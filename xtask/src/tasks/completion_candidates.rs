@@ -973,9 +973,25 @@ impl ProviderReferenceVisitor<'_> {
 }
 
 impl<'ast> Visit<'ast> for ProviderReferenceVisitor<'_> {
+    /// A test-only import is not a live delegation.
+    ///
+    /// `SeamVisitor` already refuses to inventory test-only producers, so a
+    /// `#[cfg(test)] use crate::providers::hover;` demanding a `[[delegations]]`
+    /// row would refuse correct source for a dependency that never ships.
     fn visit_item_use(&mut self, node: &'ast syn::ItemUse) {
+        if has_cfg_test(&node.attrs) {
+            return;
+        }
         self.walk_use_tree(&node.tree, false);
         syn::visit::visit_item_use(self, node);
+    }
+
+    /// Likewise a `#[test]` function's body.
+    fn visit_item_fn(&mut self, node: &'ast syn::ItemFn) {
+        if has_test_attribute(&node.attrs) || has_cfg_test(&node.attrs) {
+            return;
+        }
+        syn::visit::visit_item_fn(self, node);
     }
 
     fn visit_path(&mut self, node: &'ast syn::Path) {
@@ -1004,8 +1020,13 @@ impl<'ast> Visit<'ast> for ProviderReferenceVisitor<'_> {
         self.scopes.pop();
     }
 
-    /// An inline module is its own scope for the same reason.
+    /// An inline module is its own scope for the same reason — and a
+    /// test-only one is skipped entirely, so its imports never become live
+    /// delegations.
     fn visit_item_mod(&mut self, node: &'ast syn::ItemMod) {
+        if has_cfg_test(&node.attrs) {
+            return;
+        }
         let declared = node.content.as_ref().map(|(_, items)| {
             scope_aliases(items.iter().filter_map(|item| match item {
                 syn::Item::Use(item) => Some(item),
@@ -1069,7 +1090,7 @@ impl ProviderAliasVisitor<'_> {
 fn scope_aliases<'a>(items: impl Iterator<Item = &'a syn::ItemUse>) -> BTreeSet<String> {
     let mut aliases = BTreeSet::new();
     let mut visitor = ProviderAliasVisitor { aliases: &mut aliases };
-    for item in items {
+    for item in items.filter(|item| !has_cfg_test(&item.attrs)) {
         visitor.walk_use_tree(&item.tree, false);
     }
     aliases
@@ -1432,7 +1453,23 @@ struct CarrierVisitor<'a> {
 }
 
 impl<'ast> Visit<'ast> for CarrierVisitor<'_> {
+    /// Test-only source is not product source, here as in `SeamVisitor`.
+    ///
+    /// The carrier set is global and matched on a last path segment, so a
+    /// test-only `struct Finalization` would make every production function
+    /// returning any same-named type a producer needing a row. The two
+    /// visitors disagreeing about what counts as shipped is the bug.
+    fn visit_item_mod(&mut self, node: &'ast syn::ItemMod) {
+        if has_cfg_test(&node.attrs) {
+            return;
+        }
+        syn::visit::visit_item_mod(self, node);
+    }
+
     fn visit_item_struct(&mut self, node: &'ast syn::ItemStruct) {
+        if has_cfg_test(&node.attrs) {
+            return;
+        }
         let held = node.fields.iter().map(|field| field.ty.clone()).collect();
         self.containers.push((node.ident.to_string(), held));
         syn::visit::visit_item_struct(self, node);
@@ -1442,6 +1479,9 @@ impl<'ast> Visit<'ast> for CarrierVisitor<'_> {
     /// `CompletionFlow`, whose `Return` variant holds the page. A struct-only
     /// scan would label those seams append-only and understate what they do.
     fn visit_item_enum(&mut self, node: &'ast syn::ItemEnum) {
+        if has_cfg_test(&node.attrs) {
+            return;
+        }
         let held = node
             .variants
             .iter()
@@ -1453,6 +1493,9 @@ impl<'ast> Visit<'ast> for CarrierVisitor<'_> {
     }
 
     fn visit_item_type(&mut self, node: &'ast syn::ItemType) {
+        if has_cfg_test(&node.attrs) {
+            return;
+        }
         self.containers.push((node.ident.to_string(), vec![(*node.ty).clone()]));
         syn::visit::visit_item_type(self, node);
     }
@@ -2138,6 +2181,19 @@ fn validate_construction_plane(ledger: &Ledger, discovered: &Discovered) -> Resu
             bail!(
                 "{LEDGER_PATH} has a `construction_only` row for `{}` but that file now exposes \
                  an append-channel producer; it needs a producer row instead",
+                row.path
+            );
+        }
+        // A construction-only row is an exception to the producer rule, and an
+        // exception with no stated reason is indistinguishable from an
+        // oversight that happened to be committed. Producer rows already have
+        // to say what a reader must not infer past; this is the same rule for
+        // the escape hatch beside them.
+        if row.reason.trim().is_empty() {
+            bail!(
+                "{LEDGER_PATH} `construction_only` row for `{}` records no `reason`; a file \
+                 excused from the producer rule without one presents an unexplained exclusion \
+                 as reviewed",
                 row.path
             );
         }
@@ -4335,6 +4391,121 @@ mod tests {
             fn call() { let _ = super::super::super::super::super::super::x(); }
         });
         assert!(overshoot.is_empty(), "an over-long super chain resolves to nothing");
+    }
+
+    /// Test-only types must not enter the carrier set.
+    ///
+    /// The set is global and matched on a last path segment, so a test-only
+    /// `Finalization` would make every production function returning any
+    /// same-named type a producer needing a row — a false alarm sourced
+    /// entirely from code that never ships.
+    #[test]
+    fn test_only_carriers_do_not_widen_discovery() {
+        let file: syn::File = syn::parse_quote! {
+            #[cfg(test)]
+            mod tests {
+                pub struct Finalization { pub candidates: Vec<CompletionItem> }
+            }
+            #[cfg(test)]
+            pub struct DirectlyGated { pub candidates: Vec<CompletionItem> }
+            #[cfg(test)]
+            pub type GatedAlias = Vec<CompletionItem>;
+            pub struct Shipped { pub candidates: Vec<CompletionItem> }
+        };
+        let mut containers = Vec::new();
+        let mut visitor = CarrierVisitor { containers: &mut containers };
+        visitor.visit_file(&file);
+        let carriers = resolve_carriers(&containers);
+
+        assert!(carriers.contains("Shipped"), "product source is still a carrier");
+        for absent in ["Finalization", "DirectlyGated", "GatedAlias"] {
+            assert!(
+                !carriers.contains(absent),
+                "`{absent}` is test-only and must not widen the scan, got {carriers:?}"
+            );
+        }
+    }
+
+    /// A test-only provider import is not a live delegation.
+    #[test]
+    fn test_only_provider_references_are_not_delegations() {
+        let record = |file: &syn::File| {
+            let file_scope = scope_aliases(file.items.iter().filter_map(|item| match item {
+                syn::Item::Use(item) => Some(item),
+                _ => None,
+            }));
+            let mut modules = BTreeSet::new();
+            let mut visitor = ProviderReferenceVisitor {
+                modules: &mut modules,
+                scopes: vec![file_scope],
+                module: module_path_for(PROBE_FILE),
+            };
+            visitor.visit_file(file);
+            modules
+        };
+
+        let gated = record(&syn::parse_quote! {
+            #[cfg(test)]
+            mod tests {
+                use crate::providers::hover;
+                fn probe() { let _ = crate::providers::symbols::something(); }
+            }
+            #[cfg(test)]
+            use crate::providers::color;
+            #[test]
+            fn loose() { let _ = crate::providers::folding::something(); }
+        });
+        assert!(
+            gated.is_empty(),
+            "test-only provider references must not demand delegation rows, got {gated:?}"
+        );
+
+        // Product source still registers, including a config that also ships.
+        let shipped = record(&syn::parse_quote! {
+            use crate::providers::htmx;
+            #[cfg(any(test, feature = "probe"))]
+            use crate::providers::inline_completion;
+        });
+        assert_eq!(
+            shipped,
+            BTreeSet::from([String::from("htmx"), String::from("inline_completion")]),
+            "`any(test, feature = ..)` ships, so it is still a delegation"
+        );
+    }
+
+    /// An exception with no stated reason reads as reviewed.
+    ///
+    /// Every constructing file in the tree today also exposes a producer, so a
+    /// blank-reason row on a real path is refused by the *earlier* rule and the
+    /// reason check is never reached. The fixture therefore introduces a
+    /// construction-only file that produces nothing — the exact state the
+    /// escape hatch exists for — so the refusal it asserts can only come from
+    /// the rule under test.
+    #[test]
+    fn refuses_a_construction_only_row_with_no_reason() {
+        let (mut ledger, mut discovered) = fixture();
+        let path = "crates/perl-lsp-rs-core/src/providers/completion/completion/builds_only.rs";
+        discovered.construction_files.insert(path.to_string());
+        assert!(
+            !discovered.producer_files.contains(path),
+            "the fixture's file must not be a producer, or the earlier rule fires instead"
+        );
+
+        let mut row = ConstructionOnlyRow {
+            path: path.to_string(),
+            reason: "builds items the dispatcher owns".to_string(),
+            consumed_by: ledger.producers[0].id.clone(),
+        };
+
+        // Stated reason: accepted, so the refusal below is attributable.
+        ledger.construction_only.push(row.clone());
+        validate(&ledger, &discovered)
+            .expect("a construction-only row with a reason is the valid state");
+
+        row.reason = "   ".to_string();
+        ledger.construction_only.clear();
+        ledger.construction_only.push(row);
+        refuses(&ledger, &discovered, "records no `reason`");
     }
 
     /// A cyclic alias pair terminates instead of resolving forever.
