@@ -319,19 +319,23 @@ to audit the repo-side claims above.
 
 Multi-arch Docker images are published to:
 
-- GitHub Container Registry: `ghcr.io/EffortlessMetrics/perl-lsp`
-- Docker Hub: `effortlessmetrics/perl-lsp`
+- GitHub Container Registry: `ghcr.io/EffortlessMetrics/perl-lsp-perl`
+- Docker Hub: `effortlessmetrics/perl-lsp`, `-perl` suffixed tags
+
+The runtime is the only published image. The unsuffixed tags previously
+carried the `.docker/rust/Dockerfile` build toolchain, which contains no
+`perllsp`; it is retired from product publication (#8980).
 
 **Installation:**
 ```bash
 # From GitHub Container Registry
-docker pull ghcr.io/EffortlessMetrics/perl-lsp:latest
+docker pull ghcr.io/EffortlessMetrics/perl-lsp-perl:latest
 
 # From Docker Hub
-docker pull effortlessmetrics/perl-lsp:latest
+docker pull effortlessmetrics/perl-lsp:latest-perl
 
-# Run
-docker run --rm -v ${PWD}:/workspace effortlessmetrics/perl-lsp:latest
+# Run (stdio LSP transport; the entrypoint is perllsp)
+docker run --rm -i -v ${PWD}:/workspace effortlessmetrics/perl-lsp:latest-perl
 ```
 
 ### VSCode Extension
@@ -569,7 +573,7 @@ scoop install perl-lsp
 choco install perl-lsp
 
 # Using Docker
-docker pull effortlessmetrics/perl-lsp:latest
+docker pull effortlessmetrics/perl-lsp:latest-perl
 ```
 
 ### Changes
