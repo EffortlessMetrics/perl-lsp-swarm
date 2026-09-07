@@ -44,7 +44,7 @@ enum HirFact {
     Item { kind: &'static str, anchor: &'static str, exact: &'static str },
     Modifier { verb: StatementModifierKind, exact: &'static str, condition: &'static str },
     ArrayElement { exact: &'static str, container: &'static str, selector: &'static str },
-    Variable { exact: &'static str, sigil: Sigil, name: &'static str },
+    Variable { exact: &'static str, sigil: &'static str, name: &'static str },
     Readline { exact: &'static str },
     Postfix { verb: StatementModifierKind, exact: &'static str },
     IndexBinary { lhs: &'static str, rhs: &'static str },
@@ -90,7 +90,7 @@ fn node_text<'a>(source: &'a str, node: &Node) -> &'a str {
     source.get(node.location.start..node.location.end).unwrap_or("<invalid-range>")
 }
 
-fn node_payload<'a>(node: &'a Node) -> Option<&'a str> {
+fn node_payload(node: &Node) -> Option<&str> {
     match &node.kind {
         NodeKind::Binary { op, .. } | NodeKind::Unary { op, .. } => Some(op.as_str()),
         NodeKind::StatementModifier { modifier, .. } => Some(modifier.as_str()),
@@ -162,7 +162,7 @@ fn hir_item_kind_name(kind: &HirKind) -> &'static str {
     }
 }
 
-fn slice<'a>(source: &'a str, start: usize, end: usize) -> &'a str {
+fn slice(source: &str, start: usize, end: usize) -> &str {
     source.get(start..end).unwrap_or("<invalid-range>")
 }
 
@@ -205,7 +205,7 @@ fn local_hir_facts(source: &str, hir: &HirFile) -> String {
             let text = expr_text(source, body, id);
             let summary = match body.expr(id) {
                 Some(HirExpr::Variable(variable)) => {
-                    format!("Variable {}{}", sigil_text(variable.sigil), variable.name)
+                    format!("Variable {}{}", sigil_text(&variable.sigil), variable.name)
                 }
                 Some(HirExpr::Subscript(subscript)) => format!(
                     "Subscript {:?} container={:?} selector={:?}",
@@ -243,7 +243,7 @@ fn local_hir_facts(source: &str, hir: &HirFile) -> String {
     out
 }
 
-fn sigil_text(sigil: Sigil) -> &'static str {
+fn sigil_text(sigil: &Sigil) -> &'static str {
     match sigil {
         Sigil::Scalar => "$",
         Sigil::Array => "@",
@@ -338,7 +338,7 @@ fn prove_hir_fact(source: &str, ast: &Node, hir: &HirFile, fact: HirFact) -> Res
                 matches!(
                     body.expr(id),
                     Some(HirExpr::Variable(variable))
-                        if variable.sigil == sigil
+                        if sigil_text(&variable.sigil) == sigil
                             && variable.name == name
                             && expr_text(source, body, id) == exact
                 )
@@ -426,6 +426,13 @@ fn prove_idiom(idiom: NamedIdiom) -> Result<(), String> {
 
 fn prove_named_idiom(idiom: NamedIdiom) -> TestResult {
     prove_idiom(idiom).map_err(Into::into)
+}
+
+fn prove_must_fail(result: Result<(), String>, why: &str) -> Result<String, Box<dyn Error>> {
+    match result {
+        Err(error) => Ok(error),
+        Ok(()) => Err(format!("expected structural proof to fail: {why}").into()),
+    }
 }
 
 const E_PRINT_LITERAL: NamedIdiom = NamedIdiom {
@@ -606,7 +613,7 @@ const LANE_JOIN_AUTOSPLIT_FIELDS: NamedIdiom = NamedIdiom {
         child_exact: "@F",
     }],
     hir: &[
-        HirFact::Variable { exact: "@F", sigil: Sigil::Array, name: "F" },
+        HirFact::Variable { exact: "@F", sigil: "@", name: "F" },
         HirFact::Call { exact: r#"join "\t", @F"# },
     ],
 };
@@ -846,6 +853,7 @@ const E_PARENTHESIZED_SPLIT_SLICE: NamedIdiom = NamedIdiom {
     source: r#"print +(split)[0];"#,
     nodes: &[
         AstFact { kind: "Unary", exact: "+(split)[0]", payload: Some("+") },
+        // Binary range starts at `split`; the opening paren belongs to the unary `+`.
         AstFact { kind: "Binary", exact: "split)[0]", payload: Some("[]") },
         AstFact { kind: "FunctionCall", exact: "split", payload: Some("split") },
         AstFact { kind: "Number", exact: "0", payload: None },
@@ -958,8 +966,8 @@ const E_PRINTF_SPECIAL_VARIABLES: NamedIdiom = NamedIdiom {
         },
     ],
     hir: &[
-        HirFact::Variable { exact: "$ARGV", sigil: Sigil::Scalar, name: "ARGV" },
-        HirFact::Variable { exact: "$.", sigil: Sigil::Scalar, name: "." },
+        HirFact::Variable { exact: "$ARGV", sigil: "$", name: "ARGV" },
+        HirFact::Variable { exact: "$.", sigil: "$", name: "." },
     ],
 };
 
@@ -990,37 +998,37 @@ const E_WHILE_DIAMOND_MODIFIER: NamedIdiom = NamedIdiom {
 
 const NE_BARE_CAPTURE_VARIABLE: NamedIdiom = NamedIdiom {
     switches: "-ne",
-    source: r#"print $1 if /^(\w+)/;"#,
+    source: r#"print($1) if /^(\w+)/;"#,
     nodes: &[
         AstFact { kind: "Variable", exact: "$1", payload: Some("1") },
         AstFact { kind: "Regex", exact: r#"/^(\w+)/"#, payload: None },
         AstFact {
             kind: "StatementModifier",
-            exact: r#"print $1 if /^(\w+)/"#,
+            exact: r#"print($1) if /^(\w+)/"#,
             payload: Some("if"),
         },
     ],
     anchors: &[
         AnchorFact {
             parent_kind: "FunctionCall",
-            parent_exact: "print $1",
+            parent_exact: "print($1)",
             parent_payload: Some("print"),
             child_kind: "Variable",
             child_exact: "$1",
         },
         AnchorFact {
             parent_kind: "StatementModifier",
-            parent_exact: r#"print $1 if /^(\w+)/"#,
+            parent_exact: r#"print($1) if /^(\w+)/"#,
             parent_payload: Some("if"),
             child_kind: "Regex",
             child_exact: r#"/^(\w+)/"#,
         },
     ],
     hir: &[
-        HirFact::Variable { exact: "$1", sigil: Sigil::Scalar, name: "1" },
+        HirFact::Variable { exact: "$1", sigil: "$", name: "1" },
         HirFact::Modifier {
             verb: StatementModifierKind::If,
-            exact: r#"print $1 if /^(\w+)/"#,
+            exact: r#"print($1) if /^(\w+)/"#,
             condition: r#"/^(\w+)/"#,
         },
     ],
@@ -1100,13 +1108,15 @@ fn structurally_wrong_array_slice_fails_element_assertion() -> TestResult {
     assert_clean_parse(neighbor);
     assert_no_blocking_diagnostics(neighbor);
     let (ast, hir) = parse_clean_with_hir(neighbor)?;
-    let error = prove_ast_node(
-        neighbor,
-        &ast,
-        &hir,
-        AstFact { kind: "Binary", exact: "$F[0]", payload: Some("[]") },
-    )
-    .expect_err("clean ArraySlice parse must fail the $F[0] Binary[] assertion");
+    let error = prove_must_fail(
+        prove_ast_node(
+            neighbor,
+            &ast,
+            &hir,
+            AstFact { kind: "Binary", exact: "$F[0]", payload: Some("[]") },
+        ),
+        "clean ArraySlice parse must fail the $F[0] Binary[] assertion",
+    )?;
     assert!(
         error.contains("missing AST Binary"),
         "falsifier must name the missing Binary[] node, got: {error}"
@@ -1117,13 +1127,15 @@ fn structurally_wrong_array_slice_fails_element_assertion() -> TestResult {
         &hir,
         AstFact { kind: "ArraySlice", exact: "@F[0]", payload: None },
     )?;
-    prove_hir_fact(
-        neighbor,
-        &ast,
-        &hir,
-        HirFact::ArrayElement { exact: "$F[0]", container: "$F", selector: "0" },
-    )
-    .expect_err("ArraySlice must not lower to an array-element Subscript");
+    prove_must_fail(
+        prove_hir_fact(
+            neighbor,
+            &ast,
+            &hir,
+            HirFact::ArrayElement { exact: "$F[0]", container: "$F", selector: "0" },
+        ),
+        "ArraySlice must not lower to an array-element Subscript",
+    )?;
     Ok(())
 }
 
@@ -1132,20 +1144,24 @@ fn hash_subscript_neighbor_does_not_satisfy_array_element() -> TestResult {
     let neighbor = r#"print $F{0};"#;
     assert_clean_parse(neighbor);
     let (ast, hir) = parse_clean_with_hir(neighbor)?;
-    prove_ast_node(
-        neighbor,
-        &ast,
-        &hir,
-        AstFact { kind: "Binary", exact: "$F[0]", payload: Some("[]") },
-    )
-    .expect_err("hash subscript must not satisfy Binary[]");
-    prove_hir_fact(
-        neighbor,
-        &ast,
-        &hir,
-        HirFact::ArrayElement { exact: "$F[0]", container: "$F", selector: "0" },
-    )
-    .expect_err("hash subscript must not satisfy array-element HIR");
+    prove_must_fail(
+        prove_ast_node(
+            neighbor,
+            &ast,
+            &hir,
+            AstFact { kind: "Binary", exact: "$F[0]", payload: Some("[]") },
+        ),
+        "hash subscript must not satisfy Binary[]",
+    )?;
+    prove_must_fail(
+        prove_hir_fact(
+            neighbor,
+            &ast,
+            &hir,
+            HirFact::ArrayElement { exact: "$F[0]", container: "$F", selector: "0" },
+        ),
+        "hash subscript must not satisfy array-element HIR",
+    )?;
     Ok(())
 }
 
@@ -1154,14 +1170,16 @@ fn unrelated_subscript_does_not_satisfy_autosplit_field() -> TestResult {
     let neighbor = r#"print $x[1];"#;
     assert_clean_parse(neighbor);
     let (ast, hir) = parse_clean_with_hir(neighbor)?;
-    prove_idiom(NamedIdiom {
-        switches: "-lane",
-        source: neighbor,
-        nodes: LANE_FIRST_AUTOSPLIT_FIELD.nodes,
-        anchors: LANE_FIRST_AUTOSPLIT_FIELD.anchors,
-        hir: LANE_FIRST_AUTOSPLIT_FIELD.hir,
-    })
-    .expect_err("unrelated $x[1] must not satisfy the $F[0] idiom");
+    prove_must_fail(
+        prove_idiom(NamedIdiom {
+            switches: "-lane",
+            source: neighbor,
+            nodes: LANE_FIRST_AUTOSPLIT_FIELD.nodes,
+            anchors: LANE_FIRST_AUTOSPLIT_FIELD.anchors,
+            hir: LANE_FIRST_AUTOSPLIT_FIELD.hir,
+        }),
+        "unrelated $x[1] must not satisfy the $F[0] idiom",
+    )?;
     prove_ast_node(
         neighbor,
         &ast,
@@ -1176,13 +1194,19 @@ fn block_if_neighbor_does_not_satisfy_postfix_match() -> TestResult {
     let neighbor = r#"if (/needle/) { print; }"#;
     assert_clean_parse(neighbor);
     let (ast, hir) = parse_clean_with_hir(neighbor)?;
-    prove_ast_node(
-        neighbor,
-        &ast,
-        &hir,
-        AstFact { kind: "StatementModifier", exact: r#"print if /needle/"#, payload: Some("if") },
-    )
-    .expect_err("block if must not satisfy postfix StatementModifier");
+    prove_must_fail(
+        prove_ast_node(
+            neighbor,
+            &ast,
+            &hir,
+            AstFact {
+                kind: "StatementModifier",
+                exact: r#"print if /needle/"#,
+                payload: Some("if"),
+            },
+        ),
+        "block if must not satisfy postfix StatementModifier",
+    )?;
     prove_ast_node(
         neighbor,
         &ast,
@@ -1197,19 +1221,21 @@ fn grep_list_neighbor_does_not_satisfy_diamond_input() -> TestResult {
     let neighbor = r#"print grep /needle/, @lines;"#;
     assert_clean_parse(neighbor);
     let (ast, hir) = parse_clean_with_hir(neighbor)?;
-    prove_anchor(
-        neighbor,
-        &ast,
-        &hir,
-        AnchorFact {
-            parent_kind: "FunctionCall",
-            parent_exact: "grep /needle/, <>",
-            parent_payload: Some("grep"),
-            child_kind: "Diamond",
-            child_exact: "<>",
-        },
-    )
-    .expect_err("grep @lines must not satisfy grep diamond attachment");
+    prove_must_fail(
+        prove_anchor(
+            neighbor,
+            &ast,
+            &hir,
+            AnchorFact {
+                parent_kind: "FunctionCall",
+                parent_exact: "grep /needle/, <>",
+                parent_payload: Some("grep"),
+                child_kind: "Diamond",
+                child_exact: "<>",
+            },
+        ),
+        "grep @lines must not satisfy grep diamond attachment",
+    )?;
     prove_ast_node(
         neighbor,
         &ast,
@@ -1241,13 +1267,15 @@ fn negative_controls_keep_context_errors_and_boundaries_visible() -> TestResult 
         &loop_hir,
         AstFact { kind: "While", exact: explicit, payload: None },
     )?;
-    prove_ast_node(
-        explicit,
-        &loop_ast,
-        &loop_hir,
-        AstFact { kind: "StatementModifier", exact: "print while <>", payload: Some("while") },
-    )
-    .expect_err("explicit while (<>) must not collapse to postfix while");
+    prove_must_fail(
+        prove_ast_node(
+            explicit,
+            &loop_ast,
+            &loop_hir,
+            AstFact { kind: "StatementModifier", exact: "print while <>", payload: Some("while") },
+        ),
+        "explicit while (<>) must not collapse to postfix while",
+    )?;
 
     // Option-order and shell-quoting are CLI concerns, not parser-body syntax.
     // If either leaks into this target, the AST range makes the contamination
