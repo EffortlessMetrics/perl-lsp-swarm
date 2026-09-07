@@ -965,6 +965,77 @@ Point->new(
     );
 }
 
+/// A literal constructor key must be quoted before it is inserted as Perl.
+///
+/// `=>` auto-quotes only a plain identifier. Verified on perl 5.38.2 that
+/// `C->new(foo-bar => 1)` dies with `Bareword "foo" not allowed while
+/// "strict subs" in use`, `C->new(Foo::bar => 1)` dies under `use strict`,
+/// and `C->new($dyn => 1)` inserts the variable's *value* rather than the key.
+/// Inserting any of them unquoted silently changes which constructor argument
+/// the user is naming.
+///
+/// Controlling issue: #13449.
+#[test]
+fn test_object_pad_constructor_param_completion_quotes_literal_keys() {
+    for (key, expected_insert) in [
+        // A plain identifier is left bare: `=>` already quotes it.
+        ("plain_key", "plain_key => "),
+        ("_leading", "_leading => "),
+        ("mixed123", "mixed123 => "),
+        // Everything else has to be quoted.
+        ("foo-bar", "'foo-bar' => "),
+        ("Foo::bar", "'Foo::bar' => "),
+        ("1bad", "'1bad' => "),
+        ("get()", "'get()' => "),
+    ] {
+        let code = format!(
+            "\nuse Object::Pad;\n\nclass Point {{\nfield $x :param({key}) = 0;\n}}\n\nPoint->new(\n"
+        );
+
+        let mut parser = Parser::new(&code);
+        let ast = must(parser.parse());
+        let provider = CompletionProvider::new_with_index_and_source(&ast, &code, None);
+        let completions = provider.get_completions(&code, code.len());
+
+        let item = must_some(completions.iter().find(|item| {
+            item.label == key && item.detail.as_deref() == Some("Object::Pad constructor parameter")
+        }));
+        assert_eq!(
+            item.insert_text.as_deref(),
+            Some(expected_insert),
+            "`:param({key})` must insert `{expected_insert}`"
+        );
+        assert_eq!(item.label, key, "the label keeps the key as the source wrote it");
+        assert_eq!(item.filter_text.as_deref(), Some(key), "filtering keeps the decoded key");
+    }
+}
+
+/// Sigils, spaces, apostrophes, and backslashes survive quoting intact.
+///
+/// These keys cannot reach the provider through the current parser, which
+/// collapses internal trivia (#14998), so they are exercised at the rendering
+/// seam directly. The quoting must already be correct for when they can.
+#[test]
+fn test_constructor_key_insertion_escapes_quotes_and_backslashes() {
+    for (key, expected) in [
+        ("$dyn", "'$dyn' => "),
+        ("foo@arr", "'foo@arr' => "),
+        ("external name", "'external name' => "),
+        ("$dyn + 1", "'$dyn + 1' => "),
+        // A single quote must be escaped, or the inserted string terminates early.
+        ("it's", "'it\\'s' => "),
+        // A backslash must be escaped, or it escapes the closing quote.
+        ("back\\slash", "'back\\\\slash' => "),
+        ("trailing\\", "'trailing\\\\' => "),
+    ] {
+        assert_eq!(
+            super::constructor_key_insertion(key),
+            expected,
+            "`{key}` must be inserted as `{expected}`"
+        );
+    }
+}
+
 #[test]
 fn test_object_pad_constructor_param_completion_honors_prefix_and_value_context() {
     let prefix_code = r#"
