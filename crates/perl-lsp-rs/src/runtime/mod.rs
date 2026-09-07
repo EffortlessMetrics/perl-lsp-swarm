@@ -235,6 +235,24 @@ pub struct LspServer {
     /// authority, so buffer-derived facts are current. The marker is cleared
     /// by the next refresh in which every source resolves.
     pub(crate) stale_dependency_facts: Arc<Mutex<std::collections::BTreeSet<String>>>,
+
+    /// Serializes a whole metadata refresh: buffer snapshot *and* apply.
+    ///
+    /// `refresh_project_metadata_facts` snapshots open-document text before
+    /// taking `workspace_folders`, because taking `documents` inside the
+    /// folder lock would invert the established `documents -> workspace_folders`
+    /// order. That hoist leaves a gap: two concurrent refreshes (a watcher
+    /// batch and a `didChange`, say) can snapshot in one order and apply in
+    /// the other, letting an older buffer snapshot commit last and overwrite
+    /// newer dependency facts until the next event.
+    ///
+    /// Holding this for the whole refresh closes that gap without nesting the
+    /// two locks: it is always acquired *before* `documents` and
+    /// `workspace_folders` and only by this one route, so it cannot
+    /// participate in a cycle. A refresh that waits here then snapshots after
+    /// the previous one has fully applied, so the last refresh to run always
+    /// reads current buffer state.
+    pub(crate) metadata_refresh_serialization: Arc<Mutex<()>>,
     /// Serializes workspace identity invalidation with diagnostic publication.
     pub(crate) workspace_identity_lock: Arc<Mutex<()>>,
     /// Project configuration discovered for an unregistered single-file document.

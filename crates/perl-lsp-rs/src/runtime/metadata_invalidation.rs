@@ -120,14 +120,27 @@ impl LspServer {
 
     /// Staged editor text for `path`, if any document is open for it.
     ///
-    /// An exact match wins, so on a case-sensitive filesystem two genuinely
-    /// distinct documents (`cpanfile` and `CPANFILE`) each resolve to
-    /// themselves. Only when no document matches exactly does this fall back
-    /// to an ASCII case-insensitive search, which is what makes open-buffer
-    /// authority hold on a case-insensitive filesystem: there the editor's
-    /// URI may spell the file `CPANFILE` while the detector addresses it as
-    /// `cpanfile`, and a byte-exact lookup would silently prefer disk bytes
-    /// over the staged text the user is editing.
+    /// An exact match wins. Otherwise a differently-cased document counts only
+    /// when the filesystem says it is *the same file*, established by
+    /// canonicalizing both and comparing — not by assuming that a
+    /// case-insensitive name match implies identity.
+    ///
+    /// The distinction is load-bearing in both directions. On a
+    /// case-insensitive filesystem the editor may spell the document
+    /// `CPANFILE` while the detector addresses `cpanfile`; they canonicalize
+    /// to one path, and without this the staged text would lose to disk bytes,
+    /// breaking open-buffer authority (#8041) on exactly the platforms the
+    /// case-insensitive classifier exists for. On a case-sensitive filesystem
+    /// `CPANFILE` and `cpanfile` are two different files that canonicalize
+    /// apart, so an open `CPANFILE` must never supply text for the real
+    /// `cpanfile` — a name-only match would let an unrelated buffer replace
+    /// genuine metadata.
+    ///
+    /// Canonicalization needs both paths to exist. When the metadata file has
+    /// been deleted while a case-variant buffer stays open, identity cannot be
+    /// established and no text is returned; the exact-match path above still
+    /// covers the ordinary "open buffer outlives its backing file" case, which
+    /// is the one the delete-race regression depends on.
     fn staged_metadata_text<'a>(
         open_document_text: &'a BTreeMap<PathBuf, String>,
         path: &Path,
@@ -135,11 +148,24 @@ impl LspServer {
         if let Some(text) = open_document_text.get(path) {
             return Some(text);
         }
+        let canonical_target = std::fs::canonicalize(path).ok()?;
         open_document_text.iter().find_map(|(candidate, text)| {
-            (candidate.components().count() == path.components().count()
-                && Self::path_contains_ignore_ascii_case(path, candidate))
-            .then_some(text)
+            if candidate == path || !Self::paths_equal_ignore_ascii_case(candidate, path) {
+                return None;
+            }
+            let canonical_candidate = std::fs::canonicalize(candidate).ok()?;
+            (canonical_candidate == canonical_target).then_some(text)
         })
+    }
+
+    /// Component-wise, ASCII case-insensitive path equality.
+    ///
+    /// A cheap pre-filter for the canonicalization above: it keeps the
+    /// syscall off every open document and off any candidate that is not even
+    /// a case variant of the target.
+    fn paths_equal_ignore_ascii_case(left: &Path, right: &Path) -> bool {
+        left.components().count() == right.components().count()
+            && Self::path_contains_ignore_ascii_case(left, right)
     }
 
     /// Refresh dependency and environment facts for `roots`, at most once each.
@@ -157,6 +183,17 @@ impl LspServer {
         if roots.is_empty() {
             return;
         }
+
+        // Serialize the whole refresh. The snapshot below is deliberately
+        // taken outside `workspace_folders` (nesting `documents` inside it
+        // would invert the established order), which on its own would let two
+        // concurrent refreshes snapshot in one order and apply in the other —
+        // an older buffer snapshot committing last and overwriting newer
+        // facts. This guard is acquired before both other locks and only by
+        // this route, so it orders refreshes against each other without
+        // joining the lock graph the other two participate in. A refresh that
+        // waits here snapshots only after the previous one has fully applied.
+        let _refresh_order = self.metadata_refresh_serialization.lock();
 
         // Snapshot open-document text before taking the folder lock. No
         // production path currently holds `documents` across a
@@ -548,21 +585,43 @@ mod tests {
         }
     }
 
-    /// Open-buffer authority must survive a case-variant document URI: the
-    /// editor may spell the file `CPANFILE` while the detector addresses
-    /// `cpanfile`, and a byte-exact map lookup would silently prefer disk.
+    /// Whether this filesystem resolves `cpanfile` and `CPANFILE` to one file.
+    ///
+    /// Probed rather than inferred from `cfg!(windows)`, because macOS is
+    /// case-insensitive by default and a Linux volume can be either.
+    fn filesystem_is_case_insensitive(root: &Path) -> bool {
+        std::fs::write(root.join("case-probe"), "x").expect("write probe");
+        let insensitive = root.join("CASE-PROBE").is_file();
+        std::fs::remove_file(root.join("case-probe")).expect("remove probe");
+        insensitive
+    }
+
+    /// A case-variant buffer is authoritative only when the filesystem says it
+    /// is the *same file*, which is why identity is canonicalized rather than
+    /// assumed from the name.
+    ///
+    /// Where `CPANFILE` and `cpanfile` are one file, the staged text must win
+    /// or open-buffer authority breaks on that platform. Where they are two
+    /// files, the open `CPANFILE` is unrelated content and must not replace
+    /// the real `cpanfile` — a name-only match would do exactly that.
     #[test]
-    fn a_case_variant_open_buffer_still_supplies_staged_text() {
+    fn a_case_variant_buffer_supplies_text_only_when_it_is_the_same_file() {
         let temp = tempfile::tempdir().expect("temp dir");
         std::fs::write(temp.path().join("cpanfile"), "requires 'Disk';\n").expect("write disk");
         let mut open = BTreeMap::new();
         open.insert(temp.path().join("CPANFILE"), "requires 'Staged';\n".to_string());
 
         let reads = LspServer::capture_metadata_reads(temp.path(), &open);
+        let expected = if filesystem_is_case_insensitive(temp.path()) {
+            "requires 'Staged';\n"
+        } else {
+            "requires 'Disk';\n"
+        };
 
         assert_eq!(
             read_for(&reads, DeclaredDependencySource::Cpanfile),
-            MetadataSourceRead::Text("requires 'Staged';\n".to_string())
+            MetadataSourceRead::Text(expected.to_string()),
+            "a case variant is the same document only where the filesystem says so"
         );
     }
 
