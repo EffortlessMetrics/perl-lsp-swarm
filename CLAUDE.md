@@ -273,9 +273,11 @@ Otherwise detect, explain, repair, and continue.
   write-boundary check;
 - if another current writer is established, stop mutating that candidate; continue as
   a reviewer or take a different claim;
-- rebase and force-push belong to a candidate's single writer; if commits from multiple
-  contexts have already reached the branch, merge rather than rewriting history, then
-  return the candidate to one writer;
+- rebase and force-push require a candidate's single writer and the applicable user and
+  repository authorization; writer ownership alone grants no rewrite permission;
+- if commits from multiple contexts have already reached the branch, first establish
+  one writer; that writer preserves the commits by merging rather than rewriting
+  history, subject to the applicable authorization;
 - stage intended paths explicitly;
 - use one worktree per genuine concurrent write claim, not per lifecycle pass;
 - run focused proof, then affected package proof, then broader proof only when risk or

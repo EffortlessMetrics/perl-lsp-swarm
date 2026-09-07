@@ -243,10 +243,14 @@ candidate.
   from live evidence; missing, stale, or contradictory evidence is `NOT_PROVEN`;
 - a context that establishes another current writer does not mutate that candidate; it
   may continue as a reviewer or move to another claim;
-- if commits from multiple contexts have already reached the branch, merge rather than
-  rewrite history, then return the candidate to one writer;
+- if commits from multiple contexts have already reached the branch, first establish
+  one writer; that writer preserves the commits by merging rather than rewriting
+  history, subject to applicable user and repository authorization; writer ownership
+  alone grants no rebase or force-push authorization;
 - the writer role is exclusive, the review role is not: research, review, and
   comment on an existing candidate need no claim and no wait;
+- independent reviewing roots may publish useful findings; bounded review workers
+  return evidence to their accountable root for joining and publication;
 - focused research, oracle, proof, review, and CI evidence work may assist;
 - helpers do not inspect sibling claim implementation details or touched-file overlap as
   routine ownership checks;

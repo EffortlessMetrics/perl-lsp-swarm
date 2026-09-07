@@ -265,12 +265,13 @@ Mutation is exclusive; reading is not. Arriving at an existing candidate to rese
 review, challenge, or comment requires no claim, no check for a current writer, and no
 wait. Duplicate review is cheap and buys a second detection surface from
 changed attention, which is what substantive review asks for and cannot get from
-identity alone. A session that finds another writer already on a candidate reviews it
-and posts what it found; it does not push, and it does not stand down from reviewing.
+identity alone. A session that finds another writer already on a candidate may review
+it and contribute evidence; it does not push or need to wait to review.
 
-Duplicate review composes only when each session posts its findings to the durable
-GitHub surface. Two silent reviews are two contexts rediscovering the same defect and
-disagreeing invisibly; two posted reviews are joined evidence.
+Independent reviewing roots publish useful findings to the durable GitHub surface.
+Bounded review workers return findings to their accountable root, which joins the
+evidence and publishes the useful result. Evidence left only in a reviewing session
+cannot inform the next reviewer; publication follows the existing root/worker authority.
 
 Do not gate reading. A claim ceremony, reservation, or persistent writer-liveness
 signal ahead of research or review serializes the cheap half of the work and goes stale.
@@ -281,9 +282,11 @@ writer evidence is `NOT_PROVEN`; an established second writer is a hard stop. Th
 just-in-time write check, not durable coordination state.
 
 If a collision is discovered only after commits from multiple contexts have reached the
-branch, preserve those commits by merging rather than rewriting history, then return
-the candidate to one writer. A second writer does not gain permission to keep mutating
-merely because merge is safer than force-push.
+branch, first establish one writer. That writer preserves the commits by merging
+rather than rewriting history, subject to applicable user and repository authorization.
+A second writer does not gain permission to perform recovery mutation merely because
+merge is safer than force-push. Writer ownership alone grants no rebase or force-push
+authorization.
 
 ## Proof ladder
 
