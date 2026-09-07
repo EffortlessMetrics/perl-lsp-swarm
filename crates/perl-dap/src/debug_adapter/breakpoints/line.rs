@@ -98,9 +98,7 @@ impl DebugAdapter {
         // Consume the returned path: checking a workspace-relative spelling but
         // reading that spelling against the process cwd would authorize one
         // file and read another. All-rejected requests retain their no-I/O path.
-        if !all_entries_rejected
-            && let Some(source_path) = args.source.path.as_deref()
-        {
+        if !all_entries_rejected && let Some(source_path) = args.source.path.as_deref() {
             let admitted_path = self.validate_source_path(source_path).and_then(|path| {
                 path.into_os_string().into_string().map_err(|_| {
                     "Path validation failed: resolved source path is not valid UTF-8".to_string()
@@ -197,7 +195,8 @@ impl DebugAdapter {
         let mut rejected_results = rejected.into_iter().peekable();
         let mut body_breakpoints: Vec<Value> = Vec::with_capacity(input_len);
         for index in 0..input_len {
-            if let Some((_, line, column, message)) = rejected_results.next_if(|(i, ..)| *i == index) {
+            if let Some((_, line, column, message)) = rejected_results.next_if(|(i, ..)| *i == index)
+            {
                 let mut entry = json!({
                     "verified": false,
                     "line": line,
@@ -283,7 +282,8 @@ mod source_boundary_tests {
         let canonical_key = source_text(&canonical)?;
         let mut adapter = bounded_adapter(root.path())?;
 
-        let absolute = successful_body(request(&mut adapter, canonical_key, json!([{ "line": 1 }])))?;
+        let absolute =
+            successful_body(request(&mut adapter, canonical_key, json!([{ "line": 1 }])))?;
         assert_eq!(absolute["breakpoints"].as_array().map(Vec::len), Some(1));
         assert_eq!(absolute["breakpoints"][0]["verified"], json!(true));
 
@@ -367,8 +367,8 @@ mod source_boundary_tests {
     }
 
     #[test]
-    fn unconfigured_adapter_still_accepts_an_ordinary_absolute_source()
-    -> Result<(), Box<dyn Error>> {
+    fn unconfigured_adapter_still_accepts_an_ordinary_absolute_source() -> Result<(), Box<dyn Error>>
+    {
         let root = tempfile::tempdir()?;
         let source = root.path().join("ordinary.pl");
         fs::write(&source, "print 'fixture';\n")?;
