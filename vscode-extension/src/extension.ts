@@ -52,6 +52,11 @@ import { registerGherkinProviders } from './gherkinProviders';
 import { registerGherkinStepDefinitionSupport } from './gherkinStepDefinitions';
 import { registerDocumentFeatureGroup } from './documentFeatureGroup';
 import { StreamingCompletionController } from './streamingCompletion';
+import {
+  awaitServerProcessExit,
+  serverProcessOf,
+  type ServerProcessLike,
+} from './serverProcessTermination';
 import { InlineCompletionOwner } from './inlineCompletionRouting';
 import {
   runAllTestsWithProve,
@@ -343,6 +348,11 @@ const MAX_AUTO_RESTART_ATTEMPTS = 3;
 const STABLE_RUN_GRACE_MS = 30_000;
 const WATCHDOG_INTERVAL_MS = 30_000;
 const WATCHDOG_TIMEOUT_MS = 10_000;
+// vscode-languageclient schedules `checkProcessDied()` two seconds after
+// `stop()` settles and only then terminates a still-running server. Wait a
+// little past that for the exit event; the lifecycle's own stop bound (5 s)
+// caps the whole terminal check.
+const SERVER_PROCESS_EXIT_GRACE_MS = 4_000;
 const crashRecoveryArbiter = new CrashRecoveryArbiter(
   MAX_AUTO_RESTART_ATTEMPTS,
   STABLE_RUN_GRACE_MS,
@@ -1272,27 +1282,7 @@ async function runExtensionActivation(
 
   const fileCreationWatcher = vscode.workspace.onDidCreateFiles(async (event) => {
     try {
-      const config = vscode.workspace.getConfiguration('perl-lsp');
-      if (!config.get<boolean>('autoPopulateNewFiles', true)) {
-        return;
-      }
-
-      for (const uri of event.files) {
-        const boilerplate = generateBoilerplate(uri.fsPath);
-        if (!boilerplate) {
-          continue;
-        }
-
-        const doc = await vscode.workspace.openTextDocument(uri);
-        if (doc.getText().length > 0) {
-          // File already has content — don't overwrite
-          continue;
-        }
-
-        const edit = new vscode.WorkspaceEdit();
-        edit.insert(uri, new vscode.Position(0, 0), boilerplate.content);
-        await vscode.workspace.applyEdit(edit);
-      }
+      await populateCreatedFiles(event);
     } catch (e) {
       outputChannel.error('File creation handler error', e);
     }
@@ -1945,6 +1935,17 @@ function createLanguageClientLifecycle(
       const message = error instanceof Error ? error.message : String(error);
       outputChannel.error(`[lifecycle] ${phase} callback failed: ${message}`);
     },
+    // vscode-languageclient can settle `stop()` successfully or with a
+    // handshake rejection before the node transport terminates its server.
+    // Require Stopped plus exit of the process captured before `stop()` for
+    // either settlement before admitting a replacement (#14155).
+    captureStopWitness: (client) => serverProcessOf(client),
+    isClientTerminal: async (client, witness) =>
+      client.state === LanguageClientState.Stopped &&
+      (await awaitServerProcessExit(
+        witness as ServerProcessLike | undefined,
+        SERVER_PROCESS_EXIT_GRACE_MS,
+      )),
   });
 }
 
@@ -2788,6 +2789,47 @@ export function maybeNudgeArrowCompletion(event: vscode.TextDocumentChangeEvent)
   }
 
   void vscode.commands.executeCommand('editor.action.triggerSuggest');
+}
+
+/**
+ * Insert boilerplate into newly created Perl files that are still empty.
+ *
+ * `perl-lsp.autoPopulateNewFiles` is contributed `scope: "resource"`, so the
+ * gate is resolved against each created URI rather than once for the whole
+ * event (#14547). An unscoped `getConfiguration('perl-lsp')` cannot observe a
+ * `workspaceFolderValue` at all, so a multi-root workspace where one folder
+ * turns population off previously took the global value for every folder. The
+ * read must stay inside the loop for the declared scope to mean anything.
+ *
+ * A URI outside every workspace folder resolves to the global/workspace value,
+ * which is the same answer the hoisted read gave, as does an unset value. A
+ * workspace opened as a single folder has no workspace-folder layer to select,
+ * so it is unaffected too — but note that a `.code-workspace` listing exactly
+ * one folder is mechanically multi-root and does have that layer, so a value
+ * set on that folder now wins where it previously could not be seen.
+ */
+export async function populateCreatedFiles(event: vscode.FileCreateEvent): Promise<void> {
+  for (const uri of event.files) {
+    const scoped = vscode.workspace.getConfiguration('perl-lsp', uri);
+    if (!scoped.get<boolean>('autoPopulateNewFiles', true)) {
+      continue;
+    }
+
+    const boilerplate = generateBoilerplate(uri.fsPath);
+    if (!boilerplate) {
+      continue;
+    }
+
+    const doc = await vscode.workspace.openTextDocument(uri);
+    if (doc.getText().length > 0) {
+      // File already has content — don't overwrite
+      continue;
+    }
+
+    const edit = new vscode.WorkspaceEdit();
+    edit.insert(uri, new vscode.Position(0, 0), boilerplate.content);
+    await vscode.workspace.applyEdit(edit);
+  }
 }
 
 /**

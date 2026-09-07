@@ -100,10 +100,20 @@ NOT_PROVEN
 - `PR_IN_FLIGHT` means GitHub owns a named pending transition such as required checks,
   requested review, queue state, or armed auto-merge.
 - `MERGE_BLOCKED` means a concrete conflict, failed required check, unresolved
-  substantive thread/change request, ruleset failure, or prerequisite blocks merge.
+  review thread of any author, current change request, ruleset failure, or
+  prerequisite blocks merge.
 - `NOT_PROVEN` means API/check/policy/instrument identity is missing or unreliable.
 
 Pending checks leave substantive review current while integration is `PR_IN_FLIGHT`.
+
+Read the unresolved thread count with `scripts/reviews/threads <pr> --unresolved-only
+--json` and require `unresolved_count` of 0 before `INTEGRATION_READY`. The `main`
+ruleset sets `required_review_thread_resolution`, so a bot thread (Devin, Gemini,
+Codex, CodeRabbit, cubic), an outdated thread, or an editorial thread blocks the merge
+exactly like a substantive one, and an armed auto-merge with one open thread never
+fires and reports no failure. An unresolved review thread of any author is
+`MERGE_BLOCKED` routed to `address-review-comments`, not `PR_IN_FLIGHT`; zero
+unresolved review threads is a precondition of arming auto-merge.
 
 ## Live evidence classification
 
