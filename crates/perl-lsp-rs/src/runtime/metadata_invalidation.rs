@@ -259,15 +259,17 @@ impl LspServer {
             return;
         }
 
-        // Serialize the whole refresh. The snapshot below is deliberately
-        // taken outside `workspace_folders` (nesting `documents` inside it
-        // would invert the established order), which on its own would let two
-        // concurrent refreshes snapshot in one order and apply in the other —
-        // an older buffer snapshot committing last and overwriting newer
-        // facts. This guard is acquired before both other locks and only by
-        // this route, so it orders refreshes against each other without
-        // joining the lock graph the other two participate in. A refresh that
-        // waits here snapshots only after the previous one has fully applied.
+        // Serialize the whole refresh. Both snapshots below — open-buffer text
+        // and the per-root metadata reads — are deliberately taken outside
+        // `workspace_folders` (nesting `documents` inside it would invert the
+        // established order; holding it across file I/O would stall unrelated
+        // request work). That alone would let two concurrent refreshes
+        // snapshot in one order and apply in the other, an older snapshot
+        // committing last and overwriting newer facts. This guard is acquired
+        // before both other locks and only by this route, so it orders
+        // refreshes against each other without joining the lock graph the
+        // other two participate in. A refresh that waits here snapshots only
+        // after the previous one has fully applied.
         let _refresh_order = self.metadata_refresh_serialization.lock();
 
         // Snapshot open-document text before taking the folder lock. No
@@ -286,6 +288,34 @@ impl LspServer {
                 .collect()
         };
 
+        // Decide which roots this refresh covers under a short lock, then let
+        // it go. `capture_metadata_reads` performs up to six blocking
+        // filesystem operations per root, and `workspace_folders` also guards
+        // request helpers and the indexing commit path; holding it across that
+        // I/O would stall unrelated work for however long the filesystem takes
+        // — an unresponsive network mount being the case that hurts.
+        let capture_roots: BTreeSet<PathBuf> = {
+            let folders = self.workspace_folders.lock();
+            folders
+                .iter()
+                .filter_map(|folder| folder.path.clone().or_else(|| uri_to_fs_path(&folder.uri)))
+                .filter(|root| roots.contains(root))
+                .collect()
+        };
+
+        // Capture phase: no lock held, but still inside the refresh
+        // serialization guard, so capture and apply remain one ordered unit
+        // and a slower refresh cannot apply an older snapshot after a faster
+        // one.
+        let captured: BTreeMap<PathBuf, Vec<(DeclaredDependencySource, MetadataSourceRead)>> =
+            capture_roots
+                .into_iter()
+                .map(|root| {
+                    let reads = Self::capture_metadata_reads(&root, &open_document_text);
+                    (root, reads)
+                })
+                .collect();
+
         let mut refreshed_any = false;
         let mut newly_stale: Vec<String> = Vec::new();
         let mut now_current: Vec<String> = Vec::new();
@@ -296,15 +326,18 @@ impl LspServer {
                 let Some(root) = folder.path.clone().or_else(|| uri_to_fs_path(&folder.uri)) else {
                     continue;
                 };
-                if !roots.contains(&root) {
+                // Match captured reads by root rather than re-reading, which
+                // also carries the `roots` filter. A folder added between the
+                // two phases has no captured reads and is left to its own
+                // refresh rather than being given a snapshot taken before it
+                // existed; one removed in that window is simply absent here.
+                let Some(reads) = captured.get(&root) else {
                     continue;
-                }
-
-                let reads = Self::capture_metadata_reads(&root, &open_document_text);
+                };
                 let unreadable =
                     reads.iter().any(|(_, read)| matches!(read, MetadataSourceRead::Unreadable));
 
-                folder.refresh_workspace_metadata_from_reads(&reads);
+                folder.refresh_workspace_metadata_from_reads(reads);
                 refreshed_any = true;
 
                 if unreadable {

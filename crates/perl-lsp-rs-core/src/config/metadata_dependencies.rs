@@ -203,7 +203,16 @@ pub fn declared_dependencies_from_reads(
     previous: &[DeclaredDependency],
 ) -> Vec<DeclaredDependency> {
     let mut dependencies = Vec::new();
-    for (source, read) in reads {
+    // Iterate the canonical order and look each source up, rather than walking
+    // `reads` in whatever order the caller assembled it. Precedence is a
+    // property of `DeclaredDependencySource::ALL` — it is what
+    // `detect_declared_dependencies` uses — so letting the argument order
+    // decide would make the same inputs resolve a duplicate module differently
+    // depending on who built the slice.
+    for source in DeclaredDependencySource::ALL {
+        let Some((_, read)) = reads.iter().find(|(candidate, _)| *candidate == source) else {
+            continue;
+        };
         match read {
             MetadataSourceRead::Text(text) => {
                 for dependency in source.extractor()(text) {
@@ -212,7 +221,7 @@ pub fn declared_dependencies_from_reads(
             }
             MetadataSourceRead::Absent => {}
             MetadataSourceRead::Unreadable => {
-                for dependency in previous.iter().filter(|entry| entry.source == *source) {
+                for dependency in previous.iter().filter(|entry| entry.source == source) {
                     push_unique(&mut dependencies, dependency.clone());
                 }
             }
@@ -1517,6 +1526,77 @@ requires 'Kept#Tag'; # drop
         assert!(stripped.contains(r##""Escaped\"#Tag""##));
         assert!(stripped.contains("'Kept#Tag'"));
         assert!(!stripped.contains("drop"));
+        Ok(())
+    }
+
+    #[test]
+    fn source_precedence_does_not_depend_on_the_order_of_the_reads_slice() -> TestResult {
+        let cpanfile = MetadataSourceRead::Text("requires 'Shared::Module', '1.0';\n".to_string());
+        let meta_yml = MetadataSourceRead::Text("requires:\n  Shared::Module: '2.0'\n".to_string());
+
+        // The same two reads, assembled in opposite orders by the caller. Only
+        // `DeclaredDependencySource::ALL` may decide which source wins, so both
+        // slices must resolve the shared module to `Cpanfile`.
+        let canonical_order = declared_dependencies_from_reads(
+            &[
+                (DeclaredDependencySource::Cpanfile, cpanfile.clone()),
+                (DeclaredDependencySource::MetaYml, meta_yml.clone()),
+            ],
+            &[],
+        );
+        let reversed_order = declared_dependencies_from_reads(
+            &[
+                (DeclaredDependencySource::MetaYml, meta_yml),
+                (DeclaredDependencySource::Cpanfile, cpanfile),
+            ],
+            &[],
+        );
+
+        assert_eq!(
+            canonical_order, reversed_order,
+            "the same reads must compose identically however the caller ordered them"
+        );
+        let shared = canonical_order
+            .first()
+            .ok_or_else(|| missing("expected the shared module to be declared"))?;
+        assert_eq!(canonical_order.len(), 1, "the shared module is deduplicated to one entry");
+        assert_eq!(shared.module, "Shared::Module");
+        assert_eq!(
+            shared.source,
+            DeclaredDependencySource::Cpanfile,
+            "cpanfile precedes META.yml in DeclaredDependencySource::ALL"
+        );
+        assert_eq!(shared.version.as_deref(), Some("1.0"), "the winning source supplies the fact");
+        Ok(())
+    }
+
+    #[test]
+    fn retention_for_an_unreadable_source_does_not_depend_on_the_order_of_the_reads_slice()
+    -> TestResult {
+        // `META.yml` is unreadable and retains its own previous entry; the
+        // readable `cpanfile` declares a different module. Retention must be
+        // attributed by source, not by where the caller placed the read.
+        let previous = vec![DeclaredDependency::new(
+            "Retained::Module",
+            Some("3.0"),
+            "requires",
+            DeclaredDependencySource::MetaYml,
+        )];
+        let reads = [
+            (DeclaredDependencySource::MetaYml, MetadataSourceRead::Unreadable),
+            (
+                DeclaredDependencySource::Cpanfile,
+                MetadataSourceRead::Text("requires 'Fresh::Module', '1.0';\n".to_string()),
+            ),
+        ];
+
+        let composed = declared_dependencies_from_reads(&reads, &previous);
+        let modules: Vec<&str> = composed.iter().map(|entry| entry.module.as_str()).collect();
+        assert_eq!(
+            modules,
+            vec!["Fresh::Module", "Retained::Module"],
+            "composition follows DeclaredDependencySource::ALL, not the reads slice"
+        );
         Ok(())
     }
 }
