@@ -3,10 +3,12 @@
 //!
 //! `META.yml` is the YAML-flavored sibling of `META.json` ([crate::dist]
 //! owns the JSON path). This module adds the missing YAML metadata source
-//! with an explicit parse-state surface so consumers (Kwalitee, #7176 fact
-//! wiring) can distinguish absent, unreadable, malformed, unsupported, and
-//! successfully-parsed inputs — malformed metadata can never become an empty
-//! successful fact set.
+//! with an explicit state for supplied bytes: malformed, unsupported, or
+//! parsed. The workspace builder owns filesystem observation: an absent file
+//! emits no file record or metadata facts; an unreadable file additionally
+//! emits an identified `read_failure` limitation. Parser outcomes do not claim
+//! to observe either filesystem state. Malformed metadata can never become an
+//! empty successful fact set.
 //!
 //! # Safety contract
 //!
@@ -288,7 +290,7 @@ fn scan_stream_safety(doc: &mut Doc) -> Result<(), MetaYmlFinding> {
     let mut seen_first_marker = false;
     let mut seen_document_end = false;
 
-    for (idx, line) in doc.raw.iter().enumerate() {
+    for line in &doc.raw {
         if has_forbidden_control(&line.text) {
             return Err(MetaYmlFinding::new(
                 MetaYmlFindingKind::MalformedEncoding,
@@ -309,21 +311,14 @@ fn scan_stream_safety(doc: &mut Doc) -> Result<(), MetaYmlFinding> {
             ));
         }
         if trimmed == "---" || trimmed.starts_with("--- ") {
-            let has_later_content = doc.raw[idx + 1..]
-                .iter()
-                .any(|l| !l.text.trim().is_empty() && l.text.trim() != "...");
             if !body.is_empty() || seen_first_marker {
-                // A separator after content (or a second marker) starts a
-                // second document when real content follows; a bare trailing
-                // closer is tolerated.
-                if has_later_content {
-                    return Err(MetaYmlFinding::new(
-                        MetaYmlFindingKind::MultipleDocuments,
-                        Some(line.number),
-                        "a second document starts after the first; single-document META.yml only",
-                    ));
-                }
-                break;
+                // A second start marker starts another document even when
+                // no content follows it. Only `...` ends the first document.
+                return Err(MetaYmlFinding::new(
+                    MetaYmlFindingKind::MultipleDocuments,
+                    Some(line.number),
+                    "a second document starts after the first; single-document META.yml only",
+                ));
             }
             seen_first_marker = true;
             if let Some(rest) = trimmed.strip_prefix("--- ") {
@@ -1124,7 +1119,10 @@ fn collect_modules(modules: &Yaml, phase: &str, relation: &str, out: &mut Vec<Pr
     let mut recovered = false;
     for (module, version) in map {
         recovered = true;
-        let version = version.as_scalar().map(str::to_string).filter(|v| !v.is_empty() && v != "~");
+        let version = version
+            .as_scalar()
+            .map(str::to_string)
+            .filter(|v| !v.is_empty() && v != "~" && v != "null");
         out.push(Prereq {
             module: module.clone(),
             version,
@@ -1178,6 +1176,38 @@ mod tests {
             "{what}: expected a {kind:?} finding, got {:?}",
             outcome.findings
         );
+    }
+
+    #[test]
+    fn trailing_empty_document_is_refused() {
+        for source in ["name: X\n---\n", "---\nname: X\n---\n", "name: X\n---\n# empty\n"] {
+            assert_non_success(
+                &parse_meta_yml(fid(), source),
+                MetaYmlFindingKind::MultipleDocuments,
+                source,
+            );
+        }
+        for source in ["---\nname: X\n", "name: X\n...\n"] {
+            assert_eq!(parse_meta_yml(fid(), source).state, MetaYmlParseState::Parsed);
+        }
+    }
+
+    #[test]
+    fn null_prerequisite_versions_are_absent_but_zero_is_preserved() {
+        for source in [
+            "name: X\nrequires: { A: null, B: ~, C: 0, D: 1.50 }\n",
+            "name: X\nprereqs: { runtime: { requires: { A: null, B: ~, C: 0, D: 1.50 } } }\n",
+        ] {
+            let outcome = parse_meta_yml(fid(), source);
+            assert_eq!(outcome.state, MetaYmlParseState::Parsed);
+            let facts = must_some(outcome.facts);
+            for (module, expected) in
+                [("A", None), ("B", None), ("C", Some("0")), ("D", Some("1.50"))]
+            {
+                let prerequisite = must_some(facts.prereqs.iter().find(|p| p.module == module));
+                assert_eq!(prerequisite.version.as_deref(), expected, "{module}");
+            }
+        }
     }
 
     #[test]

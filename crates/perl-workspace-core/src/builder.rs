@@ -163,21 +163,21 @@ fn extract_dist_metadata(
         "META.json" => crate::dist::parse_meta_json(file_id.clone(), content),
         "META.yml" => {
             let outcome = crate::meta_yml::parse_meta_yml(file_id.clone(), content);
+            // Parsed facts can still carry findings, such as an unknown
+            // metadata specification. Preserve those alongside the facts.
+            for (index, finding) in outcome.findings.iter().enumerate() {
+                limitations.push(ModelLimitation {
+                    id: format!("meta-yml:{relative_path}:{index}"),
+                    kind: format!("meta_yml_{:?}", outcome.state).to_lowercase(),
+                    message: format!(
+                        "`{relative_path}`: {:?} at line {:?}: {}",
+                        finding.kind, finding.line, finding.detail
+                    ),
+                });
+            }
             match outcome.state {
                 crate::meta_yml::MetaYmlParseState::Parsed => outcome.facts,
-                state => {
-                    for (index, finding) in outcome.findings.iter().enumerate() {
-                        limitations.push(ModelLimitation {
-                            id: format!("meta-yml:{relative_path}:{index}"),
-                            kind: format!("meta_yml_{state:?}").to_lowercase(),
-                            message: format!(
-                                "`{relative_path}`: {:?} at line {:?}: {}",
-                                finding.kind, finding.line, finding.detail
-                            ),
-                        });
-                    }
-                    None
-                }
+                _ => None,
             }
         }
         "cpanfile" => Some(crate::dist::parse_cpanfile(file_id.clone(), content)),
@@ -613,6 +613,67 @@ mod tests {
                 model_for("meta-yml-wave", &[("META.yml", content)], FactClasses::FILES);
             assert!(files_only.limitations.is_empty());
         }
+    }
+
+    #[test]
+    fn meta_yml_absent_unreadable_and_parsed_remain_distinct()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let absent = model_for(
+            "meta-yml-absent",
+            &[("README", "fixture")],
+            FactClasses::FILES | FactClasses::DIST,
+        );
+        assert!(absent.file_by_path("META.yml").is_none());
+        assert!(absent.dist_metadata.is_empty());
+        assert!(absent.limitations.is_empty());
+
+        // Invalid UTF-8 deterministically exercises read failure even when
+        // the test runs with privileges that ignore filesystem permissions.
+        let root =
+            std::env::temp_dir().join(format!("pwc-meta-yml-unreadable-{}", std::process::id()));
+        std::fs::create_dir_all(&root)?;
+        std::fs::write(root.join("META.yml"), [0xff, 0xfe])?;
+        let root_text = root.to_string_lossy();
+        let unreadable = build_project_model(&ProjectModelRequest {
+            root: &root_text,
+            fact_classes: FactClasses::FILES | FactClasses::DIST,
+        });
+        std::fs::remove_dir_all(&root)?;
+        let unreadable = unreadable?;
+        assert!(unreadable.file_by_path("META.yml").is_none());
+        assert!(unreadable.dist_metadata.is_empty());
+        assert!(
+            unreadable
+                .limitations
+                .iter()
+                .any(|l| l.kind == "read_failure" && l.id == "read-failed:META.yml")
+        );
+
+        let parsed = model_for(
+            "meta-yml-observed",
+            &[("META.yml", "name: X\n")],
+            FactClasses::FILES | FactClasses::DIST,
+        );
+        assert!(parsed.file_by_path("META.yml").is_some());
+        assert!(parsed.dist_metadata.iter().any(|facts| facts.name.as_deref() == Some("X")));
+        assert!(parsed.limitations.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn meta_yml_unknown_spec_keeps_facts_and_warning() {
+        let model = model_for(
+            "meta-yml-unknown-spec",
+            &[("META.yml", "name: X\nmeta-spec: { version: 9.0 }\n")],
+            FactClasses::FILES | FactClasses::DIST,
+        );
+        assert!(model.dist_metadata.iter().any(|facts| facts.name.as_deref() == Some("X")));
+        assert!(
+            model
+                .limitations
+                .iter()
+                .any(|l| l.kind == "meta_yml_parsed" && l.message.contains("9.0"))
+        );
     }
 
     #[test]
