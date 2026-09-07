@@ -174,6 +174,11 @@ pub struct ParseBudget {
     /// Charged before the node is built, so a refused node is never
     /// constructed and never retained.
     ///
+    /// Bounds admitted construction work. Synthetic recovery nodes and the
+    /// terminal fallback shell are outside it — see
+    /// [`BudgetTracker::nodes_constructed`] for what that count does and does
+    /// not include.
+    ///
     /// Default: 16,777,216, chosen on the same bounding rationale as
     /// [`ParseBudget::max_tokens_consumed`].
     pub max_nodes_constructed: usize,
@@ -335,6 +340,17 @@ pub struct BudgetTracker {
     /// Charged exactly once per node, before construction, by the single
     /// production node seam. Nodes built by non-parser consumers of
     /// `perl_ast` are not parser work and are not counted here.
+    ///
+    /// This measures *admitted construction work*, not nodes retained in the
+    /// returned AST, and the two differ in both directions. A node built to
+    /// replace another — the container rebuilt when a list resolves to a hash,
+    /// say — is construction work and is charged, even though the AST gains
+    /// nothing. Synthetic recovery nodes and the terminal fallback shell are
+    /// *not* charged: they are not admitted parse work but the product of work
+    /// that failed or was refused, and their accounting is #7074's deferred
+    /// recovery/fallback dimension rather than this one. So this count can
+    /// exceed the retained node count on a rebuilt tree and fall below it on a
+    /// recovered one.
     pub nodes_constructed: usize,
 }
 
