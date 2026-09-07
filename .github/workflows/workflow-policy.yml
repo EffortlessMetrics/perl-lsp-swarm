@@ -5,6 +5,7 @@ on:
     paths:
       - '.github/workflows/**'
       - 'xtask/src/tasks/workflow_policy_lint.rs'
+      - 'policy/self-hosted-runner-isolation.toml'
       - 'xtask/src/tasks/ux_regression_receipt.rs'
       - 'xtask/src/main.rs'
       - 'xtask/src/tasks/mod.rs'
@@ -26,6 +27,7 @@ on:
     paths:
       - '.github/workflows/**'
       - 'xtask/src/tasks/workflow_policy_lint.rs'
+      - 'policy/self-hosted-runner-isolation.toml'
       - 'xtask/src/tasks/ux_regression_receipt.rs'
       - 'xtask/src/main.rs'
       - 'xtask/src/tasks/mod.rs'
