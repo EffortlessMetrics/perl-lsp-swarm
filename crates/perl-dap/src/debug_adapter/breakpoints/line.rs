@@ -236,6 +236,31 @@ mod source_boundary_tests {
     use std::fs;
     use std::path::Path;
 
+    fn require(condition: bool, context: &str) -> Result<(), Box<dyn Error>> {
+        if condition { Ok(()) } else { Err(context.to_string().into()) }
+    }
+
+    fn require_equal<T: std::fmt::Debug + PartialEq>(
+        actual: T,
+        expected: T,
+        context: &str,
+    ) -> Result<(), Box<dyn Error>> {
+        if actual == expected {
+            Ok(())
+        } else {
+            Err(format!("{context}: expected {expected:?}, got {actual:?}").into())
+        }
+    }
+
+    fn single_breakpoint(body: &Value) -> Result<&Value, Box<dyn Error>> {
+        let entries = body
+            .get("breakpoints")
+            .and_then(Value::as_array)
+            .ok_or("response must contain a breakpoint array")?;
+        require_equal(entries.len(), 1, "response must contain exactly one breakpoint")?;
+        entries.first().ok_or_else(|| "response breakpoint is missing".into())
+    }
+
     fn bounded_adapter(root: &Path) -> Result<DebugAdapter, Box<dyn Error>> {
         let adapter = DebugAdapter::new();
         adapter.set_workspace_root(root.canonicalize()?);
@@ -261,13 +286,21 @@ mod source_boundary_tests {
         }
     }
 
-    fn assert_refused(response: DapMessage) -> Result<(), Box<dyn Error>> {
+    fn require_refused(response: DapMessage) -> Result<(), Box<dyn Error>> {
         match response {
             DapMessage::Response { success, command, body, message, .. } => {
-                assert!(!success, "a source outside the configured boundary must be refused");
-                assert_eq!(command, "setBreakpoints");
-                assert_eq!(body, Some(json!({ "breakpoints": [] })));
-                assert!(message.is_some_and(|text| !text.is_empty()), "refusal needs a reason");
+                require(!success, "a disallowed source path must be refused")?;
+                require_equal(
+                    command.as_str(),
+                    "setBreakpoints",
+                    "refusal command must identify setBreakpoints",
+                )?;
+                require_equal(
+                    body,
+                    Some(json!({ "breakpoints": [] })),
+                    "refusal must contain an empty breakpoint array",
+                )?;
+                require(message.is_some_and(|text| !text.is_empty()), "refusal needs a reason")?;
                 Ok(())
             }
             other => Err(format!("expected refused breakpoint response, got {other:?}").into()),
@@ -280,25 +313,65 @@ mod source_boundary_tests {
         let source = root.path().join("boundary_fixture.pl");
         fs::write(&source, "my $value = 1;\nprint $value;\n")?;
         let canonical = source.canonicalize()?;
-        let canonical_key = source_text(&canonical)?;
+        let absolute_spelling = source_text(&canonical)?;
+        // Windows canonicalize adds a verbatim drive prefix; the shared path
+        // boundary intentionally returns a normal filesystem spelling. Keep the
+        // verbatim request as an alias control, but query the admitted store key.
+        let canonical_key = absolute_spelling.strip_prefix(r"\\?\").unwrap_or(absolute_spelling);
         let mut adapter = bounded_adapter(root.path())?;
 
         let absolute =
-            successful_body(request(&mut adapter, canonical_key, json!([{ "line": 1 }])))?;
-        assert_eq!(absolute["breakpoints"].as_array().map(Vec::len), Some(1));
-        assert_eq!(absolute["breakpoints"][0]["verified"], json!(true));
+            successful_body(request(&mut adapter, absolute_spelling, json!([{ "line": 1 }])))?;
+        require_equal(
+            absolute.get("breakpoints").and_then(Value::as_array).map(Vec::len),
+            Some(1),
+            "absolute request must return one breakpoint",
+        )?;
+        require_equal(
+            single_breakpoint(&absolute)?.get("verified").and_then(Value::as_bool),
+            Some(true),
+            "absolute source breakpoint must verify",
+        )?;
+
+        require_equal(
+            adapter.breakpoints.source_read_attempts(),
+            1,
+            "contained absolute control must reach the source read boundary",
+        )?;
 
         let relative =
             successful_body(request(&mut adapter, "boundary_fixture.pl", json!([{ "line": 2 }])))?;
-        assert_eq!(relative["breakpoints"].as_array().map(Vec::len), Some(1));
-        assert_eq!(relative["breakpoints"][0]["verified"], json!(true));
+        require_equal(
+            relative.get("breakpoints").and_then(Value::as_array).map(Vec::len),
+            Some(1),
+            "relative request must return one breakpoint",
+        )?;
+        require_equal(
+            single_breakpoint(&relative)?.get("verified").and_then(Value::as_bool),
+            Some(true),
+            "relative source breakpoint must verify",
+        )?;
         let records = adapter.breakpoints.get_breakpoints(canonical_key);
-        assert_eq!(records.len(), 1, "relative request replaces rather than duplicates the file");
-        assert_eq!(records.first().map(|record| record.line), Some(2));
-        assert!(adapter.breakpoints.get_breakpoints("boundary_fixture.pl").is_empty());
+        require_equal(
+            records.len(),
+            1,
+            "relative request replaces rather than duplicates the file",
+        )?;
+        require_equal(
+            records.first().map(|record| record.line),
+            Some(2),
+            "relative request must replace the old line",
+        )?;
+        require(
+            adapter.breakpoints.get_breakpoints("boundary_fixture.pl").is_empty(),
+            "relative spelling must not create a separate store key",
+        )?;
 
         successful_body(request(&mut adapter, "boundary_fixture.pl", json!([])))?;
-        assert!(adapter.breakpoints.get_breakpoints(canonical_key).is_empty());
+        require(
+            adapter.breakpoints.get_breakpoints(canonical_key).is_empty(),
+            "empty relative replacement must clear the canonical key",
+        )?;
         Ok(())
     }
 
@@ -309,8 +382,16 @@ mod source_boundary_tests {
         let source = outside.path().join("outside.pl");
         fs::write(&source, "print 'fixture';\n")?;
         let mut adapter = bounded_adapter(root.path())?;
-        assert_refused(request(&mut adapter, source_text(&source)?, json!([{ "line": 1 }])))?;
-        assert!(adapter.breakpoints.get_breakpoints(source_text(&source)?).is_empty());
+        require_refused(request(&mut adapter, source_text(&source)?, json!([{ "line": 1 }])))?;
+        require_equal(
+            adapter.breakpoints.source_read_attempts(),
+            0,
+            "outside refusal must precede the source read boundary",
+        )?;
+        require(
+            adapter.breakpoints.get_breakpoints(source_text(&source)?).is_empty(),
+            "outside request must not create records",
+        )?;
         Ok(())
     }
 
@@ -324,8 +405,8 @@ mod source_boundary_tests {
         let source = sibling.join("outside.pl");
         fs::write(&source, "print 'fixture';\n")?;
         let mut adapter = bounded_adapter(&root)?;
-        assert_refused(request(&mut adapter, source_text(&source)?, json!([{ "line": 1 }])))?;
-        assert_refused(request(
+        require_refused(request(&mut adapter, source_text(&source)?, json!([{ "line": 1 }])))?;
+        require_refused(request(
             &mut adapter,
             "../workspace-other/outside.pl",
             json!([{ "line": 1 }]),
@@ -345,13 +426,31 @@ mod source_boundary_tests {
         let mut adapter = DebugAdapter::new();
         successful_body(request(&mut adapter, key, json!([{ "line": 1 }])))?;
         let before = adapter.breakpoints.get_breakpoints(key);
-        assert_eq!(before.len(), 1);
+        require_equal(before.len(), 1, "control must seed one existing breakpoint")?;
+        require_equal(
+            adapter.breakpoints.source_read_attempts(),
+            1,
+            "seeded-record control must read the source exactly once",
+        )?;
         adapter.set_workspace_root(root.canonicalize()?);
 
-        assert_refused(request(&mut adapter, key, json!([])))?;
+        require_refused(request(&mut adapter, key, json!([])))?;
+        require_equal(
+            adapter.breakpoints.source_read_attempts(),
+            1,
+            "refused empty replacement must not read source again",
+        )?;
         let after = adapter.breakpoints.get_breakpoints(key);
-        assert_eq!(after.len(), before.len(), "refused empty replacement must not clear the store");
-        assert_eq!(after.first().map(|record| record.id), before.first().map(|record| record.id));
+        require_equal(
+            after.len(),
+            before.len(),
+            "refused empty replacement must not clear the store",
+        )?;
+        require_equal(
+            after.first().map(|record| record.id),
+            before.first().map(|record| record.id),
+            "refused replacement must preserve the existing breakpoint ID",
+        )?;
         Ok(())
     }
 
@@ -362,8 +461,12 @@ mod source_boundary_tests {
         let mut adapter = bounded_adapter(root.path())?;
         let body =
             successful_body(request(&mut adapter, source_text(&source)?, json!([{ "line": 1 }])))?;
-        assert_eq!(body["breakpoints"].as_array().map(Vec::len), Some(1));
-        assert!(!source.exists(), "breakpoint admission must not create source files");
+        require_equal(
+            body.get("breakpoints").and_then(Value::as_array).map(Vec::len),
+            Some(1),
+            "admitted request must return one breakpoint",
+        )?;
+        require(!source.exists(), "breakpoint admission must not create source files")?;
         Ok(())
     }
 
@@ -376,8 +479,36 @@ mod source_boundary_tests {
         let mut adapter = DebugAdapter::new();
         let body =
             successful_body(request(&mut adapter, source_text(&source)?, json!([{ "line": 1 }])))?;
-        assert_eq!(body["breakpoints"].as_array().map(Vec::len), Some(1));
-        assert_eq!(body["breakpoints"][0]["verified"], json!(true));
+        require_equal(
+            body.get("breakpoints").and_then(Value::as_array).map(Vec::len),
+            Some(1),
+            "admitted request must return one breakpoint",
+        )?;
+        require_equal(
+            single_breakpoint(&body)?.get("verified").and_then(Value::as_bool),
+            Some(true),
+            "ordinary absolute source breakpoint must verify",
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn unconfigured_adapter_refuses_parent_components_before_read() -> Result<(), Box<dyn Error>> {
+        let root = tempfile::tempdir()?;
+        let child = root.path().join("child");
+        fs::create_dir(&child)?;
+        fs::write(root.path().join("ordinary.pl"), "print 'fixture';\n")?;
+        let source = child.join("..").join("ordinary.pl");
+        let mut adapter = DebugAdapter::new();
+        // The file exists: this is the existing shape-only validator's policy,
+        // not a missing-file refusal or a configured workspace boundary.
+        require(source.is_file(), "parent-component fixture must resolve to a real file")?;
+        require_refused(request(&mut adapter, source_text(&source)?, json!([{ "line": 1 }])))?;
+        require_equal(
+            adapter.breakpoints.source_read_attempts(),
+            0,
+            "unconfigured parent-component refusal must precede source reads",
+        )?;
         Ok(())
     }
 
@@ -391,8 +522,11 @@ mod source_boundary_tests {
         let link = root.path().join("linked.pl");
         std::os::unix::fs::symlink(&source, &link)?;
         let mut adapter = bounded_adapter(root.path())?;
-        assert_refused(request(&mut adapter, source_text(&link)?, json!([{ "line": 1 }])))?;
-        assert!(adapter.breakpoints.get_breakpoints(source_text(&link)?).is_empty());
+        require_refused(request(&mut adapter, source_text(&link)?, json!([{ "line": 1 }])))?;
+        require(
+            adapter.breakpoints.get_breakpoints(source_text(&link)?).is_empty(),
+            "symlink escape must not create records",
+        )?;
         Ok(())
     }
 }
