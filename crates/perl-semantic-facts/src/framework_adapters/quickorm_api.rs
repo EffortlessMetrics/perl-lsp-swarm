@@ -347,6 +347,15 @@ pub enum QuickOrmMultiplicity {
     ListOfZeroOrMore,
     /// An arrayref holding zero or more values.
     ArrayRefOfZeroOrMore,
+    /// An arrayref holding exactly one element per supplied argument, where any
+    /// element may be undef.
+    ///
+    /// Distinct from [`Self::ArrayRefOfZeroOrMore`], which a consumer may read
+    /// as "every element is a value". `by_ids` maps `by_id` over its arguments
+    /// (Handle.pm:1943) and each miss contributes an undef, so the arrayref is
+    /// positional rather than compacted: its length matches the id count, and
+    /// an element must be tested before its row type is used.
+    ArrayRefOfOptionalPerArgument,
     /// An iterator yielding zero or more values.
     IteratorOfZeroOrMore,
     /// A hash or hashref of field values that is always present.
@@ -374,6 +383,7 @@ impl QuickOrmMultiplicity {
             Self::ZeroOrOne => "zero_or_one",
             Self::ListOfZeroOrMore => "list_of_zero_or_more",
             Self::ArrayRefOfZeroOrMore => "arrayref_of_zero_or_more",
+            Self::ArrayRefOfOptionalPerArgument => "arrayref_of_optional_per_argument",
             Self::IteratorOfZeroOrMore => "iterator_of_zero_or_more",
             Self::Hash => "hash",
             Self::OptionalHash => "optional_hash",
@@ -696,17 +706,20 @@ pub const QUICKORM_API_CASES: &[QuickOrmApiCase] = &[
         method: "by_ids",
         receiver: R::Connection,
         receiver_constraints: &[
+            "a supplied handle has no where clause",
+            "a supplied handle has no associated row",
+            "the selected source has a primary key",
             "a non-synchronous handle passed in admits at most one id that misses the row cache",
         ],
         arguments: A::Required,
         return_class: C::MultipleRows,
-        multiplicity: N::ArrayRefOfZeroOrMore,
+        multiplicity: N::ArrayRefOfOptionalPerArgument,
         type_params: T::DerivedFromArgumentSource,
         mode: M::ConditionalNonSync,
         void_context: V::Permitted,
         boundary: B::RuntimeResolved,
         evidence: QuickOrmEvidence { file: CONN, line: 1043 },
-        notes: "Returns an arrayref, not a flat list. Delegates to the handle terminal and inherits its conditional mode: a connection builds a synchronous handle, so the plain call is safe, but a non-synchronous handle supplied through the arguments carries `handle.by_ids`'s at-most-one-cache-miss limit.",
+        notes: "Returns a positional arrayref whose elements may be undef, inheriting `handle.by_ids`'s per-id shape. Unlike the other connection terminals this does **not** route through `Connection::handle`: it has its own body, and a supplied `DBIx::QuickORM::Handle` is used directly (`$handle = $from`, Connection.pm:1048-1049) rather than being wrapped as a derived table. So that handle's own preconditions apply unchanged. Inherits the conditional mode: a connection builds a synchronous handle, so the plain call is safe, but a non-synchronous handle supplied through the arguments carries `handle.by_ids`'s at-most-one-cache-miss limit.",
     },
     QuickOrmApiCase {
         api_case_id: "conn.count",
@@ -745,12 +758,16 @@ pub const QUICKORM_API_CASES: &[QuickOrmApiCase] = &[
         package: PKG_CONN,
         method: "delete",
         receiver: R::Connection,
-        receiver_constraints: NO_CONSTRAINTS,
+        receiver_constraints: &[
+            "a non-synchronous handle is built only when the constructor arguments set one",
+            "a forked handle is refused whenever the constructor arguments bind no row",
+            "with a row cache and no `RETURNING` on delete, only a synchronous handle is admitted",
+        ],
         arguments: A::Required,
         return_class: C::MutationOrSideEffectResult,
         multiplicity: N::ZeroOrOne,
         type_params: T::NotApplicable,
-        mode: M::SyncAsyncAsideForked,
+        mode: M::ConditionalNonSync,
         void_context: V::Permitted,
         boundary: B::RuntimeResolved,
         evidence: QuickOrmEvidence { file: CONN, line: 1002 },
@@ -907,12 +924,15 @@ pub const QUICKORM_API_CASES: &[QuickOrmApiCase] = &[
         package: PKG_CONN,
         method: "update",
         receiver: R::Connection,
-        receiver_constraints: NO_CONSTRAINTS,
+        receiver_constraints: &[
+            "a non-synchronous handle is built only when the constructor arguments set one",
+            "without a bound row, a non-synchronous handle requires that the connection maintain no row cache",
+        ],
         arguments: A::TrailingDataHashref,
         return_class: C::MutationOrSideEffectResult,
         multiplicity: N::ZeroOrOne,
         type_params: T::NotApplicable,
-        mode: M::SyncAsyncAsideForked,
+        mode: M::ConditionalNonSync,
         void_context: V::Permitted,
         boundary: B::RuntimeResolved,
         evidence: QuickOrmEvidence { file: CONN, line: 1008 },
@@ -1129,13 +1149,13 @@ pub const QUICKORM_API_CASES: &[QuickOrmApiCase] = &[
         ],
         arguments: A::Required,
         return_class: C::MultipleRows,
-        multiplicity: N::ArrayRefOfZeroOrMore,
+        multiplicity: N::ArrayRefOfOptionalPerArgument,
         type_params: T::PreservedFromReceiver,
         mode: M::ConditionalNonSync,
         void_context: V::Permitted,
         boundary: B::RuntimeResolved,
         evidence: QuickOrmEvidence { file: HANDLE, line: 1938 },
-        notes: "Returns an arrayref of by_id results, not a flat list. Upstream maps sequential `by_id` calls (Handle.pm:1943), and each cache miss reaches `one()` -> `_do_select` -> `_make_sth`, which calls `pid_and_async_check` (Handle.pm:1615). On a non-synchronous handle the first miss leaves an async query in flight, so the second miss confesses `There is currently an async query running` (Connection.pm:398). Ids answered from the row cache issue no query, so a call whose misses number zero or one still succeeds — the failure depends on cache state, not on the id count alone.",
+        notes: "Returns an arrayref of `by_id` results, not a flat list, and it is positional: `[map { $self->by_id($_) } @_]` (Handle.pm:1943) yields exactly one element per id, and a `by_id` that finds nothing contributes undef because it falls through to `one()` (Handle.pm:1935). An element must be tested before its row type is used. Upstream maps sequential `by_id` calls (Handle.pm:1943), and each cache miss reaches `one()` -> `_do_select` -> `_make_sth`, which calls `pid_and_async_check` (Handle.pm:1615). On a non-synchronous handle the first miss leaves an async query in flight, so the second miss confesses `There is currently an async query running` (Connection.pm:398). Ids answered from the row cache issue no query, so a call whose misses number zero or one still succeeds — the failure depends on cache state, not on the id count alone.",
     },
     QuickOrmApiCase {
         api_case_id: "handle.cas",
@@ -3782,9 +3802,18 @@ mod tests {
         assert_eq!(iterator.multiplicity, QuickOrmMultiplicity::IteratorOfZeroOrMore);
         assert_eq!(iterator.type_params, QuickOrmTypeParamEffect::PreservedFromReceiver);
 
-        // by_ids returns an arrayref, which is not the same shape as all().
+        // by_ids returns an arrayref, which is not the same shape as all() —
+        // and not the same shape as a compacted arrayref either. It is
+        // positional, one element per id, any of which may be undef, so it
+        // must not be readable as "every element is a row".
         let by_ids = case_by_id("handle.by_ids");
-        assert_eq!(by_ids.multiplicity, QuickOrmMultiplicity::ArrayRefOfZeroOrMore);
+        assert_eq!(by_ids.multiplicity, QuickOrmMultiplicity::ArrayRefOfOptionalPerArgument);
+        assert_ne!(by_ids.multiplicity, all.multiplicity);
+        assert_eq!(
+            case_by_id("conn.by_ids").multiplicity,
+            by_ids.multiplicity,
+            "the connection delegate returns the same positional arrayref"
+        );
     }
 
     /// Mutation control 5: `data_only` must not be a blessed row.
@@ -4364,6 +4393,8 @@ mod tests {
             conditional,
             BTreeSet::from([
                 "conn.by_ids",
+                "conn.delete",
+                "conn.update",
                 "handle.by_ids",
                 "handle.delete.bulk",
                 "handle.update.bulk",
