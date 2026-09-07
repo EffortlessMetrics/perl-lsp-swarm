@@ -1831,19 +1831,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "perl-kwalitee"
-version = "0.17.0"
-dependencies = [
- "perl-tdd-support",
- "serde",
- "serde_json",
- "sha2",
- "tempfile",
- "thiserror",
- "toml",
-]
-
-[[package]]
 name = "perl-lexer"
 version = "0.17.0"
 dependencies = [
@@ -2149,6 +2136,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "perl-release-readiness"
+version = "0.17.0"
+dependencies = [
+ "perl-tdd-support",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror",
+ "toml",
+]
+
+[[package]]
 name = "perl-ripr-facts"
 version = "0.17.0"
 dependencies = [
@@ -2226,10 +2226,13 @@ dependencies = [
  "anyhow",
  "lsp-types",
  "perl-parser-core",
+ "perl-position-tracking",
+ "perl-source-identity",
  "perl-test-must",
  "serde",
  "serde_json",
  "tempfile",
+ "thiserror",
  "url",
 ]
 
@@ -4195,7 +4198,6 @@ dependencies = [
  "perl-core-harness",
  "perl-core-harness-types",
  "perl-corpus",
- "perl-kwalitee",
  "perl-lexer",
  "perl-lsp-rs-core",
  "perl-lsp-ux-tests",
@@ -4203,6 +4205,7 @@ dependencies = [
  "perl-parser-core",
  "perl-parser-pest",
  "perl-position-tracking",
+ "perl-release-readiness",
  "perl-semantic-analyzer",
  "perl-semantic-facts",
  "perl-tdd-support",

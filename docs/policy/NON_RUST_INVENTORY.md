@@ -13,8 +13,10 @@ The inventory is generated evidence, not a tracked publication:
   tree, writes the same two files, requires this pointer to be byte-identical
   to `main`, and rejects newly added unclassified paths against the merge base.
 - The `policy` CI shard uploads both projections as the
-  `non-rust-inventory-<sha>` artifact for every run, including runs on `main`.
-  That artifact is the default-branch reference.
+  `non-rust-inventory-<sha>` artifact when both are produced, including on
+  policy failures. `<sha>` is the checked-out source commit; the included
+  `non-rust-inventory-subject.json` binds that commit and both file hashes.
+  An artifact from a `main` run is the default-branch reference.
 
 If a branch has regenerated this file, restore it with:
 

@@ -1,8 +1,8 @@
 name: Post-Merge Status Regeneration
 
-# Generate status documentation and the non-Rust reader reference from trusted
+# Generate status documentation from trusted
 # default-branch source without write authority. A separate minimal job validates
-# one content-addressed payload and proposes the exact six published files through
+# one content-addressed payload and proposes the exact five published files through
 # a reviewable pull request. Branch validity is evaluated independently.
 #
 # #12606: runs queue instead of cancelling, so a run can finish generating long

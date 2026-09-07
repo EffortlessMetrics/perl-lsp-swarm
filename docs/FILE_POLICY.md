@@ -40,6 +40,8 @@ The inventory itself is evidence, not publication. The allowlist plus the
 current-tree evaluator own the verdict; the ignored
 `target/policy/non-rust-inventory.{md,json}` files are the per-run evidence,
 and the policy CI shard uploads both as the `non-rust-inventory-<sha>`
-artifact on every run, including runs on `main`, which is the default-branch
-reference. The shard retains them when the check produces them, including
-when the new-path ratchet fails.
+artifact when both are produced, including when the new-path ratchet fails.
+The artifact name and `non-rust-inventory-subject.json` identify the checked-out
+source commit; the receipt also binds both file hashes. A `main` run supplies
+the default-branch reference. Cache-restored evidence is cleared before any
+producer can fail, so an early failure cannot publish another run's inventory.

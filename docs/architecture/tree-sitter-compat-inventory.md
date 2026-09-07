@@ -14,7 +14,7 @@ This inventory changes no compatibility behavior and removes no source.
 The dispositions below were audited against this exact source. A change to any file
 listed here invalidates the audit and the task fails until the rows are re-checked.
 
-- Digest: `sha256:8808149a51e4a706dea655c3d7c4e015f3653746c3179d2777f62c68444d7590`
+- Digest: `sha256:0bd28c41cdda2b66f6317ee41b741fdd723a00f8044a67a723a467cb2773b3cf`
 - Authority digest: `sha256:9f481f0dd02f7b88ec1853059d28eb1fd13033bc0691b56770b6fb50aea03c5a`
 - Files (7):
   - `crates/perl-tree-sitter-compat/Cargo.toml`
