@@ -346,10 +346,12 @@
     },
     "raw_digest": {
       "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
       "description": "sha256-prefixed digest over the raw observed facts only (no model labels, no admission verdicts)."
     },
     "normalized_digest": {
       "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
       "description": "sha256-prefixed digest over the normalized interpretation (canonical cell identity, protocol version, admission verdict). Separate from raw_digest by construction."
     }
   }

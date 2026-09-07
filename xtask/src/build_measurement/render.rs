@@ -305,5 +305,8 @@ fn reason_text(reason: &NotProvenReason) -> String {
         NotProvenReason::HostEnvironmentAmbiguous { detail } => {
             format!("host environment ambiguous: {detail}")
         }
+        NotProvenReason::ProofOperationUnsupported { operation } => {
+            format!("proof operation {operation} produces no measurable selected-work evidence")
+        }
     }
 }

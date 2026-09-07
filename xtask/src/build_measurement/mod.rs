@@ -38,5 +38,6 @@ pub use providers::{
     ScriptedProcess, ScriptedRunner, SystemCommandRunner,
 };
 pub use runner::{
-    CacheSnapshotPolicy, CellExecution, MeasurementHarness, normalized_digest, raw_facts_digest,
+    CacheSnapshotPolicy, CellExecution, MeasurementHarness, PreparationStep, normalized_digest,
+    raw_facts_digest,
 };

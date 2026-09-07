@@ -309,6 +309,17 @@ impl MeasurementCell {
                 Operation::Test | Operation::ExactTest | Operation::SelectedNextest
             )
     }
+
+    /// Whether the operation produces a countable work receipt a Proof cell
+    /// can be held to. Non-test operations (metadata, check, clippy, build)
+    /// have no measurable selected-work evidence, so a Proof cell may not
+    /// declare them (#14739 review).
+    pub fn has_countable_work(&self) -> bool {
+        matches!(
+            self.operation,
+            Operation::Test | Operation::ExactTest | Operation::SelectedNextest
+        )
+    }
 }
 
 /// The literal structured invocation the harness executed, with the effective
@@ -804,6 +815,11 @@ pub enum NotProvenReason {
     DeclaredPathsUnmeasurable {
         detail: String,
     },
+    /// A Proof-workflow cell declared a non-test-shaped operation, which
+    /// produces no measurable selected-work evidence (#14739 review).
+    ProofOperationUnsupported {
+        operation: String,
+    },
     /// A windows triple cannot distinguish Git Bash from native Windows,
     /// so a WslOrGitBash row carries an explicit ambiguity boundary
     /// instead of claiming the environment was proven (#14739 review).
@@ -940,8 +956,14 @@ impl MeasurementRecord {
             reasons.push(NotProvenReason::UnsupportedHost);
         }
 
-        // The observed environment triple must be compatible with the
-        // declared host profile (#14739 review).
+        // The observed environment triple must be present and compatible
+        // with the declared host profile (#14739 review).
+        if self.environment.host_triple.is_none() {
+            reasons.push(NotProvenReason::HostEnvironmentMismatch {
+                declared_host: format!("{:?}", self.cell.host),
+                observed_triple: "<missing>".to_string(),
+            });
+        }
         if let Some(triple) = &self.environment.host_triple {
             let compatible = match self.cell.host {
                 HostProfile::NativeWindows => triple.contains("windows"),
@@ -982,6 +1004,16 @@ impl MeasurementRecord {
         {
             reasons.push(NotProvenReason::DeclaredPathsUnmeasurable {
                 detail: "environment-only model declares growth paths".to_string(),
+            });
+        }
+        // The mirror contradiction: a growth-capable model with NO declared
+        // growth paths admits without measuring target, cache, temp, or lock
+        // storage (#14739 review).
+        if self.cell.execution_model.declares_growth_paths()
+            && self.cell.canonical().growth_paths.is_empty()
+        {
+            reasons.push(NotProvenReason::DeclaredPathsUnmeasurable {
+                detail: "growth-capable model declares no growth paths to measure".to_string(),
             });
         }
 
@@ -1088,6 +1120,12 @@ impl MeasurementRecord {
             None => reasons.push(NotProvenReason::CommandExitUnproven),
             Some(0) => {}
             Some(exit_code) => reasons.push(NotProvenReason::CommandFailed { exit_code }),
+        }
+
+        if self.cell.workflow_class == WorkflowClass::Proof && !self.cell.has_countable_work() {
+            reasons.push(NotProvenReason::ProofOperationUnsupported {
+                operation: format!("{:?}", self.cell.operation),
+            });
         }
 
         if self.cell.requires_selected_work() {
