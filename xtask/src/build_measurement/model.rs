@@ -942,7 +942,10 @@ impl MeasurementRecord {
                 HostProfile::NativePosix => {
                     triple.contains("linux") || triple.contains("darwin") || triple.contains("bsd")
                 }
-                HostProfile::WslOrGitBash => triple.contains("linux"),
+                // Git Bash is a Windows process with a native windows
+                // triple; WSL reports a linux triple. Both are legitimately
+                // WslOrGitBash (#14739 review).
+                HostProfile::WslOrGitBash => triple.contains("linux") || triple.contains("windows"),
                 HostProfile::Unsupported => true,
             };
             if !compatible {
