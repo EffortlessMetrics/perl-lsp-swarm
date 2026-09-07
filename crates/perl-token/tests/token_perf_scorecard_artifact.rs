@@ -208,3 +208,53 @@ fn cargo_target_dir_symlink_parent_alias_does_not_publish() {
     assert_eq!(path, root.join("target/token_performance_scorecard.json"));
     let _ = fs::remove_dir_all(&root);
 }
+
+#[cfg(unix)]
+fn check_repo_target_alias(reject_env_target: bool) -> std::io::Result<()> {
+    let nanos =
+        SystemTime::now().duration_since(UNIX_EPOCH).map_err(std::io::Error::other)?.as_nanos();
+    let root = std::env::temp_dir().join(format!(
+        "perl-token-scorecard-fallback-{reject_env_target}-{}-{nanos}",
+        std::process::id()
+    ));
+    let status = root.join("docs/project/status");
+    fs::create_dir_all(&status)?;
+    fs::create_dir_all(root.join("crates/perl-token"))?;
+    let tracked = root.join(TRACKED_ARTIFACT_RELATIVE_PATH);
+    let sentinel = "{\"schema_version\":1,\"generated_at_epoch_s\":1,\"metrics\":{}}\n";
+    fs::write(&tracked, sentinel)?;
+    let alias = root.join("target");
+    std::os::unix::fs::symlink(&status, &alias)?;
+    let target = reject_env_target.then_some(status.as_path());
+    let path = resolve_artifact_path(&root, target, false);
+    // Mirror record_metric's optional-path consumer before checking the sentinel.
+    if let Some(path) = &path {
+        write_metric(path, "token_clone", sample(7));
+    }
+    let ordinary_unchanged = fs::read_to_string(&tracked)? == sentinel;
+    // The same alias must not disable explicitly requested publication.
+    let publish = resolve_artifact_path(&root, target, true)
+        .ok_or_else(|| std::io::Error::other("explicit publication path missing"))?;
+    write_metric(&publish, "token_clone", sample(9));
+    let published = fs::read_to_string(&tracked)?.contains("\"median_ns\": 9");
+    fs::remove_file(&alias)?;
+    fs::remove_dir_all(&root)?;
+    if path.is_some() || !ordinary_unchanged || !published {
+        return Err(std::io::Error::other(
+            "fallback alias must skip ordinary writes while preserving explicit publication",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn default_repo_target_symlink_alias_does_not_publish() -> std::io::Result<()> {
+    check_repo_target_alias(false)
+}
+
+#[cfg(unix)]
+#[test]
+fn rejected_cargo_target_dir_with_repo_target_alias_does_not_publish() -> std::io::Result<()> {
+    check_repo_target_alias(true)
+}

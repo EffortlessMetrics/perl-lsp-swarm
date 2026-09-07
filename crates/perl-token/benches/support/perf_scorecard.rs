@@ -107,7 +107,10 @@ pub(crate) fn resolve_artifact_path(
             return Some(candidate);
         }
     }
-    Some(find_repo_root(cwd)?.join("target").join(LOCAL_ARTIFACT_FILE_NAME))
+    let fallback = find_repo_root(cwd)?.join("target").join(LOCAL_ARTIFACT_FILE_NAME);
+    // The default target directory can itself alias the tracked status directory.
+    // Recording a local metric is optional, so skip it if no safe path remains.
+    (!would_write_tracked_docs(cwd, &fallback)).then_some(fallback)
 }
 
 pub(crate) fn is_tracked_docs_artifact(path: &Path) -> bool {
