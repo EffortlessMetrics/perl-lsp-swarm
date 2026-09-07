@@ -64,9 +64,21 @@ struct Violation {
     source: String,
 }
 
+/// Does this line call — or import — a thread sleep?
+///
+/// Whitespace around `::` is normalised so `thread :: sleep(` cannot slip past,
+/// and a bare `thread::sleep` without a paren is matched too, which catches
+/// `use std::thread::sleep as pause;` — the aliasing route that would otherwise
+/// let a synchronization sleep back in under a different name.
+///
+/// Known limit: a call split across lines (`thread::sleep` then `(` on the next
+/// line) is not detected. This is a ratchet against the shape this crate
+/// actually removed, not a general polling detector — a busy-wait loop with no
+/// sleep at all is likewise out of its reach.
 fn is_sleep(line: &str) -> bool {
     let code = line.split("//").next().unwrap_or("");
-    code.contains("thread::sleep(")
+    let normalized: String = code.replace(" ::", "::").replace(":: ", "::").replace("\t", " ");
+    normalized.contains("thread::sleep")
 }
 
 /// Return the declared class on a marker line, if it declares one.
@@ -237,6 +249,20 @@ mod guard_controls {
     }
 
     /// A sleep mentioned only in prose or a doc comment is not a call.
+    #[test]
+    fn an_aliased_sleep_import_is_rejected() {
+        let source = "use std::thread::sleep as pause;\nlet x = 1;\n";
+        let found = unowned_sleeps("src/x.rs", source, false);
+        assert_eq!(found.len(), 1, "aliasing must not smuggle a sleep in: {found:?}");
+    }
+
+    #[test]
+    fn spacing_around_the_path_separator_cannot_hide_a_sleep() {
+        let source = "std::thread :: sleep(POLL);\n";
+        let found = unowned_sleeps("src/x.rs", source, false);
+        assert_eq!(found.len(), 1, "spaced paths must still be caught: {found:?}");
+    }
+
     #[test]
     fn a_sleep_named_in_a_comment_is_not_a_violation() {
         let source = "// we no longer thread::sleep( here\nlet x = 1;\n";

@@ -13,7 +13,7 @@ use crate::{FakeWorkspace, ScenarioConfig};
 use anyhow::{Context, Result, anyhow};
 use serde_json::{Value, json};
 use std::io::{BufRead, BufReader, Read, Write};
-use std::process::{Child, ChildStdin, Command, Stdio};
+use std::process::{Child, ChildStdin, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -511,6 +511,12 @@ impl UxClient {
         Ok(())
     }
 
+    /// Explain a wait outcome, folding in the child's real exit status.
+    fn explain(&self, end: &WaitEnd) -> String {
+        let exit = self.child.lock().ok().and_then(|mut child| child.try_wait().ok().flatten());
+        describe_end_with_exit(end, exit)
+    }
+
     fn wait_for_response(&self, id: u64, timeout: Duration) -> Result<Value> {
         // Exact JSON-RPC id identity: numeric `1` and string `"1"` are distinct
         // subjects and must never complete each other's wait.
@@ -527,7 +533,7 @@ impl UxClient {
                         .find(|(_, value)| value["id"] == wanted)
                         .map(|(observation, _)| *observation)
                 })
-                .map_err(|end| anyhow!("No LSP response to id={id}: {}", end.describe()))?;
+                .map_err(|end| anyhow!("No LSP response to id={id}: {}", self.explain(&end)))?;
 
             // Consume by observation identity, not by id, so unrelated traffic
             // can never hand this caller a different message. A `None` here
@@ -595,14 +601,48 @@ impl Drop for UxClient {
 /// `kill()` — which sends an uncatchable signal, so the subsequent reap
 /// returns promptly. A server that closed its output but is still running is
 /// killed rather than waited on forever.
+/// Describe why a wait ended, consulting the child's actual exit status.
+///
+/// `StreamEnd::ServerClosed` is an honest statement about the *stream* — EOF at
+/// a message boundary — but on its own it reads as an orderly shutdown even
+/// when the server crashed or exited nonzero without emitting a partial frame.
+/// Reporting that as "orderly" is exactly the kind of misleading outcome this
+/// substrate exists to prevent, so the process status is folded in here.
+fn describe_end_with_exit(end: &WaitEnd, exit: Option<ExitStatus>) -> String {
+    let WaitEnd::Ended(StreamEnd::ServerClosed) = end else {
+        // A transport failure and a plain deadline already say what happened.
+        return end.describe();
+    };
+    match exit {
+        Some(status) if !status.success() => format!(
+            "the server's output ended at a message boundary and the process exited \
+             unsuccessfully ({status}) — this is a server failure, not an orderly shutdown"
+        ),
+        Some(status) => {
+            format!("server closed its output stream and exited successfully ({status})")
+        }
+        // Still running, or the status could not be read: report only what is known.
+        None => format!("{} (the process had not exited when this was reported)", end.describe()),
+    }
+}
+
 fn reap_or_kill(child: &mut Child) {
     match child.try_wait() {
         // Already exited: just collect it.
         Ok(Some(_)) => {}
         // Still running, or its status could not be determined — force it.
         Ok(None) | Err(_) => {
-            let _ = child.kill();
-            let _ = child.wait();
+            if child.kill().is_ok() {
+                // The signal landed and is uncatchable, so this reap returns.
+                let _ = child.wait();
+                return;
+            }
+            // `kill` failed. For a child we spawned this essentially only
+            // happens when it has already exited and been reaped, which
+            // `try_wait` confirms cheaply. Never fall through to a blocking
+            // `wait` here: leaking a process is recoverable, hanging every
+            // remaining test is not.
+            let _ = child.try_wait();
         }
     }
 }
@@ -827,8 +867,66 @@ mod framing_tests {
 #[cfg(test)]
 mod shutdown_tests {
     use super::reap_or_kill;
+    use crate::observation::{StreamEnd, WaitEnd};
     use std::process::{Command, Stdio};
     use std::time::{Duration, Instant};
+
+    /// A crashed server must not be described as an orderly shutdown.
+    ///
+    /// EOF at a message boundary is an honest statement about the *stream*, but
+    /// on its own it reads as a clean exit even when the process died. The
+    /// reported reason folds in the real exit status.
+    #[test]
+    fn a_nonzero_exit_is_not_described_as_an_orderly_shutdown() {
+        let Ok(mut child) =
+            Command::new("/bin/sh").args(["-c", "exit 3"]).stdout(Stdio::null()).spawn()
+        else {
+            return;
+        };
+        let Ok(status) = child.wait() else { return };
+        assert!(!status.success(), "fixture must exit nonzero");
+
+        let described =
+            super::describe_end_with_exit(&WaitEnd::Ended(StreamEnd::ServerClosed), Some(status));
+
+        assert!(
+            described.contains("server failure"),
+            "a nonzero exit must be reported as a failure: {described}"
+        );
+        assert!(
+            !described.contains("orderly shutdown)"),
+            "it must not read as an orderly shutdown: {described}"
+        );
+    }
+
+    #[test]
+    fn a_successful_exit_is_still_described_as_an_orderly_close() {
+        let Ok(mut child) =
+            Command::new("/bin/sh").args(["-c", "exit 0"]).stdout(Stdio::null()).spawn()
+        else {
+            return;
+        };
+        let Ok(status) = child.wait() else { return };
+
+        let described =
+            super::describe_end_with_exit(&WaitEnd::Ended(StreamEnd::ServerClosed), Some(status));
+
+        assert!(
+            described.contains("exited successfully"),
+            "a clean exit must stay orderly: {described}"
+        );
+    }
+
+    /// A transport failure already names itself; the exit status must not
+    /// overwrite that more specific reason.
+    #[test]
+    fn a_transport_failure_keeps_its_own_reason() {
+        let described = super::describe_end_with_exit(
+            &WaitEnd::Ended(StreamEnd::TransportFailure { detail: "bad header".to_string() }),
+            None,
+        );
+        assert!(described.contains("bad header"), "the framing detail must survive: {described}");
+    }
 
     /// Regression control for the hazard that end-of-stream is not process
     /// exit: a server may close (or corrupt) its stdout and keep running.

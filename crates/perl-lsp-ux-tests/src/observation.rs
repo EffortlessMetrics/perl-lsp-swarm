@@ -26,6 +26,27 @@
 //! (3) does not block at all and the predicate is re-evaluated immediately. The
 //! caller can therefore never be forced to wait until its deadline for an
 //! observation that already arrived.
+//!
+//! # Outcome precedence
+//!
+//! A wait resolves in this order, deliberately:
+//!
+//! 1. **a match** — the predicate always runs on the freshest view first;
+//! 2. **a stream end** — an ended stream outranks the bound, so a closed or
+//!    broken transport is never reported as "nothing happened in time";
+//! 3. **the deadline**.
+//!
+//! Rule 1 means an observation that lands around the deadline can still satisfy
+//! the wait. That is intentional. The alternative — checking the clock first —
+//! discards an observation that genuinely arrived in time but whose waiter had
+//! not been scheduled yet, which is a false negative whose likelihood grows
+//! with machine load. That is precisely the runner-speed sensitivity this
+//! module exists to remove, so the tie is broken in favour of the observation.
+//!
+//! The consequence is that the deadline bounds **how long a wait blocks**, not
+//! the arrival time of what it returns. It is not a latency oracle; measuring
+//! server latency is a separate concern with its own authority. The loop is
+//! still bounded: at most one further evaluation happens once the bound passes.
 
 use serde_json::Value;
 use std::collections::VecDeque;
@@ -270,8 +291,16 @@ impl Inbox {
 
     /// Drain every buffered event, leaving the responses untouched.
     pub fn drain_events(&self) -> Vec<Value> {
-        let mut state = self.lock();
-        state.events.drain(..).map(|(_, value)| value).collect()
+        let drained = {
+            let mut state = self.lock();
+            // Draining is a mutation like any other, so it advances the
+            // sequence: the invariant that `seq` moves whenever a waiter's
+            // input changes must hold for removals too, not just publications.
+            state.seq += 1;
+            state.events.drain(..).map(|(_, value)| value).collect::<Vec<_>>()
+        };
+        self.inner.signal.notify_all();
+        drained
     }
 
     /// Block until `select` matches, the stream ends, or `timeout` expires.
@@ -647,6 +676,20 @@ mod tests {
             matches!(matched, Err(WaitEnd::Ended(StreamEnd::ServerClosed))),
             "the stream end must still win over the deadline, got {matched:?}"
         );
+    }
+
+    /// Draining is a mutation, so it must advance the sequence and wake
+    /// waiters like any other change to a waiter's input.
+    #[test]
+    fn draining_events_advances_the_sequence() {
+        let inbox = Inbox::new();
+        inbox.push_event(json!({"method": "window/logMessage"}));
+        let before = inbox.snapshot().seq();
+
+        let drained = inbox.drain_events();
+
+        assert_eq!(drained.len(), 1);
+        assert_ne!(inbox.snapshot().seq(), before, "a drain must advance the sequence");
     }
 
     #[test]
