@@ -198,6 +198,21 @@ created = "2026-08-24"
 review_after = "2026-11-24"
 
 [[allow]]
+id = "non-rust-ripr-010-consumer-fixtures"
+glob = "xtask/tests/fixtures/ripr-0.10/*.json"
+kind = "test_fixture"
+language = "json"
+surface = "fixtures"
+classification = "test"
+owner = "ci/ripr-consumer"
+reason = "Captured `ripr check --format json` output from the published 0.9.0 and 0.10.0 releases over one identical diff, pinning the producer output schema across the #9113 consumer migration. The repository has a recorded regression where a RIPR version bump changed JSON fields and the consumer silently stopped matching them (docs/learnings/2026-06-ripr-output-schema-break.md); hand-authored JSON cannot catch that class because it encodes the assumption under test. Regenerating them by hand would defeat their purpose — they change only when a reviewed producer release is intended. Provenance is in the sibling README.md."
+covered_by = [
+  "cargo test -p xtask --bin xtask ripr_evidence --locked",
+]
+created = "2026-09-07"
+review_after = "2027-03-07"
+
+[[allow]]
 id = "non-rust-lsp-318-changelog-fixture"
 glob = "xtask/tests/fixtures/lsp-318-changelog/*.md"
 kind = "test_fixture"

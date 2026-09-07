@@ -210,7 +210,7 @@ jobs:
     outputs:
       preflight_ok: ${{ steps.preflight.outputs.preflight_ok }}
     env:
-      RIPR_VERSION: "0.9.0"
+      RIPR_VERSION: "0.10.0"
       BASE_REF: ${{ github.base_ref || github.event.merge_group.base_ref || github.event.repository.default_branch }}
       PR_HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || '' }}
       PR_LABELS: ${{ github.event_name == 'pull_request' && join(github.event.pull_request.labels.*.name, ',') || '' }}
@@ -459,7 +459,7 @@ jobs:
     outputs:
       preflight_ok: ${{ steps.preflight.outputs.preflight_ok }}
     env:
-      RIPR_VERSION: "0.9.0"
+      RIPR_VERSION: "0.10.0"
       BASE_REF: ${{ github.base_ref || github.event.merge_group.base_ref || github.event.repository.default_branch }}
       PR_HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || '' }}
       PR_LABELS: ${{ github.event_name == 'pull_request' && join(github.event.pull_request.labels.*.name, ',') || '' }}
@@ -706,7 +706,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
-      RIPR_VERSION: "0.9.0"
+      RIPR_VERSION: "0.10.0"
       BASE_REF: ${{ github.base_ref || github.event.merge_group.base_ref || github.event.repository.default_branch }}
       PR_HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || '' }}
       PR_LABELS: ${{ github.event_name == 'pull_request' && join(github.event.pull_request.labels.*.name, ',') || '' }}
@@ -870,7 +870,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
-      RIPR_VERSION: "0.9.0"
+      RIPR_VERSION: "0.10.0"
       BASE_REF: ${{ github.base_ref || github.event.merge_group.base_ref || github.event.repository.default_branch }}
       PR_HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || '' }}
       PR_LABELS: ${{ github.event_name == 'pull_request' && join(github.event.pull_request.labels.*.name, ',') || '' }}
@@ -1028,7 +1028,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
-      RIPR_VERSION: "0.9.0"
+      RIPR_VERSION: "0.10.0"
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
