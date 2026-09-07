@@ -1,8 +1,32 @@
 //! Deterministic identity for the full contents of an evidence envelope.
 //!
-//! [`EnvelopeFingerprint`] answers "is this the same evidence?" — a distinct
-//! question from [`crate::ReceiptId`] ("which receipt is this?"). Two
-//! envelopes with identical field values always produce the same
+//! [`EnvelopeFingerprint`] answers **"is this the same envelope record?"** —
+//! it covers every field of the envelope, `receipt_id` included.
+//!
+//! # What it is not
+//!
+//! It is deliberately *not* an identity for the underlying evidence
+//! **content**. Two envelopes carrying byte-identical payloads but minted as
+//! separate receipts — a reproducible re-run, say — have different
+//! `receipt_id`s and different `run` identities, and therefore different
+//! fingerprints. That is correct for a whole-record fingerprint and wrong for
+//! a content identity, so do not use this to answer "did this run reproduce
+//! that run's evidence?".
+//!
+//! Content sameness already has an owner:
+//! [`PayloadIdentity::digest`](crate::PayloadIdentity) is a
+//! [`perl_source_identity::ContentDigest`] over the exact payload bytes, and
+//! two reproductions of the same evidence share it. A deduplication or
+//! reproducibility consumer should compare that digest (with whichever
+//! subject fields it considers load-bearing), never this fingerprint.
+//!
+//! Excluding `receipt_id` from the walk was considered and rejected: it would
+//! carve out a field that every future maintainer must remember to keep
+//! carved out, contradicting this crate's rule that every field is
+//! fingerprinted, and it would still not yield a content identity because
+//! `run` identity would remain in the hash.
+//!
+//! Two envelopes with identical field values always produce the same
 //! fingerprint, regardless of:
 //!
 //! - the order fields were set in code (Rust struct field order is not

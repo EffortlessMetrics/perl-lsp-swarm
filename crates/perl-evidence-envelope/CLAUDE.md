@@ -41,7 +41,11 @@ types existed anywhere in the repository before this crate.
 - `InputReference` — lineage edge as data only: an upstream `ReceiptId` paired
   with the `ContentDigest` it had when consumed.
 - `EnvelopeFingerprint` — deterministic, domain-separated SHA-256 over the
-  full envelope's canonically-ordered fields (`envfp:sha256:...`).
+  full envelope's canonically-ordered fields (`envfp:sha256:...`), including
+  `receipt_id`. It identifies the **envelope record**, not the evidence
+  content: two receipts minted for byte-identical payload bytes have
+  different fingerprints. Payload sameness is `PayloadIdentity::digest`'s
+  job, and it is stable across re-mints.
 - `EvidenceEnvelope` — the top-level record tying all of the above together.
 
 ## Does not own

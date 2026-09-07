@@ -7,11 +7,17 @@
 //! the same wire discipline as `perl-source-identity`'s ID newtypes.
 //!
 //! `ReceiptId` intentionally does not derive its value from the envelope's
-//! own [`crate::EnvelopeFingerprint`]: a receipt may be re-minted (new
-//! `ReceiptId`) for the same underlying fingerprint (e.g. a re-run that
-//! reproduces byte-identical evidence), and the two identities answer
-//! different questions — "which receipt is this" versus "is this evidence
-//! identical to that evidence".
+//! contents: a receipt may be re-minted for evidence that reproduces
+//! byte-identical payload bytes, and "which receipt is this" is a different
+//! question from "is this the same payload".
+//!
+//! Note the direction of the relationship, which is easy to get backwards:
+//! `receipt_id` is an **input to** [`crate::EnvelopeFingerprint`], not an
+//! alternative to it. The fingerprint identifies the whole envelope record
+//! including this ID, so two receipts minted for identical payload bytes have
+//! different fingerprints. Payload sameness is answered by
+//! [`PayloadIdentity::digest`](crate::PayloadIdentity), which is stable across
+//! re-mints.
 
 use serde::{Deserialize, Deserializer, Serialize};
 use sha2::{Digest as _, Sha256};

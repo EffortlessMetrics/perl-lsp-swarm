@@ -25,7 +25,18 @@ use serde::{Deserialize, Serialize};
 pub enum Completeness {
     /// Every input the producer expected to record is present.
     Complete,
-    /// Some, but not all, expected inputs are present.
+    /// **Fewer inputs are present than the producer expected — including
+    /// none at all.**
+    ///
+    /// The "including none" is load-bearing. A run that expected inputs and
+    /// recorded zero of them (a transient upstream failure, say) is `Partial`,
+    /// not [`Completeness::StructurallyUnavailable`], which is reserved for
+    /// the case where completeness could not be *determined* at all. Reading
+    /// this variant as "at least one present" would leave the
+    /// expected-some-recorded-none state with no truthful spelling, and a
+    /// producer forced to choose would land on `Complete` with an empty
+    /// `inputs` array — exactly the silent-completeness failure this enum
+    /// exists to prevent.
     Partial,
     /// Completeness does not apply to this envelope (e.g. the payload kind
     /// has no notion of "inputs").
@@ -110,6 +121,29 @@ mod tests {
             let back: Completeness = serde_json::from_str(&json).expect("deserialize");
             assert_eq!(v, back, "round-trip failed for {v}");
         }
+    }
+
+    /// The state that had no truthful spelling before `Partial` was defined
+    /// to include zero: a run expected inputs and recorded none of them.
+    ///
+    /// This asserts the vocabulary can express it *and* that expressing it
+    /// does not read as complete — the failure mode being that a producer
+    /// with no applicable variant falls back to `Complete` with an empty
+    /// `inputs` array.
+    #[test]
+    fn expected_inputs_but_recorded_none_is_partial_and_not_complete() {
+        let recorded_none_but_expected_some = Completeness::Partial;
+        assert!(
+            !recorded_none_but_expected_some.is_complete(),
+            "zero recorded inputs with expectations must never read as complete"
+        );
+        assert_ne!(
+            recorded_none_but_expected_some,
+            Completeness::StructurallyUnavailable,
+            "a transient upstream failure is Partial; StructurallyUnavailable is for \
+             completeness that could not be determined at all"
+        );
+        assert_ne!(recorded_none_but_expected_some, Completeness::NotApplicable);
     }
 
     #[test]
