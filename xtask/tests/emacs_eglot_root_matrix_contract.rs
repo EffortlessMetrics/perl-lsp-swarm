@@ -494,6 +494,27 @@ fn driver_receipt_keys(root: &Path) -> Result<Vec<String>, Box<dyn Error>> {
 }
 
 #[test]
+fn root_probe_refusal_booleans_use_native_json_values() -> Result<(), Box<dyn Error>> {
+    let forms = driver_forms(&repo_root()?)?;
+    let mut refusal_values = Vec::new();
+    for form in &forms {
+        if form.head() == Some("manual_action_required") && form.nth_atom(1) == Some(".") {
+            // The final receipt assembles this value dynamically. Check every
+            // literal refusal branch, including branches a no-server run cannot reach.
+            if let Some(value) = form.nth_atom(2) {
+                refusal_values.push(value);
+            }
+        }
+    }
+    assert_eq!(refusal_values.len(), 4, "all four refusal paths must be checked");
+    assert!(
+        refusal_values.iter().all(|value| *value == "t"),
+        "json-serialize requires t for JSON true, not :true: {refusal_values:?}"
+    );
+    Ok(())
+}
+
+#[test]
 fn root_matrix_observation_slots_match_the_driver_receipt_keys() -> Result<(), Box<dyn Error>> {
     let root = repo_root()?;
     let record: Value = serde_json::from_str(&read(&root, RECORD)?)?;

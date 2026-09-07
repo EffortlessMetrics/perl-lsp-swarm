@@ -136,7 +136,7 @@ assumed."
                                       `((initialize_root_uri
                                          . ,(or (cdr extracted) :null)))
                                     '((initialize_root_uri . :null)
-                                      (manual_action_required . :true)
+                                      (manual_action_required . t)
                                       (refusal_reason
                                        . "initialize_root_uri_not_extractable")))))
                             ;; Observe while alive, then end the session here
@@ -148,14 +148,14 @@ assumed."
                             (append observed
                                     '((session_established . t))))
                         '((session_established . :false)
-                          (manual_action_required . :true)
+                          (manual_action_required . t)
                           (refusal_reason . "no_live_session"))))
                   (error
                    `((session_established . :false)
-                     (manual_action_required . :true)
+                     (manual_action_required . t)
                      (refusal_reason . ,(perl-lsp-root-probe--error-token err)))))
               '((session_established . :false)
-                (manual_action_required . :true)
+                (manual_action_required . t)
                 (refusal_reason . "candidate_executable_not_supplied"))))
            (library-facts (perl-lsp-root-probe--library-facts))
            (cleanup-live-servers 0)
