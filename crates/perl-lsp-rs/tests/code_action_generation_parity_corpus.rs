@@ -27,6 +27,8 @@ const SUCCESS_DIAGNOSTIC_ROUTED: &str = "cac-parity-diagnostic-routed-quickfix-e
 const SUCCESS_PRAGMA: &str = "cac-parity-pragma-quickfix-single-edit";
 const SUCCESS_CRITIC_SAFE_ONLY: &str = "cac-parity-critic-quickfix-safe-only";
 const SUCCESS_FIX_ALL: &str = "cac-parity-source-fixall-aggregates-after-dedupe";
+const SUCCESS_ENHANCED_COMBINED_PRAGMA: &str = "cac-parity-enhanced-combined-pragma-fix";
+const SUCCESS_UTF8_PRAGMA: &str = "cac-parity-utf8-pragma-only-for-non-ascii-source";
 const IDENTITY_V2_DIAGNOSTIC: &str = "cac-parity-v2-attaches-originating-diagnostic";
 const IDENTITY_EXPLAIN: &str = "cac-parity-explain-diagnostic-command-only";
 const IDENTITY_TEST_GENERATION: &str = "cac-parity-test-generation-command-only";
@@ -52,6 +54,14 @@ const NO_PRAGMAS: &str = "my $value = 1;\nprint $value;\n";
 /// Carries real parse errors. The v3 parser recovers rather than failing, so
 /// this stays on the AST path — see `parse_errors_stay_on_the_ast_path`.
 const PARSE_ERRORS: &str = "sub broken { my $x = ; if ( { $x\n";
+
+/// Produces a PL109 unquoted-bareword diagnostic. The explain generation only
+/// answers PL701 and PL109, so a PL103 source leaves it silent.
+const UNQUOTED_BAREWORD: &str = "use strict;\nuse warnings;\nmy $x = SOMEBAREWORD;\n";
+
+/// Non-ASCII content with no `use utf8`, so the UTF-8 pragma family has an
+/// answer. `NO_PRAGMAS` is its negative control: pure ASCII, no UTF-8 action.
+const NON_ASCII: &str = "my $s = \"caf\u{e9} na\u{ef}ve\";\nprint $s;\n";
 
 /// A subroutine plus an extractable binary expression.
 const EXTRACTABLE: &str =
@@ -190,17 +200,22 @@ fn pragma_quickfix_is_published_once_per_pragma() -> TestResult {
 
 /// Only critic findings carrying a Safe, non-empty fix become quick fixes, so
 /// no published critic action may be an empty edit.
+///
+/// The non-emptiness precondition is load-bearing: without it this fixture
+/// passes when the critic generation publishes nothing at all, which is the
+/// regression it exists to catch.
 #[test]
 fn critic_quickfixes_are_never_published_without_an_edit() -> TestResult {
     let uri = "file:///cac_parity_critic.pl";
     let mut harness = harness_with(None)?;
-    harness.open(uri, UNDECLARED_VARIABLE)?;
+    harness.open(uri, NO_PRAGMAS)?;
     harness.barrier();
 
-    let actions = code_actions(&mut harness, uri, ((0, 0), (3, 15)), Some(&["quickfix"]))?;
+    let actions = code_actions(&mut harness, uri, ((0, 0), (1, 12)), Some(&["quickfix"]))?;
 
-    for action in &actions {
-        let is_critic =
+    let critic = actions
+        .iter()
+        .filter(|action| {
             action.get("diagnostics").and_then(Value::as_array).is_some_and(|diagnostics| {
                 diagnostics.iter().any(|diagnostic| {
                     diagnostic
@@ -208,10 +223,17 @@ fn critic_quickfixes_are_never_published_without_an_edit() -> TestResult {
                         .and_then(Value::as_str)
                         .is_some_and(|code| code.starts_with("native."))
                 })
-            });
-        if !is_critic {
-            continue;
-        }
+            })
+        })
+        .collect::<Vec<_>>();
+
+    assert!(
+        !critic.is_empty(),
+        "{SUCCESS_CRITIC_SAFE_ONLY}: the native critic generation published no quick fix for a source missing both pragmas, so this fixture would prove nothing: {:?}",
+        titles(&actions)
+    );
+
+    for action in critic {
         assert!(
             !edits_for(action, uri).is_empty(),
             "{SUCCESS_CRITIC_SAFE_ONLY}: critic quick fix {:?} was published without an edit; only Safe non-empty fixes may become quick fixes",
@@ -222,8 +244,105 @@ fn critic_quickfixes_are_never_published_without_an_edit() -> TestResult {
     Ok(())
 }
 
+/// The enhanced generation is a pragma publisher too, and the only one that
+/// offers a single combined fix. `missing_pragmas` emits one action per
+/// pragma; retiring the enhanced route would remove the one-click form from
+/// the `quickfix` kind entirely.
+#[test]
+fn enhanced_generation_publishes_a_combined_pragma_fix() -> TestResult {
+    let uri = "file:///cac_parity_enhanced_pragma.pl";
+    let mut harness = harness_with(None)?;
+    harness.open(uri, NO_PRAGMAS)?;
+    harness.barrier();
+
+    let actions = code_actions(&mut harness, uri, ((0, 0), (1, 12)), Some(&["quickfix"]))?;
+
+    let combined = actions
+        .iter()
+        .find(|action| title(action).starts_with("Add missing pragmas ("))
+        .ok_or_else(|| {
+            format!(
+                "{SUCCESS_ENHANCED_COMBINED_PRAGMA}: no combined pragma quickfix was published: {:?}",
+                titles(&actions)
+            )
+        })?;
+
+    // One action, one edit, inserting both pragmas — that is what makes it
+    // distinct from the canonical generation's per-pragma actions.
+    let edits = edits_for(combined, uri);
+    assert_eq!(
+        edits.len(),
+        1,
+        "{SUCCESS_ENHANCED_COMBINED_PRAGMA}: expected a single combined edit, got {edits:?}"
+    );
+    let new_text = edits[0].get("newText").and_then(Value::as_str).unwrap_or_default();
+    assert!(
+        new_text.contains("use strict;") && new_text.contains("use warnings;"),
+        "{SUCCESS_ENHANCED_COMBINED_PRAGMA}: combined fix must insert both pragmas, got {new_text:?}"
+    );
+
+    // The canonical per-pragma actions must still be present alongside it, or
+    // this is no longer the duplicate-authority situation the ledger records.
+    assert!(
+        actions.iter().any(|action| title(action) == "Add use strict;"),
+        "{SUCCESS_ENHANCED_COMBINED_PRAGMA}: the canonical per-pragma generation stopped publishing: {:?}",
+        titles(&actions)
+    );
+
+    Ok(())
+}
+
+/// The UTF-8 pragma family has exactly one producer, and it is conditional on
+/// the source actually containing non-ASCII content. The ASCII case is the
+/// negative control: without it, an implementation that always offered the
+/// action would pass.
+#[test]
+fn utf8_pragma_action_is_offered_only_for_non_ascii_source() -> TestResult {
+    let non_ascii_uri = "file:///cac_parity_utf8.pl";
+    let mut harness = harness_with(None)?;
+    harness.open(non_ascii_uri, NON_ASCII)?;
+    harness.barrier();
+
+    let actions = code_actions(&mut harness, non_ascii_uri, ((0, 0), (1, 8)), Some(&["quickfix"]))?;
+    let utf8 =
+        actions.iter().find(|action| title(action) == "Add UTF-8 support").ok_or_else(|| {
+            format!(
+                "{SUCCESS_UTF8_PRAGMA}: no UTF-8 pragma action for non-ASCII source: {:?}",
+                titles(&actions)
+            )
+        })?;
+
+    let edits = edits_for(utf8, non_ascii_uri);
+    let new_text = edits
+        .first()
+        .and_then(|edit| edit.get("newText"))
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    assert!(
+        new_text.contains("use utf8;"),
+        "{SUCCESS_UTF8_PRAGMA}: the UTF-8 action must insert `use utf8;`, got {new_text:?}"
+    );
+
+    // Negative control: pure ASCII, same pragma-less shape, no UTF-8 action.
+    let ascii_uri = "file:///cac_parity_ascii.pl";
+    harness.open(ascii_uri, NO_PRAGMAS)?;
+    harness.barrier();
+    let ascii_actions =
+        code_actions(&mut harness, ascii_uri, ((0, 0), (1, 12)), Some(&["quickfix"]))?;
+    assert!(
+        ascii_actions.iter().all(|action| title(action) != "Add UTF-8 support"),
+        "{SUCCESS_UTF8_PRAGMA}: a UTF-8 action was offered for pure-ASCII source: {:?}",
+        titles(&ascii_actions)
+    );
+
+    Ok(())
+}
+
 /// `source.fixAll` aggregates the deduplicated set, so it never republishes a
 /// pragma insertion that a collapsed duplicate already contributed.
+///
+/// Asserting presence first is load-bearing: an `at most one` assertion alone
+/// is satisfied by zero, so removing the aggregate entirely would have passed.
 #[test]
 fn source_fix_all_aggregates_after_dedupe() -> TestResult {
     let uri = "file:///cac_parity_fix_all.pl";
@@ -233,28 +352,47 @@ fn source_fix_all_aggregates_after_dedupe() -> TestResult {
 
     let actions = code_actions(&mut harness, uri, ((0, 0), (1, 12)), None)?;
 
-    let fix_all =
-        actions.iter().filter(|action| kind(action) == "source.fixAll").collect::<Vec<_>>();
+    // Precondition: this source yields several distinct quick fixes with edits,
+    // which is what the aggregate is built from.
+    let quickfixes_with_edits = actions
+        .iter()
+        .filter(|action| kind(action) == "quickfix" && !edits_for(action, uri).is_empty())
+        .count();
     assert!(
-        fix_all.len() <= 1,
-        "{SUCCESS_FIX_ALL}: expected at most one source.fixAll action, got {}",
-        fix_all.len()
+        quickfixes_with_edits >= 2,
+        "{SUCCESS_FIX_ALL}: expected at least two edit-carrying quick fixes to aggregate, got {quickfixes_with_edits}: {:?}",
+        titles(&actions)
     );
 
-    if let Some(action) = fix_all.first() {
-        let edits = edits_for(action, uri);
-        let mut keys = edits
-            .iter()
-            .map(|edit| (edit.get("range").map(ToString::to_string), edit.get("newText").cloned()))
-            .collect::<Vec<_>>();
-        let before = keys.len();
-        keys.dedup();
-        assert_eq!(
-            keys.len(),
-            before,
-            "{SUCCESS_FIX_ALL}: source.fixAll merged duplicate edits: {edits:?}"
-        );
-    }
+    let fix_all =
+        actions.iter().filter(|action| kind(action) == "source.fixAll").collect::<Vec<_>>();
+    assert_eq!(
+        fix_all.len(),
+        1,
+        "{SUCCESS_FIX_ALL}: expected exactly one source.fixAll action, got {}: {:?}",
+        fix_all.len(),
+        titles(&actions)
+    );
+
+    let edits = edits_for(fix_all[0], uri);
+    assert!(
+        !edits.is_empty(),
+        "{SUCCESS_FIX_ALL}: the aggregate published no edit: {:?}",
+        fix_all[0]
+    );
+
+    let mut keys = edits
+        .iter()
+        .map(|edit| (edit.get("range").map(ToString::to_string), edit.get("newText").cloned()))
+        .collect::<Vec<_>>();
+    let before = keys.len();
+    keys.sort_by_key(|key| format!("{key:?}"));
+    keys.dedup();
+    assert_eq!(
+        keys.len(),
+        before,
+        "{SUCCESS_FIX_ALL}: source.fixAll merged duplicate edits: {edits:?}"
+    );
 
     Ok(())
 }
@@ -263,19 +401,28 @@ fn source_fix_all_aggregates_after_dedupe() -> TestResult {
 
 /// The explain generation publishes a command-only action; it must never carry
 /// a workspace edit.
+///
+/// It answers only PL701 and PL109, so this uses an unquoted-bareword source.
+/// An earlier version of this fixture used a PL103 source and was therefore
+/// vacuous: the filter matched nothing and the loop asserted nothing.
 #[test]
 fn explain_diagnostic_action_is_command_only() -> TestResult {
     let uri = "file:///cac_parity_explain.pl";
     let mut harness = harness_with(None)?;
-    harness.open(uri, UNDECLARED_VARIABLE)?;
+    harness.open(uri, UNQUOTED_BAREWORD)?;
     harness.barrier();
 
-    let actions = code_actions(&mut harness, uri, ((0, 0), (3, 15)), None)?;
+    let actions = code_actions(&mut harness, uri, ((2, 0), (2, 21)), None)?;
 
-    for action in &actions {
-        if !title(action).starts_with("Explain") {
-            continue;
-        }
+    let explain =
+        actions.iter().filter(|action| title(action).starts_with("Explain")).collect::<Vec<_>>();
+    assert!(
+        !explain.is_empty(),
+        "{IDENTITY_EXPLAIN}: no explain action was published for a PL109 source, so this fixture would prove nothing: {:?}",
+        titles(&actions)
+    );
+
+    for action in explain {
         assert!(
             action.get("edit").is_none(),
             "{IDENTITY_EXPLAIN}: explain action {:?} must not carry a workspace edit",

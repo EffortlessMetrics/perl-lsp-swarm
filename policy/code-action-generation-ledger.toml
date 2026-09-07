@@ -28,6 +28,12 @@ human_ledger = "docs/project/status/code_action_generation_ledger.md"
 orchestrator = "crates/perl-lsp-rs/src/runtime/language/code_actions.rs"
 parity_corpus = "crates/perl-lsp-rs/tests/code_action_generation_parity_corpus.rs"
 
+# Literal that marks where the orchestrator's no-AST branch begins. The drift
+# check requires every `path = "ast"` anchor to occur before it and every
+# `path = "no_ast"` anchor after it, so moving a producer between branches
+# cannot leave a stale `path` behind.
+no_ast_boundary = "// No AST (parse error), but we can still offer some actions"
+
 # The six-way disposition vocabulary fixed by #9188. A row's disposition states
 # what #9190 may do with it, not how good the implementation is.
 #
@@ -65,6 +71,7 @@ family_registry = [
   "quickfix:explain_diagnostic",
   "quickfix:hardcoded_shebang",
   "quickfix:pragma",
+  "quickfix:utf8_pragma",
   "refactor.extract:basic_fallback",
   "refactor.extract:disabled_placeholder",
   "refactor.extract:subroutine",
@@ -80,6 +87,7 @@ family_registry = [
 # `unique_behavior` row must cite at least one.
 retirement_blocker_registry = [
   "canonical_route_omits_diagnostic_association",
+  "combined_pragma_fix_has_no_other_producer",
   "canonical_route_has_no_degraded_path_equivalent",
   "capability_gated_disabled_state_has_no_other_producer",
   "opt_in_engine_has_no_canonical_equivalent",
@@ -114,11 +122,11 @@ summary = "Command-only 'Explain this diagnostic' action emitted inline by the o
 [[generation]]
 id = "missing_pragmas"
 stage = 2
-path = "ast"
+path = "both"
 reachability = "production"
 production_anchor = "crate::code_actions_pragmas::missing_pragmas_actions("
 modules = ["crates/perl-lsp-rs/src/features/code_actions_pragmas.rs"]
-summary = "Source-scanning use strict / use warnings quick fixes, deliberately ordered before the diagnostic-routed generations so source.fixAll prefers its insertion point."
+summary = "Source-scanning use strict / use warnings quick fixes, deliberately ordered before the diagnostic-routed generations so source.fixAll prefers its insertion point. Called from BOTH orchestrator branches: the degraded no-AST branch calls it again after emitting its own inline pragma block."
 
 [[generation]]
 id = "native_critic"
@@ -151,7 +159,7 @@ modules = [
   "crates/perl-lsp-rs/src/features/code_actions_provider/source_utils.rs",
   "crates/perl-lsp-rs/src/features/code_actions_provider/types.rs",
 ]
-summary = "Diagnostic-based V2 generation. Uniquely populates CodeAction.diagnostics by matching each action back to the published diagnostic code and range."
+summary = "Diagnostic-based V2 generation. Within the quickfix:diagnostic_routed family it is the only generation that populates CodeAction.diagnostics, matching each action back to the published diagnostic by code and range."
 
 [[generation]]
 id = "provider_original"
@@ -192,18 +200,18 @@ summary = "Enhanced AST refactorings. Runs twice per request: once nested inside
 [[generation]]
 id = "disabled_extract_placeholder"
 stage = 8
-path = "ast"
+path = "both"
 reachability = "production"
 production_anchor = "self.maybe_push_disabled_extract_placeholder("
 modules = ["crates/perl-lsp-rs/src/runtime/language/code_actions.rs"]
-summary = "Capability-gated disabled refactor.extract placeholder for zero-width selections."
+summary = "Capability-gated disabled refactor.extract placeholder for zero-width selections. Called from BOTH orchestrator branches — once on the AST path and once on the degraded no-AST path — so it is the only generation that survives a missing parse snapshot alongside text_fallback."
 
 [[generation]]
 id = "test_generator"
 stage = 9
 path = "ast"
 reachability = "production"
-production_anchor = "TestGenerator::new("
+production_anchor = "Generate test for '{}'"
 modules = ["crates/perl-lsp-rs/src/runtime/language/code_actions.rs"]
 summary = "Command-only Test::More skeleton action per discovered subroutine."
 
@@ -212,7 +220,7 @@ id = "source_fix_all_aggregate"
 stage = 10
 path = "ast"
 reachability = "production"
-production_anchor = "build_source_fix_all("
+production_anchor = "if let Some(fix_all) = build_source_fix_all("
 modules = ["crates/perl-lsp-rs/src/runtime/language/code_actions.rs"]
 summary = "Post-dedupe aggregation of collected quick fixes into one source.fixAll action."
 
@@ -263,15 +271,39 @@ parity_fixtures = [
 generation = "provider_original"
 family = "quickfix:pragma"
 disposition = "redundant_behavior"
-notes = "diagnostic_routes routes PL100/PL101 to the same add_use_strict/add_use_warnings quick fixes the canonical generation already produced; dedupe_code_actions collapses the byte-identical result."
+notes = "Reaches this family twice over and adds nothing: diagnostic_routes routes PL100/PL101 to the same add_use_strict/add_use_warnings quick fixes the canonical generation already produced, and the nested refactors::get_refactoring_actions re-invocation reaches provider_enhanced's combined fix. dedupe_code_actions collapses both byte-identical results."
 retirement_blockers = []
 parity_fixtures = ["cac-parity-pragma-quickfix-single-edit"]
+
+[[route]]
+generation = "provider_enhanced"
+family = "quickfix:pragma"
+disposition = "unique_behavior"
+notes = "get_enhanced_refactoring_actions calls get_global_refactorings, which calls add_recommended_pragmas. It emits one combined 'Add missing pragmas (use strict;, use warnings;)' quickfix carrying a single edit, where the canonical generation emits one action per pragma. A client filtering only=[\"quickfix\"] gets the combined one-click fix from nowhere else: source.modernize and source.fixAll answer different kinds."
+retirement_blockers = ["combined_pragma_fix_has_no_other_producer"]
+parity_fixtures = ["cac-parity-enhanced-combined-pragma-fix"]
+
+[[route]]
+generation = "provider_enhanced"
+family = "quickfix:utf8_pragma"
+disposition = "canonical_candidate"
+notes = "Sole producer of 'Add UTF-8 support', which inserts use utf8; and use open qw(:std :utf8) when the source has non-ASCII content and either pragma is absent."
+retirement_blockers = []
+parity_fixtures = ["cac-parity-utf8-pragma-only-for-non-ascii-source"]
+
+[[route]]
+generation = "provider_original"
+family = "quickfix:utf8_pragma"
+disposition = "redundant_behavior"
+notes = "Reaches the same producer through the nested refactors::get_refactoring_actions re-invocation, so it contributes nothing the canonical generation did not already publish; dedupe_code_actions collapses the pair."
+retirement_blockers = []
+parity_fixtures = ["cac-parity-utf8-pragma-only-for-non-ascii-source"]
 
 [[route]]
 generation = "text_fallback"
 family = "quickfix:pragma"
 disposition = "compatibility_only"
-notes = "Reachable only when the request finds no AST for the current document generation, where none of the AST-path generations run."
+notes = "The no-AST branch emits its own inline pragma block. It is not the only pragma producer there: the same branch also calls the canonical missing_pragmas generation, so this row duplicates it on the degraded path rather than being its sole answer."
 retirement_blockers = ["canonical_route_has_no_degraded_path_equivalent"]
 parity_fixtures = []
 proof_gap = "Not reachable from the LSP surface deterministically. Malformed source recovers onto the AST path (see cac-parity-parse-error-recovery-keeps-ast-path), and the remaining trigger — a generation whose parse snapshot has not been published yet — is a timing window a corpus fixture cannot pin without racing the parser. #9189 must not treat this row as parity-proven."
@@ -291,7 +323,7 @@ parity_fixtures = [
 generation = "provider_v2"
 family = "quickfix:diagnostic_routed"
 disposition = "unique_behavior"
-notes = "Answers the same diagnostic codes as the canonical generation, but is the only generation that attaches the originating diagnostic to the emitted action. Retiring it before the canonical route emits CodeAction.diagnostics would silently break diagnostic-to-fix association for #4205 consumers."
+notes = "Answers the same diagnostic codes as the canonical generation, but is the only generation ANSWERING THIS FAMILY that attaches the originating diagnostic to the emitted action: provider_original's mapping emits title, kind and edit only. (Other generations do attach diagnostics for their own families — the critic generations and source.fixAll both do — so the claim is scoped to quickfix:diagnostic_routed, not global.) Retiring provider_v2 before the canonical route emits CodeAction.diagnostics would silently break diagnostic-to-fix association for #4205 consumers."
 retirement_blockers = ["canonical_route_omits_diagnostic_association"]
 parity_fixtures = [
   "cac-parity-v2-attaches-originating-diagnostic",

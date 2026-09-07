@@ -32,6 +32,10 @@ const REQUIRED_DISPOSITIONS: &[&str] = &[
 
 const REQUIRED_REACHABILITY: &[&str] = &["production", "unreachable_stub"];
 
+/// Which branch of `handle_code_action` a generation is invoked from.
+/// `both` means the anchor has a call site on each side of the no-AST boundary.
+const REQUIRED_PATHS: &[&str] = &["ast", "no_ast", "both", "none"];
+
 /// Prefix every parity-corpus fixture id shares, so the corpus can be scanned
 /// for fixture identities without parsing Rust.
 const FIXTURE_PREFIX: &str = "cac-parity-";
@@ -45,6 +49,7 @@ struct Ledger {
     human_ledger: String,
     orchestrator: String,
     parity_corpus: String,
+    no_ast_boundary: String,
     disposition_states: Vec<String>,
     family_registry: Vec<String>,
     retirement_blocker_registry: Vec<String>,
@@ -186,6 +191,9 @@ fn validate_ledger_shape(ledger: &Ledger, violations: &mut Vec<String>) {
     require_field(POLICY_PATH, "human_ledger", &ledger.human_ledger, HUMAN_LEDGER, violations);
     require_field(POLICY_PATH, "orchestrator", &ledger.orchestrator, ORCHESTRATOR, violations);
     require_field(POLICY_PATH, "parity_corpus", &ledger.parity_corpus, PARITY_CORPUS, violations);
+    if ledger.no_ast_boundary.trim().is_empty() {
+        violations.push(format!("{POLICY_PATH}: no_ast_boundary must not be empty"));
+    }
 
     require_exact_set(
         POLICY_PATH,
@@ -224,8 +232,19 @@ fn validate_generations(
     violations: &mut Vec<String>,
 ) {
     let reachability_states = REQUIRED_REACHABILITY.iter().copied().collect::<BTreeSet<_>>();
+    let path_states = REQUIRED_PATHS.iter().copied().collect::<BTreeSet<_>>();
     let mut seen_ids = BTreeSet::new();
     let mut seen_stages: BTreeMap<u32, String> = BTreeMap::new();
+    let boundary = orchestrator_text.find(ledger.no_ast_boundary.as_str());
+    if boundary.is_none() {
+        violations.push(format!(
+            "{POLICY_PATH}: no_ast_boundary {:?} no longer occurs in {ORCHESTRATOR}",
+            ledger.no_ast_boundary
+        ));
+    }
+
+    // (stage, id, primary offset) for production rows, used for the order check.
+    let mut ordered: Vec<(u32, String, usize)> = Vec::new();
 
     for generation in &ledger.generation {
         let id = generation.id.trim();
@@ -239,8 +258,11 @@ fn validate_generations(
         if generation.summary.trim().is_empty() {
             violations.push(format!("{POLICY_PATH}: generation {id} summary must not be empty"));
         }
-        if generation.path.trim().is_empty() {
-            violations.push(format!("{POLICY_PATH}: generation {id} path must not be empty"));
+        if !path_states.contains(generation.path.as_str()) {
+            violations.push(format!(
+                "{POLICY_PATH}: generation {id} path {:?} is not one of {REQUIRED_PATHS:?}",
+                generation.path
+            ));
         }
         if !reachability_states.contains(generation.reachability.as_str()) {
             violations.push(format!(
@@ -272,10 +294,21 @@ fn validate_generations(
                         "{POLICY_PATH}: generation {id} is production-reachable but has no production_anchor"
                     )),
                     Some(anchor) => {
-                        if !orchestrator_text.contains(anchor) {
+                        let offsets = occurrences(orchestrator_text, anchor);
+                        if offsets.is_empty() {
                             violations.push(format!(
                                 "{POLICY_PATH}: generation {id} production_anchor {anchor:?} no longer occurs in {ORCHESTRATOR}"
                             ));
+                        } else {
+                            if let Some(boundary) = boundary {
+                                check_branch(id, generation, &offsets, boundary, violations);
+                            }
+                            let primary = if generation.path == "no_ast" {
+                                offsets.iter().copied().max().unwrap_or_default()
+                            } else {
+                                offsets[0]
+                            };
+                            ordered.push((generation.stage, id.to_string(), primary));
                         }
                     }
                 }
@@ -287,6 +320,61 @@ fn validate_generations(
             }
             _ => {}
         }
+    }
+
+    // Declared stage order must match the order the anchors actually appear in
+    // the orchestrator. Presence alone would let a reordering leave every stage
+    // number stale while the check stayed green.
+    ordered.sort_by_key(|(stage, _, _)| *stage);
+    for window in ordered.windows(2) {
+        let (earlier_stage, earlier_id, earlier_offset) = &window[0];
+        let (later_stage, later_id, later_offset) = &window[1];
+        if earlier_offset >= later_offset {
+            violations.push(format!(
+                "{POLICY_PATH}: stage {earlier_stage} ({earlier_id}) is declared before stage {later_stage} ({later_id}), but its anchor occurs later in {ORCHESTRATOR}; the declared invocation order is stale"
+            ));
+        }
+    }
+}
+
+/// Every byte offset at which `needle` occurs in `haystack`.
+fn occurrences(haystack: &str, needle: &str) -> Vec<usize> {
+    if needle.is_empty() {
+        return Vec::new();
+    }
+    let mut offsets = Vec::new();
+    let mut from = 0;
+    while let Some(index) = haystack[from..].find(needle) {
+        let at = from + index;
+        offsets.push(at);
+        from = at + needle.len();
+    }
+    offsets
+}
+
+/// A generation's declared branch must match where its anchor actually sits
+/// relative to the no-AST boundary.
+fn check_branch(
+    id: &str,
+    generation: &Generation,
+    offsets: &[usize],
+    boundary: usize,
+    violations: &mut Vec<String>,
+) {
+    let before = offsets.iter().any(|offset| *offset < boundary);
+    let after = offsets.iter().any(|offset| *offset > boundary);
+
+    match generation.path.as_str() {
+        "ast" if after => violations.push(format!(
+            "{POLICY_PATH}: generation {id} declares path \"ast\" but its anchor also occurs after the no-AST boundary; declare path \"both\" or split the row"
+        )),
+        "no_ast" if before => violations.push(format!(
+            "{POLICY_PATH}: generation {id} declares path \"no_ast\" but its anchor also occurs before the no-AST boundary; declare path \"both\" or split the row"
+        )),
+        "both" if !(before && after) => violations.push(format!(
+            "{POLICY_PATH}: generation {id} declares path \"both\" but its anchor occurs on only one side of the no-AST boundary"
+        )),
+        _ => {}
     }
 }
 
@@ -450,11 +538,26 @@ fn validate_module_coverage(root: &Path, ledger: &Ledger, violations: &mut Vec<S
 
 fn validate_parity_fixtures(ledger: &Ledger, corpus_text: &str, violations: &mut Vec<String>) {
     let declared = ledger_fixture_ids(ledger);
-    let present = corpus_fixture_ids(corpus_text);
+    let fixtures = parse_corpus_fixtures(corpus_text);
+
+    for fixture in &fixtures {
+        if !fixture.bound_to_a_test {
+            violations.push(format!(
+                "{PARITY_CORPUS}: fixture {:?} is declared by const {} but that constant is not referenced by any test, so it is not executable evidence",
+                fixture.id, fixture.const_name
+            ));
+        }
+    }
+
+    let present = fixtures
+        .iter()
+        .filter(|fixture| fixture.bound_to_a_test)
+        .map(|fixture| fixture.id.clone())
+        .collect::<BTreeSet<_>>();
 
     for missing in declared.difference(&present) {
         violations.push(format!(
-            "{POLICY_PATH}: parity fixture {missing:?} is named by a route but absent from {PARITY_CORPUS}"
+            "{POLICY_PATH}: parity fixture {missing:?} is named by a route but is not declared by a test-referenced constant in {PARITY_CORPUS}"
         ));
     }
     for unclaimed in present.difference(&declared) {
@@ -472,28 +575,82 @@ fn ledger_fixture_ids(ledger: &Ledger) -> BTreeSet<String> {
         .collect::<BTreeSet<_>>()
 }
 
-/// Collect every `cac-parity-*` identity literal in the corpus source.
-///
-/// The corpus declares its fixture ids as ordinary string literals, so this
-/// stays a text scan rather than a Rust parse. Ids are restricted to the
-/// characters the prefix convention allows, which is what terminates a match.
-fn corpus_fixture_ids(corpus_text: &str) -> BTreeSet<String> {
-    let mut ids = BTreeSet::new();
-    let mut rest = corpus_text;
+/// One `cac-parity-*` identity declared by the corpus.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct CorpusFixture {
+    id: String,
+    const_name: String,
+    /// Whether `const_name` is referenced anywhere at or after the first
+    /// `#[test]` in the file.
+    bound_to_a_test: bool,
+}
 
-    while let Some(index) = rest.find(FIXTURE_PREFIX) {
-        let candidate = &rest[index..];
-        let end = candidate
-            .find(|ch: char| !ch.is_ascii_alphanumeric() && ch != '-')
-            .unwrap_or(candidate.len());
-        let id = &candidate[..end];
-        if id.len() > FIXTURE_PREFIX.len() && !id.ends_with('-') {
-            ids.insert(id.to_string());
+/// Parse the corpus's fixture identities from their `const` declarations and
+/// record whether each one is actually referenced by a test.
+///
+/// An earlier version scanned the whole file for `cac-parity-` literals, which
+/// meant deleting a test while leaving its id in a comment or an unused
+/// constant still satisfied the ledger's coverage claim. Identity now comes
+/// only from a `const NAME: &str = "cac-parity-…";` declaration, and coverage
+/// additionally requires `NAME` to appear in the file's test region.
+fn parse_corpus_fixtures(corpus_text: &str) -> Vec<CorpusFixture> {
+    let test_region_start = corpus_text.find("#[test]").unwrap_or(corpus_text.len());
+    let test_region = &corpus_text[test_region_start..];
+
+    let mut fixtures = Vec::new();
+    for line in corpus_text.lines() {
+        let trimmed = line.trim();
+        let Some(rest) = trimmed.strip_prefix("const ") else {
+            continue;
+        };
+        let Some((const_name, remainder)) = rest.split_once(':') else {
+            continue;
+        };
+        let const_name = const_name.trim();
+        let Some(value_start) = remainder.find('"') else {
+            continue;
+        };
+        let value = &remainder[value_start + 1..];
+        let Some(value_end) = value.find('"') else {
+            continue;
+        };
+        let id = &value[..value_end];
+        if !id.starts_with(FIXTURE_PREFIX) || id.len() == FIXTURE_PREFIX.len() {
+            continue;
         }
-        rest = &candidate[end.max(1)..];
+
+        fixtures.push(CorpusFixture {
+            id: id.to_string(),
+            const_name: const_name.to_string(),
+            bound_to_a_test: contains_word(test_region, const_name),
+        });
     }
 
-    ids
+    fixtures
+}
+
+/// Whole-identifier containment, so `FOO` does not match `FOO_BAR`.
+fn contains_word(haystack: &str, needle: &str) -> bool {
+    if needle.is_empty() {
+        return false;
+    }
+    let bytes = haystack.as_bytes();
+    let mut from = 0;
+    while let Some(offset) = haystack[from..].find(needle) {
+        let start = from + offset;
+        let end = start + needle.len();
+        let before_ok = start == 0 || !is_ident_byte(bytes[start - 1]);
+        let after_ok = end >= bytes.len() || !is_ident_byte(bytes[end]);
+        if before_ok && after_ok {
+            return true;
+        }
+        from = start + needle.len();
+    }
+    false
+}
+
+fn is_ident_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || byte == b'_'
 }
 
 fn validate_human_table(table: &MarkdownTable, violations: &mut Vec<String>) {
@@ -675,6 +832,8 @@ fn is_separator_row(cells: &[String]) -> bool {
 mod tests {
     use super::*;
 
+    const NO_AST_MARKER: &str = "// No AST (parse error), but we can still offer some actions";
+
     fn generation(id: &str, anchor: Option<&str>) -> Generation {
         Generation {
             id: id.to_string(),
@@ -706,6 +865,7 @@ mod tests {
             human_ledger: HUMAN_LEDGER.to_string(),
             orchestrator: ORCHESTRATOR.to_string(),
             parity_corpus: PARITY_CORPUS.to_string(),
+            no_ast_boundary: NO_AST_MARKER.to_string(),
             disposition_states: REQUIRED_DISPOSITIONS
                 .iter()
                 .map(|value| (*value).to_string())
@@ -905,18 +1065,125 @@ mod tests {
     }
 
     #[test]
-    fn collects_corpus_fixture_identities() {
-        let ids = corpus_fixture_ids(
+    fn collects_fixture_identities_bound_to_a_test() {
+        let fixtures = parse_corpus_fixtures(
             r#"
             const A: &str = "cac-parity-success-case";
-            // cac-parity-disabled-case is also declared
-            let _ = "cac-parity-success-case";
+            const B: &str = "cac-parity-orphan-case";
+
+            #[test]
+            fn uses_a() {
+                assert!(true, "{A}");
+            }
             "#,
         );
 
-        assert_eq!(
-            ids.into_iter().collect::<Vec<_>>(),
-            vec!["cac-parity-disabled-case", "cac-parity-success-case"]
+        let bound = fixtures
+            .iter()
+            .filter(|fixture| fixture.bound_to_a_test)
+            .map(|fixture| fixture.id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(bound, vec!["cac-parity-success-case"]);
+
+        let unbound = fixtures
+            .iter()
+            .filter(|fixture| !fixture.bound_to_a_test)
+            .map(|fixture| fixture.id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(unbound, vec!["cac-parity-orphan-case"]);
+    }
+
+    /// Deleting a test but leaving its id behind in a comment must not keep the
+    /// route's coverage claim alive.
+    #[test]
+    fn a_fixture_id_in_a_comment_alone_is_not_coverage() {
+        let fixtures = parse_corpus_fixtures(
+            r#"
+            // cac-parity-deleted-case used to live here.
+            #[test]
+            fn unrelated() {}
+            "#,
+        );
+
+        assert!(
+            fixtures.is_empty(),
+            "a bare comment mention must not declare a fixture, got {fixtures:?}"
+        );
+    }
+
+    #[test]
+    fn whole_identifier_matching_does_not_accept_a_prefix() {
+        assert!(contains_word("let _ = FOO;", "FOO"));
+        assert!(!contains_word("let _ = FOO_BAR;", "FOO"));
+        assert!(!contains_word("let _ = XFOO;", "FOO"));
+    }
+
+    /// The declared invocation order must match the order the anchors actually
+    /// occur in, or every stage number can go stale unnoticed.
+    #[test]
+    fn rejects_stage_order_that_contradicts_source_order() {
+        let mut first = generation("later_in_file", Some("SECOND_CALL"));
+        first.stage = 1;
+        let mut second = generation("earlier_in_file", Some("FIRST_CALL"));
+        second.stage = 2;
+
+        let ledger = ledger(
+            vec![first, second],
+            vec![
+                route("later_in_file", "quickfix:diagnostic_routed", "canonical_candidate"),
+                route("earlier_in_file", "quickfix:diagnostic_routed", "redundant_behavior"),
+            ],
+        );
+
+        let mut violations = Vec::new();
+        let source = format!("FIRST_CALL\nSECOND_CALL\n{NO_AST_MARKER}\n");
+        validate_generations(&std::path::PathBuf::from("."), &ledger, &source, &mut violations);
+
+        assert!(
+            violations
+                .iter()
+                .any(|violation| violation.contains("declared invocation order is stale")),
+            "expected stage-order violation, got {violations:?}"
+        );
+    }
+
+    /// A generation that moved into the degraded branch must not keep an `ast`
+    /// declaration.
+    #[test]
+    fn rejects_an_ast_generation_whose_anchor_moved_past_the_no_ast_boundary() {
+        let ledger = ledger(
+            vec![generation("moved", Some("THE_CALL"))],
+            vec![route("moved", "quickfix:diagnostic_routed", "canonical_candidate")],
+        );
+
+        let mut violations = Vec::new();
+        let source = format!("{NO_AST_MARKER}\nTHE_CALL\n");
+        validate_generations(&std::path::PathBuf::from("."), &ledger, &source, &mut violations);
+
+        assert!(
+            violations.iter().any(|violation| violation.contains("declare path")),
+            "expected branch violation, got {violations:?}"
+        );
+    }
+
+    /// `both` means exactly that: one call site on each side.
+    #[test]
+    fn rejects_a_both_generation_present_on_only_one_branch() {
+        let mut only_ast = generation("half", Some("THE_CALL"));
+        only_ast.path = "both".to_string();
+
+        let ledger = ledger(
+            vec![only_ast],
+            vec![route("half", "quickfix:diagnostic_routed", "canonical_candidate")],
+        );
+
+        let mut violations = Vec::new();
+        let source = format!("THE_CALL\n{NO_AST_MARKER}\n");
+        validate_generations(&std::path::PathBuf::from("."), &ledger, &source, &mut violations);
+
+        assert!(
+            violations.iter().any(|violation| violation.contains("occurs on only one side")),
+            "expected one-sided `both` violation, got {violations:?}"
         );
     }
 
@@ -928,10 +1195,12 @@ mod tests {
         );
 
         let mut violations = Vec::new();
-        validate_parity_fixtures(&ledger, "no fixtures here", &mut violations);
+        validate_parity_fixtures(&ledger, "#[test]\nfn nothing() {}", &mut violations);
 
         assert!(
-            violations.iter().any(|violation| violation.contains("absent from")),
+            violations
+                .iter()
+                .any(|violation| violation.contains("not declared by a test-referenced constant")),
             "expected missing fixture violation, got {violations:?}"
         );
     }
@@ -946,7 +1215,15 @@ mod tests {
         let mut violations = Vec::new();
         validate_parity_fixtures(
             &ledger,
-            r#""cac-parity-example" and "cac-parity-orphan""#,
+            r#"
+            const EXAMPLE: &str = "cac-parity-example";
+            const ORPHAN: &str = "cac-parity-orphan";
+
+            #[test]
+            fn uses_both() {
+                let _ = (EXAMPLE, ORPHAN);
+            }
+            "#,
             &mut violations,
         );
 

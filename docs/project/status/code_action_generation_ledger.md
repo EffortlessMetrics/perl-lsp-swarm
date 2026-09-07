@@ -28,13 +28,13 @@ order; when it does not, it falls through to a single degraded text generation.
 | Stage | Generation | Path | Reachability |
 | --- | --- | --- | --- |
 | 1 | `explain_diagnostic` | ast | production |
-| 2 | `missing_pragmas` | ast | production |
+| 2 | `missing_pragmas` | both | production |
 | 3 | `native_critic` | ast | production |
 | 4 | `legacy_critic` | ast | production |
 | 5 | `provider_v2` | ast | production |
 | 6 | `provider_original` | ast | production |
 | 7 | `provider_enhanced` | ast | production |
-| 8 | `disabled_extract_placeholder` | ast | production |
+| 8 | `disabled_extract_placeholder` | both | production |
 | 9 | `test_generator` | ast | production |
 | 10 | `source_fix_all_aggregate` | ast | production |
 | 11 | `text_fallback` | no_ast | production |
@@ -42,6 +42,11 @@ order; when it does not, it falls through to a single degraded text generation.
 
 Stages 3 and 4 are mutually exclusive: the configured critic engine selects one
 of them, so they never publish together.
+
+Stages 2 and 8 are called from *both* branches — once on the AST path and once again in
+the degraded no-AST branch — so `text_fallback` is not the sole answer there.
+The drift check enforces that dual placement rather than taking the declared
+branch on trust; it is what caught both rows being mis-declared as `ast`.
 
 ## Disposition ledger
 
@@ -52,6 +57,9 @@ of them, so they never publish together.
 | explain_diagnostic | quickfix:explain_diagnostic | canonical_candidate | — |
 | missing_pragmas | quickfix:pragma | canonical_candidate | — |
 | provider_original | quickfix:pragma | redundant_behavior | — |
+| provider_enhanced | quickfix:pragma | unique_behavior | combined_pragma_fix_has_no_other_producer |
+| provider_enhanced | quickfix:utf8_pragma | canonical_candidate | — |
+| provider_original | quickfix:utf8_pragma | redundant_behavior | — |
 | text_fallback | quickfix:pragma | compatibility_only | canonical_route_has_no_degraded_path_equivalent |
 | provider_original | quickfix:diagnostic_routed | canonical_candidate | — |
 | provider_v2 | quickfix:diagnostic_routed | unique_behavior | canonical_route_omits_diagnostic_association |
@@ -94,13 +102,19 @@ The literal extract arms that do live in `refactors.rs` are guarded by
 `actions.is_empty()`, so they only run when the nested enhanced call returned
 nothing. That is `shadow_only_candidate`, not a second authority.
 
-### Only the V2 generation associates a diagnostic with its fix
+### Within the diagnostic-routed family, only V2 associates a fix with its diagnostic
 
 `provider_v2` and `provider_original` route an overlapping set of diagnostic
 codes, so both can answer `quickfix:diagnostic_routed`. They are not
 interchangeable: the V2 mapping matches each action back to the published
 diagnostic by code and range and attaches it as `CodeAction.diagnostics`, while
 the `provider_original` mapping emits `title`, `kind` and `edit` only.
+
+The claim is scoped to this family, not global. Other generations do attach
+diagnostics for their own families — both critic generations embed the finding
+they fix, and `source.fixAll` carries the diagnostics it aggregates. What no
+other generation does is supply that association *for a diagnostic-routed quick
+fix*, which is the comparison #9189 actually has to make.
 
 That is why the V2 row is `unique_behavior` with a named blocker rather than
 `redundant_behavior`. Cutting production to `provider_original` before it emits
@@ -151,7 +165,7 @@ The corpus covers the outcome classes #9188 requires:
 
 | Class | Fixtures |
 | --- | --- |
-| successful | `cac-parity-diagnostic-routed-quickfix-edit`, `cac-parity-pragma-quickfix-single-edit`, `cac-parity-critic-quickfix-safe-only`, `cac-parity-source-fixall-aggregates-after-dedupe` |
+| successful | `cac-parity-diagnostic-routed-quickfix-edit`, `cac-parity-pragma-quickfix-single-edit`, `cac-parity-critic-quickfix-safe-only`, `cac-parity-source-fixall-aggregates-after-dedupe`, `cac-parity-enhanced-combined-pragma-fix`, `cac-parity-utf8-pragma-only-for-non-ascii-source` |
 | disabled / refused | `cac-parity-disabled-extract-requires-selection`, `cac-parity-refused-without-disabled-support` |
 | stale | `cac-parity-stale-superseded-document-version` |
 | ambiguous | `cac-parity-extract-variable-requires-selection`, `cac-parity-duplicate-authority-collapsed` |
@@ -167,6 +181,26 @@ rejection lives in the validator's own tests
 (`rejects_two_canonical_candidates_for_one_family`), so the rule is proven
 against a synthetic ledger rather than by mutating the tracked one.
 
+## Vacuity is the failure mode this corpus has to resist
+
+Every fixture that filters the published set before asserting can pass by
+matching nothing. Four of them originally did, and independent review caught
+all four:
+
+- the critic fixture used a source whose only native finding carries
+  `FixSafety::Suggested`, which the orchestrator filters out, so no critic
+  action was ever published to assert against;
+- the explain fixture used a PL103 source, but the explain generation answers
+  only PL701 and PL109;
+- the `source.fixAll` fixture asserted *at most one* aggregate, which zero
+  satisfies;
+- the enhanced generation's pragma and UTF-8 families had no fixture at all,
+  because the ledger did not know it published them.
+
+Each now asserts presence before asserting the property, and the sources were
+chosen so that presence is real. When adding a fixture, assume the filter will
+one day match nothing and make that a failure.
+
 ## Maintaining this ledger
 
 Run `cargo xtask check-code-action-generation-ledger`. It fails when:
@@ -181,6 +215,11 @@ Run `cargo xtask check-code-action-generation-ledger`. It fails when:
 - a `unique_behavior` row cites no retirement blocker;
 - a non-`retire_candidate` row cites neither a parity fixture nor a `proof_gap`;
 - a row claims both a `proof_gap` and parity fixtures;
-- a fixture id is named by the ledger but absent from the corpus, or present in
-  the corpus but claimed by no row;
+- a fixture id is named by the ledger but is not declared by a corpus constant
+  that some test actually references, or is declared there but claimed by no
+  row (a fixture id left behind in a comment after its test was deleted is not
+  coverage);
+- a generation's declared `stage` order contradicts the order its anchors occur
+  in, or its declared branch (`ast` / `no_ast` / `both`) does not match which
+  side of the no-AST boundary its anchor sits on;
 - this page and the TOML disagree on any row.
