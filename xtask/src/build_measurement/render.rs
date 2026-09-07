@@ -282,5 +282,16 @@ fn reason_text(reason: &NotProvenReason) -> String {
         NotProvenReason::DiskAdmissionSpurious { detail } => {
             format!("spurious disk admission: {detail}")
         }
+        NotProvenReason::EnvironmentUnproven => {
+            "environment identity has no observed probes".to_string()
+        }
+        NotProvenReason::RawDigestMismatch => {
+            "raw digest does not match a recomputation over the raw facts".to_string()
+        }
+        NotProvenReason::ToleranceNotProtocol { declared, expected } => {
+            format!(
+                "reconciliation tolerance {declared}ns is not the protocol default {expected}ns"
+            )
+        }
     }
 }

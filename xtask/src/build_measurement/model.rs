@@ -759,6 +759,19 @@ pub enum NotProvenReason {
     DiskAdmissionSpurious {
         detail: String,
     },
+    /// Every environment probe was missing — the record claims a host
+    /// environment it never observed (#14739 review).
+    EnvironmentUnproven,
+    /// The record's raw digest does not match a recomputation over its own
+    /// raw facts: the evidence chain is broken or tampered (#14739 review).
+    RawDigestMismatch,
+    /// The record declared a reconciliation tolerance other than the
+    /// protocol default: tolerance is protocol-fixed, never
+    /// record-selected (#14739 review).
+    ToleranceNotProtocol {
+        declared: u64,
+        expected: u64,
+    },
 }
 
 /// The complete measurement record for one declared cell: raw facts plus
@@ -836,6 +849,36 @@ impl MeasurementRecord {
             reasons.push(NotProvenReason::ProtocolMismatch {
                 record_protocol: self.protocol_version.clone(),
             });
+
+            return CellVerdict::NotProven { reasons };
+        }
+
+        // Tolerance is protocol-fixed: a record that selects its own
+        // tolerance self-certifies reconciliation (#14739 review).
+        if self.timings.tolerance_nanos != DEFAULT_TOLERANCE_NANOS {
+            reasons.push(NotProvenReason::ToleranceNotProtocol {
+                declared: self.timings.tolerance_nanos,
+                expected: DEFAULT_TOLERANCE_NANOS,
+            });
+        }
+
+        // The raw digest is the record's evidence chain: admission verifies
+        // it against a recomputation over the raw facts, so tampered raw
+        // facts never admit under their stale digest. (The normalized digest
+        // is derived from this verdict and stays consumer-verifiable.)
+        match super::runner::raw_facts_digest(self) {
+            Ok(digest) if digest == self.raw_digest => {}
+            Ok(_) => reasons.push(NotProvenReason::RawDigestMismatch),
+            Err(_) => reasons.push(NotProvenReason::RawDigestMismatch),
+        }
+
+        // An environment with every probe missing claims a host identity it
+        // never observed (#14739 review).
+        if self.environment.cargo_version.is_none()
+            && self.environment.rustc_version.is_none()
+            && self.environment.host_triple.is_none()
+        {
+            reasons.push(NotProvenReason::EnvironmentUnproven);
         }
 
         match self.timings.reconcile() {
