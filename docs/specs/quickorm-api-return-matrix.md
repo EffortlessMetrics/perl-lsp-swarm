@@ -144,7 +144,7 @@ Receiver identity and argument cohort are both load-bearing: the same method nam
 | `row.clone` | `DBIx::QuickORM::Row` | `clone` | row | optional | single_optional_row | one | preserved_from_receiver | not_applicable | permitted | runtime_resolved | — | `lib/DBIx/QuickORM/Row.pm:147` |
 | `row.conflate_args` | `DBIx::QuickORM::Row` | `conflate_args` | row | required | open_hash_or_hash_sequence | hash | not_applicable | not_applicable | permitted | runtime_resolved | — | `lib/DBIx/QuickORM/Role/Row.pm:156` |
 | `row.connection` | `DBIx::QuickORM::Row` | `connection` | row | none | metadata_or_scalar | one | not_applicable | not_applicable | permitted | exact | — | `lib/DBIx/QuickORM/Row.pm:111` |
-| `row.delete` | `DBIx::QuickORM::Row` | `delete` | row | none | mutation_or_side_effect_result | zero_or_one | not_applicable | not_applicable | permitted | runtime_resolved | — | `lib/DBIx/QuickORM/Row.pm:296` |
+| `row.delete` | `DBIx::QuickORM::Row` | `delete` | row | none | mutation_or_side_effect_result | nothing | not_applicable | not_applicable | permitted | runtime_resolved | — | `lib/DBIx/QuickORM/Row.pm:296` |
 | `row.desynced_data` | `DBIx::QuickORM::Row` | `desynced_data` | row | none | open_hash_or_hash_sequence | optional_hash | not_applicable | not_applicable | permitted | runtime_resolved | — | `lib/DBIx/QuickORM/Row.pm:118` |
 | `row.dialect` | `DBIx::QuickORM::Row` | `dialect` | row | none | metadata_or_scalar | one | not_applicable | not_applicable | permitted | exact | — | `lib/DBIx/QuickORM/Role/Row.pm:97` |
 | `row.discard` | `DBIx::QuickORM::Row` | `discard` | row | none | single_optional_row | one | preserved_from_receiver | not_applicable | permitted | exact | — | `lib/DBIx/QuickORM/Row.pm:287` |
@@ -153,10 +153,10 @@ Receiver identity and argument cohort are both load-bearing: the same method nam
 | `row.field_affinity` | `DBIx::QuickORM::Row` | `field_affinity` | row | required | metadata_or_scalar | one | not_applicable | not_applicable | permitted | runtime_resolved | — | `lib/DBIx/QuickORM/Role/Row.pm:100` |
 | `row.field_is_desynced` | `DBIx::QuickORM::Row` | `field_is_desynced` | row | required | boolean_or_count | one | not_applicable | not_applicable | permitted | runtime_resolved | — | `lib/DBIx/QuickORM/Row.pm:453` |
 | `row.fields` | `DBIx::QuickORM::Row` | `fields` | row | none | open_hash_or_hash_sequence | hash | not_applicable | not_applicable | permitted | runtime_resolved | — | `lib/DBIx/QuickORM/Row.pm:439` |
-| `row.follow` | `DBIx::QuickORM::Row` | `follow` | row | required | transform_handle_source_row | one | derived_from_argument_source | sync_async_aside_forked | permitted | runtime_resolved | — | `lib/DBIx/QuickORM/Role/Row.pm:333` |
+| `row.follow` | `DBIx::QuickORM::Row` | `follow` | row | required | transform_handle_source_row | one | derived_from_argument_source | not_applicable | permitted | runtime_resolved | — | `lib/DBIx/QuickORM/Role/Row.pm:333` |
 | `row.force_sync` | `DBIx::QuickORM::Row` | `force_sync` | row | optional | single_optional_row | one | preserved_from_receiver | not_applicable | permitted | runtime_resolved | — | `lib/DBIx/QuickORM/Row.pm:269` |
-| `row.handle.copy` | `DBIx::QuickORM::Row` | `handle` | row | no_source_argument | transform_handle_source_row | one | preserved_from_receiver | sync_async_aside_forked | permitted | runtime_resolved | — | `lib/DBIx/QuickORM/Role/Row.pm:121` |
-| `row.handle.rebind` | `DBIx::QuickORM::Row` | `handle` | row | source_or_row_rebinding | transform_handle_source_row | one | derived_from_argument_source | sync_async_aside_forked | permitted | runtime_resolved | — | `lib/DBIx/QuickORM/Role/Row.pm:121` |
+| `row.handle.copy` | `DBIx::QuickORM::Row` | `handle` | row | no_source_argument | transform_handle_source_row | one | preserved_from_receiver | not_applicable | permitted | runtime_resolved | — | `lib/DBIx/QuickORM/Role/Row.pm:121` |
+| `row.handle.rebind` | `DBIx::QuickORM::Row` | `handle` | row | source_or_row_rebinding | transform_handle_source_row | one | derived_from_argument_source | not_applicable | permitted | runtime_resolved | — | `lib/DBIx/QuickORM/Role/Row.pm:121` |
 | `row.has_field` | `DBIx::QuickORM::Row` | `has_field` | row | required | boolean_or_count | one | not_applicable | not_applicable | permitted | runtime_resolved | — | `lib/DBIx/QuickORM/Role/Row.pm:99` |
 | `row.has_pending` | `DBIx::QuickORM::Row` | `has_pending` | row | none | boolean_or_count | one | not_applicable | not_applicable | permitted | exact | — | `lib/DBIx/QuickORM/Row.pm:126` |
 | `row.in_storage` | `DBIx::QuickORM::Row` | `in_storage` | row | none | boolean_or_count | one | not_applicable | not_applicable | permitted | exact | — | `lib/DBIx/QuickORM/Row.pm:123` |
@@ -167,7 +167,7 @@ Receiver identity and argument cohort are both load-bearing: the same method nam
 | `row.is_invalid` | `DBIx::QuickORM::Row` | `is_invalid` | row | none | boolean_or_count | one | not_applicable | not_applicable | permitted | exact | — | `lib/DBIx/QuickORM/Row.pm:120` |
 | `row.is_stored` | `DBIx::QuickORM::Row` | `is_stored` | row | none | boolean_or_count | one | not_applicable | not_applicable | permitted | exact | — | `lib/DBIx/QuickORM/Row.pm:124` |
 | `row.is_valid` | `DBIx::QuickORM::Row` | `is_valid` | row | none | boolean_or_count | one | not_applicable | not_applicable | permitted | exact | — | `lib/DBIx/QuickORM/Row.pm:121` |
-| `row.obtain` | `DBIx::QuickORM::Row` | `obtain` | row | required | single_optional_row | zero_or_one | derived_from_argument_source | sync_with_async_row_result | permitted | runtime_resolved | — | `lib/DBIx/QuickORM/Role/Row.pm:348` |
+| `row.obtain` | `DBIx::QuickORM::Row` | `obtain` | row | required | single_optional_row | zero_or_one | derived_from_argument_source | not_applicable | permitted | runtime_resolved | — | `lib/DBIx/QuickORM/Role/Row.pm:348` |
 | `row.pending_data` | `DBIx::QuickORM::Row` | `pending_data` | row | none | open_hash_or_hash_sequence | optional_hash | not_applicable | not_applicable | permitted | runtime_resolved | — | `lib/DBIx/QuickORM/Row.pm:117` |
 | `row.pending_field` | `DBIx::QuickORM::Row` | `pending_field` | row | required | metadata_or_scalar | zero_or_one | not_applicable | not_applicable | permitted | runtime_resolved | — | `lib/DBIx/QuickORM/Row.pm:443` |
 | `row.pending_fields` | `DBIx::QuickORM::Row` | `pending_fields` | row | none | open_hash_or_hash_sequence | hash | not_applicable | not_applicable | permitted | runtime_resolved | — | `lib/DBIx/QuickORM/Row.pm:449` |
@@ -185,7 +185,7 @@ Receiver identity and argument cohort are both load-bearing: the same method nam
 | `row.row_data` | `DBIx::QuickORM::Row` | `row_data` | row | none | metadata_or_scalar | one | not_applicable | not_applicable | permitted | runtime_resolved | — | `lib/DBIx/QuickORM/Row.pm:114` |
 | `row.row_data_obj` | `DBIx::QuickORM::Row` | `row_data_obj` | row | none | metadata_or_scalar | one | not_applicable | not_applicable | permitted | exact | — | `lib/DBIx/QuickORM/Row.pm:113` |
 | `row.save` | `DBIx::QuickORM::Row` | `save` | row | optional | single_optional_row | one | preserved_from_receiver | not_applicable | permitted | runtime_resolved | — | `lib/DBIx/QuickORM/Role/Row.pm:250` |
-| `row.siblings` | `DBIx::QuickORM::Row` | `siblings` | row | required | transform_handle_source_row | one | preserved_from_receiver | sync_async_aside_forked | permitted | runtime_resolved | — | `lib/DBIx/QuickORM/Role/Row.pm:373` |
+| `row.siblings` | `DBIx::QuickORM::Row` | `siblings` | row | required | transform_handle_source_row | one | preserved_from_receiver | not_applicable | permitted | runtime_resolved | — | `lib/DBIx/QuickORM/Role/Row.pm:373` |
 | `row.source` | `DBIx::QuickORM::Row` | `source` | row | none | metadata_or_scalar | one | not_applicable | not_applicable | permitted | exact | — | `lib/DBIx/QuickORM/Row.pm:110` |
 | `row.stored_data` | `DBIx::QuickORM::Row` | `stored_data` | row | none | open_hash_or_hash_sequence | optional_hash | not_applicable | not_applicable | permitted | runtime_resolved | — | `lib/DBIx/QuickORM/Row.pm:116` |
 | `row.stored_field` | `DBIx::QuickORM::Row` | `stored_field` | row | required | metadata_or_scalar | zero_or_one | not_applicable | not_applicable | permitted | runtime_resolved | — | `lib/DBIx/QuickORM/Row.pm:442` |
@@ -325,7 +325,7 @@ Receiver identity and argument cohort are both load-bearing: the same method nam
 - `row.clone`: Produces another row of the same source identity.
 - `row.conflate_args`: Returns the flat inflate/deflate argument list for one field: field, value, source, dialect and affinity (Role/Row.pm:156-162).
 - `row.connection`: Connection behind the row's data object.
-- `row.delete`: Delegates to `_stored_handle->delete`; undef on a synchronous handle. A row exposes no mode selector.
+- `row.delete`: Delegates to `_stored_handle->delete`. That handle comes from `connection->handle($self)` and is synchronous, so Handle::delete always takes its `return undef` branch (Handle.pm:2525-2528) — there is no statement handle to observe.
 - `row.desynced_data`: Reads the DESYNC slot directly (Row.pm:118), so it is undef unless the row is desynced.
 - `row.dialect`: Delegates to the connection's dialect.
 - `row.discard`: Clears pending and desync state and returns the same row.
@@ -334,10 +334,10 @@ Receiver identity and argument cohort are both load-bearing: the same method nam
 - `row.field_affinity`: Delegates to the source, passing the row's dialect.
 - `row.field_is_desynced`: Per-field desync predicate.
 - `row.fields`: Inflated field map merged from pending over stored.
-- `row.follow`: Resolves the link and returns a handle on the link's *other* table (Role/Row.pm:344), so the receiver's row type does not survive.
+- `row.follow`: Resolves the link and returns a handle on the link's *other* table (Role/Row.pm:344), so the receiver's row type does not survive. The handle comes from the connection and starts synchronous; a caller may refine it afterwards.
 - `row.force_sync`: Clears the desync flag and returns the same row (Row.pm:269-273).
-- `row.handle.copy`: Role/Row.pm:121-124 builds a handle scoped to the row's own source and row, then passes the trailing arguments through Handle::handle. With no source or row argument the result stays on the receiver's own source.
-- `row.handle.rebind`: Role/Row.pm:121-124 builds a handle scoped to the row's own source and row, then passes the trailing arguments through Handle::handle. A source or row argument reaches Handle::handle and replaces that source, so the result can be a handle on another table.
+- `row.handle.copy`: Role/Row.pm:121-124 builds a handle scoped to the row's own source and row, then passes trailing arguments through Handle::handle. With no source or row argument the result stays on the receiver's own source, and starts synchronous.
+- `row.handle.rebind`: Role/Row.pm:121-124 builds a handle scoped to the row's own source and row, then passes trailing arguments through Handle::handle. A source or row argument reaches Handle::handle and replaces that source, so the result can be a handle on another table.
 - `row.has_field`: Delegates to the source; croaks without a field name.
 - `row.has_pending`: State predicate.
 - `row.in_storage`: State predicate.
@@ -348,7 +348,7 @@ Receiver identity and argument cohort are both load-bearing: the same method nam
 - `row.is_invalid`: State predicate.
 - `row.is_stored`: Alias; upstream delegates to in_storage.
 - `row.is_valid`: State predicate.
-- `row.obtain`: follow($link)->one, so it may be undef. Croaks unless the link is unique.
+- `row.obtain`: follow($link)->one, so it may be undef. Croaks unless the link is unique. `follow` builds a fresh handle from the connection, which is synchronous, so this never yields an async placeholder.
 - `row.pending_data`: Reads the PENDING slot directly (Row.pm:117), so it is undef when nothing is pending; `has_pending` guards the absent slot explicitly.
 - `row.pending_field`: Inflated pending value for one field.
 - `row.pending_fields`: Inflated pending field map.
@@ -366,7 +366,7 @@ Receiver identity and argument cohort are both load-bearing: the same method nam
 - `row.row_data`: Active row-data record.
 - `row.row_data_obj`: Row-data object itself.
 - `row.save`: Returns the same row on every path, including the early return when nothing is pending (Role/Row.pm:256-262).
-- `row.siblings`: Returns a handle on the receiver's own source filtered to rows sharing the link's local values; includes the original row.
+- `row.siblings`: Returns a handle on the receiver's own source filtered to rows sharing the link's local values; includes the original row. The handle starts synchronous.
 - `row.source`: Source behind the row. Same spelling as the handle accessor, different receiver and no clone behavior.
 - `row.stored_data`: Reads the STORED slot directly (Row.pm:116), so it is undef when the row has no stored state.
 - `row.stored_field`: Inflated stored value for one field.

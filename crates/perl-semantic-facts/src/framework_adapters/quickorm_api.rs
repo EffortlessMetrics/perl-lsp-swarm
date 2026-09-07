@@ -2576,13 +2576,13 @@ pub const QUICKORM_API_CASES: &[QuickOrmApiCase] = &[
         receiver_constraints: NO_CONSTRAINTS,
         arguments: A::None,
         return_class: C::MutationOrSideEffectResult,
-        multiplicity: N::ZeroOrOne,
+        multiplicity: N::Nothing,
         type_params: T::NotApplicable,
         mode: M::NotApplicable,
         void_context: V::Permitted,
         boundary: B::RuntimeResolved,
         evidence: QuickOrmEvidence { file: ROW, line: 296 },
-        notes: "Delegates to `_stored_handle->delete`; undef on a synchronous handle. A row exposes no mode selector.",
+        notes: "Delegates to `_stored_handle->delete`. That handle comes from `connection->handle($self)` and is synchronous, so Handle::delete always takes its `return undef` branch (Handle.pm:2525-2528) — there is no statement handle to observe.",
     },
     QuickOrmApiCase {
         api_case_id: "row.desynced_data",
@@ -2723,11 +2723,11 @@ pub const QUICKORM_API_CASES: &[QuickOrmApiCase] = &[
         return_class: C::TransformHandleSourceRow,
         multiplicity: N::One,
         type_params: T::DerivedFromArgumentSource,
-        mode: M::SyncAsyncAsideForked,
+        mode: M::NotApplicable,
         void_context: V::Permitted,
         boundary: B::RuntimeResolved,
         evidence: QuickOrmEvidence { file: ROLE_ROW, line: 333 },
-        notes: "Resolves the link and returns a handle on the link's *other* table (Role/Row.pm:344), so the receiver's row type does not survive.",
+        notes: "Resolves the link and returns a handle on the link's *other* table (Role/Row.pm:344), so the receiver's row type does not survive. The handle comes from the connection and starts synchronous; a caller may refine it afterwards.",
     },
     QuickOrmApiCase {
         api_case_id: "row.force_sync",
@@ -2755,11 +2755,11 @@ pub const QUICKORM_API_CASES: &[QuickOrmApiCase] = &[
         return_class: C::TransformHandleSourceRow,
         multiplicity: N::One,
         type_params: T::PreservedFromReceiver,
-        mode: M::SyncAsyncAsideForked,
+        mode: M::NotApplicable,
         void_context: V::Permitted,
         boundary: B::RuntimeResolved,
         evidence: QuickOrmEvidence { file: ROLE_ROW, line: 121 },
-        notes: "Role/Row.pm:121-124 builds a handle scoped to the row's own source and row, then passes the trailing arguments through Handle::handle. With no source or row argument the result stays on the receiver's own source.",
+        notes: "Role/Row.pm:121-124 builds a handle scoped to the row's own source and row, then passes trailing arguments through Handle::handle. With no source or row argument the result stays on the receiver's own source, and starts synchronous.",
     },
     QuickOrmApiCase {
         api_case_id: "row.handle.rebind",
@@ -2771,11 +2771,11 @@ pub const QUICKORM_API_CASES: &[QuickOrmApiCase] = &[
         return_class: C::TransformHandleSourceRow,
         multiplicity: N::One,
         type_params: T::DerivedFromArgumentSource,
-        mode: M::SyncAsyncAsideForked,
+        mode: M::NotApplicable,
         void_context: V::Permitted,
         boundary: B::RuntimeResolved,
         evidence: QuickOrmEvidence { file: ROLE_ROW, line: 121 },
-        notes: "Role/Row.pm:121-124 builds a handle scoped to the row's own source and row, then passes the trailing arguments through Handle::handle. A source or row argument reaches Handle::handle and replaces that source, so the result can be a handle on another table.",
+        notes: "Role/Row.pm:121-124 builds a handle scoped to the row's own source and row, then passes trailing arguments through Handle::handle. A source or row argument reaches Handle::handle and replaces that source, so the result can be a handle on another table.",
     },
     QuickOrmApiCase {
         api_case_id: "row.has_field",
@@ -2947,11 +2947,11 @@ pub const QUICKORM_API_CASES: &[QuickOrmApiCase] = &[
         return_class: C::SingleOptionalRow,
         multiplicity: N::ZeroOrOne,
         type_params: T::DerivedFromArgumentSource,
-        mode: M::SyncWithAsyncRowResult,
+        mode: M::NotApplicable,
         void_context: V::Permitted,
         boundary: B::RuntimeResolved,
         evidence: QuickOrmEvidence { file: ROLE_ROW, line: 348 },
-        notes: "follow($link)->one, so it may be undef. Croaks unless the link is unique.",
+        notes: "follow($link)->one, so it may be undef. Croaks unless the link is unique. `follow` builds a fresh handle from the connection, which is synchronous, so this never yields an async placeholder.",
     },
     QuickOrmApiCase {
         api_case_id: "row.pending_data",
@@ -3235,11 +3235,11 @@ pub const QUICKORM_API_CASES: &[QuickOrmApiCase] = &[
         return_class: C::TransformHandleSourceRow,
         multiplicity: N::One,
         type_params: T::PreservedFromReceiver,
-        mode: M::SyncAsyncAsideForked,
+        mode: M::NotApplicable,
         void_context: V::Permitted,
         boundary: B::RuntimeResolved,
         evidence: QuickOrmEvidence { file: ROLE_ROW, line: 373 },
-        notes: "Returns a handle on the receiver's own source filtered to rows sharing the link's local values; includes the original row.",
+        notes: "Returns a handle on the receiver's own source filtered to rows sharing the link's local values; includes the original row. The handle starts synchronous.",
     },
     QuickOrmApiCase {
         api_case_id: "row.source",
@@ -3878,6 +3878,23 @@ mod tests {
             case_by_id("row.handle.rebind").type_params,
             QuickOrmTypeParamEffect::DerivedFromArgumentSource
         );
+    }
+
+    /// A `Row` never carries a handle execution mode. It builds its own handle
+    /// through the connection, and `Connection::handle` yields a synchronous
+    /// handle — proved by `Connection::async` having to call `->async` on that
+    /// handle explicitly (Connection.pm:992). So no row method can admit an
+    /// async form or return an async placeholder.
+    #[test]
+    fn row_methods_expose_no_execution_mode() {
+        for case in quickorm_api_cases_for_receiver(QuickOrmReceiver::Row) {
+            assert_eq!(
+                case.mode,
+                QuickOrmModeSupport::NotApplicable,
+                "`{}` has a Row receiver, which exposes no mode selector",
+                case.api_case_id
+            );
+        }
     }
 
     #[test]
