@@ -303,7 +303,22 @@ fn scan_stream_safety(doc: &mut Doc) -> Result<(), MetaYmlFinding> {
             ));
         }
         let trimmed = line.text.trim();
-        if indentation(&line.text) == 0 && trimmed == "..." {
+        // Markers start at column zero and end at ASCII separation. An
+        // indented marker belongs to content; a suffix like `...name` is a
+        // plain scalar rather than a document marker (YAML 1.2.2, 9.1.2).
+        let marker_suffix = |marker| {
+            line.text
+                .strip_prefix(marker)
+                .filter(|rest| rest.chars().next().is_none_or(|c| matches!(c, ' ' | '\t')))
+        };
+        if let Some(rest) = marker_suffix("...") {
+            if !rest.trim().is_empty() {
+                return Err(MetaYmlFinding::new(
+                    MetaYmlFindingKind::MalformedSyntax,
+                    Some(line.number),
+                    "document end marker cannot carry inline content",
+                ));
+            }
             seen_document_end = true;
             continue;
         }
@@ -314,7 +329,7 @@ fn scan_stream_safety(doc: &mut Doc) -> Result<(), MetaYmlFinding> {
                 "content appears after the first document's explicit end marker",
             ));
         }
-        if indentation(&line.text) == 0 && (trimmed == "---" || trimmed.starts_with("--- ")) {
+        if let Some(rest) = marker_suffix("---") {
             if !body.is_empty() || seen_first_marker {
                 // A second start marker starts another document even when
                 // no content follows it. Only `...` ends the first document.
@@ -325,11 +340,9 @@ fn scan_stream_safety(doc: &mut Doc) -> Result<(), MetaYmlFinding> {
                 ));
             }
             seen_first_marker = true;
-            if let Some(rest) = trimmed.strip_prefix("--- ") {
-                // `--- name: X` starts the document inline with content.
-                if !rest.trim().is_empty() {
-                    body.push(Line { number: line.number, text: rest.to_string().into() });
-                }
+            // Space and tab separators both admit inline document content.
+            if !rest.trim().is_empty() {
+                body.push(Line { number: line.number, text: rest.trim_start().to_string().into() });
             }
             continue;
         }
@@ -350,7 +363,7 @@ fn scan_stream_safety(doc: &mut Doc) -> Result<(), MetaYmlFinding> {
         // A block-scalar indicator is either the whole line or the value of a
         // `key: |` / `key: >` mapping entry (or a bare `- |` sequence item).
         let scalar_or_map = trimmed.strip_prefix('-').map(str::trim_start).unwrap_or(trimmed);
-        let value_part = split_key(scalar_or_map, line.number)?
+        let value_part = split_key(scalar_or_map, line.number, false)?
             .map(|(_, rest)| rest)
             .unwrap_or_else(|| scalar_or_map.to_string());
         let value_trimmed = value_part.trim_start();
@@ -644,7 +657,7 @@ impl<'a> Parser<'a> {
                 self.charge_nodes(entries.len())?;
                 items.push(Yaml::Map(entries));
             } else {
-                items.push(self.parse_scalar_or_flow(&rest, line.number)?);
+                items.push(self.parse_scalar_or_flow(&rest, line.number, false)?);
             }
         }
         Ok(Yaml::Seq(items))
@@ -678,7 +691,7 @@ impl<'a> Parser<'a> {
             if trimmed.starts_with("- ") || trimmed == "-" {
                 break;
             }
-            let Some((key, rest)) = split_key(&trimmed, line.number)? else {
+            let Some((key, rest)) = split_key(&trimmed, line.number, false)? else {
                 return Err(MetaYmlFinding::new(
                     MetaYmlFindingKind::MalformedSyntax,
                     Some(line.number),
@@ -701,7 +714,7 @@ impl<'a> Parser<'a> {
                     }
                 }
             } else {
-                self.parse_scalar_or_flow(&rest, line.number)?
+                self.parse_scalar_or_flow(&rest, line.number, false)?
             };
             if !seen_keys.insert(key.clone()) {
                 return Err(MetaYmlFinding::new(
@@ -751,7 +764,12 @@ impl<'a> Parser<'a> {
 
     /// Parse an inline scalar or flow-collection value. Scalars and every
     /// flow node charge the budget, so flat documents fail closed.
-    fn parse_scalar_or_flow(&mut self, text: &str, line: usize) -> Result<Yaml, MetaYmlFinding> {
+    fn parse_scalar_or_flow(
+        &mut self,
+        text: &str,
+        line: usize,
+        in_flow: bool,
+    ) -> Result<Yaml, MetaYmlFinding> {
         let trimmed = text.trim();
         if trimmed.starts_with('[') {
             return self.flow_seq(trimmed, line);
@@ -760,7 +778,7 @@ impl<'a> Parser<'a> {
             return self.flow_map(trimmed, line);
         }
         self.charge_node_at(line)?;
-        parse_scalar_value(trimmed, line)
+        parse_scalar_value(trimmed, line, in_flow)
     }
 
     /// Parse a flow sequence `[a, b, [c]]` with the same budgets: the
@@ -796,7 +814,7 @@ impl<'a> Parser<'a> {
                 } else if part.starts_with('{') {
                     items.push(self.flow_map(part, line)?);
                 } else {
-                    items.push(parse_scalar_value(part, line)?);
+                    items.push(parse_scalar_value(part, line, true)?);
                 }
             }
             Ok(Yaml::Seq(items))
@@ -834,7 +852,7 @@ impl<'a> Parser<'a> {
                 if part.is_empty() {
                     continue;
                 }
-                let Some((key, value)) = split_key(part, line)? else {
+                let Some((key, value)) = split_key(part, line, true)? else {
                     return Err(MetaYmlFinding::new(
                         MetaYmlFindingKind::MalformedSyntax,
                         Some(line),
@@ -851,7 +869,7 @@ impl<'a> Parser<'a> {
                         ),
                     ));
                 }
-                entries.push((key, self.parse_scalar_or_flow(&value, line)?));
+                entries.push((key, self.parse_scalar_or_flow(&value, line, true)?));
             }
             Ok(Yaml::Map(entries))
         })();
@@ -864,8 +882,8 @@ impl<'a> Parser<'a> {
         text: &str,
         line: usize,
     ) -> Result<Option<(String, Yaml)>, MetaYmlFinding> {
-        match split_key(text, line)? {
-            Some((key, rest)) => Ok(Some((key, self.parse_scalar_or_flow(&rest, line)?))),
+        match split_key(text, line, false)? {
+            Some((key, rest)) => Ok(Some((key, self.parse_scalar_or_flow(&rest, line, false)?))),
             None => Ok(None),
         }
     }
@@ -898,7 +916,11 @@ fn indentation(text: &str) -> usize {
 }
 
 /// Split `key: value` at the top level of a line (outside quotes/brackets).
-fn split_key(text: &str, line: usize) -> Result<Option<(String, String)>, MetaYmlFinding> {
+fn split_key(
+    text: &str,
+    line: usize,
+    in_flow: bool,
+) -> Result<Option<(String, String)>, MetaYmlFinding> {
     let mut quotes = QuoteState::default();
     let mut depth = 0usize;
     for (i, c) in text.char_indices() {
@@ -912,7 +934,7 @@ fn split_key(text: &str, line: usize) -> Result<Option<(String, String)>, MetaYm
                 let after = &text[i + 1..];
                 if after.is_empty() || after.starts_with(' ') || after.starts_with('\t') {
                     return Ok(Some((
-                        unquote(text[..i].trim(), line)?,
+                        unquote(text[..i].trim(), line, in_flow)?,
                         after.trim_start().to_string(),
                     )));
                 }
@@ -923,7 +945,7 @@ fn split_key(text: &str, line: usize) -> Result<Option<(String, String)>, MetaYm
     Ok(None)
 }
 
-fn unquote(text: &str, line: usize) -> Result<String, MetaYmlFinding> {
+fn unquote(text: &str, line: usize, in_flow: bool) -> Result<String, MetaYmlFinding> {
     let trimmed = text.trim();
     let malformed = || {
         MetaYmlFinding::new(
@@ -962,11 +984,14 @@ fn unquote(text: &str, line: usize) -> Result<String, MetaYmlFinding> {
     let separated_colon = trimmed.char_indices().any(|(index, c)| {
         c == ':' && trimmed[index + 1..].chars().next().is_none_or(|c| matches!(c, ' ' | '\t'))
     });
-    if forbidden_start || separated_colon {
+    // Flow plain scalars exclude collection punctuation anywhere, unlike
+    // block plain scalars. Quoted values returned before this check.
+    let forbidden_flow = in_flow && trimmed.chars().any(|c| "[]{},".contains(c));
+    if forbidden_start || separated_colon || forbidden_flow {
         return Err(MetaYmlFinding::new(
             MetaYmlFindingKind::MalformedSyntax,
             Some(line),
-            "reserved indicator or separated colon in an unquoted scalar",
+            "reserved indicator, separated colon, or flow delimiter in an unquoted scalar",
         ));
     }
     Ok(trimmed.to_string())
@@ -974,12 +999,12 @@ fn unquote(text: &str, line: usize) -> Result<String, MetaYmlFinding> {
 
 /// Resolve null before decoding quotes; quoted null-like text remains a
 /// string. Other scalars retain their spelling rather than numeric coercion.
-fn parse_scalar_value(text: &str, line: usize) -> Result<Yaml, MetaYmlFinding> {
+fn parse_scalar_value(text: &str, line: usize, in_flow: bool) -> Result<Yaml, MetaYmlFinding> {
     let trimmed = text.trim();
     if matches!(trimmed, "" | "~" | "null" | "Null" | "NULL") {
         return Ok(Yaml::Null);
     }
-    Ok(Yaml::Scalar(unquote(trimmed, line)?))
+    Ok(Yaml::Scalar(unquote(trimmed, line, in_flow)?))
 }
 
 fn decode_double_quoted(text: &str, line: usize) -> Result<String, MetaYmlFinding> {
@@ -1201,6 +1226,50 @@ mod tests {
             "{what}: expected a {kind:?} finding, got {:?}",
             outcome.findings
         );
+    }
+
+    #[test]
+    fn flow_plain_scalars_refuse_embedded_delimiters_in_keys_and_values() {
+        for token in ["a[b]", "a{b}"] {
+            for source in [
+                format!("requires: {{ Foo: {token} }}\n"),
+                format!("license: [{token}]\n"),
+                format!("requires: {{ {token}: 1 }}\n"),
+            ] {
+                assert_non_success(
+                    &parse_meta_yml(fid(), &source),
+                    MetaYmlFindingKind::MalformedSyntax,
+                    &source,
+                );
+            }
+            let block = format!("name: {token}\n");
+            assert_eq!(must_some(parse_meta_yml(fid(), &block).facts).name.as_deref(), Some(token));
+            let quoted = format!("requires: {{ '{token}': '{token}' }}\n");
+            let facts = must_some(parse_meta_yml(fid(), &quoted).facts);
+            assert_eq!(facts.prereqs[0].module, token);
+            assert_eq!(facts.prereqs[0].version.as_deref(), Some(token));
+        }
+    }
+
+    #[test]
+    fn document_markers_use_ascii_separation_without_hiding_content() {
+        for separator in [" ", "\t"] {
+            let source = format!("---{separator}name: X\n");
+            assert_eq!(must_some(parse_meta_yml(fid(), &source).facts).name.as_deref(), Some("X"));
+            for source in
+                [format!("...{separator}name: X\n"), format!("name: X\n...{separator}name: Y\n")]
+            {
+                assert_non_success(
+                    &parse_meta_yml(fid(), &source),
+                    MetaYmlFindingKind::MalformedSyntax,
+                    &source,
+                );
+            }
+            let source = format!("---{separator}# start\nname: X\n...{separator}# end\n");
+            assert_eq!(must_some(parse_meta_yml(fid(), &source).facts).name.as_deref(), Some("X"));
+        }
+        let facts = must_some(parse_meta_yml(fid(), "...suffix: X\n---suffix: Y\n").facts);
+        assert!(facts.name.is_none());
     }
 
     #[test]

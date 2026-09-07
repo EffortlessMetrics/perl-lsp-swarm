@@ -662,7 +662,9 @@ mod tests {
 
     #[test]
     fn meta_yml_invalid_plain_or_indented_marker_never_publishes_facts() {
-        for source in ["name: X: Y\n", "name:\n  ...\n"] {
+        for source in
+            ["name: X: Y\n", "name:\n  ...\n", "requires: { Foo: a[b] }\n", "...\tname: X\n"]
+        {
             let model = model_for(
                 "meta-yml-refused-scalar",
                 &[("META.yml", source)],
