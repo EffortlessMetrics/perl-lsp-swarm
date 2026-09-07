@@ -102,6 +102,20 @@ impl WorkspaceFolderState {
     }
 
     /// Refresh metadata-derived facts for this folder's effective workspace config.
+    ///
+    /// # This route reads disk and ignores open buffers
+    ///
+    /// Facts come from the files on disk, so a metadata document the editor
+    /// holds with unsaved changes does *not* speak for itself here. That is
+    /// correct for establishing a folder — nothing is open yet — and it is
+    /// what the configuration-reload paths still use, but it means a
+    /// configuration reload that lands while a metadata buffer is dirty
+    /// replaces staged facts with disk contents until the next event on that
+    /// document restores them (#15088).
+    ///
+    /// Prefer [`Self::refresh_workspace_metadata_from_reads`] anywhere an open
+    /// buffer could be authoritative (#8041). Every route added by #13640 —
+    /// watcher, file operations, and text-document lifecycle — uses that one.
     pub fn refresh_workspace_metadata(&mut self) {
         if let Some(path) = self.path.as_deref() {
             self.effective_workspace_config.refresh_declared_dependencies(path);
