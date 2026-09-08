@@ -2,30 +2,10 @@
 
 const fs = require('fs');
 const path = require('path');
-const { spawnSync } = require('child_process');
+const { vsixName } = require('./package-vsix');
 
 const EXTENSION_ROOT = path.resolve(__dirname, '..');
 const BASELINE_PATH = path.join(__dirname, 'vsix-inventory-baseline.json');
-const VSCE_ENTRY = path.join(EXTENSION_ROOT, 'node_modules', '@vscode', 'vsce', 'vsce');
-
-function collectPackagedFiles() {
-  const result = spawnSync(process.execPath, [VSCE_ENTRY, 'ls'], {
-    cwd: EXTENSION_ROOT,
-    encoding: 'utf8',
-    windowsHide: true,
-  });
-  if (result.error) {
-    throw result.error;
-  }
-  if (result.status !== 0) {
-    throw new Error(`vsce ls failed: ${(result.stderr || result.stdout || '').trim()}`);
-  }
-  return result.stdout
-    .split(/\r?\n/)
-    .map((line) => line.trim().replaceAll('\\', '/'))
-    .filter((file) => file.length > 0)
-    .map((file) => ({ file, bytes: fs.statSync(path.join(EXTENSION_ROOT, file)).size }));
-}
 
 function summarizeInventory(entries) {
   const files = Object.fromEntries(entries.map(({ file, bytes }) => [file, bytes]));
@@ -139,28 +119,45 @@ function currentSourceBundleFile(platform = process.platform, arch = process.arc
   return `bin/${platform}-${arch}/${binaryName}`;
 }
 
-function exactVsixPath(argv) {
-  const index = argv.indexOf('--vsix');
-  if (index === -1) {
-    return null;
+function parseArgs(argv) {
+  let updateBaseline = false;
+  /** @type {string | null} */
+  let vsixPath = null;
+  for (let index = 0; index < argv.length; index += 1) {
+    const argument = argv[index];
+    if (argument === '--update-baseline') {
+      if (updateBaseline) {
+        throw new Error('duplicate --update-baseline option');
+      }
+      updateBaseline = true;
+      continue;
+    }
+    if (argument === '--vsix') {
+      if (vsixPath !== null) {
+        throw new Error('duplicate --vsix option');
+      }
+      const value = argv[++index];
+      if (!value || value.startsWith('--')) {
+        throw new Error('--vsix requires a value');
+      }
+      vsixPath = path.resolve(EXTENSION_ROOT, value);
+      continue;
+    }
+    throw new Error(`Unknown argument: ${argument}`);
   }
-  const value = argv[index + 1];
-  if (!value) {
-    throw new Error('--vsix requires a value');
-  }
-  return path.resolve(EXTENSION_ROOT, value);
+  return { updateBaseline, vsixPath };
 }
 
 function main() {
-  const updateBaseline = process.argv.includes('--update-baseline');
+  const { updateBaseline, vsixPath: requestedVsixPath } = parseArgs(process.argv.slice(2));
   const baseline =
     updateBaseline && !fs.existsSync(BASELINE_PATH)
       ? null
       : JSON.parse(fs.readFileSync(BASELINE_PATH, 'utf8'));
-  const vsixPath = exactVsixPath(process.argv.slice(2));
-  const actual = vsixPath
-    ? require('./check-vsix-inventory-transition').collectArchiveInventory(vsixPath).inventory
-    : summarizeInventory(collectPackagedFiles());
+  const vsixPath = requestedVsixPath || path.join(EXTENSION_ROOT, vsixName);
+  const actual = require('./check-vsix-inventory-transition').collectArchiveInventory(
+    vsixPath,
+  ).inventory;
   if (updateBaseline) {
     fs.writeFileSync(BASELINE_PATH, `${JSON.stringify(actual, null, 2)}\n`);
     process.stdout.write(`Updated ${BASELINE_PATH}\n`);
@@ -198,6 +195,7 @@ module.exports = {
   currentSourceBundleFile,
   bundleTargetForPackagedFile,
   platformForPackagedFile,
+  parseArgs,
   summarizeInventory,
 };
 

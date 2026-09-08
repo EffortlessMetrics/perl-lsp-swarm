@@ -397,6 +397,28 @@ void test('an archive with no extension payload cannot authorize a transition', 
   }
 });
 
+void test('rejects a payload corrupted without damaging the central directory', () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-vsix-archive-'));
+  try {
+    const entryName = 'extension/package.json';
+    const archive = storedZip([
+      [entryName, '{"name":"perl-lsp-rs"}'],
+      ['[Content_Types].xml', '<Types/>'],
+    ]);
+    const payloadOffset = 30 + Buffer.byteLength(entryName);
+    archive[payloadOffset] = (archive[payloadOffset] ?? 0) ^ 0xff;
+    const vsixPath = path.join(directory, 'payload-corrupt.vsix');
+    fs.writeFileSync(vsixPath, archive);
+
+    assert.throws(
+      () => collectArchiveInventory(vsixPath),
+      /CRC mismatch|unable to read VSIX archive entry/,
+    );
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 // adm-zip normalizes traversal names when it writes, so a hostile archive has
 // to be assembled byte-wise to reach the canonical-path guard at all.
 function storedZip(entries) {

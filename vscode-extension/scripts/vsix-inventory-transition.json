@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
   "owner_issue": 15121,
-  "reason": "The ordinary package command now measures the exact VSIX archive. Fresh Windows packaging preserved the archive file set and names while package.json grew from 59535 to 59552 bytes because the deterministic archive wrapper and standalone archive check are now included. This declaration records the measured candidate inventory without changing the validator or baseline file names; installed behavior remains an independent stage.",
+  "reason": "The ordinary package command now measures the exact versioned VSIX archive and validates every payload. Fresh Windows packaging preserved the archive file set and names; package.json is 59528 bytes after binding the standalone check to the metadata-derived artifact name and exact release workflow path. This declaration records the measured candidate inventory; installed behavior remains an independent stage.",
   "base_baseline_file_sha256": "5c73582a6a7ae22a9f648492731ef3315336bfb17553aee22bfb48c332f89411",
-  "candidate_baseline_file_sha256": "a26281d04c17001ec1c17d39efc45350f9643d15d82e5f6668c231131d21e0f0",
+  "candidate_baseline_file_sha256": "4edd01ebb5a7ca17295226af8c866a172d1d424c9aa7cd342c7dd9e15d799db8",
   "base_inventory_sha256": "7780c5f86aebdd24b900a76bf412fcc05ad1c1acfd0b16717be6444bd884bcbb",
-  "candidate_inventory_sha256": "6473b57fc2922125474fd772045b248a8dd428aff1ae90629d7c16016156fc62"
+  "candidate_inventory_sha256": "5f414273d8913857ebb2aef8a14fbf4c1613fb0ce71a95a94a82b846349ad4ff"
 }

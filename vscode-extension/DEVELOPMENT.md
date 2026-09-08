@@ -143,8 +143,8 @@ The `.vsix` file can be installed directly in VS Code via **Extensions → Insta
 ## Common tasks
 
 Run `npm run package` before `npm run check:package-inventory`; packaging creates the
-deterministic `perl-lsp-rs.vsix`, and the standalone check revalidates that existing
-archive.
+deterministic versioned `perl-lsp-rs-<version>.vsix`, and the standalone check
+revalidates that existing archive.
 
 | Task                           | Command                           |
 | ------------------------------ | --------------------------------- |

@@ -9,6 +9,7 @@ const packageJson = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'packa
 void test('ordinary packaging checks the exact VSIX it just produced', () => {
   const command = packageJson.scripts.package;
   assert.equal(command, 'node scripts/package-vsix.js');
+  assert.equal(vsixName, `perl-lsp-rs-${packageJson.version}.vsix`);
   const calls = [];
   /** @type {any} */
   const fileSystem = {
@@ -66,7 +67,10 @@ void test('a successful packager without a fresh archive cannot validate a stale
     },
   };
 
-  assert.throws(() => packageVsix(() => true, fileSystem), /without producing perl-lsp-rs\.vsix/);
+  assert.throws(
+    () => packageVsix(() => true, fileSystem),
+    new RegExp(`without producing ${vsixName.replace('.', '\\.')}`),
+  );
   assert.equal(calls.length, 1);
 });
 

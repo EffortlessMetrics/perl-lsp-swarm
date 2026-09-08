@@ -5,7 +5,10 @@ const fs = require('node:fs');
 const { spawnSync } = require('node:child_process');
 
 const extensionRoot = path.resolve(__dirname, '..');
-const vsixName = 'perl-lsp-rs.vsix';
+const packageManifest = JSON.parse(
+  fs.readFileSync(path.join(extensionRoot, 'package.json'), 'utf8'),
+);
+const vsixName = `perl-lsp-rs-${packageManifest.version}.vsix`;
 const vsixPath = path.join(extensionRoot, vsixName);
 const vsceEntry = path.join(extensionRoot, 'node_modules', '@vscode', 'vsce', 'vsce');
 
