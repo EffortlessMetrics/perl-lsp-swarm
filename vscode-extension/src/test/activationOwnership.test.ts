@@ -45,6 +45,7 @@ interface TrackedDisposable {
 
 const tracked: TrackedDisposable[] = [];
 const disposedOrder: string[] = [];
+const disposedEntries: TrackedDisposable[] = [];
 
 function creationOrder(): string[] {
   return tracked.map((entry) => entry.label);
@@ -56,6 +57,7 @@ function disposedLabels(): string[] {
 
 function resetDisposalTracking(): void {
   disposedOrder.length = 0;
+  disposedEntries.length = 0;
 }
 
 /** Support surfaces intentionally retained after a failed activation (#7854). */
@@ -75,9 +77,11 @@ function wrapDisposableFactory<T extends { dispose: jest.Mock }>(
   return (...args: unknown[]) => {
     const disposable = original(...args);
     const label = labelFor(...args);
-    tracked.push({ label, disposable });
+    const entry = { label, disposable };
+    tracked.push(entry);
     disposable.dispose.mockImplementation(() => {
       disposedOrder.push(label);
+      disposedEntries.push(entry);
     });
     return disposable;
   };
@@ -333,20 +337,19 @@ describe('transactional production activation (#7854)', () => {
     // cleanups.
     expect(disposedLabels()).toEqual([]);
 
-    // Every activation-created disposable reached the host net at commit —
+    // Every directly created activation disposable reached the host net at commit —
     // the same array content the pre-transaction code produced by pushing at
-    // creation time. Three owned resources are not in `tracked`: the health widget data
-    // source and the server-demand dispose wrapper are created internally rather than by
-    // a host factory, and the legacy-migration folder watcher (#14966) comes from
-    // `onDidChangeWorkspaceFolders`, which this harness deliberately does not instrument
-    // — the health widget registers that same event into its own disposables, which never
-    // reach the host net, so tracking the factory would break the containment check
-    // above. So the host net carries every tracked disposable plus those three.
+    // creation time. HealthWidgetDataSource is an intentional aggregate owner:
+    // its child listeners stay out of the host net and are released by its own
+    // dispose() path instead.
     const hostArray = context.subscriptions as unknown as { dispose: jest.Mock }[];
-    for (const entry of tracked) {
+    const hostOwned = tracked.filter((entry) => hostArray.includes(entry.disposable));
+    const componentOwned = tracked.filter((entry) => !hostArray.includes(entry.disposable));
+    for (const entry of hostOwned) {
       expect(hostArray).toContain(entry.disposable);
     }
-    expect(hostArray).toHaveLength(tracked.length + 3);
+    expect(hostArray).toHaveLength(hostOwned.length + 3);
+    expect(componentOwned.map((entry) => entry.label)).toContain('watcher:file-creation');
 
     expect(vscode.commands.executeCommand).toHaveBeenCalledWith(
       'setContext',
@@ -362,7 +365,10 @@ describe('transactional production activation (#7854)', () => {
     // Deactivate releases everything the committed attempt owns, in reverse
     // creation order, through the same cleanup primitives as rollback.
     await deactivate();
-    expect(disposedLabels()).toEqual([...creationOrder()].reverse());
+    expect(disposedEntries.filter((entry) => hostOwned.includes(entry))).toEqual(
+      [...hostOwned].reverse(),
+    );
+    expect(disposedEntries).toHaveLength(tracked.length);
     for (const entry of tracked) {
       expect(entry.disposable.dispose).toHaveBeenCalledTimes(1);
     }
@@ -393,15 +399,20 @@ describe('transactional production activation (#7854)', () => {
 
     await activate(makeContext(extensionRoot));
 
-    const registration = (vscode.workspace.onDidCreateFiles as jest.Mock).mock.calls[0];
-    expect(registration).toBeDefined();
-    const onDidCreateFiles = registration?.[0] as (event: {
-      files: readonly { fsPath: string }[];
-    }) => Promise<void>;
-
-    await onDidCreateFiles({ files: [vscode.Uri.file('/ws/lib/Wired.pm')] });
+    const registrations = (vscode.workspace.onDidCreateFiles as jest.Mock).mock.calls;
+    expect(registrations.length).toBeGreaterThan(1);
+    const createdFileEvent = { files: [vscode.Uri.file('/ws/lib/Wired.pm')] };
+    for (const registration of registrations) {
+      const onDidCreateFiles = registration[0] as (
+        event: typeof createdFileEvent,
+      ) => void | Promise<void>;
+      await onDidCreateFiles(createdFileEvent);
+    }
 
     const applyEdit = vscode.workspace.applyEdit as jest.Mock;
+    // The exact edit assertion below is also a negative control for replacing
+    // the boilerplate handler with a no-op: dispatching every listener must
+    // still produce exactly one boilerplate edit.
     expect(applyEdit).toHaveBeenCalledTimes(1);
     const edit = applyEdit.mock.calls[0]?.[0] as {
       inserts: Array<{ uri: { fsPath: string }; newText: string }>;

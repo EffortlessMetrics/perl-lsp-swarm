@@ -174,8 +174,12 @@ export class HealthWidgetDataSource {
       this.disposables.push(deleteListener);
     }
     const renameListener = this.workspace.onDidRenameFiles?.((event) => {
-      if (event.files.some(({ oldUri, newUri }) =>
-        isRelevantWorkspaceFile(oldUri) || isRelevantWorkspaceFile(newUri))) {
+      if (
+        event.files.some(
+          ({ oldUri, newUri }) =>
+            isRelevantWorkspaceFile(oldUri) || isRelevantWorkspaceFile(newUri),
+        )
+      ) {
         invalidate();
       }
     });
@@ -272,11 +276,7 @@ export class HealthWidgetDataSource {
         if (generation !== this.fileCountGeneration) {
           return;
         }
-        const uris = await this.workspace.findFiles(
-          glob,
-          FILE_SCAN_EXCLUDE,
-          this.fileScanCap + 1,
-        );
+        const uris = await this.workspace.findFiles(glob, FILE_SCAN_EXCLUDE, this.fileScanCap + 1);
         if (uris.length > this.fileScanCap) {
           lowerBound = true;
         }
