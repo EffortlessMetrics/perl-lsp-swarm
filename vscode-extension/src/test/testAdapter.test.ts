@@ -286,6 +286,22 @@ describe('bounded prove process execution', () => {
     expect(result.diagnostic).toContain('process input');
   }, 30_000);
 
+  test('keeps caller cancellation when stdin closes during termination', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const result = await runBoundedProcess(process.execPath, ['-e', 'setTimeout(() => {}, 5000)'], {
+      shell: false,
+      signal: controller.signal,
+      stdin: 'x'.repeat(16 * 1024 * 1024),
+      timeoutMs: 5_000,
+      maxOutputBytes: 32,
+      terminationGraceMs: 25,
+    });
+
+    expect(result.outcome).toBe('cancelled');
+    expect(result.diagnostic).toContain('cancelled');
+  }, 30_000);
+
   test('terminates a process that exceeds the wall-clock deadline', async () => {
     const result = await runBoundedProcess(process.execPath, ['-e', 'setTimeout(() => {}, 5000)'], {
       shell: false,
@@ -556,7 +572,7 @@ describe('bounded prove process execution', () => {
       `require('fs').writeFileSync(${JSON.stringify(parentMarker)}, 'started');\n` +
         `require('child_process').spawn(process.execPath, ['-e', ${JSON.stringify(
           `require('fs').writeFileSync(${JSON.stringify(childMarker)}, 'started'); setTimeout(() => require('fs').writeFileSync(${JSON.stringify(childMarker)}, 'survived'), 3000); setTimeout(() => {}, 5000);`,
-        )}], { windowsHide: true, stdio: 'ignore' });\n` +
+        )}], { detached: true, windowsHide: true, stdio: 'ignore' });\n` +
         'setTimeout(() => {}, 5000);\n',
       'utf8',
     );
