@@ -1011,6 +1011,32 @@ fn check_scenarios(
 
 const SELF_CORRECTION_MARKER: &str = "Self-authored correction and disclosure";
 const SELF_CORRECTION_REFERENCE: &str = "correction and disclosure contract";
+const CANONICAL_SELF_CORRECTION_CLAUSES: &[(&str, &str)] = &[
+    ("correction", "correct it immediately"),
+    ("proof", "rerun the affected proof"),
+    ("disclosure", "disclose the defect, correction, result, and remaining uncertainty"),
+    ("scope/writer", "covered by the accepted claim and current writer envelope"),
+    (
+        "approval boundary",
+        "ask for a decision only when the correction requires a non-derivable product or policy choice, a separately protected external action, or material scope, cost, privacy, security, or exposure change",
+    ),
+    (
+        "candidate-local continuation",
+        "pending candidate work remains a candidate-local wait with one exact wake event",
+    ),
+    (
+        "higher precedence",
+        "repository guidance cannot override a higher-precedence runtime instruction; that provenance remains an explicit uncertainty boundary",
+    ),
+    (
+        "approval transaction",
+        "the fact that the agent introduced the defect does not create a new approval transaction",
+    ),
+    (
+        "disjoint continuation",
+        "do not turn unchanged polling into progress or an umbrella blocker; advance another disjoint claim when its authority permits",
+    ),
+];
 const KNOWN_BAD_SELF_CORRECTION_WORDING: &[&str] = &[
     "tell the user rather than going back and correcting your bug",
     "tell the user rather than correct the bug and let them decide",
@@ -1053,16 +1079,117 @@ fn check_self_correction_guidance(root: &Path) -> Vec<String> {
         if !text.contains(required) {
             errors.push(format!("{label}: missing self-correction guidance marker '{required}'"));
         }
-        if contains_known_bad_self_correction_wording(&text) {
-            errors.push(format!("{label}: contains known-bad self-correction wording"));
+        if label == "docs/agents/DEVELOPMENT_METHOD.md" {
+            errors.extend(
+                canonical_self_correction_errors(&text)
+                    .into_iter()
+                    .map(|error| format!("{label}: {error}")),
+            );
+        }
+        match contains_known_bad_self_correction_wording(&text) {
+            Ok(true) => errors.push(format!("{label}: contains known-bad self-correction wording")),
+            Ok(false) => {}
+            Err(error) => {
+                errors.push(format!("{label}: cannot check self-correction wording: {error}"))
+            }
         }
     }
     errors
 }
 
-fn contains_known_bad_self_correction_wording(text: &str) -> bool {
-    let lowered = text.split_whitespace().collect::<Vec<_>>().join(" ").to_ascii_lowercase();
-    KNOWN_BAD_SELF_CORRECTION_WORDING.iter().any(|phrase| lowered.contains(phrase))
+fn canonical_self_correction_errors(text: &str) -> Vec<String> {
+    let section = match canonical_self_correction_section(text) {
+        Ok(section) => section,
+        Err(reason) => return vec![reason.to_owned()],
+    };
+    let normalized = normalize_guidance_text(&section);
+    CANONICAL_SELF_CORRECTION_CLAUSES
+        .iter()
+        .filter(|(_, clause)| !normalized.contains(&normalize_guidance_text(clause)))
+        .map(|(name, _)| format!("canonical self-correction section missing {name} clause"))
+        .collect()
+}
+
+/// Extract the finite, named canonical section used by the guidance checker.
+/// This intentionally handles only the repository's `##` Markdown heading
+/// shape; it is a structural presence check, not a general Markdown parser.
+fn canonical_self_correction_section(text: &str) -> Result<String, &'static str> {
+    let heading = format!("## {SELF_CORRECTION_MARKER}");
+    let heading_count = text.lines().filter(|line| line.trim() == heading).count();
+    if heading_count == 0 {
+        return Err("missing canonical self-correction section body");
+    }
+    if heading_count > 1 {
+        return Err("canonical self-correction section appears more than once");
+    }
+    let mut in_section = false;
+    let mut body = String::new();
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if !in_section {
+            if trimmed == heading {
+                in_section = true;
+            }
+            continue;
+        }
+        if trimmed.starts_with("# ") || trimmed.starts_with("## ") {
+            break;
+        }
+        body.push_str(line);
+        body.push('\n');
+    }
+    if body.trim().is_empty() {
+        return Err("canonical self-correction section body is empty");
+    }
+    Ok(body)
+}
+
+fn normalize_guidance_text(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ").to_ascii_lowercase()
+}
+
+fn contains_known_bad_self_correction_wording(
+    text: &str,
+) -> std::result::Result<bool, regex::Error> {
+    // Finite formatting forms, not a Markdown parser: simple inline links,
+    // non-nested emphasis and single-backtick code. Preserve other punctuation.
+    let links = regex::Regex::new(r"\[([^\[\]\n]+)\]\([^()\n]*\)")?;
+    let formatting =
+        regex::Regex::new(r"\*\*([^*]+)\*\*|__([^_]+)__|\*([^*]+)\*|_([^_]+)_|`([^`]+)`")?;
+    let mut paragraph = String::new();
+    for line in text.lines().chain(std::iter::once("")) {
+        if !line.trim().is_empty() {
+            paragraph.push(' ');
+            paragraph.push_str(line);
+            continue;
+        }
+        let visible = links.replace_all(&paragraph, "$1");
+        let visible = formatting.replace_all(&visible, |captures: &regex::Captures<'_>| {
+            let Some(whole) = captures.get(0) else { return String::new() };
+            let before = visible.get(..whole.start()).and_then(|s| s.chars().next_back());
+            let after = visible.get(whole.end()..).and_then(|s| s.chars().next());
+            // Unmatched adjacent delimiters, escapes and intraword punctuation
+            // must not be converted into spaces that manufacture a phrase.
+            let boundary =
+                |c: char| c.is_alphanumeric() || matches!(c, '*' | '_' | '`' | '~' | '\\');
+            if before.is_some_and(boundary) || after.is_some_and(boundary) {
+                return whole.as_str().to_owned();
+            }
+            captures
+                .iter()
+                .skip(1)
+                .flatten()
+                .next()
+                .map_or_else(|| whole.as_str().to_owned(), |label| label.as_str().to_owned())
+        });
+        let normalized =
+            visible.split_whitespace().collect::<Vec<_>>().join(" ").to_ascii_lowercase();
+        if KNOWN_BAD_SELF_CORRECTION_WORDING.iter().any(|phrase| normalized.contains(phrase)) {
+            return Ok(true);
+        }
+        paragraph.clear();
+    }
+    Ok(false)
 }
 
 fn collect_skills(skill_root: &Path, errors: &mut Vec<String>) -> Result<Vec<Skill>> {
@@ -2344,18 +2471,97 @@ mod tests {
             "Tell the user rather than going back and correcting your bug.",
             "tell the user rather than correct the bug and let them decide",
             "Tell the user rather than going\nback and correcting your bug.",
+            "tell the **user** rather than going back and correcting your bug",
+            "tell the *user* rather than going back and correcting your bug",
+            "tell the __user__ rather than going back and correcting your bug",
+            "tell the _user_ rather than going back and correcting your bug",
+            "tell the [user](https://example.invalid) rather than going back and correcting your bug",
+            "tell the [**user**](https://example.invalid) rather than going back and correcting your bug",
+            "tell the `user` rather than going back and correcting your bug",
+            "tell the **user** rather than going\r\nback and correcting your bug",
         ] {
             anyhow::ensure!(
-                super::contains_known_bad_self_correction_wording(text),
-                "known regression was missed"
+                super::contains_known_bad_self_correction_wording(text)?,
+                "known regression was missed: {text:?}"
             );
         }
         anyhow::ensure!(
             !super::contains_known_bad_self_correction_wording(
                 "Correct the reversible defect, rerun proof, and disclose the correction."
-            ),
+            )?,
             "canonical guidance rejected"
         );
+        anyhow::ensure!(
+            !super::contains_known_bad_self_correction_wording(
+                "tell the\n\nuser rather than going back and correcting your bug"
+            )?,
+            "separate paragraphs were incorrectly joined"
+        );
+        for text in [
+            "tell the *user rather than going back and correcting your bug",
+            "tell the u_ser rather than going back and correcting your bug",
+            "tell the ~~user~~ rather than going back and correcting your bug",
+            "tell the **user* rather than going back and correcting your bug * elsewhere",
+            "tell the\r\n\r\nuser rather than going back and correcting your bug",
+            "tell the\n  \nuser rather than going back and correcting your bug",
+        ] {
+            anyhow::ensure!(
+                !super::contains_known_bad_self_correction_wording(text)?,
+                "unsupported Markdown manufactured a known-bad match: {text:?}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn canonical_self_correction_clauses_are_scoped_to_named_section() -> anyhow::Result<()> {
+        let source = include_str!("../../../docs/agents/DEVELOPMENT_METHOD.md");
+        anyhow::ensure!(
+            super::canonical_self_correction_errors(source).is_empty(),
+            "actual canonical guidance rejected"
+        );
+
+        let heading = "## Self-authored correction and disclosure\n";
+        let body = super::CANONICAL_SELF_CORRECTION_CLAUSES
+            .iter()
+            .map(|(_, clause)| *clause)
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        for (clause_name, clause) in super::CANONICAL_SELF_CORRECTION_CLAUSES {
+            let replacement = format!("{heading}{body}");
+            let removed = replacement.replacen(clause, "", 1);
+            let errors = super::canonical_self_correction_errors(&removed);
+            anyhow::ensure!(
+                errors.iter().any(|error| error
+                    == &format!("canonical self-correction section missing {clause_name} clause")),
+                "deleted {clause_name} clause did not trigger its production finding"
+            );
+        }
+
+        let masked = format!(
+            "{heading}Approval must always be requested before correcting an agent-authored defect.\n\n## Elsewhere\n{body}"
+        );
+        anyhow::ensure!(
+            super::canonical_self_correction_errors(&masked).iter().any(|error|
+                error == "canonical self-correction section missing correction clause"
+            ),
+            "body from another section masked missing canonical correction clause"
+        );
+        for (invalid, expected) in [
+            (body.clone(), "missing canonical self-correction section body"),
+            (format!("{heading}\n## Next"), "canonical self-correction section body is empty"),
+            (
+                format!("{heading}{body}\n\n{heading}{body}"),
+                "canonical self-correction section appears more than once",
+            ),
+        ] {
+            anyhow::ensure!(
+                super::canonical_self_correction_errors(&invalid)
+                    .iter()
+                    .any(|error| error == expected),
+                "malformed canonical section did not trigger {expected}"
+            );
+        }
         Ok(())
     }
 }
