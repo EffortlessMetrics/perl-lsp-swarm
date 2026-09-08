@@ -1184,11 +1184,14 @@ void test('POSIX group inspection rejects a reused PID with a changed starttime'
   assert.equal(inspectPosixProcessGroup(100, '/mock', procFs), null);
 });
 
-void test('POSIX group inspection uses the latest stable member state', () => {
+void test('POSIX group inspection retains live evidence across a second-read exit', () => {
   let statRead = 0;
   const procFs = {
     readdirSync: () => ['100'],
-    readFileSync: () => procStat('100', statRead++ === 0 ? 'Z' : 'S'),
+    // Simulate the leader becoming a zombie while a same-group child forks
+    // during the second observation; the first live state still blocks
+    // terminal absence from being claimed.
+    readFileSync: () => procStat('100', statRead++ === 0 ? 'R' : 'Z'),
   };
   assert.equal(inspectPosixProcessGroup(100, '/mock', procFs), true);
 });

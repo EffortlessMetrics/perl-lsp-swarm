@@ -373,9 +373,12 @@ function inspectPosixProcessGroup(pid, procRoot = '/proc', procFs = fs) {
       return null;
     }
   }
-  for (const member of second.values()) {
-    if (member.state !== 'Z') {
-      return true;
+  for (const snapshot of [first, second]) {
+    for (const member of snapshot.values()) {
+      // A member that was live at either observation may have become a
+      // zombie during the read; that transition does not prove the group was
+      // already terminal when the first snapshot was taken.
+      if (member.state !== 'Z') return true;
     }
   }
   return false;
