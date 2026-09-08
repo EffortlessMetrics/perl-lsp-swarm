@@ -184,7 +184,7 @@ async function releaseClient(
   try {
     fs.writeFileSync(`${control}.exit`, 'exit', 'utf8');
   } catch (error: unknown) {
-    await forceKill(witness, exit, error);
+    await forceKill(witness, error);
     return;
   }
   const settled = await Promise.race([
@@ -193,41 +193,35 @@ async function releaseClient(
   ]);
   if (settled || witness.exitCode !== null || witness.signalCode !== null) return;
 
-  await forceKill(witness, exit);
+  await forceKill(witness);
 }
 
-async function forceKill(
-  witness: ServerProcessLike,
-  observedExit: Promise<void>,
-  cause?: unknown,
-): Promise<void> {
+async function forceKill(witness: ServerProcessLike, cause?: unknown): Promise<void> {
   const kill = (witness as ServerProcessLike & { kill?: () => boolean }).kill;
   if (typeof kill !== 'function') {
     throw new Error('owned child must expose an exact-handle kill fallback', { cause });
   }
-  const forcedExit = new Promise<void>((resolve, reject) => {
-    const timer = setTimeout(() => {
-      witness.removeListener('exit', onExit);
-      reject(new Error(`owned child ${String(witness.pid)} did not exit after kill`));
-    }, 5_000);
-    const onExit = (): void => {
+  await new Promise<void>((resolve, reject) => {
+    const finish = (error?: Error): void => {
       clearTimeout(timer);
-      resolve();
+      witness.removeListener('exit', onExit);
+      if (error) reject(error);
+      else resolve();
     };
+    const timer = setTimeout(
+      () => finish(new Error(`owned child ${String(witness.pid)} did not exit after kill`)),
+      5_000,
+    );
+    const onExit = (): void => finish();
     witness.once('exit', onExit);
+    try {
+      if (!kill.call(witness)) {
+        finish(new Error('exact-handle child termination request failed', { cause }));
+      }
+    } catch (error: unknown) {
+      finish(new Error('exact-handle child termination request threw', { cause: error }));
+    }
   });
-  let requested: boolean;
-  try {
-    requested = kill.call(witness);
-  } catch (error: unknown) {
-    await Promise.race([observedExit, new Promise<void>((resolve) => setTimeout(resolve, 100))]);
-    throw new Error('exact-handle child termination request threw', { cause: error });
-  }
-  if (!requested) {
-    await Promise.race([observedExit, new Promise<void>((resolve) => setTimeout(resolve, 100))]);
-    throw new Error('exact-handle child termination request failed', { cause });
-  }
-  await forcedExit;
 }
 
 async function cleanupClients(
