@@ -341,7 +341,7 @@ fn collect_namespace_shadows(items: &[&Item], shadows: &mut PreludeShadow) {
             Item::Mod(item_mod) => untrust_namespace_ident(&item_mod.ident, shadows),
             Item::ExternCrate(ext) => {
                 if let Some((_, rename)) = &ext.rename {
-                    untrust_namespace_rename(&ext.ident, rename, shadows);
+                    untrust_namespace_alias(&[], &ext.ident, rename, shadows);
                 }
             }
             Item::Use(item_use) => collect_use_namespace_aliases(&item_use.tree, &[], shadows),
@@ -352,7 +352,9 @@ fn collect_namespace_shadows(items: &[&Item], shadows: &mut PreludeShadow) {
 
 fn collect_use_namespace_aliases(tree: &UseTree, prefix: &[String], shadows: &mut PreludeShadow) {
     match tree {
-        UseTree::Rename(rename) => untrust_namespace_rename(&rename.ident, &rename.rename, shadows),
+        UseTree::Rename(rename) => {
+            untrust_namespace_alias(prefix, &rename.ident, &rename.rename, shadows);
+        }
         UseTree::Path(path) => {
             let mut next = prefix.to_vec();
             next.push(ident_unraw(&path.ident));
@@ -386,10 +388,30 @@ fn untrust_namespace_ident(ident: &Ident, shadows: &mut PreludeShadow) {
     }
 }
 
-fn untrust_namespace_rename(ident: &Ident, rename: &Ident, shadows: &mut PreludeShadow) {
+/// `use std as std` / `use core as core` stay trusted. `use custom::std as std`
+/// and `use foo as std` untrust the bound namespace.
+fn untrust_namespace_alias(
+    prefix: &[String],
+    ident: &Ident,
+    rename: &Ident,
+    shadows: &mut PreludeShadow,
+) {
     let bound = ident_unraw(rename);
-    if matches!(bound.as_str(), "std" | "core") && ident_unraw(ident) != bound {
-        shadows.untrust_namespace(&bound);
+    if !matches!(bound.as_str(), "std" | "core") {
+        return;
+    }
+    let source = ident_unraw(ident);
+    if imported_path_is_real_std_or_core_crate(prefix, &source) {
+        return;
+    }
+    shadows.untrust_namespace(&bound);
+}
+
+fn imported_path_is_real_std_or_core_crate(prefix: &[String], ident: &str) -> bool {
+    match prefix {
+        [] => matches!(ident, "std" | "core"),
+        [ns] if ident == "self" => matches!(ns.as_str(), "std" | "core"),
+        _ => false,
     }
 }
 
@@ -1025,6 +1047,82 @@ mod tests {
             vec![RuleId::OptionSomeOrNone],
             "{:?}",
             rules(grouped_self)
+        );
+
+        let same_name = r#"
+            mod custom {
+                pub mod std {
+                    pub mod option {
+                        pub struct Option;
+                        impl Option {
+                            pub fn is_some(&self) -> bool { false }
+                            pub fn is_none(&self) -> bool { false }
+                        }
+                    }
+                }
+            }
+            use custom::std as std;
+            fn skip_same_name(x: std::option::Option) {
+                assert!(x.is_some() || x.is_none());
+            }
+            fn retain_prelude(x: Option<u8>) {
+                assert!(x.is_some() || x.is_none());
+            }
+        "#;
+        assert_eq!(rules(same_name), vec![RuleId::OptionSomeOrNone], "{:?}", rules(same_name));
+
+        let grouped_same_name = r#"
+            mod custom {
+                pub mod std {
+                    pub mod option {
+                        pub struct Option;
+                        impl Option {
+                            pub fn is_some(&self) -> bool { false }
+                            pub fn is_none(&self) -> bool { false }
+                        }
+                    }
+                }
+            }
+            use custom::{std as std};
+            fn skip_grouped_same_name(x: std::option::Option) {
+                assert!(x.is_some() || x.is_none());
+            }
+            fn retain_prelude(x: Option<u8>) {
+                assert!(x.is_some() || x.is_none());
+            }
+        "#;
+        assert_eq!(
+            rules(grouped_same_name),
+            vec![RuleId::OptionSomeOrNone],
+            "{:?}",
+            rules(grouped_same_name)
+        );
+
+        let same_name_core = r#"
+            mod custom {
+                pub mod core {
+                    pub mod option {
+                        pub struct Option;
+                        impl Option {
+                            pub fn is_some(&self) -> bool { false }
+                            pub fn is_none(&self) -> bool { false }
+                        }
+                    }
+                }
+            }
+            use custom::core as core;
+            fn skip_same_name_core(x: core::option::Option) {
+                assert!(x.is_some() || x.is_none());
+            }
+            fn retain_prelude(x: Option<u8>) {
+                assert!(x.is_some() || x.is_none());
+            }
+        "#;
+        assert_eq!(
+            rules(same_name_core),
+            vec![RuleId::OptionSomeOrNone],
+            "{:?}",
+            rules(same_name_core)
         );
 
         let real_std = r#"
