@@ -17,6 +17,7 @@ const {
   interpretTestExplorerExit,
   validateTestExplorerReceipt,
   runPublishedSmoke,
+  runTestExplorerJourneyStage,
   testExplorerSmokeEnv,
   interpretTransitionResult,
   publishCheckSummary,
@@ -158,6 +159,50 @@ void test('classifies unavailable Test Explorer host resolution as not-proven', 
         },
       },
     );
+  } finally {
+    if (previousReceiptsDir === undefined) delete process.env.PERL_LSP_SMOKE_RECEIPTS_DIR;
+    else process.env.PERL_LSP_SMOKE_RECEIPTS_DIR = previousReceiptsDir;
+    fs.rmSync(receiptsDir, { recursive: true, force: true });
+  }
+});
+
+void test('clears stale Test Explorer and host-resolution receipts before launch', () => {
+  const receiptsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-test-explorer-clear-'));
+  const previousReceiptsDir = process.env.PERL_LSP_SMOKE_RECEIPTS_DIR;
+  process.env.PERL_LSP_SMOKE_RECEIPTS_DIR = receiptsDir;
+  const revision = 'a'.repeat(40);
+  const vsixSha256 = 'b'.repeat(64);
+  const environment = testExplorerSmokeEnv({}, revision, 'candidate.vsix', vsixSha256);
+  const hostReceipt = path.join(receiptsDir, 'vscode_host_resolution_failure.json');
+  assert.ok(environment.PERL_LSP_TEST_EXPLORER_RECEIPT);
+  const explorerReceipt = environment.PERL_LSP_TEST_EXPLORER_RECEIPT;
+  fs.mkdirSync(path.dirname(explorerReceipt), { recursive: true });
+  fs.writeFileSync(explorerReceipt, 'stale explorer receipt');
+  fs.writeFileSync(hostReceipt, 'stale host receipt');
+  let launched = false;
+  try {
+    const result = runTestExplorerJourneyStage({}, revision, 'candidate.vsix', vsixSha256, () => {
+      launched = true;
+      assert.equal(fs.existsSync(explorerReceipt), false);
+      assert.equal(fs.existsSync(hostReceipt), false);
+      return {
+        phase: 'child',
+        result: {
+          pid: 1,
+          output: [],
+          stdout: '',
+          stderr: '',
+          signal: null,
+          status: 1,
+        },
+      };
+    });
+    assert.equal(launched, true);
+    assert.deepEqual(result, {
+      status: 'failed',
+      exit_code: 1,
+      reason: 'test_explorer_journey_failed',
+    });
   } finally {
     if (previousReceiptsDir === undefined) delete process.env.PERL_LSP_SMOKE_RECEIPTS_DIR;
     else process.env.PERL_LSP_SMOKE_RECEIPTS_DIR = previousReceiptsDir;

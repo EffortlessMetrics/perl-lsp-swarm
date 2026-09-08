@@ -204,7 +204,20 @@ function interpretTestExplorerExit(smokeRun, childReceipt) {
   };
 }
 
-function runTestExplorerJourneyStage(baseEnv, revision, vsixPath, vsixSha256) {
+/**
+ * @param {NodeJS.ProcessEnv} baseEnv
+ * @param {string} revision
+ * @param {string} vsixPath
+ * @param {string} vsixSha256
+ * @param {(env: NodeJS.ProcessEnv) => {phase: string, result: {status: number | null, error?: Error}}} [runner]
+ */
+function runTestExplorerJourneyStage(
+  baseEnv,
+  revision,
+  vsixPath,
+  vsixSha256,
+  runner = (env) => runPublishedSmoke(env),
+) {
   const env = testExplorerSmokeEnv(baseEnv, revision, vsixPath, vsixSha256);
   const receiptFile = env.PERL_LSP_TEST_EXPLORER_RECEIPT;
   try {
@@ -220,7 +233,7 @@ function runTestExplorerJourneyStage(baseEnv, revision, vsixPath, vsixSha256) {
       }`,
     };
   }
-  const smokeRun = runPublishedSmoke(env);
+  const smokeRun = runner(env);
   const childReceipt =
     smokeRun.phase === 'child' && smokeRun.result.status === 0
       ? validateTestExplorerReceipt({
