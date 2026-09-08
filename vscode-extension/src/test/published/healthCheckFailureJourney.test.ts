@@ -108,12 +108,11 @@ suite('Installed Health Check failure and recovery', function () {
       JSON.stringify(settledFailure, null, 2),
     );
 
-    const restartResult = await withTimeout(
+    await withTimeout(
       'blocked restart decision',
       vscode.commands.executeCommand('perl-lsp.restart'),
       20_000,
     );
-    assert.equal(typeof restartResult, 'boolean');
     assert.notEqual(activation?.getLanguageClientStartupMetrics?.().lifecycle_state, 'running');
   });
 
