@@ -3015,9 +3015,10 @@ function getSupportedFeatureProfiles(): string[] {
  * Restart the language server through the authoritative lifecycle.
  *
  * Returns true only when restart was refused because the lifecycle's client
- * cleanup is incomplete (#14448): that lifecycle cannot admit a replacement
- * until the window reloads, so automatic crash recovery must not spend
- * further retry slots on it.
+ * cleanup is incomplete (#14448): automatic crash recovery must not spend
+ * further retry slots on it. An explicit retry is admitted only when the
+ * lifecycle retained an exact terminal process subject to recheck; otherwise
+ * the user must reload the window.
  */
 async function restartServer(_context: vscode.ExtensionContext): Promise<boolean> {
   const lifecycle = languageClientLifecycle;
