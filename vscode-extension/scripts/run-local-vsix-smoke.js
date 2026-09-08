@@ -127,8 +127,15 @@ function validateTestExplorerReceipt({
   if (!expectedVsixSha256 || receipt?.vsix_sha256 !== expectedVsixSha256) {
     violations.push('Test Explorer child VSIX digest is not the package this run created');
   }
-  if (typeof receipt?.fixture !== 'string' || typeof receipt?.test_zero !== 'string') {
+  if (
+    typeof receipt?.fixture !== 'string' ||
+    receipt.fixture.length === 0 ||
+    typeof receipt?.test_zero !== 'string' ||
+    receipt.test_zero.length === 0
+  ) {
     violations.push('Test Explorer child receipt is missing selected fixture evidence');
+  } else if (path.normalize(receipt.fixture) !== path.normalize(receipt.test_zero)) {
+    violations.push('Test Explorer child receipt selected a different test than its fixture');
   }
   return violations.length > 0 ? { ok: false, violations } : { ok: true, receipt };
 }
@@ -347,7 +354,7 @@ function writeJsonAtomic(destination, value) {
  *     package_creation: SmokeStage,
  *     package_inventory: SmokeStage,
  *     behavioral_smoke: SmokeStage,
- *     test_explorer_journey: SmokeStage,
+ *     test_explorer_journey?: SmokeStage,
  *     activation_failure_journey: SmokeStage,
  *     crash_recovery_journey: SmokeStage,
  *   },
@@ -1117,12 +1124,15 @@ function checkHeadline(receipt) {
 
 /** Stages that carry no verdict yet, so the summary can say what is still owed. */
 function checkRemainingProof(stages) {
-  return checkStageOrder(stages).filter((key) => {
-    const status = stages[key]?.status;
-    return status === 'not_run' || status === 'not_proven';
-  }).map(
-    (key) => `${CHECK_STAGE_LABELS[key]} (${stages[key].status}): ${checkStageDetail(stages[key])}`,
-  );
+  return checkStageOrder(stages)
+    .filter((key) => {
+      const status = stages[key]?.status;
+      return status === 'not_run' || status === 'not_proven';
+    })
+    .map(
+      (key) =>
+        `${CHECK_STAGE_LABELS[key]} (${stages[key].status}): ${checkStageDetail(stages[key])}`,
+    );
 }
 
 /** Workflow-command data escaping, per GitHub's documented encoding. */
@@ -2640,6 +2650,7 @@ function main() {
       persistReceipt(destination, receipt);
 
       if (shouldRunBehavioralSmoke(receipt.stages)) {
+        /** @type {NodeJS.ProcessEnv} */
         const smokeEnv = {
           ...process.env,
           PERL_LSP_CURRENT_SOURCE_SHA: revision,

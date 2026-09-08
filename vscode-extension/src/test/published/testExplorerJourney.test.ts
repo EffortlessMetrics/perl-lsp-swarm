@@ -123,27 +123,28 @@ suite('Installed Test Explorer runAll journey', function () {
       assert.equal(phase, `END:${token}`);
       assert.equal(path.normalize(test0 ?? ''), path.normalize(fixture));
       const receiptPath = process.env.PERL_LSP_TEST_EXPLORER_RECEIPT;
-      assert.ok(receiptPath, 'installed Test Explorer journey requires a receipt path');
-      const receiptTemp = `${receiptPath}.tmp-${process.pid}-${token}`;
-      fs.mkdirSync(path.dirname(receiptPath), { recursive: true });
-      fs.writeFileSync(
-        receiptTemp,
-        JSON.stringify(
-          {
-            schema_version: 'test_explorer_journey.v1',
-            outcome: 'completed',
-            source_revision: process.env.PERL_LSP_CURRENT_SOURCE_SHA ?? null,
-            server_source_revision: process.env.PERL_LSP_SERVER_SOURCE_SHA ?? null,
-            vsix_sha256: process.env.PERL_LSP_VSIX_SHA256 ?? null,
-            fixture,
-            test_zero: test0,
-          },
-          null,
-          2,
-        ),
-        'utf8',
-      );
-      fs.renameSync(receiptTemp, receiptPath);
+      if (receiptPath) {
+        const receiptTemp = `${receiptPath}.tmp-${process.pid}-${token}`;
+        fs.mkdirSync(path.dirname(receiptPath), { recursive: true });
+        fs.writeFileSync(
+          receiptTemp,
+          JSON.stringify(
+            {
+              schema_version: 'test_explorer_journey.v1',
+              outcome: 'completed',
+              source_revision: process.env.PERL_LSP_CURRENT_SOURCE_SHA ?? null,
+              server_source_revision: process.env.PERL_LSP_SERVER_SOURCE_SHA ?? null,
+              vsix_sha256: process.env.PERL_LSP_VSIX_SHA256 ?? null,
+              fixture,
+              test_zero: test0,
+            },
+            null,
+            2,
+          ),
+          'utf8',
+        );
+        fs.renameSync(receiptTemp, receiptPath);
+      }
     } finally {
       if (previousMarker === undefined) delete process.env.PERL_LSP_TEST_EXPLORER_MARKER;
       else process.env.PERL_LSP_TEST_EXPLORER_MARKER = previousMarker;

@@ -77,10 +77,13 @@ void test('does not turn missing or failed Test Explorer children into a pass', 
     { status: 'failed', exit_code: null, reason: 'test_explorer_journey_failed' },
   );
   assert.deepEqual(
-    interpretTestExplorerExit({
-      phase: 'child',
-      result: { status: 0, error: undefined },
-    }, { ok: true, receipt: { fixture: 'generated test.t', test_zero: 'generated test.t' } }),
+    interpretTestExplorerExit(
+      {
+        phase: 'child',
+        result: { status: 0, error: undefined },
+      },
+      { ok: true, receipt: { fixture: 'generated test.t', test_zero: 'generated test.t' } },
+    ),
     {
       status: 'pass',
       exit_code: 0,
@@ -121,6 +124,17 @@ void test('requires a fresh candidate-bound Test Explorer completion receipt', (
         expectedServerSourceSha: valid.server_source_revision,
         expectedVsixSha256: valid.vsix_sha256,
         readFile: () => JSON.stringify(valid),
+        exists: () => true,
+      }).ok,
+      false,
+    );
+    assert.equal(
+      validateTestExplorerReceipt({
+        receiptFile,
+        expectedRevision: valid.source_revision,
+        expectedServerSourceSha: valid.server_source_revision,
+        expectedVsixSha256: valid.vsix_sha256,
+        readFile: () => JSON.stringify({ ...valid, test_zero: 'other-fixture.t' }),
         exists: () => true,
       }).ok,
       false,
