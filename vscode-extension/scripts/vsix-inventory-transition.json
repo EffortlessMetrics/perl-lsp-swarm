@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "owner_issue": 14486,
-  "reason": "The VS Code lifecycle retains a completed cleanup episode exact process subject and allows explicit replacement only after terminal observation. Parent 8edb628e to candidate 4e8d8e2 changes out/extension.js from 1691400 to 1693108 bytes; other archive paths are unchanged. Unit and registered-command proofs cover late natural exit recovery; installed process no-overlap evidence remains separate.",
+  "reason": "The VS Code lifecycle retains the completed cleanup episode's exact process subject and permits explicit replacement only after terminal observation. Against current main, the measured combined transition changes out/extension.js from 1691400 to 1693108 bytes (+1708); all other ordinary archive paths remain unchanged. Installed process no-overlap evidence remains separate from ordinary inventory.",
   "base_baseline_file_sha256": "03b0339c3c4bfcfd8f9dc9aa74e8d0f578231ea4beddfefba20a303050bf5035",
   "candidate_baseline_file_sha256": "7da88b0dd0f7b21171781e279784ea1e4b48436c614f6b1a0979963a60fd9e24",
   "base_inventory_sha256": "25bb3d522c7662251cbea5f1f42b8fa5ccbaeb7ce32bd918d7b1e45812b5dfd9",
