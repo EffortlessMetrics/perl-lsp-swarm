@@ -720,9 +720,9 @@ fn revision_sha(repo: &Path, revision: &str) -> Result<String> {
 ///
 /// This does not conflict with preserving a refused envelope's payload: the
 /// current producer output is written back to `raw-check.json` immediately after
-/// `run_ripr_check` returns valid JSON and before the envelope check, so a
-/// refused envelope leaves its own bytes behind. JSON syntax failures occur
-/// before that write and do not preserve their current malformed bytes.
+/// `run_ripr_check` returns successfully and before JSON parsing or the envelope
+/// check, so syntax failures and refused envelopes both retain their current
+/// UTF-8 payload. A producer failure or non-UTF-8 stdout returns earlier.
 fn clear_stale_pr_artifacts(repo: &Path) -> Result<()> {
     for relative in [PR_EVIDENCE_JSON, PR_EVIDENCE_MD, PR_RAW_CHECK_JSON, PR_DIFF, PR_DIFF_RECEIPT]
     {
@@ -754,19 +754,19 @@ fn write_pr_evidence(repo: &Path, options: &PrEvidenceOptions) -> Result<()> {
     let changed_file_count = diff_receipt.entries.len();
     write_pr_diff(repo, &diff_receipt)?;
     let check_json = run_ripr_check(repo, options)?;
-    let check_value: Value =
-        serde_json::from_str(&check_json).context("ripr check output was not valid JSON")?;
     // Write raw check output for offline diagnostics (#1346): repo-exposure.json only contains
     // per-bucket counts; the findings[] array (which carries per-finding classification and path)
     // is required to diagnose suppression mismatches.  This file is included in the
     // ripr-pr-evidence artifact upload so it is available without re-running ripr.
     //
-    // This must stay ahead of the envelope check below (#9113). The artifact upload is
+    // This must precede JSON parsing and envelope validation (#9113). The artifact upload is
     // `if: always()`, so an unrecognized producer shape is exactly the case where the exact
     // payload is needed to diagnose the refusal — and the only case where nobody has seen it
     // before. Validating first would bail with the evidence directory missing the one file
     // that explains why.
     write_text(&repo.join(PR_RAW_CHECK_JSON), &check_json)?;
+    let check_value: Value =
+        serde_json::from_str(&check_json).context("ripr check output was not valid JSON")?;
     // Fail closed on a producer whose envelope changed shape (#9113), before any
     // counting can turn missing fields into an all-zero "clean" verdict.
     validate_check_envelope(&check_value)?;
@@ -4021,7 +4021,7 @@ mod tests {
         // unsuppressed totals as if the policy had been consulted.
         let mut check = parse_check(REAL_010_CHECK)?;
         check.as_object_mut().context("object")?.remove("findings");
-        validate_check_envelope(&check).err().ok_or_else(|| {
+        let _refusal = validate_check_envelope(&check).err().ok_or_else(|| {
             eyre!("summary-only output must be refused, not treated as unsuppressed truth")
         })?;
         Ok(())
@@ -4287,7 +4287,7 @@ esac
         {
             let fake = write_fake_ripr_check_binary(bin_dir.path(), &broken.to_string())?;
             let _guard = override_ripr_bin(&fake)?;
-            write_pr_evidence(repo.path(), &options)
+            let _refusal = write_pr_evidence(repo.path(), &options)
                 .err()
                 .ok_or_else(|| eyre!("the broken envelope must still be refused"))?;
         }
@@ -4305,7 +4305,7 @@ esac
         // And the always-run contract check must now refuse rather than accept
         // stale evidence for these revisions. This is the assertion that makes
         // the whole operation fail closed, not just its ingest.
-        check_pr_evidence(repo.path(), &options)
+        let _refusal = check_pr_evidence(repo.path(), &options)
             .err()
             .ok_or_else(|| eyre!("stale evidence must not validate after a refused rerun"))?;
 
@@ -4314,6 +4314,56 @@ esac
             repo.path().join(PR_RAW_CHECK_JSON).exists(),
             "proof predicate failed: {}",
             stringify!(repo.path().join(PR_RAW_CHECK_JSON).exists())
+        );
+        Ok(())
+    }
+
+    /// Malformed JSON must fail closed while preserving this attempt's exact output.
+    #[cfg(not(windows))]
+    #[test]
+    fn a_malformed_json_rerun_preserves_current_payload_and_refuses_stale_evidence() -> Result<()> {
+        let repo = evidence_repo()?;
+        let options = evidence_options();
+        let bin_dir = tempfile::tempdir()?;
+
+        {
+            let fake = write_fake_ripr_check_binary(bin_dir.path(), REAL_010_CHECK)?;
+            let _guard = override_ripr_bin(&fake)?;
+            write_pr_evidence(repo.path(), &options)?;
+            check_pr_evidence(repo.path(), &options)
+                .context("healthy prior evidence must validate before the malformed rerun")?;
+        }
+
+        // Intentionally invalid syntax, not a valid envelope missing a count.
+        // The existing fake producer's heredoc appends one newline to this text.
+        let malformed = r#"{"summary": broken-current-payload"#;
+        {
+            let fake = write_fake_ripr_check_binary(bin_dir.path(), malformed)?;
+            let _guard = override_ripr_bin(&fake)?;
+            let refusal = write_pr_evidence(repo.path(), &options)
+                .err()
+                .ok_or_else(|| eyre!("malformed JSON must refuse evidence generation"))?;
+            color_eyre::eyre::ensure!(
+                refusal.to_string().contains("ripr check output was not valid JSON"),
+                "the instrument must fail at JSON parsing, got: {refusal}"
+            );
+        }
+
+        for artifact in [PR_EVIDENCE_JSON, PR_EVIDENCE_MD] {
+            color_eyre::eyre::ensure!(
+                !repo.path().join(artifact).exists(),
+                "malformed output must not retain the prior evidence artifact: {artifact}"
+            );
+        }
+        let _refusal = check_pr_evidence(repo.path(), &options)
+            .err()
+            .ok_or_else(|| eyre!("original valid revisions must not accept stale evidence"))?;
+        let actual = fs::read(repo.path().join(PR_RAW_CHECK_JSON))
+            .context("malformed producer output must survive for offline diagnosis")?;
+        let expected = format!("{malformed}\n");
+        color_eyre::eyre::ensure!(
+            actual == expected.as_bytes(),
+            "raw diagnostic must retain the exact current malformed payload, including its newline"
         );
         Ok(())
     }
@@ -4345,7 +4395,7 @@ esac
             base: "refs/heads/does-not-exist".to_string(),
             ..evidence_options()
         };
-        write_pr_evidence(repo.path(), &bogus)
+        let _refusal = write_pr_evidence(repo.path(), &bogus)
             .err()
             .ok_or_else(|| eyre!("an unresolvable base must fail"))?;
 
@@ -4369,7 +4419,7 @@ esac
         // Checked with the ORIGINAL revisions: those still resolve, so this is a
         // real acceptance test of the leftovers rather than a second failure for
         // the same reason the generation failed.
-        check_pr_evidence(repo.path(), &options)
+        let _refusal = check_pr_evidence(repo.path(), &options)
             .err()
             .ok_or_else(|| eyre!("stale evidence must not validate after an early failure"))?;
         Ok(())
@@ -4408,7 +4458,7 @@ esac
             fs::set_permissions(&failing, permissions)?;
         }
         let _guard = override_ripr_bin(&failing)?;
-        write_pr_evidence(repo.path(), &options)
+        let _refusal = write_pr_evidence(repo.path(), &options)
             .err()
             .ok_or_else(|| eyre!("a failing producer must abort"))?;
 
