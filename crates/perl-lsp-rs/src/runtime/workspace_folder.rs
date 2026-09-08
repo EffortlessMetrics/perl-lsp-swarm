@@ -101,17 +101,30 @@ impl WorkspaceFolderState {
         self
     }
 
+    /// Replace settings while retaining metadata facts until the next
+    /// buffer-aware refresh.
+    ///
+    /// Configuration reloads rebuild effective settings, but declared
+    /// dependencies belong to the metadata read authority. Keeping the last
+    /// facts here means an unreadable source remains visible as stale while
+    /// new settings are accepted (#15088). Detected include-root ownership is
+    /// intentionally reset with the replacement config; the subsequent marker
+    /// reconciliation establishes it again.
+    pub(crate) fn replace_effective_workspace_config(&mut self, mut config: WorkspaceConfig) {
+        config.declared_dependencies =
+            self.effective_workspace_config.declared_dependencies.clone();
+        self.effective_workspace_config = config;
+    }
+
     /// Refresh metadata-derived facts for this folder's effective workspace config.
     ///
     /// # This route reads disk and ignores open buffers
     ///
     /// Facts come from the files on disk, so a metadata document the editor
     /// holds with unsaved changes does *not* speak for itself here. That is
-    /// correct for establishing a folder — nothing is open yet — and it is
-    /// what the configuration-reload paths still use, but it means a
-    /// configuration reload that lands while a metadata buffer is dirty
-    /// replaces staged facts with disk contents until the next event on that
-    /// document restores them (#15088).
+    /// correct for establishing a folder — nothing is open yet. Registered
+    /// folders must use [`Self::refresh_workspace_metadata_from_reads`], so
+    /// configuration reloads preserve open-buffer authority (#15088).
     ///
     /// Prefer [`Self::refresh_workspace_metadata_from_reads`] anywhere an open
     /// buffer could be authoritative (#8041). Every route added by #13640 —
