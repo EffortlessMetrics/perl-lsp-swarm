@@ -13,7 +13,8 @@ use perl_semantic_analyzer::Parser;
 use perl_semantic_analyzer::analysis::scope_analyzer::{IssueKind, ScopeAnalyzer, ScopeIssue};
 use perl_semantic_analyzer::pragma_tracker::PragmaTracker;
 use perl_semantic_analyzer::symbol::{ScopeKind, SymbolExtractor, SymbolKind, SymbolTable};
-use perl_tdd_support::must;
+use perl_semantic_analyzer::{Node, NodeKind};
+use perl_tdd_support::{must, must_some_with};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -71,6 +72,28 @@ fn has_issue(issues: &[ScopeIssue], kind: IssueKind, var_name: &str) -> bool {
 
 fn count_issues(issues: &[ScopeIssue], kind: IssueKind) -> usize {
     issues.iter().filter(|i| i.kind == kind).count()
+}
+
+fn parse_program(code: &str) -> Node {
+    let mut parser = Parser::new(code);
+    must(parser.parse())
+}
+
+fn find_function_call_args<'a>(node: &'a Node, name: &str) -> Option<&'a [Node]> {
+    if let NodeKind::FunctionCall { name: call_name, args } = &node.kind
+        && call_name == name
+    {
+        return Some(args.as_slice());
+    }
+    node.children().into_iter().find_map(|child| find_function_call_args(child, name))
+}
+
+fn arg_kind_names(args: &[Node]) -> Vec<&'static str> {
+    args.iter().map(|arg| arg.kind.kind_name()).collect()
+}
+
+fn count_named_issues(issues: &[ScopeIssue], kind: IssueKind, variable_name: &str) -> usize {
+    issues.iter().filter(|issue| issue.kind == kind && issue.variable_name == variable_name).count()
 }
 
 // ===========================================================================
@@ -3384,6 +3407,330 @@ close $fh;
             ) && i.variable_name == "$fh"
         }),
         "open my $fh / <$fh> should not be flagged; issues: {:?}",
+        issues
+    );
+    Ok(())
+}
+
+#[test]
+fn bare_open_declaration_is_function_call_arg0() -> Result<(), Box<dyn std::error::Error>> {
+    // #15051: pin the parser shape the consumer uses for bare `open my $fh`.
+    let ast = parse_program("open my $fh, '<', 'x';\n");
+    let args =
+        must_some_with(find_function_call_args(&ast, "open"), "bare open parses as FunctionCall");
+    assert_eq!(
+        arg_kind_names(args),
+        ["VariableDeclaration", "String", "String"],
+        "bare open should expose the lexical handle as args[0]; sexp: {}",
+        ast.to_sexp()
+    );
+    Ok(())
+}
+
+#[test]
+fn parenthesized_open_declaration_is_wrapped_list_arg0() -> Result<(), Box<dyn std::error::Error>> {
+    // #15051: parenthesized `open(my $fh, ...)` keeps the same declaration node,
+    // but the parser wraps the comma list as a single ArrayLiteral argument.
+    let ast = parse_program("open(my $fh, '<', 'x');\n");
+    let args = must_some_with(
+        find_function_call_args(&ast, "open"),
+        "parenthesized open parses as FunctionCall",
+    );
+    assert_eq!(
+        arg_kind_names(args),
+        ["ArrayLiteral"],
+        "parenthesized open should wrap the argument list; sexp: {}",
+        ast.to_sexp()
+    );
+    let elements = match args.first().map(|arg| &arg.kind) {
+        Some(NodeKind::ArrayLiteral { elements }) => elements,
+        other => {
+            return Err(format!(
+                "expected ArrayLiteral wrapper, got {other:?}; sexp: {}",
+                ast.to_sexp()
+            )
+            .into());
+        }
+    };
+    assert_eq!(
+        arg_kind_names(elements),
+        ["VariableDeclaration", "String", "String"],
+        "inner list should still start with the lexical handle; sexp: {}",
+        ast.to_sexp()
+    );
+    Ok(())
+}
+
+#[test]
+fn parenthesized_fat_comma_open_declaration_is_hash_literal()
+-> Result<(), Box<dyn std::error::Error>> {
+    // Even fat-comma lists become HashLiteral via `build_list_or_hash` (#15051).
+    let ast = parse_program("open(my $fh => '<file');\n");
+    let args = must_some_with(
+        find_function_call_args(&ast, "open"),
+        "parenthesized fat-comma open parses as FunctionCall",
+    );
+    assert_eq!(
+        arg_kind_names(args),
+        ["HashLiteral"],
+        "even fat-comma open should wrap as HashLiteral; sexp: {}",
+        ast.to_sexp()
+    );
+    match args.first().map(|arg| &arg.kind) {
+        Some(NodeKind::HashLiteral { pairs }) => {
+            let pair = pairs.first().ok_or("expected one fat-comma pair")?;
+            assert_eq!(pair.0.kind.kind_name(), "VariableDeclaration");
+            assert_eq!(pair.1.kind.kind_name(), "String");
+        }
+        other => {
+            return Err(format!(
+                "expected HashLiteral wrapper, got {other:?}; sexp: {}",
+                ast.to_sexp()
+            )
+            .into());
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn parenthesized_fat_comma_pipe_declaration_is_hash_literal()
+-> Result<(), Box<dyn std::error::Error>> {
+    let ast = parse_program("pipe(my $reader => my $writer);\n");
+    let args = must_some_with(
+        find_function_call_args(&ast, "pipe"),
+        "parenthesized fat-comma pipe parses as FunctionCall",
+    );
+    assert_eq!(
+        arg_kind_names(args),
+        ["HashLiteral"],
+        "even fat-comma pipe should wrap as HashLiteral; sexp: {}",
+        ast.to_sexp()
+    );
+    match args.first().map(|arg| &arg.kind) {
+        Some(NodeKind::HashLiteral { pairs }) => {
+            let pair = pairs.first().ok_or("expected one fat-comma pair")?;
+            assert_eq!(pair.0.kind.kind_name(), "VariableDeclaration");
+            assert_eq!(pair.1.kind.kind_name(), "VariableDeclaration");
+        }
+        other => {
+            return Err(format!(
+                "expected HashLiteral wrapper, got {other:?}; sexp: {}",
+                ast.to_sexp()
+            )
+            .into());
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn parenthesized_open_consumes_inner_handle_without_a_later_read()
+-> Result<(), Box<dyn std::error::Error>> {
+    // Reproduction from #15051 / #14840 verification:
+    // `use strict; my $fh; { open(my $fh, '<', 'x'); }` must not flag the inner
+    // declaration unused. The outer binding and an unrelated lexical stay unused.
+    let code = r#"
+use strict;
+my $fh;
+my $unused;
+{
+    open(my $fh, '<', 'x');
+}
+"#;
+    let issues = scope_issues_strict(code);
+    assert_eq!(
+        count_named_issues(&issues, IssueKind::UnusedVariable, "$fh"),
+        1,
+        "outer $fh stays unused; inner parenthesized open declaration is consumed: {:?}",
+        issues
+    );
+    assert_eq!(
+        count_named_issues(&issues, IssueKind::UnusedVariable, "$unused"),
+        1,
+        "unrelated unused lexical must still be reported: {:?}",
+        issues
+    );
+    assert_eq!(
+        count_named_issues(&issues, IssueKind::VariableShadowing, "$fh"),
+        1,
+        "inner open declaration should still shadow the outer $fh: {:?}",
+        issues
+    );
+    assert!(
+        !issues.iter().any(|issue| {
+            issue.variable_name == "$fh"
+                && matches!(
+                    issue.kind,
+                    IssueKind::UndeclaredVariable | IssueKind::UninitializedVariable
+                )
+        }),
+        "parenthesized open must not undeclare or uninitialize $fh: {:?}",
+        issues
+    );
+    Ok(())
+}
+
+#[test]
+fn bare_open_consumes_inner_handle_without_a_later_read() -> Result<(), Box<dyn std::error::Error>>
+{
+    // Same consumption contract as the parenthesized form: no later read required.
+    let code = r#"
+use strict;
+my $fh;
+my $unused;
+{
+    open my $fh, '<', 'x';
+}
+"#;
+    let issues = scope_issues_strict(code);
+    assert_eq!(
+        count_named_issues(&issues, IssueKind::UnusedVariable, "$fh"),
+        1,
+        "bare open already consumes the inner handle; outer $fh stays unused: {:?}",
+        issues
+    );
+    assert_eq!(
+        count_named_issues(&issues, IssueKind::UnusedVariable, "$unused"),
+        1,
+        "unrelated unused lexical must still be reported: {:?}",
+        issues
+    );
+    assert_eq!(
+        count_named_issues(&issues, IssueKind::VariableShadowing, "$fh"),
+        1,
+        "bare open declaration should still shadow the outer $fh: {:?}",
+        issues
+    );
+    Ok(())
+}
+
+#[test]
+fn parenthesized_fat_comma_open_consumes_handle_without_a_later_read()
+-> Result<(), Box<dyn std::error::Error>> {
+    let code = r#"
+use strict;
+my $unused;
+open(my $fh => '<file');
+"#;
+    let issues = scope_issues_strict(code);
+    assert_eq!(
+        count_named_issues(&issues, IssueKind::UnusedVariable, "$fh"),
+        0,
+        "fat-comma parenthesized open should consume $fh: {:?}",
+        issues
+    );
+    assert_eq!(
+        count_named_issues(&issues, IssueKind::UnusedVariable, "$unused"),
+        1,
+        "unrelated unused lexical must still be reported: {:?}",
+        issues
+    );
+    Ok(())
+}
+
+#[test]
+fn parenthesized_fat_comma_pipe_consumes_both_handles() -> Result<(), Box<dyn std::error::Error>> {
+    let code = r#"
+use strict;
+pipe(my $reader => my $writer);
+"#;
+    let issues = scope_issues_strict(code);
+    for var in ["$reader", "$writer"] {
+        assert_eq!(
+            count_named_issues(&issues, IssueKind::UnusedVariable, var),
+            0,
+            "fat-comma pipe should consume {var}: {issues:?}"
+        );
+        assert!(
+            !issues.iter().any(|issue| {
+                issue.variable_name == var
+                    && matches!(
+                        issue.kind,
+                        IssueKind::UndeclaredVariable | IssueKind::UninitializedVariable
+                    )
+            }),
+            "fat-comma pipe should not undeclare or uninitialize {var}: {issues:?}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn parenthesized_fat_comma_recv_consumes_position_1() -> Result<(), Box<dyn std::error::Error>> {
+    let code = r#"
+use strict;
+socket my $sock, 2, 1, 0;
+recv($sock => my $data, 1024, 0);
+"#;
+    let issues = scope_issues_strict(code);
+    assert_eq!(
+        count_named_issues(&issues, IssueKind::UnusedVariable, "$data"),
+        0,
+        "fat-comma recv should consume the position-1 buffer: {:?}",
+        issues
+    );
+    assert!(
+        !issues.iter().any(|issue| {
+            issue.variable_name == "$sock"
+                && matches!(
+                    issue.kind,
+                    IssueKind::UndeclaredVariable
+                        | IssueKind::UninitializedVariable
+                        | IssueKind::UnusedVariable
+                )
+        }),
+        "recv filehandle at position 0 should remain a use of $sock: {:?}",
+        issues
+    );
+    Ok(())
+}
+
+#[test]
+fn brace_hash_constructor_is_not_unwrapped_as_open_args() -> Result<(), Box<dyn std::error::Error>>
+{
+    // `{ my $fh => 1 }` is a brace hash, not a parenthesized call list.
+    let code = r#"
+use strict;
+open({ my $fh => 1 });
+"#;
+    let issues = scope_issues_strict(code);
+    assert_eq!(
+        count_named_issues(&issues, IssueKind::UnusedVariable, "$fh"),
+        1,
+        "brace-hash constructor must not be treated as open's argument list: {:?}",
+        issues
+    );
+    Ok(())
+}
+
+#[test]
+fn parenthesized_user_call_declaration_is_not_auto_consumed()
+-> Result<(), Box<dyn std::error::Error>> {
+    // Opposite-direction control: only selected builtin declaration slots consume.
+    let code = r#"
+use strict;
+foo(my $x, 1);
+"#;
+    let issues = scope_issues_strict(code);
+    assert_eq!(
+        count_named_issues(&issues, IssueKind::UnusedVariable, "$x"),
+        1,
+        "parenthesized user-call declaration must remain unused: {:?}",
+        issues
+    );
+    Ok(())
+}
+
+#[test]
+fn parenthesized_open_does_not_make_modifier_declarations_visible()
+-> Result<(), Box<dyn std::error::Error>> {
+    // Non-goal: do not reopen #14840 / #1772 statement-modifier visibility.
+    let code = "use strict;\nprint $x if my $x = 1;\n";
+    let issues = scope_issues_strict(code);
+    assert!(
+        has_issue(&issues, IssueKind::UndeclaredVariable, "x"),
+        "pending modifier declarations must stay invisible to ordinary uses: {:?}",
         issues
     );
     Ok(())
