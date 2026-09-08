@@ -398,10 +398,26 @@ describe('HealthWidgetDataSource — bounded file count', () => {
     source.start();
     expect(pending).toHaveLength(1);
 
+    const staleUris = [
+      uri('/ws/stale-one.pm'),
+      uri('/ws/stale-two.pm'),
+      uri('/ws/stale-three.pm'),
+      uri('/ws/stale-four.pm'),
+    ];
+    for (const staleUri of staleUris) {
+      pending.shift()?.([staleUri]);
+      await Promise.resolve();
+    }
+    expect(pending).toHaveLength(1);
+
     createListener?.();
     expect(widget.fileCount).toBeUndefined();
 
-    pending.shift()?.([uri('/ws/stale.pm')]);
+    pending.shift()?.([
+      uri('/ws/stale-five.pm'),
+      uri('/ws/stale-six.pm'),
+      uri('/ws/stale-seven.pm'),
+    ]);
     await Promise.resolve();
     await Promise.resolve();
     expect(widget.fileCount).toBeUndefined();
