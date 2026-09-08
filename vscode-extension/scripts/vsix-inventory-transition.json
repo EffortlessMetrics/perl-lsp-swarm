@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "owner_issue": 15153,
+  "owner_issue": 14486,
   "reason": "The #14486 retained process witness adapter is stacked on the published #15158 health and packaging candidate. Against exact parent candidate 8d7e58b8e, the measured transition changes out/extension.js from 1688070 to 1688827 bytes (+757); readme.md, package.json, and the other 27 archive paths retain their measured sizes. The candidate total is 1867070 bytes versus the parent candidate total 1866313 bytes (+757). This declaration records the exact ordinary package transition without changing validator thresholds or admission rules; bundled installed-health evidence remains separate from this ordinary inventory.",
   "base_baseline_file_sha256": "eb608f9f8d1fe2c86b5feb84d22477c15da72a2ea991964a54731e88544a116a",
   "candidate_baseline_file_sha256": "8f0bfe8bd6203ecbab140f1ab507eabc84329347f1fdb2d1bfa2ba0cdf7ec7cb",
