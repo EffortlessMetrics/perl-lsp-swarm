@@ -89,8 +89,7 @@ export function registerServerCommandGroup(
         serverPath !== undefined ? serverPath : await dependencies.resolveServerPath();
       const initialSnapshot =
         serverPath === undefined ? dependencies.currentRuntimeSnapshot() : null;
-      const firstProbePath =
-        initialSnapshot ? initialSnapshot.serverPath : resolvedPath;
+      const firstProbePath = initialSnapshot ? initialSnapshot.serverPath : resolvedPath;
       let results = [...(await dependencies.runHealthCheck(firstProbePath))];
       let runtimeResult: HealthCheckResult | undefined;
       if (serverPath === undefined) {
