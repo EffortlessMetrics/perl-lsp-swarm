@@ -24,7 +24,9 @@ export interface ServerCommandContext {
   readonly restartServer: () => Promise<void>;
   readonly runHealthCheck: (serverPath: string | null) => Promise<HealthCheckResult[]>;
   /** Runtime proof supplied by the lifecycle owner after implicit startup. */
-  readonly runtimeHealthCheck?: () => HealthCheckResult;
+  readonly runtimeHealthCheck: (resolvedPath: string | null) => HealthCheckResult;
+  /** Report only a known matching runtime failure for explicit-path diagnostics. */
+  readonly runtimeFailureCheck?: (requestedPath: string | null) => HealthCheckResult | undefined;
   /** Optional until the negotiated identity protocol is available in composition. */
   readonly showBinaryIdentity?: () => Promise<unknown>;
 }
@@ -84,7 +86,14 @@ export function registerServerCommandGroup(
         serverPath !== undefined ? serverPath : await dependencies.resolveServerPath();
       const results = [...(await dependencies.runHealthCheck(resolvedPath))];
       const runtimeResult =
-        serverPath === undefined ? dependencies.runtimeHealthCheck?.() : undefined;
+        serverPath === undefined
+          ? (dependencies.runtimeHealthCheck?.(resolvedPath) ?? {
+              label: 'LSP runtime',
+              ok: false,
+              status: 'error' as const,
+              detail: 'Runtime health evidence is unavailable.',
+            })
+          : dependencies.runtimeFailureCheck?.(resolvedPath);
       if (runtimeResult) {
         results.push(runtimeResult);
       }

@@ -973,7 +973,7 @@ async function runExtensionActivation(
       const onboarding = new OnboardingManager(context, outputChannel);
       return onboarding.runSetupHealthCheck(serverPath);
     },
-    runtimeHealthCheck: () =>
+    runtimeHealthCheck: (resolvedPath) =>
       languageServerRuntimeHealth(
         languageClientLifecycle?.snapshot ?? {
           state: 'stopped',
@@ -981,7 +981,15 @@ async function runExtensionActivation(
           error: undefined,
           serverPath: null,
         },
+        resolvedPath,
       ),
+    runtimeFailureCheck: (requestedPath) => {
+      const snapshot = languageClientLifecycle?.snapshot;
+      if (snapshot?.state !== 'failed' || snapshot.serverPath !== requestedPath) {
+        return undefined;
+      }
+      return languageServerRuntimeHealth(snapshot, requestedPath);
+    },
   });
   activation.ownDisposables('commands', 'mandatory_for_activation', serverCommandDisposables);
 

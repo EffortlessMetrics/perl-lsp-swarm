@@ -19,15 +19,26 @@ function describeLifecycleError(error: unknown): string {
  * failed start must never turn that failure into a passing check.
  */
 export function languageServerRuntimeHealth(
-  snapshot: Pick<LifecycleSnapshot, 'state' | 'generation' | 'error'>,
+  snapshot: Pick<LifecycleSnapshot, 'state' | 'generation' | 'error' | 'serverPath'>,
+  expectedPath?: string | null,
 ): HealthCheckResult {
   const label = 'LSP runtime';
+  if (expectedPath !== undefined && snapshot.serverPath !== expectedPath) {
+    return {
+      label,
+      ok: false,
+      status: HealthCheckStatus.Error,
+      detail:
+        'The language server changed while health checks were running. Run Health Check again.',
+    };
+  }
+
   if (snapshot.state === 'running') {
     return {
       label,
       ok: true,
       status: HealthCheckStatus.Ok,
-      detail: `Language server running (generation ${snapshot.generation}).`,
+      detail: 'Language server is running.',
     };
   }
 
@@ -36,9 +47,7 @@ export function languageServerRuntimeHealth(
       label,
       ok: false,
       status: HealthCheckStatus.Error,
-      detail:
-        `Language server failed to start (generation ${snapshot.generation}): ` +
-        describeLifecycleError(snapshot.error),
+      detail: `Language server failed to start: ${describeLifecycleError(snapshot.error)}`,
     };
   }
 
@@ -46,6 +55,6 @@ export function languageServerRuntimeHealth(
     label,
     ok: false,
     status: HealthCheckStatus.Error,
-    detail: `Language server is not running (state ${snapshot.state}, generation ${snapshot.generation}).`,
+    detail: 'Language server is not running.',
   };
 }
