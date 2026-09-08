@@ -407,10 +407,6 @@ async function main(): Promise<void> {
     envValue('PERL_LSP_CURRENT_SOURCE_SHA') ||
     envValue('PERL_LSP_CANDIDATE_ARTIFACT_MANIFEST'),
   );
-  const repoRoot = path.resolve(__dirname, '../../../..');
-  const receiptsRoot =
-    process.env.PERL_LSP_SMOKE_RECEIPTS_DIR ||
-    path.join(repoRoot, 'target', 'receipts', 'vscode-smoke');
   assertCandidateBoundPlatform(
     process.platform === 'linux' ? 'linux' : process.platform,
     candidateBound,
@@ -457,6 +453,10 @@ async function main(): Promise<void> {
   const downloadDir = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-published-smoke-download-'));
   const harnessExtensionPath = path.resolve(process.cwd(), 'src/test/published/harness');
   const extensionTestsPath = path.resolve(__dirname, './suite');
+  const repoRoot = path.resolve(__dirname, '../../../..');
+  const receiptsRoot =
+    process.env.PERL_LSP_SMOKE_RECEIPTS_DIR ||
+    path.join(repoRoot, 'target', 'receipts', 'vscode-smoke');
   fs.mkdirSync(receiptsRoot, { recursive: true });
 
   if (!configuredWorkspace) {
