@@ -36,6 +36,33 @@ describe('Rolldown bundle configuration', () => {
     expect(fs.existsSync(configPath)).toBe(true);
   });
 
+  test('patches only the pinned language-client source and rejects drift', () => {
+    const sourcePath = path.join(
+      EXT_ROOT,
+      'node_modules',
+      'vscode-languageclient',
+      'lib',
+      'common',
+      'client.js',
+    );
+    const script = `
+      import fs from 'node:fs';
+      import { patchPinnedLanguageClientSource } from './rolldown.config.mjs';
+      const sourcePath = ${JSON.stringify(sourcePath)};
+      const source = fs.readFileSync(sourcePath, 'utf8');
+      const patched = patchPinnedLanguageClientSource(source, sourcePath);
+      if (!patched || !patched.includes('return promise;')) process.exit(11);
+      if (patchPinnedLanguageClientSource(source, 'other-module/client.js') !== null) process.exit(12);
+      let rejected = false;
+      try { patchPinnedLanguageClientSource(source + '\\n', sourcePath); } catch { rejected = true; }
+      if (!rejected) process.exit(13);
+    `;
+    execFileSync(process.execPath, ['--input-type=module', '-e', script], {
+      cwd: EXT_ROOT,
+      stdio: 'pipe',
+    });
+  });
+
   test('rolldown.config.mjs targets the exact main/debugger entry path (out/extension.js)', () => {
     const configPath = path.join(EXT_ROOT, 'rolldown.config.mjs');
     const source = fs.readFileSync(configPath, 'utf8');

@@ -11,8 +11,9 @@
 //
 // Rolldown is ESM-only (no CJS export), so this config file is itself ESM
 // (.mjs) even though the rest of the extension's tooling is CommonJS.
+import { createHash } from 'node:crypto';
 import { builtinModules } from 'node:module';
-import { defineConfig } from 'rolldown';
+import { defineConfig, RolldownMagicString } from 'rolldown';
 
 // Node built-ins must never be bundled — Node resolves `require('fs')` etc.
 // natively at runtime. Cover both the bare form (`fs`) and the explicit
@@ -34,11 +35,81 @@ const nodeBuiltins = new Set([...builtinModules, ...builtinModules.map((m) => `n
 // above.
 const external = (id) => id === 'vscode' || nodeBuiltins.has(id);
 
+const PINNED_LANGUAGE_CLIENT_SOURCE_SHA256 =
+    'FB34F029620E1990B00F351D9A79CEEDA40432AA5D177FD4245BD62053DF05A8';
+const LANGUAGE_CLIENT_SOURCE_SUFFIX = '/node_modules/vscode-languageclient/lib/common/client.js';
+
+/**
+ * vscode-languageclient 10.1.1 returns the mutable `_onStart` field after
+ * `handleConnectionClosed` can clear it. That can orphan the rejection from
+ * the start operation. Keep this narrowly pinned to the exact resolved source
+ * and hash until the dependency ships the equivalent upstream correction.
+ */
+export function patchPinnedLanguageClientSource(source, id) {
+    const normalizedId = id.replaceAll('\\', '/');
+    if (!normalizedId.endsWith(LANGUAGE_CLIENT_SOURCE_SUFFIX)) {
+        return null;
+    }
+    const sourceSha256 = createHash('sha256').update(source).digest('hex').toUpperCase();
+    if (sourceSha256 !== PINNED_LANGUAGE_CLIENT_SOURCE_SHA256) {
+        throw new Error(
+            `Refusing to patch unexpected vscode-languageclient source ${id}: expected ${PINNED_LANGUAGE_CLIENT_SOURCE_SHA256}, got ${sourceSha256}.`,
+        );
+    }
+    const start = source.indexOf('    async start() {');
+    const end = source.indexOf('    createOnStartPromise()', start);
+    if (start < 0 || end <= start) {
+        throw new Error(
+            `Refusing to patch vscode-languageclient source with an unexpected start() shape: ${id}.`,
+        );
+    }
+    const body = source.slice(start, end);
+    const returnText = '        return this._onStart;';
+    const returnOffsets = [];
+    let offset = body.indexOf(returnText);
+    while (offset >= 0) {
+        returnOffsets.push(offset);
+        offset = body.indexOf(returnText, offset + returnText.length);
+    }
+    if (returnOffsets.length !== 2) {
+        throw new Error(
+            `Refusing to patch vscode-languageclient start() with ${returnOffsets.length} mutable-return sites; expected 2.`,
+        );
+    }
+    const finalReturnOffset = start + returnOffsets[returnOffsets.length - 1];
+    return `${source.slice(0, finalReturnOffset)}        return promise;${source.slice(finalReturnOffset + returnText.length)}`;
+}
+
+const pinnedLanguageClientPatch = {
+    name: 'patch-pinned-vscode-languageclient-start-promise',
+    transform(source, id) {
+        const patched = patchPinnedLanguageClientSource(source, id);
+        if (patched === null) return null;
+        let prefix = 0;
+        while (prefix < source.length && source[prefix] === patched[prefix]) prefix += 1;
+        let suffix = 0;
+        while (
+            suffix < source.length - prefix &&
+            suffix < patched.length - prefix &&
+            source[source.length - 1 - suffix] === patched[patched.length - 1 - suffix]
+        ) {
+            suffix += 1;
+        }
+        const magic = new RolldownMagicString(source);
+        magic.overwrite(
+            prefix,
+            source.length - suffix,
+            patched.slice(prefix, patched.length - suffix),
+        );
+        return { code: magic };
+    },
+};
 export default defineConfig({
     input: 'src/extension.ts',
     tsconfig: './tsconfig.json',
     platform: 'node',
     external,
+    plugins: [pinnedLanguageClientPatch],
     output: {
         file: 'out/extension.js',
         format: 'cjs',
