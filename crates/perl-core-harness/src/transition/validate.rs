@@ -10,8 +10,9 @@
 use crate::transition::model::AcceptedBaseline;
 use crate::transition::terminal::TerminalProcessOutcome;
 use perl_core_harness_types::{
-    COMPILE_BASELINE_V2_SCHEMA_VERSION, CompileBaselineV2, ObservedSemanticBoundary,
+    COMPILE_BASELINE_V2_SCHEMA_VERSION, CompileBaselineV2, HarnessMode, ObservedSemanticBoundary,
     RUN_REPORT_SCHEMA_VERSION, RunFailure, RunFileResult, RunReport, RunnerStatus,
+    validate_file_result_mechanisms,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -92,6 +93,7 @@ pub fn validate_run_report(
             "current observation repeats file-result path {path}"
         )));
     }
+    validate_mechanism_claims(report.mode, &report.file_results, "current")?;
     validate_file_result_assertions(&report.file_results, "current")?;
     validate_summary_against_file_results(report)?;
     validate_failure_inventory(
@@ -106,6 +108,23 @@ pub fn validate_run_report(
         "current",
     )?;
     Ok(ValidatedRunReport { inner: report.clone() })
+}
+
+/// Reject transition evidence whose per-file execution-mechanism claims are not
+/// admissible for the mode that produced them.
+///
+/// This module is the canonical structural validator for transition evidence,
+/// so the mechanism contract has to hold here too. Without it, `classify` and
+/// `check` would accept an observation or an accepted baseline claiming a rail
+/// no evidence backs — the same forgery the receipt, report, and baseline
+/// readers already refuse (#14363).
+fn validate_mechanism_claims(
+    mode: HarnessMode,
+    file_results: &[RunFileResult],
+    subject: &str,
+) -> Result<(), EvidenceValidationError> {
+    validate_file_result_mechanisms(mode, file_results)
+        .map_err(|violation| EvidenceValidationError::new(format!("{subject} {violation}")))
 }
 
 /// Validate an accepted V2 baseline's structural count and membership invariants.
@@ -134,6 +153,7 @@ pub fn validate_compile_baseline_v2(
             "accepted V2 file_membership repeats path {path}"
         )));
     }
+    validate_mechanism_claims(baseline.mode, &baseline.file_results, "accepted V2")?;
     if let Some(path) = first_whitespace_contaminated_path(&baseline.file_results) {
         return Err(EvidenceValidationError::new(format!(
             "accepted file-result path {path:?} has leading or trailing whitespace"
@@ -192,6 +212,11 @@ pub fn validate_accepted_baseline(
     match accepted {
         AcceptedBaseline::V2(value) => validate_compile_baseline_v2(value).map(|_| ()),
         AcceptedBaseline::V1(value) => {
+            // The V1 arm re-implements its structural checks inline, so it does
+            // not inherit the V2 arm's contract. Delegate the mechanism claim to
+            // the same shared helper: the documented future V1-migration slice
+            // must not reopen this gap (#14363).
+            validate_mechanism_claims(value.mode, &value.file_results, "accepted")?;
             if let Some(path) = first_whitespace_contaminated_path(&value.file_results) {
                 return Err(EvidenceValidationError::new(format!(
                     "accepted file-result path {path:?} has leading or trailing whitespace"
@@ -459,11 +484,186 @@ fn first_whitespace_contaminated_str<'a>(
 mod ripr_inventory_call_observers {
     use super::*;
     use perl_core_harness_types::{
-        HarnessMode, HarnessProfile, HarnessRunner, ObservedSemanticBoundary, RunFailure,
-        RunFileResult, RunReport, RunSummary, RunnerStatus, SemanticBoundaryConfidence,
+        COMPILE_BASELINE_SCHEMA_VERSION, CompileBaseline, ExecutionMechanism, HarnessMode,
+        HarnessProfile, HarnessRunner, ObservedSemanticBoundary, RunFailure, RunFileResult,
+        RunReport, RunSummary, RunnerStatus, SemanticBoundaryConfidence,
         SemanticBoundaryDisposition, SemanticBoundaryLockScope, SemanticBoundarySourceSpan,
     };
     use std::collections::BTreeMap;
+
+    /// An execute-mode observation shaped like the selected-base receipt.
+    fn clean_execute_report() -> RunReport {
+        let mut report = clean_report();
+        report.mode = HarnessMode::Execute;
+        report.harness_status = Some(1);
+        for result in &mut report.file_results {
+            result.mechanism = Some(ExecutionMechanism::FixtureReplay);
+        }
+        report
+    }
+
+    #[test]
+    fn validate_run_report_rejects_an_empty_execution_observation() {
+        let mut report = clean_execute_report();
+        report.file_results.clear();
+        report.summary.files_total = 0;
+        report.summary.files_passed = 0;
+        report.summary.tap_assertions_total = 0;
+        report.summary.tap_assertions_passed = 0;
+
+        let err = validate_run_report(&report).expect_err("empty execution observation");
+
+        assert!(
+            err.reason.contains("names no execution mechanism for anything"),
+            "unexpected reason: {}",
+            err.reason
+        );
+    }
+
+    #[test]
+    fn validate_run_report_rejects_an_empty_accepted_execution_baseline() {
+        let mut accepted = clean_v1_accepted(Some(ExecutionMechanism::FixtureReplay));
+        accepted.file_results.clear();
+        accepted.files_total = 0;
+        accepted.files_passed = 0;
+        accepted.tap_assertions_total = 0;
+        accepted.tap_assertions_passed = 0;
+
+        let err = validate_accepted_baseline(&AcceptedBaseline::V1(accepted))
+            .expect_err("empty accepted execution baseline");
+
+        assert!(
+            err.reason.contains("names no execution mechanism for anything"),
+            "unexpected reason: {}",
+            err.reason
+        );
+    }
+
+    #[test]
+    fn validate_run_report_rejects_a_relabelled_execution_mechanism() {
+        // `classify` and `check` reach this validator, so an observation
+        // claiming a rail no evidence backs must not become comparable.
+        for mechanism in [ExecutionMechanism::EirExecution, ExecutionMechanism::RealPerlOracle] {
+            let mut report = clean_execute_report();
+            for result in &mut report.file_results {
+                result.mechanism = Some(mechanism);
+            }
+
+            let err = validate_run_report(&report).expect_err("relabelled mechanism");
+
+            assert!(
+                err.reason.contains("no current rail can supply"),
+                "unexpected reason for {mechanism}: {}",
+                err.reason
+            );
+        }
+    }
+
+    #[test]
+    fn validate_run_report_rejects_an_execution_observation_without_a_mechanism() {
+        let mut report = clean_execute_report();
+        for result in &mut report.file_results {
+            result.mechanism = None;
+        }
+
+        let err = validate_run_report(&report).expect_err("missing mechanism");
+
+        assert!(
+            err.reason.contains("does not declare an execution mechanism"),
+            "unexpected reason: {}",
+            err.reason
+        );
+    }
+
+    #[test]
+    fn validate_run_report_rejects_a_compile_observation_claiming_execution_evidence() {
+        let mut report = clean_report();
+        for result in &mut report.file_results {
+            result.mechanism = Some(ExecutionMechanism::FixtureReplay);
+        }
+
+        let err = validate_run_report(&report).expect_err("mechanism outside execution");
+
+        assert!(
+            err.reason.contains("only execution receipts may carry"),
+            "unexpected reason: {}",
+            err.reason
+        );
+    }
+
+    #[test]
+    fn validate_run_report_accepts_an_honestly_classified_execution_observation() {
+        // Opposite-direction control: the contract must not block real evidence.
+        validate_run_report(&clean_execute_report())
+            .expect("an honestly classified execute observation stays comparable");
+    }
+
+    /// A V1 accepted baseline in execute mode with an honest mechanism.
+    fn clean_v1_accepted(mechanism: Option<ExecutionMechanism>) -> CompileBaseline {
+        let report = clean_execute_report();
+        let mut file_results = report.file_results.clone();
+        for result in &mut file_results {
+            result.mechanism = mechanism;
+        }
+        CompileBaseline {
+            schema_version: COMPILE_BASELINE_SCHEMA_VERSION.to_string(),
+            report_schema_version: RUN_REPORT_SCHEMA_VERSION.to_string(),
+            mode: report.mode,
+            profile: report.profile,
+            files_total: report.summary.files_total,
+            files_passed: report.summary.files_passed,
+            files_failed: report.summary.files_failed,
+            tap_assertions_total: report.summary.tap_assertions_total,
+            tap_assertions_passed: report.summary.tap_assertions_passed,
+            buckets: BTreeMap::new(),
+            expected_failures: Vec::new(),
+            file_results,
+            semantic_boundaries: Some(Vec::new()),
+        }
+    }
+
+    /// The V1 arm re-implements its structural checks inline rather than
+    /// delegating, so it needs its own control: without one, the mechanism
+    /// claim could be dropped from that arm and no test would notice (#14363).
+    #[test]
+    fn validate_accepted_baseline_v1_rejects_a_relabelled_mechanism() {
+        for mechanism in [ExecutionMechanism::EirExecution, ExecutionMechanism::RealPerlOracle] {
+            let accepted = AcceptedBaseline::V1(clean_v1_accepted(Some(mechanism)));
+
+            let err = validate_accepted_baseline(&accepted)
+                .expect_err("a V1 baseline claiming an unsupported rail must be refused");
+
+            assert!(
+                err.reason.contains("no current rail can supply"),
+                "unexpected reason for {mechanism}: {}",
+                err.reason
+            );
+        }
+    }
+
+    #[test]
+    fn validate_accepted_baseline_v1_rejects_a_missing_mechanism() {
+        let accepted = AcceptedBaseline::V1(clean_v1_accepted(None));
+
+        let err = validate_accepted_baseline(&accepted)
+            .expect_err("an execute-mode V1 baseline must name its rail");
+
+        assert!(
+            err.reason.contains("does not declare an execution mechanism"),
+            "unexpected reason: {}",
+            err.reason
+        );
+    }
+
+    #[test]
+    fn validate_accepted_baseline_v1_accepts_honest_evidence() {
+        // Opposite-direction control: the added gate must not block a
+        // legitimately accepted V1 baseline.
+        let accepted =
+            AcceptedBaseline::V1(clean_v1_accepted(Some(ExecutionMechanism::FixtureReplay)));
+
+        validate_accepted_baseline(&accepted).expect("honest V1 evidence stays comparable");
+    }
 
     #[test]
     fn validate_run_report_rejects_missing_failure_record() {
@@ -580,12 +780,14 @@ mod ripr_inventory_call_observers {
             },
             file_results: vec![
                 RunFileResult {
+                    mechanism: None,
                     path: "base/0.t".into(),
                     status: RunnerStatus::Pass,
                     assertions_passed: 1,
                     assertions_total: 1,
                 },
                 RunFileResult {
+                    mechanism: None,
                     path: "base/1.t".into(),
                     status: RunnerStatus::Pass,
                     assertions_passed: 1,
@@ -732,10 +934,10 @@ mod ripr_inventory_call_observers {
     /// instead of being permanently misclassified by zero-only defensive code.
     #[test]
     fn recognized_execute_nonzero_status_is_terminally_admissible() {
-        let mut report = clean_report();
-        report.mode = HarnessMode::Execute;
-        report.harness_status = Some(1);
-        assert!(validate_run_report(&report).is_ok());
+        // `clean_execute_report` is `clean_report` in execute mode with the
+        // scheduler's recognized nonzero status and an honest mechanism, so the
+        // subject stays terminal admissibility rather than classification.
+        assert!(validate_run_report(&clean_execute_report()).is_ok());
     }
 
     #[test]
@@ -780,6 +982,7 @@ mod ripr_inventory_call_observers {
             },
             buckets: BTreeMap::new(),
             file_results: vec![RunFileResult {
+                mechanism: None,
                 path: "base/0.t".into(),
                 status: RunnerStatus::Pass,
                 assertions_passed: 1,

@@ -24,11 +24,11 @@ SHA changed, or review-receipt convergence.
 
 ## Orchestration affordances
 
-### Lane-root decisions
+### Root decisions
 
-The lane root retains the substantive-review prerequisite, required/advisory policy
-interpretation, failure ownership, whether candidate/review meaning changed, whether a
-remote state is in flight or blocked, and whether integration is ready.
+The accountable root retains the substantive-review prerequisite, required/advisory
+policy interpretation, failure ownership, whether candidate/review meaning changed,
+whether a remote state is in flight or blocked, and whether integration is ready.
 
 ### Delegable read-only work
 
@@ -100,10 +100,20 @@ NOT_PROVEN
 - `PR_IN_FLIGHT` means GitHub owns a named pending transition such as required checks,
   requested review, queue state, or armed auto-merge.
 - `MERGE_BLOCKED` means a concrete conflict, failed required check, unresolved
-  substantive thread/change request, ruleset failure, or prerequisite blocks merge.
+  review thread of any author, current change request, ruleset failure, or
+  prerequisite blocks merge.
 - `NOT_PROVEN` means API/check/policy/instrument identity is missing or unreliable.
 
 Pending checks leave substantive review current while integration is `PR_IN_FLIGHT`.
+
+Read the unresolved thread count with `scripts/reviews/threads <pr> --unresolved-only
+--json` and require `unresolved_count` of 0 before `INTEGRATION_READY`. The `main`
+ruleset sets `required_review_thread_resolution`, so a bot thread (Devin, Gemini,
+Codex, CodeRabbit, cubic), an outdated thread, or an editorial thread blocks the merge
+exactly like a substantive one, and an armed auto-merge with one open thread never
+fires and reports no failure. An unresolved review thread of any author is
+`MERGE_BLOCKED` routed to `address-review-comments`, not `PR_IN_FLIGHT`; zero
+unresolved review threads is a precondition of arming auto-merge.
 
 ## Live evidence classification
 
@@ -123,7 +133,9 @@ evidence rule:
 - a rerun of a merge-tree-evaluated check replays its original merge snapshot: after
   material base movement (release bumps, fmt/clippy sweeps landing on main), a fresh
   trigger (empty-commit head bump, e.g. `ci: re-request fresh merge-tree checks`)
-  re-evaluates the current tree and is the honest action; the empty-commit ban covers
+  re-evaluates the current tree and is the honest action; the bound is at most one
+  fresh trigger per observed material base movement — never per wait cycle — and the
+  accountable root owns the action. The empty-commit ban covers
   manufacturing a current status on an unchanged subject, not re-evaluating a changed
   merge tree (#12174, #12251, #12256, #12258 each unblocked only through the fresh
   trigger). Advisory CI-Gate shard redness on that fresh tree is then a main-red
@@ -173,8 +185,8 @@ owned failure, changed prerequisite/route, corrected instrument classification,
   only the affected proof and review;
 - `main` advances while the candidate remains conflict-free → no required candidate,
   proof, or review action;
-- rebase is acceptable when resolving an actual conflict or when the lane owner judges
-  that a base refresh materially simplifies active work or reduces a concrete
+- rebase is acceptable when resolving an actual conflict or when the accountable root
+  judges that a base refresh materially simplifies active work or reduces a concrete
   integration risk;
 - repeated rebases solely to chase `main` or replay CI are churn; distinct integration
   work may justify more than one.
