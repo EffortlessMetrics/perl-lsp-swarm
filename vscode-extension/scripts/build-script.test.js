@@ -7,8 +7,7 @@ const { test } = require('node:test');
 
 const extensionRoot = path.resolve(__dirname, '..');
 const buildScript = path.join(extensionRoot, 'build.sh');
-const bashPath =
-  process.platform === 'win32' ? 'C:\\Program Files\\Git\\bin\\bash.exe' : 'bash';
+const bashPath = process.platform === 'win32' ? 'C:\\Program Files\\Git\\bin\\bash.exe' : 'bash';
 const steps = ['doctor', 'ci', 'build', 'bundle-lsp', 'package'];
 
 function runBuild(failAt = '') {
@@ -32,11 +31,10 @@ exit 0
       PATH: [directory, process.env.PATH].filter(Boolean).join(path.delimiter),
       FAKE_NPM_LOG: logPath,
       FAKE_NPM_FAIL_AT: failAt,
-      FAKE_NPM: fakeNpm,
     };
     const resolveCommand =
       process.platform === 'win32' ? 'cygpath -w "$(command -v npm)"' : 'command -v npm';
-    const resolved = spawnSync(bashPath, ['-lc', resolveCommand], {
+    const resolved = spawnSync(bashPath, ['-c', resolveCommand], {
       cwd: extensionRoot,
       encoding: 'utf8',
       env,
@@ -44,7 +42,10 @@ exit 0
     });
     assert.equal(resolved.status, 0, resolved.stderr);
     const normalizeExecutable = (value) => {
-      let normalized = value.trim().replaceAll('\\', '/').toLowerCase();
+      let normalized = value.trim().replaceAll('\\', '/');
+      if (process.platform === 'win32') {
+        normalized = normalized.toLowerCase();
+      }
       if (process.platform === 'win32' && /^\/[a-z]\//.test(normalized)) {
         normalized = `${normalized[1]}:${normalized.slice(2)}`;
       }

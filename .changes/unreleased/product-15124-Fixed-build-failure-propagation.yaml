@@ -1,0 +1,6 @@
+project: product
+component: Developer experience
+kind: Fixed
+body: >-
+  The VS Code extension build now stops and reports failure when a toolchain,
+  build, bundling, or packaging step fails.
