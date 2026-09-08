@@ -465,6 +465,27 @@ impl Lowerer {
                     self.visit(arg, confidence);
                 }
             }
+            NodeKind::Identifier { name } if is_synthesized_operand(node, name) => {
+                // A parser-synthesized operand, not source text. Unbound `s///`,
+                // `tr///` and `y///` materialize their implicit `$_` topic as a
+                // zero-width `Identifier { name: "$_" }` (#14641).
+                //
+                // Adopting it would assert a maximum-strength claim — `ExactAst`
+                // provenance at `High` confidence — about a name unrepresentable
+                // in Perl source, over a range covering no text. Emit neither the
+                // `BarewordExpr` item nor the `BarewordFact`, so no downstream
+                // consumer can mistake the fabrication for a bareword. Modeling
+                // the implicit topic as a first-class operand is #6666's claim,
+                // not this arm's.
+                //
+                // The empty range is the proven discriminator. The sigil alone
+                // is not enough: `new $class` is a *written* dynamic indirect
+                // constructor whose receiver the parser records as a real,
+                // nonzero-width `Identifier { name: "$class" }`. Dropping that
+                // would discard a source-backed fact. Whether such a receiver
+                // should be a bareword at all is a separate defect (#15031); this
+                // arm deliberately leaves that behavior exactly as it was.
+            }
             NodeKind::Identifier { name } => {
                 let item_id = self.push_item(
                     node,
@@ -2542,12 +2563,52 @@ fn is_export_symbol_name(value: &str) -> bool {
     let Some(first) = value.chars().next() else {
         return false;
     };
-    let body = if matches!(first, '$' | '@' | '%' | '&' | '*') {
-        &value[first.len_utf8()..]
-    } else {
-        value
-    };
+    let body = if PERL_SIGILS.contains(&first) { &value[first.len_utf8()..] } else { value };
     is_bareword_like(body)
+}
+
+/// Sigils that introduce a non-bareword Perl symbol form.
+///
+/// A bareword is by definition an unquoted name carrying no sigil, so each of
+/// these characters marks a name as something other than a bareword.
+const PERL_SIGILS: [char; 5] = ['$', '@', '%', '&', '*'];
+
+/// Whether `value` begins with a Perl sigil, and therefore cannot be a bareword.
+fn is_sigil_prefixed(value: &str) -> bool {
+    value.chars().next().is_some_and(|first| PERL_SIGILS.contains(&first))
+}
+
+/// Whether an `Identifier` node was fabricated by the parser rather than scanned
+/// from source, and so must not be recorded as a bareword (#14641).
+///
+/// Two conditions, of unequal strength:
+///
+/// - **the range is empty**, so the node covers no source text at all;
+/// - **the name carries a sigil**, so it could not be a bareword even if it had.
+///
+/// The empty range is the load-bearing half. The sigil alone is *not* sufficient
+/// and an earlier revision that relied on it was wrong: `new $class` is a legal
+/// dynamic indirect constructor whose receiver arrives here as a real
+/// `Identifier { name: "$class" }` spanning the characters the author typed.
+/// Discarding that would drop a source-backed fact. (Whether such a receiver
+/// should be classified as a *bareword* at all is a separate defect, #15031;
+/// this predicate deliberately leaves that behavior unchanged.)
+///
+/// The sigil test is defence in depth rather than a proven discriminator. A finite
+/// probe over malformed and recovery-path inputs found no zero-width
+/// `Identifier` with a non-sigil name; every zero-width identifier in that
+/// corpus was the `"$_"` topic. Keeping the sigil test
+/// means that if recovery ever does synthesize a zero-width placeholder named
+/// like an ordinary bareword, it is still recorded rather than silently dropped
+/// by this arm. `hir_synthesized_topic_not_a_bareword.rs` states that limit
+/// rather than implying the condition is falsifiable today.
+///
+/// Together they identify the synthesized shape: a name that cannot be a
+/// bareword, over a span containing nothing. The implicit `$_` topic of an
+/// unbound `s///`, `tr///` or `y///` is the only such node the parser builds
+/// today, at three sites (`expressions/quotes.rs`, `expressions/primary.rs`).
+fn is_synthesized_operand(node: &Node, name: &str) -> bool {
+    node.location.start == node.location.end && is_sigil_prefixed(name)
 }
 
 fn is_bareword_like(value: &str) -> bool {

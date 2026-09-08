@@ -263,7 +263,22 @@ Otherwise detect, explain, repair, and continue.
 - read nearest package-local owner guidance before modifying an owning crate;
 - production code must not use `unwrap`, `expect`, `panic!`, `todo!`,
   `unimplemented!`, `abort`, or `dbg!` outside documented narrow exceptions;
-- never use `git stash` in worktrees; use scoped restore or a WIP commit;
+- never use `git stash`: `refs/stash` is a single repository-global stack shared by
+  every worktree, so a concurrent agent's `pop` can silently take your entry into
+  its own tree and drop the ref; use scoped restore or a WIP commit;
+- immediately before candidate mutation, establish the exact candidate, head, and
+  mutation owner from live evidence, using typed checks applicable to that operation;
+  new-candidate admission is not a resume check. For an existing candidate, use
+  applicable resume/reuse guidance and current ownership evidence; an open PR alone
+  does not establish another writer. Missing, stale, or contradictory ownership
+  evidence is `NOT_PROVEN`; read-only research and review need no writer admission;
+- if another current writer is established, stop mutating that candidate; continue as
+  a reviewer or take a different claim;
+- rebase and force-push require a candidate's single writer and the applicable user and
+  repository authorization; writer ownership alone grants no rewrite permission;
+- if commits from multiple contexts have already reached the branch, first establish
+  one writer; that writer preserves the commits by merging rather than rewriting
+  history, subject to the applicable authorization;
 - stage intended paths explicitly;
 - use one worktree per genuine concurrent write claim, not per lifecycle pass;
 - regenerate generated projections only through their owning writer and publication

@@ -46,6 +46,21 @@ created = "2026-08-15"
 review_after = "2026-11-15"
 
 [[allow]]
+id = "non-rust-changelog-product-12815-fixture"
+path = "xtask/tests/fixtures/product-12815-Fixed-221500.yaml"
+kind = "test_fixture"
+language = "yaml"
+surface = "fixtures"
+classification = "test"
+owner = "tooling/changelog"
+reason = "Permanent Changie fragment fixture preserving the product-12815 folded-body regression after release batching removes unreleased entries."
+covered_by = [
+  "cargo test -p xtask --bin xtask tasks::changelog::tests::repaired_product_12815_fragment_is_schema_valid -- --exact --nocapture",
+]
+created = "2026-09-02"
+review_after = "2027-03-02"
+
+[[allow]]
 id = "non-rust-generated-badge-endpoints"
 glob = "badges/*.json"
 kind = "generated_badge_endpoint"
@@ -437,6 +452,22 @@ covered_by = [
 ]
 created = "2026-08-16"
 review_after = "2026-11-16"
+
+[[allow]]
+id = "non-rust-worked-lane-corpus-test"
+path = "tests/test_worked_lane_corpus.py"
+kind = "control_plane_contract_test"
+language = "python"
+surface = "ci"
+classification = "test"
+owner = "release/ci"
+reason = "Binds the worked-lane category ledger to the corpus it accounts for, so an added, renamed, or deleted example cannot leave the accounting stale and a category cannot borrow a lane or receipt that demonstrates something else. Standard-library `unittest` and `re` only, so it needs no Rust build and no Python dependency install."
+covered_by = [
+  "python3 -m unittest tests/test_worked_lane_corpus.py",
+  ".github/workflows/worked-lane-corpus.yml",
+]
+created = "2026-08-29"
+review_after = "2026-11-29"
 
 [[allow]]
 id = "non-rust-legacy-authority-banner-migrator"
