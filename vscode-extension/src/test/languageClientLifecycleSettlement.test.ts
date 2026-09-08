@@ -579,7 +579,7 @@ describe('LanguageClientLifecycle client cleanup admission', () => {
 
   test('a throwing terminal recheck remains fail-closed after the child exits', async () => {
     let checks = 0;
-    const { controller, child, clients } = makeStartupProcessController(async (process) => {
+    const { controller, child, clients } = makeStartupProcessController(async (_process) => {
       checks += 1;
       if (checks === 1) return false;
       throw new Error('process observation unavailable');
