@@ -814,9 +814,6 @@ fn declared_parallel_problems(
             ));
             continue;
         }
-        if !left_present {
-            continue;
-        }
         let ordered = closure.get(left).is_some_and(|targets| targets.contains(right))
             || closure.get(right).is_some_and(|targets| targets.contains(left));
         if ordered {

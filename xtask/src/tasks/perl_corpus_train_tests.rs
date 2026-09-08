@@ -6,9 +6,9 @@
 //! generated projections must pass and stay byte-deterministic.
 
 use super::{
-    INVALID_DIR, MANIFEST_PATH, SCHEMA_PATH, SHUFFLED_PATH, canonical_form,
-    invalid_fixture_names, load_validated_manifest, render_explain_static, render_projections,
-    title_fingerprint, validate_canonical_document, validate_document,
+    INVALID_DIR, MANIFEST_PATH, SCHEMA_PATH, SHUFFLED_PATH, canonical_form, invalid_fixture_names,
+    load_validated_manifest, render_explain_static, render_projections, title_fingerprint,
+    validate_canonical_document, validate_document,
 };
 use color_eyre::eyre::{Result, bail, eyre};
 use serde_json::{Map, Value};
@@ -584,7 +584,9 @@ fn canonical_loader_rejects_missing_declared_parallel_endpoints() -> Result<()> 
         std::fs::create_dir_all(
             manifest_path.parent().ok_or_else(|| eyre!("manifest parent directory"))?,
         )?;
-        std::fs::create_dir_all(schema_path.parent().ok_or_else(|| eyre!("schema parent directory"))?)?;
+        std::fs::create_dir_all(
+            schema_path.parent().ok_or_else(|| eyre!("schema parent directory"))?,
+        )?;
         let mut doc = load(MANIFEST_PATH)?;
         if mutation == "remove" {
             for endpoint in ["pc_property_suites_11580", "pc_fixture_promotion_11034"] {
