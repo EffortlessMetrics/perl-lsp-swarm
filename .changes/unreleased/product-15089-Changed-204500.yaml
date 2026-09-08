@@ -2,12 +2,12 @@ project: product
 component: Packaging and distribution
 kind: Changed
 body: >-
-  Publish only the perllsp runtime Docker image. The unsuffixed
-  `perl-lsp:<version>` tags previously carried the Rust build toolchain, which
-  ships no `perllsp`; that image is retired from product publication and the
-  `-perl` runtime tags are the supported reference.
+  Future releases publish only the perllsp runtime Docker image. Unsuffixed
+  builder tags stop receiving new releases; existing registry tags are not
+  rewritten. Use the documented runtime image references to run perllsp.
+  The Rust toolchain Dockerfile remains a local CI scan input.
 time: 2026-09-07T20:45:00Z
 custom:
   PR: "15089"
   Slug: retire-rust-builder-publication
-  Breaking: "no"
+  Breaking: "yes"
