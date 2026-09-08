@@ -89,7 +89,7 @@ AST kinds tracked: `76`. HIR construct kinds tracked: `29`.
 | `DataSection` | `lowered` | `DataSectionDecl` | Explicitly handled: emits a DataSectionDecl shell with exact marker and payload ranges; payload is an opaque source region and is never lowered as Perl. |
 | `Class` | `lowered` | `ClassDecl` | Lowered as class-declaration shell; class body is traversed. No dedicated scope frame or stash slot yet. |
 | `Format` | `intentionally_skipped` | - | Explicitly handled: records a ScopeGraph format frame and stash slot; no HIR item yet. |
-| `Identifier` | `lowered` | `BarewordExpr` | Lowered as bareword expression shell; records bareword fact. |
+| `Identifier` | `lowered` | `BarewordExpr` | Lowered as bareword expression shell; records bareword fact. A sigil-prefixed name cannot be a bareword, so the parser-synthesized implicit topic emits neither item nor fact. |
 | `Error` | `intentionally_skipped` | - | Recovered partials are traversed; raw error nodes emit no HIR. |
 | `MissingExpression` | `intentionally_skipped` | - | Parser recovery placeholder, intentionally no HIR item. |
 | `MissingStatement` | `intentionally_skipped` | - | Parser recovery placeholder, intentionally no HIR item. |

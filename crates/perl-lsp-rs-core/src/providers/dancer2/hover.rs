@@ -12,6 +12,7 @@
 //! where #8924 proves it. Never invents bodies or locations.
 
 use super::activation::Dancer2FileActivations;
+use super::activation::Dancer2TwoXPackageActivation;
 use super::facts::CanonicalDancer2FileFacts;
 use perl_semantic_facts::framework_adapters::dancer2::{
     DANCER2_DSL_CONTRACT_VERSION, Dancer2KeywordState, DslKeywordScope,
@@ -56,6 +57,14 @@ pub fn hover_projection_at(
     package: &str,
     offset: usize,
 ) -> Option<RouteHoverProjection> {
+    // A 2.x-resolved module routes the document to the 2.x contract
+    // (#14989) — but that adapter is AdapterDisposition::Shadow: its output
+    // permits comparison, not user-facing rendering. The production hover
+    // therefore serves nothing for a 2.x package; comparison consumers use
+    // `two_x_shadow_hover_projection_at` explicitly (#15006 review).
+    if activations.two_x_packages.iter().any(|p| p.package == package) {
+        return None;
+    }
     let activation = activations.for_package(package)?;
     if !activation.facts.is_exact() {
         return None;
@@ -69,6 +78,90 @@ pub fn hover_projection_at(
         return Some(route_hover(route, facts, &version));
     }
     keyword_hover(&activation.facts, facts, ast, offset, &version, package)
+}
+
+/// Keyword hover under the 2.x contract, for COMPARISON consumers only
+/// (#14989): the 2.x adapter is `AdapterDisposition::Shadow`, so this
+/// projection is never wired into the production hover path. Route-handler-
+/// only keywords state their scope honestly: the 2.x route-family leaf that
+/// would establish request context at this position is a separate claim,
+/// so hover says so instead of guessing.
+// Unused in the lib build BY DESIGN: the production hover stays silent
+// while the adapter is Shadow; only comparison consumers call this.
+#[allow(dead_code)]
+pub fn two_x_shadow_hover_projection_at(
+    activations: &Dancer2FileActivations,
+    ast: &perl_parser_core::Node,
+    package: &str,
+    offset: usize,
+) -> Option<RouteHoverProjection> {
+    let activation = activations.two_x_packages.iter().find(|p| p.package == package)?;
+    if !activation.facts.is_exact() {
+        return None;
+    }
+    two_x_shadow_keyword_hover(activation, ast, offset, package)
+}
+
+#[allow(dead_code)]
+fn two_x_shadow_keyword_hover(
+    activation: &Dancer2TwoXPackageActivation,
+    ast: &perl_parser_core::Node,
+    offset: usize,
+    package: &str,
+) -> Option<RouteHoverProjection> {
+    use perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXKeywordState;
+
+    let version = match &activation.facts.state {
+        perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXActivationState::Exact {
+            framework_version,
+            ..
+        } => framework_version.clone(),
+        _ => return None,
+    };
+    let vocabulary: std::collections::HashSet<&str> = activation
+        .facts
+        .keywords
+        .iter()
+        .filter(|keyword| keyword.state == Dancer2TwoXKeywordState::Imported)
+        .map(|keyword| keyword.keyword.as_str())
+        .collect();
+    let mut found = None;
+    find_keyword_usage(ast, offset, &vocabulary, &mut found);
+    let keyword_name = found?;
+    if declared_sub_names(ast).contains(&(package.to_string(), keyword_name.clone())) {
+        // A local `sub <name>` owns the name: the ordinary Perl hover path
+        // covers it, exactly like the 1.x contract.
+        return None;
+    }
+    let keyword =
+        activation.facts.keywords.iter().find(|keyword| keyword.keyword == keyword_name)?;
+    let availability = match keyword.scope {
+        perl_semantic_facts::framework_adapters::dancer2::DslKeywordScope::Global => {
+            "global (available in any package scope that activated the DSL)".to_string()
+        }
+        perl_semantic_facts::framework_adapters::dancer2::DslKeywordScope::RouteHandlerOnly => {
+            "route-handler only (availability at this position is not yet established for the              2.x contract; the 2.x route-family leaf owns that claim)"
+                .to_string()
+        }
+        _ => "unknown scope".to_string(),
+    };
+    let deprecation = keyword
+        .deprecation_replacement
+        .map(|replacement| {
+            format!(
+                "
+- deprecation: replaced by `{replacement}` (upstream runtime croak)"
+            )
+        })
+        .unwrap_or_default();
+    let content = format!(
+        "**Dancer2 2.x DSL keyword `{keyword_name}`** (`Dancer2` {version})
+- availability:          {availability}
+- keyword contract: `{}`{deprecation}
+- provenance: comparison-only          import fact of this activation (package `{package}`; not publication authority)",
+        activation.facts.dsl_contract_version,
+    );
+    Some(RouteHoverProjection::Keyword { content })
 }
 
 /// `(package, name)` pairs of subroutine declarations in the AST.
@@ -359,8 +452,13 @@ mod tests {
         let mut parser = Parser::new(source);
         let ast = must_with(parser.parse(), "fixture must parse");
         let module = RuntimeDancer2Module::new("lib/Dancer2.pm", "1.1.1");
-        let activations =
-            file_activations(&ast, FileId(1), Some(&module), &SourceGeneration::known("g1"));
+        let activations = file_activations(
+            &ast,
+            source,
+            FileId(1),
+            Some(&module),
+            &SourceGeneration::known("g1"),
+        );
         let facts = canonical_file_facts(&ast, FileId(1), &activations);
         Setup { activations, facts, ast }
     }
@@ -434,7 +532,8 @@ mod tests {
         let source = "get '/x' => sub { 1 };";
         let mut parser = Parser::new(source);
         let ast = must_with(parser.parse(), "fixture must parse");
-        let activations = file_activations(&ast, FileId(1), None, &SourceGeneration::known("g1"));
+        let activations =
+            file_activations(&ast, source, FileId(1), None, &SourceGeneration::known("g1"));
         let facts = canonical_file_facts(&ast, FileId(1), &activations);
         assert!(hover_projection_at(&activations, &facts, &ast, "main", 5).is_none());
     }
@@ -543,5 +642,275 @@ mod tests {
             "params keyword",
         );
         assert_eq!(params.scope, DslKeywordScope::RouteHandlerOnly);
+    }
+
+    fn parse(source: &str) -> perl_parser_core::Node {
+        use perl_test_must::must_with;
+        let mut parser = Parser::new(source);
+        must_with(parser.parse(), "fixture must parse")
+    }
+
+    // ---------------------------------------------------------------------------
+    // Slice 2 (#14989): downstream rendering of the 2.x carrier with
+    // route-handler scope honesty.
+    // ---------------------------------------------------------------------------
+
+    /// The canonical fact projection carries exact 2.x activations and their
+    /// source-level route declarations, contract-separated from the 1.x fields.
+    #[test]
+    fn two_x_exact_activations_flow_into_canonical_facts() {
+        let source = "package App;
+use Dancer2;
+get '/x' => sub { 1 };
+";
+        let ast = parse(source);
+        let module = RuntimeDancer2Module::new("lib/Dancer2.pm", "2.0.1");
+        let activations = file_activations(
+            &ast,
+            source,
+            FileId(1),
+            Some(&module),
+            &SourceGeneration::known("gen-test"),
+        );
+        let facts = canonical_file_facts(&ast, FileId(1), &activations);
+        assert_eq!(facts.two_x.len(), 1, "the exact 2.x activation is carried");
+        assert_eq!(facts.two_x[0].package, "App");
+        assert!(facts.two_x[0].facts.is_exact());
+        assert!(
+            !facts.two_x_extracted_routes.is_empty(),
+            "the package's route declarations are retained for bounded diagnostics"
+        );
+        // Contract separation: the 1.x fields stay empty for a 2.x document.
+        assert!(facts.extracted_routes.is_empty());
+        assert!(facts.routes.is_empty());
+        // A 1.x document carries nothing in the 2.x carrier.
+        let one_x_source = "package App;
+use Dancer2;
+";
+        let one_x_ast = parse(one_x_source);
+        let one_x_module = RuntimeDancer2Module::new("lib/Dancer2.pm", "1.1.1");
+        let one_x = file_activations(
+            &one_x_ast,
+            one_x_source,
+            FileId(1),
+            Some(&one_x_module),
+            &SourceGeneration::known("gen-test"),
+        );
+        let one_x_facts = canonical_file_facts(&one_x_ast, FileId(1), &one_x);
+        assert!(one_x_facts.two_x.is_empty());
+        assert!(one_x_facts.two_x_extracted_routes.is_empty());
+    }
+
+    /// Hover on a GLOBAL 2.x keyword renders global availability under the
+    /// 2.x contract with comparison-only provenance.
+    #[test]
+    fn two_x_hover_names_the_two_x_contract_and_global_scope() {
+        use perl_test_must::must_some_with;
+        let source = "package App;
+use Dancer2;
+dancer_app;
+";
+        let ast = parse(source);
+        let module = RuntimeDancer2Module::new("lib/Dancer2.pm", "2.0.1");
+        let activations = file_activations(
+            &ast,
+            source,
+            FileId(1),
+            Some(&module),
+            &SourceGeneration::known("gen-test"),
+        );
+        let facts = canonical_file_facts(&ast, FileId(1), &activations);
+        let offset = must_some_with(source.find("dancer_app"), "keyword in fixture");
+        // The production path stays silent for shadow 2.x packages; the
+        // explicit comparison entry point renders.
+        assert!(
+            hover_projection_at(&activations, &facts, &ast, "App", offset).is_none(),
+            "shadow 2.x facts must not reach the production hover"
+        );
+        let projection = must_some_with(
+            two_x_shadow_hover_projection_at(&activations, &ast, "App", offset),
+            "a keyword hover for a 2.x global keyword",
+        );
+        assert!(
+            matches!(&projection, RouteHoverProjection::Keyword { content }
+                if content.contains("2.x DSL keyword `dancer_app`")
+                    && content.contains("global")
+                    && content.contains("comparison-only")),
+            "unexpected 2.x global hover: {projection:?}"
+        );
+    }
+
+    /// Hover on a ROUTE-HANDLER-ONLY 2.x keyword states its scope honestly:
+    /// availability at the position is not established for the 2.x contract
+    /// instead of borrowing the 1.x request-context machinery.
+    #[test]
+    fn two_x_hover_keeps_route_handler_scope_honest() {
+        use perl_test_must::must_some_with;
+        let source = "package App;
+use Dancer2;
+params;
+";
+        let ast = parse(source);
+        let module = RuntimeDancer2Module::new("lib/Dancer2.pm", "2.0.1");
+        let activations = file_activations(
+            &ast,
+            source,
+            FileId(1),
+            Some(&module),
+            &SourceGeneration::known("gen-test"),
+        );
+        let facts = canonical_file_facts(&ast, FileId(1), &activations);
+        let offset = must_some_with(source.find("params"), "keyword in fixture");
+        let projection = must_some_with(
+            two_x_shadow_hover_projection_at(&activations, &ast, "App", offset),
+            "a keyword hover for a 2.x route-handler-only keyword",
+        );
+        assert!(
+            matches!(&projection, RouteHoverProjection::Keyword { content }
+                if content.contains("route-handler only") && content.contains("not yet established")),
+            "the 2.x request-context boundary must be explicit: {projection:?}"
+        );
+    }
+
+    /// A same-package `sub params` owns its name: the ordinary Perl hover
+    /// path covers it, exactly like the 1.x contract.
+    #[test]
+    fn two_x_hover_yields_to_local_sub_declarations() {
+        use perl_test_must::must_some_with;
+        let source = "package App;
+use Dancer2;
+sub params { 1 }
+params;
+";
+        let ast = parse(source);
+        let module = RuntimeDancer2Module::new("lib/Dancer2.pm", "2.0.1");
+        let activations = file_activations(
+            &ast,
+            source,
+            FileId(1),
+            Some(&module),
+            &SourceGeneration::known("gen-test"),
+        );
+        let facts = canonical_file_facts(&ast, FileId(1), &activations);
+        let offset = must_some_with(source.rfind("params"), "call in fixture");
+        assert!(
+            two_x_shadow_hover_projection_at(&activations, &ast, "App", offset).is_none(),
+            "a locally declared name is not a DSL hover"
+        );
+    }
+
+    /// Route-family leaf (#14989): exact 2.x packages mint route facts
+    /// through the shared core with the TwoX contract marker.
+    #[test]
+    fn two_x_route_facts_mint_with_the_two_x_contract_marker() {
+        let source = "package App;
+use Dancer2;
+get '/x' => sub { 1 };
+";
+        let ast = parse(source);
+        let module = RuntimeDancer2Module::new("lib/Dancer2.pm", "2.0.1");
+        let activations = file_activations(
+            &ast,
+            source,
+            FileId(1),
+            Some(&module),
+            &SourceGeneration::known("gen-test"),
+        );
+        let facts = canonical_file_facts(&ast, FileId(1), &activations);
+        assert_eq!(facts.two_x_route_facts.len(), 1, "one bundle per exact 2.x package");
+        let bundle = &facts.two_x_route_facts[0];
+        assert_eq!(
+            bundle.contract,
+            perl_semantic_facts::framework_adapters::dancer2_routes::RouteFactsContract::TwoX
+        );
+        assert_eq!(bundle.routes.len(), 1, "the get route mints");
+        assert_eq!(bundle.routes[0].framework_version, "2.0.1");
+        // Provenance: 2.x leaves attribute to the 2.X adapter, never 1.x.
+        assert_eq!(
+            bundle.routes[0].adapter_id,
+            perl_semantic_facts::framework_adapters::dancer2_two_x::DANCER2_TWO_X_ADAPTER_ID
+        );
+        // Handler context mints in the same pass for the registering inline
+        // handler: route-handler-only scope is now established for 2.x.
+        assert_eq!(bundle.handler_contexts.len(), 1);
+    }
+
+    /// A 2.x-excluded keyword's route never mints, and the 1.x bundle stays
+    /// OneX-marked.
+    #[test]
+    fn two_x_excluded_keyword_routes_never_mint_and_one_x_marker_holds() {
+        let excluded = "package App;
+use Dancer2 '!get';
+get '/x' => sub { 1 };
+";
+        let ast = parse(excluded);
+        let module = RuntimeDancer2Module::new("lib/Dancer2.pm", "2.0.1");
+        let activations = file_activations(
+            &ast,
+            excluded,
+            FileId(1),
+            Some(&module),
+            &SourceGeneration::known("gen-test"),
+        );
+        let facts = canonical_file_facts(&ast, FileId(1), &activations);
+        assert!(
+            facts.two_x_route_facts.iter().all(|b| b.routes.is_empty()),
+            "an excluded route keyword mints no route"
+        );
+        // The OneX contract marker holds at the route-family producer for
+        // the 1.x path.
+        assert!(
+            facts.two_x_route_facts.iter().all(|b| {
+                b.contract
+                == perl_semantic_facts::framework_adapters::dancer2_routes::RouteFactsContract::TwoX
+            }),
+            "every 2.x bundle must carry the TwoX marker"
+        );
+        let one_x_source = "package App;
+use Dancer2;
+get '/x' => sub { 1 };
+";
+        let one_x_ast = parse(one_x_source);
+        let one_x_module = RuntimeDancer2Module::new("lib/Dancer2.pm", "1.1.1");
+        let one_x = file_activations(
+            &one_x_ast,
+            one_x_source,
+            FileId(1),
+            Some(&one_x_module),
+            &SourceGeneration::known("gen-test"),
+        );
+        let one_x_facts = canonical_file_facts(&one_x_ast, FileId(1), &one_x);
+        assert!(!one_x_facts.routes.is_empty(), "the 1.x path still mints routes");
+        assert!(
+            facts.two_x_route_facts.is_empty()
+                || facts.two_x_route_facts.iter().all(|b| {
+                    b.contract
+            == perl_semantic_facts::framework_adapters::dancer2_routes::RouteFactsContract::TwoX
+                })
+        );
+        // The ONEX marker is load-bearing at the producer: a 1.x family
+        // bundle minted from a detected 1.x activation carries it, so a
+        // regression flipping the default cannot pass.
+        let one_x_detection =
+            must_some_with(one_x.detection.as_ref(), "the 1.x path carries its detection");
+        let one_x_activation = must_some_with(one_x.packages.first(), "1.x activation");
+        let route_contexts =
+            perl_semantic_analyzer::analysis::dancer2_routes::extract_dancer2_route_contexts(
+                &one_x_ast,
+                FileId(1),
+            );
+        let family =
+            perl_semantic_facts::framework_adapters::dancer2_routes::dancer2_route_family_facts(
+                one_x_detection,
+                &one_x_activation.facts,
+                Some("App"),
+                &route_contexts.routes,
+                &route_contexts.prefixes,
+            );
+        assert_eq!(
+            family.contract,
+            perl_semantic_facts::framework_adapters::dancer2_routes::RouteFactsContract::OneX
+        );
+        assert!(!family.routes.is_empty(), "the producer still mints 1.x routes");
     }
 }

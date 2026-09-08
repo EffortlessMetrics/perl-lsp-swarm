@@ -64,6 +64,9 @@ impl LspServer {
             pending_request_ids: Arc::new(Mutex::new(HashSet::new())),
             workspace_folders: Arc::new(Mutex::new(Vec::new())),
             workspace_identity_generation: Arc::new(AtomicU64::new(0)),
+            dependency_facts_generation: Arc::new(AtomicU64::new(0)),
+            stale_dependency_facts: Arc::new(Mutex::new(std::collections::BTreeSet::new())),
+            metadata_refresh_serialization: Arc::new(Mutex::new(())),
             workspace_identity_lock: Arc::new(Mutex::new(())),
             single_file_project_config: Arc::new(Mutex::new(None)),
             single_file_project_config_generation: Arc::new(AtomicU64::new(0)),
@@ -257,6 +260,9 @@ impl LspServer {
             pending_request_ids: Arc::new(Mutex::new(HashSet::new())),
             workspace_folders: Arc::new(Mutex::new(Vec::new())),
             workspace_identity_generation: Arc::new(AtomicU64::new(0)),
+            dependency_facts_generation: Arc::new(AtomicU64::new(0)),
+            stale_dependency_facts: Arc::new(Mutex::new(std::collections::BTreeSet::new())),
+            metadata_refresh_serialization: Arc::new(Mutex::new(())),
             workspace_identity_lock: Arc::new(Mutex::new(())),
             single_file_project_config: Arc::new(Mutex::new(None)),
             single_file_project_config_generation: Arc::new(AtomicU64::new(0)),
@@ -391,6 +397,9 @@ impl LspServer {
             pending_request_ids: Arc::new(Mutex::new(HashSet::new())),
             workspace_folders: Arc::new(Mutex::new(Vec::new())),
             workspace_identity_generation: Arc::new(AtomicU64::new(0)),
+            dependency_facts_generation: Arc::new(AtomicU64::new(0)),
+            stale_dependency_facts: Arc::new(Mutex::new(std::collections::BTreeSet::new())),
+            metadata_refresh_serialization: Arc::new(Mutex::new(())),
             workspace_identity_lock: Arc::new(Mutex::new(())),
             single_file_project_config: Arc::new(Mutex::new(None)),
             single_file_project_config_generation: Arc::new(AtomicU64::new(0)),
@@ -574,7 +583,7 @@ mod tests {
         // loop turns that exact error into the typed first cause reported in
         // the settlement record asserted below.
         let mut probe_sink = FailingWriter;
-        let probe = probe_sink.write(&mut Vec::new());
+        let probe = probe_sink.write(&[]);
         assert!(
             matches!(&probe, Err(err) if err.kind() == io::ErrorKind::ConnectionAborted),
             "controlled writer must fail writes with ConnectionAborted, got {probe:?}"

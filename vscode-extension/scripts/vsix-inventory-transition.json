@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "owner_issue": 14718,
-  "reason": "Corrects a stale size-only row. rolldown 1.2.6 (#14702) emits out/extension.js at 1636669 bytes where 1.2.5 emitted 1636125; the baseline landed in #14680 was measured against 1.2.5 and the two changes crossed. Measured twice from a clean npm ci at the current main. The 29-file package is unchanged: no file additions, removals, or permission loosening.",
-  "base_baseline_file_sha256": "ead549f99a68d55a78f83a3b94d6e95cfc860be529d79813b6bc6ff13e070a75",
-  "candidate_baseline_file_sha256": "a966dac61b30ed8f950dc9910b5dfaf354ff131cf797dcd7ea24f6b1fa756c2a",
-  "base_inventory_sha256": "a526f424818662c8ec573c84cd9360eccfff0e3ee7a56d7123c4df047fdc02df",
-  "candidate_inventory_sha256": "71c92a4b4282c160e4db6417312fa3622a9ba9a8266bce7fbe6172b9ad5004f1"
+  "owner_issue": 15069,
+  "reason": "PR #15104 preserves the formatter-required Markdown badge separator. Both hosted Linux smoke artifacts 10037841067 and 10037834538 from run 34177157278 measured readme.md at 25231 bytes, up one byte, and total inventory at 1857610 bytes. All other 28 paths and sizes match base c01b5a6a856227cab6bf97db67d67937ce07f4bd. Package creation, behavioral smoke, activation recovery and crash recovery passed on c1b82c19ee7d4f2bb44953cdd3ba76538d7f883e; inventory alone refused the undeclared byte increase. This declaration uses that measured inventory, not a new package or installed-smoke receipt. No validator, threshold or admission rule changes; fresh hosted transition validation remains required.",
+  "base_baseline_file_sha256": "043e9c99fbe2ad917624b248a50ec498c808480445e219f2589178c2c0dd694e",
+  "candidate_baseline_file_sha256": "5c73582a6a7ae22a9f648492731ef3315336bfb17553aee22bfb48c332f89411",
+  "base_inventory_sha256": "689fa5b8485cd88e79dc906275a51883b3d574dccff965435faffe678beb5ec7",
+  "candidate_inventory_sha256": "7780c5f86aebdd24b900a76bf412fcc05ad1c1acfd0b16717be6444bd884bcbb"
 }
