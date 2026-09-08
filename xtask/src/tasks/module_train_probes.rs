@@ -153,12 +153,28 @@ fn semantic_anchor_present(source: &str, anchor: &str) -> bool {
     visitor.found
 }
 
+fn semantic_selector_present(source: &str, anchors: &[&str]) -> bool {
+    let Ok(file) = syn::parse_file(source) else {
+        return false;
+    };
+    if anchors.len() == 2
+        && let Some(variant) =
+            anchors.iter().copied().find(|anchor| anchor.starts_with("ModuleTrainCommand::"))
+        && let Some(call) =
+            anchors.iter().copied().find(|anchor| anchor.starts_with("module_train::"))
+    {
+        return dispatch_pair_present(&file, variant, call);
+    }
+    anchors.iter().all(|anchor| semantic_anchor_present(source, anchor))
+}
+
 fn dispatch_variant_present(file: &syn::File, anchor: &str) -> bool {
     let mut visitor = DispatchVisitor {
         expected: anchor.split("::").collect(),
         mode: DispatchMode::Variant,
-        in_match_arm: false,
-        in_module_train_dispatch: false,
+        root_dispatch_seen: false,
+        in_module_train_arm: false,
+        in_command_dispatch_arm: false,
         found: false,
     };
     visitor.visit_file(file);
@@ -169,8 +185,9 @@ fn dispatch_call_present(file: &syn::File, anchor: &str) -> bool {
     let mut visitor = DispatchVisitor {
         expected: anchor.split("::").collect(),
         mode: DispatchMode::Call,
-        in_match_arm: false,
-        in_module_train_dispatch: false,
+        root_dispatch_seen: false,
+        in_module_train_arm: false,
+        in_command_dispatch_arm: false,
         found: false,
     };
     visitor.visit_file(file);
@@ -186,8 +203,9 @@ enum DispatchMode {
 struct DispatchVisitor<'a> {
     expected: Vec<&'a str>,
     mode: DispatchMode,
-    in_match_arm: bool,
-    in_module_train_dispatch: bool,
+    root_dispatch_seen: bool,
+    in_module_train_arm: bool,
+    in_command_dispatch_arm: bool,
     found: bool,
 }
 
@@ -196,6 +214,9 @@ impl<'ast> Visit<'ast> for DispatchVisitor<'_> {
         if has_test_cfg(&node.attrs) || node.sig.ident != "run_cli" {
             return;
         }
+        self.root_dispatch_seen = false;
+        self.in_module_train_arm = false;
+        self.in_command_dispatch_arm = false;
         syn::visit::visit_item_fn(self, node);
     }
 
@@ -207,33 +228,136 @@ impl<'ast> Visit<'ast> for DispatchVisitor<'_> {
     }
 
     fn visit_expr_match(&mut self, node: &'ast syn::ExprMatch) {
-        self.visit_expr(&node.expr);
-        for arm in &node.arms {
-            let in_module_train_dispatch =
-                pattern_contains_path(&arm.pat, &["Commands", "ModuleTrain"]);
-            if matches!(self.mode, DispatchMode::Variant)
-                && self.in_module_train_dispatch
-                && pattern_contains_path(&arm.pat, &self.expected)
-            {
-                self.found = true;
+        if !self.root_dispatch_seen
+            && node
+                .arms
+                .iter()
+                .any(|arm| pattern_contains_path(&arm.pat, &["Commands", "ModuleTrain"]))
+        {
+            self.root_dispatch_seen = true;
+            self.visit_expr(&node.expr);
+            for arm in &node.arms {
+                let was_in_module_train_arm = self.in_module_train_arm;
+                self.in_module_train_arm =
+                    pattern_contains_path(&arm.pat, &["Commands", "ModuleTrain"]);
+                self.visit_arm(arm);
+                self.in_module_train_arm = was_in_module_train_arm;
             }
-            let was_in_match_arm = self.in_match_arm;
-            let was_in_module_train_dispatch = self.in_module_train_dispatch;
-            self.in_match_arm = true;
-            self.in_module_train_dispatch |= in_module_train_dispatch;
-            self.visit_arm(arm);
-            self.in_match_arm = was_in_match_arm;
-            self.in_module_train_dispatch = was_in_module_train_dispatch;
+        } else if self.in_module_train_arm && is_command_dispatch_expr(&node.expr) {
+            self.visit_expr(&node.expr);
+            for arm in &node.arms {
+                let was_in_command_dispatch_arm = self.in_command_dispatch_arm;
+                self.in_command_dispatch_arm = true;
+                if matches!(self.mode, DispatchMode::Variant)
+                    && pattern_contains_path(&arm.pat, &self.expected)
+                {
+                    self.found = true;
+                }
+                self.visit_arm(arm);
+                self.in_command_dispatch_arm = was_in_command_dispatch_arm;
+            }
+        } else {
+            syn::visit::visit_expr_match(self, node);
         }
     }
 
     fn visit_expr_call(&mut self, node: &'ast syn::ExprCall) {
         if matches!(self.mode, DispatchMode::Call)
-            && self.in_match_arm
-            && self.in_module_train_dispatch
+            && self.in_command_dispatch_arm
             && expression_path_matches(&node.func, &self.expected)
         {
             self.found = true;
+        }
+        syn::visit::visit_expr_call(self, node);
+    }
+}
+
+fn is_command_dispatch_expr(expression: &syn::Expr) -> bool {
+    matches!(expression, syn::Expr::Path(path) if path.path.is_ident("command"))
+}
+
+struct DispatchPairVisitor<'a> {
+    variant: Vec<&'a str>,
+    call: Vec<&'a str>,
+    root_dispatch_seen: bool,
+    in_module_train_arm: bool,
+    in_command_dispatch_arm: bool,
+    call_in_current_arm: bool,
+    found: bool,
+}
+
+fn dispatch_pair_present(file: &syn::File, variant: &str, call: &str) -> bool {
+    let mut visitor = DispatchPairVisitor {
+        variant: variant.split("::").collect(),
+        call: call.split("::").collect(),
+        root_dispatch_seen: false,
+        in_module_train_arm: false,
+        in_command_dispatch_arm: false,
+        call_in_current_arm: false,
+        found: false,
+    };
+    visitor.visit_file(file);
+    visitor.found
+}
+
+impl<'ast> Visit<'ast> for DispatchPairVisitor<'_> {
+    fn visit_item_fn(&mut self, node: &'ast syn::ItemFn) {
+        if has_test_cfg(&node.attrs) || node.sig.ident != "run_cli" {
+            return;
+        }
+        self.root_dispatch_seen = false;
+        self.in_module_train_arm = false;
+        self.in_command_dispatch_arm = false;
+        self.call_in_current_arm = false;
+        syn::visit::visit_item_fn(self, node);
+    }
+
+    fn visit_item_mod(&mut self, node: &'ast syn::ItemMod) {
+        if has_test_cfg(&node.attrs) {
+            return;
+        }
+        syn::visit::visit_item_mod(self, node);
+    }
+
+    fn visit_expr_match(&mut self, node: &'ast syn::ExprMatch) {
+        if !self.root_dispatch_seen
+            && node
+                .arms
+                .iter()
+                .any(|arm| pattern_contains_path(&arm.pat, &["Commands", "ModuleTrain"]))
+        {
+            self.root_dispatch_seen = true;
+            self.visit_expr(&node.expr);
+            for arm in &node.arms {
+                let previous = self.in_module_train_arm;
+                self.in_module_train_arm =
+                    pattern_contains_path(&arm.pat, &["Commands", "ModuleTrain"]);
+                self.visit_arm(arm);
+                self.in_module_train_arm = previous;
+            }
+        } else if self.in_module_train_arm && is_command_dispatch_expr(&node.expr) {
+            self.visit_expr(&node.expr);
+            for arm in &node.arms {
+                let previous_arm = self.in_command_dispatch_arm;
+                let previous_call = self.call_in_current_arm;
+                self.in_command_dispatch_arm = true;
+                self.call_in_current_arm = false;
+                let has_variant = pattern_contains_path(&arm.pat, &self.variant);
+                self.visit_arm(arm);
+                if has_variant && self.call_in_current_arm {
+                    self.found = true;
+                }
+                self.in_command_dispatch_arm = previous_arm;
+                self.call_in_current_arm = previous_call;
+            }
+        } else {
+            syn::visit::visit_expr_match(self, node);
+        }
+    }
+
+    fn visit_expr_call(&mut self, node: &'ast syn::ExprCall) {
+        if self.in_command_dispatch_arm && expression_path_matches(&node.func, &self.call) {
+            self.call_in_current_arm = true;
         }
         syn::visit::visit_expr_call(self, node);
     }
@@ -486,7 +610,7 @@ pub(super) fn node_probe(
                 satisfied = false;
                 break;
             };
-            if !selector.anchors.iter().all(|anchor| semantic_anchor_present(&text, anchor)) {
+            if !semantic_selector_present(&text, selector.anchors) {
                 satisfied = false;
                 break;
             }

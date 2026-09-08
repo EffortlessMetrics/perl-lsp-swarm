@@ -782,6 +782,39 @@ fn comments_and_literals_cannot_satisfy_dispatch_anchors() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn dispatch_variant_and_call_must_share_the_same_command_arm() -> Result<()> {
+    let tree = FakeTree::from_real()?
+        .without_anchor("xtask/src/main.rs", "ModuleTrainCommand::Status")?
+        .without_anchor("xtask/src/main.rs", "module_train::run_status")?
+        .with_added(
+            "xtask/src/main.rs",
+            r#"
+                fn run_cli(cli: Cli) {
+                    match cli.command {
+                        Commands::ModuleTrain { command } => match command {
+                            ModuleTrainCommand::Status { tree } => {
+                                module_train::run_next(&tree);
+                            }
+                            ModuleTrainCommand::Next { tree } => {
+                                module_train::run_status(&tree);
+                            }
+                            _ => {}
+                        },
+                        _ => {}
+                    }
+                }
+            "#,
+        )?;
+    let (outcome, unmet) = probe_for("C02", &tree)?;
+    if outcome == ProbeOutcome::Pass
+        || !unmet.iter().any(|component| component == "current_tree_probes")
+    {
+        bail!("crossed command arms satisfied C02: {outcome:?} unmet={unmet:?}");
+    }
+    Ok(())
+}
+
 /// The mirror control: an implementation module removed while the CLI still
 /// references it is equally not landed.
 #[test]
