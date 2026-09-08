@@ -4588,7 +4588,14 @@ review_after = "2026-11-13"
         )?;
         seed_frozen_pointer(temp.path())?;
         write_readme_allowlist(temp.path(), "policy/non-rust-allowlist.toml")?;
-        non_rust_inventory_check(temp.path())?;
+        // This is inherited inventory, so provide real parent history and pin
+        // that baseline independently of ambient CI refs or Git's branch name.
+        configure_git_identity(temp.path())?;
+        run_git(temp.path(), &["config", "commit.gpgsign", "false"])?;
+        run_git(temp.path(), &["add", "."])?;
+        commit_quiet(temp.path(), "inherited inventory")?;
+        run_git(temp.path(), &["commit", "--allow-empty", "-qm", "candidate"])?;
+        non_rust_inventory_check_with_baseline(temp.path(), Some("HEAD^"))?;
         Ok(())
     }
 
