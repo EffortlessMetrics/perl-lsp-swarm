@@ -9,6 +9,7 @@
  */
 
 import * as vscode from 'vscode';
+import { isPerlLanguageId } from './languageIdentity';
 
 // ---------------------------------------------------------------------------
 // POD → HTML conversion
@@ -727,7 +728,7 @@ ${bodyHtml}
 export function registerPodPreview(context: vscode.ExtensionContext): vscode.Disposable[] {
   const previewCommand = vscode.commands.registerCommand('perl-lsp.previewPod', () => {
     const editor = vscode.window.activeTextEditor;
-    if (!editor || editor.document.languageId !== 'perl') {
+    if (!editor || !isPerlLanguageId(editor.document.languageId)) {
       vscode.window.showErrorMessage('No active Perl file to preview POD documentation');
       return;
     }
@@ -735,7 +736,7 @@ export function registerPodPreview(context: vscode.ExtensionContext): vscode.Dis
   });
 
   const saveWatcher = vscode.workspace.onDidSaveTextDocument((document) => {
-    if (document.languageId !== 'perl') {
+    if (!isPerlLanguageId(document.languageId)) {
       return;
     }
     if (!podPreviewPanel) {

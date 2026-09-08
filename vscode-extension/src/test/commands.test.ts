@@ -90,6 +90,14 @@ const NEW_COMMAND_IDS = [
   'perl-lsp.showParserAst',
 ];
 
+// The perl5 alias is a supported language id (#7699, languageIdentity.ts):
+// every declarative editor-language gate must enumerate both ids, so commands
+// survive a buffer classified `perl5` by another extension or user
+// classification. The manifest contract test (languageIdentity.test.ts)
+// enforces the enumeration across menus/keybindings; these assertions keep the
+// per-command gate shape honest here.
+const PERL_EDITOR_LANG_GATE = 'editorLangId == perl || editorLangId == perl5';
+
 describe('perl-lsp command palette commands (issue #2058)', () => {
   let pkg: ExtensionManifest;
   let commandIds: string[];
@@ -127,17 +135,17 @@ describe('perl-lsp command palette commands (issue #2058)', () => {
 
     test('checkSyntax is guarded by editorLangId == perl', () => {
       const entry = paletteEntries.find((e: MenuEntry) => e.command === 'perl-lsp.checkSyntax');
-      expect(entry?.when).toContain('editorLangId == perl');
+      expect(entry?.when).toContain(PERL_EDITOR_LANG_GATE);
     });
 
     test('runCurrentTest is guarded by editorLangId == perl', () => {
       const entry = paletteEntries.find((e: MenuEntry) => e.command === 'perl-lsp.runCurrentTest');
-      expect(entry?.when).toContain('editorLangId == perl');
+      expect(entry?.when).toContain(PERL_EDITOR_LANG_GATE);
     });
 
     test('runTestAtCursor is guarded by editorLangId == perl', () => {
       const entry = paletteEntries.find((e: MenuEntry) => e.command === 'perl-lsp.runTestAtCursor');
-      expect(entry?.when).toContain('editorLangId == perl');
+      expect(entry?.when).toContain(PERL_EDITOR_LANG_GATE);
     });
 
     test('runAllTests is guarded by workspaceFolderCount >= 1', () => {
@@ -147,24 +155,24 @@ describe('perl-lsp command palette commands (issue #2058)', () => {
 
     test('formatDocument is guarded by editorLangId == perl', () => {
       const entry = paletteEntries.find((e: MenuEntry) => e.command === 'perl-lsp.formatDocument');
-      expect(entry?.when).toContain('editorLangId == perl');
+      expect(entry?.when).toContain(PERL_EDITOR_LANG_GATE);
     });
 
     test('runPerlCritic is guarded by editorLangId == perl', () => {
       const entry = paletteEntries.find((e: MenuEntry) => e.command === 'perl-lsp.runPerlCritic');
-      expect(entry?.when).toContain('editorLangId == perl');
+      expect(entry?.when).toContain(PERL_EDITOR_LANG_GATE);
     });
 
     test('setPerlCriticSeverity is guarded by editorLangId == perl', () => {
       const entry = paletteEntries.find(
         (e: MenuEntry) => e.command === 'perl-lsp.setPerlCriticSeverity',
       );
-      expect(entry?.when).toContain('editorLangId == perl');
+      expect(entry?.when).toContain(PERL_EDITOR_LANG_GATE);
     });
 
     test('showIncPaths is guarded by editorLangId == perl', () => {
       const entry = paletteEntries.find((e: MenuEntry) => e.command === 'perl-lsp.showIncPaths');
-      expect(entry?.when).toContain('editorLangId == perl');
+      expect(entry?.when).toContain(PERL_EDITOR_LANG_GATE);
     });
 
     test('openModule is guarded by workspaceFolderCount >= 1', () => {
@@ -174,7 +182,7 @@ describe('perl-lsp command palette commands (issue #2058)', () => {
 
     test('showParserAst is guarded by editorLangId == perl', () => {
       const entry = paletteEntries.find((e: MenuEntry) => e.command === 'perl-lsp.showParserAst');
-      expect(entry?.when).toContain('editorLangId == perl');
+      expect(entry?.when).toContain(PERL_EDITOR_LANG_GATE);
     });
   });
 
@@ -225,7 +233,7 @@ describe('perl-lsp.extractVariable command', () => {
     const palette = pkg.contributes.menus.commandPalette;
     const entry = palette.find((e: MenuEntry) => e.command === 'perl-lsp.extractVariable');
     expect(entry).toBeDefined();
-    expect(entry.when).toContain('editorLangId == perl');
+    expect(entry.when).toContain(PERL_EDITOR_LANG_GATE);
     expect(entry.when).toContain('editorHasSelection');
   });
 
@@ -234,7 +242,7 @@ describe('perl-lsp.extractVariable command', () => {
     const kb = keybindings.find((k: Keybinding) => k.command === 'perl-lsp.extractVariable');
     expect(kb).toBeDefined();
     expect(kb.key.toLowerCase()).toBe('shift+alt+v');
-    expect(kb.when).toContain('editorLangId == perl');
+    expect(kb.when).toContain(PERL_EDITOR_LANG_GATE);
     expect(kb.when).toContain('editorHasSelection');
   });
 });
@@ -265,14 +273,14 @@ describe('perl-lsp.runTestAtCursor command', () => {
     const palette = pkg.contributes.menus.commandPalette;
     const entry = palette.find((e: MenuEntry) => e.command === 'perl-lsp.runTestAtCursor');
     expect(entry).toBeDefined();
-    expect(entry.when).toContain('editorLangId == perl');
+    expect(entry.when).toContain(PERL_EDITOR_LANG_GATE);
   });
 
   test('appears in the editor context menu', () => {
     const contextMenu = pkg.contributes.menus['editor/context'];
     const entry = contextMenu.find((e: MenuEntry) => e.command === 'perl-lsp.runTestAtCursor');
     expect(entry).toBeDefined();
-    expect(entry.when).toContain('editorLangId == perl');
+    expect(entry.when).toContain(PERL_EDITOR_LANG_GATE);
   });
 
   test('has a keyboard shortcut', () => {
@@ -280,7 +288,7 @@ describe('perl-lsp.runTestAtCursor command', () => {
     const kb = keybindings.find((k: Keybinding) => k.command === 'perl-lsp.runTestAtCursor');
     expect(kb).toBeDefined();
     expect(kb.key.toLowerCase()).toBe('ctrl+alt+shift+t');
-    expect(kb.when).toContain('editorLangId == perl');
+    expect(kb.when).toContain(PERL_EDITOR_LANG_GATE);
   });
 });
 
@@ -317,7 +325,7 @@ describe('perl-lsp.extractMethod command', () => {
     const palette = pkg.contributes.menus.commandPalette;
     const entry = palette.find((e: MenuEntry) => e.command === 'perl-lsp.extractMethod');
     expect(entry).toBeDefined();
-    expect(entry.when).toContain('editorLangId == perl');
+    expect(entry.when).toContain(PERL_EDITOR_LANG_GATE);
     expect(entry.when).toContain('editorHasSelection');
   });
 
@@ -326,7 +334,7 @@ describe('perl-lsp.extractMethod command', () => {
     const kb = keybindings.find((k: Keybinding) => k.command === 'perl-lsp.extractMethod');
     expect(kb).toBeDefined();
     expect(kb.key.toLowerCase()).toBe('shift+alt+m');
-    expect(kb.when).toContain('editorLangId == perl');
+    expect(kb.when).toContain(PERL_EDITOR_LANG_GATE);
     expect(kb.when).toContain('editorHasSelection');
   });
 });
@@ -364,7 +372,7 @@ describe('perl-lsp.showRefactoringOptions command', () => {
     const palette = pkg.contributes.menus.commandPalette;
     const entry = palette.find((e: MenuEntry) => e.command === 'perl-lsp.showRefactoringOptions');
     expect(entry).toBeDefined();
-    expect(entry.when).toContain('editorLangId == perl');
+    expect(entry.when).toContain(PERL_EDITOR_LANG_GATE);
   });
 });
 
@@ -446,7 +454,7 @@ describe('perl-lsp trust explanation commands', () => {
   ])('%s is available from the Perl command palette', (id) => {
     const entry = paletteEntries.find((e: MenuEntry) => e.command === id);
     expect(entry).toBeDefined();
-    expect(entry.when).toContain('editorLangId == perl');
+    expect(entry.when).toContain(PERL_EDITOR_LANG_GATE);
   });
 
   test('workspace trust report is available when a workspace is open', () => {

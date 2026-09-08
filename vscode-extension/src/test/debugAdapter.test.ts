@@ -94,6 +94,23 @@ describe('PerlDebugConfigurationProvider', () => {
       vscode.window.activeTextEditor = undefined;
     });
 
+    test('fills in the same defaults for a perl5 alias editor (#7699)', () => {
+      const vscode = require('vscode');
+      vscode.window.activeTextEditor = {
+        document: { languageId: 'perl5', uri: { fsPath: '/test.pl' } },
+      };
+
+      const config = asDebugConfiguration({});
+      provider.resolveDebugConfiguration(undefined, config);
+
+      expect(config.type).toBe('perl');
+      expect(config.name).toBe('Launch Perl');
+      expect(config.request).toBe('launch');
+      expect(config.program).toBe('${file}');
+
+      vscode.window.activeTextEditor = undefined;
+    });
+
     test('does not modify config with existing type/request/name', () => {
       const config = asDebugConfiguration({
         type: 'perl',
@@ -812,6 +829,24 @@ describe('offerDebugConfigOnFirstPerlOpen', () => {
     const doc = { languageId: 'perl' };
     await offerDebugConfigOnFirstPerlOpen(doc as vscode.TextDocument);
     expect(vscode.window.showInformationMessage).not.toHaveBeenCalled();
+  });
+
+  test('shows the same onboarding prompt for a perl5 alias document (#7699)', async () => {
+    // Runs before any test that trips the once-per-session prompt flag, so the
+    // alias itself must pass the language gate for the prompt to appear.
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'onboard-perl5-'));
+    try {
+      vscode.workspace.workspaceFolders = [{ uri: { fsPath: tmpDir }, name: 'test' }];
+      const doc = { languageId: 'perl5' };
+      await offerDebugConfigOnFirstPerlOpen(doc as vscode.TextDocument);
+      expect(vscode.window.showInformationMessage).toHaveBeenCalledWith(
+        expect.stringContaining('debug configuration'),
+        expect.any(String),
+        expect.any(String),
+      );
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
   });
 
   test('shows onboarding prompt for perl document in workspace without launch.json', async () => {

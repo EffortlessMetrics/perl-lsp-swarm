@@ -1,0 +1,22 @@
+{
+  "name": "perl5-alias-language-fixture",
+  "displayName": "Perl5 Alias Language Fixture",
+  "description": "Test-only stand-in for the production premise of the perl5 alias (#7699): another extension contributes the perl5 language ID. Loaded as a second development extension only when PERL_LSP_ALIAS_SMOKE=1.",
+  "version": "0.0.0",
+  "publisher": "EffortlessMetrics",
+  "private": true,
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.125.0"
+  },
+  "contributes": {
+    "languages": [
+      {
+        "id": "perl5",
+        "aliases": [
+          "Perl 5 (Alias Fixture)"
+        ]
+      }
+    ]
+  }
+}

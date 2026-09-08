@@ -17,6 +17,11 @@ import { PerlTestAdapter } from './testAdapter';
 import { activateDebugger, rewriteTestLensCommand } from './debugAdapter';
 import { BinaryDownloader, parseLocalVersion } from './downloader';
 import {
+  isPerlLanguageId,
+  isSupportedPerlUriScheme,
+  perlDocumentSelector,
+} from './languageIdentity';
+import {
   acquireLaunchManagedCandidateReference,
   mayReleaseManagedCandidateReferences,
   releaseManagedCandidateSessionReferences,
@@ -549,7 +554,7 @@ export async function runPerlCriticOnActiveFile(
   }
   const channel = outputChannel;
   const editor = vscode.window.activeTextEditor;
-  if (!editor || editor.document.languageId !== 'perl') {
+  if (!editor || !isPerlLanguageId(editor.document.languageId)) {
     vscode.window.showErrorMessage('No active Perl file to run Critic on');
     return;
   }
@@ -1036,7 +1041,7 @@ async function runExtensionActivation(
           const mode = widget?.mode ?? 'starting';
           const hasLiveServer = mode === 'running' || mode === 'indexing';
           const activeEditor = vscode.window.activeTextEditor;
-          const activePerlDocument = activeEditor?.document.languageId === 'perl';
+          const activePerlDocument = isPerlLanguageId(activeEditor?.document.languageId);
           return {
             mode,
             ...(hasLiveServer && widget?.version !== undefined ? { version: widget.version } : {}),
@@ -1980,8 +1985,7 @@ async function finalizeStartedLanguageClient(
     const openPerlDocuments = vscode.workspace.textDocuments
       .filter(
         (document) =>
-          document.languageId === 'perl' &&
-          (document.uri.scheme === 'file' || document.uri.scheme === 'untitled'),
+          isPerlLanguageId(document.languageId) && isSupportedPerlUriScheme(document.uri.scheme),
       )
       .map((document) => ({
         uri: document.uri.toString(),
@@ -2175,10 +2179,7 @@ export function createLanguageClient(serverPath: string): LanguageClient {
 
   const clientOptions: LanguageClientOptions = {
     connectionOptions: LANGUAGE_CLIENT_CONNECTION_OPTIONS,
-    documentSelector: [
-      { scheme: 'file', language: 'perl' },
-      { scheme: 'untitled', language: 'perl' },
-    ],
+    documentSelector: perlDocumentSelector(),
     synchronize: {
       fileEvents: vscode.workspace.createFileSystemWatcher('**/.perltidyrc'),
     },
@@ -2765,7 +2766,11 @@ export function presentFormattingProviderError(
 
 export function maybeNudgeArrowCompletion(event: vscode.TextDocumentChangeEvent): void {
   const editor = vscode.window.activeTextEditor;
-  if (!editor || event.document !== editor.document || event.document.languageId !== 'perl') {
+  if (
+    !editor ||
+    event.document !== editor.document ||
+    !isPerlLanguageId(event.document.languageId)
+  ) {
     return;
   }
 
@@ -3070,7 +3075,7 @@ async function restartServerFromExplicitRecovery(context: vscode.ExtensionContex
 }
 
 function shouldFormatOnSave(document: vscode.TextDocument): boolean {
-  if (document.languageId !== 'perl') {
+  if (!isPerlLanguageId(document.languageId)) {
     return false;
   }
 

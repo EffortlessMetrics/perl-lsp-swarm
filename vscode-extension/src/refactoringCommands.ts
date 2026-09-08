@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import type { LanguageClient } from 'vscode-languageclient/node';
+import { isPerlLanguageId } from './languageIdentity';
 
 type RefactoringClient = Pick<LanguageClient, 'sendRequest'> & {
   readonly protocol2CodeConverter: Pick<
@@ -63,7 +64,7 @@ export async function extractVariableCommand(
   dependencies: RefactoringCommandDependencies,
 ): Promise<void> {
   const editor = vscode.window.activeTextEditor;
-  if (!editor || editor.document.languageId !== 'perl') {
+  if (!editor || !isPerlLanguageId(editor.document.languageId)) {
     vscode.window.showErrorMessage(
       'Extract Variable requires an active Perl file with a selection',
     );
@@ -111,7 +112,7 @@ export async function extractMethodCommand(
   dependencies: RefactoringCommandDependencies,
 ): Promise<void> {
   const editor = vscode.window.activeTextEditor;
-  if (!editor || editor.document.languageId !== 'perl') {
+  if (!editor || !isPerlLanguageId(editor.document.languageId)) {
     vscode.window.showErrorMessage('Extract Method requires an active Perl file with a selection');
     return;
   }
@@ -156,7 +157,7 @@ export async function extractMethodCommand(
 /** Show the refactoring commands available for the active Perl document. */
 export async function showRefactoringOptionsCommand(): Promise<void> {
   const editor = vscode.window.activeTextEditor;
-  if (!editor || editor.document.languageId !== 'perl') {
+  if (!editor || !isPerlLanguageId(editor.document.languageId)) {
     vscode.window.showErrorMessage('Refactoring options require an active Perl file');
     return;
   }

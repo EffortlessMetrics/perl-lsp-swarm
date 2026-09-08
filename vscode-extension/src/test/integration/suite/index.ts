@@ -14,6 +14,11 @@ export async function run(): Promise<void> {
   if (!firstHourOnly) {
     loadedFiles.push(path.resolve(__dirname, '../managedBinarySmoke.test.js'));
   }
+  // The perl5 alias smoke (#7699) also needs the perl5-alias-language fixture
+  // development extension, which runTest.ts adds under the same flag.
+  if (process.env.PERL_LSP_ALIAS_SMOKE === '1' && !firstHourOnly) {
+    loadedFiles.push(path.resolve(__dirname, '../perl5AliasSmoke.test.js'));
+  }
   if (process.env.PERL_LSP_FIRST_HOUR_RECEIPT === '1' || firstHourOnly) {
     loadedFiles.push(path.resolve(__dirname, '../firstHourReceipt.test.js'));
   }
