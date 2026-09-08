@@ -82,6 +82,10 @@ generator, scheduler, workflow, or GitHub state.
 - The declared parallel generator successors #11580 and #11034 must not acquire a
   direct or transitive hard dependency path. Evidence edges remain non-ordering and
   do not trigger this programme-specific law.
+- The configured parallel pair is keyed by exact manifest `node_id` identities;
+  removing or renaming either endpoint after repairing all dependency,
+  `consumed_by`, and semantic-authority references must fail with
+  `DECLARED_PARALLEL_ENDPOINT_MISSING`.
 - Lineage rows must not carry status words (open/merged/closed/draft/landed); the
   checker scans for them.
 - After any manifest edit: `cargo xtask perl-corpus-train graph` then `check`.

@@ -461,6 +461,90 @@ fn add_dependency(doc: &mut Value, source: &str, target: &str, class: &str) -> R
     Ok(())
 }
 
+fn remove_node_and_repair_references(doc: &mut Value, node_id: &str) -> Result<()> {
+    let nodes =
+        doc.get_mut("nodes").and_then(Value::as_array_mut).ok_or_else(|| eyre!("nodes array"))?;
+    let issue_ref = nodes
+        .iter()
+        .find(|node| node.get("node_id").and_then(Value::as_str) == Some(node_id))
+        .and_then(|node| node.get("issue_ref"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let before = nodes.len();
+    nodes.retain(|node| node.get("node_id").and_then(Value::as_str) != Some(node_id));
+    if nodes.len() != before - 1 {
+        bail!("node {node_id} must be present exactly once");
+    }
+    for node in nodes.iter_mut().filter_map(Value::as_object_mut) {
+        if let Some(deps) = node.get_mut("dependencies").and_then(Value::as_array_mut) {
+            deps.retain(|dep| dep.get("target").and_then(Value::as_str) != Some(node_id));
+        }
+        if let Some(consumers) = node.get_mut("consumed_by").and_then(Value::as_array_mut) {
+            consumers.retain(|id| id.as_str() != Some(node_id));
+        }
+        if let (Some(issue_ref), Some(authorities)) = (
+            issue_ref.as_deref(),
+            node.get_mut("semantic_authority_refs").and_then(Value::as_array_mut),
+        ) {
+            authorities.retain(|authority| authority.as_str() != Some(issue_ref));
+        }
+    }
+    Ok(())
+}
+
+fn rename_node_and_repair_references(doc: &mut Value, old_id: &str, new_id: &str) -> Result<()> {
+    let nodes =
+        doc.get_mut("nodes").and_then(Value::as_array_mut).ok_or_else(|| eyre!("nodes array"))?;
+    let mut renamed = false;
+    for node in nodes.iter_mut().filter_map(Value::as_object_mut) {
+        if node.get("node_id").and_then(Value::as_str) == Some(old_id) {
+            node.insert("node_id".to_string(), Value::String(new_id.to_string()));
+            renamed = true;
+        }
+        if let Some(deps) = node.get_mut("dependencies").and_then(Value::as_array_mut) {
+            for dep in deps.iter_mut().filter_map(Value::as_object_mut) {
+                if dep.get("target").and_then(Value::as_str) == Some(old_id) {
+                    dep.insert("target".to_string(), Value::String(new_id.to_string()));
+                }
+            }
+        }
+        if let Some(consumers) = node.get_mut("consumed_by").and_then(Value::as_array_mut) {
+            for id in consumers.iter_mut() {
+                if id.as_str() == Some(old_id) {
+                    *id = Value::String(new_id.to_string());
+                }
+            }
+        }
+    }
+    if !renamed {
+        bail!("node {old_id} must be present exactly once");
+    }
+    Ok(())
+}
+
+#[test]
+fn falsifier_11b_missing_declared_parallel_endpoint_after_repaired_mutation_fails() -> Result<()> {
+    let base = load(MANIFEST_PATH)?;
+    // The canonical pair is present and has no ordering path.
+    assert_exact_codes(&base, &[])?;
+
+    for endpoint in ["pc_property_suites_11580", "pc_fixture_promotion_11034"] {
+        let mut doc = base.clone();
+        remove_node_and_repair_references(&mut doc, endpoint)?;
+        assert_exact_codes(&doc, &["DECLARED_PARALLEL_ENDPOINT_MISSING"])?;
+    }
+
+    for (old_id, new_id) in [
+        ("pc_property_suites_11580", "pc_property_suites_11580_renamed"),
+        ("pc_fixture_promotion_11034", "pc_fixture_promotion_11034_renamed"),
+    ] {
+        let mut doc = base.clone();
+        rename_node_and_repair_references(&mut doc, old_id, new_id)?;
+        assert_exact_codes(&doc, &["DECLARED_PARALLEL_ENDPOINT_MISSING"])?;
+    }
+    Ok(())
+}
+
 #[test]
 fn falsifier_12_generated_output_is_invariant_under_shuffle_root_and_order() -> Result<()> {
     let base = load(MANIFEST_PATH)?;

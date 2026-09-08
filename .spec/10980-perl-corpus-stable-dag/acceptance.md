@@ -8,6 +8,7 @@
 | A controller, decision, external action, or historical node is marked selectable | `NON_LEAF_SELECTABLE` | falsifier 1 |
 | Two selectable nodes own one exclusive conflict key with no hard dependency path between them (an evidence edge orders nothing) | `CONFLICT_KEY_PARALLEL_COLLISION` | falsifiers 2, 5, 11 |
 | The two declared generator successors (#11580 and #11034) acquire a direct or transitive hard dependency path | `DECLARED_PARALLEL_SERIALIZED` | falsifier 11 |
+| A configured declared-parallel endpoint is removed or renamed after all graph references are repaired | `DECLARED_PARALLEL_ENDPOINT_MISSING` | falsifier 11b |
 | Two active nodes declare the same `authority_after` | `DUPLICATE_ACTIVE_AUTHORITY` | falsifiers 2, 8 |
 | A banned state key, a status word in a lineage row, a commit hash, or a branch/pull coordinate appears in stable bytes | `MUTABLE_STATE_EMBEDDED` | falsifier 3 |
 | A pull request is the subject of a non-historical node | `CANDIDATE_AS_ACTIVE_NODE` | falsifier 3 |

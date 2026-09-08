@@ -575,6 +575,10 @@ fn node_problems(doc: &Value, vocab: &Vocabulary<'_>, violations: &mut Vec<Viola
 // ---------------------------------------------------------------------------
 
 struct Graph<'a> {
+    /// Every node identity in the manifest, including nodes with no hard edges.
+    /// Configured graph laws must distinguish an absent endpoint from a node
+    /// that simply has no reachable hard targets.
+    node_ids: BTreeSet<&'a str>,
     /// hard + evidence node edges, source -> targets (acyclicity law).
     ordering: BTreeMap<&'a str, BTreeSet<&'a str>>,
     /// hard node edges only, source -> targets. Only a hard path proves two
@@ -717,7 +721,8 @@ fn edge_problems<'a>(
         }
     }
 
-    Graph { ordering, hard_ordering }
+    let node_ids = by_id.keys().copied().collect();
+    Graph { node_ids, ordering, hard_ordering }
 }
 
 /// First hard/evidence cycle, as the node path that closes it.
@@ -786,6 +791,23 @@ fn reachability<'a>(graph: &Graph<'a>) -> BTreeMap<&'a str, BTreeSet<&'a str>> {
 fn declared_parallel_problems(graph: &Graph<'_>, violations: &mut Vec<Violation>) {
     let closure = reachability(graph);
     for (left, right) in DECLARED_PARALLEL_PAIRS {
+        let left_present = graph.node_ids.contains(left);
+        let right_present = graph.node_ids.contains(right);
+        // A compact invalid fixture may not model this programme-specific
+        // pair at all. Once either configured endpoint is present, however,
+        // both identities are part of the graph contract.
+        if left_present != right_present {
+            violations.push(Violation::new(
+                "DECLARED_PARALLEL_ENDPOINT_MISSING",
+                format!(
+                    "declared parallel endpoints {left} and {right} must both resolve to manifest node identities"
+                ),
+            ));
+            continue;
+        }
+        if !left_present {
+            continue;
+        }
         let ordered = closure.get(left).is_some_and(|targets| targets.contains(right))
             || closure.get(right).is_some_and(|targets| targets.contains(left));
         if ordered {
