@@ -286,13 +286,12 @@ impl DebtVisitor<'_> {
         };
         let collapsed = collapse(&list.tokens.to_string());
         let cfg_test = ident == "cfg_attr" && cfg_attr_predicate_requires_test(&attr.meta);
-        if ident == "cfg_attr" && !cfg_test && !self.in_test {
+        if ident == "cfg_attr" && !cfg_test {
             return None;
         }
         let mut lints = BTreeSet::new();
         for lint in &self.vocabulary.lints {
-            let needle = collapse(lint);
-            if collapsed.contains(&needle) {
+            if collapsed_mentions_lint(&collapsed, lint) {
                 lints.insert(lint.clone());
             }
         }
@@ -737,6 +736,33 @@ fn collapse(text: &str) -> String {
     text.chars().filter(|ch| !ch.is_whitespace()).collect()
 }
 
+fn collapsed_mentions_lint(collapsed: &str, lint: &str) -> bool {
+    let needle = collapse(lint);
+    if needle.is_empty() {
+        return false;
+    }
+    let bytes = collapsed.as_bytes();
+    let mut search_from = 0;
+    while let Some(rel) = collapsed.get(search_from..).and_then(|rest| rest.find(&needle)) {
+        let idx = search_from + rel;
+        let before_ok = idx == 0 || !is_ident_continue(bytes[idx - 1]);
+        let after = idx + needle.len();
+        let after_ok = after == bytes.len() || !is_ident_continue(bytes[after]);
+        if before_ok && after_ok {
+            return true;
+        }
+        search_from = idx.saturating_add(1);
+        if search_from >= collapsed.len() {
+            break;
+        }
+    }
+    false
+}
+
+fn is_ident_continue(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || byte == b'_'
+}
+
 fn family_lint(family: &str) -> &'static str {
     match family {
         "unwrap" | "unwrap_err" => "clippy::unwrap_used",
@@ -990,6 +1016,22 @@ mod tests {
         };
         assert!(!attrs_have_cfg_test(&any_fn.attrs));
         assert!(attrs_have_cfg_test(&all_fn.attrs));
+        let not_test =
+            syn::parse_file("#[cfg_attr(not(test), allow(clippy::unwrap_used))]\nfn t() {}")
+                .map_err(|err| color_eyre::eyre::eyre!("parse not-test cfg_attr: {err}"))?;
+        let not_attr = match not_test.items.as_slice() {
+            [syn::Item::Fn(func)] => func.attrs.first(),
+            _ => None,
+        }
+        .ok_or_else(|| color_eyre::eyre::eyre!("missing not-test cfg_attr"))?;
+        assert!(!cfg_attr_predicate_requires_test(&not_attr.meta));
+        assert!(cfg_attr_predicate_requires_test(&allow_attr.meta));
+        assert!(collapsed_mentions_lint("allow(clippy::panic)", "clippy::panic"));
+        assert!(!collapsed_mentions_lint("allow(clippy::panic_in_result_fn)", "clippy::panic"));
+        assert!(collapsed_mentions_lint(
+            "allow(clippy::panic,clippy::unwrap_used)",
+            "clippy::panic"
+        ));
         Ok(())
     }
 }

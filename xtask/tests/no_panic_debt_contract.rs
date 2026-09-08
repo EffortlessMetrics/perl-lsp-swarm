@@ -134,3 +134,31 @@ fn cli_exposes_inventory_check_and_report() {
     assert!(stdout.contains("check"), "{stdout}");
     assert!(stdout.contains("report"), "{stdout}");
 }
+
+#[test]
+fn unsupported_baseline_schema_fails_even_when_identities_match() {
+    let temp = fixture_root();
+    let current = build_inventory(InventoryRequest {
+        root: temp.path(),
+        repository_commit: Some("fixture".to_string()),
+        ..InventoryRequest::default()
+    })
+    .expect("inventory");
+    let mut baseline = current.clone();
+    baseline.schema = "not_test_panic_family_debt.v1".to_string();
+    let path = temp.path().join("baseline.json");
+    std::fs::write(&path, canonical_json(&baseline).expect("json")).expect("baseline");
+    let result = check_inventory(xtask::no_panic_debt::CheckRequest {
+        root: temp.path(),
+        current: &current,
+        artifact: None,
+        baseline: Some(&path),
+    })
+    .expect("check");
+    assert!(!result.ok, "unsupported baseline schema passed: {:?}", result.findings);
+    assert!(
+        result.findings.iter().any(|finding| finding.contains("unsupported schema")),
+        "{:?}",
+        result.findings
+    );
+}

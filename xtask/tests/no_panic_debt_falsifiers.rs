@@ -791,6 +791,118 @@ fn retired_registry_row_for_a_missing_file_is_not_converted_absent() {
 }
 
 #[test]
+fn cfg_attr_not_test_allow_does_not_cover_test_unwrap() {
+    let temp = tempfile::tempdir().expect("temp");
+    write_policy(temp.path());
+    write_empty_registry(temp.path());
+    write_package(
+        temp.path(),
+        "demo",
+        r##"
+#[cfg(test)]
+mod tests {
+    #[cfg_attr(not(test), allow(clippy::unwrap_used, reason = "#13397 inactive"))]
+    #[test]
+    fn still_debt() {
+        let _ = Some(1).unwrap();
+    }
+
+    #[cfg_attr(feature = "need-me", allow(clippy::unwrap_used, reason = "#13397 feature"))]
+    #[test]
+    fn feature_gated_allow() {
+        let _ = Some(2).unwrap();
+    }
+}
+"##,
+        &[("known.rs", "#[test]\nfn known() {}\n")],
+    );
+    let inventory = inventory_at(temp.path());
+    let still_debt = inventory
+        .rows
+        .iter()
+        .find(|row| {
+            row.kind == "site" && row.entrypoint == "still_debt" && row.site_family == "unwrap"
+        })
+        .expect("still_debt unwrap");
+    assert!(
+        still_debt.declaration_identity.is_empty(),
+        "cfg_attr(not(test), allow) covered a test unwrap: {:?}",
+        still_debt
+    );
+    assert_eq!(still_debt.status, DebtStatus::Unowned);
+    let feature_row = inventory
+        .rows
+        .iter()
+        .find(|row| {
+            row.kind == "site"
+                && row.entrypoint == "feature_gated_allow"
+                && row.site_family == "unwrap"
+        })
+        .expect("feature unwrap");
+    assert!(
+        feature_row.declaration_identity.is_empty(),
+        "cfg_attr(feature, allow) covered a test unwrap: {:?}",
+        feature_row
+    );
+}
+
+#[test]
+fn panic_in_result_fn_allow_does_not_cover_panic_macro() {
+    let temp = tempfile::tempdir().expect("temp");
+    write_policy(temp.path());
+    write_empty_registry(temp.path());
+    write_package(
+        temp.path(),
+        "demo",
+        r##"
+#[cfg(test)]
+mod tests {
+    #[allow(clippy::panic_in_result_fn, reason = "#13397 prefix")]
+    #[test]
+    fn unrelated_allow() {
+        panic!("still debt");
+    }
+
+    #[allow(clippy::panic, reason = "#13397 panic")]
+    #[test]
+    fn real_allow() {
+        panic!("owned");
+    }
+}
+"##,
+        &[("known.rs", "#[test]\nfn known() {}\n")],
+    );
+    let inventory = inventory_at(temp.path());
+    let unrelated = inventory
+        .rows
+        .iter()
+        .find(|row| {
+            row.kind == "site" && row.entrypoint == "unrelated_allow" && row.site_family == "panic!"
+        })
+        .expect("prefix panic");
+    assert!(
+        unrelated.declaration_identity.is_empty(),
+        "allow(clippy::panic_in_result_fn) covered panic!: {:?}",
+        unrelated
+    );
+    assert_eq!(unrelated.status, DebtStatus::Unowned);
+    let owned = inventory
+        .rows
+        .iter()
+        .find(|row| {
+            row.kind == "site" && row.entrypoint == "real_allow" && row.site_family == "panic!"
+        })
+        .expect("real panic allow");
+    assert!(
+        !owned.declaration_identity.is_empty(),
+        "allow(clippy::panic) did not cover panic!: {:?}",
+        owned
+    );
+    assert_eq!(owned.owner, "#13397");
+    assert_eq!(owned.status, DebtStatus::DirectDebt);
+}
+
+#[test]
 fn missing_cfg_test_path_module_is_not_proven() {
     let temp = tempfile::tempdir().expect("temp");
     write_policy(temp.path());
