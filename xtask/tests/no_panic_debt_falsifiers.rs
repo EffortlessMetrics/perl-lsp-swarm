@@ -1671,3 +1671,53 @@ mod tests {
         inventory.rows
     );
 }
+
+#[test]
+fn cfg_attr_test_test_is_an_entrypoint() {
+    let temp = tempfile::tempdir().expect("temp");
+    write_policy(temp.path());
+    write_empty_registry(temp.path());
+    write_package(
+        temp.path(),
+        "demo",
+        r#"
+pub fn prod() -> u8 { Some(0).unwrap() }
+
+#[cfg_attr(test, test)]
+fn gated_unit() { let _ = Some(1).unwrap(); }
+
+#[cfg_attr(test, allow(clippy::unwrap_used))]
+fn still_prod() -> u8 { Some(2).unwrap() }
+"#,
+        &[("known.rs", "#[test]\nfn known() {}\n")],
+    );
+    let inventory = inventory_at(temp.path());
+    assert!(
+        inventory.population.entrypoints.iter().any(|entry| entry.name == "gated_unit"),
+        "#[cfg_attr(test, test)] was not an entrypoint: {:?}",
+        inventory.population.entrypoints
+    );
+    assert!(
+        inventory.rows.iter().any(|row| {
+            row.path.ends_with("src/lib.rs")
+                && row.entrypoint == "gated_unit"
+                && row.site_family == "unwrap"
+        }),
+        "#[cfg_attr(test, test)] unwrap omitted: {:?}",
+        inventory.rows
+    );
+    assert!(
+        !inventory.rows.iter().any(|row| {
+            row.kind == "site" && row.entrypoint == "still_prod" && row.site_family == "unwrap"
+        }),
+        "#[cfg_attr(test, allow)] promoted production unwrap: {:?}",
+        inventory.rows
+    );
+    assert!(
+        !inventory.rows.iter().any(|row| {
+            row.kind == "site" && row.entrypoint == "prod" && row.site_family == "unwrap"
+        }),
+        "plain production unwrap became test debt: {:?}",
+        inventory.rows
+    );
+}

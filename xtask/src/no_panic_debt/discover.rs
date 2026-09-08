@@ -522,11 +522,33 @@ impl MetaText for Meta {
 }
 
 fn is_test_attribute(attr: &Attribute) -> bool {
-    attr.path().segments.last().is_some_and(|segment| segment.ident == "test")
+    if attr.path().segments.last().is_some_and(|segment| segment.ident == "test") {
+        return true;
+    }
+    attr.path().is_ident("cfg_attr") && cfg_attr_applies_test_item(&attr.meta)
 }
 
 fn attrs_have_cfg_test(attrs: &[Attribute]) -> bool {
     attrs.iter().any(|attr| attr.path().is_ident("cfg") && meta_list_requires_test(&attr.meta))
+}
+
+/// `#[cfg_attr(test, test)]` creates a test item. `#[cfg_attr(test, allow(...))]` does not.
+fn cfg_attr_applies_test_item(meta: &Meta) -> bool {
+    let Meta::List(list) = meta else {
+        return false;
+    };
+    let mut groups = split_top_level_commas(list.tokens.clone());
+    let Some(predicate) = groups.first() else {
+        return false;
+    };
+    if !cfg_predicate_requires_test(predicate.clone()) {
+        return false;
+    }
+    groups.drain(..1);
+    groups.into_iter().any(|payload| {
+        let collapsed = collapse(&payload.to_string());
+        collapsed == "test" || collapsed.starts_with("test(")
+    })
 }
 
 fn meta_list_requires_test(meta: &Meta) -> bool {
