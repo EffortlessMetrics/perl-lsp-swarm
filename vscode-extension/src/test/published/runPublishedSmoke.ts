@@ -480,7 +480,6 @@ async function main(): Promise<void> {
     const vsixSha256 = selectedVsixSha256(installTarget);
     const extensionTestsEnv: NodeJS.ProcessEnv = {
       ...process.env,
-      PERL_LSP_EXTENSION_TEST_SKIP_STARTUP: '1',
       PERL_LSP_PUBLISHED_EXTENSION_ID: envValue('PERL_LSP_PUBLISHED_EXTENSION_ID') || EXTENSION_ID,
       PERL_LSP_PUBLISHED_EXTENSION_SOURCE: source,
       PERL_LSP_SMOKE_RECEIPTS_DIR: receiptsRoot,
@@ -489,6 +488,11 @@ async function main(): Promise<void> {
       PERL_LSP_TOOLCHAIN_NPM_VERSION: toolchainNpmVersionValue,
       PERL_LSP_VSCODE_VERSION: vscodeVersion,
     };
+    if (process.env.PERL_LSP_TEST_EXPLORER_SMOKE !== '1') {
+      extensionTestsEnv.PERL_LSP_EXTENSION_TEST_SKIP_STARTUP = '1';
+    } else {
+      delete extensionTestsEnv.PERL_LSP_EXTENSION_TEST_SKIP_STARTUP;
+    }
     configureInstalledAcceptanceReceipt(extensionTestsEnv, receiptsRoot);
     if (vsixSha256 === undefined) {
       delete extensionTestsEnv.PERL_LSP_VSIX_SHA256;

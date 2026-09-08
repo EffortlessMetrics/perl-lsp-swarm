@@ -58,6 +58,56 @@ void test('publisher workflow invokes both CLIs offline through npm exec', () =>
   assert.doesNotMatch(source, /^\s+run: ovsx --version/m);
 });
 
+void test('managed Windows smoke packages and runs the current Test Explorer VSIX', () => {
+  const source = readWorkflow('vscode-managed-binary-smoke.yml');
+  const packageIndex = source.indexOf(
+    '- name: Package current extension for Windows published smoke',
+  );
+  const explorerIndex = source.indexOf(
+    '- name: Run current extension Test Explorer smoke (Windows)',
+  );
+  assert.notEqual(packageIndex, -1);
+  assert.notEqual(explorerIndex, -1);
+  assert.ok(packageIndex < explorerIndex);
+  const nextStepIndex = (index) => {
+    const offset = source.slice(index + 1).search(/\r?\n\s+- name:/);
+    return offset === -1 ? -1 : index + 1 + offset;
+  };
+  const packageNextStepIndex = nextStepIndex(packageIndex);
+  const explorerNextStepIndex = nextStepIndex(explorerIndex);
+  const packageStep = source.slice(
+    packageIndex,
+    packageNextStepIndex === -1 ? source.length : packageNextStepIndex,
+  );
+  const explorerStep = source.slice(
+    explorerIndex,
+    explorerNextStepIndex === -1 ? source.length : explorerNextStepIndex,
+  );
+  assert.match(packageStep, /if: runner\.os == 'Windows'/);
+  assert.match(packageStep, /run: npm run package/);
+  assert.match(explorerStep, /if: runner\.os == 'Windows'/);
+  assert.match(explorerStep, /GITHUB_TOKEN: \$\{\{ github\.token \}\}/);
+  assert.match(explorerStep, /PERL_LSP_PUBLISHED_EXTENSION_SOURCE: vsix/);
+  assert.match(explorerStep, /PERL_LSP_TEST_EXPLORER_SMOKE: '1'/);
+  assert.match(explorerStep, /\$vsix\.Count -ne 1/);
+  assert.match(explorerStep, /\$env:PERL_LSP_PUBLISHED_VSIX_PATH = \$vsix\[0\]\.FullName/);
+  assert.match(explorerStep, /npm run test:published/);
+  const vsixSelection = explorerStep.indexOf('$vsix = @(');
+  const vsixAssignment = explorerStep.indexOf('$env:PERL_LSP_PUBLISHED_VSIX_PATH =');
+  const publishedTest = explorerStep.indexOf('npm run test:published');
+  assert.notEqual(vsixSelection, -1, 'the published VSIX must be enumerated');
+  assert.notEqual(vsixAssignment, -1, 'the selected VSIX path must be assigned');
+  assert.notEqual(publishedTest, -1, 'the published Test Explorer command must be present');
+  assert.ok(
+    vsixSelection < vsixAssignment,
+    'the published VSIX must be selected before binding its path',
+  );
+  assert.ok(
+    vsixAssignment < publishedTest,
+    'the selected VSIX path must be bound before the published test',
+  );
+});
+
 void test('managed-binary smoke proves TypeScript authority before compilation on every OS', () => {
   const source = readWorkflow('vscode-managed-binary-smoke.yml');
   const setupIndex = source.indexOf('- name: Setup VS Code toolchain');

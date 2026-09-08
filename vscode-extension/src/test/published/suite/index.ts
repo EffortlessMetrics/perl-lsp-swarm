@@ -54,6 +54,18 @@ export async function run(): Promise<void> {
       `PERL_LSP_CRASH_RECOVERY_LEG must be 'transient' or 'breaker' when PERL_LSP_CRASH_RECOVERY_SMOKE=1, got ${JSON.stringify(crashRecoveryLeg)}`,
     );
   }
+  const testExplorerSmoke = process.env.PERL_LSP_TEST_EXPLORER_SMOKE === '1';
+  const selectedSmokeCount = [
+    currentSourceSmoke,
+    packagedBundleSmoke,
+    healthCheckFailureSmoke,
+    activationFailureSmoke,
+    crashRecoverySmoke,
+    testExplorerSmoke,
+  ].filter(Boolean).length;
+  if (testExplorerSmoke && selectedSmokeCount > 1) {
+    throw new Error('Published smoke selectors are mutually exclusive.');
+  }
   const smokeTestPaths = crashRecoverySmoke
     ? [path.resolve(__dirname, '../crashRecoveryJourney.test.js')]
     : activationFailureSmoke
@@ -62,9 +74,11 @@ export async function run(): Promise<void> {
         ? [path.resolve(__dirname, '../packagedBundleJourney.test.js')]
         : healthCheckFailureSmoke
           ? [path.resolve(__dirname, '../healthCheckFailureJourney.test.js')]
-          : currentSourceSmoke
-            ? [path.resolve(__dirname, '../../integration/firstHourReceipt.test.js')]
-            : [path.resolve(__dirname, '../managedBinaryPublishedSmoke.test.js')];
+          : testExplorerSmoke
+            ? [path.resolve(__dirname, '../testExplorerJourney.test.js')]
+            : currentSourceSmoke
+              ? [path.resolve(__dirname, '../../integration/firstHourReceipt.test.js')]
+              : [path.resolve(__dirname, '../managedBinaryPublishedSmoke.test.js')];
   for (const smokeTestPath of smokeTestPaths) {
     mocha.addFile(smokeTestPath);
   }
