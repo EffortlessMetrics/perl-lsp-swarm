@@ -1,14 +1,22 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
-import { spawn, type SpawnOptions } from 'child_process';
+import { spawn, type ChildProcess, type SpawnOptions } from 'child_process';
 import { StringDecoder } from 'string_decoder';
 
 const WINDOWS_TREE_KILL_TIMEOUT_MS = 5_000;
 
-function killWindowsProcessTree(pid: number | undefined): Promise<void> {
-  if (process.platform !== 'win32' || pid === undefined) {
-    return Promise.resolve();
+export type TreeKillResult = { ok: true } | { ok: false; diagnostic: string };
+
+function killWindowsProcessTree(pid: number | undefined): Promise<TreeKillResult> {
+  if (process.platform !== 'win32') {
+    return Promise.resolve({ ok: true });
+  }
+  if (pid === undefined) {
+    return Promise.resolve({
+      ok: false,
+      diagnostic: 'Windows process-tree cleanup could not start because the parent had no PID.',
+    });
   }
 
   return new Promise((resolve) => {
@@ -28,18 +36,32 @@ function killWindowsProcessTree(pid: number | undefined): Promise<void> {
       } catch {
         // taskkill may already have exited or been torn down with its parent.
       }
-      resolve();
+      resolve({
+        ok: false,
+        diagnostic: `Windows process-tree cleanup exceeded ${WINDOWS_TREE_KILL_TIMEOUT_MS} ms.`,
+      });
     }, WINDOWS_TREE_KILL_TIMEOUT_MS);
-    const finish = (): void => {
+    const finish = (result: TreeKillResult): void => {
       if (settled) {
         return;
       }
       settled = true;
       clearTimeout(timer);
-      resolve();
+      resolve(result);
     };
-    killer.once('error', finish);
-    killer.once('close', finish);
+    killer.once('error', (error: Error) =>
+      finish({ ok: false, diagnostic: `Windows process-tree cleanup failed: ${error.message}.` }),
+    );
+    killer.once('close', (code: number | null, signal: NodeJS.Signals | null) => {
+      if (code === 0) {
+        finish({ ok: true });
+        return;
+      }
+      finish({
+        ok: false,
+        diagnostic: `Windows process-tree cleanup exited with ${code ?? signal ?? 'unknown'}.`,
+      });
+    });
   });
 }
 
@@ -60,6 +82,7 @@ export type BoundedProcessOutcome =
   | 'timed_out'
   | 'output_limit'
   | 'cancelled'
+  | 'input_error'
   | 'termination_failed'
   | 'spawn_error';
 
@@ -75,6 +98,8 @@ export interface BoundedProcessResult {
 
 export interface BoundedProcessOptions extends Omit<SpawnOptions, 'signal' | 'stdio'> {
   signal?: AbortSignal;
+  /** Optional newline-delimited input written to the child before execution. */
+  stdin?: string;
   timeoutMs: number;
   maxOutputBytes: number;
   terminationGraceMs: number;
@@ -89,6 +114,10 @@ export interface BoundedProcessOptions extends Omit<SpawnOptions, 'signal' | 'st
    * delivered; production callers leave this unset and use `ChildProcess.kill`.
    */
   killProcess?: (proc: ReturnType<typeof spawn>, signal: NodeJS.Signals) => boolean;
+  /** Test seam for Windows process-tree cleanup; production callers leave this unset. */
+  killProcessTree?: (pid: number | undefined) => Promise<TreeKillResult>;
+  /** Test seam for child lifecycle ordering; production callers leave this unset. */
+  spawnProcess?: typeof spawn;
 }
 
 /**
@@ -105,14 +134,17 @@ export function runBoundedProcess(
   return new Promise((resolve) => {
     const {
       signal,
+      stdin,
       timeoutMs,
       maxOutputBytes,
       terminationGraceMs,
       terminationWatchdogMs = DEFAULT_TERMINATION_WATCHDOG_MS,
       killProcess,
+      killProcessTree,
+      spawnProcess,
       ...spawnOptions
     } = options;
-    const proc = spawn(command, [...args], {
+    const proc: ChildProcess = (spawnProcess ?? spawn)(command, [...args], {
       ...spawnOptions,
       stdio: 'pipe',
     });
@@ -130,9 +162,25 @@ export function runBoundedProcess(
     let closed = false;
     let graceTimer: NodeJS.Timeout | undefined;
     let watchdogTimer: NodeJS.Timeout | undefined;
-    let treeKill: Promise<void> | undefined;
+    let treeKill: Promise<TreeKillResult> | undefined;
+    let parentExited = false;
+    let stdinError: Error | undefined;
     const timeout = setTimeout(() => requestTermination('timed_out'), timeoutMs);
-    const needsTreeKill = process.platform === 'win32' && spawnOptions.shell === true;
+    const needsTreeKill = process.platform === 'win32';
+    const killTree = killProcessTree ?? killWindowsProcessTree;
+
+    const startTreeKill = (): void => {
+      if (parentExited || proc.exitCode !== null || proc.signalCode !== null) {
+        treeKill = Promise.resolve({
+          ok: false,
+          diagnostic:
+            'Windows process-tree cleanup could not start because the parent had already exited.',
+        });
+        return;
+      }
+      const cleanupPromise = killTree(proc.pid);
+      treeKill = cleanupPromise;
+    };
 
     const deliverKill = (killSignal: NodeJS.Signals): boolean => {
       if (killProcess) {
@@ -205,16 +253,14 @@ export function runBoundedProcess(
         return;
       }
       termination = reason;
-      if (!needsTreeKill) {
-        deliverKill('SIGTERM');
+      if (needsTreeKill) {
+        startTreeKill();
+        armTerminationWatchdog();
+        return;
       }
+      deliverKill('SIGTERM');
       graceTimer = setTimeout(() => {
         if (closed) {
-          return;
-        }
-        if (needsTreeKill) {
-          treeKill = killWindowsProcessTree(proc.pid);
-          armTerminationWatchdog();
           return;
         }
         deliverKill('SIGKILL');
@@ -232,8 +278,15 @@ export function runBoundedProcess(
         timed_out: `Process exceeded the ${timeoutMs} ms deadline.`,
         output_limit: `Process output exceeded the ${maxOutputBytes}-byte capture limit.`,
         cancelled: 'Process execution was cancelled.',
+        input_error: `Failed to provide process input: ${stdinError?.message ?? 'the input stream closed unexpectedly'}.`,
       }[outcome];
-      void (treeKill ?? Promise.resolve()).then(() => finish(outcome, exitCode, signal, detail));
+      void (treeKill ?? Promise.resolve({ ok: true as const })).then((cleanupResult) => {
+        if (!cleanupResult.ok) {
+          finish('termination_failed', exitCode, signal, cleanupResult.diagnostic);
+          return;
+        }
+        finish(outcome, exitCode, signal, detail);
+      });
     };
 
     const appendDecodedOutput = (target: 'stdout' | 'stderr', text: string): void => {
@@ -302,15 +355,24 @@ export function runBoundedProcess(
         `Failed to run prove: ${error.message}. Is prove installed?`,
       );
     });
+    proc.on('exit', () => {
+      parentExited = true;
+    });
+    if (stdin !== undefined && proc.stdin !== null) {
+      proc.stdin.once('error', (error: Error) => {
+        stdinError = error;
+        if (termination === undefined && !closed) {
+          requestTermination('input_error');
+        }
+      });
+      proc.stdin.end(stdin);
+    }
     proc.on('close', (exitCode, signal) => {
       closed = true;
       flushDecoders();
       if (termination === undefined) {
         finish('completed', exitCode, signal);
         return;
-      }
-      if (needsTreeKill && treeKill === undefined) {
-        treeKill = killWindowsProcessTree(proc.pid);
       }
       finishAfterTreeKill(exitCode, signal);
     });
@@ -347,10 +409,11 @@ function configuredProveLimits(resource?: vscode.Uri): ProveExecutionLimits {
 /**
  * Resolve the `prove` command for the current platform.
  *
- * On Windows, `prove` is a `.bat` script shim — spawning it without
- * `shell: true` fails with ENOENT. On all platforms, attempt to derive
- * `prove` from the directory of the `perl` binary on PATH so that
- * perlbrew/plenv users get the matching `prove`.
+ * On Windows, invoke the matching Perl interpreter directly against its
+ * adjacent `prove.bat` with the documented stdin-list form. This preserves
+ * the Perl installation selected by PATH and avoids resolving a different
+ * `prove` from PATH. On other platforms, derive `prove` from the Perl directory when
+ * possible.
  *
  * Returns `{ command, args, shell }` for use with `child_process.spawn`.
  */
@@ -358,32 +421,49 @@ export function resolveProveCommand(extraArgs: string[]): {
   command: string;
   args: string[];
   shell: boolean;
+  error?: string;
 } {
   const isWindows = process.platform === 'win32';
 
-  // Try to find `prove` next to `perl` on PATH.
+  // Try to find `perl` and its matching `prove` on PATH.
+  let perlPath: string | null = null;
   let provePath: string | null = null;
   try {
-    const { execSync } = require('child_process');
-    const perlPath = execSync('perl -e "print $^X"', {
+    const { execFileSync } = require('child_process');
+    perlPath = execFileSync('perl', ['-e', 'print $^X'], {
       encoding: 'utf8',
       timeout: 3000,
     }).trim();
-    const perlDir = path.dirname(perlPath);
-    const candidate = path.join(perlDir, isWindows ? 'prove.bat' : 'prove');
-    if (fs.existsSync(candidate)) {
-      provePath = candidate;
+    if (perlPath) {
+      const perlDir = path.dirname(perlPath);
+      const candidate = path.join(perlDir, isWindows ? 'prove.bat' : 'prove');
+      if (fs.existsSync(candidate)) {
+        provePath = candidate;
+      }
     }
   } catch {
-    // perl not on PATH or execSync failed — fall back to bare 'prove'.
+    // perl not on PATH or execFileSync failed — report an actionable resolution error.
+  }
+
+  if (isWindows && perlPath && provePath) {
+    return { command: perlPath, args: ['-x', provePath, ...extraArgs], shell: false };
   }
 
   if (provePath) {
     return { command: provePath, args: extraArgs, shell: false };
   }
 
-  // Fallback: bare 'prove' with shell on Windows for .bat resolution.
-  return { command: 'prove', args: extraArgs, shell: isWindows };
+  if (isWindows) {
+    return {
+      command: '',
+      args: [],
+      shell: false,
+      error:
+        'A matching Perl/prove installation was not found on PATH; install Perl with prove or configure a supported Perl runtime.',
+    };
+  }
+
+  return { command: 'prove', args: extraArgs, shell: false };
 }
 
 export interface SubtestInfo {
@@ -577,11 +657,22 @@ export class PerlTestAdapter implements vscode.Disposable {
     const workspaceFolder = vscode.workspace.getWorkspaceFolder(fileItem.uri!);
     const cwd = workspaceFolder?.uri.fsPath ?? path.dirname(filePath);
     const startTime = Date.now();
-    const {
-      command: proveCmd,
-      args: proveArgs,
-      shell: useShell,
-    } = resolveProveCommand(['-v', '--nocolor', filePath]);
+    const isWindows = process.platform === 'win32';
+    const resolution = resolveProveCommand(
+      isWindows ? ['-v', '--nocolor', '-'] : ['-v', '--nocolor', filePath],
+    );
+    if (resolution.error !== undefined) {
+      const message = new vscode.TestMessage(resolution.error);
+      if (fileItem.uri) {
+        message.location = new vscode.Location(fileItem.uri, new vscode.Position(0, 0));
+      }
+      run.errored(fileItem, message, Date.now() - startTime);
+      for (const st of subtests) {
+        run.errored(st, new vscode.TestMessage(message.message));
+      }
+      return;
+    }
+    const { command: proveCmd, args: proveArgs, shell: useShell } = resolution;
     const cancellation = new AbortController();
     const killOnCancel = token.onCancellationRequested(() => cancellation.abort());
     if (token.isCancellationRequested) {
@@ -593,6 +684,7 @@ export class PerlTestAdapter implements vscode.Disposable {
       env: { ...process.env, HARNESS_ACTIVE: '1' },
       shell: useShell,
       signal: cancellation.signal,
+      ...(isWindows ? { stdin: `${filePath}\n` } : {}),
       ...configuredProveLimits(fileItem.uri),
     });
     killOnCancel.dispose();
