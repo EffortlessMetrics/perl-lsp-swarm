@@ -184,6 +184,14 @@ fn registry_row_for_disappeared_or_changed_family_is_stale() {
         "unwrap inherited panic! registry identity: {:?}",
         inventory.rows
     );
+    let result = check_inventory(xtask::no_panic_debt::CheckRequest {
+        root: temp.path(),
+        current: &inventory,
+        artifact: None,
+        baseline: None,
+    })
+    .expect("check");
+    assert!(!result.ok, "changed-family stale registry passed check: {:?}", result.findings);
 }
 
 #[test]
@@ -223,6 +231,25 @@ fn source_disappearance_without_disposition_is_not_converted() {
         !inventory.rows.iter().any(|row| row.status == DebtStatus::ConvertedAbsent),
         "active disappearance was treated as converted: {:?}",
         inventory.rows
+    );
+    let result = check_inventory(xtask::no_panic_debt::CheckRequest {
+        root: temp.path(),
+        current: &inventory,
+        artifact: None,
+        baseline: None,
+    })
+    .expect("check");
+    assert!(
+        !result.ok,
+        "stale registry on successfully covered source passed check: {:?}",
+        result.findings
+    );
+    assert!(
+        result.findings.iter().any(|finding| {
+            finding.contains("stale registry identity on successfully covered source")
+        }),
+        "missing covered-source stale-registry finding: {:?}",
+        result.findings
     );
 }
 
@@ -1582,6 +1609,65 @@ mod tests {
             .iter()
             .any(|row| { row.path.ends_with("src/lib.rs") && row.site_family == "unwrap" }),
         "Some.unwrap() omitted: {:?}",
+        inventory.rows
+    );
+}
+
+#[test]
+fn crate_cfg_attr_test_allow_does_not_make_production_unwrap_debt() {
+    let temp = tempfile::tempdir().expect("temp");
+    write_policy(temp.path());
+    write_empty_registry(temp.path());
+    write_package(
+        temp.path(),
+        "demo",
+        r#"
+#![cfg_attr(test, allow(clippy::unwrap_used))]
+mod foo;
+pub fn lib_prod() -> u8 { Some(0).unwrap() }
+"#,
+        &[("known.rs", "#[test]\nfn known() {}\n")],
+    );
+    fs::write(
+        temp.path().join("crates/demo/src/foo.rs"),
+        r#"
+pub fn prod() -> u8 { Some(1).unwrap() }
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn unit() { let _ = Some(1).unwrap(); }
+}
+"#,
+    )
+    .expect("foo.rs");
+    let inventory = inventory_at(temp.path());
+    assert!(
+        inventory.rows.iter().any(|row| {
+            row.path.ends_with("src/foo.rs")
+                && row.entrypoint == "unit"
+                && row.site_family == "unwrap"
+        }),
+        "real #[cfg(test)] unwrap omitted: {:?}",
+        inventory.rows
+    );
+    assert!(
+        !inventory.rows.iter().any(|row| {
+            row.kind == "site"
+                && row.site_family == "unwrap"
+                && (row.entrypoint == "prod" || row.entrypoint == "lib_prod")
+        }),
+        "cfg_attr(test, allow) promoted production unwrap to test debt: {:?}",
+        inventory.rows
+    );
+    assert!(
+        inventory.rows.iter().any(|row| {
+            row.kind == "declaration"
+                && row.path.ends_with("src/lib.rs")
+                && row.declaration_scope == "crate"
+                && row.source_identity.contains("cfg_attr")
+        }),
+        "cfg_attr(test, allow) declaration was dropped: {:?}",
         inventory.rows
     );
 }

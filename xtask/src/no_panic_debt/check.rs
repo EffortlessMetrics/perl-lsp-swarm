@@ -131,13 +131,20 @@ pub fn integrity_findings(root: &Path, inventory: &Inventory) -> Vec<String> {
                 row.path
             ));
         }
+        let parse_failed = inventory.instruments.iter().any(|instrument| {
+            instrument.kind == "source_parse"
+                && instrument.status == InstrumentStatus::NotProven
+                && instrument.subject == row.path
+        });
+        if row.status == DebtStatus::StaleRegistry && !parse_failed {
+            findings.push(format!(
+                "stale registry identity on successfully covered source: {}:{}",
+                row.path, row.entrypoint
+            ));
+        }
         if matches!(row.status, DebtStatus::ConvertedAbsent | DebtStatus::StaleRegistry)
             && row.kind == "registry"
-            && inventory.instruments.iter().any(|instrument| {
-                instrument.kind == "source_parse"
-                    && instrument.status == InstrumentStatus::NotProven
-                    && instrument.subject == row.path
-            })
+            && parse_failed
         {
             findings.push(format!(
                 "absence claimed without successful coverage of {}:{}",

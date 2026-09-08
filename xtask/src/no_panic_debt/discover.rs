@@ -526,15 +526,7 @@ fn is_test_attribute(attr: &Attribute) -> bool {
 }
 
 fn attrs_have_cfg_test(attrs: &[Attribute]) -> bool {
-    attrs.iter().any(|attr| {
-        if attr.path().is_ident("cfg") {
-            meta_list_requires_test(&attr.meta)
-        } else if attr.path().is_ident("cfg_attr") {
-            cfg_attr_predicate_requires_test(&attr.meta)
-        } else {
-            false
-        }
-    })
+    attrs.iter().any(|attr| attr.path().is_ident("cfg") && meta_list_requires_test(&attr.meta))
 }
 
 fn meta_list_requires_test(meta: &Meta) -> bool {
