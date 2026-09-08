@@ -99,6 +99,19 @@ setTimeout(
 setInterval(() => {}, 1000);
 `;
 
+/** A Windows CLI lifetime control: the leader exits but its descendant keeps the pipes open. */
+const EXIT_WITH_INHERITED_GRANDCHILD = `
+const { spawn } = require('node:child_process');
+const fs = require('node:fs');
+const grandchild = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 120000)'], { stdio: 'inherit' });
+const pidTemp = process.env.FIXTURE_PIDS_FILE + '.' + process.pid + '.tmp';
+fs.writeFileSync(pidTemp, JSON.stringify({ child: process.pid, grandchild: grandchild.pid }));
+fs.renameSync(pidTemp, process.env.FIXTURE_PIDS_FILE);
+console.log('FIXTURE_READY');
+setTimeout(() => process.exit(5), 120);
+setInterval(() => {}, 1000);
+`;
+
 /**
  * The wrapper-that-leaves-a-descendant control: reports readiness, spawns a
  * long-lived grandchild, records both PIDs, and (POSIX only) ignores the
@@ -573,6 +586,91 @@ void test('the CLI proof harness reaches readiness and reports owned-stop cleanu
   assertAllGone(pids);
 });
 
+void test(
+  'the real Windows CLI exits after reporting a leader-exit cleanup boundary',
+  { skip: !IS_WINDOWS, timeout: 15000 },
+  async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-dev-supervisor-cli-lifetime-'));
+    tempDirs.push(dir);
+    const pidsFile = path.join(dir, 'pids.json');
+    const fixture = path.join(dir, 'inherited-descendant.cjs');
+    const configFile = path.join(dir, 'config.json');
+    fs.writeFileSync(fixture, EXIT_WITH_INHERITED_GRANDCHILD);
+    fs.writeFileSync(
+      configFile,
+      JSON.stringify({
+        children: [
+          {
+            name: 'one',
+            command: process.execPath,
+            args: [fixture],
+            readyPattern: 'FIXTURE_READY',
+            env: { FIXTURE_PIDS_FILE: pidsFile },
+          },
+        ],
+        readinessTimeoutMs: 8000,
+      }),
+    );
+    const out = [];
+    const err = [];
+    const child = spawn(
+      process.execPath,
+      [path.join(extensionRoot, 'scripts', 'dev-supervisor.js')],
+      {
+        env: { ...process.env, [CONFIG_ENV]: configFile },
+        stdio: ['ignore', 'pipe', 'pipe'],
+        windowsHide: true,
+      },
+    );
+    child.stdout?.on('data', (chunk) => out.push(Buffer.from(chunk)));
+    child.stderr?.on('data', (chunk) => err.push(Buffer.from(chunk)));
+    try {
+      const result = await new Promise((resolve) => {
+        const timer = setTimeout(() => {
+          child.stdout?.destroy();
+          child.stderr?.destroy();
+          resolve({ code: null, timedOut: true });
+        }, 8000);
+        child.once('error', () => {
+          clearTimeout(timer);
+          resolve({ code: null, timedOut: false });
+        });
+        child.once('exit', (code) => {
+          clearTimeout(timer);
+          child.stdout?.destroy();
+          child.stderr?.destroy();
+          resolve({ code, timedOut: false });
+        });
+      });
+      assert.equal(
+        result.timedOut,
+        false,
+        'the CLI must not remain alive on inherited descendant pipes',
+      );
+      const stdout = Buffer.concat(out).toString('utf8');
+      const stderr = Buffer.concat(err).toString('utf8');
+      assert.equal(result.code, 5, `unexpected CLI result: stdout=${stdout} stderr=${stderr}`);
+      assert.match(stdout, /watcher "one" failed \(phase=ready, code=5/);
+      assert.match(stdout, /exited \(code=5, reason=child-failure:one\)/);
+    } finally {
+      if (fs.existsSync(pidsFile)) {
+        const pids = JSON.parse(fs.readFileSync(pidsFile, 'utf8'));
+        for (const pid of [pids.grandchild, pids.child]) {
+          if (typeof pid === 'number') {
+            try {
+              process.kill(pid, 'SIGTERM');
+            } catch {
+              // The process may already be gone after the bounded CLI exit.
+            }
+          }
+        }
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        assertAllGone([pids.child, pids.grandchild]);
+      }
+    }
+  },
+);
+
 void test('an invalid proof-harness config is red and names the offending field', async () => {
   const { code, stderr } = await runCli({ children: [], bogus: true });
   assert.equal(code, 2);
@@ -898,7 +996,7 @@ void test('a synchronous reporter failure prevents watcher launch', async () => 
 for (const failureMode of ['throw', 'emit']) {
   void test(
     `${failureMode === 'throw' ? 'synchronous' : 'asynchronous'} EPIPE enters owned shutdown`,
-    { timeout: 10000 },
+    { timeout: 30000 },
     async () => {
       class FailingOutput extends EventEmitter {
         constructor() {

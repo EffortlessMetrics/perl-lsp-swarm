@@ -90,6 +90,9 @@ const FORCE_KILL_WAIT_MS = 10_000;
 /** Hard cap on waiting for the Windows tree-kill helper itself. */
 const TASKKILL_TIMEOUT_MS = 5_000;
 
+/** Hard cap on flushing the supervisor's final CLI diagnostics. */
+const CLI_OUTPUT_FLUSH_TIMEOUT_MS = 1_000;
+
 /** How the supervisor reports stopping, keyed by cause. */
 const STOP_REASONS = {
   CHILD_FAILURE: 'child-failure',
@@ -1026,6 +1029,57 @@ function loadConfigOverride() {
   return parseSupervisorConfig(fs.readFileSync(configPath, 'utf8'), configPath);
 }
 
+/**
+ * Lets final reporter writes drain without allowing inherited watcher pipes to
+ * hold the CLI open forever after the terminal result has been published.
+ *
+ * @returns {Promise<void>}
+ */
+function flushCliOutput() {
+  return new Promise((resolve) => {
+    let settled = false;
+    let pending = 2;
+    /** @type {NodeJS.Timeout | undefined} */
+    let timer;
+    const finish = () => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      if (timer !== undefined) {
+        clearTimeout(timer);
+      }
+      resolve();
+    };
+    timer = setTimeout(finish, CLI_OUTPUT_FLUSH_TIMEOUT_MS);
+    const drained = () => {
+      pending -= 1;
+      if (pending === 0) {
+        finish();
+      }
+    };
+    for (const stream of [process.stdout, process.stderr]) {
+      try {
+        stream.write('', drained);
+      } catch {
+        drained();
+      }
+    }
+  });
+}
+
+/**
+ * Publish a terminal result, give stdout/stderr a bounded drain window, then
+ * exit explicitly so inherited descendant pipe handles cannot keep the CLI
+ * alive after cleanup has been reported honestly.
+ *
+ * @param {number} code
+ */
+function exitAfterCliOutput(code) {
+  process.exitCode = code;
+  void flushCliOutput().then(() => process.exit(code));
+}
+
 function main() {
   const reporter = createReporter(REPORT_SCOPE);
   /** @type {{children: WatchChildSpec[], options: Partial<SupervisorOptions>}} */
@@ -1053,7 +1107,7 @@ function main() {
   controller
     .waitForExit()
     .then((result) => {
-      process.exitCode = result.code;
+      exitAfterCliOutput(result.code);
     })
     .catch((error) => {
       // runDevSupervisor resolves rather than throwing; this guards only a
@@ -1061,7 +1115,7 @@ function main() {
       reporter.error(
         `unexpected failure: ${error instanceof Error ? error.message : String(error)}`,
       );
-      process.exitCode = 1;
+      exitAfterCliOutput(1);
     });
 }
 
