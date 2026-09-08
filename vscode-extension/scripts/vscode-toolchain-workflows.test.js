@@ -69,11 +69,19 @@ void test('managed Windows smoke packages and runs the current Test Explorer VSI
   assert.notEqual(packageIndex, -1);
   assert.notEqual(explorerIndex, -1);
   assert.ok(packageIndex < explorerIndex);
-  const nextStepIndex = source.indexOf('\n      - name:', explorerIndex + 1);
-  const packageStep = source.slice(packageIndex, explorerIndex);
+  const nextStepIndex = (index) => {
+    const offset = source.slice(index + 1).search(/\r?\n\s+- name:/);
+    return offset === -1 ? -1 : index + 1 + offset;
+  };
+  const packageNextStepIndex = nextStepIndex(packageIndex);
+  const explorerNextStepIndex = nextStepIndex(explorerIndex);
+  const packageStep = source.slice(
+    packageIndex,
+    packageNextStepIndex === -1 ? source.length : packageNextStepIndex,
+  );
   const explorerStep = source.slice(
     explorerIndex,
-    nextStepIndex === -1 ? source.length : nextStepIndex,
+    explorerNextStepIndex === -1 ? source.length : explorerNextStepIndex,
   );
   assert.match(packageStep, /if: runner\.os == 'Windows'/);
   assert.match(packageStep, /run: npm run package/);
@@ -87,6 +95,9 @@ void test('managed Windows smoke packages and runs the current Test Explorer VSI
   const vsixSelection = explorerStep.indexOf('$vsix = @(');
   const vsixAssignment = explorerStep.indexOf('$env:PERL_LSP_PUBLISHED_VSIX_PATH =');
   const publishedTest = explorerStep.indexOf('npm run test:published');
+  assert.notEqual(vsixSelection, -1, 'the published VSIX must be enumerated');
+  assert.notEqual(vsixAssignment, -1, 'the selected VSIX path must be assigned');
+  assert.notEqual(publishedTest, -1, 'the published Test Explorer command must be present');
   assert.ok(
     vsixSelection < vsixAssignment,
     'the published VSIX must be selected before binding its path',
