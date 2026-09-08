@@ -222,7 +222,17 @@ function renderSupportPacketSafely(
 }
 
 async function openIssueForm(): Promise<void> {
-  await vscode.env.openExternal(vscode.Uri.parse(PUBLIC_BUG_REPORT_URL));
+  try {
+    const opened = await vscode.env.openExternal(vscode.Uri.parse(PUBLIC_BUG_REPORT_URL));
+    if (opened) {
+      return;
+    }
+  } catch {
+    // Fall through to the same bounded manual-recovery message as a false result.
+  }
+  await vscode.window.showWarningMessage(
+    `Could not open the issue form. Open it manually: ${PUBLIC_BUG_REPORT_URL}`,
+  );
 }
 
 /**

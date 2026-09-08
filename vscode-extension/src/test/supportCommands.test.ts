@@ -166,6 +166,30 @@ describe('support command implementations', () => {
     expect(vscode.env.clipboard.writeText).not.toHaveBeenCalled();
   });
 
+  test('reports a bounded manual URL when the host declines to open the issue form', async () => {
+    const deps = dependencies();
+    (vscode.window.showInformationMessage as jest.Mock).mockResolvedValueOnce('Open Issue Form');
+    (vscode.env.openExternal as jest.Mock).mockResolvedValueOnce(false);
+
+    await expect(reportIssueCommand(deps)).resolves.toBeUndefined();
+
+    const [warning] = (vscode.window.showWarningMessage as jest.Mock).mock.calls[0] as [string];
+    expect(warning).toContain('Could not open the issue form');
+    expect(warning).toContain('https://github.com/EffortlessMetrics/perl-lsp/issues/new');
+  });
+
+  test('keeps issue-form recovery bounded when opening the browser rejects', async () => {
+    const deps = dependencies();
+    (vscode.window.showInformationMessage as jest.Mock).mockResolvedValueOnce('Open Issue Form');
+    (vscode.env.openExternal as jest.Mock).mockRejectedValueOnce(new Error('host unavailable'));
+
+    await expect(reportIssueCommand(deps)).resolves.toBeUndefined();
+
+    const [warning] = (vscode.window.showWarningMessage as jest.Mock).mock.calls[0] as [string];
+    expect(warning).not.toContain('host unavailable');
+    expect(warning).toContain('Open it manually');
+  });
+
   test('copies the typed support packet without opening anything automatically', async () => {
     const deps = dependencies();
     (vscode.window.showInformationMessage as jest.Mock).mockResolvedValueOnce(
@@ -271,6 +295,25 @@ describe('support command implementations', () => {
     expect(vscode.env.openExternal).toHaveBeenCalledTimes(1);
   });
 
+  test('clipboard recovery reports a bounded manual URL when the browser rejects', async () => {
+    const deps = dependencies();
+    (vscode.window.showInformationMessage as jest.Mock).mockResolvedValueOnce(
+      'Copy Support Packet',
+    );
+    (vscode.env.clipboard.writeText as jest.Mock).mockRejectedValueOnce(
+      new Error('clipboard unavailable'),
+    );
+    (vscode.window.showWarningMessage as jest.Mock).mockResolvedValueOnce('Open Issue Form');
+    (vscode.env.openExternal as jest.Mock).mockRejectedValueOnce(new Error('browser unavailable'));
+
+    await expect(reportIssueCommand(deps)).resolves.toBeUndefined();
+
+    const warnings = (vscode.window.showWarningMessage as jest.Mock).mock.calls;
+    expect(warnings[0]?.[0]).toContain('clipboard');
+    expect(warnings[1]?.[0]).toContain('Open it manually');
+    expect(warnings[1]?.[0]).not.toContain('browser unavailable');
+  });
+
   test('clipboard-failure recovery can show the packet instead of opening the browser', async () => {
     const deps = dependencies();
     (vscode.window.showInformationMessage as jest.Mock).mockResolvedValueOnce(
@@ -338,6 +381,7 @@ describe('support command implementations', () => {
       throw new Error('invalid support packet: forged/private/path');
     });
     (vscode.window.showWarningMessage as jest.Mock).mockResolvedValueOnce('Open Issue Form');
+    (vscode.env.openExternal as jest.Mock).mockResolvedValueOnce(true);
 
     try {
       await expect(reportIssueCommand(deps)).resolves.toBeUndefined();
