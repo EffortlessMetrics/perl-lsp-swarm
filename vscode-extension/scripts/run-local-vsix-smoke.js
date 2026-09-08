@@ -23,6 +23,40 @@ function runNpm(args, env) {
   });
 }
 
+/**
+ * Compile the published smoke entrypoint separately from executing it. A
+ * compiler exit code must never be confused with the child's typed platform
+ * boundary exit code.
+ *
+ * @param {NodeJS.ProcessEnv} env
+ * @param {(file: string, args: string[], options: object) => import('child_process').SpawnSyncReturns<string>} [runner]
+ */
+function runPublishedSmoke(env, runner = spawnSync) {
+  const options = {
+    cwd: root,
+    env,
+    encoding: 'utf8',
+    windowsHide: true,
+    stdio: 'inherit',
+  };
+  const compile = runner(
+    process.execPath,
+    [path.join(__dirname, 'governed-tsc.js'), '-p', './tsconfig.published-smoke.json'],
+    options,
+  );
+  if (compile.error || compile.status !== 0) {
+    return { phase: 'compile', result: compile };
+  }
+  return {
+    phase: 'child',
+    result: runner(
+      process.execPath,
+      [path.join(root, 'out/test/published/runPublishedSmoke.js')],
+      options,
+    ),
+  };
+}
+
 function gitRevision() {
   const result = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' });
   if (result.status !== 0) {
@@ -625,6 +659,8 @@ function validateChildSmokeReceipt({
 
 /** Must match `HOST_RESOLUTION_FAILURE_RECEIPT_NAME` in vscodeHostResolution.ts. */
 const HOST_RESOLUTION_FAILURE_RECEIPT = 'vscode_host_resolution_failure.json';
+// Reserved by runPublishedSmoke.ts for the candidate-bound platform boundary.
+const CANDIDATE_PLATFORM_UNAVAILABLE_EXIT_CODE = 2;
 
 function hostResolutionFailurePath(root = receiptsRoot()) {
   return path.join(root, HOST_RESOLUTION_FAILURE_RECEIPT);
@@ -668,6 +704,8 @@ function readHostResolutionFailureReceipt(
  * @param {{
  *   status?: number | null,
  *   spawnError?: Error | undefined,
+ *   candidateBound?: boolean,
+ *   platform?: string,
  *   receiptsRoot?: string,
  *   exists?: ((file: string) => boolean) | undefined,
  *   readFile?: ((file: string) => string) | undefined,
@@ -682,6 +720,8 @@ function readHostResolutionFailureReceipt(
 function interpretBehavioralSmokeExit({
   status = null,
   spawnError,
+  candidateBound = false,
+  platform = process.platform,
   receiptsRoot: root = receiptsRoot(),
   exists,
   readFile,
@@ -715,6 +755,17 @@ function interpretBehavioralSmokeExit({
       status: 'not_proven',
       exit_code: null,
       reason: spawnError.message,
+    };
+  }
+  if (
+    candidateBound &&
+    platform !== 'linux' &&
+    status === CANDIDATE_PLATFORM_UNAVAILABLE_EXIT_CODE
+  ) {
+    return {
+      status: 'not_proven',
+      exit_code: status,
+      reason: 'candidate_bound_platform_unavailable',
     };
   }
   return {
@@ -2356,7 +2407,7 @@ function main() {
         PERL_LSP_SMOKE_RECEIPTS_DIR: receiptsRoot(),
       };
       const packageResult = runNpm(
-        ['exec', '--offline', '--no', '--', '@vscode/vsce', 'package'],
+        ['exec', '--offline', '--no', '--', 'vsce', 'package'],
         packageEnv,
       );
       if (packageResult.error) {
@@ -2440,7 +2491,7 @@ function main() {
           PERL_LSP_SERVER_SOURCE_SHA: serverSourceRevision,
           PERL_LSP_SMOKE_RECEIPTS_DIR: receiptsRoot(),
           PERL_LSP_SMOKE_SOURCE_LABEL: smokeSourceLabel(),
-          PERL_LSP_VSIX_SHA256: receipt.vsix.sha256,
+          PERL_LSP_VSIX_SHA256: receipt.vsix.sha256 ?? '',
         };
 
         // Clear any receipt left by an earlier run so a stale artifact can
@@ -2461,11 +2512,25 @@ function main() {
           return;
         }
 
-        const smokeResult = runNpm(['run', 'test:published'], smokeEnv);
+        const smokeRun = runPublishedSmoke(smokeEnv);
+        const smokeResult = smokeRun.result;
+        if (smokeRun.phase === 'compile') {
+          receipt.stages.behavioral_smoke = {
+            status: 'failed',
+            exit_code: smokeResult.status ?? null,
+            reason: smokeResult.error
+              ? 'published_smoke_compile_spawn_failed'
+              : 'published_smoke_compile_failed',
+          };
+          persistReceipt(destination, receipt);
+          return;
+        }
         if (smokeResult.error || smokeResult.status !== 0) {
           receipt.stages.behavioral_smoke = interpretBehavioralSmokeExit({
             status: smokeResult.status,
             spawnError: smokeResult.error,
+            candidateBound: Boolean(smokeEnv.PERL_LSP_CURRENT_SOURCE_SHA),
+            platform: process.platform,
             receiptsRoot: receiptsRoot(),
           });
         } else if (smokeResult.status === 0) {
@@ -2585,6 +2650,7 @@ module.exports = {
   finalizeSmokeRun,
   initialReceipt,
   interpretBehavioralSmokeExit,
+  runPublishedSmoke,
   interpretTransitionResult,
   publishCheckSummary,
   writeProjectionLine,

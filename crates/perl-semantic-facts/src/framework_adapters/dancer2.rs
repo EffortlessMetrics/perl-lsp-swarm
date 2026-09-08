@@ -741,6 +741,7 @@ fn unknown_exclusions(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use perl_test_must::must_some_with;
 
     #[test]
     fn descriptor_is_dancer2_selective_and_shadow() {
@@ -865,10 +866,10 @@ mod tests {
     fn reviewed_keyword_exclusion_is_known_and_preserved() {
         let evidence = parse_dancer2_import_args(&["!uri_for_route".to_string()]);
         let facts = default_keyword_facts(&evidence, "1.1.1");
-        let uri_for_route = facts
-            .iter()
-            .find(|fact| fact.keyword == "uri_for_route")
-            .expect("reviewed keyword fact");
+        let uri_for_route = must_some_with(
+            facts.iter().find(|fact| fact.keyword == "uri_for_route"),
+            "reviewed keyword fact",
+        );
         assert_eq!(uri_for_route.state, Dancer2KeywordState::Excluded);
         assert!(unknown_exclusions(&evidence, Some("1.1.1")).is_empty());
         assert_eq!(dsl_contract_version_for("1.1.1"), DANCER2_DSL_CONTRACT_VERSION);
