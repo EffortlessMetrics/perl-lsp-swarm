@@ -20,6 +20,12 @@ Contract tiers:
 2. **Published support crates (stable but faster-moving):** all other allowlisted crates.
 3. **Non-allowlisted crates:** internal-only; no external SemVer contract until published.
 
+Which allowlisted crates the two API ratchets (`just public-api-check` baselines and the
+semver rails) actually guard is a separate, deliberate decision recorded in one place:
+`.ci/public-api-baselines/ratchet-crates.txt`. Every crate that opts in with an explicit
+`publish = true` must be listed there; `cargo xtask publish-manifest-check` enforces that
+rule and keeps the list, the committed baselines, and the allowlist consistent (#14607).
+
 ## Compatibility Guarantees
 
 ### 1) Patch releases (`0.Y.Z`)
@@ -90,7 +96,8 @@ Facade crates are the main downstream integration surface. For these crates:
 Before merging a PR that touches public items in a published crate:
 
 1. Run SemVer checks (`just semver-check` or package-specific check).
-2. Run facade API checks (`just public-api-check`) when a facade crate is touched.
+2. Run the public API ratchet (`just public-api-check`) when a crate listed in
+   `.ci/public-api-baselines/ratchet-crates.txt` is touched.
 3. Confirm version bump matches this policy.
 4. Add/refresh changelog notes and migration guidance for intentional breaks.
 

@@ -357,7 +357,16 @@ impl DebugAdapter {
     /// warning — defense-in-depth only blocks when a workspace boundary is known.
     fn validate_source_path(&self, path: &str) -> Result<PathBuf, String> {
         let ws = lock_or_recover(&self.workspace_root, "debug_adapter.workspace_root");
-        match ws.as_ref() {
+        Self::validate_source_path_at(path, ws.as_deref())
+    }
+
+    /// Apply the source boundary to a client spelling or an observed debugger alias.
+    /// Callers snapshot authority before holding the session lock.
+    fn validate_source_path_at(
+        path: &str,
+        workspace_root: Option<&Path>,
+    ) -> Result<PathBuf, String> {
+        match workspace_root {
             Some(root) => security::validate_path(Path::new(path), root)
                 .map_err(|e| format!("Path validation failed: {e}")),
             None => {
@@ -411,6 +420,36 @@ impl DebugAdapter {
                 Ok(PathBuf::from(path))
             }
         }
+    }
+
+    /// Correlate a debugger stop through the same source boundary as admission.
+    /// The caller supplies a root snapshot, so no authority lock is nested under
+    /// the session/store locks. Rejected paths cannot claim a breakpoint stop.
+    fn register_observed_breakpoint_hit(
+        breakpoints: &crate::breakpoints::BreakpointStore,
+        source_path: &str,
+        line: i64,
+        workspace_root: Option<&Path>,
+        debuggee_cwd: &Path,
+    ) -> crate::breakpoints::BreakpointHitOutcome {
+        // Observed relative names belong to the debuggee's launch directory.
+        // Resolving them does not confer trust: containment is still checked
+        // independently against the configured workspace boundary below.
+        let observed = Path::new(source_path);
+        let resolved = if observed.is_absolute() {
+            observed.to_path_buf()
+        } else {
+            debuggee_cwd.join(observed)
+        };
+        let Some(resolved) = resolved.to_str() else {
+            return crate::breakpoints::BreakpointHitOutcome::default();
+        };
+        Self::validate_source_path_at(resolved, workspace_root)
+            .ok()
+            .as_deref()
+            .and_then(Path::to_str)
+            .map(|path| breakpoints.register_breakpoint_hit(path, line))
+            .unwrap_or_default()
     }
 
     /// Get next sequence number (monotonically increasing, poison-safe)

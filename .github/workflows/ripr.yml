@@ -42,7 +42,13 @@ on:
   # PRs, they only burn the 10 GB quota.
   schedule:
     - cron: '23 11 * * *'
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      seed_cache:
+        description: 'Seed the shared RIPR Cargo cache from canonical main/master'
+        required: false
+        default: false
+        type: boolean
 
 concurrency:
   group: ripr-${{ github.event.pull_request.number || github.ref }}
@@ -65,7 +71,8 @@ jobs:
     timeout-minutes: 5
     if: >-
       (github.event.pull_request.draft != true || github.event_name != 'pull_request') &&
-      github.event_name != 'schedule'
+      github.event_name != 'schedule' &&
+      (github.event_name != 'workflow_dispatch' || inputs.seed_cache != true)
     outputs:
       target: ${{ steps.route.outputs.target }}
       reason: ${{ steps.route.outputs.reason }}
@@ -210,7 +217,7 @@ jobs:
     outputs:
       preflight_ok: ${{ steps.preflight.outputs.preflight_ok }}
     env:
-      RIPR_VERSION: "0.9.0"
+      RIPR_VERSION: "0.10.0"
       BASE_REF: ${{ github.base_ref || github.event.merge_group.base_ref || github.event.repository.default_branch }}
       PR_HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || '' }}
       PR_LABELS: ${{ github.event_name == 'pull_request' && join(github.event.pull_request.labels.*.name, ',') || '' }}
@@ -459,7 +466,7 @@ jobs:
     outputs:
       preflight_ok: ${{ steps.preflight.outputs.preflight_ok }}
     env:
-      RIPR_VERSION: "0.9.0"
+      RIPR_VERSION: "0.10.0"
       BASE_REF: ${{ github.base_ref || github.event.merge_group.base_ref || github.event.repository.default_branch }}
       PR_HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || '' }}
       PR_LABELS: ${{ github.event_name == 'pull_request' && join(github.event.pull_request.labels.*.name, ',') || '' }}
@@ -706,7 +713,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 75
     env:
-      RIPR_VERSION: "0.9.0"
+      RIPR_VERSION: "0.10.0"
       BASE_REF: ${{ github.base_ref || github.event.merge_group.base_ref || github.event.repository.default_branch }}
       PR_HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || '' }}
       PR_LABELS: ${{ github.event_name == 'pull_request' && join(github.event.pull_request.labels.*.name, ',') || '' }}
@@ -732,7 +739,8 @@ jobs:
         with:
           cache-on-failure: true
           cache-all-crates: true
-          shared-key: ripr-${{ env.RIPR_VERSION }}-${{ hashFiles('Cargo.lock') }}
+          shared-key: ripr-${{ env.RIPR_VERSION }}
+          cache-workspace-crates: true
           # #12563: the old main-only save-if could never fire in this
           # workflow, so every hosted run cold-built ~6.5m into the
           # runner-eviction window. PR runs must stay restore-only
@@ -740,10 +748,14 @@ jobs:
           # merge ref, cannot warm other PRs, and burn the 10 GB quota. Saves
           # come from the scheduled main-ref seed job (and a manual main-ref
           # dispatch) instead.
-          save-if: ${{ github.event_name == 'workflow_dispatch' }}
+          # Analysis jobs restore the canonical seed but never publish shared state.
+          save-if: ${{ false }}
 
       - name: Install ripr
         run: cargo install ripr --version "$RIPR_VERSION" --locked
+
+      - name: Build xtask
+        run: cargo build -p xtask --locked
 
       - name: Run ripr doctor
         run: ripr doctor
@@ -870,7 +882,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 75
     env:
-      RIPR_VERSION: "0.9.0"
+      RIPR_VERSION: "0.10.0"
       BASE_REF: ${{ github.base_ref || github.event.merge_group.base_ref || github.event.repository.default_branch }}
       PR_HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || '' }}
       PR_LABELS: ${{ github.event_name == 'pull_request' && join(github.event.pull_request.labels.*.name, ',') || '' }}
@@ -906,13 +918,18 @@ jobs:
         with:
           cache-on-failure: true
           cache-all-crates: true
-          shared-key: ripr-fallback-${{ env.RIPR_VERSION }}-${{ hashFiles('Cargo.lock') }}
+          shared-key: ripr-${{ env.RIPR_VERSION }}
+          cache-workspace-crates: true
           # #12563: same restore-only repair as the primary hosted job above —
-          # the fallback key is seeded by the scheduled main-ref seed job.
-          save-if: ${{ github.event_name == 'workflow_dispatch' }}
+          # the shared key is seeded by the scheduled or explicit canonical seed job.
+          # Analysis jobs restore the canonical seed but never publish shared state.
+          save-if: ${{ false }}
 
       - name: Install ripr
         run: cargo install ripr --version "$RIPR_VERSION" --locked
+
+      - name: Build xtask
+        run: cargo build -p xtask --locked
 
       - name: Run ripr doctor
         run: ripr doctor
@@ -1015,20 +1032,22 @@ jobs:
           if-no-files-found: error
 
   # -------------------------------------------------------------------------
-  # 3. Cache seed (#12563) -- scheduled main-ref run that warms both ripr
-  # rust-cache keys so hosted PR runs restore instead of cold-building ~6.5m
+  # 3. Cache seed (#12563) -- scheduled or explicit canonical main-ref run that
+  # warms the shared ripr rust-cache key so hosted PR runs restore instead of cold-building ~6.5m
   # into the runner-eviction window. Pull_request runs stay restore-only
-  # (docs/ci/cache-policy.md); this job is the only writer besides a manual
-  # main-ref dispatch. Builds the same artifacts the analysis jobs build
-  # (ripr binary + xtask), under both shared keys.
+  # (docs/ci/cache-policy.md); this job is the only writer. Builds the same
+  # artifacts the analysis jobs build (ripr binary + xtask).
   # -------------------------------------------------------------------------
   seed-cache:
     name: Seed ripr rust cache
-    if: github.event_name == 'schedule'
+    if: >-
+      (github.event_name == 'schedule' ||
+      (github.event_name == 'workflow_dispatch' && inputs.seed_cache == true)) &&
+      (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main')
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
-      RIPR_VERSION: "0.9.0"
+      RIPR_VERSION: "0.10.0"
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -1036,25 +1055,20 @@ jobs:
       - name: Toolchain (rust-toolchain.toml pins 1.95.0)
         run: rustc --version
 
-      - name: Cache cargo dependencies (primary key)
+      - name: Cache cargo dependencies
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
         with:
           cache-on-failure: true
           cache-all-crates: true
-          shared-key: ripr-${{ env.RIPR_VERSION }}-${{ hashFiles('Cargo.lock') }}
+          cache-workspace-crates: true
+          shared-key: ripr-${{ env.RIPR_VERSION }}
+          save-if: ${{ (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.seed_cache == true)) && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main') }}
 
       - name: Install ripr
         run: cargo install ripr --version "$RIPR_VERSION" --locked
 
       - name: Build xtask
         run: cargo build -p xtask --locked
-
-      - name: Cache cargo dependencies (fallback key)
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
-        with:
-          cache-on-failure: true
-          cache-all-crates: true
-          shared-key: ripr-fallback-${{ env.RIPR_VERSION }}-${{ hashFiles('Cargo.lock') }}
 
   # -------------------------------------------------------------------------
   # 4. Result aggregator -- owns the "ripr+ New Gap Gate" required-check name.

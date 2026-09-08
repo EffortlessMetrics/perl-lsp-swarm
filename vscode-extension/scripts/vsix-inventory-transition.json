@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "owner_issue": 14155,
-  "reason": "Accept the combined landed #14857 lifecycle and #14621 per-file configuration package, plus the #14919 Marketplace README refresh. Measured with Node 26.5.0 and npm 11.18.0 from an actual VSIX at main 42007301a43ad5287aa00df8e26683f9795655b9. The 29 payload paths are unchanged: out/extension.js grows by 1130 bytes to 1679645; readme.md grows by 8 bytes to 25230; total payload is 1857611 bytes. Installed behavior remains a separate proof surface.",
-  "base_baseline_file_sha256": "a0ff6132d090487820a562be18de96e17a9e0b6f1c22c5304386519490aac8c5",
-  "candidate_baseline_file_sha256": "71482686ee9c9e65c120c19a814034fd537dc61e826306b406d5b137cb1b2a5b",
-  "base_inventory_sha256": "58b0b7699290c02ba693c03393cc5fc7771c687386499ebd1d426ac3850b1b02",
-  "candidate_inventory_sha256": "0b5940446ee784e69435a7bf1f2f44f7ea49e17832178a82a559012a25c22584"
+  "owner_issue": 15153,
+  "reason": "The exact pinned vscode-jsonrpc 9.0.2 write-failure orphan rejection is corrected in the resolved bundle source, guarded by its source hash, on top of the existing language-client startup correction. Against current main, the measured combined transition changes out/extension.js from 1688966 to 1691400 bytes (+2434) and README.md from 25231 to 25629 bytes (+398); the other archive paths are unchanged. Bundled installed-health evidence remains separate from ordinary inventory.",
+  "base_baseline_file_sha256": "4e148581fe7caff83e13b7d0f617d58c7a957fbc1bb5f1c8b617b9fbd2bd83da",
+  "candidate_baseline_file_sha256": "03b0339c3c4bfcfd8f9dc9aa74e8d0f578231ea4beddfefba20a303050bf5035",
+  "base_inventory_sha256": "d44214d4914ba1bd8b35d300c9571675e8ae3a7ae526ea017d96c4dc6ff3ea92",
+  "candidate_inventory_sha256": "25bb3d522c7662251cbea5f1f42b8fa5ccbaeb7ce32bd918d7b1e45812b5dfd9"
 }

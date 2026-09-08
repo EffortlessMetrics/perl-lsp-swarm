@@ -27,6 +27,7 @@ pub mod file_watcher_debounce;
 mod language;
 mod latency;
 mod lifecycle;
+mod metadata_invalidation;
 mod notebook;
 pub(crate) mod outbound;
 #[allow(unused_imports)]
@@ -62,6 +63,8 @@ mod active_document_readiness_tests;
 mod diagnostics_sink_tests;
 #[cfg(test)]
 mod document_symbols_sink_tests;
+#[cfg(test)]
+mod metadata_invalidation_tests;
 #[cfg(test)]
 mod open_buffer_authority_tests;
 #[cfg(test)]
@@ -216,6 +219,40 @@ pub struct LspServer {
     workspace_folders: Arc<Mutex<Vec<WorkspaceFolderState>>>,
     /// Monotonic configuration/ownership generation for diagnostic snapshots.
     pub(crate) workspace_identity_generation: Arc<AtomicU64>,
+    /// Monotonic generation for dependency and environment facts derived from
+    /// project metadata (#13640).
+    ///
+    /// Advanced once per coalesced watcher batch that actually refreshed at
+    /// least one folder, so a burst of metadata writes is one observable
+    /// refresh rather than one per event.
+    pub(crate) dependency_facts_generation: Arc<AtomicU64>,
+    /// Workspace folder URIs holding at least one metadata source that could
+    /// not be read, whose previous facts are therefore retained rather than
+    /// observed (#13640).
+    ///
+    /// A folder is marked only when a metadata file exists but cannot be read
+    /// as text. An open buffer is *not* stale: its staged text is the
+    /// authority, so buffer-derived facts are current. The marker is cleared
+    /// by the next refresh in which every source resolves.
+    pub(crate) stale_dependency_facts: Arc<Mutex<std::collections::BTreeSet<String>>>,
+
+    /// Serializes a whole metadata refresh: buffer snapshot *and* apply.
+    ///
+    /// `refresh_project_metadata_facts` snapshots open-document text before
+    /// taking `workspace_folders`, because taking `documents` inside the
+    /// folder lock would invert the established `documents -> workspace_folders`
+    /// order. That hoist leaves a gap: two concurrent refreshes (a watcher
+    /// batch and a `didChange`, say) can snapshot in one order and apply in
+    /// the other, letting an older buffer snapshot commit last and overwrite
+    /// newer dependency facts until the next event.
+    ///
+    /// Holding this for the whole refresh closes that gap without nesting the
+    /// two locks: it is always acquired *before* `documents` and
+    /// `workspace_folders` and only by this one route, so it cannot
+    /// participate in a cycle. A refresh that waits here then snapshots after
+    /// the previous one has fully applied, so the last refresh to run always
+    /// reads current buffer state.
+    pub(crate) metadata_refresh_serialization: Arc<Mutex<()>>,
     /// Serializes workspace identity invalidation with diagnostic publication.
     pub(crate) workspace_identity_lock: Arc<Mutex<()>>,
     /// Project configuration discovered for an unregistered single-file document.
@@ -1017,6 +1054,14 @@ impl LspServer {
 
     /// Evict open-document state and workspace index state for a removed folder.
     pub(crate) fn evict_workspace_folder_state(&self, folder_uri: &str) {
+        // Metadata staleness is folder-scoped, so it is evicted here rather
+        // than at the one current call site: this is the single place that
+        // owns folder eviction, so a future remover cannot miss it (#13640).
+        // Without this the set grows across add/remove cycles and a folder
+        // re-added under the same URI inherits the previous incarnation's
+        // stale flag even when its disk state is fresh.
+        self.stale_dependency_facts.lock().remove(folder_uri);
+
         let folder_keys = Self::uri_key_variants(folder_uri);
         let docs_to_evict = {
             let documents = self.documents.lock();

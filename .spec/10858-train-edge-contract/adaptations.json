@@ -51,6 +51,23 @@
       "kind": "requires_behavior_for_claim"
     },
     {
+      "programme_schema": "perl_corpus_train.v1",
+      "class": "hard",
+      "kind": "requires_implementation"
+    },
+    {
+      "programme_schema": "perl_corpus_train.v1",
+      "class": "evidence",
+      "kind": "requires_behavior_for_claim"
+    },
+    {
+      "programme_schema": "perl_corpus_train.v1",
+      "class": "authorization",
+      "kind": "external_checkpoint",
+      "stage": "manual_authorization",
+      "rationale": "The perl-corpus train's authorization class names explicit human authorization for repository creation/history import and tag/release/publication (#EXPLICIT-AUTHORIZATION on the #8850 and #8869 external actions); manual_authorization is the exact common stage (#10980)."
+    },
+    {
       "programme_schema": "native_neovim_train.v1",
       "class": "requires_implementation",
       "kind": "requires_implementation"
@@ -108,6 +125,10 @@
     {
       "bundle": ".spec/11392-native-neovim-train-graph",
       "programme_schema": "native_neovim_train.v1"
+    },
+    {
+      "bundle": ".spec/10980-perl-corpus-stable-dag",
+      "programme_schema": "perl_corpus_train.v1"
     }
   ]
 }

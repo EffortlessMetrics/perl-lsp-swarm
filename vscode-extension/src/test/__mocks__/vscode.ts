@@ -24,6 +24,13 @@ export class Position {
   ) {}
 }
 
+export class Location {
+  constructor(
+    public readonly uri: unknown,
+    public readonly range: unknown,
+  ) {}
+}
+
 /**
  * Records the insertions staged on it.
  *
@@ -275,9 +282,9 @@ export const workspace = {
     update: jest.fn(),
   })),
   createFileSystemWatcher: jest.fn(() => ({
-    onDidCreate: jest.fn(),
-    onDidChange: jest.fn(),
-    onDidDelete: jest.fn(),
+    onDidCreate: jest.fn(() => ({ dispose: jest.fn() })),
+    onDidChange: jest.fn(() => ({ dispose: jest.fn() })),
+    onDidDelete: jest.fn(() => ({ dispose: jest.fn() })),
     dispose: jest.fn(),
   })),
   onDidOpenTextDocument: jest.fn(() => ({ dispose: jest.fn() })),
