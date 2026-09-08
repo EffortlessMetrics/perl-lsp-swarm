@@ -1151,6 +1151,81 @@ class PayloadOracleTests(unittest.TestCase):
         violations = aggregate_lane_history.validate_history_payload(payload)
         self.assertTrue(any("lane_sample_cap" in v for v in violations), violations)
 
+    def test_runs_scanned_bounding_source_runs_validates(self) -> None:
+        """The listing-layer counter is optional, but coherent when present (#13467)."""
+        payload = self.clean_payload()
+        payload["validation"]["runs_scanned"] = 5
+        self.assertEqual([], aggregate_lane_history.validate_history_payload(payload))
+        # Equal is coherent: every scanned candidate became a source run.
+        payload["validation"]["runs_scanned"] = 2
+        self.assertEqual([], aggregate_lane_history.validate_history_payload(payload))
+
+    def test_runs_scanned_below_source_run_count_fails(self) -> None:
+        """More accepted source runs than scanned candidates is impossible."""
+        payload = self.clean_payload()
+        payload["validation"]["runs_scanned"] = 1
+        violations = aggregate_lane_history.validate_history_payload(payload)
+        self.assertTrue(any("runs_scanned 1 < source_run_count 2" in v for v in violations), violations)
+
+    def test_bool_runs_scanned_fails(self) -> None:
+        payload = self.clean_payload()
+        payload["validation"]["runs_scanned"] = True
+        violations = aggregate_lane_history.validate_history_payload(payload)
+        self.assertTrue(any("runs_scanned must be a non-negative int" in v for v in violations), violations)
+
+    def test_main_records_runs_scanned_when_passed(self) -> None:
+        """--runs-scanned lands in the payload and the printed summary."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            actuals = root / "actuals"
+            actuals.mkdir()
+            write_run(
+                actuals,
+                jobs=[{"lane_id": "rust-small", "actual_lem": 12}],
+            )
+            lanes = root / "ci-lanes.toml"
+            lanes.write_text(
+                "[lane.rust-small]\nbase_lem = 10\n[lane.docs]\nbase_lem = 2\n",
+                encoding="utf-8",
+            )
+            output = root / "history.json"
+
+            old_argv = sys.argv
+            try:
+                sys.argv = [
+                    "aggregate_lane_history.py",
+                    "--actuals-dir",
+                    str(actuals),
+                    "--output",
+                    str(output),
+                    "--static-lanes",
+                    str(lanes),
+                    "--require-trusted-markers",
+                    "--repository",
+                    REPOSITORY,
+                    "--default-branch",
+                    DEFAULT_BRANCH,
+                    "--runs-scanned",
+                    "7",
+                ]
+                stdout = io.StringIO()
+                with redirect_stdout(stdout):
+                    status = aggregate_lane_history.main()
+            finally:
+                sys.argv = old_argv
+
+            history = json.loads(output.read_text(encoding="utf-8"))
+            printed = json.loads(stdout.getvalue())
+
+        self.assertEqual(0, status)
+        self.assertEqual(7, history["validation"]["runs_scanned"])
+        self.assertEqual(7, printed["runs_scanned"])
+        self.assertEqual(
+            [],
+            aggregate_lane_history.validate_history_payload(history),
+            "the generated payload with runs_scanned must pass its own oracle",
+        )
+
     def test_checked_in_history_validates(self) -> None:
         """The current committed payload must pass its own oracle."""
         repo_root = SCRIPT_PATH.parent.parent.parent

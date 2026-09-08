@@ -7,6 +7,15 @@ const findFiles = jest.fn<Promise<{ fsPath: string }[]>, unknown[]>();
 jest.mock(
   'vscode',
   () => ({
+    RelativePattern: class {
+      readonly baseUri: { fsPath: string };
+      readonly pattern: string;
+
+      constructor(folder: { uri: { fsPath: string } }, pattern: string) {
+        this.baseUri = folder.uri;
+        this.pattern = pattern;
+      }
+    },
     workspace: {
       isTrusted: true,
       findFiles: (...args: unknown[]) => findFiles(...args),
@@ -24,6 +33,7 @@ import {
   collectWorkspaceStepDefinitionSources,
   MAX_STEP_DEFINITION_FILE_BYTES,
   MAX_STEP_DEFINITION_TOTAL_READ_BYTES,
+  scanStepDefinitions,
   writeGeneratedStepDefinitionFile,
 } from '../gherkinStepDefinitions';
 
@@ -32,12 +42,17 @@ import {
 // past them, without re-asserting the stricter policy #6158 deliberately
 // rejected to avoid the ordinary-pattern false negatives in #859.
 describe('Gherkin regex safety', () => {
-  it.each(['^(a|aa)+$', '^(a|a?)+$', '^(a+)+$', '^(a)\\1$', '^(?=a)a$'])(
-    'rejects catastrophic workspace regex %s without executing it',
-    (source) => {
-      expect(isPotentiallyExpensiveRegex(source)).toBe(true);
-    },
-  );
+  it.each([
+    '^(a|aa)+$',
+    '^(a|a?)+$',
+    '^(a+)+$',
+    '^(a{1,})+$',
+    '^(a)\\1$',
+    '^(?<value>a)\\k<value>$',
+    '^(?=a)a$',
+  ])('rejects catastrophic workspace regex %s without executing it', (source) => {
+    expect(isPotentiallyExpensiveRegex(source)).toBe(true);
+  });
 
   it.each(['^I have "([^"]+)"$', '^I have ([0-9]{2}) items$', '^status: (pass|fail)$', '^a+b$'])(
     'keeps ordinary anchored capture regex %s available',
@@ -73,6 +88,7 @@ describe('Gherkin regex safety', () => {
       (_unused, index) => `Given qr/^step number ${index}$/, sub { return; };`,
     ).join('\n');
 
+    expect(scanStepDefinitions(source).definitions).toHaveLength(25_000);
     expect(classifyStepDefinitionStatus(step, [source])).toBe('ambiguous');
   });
 
@@ -295,7 +311,7 @@ describe('bounded workspace step-definition scan', () => {
       filePath: string,
       limit: number,
     ) => Promise<{ text: string; byteLength: number } | null>,
-  ): Promise<string[]> {
+  ): ReturnType<typeof collectWorkspaceStepDefinitionSources> {
     return collectWorkspaceStepDefinitionSources(
       {
         uri: { fsPath: workspaceRoot },
@@ -308,7 +324,32 @@ describe('bounded workspace step-definition scan', () => {
     const filePath = await writeStepFile('small_steps.pm', 'Given qr/^ok$/, sub { return; };\n');
     findFiles.mockResolvedValue([{ fsPath: filePath }]);
 
-    expect(await scan()).toEqual(['Given qr/^ok$/, sub { return; };\n']);
+    await expect(scan()).resolves.toEqual({
+      sources: ['Given qr/^ok$/, sub { return; };\n'],
+      complete: true,
+    });
+  });
+
+  it('scopes discovery to the selected workspace folder before applying the cap', async () => {
+    const filePath = await writeStepFile('selected_steps.pm', 'Given qr/^selected$/, sub {};\n');
+    findFiles.mockImplementation(async (include: unknown) => {
+      expect(include).toMatchObject({
+        baseUri: { fsPath: workspaceRoot },
+        pattern: '**/*.pm',
+      });
+      return [{ fsPath: filePath }];
+    });
+
+    await expect(scan()).resolves.toEqual({
+      sources: ['Given qr/^selected$/, sub {};\n'],
+      complete: true,
+    });
+  });
+
+  it('marks a failed file listing incomplete instead of offering generation', async () => {
+    findFiles.mockRejectedValue(new Error('workspace index unavailable'));
+
+    await expect(scan()).resolves.toEqual({ sources: [], complete: false });
   });
 
   it('skips a file already past the per-file limit', async () => {
@@ -318,7 +359,19 @@ describe('bounded workspace step-definition scan', () => {
     );
     findFiles.mockResolvedValue([{ fsPath: filePath }]);
 
-    expect(await scan()).toEqual([]);
+    await expect(scan()).resolves.toEqual({ sources: [], complete: false });
+  });
+
+  it('marks a capped file listing incomplete instead of treating it as exhaustive', async () => {
+    const filePath = await writeStepFile('capped_steps.pm', 'Given qr/^ok$/, sub { return; };\n');
+    findFiles.mockResolvedValue(Array.from({ length: 500 }, () => ({ fsPath: filePath })));
+
+    const result = await scan(async () => ({
+      text: 'Given qr/^ok$/, sub { return; };\n',
+      byteLength: Buffer.byteLength('Given qr/^ok$/, sub { return; };\n', 'utf8'),
+    }));
+    expect(result.sources).toHaveLength(500);
+    expect(result.complete).toBe(false);
   });
 
   it('holds the per-file bound when the workspace grows the file mid-scan', async () => {
@@ -360,22 +413,25 @@ describe('bounded workspace step-definition scan', () => {
         if (candidate === filePath) {
           await grow();
         }
-        return realReadFile(candidate as never, ...(rest as []));
+        return realReadFile(candidate as never, ...rest);
       }),
     ];
 
-    let sources: string[];
+    let scanResult: Awaited<ReturnType<typeof scan>>;
     try {
       findFiles.mockResolvedValue([{ fsPath: filePath }]);
-      sources = await scan();
+      scanResult = await scan();
     } finally {
       for (const spy of spies) {
         spy.mockRestore();
       }
     }
 
-    expect(sources).toHaveLength(1);
-    expect(Buffer.byteLength(sources[0] ?? '', 'utf8')).toBeLessThanOrEqual(PER_FILE_LIMIT);
+    expect(scanResult.complete).toBe(true);
+    expect(scanResult.sources).toHaveLength(1);
+    expect(Buffer.byteLength(scanResult.sources[0] ?? '', 'utf8')).toBeLessThanOrEqual(
+      PER_FILE_LIMIT,
+    );
   });
 
   it('accepts a file sitting exactly on the per-file limit', async () => {
@@ -386,9 +442,10 @@ describe('bounded workspace step-definition scan', () => {
     );
     findFiles.mockResolvedValue([{ fsPath: filePath }]);
 
-    const sources = await scan();
-    expect(sources).toHaveLength(1);
-    expect(Buffer.byteLength(sources[0] ?? '', 'utf8')).toBe(PER_FILE_LIMIT);
+    const result = await scan();
+    expect(result.complete).toBe(true);
+    expect(result.sources).toHaveLength(1);
+    expect(Buffer.byteLength(result.sources[0] ?? '', 'utf8')).toBe(PER_FILE_LIMIT);
   });
 
   it('stops before a file that would straddle the aggregate envelope', async () => {
@@ -408,19 +465,20 @@ describe('bounded workspace step-definition scan', () => {
     }
     findFiles.mockResolvedValue(paths.map((fsPath) => ({ fsPath })));
 
-    const sources = await scan();
-    const total = sources.reduce((sum, source) => sum + Buffer.byteLength(source, 'utf8'), 0);
+    const result = await scan();
+    const total = result.sources.reduce(
+      (sum, source) => sum + Buffer.byteLength(source, 'utf8'),
+      0,
+    );
     expect(total).toBeLessThanOrEqual(TOTAL_LIMIT);
-    // Derive the exact admitted count from the fixture's actual bytes and the
-    // conservative next-read charge. This prevents an empty or arbitrarily
-    // short result from satisfying the aggregate-bound assertion.
     const fixtureBytes = Buffer.byteLength(chunk, 'utf8');
     const worstCaseNextRead = PER_FILE_LIMIT + 1;
     const expected = Math.min(
       fits + 2,
       Math.floor((TOTAL_LIMIT - worstCaseNextRead) / fixtureBytes) + 1,
     );
-    expect(sources).toHaveLength(expected);
+    expect(result.sources).toHaveLength(expected);
+    expect(result.complete).toBe(false);
   });
 
   it('stops attempted reads before the next oversized candidate crosses the envelope', async () => {
@@ -430,12 +488,13 @@ describe('bounded workspace step-definition scan', () => {
     const attempted: string[] = [];
     findFiles.mockResolvedValue(paths);
 
-    const sources = await scan(async (filePath) => {
+    const result = await scan(async (filePath) => {
       attempted.push(filePath);
       return null;
     });
 
-    expect(sources).toEqual([]);
+    expect(result.sources).toEqual([]);
+    expect(result.complete).toBe(false);
     expect(attempted).toHaveLength(
       Math.floor(MAX_STEP_DEFINITION_TOTAL_READ_BYTES / (MAX_STEP_DEFINITION_FILE_BYTES + 1)),
     );
@@ -455,7 +514,7 @@ describe('bounded workspace step-definition scan', () => {
       await fs.promises.symlink(outside, link);
       findFiles.mockResolvedValue([{ fsPath: link }]);
 
-      expect(await scan()).toEqual([]);
+      await expect(scan()).resolves.toEqual({ sources: [], complete: false });
     } finally {
       await fs.promises.rm(outside, { force: true });
     }

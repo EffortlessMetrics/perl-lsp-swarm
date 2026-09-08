@@ -30,6 +30,7 @@ import {
   activate,
   deactivate,
 } from '../extension';
+import { HealthWidgetDataSource } from '../healthWidgetDataSource';
 
 /**
  * Production-path proof that `activate()` runs inside the activation
@@ -41,14 +42,37 @@ import {
 interface TrackedDisposable {
   label: string;
   disposable: { dispose: jest.Mock };
+  owner: string | undefined;
 }
 
 const tracked: TrackedDisposable[] = [];
 const disposedOrder: string[] = [];
+const disposedEntries: TrackedDisposable[] = [];
+let activeDisposableOwner: string | undefined;
+let startedHealthWidgetDataSource: HealthWidgetDataSource | undefined;
 
-function creationOrder(): string[] {
-  return tracked.map((entry) => entry.label);
-}
+const HEALTH_WIDGET_CHILD_LABELS = [
+  'health:diagnostics',
+  'health:workspace-folders',
+  'health:files-created',
+  'health:watcher:**/*.pl',
+  'health:watcher:**/*.pl:create',
+  'health:watcher:**/*.pl:delete',
+  'health:watcher:**/*.pm',
+  'health:watcher:**/*.pm:create',
+  'health:watcher:**/*.pm:delete',
+  'health:watcher:**/*.t',
+  'health:watcher:**/*.t:create',
+  'health:watcher:**/*.t:delete',
+  'health:watcher:**/*.pod',
+  'health:watcher:**/*.pod:create',
+  'health:watcher:**/*.pod:delete',
+  'health:watcher:**/*.psgi',
+  'health:watcher:**/*.psgi:create',
+  'health:watcher:**/*.psgi:delete',
+] as const;
+
+const LEGACY_MIGRATION_FOLDER_LABEL = 'watcher:legacy-migration-folders';
 
 function disposedLabels(): string[] {
   return [...disposedOrder];
@@ -56,6 +80,7 @@ function disposedLabels(): string[] {
 
 function resetDisposalTracking(): void {
   disposedOrder.length = 0;
+  disposedEntries.length = 0;
 }
 
 /** Support surfaces intentionally retained after a failed activation (#7854). */
@@ -75,12 +100,24 @@ function wrapDisposableFactory<T extends { dispose: jest.Mock }>(
   return (...args: unknown[]) => {
     const disposable = original(...args);
     const label = labelFor(...args);
-    tracked.push({ label, disposable });
+    const entry = { label, disposable, owner: activeDisposableOwner };
+    tracked.push(entry);
     disposable.dispose.mockImplementation(() => {
       disposedOrder.push(label);
+      disposedEntries.push(entry);
     });
     return disposable;
   };
+}
+
+function trackNestedDisposable<T extends { dispose: jest.Mock }>(disposable: T, label: string): T {
+  const entry = { label, disposable, owner: activeDisposableOwner };
+  tracked.push(entry);
+  disposable.dispose.mockImplementation(() => {
+    disposedOrder.push(label);
+    disposedEntries.push(entry);
+  });
+  return disposable;
 }
 
 /**
@@ -97,6 +134,45 @@ function trackDisposableFactory(
 ): void {
   const original = owner[factory] as unknown as (...args: unknown[]) => { dispose: jest.Mock };
   owner[factory] = jest.fn(wrapDisposableFactory(original, labelFor));
+}
+
+function trackHealthWidgetFactories(): void {
+  trackDisposableFactory(
+    vscode.languages as unknown as Record<string, unknown>,
+    'onDidChangeDiagnostics',
+    () => 'health:diagnostics',
+  );
+  const workspace = vscode.workspace as unknown as Record<string, unknown>;
+  if (typeof workspace.onDidChangeWorkspaceFolders === 'function') {
+    trackDisposableFactory(workspace, 'onDidChangeWorkspaceFolders', () =>
+      activeDisposableOwner === 'health-widget-data-source'
+        ? 'health:workspace-folders'
+        : LEGACY_MIGRATION_FOLDER_LABEL,
+    );
+  }
+
+  const originalCreateWatcher = workspace.createFileSystemWatcher as unknown as (
+    ...args: unknown[]
+  ) => {
+    dispose: jest.Mock;
+    onDidCreate: (...args: unknown[]) => { dispose: jest.Mock };
+    onDidDelete: (...args: unknown[]) => { dispose: jest.Mock };
+  };
+  workspace.createFileSystemWatcher = jest.fn((...args: unknown[]) => {
+    const glob = String(args[0]);
+    const watcher = originalCreateWatcher(...args);
+    trackNestedDisposable(watcher, `health:watcher:${glob}`);
+    for (const method of ['onDidCreate', 'onDidDelete'] as const) {
+      const originalMethod = watcher[method];
+      watcher[method] = jest.fn((...listenerArgs: unknown[]) =>
+        trackNestedDisposable(
+          originalMethod(...listenerArgs),
+          `health:watcher:${glob}:${method === 'onDidCreate' ? 'create' : 'delete'}`,
+        ),
+      );
+    }
+    return watcher;
+  });
 }
 
 beforeAll(() => {
@@ -123,7 +199,7 @@ beforeAll(() => {
   trackDisposableFactory(
     vscode.workspace as unknown as Record<string, unknown>,
     'onDidCreateFiles',
-    () => 'watcher:file-creation',
+    () => (activeDisposableOwner ? 'health:files-created' : 'watcher:file-creation'),
   );
   trackDisposableFactory(
     vscode.workspace as unknown as Record<string, unknown>,
@@ -170,6 +246,20 @@ beforeAll(() => {
     'registerCodeActionsProvider',
     () => 'provider:gherkin-code-actions',
   );
+  trackHealthWidgetFactories();
+  const originalHealthWidgetStart = HealthWidgetDataSource.prototype.start;
+  jest
+    .spyOn(HealthWidgetDataSource.prototype, 'start')
+    .mockImplementation(function (this: HealthWidgetDataSource) {
+      startedHealthWidgetDataSource = this;
+      const previousOwner = activeDisposableOwner;
+      activeDisposableOwner = 'health-widget-data-source';
+      try {
+        return originalHealthWidgetStart.call(this);
+      } finally {
+        activeDisposableOwner = previousOwner;
+      }
+    });
 });
 
 function makeContext(extensionPath: string): vscode.ExtensionContext {
@@ -236,10 +326,15 @@ describe('transactional production activation (#7854)', () => {
     // Every mandatory resource created before the failure was disposed, in
     // exact reverse creation order; retained support surfaces (the four
     // support commands and the output channel) were not.
-    const disposalOrder = disposedLabels();
     const retained = [...RETAINED_LABELS, 'output-channel'];
-    const mandatory = creationOrder().filter((label) => !retained.includes(label));
-    expect(disposalOrder).toEqual([...mandatory].reverse());
+    const componentOwned = tracked.filter((entry) => entry.owner === 'health-widget-data-source');
+    const mandatory = tracked.filter(
+      (entry) => !componentOwned.includes(entry) && !retained.includes(entry.label),
+    );
+    expect(disposedEntries.filter((entry) => !componentOwned.includes(entry))).toEqual(
+      [...mandatory].reverse(),
+    );
+    const disposalOrder = disposedLabels();
     for (const label of RETAINED_LABELS) {
       expect(disposalOrder).not.toContain(label);
     }
@@ -312,7 +407,12 @@ describe('transactional production activation (#7854)', () => {
 
     // The real terminal path still tears the committed runtime down fully.
     await deactivate();
-    expect(disposedLabels()).toEqual([...creationOrder()].reverse());
+    const componentOwned = tracked.filter((entry) => entry.owner === 'health-widget-data-source');
+    const hostOwned = tracked.filter((entry) => !componentOwned.includes(entry));
+    expect(disposedEntries.filter((entry) => hostOwned.includes(entry))).toEqual(
+      [...hostOwned].reverse(),
+    );
+    expect(disposedEntries).toHaveLength(tracked.length);
     expect(_extensionActivationStateForTest()?.lastCleanupReceipt?.terminal_state).toBe(
       'deactivated',
     );
@@ -333,16 +433,28 @@ describe('transactional production activation (#7854)', () => {
     // cleanups.
     expect(disposedLabels()).toEqual([]);
 
-    // Every activation-created disposable reached the host net at commit —
+    // Every directly created activation disposable reached the host net at commit —
     // the same array content the pre-transaction code produced by pushing at
-    // creation time. Two owned resources are created internally (the health
-    // widget data source and the server-demand dispose wrapper), so the host
-    // net carries every tracked disposable plus those two.
+    // creation time. HealthWidgetDataSource is an intentional aggregate owner:
+    // its independently tagged child listeners stay out of the host net and are
+    // released by its own dispose() path instead.
     const hostArray = context.subscriptions as unknown as { dispose: jest.Mock }[];
-    for (const entry of tracked) {
-      expect(hostArray).toContain(entry.disposable);
+    const componentOwned = tracked.filter((entry) => entry.owner === 'health-widget-data-source');
+    expect(componentOwned.map((entry) => entry.label)).toEqual([...HEALTH_WIDGET_CHILD_LABELS]);
+    expect(componentOwned).toHaveLength(HEALTH_WIDGET_CHILD_LABELS.length);
+    const legacyFolderEntries = tracked.filter(
+      (entry) => entry.label === LEGACY_MIGRATION_FOLDER_LABEL,
+    );
+    expect(legacyFolderEntries).toHaveLength(1);
+    expect(legacyFolderEntries[0]?.owner).toBeUndefined();
+    expect(startedHealthWidgetDataSource).toBeDefined();
+    expect(hostArray).toContain(startedHealthWidgetDataSource);
+    for (const entry of componentOwned) {
+      expect(hostArray).not.toContain(entry.disposable);
     }
-    expect(hostArray).toHaveLength(tracked.length + 2);
+    const hostOwned = tracked.filter((entry) => entry.owner !== 'health-widget-data-source');
+    expect(hostOwned.every((entry) => hostArray.includes(entry.disposable))).toBe(true);
+    expect(hostArray).toHaveLength(hostOwned.length + 2);
 
     expect(vscode.commands.executeCommand).toHaveBeenCalledWith(
       'setContext',
@@ -358,7 +470,10 @@ describe('transactional production activation (#7854)', () => {
     // Deactivate releases everything the committed attempt owns, in reverse
     // creation order, through the same cleanup primitives as rollback.
     await deactivate();
-    expect(disposedLabels()).toEqual([...creationOrder()].reverse());
+    expect(disposedEntries.filter((entry) => hostOwned.includes(entry))).toEqual(
+      [...hostOwned].reverse(),
+    );
+    expect(disposedEntries).toHaveLength(tracked.length);
     for (const entry of tracked) {
       expect(entry.disposable.dispose).toHaveBeenCalledTimes(1);
     }
@@ -376,5 +491,38 @@ describe('transactional production activation (#7854)', () => {
     for (const entry of tracked) {
       expect(entry.disposable.dispose).toHaveBeenCalledTimes(1);
     }
+  });
+
+  test('the registered file-creation listener actually populates a created file (#14547)', async () => {
+    // The rest of this suite proves the listener was *registered* and is
+    // disposed with the attempt. That leaves the callback itself unexercised:
+    // replacing the handler body with a no-op kept every other test in the
+    // extension suite green, so nothing connected activation to the
+    // boilerplate behaviour. This drives the registered callback end to end.
+    process.env.PERL_LSP_EXTENSION_TEST_SKIP_STARTUP = '1';
+    const extensionRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-activation-'));
+
+    await activate(makeContext(extensionRoot));
+
+    const registrations = (vscode.workspace.onDidCreateFiles as jest.Mock).mock.calls;
+    expect(registrations.length).toBeGreaterThan(1);
+    const createdFileEvent = { files: [vscode.Uri.file('/ws/lib/Wired.pm')] };
+    for (const registration of registrations) {
+      const onDidCreateFiles = registration[0] as (
+        event: typeof createdFileEvent,
+      ) => void | Promise<void>;
+      await onDidCreateFiles(createdFileEvent);
+    }
+
+    const applyEdit = vscode.workspace.applyEdit as jest.Mock;
+    // The exact edit assertion below is also a negative control for replacing
+    // the boilerplate handler with a no-op: dispatching every listener must
+    // still produce exactly one boilerplate edit.
+    expect(applyEdit).toHaveBeenCalledTimes(1);
+    const edit = applyEdit.mock.calls[0]?.[0] as {
+      inserts: Array<{ uri: { fsPath: string }; newText: string }>;
+    };
+    expect(edit.inserts.map((insert) => insert.uri.fsPath)).toEqual(['/ws/lib/Wired.pm']);
+    expect(edit.inserts[0]?.newText).toContain('package Wired;');
   });
 });

@@ -1,5 +1,10 @@
 import * as vscode from 'vscode';
-import { isPotentiallyExpensiveRegex } from './gherkinRedosGuard';
+import {
+  createGherkinMatchBudget,
+  isSafeGherkinStepMatch,
+  normalizeGherkinRegexFlags,
+  type GherkinMatchBudget,
+} from './gherkinRedosGuard';
 import {
   MAX_STEP_DEFINITION_FILE_BYTES,
   MAX_STEP_DEFINITION_TOTAL_BYTES,
@@ -66,8 +71,6 @@ const STEP_DEFINITION_FILE_GLOBS = [
 ] as const;
 const STEP_DEFINITION_EXCLUDE_GLOB = '{**/node_modules/**,**/blib/**,**/.git/**}';
 const STEP_DEFINITION_FILE_LIMIT = 1000;
-const MAX_MATCH_REGEX_LENGTH = 256;
-const MAX_MATCH_STEP_TEXT_LENGTH = 512;
 // Catastrophic backtracking (ReDoS) requires a *quantified group that itself
 // contains a quantifier, a backreference, a lookaround, or alternation. A
 // single character class followed by one quantifier
@@ -108,6 +111,12 @@ export function registerGherkinProviders(): vscode.Disposable[] {
       }
 
       const links = provideGherkinStepDefinitionLinks(document.getText(), position, candidates);
+      if (links === null) {
+        void vscode.window.showWarningMessage(
+          'Gherkin step matching stopped after reaching its safety budget; no definition result is available.',
+        );
+        return undefined;
+      }
       return links.length > 0 ? links : undefined;
     },
   };
@@ -146,15 +155,20 @@ export function provideGherkinStepDefinitionLinks(
   featureText: string,
   position: vscode.Position,
   documents: readonly StepDefinitionDocument[],
-): vscode.LocationLink[] {
+): vscode.LocationLink[] | null {
   const step = extractStepReference(featureText, position);
   if (!step) {
     return [];
   }
 
   const matches: ParsedStepDefinition[] = [];
+  const budget = createGherkinMatchBudget();
   for (const document of documents) {
-    matches.push(...findMatchingStepDefinitions(step, document));
+    const documentMatches = findMatchingStepDefinitions(step, document, budget);
+    if (documentMatches === null) {
+      return null;
+    }
+    matches.push(...documentMatches);
   }
 
   matches.sort((left, right) => {
@@ -288,29 +302,10 @@ export interface StepDefinitionScan {
 }
 
 /**
- * Read candidate step-definition files sequentially under the same envelope as
- * the step-definition collector (#9773): a per-file byte cap, an aggregate cap
- * on both attempted and retained bytes, and regular local files only. The
- * previous implementation opened each candidate through `openTextDocument`
- * with no byte bound at all, so a workspace of 1000 large or special files
- * could occupy the extension host.
- *
- * The retained cap alone is not a read bound: a candidate rejected by the
- * per-file cap has already consumed up to `MAX_STEP_DEFINITION_FILE_BYTES + 1`
- * bytes of I/O, so every attempted read is charged against the read budget and
- * the scan stops with the typed `read_budget_exhausted` refusal instead of
- * letting the next attempted read cross it. Candidates whose URI scheme is not
- * `file` are skipped: their `fsPath` names no local file this scan may read.
- * A candidate open in the editor with unsaved edits resolves from its buffer
- * under the same envelope, so links never follow stale disk contents; because
- * an edit can land while the disk read is pending, the buffer is re-checked
- * after the await and preferred over the just-read disk text. A clean
- * document takes the disk path so the regular-file and symlink checks stay on
- * the read path.
- *
- * Exported for the containment proof in gherkinProviders.test.ts: the scan
- * bounds are a security claim and need a direct seam, not one observed only
- * through the definition provider.
+ * Read candidate step-definition files sequentially under the shared byte
+ * envelope: a per-file cap and aggregate caps on attempted and retained
+ * bytes. Dirty editor buffers are preferred over stale disk contents, and the
+ * post-read check also runs when the disk read failed.
  */
 export async function collectStepDefinitionDocuments(
   candidates: readonly vscode.Uri[],
@@ -326,9 +321,6 @@ export async function collectStepDefinitionDocuments(
       (document) => document.uri.toString() === candidate.toString() && document.isDirty,
     );
 
-  // Admit one candidate's buffer text under the same envelope as a disk read:
-  // charged against the read budget, capped per file, and capped on the
-  // retained total.
   const admitBufferText = (
     uri: vscode.Uri,
     text: string,
@@ -350,12 +342,15 @@ export async function collectStepDefinitionDocuments(
   };
 
   const admitDirtyBuffer = (uri: vscode.Uri): 'stop' | 'continue' => {
-    const outcome = admitBufferText(uri, dirtyDocumentFor(uri)!.getText());
-    if (outcome === 'read-budget-exhausted') {
-      refusal = 'read_budget_exhausted';
-      return 'stop';
+    const document = dirtyDocumentFor(uri);
+    if (!document) {
+      return 'continue';
     }
-    if (outcome === 'over-retained-cap') {
+    const outcome = admitBufferText(uri, document.getText());
+    if (outcome === 'read-budget-exhausted' || outcome === 'over-retained-cap') {
+      if (outcome === 'read-budget-exhausted') {
+        refusal = 'read_budget_exhausted';
+      }
       return 'stop';
     }
     return 'continue';
@@ -372,10 +367,6 @@ export async function collectStepDefinitionDocuments(
       break;
     }
 
-    // The scan that replaced `openTextDocument` must not regress dirty-buffer
-    // visibility: a document open with unsaved edits resolves from its buffer
-    // (charged and capped like any read), while a clean document takes the
-    // disk path so the regular-file and symlink checks stay on the read path.
     if (dirtyDocumentFor(uri)) {
       if (admitDirtyBuffer(uri) === 'stop') {
         break;
@@ -383,9 +374,6 @@ export async function collectStepDefinitionDocuments(
       continue;
     }
 
-    // Rejected candidates are charged at their worst case — the per-file cap
-    // plus the one overflow byte readBoundedFile reads to distinguish "at the
-    // limit" from "over it" — so no attempted read can cross the read budget.
     if (
       attemptedBytes + MAX_STEP_DEFINITION_FILE_BYTES + 1 >
       MAX_STEP_DEFINITION_TOTAL_READ_BYTES
@@ -397,9 +385,6 @@ export async function collectStepDefinitionDocuments(
     const read = await readBoundedFile(uri.fsPath, MAX_STEP_DEFINITION_FILE_BYTES);
     attemptedBytes += read ? read.byteLength : MAX_STEP_DEFINITION_FILE_BYTES + 1;
 
-    // An edit can land while the read is pending, which turns the just-read
-    // disk text stale. Reconcile after the await even when the disk read
-    // failed: a buffer that is dirty now still wins under the same envelope.
     if (dirtyDocumentFor(uri)) {
       if (admitDirtyBuffer(uri) === 'stop') {
         break;
@@ -410,11 +395,9 @@ export async function collectStepDefinitionDocuments(
     if (!read) {
       continue;
     }
-
     if (acceptedBytes + read.byteLength > MAX_STEP_DEFINITION_TOTAL_BYTES) {
       break;
     }
-
     acceptedBytes += read.byteLength;
     documents.push({ uri, text: read.text });
   }
@@ -488,10 +471,18 @@ function resolveEffectiveKeyword(
 function findMatchingStepDefinitions(
   step: GherkinStepReference,
   document: StepDefinitionDocument,
-): ParsedStepDefinition[] {
+  budget: GherkinMatchBudget,
+): ParsedStepDefinition[] | null {
   const matches: ParsedStepDefinition[] = [];
 
   for (const definition of parseStepDefinitions(document)) {
+    // Every parsed definition consumes the shared population budget. Moving
+    // this below filtering would let incompatible or unsafe definitions make
+    // the operation's cost depend on which consumer reached them.
+    if (!budget.tryConsume()) {
+      return null;
+    }
+
     if (!keywordsAreCompatible(step, definition.keyword)) {
       continue;
     }
@@ -695,33 +686,16 @@ function stepTextMatches(stepText: string, matcher: StepMatcher): boolean {
     return matcher.text === stepText;
   }
 
-  if (!isSafeRegexForStepMatching(matcher.source, stepText)) {
+  const flags = normalizeGherkinRegexFlags(matcher.flags);
+  if (flags === null || !isSafeGherkinStepMatch(matcher.source, stepText, flags)) {
     return false;
   }
 
   try {
-    return new RegExp(matcher.source, normalizeRegexFlags(matcher.flags)).test(stepText);
+    return new RegExp(matcher.source, flags).test(stepText);
   } catch {
     return false;
   }
-}
-
-function isSafeRegexForStepMatching(source: string, stepText: string): boolean {
-  if (source.length > MAX_MATCH_REGEX_LENGTH || stepText.length > MAX_MATCH_STEP_TEXT_LENGTH) {
-    return false;
-  }
-
-  return !isPotentiallyExpensiveRegex(source);
-}
-
-function normalizeRegexFlags(flags: string): string {
-  let normalized = '';
-  for (const flag of flags.toLowerCase()) {
-    if ((flag === 'i' || flag === 'm' || flag === 's') && !normalized.includes(flag)) {
-      normalized += flag;
-    }
-  }
-  return normalized;
 }
 
 function definitionScore(uri: vscode.Uri, keyword: StepDefinitionKeyword): number {
