@@ -1,0 +1,9 @@
+project: vscode
+component: Packaging and distribution
+kind: Fixed
+body: Ordinary VSIX packaging now validates the exact archive it produced, so package inventory checks use shipped archive names and reject missing or corrupt artifacts.
+time: 2026-09-08T02:00:00Z
+custom:
+  PR: TBD
+  Slug: package-archive-inventory
+  Breaking: "no"
