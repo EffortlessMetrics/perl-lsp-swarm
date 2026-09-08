@@ -466,20 +466,30 @@ export async function collectWorkspaceStepDefinitionSources(
  * from the already-open descriptor and enforced by the read itself, and the
  * read window contains no path observation that a hostile process could race.
  * Returns `null` for anything that is not a readable regular file within the
- * limit. Final-component symlinks are rejected at open with `O_NOFOLLOW`
- * where available. The additional post-read `lstat` rejects a path entry that
- * is still a symlink. On win32, which has no `O_NOFOLLOW`, this is a check of
- * a stable path entry, not atomic exclusion during concurrent replacement.
- * Resolved content may be consumed before rejection, bounded and charged to
- * the read budget. Parent-directory symlink exclusion is not established.
+ * limit. A pre-open `lstat` avoids opening known directories, FIFOs, devices,
+ * and links; descriptor `stat` and a post-read path check remain the race
+ * boundary. `O_NOFOLLOW` and `O_NONBLOCK` are used where the platform defines
+ * them. On win32, which has neither flag, this is a stable-entry check rather
+ * than atomic exclusion or a universal I/O deadline. Parent-directory
+ * symlink exclusion is not established.
  */
 export async function readBoundedFile(
   filePath: string,
   limit: number,
 ): Promise<{ text: string; byteLength: number } | null> {
+  try {
+    const pathEntry = await fs.promises.lstat(filePath);
+    if (!pathEntry.isFile()) {
+      return null;
+    }
+  } catch {
+    return null;
+  }
+
   let handle: fs.promises.FileHandle;
   try {
-    const flags = fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0);
+    const flags =
+      fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0);
     handle = await fs.promises.open(filePath, flags);
   } catch {
     return null;
@@ -508,7 +518,7 @@ export async function readBoundedFile(
     }
 
     const pathEntry = await fs.promises.lstat(filePath);
-    if (pathEntry.isSymbolicLink()) {
+    if (!pathEntry.isFile()) {
       return null;
     }
 

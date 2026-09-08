@@ -652,6 +652,25 @@ describe('gherkin step-definition workspace envelope', () => {
     }
   });
 
+  test('rejects a nonregular path before opening a descriptor', async () => {
+    const root = makeEnvelopeWorkspace('special-entry');
+    const candidate = path.join(root, 'steps.pm');
+    const lstat = jest.spyOn(fs.promises, 'lstat').mockResolvedValue({
+      isFile: () => false,
+      isSymbolicLink: () => false,
+    } as unknown as fs.Stats);
+    const open = jest.spyOn(fs.promises, 'open');
+
+    try {
+      expect(await readBoundedFile(candidate, 512 * 1024)).toBeNull();
+      expect(open).not.toHaveBeenCalled();
+    } finally {
+      open.mockRestore();
+      lstat.mockRestore();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test('refuses the scan when attempted reads exhaust the read budget', async () => {
     const root = makeEnvelopeWorkspace('read-budget');
     // The review's falsifier: 100 x 600 KiB candidates are each rejected by

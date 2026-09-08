@@ -391,13 +391,14 @@ describe('bounded workspace step-definition scan', () => {
     const realLstat = fs.promises.lstat.bind(fs.promises);
     const realStat = fs.promises.stat.bind(fs.promises);
     const realReadFile = fs.promises.readFile.bind(fs.promises);
+    let candidateLstatCalls = 0;
     const grow = async () => {
       await fs.promises.writeFile(filePath, grown, 'utf8');
     };
     const spies = [
       jest.spyOn(fs.promises, 'lstat').mockImplementation(async (candidate, ...rest) => {
         const stats = await realLstat(candidate as fs.PathLike, ...(rest as []));
-        if (candidate === filePath) {
+        if (candidate === filePath && ++candidateLstatCalls >= 2) {
           await grow();
         }
         return stats;

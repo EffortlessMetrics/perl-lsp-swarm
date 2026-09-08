@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "total_files": 29,
-  "total_bytes": 1867081,
+  "total_bytes": 1867173,
   "files": {
     "readme.md": 25231,
     "package.nls.json": 2116,
@@ -13,11 +13,11 @@
     "changelog.md": 23221,
     ".oxlintrc.json": 559,
     ".oxfmtrc.json": 203,
-    "snippets/perl.json": 12172,
-    "snippets/launch.json": 1139,
     "syntaxes/perl.tmLanguage.json": 13660,
     "syntaxes/gherkin.tmLanguage.json": 1875,
-    "out/extension.js": 1689236,
+    "snippets/perl.json": 12172,
+    "snippets/launch.json": 1139,
+    "out/extension.js": 1689328,
     "media/walkthrough/welcome.svg": 756,
     "media/walkthrough/verify-perl.svg": 1189,
     "media/walkthrough/try-goto-definition.svg": 1852,
