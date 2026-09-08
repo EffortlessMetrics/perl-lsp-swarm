@@ -65,6 +65,7 @@ describe('Rolldown bundle configuration', () => {
     execFileSync(process.execPath, ['--input-type=module', '-e', script], {
       cwd: EXT_ROOT,
       stdio: 'pipe',
+      timeout: 15_000,
     });
   });
 
@@ -96,6 +97,7 @@ describe('Rolldown bundle configuration', () => {
     execFileSync(process.execPath, ['--input-type=module', '-e', script], {
       cwd: EXT_ROOT,
       stdio: 'pipe',
+      timeout: 15_000,
     });
   });
 
@@ -170,6 +172,7 @@ describe('Rolldown bundle configuration', () => {
     execFileSync(process.execPath, ['--input-type=module', '-e', script], {
       cwd: EXT_ROOT,
       stdio: 'pipe',
+      timeout: 15_000,
     });
   });
 
