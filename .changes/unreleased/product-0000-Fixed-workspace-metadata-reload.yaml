@@ -1,5 +1,5 @@
 project: product
-component: Workspace configuration
+component: Performance and reliability
 kind: Fixed
 body: "Configuration reloads now preserve metadata from open buffers while accepting new workspace settings, retain known facts when metadata sources are temporarily unreadable, and reconcile detected include roots without discarding explicit user roots (#15088)."
 time: 2026-09-08T05:04:14Z
