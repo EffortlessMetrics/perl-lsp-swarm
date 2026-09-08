@@ -1173,7 +1173,7 @@ void test('CLI output flush is bounded and preserves drain failures', async () =
       this.writes = [];
     }
 
-    /** @param {string} chunk @param {(error?: Error) => void} callback */
+    /** @param {string} chunk @param {(error?: Error | null) => void} callback */
     write(chunk, callback) {
       this.writes.push(chunk);
       if (this.mode === 'throw') {
@@ -1184,7 +1184,7 @@ void test('CLI output flush is bounded and preserves drain failures', async () =
           callback(Object.assign(new Error('closed output'), { code: 'EPIPE' })),
         );
       } else if (this.mode === 'success') {
-        queueMicrotask(() => callback());
+        queueMicrotask(() => callback(null));
       }
       return true;
     }
