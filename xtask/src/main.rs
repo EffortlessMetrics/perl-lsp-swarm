@@ -183,6 +183,13 @@ enum Commands {
     /// declared adaptations of the landed programme train manifests.
     CheckTrainEdgeContract,
 
+    /// Validate the structural release-candidate security contract (no audits).
+    CandidateSecurityContract {
+        /// Path to the contract JSON document.
+        #[arg(long)]
+        contract: PathBuf,
+    },
+
     /// Validate the stable native Neovim implementation train manifest
     /// (native_neovim_train.v1, #11392): the closed schema, graph shift-left
     /// rejection law with named diagnostics, the shuffled determinism
@@ -5012,6 +5019,9 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::ReleaseTrustInvariants { command } => release_trust_invariants::run(command),
         Commands::CheckOracleReceiptSchema => oracle_receipt_schema::run(),
         Commands::CheckTrainEdgeContract => train_edge_contract::run(),
+        Commands::CandidateSecurityContract { contract } => {
+            tasks::candidate_security_contract::run(&contract)
+        }
         Commands::CheckNativeNeovimTrain => native_neovim_train::run(),
         Commands::PerlCorpusTrain { command } => match command {
             PerlCorpusTrainCommand::Check => perl_corpus_train::run_check(),
@@ -7059,6 +7069,26 @@ mod tests {
     use super::*;
 
     type TestResult<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
+
+    #[test]
+    fn candidate_security_contract_command_requires_and_preserves_path() -> TestResult {
+        match Cli::try_parse_from([
+            "xtask",
+            "candidate-security-contract",
+            "--contract",
+            "candidate.json",
+        ])?
+        .command
+        {
+            Commands::CandidateSecurityContract { contract }
+                if contract == PathBuf::from("candidate.json") => {}
+            _ => return Err(std::io::Error::other("contract path was not preserved").into()),
+        }
+        if Cli::try_parse_from(["xtask", "candidate-security-contract"]).is_ok() {
+            return Err(std::io::Error::other("contract path must be required").into());
+        }
+        Ok(())
+    }
 
     fn parse_devex_command(args: &[&str]) -> TestResult<DevexCommand> {
         match Cli::try_parse_from(args)?.command {
