@@ -58,6 +58,29 @@ void test('publisher workflow invokes both CLIs offline through npm exec', () =>
   assert.doesNotMatch(source, /^\s+run: ovsx --version/m);
 });
 
+void test('managed Windows smoke packages and runs the current Test Explorer VSIX', () => {
+  const source = readWorkflow('vscode-managed-binary-smoke.yml');
+  const packageIndex = source.indexOf(
+    '- name: Package current extension for Windows published smoke',
+  );
+  const explorerIndex = source.indexOf(
+    '- name: Run current extension Test Explorer smoke (Windows)',
+  );
+  assert.notEqual(packageIndex, -1);
+  assert.notEqual(explorerIndex, -1);
+  assert.ok(packageIndex < explorerIndex);
+  assert.ok(source.indexOf("if: runner.os == 'Windows'", packageIndex) > packageIndex);
+  assert.ok(
+    source.indexOf('PERL_LSP_PUBLISHED_EXTENSION_SOURCE: vsix', explorerIndex) > explorerIndex,
+  );
+  assert.ok(source.indexOf("PERL_LSP_TEST_EXPLORER_SMOKE: '1'", explorerIndex) > explorerIndex);
+  assert.ok(
+    source.indexOf('$env:PERL_LSP_PUBLISHED_VSIX_PATH = $vsix.FullName', explorerIndex) >
+      explorerIndex,
+  );
+  assert.ok(source.indexOf('npm run test:published', explorerIndex) > explorerIndex);
+});
+
 void test('managed-binary smoke proves TypeScript authority before compilation on every OS', () => {
   const source = readWorkflow('vscode-managed-binary-smoke.yml');
   const setupIndex = source.indexOf('- name: Setup VS Code toolchain');
