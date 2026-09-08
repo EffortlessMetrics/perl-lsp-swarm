@@ -196,20 +196,10 @@ async function getServerVersionSafely(dependencies: SupportCommandDependencies):
   }
 }
 
-/**
- * Render the human packet projection, or `null` when the packet cannot be built.
+/** Render the human packet projection, or `null` when it cannot be built.
  *
- * The raw failure is deliberately dropped rather than surfaced: packet-validation
- * messages name the offending field contents, which is exactly the class of data the
- * packet exists to keep out of a public report.
- *
- * The catch is also deliberately silent rather than logging an error class. This
- * extension emits no `console` output from production code — there are zero
- * `console.*` calls outside tests and `.oxlintrc.json` sets `no-console`, against a
- * 0/0 warning budget, so a `console.error` here fails `npm run lint` outright. The
- * sanctioned diagnostic surface is an `OutputChannel` (see `diagnosticCommands.ts`),
- * which this command does not take; wiring one is tracked separately rather than
- * widened into this claim.
+ * The raw failure is deliberately dropped because packet-validation messages may
+ * expose the contents the packet exists to keep out of a public report.
  */
 function renderSupportPacketSafely(
   dependencies: SupportCommandDependencies,
@@ -276,9 +266,13 @@ async function copySupportPacket(humanPacket: string): Promise<void> {
     }
     return;
   }
-  vscode.window.showInformationMessage(
+  const selection = await vscode.window.showInformationMessage(
     'Support packet copied. Review it, then choose Open Issue Form to paste it into the report.',
+    'Open Issue Form',
   );
+  if (selection === 'Open Issue Form') {
+    await openIssueForm();
+  }
 }
 
 /**

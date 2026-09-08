@@ -191,6 +191,21 @@ describe('support command implementations', () => {
     // confirmation itself: deleting it must not leave this test green.
     expect(vscode.window.showInformationMessage).toHaveBeenCalledWith(
       expect.stringContaining('Support packet copied'),
+      'Open Issue Form',
+    );
+  });
+
+  test('opens the issue form only after an explicit post-copy action', async () => {
+    const deps = dependencies();
+    (vscode.window.showInformationMessage as jest.Mock)
+      .mockResolvedValueOnce('Copy Support Packet')
+      .mockResolvedValueOnce('Open Issue Form');
+
+    await reportIssueCommand(deps);
+
+    const url = (vscode.env.openExternal as jest.Mock).mock.calls[0]?.[0].toString();
+    expect(url).toBe(
+      'https://github.com/EffortlessMetrics/perl-lsp/issues/new?template=bug_report.yml',
     );
   });
 
