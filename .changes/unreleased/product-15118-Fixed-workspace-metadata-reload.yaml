@@ -4,6 +4,6 @@ kind: Fixed
 body: "Configuration reloads now preserve metadata from open buffers while accepting new workspace settings, retain known facts when metadata sources are temporarily unreadable, and reconcile detected include roots without discarding explicit user roots (#15088)."
 time: 2026-09-08T05:04:14Z
 custom:
-  PR: "0000"
+  PR: "15118"
   Slug: workspace-metadata-reload-15088
   Breaking: "no"
