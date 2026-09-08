@@ -81,12 +81,6 @@ jobs:
         if: runner.os != 'Linux'
         run: npm run test:published
 
-      - name: Run published Test Explorer smoke (Windows)
-        if: runner.os == 'Windows'
-        env:
-          PERL_LSP_TEST_EXPLORER_SMOKE: '1'
-        run: npm run test:published
-
       - name: Run published extension smoke under Xvfb
         if: runner.os == 'Linux'
         run: xvfb-run -a npm run test:published

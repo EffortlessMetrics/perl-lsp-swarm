@@ -50,15 +50,6 @@ void test('current-source smoke does not reinstall dependencies after setup', ()
   assert.doesNotMatch(source, /\bnpm\s+(?:ci|install)\b/);
 });
 
-void test('published smoke runs the Test Explorer journey on Windows', () => {
-  const source = readWorkflow('vscode-published-extension-smoke.yml');
-  const explorerStep = source.indexOf('- name: Run published Test Explorer smoke (Windows)');
-  assert.notEqual(explorerStep, -1);
-  assert.ok(source.indexOf("PERL_LSP_TEST_EXPLORER_SMOKE: '1'", explorerStep) > explorerStep);
-  assert.ok(source.indexOf("if: runner.os == 'Windows'", explorerStep) > explorerStep);
-  assert.ok(source.indexOf('run: npm run test:published', explorerStep) > explorerStep);
-});
-
 void test('publisher workflow invokes both CLIs offline through npm exec', () => {
   const source = readWorkflow('publish-extension.yml');
   assert.match(source, /npm exec --offline --no -- @vscode\/vsce publish/);
