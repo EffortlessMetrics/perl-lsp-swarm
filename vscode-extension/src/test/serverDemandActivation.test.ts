@@ -440,6 +440,39 @@ describe('deferred language-server startup (#8180)', () => {
     expect(serverNotRunningMessage()).not.toContain('The binary does not have execute permission.');
   });
 
+  test('a delayed health choice checks the recovered generation through the current command', async () => {
+    let resolveChoice: ((choice: string) => void) | undefined;
+    jest.mocked(vscode.window.showErrorMessage).mockImplementationOnce(() => {
+      const choice = new Promise<string | undefined>((resolve) => {
+        resolveChoice = (choice) => resolve(choice);
+      });
+      return choice as unknown as ReturnType<typeof vscode.window.showErrorMessage>;
+    });
+    mockLanguageClientStart
+      .mockImplementationOnce(async () => {
+        throw new Error('delayed dialog startup refusal');
+      })
+      .mockImplementationOnce(async () => undefined);
+
+    setOpenDocuments([fakeDocument('perl')]);
+    await activate(makeContext(makeExtensionRoot()));
+    await waitForStarts(1);
+    await vscode.commands.executeCommand('perl-lsp.restart');
+    await waitForStarts(2);
+    expect(resolveChoice).toBeDefined();
+
+    const callsBeforeChoice = jest.mocked(vscode.commands.executeCommand).mock.calls.length;
+    resolveChoice?.('Run Health Check');
+    await settle();
+
+    expect(
+      jest
+        .mocked(vscode.commands.executeCommand)
+        .mock.calls.slice(callsBeforeChoice)
+        .some(([command]) => command === 'perl-lsp.runHealthCheck'),
+    ).toBe(true);
+  });
+
   test('a later health check reports recovery while keeping optional warnings separate', async () => {
     mockLanguageClientStart
       .mockImplementationOnce(async () => {
