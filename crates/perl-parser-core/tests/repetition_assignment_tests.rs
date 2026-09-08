@@ -5,7 +5,7 @@ mod cpan_test_helpers;
 use cpan_test_helpers::{assert_clean_parse, parse};
 use perl_parser_core::hir::{AssignMode, HirExpr, HirKind, HirStmt, lower_ast};
 use perl_parser_core::syntax::error::{ParseError, RecoveryKind, RecoverySite};
-use perl_parser_core::{Node, NodeKind, Parser};
+use perl_parser_core::{Node, NodeKind, Parser, TokenKind, TokenStream};
 
 fn find_assignment<'a>(node: &'a Node, expected_op: &str) -> Option<&'a Node> {
     if matches!(&node.kind, NodeKind::Assignment { op, .. } if op == expected_op) {
@@ -37,6 +37,39 @@ fn find_missing_expression(node: &Node) -> Option<&Node> {
     }
 
     node.children().into_iter().find_map(find_missing_expression)
+}
+
+fn find_binary_x(node: &Node) -> Option<&Node> {
+    if matches!(&node.kind, NodeKind::Binary { op, .. } if op == "x") {
+        return Some(node);
+    }
+
+    node.children().into_iter().find_map(find_binary_x)
+}
+
+fn program_statements(ast: &Node) -> Result<&[Node], String> {
+    match &ast.kind {
+        NodeKind::Program { statements, .. } => Ok(statements),
+        other => Err(format!("expected program root, got {other:?}")),
+    }
+}
+
+fn token_after_infix_x(source: &str) -> Result<(TokenKind, String), String> {
+    let mut stream = TokenStream::new(source);
+    let mut saw_x = false;
+    loop {
+        let token =
+            stream.next().map_err(|error| format!("lex error for {source:?}: {error:?}"))?;
+        if token.kind() == TokenKind::Eof {
+            return Err(format!("no token after infix x in {source:?}"));
+        }
+        if saw_x {
+            return Ok((token.kind(), token.text.to_string()));
+        }
+        if token.kind() == TokenKind::Identifier && token.text.as_ref() == "x" {
+            saw_x = true;
+        }
+    }
 }
 
 #[test]
@@ -374,16 +407,18 @@ fn repetition_assignment_rejects_malformed_missing_rhs_and_triple_equals() -> Re
 
 #[test]
 fn repetition_assignment_rejects_trivia_between_x_and_equals() -> Result<(), String> {
-    // Newline or comment trivia between `x` and `=` keeps the source outside
-    // the repetition-assignment operator. Newline trivia terminates the
-    // `$value x` statement cleanly, so the source parses as two statements
-    // with no diagnostics; comment trivia leaves an unparsable `/ = 3;`
-    // remainder that surfaces as recovery diagnostics while still parsing.
-    // Pin the exact accepted shapes so the test cannot pass vacuously on a
-    // future hard parse error or unrelated acceptance.
-    for (source, expects_recovery_diagnostics) in
-        [("$value x\n= 3;", false), ("$value x /* separated */ = 3;", true)]
-    {
+    // Real Perl trivia between `x` and `=` is whitespace or a `#` line
+    // comment. Perl 5.38.2 syntax-errors these sources (`near "x ="`,
+    // `near "x\n="`, `near "x # separated\n="`) and never forms `x=`.
+    // The native parser currently splits them into two statements with no
+    // diagnostics: statement termination owns the leftover `= 3`. Pin that
+    // exact shape so the test cannot pass vacuously on a future hard parse
+    // error or by normalizing trivia into `x=`.
+    //
+    // `/* ... */` is not trivia. Perl has no C comments; after infix `x` a
+    // `/` opens a bare regex. That boundary is
+    // `slash_after_infix_x_scans_as_bare_regex_not_c_comment`, not this test.
+    for source in ["$value x\n= 3;", "$value x # separated\n= 3;"] {
         let mut parser = Parser::new(source);
         let ast = parser
             .parse()
@@ -394,21 +429,133 @@ fn repetition_assignment_rejects_trivia_between_x_and_equals() -> Result<(), Str
                 ast.to_sexp()
             ));
         }
-        let NodeKind::Program { statements, .. } = &ast.kind else {
-            return Err(format!("expected program root, got {:?}", ast.kind));
-        };
+        let statements = program_statements(&ast)?;
         if statements.len() != 2 {
             return Err(format!(
                 "expected trivia-separated source to parse as two statements:\n{}",
                 ast.to_sexp()
             ));
         }
-        if parser.get_errors().is_empty() == expects_recovery_diagnostics {
+        if !parser.get_errors().is_empty() {
             return Err(format!(
-                "unexpected diagnostics for {source:?}: {:?}",
+                "expected no diagnostics for real Perl trivia {source:?}, got {:?}",
                 parser.get_errors()
             ));
         }
+    }
+
+    // Opposite-direction control: `#` trivia after infix `x` is skipped, so
+    // the following term is the repetition count. perl 5.38.2 accepts this.
+    // If `#` stopped being trivia, `count` would become an identifier RHS or
+    // the `x` operator would fail to take `3`.
+    let commented_count = "$value x # count\n3;";
+    assert_clean_parse(commented_count);
+    let ast = parse(commented_count);
+    if find_assignment(&ast, "x=").is_some() {
+        return Err(format!("hash-comment trivia must not form x=:\n{}", ast.to_sexp()));
+    }
+    let repetition = find_binary_x(&ast).ok_or_else(|| {
+        format!("expected binary x with hash-comment trivia skipped:\n{}", ast.to_sexp())
+    })?;
+    let NodeKind::Binary { right, .. } = &repetition.kind else {
+        return Err(format!("expected Binary x, got: {:?}", repetition.kind));
+    };
+    if !matches!(&right.kind, NodeKind::Number { value } if value == "3") {
+        return Err(format!("expected repetition count 3 after # trivia, got: {:?}", right.kind));
+    }
+    Ok(())
+}
+
+#[test]
+fn slash_after_infix_x_scans_as_bare_regex_not_c_comment() -> Result<(), String> {
+    // Ruling recorded on #14982: after infix `x`, `/` is a term-position
+    // regex delimiter. `$value x /* separated */= 3;` is `m/* separated */`,
+    // not a skipped C comment. perl 5.38.2 reports `Quantifier follows
+    // nothing in regex` for that pattern; this parser does not compile the
+    // pattern, but it must still build a Regex node and must not form `x=`.
+    //
+    // `$value x/* separated */= 3;` is the adjacency falsifier: skipping
+    // `/* */` as a comment would glue `x` to `=` and produce `x=`.
+    for source in [
+        "$value x /* separated */ = 3;",
+        "$value x /* separated */= 3;",
+        "$value x/* separated */= 3;",
+    ] {
+        let ast = parse(source);
+        let (kind_after_x, text_after_x) = token_after_infix_x(source)?;
+        if kind_after_x == TokenKind::Assign {
+            return Err(format!(
+                "token after x is Assign — /* */ was skipped as a comment:\n{source}\n{text_after_x}"
+            ));
+        }
+        if kind_after_x != TokenKind::Slash {
+            return Err(format!(
+                "expected Slash after infix x (bare regex opener), got {kind_after_x:?} {text_after_x:?} for {source}"
+            ));
+        }
+        if find_assignment(&ast, "x=").is_some() {
+            return Err(format!(
+                "slash after infix x must not form x= (C comments do not exist):\n{}",
+                ast.to_sexp()
+            ));
+        }
+        let statements = program_statements(&ast)?;
+        if statements.len() != 1 {
+            return Err(format!("expected one assignment of (x /regex/), got:\n{}", ast.to_sexp()));
+        }
+        let assignment = find_assignment(&ast, "=").ok_or_else(|| {
+            format!("expected ordinary = of the x-regex expression:\n{}", ast.to_sexp())
+        })?;
+        let NodeKind::Assignment { lhs, rhs, .. } = &assignment.kind else {
+            return Err(format!("expected Assignment, got: {:?}", assignment.kind));
+        };
+        let NodeKind::Binary { op, right, .. } = &lhs.kind else {
+            return Err(format!("expected binary x as assignment LHS, got: {:?}", lhs.kind));
+        };
+        if op != "x" {
+            return Err(format!("expected binary x, got operator {op:?}"));
+        }
+        match &right.kind {
+            NodeKind::Regex { pattern, modifiers, .. }
+                if pattern == "/* separated */" && modifiers.is_empty() => {}
+            other => {
+                return Err(format!(
+                    "expected Regex pattern /* separated */ after infix x, got: {other:?}"
+                ));
+            }
+        }
+        if !matches!(&rhs.kind, NodeKind::Number { value } if value == "3") {
+            return Err(format!("expected assignment RHS 3, got: {:?}", rhs.kind));
+        }
+    }
+
+    // Opposite-direction control: a legal regex body after infix `x` is
+    // still a Regex RHS, never `x=`. perl 5.38.2 accepts `$value x /foo/;`.
+    let legal = "$value x /foo/;";
+    assert_clean_parse(legal);
+    let ast = parse(legal);
+    if find_assignment(&ast, "x=").is_some() || find_assignment(&ast, "=").is_some() {
+        return Err(format!("legal /foo/ after x must not be assignment:\n{}", ast.to_sexp()));
+    }
+    let repetition = find_binary_x(&ast)
+        .ok_or_else(|| format!("expected binary x for {legal}:\n{}", ast.to_sexp()))?;
+    let NodeKind::Binary { right, .. } = &repetition.kind else {
+        return Err(format!("expected Binary x, got: {:?}", repetition.kind));
+    };
+    match &right.kind {
+        NodeKind::Regex { pattern, modifiers, .. }
+            if pattern == "/foo/" && modifiers.is_empty() => {}
+        other => return Err(format!("expected Regex /foo/ after infix x, got: {other:?}")),
+    }
+
+    // Opposite-direction token control: contiguous `x=` still lexes as
+    // Identifier("x") immediately followed by Assign. If this started
+    // requiring Slash after every `x`, the #13179 operator would be lost.
+    let (kind_after_contiguous_x, text_after_contiguous_x) = token_after_infix_x("$value x= 3;")?;
+    if kind_after_contiguous_x != TokenKind::Assign || text_after_contiguous_x != "=" {
+        return Err(format!(
+            "contiguous x= must still lex Assign after x, got {kind_after_contiguous_x:?} {text_after_contiguous_x:?}"
+        ));
     }
     Ok(())
 }

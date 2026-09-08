@@ -335,14 +335,18 @@ describe('transactional production activation (#7854)', () => {
 
     // Every activation-created disposable reached the host net at commit —
     // the same array content the pre-transaction code produced by pushing at
-    // creation time. Two owned resources are created internally (the health
-    // widget data source and the server-demand dispose wrapper), so the host
-    // net carries every tracked disposable plus those two.
+    // creation time. Three owned resources are not in `tracked`: the health widget data
+    // source and the server-demand dispose wrapper are created internally rather than by
+    // a host factory, and the legacy-migration folder watcher (#14966) comes from
+    // `onDidChangeWorkspaceFolders`, which this harness deliberately does not instrument
+    // — the health widget registers that same event into its own disposables, which never
+    // reach the host net, so tracking the factory would break the containment check
+    // above. So the host net carries every tracked disposable plus those three.
     const hostArray = context.subscriptions as unknown as { dispose: jest.Mock }[];
     for (const entry of tracked) {
       expect(hostArray).toContain(entry.disposable);
     }
-    expect(hostArray).toHaveLength(tracked.length + 2);
+    expect(hostArray).toHaveLength(tracked.length + 3);
 
     expect(vscode.commands.executeCommand).toHaveBeenCalledWith(
       'setContext',
@@ -376,5 +380,33 @@ describe('transactional production activation (#7854)', () => {
     for (const entry of tracked) {
       expect(entry.disposable.dispose).toHaveBeenCalledTimes(1);
     }
+  });
+
+  test('the registered file-creation listener actually populates a created file (#14547)', async () => {
+    // The rest of this suite proves the listener was *registered* and is
+    // disposed with the attempt. That leaves the callback itself unexercised:
+    // replacing the handler body with a no-op kept every other test in the
+    // extension suite green, so nothing connected activation to the
+    // boilerplate behaviour. This drives the registered callback end to end.
+    process.env.PERL_LSP_EXTENSION_TEST_SKIP_STARTUP = '1';
+    const extensionRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-activation-'));
+
+    await activate(makeContext(extensionRoot));
+
+    const registration = (vscode.workspace.onDidCreateFiles as jest.Mock).mock.calls[0];
+    expect(registration).toBeDefined();
+    const onDidCreateFiles = registration?.[0] as (event: {
+      files: readonly { fsPath: string }[];
+    }) => Promise<void>;
+
+    await onDidCreateFiles({ files: [vscode.Uri.file('/ws/lib/Wired.pm')] });
+
+    const applyEdit = vscode.workspace.applyEdit as jest.Mock;
+    expect(applyEdit).toHaveBeenCalledTimes(1);
+    const edit = applyEdit.mock.calls[0]?.[0] as {
+      inserts: Array<{ uri: { fsPath: string }; newText: string }>;
+    };
+    expect(edit.inserts.map((insert) => insert.uri.fsPath)).toEqual(['/ws/lib/Wired.pm']);
+    expect(edit.inserts[0]?.newText).toContain('package Wired;');
   });
 });

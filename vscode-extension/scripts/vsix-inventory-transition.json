@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
   "owner_issue": 9848,
-  "reason": "The #9848/#9851 dev-supervisor and checked-launch feature adds bundled supervisor code and manifest entries: out/extension.js grew 4288 bytes and package.json 142 bytes (total 1814627 to 1819057); the 29-file package set is unchanged with behavior_safe packaging. Measured by the hosted Linux current-source smoke at head 7a07ff3507.",
-  "base_baseline_file_sha256": "a966dac61b30ed8f950dc9910b5dfaf354ff131cf797dcd7ea24f6b1fa756c2a",
-  "candidate_baseline_file_sha256": "37c1980b4af95974d7b54b2c2c636a812b1a05375705e9e28d62f71322a84545",
-  "base_inventory_sha256": "71c92a4b4282c160e4db6417312fa3622a9ba9a8266bce7fbe6172b9ad5004f1",
-  "candidate_inventory_sha256": "5be4ee23d17452a68f6bb5f97f3caaf163153b607ce2226ae5bc302ece4bf54a"
+  "reason": "The merged #9848/#9851 dev-supervisor and checked-launch candidate was measured by the exact Windows VSIX archive after current-main packaging validation ran: the packaged file set remains 29 files, package.json is 59670 bytes, out/extension.js is 1683027 bytes, and total payload bytes are 1861129. This declaration records the measured candidate inventory; installed behavior remains an independent stage.",
+  "base_baseline_file_sha256": "4edd01ebb5a7ca17295226af8c866a172d1d424c9aa7cd342c7dd9e15d799db8",
+  "candidate_baseline_file_sha256": "7051bff6976010b170d21e6af8850fe0d356e0e4131a40170042888917897423",
+  "base_inventory_sha256": "5f414273d8913857ebb2aef8a14fbf4c1613fb0ce71a95a94a82b846349ad4ff",
+  "candidate_inventory_sha256": "12ee24b7c56c715411f7c51cdc9bd2818c52bc9faf639f5848e1dfdc20b8ee43"
 }

@@ -413,7 +413,7 @@ fn references_live_source_backed_quality_note(
     let ambiguous_fallbacks = usize::from(!occurrences.is_empty() && live_occurrences == 0);
 
     format!(
-        "references live source-backed proof: live_occurrences={live_occurrences}; live_exact_occurrences={live_exact_occurrences}; live_import_export_occurrences={live_import_export_occurrences}; legacy_fallbacks={legacy_fallbacks}; compiler_fact_candidates={}; ambiguous_fallbacks={ambiguous_fallbacks}; import_export_candidates={import_export_candidates}; import_export_fallbacks={import_export_fallbacks}; stale_fact_blockers=0; generated_no_source_fallbacks={generated_no_source_fallbacks}; dynamic_boundary_blockers={dynamic_boundary_blockers}; low_confidence_fallbacks={low_confidence_fallbacks}; partial live exact/imported references cutover",
+        "references live source-backed proof: live_occurrences={live_occurrences}; live_exact_occurrences={live_exact_occurrences}; live_import_export_occurrences={live_import_export_occurrences}; legacy_fallbacks={legacy_fallbacks}; source_backed_candidates={}; ambiguous_fallbacks={ambiguous_fallbacks}; import_export_candidates={import_export_candidates}; import_export_fallbacks={import_export_fallbacks}; stale_fact_blockers=0; generated_no_source_fallbacks={generated_no_source_fallbacks}; dynamic_boundary_blockers={dynamic_boundary_blockers}; low_confidence_fallbacks={low_confidence_fallbacks}; partial live exact/imported references cutover",
         occurrences.len()
     )
 }

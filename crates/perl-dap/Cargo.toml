@@ -83,6 +83,7 @@ tempfile.workspace = true
 sha2.workspace = true
 
 perl-tdd-support = { workspace = true }
+perl-test-must = { workspace = true }
 
 # Serial test execution for env-mutating tests (prevents races on PLENV_*, PERLBREW_*, PATH)
 serial_test = "4.0.1"

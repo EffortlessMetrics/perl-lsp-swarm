@@ -306,13 +306,16 @@ impl DebugAdapter {
                             // current-frame inspection must always use the innermost pad.
                             let cmd = Self::build_locals_b_eval_cmd();
                             let commands = vec![cmd];
-                            match self.send_framed_debugger_commands(stdin, &commands) {
-                                Ok((begin, end)) => {
-                                    framed_scope_lines = self.capture_framed_debugger_output(
-                                        &begin,
-                                        &end,
-                                        DEBUGGER_QUERY_WAIT_MS * 8,
-                                    );
+                            match self.send_framed_debugger_query(
+                                stdin,
+                                &commands,
+                                DEBUGGER_QUERY_WAIT_MS * 8,
+                            ) {
+                                Ok((operation, begin, end)) => {
+                                    framed_scope_lines = self
+                                        .capture_framed_debugger_output_for_operation(
+                                            &operation, &begin, &end,
+                                        );
                                 }
                                 Err(error) => {
                                     tracing::warn!(%error, "Failed to send framed locals command, falling back");
@@ -539,6 +542,27 @@ impl DebugAdapter {
         request_seq: i64,
         arguments: Option<Value>,
     ) -> DapMessage {
+        // #8354 fail-closed gate. The refusal is a function of the advertised
+        // capability alone, so advertisement and enforcement cannot disagree.
+        // It fires before `parse_dap_arguments`, name/value screening,
+        // reference lookup, and any broker/debugger traffic: while the
+        // capability is closed, no parser, resolver, coordinator, or transport
+        // call may run and no reference or retained state may change — valid
+        // and hostile input get the identical early unsupported response.
+        if crate::backend::capabilities::refuse_set_variable(
+            crate::backend::capabilities::advertises_set_variable(),
+        ) {
+            return DapMessage::Response {
+                seq,
+                request_seq,
+                success: false,
+                command: "setVariable".to_string(),
+                body: None,
+                message: Some(
+                    crate::backend::capabilities::SET_VARIABLE_UNSUPPORTED_MESSAGE.to_string(),
+                ),
+            };
+        }
         let args: SetVariableArguments = match parse_dap_arguments(arguments) {
             Ok(a) => a,
             Err(message) => {
@@ -658,8 +682,9 @@ impl DebugAdapter {
             if let Some(stdin) = session.process.stdin.as_mut() {
                 // Frame assignment + read-back so output parsing is deterministic.
                 let commands = vec![format!("p {name} = {value}"), format!("p {name}")];
-                match self.send_framed_debugger_commands(stdin, &commands) {
-                    Ok(markers) => Some(markers),
+                match self.send_framed_debugger_query(stdin, &commands, DEBUGGER_QUERY_WAIT_MS * 8)
+                {
+                    Ok((operation, begin, end)) => Some((operation, begin, end)),
                     Err(error) => {
                         return DapMessage::Response {
                             seq,
@@ -710,8 +735,8 @@ impl DebugAdapter {
         // branch would then discard such a line outright (#7275).
         let parsed = output_frame_markers
             .as_ref()
-            .and_then(|(begin, end)| {
-                self.capture_framed_debugger_output(begin, end, DEBUGGER_QUERY_WAIT_MS * 8)
+            .and_then(|(operation, begin, end)| {
+                self.capture_framed_debugger_output_for_operation(operation, begin, end)
             })
             .and_then(|lines| {
                 Self::parse_evaluate_result_from_lines(
@@ -1433,10 +1458,10 @@ mod value_format_family_tests {
         }
     }
 
-    // --- variables family: projection + identity independence ---------------
+    // --- variables family: #9581 floor + default-contract integrity ---------
 
     #[test]
-    fn variables_hex_projects_from_typed_authority_and_preserves_identity() -> TestResult {
+    fn hex_requests_are_floored_and_default_projection_preserves_identity() -> TestResult {
         if !perl_available() {
             return Ok(());
         }
@@ -1444,32 +1469,44 @@ mod value_format_family_tests {
         seed_current_frame(&adapter)?;
         seed_typed_roots(&adapter, 11);
 
-        // Rows are sorted by name: $f, $n, $neg, $s, $u, $zero.
-        let f = response_value_at(&mut adapter, 11, Some(json!({ "hex": true })), 0)?;
-        assert_eq!(f["value"], "2.5", "floats are not an integer authority: unchanged");
+        // #9581: a hex request is rejected before any cache read or projection.
+        let hexed = response_value_at(&mut adapter, 11, Some(json!({ "hex": true })), 0);
+        let hexed_err = match hexed {
+            Err(message) => message,
+            Ok(row) => {
+                return Err(format!(
+                    "hex requests must be floored-rejected (#9581), got row: {row:?}"
+                )
+                .into());
+            }
+        };
+        assert!(
+            hexed_err.contains("supportsValueFormattingOptions"),
+            "expected the #9581 floor rejection, got: {hexed_err}"
+        );
 
-        let n = response_value_at(&mut adapter, 11, Some(json!({ "hex": true })), 1)?;
-        assert_eq!(n["value"], "0xff", "Integer(255) must render from typed authority");
-        assert_eq!(n["name"], "$n", "formatting must not change identity fields");
+        // Rows are sorted by name: $f, $n, $neg, $s, $u, $zero. The default
+        // contract is untouched by the floor and identity fields stay exact.
+        let f = response_value_at(&mut adapter, 11, None, 0)?;
+        assert_eq!(f["value"], "2.5");
+        let n = response_value_at(&mut adapter, 11, None, 1)?;
+        assert_eq!(n["value"], "255", "default decimal rendering is unchanged");
+        assert_eq!(n["name"], "$n", "identity fields are unaffected by the floor");
         assert_eq!(n["type"], "SCALAR");
         assert_eq!(n["evaluateName"], "$n");
-
-        let neg = response_value_at(&mut adapter, 11, Some(json!({ "hex": true })), 2)?;
-        assert_eq!(neg["value"], "-0x2a", "signed integers keep sign-magnitude hex");
-
-        let s = response_value_at(&mut adapter, 11, Some(json!({ "hex": true })), 3)?;
-        assert_eq!(s["value"], "\"hello\"", "strings are never heuristically parsed");
-
-        let u = response_value_at(&mut adapter, 11, Some(json!({ "hex": true })), 4)?;
-        assert_eq!(u["value"], "undef", "undef is a non-numeric class: unchanged");
-
-        let zero = response_value_at(&mut adapter, 11, Some(json!({ "hex": true })), 5)?;
-        assert_eq!(zero["value"], "0x0", "zero renders as 0x0");
+        let neg = response_value_at(&mut adapter, 11, None, 2)?;
+        assert_eq!(neg["value"], "-42");
+        let s = response_value_at(&mut adapter, 11, None, 3)?;
+        assert_eq!(s["value"], "\"hello\"");
+        let u = response_value_at(&mut adapter, 11, None, 4)?;
+        assert_eq!(u["value"], "undef");
+        let zero = response_value_at(&mut adapter, 11, None, 5)?;
+        assert_eq!(zero["value"], "0");
         Ok(())
     }
 
     #[test]
-    fn variables_hex_does_not_leak_across_requests_sharing_the_cache() -> TestResult {
+    fn floored_hex_never_leaks_into_default_requests_sharing_the_cache() -> TestResult {
         if !perl_available() {
             return Ok(());
         }
@@ -1477,18 +1514,23 @@ mod value_format_family_tests {
         seed_current_frame(&adapter)?;
         seed_typed_roots(&adapter, 11);
 
-        // Hex first, then default on the same cached reference: the second
-        // response must be decimal - the cache retains policy-neutral rows.
-        assert_eq!(
-            response_value_at(&mut adapter, 11, Some(json!({ "hex": true })), 1)?["value"],
-            "0xff"
-        );
+        // Hex first (floored, no effect), then default on the same cached
+        // reference: the response must be decimal — the floor mutated nothing.
+        let floored = response_value_at(&mut adapter, 11, Some(json!({ "hex": true })), 1);
+        let err = match floored {
+            Err(message) => message,
+            Ok(row) => {
+                return Err(format!(
+                    "hex requests must be floored-rejected (#9581), got row: {row:?}"
+                )
+                .into());
+            }
+        };
+        assert!(err.contains("supportsValueFormattingOptions"), "got: {err}");
         assert_eq!(response_value_at(&mut adapter, 11, None, 1)?["value"], "255");
-        // And hex again after default - projection is per request.
-        assert_eq!(
-            response_value_at(&mut adapter, 11, Some(json!({ "hex": true })), 1)?["value"],
-            "0xff"
-        );
+        // And the floor is stable across requests on the same reference.
+        let again = response_value_at(&mut adapter, 11, Some(json!({ "hex": true })), 1);
+        assert!(again.is_err(), "hex stays floored on the same reference");
         Ok(())
     }
 
@@ -1510,7 +1552,7 @@ mod value_format_family_tests {
     }
 
     #[test]
-    fn variables_hex_projects_cached_child_rows() -> TestResult {
+    fn child_rows_serve_the_default_contract_under_the_format_floor() -> TestResult {
         if !perl_available() {
             return Ok(());
         }
@@ -1538,9 +1580,11 @@ mod value_format_family_tests {
         }
         assert!(child_ref > 0, "fixture must produce an expandable child ref");
 
-        let first_hex =
-            response_value_at(&mut adapter, i64::from(child_ref), Some(json!({ "hex": true })), 0)?;
-        assert_eq!(first_hex["value"], "0xa", "child Integer(10) must render hex");
+        // #9581: a hex request on a child reference is floored-rejected...
+        let floored =
+            response_value_at(&mut adapter, i64::from(child_ref), Some(json!({ "hex": true })), 0);
+        assert!(floored.is_err(), "hex child projection must be floored-rejected");
+        // ...and the default child row keeps rendering from the cache.
         let first_default = response_value_at(&mut adapter, i64::from(child_ref), None, 0)?;
         assert_eq!(first_default["value"], "10");
         Ok(())
@@ -1577,11 +1621,12 @@ mod value_format_family_tests {
     fn mutation_and_evaluate_families_reject_unknown_format_options() -> TestResult {
         let mut adapter = DebugAdapter::new();
         // Argument deserialization fails before any session or mutation work.
+        // setVariable is deliberately absent from the family loop: since
+        // #8354 its capability gate refuses before argument parsing, so
+        // setExpression carries the mutation-family admission proof. The
+        // ordering claim itself (gate precedes screening) is asserted below
+        // and in dap_setvariable_capability_fail_closed_8354.
         for (command, arguments) in [
-            (
-                "setVariable",
-                json!({ "variablesReference": 11, "name": "$x", "value": "5", "format": { "radix": 16 } }),
-            ),
             ("evaluate", json!({ "expression": "$x", "format": { "radix": 16 } })),
             (
                 "setExpression",
@@ -1594,16 +1639,30 @@ mod value_format_family_tests {
                 "{command} must reject the unknown option by name: {message}"
             );
         }
+        // setVariable must refuse on the capability floor before it would ever
+        // reach this argument validation.
+        let message = response_message(
+            &mut adapter,
+            "setVariable",
+            json!({ "variablesReference": 11, "name": "$x", "value": "5", "format": { "radix": 16 } }),
+        )?;
+        assert!(
+            message.contains("supportsSetVariable"),
+            "setVariable must be refused by the #8354 capability gate, not by argument \
+             validation: {message}"
+        );
         Ok(())
     }
 
     #[test]
-    fn valid_hex_format_is_accepted_by_supported_families_and_floored_for_set_expression()
-    -> TestResult {
-        // A well-formed format deserializes cleanly: without a session the
-        // setVariable/evaluate handlers proceed to their normal "No debugger
-        // session" failure, NOT to a format error - proving the option is
-        // consumed, not rejected.
+    fn valid_hex_format_is_floored_on_all_four_families_and_set_expression_refused() -> TestResult {
+        // #9581: a well-formed hex format is no longer consumed by the
+        // handlers — the capability floor rejects every family explicitly
+        // BEFORE deserialization/session work, and never silently ignores it.
+        //
+        // #8354: setVariable is absent from this family because its capability
+        // gate refuses before argument parsing, so evaluate carries the
+        // format-acceptance proof.
         //
         // #9568: setExpression refuses at the capability floor before any
         // session work, so its well-formed-format leg expects the authority
@@ -1613,36 +1672,39 @@ mod value_format_family_tests {
         // `mutation_and_evaluate_families_reject_unknown_format_options`),
         // which runs before this same gate.
         let mut adapter = DebugAdapter::new();
+        // #9568: setVariable and setExpression hex requests are refused by
+        // their own exact-mutation authority (SET_VARIABLE_UNSUPPORTED_MESSAGE
+        // / SET_EXPRESSION_UNSUPPORTED_MESSAGE) before the ValueFormat floor
+        // is consulted — covered by that authority's tests. The VFO floor's
+        // own refusal contract covers the remaining two families:
         for (command, arguments) in [
-            (
-                "setVariable",
-                json!({ "variablesReference": 11, "name": "$x", "value": "5", "format": { "hex": true } }),
-            ),
             ("evaluate", json!({ "expression": "$x", "format": { "hex": true } })),
+            ("variables", json!({ "variablesReference": 11, "format": { "hex": true } })),
         ] {
             let message = response_message(&mut adapter, command, arguments)?;
-            assert_eq!(message, "No debugger session", "{command}: {message}");
+            assert!(
+                message.contains("unsupported")
+                    && message.contains("supportsValueFormattingOptions"),
+                "{command} must get the #9581 floor rejection: {message}"
+            );
         }
-        let set_expression_message = response_message(
-            &mut adapter,
-            "setExpression",
-            json!({ "expression": "$x", "value": "5", "format": { "hex": true } }),
-        )?;
-        assert_eq!(
-            set_expression_message,
-            crate::backend::capabilities::SET_EXPRESSION_UNSUPPORTED_MESSAGE,
-            "a well-formed format deserializes cleanly; the #9568 capability floor, \
-             not a format error, is what refuses setExpression"
-        );
+        // #9568 note: setExpression's dedicated authority refusal
+        // (SET_EXPRESSION_UNSUPPORTED_MESSAGE) is unreachable for a
+        // well-formed format while the #9581 ValueFormat floor holds — the
+        // floor rejects the request first (asserted above for setExpression
+        // among the four families). The #9568 message re-emerges exactly when
+        // its re-enable gate (#9570 promotion boundary) lands.
         Ok(())
     }
 
     #[test]
     fn missing_arguments_message_is_preserved() -> TestResult {
         // Regression guard: `None` arguments still report "Missing arguments"
-        // (existing integration tests assert this exact message).
+        // (existing integration tests assert this exact message). setVariable
+        // is absent since #8354: its capability gate refuses before argument
+        // parsing, so it can no longer produce this message.
         let mut adapter = DebugAdapter::new();
-        for command in ["variables", "evaluate", "setVariable", "setExpression"] {
+        for command in ["variables", "evaluate", "setExpression"] {
             let outcome = adapter.handle_request(1, command, None);
             match outcome {
                 DapMessage::Response { success: false, message: Some(message), .. } => {
@@ -1659,10 +1721,10 @@ mod value_format_family_tests {
         Ok(())
     }
 
-    // --- EvaluateResult placeholder expansion under a later format ----------
+    // --- EvaluateResult placeholder expansion under the format floor --------
 
     #[test]
-    fn eval_result_placeholder_rows_with_typed_facts_project_under_request_format() -> TestResult {
+    fn eval_result_placeholder_rows_serve_the_default_contract_under_the_floor() -> TestResult {
         if !perl_available() {
             return Ok(());
         }
@@ -1694,12 +1756,14 @@ mod value_format_family_tests {
         }
 
         let mut adapter_mut = adapter;
-        let hexed =
-            response_value_at(&mut adapter_mut, i64::from(wire), Some(json!({ "hex": true })), 0)?;
-        assert_eq!(hexed["value"], "0xbeef", "48879 = 0xbeef from typed authority");
-        assert_eq!(hexed["name"], "$expr");
+        // #9581: a hex request on an EvalResult reference is floored-rejected.
+        let floored =
+            response_value_at(&mut adapter_mut, i64::from(wire), Some(json!({ "hex": true })), 0);
+        assert!(floored.is_err(), "hex EvalResult projection must be floored-rejected");
+        // The default contract serves the cached decimal row unchanged.
         let decimal = response_value_at(&mut adapter_mut, i64::from(wire), None, 0)?;
         assert_eq!(decimal["value"], "48879");
+        assert_eq!(decimal["name"], "$expr");
         Ok(())
     }
 }

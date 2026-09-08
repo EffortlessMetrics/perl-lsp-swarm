@@ -897,7 +897,12 @@ for (const failureMode of ['throw', 'emit']) {
       const run = runSupervisor(
         [readyChild('types', 'FIXTURE_READY_A'), readyChild('bundle', 'FIXTURE_READY_B')],
         { forwardOutput: true },
-        { outputStreams: { stdout, stderr: new PassThrough() } },
+        {
+          outputStreams: {
+            stdout: /** @type {NodeJS.WritableStream} */ (/** @type {unknown} */ (stdout)),
+            stderr: new PassThrough(),
+          },
+        },
       );
       const result = await run.exit;
       assert.equal(result.code, 1);
