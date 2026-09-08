@@ -2,6 +2,7 @@ import * as assert from 'assert';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { spawn } from 'child_process';
 import { ProcessBoundLanguageClient } from '../../processBoundLanguageClient';
 import {
   awaitServerProcessExit,
@@ -202,24 +203,42 @@ async function forceKill(witness: ServerProcessLike, cause?: unknown): Promise<v
     throw new Error('owned child must expose an exact-handle kill fallback', { cause });
   }
   await new Promise<void>((resolve, reject) => {
+    let requestFailure: Error | undefined;
     const finish = (error?: Error): void => {
       clearTimeout(timer);
       witness.removeListener('exit', onExit);
       if (error) reject(error);
       else resolve();
     };
-    const timer = setTimeout(
-      () => finish(new Error(`owned child ${String(witness.pid)} did not exit after kill`)),
-      5_000,
-    );
+    const timer = setTimeout(() => {
+      if (witness.exitCode !== null || witness.signalCode !== null) {
+        finish();
+        return;
+      }
+      finish(
+        new Error(`owned child ${String(witness.pid)} did not exit after kill`, {
+          cause: requestFailure ?? cause,
+        }),
+      );
+    }, 5_000);
     const onExit = (): void => finish();
     witness.once('exit', onExit);
+    const finishIfExited = (): boolean => {
+      if (witness.exitCode !== null || witness.signalCode !== null) {
+        finish();
+        return true;
+      }
+      return false;
+    };
+    if (finishIfExited()) return;
     try {
       if (!kill.call(witness)) {
-        finish(new Error('exact-handle child termination request failed', { cause }));
+        requestFailure = new Error('exact-handle child termination request failed', { cause });
+        finishIfExited();
       }
     } catch (error: unknown) {
-      finish(new Error('exact-handle child termination request threw', { cause: error }));
+      requestFailure = new Error('exact-handle child termination request threw', { cause: error });
+      finishIfExited();
     }
   });
 }
@@ -401,6 +420,22 @@ suite('Real language-client process settlement', function () {
       fs.rmSync(`${control}.hold`, { force: true });
       await cleanupClients(clients, control, observedExit);
       fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  test('cleanup fallback waits when an exact child exits after kill returns false', async function () {
+    const child = spawn(nodeExecutable(), ['-e', 'setTimeout(() => process.exit(0), 150)']);
+    const originalKill = child.kill;
+    child.kill = (() => false) as typeof child.kill;
+    try {
+      await forceKill(child as unknown as ServerProcessLike);
+      assert.equal(child.exitCode, 0);
+      assert.equal(child.signalCode, null);
+    } finally {
+      child.kill = originalKill;
+      if (child.exitCode === null && child.signalCode === null) {
+        originalKill.call(child);
+      }
     }
   });
 });
