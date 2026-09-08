@@ -362,7 +362,7 @@ impl StreamSessionManager {
         outcome: StreamTerminalOutcome,
     ) -> bool {
         let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-        if !state.sessions.get(key).is_some_and(|session| session.session_id == session_id) {
+        if state.sessions.get(key).is_none_or(|session| session.session_id != session_id) {
             return false;
         }
         if let Some(session) = state.sessions.remove(key) {
