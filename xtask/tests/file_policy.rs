@@ -366,8 +366,8 @@ fn non_rust_inventory_check_is_wired_to_policy_shard() -> Result<()> {
 }
 
 /// Execute the actual workflow scripts over a repository whose push ref moved.
-/// A PR's event/merge SHA also differs from the checked-out head. Neither may
-/// relabel evidence, and an early producer failure must not publish cached files.
+/// The immutable integration event SHA must match checkout, even if a moving
+/// ref advances. An early producer failure must not publish cached files.
 #[test]
 #[cfg(unix)]
 fn inventory_artifact_binds_checkout_and_rejects_cached_evidence() -> Result<()> {
@@ -385,34 +385,51 @@ fn inventory_artifact_binds_checkout_and_rejects_cached_evidence() -> Result<()>
     let script = |name: &str| -> Result<&str> {
         step(name)?.get("run").and_then(Value::as_str).ok_or_else(|| eyre!("missing script {name}"))
     };
-    let immutable = "${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}";
-    assert_eq!(
-        steps[0].get("with").and_then(|v| v.get("ref")).and_then(Value::as_str),
-        Some(immutable)
+    let immutable = "${{ github.sha }}";
+    ensure!(
+        steps
+            .first()
+            .and_then(|step| step.get("with"))
+            .and_then(|v| v.get("ref"))
+            .and_then(Value::as_str)
+            == Some(immutable),
+        "checkout must select immutable integration event SHA"
     );
-    assert_eq!(
-        step("Bind inventory source")?
+    ensure!(
+        step("Bind shard integration source")?
             .get("env")
             .and_then(|v| v.get("EXPECTED_SOURCE_SHA"))
-            .and_then(Value::as_str),
-        Some(immutable)
+            .and_then(Value::as_str)
+            == Some(immutable),
+        "source guard must require immutable integration event SHA"
+    );
+    ensure!(
+        step("Bind shard integration source")?.get("if").is_none(),
+        "source binding must run for every shard"
     );
     let position =
         |name: &str| steps.iter().position(|s| s.get("name").and_then(Value::as_str) == Some(name));
+    ensure!(
+        position("Bind shard integration source").ok_or_else(|| eyre!("missing source binding"))?
+            < position("Warm xtask").ok_or_else(|| eyre!("missing build step"))?,
+        "source binding must precede builds"
+    );
     ensure!(position("Cache cargo dependencies") < position("Clear restored inventory evidence"));
     ensure!(position("Clear restored inventory evidence") < position("Warm xtask"));
-    assert_eq!(
-        step("Bind produced inventory evidence")?.get("if").and_then(Value::as_str),
-        Some(
-            "always() && matrix.name == 'policy' && steps.inventory-source.outcome == 'success' && steps.inventory-clean.outcome == 'success'"
-        )
+    ensure!(
+        step("Bind produced inventory evidence")?.get("if").and_then(Value::as_str)
+            == Some(
+                "always() && matrix.name == 'policy' && steps.inventory-source.outcome == 'success' && steps.inventory-clean.outcome == 'success'"
+            ),
+        "inventory binding must require source validation and cache clearance"
     );
-    assert_eq!(
+    ensure!(
         step("Upload non-Rust inventory evidence")?
             .get("with")
             .and_then(|v| v.get("name"))
-            .and_then(Value::as_str),
-        Some("non-rust-inventory-${{ steps.inventory-source.outputs.sha }}")
+            .and_then(Value::as_str)
+            == Some("non-rust-inventory-${{ steps.inventory-source.outputs.sha }}"),
+        "inventory artifact name must use verified source output"
     );
 
     let temp = tempfile::tempdir()?;
@@ -427,7 +444,7 @@ fn inventory_artifact_binds_checkout_and_rejects_cached_evidence() -> Result<()>
     git(&["config", "user.name", "test"])?;
     git(&["commit", "--allow-empty", "-qm", "event"])?;
     let event = git(&["rev-parse", "HEAD"])?;
-    git(&["commit", "--allow-empty", "-qm", "moved push ref or synthetic merge"])?;
+    git(&["commit", "--allow-empty", "-qm", "moved ref after integration event"])?;
     let moved = git(&["rev-parse", "HEAD"])?;
     ensure!(event != moved);
     git(&["checkout", "--detach", &event])?;
@@ -442,11 +459,14 @@ fn inventory_artifact_binds_checkout_and_rejects_cached_evidence() -> Result<()>
             .env("SOURCE_SHA", subject)
             .output()?)
     };
-    ensure!(run("Bind inventory source", &event)?.status.success());
-    assert_eq!(std::fs::read_to_string(&output)?, format!("sha={event}\n"));
+    ensure!(run("Bind shard integration source", &event)?.status.success());
     ensure!(
-        !run("Bind inventory source", &moved)?.status.success(),
-        "event/merge identity cannot substitute for checkout"
+        std::fs::read_to_string(&output)? == format!("sha={event}\n"),
+        "source guard must emit the verified integration SHA"
+    );
+    ensure!(
+        !run("Bind shard integration source", &moved)?.status.success(),
+        "a different subject cannot relabel the checked-out integration tree"
     );
     let policy = root.join("target/policy");
     std::fs::create_dir_all(&policy)?;
@@ -460,7 +480,7 @@ fn inventory_artifact_binds_checkout_and_rejects_cached_evidence() -> Result<()>
     }
     ensure!(run("Clear restored inventory evidence", &event)?.status.success());
     ensure!(run("Bind produced inventory evidence", &event)?.status.success());
-    assert_eq!(std::fs::read_to_string(&output)?, "", "no producer output must mean no upload");
+    ensure!(std::fs::read_to_string(&output)?.is_empty(), "no producer output must mean no upload");
     ensure!(!policy.join("non-rust-inventory-subject.json").exists());
 
     // The inventory producer emits evidence before rejecting new debt. The
@@ -472,22 +492,32 @@ fn inventory_artifact_binds_checkout_and_rejects_cached_evidence() -> Result<()>
     );
     std::fs::write(policy.join("non-rust-inventory.json"), "[]\n")?;
     ensure!(run("Bind produced inventory evidence", &event)?.status.success());
-    assert_eq!(std::fs::read_to_string(&output)?, "ready=true\n");
+    ensure!(
+        std::fs::read_to_string(&output)? == "ready=true\n",
+        "complete inventory must enable upload"
+    );
     let receipt: serde_json::Value =
         serde_json::from_slice(&std::fs::read(policy.join("non-rust-inventory-subject.json"))?)?;
-    assert_eq!(receipt["source_sha"].as_str(), Some(event.as_str()));
+    ensure!(
+        receipt.get("source_sha").and_then(serde_json::Value::as_str) == Some(event.as_str()),
+        "receipt must bind the checked-out integration SHA"
+    );
     use sha2::{Digest, Sha256};
     for ext in ["md", "json"] {
         let name = format!("non-rust-inventory.{ext}");
-        assert_eq!(
-            receipt["sha256"][&name].as_str(),
-            Some(
-                Sha256::digest(std::fs::read(policy.join(&name))?)
-                    .iter()
-                    .map(|byte| format!("{byte:02x}"))
-                    .collect::<String>()
-                    .as_str()
-            )
+        ensure!(
+            receipt
+                .get("sha256")
+                .and_then(|hashes| hashes.get(&name))
+                .and_then(serde_json::Value::as_str)
+                == Some(
+                    Sha256::digest(std::fs::read(policy.join(&name))?)
+                        .iter()
+                        .map(|byte| format!("{byte:02x}"))
+                        .collect::<String>()
+                        .as_str()
+                ),
+            "inventory hash must match produced file bytes"
         );
     }
     ensure!(!run("Bind produced inventory evidence", &moved)?.status.success());
