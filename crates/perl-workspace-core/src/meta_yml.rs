@@ -374,13 +374,6 @@ fn scan_stream_safety(doc: &mut Doc) -> Result<(), MetaYmlFinding> {
                 "block scalars ('|' / '>') are not supported",
             ));
         }
-        if trimmed.starts_with("<<:") {
-            return Err(MetaYmlFinding::new(
-                MetaYmlFindingKind::AnchorAliasOrTag,
-                Some(line.number),
-                "merge keys ('<<') are refused",
-            ));
-        }
     }
 
     doc.body = body;
@@ -933,10 +926,18 @@ fn split_key(
             ':' if depth == 0 => {
                 let after = &text[i + 1..];
                 if after.is_empty() || after.starts_with(' ') || after.starts_with('\t') {
-                    return Ok(Some((
-                        unquote(text[..i].trim(), line, in_flow)?,
-                        after.trim_start().to_string(),
-                    )));
+                    let key = unquote(text[..i].trim(), line, in_flow)?;
+                    // Merge keys are refused at the shared key seam so block
+                    // mappings, flow mappings, and sequence items all reject
+                    // them instead of publishing a fake `<<` entry.
+                    if key == "<<" {
+                        return Err(MetaYmlFinding::new(
+                            MetaYmlFindingKind::AnchorAliasOrTag,
+                            Some(line),
+                            "merge keys ('<<') are refused",
+                        ));
+                    }
+                    return Ok(Some((key, after.trim_start().to_string())));
                 }
             }
             _ => {}
@@ -1731,6 +1732,23 @@ build_requires:
             MetaYmlFindingKind::AnchorAliasOrTag,
             "explicit tag",
         );
+    }
+
+    #[test]
+    fn merge_keys_refuse_at_every_key_seam_without_fake_facts() {
+        for input in [
+            "<<: *defaults\nname: X\n",
+            "<< : *defaults\nname: X\n",
+            "requires: { <<: { Foo: 1 } }\n",
+            "license:\n  - <<: *defaults\n",
+        ] {
+            let outcome = parse_meta_yml(fid(), input);
+            assert_non_success(&outcome, MetaYmlFindingKind::AnchorAliasOrTag, input);
+        }
+
+        // The `<<` token as a *value* is an ordinary plain scalar.
+        let facts = must_some(parse_meta_yml(fid(), "name: <<\n").facts);
+        assert_eq!(facts.name.as_deref(), Some("<<"));
     }
 
     #[test]
