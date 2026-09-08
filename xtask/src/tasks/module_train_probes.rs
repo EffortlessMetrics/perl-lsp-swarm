@@ -1,10 +1,9 @@
 //! Semantic current-tree implementation probes for the module train (#11626).
 //!
-//! This registry lives in its own module on purpose. Selectors are parsed
-//! syntax anchors in a tree file, so if the anchor string literals sat in the
-//! same file a selector targets, that selector could be satisfied by *its own
-//! declaration* rather than by real code — a vacuous probe that would survive
-//! deleting the implementation it claims to verify.
+//! This registry lives in its own module on purpose: selectors must never
+//! target the declarations that define them. Syntax matching separately
+//! rejects comments and string literals, while registry separation keeps
+//! self-targeting out of the selector topology entirely.
 //!
 //! Keeping `PROBED_NODES` here, and never targeting this file from a selector,
 //! makes that impossible by construction. The guard test

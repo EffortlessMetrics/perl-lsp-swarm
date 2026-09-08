@@ -812,7 +812,7 @@ fn landing_the_residual_component_lands_c02() -> Result<()> {
     let tree = FakeTree::from_real()?.with_added(
         "xtask/src/main.rs",
         r#"
-            fn synthetic_module_train_dispatch(command: Commands) {
+            fn run_cli(command: Commands) {
                 match command {
                     Commands::ModuleTrain { command } => match command {
                         ModuleTrainCommand::Explain { node, tree } => {
