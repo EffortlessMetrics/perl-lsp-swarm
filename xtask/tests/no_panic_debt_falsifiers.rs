@@ -1370,3 +1370,216 @@ fn ordinary() { let _ = Some(2).unwrap(); }
         result.findings
     );
 }
+
+#[test]
+fn ordinary_lib_module_cfg_test_unwrap_is_debt_and_production_is_not() {
+    let temp = tempfile::tempdir().expect("temp");
+    write_policy(temp.path());
+    write_empty_registry(temp.path());
+    write_package(
+        temp.path(),
+        "demo",
+        "mod foo;\npub fn lib_prod() -> u8 { Some(0).unwrap() }\n",
+        &[("known.rs", "#[test]\nfn known() {}\n")],
+    );
+    fs::write(
+        temp.path().join("crates/demo/src/foo.rs"),
+        r#"
+pub fn prod() -> u8 { Some(1).unwrap() }
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn unit() { let _ = Some(1).unwrap(); }
+}
+
+#[cfg(test)]
+mod bar;
+"#,
+    )
+    .expect("foo.rs");
+    fs::create_dir_all(temp.path().join("crates/demo/src/foo")).expect("foo dir");
+    fs::write(
+        temp.path().join("crates/demo/src/foo/bar.rs"),
+        "fn helper() { let _ = Some(1).unwrap(); }\n",
+    )
+    .expect("foo/bar.rs");
+    let inventory = inventory_at(temp.path());
+    assert!(
+        inventory.rows.iter().any(|row| {
+            row.path.ends_with("src/foo.rs")
+                && row.site_family == "unwrap"
+                && row.entrypoint == "unit"
+        }),
+        "#[cfg(test)] unit unwrap under ordinary lib mod foo was omitted: {:?}",
+        inventory.rows
+    );
+    assert!(
+        inventory
+            .rows
+            .iter()
+            .any(|row| { row.path.ends_with("src/foo/bar.rs") && row.site_family == "unwrap" }),
+        "nested outline foo.rs -> foo/bar.rs unwrap was omitted: {:?}",
+        inventory.rows
+    );
+    assert!(
+        !inventory.rows.iter().any(|row| {
+            row.path.ends_with("src/foo.rs")
+                && row.entrypoint == "prod"
+                && row.site_family == "unwrap"
+        }),
+        "production unwrap in ordinary lib module became test debt: {:?}",
+        inventory.rows
+    );
+    assert!(
+        !inventory
+            .rows
+            .iter()
+            .any(|row| { row.path.ends_with("src/lib.rs") && row.site_family == "unwrap" }),
+        "lib.rs production unwrap became test debt: {:?}",
+        inventory.rows
+    );
+}
+
+#[test]
+fn cfg_all_test_is_required_test_and_cfg_any_is_not() {
+    let temp = tempfile::tempdir().expect("temp");
+    write_policy(temp.path());
+    write_empty_registry(temp.path());
+    write_package(
+        temp.path(),
+        "demo",
+        r#"
+#[cfg(all(test, feature = "need-me"))]
+mod gated {
+    fn helper() { let _ = Some(1).unwrap(); }
+}
+
+#[cfg(all(not(unix), test))]
+mod not_unix {
+    fn helper() { let _ = Some(1).unwrap(); }
+}
+
+#[cfg(any(test, feature = "prod"))]
+mod maybe {
+    fn helper() { let _ = Some(1).unwrap(); }
+}
+
+#[cfg(all(test, feature = "need-me"))]
+mod outline_gated;
+
+struct Parser;
+
+#[cfg(all(test, feature = "need-me"))]
+impl Parser {
+    fn helper() { let _ = Some(1).unwrap(); }
+}
+"#,
+        &[("known.rs", "#[test]\nfn known() {}\n")],
+    );
+    fs::write(
+        temp.path().join("crates/demo/src/outline_gated.rs"),
+        "fn helper() { let _ = Some(1).unwrap(); }\n",
+    )
+    .expect("outline_gated.rs");
+    let inventory = inventory_at(temp.path());
+    assert!(
+        inventory.rows.iter().any(|row| {
+            row.path.ends_with("src/lib.rs")
+                && row.entrypoint == "helper"
+                && row.site_family == "unwrap"
+                && row.limitations.iter().any(|limit| limit.starts_with("feature-gated"))
+        }),
+        "#[cfg(all(test, feature))] inline unwrap omitted: {:?}",
+        inventory.rows
+    );
+    assert!(
+        inventory.rows.iter().any(|row| {
+            row.path.ends_with("src/lib.rs")
+                && row.site_family == "unwrap"
+                && row.limitations.iter().any(|limit| limit.starts_with("platform-gated"))
+        }),
+        "#[cfg(all(not(unix), test))] unwrap omitted: {:?}",
+        inventory.rows
+    );
+    assert!(
+        inventory.rows.iter().any(|row| {
+            row.path.ends_with("src/outline_gated.rs") && row.site_family == "unwrap"
+        }),
+        "outline #[cfg(all(test, feature))] unwrap omitted: {:?}",
+        inventory.rows
+    );
+    let lib_helpers = inventory
+        .rows
+        .iter()
+        .filter(|row| {
+            row.path.ends_with("src/lib.rs")
+                && row.site_family == "unwrap"
+                && row.entrypoint == "helper"
+        })
+        .count();
+    assert_eq!(
+        lib_helpers, 3,
+        "expected inline all(test), all(not(unix), test), and impl helpers; not cfg(any): {:?}",
+        inventory.rows
+    );
+}
+
+#[test]
+fn custom_expect_token_is_not_panic_expect() {
+    let temp = tempfile::tempdir().expect("temp");
+    write_policy(temp.path());
+    write_empty_registry(temp.path());
+    write_package(
+        temp.path(),
+        "demo",
+        r#"
+#[cfg(test)]
+mod tests {
+    struct ParserContext;
+    enum TokenType { Ident }
+    impl ParserContext {
+        fn expect(&mut self, _kind: TokenType) {}
+        fn unwrap(&self) {}
+    }
+
+    #[test]
+    fn parser_expect() {
+        let mut ctx = ParserContext;
+        ctx.expect(TokenType::Ident);
+        ParserContext::expect(&mut ctx, TokenType::Ident);
+        ctx.unwrap();
+        let _ = Some(1).expect("msg");
+        let _ = Some(1).unwrap();
+    }
+}
+"#,
+        &[("known.rs", "#[test]\nfn known() {}\n")],
+    );
+    let inventory = inventory_at(temp.path());
+    let expect_rows: Vec<_> = inventory
+        .rows
+        .iter()
+        .filter(|row| row.path.ends_with("src/lib.rs") && row.site_family == "expect")
+        .collect();
+    assert_eq!(
+        expect_rows.len(),
+        1,
+        "ParserContext::expect was classified as clippy::expect_used: {:?}",
+        inventory.rows
+    );
+    assert!(
+        expect_rows.iter().any(|row| row.source_identity.contains("expect(\"msg\")")
+            || row.source_identity.contains(".expect(")),
+        "real Some.expect(\"msg\") omitted: {:?}",
+        expect_rows
+    );
+    assert!(
+        inventory
+            .rows
+            .iter()
+            .any(|row| { row.path.ends_with("src/lib.rs") && row.site_family == "unwrap" }),
+        "Some.unwrap() omitted: {:?}",
+        inventory.rows
+    );
+}

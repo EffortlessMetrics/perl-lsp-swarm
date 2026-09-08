@@ -6,11 +6,23 @@ use super::normalize_path;
 use super::topology::is_complete_test_file;
 use super::vocabulary::{macro_family, method_family};
 use proc_macro2::LineColumn;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use syn::spanned::Spanned;
 use syn::visit::Visit;
 use syn::{Attribute, Expr, ExprCall, ExprMethodCall, ItemFn, ItemMod, Macro, Meta};
+
+#[derive(Clone, Debug)]
+struct ModuleWork {
+    path: PathBuf,
+    treat_as_test: bool,
+    package: String,
+    target_kind: TargetKind,
+    target_name: String,
+    feature: Option<String>,
+    required_features: Vec<String>,
+    platform: Option<String>,
+}
 
 pub(crate) fn scan(
     root: &Path,
@@ -21,14 +33,16 @@ pub(crate) fn scan(
     let mut sites = Vec::new();
     let mut declarations = Vec::new();
     let mut instruments = Vec::new();
-    let mut extra_files = BTreeSet::new();
+    let mut extra_files = BTreeMap::new();
     let mut covered_paths = BTreeSet::new();
 
     for file in &topology.files {
         match scan_file(root, file, vocabulary, true, false) {
             Ok(mut scanned) => {
                 covered_paths.insert(file.path.clone());
-                extra_files.extend(scanned.external_modules);
+                for work in scanned.external_modules {
+                    enqueue_module(&mut extra_files, work);
+                }
                 entrypoints.append(&mut scanned.entrypoints);
                 sites.append(&mut scanned.sites);
                 declarations.append(&mut scanned.declarations);
@@ -45,7 +59,7 @@ pub(crate) fn scan(
 
     let mut pending = extra_files;
     let mut scanned_extra = BTreeSet::new();
-    while let Some(path) = pending.pop_first() {
+    while let Some((path, work)) = pending.pop_first() {
         if !scanned_extra.insert(path.clone()) {
             continue;
         }
@@ -55,18 +69,20 @@ pub(crate) fn scan(
             continue;
         }
         let file = already.cloned().unwrap_or_else(|| FileRecord {
-            package: package_from_path(root, &path).unwrap_or_else(|| "unknown".to_string()),
-            target_kind: TargetKind::UnitTest,
+            package: work.package.clone(),
+            target_kind: work.target_kind,
             path: relative,
-            target_name: String::new(),
-            feature: None,
-            required_features: Vec::new(),
-            platform: None,
+            target_name: work.target_name.clone(),
+            feature: work.feature.clone(),
+            required_features: work.required_features.clone(),
+            platform: work.platform.clone(),
         });
-        match scan_file(root, &file, vocabulary, true, true) {
+        match scan_file(root, &file, vocabulary, true, work.treat_as_test) {
             Ok(mut scanned) => {
                 covered_paths.insert(file.path.clone());
-                pending.extend(scanned.external_modules);
+                for nested in scanned.external_modules {
+                    enqueue_module(&mut pending, nested);
+                }
                 entrypoints.append(&mut scanned.entrypoints);
                 sites.append(&mut scanned.sites);
                 declarations.append(&mut scanned.declarations);
@@ -111,12 +127,31 @@ pub(crate) fn scan(
     Ok(Discovered { entrypoints, sites, declarations, instruments, covered_paths })
 }
 
+fn enqueue_module(pending: &mut BTreeMap<PathBuf, ModuleWork>, work: ModuleWork) {
+    if let Some(existing) = pending.get_mut(&work.path) {
+        existing.treat_as_test |= work.treat_as_test;
+        return;
+    }
+    pending.insert(work.path.clone(), work);
+}
+
+/// Directory rustc uses to resolve child `mod` items of `file`.
+/// `lib.rs` / `main.rs` / `mod.rs` keep children in the parent directory;
+/// `foo.rs` resolves children under `foo/`.
+fn rustc_child_module_dir(file: &Path) -> PathBuf {
+    let parent = file.parent().map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("."));
+    match file.file_name().and_then(|name| name.to_str()) {
+        Some("lib.rs" | "main.rs" | "mod.rs") => parent,
+        _ => file.file_stem().map(|stem| parent.join(stem)).unwrap_or(parent),
+    }
+}
+
 struct ScannedFile {
     entrypoints: Vec<Entrypoint>,
     sites: Vec<RawSite>,
     declarations: Vec<RawDeclaration>,
     instruments: Vec<Instrument>,
-    external_modules: Vec<PathBuf>,
+    external_modules: Vec<ModuleWork>,
 }
 
 fn scan_file(
@@ -131,14 +166,15 @@ fn scan_file(
     let lines: Vec<&str> = source.lines().collect();
     let parsed = syn::parse_file(&source).map_err(|err| err.to_string())?;
     let complete = is_complete_test_file(file.target_kind, &file.path);
-    let module_dir = abs.parent().map(Path::to_path_buf).unwrap_or_else(|| abs.clone());
+    let module_dir = rustc_child_module_dir(&abs);
+    let file_cfg_test = attrs_have_cfg_test(&parsed.attrs);
     let mut visitor = DebtVisitor {
         file,
         lines: &lines,
         vocabulary,
         follow_modules,
         module_dir,
-        in_test: treat_as_test || complete,
+        in_test: treat_as_test || complete || file_cfg_test,
         current_fn: "<file>".to_string(),
         current_feature: file.feature.clone(),
         current_platform: file.platform.clone(),
@@ -182,7 +218,7 @@ struct DebtVisitor<'a> {
     entrypoints: Vec<Entrypoint>,
     sites: Vec<RawSite>,
     declarations: Vec<RawDeclaration>,
-    external_modules: Vec<PathBuf>,
+    external_modules: Vec<ModuleWork>,
     instruments: Vec<Instrument>,
 }
 
@@ -214,7 +250,7 @@ impl DebtVisitor<'_> {
             return None;
         };
         let collapsed = collapse(&list.tokens.to_string());
-        let cfg_test = ident == "cfg_attr" && is_cfg_test_prefix(&collapsed);
+        let cfg_test = ident == "cfg_attr" && cfg_attr_predicate_requires_test(&attr.meta);
         if ident == "cfg_attr" && !cfg_test && !self.in_test {
             return None;
         }
@@ -301,10 +337,18 @@ impl<'ast> Visit<'ast> for DebtVisitor<'_> {
         if node.content.is_some() {
             self.module_dir = inline_module_dir(&self.module_dir, node);
         } else if self.follow_modules
-            && self.in_test
             && let Some(path) = outline_module_path(&self.module_dir, node)
         {
-            self.external_modules.push(path);
+            self.external_modules.push(ModuleWork {
+                path,
+                treat_as_test: self.in_test,
+                package: self.file.package.clone(),
+                target_kind: self.file.target_kind,
+                target_name: self.file.target_name.clone(),
+                feature: self.current_feature.clone(),
+                required_features: self.file.required_features.clone(),
+                platform: self.current_platform.clone(),
+            });
         }
         syn::visit::visit_item_mod(self, node);
         self.pop_attrs();
@@ -316,6 +360,7 @@ impl<'ast> Visit<'ast> for DebtVisitor<'_> {
 
     fn visit_item_fn(&mut self, node: &'ast ItemFn) {
         let is_test = node.attrs.iter().any(is_test_attribute);
+        let cfg_test = attrs_have_cfg_test(&node.attrs);
         let previous_fn = self.current_fn.clone();
         let previous_test = self.in_test;
         let previous_feature = self.current_feature.clone();
@@ -327,8 +372,10 @@ impl<'ast> Visit<'ast> for DebtVisitor<'_> {
         if let Some(platform) = first_platform(&node.attrs) {
             self.current_platform = Some(platform);
         }
-        if is_test {
+        if is_test || cfg_test {
             self.in_test = true;
+        }
+        if is_test {
             self.entrypoints.push(Entrypoint {
                 package: self.file.package.clone(),
                 target_kind: self.file.target_kind,
@@ -347,8 +394,21 @@ impl<'ast> Visit<'ast> for DebtVisitor<'_> {
         self.current_platform = previous_platform;
     }
 
+    fn visit_item_impl(&mut self, node: &'ast syn::ItemImpl) {
+        let previous_test = self.in_test;
+        if attrs_have_cfg_test(&node.attrs) {
+            self.in_test = true;
+        }
+        self.push_attrs(&node.attrs, "item");
+        syn::visit::visit_item_impl(self, node);
+        self.pop_attrs();
+        self.in_test = previous_test;
+    }
+
     fn visit_expr_method_call(&mut self, node: &'ast ExprMethodCall) {
-        if let Some(family) = method_family(&node.method.to_string()) {
+        if let Some(family) = method_family(&node.method.to_string())
+            && panic_method_shape(family, &node.args)
+        {
             self.record_site(family, node.method.span());
         }
         syn::visit::visit_expr_method_call(self, node);
@@ -358,6 +418,7 @@ impl<'ast> Visit<'ast> for DebtVisitor<'_> {
         if let Expr::Path(path) = &*node.func
             && let Some(ident) = path.path.segments.last()
             && let Some(family) = method_family(&ident.ident.to_string())
+            && panic_call_shape(family, &node.args)
         {
             self.record_site(family, ident.ident.span());
         }
@@ -442,10 +503,104 @@ fn is_test_attribute(attr: &Attribute) -> bool {
 
 fn attrs_have_cfg_test(attrs: &[Attribute]) -> bool {
     attrs.iter().any(|attr| {
-        attr.path().is_ident("cfg") && collapse(&attr.meta.to_token_string()).contains("cfg(test")
-            || attr.path().is_ident("cfg_attr")
-                && is_cfg_test_prefix(&collapse(&attr.meta.to_token_string()))
+        if attr.path().is_ident("cfg") {
+            meta_list_requires_test(&attr.meta)
+        } else if attr.path().is_ident("cfg_attr") {
+            cfg_attr_predicate_requires_test(&attr.meta)
+        } else {
+            false
+        }
     })
+}
+
+fn meta_list_requires_test(meta: &Meta) -> bool {
+    let Meta::List(list) = meta else {
+        return false;
+    };
+    cfg_predicate_requires_test(list.tokens.clone())
+}
+
+fn cfg_attr_predicate_requires_test(meta: &Meta) -> bool {
+    let Meta::List(list) = meta else {
+        return false;
+    };
+    split_top_level_commas(list.tokens.clone())
+        .into_iter()
+        .next()
+        .is_some_and(cfg_predicate_requires_test)
+}
+
+fn cfg_predicate_requires_test(tokens: proc_macro2::TokenStream) -> bool {
+    let collapsed = collapse(&tokens.to_string());
+    if collapsed == "test" {
+        return true;
+    }
+    let Ok(meta) = syn::parse2::<Meta>(tokens) else {
+        return collapsed == "test";
+    };
+    match meta {
+        Meta::Path(path) => path.is_ident("test"),
+        Meta::List(list) if list.path.is_ident("all") => {
+            split_top_level_commas(list.tokens).into_iter().any(cfg_predicate_requires_test)
+        }
+        Meta::List(list) if list.path.is_ident("any") || list.path.is_ident("not") => false,
+        _ => false,
+    }
+}
+
+fn split_top_level_commas(tokens: proc_macro2::TokenStream) -> Vec<proc_macro2::TokenStream> {
+    let mut groups = vec![proc_macro2::TokenStream::new()];
+    for tree in tokens {
+        if let proc_macro2::TokenTree::Punct(punct) = &tree
+            && punct.as_char() == ','
+        {
+            groups.push(proc_macro2::TokenStream::new());
+            continue;
+        }
+        if let Some(current) = groups.last_mut() {
+            current.extend(std::iter::once(tree));
+        }
+    }
+    groups.into_iter().filter(|group| !group.is_empty()).collect()
+}
+
+fn panic_method_shape(
+    family: &str,
+    args: &syn::punctuated::Punctuated<Expr, syn::token::Comma>,
+) -> bool {
+    match family {
+        "unwrap" | "unwrap_err" => args.is_empty(),
+        "expect" | "expect_err" => args.first().is_some_and(is_panic_message_expr),
+        _ => true,
+    }
+}
+
+fn panic_call_shape(
+    family: &str,
+    args: &syn::punctuated::Punctuated<Expr, syn::token::Comma>,
+) -> bool {
+    match family {
+        "unwrap" | "unwrap_err" => args.len() <= 1,
+        "expect" | "expect_err" => args.iter().any(is_panic_message_expr),
+        _ => true,
+    }
+}
+
+fn is_panic_message_expr(expr: &Expr) -> bool {
+    match expr {
+        Expr::Lit(lit) if matches!(lit.lit, syn::Lit::Str(_)) => true,
+        Expr::Macro(mac) => {
+            let name = mac
+                .mac
+                .path
+                .segments
+                .last()
+                .map(|segment| segment.ident.to_string())
+                .unwrap_or_default();
+            matches!(name.as_str(), "format" | "concat" | "format_args")
+        }
+        _ => false,
+    }
 }
 
 fn first_feature(attrs: &[Attribute]) -> Option<String> {
@@ -474,10 +629,6 @@ fn first_platform(attrs: &[Attribute]) -> Option<String> {
         }
     }
     None
-}
-
-fn is_cfg_test_prefix(collapsed: &str) -> bool {
-    collapsed.contains("cfg_attr(test,") || collapsed.contains("cfg_attr(test)")
 }
 
 fn extract_quoted_after(text: &str, prefix: &str) -> Option<String> {
@@ -607,15 +758,6 @@ fn outline_module_path(module_dir: &Path, node: &ItemMod) -> Option<PathBuf> {
     }
     let nested = module_dir.join(&name).join("mod.rs");
     nested.is_file().then_some(nested)
-}
-
-fn package_from_path(root: &Path, path: &Path) -> Option<String> {
-    let relative = path.strip_prefix(root).ok()?;
-    let mut components = relative.components();
-    if components.next()?.as_os_str() == "crates" {
-        return components.next()?.as_os_str().to_str().map(str::to_string);
-    }
-    None
 }
 
 fn test_generating_macro(name: &str) -> bool {

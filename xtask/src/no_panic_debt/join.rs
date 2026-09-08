@@ -232,6 +232,8 @@ pub(crate) fn join(
         "ordinary generation does not call GitHub".to_string(),
         "assert!/assert_eq! are not classified as panic-family debt".to_string(),
         "population is Cargo metadata test=true target roots plus bounded module-edge traversal; handwritten manifest autodiscovery is not the authority".to_string(),
+        "expect/unwrap classification is syntactic (panic-message-shaped args), not Clippy typeck".to_string(),
+        "cfg(any(test, ...)) and cfg(not(...)) are not required-test context".to_string(),
     ];
     if instruments.iter().any(|instrument| instrument.status == InstrumentStatus::NotProven)
         || rows.iter().any(|row| row.status == DebtStatus::InstrumentNotProven)
