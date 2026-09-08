@@ -99,9 +99,6 @@ export function patchPinnedLanguageClientSource(source, id) {
 let pinnedLanguageClientPatchApplied = false;
 const pinnedLanguageClientPatch = {
     name: 'patch-pinned-vscode-languageclient-start-promise',
-    buildStart() {
-        pinnedLanguageClientPatchApplied = false;
-    },
     transform(source, id) {
         const details = patchPinnedLanguageClientDetails(source, id);
         if (details === null) return null;

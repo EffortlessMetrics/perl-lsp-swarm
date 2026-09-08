@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "owner_issue": 14486,
-  "reason": "The #14486 retained process witness adapter and same-claim #15153 startup settlement repair are incorporated into the main-targeted #15158 health candidate. Against exact main b6b6a881, the measured ordinary transition changes out/extension.js from 1686496 to 1688941 bytes (+2445) and readme.md from 25231 to 25629 bytes (+398); the other 27 archive paths retain their measured sizes. The candidate total is 1867184 bytes versus main 1864341 bytes (+2843). This declaration records the exact ordinary package transition without changing validator thresholds or admission rules; bundled installed-health evidence remains separate from this ordinary inventory.",
+  "owner_issue": 15153,
+  "reason": "The pinned vscode-languageclient 10.1.1 start promise is corrected in the exact resolved bundle source, guarded by the original source hash; the measured ordinary transition changes out/extension.js from 1686496 to 1688935 bytes (+2439) and readme.md from 25231 to 25629 bytes (+398), with the other 27 archive paths unchanged. Bundled installed-health evidence remains separate from ordinary inventory.",
   "base_baseline_file_sha256": "eaef617cee329a98c217809c7b330c51c8ea246eb13b983ecc78d83e4487d945",
-  "candidate_baseline_file_sha256": "7815d2caa890d361d4353aa3f94beaf304f7236b5e4330756a0b9bbc8e6e4b1a",
+  "candidate_baseline_file_sha256": "f46b1c73cc4c56dece1215571abef01c0aa8349ba1e8ed3355d23c343def34d4",
   "base_inventory_sha256": "2b68285babc5d03bd46afa00260919d43ed466415a40fc92e3a4ce79ed579766",
-  "candidate_inventory_sha256": "8978d708bce4b8071a4784d740589674b8c1cb311be07d2307aec9bd2e3b8525"
+  "candidate_inventory_sha256": "20a28ac913f7f806b9cdb6782d213ae92e8456871ae149e8c55103d985101b72"
 }
