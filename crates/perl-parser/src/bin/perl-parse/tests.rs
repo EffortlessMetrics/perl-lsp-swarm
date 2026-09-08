@@ -3,15 +3,11 @@ use std::time::Duration;
 
 use perl_parser::{Node, NodeKind, ParseError, SourceLocation};
 
-use super::cli::{
-    CliRequest, OutputFormat, ProcessStatus, help_text, parse_args, write_help, write_usage_error,
-    write_version,
-};
-use super::report::{position_to_line_col, write_error};
-use super::stats::TotalStats;
 use super::{
-    ByteRange, LEGACY_SUMMARY_LIMITATIONS, LEGACY_SUMMARY_SCHEMA, LEGACY_SUMMARY_SUBJECT, execute,
-    legacy_parse_summary, read_source_bytes, render_output,
+    ByteRange, CliRequest, LEGACY_SUMMARY_LIMITATIONS, LEGACY_SUMMARY_SCHEMA,
+    LEGACY_SUMMARY_SUBJECT, OutputFormat, ProcessStatus, TotalStats, execute, help_text,
+    legacy_parse_summary, parse_args, position_to_line_col, read_source_bytes, render_output,
+    write_error, write_help, write_usage_error, write_version,
 };
 
 #[test]
@@ -478,13 +474,10 @@ fn empty_argv_defaults_to_stdin_run() -> Result<(), Box<dyn std::error::Error>> 
         CliRequest::Run(args) => {
             check_equal(&(args.inputs.len()), &1)?;
             check(
-                matches!(
-                    args.inputs.first().ok_or("expected one input")?,
-                    super::cli::Input::Stdin
-                ),
+                matches!(args.inputs.first().ok_or("expected one input")?, super::Input::Stdin),
                 stringify!(matches!(
                     args.inputs.first().ok_or("expected one input")?,
-                    super::cli::Input::Stdin
+                    super::Input::Stdin
                 )),
             )?;
         }
@@ -498,13 +491,10 @@ fn dash_input_is_stdin() -> Result<(), Box<dyn std::error::Error>> {
     match parse_args(["-"])? {
         CliRequest::Run(args) => {
             check(
-                matches!(
-                    args.inputs.first().ok_or("expected one input")?,
-                    super::cli::Input::Stdin
-                ),
+                matches!(args.inputs.first().ok_or("expected one input")?, super::Input::Stdin),
                 stringify!(matches!(
                     args.inputs.first().ok_or("expected one input")?,
-                    super::cli::Input::Stdin
+                    super::Input::Stdin
                 )),
             )?;
         }
@@ -787,10 +777,12 @@ fn execute_continue_counts_unreadable_input_and_stays_nonzero()
 -> Result<(), Box<dyn std::error::Error>> {
     let before = temp_perl("use strict;\nmy $value = 1;\n")?;
     let after = temp_perl("use strict;\nmy $value = 2;\n")?;
+    let scratch = tempfile::tempdir()?;
+    let missing = scratch.path().join("missing-perl-parse-input.pl");
     let before_path = before.path().to_str().ok_or("temp path was not UTF-8")?;
     let after_path = after.path().to_str().ok_or("temp path was not UTF-8")?;
-    let missing = before.path().with_file_name("missing-perl-parse-input.pl");
     let missing_path = missing.to_str().ok_or("missing path was not UTF-8")?;
+    check(!missing.exists(), stringify!(!missing.exists()))?;
 
     let mut stdout = Vec::new();
     let mut stderr = Vec::new();
