@@ -33,10 +33,11 @@ use ureq::unversioned::transport::{DefaultConnector, NextTimeout};
 /// enumerated every field of the 0.17.0 struct no longer compiles.
 ///
 /// This crate is published and pre-1.0. Under Cargo's 0.x rules the minor
-/// component is the breaking-change vehicle, and this change lands in the
-/// 0.18.0 release (`docs/releases/v0.18-release-topology.md`), whose AI
-/// security umbrella (#4955) is this work's parent. So the break is carried by
-/// a version bump that already signals it, rather than slipped into a patch.
+/// component is the breaking-change vehicle. The planned disposition is to
+/// carry this field addition in the 0.18.0 release train
+/// (`docs/releases/v0.18-release-topology.md`), under the AI security umbrella
+/// (#4955). The current tree is still 0.17 and release preparation remains a
+/// separate gate.
 ///
 /// Callers using `new` plus field assignment need no change.
 #[derive(Debug, Clone)]
