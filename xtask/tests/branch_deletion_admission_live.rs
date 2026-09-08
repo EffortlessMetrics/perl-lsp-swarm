@@ -836,7 +836,7 @@ fn a_cross_repository_parent_retains() -> Result<(), Box<dyn std::error::Error>>
 /// admission graph. Missing, null, wrong-type, and duplicate values must all
 /// retain rather than becoming the same-repository default.
 #[test]
-fn missing_or_ambiguous_repository_binding_retains() {
+fn missing_or_ambiguous_repository_binding_retains() -> anyhow::Result<()> {
     for (label, parent) in [
         (
             "missing",
@@ -864,11 +864,12 @@ fn missing_or_ambiguous_repository_binding_retains() {
         ),
     ] {
         let commands = healthy().on("gh pr view 7799", &parent);
-        assert!(
+        anyhow::ensure!(
             collect_request(&commands, 7799, "origin").is_err(),
             "{label} repository-binding evidence must not be accepted",
         );
     }
+    Ok(())
 }
 
 /// A command surface on which a child pull request is opened *after* the
