@@ -506,15 +506,6 @@ function childReceiptPath() {
   return path.join(receiptsRoot(), smokeSourceLabel(), smokePlatformLabel(), CHILD_RECEIPT_NAME);
 }
 
-function clearSmokeStageReceipts(root = receiptsRoot()) {
-  for (const receiptFile of [
-    path.join(root, smokeSourceLabel(), smokePlatformLabel(), CHILD_RECEIPT_NAME),
-    hostResolutionFailurePath(root),
-  ]) {
-    fs.rmSync(receiptFile, { force: true });
-  }
-}
-
 /**
  * A zero exit code from the extension-host smoke is not behavioral proof: a
  * no-op script, a swallowed receipt write, or a receipt left behind by an
@@ -725,6 +716,13 @@ function interpretBehavioralSmokeExit({
       reason: 'vscode_host_resolution_receipt_invalid',
     };
   }
+  if (spawnError) {
+    return {
+      status: 'not_proven',
+      exit_code: null,
+      reason: spawnError.message,
+    };
+  }
   if (
     candidateBound &&
     platform !== 'linux' &&
@@ -734,13 +732,6 @@ function interpretBehavioralSmokeExit({
       status: 'not_proven',
       exit_code: status,
       reason: 'candidate_bound_platform_unavailable',
-    };
-  }
-  if (spawnError) {
-    return {
-      status: 'not_proven',
-      exit_code: null,
-      reason: spawnError.message,
     };
   }
   return {
@@ -2473,7 +2464,8 @@ function main() {
         // never be mistaken for this run's behavioral evidence.
         const childReceiptFile = childReceiptPath();
         try {
-          clearSmokeStageReceipts(receiptsRoot());
+          fs.rmSync(childReceiptFile, { force: true });
+          fs.rmSync(hostResolutionFailurePath(), { force: true });
         } catch (error) {
           receipt.stages.behavioral_smoke = {
             status: 'not_proven',
@@ -2608,7 +2600,6 @@ module.exports = {
   composeCrashRecoveryReceipt,
   computeOverallStatus,
   concludeRun,
-  clearSmokeStageReceipts,
   crashRecoveryLegEnv,
   finalizeSmokeRun,
   initialReceipt,

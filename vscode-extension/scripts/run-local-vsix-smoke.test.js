@@ -6,7 +6,6 @@ const { test } = require('node:test');
 const {
   activationFailureLegEnv,
   bundleTargetForPlatform,
-  clearSmokeStageReceipts,
   composeActivationRecoveryReceipt,
   composeCheckSummary,
   composeCrashRecoveryReceipt,
@@ -619,6 +618,20 @@ void test('a spawn error is explicitly classified as not_proven', () => {
   });
   assert.equal(result.status, 'not_proven');
   assert.equal(result.reason, 'spawn failed');
+});
+
+void test('a spawn error takes precedence over the typed platform exit', () => {
+  const result = interpretBehavioralSmokeExit({
+    status: 2,
+    spawnError: new Error('spawn failed before exit'),
+    candidateBound: true,
+    platform: 'win32',
+    receiptsRoot: '/fixture',
+    exists: () => false,
+  });
+  assert.equal(result.status, 'not_proven');
+  assert.equal(result.reason, 'spawn failed before exit');
+  assert.equal(result.exit_code, null);
 });
 
 void test('network, cache, and runner host failures keep the host-resolution boundary', () => {
