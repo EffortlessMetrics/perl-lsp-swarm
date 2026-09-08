@@ -160,37 +160,178 @@ impl StreamSession {
     }
 }
 
-/// Manages active stream sessions with cancel-previous semantics.
+/// Admission authority retained only while requests for a URI are outstanding.
+#[derive(Default)]
+struct SessionState {
+    sessions: HashMap<SessionKey, Arc<StreamSession>>,
+    admissions: HashMap<String, AdmissionCell>,
+}
+
+struct AdmissionCell {
+    identity: Arc<()>,
+    outstanding: usize,
+    latest_admitted: Option<u64>,
+}
+
+/// Failure to reserve an ingress order. Neither counter nor count may wrap.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ReadReservationError {
+    OrderExhausted,
+    OutstandingExhausted,
+}
+
+/// One request's owned reservation, carried unchanged from ingress to the handler.
+///
+/// This is deliberately not Clone. Dropping a queued, rejected, completed, or
+/// unwinding request retires exactly one reservation. An admitted request also
+/// owns identity-checked session cleanup, including handler unwind.
+pub(crate) struct StreamAdmissionTicket {
+    state: Arc<std::sync::Mutex<SessionState>>,
+    uri: String,
+    cell: Arc<()>,
+    order: u64,
+    session: Option<(SessionKey, String)>,
+}
+
+impl Drop for StreamAdmissionTicket {
+    fn drop(&mut self) {
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        if let Some((key, session_id)) = self.session.as_ref()
+            && state.sessions.get(key).is_some_and(|session| session.session_id == *session_id)
+            && let Some(session) = state.sessions.remove(key)
+        {
+            session.settle(StreamTerminalOutcome::ProtocolEndedWithoutFinal);
+        }
+        let remove = state.admissions.get_mut(&self.uri).is_some_and(|cell| {
+            if !Arc::ptr_eq(&cell.identity, &self.cell) {
+                return false;
+            }
+            let Some(remaining) = cell.outstanding.checked_sub(1) else {
+                return false;
+            };
+            cell.outstanding = remaining;
+            remaining == 0
+        });
+        if remove {
+            state.admissions.remove(&self.uri);
+        }
+    }
+}
+
+/// Manages active sessions and transient request-order admission authority.
 pub struct StreamSessionManager {
-    sessions: std::sync::Mutex<HashMap<SessionKey, Arc<StreamSession>>>,
+    state: Arc<std::sync::Mutex<SessionState>>,
     generation: AtomicU64,
+    #[cfg(test)]
+    before_start: parking_lot::Mutex<Option<Arc<dyn Fn(&SessionKey) + Send + Sync>>>,
 }
 
 impl StreamSessionManager {
     /// Create a new, empty session manager.
     pub fn new() -> Self {
-        Self { sessions: std::sync::Mutex::new(HashMap::new()), generation: AtomicU64::new(0) }
+        Self {
+            state: Arc::new(std::sync::Mutex::new(SessionState::default())),
+            generation: AtomicU64::new(0),
+            #[cfg(test)]
+            before_start: parking_lot::Mutex::new(None),
+        }
     }
 
-    /// Start a new session, superseding every active session for the same
-    /// document.
+    fn next_order(counter: &AtomicU64) -> Result<u64, ReadReservationError> {
+        counter
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |value| value.checked_add(1))
+            .map_err(|_| ReadReservationError::OrderExhausted)
+    }
+
+    /// Allocate the scheduler's order and reserve its URI in one critical section.
     ///
-    /// The product exposes **one** active ghost-text stream per document, not
-    /// independent backend work at every cursor the user has visited. A new
-    /// request therefore supersedes older cursor and older version streams for
-    /// the same URI, not merely the entry that shares its exact
-    /// [`SessionKey`]. Superseded sessions are cancelled, settled as
-    /// [`StreamTerminalOutcome::SupersededByNewRequest`], and evicted here.
-    pub fn start_session(&self, key: SessionKey) -> Arc<StreamSession> {
+    /// Reservation is not admission: it does not cancel a stream or advance the
+    /// latest admitted order. Ordinary reads share the checked counter but own
+    /// no URI state. Keeping allocation inside this lock prevents a concurrent
+    /// later request from completing and erasing a cell before an older request
+    /// has registered its outstanding reservation.
+    pub(crate) fn reserve_read(
+        &self,
+        counter: &AtomicU64,
+        uri: Option<&str>,
+    ) -> Result<(u64, Option<StreamAdmissionTicket>), ReadReservationError> {
+        let Some(uri) = uri else {
+            return Self::next_order(counter).map(|order| (order, None));
+        };
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        let outstanding = state
+            .admissions
+            .get(uri)
+            .map_or(0, |cell| cell.outstanding)
+            .checked_add(1)
+            .ok_or(ReadReservationError::OutstandingExhausted)?;
+        let order = Self::next_order(counter)?;
+        let cell = state.admissions.entry(uri.to_string()).or_insert_with(|| AdmissionCell {
+            identity: Arc::new(()),
+            outstanding: 0,
+            latest_admitted: None,
+        });
+        cell.outstanding = outstanding;
+        let ticket = StreamAdmissionTicket {
+            state: Arc::clone(&self.state),
+            uri: uri.to_string(),
+            cell: Arc::clone(&cell.identity),
+            order,
+            session: None,
+        };
+        Ok((order, Some(ticket)))
+    }
+
+    /// Pause a test request after its handler snapshot, before session admission.
+    #[cfg(test)]
+    pub(crate) fn set_before_start_hook(&self, hook: Arc<dyn Fn(&SessionKey) + Send + Sync>) {
+        *self.before_start.lock() = Some(hook);
+    }
+
+    #[cfg(test)]
+    fn run_before_start_hook(&self, key: &SessionKey) {
+        let hook = self.before_start.lock().clone();
+        if let Some(hook) = hook {
+            hook(key);
+        }
+    }
+
+    /// Admit an eligible request only if no newer eligible request has admitted.
+    ///
+    /// The order comparison, watermark update, supersession, and insertion share
+    /// one lock. Completing a newer stream cannot revive an older outstanding
+    /// request. Eligibility belongs to the streaming handler, not this manager.
+    pub(crate) fn admit_session(
+        &self,
+        ticket: &mut StreamAdmissionTicket,
+        key: SessionKey,
+    ) -> Option<Arc<StreamSession>> {
+        if !Arc::ptr_eq(&self.state, &ticket.state)
+            || ticket.uri != key.uri
+            || ticket.session.is_some()
+        {
+            return None;
+        }
+        #[cfg(test)]
+        self.run_before_start_hook(&key);
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        let cell = state.admissions.get_mut(&ticket.uri)?;
+        if !Arc::ptr_eq(&cell.identity, &ticket.cell)
+            || cell.latest_admitted.is_some_and(|latest| latest >= ticket.order)
+        {
+            return None;
+        }
+        cell.latest_admitted = Some(ticket.order);
+        let session = self.insert_session(&mut state, key.clone());
+        ticket.session = Some((key, session.session_id.clone()));
+        Some(session)
+    }
+
+    fn insert_session(&self, state: &mut SessionState, key: SessionKey) -> Arc<StreamSession> {
         let generation = self.generation.fetch_add(1, Ordering::Relaxed);
-        let session_id = format!("sess-{generation:x}");
-        let session = Arc::new(StreamSession::new(session_id, key.line, key.character));
-
-        let mut sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
-
-        // Supersede every prior stream for this document, whatever cursor or
-        // version it was started at.
-        sessions.retain(|existing, existing_session| {
+        let session =
+            Arc::new(StreamSession::new(format!("sess-{generation:x}"), key.line, key.character));
+        state.sessions.retain(|existing, existing_session| {
             if existing.uri == key.uri {
                 existing_session.cancel_with(StreamTerminalOutcome::SupersededByNewRequest);
                 false
@@ -198,48 +339,43 @@ impl StreamSessionManager {
                 true
             }
         });
-        sessions.insert(key, Arc::clone(&session));
-
+        state.sessions.insert(key, Arc::clone(&session));
         session
     }
 
-    /// Remove the session stored under `key` only when it is still the exact
-    /// session identified by `session_id`, settling it with `outcome`.
+    /// Seed a session for existing isolated session and lifecycle test fixtures.
     ///
-    /// Session identity is load-bearing: a later request can reuse the same
-    /// display key, and a stale task finishing afterwards must not remove its
-    /// replacement. Returns `true` when this call evicted the entry.
+    /// Production requests must carry an ingress ticket through `admit_session`.
+    #[cfg(any(test, feature = "expose_lsp_test_api"))]
+    pub fn start_session(&self, key: SessionKey) -> Arc<StreamSession> {
+        #[cfg(test)]
+        self.run_before_start_hook(&key);
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        self.insert_session(&mut state, key)
+    }
+
+    /// Remove only the exact session, without evicting a successor.
     pub fn finish_if_current(
         &self,
         key: &SessionKey,
         session_id: &str,
         outcome: StreamTerminalOutcome,
     ) -> bool {
-        let mut sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
-        let matches = sessions.get(key).is_some_and(|s| s.session_id == session_id);
-        if !matches {
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        if !state.sessions.get(key).is_some_and(|session| session.session_id == session_id) {
             return false;
         }
-        if let Some(session) = sessions.remove(key) {
+        if let Some(session) = state.sessions.remove(key) {
             session.settle(outcome);
             return true;
         }
         false
     }
 
-    /// Cancel and remove all sessions for a given URI (on didChange/didClose).
-    ///
-    /// Cancelled sessions are evicted immediately. Removal is never deferred to
-    /// a later housekeeping sweep: every terminal path — this one, supersession
-    /// in [`start_session`], and [`finish_if_current`] on the handler's own
-    /// completion — evicts its entry, so the map holds only genuinely active
-    /// streams.
-    ///
-    /// [`start_session`]: StreamSessionManager::start_session
-    /// [`finish_if_current`]: StreamSessionManager::finish_if_current
+    /// Cancel and remove active sessions for a URI, not its outstanding tickets.
     pub fn cancel_for_uri(&self, uri: &str) {
-        let mut sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
-        sessions.retain(|key, session| {
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        state.sessions.retain(|key, session| {
             if key.uri == uri {
                 session.cancel_with(StreamTerminalOutcome::DocumentChangedOrClosed);
                 false
@@ -249,11 +385,10 @@ impl StreamSessionManager {
         });
     }
 
-    /// Cancel and remove all sessions for a given URI where the document
-    /// version is older than the supplied version (on document version change).
+    /// Cancel active sessions older than the supplied document version.
     pub fn cancel_for_uri_version(&self, uri: &str, version: i64) {
-        let mut sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
-        sessions.retain(|key, session| {
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        state.sessions.retain(|key, session| {
             if key.uri == uri && key.document_version < version {
                 session.cancel_with(StreamTerminalOutcome::DocumentChangedOrClosed);
                 false
@@ -263,12 +398,15 @@ impl StreamSessionManager {
         });
     }
 
-    /// Number of sessions currently held by the manager.
-    ///
-    /// Test-only; production code observes manager state through cancellation.
+    /// Number of genuinely active sessions.
     #[cfg(any(test, feature = "expose_lsp_test_api"))]
     pub fn len(&self) -> usize {
-        self.sessions.lock().unwrap_or_else(|e| e.into_inner()).len()
+        self.state.lock().unwrap_or_else(|error| error.into_inner()).sessions.len()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn admission_count(&self) -> usize {
+        self.state.lock().unwrap_or_else(|error| error.into_inner()).admissions.len()
     }
 }
 
@@ -521,5 +659,202 @@ mod tests {
         assert_eq!(session.pending_sequence(), 0, "reading must not consume");
         session.commit_sequence();
         assert_eq!(session.pending_sequence(), 1);
+    }
+}
+
+#[cfg(test)]
+mod admission_tests {
+    use super::*;
+
+    fn key(uri: &str, character: u64) -> SessionKey {
+        SessionKey { uri: uri.to_string(), document_version: 1, line: 0, character }
+    }
+
+    fn reserve(
+        manager: &StreamSessionManager,
+        counter: &AtomicU64,
+        uri: &str,
+    ) -> Result<StreamAdmissionTicket, String> {
+        manager
+            .reserve_read(counter, Some(uri))
+            .map_err(|error| format!("reservation failed: {error:?}"))?
+            .1
+            .ok_or_else(|| "scoped reservation did not return a ticket".to_string())
+    }
+
+    #[test]
+    fn completed_newer_admission_still_rejects_older_ticket() -> Result<(), String> {
+        let manager = StreamSessionManager::new();
+        let counter = AtomicU64::new(0);
+        let mut older = reserve(&manager, &counter, "file:///a.pl")?;
+        let mut newer = reserve(&manager, &counter, "file:///a.pl")?;
+        let newer_key = key("file:///a.pl", 11);
+        let session = manager
+            .admit_session(&mut newer, newer_key.clone())
+            .ok_or("newer request must admit")?;
+        if !manager.finish_if_current(
+            &newer_key,
+            &session.session_id,
+            StreamTerminalOutcome::CompletedWithCandidate,
+        ) {
+            return Err("newer session did not finish".into());
+        }
+        drop(newer);
+        if manager.admission_count() != 1 || manager.len() != 0 {
+            return Err(
+                "completed newer request must retain only the older ticket's order cell".into()
+            );
+        }
+        if manager.admit_session(&mut older, key("file:///a.pl", 19)).is_some() {
+            return Err("completed newer admission must still reject an older ticket".into());
+        }
+        drop(older);
+        if manager.admission_count() != 0 {
+            return Err("last ticket leaked URI history".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn reservation_without_admission_does_not_cancel_a_stream() -> Result<(), String> {
+        let manager = StreamSessionManager::new();
+        let counter = AtomicU64::new(0);
+        let mut older = reserve(&manager, &counter, "file:///a.pl")?;
+        let session = manager
+            .admit_session(&mut older, key("file:///a.pl", 19))
+            .ok_or("older request must admit")?;
+        let newer = reserve(&manager, &counter, "file:///a.pl")?;
+        drop(newer);
+        if session.is_cancelled() || session.is_settled() || manager.len() != 1 {
+            return Err("an unadmitted newer request must leave the older stream active".into());
+        }
+        drop(older);
+        if manager.len() != 0 || manager.admission_count() != 0 {
+            return Err("ticket drop must release its active session and order cell".into());
+        }
+        if session.terminal_outcome() != Some(StreamTerminalOutcome::ProtocolEndedWithoutFinal) {
+            return Err("abandoned admitted ticket must settle its exact session".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn forward_supersession_and_other_uri_keep_exact_cleanup() -> Result<(), String> {
+        let manager = StreamSessionManager::new();
+        let counter = AtomicU64::new(0);
+        let mut older = reserve(&manager, &counter, "file:///a.pl")?;
+        let old_session = manager
+            .admit_session(&mut older, key("file:///a.pl", 19))
+            .ok_or("older request must admit")?;
+        let mut other = reserve(&manager, &counter, "file:///b.pl")?;
+        let other_session = manager
+            .admit_session(&mut other, key("file:///b.pl", 19))
+            .ok_or("other URI must admit")?;
+        let mut newer = reserve(&manager, &counter, "file:///a.pl")?;
+        let new_session = manager
+            .admit_session(&mut newer, key("file:///a.pl", 11))
+            .ok_or("newer request must admit")?;
+        if !old_session.is_cancelled() || new_session.is_cancelled() || other_session.is_cancelled()
+        {
+            return Err("newer admission must supersede only its own URI".into());
+        }
+        drop(older);
+        if manager.len() != 2 || new_session.is_settled() || other_session.is_settled() {
+            return Err("old ticket cleanup removed a successor or another URI".into());
+        }
+        drop(newer);
+        if manager.len() != 1 || manager.admission_count() != 1 || other_session.is_settled() {
+            return Err("one URI's last ticket cleanup affected another URI".into());
+        }
+        drop(other);
+        if manager.len() != 0 || manager.admission_count() != 0 {
+            return Err("completed tickets leaked manager entries".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn tickets_cannot_admit_in_another_owner_or_uri_or_twice() -> Result<(), String> {
+        let manager = StreamSessionManager::new();
+        let other_manager = StreamSessionManager::new();
+        let counter = AtomicU64::new(0);
+        let mut ticket = reserve(&manager, &counter, "file:///a.pl")?;
+        if other_manager.admit_session(&mut ticket, key("file:///a.pl", 19)).is_some()
+            || manager.admit_session(&mut ticket, key("file:///b.pl", 19)).is_some()
+        {
+            return Err("ticket must remain bound to its exact manager and URI".into());
+        }
+        let session = manager
+            .admit_session(&mut ticket, key("file:///a.pl", 19))
+            .ok_or("original owner and URI must still admit")?;
+        if manager.admit_session(&mut ticket, key("file:///a.pl", 11)).is_some()
+            || session.is_cancelled()
+        {
+            return Err("one ticket admitted twice".into());
+        }
+        drop(ticket);
+        if manager.admission_count() != 0 || manager.len() != 0 || other_manager.len() != 0 {
+            return Err("bound-ticket cleanup leaked state".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn arrival_order_exhaustion_is_permanent_and_does_not_create_cells() -> Result<(), String> {
+        let manager = StreamSessionManager::new();
+        let counter = AtomicU64::new(u64::MAX - 1);
+        let ticket = reserve(&manager, &counter, "file:///a.pl")?;
+        if ticket.order != u64::MAX - 1 || counter.load(Ordering::SeqCst) != u64::MAX {
+            return Err("last available order was not reserved exactly".into());
+        }
+        for scope in [None, Some("file:///b.pl"), Some("file:///a.pl"), None] {
+            if !matches!(
+                manager.reserve_read(&counter, scope),
+                Err(ReadReservationError::OrderExhausted)
+            ) {
+                return Err("exhausted ingress counter must reject every later reservation".into());
+            }
+        }
+        if counter.load(Ordering::SeqCst) != u64::MAX || manager.admission_count() != 1 {
+            return Err("exhaustion wrapped the counter or created an admission cell".into());
+        }
+        drop(ticket);
+        if manager.admission_count() != 0 {
+            return Err("last valid ticket leaked its cell".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn outstanding_count_exhaustion_does_not_consume_an_order() -> Result<(), String> {
+        let manager = StreamSessionManager::new();
+        let counter = AtomicU64::new(7);
+        {
+            let mut state = manager.state.lock().map_err(|error| error.to_string())?;
+            state.admissions.insert(
+                "file:///a.pl".into(),
+                AdmissionCell {
+                    identity: Arc::new(()),
+                    outstanding: usize::MAX,
+                    latest_admitted: None,
+                },
+            );
+        }
+        for _ in 0..2 {
+            if !matches!(
+                manager.reserve_read(&counter, Some("file:///a.pl")),
+                Err(ReadReservationError::OutstandingExhausted)
+            ) {
+                return Err("outstanding count exhaustion must fail closed".into());
+            }
+        }
+        if counter.load(Ordering::SeqCst) != 7 {
+            return Err("failed count reservation consumed an arrival order".into());
+        }
+        let state = manager.state.lock().map_err(|error| error.to_string())?;
+        if state.admissions.get("file:///a.pl").map(|cell| cell.outstanding) != Some(usize::MAX) {
+            return Err("outstanding count wrapped or changed on failure".into());
+        }
+        Ok(())
     }
 }

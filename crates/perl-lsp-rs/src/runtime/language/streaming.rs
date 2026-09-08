@@ -8,10 +8,10 @@
 use super::super::{JsonRpcError, LspServer, Value, json};
 use crate::protocol::{invalid_params, req_position, req_uri};
 use crate::runtime::language::misc::{
-    ExternalCompletionOutcome, evaluate_external_candidates, external_completion_permitted,
-    inline_completion_trigger_kind, selected_inline_completion_info,
+    ExternalCompletionOutcome, InlineCompletionTriggerKind, evaluate_external_candidates,
+    external_completion_permitted, inline_completion_trigger_kind, selected_inline_completion_info,
 };
-use crate::runtime::stream_session::{SessionKey, StreamTerminalOutcome};
+use crate::runtime::stream_session::{SessionKey, StreamAdmissionTicket, StreamTerminalOutcome};
 use perl_lsp_rs_core::providers::inline_completion::{BackendError, InlineCompletionItem};
 use std::time::{Duration, Instant};
 
@@ -57,7 +57,40 @@ fn stream_progress_payload(
     })
 }
 
+/// Pure request shape shared by ingress reservation and the streaming handler.
+/// Configuration, document freshness, and prepared-context eligibility remain
+/// handler-owned decisions after the scheduler's mutation barrier.
+struct StreamingRequestShape<'a> {
+    uri: &'a str,
+    line: u32,
+    character: u32,
+    trigger_kind: InlineCompletionTriggerKind,
+    token: Option<&'a str>,
+}
+
+fn streaming_request_shape(params: &Value) -> Result<StreamingRequestShape<'_>, JsonRpcError> {
+    let uri = req_uri(params)?;
+    let (line, character) = req_position(params)?;
+    let trigger_kind = inline_completion_trigger_kind(params)?;
+    let token = params.get("partialResultToken").and_then(Value::as_str);
+    Ok(StreamingRequestShape { uri, line, character, trigger_kind, token })
+}
+
 impl LspServer {
+    /// The streaming owner identifies a possible reservation without admitting it.
+    pub(crate) fn streaming_admission_uri(
+        request: &crate::protocol::JsonRpcRequest,
+    ) -> Option<&str> {
+        if request.method != "textDocument/perlInlineCompletionStream" {
+            return None;
+        }
+        let shape = streaming_request_shape(request.params.as_ref()?).ok()?;
+        if !external_completion_permitted(shape.trigger_kind) || shape.token.is_none() {
+            return None;
+        }
+        Some(shape.uri)
+    }
+
     /// Handle `textDocument/perlInlineCompletionStream` custom request.
     ///
     /// Starts a streaming session that emits cumulative candidates via `$/progress`.
@@ -68,18 +101,17 @@ impl LspServer {
     pub(crate) fn handle_streaming_inline_completion(
         &self,
         params: Option<Value>,
+        mut admission: Option<StreamAdmissionTicket>,
     ) -> Result<Option<Value>, JsonRpcError> {
         let params = params.ok_or_else(|| invalid_params("missing params"))?;
 
-        let uri = req_uri(&params)?;
-        let (line, character) = req_position(&params)?;
+        let StreamingRequestShape { uri, line, character, trigger_kind, token } =
+            streaming_request_shape(&params)?;
         // Parse the actual request context the same way the standard route
         // does, so the stream applies the identical trigger and
         // selected-completion policy.
-        let trigger_kind = inline_completion_trigger_kind(&params)?;
         let selected_completion = selected_inline_completion_info(&params)?;
-        let partial_result_token =
-            params.get("partialResultToken").and_then(|v| v.as_str()).map(|s| s.to_string());
+        let partial_result_token = token.map(str::to_string);
         // The request's document version, when the client supplies one. An
         // absent version is "unknown", not zero: it cannot prove staleness.
         let request_document_version =
@@ -146,25 +178,6 @@ impl LspServer {
             return self.handle_inline_completion(Some(params));
         }
 
-        // Start session. This supersedes every older stream for the same
-        // document, whatever cursor it was started at.
-        let session_key = SessionKey {
-            uri: uri.to_string(),
-            document_version,
-            line: u64::from(line),
-            character: u64::from(character),
-        };
-        let session = self.stream_sessions().start_session(session_key.clone());
-        let session_id = session.session_id.clone();
-
-        // Every path below this point owns a manager entry and must release it
-        // exactly once. `finish_if_current` settles the session and evicts the
-        // entry only while it is still the exact session this request started,
-        // so a stale task cannot remove its replacement.
-        let release = |outcome: StreamTerminalOutcome| {
-            self.stream_sessions().finish_if_current(&session_key, &session_id, outcome);
-        };
-
         // Prepare context. Invoked AI preparation fails closed here: a stale
         // request version or a hard-reject cursor makes zero backend calls,
         // exactly as in the buffered route.
@@ -184,9 +197,34 @@ impl LspServer {
                 // A stale request version or a hard-reject cursor ends the
                 // stream before any backend work. No progress value is emitted,
                 // so the client settles fail-closed on the null response.
-                release(StreamTerminalOutcome::ProtocolEndedWithoutFinal);
                 return Ok(Some(json!(null)));
             }
+        };
+
+        // Buffered fallback is not a streaming admission and must not supersede
+        // a still-valid stream. A valid empty streamed final remains an admission.
+        let backend = self.ai_backend();
+        if backend.is_none() && ai_fallback {
+            return self.handle_inline_completion(Some(params));
+        }
+        let session_key = SessionKey {
+            uri: uri.to_string(),
+            document_version,
+            line: u64::from(line),
+            character: u64::from(character),
+        };
+        let Some(ticket) = admission.as_mut() else {
+            return Ok(Some(json!(null)));
+        };
+        let Some(session) = self.stream_sessions().admit_session(ticket, session_key.clone())
+        else {
+            return Ok(Some(json!(null)));
+        };
+        let session_id = session.session_id.clone();
+        // Normal terminal paths release promptly. The ingress ticket is the
+        // exact-identity cleanup backstop on every return and handler unwind.
+        let release = |outcome: StreamTerminalOutcome| {
+            self.stream_sessions().finish_if_current(&session_key, &session_id, outcome);
         };
 
         // Build request
@@ -199,15 +237,9 @@ impl LspServer {
         let token_clone = token.clone();
 
         // Get the AI backend; fall back to one-shot if unavailable
-        let backend = match self.ai_backend() {
+        let backend = match backend {
             Some(b) => b,
             None => {
-                if ai_fallback {
-                    // The buffered route answers directly; this stream never
-                    // reaches a progress value.
-                    release(StreamTerminalOutcome::ProtocolEndedWithoutFinal);
-                    return self.handle_inline_completion(Some(params));
-                }
                 // No backend and no fallback -- emit the one empty final.
                 let progress = stream_progress_payload(
                     &token_clone,

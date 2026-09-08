@@ -264,19 +264,24 @@ backing, so **no** `(@proposed)` marker — it is a perl-lsp extension, not an
 upstream-proposed method).
 
 - Handler: `handle_streaming_inline_completion`
-  (`crates/perl-lsp-rs/src/runtime/language/streaming.rs:20`).
-- Routed at `crates/perl-lsp-rs/src/runtime/dispatch/routing.rs:129`.
+  (`crates/perl-lsp-rs/src/runtime/language/streaming.rs`).
+- Routed at `crates/perl-lsp-rs/src/runtime/dispatch/routing.rs`.
 - Requires a `partialResultToken`; absent → one-shot fallback returning items
   directly (`streaming.rs`).
 - Emits `$/progress` notifications with payload
   `{ token, value: { kind: "perlInlineCompletionStream", sessionId, sequence,
   isFinal, items } }`. Each chunk carries **cumulative** text (not a delta).
-- Session replacement is **scoped to the document**. `StreamSessionManager::`
-  `start_session` (`crates/perl-lsp-rs/src/runtime/stream_session.rs`) cancels and
-  evicts every prior session for the same `uri`, whatever cursor or document
-  version it was started at, settling each as `SupersededByNewRequest`. One
-  document therefore exposes exactly **one** active ghost-text stream; other
-  documents are independent. Streams are also reclaimed by `cancel_for_uri`
+- Session replacement is **scoped to the document and ordered at ingress**.
+  An owned admission ticket carries the scheduler's read-arrival order through
+  dispatch. `StreamSessionManager::admit_session`
+  (`crates/perl-lsp-rs/src/runtime/stream_session.rs`) admits only a request newer
+  than the latest valid admission for the same `uri`, cancelling and evicting
+  the replaced session as `SupersededByNewRequest`. A delayed older request
+  cannot replace a newer stream, even after that newer stream completes or
+  fails: its admission watermark remains while older tickets are outstanding.
+  Invalid requests and pre-admission one-shot fallback do not advance that
+  watermark. One document exposes at most **one** active ghost-text stream;
+  other documents are independent. Streams are also reclaimed by `cancel_for_uri`
   (didChange/didClose) and `cancel_for_uri_version` (older version), which settle
   as `DocumentChangedOrClosed`. Cancellation is honored mid-stream
   (`session.is_cancelled()`).
@@ -302,13 +307,15 @@ already-recorded outcome rather than requiring a new successful settlement.
   chunks is refused by the settled-guard rather than producing a second one.
   Cancellation or failure of every enqueue attempt can leave no final value
   accepted; a final enqueue is not an acknowledgement from the client.
-- **No retained sessions.** Every terminal path evicts its entry through
-  `finish_if_current(key, session_id, outcome)`. A completed stream is not left
-  in the manager to be swept by a later unrelated edit. There is no housekeeping
-  `cleanup()` sweep. The bound is "one entry per document per request", not an
-  unconditional guarantee: `release` is an ordinary call, so a panic between
-  session start and release would leak one entry until the next request for that
-  URI or the next didChange/didClose sweep.
+- **No retained sessions.** Normal terminal paths promptly evict their entry
+  through `finish_if_current(key, session_id, outcome)`. The owned admission
+  ticket also provides an RAII backstop: dropping it removes only its exact
+  session, preserving any terminal outcome already recorded. Queue rejection,
+  queued-request disposal, and early returns retire the ticket without a later
+  edit or housekeeping sweep. Per-URI admission cells are transient: they retain
+  ordering only while tickets remain outstanding and disappear when the last
+  ticket retires. This cleanup structure is not a separately executed
+  panic/unwind witness or a guarantee about process termination.
 - **Session identity is load-bearing.** `finish_if_current` removes an entry only
   while it is still the exact session that request started, so a stale task
   finishing late cannot evict the replacement that reused its display key.
@@ -338,7 +345,7 @@ transaction or a client acknowledgement protocol.
 
 **Supersession trade-off.** Because the scope is the document, a client showing
 one document in two views and requesting at both cursors gets one stream: the
-earlier cursor's in-flight stream is cancelled, and callbacks that observe this
+earlier valid ingress request's in-flight stream is cancelled, and callbacks that observe this
 state stop. Its request can resolve (`null`) without a final frame, which the
 client treats as a revocation. An enqueue racing cancellation remains within
 the #14168 boundary above. Supersession matches the
@@ -411,6 +418,23 @@ Session identity and eviction —
 `settle_records_exactly_one_outcome`,
 `cancel_with_preserves_an_already_recorded_outcome`,
 `a_pending_sequence_is_reused_until_it_is_committed`.
+
+Ingress admission ordering and ticket retirement -
+`crates/perl-lsp-rs/src/runtime/scheduler.rs` unit tests:
+`reverse_admission_keeps_later_stream_alive` and
+`ordinary_stream_admission_control`, plus the `stream_admission` cases for
+completed, failed, and invalid newer requests; forward order; another URI;
+buffered, automatic, and disabled-streaming fallback; and queued-ticket disposal
+and rejection. The reverse-order witness pauses the older request before
+admission and checks that the newer request continues and enqueues exactly one
+nonempty final value before its response acknowledgement. Manager-level
+`admission_tests` in `stream_session.rs` cover ticket identity, retirement, and
+the retained admission watermark.
+
+The candidate's owning-library serial run passed 2,033 tests. The default-parallel
+run failed two tests and is not claimed green or attributed to the baseline.
+These scheduler/manager fixtures do not establish actual-editor rendering,
+transport delivery, or separately executed panic/unwind behavior.
 
 Client revocation —
 `vscode-extension/src/test/streamingCompletion.test.ts`:
