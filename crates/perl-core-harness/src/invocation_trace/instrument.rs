@@ -1431,6 +1431,15 @@ mod contract_tests {
     use crate::observed_discovery::model::{DiscoveryObservationState, ProcessCompletion};
     use color_eyre::eyre::Result;
 
+    fn require_equal<L, R>(left: &L, right: &R, context: &str) -> Result<()>
+    where
+        L: std::fmt::Debug + PartialEq<R> + ?Sized,
+        R: std::fmt::Debug + ?Sized,
+    {
+        color_eyre::eyre::ensure!(left == right, "{context}: left={left:?}, right={right:?}");
+        Ok(())
+    }
+
     fn spec(anchor: &str, replacement: &str) -> ExactPatchSpec {
         ExactPatchSpec {
             schema_version: super::EXACT_PATCH_SCHEMA_VERSION.to_string(),
@@ -1453,8 +1462,12 @@ mod contract_tests {
             .map_err(|error| color_eyre::eyre::eyre!(error.message()))?;
         let second = apply_exact_patch(ordinary, &spec)
             .map_err(|error| color_eyre::eyre::eyre!(error.message()))?;
-        assert_eq!(first, second);
-        assert!(first.starts_with(b"#!./perl\n# instrumented"));
+        require_equal(&(first), &(second), "instrumentation contract")?;
+        color_eyre::eyre::ensure!(
+            first.starts_with(b"#!./perl\n# instrumented"),
+            "condition failed: {}",
+            stringify!(first.starts_with(b"#!./perl\n# instrumented"))
+        );
         Ok(())
     }
 
@@ -1467,8 +1480,8 @@ mod contract_tests {
         else {
             super::bail!("drifted ordinary artifact must refuse the patch");
         };
-        assert_ne!(expected, measured);
-        assert!(
+        color_eyre::eyre::ensure!(&(expected) != &(measured), "expected distinct values");
+        color_eyre::eyre::ensure!(
             spec.expected_ordinary_sha256 == expected,
             "the refusal carries the pinned subject"
         );
@@ -1483,7 +1496,7 @@ mod contract_tests {
         else {
             super::bail!("absent anchor must refuse");
         };
-        assert_eq!(label, "seam");
+        require_equal(&(label), &("seam"), "instrumentation contract")?;
 
         let ambiguous_source = b"#!./perl\n# ordinary\n# ordinary\n";
         let mut ambiguous_spec = spec("# ordinary", "# x");
@@ -1493,7 +1506,7 @@ mod contract_tests {
         else {
             super::bail!("ambiguous anchor must refuse");
         };
-        assert_eq!(occurrences, 2);
+        require_equal(&(occurrences), &(2), "instrumentation contract")?;
         Ok(())
     }
 
@@ -1520,12 +1533,16 @@ mod contract_tests {
         };
         let patched = apply_exact_patch(ordinary, &spec)
             .map_err(|error| color_eyre::eyre::eyre!(error.message()))?;
-        assert!(patched.ends_with(b"# upstream-instrumented-twice\n"));
+        color_eyre::eyre::ensure!(
+            patched.ends_with(b"# upstream-instrumented-twice\n"),
+            "condition failed: {}",
+            stringify!(patched.ends_with(b"# upstream-instrumented-twice\n"))
+        );
         Ok(())
     }
 
     #[test]
-    fn manifest_delta_detects_exactly_the_changed_runner_artifact() {
+    fn manifest_delta_detects_exactly_the_changed_runner_artifact() -> Result<()> {
         let before =
             [("t/TEST".to_string(), "a".to_string()), ("t/base/if.t".to_string(), "b".to_string())]
                 .into_iter()
@@ -1534,16 +1551,21 @@ mod contract_tests {
             [("t/TEST".to_string(), "c".to_string()), ("t/base/if.t".to_string(), "b".to_string())]
                 .into_iter()
                 .collect();
-        assert_eq!(manifest_changes(&before, &after), vec!["t/TEST".to_string()]);
+        require_equal(
+            &(manifest_changes(&before, &after)),
+            &(vec!["t/TEST".to_string()]),
+            "instrumentation contract",
+        )?;
         let touched_member =
             [("t/TEST".to_string(), "a".to_string()), ("t/base/if.t".to_string(), "z".to_string())]
                 .into_iter()
                 .collect();
-        assert_eq!(
-            manifest_changes(&before, &touched_member).len(),
-            1,
-            "any non-artifact change is visible in the delta"
-        );
+        require_equal(
+            &(manifest_changes(&before, &touched_member).len()),
+            &(1),
+            "any non-artifact change is visible in the delta",
+        )?;
+        Ok(())
     }
 
     #[test]
@@ -1552,8 +1574,18 @@ mod contract_tests {
         let path = directory.path().join("t-TEST");
         std::fs::write(&path, b"written")?;
         let expected = super::sha256_bytes(b"written");
-        assert_eq!(remeasure_instrumented_artifact(&path, &expected)?, expected);
-        assert!(remeasure_instrumented_artifact(&path, &super::sha256_bytes(b"other")).is_err());
+        require_equal(
+            &(remeasure_instrumented_artifact(&path, &expected)?),
+            &(expected),
+            "instrumentation contract",
+        )?;
+        color_eyre::eyre::ensure!(
+            remeasure_instrumented_artifact(&path, &super::sha256_bytes(b"other")).is_err(),
+            "condition failed: {}",
+            stringify!(
+                remeasure_instrumented_artifact(&path, &super::sha256_bytes(b"other")).is_err()
+            )
+        );
         Ok(())
     }
 
@@ -1565,13 +1597,17 @@ mod contract_tests {
         std::fs::write(&path, oversized)?;
 
         let (retained, was_oversized) = read_bounded_trace(&path)?;
-        assert!(was_oversized);
-        assert_eq!(retained.len(), super::MAX_TRACE_STREAM_BYTES);
+        color_eyre::eyre::ensure!(was_oversized, "condition failed: {}", stringify!(was_oversized));
+        require_equal(
+            &(retained.len()),
+            &(super::MAX_TRACE_STREAM_BYTES),
+            "instrumentation contract",
+        )?;
         Ok(())
     }
 
     #[test]
-    fn capture_owned_environment_cannot_be_overridden_by_target_contract() {
+    fn capture_owned_environment_cannot_be_overridden_by_target_contract() -> Result<()> {
         let contract = [
             (TRACE_ENV_FILE.to_string(), "foreign-trace.jsonl".to_string()),
             (TRACE_ENV_SESSION.to_string(), "foreign-session".to_string()),
@@ -1589,33 +1625,60 @@ mod contract_tests {
             "component_base",
             "instrumentation-1",
         );
-        assert_eq!(environment.get(TRACE_ENV_FILE), Some(&TRACE_CHANNEL_BASENAME.to_string()));
-        assert_eq!(environment.get(TRACE_ENV_SESSION), Some(&"trace-session".to_string()));
-        assert_eq!(environment.get(TRACE_ENV_ARTIFACT), Some(&"instrumented-digest".to_string()));
-        assert_eq!(environment.get(TRACE_ENV_TARGET), Some(&"component_base".to_string()));
-        assert_eq!(
-            environment.get(TRACE_ENV_INSTRUMENTATION),
-            Some(&"instrumentation-1".to_string())
-        );
-        assert_eq!(environment.get("PERL5LIB"), Some(&"target/lib".to_string()));
-        assert_eq!(environment.get("LC_ALL"), Some(&"C".to_string()));
+        require_equal(
+            &(environment.get(TRACE_ENV_FILE)),
+            &(Some(&TRACE_CHANNEL_BASENAME.to_string())),
+            "instrumentation contract",
+        )?;
+        require_equal(
+            &(environment.get(TRACE_ENV_SESSION)),
+            &(Some(&"trace-session".to_string())),
+            "instrumentation contract",
+        )?;
+        require_equal(
+            &(environment.get(TRACE_ENV_ARTIFACT)),
+            &(Some(&"instrumented-digest".to_string())),
+            "instrumentation contract",
+        )?;
+        require_equal(
+            &(environment.get(TRACE_ENV_TARGET)),
+            &(Some(&"component_base".to_string())),
+            "instrumentation contract",
+        )?;
+        require_equal(
+            &(environment.get(TRACE_ENV_INSTRUMENTATION)),
+            &(Some(&"instrumentation-1".to_string())),
+            "instrumentation contract",
+        )?;
+        require_equal(
+            &(environment.get("PERL5LIB")),
+            &(Some(&"target/lib".to_string())),
+            "instrumentation contract",
+        )?;
+        require_equal(
+            &(environment.get("LC_ALL")),
+            &(Some(&"C".to_string())),
+            "instrumentation contract",
+        )?;
+        Ok(())
     }
 
     #[test]
-    fn prescan_reads_the_instrument_declaration_without_rewriting_it() {
+    fn prescan_reads_the_instrument_declaration_without_rewriting_it() -> Result<()> {
         let rows = r#"{"frame":"row","sequence":0}
 {"frame":"row","sequence":1}
 {"frame":"terminal","row_count":2}
 "#;
         let prescan = prescan_instrument_stream(rows.as_bytes());
-        assert_eq!(prescan.row_lines, 2);
-        assert_eq!(prescan.declared_row_count, Some(2));
+        require_equal(&(prescan.row_lines), &(2), "instrumentation contract")?;
+        require_equal(&(prescan.declared_row_count), &(Some(2)), "instrumentation contract")?;
         // A truncated stream keeps its counted rows and no declaration.
         let truncated = r#"{"frame":"row","sequence":0}
 {"frame":"row""#;
         let prescan = prescan_instrument_stream(truncated.as_bytes());
-        assert_eq!(prescan.row_lines, 1);
-        assert_eq!(prescan.declared_row_count, None);
+        require_equal(&(prescan.row_lines), &(1), "instrumentation contract")?;
+        require_equal(&(prescan.declared_row_count), &(None), "instrumentation contract")?;
+        Ok(())
     }
 
     #[test]
@@ -1637,6 +1700,7 @@ mod contract_tests {
         for output in &outputs {
             std::fs::write(output, b"{\"stale\":true}")?;
         }
+        let [parent_output, trace_output, work_output] = &outputs;
         let path_arg = |path: &std::path::Path| path.to_string_lossy().into_owned();
         for (extra, expected) in [
             (vec!["--deadline-seconds".to_string(), "nope".to_string()], "--deadline-seconds"),
@@ -1669,27 +1733,34 @@ mod contract_tests {
                 "--patch".to_string(),
                 path_arg(&patch),
                 "--output".to_string(),
-                path_arg(&outputs[0]),
+                path_arg(parent_output),
                 "--trace-output".to_string(),
-                path_arg(&outputs[1]),
+                path_arg(trace_output),
                 "--work-output".to_string(),
-                path_arg(&outputs[2]),
+                path_arg(work_output),
             ];
             args.extend(extra);
             let options = super::Options::parse(args.into_iter())?;
             let Err(error) = super::observe_invocations_from_options(options) else {
                 super::bail!("option validation must refuse {expected}");
             };
-            assert!(error.to_string().contains(expected), "unexpected refusal: {error}");
+            color_eyre::eyre::ensure!(
+                error.to_string().contains(expected),
+                "unexpected refusal: {error}"
+            );
             for output in &outputs {
-                assert!(!output.exists(), "stale receipt {} must be removed", output.display());
+                color_eyre::eyre::ensure!(
+                    !output.exists(),
+                    "stale receipt {} must be removed",
+                    output.display()
+                );
             }
         }
         Ok(())
     }
 
     #[test]
-    fn state_derivation_never_completes_a_failed_capture() {
+    fn state_derivation_never_completes_a_failed_capture() -> Result<()> {
         let proven_cleanup = CleanupRecord {
             instrumented_tree_removed: true,
             trace_file_removed: true,
@@ -1707,8 +1778,8 @@ mod contract_tests {
         let parent_complete = Some(DiscoveryObservationState::ObservedComplete);
 
         // The one complete shape.
-        assert_eq!(
-            derive_instrumentation_state(
+        require_equal(
+            &(derive_instrumentation_state(
                 &proven_cleanup,
                 false,
                 false,
@@ -1719,15 +1790,16 @@ mod contract_tests {
                 ProcessCompletion::ExitStatus { code: 0 },
                 parent_complete,
                 &work,
-            ),
-            InstrumentationState::ObservedComplete
-        );
+            )),
+            &(InstrumentationState::ObservedComplete),
+            "instrumentation contract",
+        )?;
 
         // Cleanup dominates every other outcome.
         let dirty_cleanup =
             CleanupRecord { failures: vec!["leftover".to_string()], ..proven_cleanup.clone() };
-        assert_eq!(
-            derive_instrumentation_state(
+        require_equal(
+            &(derive_instrumentation_state(
                 &dirty_cleanup,
                 false,
                 false,
@@ -1738,16 +1810,17 @@ mod contract_tests {
                 ProcessCompletion::ExitStatus { code: 0 },
                 parent_complete,
                 &work,
-            ),
-            InstrumentationState::CleanupFailed
-        );
+            )),
+            &(InstrumentationState::CleanupFailed),
+            "instrumentation contract",
+        )?;
 
         // A run directory that survived a swallowed drop error records no
         // failure string but is still unproven cleanup.
         let unremoved_run_directory =
             CleanupRecord { run_directory_removed: false, ..proven_cleanup.clone() };
-        assert_eq!(
-            derive_instrumentation_state(
+        require_equal(
+            &(derive_instrumentation_state(
                 &unremoved_run_directory,
                 false,
                 false,
@@ -1758,13 +1831,14 @@ mod contract_tests {
                 ProcessCompletion::ExitStatus { code: 0 },
                 parent_complete,
                 &work,
-            ),
-            InstrumentationState::CleanupFailed
-        );
+            )),
+            &(InstrumentationState::CleanupFailed),
+            "instrumentation contract",
+        )?;
 
         // A lying terminal never completes.
-        assert_eq!(
-            derive_instrumentation_state(
+        require_equal(
+            &(derive_instrumentation_state(
                 &proven_cleanup,
                 false,
                 false,
@@ -1775,14 +1849,15 @@ mod contract_tests {
                 ProcessCompletion::ExitStatus { code: 0 },
                 parent_complete,
                 &work,
-            ),
-            InstrumentationState::TerminalDisagreement
-        );
+            )),
+            &(InstrumentationState::TerminalDisagreement),
+            "instrumentation contract",
+        )?;
 
         // A partial trace stays partial; nothing upgrades it.
         work.complete_rows = 1;
-        assert_eq!(
-            derive_instrumentation_state(
+        require_equal(
+            &(derive_instrumentation_state(
                 &proven_cleanup,
                 false,
                 false,
@@ -1793,16 +1868,17 @@ mod contract_tests {
                 ProcessCompletion::ExitStatus { code: 0 },
                 parent_complete,
                 &work,
-            ),
-            InstrumentationState::TracePartial
-        );
+            )),
+            &(InstrumentationState::TracePartial),
+            "instrumentation contract",
+        )?;
         work.complete_rows = 2;
 
         // A missing terminal frame types the stream malformed.
         let malformed =
             TraceStreamOutcome::Malformed { reason: "missing terminal frame".to_string() };
-        assert_eq!(
-            derive_instrumentation_state(
+        require_equal(
+            &(derive_instrumentation_state(
                 &proven_cleanup,
                 false,
                 false,
@@ -1813,13 +1889,14 @@ mod contract_tests {
                 ProcessCompletion::ExitStatus { code: 0 },
                 parent_complete,
                 &work,
-            ),
-            InstrumentationState::TraceMalformed
-        );
+            )),
+            &(InstrumentationState::TraceMalformed),
+            "instrumentation contract",
+        )?;
 
         // Missing terminal evidence is not proven, never complete.
-        assert_eq!(
-            derive_instrumentation_state(
+        require_equal(
+            &(derive_instrumentation_state(
                 &proven_cleanup,
                 false,
                 false,
@@ -1830,13 +1907,14 @@ mod contract_tests {
                 ProcessCompletion::TimedOut { deadline_millis: 1000 },
                 Some(DiscoveryObservationState::TimedOut),
                 &work,
-            ),
-            InstrumentationState::NotProven
-        );
+            )),
+            &(InstrumentationState::NotProven),
+            "instrumentation contract",
+        )?;
 
         // A failed runner never completes even with complete-looking rows.
-        assert_eq!(
-            derive_instrumentation_state(
+        require_equal(
+            &(derive_instrumentation_state(
                 &proven_cleanup,
                 false,
                 false,
@@ -1847,14 +1925,15 @@ mod contract_tests {
                 ProcessCompletion::ExitStatus { code: 7 },
                 Some(DiscoveryObservationState::RunnerFailed),
                 &work,
-            ),
-            InstrumentationState::RunnerFailed
-        );
+            )),
+            &(InstrumentationState::RunnerFailed),
+            "instrumentation contract",
+        )?;
 
         // An absent parent is a construction failure; contamination types
         // itself.
-        assert_eq!(
-            derive_instrumentation_state(
+        require_equal(
+            &(derive_instrumentation_state(
                 &proven_cleanup,
                 true,
                 true,
@@ -1865,11 +1944,12 @@ mod contract_tests {
                 ProcessCompletion::ExitStatus { code: 0 },
                 None,
                 &work,
-            ),
-            InstrumentationState::ContaminatedParent
-        );
-        assert_eq!(
-            derive_instrumentation_state(
+            )),
+            &(InstrumentationState::ContaminatedParent),
+            "instrumentation contract",
+        )?;
+        require_equal(
+            &(derive_instrumentation_state(
                 &proven_cleanup,
                 true,
                 false,
@@ -1880,13 +1960,15 @@ mod contract_tests {
                 ProcessCompletion::ExitStatus { code: 0 },
                 None,
                 &work,
-            ),
-            InstrumentationState::ParentConstructionFailed
-        );
+            )),
+            &(InstrumentationState::ParentConstructionFailed),
+            "instrumentation contract",
+        )?;
+        Ok(())
     }
 
     #[test]
-    fn mandatory_limitations_are_exactly_the_sorted_required_set() {
+    fn mandatory_limitations_are_exactly_the_sorted_required_set() -> Result<()> {
         let mut expected = vec![
             super::LIMITATION_INSTRUMENTED_NOT_ORDINARY,
             super::LIMITATION_TRACE_NOT_EXECUTION,
@@ -1894,21 +1976,37 @@ mod contract_tests {
             super::LIMITATION_DISPOSABLE_MANIFEST,
         ];
         expected.sort_unstable();
-        assert_eq!(required_limitations(), expected);
+        require_equal(&(required_limitations()), &(expected), "instrumentation contract")?;
+        Ok(())
     }
 
     #[test]
-    fn constants_pin_the_channel_and_tool_identities() {
-        assert_eq!(super::TRACE_CHANNEL_BASENAME, ".perl-core-harness-trace.jsonl");
-        assert_eq!(super::PATCH_TOOL_IDENTITY, "perl-core-harness/exact-anchor-patch/1");
-        assert_eq!(
-            super::INSTRUMENTATION_WORK_SCHEMA_VERSION,
-            "perl_core_harness.instrumentation_work.v1"
-        );
-        assert_eq!(super::EXACT_PATCH_SCHEMA_VERSION, "perl_core_harness.exact_runner_patch.v1");
-        assert_eq!(
-            UPSTREAM_INVOCATION_TRACE_SCHEMA_VERSION,
-            "perl_core_harness.upstream_effective_invocation_trace.v1"
-        );
+    fn constants_pin_the_channel_and_tool_identities() -> Result<()> {
+        require_equal(
+            &(super::TRACE_CHANNEL_BASENAME),
+            &(".perl-core-harness-trace.jsonl"),
+            "instrumentation contract",
+        )?;
+        require_equal(
+            &(super::PATCH_TOOL_IDENTITY),
+            &("perl-core-harness/exact-anchor-patch/1"),
+            "instrumentation contract",
+        )?;
+        require_equal(
+            &(super::INSTRUMENTATION_WORK_SCHEMA_VERSION),
+            &("perl_core_harness.instrumentation_work.v1"),
+            "instrumentation contract",
+        )?;
+        require_equal(
+            &(super::EXACT_PATCH_SCHEMA_VERSION),
+            &("perl_core_harness.exact_runner_patch.v1"),
+            "instrumentation contract",
+        )?;
+        require_equal(
+            &(UPSTREAM_INVOCATION_TRACE_SCHEMA_VERSION),
+            &("perl_core_harness.upstream_effective_invocation_trace.v1"),
+            "instrumentation contract",
+        )?;
+        Ok(())
     }
 }

@@ -40,6 +40,19 @@ const ORDINARY_ARTIFACT: &str = "#!./perl\n# hermetic stand-in for the pinned up
 const ORDINARY_ANCHOR: &str = "# hermetic stand-in for the pinned upstream t/TEST";
 const INSTRUMENTATION_ID: &str = "trace-instrument-1";
 
+fn require_equal<L, R>(left: &L, right: &R, context: &str) -> Result<()>
+where
+    L: std::fmt::Debug + PartialEq<R> + ?Sized,
+    R: std::fmt::Debug + ?Sized,
+{
+    color_eyre::eyre::ensure!(left == right, "{context}: left={left:?}, right={right:?}");
+    Ok(())
+}
+
+fn required_item<T>(items: &[T], index: usize) -> Result<&T> {
+    items.get(index).ok_or_else(|| color_eyre::eyre::eyre!("missing fixture item {index}"))
+}
+
 fn fixture_host_perl() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_perl-core-harness-trace-fixture"))
 }
@@ -166,13 +179,33 @@ fn clean_capture_emits_binding_trace_receipts() -> Result<()> {
     let work = &observation.work;
 
     // Parent: the same strict #12281 construction, instrumented subject.
-    assert_eq!(parent.payload.state, DiscoveryObservationState::ObservedComplete);
-    assert_eq!(parent.payload.subject.instrumentation_id, Some(INSTRUMENTATION_ID.to_string()));
-    assert_eq!(parent.payload.invocation.argv.len(), 3);
-    assert_eq!(parent.payload.invocation.argv[0], "TEST");
-    assert_eq!(parent.payload.invocation.argv[1], "--dumptests");
-    assert_eq!(parent.payload.invocation.argv[2], "base");
-    assert_eq!(parent.payload.invocation.working_directory, "t");
+    require_equal(
+        &(parent.payload.state),
+        &(DiscoveryObservationState::ObservedComplete),
+        "capture contract",
+    )?;
+    require_equal(
+        &(parent.payload.subject.instrumentation_id),
+        &(Some(INSTRUMENTATION_ID.to_string())),
+        "capture contract",
+    )?;
+    require_equal(&(parent.payload.invocation.argv.len()), &(3), "capture contract")?;
+    require_equal(
+        &(required_item(&parent.payload.invocation.argv, 0)?),
+        &("TEST"),
+        "capture contract",
+    )?;
+    require_equal(
+        &(required_item(&parent.payload.invocation.argv, 1)?),
+        &("--dumptests"),
+        "capture contract",
+    )?;
+    require_equal(
+        &(required_item(&parent.payload.invocation.argv, 2)?),
+        &("base"),
+        "capture contract",
+    )?;
+    require_equal(&(parent.payload.invocation.working_directory), &("t"), "capture contract")?;
     let accepted: Vec<String> = parent
         .payload
         .rows
@@ -180,28 +213,65 @@ fn clean_capture_emits_binding_trace_receipts() -> Result<()> {
         .filter(|row| row.is_accepted())
         .filter_map(|row| row.canonical_path().map(str::to_string))
         .collect();
-    assert_eq!(accepted, vec!["t/base/cond.t".to_string(), "t/base/if.t".to_string()]);
+    require_equal(
+        &(accepted),
+        &(vec!["t/base/cond.t".to_string(), "t/base/if.t".to_string()]),
+        "capture contract",
+    )?;
 
     // Trace: strict decode, complete rows, exact parent binding.
-    assert_eq!(trace.schema_version, UPSTREAM_INVOCATION_TRACE_SCHEMA_VERSION);
-    assert!(trace.payload.trace_decode.is_complete());
-    assert_eq!(trace.payload.rows.len(), 2);
+    require_equal(
+        &(trace.schema_version),
+        &(UPSTREAM_INVOCATION_TRACE_SCHEMA_VERSION),
+        "capture contract",
+    )?;
+    color_eyre::eyre::ensure!(
+        trace.payload.trace_decode.is_complete(),
+        "capture contract failed: {}",
+        stringify!(trace.payload.trace_decode.is_complete())
+    );
+    require_equal(&(trace.payload.rows.len()), &(2), "capture contract")?;
     for row in &trace.payload.rows {
-        assert_eq!(row.state, InvocationObservationState::ObservedComplete);
-        assert!(row.disposition.is_accepted());
-        assert_eq!(row.fields.state_counts().observed, 17);
-        assert!(matches!(
-            row.projection,
-            perl_core_harness::invocation_trace::ProjectionRecord::Projected { .. }
-        ));
-        assert_eq!(
-            row.subject.parent_receipt_digest, parent.payload_digest,
-            "every row binds the exact parent receipt"
+        require_equal(
+            &(row.state),
+            &(InvocationObservationState::ObservedComplete),
+            "capture contract",
+        )?;
+        color_eyre::eyre::ensure!(
+            row.disposition.is_accepted(),
+            "capture contract failed: {}",
+            stringify!(row.disposition.is_accepted())
         );
-        assert!(parent.payload.rows.iter().any(|member| member.is_accepted()
-            && member.canonical_path() == Some(row.subject.parent_member_path.as_str())));
+        require_equal(&(row.fields.state_counts().observed), &(17), "capture contract")?;
+        color_eyre::eyre::ensure!(
+            matches!(
+                row.projection,
+                perl_core_harness::invocation_trace::ProjectionRecord::Projected { .. }
+            ),
+            "capture contract failed: {}",
+            stringify!(matches!(
+                row.projection,
+                perl_core_harness::invocation_trace::ProjectionRecord::Projected { .. }
+            ))
+        );
+        require_equal(
+            &(row.subject.parent_receipt_digest),
+            &(parent.payload_digest),
+            &format!("every row binds the exact parent receipt"),
+        )?;
+        color_eyre::eyre::ensure!(
+            parent.payload.rows.iter().any(|member| member.is_accepted()
+                && member.canonical_path() == Some(row.subject.parent_member_path.as_str())),
+            "capture contract failed: {}",
+            stringify!(parent.payload.rows.iter().any(|member| member.is_accepted()
+                && member.canonical_path() == Some(row.subject.parent_member_path.as_str())))
+        );
     }
-    assert_eq!(trace.payload.terminal.as_ref().map(|t| t.row_count), Some(2));
+    require_equal(
+        &(trace.payload.terminal.as_ref().map(|t| t.row_count)),
+        &(Some(2)),
+        "capture contract",
+    )?;
 
     // Ordinary stdout stays byte-exact member rows: the trace channel never
     // entered the discovery stream.
@@ -210,32 +280,41 @@ fn clean_capture_emits_binding_trace_receipts() -> Result<()> {
         .stdout
         .bytes()
         .map_err(|error| color_eyre::eyre::eyre!("decoding retained stdout: {error}"))?;
-    assert_eq!(stdout_bytes, b"t/base/cond.t\nt/base/if.t\n");
+    require_equal(&(stdout_bytes), &(b"t/base/cond.t\nt/base/if.t\n"), "capture contract")?;
 
     // Work receipt: identities distinct, counters honest, cleanup proven.
-    assert_eq!(work.payload.state, InstrumentationState::ObservedComplete);
-    assert_ne!(
-        work.payload.ordinary_artifact.content_sha256,
-        work.payload.instrumented_artifact.content_sha256,
+    require_equal(
+        &(work.payload.state),
+        &(InstrumentationState::ObservedComplete),
+        "capture contract",
+    )?;
+    color_eyre::eyre::ensure!(
+        &(work.payload.ordinary_artifact.content_sha256)
+            != &(work.payload.instrumented_artifact.content_sha256),
         "ordinary and instrumented identities stay distinct and load-bearing"
     );
-    assert_eq!(
-        work.payload.ordinary_artifact.content_sha256,
-        sha_hex(ORDINARY_ARTIFACT.as_bytes())
-    );
+    require_equal(
+        &(work.payload.ordinary_artifact.content_sha256),
+        &(sha_hex(ORDINARY_ARTIFACT.as_bytes())),
+        "capture contract",
+    )?;
     let work_counters = &work.payload.work;
-    assert_eq!(work_counters.instrumented_processes, 1);
-    assert_eq!(work_counters.trace_rows, 2);
-    assert_eq!(work_counters.complete_rows, 2);
-    assert_eq!(work_counters.canonical_plan_projections, 2);
-    assert_eq!(work_counters.canonical_plan_projections_accepted, 2);
-    assert_eq!(work_counters.ordinary_output_contamination_count, 0);
-    assert_eq!(work_counters.fields_synthesized, 0);
-    assert_eq!(work_counters.direct_rows_consumed, 0);
-    assert_eq!(work_counters.terminal_disagreements, 0);
-    assert_eq!(work_counters.cleanup_failures, 0);
-    assert!(work.payload.cleanup.is_proven());
-    assert_eq!(work.payload.work.manifest_files_changed, 1);
+    require_equal(&(work_counters.instrumented_processes), &(1), "capture contract")?;
+    require_equal(&(work_counters.trace_rows), &(2), "capture contract")?;
+    require_equal(&(work_counters.complete_rows), &(2), "capture contract")?;
+    require_equal(&(work_counters.canonical_plan_projections), &(2), "capture contract")?;
+    require_equal(&(work_counters.canonical_plan_projections_accepted), &(2), "capture contract")?;
+    require_equal(&(work_counters.ordinary_output_contamination_count), &(0), "capture contract")?;
+    require_equal(&(work_counters.fields_synthesized), &(0), "capture contract")?;
+    require_equal(&(work_counters.direct_rows_consumed), &(0), "capture contract")?;
+    require_equal(&(work_counters.terminal_disagreements), &(0), "capture contract")?;
+    require_equal(&(work_counters.cleanup_failures), &(0), "capture contract")?;
+    color_eyre::eyre::ensure!(
+        work.payload.cleanup.is_proven(),
+        "capture contract failed: {}",
+        stringify!(work.payload.cleanup.is_proven())
+    );
+    require_equal(&(work.payload.work.manifest_files_changed), &(1), "capture contract")?;
 
     // Both receipts reconstruct through the landed decoders.
     let matrix = perl_core_harness::io::read_matrix(&matrix_path())?;
@@ -253,8 +332,9 @@ fn clean_capture_emits_binding_trace_receipts() -> Result<()> {
     Ok(())
 }
 
-fn spec_from(raw: &str) -> ExactPatchSpec {
-    serde_json::from_str(raw).unwrap_or_else(|error| panic!("fixture spec decodes: {error}"))
+fn spec_from(raw: &str) -> Result<ExactPatchSpec> {
+    serde_json::from_str(raw)
+        .map_err(|error| color_eyre::eyre::eyre!("fixture spec decodes: {error}"))
 }
 
 #[test]
@@ -264,15 +344,39 @@ fn command_writes_reconstructing_receipts() -> Result<()> {
     let patch = write_patch_spec(temp.path(), ORDINARY_ARTIFACT)?;
     let config = config_for(&tree, &patch, temp.path(), "component_base", default_limits());
     observe_invocations_command(&config)?;
-    assert!(config.output.is_file());
-    assert!(config.trace_output.is_file());
-    assert!(config.work_output.is_file());
+    color_eyre::eyre::ensure!(
+        config.output.is_file(),
+        "capture contract failed: {}",
+        stringify!(config.output.is_file())
+    );
+    color_eyre::eyre::ensure!(
+        config.trace_output.is_file(),
+        "capture contract failed: {}",
+        stringify!(config.trace_output.is_file())
+    );
+    color_eyre::eyre::ensure!(
+        config.work_output.is_file(),
+        "capture contract failed: {}",
+        stringify!(config.work_output.is_file())
+    );
     let parent = load_parent(&config.output)?;
     let trace = load_trace(&config.trace_output)?;
     let work = load_work(&config.work_output)?;
-    assert_eq!(parent.payload.state, DiscoveryObservationState::ObservedComplete);
-    assert!(trace.payload.trace_decode.is_complete());
-    assert_eq!(work.payload.state, InstrumentationState::ObservedComplete);
+    require_equal(
+        &(parent.payload.state),
+        &(DiscoveryObservationState::ObservedComplete),
+        "capture contract",
+    )?;
+    color_eyre::eyre::ensure!(
+        trace.payload.trace_decode.is_complete(),
+        "capture contract failed: {}",
+        stringify!(trace.payload.trace_decode.is_complete())
+    );
+    require_equal(
+        &(work.payload.state),
+        &(InstrumentationState::ObservedComplete),
+        "capture contract",
+    )?;
     let matrix = perl_core_harness::io::read_matrix(&matrix_path())?;
     check_observed_discovery_against(&matrix, &parent)
         .map_err(|error| color_eyre::eyre::eyre!(error))?;
@@ -307,7 +411,7 @@ fn discriminating_invocation_shapes_stay_distinct() -> Result<()> {
         .as_ref()
         .ok_or_else(|| color_eyre::eyre::eyre!("capture must construct the trace"))?;
     let rows = &trace.payload.rows;
-    assert_eq!(rows.len(), members.len());
+    require_equal(&(rows.len()), &(members.len()), "capture contract")?;
 
     let row_for =
         |suffix: &str| -> Result<&perl_core_harness::invocation_trace::EffectiveInvocationRow> {
@@ -318,88 +422,117 @@ fn discriminating_invocation_shapes_stay_distinct() -> Result<()> {
 
     // Taint modes never collapse, and the ordered switches carry them.
     let full = row_for("probe_a_taintT.t")?;
-    assert_eq!(
-        full.fields.taint_mode,
-        observed(perl_core_harness::invocation_trace::TaintMode::TaintMode)
-    );
-    assert_eq!(
-        full.fields.interpreter_switches,
-        observed(vec!["-I../lib".to_string(), "-I../t/lib".to_string(), "-T".to_string()])
-    );
+    require_equal(
+        &(full.fields.taint_mode),
+        &(observed(perl_core_harness::invocation_trace::TaintMode::TaintMode)),
+        "capture contract",
+    )?;
+    require_equal(
+        &(full.fields.interpreter_switches),
+        &(observed(vec!["-I../lib".to_string(), "-I../t/lib".to_string(), "-T".to_string()])),
+        "capture contract",
+    )?;
     let weak = row_for("probe_b_taintt.t")?;
-    assert_eq!(
-        weak.fields.taint_mode,
-        observed(perl_core_harness::invocation_trace::TaintMode::TaintWarnings)
-    );
+    require_equal(
+        &(weak.fields.taint_mode),
+        &(observed(perl_core_harness::invocation_trace::TaintMode::TaintWarnings)),
+        "capture contract",
+    )?;
     let plain = row_for("plain.t")?;
-    assert_eq!(
-        plain.fields.taint_mode,
-        observed(perl_core_harness::invocation_trace::TaintMode::None)
-    );
+    require_equal(
+        &(plain.fields.taint_mode),
+        &(observed(perl_core_harness::invocation_trace::TaintMode::None)),
+        "capture contract",
+    )?;
 
     // UTF/source mode distinction reaches the observed environment.
     let utf8 = row_for("utf8.t")?;
-    assert_eq!(
-        utf8.fields.utf8_mode,
-        observed(perl_core_harness::invocation_trace::Utf8Switch::Utf8)
-    );
+    require_equal(
+        &(utf8.fields.utf8_mode),
+        &(observed(perl_core_harness::invocation_trace::Utf8Switch::Utf8)),
+        "capture contract",
+    )?;
     match &utf8.fields.environment {
         EffectiveInvocationField::Observed { value } => {
-            assert!(value.variables.contains_key("PERL_UNICODE"));
+            color_eyre::eyre::ensure!(
+                value.variables.contains_key("PERL_UNICODE"),
+                "capture contract failed: {}",
+                stringify!(value.variables.contains_key("PERL_UNICODE"))
+            );
         }
         other => bail!("utf8 environment must be observed, got {other:?}"),
     }
-    assert_eq!(
-        plain.fields.utf8_mode,
-        observed(perl_core_harness::invocation_trace::Utf8Switch::None)
-    );
+    require_equal(
+        &(plain.fields.utf8_mode),
+        &(observed(perl_core_harness::invocation_trace::Utf8Switch::None)),
+        "capture contract",
+    )?;
 
     // TestInit classes stay distinct: U1, U2T, A, NC.
-    assert_eq!(
-        row_for("init_u1.t")?.fields.test_init,
-        observed(perl_core_harness::invocation_trace::TestInitClass::U1)
-    );
-    assert_eq!(
-        row_for("init_u2t.t")?.fields.test_init,
-        observed(perl_core_harness::invocation_trace::TestInitClass::U2t)
-    );
-    assert_eq!(
-        row_for("init_a.t")?.fields.test_init,
-        observed(perl_core_harness::invocation_trace::TestInitClass::A)
-    );
-    assert_eq!(
-        row_for("init_nc.t")?.fields.test_init,
-        observed(perl_core_harness::invocation_trace::TestInitClass::Nc)
-    );
-    assert_eq!(
-        plain.fields.test_init,
-        observed(perl_core_harness::invocation_trace::TestInitClass::Standard)
-    );
+    require_equal(
+        &(row_for("init_u1.t")?.fields.test_init),
+        &(observed(perl_core_harness::invocation_trace::TestInitClass::U1)),
+        "capture contract",
+    )?;
+    require_equal(
+        &(row_for("init_u2t.t")?.fields.test_init),
+        &(observed(perl_core_harness::invocation_trace::TestInitClass::U2t)),
+        "capture contract",
+    )?;
+    require_equal(
+        &(row_for("init_a.t")?.fields.test_init),
+        &(observed(perl_core_harness::invocation_trace::TestInitClass::A)),
+        "capture contract",
+    )?;
+    require_equal(
+        &(row_for("init_nc.t")?.fields.test_init),
+        &(observed(perl_core_harness::invocation_trace::TestInitClass::Nc)),
+        "capture contract",
+    )?;
+    require_equal(
+        &(plain.fields.test_init),
+        &(observed(perl_core_harness::invocation_trace::TestInitClass::Standard)),
+        "capture contract",
+    )?;
 
     // cwd/return-directory distinction: the chdir member runs in t/base and
     // returns to t.
     let chdir = row_for("chdir_probe.t")?;
-    assert_eq!(chdir.fields.run_cwd, observed("t/base".to_string()));
-    assert_eq!(chdir.fields.return_directory, observed("t".to_string()));
-    assert_eq!(plain.fields.run_cwd, observed("t".to_string()));
+    require_equal(&(chdir.fields.run_cwd), &(observed("t/base".to_string())), "capture contract")?;
+    require_equal(
+        &(chdir.fields.return_directory),
+        &(observed("t".to_string())),
+        "capture contract",
+    )?;
+    require_equal(&(plain.fields.run_cwd), &(observed("t".to_string())), "capture contract")?;
 
     // Ordered include roots keep application order.
-    assert_eq!(
-        plain.fields.include_roots,
-        observed(vec!["../lib".to_string(), "../t/lib".to_string()])
-    );
+    require_equal(
+        &(plain.fields.include_roots),
+        &(observed(vec!["../lib".to_string(), "../t/lib".to_string()])),
+        "capture contract",
+    )?;
 
     // Script arguments keep their order and never leak into other rows.
-    assert_eq!(
-        row_for("with_args.t")?.fields.script_arguments,
-        observed(vec!["--flag".to_string(), "value".to_string()])
-    );
-    assert_eq!(plain.fields.script_arguments, observed(Vec::new()));
+    require_equal(
+        &(row_for("with_args.t")?.fields.script_arguments),
+        &(observed(vec!["--flag".to_string(), "value".to_string()])),
+        "capture contract",
+    )?;
+    require_equal(&(plain.fields.script_arguments), &(observed(Vec::new())), "capture contract")?;
 
     // Source form and capture point stay observed for every row.
     for row in rows {
-        assert_eq!(row.fields.source_form, observed(SourceForm::DotT));
-        assert!(row.fields.capture_point.is_observed());
+        require_equal(
+            &(row.fields.source_form),
+            &(observed(SourceForm::DotT)),
+            "capture contract",
+        )?;
+        color_eyre::eyre::ensure!(
+            row.fields.capture_point.is_observed(),
+            "capture contract failed: {}",
+            stringify!(row.fields.capture_point.is_observed())
+        );
     }
 
     // The comp family carries its own include order.
@@ -414,10 +547,11 @@ fn discriminating_invocation_shapes_stay_distinct() -> Result<()> {
         .iter()
         .find(|row| row.subject.parent_member_path == "t/comp/require.t")
         .ok_or_else(|| color_eyre::eyre::eyre!("comp row missing"))?;
-    assert_eq!(
-        comp_row.fields.include_roots,
-        observed(vec!["../lib".to_string(), "../cpan".to_string()])
-    );
+    require_equal(
+        &(comp_row.fields.include_roots),
+        &(observed(vec!["../lib".to_string(), "../cpan".to_string()])),
+        "capture contract",
+    )?;
     Ok(())
 }
 
@@ -444,15 +578,21 @@ fn repeated_equivalent_runs_produce_byte_identical_normalized_receipts() -> Resu
             second.work.payload.process_nonce.clone(),
             second.work.payload.trace_session_id.clone(),
         ];
-        assert_eq!(
-            normalize_receipt(&a, &secrets),
-            normalize_receipt(&b, &secrets),
-            "normalized receipts must be byte-identical across equivalent runs"
-        );
+        require_equal(
+            &(normalize_receipt(&a, &secrets)),
+            &(normalize_receipt(&b, &secrets)),
+            &format!("normalized receipts must be byte-identical across equivalent runs"),
+        )?;
     }
     // Raw digests differ: the capture identities are per-run.
-    assert_ne!(first.work.payload.process_nonce, second.work.payload.process_nonce);
-    assert_ne!(first.work.payload.trace_session_id, second.work.payload.trace_session_id);
+    color_eyre::eyre::ensure!(
+        &(first.work.payload.process_nonce) != &(second.work.payload.process_nonce),
+        "expected distinct capture values"
+    );
+    color_eyre::eyre::ensure!(
+        &(first.work.payload.trace_session_id) != &(second.work.payload.trace_session_id),
+        "expected distinct capture values"
+    );
     Ok(())
 }
 
@@ -493,25 +633,33 @@ fn normalize_receipt(value: &serde_json::Value, secrets: &[String]) -> serde_jso
 /// derived digests never defeat the normalized comparison.
 fn mask_hex_runs(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
-    let bytes = text.as_bytes();
-    let mut index = 0;
-    while index < bytes.len() {
-        if bytes[index].is_ascii_hexdigit() {
-            let start = index;
-            while index < bytes.len() && bytes[index].is_ascii_hexdigit() {
-                index += 1;
+    let mut chars = text.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch.is_ascii_hexdigit() {
+            let mut run = String::from(ch);
+            while chars.peek().is_some_and(char::is_ascii_hexdigit) {
+                if let Some(next) = chars.next() {
+                    run.push(next);
+                }
             }
-            if index - start >= 64 {
+            if run.len() >= 64 {
                 out.push_str("<digest>");
             } else {
-                out.push_str(&text[start..index]);
+                out.push_str(&run);
             }
         } else {
-            out.push(bytes[index] as char);
-            index += 1;
+            out.push(ch);
         }
     }
     out
+}
+
+#[test]
+fn receipt_normalization_preserves_utf8_around_hex_runs() -> Result<()> {
+    let short = "a".repeat(63);
+    let digest = "b".repeat(64);
+    let input = format!("é{short}猫{digest}🦀");
+    require_equal(&mask_hex_runs(&input), &format!("é{short}猫<digest>🦀"), "UTF-8 normalization")
 }
 
 // ---------------------------------------------------------------------------
@@ -524,22 +672,52 @@ fn missing_field_stays_partial_and_never_projects() -> Result<()> {
     let trace = observation.trace.as_ref().ok_or_else(|| {
         color_eyre::eyre::eyre!("the trace receipt still exists for a partial row")
     })?;
-    let first = &trace.payload.rows[0];
-    assert_eq!(first.state, InvocationObservationState::ObservedPartial);
-    assert!(!first.fields.environment.is_observed());
-    assert!(!matches!(
-        first.projection,
-        perl_core_harness::invocation_trace::ProjectionRecord::Projected { .. }
-    ));
-    let second = &trace.payload.rows[1];
-    assert_eq!(second.state, InvocationObservationState::ObservedComplete);
-    assert!(matches!(
-        second.projection,
-        perl_core_harness::invocation_trace::ProjectionRecord::Projected { .. }
-    ));
-    assert_eq!(observation.work.payload.state, InstrumentationState::TracePartial);
-    assert_eq!(observation.work.payload.work.complete_rows, 1);
-    assert_eq!(observation.work.payload.work.fields_synthesized, 0);
+    let first = &required_item(&trace.payload.rows, 0)?;
+    require_equal(
+        &(first.state),
+        &(InvocationObservationState::ObservedPartial),
+        "capture contract",
+    )?;
+    color_eyre::eyre::ensure!(
+        !first.fields.environment.is_observed(),
+        "capture contract failed: {}",
+        stringify!(!first.fields.environment.is_observed())
+    );
+    color_eyre::eyre::ensure!(
+        !matches!(
+            first.projection,
+            perl_core_harness::invocation_trace::ProjectionRecord::Projected { .. }
+        ),
+        "capture contract failed: {}",
+        stringify!(!matches!(
+            first.projection,
+            perl_core_harness::invocation_trace::ProjectionRecord::Projected { .. }
+        ))
+    );
+    let second = &required_item(&trace.payload.rows, 1)?;
+    require_equal(
+        &(second.state),
+        &(InvocationObservationState::ObservedComplete),
+        "capture contract",
+    )?;
+    color_eyre::eyre::ensure!(
+        matches!(
+            second.projection,
+            perl_core_harness::invocation_trace::ProjectionRecord::Projected { .. }
+        ),
+        "capture contract failed: {}",
+        stringify!(matches!(
+            second.projection,
+            perl_core_harness::invocation_trace::ProjectionRecord::Projected { .. }
+        ))
+    );
+    require_equal(
+        &(observation.work.payload.state),
+        &(InstrumentationState::TracePartial),
+        "capture contract",
+    )?;
+    require_equal(&(observation.work.payload.work.complete_rows), &(1), "capture contract")?;
+    require_equal(&(observation.work.payload.work.fields_synthesized), &(0), "capture contract")?;
     // Command surface: typed failure naming the state.
     let temp = tempfile::tempdir()?;
     let tree = fixture_tree(temp.path(), "missing_field", &["if.t", "cond.t"])?;
@@ -548,7 +726,7 @@ fn missing_field_stays_partial_and_never_projects() -> Result<()> {
     let Err(error) = observe_invocations_command(&config) else {
         bail!("a partial observation must not be a clean pass");
     };
-    assert!(
+    color_eyre::eyre::ensure!(
         error.to_string().contains("TracePartial"),
         "typed failure must name the state: {error}"
     );
@@ -563,15 +741,38 @@ fn instrument_failure_field_types_instrument_failed() -> Result<()> {
         .trace
         .as_ref()
         .ok_or_else(|| color_eyre::eyre::eyre!("trace receipt retained for instrument failure"))?;
-    let first = &trace.payload.rows[0];
-    assert_eq!(first.state, InvocationObservationState::InstrumentFailed);
-    assert!(first.fields.scheduling.is_instrument_failure());
-    assert!(!matches!(
-        first.projection,
-        perl_core_harness::invocation_trace::ProjectionRecord::Projected { .. }
-    ));
-    assert_eq!(observation.work.payload.state, InstrumentationState::InstrumentFailed);
-    assert_eq!(observation.work.payload.work.instrument_failed_rows, 1);
+    let first = &required_item(&trace.payload.rows, 0)?;
+    require_equal(
+        &(first.state),
+        &(InvocationObservationState::InstrumentFailed),
+        "capture contract",
+    )?;
+    color_eyre::eyre::ensure!(
+        first.fields.scheduling.is_instrument_failure(),
+        "capture contract failed: {}",
+        stringify!(first.fields.scheduling.is_instrument_failure())
+    );
+    color_eyre::eyre::ensure!(
+        !matches!(
+            first.projection,
+            perl_core_harness::invocation_trace::ProjectionRecord::Projected { .. }
+        ),
+        "capture contract failed: {}",
+        stringify!(!matches!(
+            first.projection,
+            perl_core_harness::invocation_trace::ProjectionRecord::Projected { .. }
+        ))
+    );
+    require_equal(
+        &(observation.work.payload.state),
+        &(InstrumentationState::InstrumentFailed),
+        "capture contract",
+    )?;
+    require_equal(
+        &(observation.work.payload.work.instrument_failed_rows),
+        &(1),
+        "capture contract",
+    )?;
     Ok(())
 }
 
@@ -587,27 +788,53 @@ fn duplicate_row_retains_first_contributor_never_last_writer() -> Result<()> {
         .as_ref()
         .ok_or_else(|| color_eyre::eyre::eyre!("trace receipt retained for duplicates"))?;
     let rows = &trace.payload.rows;
-    assert_eq!(rows.len(), 3);
-    assert!(rows[0].disposition.is_accepted());
-    match &rows[2].disposition {
+    require_equal(&(rows.len()), &(3), "capture contract")?;
+    color_eyre::eyre::ensure!(
+        required_item(&rows, 0)?.disposition.is_accepted(),
+        "capture contract failed: {}",
+        stringify!(required_item(&rows, 0)?.disposition.is_accepted())
+    );
+    match &required_item(&rows, 2)?.disposition {
         TraceRowDisposition::DuplicateRowId { row_id } => {
-            assert_eq!(row_id, &rows[0].row_id);
+            require_equal(&(row_id), &(&required_item(&rows, 0)?.row_id), "capture contract")?;
         }
         other => bail!("expected duplicate disposition, got {other:?}"),
     }
-    assert_eq!(rows[2].state, InvocationObservationState::NotProven);
+    require_equal(
+        &(required_item(&rows, 2)?.state),
+        &(InvocationObservationState::NotProven),
+        "capture contract",
+    )?;
     // The first contributor keeps its observation; the duplicate projects
     // nothing.
-    assert!(matches!(
-        rows[0].projection,
-        perl_core_harness::invocation_trace::ProjectionRecord::Projected { .. }
-    ));
-    assert!(!matches!(
-        rows[2].projection,
-        perl_core_harness::invocation_trace::ProjectionRecord::Projected { .. }
-    ));
-    assert_eq!(observation.work.payload.work.conflicting_rows, 1);
-    assert_eq!(observation.work.payload.state, InstrumentationState::TracePartial);
+    color_eyre::eyre::ensure!(
+        matches!(
+            required_item(&rows, 0)?.projection,
+            perl_core_harness::invocation_trace::ProjectionRecord::Projected { .. }
+        ),
+        "capture contract failed: {}",
+        stringify!(matches!(
+            required_item(&rows, 0)?.projection,
+            perl_core_harness::invocation_trace::ProjectionRecord::Projected { .. }
+        ))
+    );
+    color_eyre::eyre::ensure!(
+        !matches!(
+            required_item(&rows, 2)?.projection,
+            perl_core_harness::invocation_trace::ProjectionRecord::Projected { .. }
+        ),
+        "capture contract failed: {}",
+        stringify!(!matches!(
+            required_item(&rows, 2)?.projection,
+            perl_core_harness::invocation_trace::ProjectionRecord::Projected { .. }
+        ))
+    );
+    require_equal(&(observation.work.payload.work.conflicting_rows), &(1), "capture contract")?;
+    require_equal(
+        &(observation.work.payload.state),
+        &(InstrumentationState::TracePartial),
+        "capture contract",
+    )?;
     Ok(())
 }
 
@@ -616,20 +843,28 @@ fn foreign_session_and_out_of_order_rows_are_typed_not_repaired() -> Result<()> 
     let foreign = observe_with_mode("component_base", "foreign_session", &["if.t", "cond.t"])?;
     let trace =
         foreign.trace.as_ref().ok_or_else(|| color_eyre::eyre::eyre!("trace receipt retained"))?;
-    match &trace.payload.rows[1].disposition {
+    match &required_item(&trace.payload.rows, 1)?.disposition {
         TraceRowDisposition::CrossRunInterleaved { session_id } => {
-            assert!(session_id.ends_with("-foreign"));
+            color_eyre::eyre::ensure!(
+                session_id.ends_with("-foreign"),
+                "capture contract failed: {}",
+                stringify!(session_id.ends_with("-foreign"))
+            );
         }
         other => bail!("expected cross-run disposition, got {other:?}"),
     }
-    assert_eq!(trace.payload.rows[1].state, InvocationObservationState::NotProven);
+    require_equal(
+        &(required_item(&trace.payload.rows, 1)?.state),
+        &(InvocationObservationState::NotProven),
+        "capture contract",
+    )?;
 
     let ordered = observe_with_mode("component_base", "out_of_order", &["if.t", "cond.t"])?;
     let trace =
         ordered.trace.as_ref().ok_or_else(|| color_eyre::eyre::eyre!("trace receipt retained"))?;
-    match &trace.payload.rows[1].disposition {
+    match &required_item(&trace.payload.rows, 1)?.disposition {
         TraceRowDisposition::OutOfOrderSequence { expected, actual } => {
-            assert_eq!((*expected, *actual), (1, 5));
+            require_equal(&((*expected, *actual)), &((1, 5)), "capture contract")?;
         }
         other => bail!("expected out-of-order disposition, got {other:?}"),
     }
@@ -647,16 +882,35 @@ fn truncated_trace_stream_is_never_a_clean_observation() -> Result<()> {
         .trace
         .as_ref()
         .ok_or_else(|| color_eyre::eyre::eyre!("the malformed trace stays a typed receipt"))?;
-    assert!(!trace.payload.trace_decode.is_complete());
-    assert!(trace.payload.terminal.is_none());
+    color_eyre::eyre::ensure!(
+        !trace.payload.trace_decode.is_complete(),
+        "capture contract failed: {}",
+        stringify!(!trace.payload.trace_decode.is_complete())
+    );
+    color_eyre::eyre::ensure!(
+        trace.payload.terminal.is_none(),
+        "capture contract failed: {}",
+        stringify!(trace.payload.terminal.is_none())
+    );
     for row in &trace.payload.rows {
-        assert_eq!(row.state, InvocationObservationState::NotProven);
-        assert!(!matches!(
-            row.projection,
-            perl_core_harness::invocation_trace::ProjectionRecord::Projected { .. }
-        ));
+        require_equal(&(row.state), &(InvocationObservationState::NotProven), "capture contract")?;
+        color_eyre::eyre::ensure!(
+            !matches!(
+                row.projection,
+                perl_core_harness::invocation_trace::ProjectionRecord::Projected { .. }
+            ),
+            "capture contract failed: {}",
+            stringify!(!matches!(
+                row.projection,
+                perl_core_harness::invocation_trace::ProjectionRecord::Projected { .. }
+            ))
+        );
     }
-    assert_eq!(observation.work.payload.state, InstrumentationState::TraceMalformed);
+    require_equal(
+        &(observation.work.payload.state),
+        &(InstrumentationState::TraceMalformed),
+        "capture contract",
+    )?;
     Ok(())
 }
 
@@ -667,16 +921,32 @@ fn nonzero_exit_yields_runner_failed_rows_and_typed_failure() -> Result<()> {
         .parent
         .as_ref()
         .ok_or_else(|| color_eyre::eyre::eyre!("runner-failed parent is retained evidence"))?;
-    assert_eq!(parent.payload.state, DiscoveryObservationState::RunnerFailed);
+    require_equal(
+        &(parent.payload.state),
+        &(DiscoveryObservationState::RunnerFailed),
+        "capture contract",
+    )?;
     let trace = observation
         .trace
         .as_ref()
         .ok_or_else(|| color_eyre::eyre::eyre!("runner-failed trace is retained evidence"))?;
     for row in &trace.payload.rows {
-        assert_eq!(row.state, InvocationObservationState::RunnerFailed);
+        require_equal(
+            &(row.state),
+            &(InvocationObservationState::RunnerFailed),
+            "capture contract",
+        )?;
     }
-    assert_eq!(observation.work.payload.state, InstrumentationState::RunnerFailed);
-    assert_eq!(observation.work.payload.work.terminal_disagreements, 0);
+    require_equal(
+        &(observation.work.payload.state),
+        &(InstrumentationState::RunnerFailed),
+        "capture contract",
+    )?;
+    require_equal(
+        &(observation.work.payload.work.terminal_disagreements),
+        &(0),
+        "capture contract",
+    )?;
     Ok(())
 }
 
@@ -688,10 +958,22 @@ fn lying_terminal_frame_types_the_disagreement() -> Result<()> {
         .trace
         .as_ref()
         .ok_or_else(|| color_eyre::eyre::eyre!("the lying trace stays retained evidence"))?;
-    assert_eq!(trace.payload.rows[0].state, InvocationObservationState::ObservedComplete);
+    require_equal(
+        &(required_item(&trace.payload.rows, 0)?.state),
+        &(InvocationObservationState::ObservedComplete),
+        "capture contract",
+    )?;
     // ...but the work receipt types the supervisor disagreement.
-    assert_eq!(observation.work.payload.work.terminal_disagreements, 1);
-    assert_eq!(observation.work.payload.state, InstrumentationState::TerminalDisagreement);
+    require_equal(
+        &(observation.work.payload.work.terminal_disagreements),
+        &(1),
+        "capture contract",
+    )?;
+    require_equal(
+        &(observation.work.payload.state),
+        &(InstrumentationState::TerminalDisagreement),
+        "capture contract",
+    )?;
     // Command surface: typed failure.
     let temp = tempfile::tempdir()?;
     let tree = fixture_tree(temp.path(), "lying_terminal", &["if.t"])?;
@@ -700,7 +982,7 @@ fn lying_terminal_frame_types_the_disagreement() -> Result<()> {
     let Err(error) = observe_invocations_command(&config) else {
         bail!("a lying terminal must not be a clean pass");
     };
-    assert!(
+    color_eyre::eyre::ensure!(
         error.to_string().contains("TerminalDisagreement"),
         "typed failure must name the disagreement: {error}"
     );
@@ -720,18 +1002,33 @@ fn stdout_contamination_refuses_trace_construction() -> Result<()> {
     let Err(error) = observe_invocations_command(&config) else {
         bail!("a contaminated capture must not be a clean pass");
     };
-    assert!(
+    color_eyre::eyre::ensure!(
         error.to_string().contains("ContaminatedParent"),
         "typed failure must name the contamination: {error}"
     );
     // The contaminated parent stays retained as evidence; no trace receipt
     // is fabricated against a voided transport contract.
     let parent = load_parent(&config.output)?;
-    assert_ne!(parent.payload.state, DiscoveryObservationState::ObservedComplete);
-    assert!(!config.trace_output.exists());
+    color_eyre::eyre::ensure!(
+        &(parent.payload.state) != &(DiscoveryObservationState::ObservedComplete),
+        "expected distinct capture values"
+    );
+    color_eyre::eyre::ensure!(
+        !config.trace_output.exists(),
+        "capture contract failed: {}",
+        stringify!(!config.trace_output.exists())
+    );
     let work = load_work(&config.work_output)?;
-    assert_eq!(work.payload.state, InstrumentationState::ContaminatedParent);
-    assert_eq!(work.payload.work.ordinary_output_contamination_count, 1);
+    require_equal(
+        &(work.payload.state),
+        &(InstrumentationState::ContaminatedParent),
+        "capture contract",
+    )?;
+    require_equal(
+        &(work.payload.work.ordinary_output_contamination_count),
+        &(1),
+        "capture contract",
+    )?;
     Ok(())
 }
 
@@ -748,14 +1045,18 @@ fn empty_discovery_is_a_typed_parent_construction_failure() -> Result<()> {
     let Err(error) = observe_invocations_command(&config) else {
         bail!("an empty instrumented discovery must not be a clean pass");
     };
-    assert!(
+    color_eyre::eyre::ensure!(
         error.to_string().contains("ParentConstructionFailed"),
         "typed failure must name the empty-stream law: {error}"
     );
-    assert!(!config.output.exists(), "no parent receipt may be fabricated");
-    assert!(!config.trace_output.exists(), "no trace receipt may be fabricated");
+    color_eyre::eyre::ensure!(!config.output.exists(), "no parent receipt may be fabricated");
+    color_eyre::eyre::ensure!(!config.trace_output.exists(), "no trace receipt may be fabricated");
     let work = load_work(&config.work_output)?;
-    assert_eq!(work.payload.state, InstrumentationState::ParentConstructionFailed);
+    require_equal(
+        &(work.payload.state),
+        &(InstrumentationState::ParentConstructionFailed),
+        "capture contract",
+    )?;
     Ok(())
 }
 
@@ -772,20 +1073,39 @@ fn captured_mid_run_timeout_yields_not_proven_with_retained_rows() -> Result<()>
     let config = config_for(&tree, &patch, temp.path(), "component_base", limits);
     let started = std::time::Instant::now();
     let observation = observe_invocations(&config)?;
-    assert!(started.elapsed() < Duration::from_secs(45), "supervision must bound the hung runner");
+    color_eyre::eyre::ensure!(
+        started.elapsed() < Duration::from_secs(45),
+        "supervision must bound the hung runner"
+    );
     let parent = observation
         .parent
         .as_ref()
         .ok_or_else(|| color_eyre::eyre::eyre!("the timed-out parent stays retained"))?;
-    assert_eq!(parent.payload.state, DiscoveryObservationState::TimedOut);
+    require_equal(
+        &(parent.payload.state),
+        &(DiscoveryObservationState::TimedOut),
+        "capture contract",
+    )?;
     let trace = observation
         .trace
         .as_ref()
         .ok_or_else(|| color_eyre::eyre::eyre!("the un-terminated trace stays retained"))?;
-    assert!(!trace.payload.trace_decode.is_complete());
-    assert_eq!(trace.payload.rows.len(), 1);
-    assert_eq!(trace.payload.rows[0].state, InvocationObservationState::NotProven);
-    assert_eq!(observation.work.payload.state, InstrumentationState::NotProven);
+    color_eyre::eyre::ensure!(
+        !trace.payload.trace_decode.is_complete(),
+        "capture contract failed: {}",
+        stringify!(!trace.payload.trace_decode.is_complete())
+    );
+    require_equal(&(trace.payload.rows.len()), &(1), "capture contract")?;
+    require_equal(
+        &(required_item(&trace.payload.rows, 0)?.state),
+        &(InvocationObservationState::NotProven),
+        "capture contract",
+    )?;
+    require_equal(
+        &(observation.work.payload.state),
+        &(InstrumentationState::NotProven),
+        "capture contract",
+    )?;
     Ok(())
 }
 
@@ -801,8 +1121,10 @@ fn patch_drift_missing_and_ambiguous_anchors_refuse_before_any_process() -> Resu
     // Subject drift: the spec pins another ordinary digest.
     let mut drifted_spec_raw = serde_json::to_value(&spec_from(&fs::read_to_string(
         &write_patch_spec(temp.path(), ORDINARY_ARTIFACT)?,
-    )?))?;
-    drifted_spec_raw["expected_ordinary_sha256"] =
+    )?)?)?;
+    *drifted_spec_raw
+        .get_mut("expected_ordinary_sha256")
+        .ok_or_else(|| color_eyre::eyre::eyre!("missing specification digest"))? =
         serde_json::Value::String(sha_hex(b"#!./perl\n# drifted\n"));
     let drifted_path = temp.path().join("drifted-spec.json");
     fs::write(&drifted_path, serde_json::to_vec(&drifted_spec_raw)?)?;
@@ -810,22 +1132,26 @@ fn patch_drift_missing_and_ambiguous_anchors_refuse_before_any_process() -> Resu
     let Err(error) = observe_invocations(&config) else {
         bail!("patch subject drift must refuse the capture");
     };
-    assert!(
+    color_eyre::eyre::ensure!(
         error.to_string().contains("source drift is rejected"),
         "drift refusal must name the law: {error}"
     );
 
     // Missing anchor: exact bytes absent from the artifact.
     let mut missing_spec =
-        spec_from(&fs::read_to_string(&write_patch_spec(temp.path(), ORDINARY_ARTIFACT)?)?);
-    missing_spec.operations[0].anchor = "# absent from the artifact".to_string();
+        spec_from(&fs::read_to_string(&write_patch_spec(temp.path(), ORDINARY_ARTIFACT)?)?)?;
+    missing_spec
+        .operations
+        .first_mut()
+        .ok_or_else(|| color_eyre::eyre::eyre!("missing patch operation"))?
+        .anchor = "# absent from the artifact".to_string();
     let missing_path = temp.path().join("missing-spec.json");
     fs::write(&missing_path, serde_json::to_vec(&missing_spec)?)?;
     let config = config_for(&tree, &missing_path, temp.path(), "component_base", default_limits());
     let Err(error) = observe_invocations(&config) else {
         bail!("a missing anchor must refuse the capture");
     };
-    assert!(
+    color_eyre::eyre::ensure!(
         error.to_string().contains("anchors on bytes absent"),
         "missing-anchor refusal: {error}"
     );
@@ -833,7 +1159,7 @@ fn patch_drift_missing_and_ambiguous_anchors_refuse_before_any_process() -> Resu
     // Ambiguous anchor: the anchor occurs twice in the artifact.
     let ambiguous_artifact = format!("{ORDINARY_ARTIFACT}{ORDINARY_ANCHOR}\n");
     let mut ambiguous_spec =
-        spec_from(&fs::read_to_string(&write_patch_spec(temp.path(), ORDINARY_ARTIFACT)?)?);
+        spec_from(&fs::read_to_string(&write_patch_spec(temp.path(), ORDINARY_ARTIFACT)?)?)?;
     ambiguous_spec.expected_ordinary_sha256 = sha_hex(ambiguous_artifact.as_bytes());
     let ambiguous_path = temp.path().join("ambiguous-spec.json");
     fs::write(&ambiguous_path, serde_json::to_vec(&ambiguous_spec)?)?;
@@ -843,12 +1169,19 @@ fn patch_drift_missing_and_ambiguous_anchors_refuse_before_any_process() -> Resu
     let Err(error) = observe_invocations(&config) else {
         bail!("an ambiguous anchor must refuse the capture");
     };
-    assert!(error.to_string().contains("anchors 2 times"), "ambiguous-anchor refusal: {error}");
+    color_eyre::eyre::ensure!(
+        error.to_string().contains("anchors 2 times"),
+        "ambiguous-anchor refusal: {error}"
+    );
     // The pure patch tool carries the same typed refusals.
     let Err(error) = apply_exact_patch(ORDINARY_ARTIFACT.as_bytes(), &ambiguous_spec) else {
         bail!("the pure tool must refuse a drifted subject");
     };
-    assert!(error.message().contains("measures"));
+    color_eyre::eyre::ensure!(
+        error.message().contains("measures"),
+        "capture contract failed: {}",
+        stringify!(error.message().contains("measures"))
+    );
     Ok(())
 }
 
@@ -868,7 +1201,7 @@ fn unadmitted_routes_and_targets_refuse_before_any_process() -> Result<()> {
     let Err(error) = observe_invocations(&harness_config) else {
         bail!("t/harness must refuse the instrumentation route");
     };
-    assert!(
+    color_eyre::eyre::ensure!(
         error.to_string().contains("not an admitted instrumentation route"),
         "unexpected runner refusal: {error}"
     );
@@ -882,7 +1215,10 @@ fn unadmitted_routes_and_targets_refuse_before_any_process() -> Result<()> {
         let Err(error) = observe_invocations(&config) else {
             bail!("{target_id} must refuse the instrumentation route");
         };
-        assert!(error.to_string().contains(fragment), "unexpected {target_id} refusal: {error}");
+        color_eyre::eyre::ensure!(
+            error.to_string().contains(fragment),
+            "unexpected {target_id} refusal: {error}"
+        );
     }
     Ok(())
 }
@@ -901,10 +1237,22 @@ fn ordinary_tree_is_never_modified_and_stays_ordinary() -> Result<()> {
 
     // The pinned ordinary artifact bytes are untouched, and no trace channel
     // or patch residue entered the original tree.
-    assert_eq!(fs::read_to_string(tree.join("t").join("TEST"))?, ORDINARY_ARTIFACT);
-    assert!(!tree.join("t").join(".perl-core-harness-trace.jsonl").exists());
+    require_equal(
+        &(fs::read_to_string(tree.join("t").join("TEST"))?),
+        &(ORDINARY_ARTIFACT),
+        "capture contract",
+    )?;
+    color_eyre::eyre::ensure!(
+        !tree.join("t").join(".perl-core-harness-trace.jsonl").exists(),
+        "capture contract failed: {}",
+        stringify!(!tree.join("t").join(".perl-core-harness-trace.jsonl").exists())
+    );
     let work = load_work(&config.work_output)?;
-    assert!(work.payload.cleanup.is_proven());
+    color_eyre::eyre::ensure!(
+        work.payload.cleanup.is_proven(),
+        "capture contract failed: {}",
+        stringify!(work.payload.cleanup.is_proven())
+    );
 
     // The landed ordinary route on the same tree keeps its distinct identity:
     // instrumentation_id absent, ordinary artifact digest, own nonce.
@@ -923,17 +1271,21 @@ fn ordinary_tree_is_never_modified_and_stays_ordinary() -> Result<()> {
             limits: default_limits(),
         },
     )?;
-    assert_eq!(ordinary.payload.subject.instrumentation_id, None);
-    assert_eq!(
-        ordinary.payload.invocation.runner_artifact.content_sha256,
-        sha_hex(ORDINARY_ARTIFACT.as_bytes())
-    );
-    assert_ne!(
-        ordinary.payload.invocation.runner_artifact.content_sha256,
-        work.payload.instrumented_artifact.content_sha256,
+    require_equal(&(ordinary.payload.subject.instrumentation_id), &(None), "capture contract")?;
+    require_equal(
+        &(ordinary.payload.invocation.runner_artifact.content_sha256),
+        &(sha_hex(ORDINARY_ARTIFACT.as_bytes())),
+        "capture contract",
+    )?;
+    color_eyre::eyre::ensure!(
+        &(ordinary.payload.invocation.runner_artifact.content_sha256)
+            != &(work.payload.instrumented_artifact.content_sha256),
         "the instrumented artifact must never stand in for the ordinary one"
     );
-    assert_ne!(ordinary.payload.terminal.process_nonce, work.payload.process_nonce);
+    color_eyre::eyre::ensure!(
+        &(ordinary.payload.terminal.process_nonce) != &(work.payload.process_nonce),
+        "expected distinct capture values"
+    );
     Ok(())
 }
 
@@ -957,9 +1309,20 @@ fn the_fixture_refuses_an_unpatched_artifact_digest() -> Result<()> {
         .env("PERL_CORE_HARNESS_TRACE_TARGET", "component_base")
         .env("PERL_CORE_HARNESS_TRACE_INSTRUMENTATION", INSTRUMENTATION_ID)
         .output()?;
-    assert_eq!(output.status.code(), Some(66), "the fixture must refuse a foreign artifact");
-    assert!(String::from_utf8_lossy(&output.stderr).contains("measures"));
-    assert!(!t_dir.join(".trace.jsonl").exists(), "no trace may be emitted for a foreign subject");
+    require_equal(
+        &(output.status.code()),
+        &(Some(66)),
+        &format!("the fixture must refuse a foreign artifact"),
+    )?;
+    color_eyre::eyre::ensure!(
+        String::from_utf8_lossy(&output.stderr).contains("measures"),
+        "capture contract failed: {}",
+        stringify!(String::from_utf8_lossy(&output.stderr).contains("measures"))
+    );
+    color_eyre::eyre::ensure!(
+        !t_dir.join(".trace.jsonl").exists(),
+        "no trace may be emitted for a foreign subject"
+    );
     Ok(())
 }
 
@@ -978,22 +1341,42 @@ fn a_partial_parent_never_completes_on_trace_evidence_alone() -> Result<()> {
         .parent
         .as_ref()
         .ok_or_else(|| color_eyre::eyre::eyre!("the partial parent stays retained"))?;
-    assert_eq!(parent.payload.state, DiscoveryObservationState::ObservedPartial);
+    require_equal(
+        &(parent.payload.state),
+        &(DiscoveryObservationState::ObservedPartial),
+        "capture contract",
+    )?;
     let trace = observation
         .trace
         .as_ref()
         .ok_or_else(|| color_eyre::eyre::eyre!("the trace stays retained"))?;
-    assert!(trace.payload.trace_decode.is_complete());
+    color_eyre::eyre::ensure!(
+        trace.payload.trace_decode.is_complete(),
+        "capture contract failed: {}",
+        stringify!(trace.payload.trace_decode.is_complete())
+    );
     for row in &trace.payload.rows {
         if row.subject.parent_member_path == "t/comp/foreign_extra.t" {
             // The invocation of an unobserved member types itself, never
             // joins the accepted denominator.
-            assert_eq!(row.state, InvocationObservationState::SubjectMismatch);
+            require_equal(
+                &(row.state),
+                &(InvocationObservationState::SubjectMismatch),
+                "capture contract",
+            )?;
         } else {
-            assert_eq!(row.state, InvocationObservationState::ObservedComplete);
+            require_equal(
+                &(row.state),
+                &(InvocationObservationState::ObservedComplete),
+                "capture contract",
+            )?;
         }
     }
-    assert_eq!(observation.work.payload.state, InstrumentationState::ParentIncomplete);
+    require_equal(
+        &(observation.work.payload.state),
+        &(InstrumentationState::ParentIncomplete),
+        "capture contract",
+    )?;
 
     let temp = tempfile::tempdir()?;
     let tree = fixture_tree(temp.path(), "extra_member", &["if.t"])?;
@@ -1002,7 +1385,7 @@ fn a_partial_parent_never_completes_on_trace_evidence_alone() -> Result<()> {
     let Err(error) = observe_invocations_command(&config) else {
         bail!("a partial parent must not be a clean pass");
     };
-    assert!(
+    color_eyre::eyre::ensure!(
         error.to_string().contains("ParentIncomplete"),
         "typed failure must name the parent law: {error}"
     );
@@ -1016,7 +1399,11 @@ fn failed_reruns_clear_stale_successful_outputs() -> Result<()> {
     let patch = write_patch_spec(temp.path(), ORDINARY_ARTIFACT)?;
     let config = config_for(&tree, &patch, temp.path(), "component_base", default_limits());
     observe_invocations_command(&config)?;
-    assert!(config.output.is_file() && config.trace_output.is_file());
+    color_eyre::eyre::ensure!(
+        config.output.is_file() && config.trace_output.is_file(),
+        "capture contract failed: {}",
+        stringify!(config.output.is_file() && config.trace_output.is_file())
+    );
 
     // Setup errors happen before an observation exists. They must invalidate
     // receipts from the prior successful run just as a typed observation
@@ -1025,10 +1412,22 @@ fn failed_reruns_clear_stale_successful_outputs() -> Result<()> {
     let Err(error) = observe_invocations_command(&config) else {
         bail!("a malformed patch specification must fail before capture");
     };
-    assert!(error.to_string().contains("patch"), "unexpected setup error: {error}");
-    assert!(!config.output.exists(), "early errors must remove stale parent receipt");
-    assert!(!config.trace_output.exists(), "early errors must remove stale trace receipt");
-    assert!(!config.work_output.exists(), "early errors must remove stale work receipt");
+    color_eyre::eyre::ensure!(
+        error.to_string().contains("patch"),
+        "unexpected setup error: {error}"
+    );
+    color_eyre::eyre::ensure!(
+        !config.output.exists(),
+        "early errors must remove stale parent receipt"
+    );
+    color_eyre::eyre::ensure!(
+        !config.trace_output.exists(),
+        "early errors must remove stale trace receipt"
+    );
+    color_eyre::eyre::ensure!(
+        !config.work_output.exists(),
+        "early errors must remove stale work receipt"
+    );
 
     // Restore the valid specification before exercising the typed observation
     // failure below.
@@ -1040,11 +1439,19 @@ fn failed_reruns_clear_stale_successful_outputs() -> Result<()> {
     let Err(error) = observe_invocations_command(&config) else {
         bail!("an empty instrumented discovery must not be a clean pass");
     };
-    assert!(error.to_string().contains("ParentConstructionFailed"));
-    assert!(!config.output.exists(), "stale parent receipt must be removed");
-    assert!(!config.trace_output.exists(), "stale trace receipt must be removed");
+    color_eyre::eyre::ensure!(
+        error.to_string().contains("ParentConstructionFailed"),
+        "capture contract failed: {}",
+        stringify!(error.to_string().contains("ParentConstructionFailed"))
+    );
+    color_eyre::eyre::ensure!(!config.output.exists(), "stale parent receipt must be removed");
+    color_eyre::eyre::ensure!(!config.trace_output.exists(), "stale trace receipt must be removed");
     let work = load_work(&config.work_output)?;
-    assert_eq!(work.payload.state, InstrumentationState::ParentConstructionFailed);
+    require_equal(
+        &(work.payload.state),
+        &(InstrumentationState::ParentConstructionFailed),
+        "capture contract",
+    )?;
     Ok(())
 }
 
@@ -1055,9 +1462,21 @@ fn early_patch_failure_clears_all_stale_successful_outputs() -> Result<()> {
     let patch = write_patch_spec(temp.path(), ORDINARY_ARTIFACT)?;
     let config = config_for(&tree, &patch, temp.path(), "component_base", default_limits());
     observe_invocations_command(&config)?;
-    assert!(config.output.is_file());
-    assert!(config.trace_output.is_file());
-    assert!(config.work_output.is_file());
+    color_eyre::eyre::ensure!(
+        config.output.is_file(),
+        "capture contract failed: {}",
+        stringify!(config.output.is_file())
+    );
+    color_eyre::eyre::ensure!(
+        config.trace_output.is_file(),
+        "capture contract failed: {}",
+        stringify!(config.trace_output.is_file())
+    );
+    color_eyre::eyre::ensure!(
+        config.work_output.is_file(),
+        "capture contract failed: {}",
+        stringify!(config.work_output.is_file())
+    );
 
     // Patch decoding fails before any supervised capture starts. The prior
     // successful receipts must nevertheless be absent, so they cannot be
@@ -1066,13 +1485,13 @@ fn early_patch_failure_clears_all_stale_successful_outputs() -> Result<()> {
     let Err(error) = observe_invocations_command(&config) else {
         bail!("an invalid patch specification must refuse before capture");
     };
-    assert!(
+    color_eyre::eyre::ensure!(
         error.to_string().contains("decoding patch specification"),
         "expected the early patch failure, got: {error}"
     );
-    assert!(!config.output.exists(), "stale parent receipt must be removed");
-    assert!(!config.trace_output.exists(), "stale trace receipt must be removed");
-    assert!(!config.work_output.exists(), "stale work receipt must be removed");
+    color_eyre::eyre::ensure!(!config.output.exists(), "stale parent receipt must be removed");
+    color_eyre::eyre::ensure!(!config.trace_output.exists(), "stale trace receipt must be removed");
+    color_eyre::eyre::ensure!(!config.work_output.exists(), "stale work receipt must be removed");
     Ok(())
 }
 
@@ -1088,11 +1507,11 @@ fn outputs_cannot_alias_the_matrix_or_the_reviewed_patch() -> Result<()> {
     let Err(error) = observe_invocations(&aliased_patch) else {
         bail!("an output aliasing the reviewed patch must refuse");
     };
-    assert!(
+    color_eyre::eyre::ensure!(
         error.to_string().contains("destination") || error.to_string().contains("alias"),
         "unexpected alias refusal: {error}"
     );
-    assert!(patch.is_file(), "the patch must survive the refusal");
+    color_eyre::eyre::ensure!(patch.is_file(), "the patch must survive the refusal");
 
     let mut aliased_matrix =
         config_for(&tree, &patch, temp.path(), "component_base", default_limits());
@@ -1112,21 +1531,25 @@ fn validation_binds_the_exact_supplied_specification() -> Result<()> {
         let path = write_patch_spec(temp.path(), ORDINARY_ARTIFACT)?;
         fs::read_to_string(path)?
     };
-    let spec = spec_from(&spec_raw);
+    let spec = spec_from(&spec_raw)?;
     validate_instrumentation_work(work, ORDINARY_ARTIFACT.as_bytes(), spec_raw.as_bytes())
         .map_err(|error| color_eyre::eyre::eyre!(error))?;
 
     // A different specification with the same patched bytes never validates
     // this receipt.
     let mut other = spec.clone();
-    other.operations[0].label = "relabelled-operation".to_string();
+    other
+        .operations
+        .first_mut()
+        .ok_or_else(|| color_eyre::eyre::eyre!("missing patch operation"))?
+        .label = "relabelled-operation".to_string();
     let other_bytes = serde_json::to_vec(&other)?;
     let Err(error) =
         validate_instrumentation_work(work, ORDINARY_ARTIFACT.as_bytes(), &other_bytes)
     else {
         bail!("a foreign specification must refuse validation");
     };
-    assert!(
+    color_eyre::eyre::ensure!(
         error.contains("does not bind the supplied specification"),
         "unexpected refusal: {error}"
     );
@@ -1141,15 +1564,22 @@ fn validation_hashes_the_specification_bytes_the_capture_read() -> Result<()> {
     let temp = tempfile::tempdir()?;
     let tree = fixture_tree(temp.path(), "clean", &["if.t"])?;
     let compact_path = write_patch_spec(temp.path(), ORDINARY_ARTIFACT)?;
-    let spec = spec_from(&fs::read_to_string(&compact_path)?);
+    let spec = spec_from(&fs::read_to_string(&compact_path)?)?;
     let pretty_bytes = serde_json::to_vec_pretty(&spec)?;
-    assert_ne!(pretty_bytes, serde_json::to_vec(&spec)?);
+    color_eyre::eyre::ensure!(
+        &(pretty_bytes) != &(serde_json::to_vec(&spec)?),
+        "expected distinct capture values"
+    );
     let pretty_path = temp.path().join("patch-spec-pretty.json");
     fs::write(&pretty_path, &pretty_bytes)?;
     let config = config_for(&tree, &pretty_path, temp.path(), "component_base", default_limits());
     let observation = observe_invocations(&config)?;
     let work = &observation.work;
-    assert_eq!(work.payload.patch.spec_sha256, sha_hex(&pretty_bytes));
+    require_equal(
+        &(work.payload.patch.spec_sha256),
+        &(sha_hex(&pretty_bytes)),
+        "capture contract",
+    )?;
     validate_instrumentation_work(work, ORDINARY_ARTIFACT.as_bytes(), &pretty_bytes)
         .map_err(|error| color_eyre::eyre::eyre!(error))?;
     let Err(error) = validate_instrumentation_work(
@@ -1159,7 +1589,7 @@ fn validation_hashes_the_specification_bytes_the_capture_read() -> Result<()> {
     ) else {
         bail!("re-serialized specification bytes must refuse validation");
     };
-    assert!(
+    color_eyre::eyre::ensure!(
         error.contains("does not bind the supplied specification"),
         "unexpected refusal: {error}"
     );
@@ -1191,10 +1621,10 @@ fn validation_refuses_a_stale_or_tampered_manifest() -> Result<()> {
     let after = resign(&|receipt| {
         receipt.payload.manifest_after.insert("t/TEST".to_string(), stale_digest.clone());
     })?;
-    assert!(after.contains("manifest_after"), "unexpected refusal: {after}");
+    color_eyre::eyre::ensure!(after.contains("manifest_after"), "unexpected refusal: {after}");
     let before = resign(&|receipt| {
         receipt.payload.manifest_before.insert("t/TEST".to_string(), stale_digest.clone());
     })?;
-    assert!(before.contains("manifest_before"), "unexpected refusal: {before}");
+    color_eyre::eyre::ensure!(before.contains("manifest_before"), "unexpected refusal: {before}");
     Ok(())
 }
