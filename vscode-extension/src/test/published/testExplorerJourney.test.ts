@@ -90,6 +90,8 @@ suite('Installed Test Explorer prove journey', function () {
       const runDeadline = Math.min(deadline, Date.now() + 10_000);
       let runAttempts = 0;
       let ranFixture = false;
+      // Refresh awaits discovery, but VS Code publishes TestItemCollection diffs on a debounce;
+      // each runAll is awaited before the next eligibility attempt, and the marker guards repeats.
       while (Date.now() < runDeadline) {
         runAttempts += 1;
         await vscode.commands.executeCommand('testing.runAll');
