@@ -110,11 +110,12 @@ describe('test adapter TAP parsing', () => {
 
 describe('bounded prove process execution', () => {
   test.each([
-    ['ASCII and metacharacters', 'selected space & [1] {a,b}.t'],
-    ['Unicode and metacharacters', 'selected café_日本語 [1] {a,b}.t'],
+    ['ASCII and metacharacters', 'selected space & [1] {a,b}.t', false],
+    ['Unicode and metacharacters', 'selected café_日本語 [1] {a,b}.t', false],
+    ['ASCII file removed after discovery', 'selected-removed [1] {a,b}.t', true],
   ])(
     'runs the registered Test Explorer profile with the selected file on stdin (%s)',
-    async (label, fixtureName) => {
+    async (label, fixtureName, removeBeforeRun) => {
       if (process.platform !== 'win32') {
         return;
       }
@@ -160,6 +161,9 @@ describe('bounded prove process execution', () => {
       const previousMarker = process.env.PERL_LSP_SELECTED_MARKER;
       process.env.PERL_LSP_SELECTED_MARKER = marker;
       try {
+        if (removeBeforeRun) {
+          fs.rmSync(fixture);
+        }
         await profile(
           { include: [fileItem] },
           {
@@ -168,8 +172,15 @@ describe('bounded prove process execution', () => {
           },
         );
         const run = controller.createTestRun.mock.results[0]?.value;
-        if (label === 'Unicode and metacharacters') {
-          expect(fs.existsSync(marker)).toBe(false);
+        if (fs.existsSync(marker)) {
+          expect(fs.readFileSync(marker, 'utf8').trim()).toBe(path.normalize(fixture));
+          expect(run.passed).toHaveBeenCalledWith(fileItem, expect.any(Number));
+          expect(run.errored).not.toHaveBeenCalled();
+          expect(run.failed).not.toHaveBeenCalled();
+        } else {
+          expect(label).toMatch(/Unicode|removed/);
+          expect(run.passed).not.toHaveBeenCalled();
+          expect(run.failed).not.toHaveBeenCalled();
           expect(run.errored).toHaveBeenCalledWith(
             fileItem,
             expect.objectContaining({
@@ -178,14 +189,11 @@ describe('bounded prove process execution', () => {
             expect.any(Number),
           );
           expect(run.errored.mock.calls[0][1].message).toContain(
-            'selected path contains non-ASCII characters',
+            removeBeforeRun
+              ? `The Perl test harness could not open the selected file ${path.normalize(fixture)}`
+              : 'selected path contains non-ASCII characters',
           );
-          expect(run.passed).not.toHaveBeenCalled();
-          expect(run.failed).not.toHaveBeenCalled();
-        } else {
-          expect(fs.readFileSync(marker, 'utf8').trim()).toBe(path.normalize(fixture));
-          expect(run.passed).toHaveBeenCalledWith(fileItem, expect.any(Number));
-          expect(run.errored).not.toHaveBeenCalled();
+          expect(run.errored.mock.calls[0][1].message).toContain('Cannot detect source of');
         }
       } finally {
         if (previousMarker === undefined) delete process.env.PERL_LSP_SELECTED_MARKER;
