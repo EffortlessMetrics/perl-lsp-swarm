@@ -94,6 +94,7 @@ interface ActiveClient<TClient extends LifecycleClient<TEvent>, TEvent = unknown
   readonly client: TClient;
   readonly serverPath: string;
   readonly generation: number;
+  startupSettled: boolean;
   listener: LifecycleDisposable | undefined;
 }
 
@@ -140,6 +141,7 @@ export class LanguageClientLifecycle<TClient extends LifecycleClient<TEvent>, TE
   private startPromise: Promise<TClient | undefined> | undefined;
   private restartPromise: Promise<TClient | undefined> | undefined;
   private stopPromise: Promise<void> | undefined;
+  private stopIntent = 0;
   private replacementBlockedError: unknown | undefined;
   private blockedProcessCleanup: BlockedProcessCleanup<TClient> | undefined;
   private readonly cleanupPromises = new WeakMap<TClient, Promise<CleanupResult>>();
@@ -189,6 +191,7 @@ export class LanguageClientLifecycle<TClient extends LifecycleClient<TEvent>, TE
 
   /** Stop the current generation and invalidate all pending startup work. */
   stop(): Promise<void> {
+    this.stopIntent += 1;
     if (this.stopPromise) {
       return this.stopPromise;
     }
@@ -275,6 +278,7 @@ export class LanguageClientLifecycle<TClient extends LifecycleClient<TEvent>, TE
         client,
         serverPath,
         generation: startGeneration,
+        startupSettled: false,
         listener: undefined,
       };
       this.activeClient = active;
@@ -290,6 +294,7 @@ export class LanguageClientLifecycle<TClient extends LifecycleClient<TEvent>, TE
       if (!startResult.completed) {
         throw startResult.error;
       }
+      active.startupSettled = true;
       if (this.hooks.isClientRunning && !this.hooks.isClientRunning(client)) {
         throw new LanguageClientLifecycleError(
           'Language client stopped before startup completed.',
@@ -361,7 +366,11 @@ export class LanguageClientLifecycle<TClient extends LifecycleClient<TEvent>, TE
   }
 
   private async runRestart(): Promise<TClient | undefined> {
+    const expectedStopIntent = this.stopIntent + 1;
     await this.stop();
+    if (this.stopIntent !== expectedStopIntent) {
+      return undefined;
+    }
     if (this.replacementBlockedError !== undefined) {
       throw this.replacementBlockedFailure();
     }
@@ -465,6 +474,7 @@ export class LanguageClientLifecycle<TClient extends LifecycleClient<TEvent>, TE
 
     if (
       clientCallsComplete &&
+      active.startupSettled &&
       this.hooks.isClientTerminal &&
       !stopCleanupComplete &&
       witness !== undefined
@@ -483,7 +493,8 @@ export class LanguageClientLifecycle<TClient extends LifecycleClient<TEvent>, TE
 
   private async retryBlockedProcessCleanup(): Promise<CleanupResult> {
     const blocked = this.blockedProcessCleanup;
-    if (!blocked || !this.hooks.isClientTerminal) {
+    const isClientTerminal = this.hooks.isClientTerminal;
+    if (!blocked || !isClientTerminal) {
       return {
         error: this.replacementBlockedError,
         clientCleanupComplete: false,
@@ -492,7 +503,7 @@ export class LanguageClientLifecycle<TClient extends LifecycleClient<TEvent>, TE
 
     let terminal = false;
     const result = await this.runBounded('terminal check', async () => {
-      terminal = (await this.hooks.isClientTerminal!(blocked.client, blocked.witness)) === true;
+      terminal = (await isClientTerminal(blocked.client, blocked.witness)) === true;
     });
     if (!result.completed || !terminal) {
       return {
