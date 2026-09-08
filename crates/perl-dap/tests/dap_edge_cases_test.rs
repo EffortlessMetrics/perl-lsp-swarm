@@ -498,12 +498,22 @@ fn test_dap_attach_process_id_mode_is_refused() -> TestResult {
     let response = adapter.handle_request(1, "attach", Some(attach_args));
     match response {
         DapMessage::Response { success, command, body, message, .. } => {
-            assert_eq!(command, "attach");
-            assert!(!success, "PID attach must be refused (#8109)");
-            assert!(body.is_none(), "refusal must not carry an attach body");
+            if command != "attach" {
+                return Err(format!("expected attach response command, got {command}").into());
+            }
+            if success {
+                return Err("PID attach must be refused (#8109)".into());
+            }
+            if body.is_some() {
+                return Err("refusal must not carry an attach body".into());
+            }
             let msg = message.ok_or("Expected refusal message")?;
-            assert!(msg.contains("not supported"), "refusal must name the disposition: {msg}");
-            assert!(msg.contains("8109"), "refusal must cite the owning issue: {msg}");
+            if !msg.contains("not supported") {
+                return Err(format!("refusal must name the disposition: {msg}").into());
+            }
+            if !msg.contains("8109") {
+                return Err(format!("refusal must cite the owning issue: {msg}").into());
+            }
         }
         _ => return Err("Expected attach response".into()),
     }
