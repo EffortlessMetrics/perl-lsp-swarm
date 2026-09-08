@@ -117,6 +117,45 @@ fn a_fully_read_unencumbered_subject_is_admitted() -> Result<(), Box<dyn std::er
     Ok(())
 }
 
+#[test]
+fn missing_parent_fork_evidence_is_an_error() -> Result<(), Box<dyn std::error::Error>> {
+    let parent = merged_parent_json().replace(",\"isCrossRepository\":false", "");
+    let commands = healthy().on("gh pr view 7799", &parent);
+    if collect_request(&commands, 7799, "origin").is_ok() {
+        return Err("missing parent fork evidence was accepted".into());
+    }
+    Ok(())
+}
+
+#[test]
+fn malformed_parent_fork_evidence_is_an_error() -> Result<(), Box<dyn std::error::Error>> {
+    for value in ["null", "\"false\"", "0", "[]", "{}"] {
+        let parent = merged_parent_json()
+            .replace("\"isCrossRepository\":false", &format!("\"isCrossRepository\":{value}"));
+        let commands = healthy().on("gh pr view 7799", &parent);
+        if collect_request(&commands, 7799, "origin").is_ok() {
+            return Err(format!("non-boolean parent fork evidence was accepted: {value}").into());
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn duplicate_parent_fork_evidence_is_an_error() -> Result<(), Box<dyn std::error::Error>> {
+    for fields in [
+        r#""isCrossRepository":false,"isCrossRepository":true"#,
+        r#""isCrossRepository":true,"isCrossRepository":false"#,
+        r#""isCrossRepository":false,"isCrossRepository":false"#,
+    ] {
+        let parent = merged_parent_json().replace("\"isCrossRepository\":false", fields);
+        let commands = healthy().on("gh pr view 7799", &parent);
+        if collect_request(&commands, 7799, "origin").is_ok() {
+            return Err(format!("duplicate parent fork evidence was accepted: {fields}").into());
+        }
+    }
+    Ok(())
+}
+
 /// Repository identity is derived from the remote, not supplied by the
 /// caller, so a live plan cannot be aimed at a repository the child check
 /// never covered.
