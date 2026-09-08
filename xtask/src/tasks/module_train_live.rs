@@ -2874,8 +2874,8 @@ pub fn run_refresh(output: &Path, from_fixture: Option<&Path>) -> Result<()> {
         }
     };
     let loaded = load_manifest()?;
-    let source = RepoTreeSource::from_project_root()?;
     let binding = tree_binding("HEAD")?;
+    let source = RepoTreeSource::from_project_root_at_revision(binding.tree_head.clone())?;
     let probe = TreeProbe {
         source: &source,
         head: Some(binding.tree_head),

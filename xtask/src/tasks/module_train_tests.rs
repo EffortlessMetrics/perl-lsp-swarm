@@ -804,6 +804,43 @@ fn adding_existing_fixture_content_is_rejected() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn pinned_tree_source_ignores_worktree_edit_after_capture() -> Result<()> {
+    let repo = tempfile::tempdir()?;
+    let path = repo.path().join("probe.rs");
+    std::fs::write(&path, "fn captured() {}\n")?;
+    for args in [
+        vec!["init", "-q"],
+        vec!["config", "user.email", "test@example.invalid"],
+        vec!["config", "user.name", "test"],
+        vec!["add", "probe.rs"],
+        vec!["commit", "-qm", "capture"],
+    ] {
+        let output =
+            std::process::Command::new("git").args(args).current_dir(repo.path()).output()?;
+        if !output.status.success() {
+            bail!("git {:?} failed: {}", args, String::from_utf8_lossy(&output.stderr));
+        }
+    }
+    let head = std::process::Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(repo.path())
+        .output()?;
+    if !head.status.success() {
+        bail!("git rev-parse HEAD failed");
+    }
+    let head = String::from_utf8(head.stdout)?.trim().to_string();
+    std::fs::write(&path, "fn edited() {}\n")?;
+    let source = RepoTreeSource::from_root_at_revision(repo.path().to_path_buf(), head)?;
+    let captured = source
+        .read_text("probe.rs")?
+        .ok_or_else(|| color_eyre::eyre::eyre!("captured probe path must exist"))?;
+    if captured != "fn captured() {}\n" {
+        bail!("pinned source read the mutable worktree instead of the captured tree");
+    }
+    Ok(())
+}
+
 /// Wrong-subject control: C03's live `explain` composes a live addendum and is
 /// a different subject from C02's offline static packet. It must not satisfy
 /// C02's residual component.

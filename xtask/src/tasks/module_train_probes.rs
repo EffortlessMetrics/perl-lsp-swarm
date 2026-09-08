@@ -9,6 +9,7 @@
 //! makes that impossible by construction. The guard test
 //! `no_selector_targets_the_registry_that_declares_it` pins the rule.
 
+use crate::tasks::staged::{StagedPathText, read_staged_path_text};
 use color_eyre::eyre::{Context, Result, bail};
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -42,12 +43,27 @@ pub trait TreeSource {
 /// loaded from, never the ambient process working directory.
 pub struct RepoTreeSource {
     root: PathBuf,
+    revision: Option<String>,
     cache: RefCell<BTreeMap<String, Option<String>>>,
 }
 
 impl RepoTreeSource {
     pub fn from_project_root() -> Result<Self> {
-        Ok(Self { root: crate::utils::project_root()?, cache: RefCell::new(BTreeMap::new()) })
+        Self::from_root(crate::utils::project_root()?, None)
+    }
+
+    /// Read an immutable captured tree object through the existing staged-tree
+    /// reader. The live refresh path uses this after binding HEAD.
+    pub(crate) fn from_project_root_at_revision(revision: String) -> Result<Self> {
+        Self::from_root(crate::utils::project_root()?, Some(revision))
+    }
+
+    pub(crate) fn from_root_at_revision(root: PathBuf, revision: String) -> Result<Self> {
+        Self::from_root(root, Some(revision))
+    }
+
+    fn from_root(root: PathBuf, revision: Option<String>) -> Result<Self> {
+        Ok(Self { root, revision, cache: RefCell::new(BTreeMap::new()) })
     }
 }
 
@@ -56,18 +72,29 @@ impl TreeSource for RepoTreeSource {
         if let Some(cached) = self.cache.borrow().get(relative) {
             return Ok(cached.clone());
         }
-        let path = self.root.join(relative);
-        let text = match std::fs::read(&path) {
-            Ok(bytes) => {
-                let text = String::from_utf8(bytes).with_context(|| {
-                    format!("probe selector target {relative} is not valid UTF-8")
-                })?;
-                Some(text)
+        let text = if let Some(revision) = &self.revision {
+            match read_staged_path_text(&self.root, relative, Some(revision))? {
+                StagedPathText::Present(text) => Some(text),
+                StagedPathText::Absent => None,
+                StagedPathText::Binary => {
+                    bail!("probe selector target {relative} in {revision} is not valid UTF-8")
+                }
             }
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
-            Err(err) => {
-                return Err(err)
-                    .with_context(|| format!("failed to read probe selector target {relative}"));
+        } else {
+            let path = self.root.join(relative);
+            match std::fs::read(&path) {
+                Ok(bytes) => {
+                    let text = String::from_utf8(bytes).with_context(|| {
+                        format!("probe selector target {relative} is not valid UTF-8")
+                    })?;
+                    Some(text)
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+                Err(err) => {
+                    return Err(err).with_context(|| {
+                        format!("failed to read probe selector target {relative}")
+                    });
+                }
             }
         };
         self.cache.borrow_mut().insert(relative.to_string(), text.clone());
