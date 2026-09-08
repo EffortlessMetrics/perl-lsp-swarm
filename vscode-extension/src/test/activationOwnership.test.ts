@@ -72,9 +72,7 @@ const HEALTH_WIDGET_CHILD_LABELS = [
   'health:watcher:**/*.psgi:delete',
 ] as const;
 
-function creationOrder(): string[] {
-  return tracked.map((entry) => entry.label);
-}
+const LEGACY_MIGRATION_FOLDER_LABEL = 'watcher:legacy-migration-folders';
 
 function disposedLabels(): string[] {
   return [...disposedOrder];
@@ -146,10 +144,10 @@ function trackHealthWidgetFactories(): void {
   );
   const workspace = vscode.workspace as unknown as Record<string, unknown>;
   if (typeof workspace.onDidChangeWorkspaceFolders === 'function') {
-    trackDisposableFactory(
-      workspace,
-      'onDidChangeWorkspaceFolders',
-      () => 'health:workspace-folders',
+    trackDisposableFactory(workspace, 'onDidChangeWorkspaceFolders', () =>
+      activeDisposableOwner === 'health-widget-data-source'
+        ? 'health:workspace-folders'
+        : LEGACY_MIGRATION_FOLDER_LABEL,
     );
   }
 
@@ -328,15 +326,15 @@ describe('transactional production activation (#7854)', () => {
     // Every mandatory resource created before the failure was disposed, in
     // exact reverse creation order; retained support surfaces (the four
     // support commands and the output channel) were not.
-    const disposalOrder = disposedLabels();
     const retained = [...RETAINED_LABELS, 'output-channel'];
-    const componentLabels = new Set<string>(HEALTH_WIDGET_CHILD_LABELS);
-    const mandatory = creationOrder().filter(
-      (label) => !retained.includes(label) && !componentLabels.has(label),
+    const componentOwned = tracked.filter((entry) => entry.owner === 'health-widget-data-source');
+    const mandatory = tracked.filter(
+      (entry) => !componentOwned.includes(entry) && !retained.includes(entry.label),
     );
-    expect(disposalOrder.filter((label) => !componentLabels.has(label))).toEqual(
+    expect(disposedEntries.filter((entry) => !componentOwned.includes(entry))).toEqual(
       [...mandatory].reverse(),
     );
+    const disposalOrder = disposedLabels();
     for (const label of RETAINED_LABELS) {
       expect(disposalOrder).not.toContain(label);
     }
@@ -409,11 +407,12 @@ describe('transactional production activation (#7854)', () => {
 
     // The real terminal path still tears the committed runtime down fully.
     await deactivate();
-    const componentLabels = new Set<string>(HEALTH_WIDGET_CHILD_LABELS);
-    const hostCreationOrder = creationOrder().filter((label) => !componentLabels.has(label));
-    expect(disposedLabels().filter((label) => !componentLabels.has(label))).toEqual(
-      [...hostCreationOrder].reverse(),
+    const componentOwned = tracked.filter((entry) => entry.owner === 'health-widget-data-source');
+    const hostOwned = tracked.filter((entry) => !componentOwned.includes(entry));
+    expect(disposedEntries.filter((entry) => hostOwned.includes(entry))).toEqual(
+      [...hostOwned].reverse(),
     );
+    expect(disposedEntries).toHaveLength(tracked.length);
     expect(_extensionActivationStateForTest()?.lastCleanupReceipt?.terminal_state).toBe(
       'deactivated',
     );
@@ -443,6 +442,11 @@ describe('transactional production activation (#7854)', () => {
     const componentOwned = tracked.filter((entry) => entry.owner === 'health-widget-data-source');
     expect(componentOwned.map((entry) => entry.label)).toEqual([...HEALTH_WIDGET_CHILD_LABELS]);
     expect(componentOwned).toHaveLength(HEALTH_WIDGET_CHILD_LABELS.length);
+    const legacyFolderEntries = tracked.filter(
+      (entry) => entry.label === LEGACY_MIGRATION_FOLDER_LABEL,
+    );
+    expect(legacyFolderEntries).toHaveLength(1);
+    expect(legacyFolderEntries[0]?.owner).toBeUndefined();
     expect(startedHealthWidgetDataSource).toBeDefined();
     expect(hostArray).toContain(startedHealthWidgetDataSource);
     for (const entry of componentOwned) {
