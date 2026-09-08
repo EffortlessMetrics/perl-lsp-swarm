@@ -4,5 +4,6 @@ kind: Fixed
 body: "Language-client shutdown now retains the spawned server process witness so Run Health Check can distinguish a live failed process from a safely exited one before retrying startup."
 time: 2026-09-08T00:00:00Z
 custom:
+  PR: "15162"
   Slug: retained-process-witness-adapter
   Breaking: "no"
