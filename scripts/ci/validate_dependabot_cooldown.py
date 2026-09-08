@@ -69,7 +69,8 @@ def validate(root: Path) -> list[str]:
         except RuntimeError as exc:
             findings.append(f"guide-unreadable: {exc}")
             continue
-        if "14-day" not in text or "default-days: 14" not in text:
+        has_age = "14-day" in text or "14 days" in text
+        if not has_age or "default-days: 14" not in text:
             findings.append(
                 f"cooldown-guide-drift: {guide.as_posix()} must state the 14-day cooldown and default-days: 14"
             )
