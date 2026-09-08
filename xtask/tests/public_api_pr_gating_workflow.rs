@@ -8,6 +8,64 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+#[test]
+fn ratchet_reader_rejects_missing_unreadable_empty_and_duplicate_lists()
+-> Result<(), Box<dyn std::error::Error>> {
+    let workflow = fs::read_to_string(project_root()?.join(".github/workflows/ci.yml"))?;
+    let function = workflow
+        .split("          def ratchet_crates():")
+        .nth(1)
+        .and_then(|rest| rest.split("          def derive_prefixes():").next())
+        .ok_or("missing selector ratchet reader")?;
+    let source = format!(
+        "def ratchet_crates():{}",
+        function
+            .lines()
+            .map(|line| { format!("\n{}", line.strip_prefix("          ").unwrap_or(line)) })
+            .collect::<String>()
+    );
+    let harness = r#"
+import contextlib, io, pathlib, sys, tempfile
+exec(sys.argv[1])
+with tempfile.TemporaryDirectory() as directory:
+    root = pathlib.Path(directory)
+    cases = [
+        ('missing', None, 'cannot read'),
+        ('directory', None, 'cannot read'),
+        ('empty', '# only comments\n\n', 'lists no crates'),
+        ('duplicate', 'perl-parser\n perl-parser # repeated\n', 'duplicate'),
+        ('valid', '# facades\n perl-parser # parser\n\nperl-lsp\n', None),
+    ]
+    for name, content, diagnostic in cases:
+        path = root / name
+        if name == 'directory':
+            path.mkdir()
+        elif content is not None:
+            path.write_text(content, encoding='utf-8')
+        RATCHET_LIST = str(path)
+        errors = io.StringIO()
+        try:
+            with contextlib.redirect_stderr(errors):
+                result = ratchet_crates()
+        except SystemExit as error:
+            if diagnostic is None or error.code != 1 or diagnostic not in errors.getvalue():
+                raise RuntimeError((name, error.code, errors.getvalue()))
+        else:
+            if diagnostic is not None or result != ('perl-parser', 'perl-lsp'):
+                raise RuntimeError((name, result, 'unexpected acceptance'))
+"#;
+    let python = if cfg!(windows) { "python" } else { "python3" };
+    let output = std::process::Command::new(python).args(["-c", harness, &source]).output()?;
+    if !output.status.success() {
+        return Err(format!(
+            "selector reader proof failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        )
+        .into());
+    }
+    Ok(())
+}
+
 fn project_root() -> Result<PathBuf, Box<dyn std::error::Error>> {
     Ok(PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -384,18 +442,24 @@ fn scope_selection_is_job_level_and_never_label_gated() -> Result<(), Box<dyn st
         "ci.yml excludes the labeled event on purpose; labels must not gate its jobs"
     );
 
-    let trigger_facade_paths = [
-        "crates/perl-parser/",
-        "crates/perl-lexer/",
-        "crates/perl-parser-core/",
-        "crates/perl-lsp-rs/",
-        "crates/perl-uri/",
-        "crates/perl-dap/",
-        "crates/perllsp/",
+    // #14607: the crates the rails check directly are not restated in the
+    // workflow; the selector reads the same single list the recipes read.
+    for anchor in [
         ".ci/public-api-baselines/",
-    ];
-    for facade_path in trigger_facade_paths {
-        assert!(workflow.contains(facade_path), "scope selector must cover {facade_path}");
+        "\"ratchet-crates.txt\"",
+        "def ratchet_crates():",
+        "for crate in ratchet_crates():",
+    ] {
+        assert!(
+            workflow.contains(anchor),
+            "scope selector must derive from the ratchet list: {anchor}"
+        );
+    }
+    for stale_literal in ["\"crates/perl-parser/\",", "\"crates/perllsp/\","] {
+        assert!(
+            !workflow.contains(stale_literal),
+            "scope selector must not restate the ratchet crate list: {stale_literal}"
+        );
     }
     assert!(
         workflow.contains("api_scope=true") && workflow.contains("api_scope=false"),
@@ -667,10 +731,22 @@ fn nightly_public_api_label_is_governed_and_provisioned() -> Result<(), Box<dyn 
         .ok_or_else(|| format!("{label} must have a canonical description"))?;
 
     let provisioning = read(&root, "scripts/gh/ensure-labels.sh")?;
-    let expected = format!("ensure_reconciled \"{label}\" \"{color}\" \"{description}\"");
     assert!(
-        provisioning.lines().any(|line| line.trim() == expected),
-        "the provisioning metadata must join the canonical ci-config value"
+        provisioning.contains("public_api_metadata()")
+            && provisioning.contains(
+                "CI_CONFIG_PATH=\"${CI_CONFIG_PATH:-${REPO_ROOT}/.github/ci-config.yml}\"",
+            ),
+        "provisioning must read the canonical ci-config metadata"
+    );
+    assert!(
+        provisioning
+            .lines()
+            .any(|line| line.trim() == format!("ensure_reconciled \"{label}\" \"${{PUBLIC_API_COLOR}}\" \"${{PUBLIC_API_DESCRIPTION}}\"")),
+        "provisioning must pass catalog-derived metadata to reconciliation"
+    );
+    assert!(
+        !provisioning.contains(&format!("\"{color}\" \"{description}\"")),
+        "provisioning must not duplicate the catalog metadata literals"
     );
     assert!(
         provisioning.contains("gh label edit \"$name\""),

@@ -1,24 +1,39 @@
 {
-  "commit": "unknown",
+  "kind": "perl_kwalitee",
+  "schema_version": 1,
   "generated_at": "2026-08-14T00:00:00Z",
+  "commit": "unknown",
+  "profile": "release",
+  "score": 63,
+  "verdict": "fail",
+  "mandatory_passed": false,
+  "mandatory_failed_count": 3,
+  "mandatory_unverified_count": 2,
+  "warning_count": 1,
+  "unverified_count": 2,
   "indicators": [
     {
+      "id": "manifest.workspace_member_declared",
       "area": "manifest",
+      "title": "perl-kwalitee is a declared workspace member",
+      "mandatory": true,
+      "status": "pass",
+      "score_weight": 3,
       "evidence": [
         {
           "kind": "file",
           "value": "Cargo.toml [workspace].members"
         }
       ],
-      "id": "manifest.workspace_member_declared",
-      "mandatory": true,
-      "remediation": null,
-      "score_weight": 3,
-      "status": "pass",
-      "title": "perl-kwalitee is a declared workspace member"
+      "remediation": null
     },
     {
+      "id": "manifest.publish_policy_clean",
       "area": "manifest",
+      "title": "publish policy is intentional",
+      "mandatory": true,
+      "status": "pass",
+      "score_weight": 4,
       "evidence": [
         {
           "kind": "file",
@@ -29,105 +44,105 @@
           "value": "Cargo.toml [workspace.metadata.publish].allow"
         }
       ],
-      "id": "manifest.publish_policy_clean",
-      "mandatory": true,
-      "remediation": null,
-      "score_weight": 4,
-      "status": "pass",
-      "title": "publish policy is intentional"
+      "remediation": null
     },
     {
+      "id": "license.declared",
       "area": "license",
+      "title": "crate declares license metadata",
+      "mandatory": true,
+      "status": "pass",
+      "score_weight": 3,
       "evidence": [
         {
           "kind": "file",
           "value": "crates/perl-kwalitee/Cargo.toml [package].license"
         }
       ],
-      "id": "license.declared",
-      "mandatory": true,
-      "remediation": null,
-      "score_weight": 3,
-      "status": "pass",
-      "title": "crate declares license metadata"
+      "remediation": null
     },
     {
+      "id": "product_surface.native_only",
       "area": "product_surface",
+      "title": "first-mile surfaces stay native-only",
+      "mandatory": true,
+      "status": "pass",
+      "score_weight": 15,
       "evidence": [
         {
           "kind": "command",
           "value": "cargo xtask check-native-product-surface"
         }
       ],
-      "id": "product_surface.native_only",
-      "mandatory": true,
-      "remediation": null,
-      "score_weight": 15,
-      "status": "pass",
-      "title": "first-mile surfaces stay native-only"
+      "remediation": null
     },
     {
+      "id": "dap.cli_native_only",
       "area": "dap",
+      "title": "shipped perl-dap CLI stays native-only",
+      "mandatory": true,
+      "status": "pass",
+      "score_weight": 7,
       "evidence": [
         {
           "kind": "test",
           "value": "perl-dap main.rs::cli_help_has_no_bridge_product_surface"
         }
       ],
-      "id": "dap.cli_native_only",
-      "mandatory": true,
-      "remediation": null,
-      "score_weight": 7,
-      "status": "pass",
-      "title": "shipped perl-dap CLI stays native-only"
+      "remediation": null
     },
     {
-      "area": "release",
-      "evidence": [
-        {
-          "kind": "command",
-          "value": "cargo xtask release artifact-check --dist <dir>"
-        }
-      ],
       "id": "release.native_binaries_present",
+      "area": "release",
+      "title": "release archives contain the native binaries",
       "mandatory": true,
-      "remediation": "The release profile requires --dist; supply a populated dist directory.",
+      "status": "fail",
       "score_weight": 7,
-      "status": "fail",
-      "title": "release archives contain the native binaries"
-    },
-    {
-      "area": "release",
       "evidence": [
         {
           "kind": "command",
           "value": "cargo xtask release artifact-check --dist <dir>"
         }
       ],
+      "remediation": "The release profile requires --dist; supply a populated dist directory."
+    },
+    {
       "id": "release.no_external_tooling",
-      "mandatory": true,
-      "remediation": "The release profile requires --dist; supply a populated dist directory.",
-      "score_weight": 8,
-      "status": "fail",
-      "title": "release archives bundle no external Perl tooling"
-    },
-    {
       "area": "release",
+      "title": "release archives bundle no external Perl tooling",
+      "mandatory": true,
+      "status": "fail",
+      "score_weight": 8,
       "evidence": [
         {
           "kind": "command",
           "value": "cargo xtask release artifact-check --dist <dir>"
         }
       ],
-      "id": "release.checksums_valid",
-      "mandatory": true,
-      "remediation": "The release profile requires --dist; supply a populated dist directory.",
-      "score_weight": 5,
-      "status": "fail",
-      "title": "consolidated checksums are present and valid"
+      "remediation": "The release profile requires --dist; supply a populated dist directory."
     },
     {
+      "id": "release.checksums_valid",
+      "area": "release",
+      "title": "consolidated checksums are present and valid",
+      "mandatory": true,
+      "status": "fail",
+      "score_weight": 5,
+      "evidence": [
+        {
+          "kind": "command",
+          "value": "cargo xtask release artifact-check --dist <dir>"
+        }
+      ],
+      "remediation": "The release profile requires --dist; supply a populated dist directory."
+    },
+    {
+      "id": "formatter.native_default",
       "area": "formatter",
+      "title": "formatter defaults to the native engine",
+      "mandatory": true,
+      "status": "pass",
+      "score_weight": 10,
       "evidence": [
         {
           "kind": "receipt",
@@ -138,15 +153,15 @@
           "value": "native-default engine"
         }
       ],
-      "id": "formatter.native_default",
-      "mandatory": true,
-      "remediation": null,
-      "score_weight": 10,
-      "status": "pass",
-      "title": "formatter defaults to the native engine"
+      "remediation": null
     },
     {
+      "id": "critic.native_default",
       "area": "critic",
+      "title": "critic defaults to the native engine",
+      "mandatory": true,
+      "status": "warn",
+      "score_weight": 8,
       "evidence": [
         {
           "kind": "receipt",
@@ -157,30 +172,30 @@
           "value": "native default"
         }
       ],
-      "id": "critic.native_default",
-      "mandatory": true,
-      "remediation": "Run `cargo xtask native-tooling readiness` and confirm the critic native-default criterion is ready.",
-      "score_weight": 8,
-      "status": "warn",
-      "title": "critic defaults to the native engine"
+      "remediation": "Run `cargo xtask native-tooling readiness` and confirm the critic native-default criterion is ready."
     },
     {
+      "id": "critic.run_critic_registry_parity",
       "area": "critic",
+      "title": "perl.runCritic matches editor native diagnostics",
+      "mandatory": true,
+      "status": "unverified",
+      "score_weight": 7,
       "evidence": [
         {
           "kind": "note",
           "value": "no external result supplied for critic.run_critic_registry_parity"
         }
       ],
-      "id": "critic.run_critic_registry_parity",
-      "mandatory": true,
-      "remediation": "Run `cargo test -p perl-lsp-rs --lib execute_command::tests::run_critic_native_matches_pull_diagnostics_registry` and resolve the parity failure.",
-      "score_weight": 7,
-      "status": "unverified",
-      "title": "perl.runCritic matches editor native diagnostics"
+      "remediation": "Run `cargo test -p perl-lsp-rs --lib execute_command::tests::run_critic_native_matches_pull_diagnostics_registry` and resolve the parity failure."
     },
     {
+      "id": "quality.no_new_severe_gaps",
       "area": "quality",
+      "title": "no new severe coverage/ripr regressions",
+      "mandatory": true,
+      "status": "pass",
+      "score_weight": 15,
       "evidence": [
         {
           "kind": "receipt",
@@ -191,97 +206,82 @@
           "value": "pass"
         }
       ],
-      "id": "quality.no_new_severe_gaps",
-      "mandatory": true,
-      "remediation": null,
-      "score_weight": 15,
-      "status": "pass",
-      "title": "no new severe coverage/ripr regressions"
+      "remediation": null
     },
     {
+      "id": "docs.status_current",
       "area": "docs",
+      "title": "generated status docs are current",
+      "mandatory": true,
+      "status": "unverified",
+      "score_weight": 5,
       "evidence": [
         {
           "kind": "note",
           "value": "no external result supplied for docs.status_current"
         }
       ],
-      "id": "docs.status_current",
-      "mandatory": true,
-      "remediation": "Run `cargo xtask update-status --check`; regenerate with `--write` if drift is reported.",
-      "score_weight": 5,
-      "status": "unverified",
-      "title": "generated status docs are current"
+      "remediation": "Run `cargo xtask update-status --check`; regenerate with `--write` if drift is reported."
     },
     {
-      "area": "formatter",
-      "evidence": [
-        {
-          "kind": "note",
-          "value": "receipt-heavy advisory indicators are only evaluated under the nightly profile"
-        }
-      ],
       "id": "formatter.corpus_idempotent",
-      "mandatory": false,
-      "remediation": null,
-      "score_weight": 3,
-      "status": "not_applicable",
-      "title": "native formatter is idempotent + parse-preserving over the corpus"
-    },
-    {
-      "area": "critic",
-      "evidence": [
-        {
-          "kind": "note",
-          "value": "receipt-heavy advisory indicators are only evaluated under the nightly profile"
-        }
-      ],
-      "id": "critic.no_false_positives",
-      "mandatory": false,
-      "remediation": null,
-      "score_weight": 3,
-      "status": "not_applicable",
-      "title": "native critic raises no findings on the clean fixtures"
-    },
-    {
       "area": "formatter",
+      "title": "native formatter is idempotent + parse-preserving over the corpus",
+      "mandatory": false,
+      "status": "not_applicable",
+      "score_weight": 3,
       "evidence": [
         {
           "kind": "note",
           "value": "receipt-heavy advisory indicators are only evaluated under the nightly profile"
         }
       ],
-      "id": "formatter.perltidy_compat_no_external_only",
-      "mandatory": false,
-      "remediation": null,
-      "score_weight": 2,
-      "status": "not_applicable",
-      "title": "perltidy compatibility has no external-only gaps"
+      "remediation": null
     },
     {
+      "id": "critic.no_false_positives",
       "area": "critic",
+      "title": "native critic raises no findings on the clean fixtures",
+      "mandatory": false,
+      "status": "not_applicable",
+      "score_weight": 3,
       "evidence": [
         {
           "kind": "note",
           "value": "receipt-heavy advisory indicators are only evaluated under the nightly profile"
         }
       ],
-      "id": "critic.perlcritic_compat_no_external_only",
+      "remediation": null
+    },
+    {
+      "id": "formatter.perltidy_compat_no_external_only",
+      "area": "formatter",
+      "title": "perltidy compatibility has no external-only gaps",
       "mandatory": false,
-      "remediation": null,
-      "score_weight": 2,
       "status": "not_applicable",
-      "title": "perlcritic compatibility has no external-only gaps"
+      "score_weight": 2,
+      "evidence": [
+        {
+          "kind": "note",
+          "value": "receipt-heavy advisory indicators are only evaluated under the nightly profile"
+        }
+      ],
+      "remediation": null
+    },
+    {
+      "id": "critic.perlcritic_compat_no_external_only",
+      "area": "critic",
+      "title": "perlcritic compatibility has no external-only gaps",
+      "mandatory": false,
+      "status": "not_applicable",
+      "score_weight": 2,
+      "evidence": [
+        {
+          "kind": "note",
+          "value": "receipt-heavy advisory indicators are only evaluated under the nightly profile"
+        }
+      ],
+      "remediation": null
     }
-  ],
-  "kind": "perl_kwalitee",
-  "mandatory_failed_count": 3,
-  "mandatory_passed": false,
-  "mandatory_unverified_count": 2,
-  "profile": "release",
-  "schema_version": 1,
-  "score": 63,
-  "unverified_count": 2,
-  "verdict": "fail",
-  "warning_count": 1
+  ]
 }

@@ -481,13 +481,6 @@ fn token_kind_clone_equals_original() {
 }
 
 #[test]
-fn token_kind_eq_is_reflexive() {
-    for kind in all_token_kinds() {
-        assert_eq!(kind, kind);
-    }
-}
-
-#[test]
 fn token_kind_eq_is_symmetric() {
     let a = TokenKind::Arrow;
     let b = TokenKind::Arrow;

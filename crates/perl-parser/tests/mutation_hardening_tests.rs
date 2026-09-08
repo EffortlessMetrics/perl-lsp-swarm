@@ -19,8 +19,8 @@ use perl_tdd_support::must;
 mod incremental_position_arithmetic_tests {
     use super::*;
 
-    /// Test position arithmetic boundary conditions that could cause off-by-one errors
-    /// Targets line 232: is_single_token_edit - edit size boundary checks
+    /// Valid edits of any size take the fail-closed full fresh parse.
+    /// Targets the former `is_single_token_edit` size boundary, now removed.
     #[rstest]
     #[case(0, 0, false)] // Zero-length edit
     #[case(0, 1, true)] // Single character edit
@@ -49,15 +49,14 @@ mod incremental_position_arithmetic_tests {
             Position::new(old_end, 0, 0),
         );
 
-        // Access the private method through apply_edit to test the boundary logic
-        // This indirectly tests is_single_token_edit which contains the mutant at line 232
+        // Access apply_edit to prove size does not restore a leaf-patch path.
         let result = doc.apply_edit(edit);
         assert!(result.is_ok(), "Edit should succeed regardless of size boundary");
         Ok(())
     }
 
-    /// Test position adjustment arithmetic that could overflow
-    /// Targets line 397: adjust_node_position - potential isize overflow
+    /// Deletion near the start of the file used to drive `adjust_node_position`.
+    /// That helper is removed; the fail-closed fresh parse must still apply.
     #[rstest]
     #[case(0, 1)] // Positive delta
     #[case(100, -50)] // Negative delta within bounds

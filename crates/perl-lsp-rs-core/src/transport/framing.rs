@@ -4,11 +4,9 @@
 //! (absorbed from `perl-content-length-framing` in Wave Final PR B, #4541)
 //! and the higher-level LSP message reader/writer utilities.
 
-use crate::protocol::{JsonRpcRequest, JsonRpcResponse};
-use serde_json::{Value, json};
-use std::borrow::Cow;
+use crate::protocol::JsonRpcResponse;
 use std::fmt;
-use std::io::{self, BufRead, Read, Write};
+use std::io::{self, Write};
 
 // ── Absorbed from perl-content-length-framing ─────────────────────────────────
 
@@ -283,198 +281,7 @@ fn find_subslice(hay: &[u8], needle: &[u8]) -> Option<usize> {
     hay.windows(needle.len()).position(|window| window == needle)
 }
 
-// ── LSP message reader/writer ─────────────────────────────────────────────────
-
-const LOG_PREVIEW_MAX_BYTES: usize = 160;
-
-fn body_preview(body: &[u8]) -> String {
-    let truncated_len = body.len().min(LOG_PREVIEW_MAX_BYTES);
-    let mut preview = String::from_utf8_lossy(&body[..truncated_len]).to_string();
-
-    if body.len() > LOG_PREVIEW_MAX_BYTES {
-        preview.push('…');
-    }
-
-    preview.replace(['\r', '\n'], "\\n")
-}
-
-fn decode_request_text_lossy(body: &[u8]) -> Cow<'_, str> {
-    let text = String::from_utf8_lossy(body);
-
-    if matches!(text, Cow::Owned(_)) {
-        tracing::warn!(
-            payload_bytes = body.len(),
-            preview = %body_preview(body),
-            "invalid UTF-8 in incoming JSON-RPC body; replaced invalid bytes with U+FFFD"
-        );
-    }
-
-    text
-}
-
-const CLIENT_RESPONSE_METHOD: &str = "$/perl-lsp/clientResponse";
-
-fn parse_request_body(body: &[u8]) -> Result<JsonRpcRequest, serde_json::Error> {
-    let text = decode_request_text_lossy(body);
-    let value: Value = serde_json::from_str(text.as_ref())?;
-
-    // Standard JSON-RPC request/notification
-    if value.get("method").is_some() {
-        return serde_json::from_value(value);
-    }
-
-    // JSON-RPC response to a server-initiated request.
-    // Convert to an internal pseudo-notification so the runtime can route it.
-    if let Some(id) = value.get("id") {
-        let params = json!({
-            "id": id,
-            "result": value.get("result").cloned().unwrap_or(Value::Null),
-            "error": value.get("error").cloned(),
-        });
-        return Ok(JsonRpcRequest {
-            _jsonrpc: "2.0".to_string(),
-            id: None,
-            method: CLIENT_RESPONSE_METHOD.to_string(),
-            params: Some(params),
-        });
-    }
-
-    serde_json::from_value(value)
-}
-
-/// Stateful reader for `Content-Length` framed JSON-RPC requests.
-///
-/// This reader keeps partial frame state across reads, which allows it to
-/// handle split headers, split bodies, and multiple messages arriving in a
-/// single transport read.
-#[derive(Default)]
-pub struct ContentLengthMessageReader {
-    framer: ContentLengthFramer,
-}
-
-impl ContentLengthMessageReader {
-    /// Create a new reader with empty frame state.
-    #[must_use]
-    pub fn new() -> Self {
-        Self { framer: ContentLengthFramer::new() }
-    }
-
-    /// Read and parse the next JSON-RPC request from the underlying byte stream.
-    ///
-    /// Returns:
-    /// - `Ok(Some(request))` when a complete request is decoded
-    /// - `Ok(None)` on EOF
-    /// - `Err(io::Error)` on non-recoverable I/O failure
-    ///
-    /// Malformed frames are logged and skipped so the caller can continue
-    /// processing subsequent requests.
-    pub fn read_next(&mut self, reader: &mut dyn Read) -> io::Result<Option<JsonRpcRequest>> {
-        let mut chunk = [0u8; 8 * 1024];
-
-        loop {
-            match self.framer.try_next() {
-                Ok(Some(body)) => match parse_request_body(&body) {
-                    Ok(request) => return Ok(Some(request)),
-                    Err(error) => {
-                        tracing::warn!(
-                            payload_bytes = body.len(),
-                            preview = %body_preview(&body),
-                            %error,
-                            "incoming JSON parse error"
-                        );
-                        continue;
-                    }
-                },
-                Ok(None) => {}
-                Err(error) => {
-                    tracing::warn!(%error, "frame parse error");
-                    continue;
-                }
-            }
-
-            let bytes_read = reader.read(&mut chunk)?;
-            if bytes_read == 0 {
-                return Ok(None);
-            }
-            self.framer.push(&chunk[..bytes_read]);
-        }
-    }
-}
-
-/// Read an LSP message from a buffered reader.
-///
-/// This is a compatibility helper for one-shot reads. For long-running loops,
-/// prefer [`ContentLengthMessageReader`] to preserve parser state across calls.
-pub fn read_message(reader: &mut dyn BufRead) -> io::Result<Option<JsonRpcRequest>> {
-    let mut content_length = None;
-
-    loop {
-        let mut line = String::new();
-        let bytes_read = reader.read_line(&mut line)?;
-        if bytes_read == 0 {
-            return Ok(None);
-        }
-
-        if line == "\r\n" || line == "\n" {
-            break;
-        }
-
-        let header = line.trim_end_matches(&['\r', '\n'][..]);
-        if let Some((name, value)) = header.split_once(':')
-            && name.trim().eq_ignore_ascii_case("Content-Length")
-        {
-            match value.trim().parse::<usize>() {
-                Ok(length) => content_length = Some(length),
-                Err(error) => {
-                    tracing::warn!(raw_header = header, %error, "invalid Content-Length header");
-                    return Ok(None);
-                }
-            }
-        }
-    }
-
-    let length = match content_length {
-        Some(length) => length,
-        None => {
-            tracing::warn!("missing Content-Length header");
-            return Ok(None);
-        }
-    };
-
-    // Path B DoS guard: mirrors the try_next guard (framing.rs line 147).
-    // Without this check, `Content-Length: 4294967295` would attempt a 4 GiB
-    // allocation. `read_message` is public API; any integrator that feeds it
-    // untrusted input is exposed.
-    if length > MAX_FRAME_SIZE {
-        tracing::warn!(
-            length,
-            max = MAX_FRAME_SIZE,
-            "Content-Length exceeds maximum frame size; dropping message"
-        );
-        return Ok(None);
-    }
-
-    let mut body = vec![0u8; length];
-    if let Err(error) = reader.read_exact(&mut body) {
-        if error.kind() == io::ErrorKind::UnexpectedEof {
-            return Ok(None);
-        }
-        return Err(error);
-    }
-
-    match parse_request_body(&body) {
-        Ok(request) => Ok(Some(request)),
-        Err(error) => {
-            tracing::warn!(
-                payload_bytes = body.len(),
-                preview = %body_preview(&body),
-                %error,
-                "JSON parse error"
-            );
-            Ok(None)
-        }
-    }
-}
+// ── LSP message writer ───────────────────────────────────────────────────────
 
 /// Write an LSP response with `Content-Length` framing.
 pub fn write_message(writer: &mut dyn Write, response: &JsonRpcResponse) -> io::Result<()> {
@@ -518,10 +325,11 @@ pub fn log_response(response: &JsonRpcResponse) {
 #[cfg(test)]
 mod tests {
     use super::{
-        ContentLengthFramer, ContentLengthMessageReader, FramingError, MAX_FRAME_SIZE,
-        MAX_HEADER_BYTES, log_response, read_message, write_message, write_notification,
+        ContentLengthFramer, FramingError, MAX_FRAME_SIZE, MAX_HEADER_BYTES, log_response,
+        write_message, write_notification,
     };
     use crate::protocol::{JsonRpcError, JsonRpcId, JsonRpcResponse};
+    use crate::transport::{ContentLengthMessageReader, IncomingMessageError, read_message};
     use perl_parser_core::{ErrorCategory, ErrorClass};
     use std::io::{self, BufReader, Cursor};
 
@@ -625,21 +433,24 @@ mod tests {
     }
 
     #[test]
-    fn read_message_replaces_invalid_utf8_in_json_strings() -> io::Result<()> {
+    fn read_message_rejects_invalid_utf8_and_preserves_following_frame() -> io::Result<()> {
         let mut body = br#"{"jsonrpc":"2.0","id":1,"method":"test","params":{"text":"abc"#.to_vec();
         body.push(0xFF);
         body.extend_from_slice(br#""}}"#);
 
         let mut frame = format!("Content-Length: {}\r\n\r\n", body.len()).into_bytes();
         frame.extend_from_slice(&body);
+        frame.extend(framed_request(2, "recovered"));
         let mut reader = BufReader::new(Cursor::new(frame));
 
-        let req = read_message(&mut reader)?
-            .ok_or_else(|| io::Error::new(io::ErrorKind::UnexpectedEof, "expected request"))?;
-        let params = req
-            .params
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "expected params"))?;
-        assert_eq!(params["text"], "abc\u{FFFD}");
+        assert!(
+            read_message(&mut reader)?.is_none(),
+            "invalid UTF-8 must not become a request via U+FFFD replacement"
+        );
+        let recovered = read_message(&mut reader)?.ok_or_else(|| {
+            io::Error::new(io::ErrorKind::UnexpectedEof, "expected recovered request")
+        })?;
+        assert_eq!(recovered.method, "recovered");
         Ok(())
     }
 
@@ -850,23 +661,26 @@ mod tests {
     }
 
     #[test]
-    fn stateful_reader_replaces_invalid_utf8_in_json_strings() -> io::Result<()> {
+    fn stateful_reader_rejects_invalid_utf8_then_reads_following_frame() -> io::Result<()> {
         let mut body = br#"{"jsonrpc":"2.0","id":9,"method":"test","params":{"text":"abc"#.to_vec();
         body.push(0xFF);
         body.extend_from_slice(br#""}}"#);
 
         let mut payload = format!("Content-Length: {}\r\n\r\n", body.len()).into_bytes();
         payload.extend_from_slice(&body);
+        payload.extend(framed_request(2, "recovered"));
 
         let mut cursor = Cursor::new(payload);
         let mut reader = ContentLengthMessageReader::new();
-        let req = reader
-            .read_next(&mut cursor)?
-            .ok_or_else(|| io::Error::new(io::ErrorKind::UnexpectedEof, "expected request"))?;
-        let params = req
-            .params
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "expected params"))?;
-        assert_eq!(params["text"], "abc\u{FFFD}");
+        let outcome = reader.read_next_outcome(&mut cursor)?;
+        assert!(
+            matches!(outcome, Some(Err(IncomingMessageError::InvalidUtf8 { .. }))),
+            "invalid UTF-8 must be a typed encoding failure, not U+FFFD replacement: {outcome:?}"
+        );
+        let recovered = reader.read_next(&mut cursor)?.ok_or_else(|| {
+            io::Error::new(io::ErrorKind::UnexpectedEof, "expected recovered request")
+        })?;
+        assert_eq!(recovered.method, "recovered");
         Ok(())
     }
 
@@ -1241,55 +1055,6 @@ mod tests {
         assert_eq!(parsed["error"]["code"], -32602);
         assert_eq!(parsed["error"]["data"]["detail"], "missing field");
         Ok(())
-    }
-
-    // ── body_preview (private helper) ────────────────────────────────
-
-    #[test]
-    fn body_preview_short_input_no_truncation() {
-        let input = b"hello world";
-        let result = super::body_preview(input);
-        assert_eq!(result, "hello world");
-    }
-
-    #[test]
-    fn body_preview_truncates_long_input() {
-        let input = vec![b'a'; 200];
-        let result = super::body_preview(&input);
-        // Should be truncated to LOG_PREVIEW_MAX_BYTES (160) plus ellipsis
-        assert!(result.ends_with('\u{2026}'));
-        // The visible portion is 160 'a' chars + 1 ellipsis
-        assert_eq!(result.len(), super::LOG_PREVIEW_MAX_BYTES + '\u{2026}'.len_utf8());
-    }
-
-    #[test]
-    fn body_preview_replaces_newlines() {
-        let input = b"line1\r\nline2\nline3";
-        let result = super::body_preview(input);
-        assert_eq!(result, "line1\\n\\nline2\\nline3");
-    }
-
-    #[test]
-    fn body_preview_empty_input() {
-        let input = b"";
-        let result = super::body_preview(input);
-        assert_eq!(result, "");
-    }
-
-    #[test]
-    fn body_preview_exactly_at_max_bytes() {
-        let input = vec![b'z'; super::LOG_PREVIEW_MAX_BYTES];
-        let result = super::body_preview(&input);
-        // Exactly at the limit: no truncation marker
-        assert!(!result.contains('\u{2026}'));
-        assert_eq!(result.len(), super::LOG_PREVIEW_MAX_BYTES);
-    }
-
-    #[test]
-    fn body_preview_one_byte_over_max() {
-        let input = vec![b'z'; super::LOG_PREVIEW_MAX_BYTES + 1];
-        let result = super::body_preview(&input);
-        assert!(result.ends_with('\u{2026}'));
     }
 
     // ── read_message: Content-Length edge cases ──────────────────────

@@ -59,9 +59,15 @@ enum BaseSource {
     MergeBase(String),
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug)]
 struct Ledger {
     pin: Vec<LedgerPin>,
+    source_path: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct LedgerFile {
+    pin: Vec<toml::Spanned<LedgerPin>>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd)]
@@ -70,6 +76,8 @@ struct LedgerPin {
     sha: String,
     kind: ProjectionKind,
     value: String,
+    #[serde(skip)]
+    source_line: usize,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -155,17 +163,15 @@ fn main() -> Result<()> {
     let root = args.root.unwrap_or_else(default_root);
     verify_subject_binding(&root, args.expect_merge_of.as_deref(), args.expect_origin.as_deref())?;
     let ledger_path = if args.ledger.is_absolute() { args.ledger } else { root.join(args.ledger) };
-    let ledger = load_ledger(&ledger_path)?;
+    let ledger = load_ledger(&ledger_path, &ledger_display_path(&root, &ledger_path))?;
     let pattern = uses_pattern()?;
     let current = scan_worktree(&root, &pattern)?;
     let comparator = if let Some(spec) = non_empty(args.merge_base.as_deref()) {
         // The scanned worktree is a merge result; compare it against the base
         // tree actually incorporated into that result, resolved now.
         Some((resolve_merge_base(&root, spec)?, BaseSource::MergeBase(spec.to_owned())))
-    } else if let Some(recorded) = non_empty(args.base.as_deref()) {
-        Some((recorded.to_owned(), BaseSource::Recorded))
     } else {
-        None
+        non_empty(args.base.as_deref()).map(|recorded| (recorded.to_owned(), BaseSource::Recorded))
     };
     let (base, compared) = match &comparator {
         Some((comparator_sha, _)) => (scan_git_ref(&root, comparator_sha, &pattern)?, true),
@@ -184,11 +190,7 @@ fn main() -> Result<()> {
         write_receipt(&path, &receipt)?;
     }
     if !receipt.passed {
-        bail!(
-            "action-pin provenance failed with {} error(s) and {} warning(s)",
-            receipt.error_count,
-            receipt.warning_count
-        );
+        bail!("{}", failure_summary(&receipt));
     }
     println!(
         "Action-pin provenance passed ({} external use(s), {} new/changed, {} warning(s))",
@@ -202,6 +204,34 @@ fn main() -> Result<()> {
 
 fn non_empty(value: Option<&str>) -> Option<&str> {
     value.map(str::trim).filter(|v| !v.is_empty())
+}
+
+/// Builds the single-line process failure summary. The per-issue annotations
+/// are printed above this line and can scroll out of a CI log, so the final
+/// error must itself name the failing codes and locations. A count-only
+/// summary read as an empty-message crash and repeatedly delayed diagnosis
+/// of the recurring main red (#14249).
+fn failure_summary(receipt: &Receipt) -> String {
+    const MAX_LISTED: usize = 10;
+    let errors: Vec<&Issue> = receipt.issues.iter().filter(|i| i.level == "error").collect();
+    let mut summary = format!(
+        "action-pin provenance failed with {} error(s) and {} warning(s)",
+        receipt.error_count, receipt.warning_count
+    );
+    if errors.is_empty() {
+        return summary;
+    }
+    let listed = errors.len().min(MAX_LISTED);
+    let parts: Vec<String> = errors[..listed]
+        .iter()
+        .map(|issue| format!("{} at {}:{}", issue.code, issue.path, issue.line))
+        .collect();
+    summary.push_str(": ");
+    summary.push_str(&parts.join("; "));
+    if errors.len() > listed {
+        summary.push_str(&format!("; and {} more", errors.len() - listed));
+    }
+    summary
 }
 
 fn base_source_label(comparator_sha: &str, source: &BaseSource) -> String {
@@ -328,10 +358,28 @@ fn release_pattern() -> Result<Regex> {
 fn branch_pattern() -> Result<Regex> {
     Regex::new(r"^[A-Za-z0-9._/-]+ \([A-Za-z0-9._/-]+\)$").context("compiling branch pattern")
 }
+fn immutable_sha_pattern() -> Result<Regex> {
+    Regex::new(r"^[0-9a-fA-F]{40}$").context("compiling immutable sha pattern")
+}
 
-fn load_ledger(path: &Path) -> Result<Ledger> {
+fn ledger_display_path(root: &Path, path: &Path) -> String {
+    path.strip_prefix(root).unwrap_or(path).to_string_lossy().replace('\\', "/")
+}
+
+fn load_ledger(path: &Path, source_path: &str) -> Result<Ledger> {
     let text = fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-    toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))
+    let parsed: LedgerFile =
+        toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
+    let mut pin = Vec::with_capacity(parsed.pin.len());
+    for located in parsed.pin {
+        let start = located.span().start.min(text.len());
+        let source_line =
+            text.as_bytes()[..start].iter().filter(|byte| **byte == b'\n').count() + 1;
+        let mut located_pin = located.into_inner();
+        located_pin.source_line = source_line;
+        pin.push(located_pin);
+    }
+    Ok(Ledger { pin, source_path: source_path.to_owned() })
 }
 
 fn scan_worktree(root: &Path, pattern: &Regex) -> Result<Vec<Occurrence>> {
@@ -389,6 +437,9 @@ fn scan_git_ref(root: &Path, base: &str, pattern: &Regex) -> Result<Vec<Occurren
 fn scan_text(path: &str, text: &str, pattern: &Regex) -> Result<Vec<Occurrence>> {
     let release = release_pattern()?;
     let branch = branch_pattern()?;
+    // Compiled once and propagated: classification must never depend on a
+    // pattern that could silently drop the occurrence being classified.
+    let immutable_sha = immutable_sha_pattern()?;
     Ok(text
         .lines()
         .enumerate()
@@ -404,7 +455,7 @@ fn scan_text(path: &str, text: &str, pattern: &Regex) -> Result<Vec<Occurrence>>
                 if let Some(image) = scalar.strip_prefix("docker://") {
                     (image.to_owned(), scalar.to_owned(), ReferenceKind::Docker)
                 } else if let Some((action, reference)) = scalar.rsplit_once('@') {
-                    let kind = if Regex::new(r"^[0-9a-fA-F]{40}$").ok()?.is_match(reference) {
+                    let kind = if immutable_sha.is_match(reference) {
                         ReferenceKind::ImmutableSha
                     } else {
                         ReferenceKind::Mutable
@@ -490,20 +541,33 @@ fn validate(
 }
 
 fn validate_ledger(ledger: &Ledger, issues: &mut Vec<Issue>) {
-    let mut values: BTreeMap<(&str, &str), BTreeSet<(&ProjectionKind, &str)>> = BTreeMap::new();
+    let mut values: BTreeMap<(&str, &str), Vec<&LedgerPin>> = BTreeMap::new();
     for pin in &ledger.pin {
-        values.entry((&pin.action, &pin.sha)).or_default().insert((&pin.kind, &pin.value));
+        values.entry((&pin.action, &pin.sha)).or_default().push(pin);
     }
-    for ((action, sha), projections) in values {
-        let authoritative: BTreeSet<_> =
-            projections.iter().filter(|(kind, _)| **kind != ProjectionKind::LegacyDebt).collect();
-        if authoritative.len() > 1 {
+    for ((action, sha), rows) in values {
+        let mut authoritative = BTreeSet::new();
+        let mut first_line = None;
+        for pin in rows {
+            if pin.kind == ProjectionKind::LegacyDebt
+                || !authoritative.insert((&pin.kind, pin.value.as_str()))
+            {
+                continue;
+            }
+            let line = pin.source_line;
+            let Some(previous_line) = first_line else {
+                first_line = Some(line);
+                continue;
+            };
             issues.push(Issue {
                 level: "error",
                 code: "CONTRADICTORY_LEDGER_MAPPING",
-                path: DEFAULT_LEDGER.into(),
-                line: 1,
-                message: format!("{action}@{sha} has contradictory reviewed mappings"),
+                path: ledger.source_path.clone(),
+                line,
+                message: format!(
+                    "{action}@{sha} has a reviewed mapping that contradicts {}:{previous_line}",
+                    ledger.source_path
+                ),
             });
         }
     }
@@ -586,10 +650,16 @@ mod tests {
         scan_text(".github/workflows/test.yml", source, &uses_pattern()?)
     }
     fn ledger(pins: Vec<LedgerPin>) -> Ledger {
-        Ledger { pin: pins }
+        Ledger { pin: pins, source_path: DEFAULT_LEDGER.into() }
     }
     fn row(action: &str, sha: &str, kind: ProjectionKind, value: &str) -> LedgerPin {
-        LedgerPin { action: action.into(), sha: sha.into(), kind, value: value.into() }
+        LedgerPin {
+            action: action.into(),
+            sha: sha.into(),
+            kind,
+            value: value.into(),
+            source_line: 1,
+        }
     }
     const SHA: &str = "1111111111111111111111111111111111111111";
     #[test]
@@ -647,12 +717,24 @@ mod tests {
     }
     #[test]
     fn contradictory_authoritative_mappings_fail() -> Result<()> {
-        let map = ledger(vec![
-            row("actions/checkout", SHA, ProjectionKind::ReleaseTag, "v7.0.0"),
-            row("actions/checkout", SHA, ProjectionKind::ReleaseTag, "v7.0.1"),
-        ]);
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("custom-pins.toml");
+        let source = format!(
+            "# selected ledger\n\n[[pin]]\naction = 'actions/checkout'\nsha = '{SHA}'\nkind = 'release_tag'\nvalue = 'v7.0.0'\n\n[[pin]]\naction = 'actions/checkout'\nsha = '{SHA}'\nkind = 'release_tag'\nvalue = 'v7.0.1'\n"
+        );
+        fs::write(&path, &source)?;
+        let map = load_ledger(&path, "custom/custom-pins.toml")?;
         let receipt = validate(vec![], vec![], false, false, &map);
-        assert!(receipt.issues.iter().any(|i| i.code == "CONTRADICTORY_LEDGER_MAPPING"));
+        let issue = receipt
+            .issues
+            .iter()
+            .find(|issue| issue.code == "CONTRADICTORY_LEDGER_MAPPING")
+            .ok_or_else(|| eyre!("missing contradictory-ledger issue"))?;
+        assert_eq!(issue.path, "custom/custom-pins.toml");
+        assert_eq!(issue.line, 9);
+        assert!(issue.message.contains("custom/custom-pins.toml:3"));
+        let summary = failure_summary(&receipt);
+        assert!(summary.contains("CONTRADICTORY_LEDGER_MAPPING at custom/custom-pins.toml:9"));
         Ok(())
     }
     #[test]
@@ -668,6 +750,57 @@ mod tests {
         );
         assert!(receipt.passed);
         assert_eq!(receipt.warning_count, 1);
+        Ok(())
+    }
+    #[test]
+    fn scans_bumped_codeql_pin_with_release_projection() -> Result<()> {
+        // The exact ci-security.yml line shape whose bumped pin went unproven
+        // on main (#14249): immutable SHA with a release-tag projection.
+        let source = concat!(
+            "        uses: github/codeql-action/upload-sarif@",
+            "cdf488f595d80d6e07e03d4674febd5ab45fa938",
+            "  # v4.37.9\n"
+        );
+        let got = scan(source)?;
+        assert_eq!(got.len(), 1);
+        let pin = &got[0];
+        assert_eq!(pin.action, "github/codeql-action/upload-sarif");
+        assert_eq!(pin.reference, "cdf488f595d80d6e07e03d4674febd5ab45fa938");
+        assert_eq!(pin.reference_kind, ReferenceKind::ImmutableSha);
+        assert_eq!(pin.projection_kind, Some(ProjectionKind::ReleaseTag));
+        assert_eq!(pin.comment.as_deref(), Some("v4.37.9"));
+        Ok(())
+    }
+    #[test]
+    fn failure_summary_names_unproven_locations() -> Result<()> {
+        // Regression for the recurring main red: the process summary counted
+        // failures ("failed with 2 error(s) and 87 warning(s)") without naming
+        // them, reading as an empty-message crash in CI logs. The summary must
+        // identify each error-level issue and its location.
+        let source = format!(
+            "- uses: github/codeql-action/upload-sarif@{SHA} # v4.37.9\n\
+             - uses: github/codeql-action/upload-sarif@{SHA} # v4.37.9\n"
+        );
+        let got = scan(&source)?;
+        let receipt = validate(got, vec![], true, false, &ledger(vec![]));
+        assert_eq!(receipt.error_count, 2);
+        let summary = failure_summary(&receipt);
+        assert!(summary.starts_with("action-pin provenance failed with 2 error(s)"));
+        assert!(summary.contains("ACTION_PROVENANCE_NOT_PROVEN at .github/workflows/test.yml:1"));
+        assert!(summary.contains("ACTION_PROVENANCE_NOT_PROVEN at .github/workflows/test.yml:2"));
+        Ok(())
+    }
+    #[test]
+    fn failure_summary_bounds_very_long_lists() -> Result<()> {
+        let source: String =
+            (0..16).map(|i| format!("- uses: action-{i}@{SHA} # v1.0.{i}\n")).collect();
+        let got = scan(&source)?;
+        let receipt = validate(got, vec![], true, false, &ledger(vec![]));
+        assert_eq!(receipt.error_count, 16);
+        let summary = failure_summary(&receipt);
+        assert!(summary.contains("and 6 more"));
+        assert!(summary.contains("test.yml:10"));
+        assert!(!summary.contains("test.yml:11"));
         Ok(())
     }
 }
