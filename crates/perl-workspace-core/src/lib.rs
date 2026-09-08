@@ -119,6 +119,9 @@ pub use fact_classes::FactClasses;
 pub use file::{FileRecord, FileRole, ParseStatus};
 pub use id::{Digest, FileId, PackageId, SymbolId, fnv1a};
 pub use import::{ImportFact, ImportKind};
+pub use meta_yml::{
+    MetaYmlFinding, MetaYmlFindingKind, MetaYmlOutcome, MetaYmlParseState, parse_meta_yml,
+};
 pub use model::ProjectModel;
 pub use package::PackageRecord;
 pub use pod::{PodFact, PodSection, PodSectionKind};
