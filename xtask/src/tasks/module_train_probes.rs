@@ -52,12 +52,6 @@ impl RepoTreeSource {
         Self::from_root(crate::utils::project_root()?, None)
     }
 
-    /// Read an immutable captured tree object through the existing staged-tree
-    /// reader. The live refresh path uses this after binding HEAD.
-    pub(crate) fn from_project_root_at_revision(revision: String) -> Result<Self> {
-        Self::from_root(crate::utils::project_root()?, Some(revision))
-    }
-
     pub(crate) fn from_root_at_revision(root: PathBuf, revision: String) -> Result<Self> {
         Self::from_root(root, Some(revision))
     }
