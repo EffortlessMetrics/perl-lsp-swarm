@@ -815,6 +815,10 @@ export class PerlDebugConfigurationProvider implements vscode.DebugConfiguration
       // processId attach fail-closed (#8109), so no template, snippet, or
       // schema here advertises it. External-peer fields are validated
       // separately by the descriptor factory.
+      // Preserve an explicit legacy processId unchanged when forwarding an
+      // existing configuration for adapter diagnostics; never default it into
+      // the TCP host/port path. The adapter owns the deterministic #8109
+      // refusal for that compatibility input.
       if (config.processId === undefined || config.processId === null) {
         if (!config.host) {
           config.host = 'localhost';
