@@ -139,18 +139,8 @@ impl<'a> Parser<'a> {
 
                             if self.peek_kind() == Some(TokenKind::Star) {
                                 // ->@*
-                                self.tokens.next()?; // consume *
-                                let start = expr.location.start;
-                                let end = self.previous_position();
-
+                                expr = self.consume_arrow_star_deref(expr, "->@*")?;
                                 record_postfix_layer()?;
-                                expr = Node::new(
-                                    NodeKind::Unary {
-                                        op: "->@*".to_string(),
-                                        operand: Box::new(expr),
-                                    },
-                                    SourceLocation { start, end },
-                                );
                             } else if self.peek_kind() == Some(TokenKind::LeftBracket) {
                                 // ->@[...] array slice
                                 self.tokens.next()?; // consume [
@@ -196,18 +186,8 @@ impl<'a> Parser<'a> {
 
                             if self.peek_kind() == Some(TokenKind::Star) {
                                 // ->%*
-                                self.tokens.next()?; // consume *
-                                let start = expr.location.start;
-                                let end = self.previous_position();
-
+                                expr = self.consume_arrow_star_deref(expr, "->%*")?;
                                 record_postfix_layer()?;
-                                expr = Node::new(
-                                    NodeKind::Unary {
-                                        op: "->%*".to_string(),
-                                        operand: Box::new(expr),
-                                    },
-                                    SourceLocation { start, end },
-                                );
                             } else if self.peek_kind() == Some(TokenKind::LeftBrace) {
                                 // ->%{...} hash slice
                                 self.tokens.next()?; // consume {
@@ -235,18 +215,8 @@ impl<'a> Parser<'a> {
                             self.tokens.next()?; // consume $
 
                             if self.peek_kind() == Some(TokenKind::Star) {
-                                self.tokens.next()?; // consume *
-                                let start = expr.location.start;
-                                let end = self.previous_position();
-
+                                expr = self.consume_arrow_star_deref(expr, "->$*")?;
                                 record_postfix_layer()?;
-                                expr = Node::new(
-                                    NodeKind::Unary {
-                                        op: "->$*".to_string(),
-                                        operand: Box::new(expr),
-                                    },
-                                    SourceLocation { start, end },
-                                );
                             }
                         }
 
@@ -255,18 +225,8 @@ impl<'a> Parser<'a> {
                             self.tokens.next()?; // consume &
 
                             if self.peek_kind() == Some(TokenKind::Star) {
-                                self.tokens.next()?; // consume *
-                                let start = expr.location.start;
-                                let end = self.previous_position();
-
+                                expr = self.consume_arrow_star_deref(expr, "->&*")?;
                                 record_postfix_layer()?;
-                                expr = Node::new(
-                                    NodeKind::Unary {
-                                        op: "->&*".to_string(),
-                                        operand: Box::new(expr),
-                                    },
-                                    SourceLocation { start, end },
-                                );
                             }
                         }
 
@@ -275,18 +235,8 @@ impl<'a> Parser<'a> {
                             self.tokens.next()?; // consume first *
 
                             if self.peek_kind() == Some(TokenKind::Star) {
-                                self.tokens.next()?; // consume second *
-                                let start = expr.location.start;
-                                let end = self.previous_position();
-
+                                expr = self.consume_arrow_star_deref(expr, "->**")?;
                                 record_postfix_layer()?;
-                                expr = Node::new(
-                                    NodeKind::Unary {
-                                        op: "->**".to_string(),
-                                        operand: Box::new(expr),
-                                    },
-                                    SourceLocation { start, end },
-                                );
                             }
                         }
 
@@ -301,17 +251,8 @@ impl<'a> Parser<'a> {
                                     .is_ok_and(|t| t.kind() == TokenKind::Star)
                             {
                                 self.tokens.next()?; // consume $#
-                                self.tokens.next()?; // consume *
-                                let start = expr.location.start;
-                                let end = self.previous_position();
+                                expr = self.consume_arrow_star_deref(expr, "->$#*")?;
                                 record_postfix_layer()?;
-                                expr = Node::new(
-                                    NodeKind::Unary {
-                                        op: "->$#*".to_string(),
-                                        operand: Box::new(expr),
-                                    },
-                                    SourceLocation { start, end },
-                                );
                                 continue;
                             }
 
@@ -542,6 +483,11 @@ impl<'a> Parser<'a> {
                                     self.peek_kind(),
                                     Some(TokenKind::Comma) | Some(TokenKind::FatArrow)
                                 ) {
+                                    if self.peek_kind() == Some(TokenKind::FatArrow)
+                                        && let Some(arg) = args.last_mut()
+                                    {
+                                        Self::auto_quote_bareword_before_fat_comma(arg);
+                                    }
                                     self.consume_token()?; // consume comma or fat arrow
                                     if self.is_at_statement_end() {
                                         break;
@@ -573,6 +519,11 @@ impl<'a> Parser<'a> {
                                     self.peek_kind(),
                                     Some(TokenKind::Comma) | Some(TokenKind::FatArrow)
                                 ) {
+                                    if self.peek_kind() == Some(TokenKind::FatArrow)
+                                        && let Some(arg) = args.last_mut()
+                                    {
+                                        Self::auto_quote_bareword_before_fat_comma(arg);
+                                    }
                                     self.consume_token()?; // consume comma or fat arrow
                                     if is_bare_func {
                                         if !self.should_continue_bare_call_after_block() {
@@ -617,6 +568,11 @@ impl<'a> Parser<'a> {
                                             self.peek_kind(),
                                             Some(TokenKind::Comma) | Some(TokenKind::FatArrow)
                                         ) {
+                                            if self.peek_kind() == Some(TokenKind::FatArrow)
+                                                && let Some(arg) = args.last_mut()
+                                            {
+                                                Self::auto_quote_bareword_before_fat_comma(arg);
+                                            }
                                             self.consume_token()?;
                                         }
                                         if self.is_implicit_arg_terminator() {
@@ -630,6 +586,11 @@ impl<'a> Parser<'a> {
                                         self.peek_kind(),
                                         Some(TokenKind::Comma) | Some(TokenKind::FatArrow)
                                     ) {
+                                        if self.peek_kind() == Some(TokenKind::FatArrow)
+                                            && let Some(arg) = args.last_mut()
+                                        {
+                                            Self::auto_quote_bareword_before_fat_comma(arg);
+                                        }
                                         self.consume_token()?; // consume comma or fat arrow
                                         if self.is_implicit_arg_terminator() {
                                             break;
@@ -755,9 +716,21 @@ impl<'a> Parser<'a> {
                         if matches!(name.as_str(), "q" | "qq" | "qw" | "qr" | "qx" | "m" | "s") {
                             // This was already parsed as a quote operator in parse_primary
                             // Don't try to parse arguments
-                        } else if self.peek_kind() == Some(TokenKind::FatArrow) {
+                        } else if self.peek_kind() == Some(TokenKind::FatArrow)
+                            && Self::core_qualified_builtin_name(name).is_none()
+                        {
                             // Identifier before => is a hash key — do NOT treat as
                             // a builtin function call.  Fall through to break.
+                        } else if self.peek_kind() == Some(TokenKind::FatArrow)
+                            && Self::core_qualified_builtin_name(name).is_some()
+                        {
+                            // A qualified CORE builtin remains executable before a fat comma;
+                            // do not let the generic key conversion turn it into a string.
+                            let start = expr.location.start;
+                            expr = Node::new(
+                                NodeKind::FunctionCall { name: name.clone(), args: vec![] },
+                                SourceLocation { start, end: expr.location.end },
+                            );
                         } else if Self::is_nullary_builtin(name) {
                             // Nullary builtins (shift, pop, caller, wantarray, etc.) can also
                             // take an explicit sigil-starting argument, e.g. `shift @arr`.
@@ -937,6 +910,7 @@ impl<'a> Parser<'a> {
                             } else {
                                 // Parse arguments without parentheses
                                 let mut args = Vec::new();
+                                let mut flattened_qw_end = None;
 
                                 // Special handling for sort/map/grep/first/any/all/etc.
                                 // with block first argument
@@ -966,6 +940,11 @@ impl<'a> Parser<'a> {
                                             self.peek_kind(),
                                             Some(TokenKind::Comma) | Some(TokenKind::FatArrow)
                                         ) {
+                                            if self.peek_kind() == Some(TokenKind::FatArrow)
+                                                && let Some(arg) = args.last_mut()
+                                            {
+                                                Self::auto_quote_bareword_before_fat_comma(arg);
+                                            }
                                             self.consume_token()?;
                                         }
                                         // Check again after potential comma/fat arrow
@@ -1021,6 +1000,11 @@ impl<'a> Parser<'a> {
                                             self.peek_kind(),
                                             Some(TokenKind::Comma) | Some(TokenKind::FatArrow)
                                         ) {
+                                            if self.peek_kind() == Some(TokenKind::FatArrow)
+                                                && let Some(arg) = args.last_mut()
+                                            {
+                                                Self::auto_quote_bareword_before_fat_comma(arg);
+                                            }
                                             self.consume_token()?;
                                         }
                                         if self.is_implicit_arg_terminator() {
@@ -1055,6 +1039,11 @@ impl<'a> Parser<'a> {
                                             self.peek_kind(),
                                             Some(TokenKind::Comma) | Some(TokenKind::FatArrow)
                                         ) {
+                                            if self.peek_kind() == Some(TokenKind::FatArrow)
+                                                && let Some(arg) = args.last_mut()
+                                            {
+                                                Self::auto_quote_bareword_before_fat_comma(arg);
+                                            }
                                             self.consume_token()?;
                                         }
                                         if self.is_implicit_arg_terminator() {
@@ -1073,6 +1062,11 @@ impl<'a> Parser<'a> {
                                         self.peek_kind(),
                                         Some(TokenKind::Comma) | Some(TokenKind::FatArrow)
                                     ) {
+                                        if self.peek_kind() == Some(TokenKind::FatArrow)
+                                            && let Some(arg) = args.last_mut()
+                                        {
+                                            Self::auto_quote_bareword_before_fat_comma(arg);
+                                        }
                                         self.consume_token()?; // consume comma or fat arrow
                                         if self.is_at_statement_end() {
                                             break;
@@ -1102,6 +1096,11 @@ impl<'a> Parser<'a> {
                                             self.peek_kind(),
                                             Some(TokenKind::Comma) | Some(TokenKind::FatArrow)
                                         ) {
+                                            if self.peek_kind() == Some(TokenKind::FatArrow)
+                                                && let Some(arg) = args.last_mut()
+                                            {
+                                                Self::auto_quote_bareword_before_fat_comma(arg);
+                                            }
                                             self.consume_token()?;
                                         }
                                         if self.is_at_statement_end() {
@@ -1114,7 +1113,7 @@ impl<'a> Parser<'a> {
                                 {
                                     // For `split /regex/, ...` and `grep /regex/, @list`,
                                     // re-lex `/` as regex delimiter
-                                    self.tokens.relex_as_term();
+                                    self.reclassify_head_as_term()?;
                                     args.push(self.parse_ternary()?);
 
                                     // Parse remaining arguments separated by commas or fat arrows
@@ -1122,6 +1121,11 @@ impl<'a> Parser<'a> {
                                         self.peek_kind(),
                                         Some(TokenKind::Comma) | Some(TokenKind::FatArrow)
                                     ) {
+                                        if self.peek_kind() == Some(TokenKind::FatArrow)
+                                            && let Some(arg) = args.last_mut()
+                                        {
+                                            Self::auto_quote_bareword_before_fat_comma(arg);
+                                        }
                                         self.consume_token()?;
                                         if self.is_at_statement_end() {
                                             break;
@@ -1142,6 +1146,13 @@ impl<'a> Parser<'a> {
                                         // assignment first would consume `$fh %hash` as a
                                         // modulo expression and lose the indirect-call boundary.
                                         args.push(self.parse_primary()?);
+                                    } else if self.peek_is_qw_list_start() {
+                                        // `has qw(a b)` is `has('a', 'b')` in list context.
+                                        // Keep parenthesized `has(qw(a b))` on parse_args().
+                                        let (words, qw_location) =
+                                            self.parse_flattened_qw_list_argument()?;
+                                        flattened_qw_end = Some(qw_location.end);
+                                        args.extend(words);
                                     } else {
                                         args.push(self.parse_assignment_or_declaration()?);
                                     }
@@ -1205,6 +1216,11 @@ impl<'a> Parser<'a> {
                                                 self.peek_kind(),
                                                 Some(TokenKind::Comma) | Some(TokenKind::FatArrow)
                                             ) {
+                                                if self.peek_kind() == Some(TokenKind::FatArrow)
+                                                    && let Some(arg) = args.last_mut()
+                                                {
+                                                    Self::auto_quote_bareword_before_fat_comma(arg);
+                                                }
                                                 self.consume_token()?;
                                             }
                                             if self.is_at_statement_end() {
@@ -1265,6 +1281,11 @@ impl<'a> Parser<'a> {
                                             break;
                                         }
 
+                                        if self.peek_kind() == Some(TokenKind::FatArrow)
+                                            && let Some(arg) = args.last_mut()
+                                        {
+                                            Self::auto_quote_bareword_before_fat_comma(arg);
+                                        }
                                         self.consume_token()?;
                                         if self.is_at_statement_end() {
                                             break;
@@ -1277,11 +1298,9 @@ impl<'a> Parser<'a> {
 
                                 let end = args
                                     .last()
-                                    .ok_or_else(|| {
-                                        ParseError::syntax("Empty arguments list", start)
-                                    })?
-                                    .location
-                                    .end;
+                                    .map(|arg| arg.location.end)
+                                    .or(flattened_qw_end)
+                                    .unwrap_or_else(|| self.previous_position());
 
                                 expr = if scalar_filehandle {
                                     let mut message_args = args;
@@ -1467,14 +1486,16 @@ impl<'a> Parser<'a> {
     }
 
     /// Attempt to parse a keyword or word operator (`not`, `and`, `or`, `xor`,
-    /// `do`, `eval`, `cmp`, etc.) as a bareword hash key when it appears directly
-    /// before `}` or as part of a comma-separated hash slice.
+    /// `do`, `eval`, `cmp`, etc.) as a bareword hash key. Non-control keywords
+    /// are accepted directly before `}` or within a comma-separated subscript.
+    /// `return`, `next`, `last`, and `redo` are accepted only as the initial,
+    /// sole key directly before `}`; after a comma they remain executable.
     ///
-    /// Returns `Some(Node)` if the current token is a keyword/operator followed
-    /// by `}` or `,`, otherwise returns `None` to fall through to general
-    /// expression parsing.
+    /// Returns `Some(Node)` when the current token satisfies the applicable
+    /// position-sensitive boundary, otherwise returns `None` to fall through
+    /// to general expression parsing.
     fn try_parse_keyword_bareword_key(&mut self) -> ParseResult<Option<Node>> {
-        if !self.peek_is_keyword_bareword_key() {
+        if !self.peek_is_keyword_bareword_key(true) {
             return Ok(None);
         }
 
@@ -1492,7 +1513,9 @@ impl<'a> Parser<'a> {
                 break;
             }
 
-            if self.peek_is_keyword_bareword_key() {
+            // Terminal controls are static keys only when they are the sole
+            // subscript expression. After a comma, Perl keeps them executable.
+            if self.peek_is_keyword_bareword_key(false) {
                 elements.push(self.consume_as_bareword_identifier()?);
             } else {
                 elements.push(self.parse_assignment()?);
@@ -1503,33 +1526,42 @@ impl<'a> Parser<'a> {
         Ok(Some(Node::new(NodeKind::ArrayLiteral { elements }, SourceLocation { start, end })))
     }
 
-    fn peek_is_keyword_bareword_key(&mut self) -> bool {
+    fn peek_is_keyword_bareword_key(&mut self, allow_terminal_control_key: bool) -> bool {
         let Ok(first) = self.tokens.peek() else {
             return false;
         };
 
-        let is_keyword_key = matches!(
-            first.kind(),
-            TokenKind::WordNot
-                | TokenKind::WordAnd
-                | TokenKind::WordOr
-                | TokenKind::WordXor
-                | TokenKind::Do
-                | TokenKind::Eval
-                | TokenKind::Local
-                | TokenKind::Try
-                | TokenKind::Defer
-                | TokenKind::StringCompare
-        ) || matches!(first.text.as_ref(), "tie" | "untie");
+        let kind = first.kind();
+        let is_terminal_control_key =
+            matches!(kind, TokenKind::Return | TokenKind::Next | TokenKind::Last | TokenKind::Redo);
+        let is_keyword_key = (allow_terminal_control_key && is_terminal_control_key)
+            || matches!(
+                kind,
+                TokenKind::WordNot
+                    | TokenKind::WordAnd
+                    | TokenKind::WordOr
+                    | TokenKind::WordXor
+                    | TokenKind::Do
+                    | TokenKind::Eval
+                    | TokenKind::Local
+                    | TokenKind::Try
+                    | TokenKind::Defer
+                    | TokenKind::StringCompare
+            )
+            || matches!(first.text.as_ref(), "tie" | "untie");
 
         if !is_keyword_key {
             return false;
         }
 
-        self.tokens
-            .peek_second()
-            .ok()
-            .is_some_and(|second| matches!(second.kind(), TokenKind::RightBrace | TokenKind::Comma))
+        let Ok(second) = self.tokens.peek_second() else {
+            return false;
+        };
+        if is_terminal_control_key {
+            second.kind() == TokenKind::RightBrace
+        } else {
+            matches!(second.kind(), TokenKind::RightBrace | TokenKind::Comma)
+        }
     }
 
     fn consume_as_bareword_identifier(&mut self) -> ParseResult<Node> {
@@ -1581,5 +1613,19 @@ impl<'a> Parser<'a> {
 
         let end = elements.last().map(|n| n.location.end).unwrap_or(start);
         Ok(Some(Node::new(NodeKind::ArrayLiteral { elements }, SourceLocation { start, end })))
+    }
+
+    /// Finish an arrow star-form postfix dereference from the consumed `*` token.
+    ///
+    /// The Unary end is `star.end()`, matching generic postfix's `op_token.end()`
+    /// pattern. Using `previous_position()` after `tokens.next()` would leave the
+    /// node span on the receiver only (#13891).
+    fn consume_arrow_star_deref(&mut self, expr: Node, op: &'static str) -> ParseResult<Node> {
+        let star = self.consume_token()?;
+        let start = expr.location.start;
+        Ok(Node::new(
+            NodeKind::Unary { op: op.to_string(), operand: Box::new(expr) },
+            SourceLocation { start, end: star.end() },
+        ))
     }
 }

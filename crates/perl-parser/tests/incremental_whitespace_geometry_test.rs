@@ -211,9 +211,15 @@ fn stale_temporal_order_falls_back_without_corrupting_the_tree() -> TestResult {
 
 #[test]
 fn mapped_statement_spans_are_safe_for_range_consumers() -> TestResult {
+    // A single space at the statement boundary is whitespace-only, preserves
+    // the inter-token gap class, and is provably code on both sides, so the
+    // exact whitespace mapper must own the spans validated below. A full
+    // parse fails `used_incremental_path`; an advanced-reuse partial-reuse
+    // implementation fails `!used_advanced_reuse`; a mapper applying the
+    // wrong shift fails the slice equality against the fresh parse.
     let source1 = "my $x = 1;my $y = 2;";
     let boundary = source1.find("my $y").ok_or("expected second declaration")?;
-    let source2 = "my $x = 1;\nmy $y = 2;";
+    let source2 = "my $x = 1; my $y = 2;";
     let mut parser = IncrementalParserV2::new();
     parser.parse(source1)?;
     parser.edit(edit(boundary, boundary, boundary + 1));
@@ -221,7 +227,8 @@ fn mapped_statement_spans_are_safe_for_range_consumers() -> TestResult {
     let incremental = parser.parse(source2)?;
     assert_eq!(incremental, parse_fresh(source2)?);
     assert!(parser.used_incremental_path());
-    assert!(parser.used_advanced_reuse());
+    assert!(!parser.used_advanced_reuse());
+    assert_eq!(parser.reparsed_nodes, 0);
     let statements = match &incremental.kind {
         NodeKind::Program { statements } => statements,
         other => return Err(format!("expected Program, got {}", other.kind_name()).into()),
@@ -242,6 +249,37 @@ fn mapped_statement_spans_are_safe_for_range_consumers() -> TestResult {
         .collect();
 
     assert_eq!(statement_text, fresh_statement_text);
+    assert_eq!(statement_text, vec!["my $x = 1", "my $y = 2"]);
+    Ok(())
+}
+
+#[test]
+fn statement_boundary_newline_keeps_mapped_spans_exact_under_advanced_reuse() -> TestResult {
+    // A newline changes the inter-token gap class between statements, so the
+    // exact whitespace mapper must decline the edit and advanced reuse
+    // carries it. The spans must still be fresh-parse exact: a full-parse
+    // fallback fails `used_incremental_path`, and any mapped-span drift
+    // fails the slice equality below.
+    let source1 = "my $x = 1;my $y = 2;";
+    let boundary = source1.find("my $y").ok_or("expected second declaration")?;
+    let source2 = "my $x = 1;\nmy $y = 2;";
+    let mut parser = IncrementalParserV2::new();
+    parser.parse(source1)?;
+    parser.edit(edit(boundary, boundary, boundary + 1));
+
+    let incremental = parser.parse(source2)?;
+    assert_eq!(incremental, parse_fresh(source2)?);
+    assert!(parser.used_incremental_path());
+    assert!(parser.used_advanced_reuse());
+    let statements = match &incremental.kind {
+        NodeKind::Program { statements } => statements,
+        other => return Err(format!("expected Program, got {}", other.kind_name()).into()),
+    };
+    let statement_text: Vec<&str> = statements
+        .iter()
+        .map(|statement| &source2[statement.location.start..statement.location.end])
+        .collect();
+
     assert_eq!(statement_text, vec!["my $x = 1", "my $y = 2"]);
     Ok(())
 }

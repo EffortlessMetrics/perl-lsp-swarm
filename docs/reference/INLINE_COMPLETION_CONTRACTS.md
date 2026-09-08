@@ -288,16 +288,20 @@ upstream-proposed method).
 Every stream reaches **exactly one** terminal disposition, recorded as a
 `StreamTerminalOutcome` (`stream_session.rs`) by a single compare-and-set
 `StreamSession::settle`. The first caller to settle wins; every later caller
-observes `false`. Both the emission of the one `isFinal: true` value and the
-eviction of the manager entry are gated on that transition.
+observes `false`. On the handler's final path, successful outbound enqueue
+precedes the sequence and terminal commits; cancellation can settle
+independently. Manager eviction checks session identity and preserves an
+already-recorded outcome rather than requiring a new successful settlement.
 
 **Invariants.**
 
-- **Exactly one final.** At most one `isFinal: true` progress value is
-  *delivered* per stream, on every path: accepted candidate, filtered/empty,
+- **At most one final enqueue.** At most one `isFinal: true` progress value is
+  accepted by the outbound queue per stream: accepted candidate, filtered/empty,
   deterministic fallback, clean EOF without an explicit final chunk, and backend
   failure. A backend that ignores `StreamControl::Stop` and keeps sending final
   chunks is refused by the settled-guard rather than producing a second one.
+  Cancellation or failure of every enqueue attempt can leave no final value
+  accepted; a final enqueue is not an acknowledgement from the client.
 - **No retained sessions.** Every terminal path evicts its entry through
   `finish_if_current(key, session_id, outcome)`. A completed stream is not left
   in the manager to be swept by a later unrelated edit. There is no housekeeping
@@ -308,30 +312,36 @@ eviction of the manager entry are gated on that transition.
 - **Session identity is load-bearing.** `finish_if_current` removes an entry only
   while it is still the exact session that request started, so a stale task
   finishing late cannot evict the replacement that reused its display key.
-- **Delivery, not intent, commits state.** The outbound channel is bounded, so a
+- **Queue acceptance, not intent, commits state.** The outbound channel is bounded, so a
   `$/progress` notification can fail transiently under backpressure. Both the
   sequence value and the terminal outcome are therefore committed *after* a
-  successful send: `pending_sequence` reads, `commit_sequence` consumes. A frame
-  that never reached the client consumes no sequence value and does not settle
-  the stream, so the terminal is attempted once more by the tail owner, and a
-  terminal that is never delivered is recorded as `ProtocolEndedWithoutFinal`
-  rather than as a success.
-- **Contiguous observed sequences.** Every sequence value the client observes is
-  consumed by a frame that was actually delivered to it. A frame suppressed by
+  successful enqueue: `pending_sequence` reads, `commit_sequence` consumes. A
+  rejected enqueue consumes no sequence value and does not settle the stream,
+  so the terminal is attempted once more by the tail owner. If no attempt is
+  accepted and no cancellation already settled the session, release records
+  `ProtocolEndedWithoutFinal` rather than a successful completion.
+- **Contiguous queue-accepted sequences.** A sequence value is consumed only
+  after the outbound queue accepts its frame. A frame suppressed by
   `updateDebounceMs` pacing, skipped because its cumulative text was filtered, or
-  dropped by a failed send consumes none — so the observed sequence stream has no
-  gaps.
+  rejected by a failed enqueue consumes none, so those paths introduce no gaps
+  in the queue-accepted sequence. This does not prove client receipt or display.
 - **A failure is never a completion.** When the backend returns an error, the
   partial cumulative text it produced is discarded rather than re-evaluated and
   emitted as the terminal candidate. The configured `fallback` policy owns the
   final content: deterministic items when `fallback` is true, an empty final
   otherwise — the same decision the buffered route applies to a failed AI call.
 
+Successful enqueue is not confirmed transport delivery or editor rendering.
+Deterministic bounded-channel backpressure and cancellation-versus-send proof
+remain #14168; this handler does not provide an atomic cancellation/send
+transaction or a client acknowledgement protocol.
+
 **Supersession trade-off.** Because the scope is the document, a client showing
 one document in two views and requesting at both cursors gets one stream: the
-earlier cursor's in-flight stream is cancelled and receives no further frames,
-including no terminal one. Its request still resolves (`null`), which the client
-treats as a revocation, so no ghost text is stranded. Supersession matches the
+earlier cursor's in-flight stream is cancelled, and callbacks that observe this
+state stop. Its request can resolve (`null`) without a final frame, which the
+client treats as a revocation. An enqueue racing cancellation remains within
+the #14168 boundary above. Supersession matches the
 request URI as spelled — the same string that forms the `SessionKey` — so a
 client that spells one document two ways can hold one stream per spelling; those
 are reclaimed by the didChange/didClose sweeps, which do compare URI variants.
@@ -352,11 +362,12 @@ generation, needs no suppression state, and leaves a deliberate re-invocation at
 the same cursor free to retry. That matters because an AI backend is not
 deterministic: a user asking again is a real request, not a duplicate.
 
-Only an *accepted* terminal candidate retriggers the widget. One bounded race
-remains: a retrigger queued for an earlier non-final chunk can be serviced after
-the stream has already settled and revoked, which starts one further generation.
-That is bounded, not a loop, because the second stream's own revocation hides
-rather than retriggers.
+Non-final updates and an accepted terminal candidate can request a widget
+refresh; revocation itself requests only dismissal. The actual editor's handling
+of an already-queued invocation after revocation, including any additional
+generation count, is not established by the controller fixtures. That remains
+part of the actual-editor proof owned by #2163; no exact extra-generation bound
+is claimed here.
 
 Terminal outcomes owned elsewhere: the document-lifecycle transitions of #8657 /
 #8666 / #10254 are not yet consumed here; stream revocation still follows raw

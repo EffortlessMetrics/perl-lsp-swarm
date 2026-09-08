@@ -19,6 +19,7 @@ on:
       - 'scripts/install.sh'
       - 'scripts/publish-topo.py'
       - 'scripts/tests/test-install-target-selection.sh'
+      - 'scripts/tests/test-install-source-version-binding.sh'
       # Install-surface honesty gates (issue #5448): the zero-argument
       # bootstrap path and the public package manifests.
       - 'install.ps1'
@@ -83,6 +84,7 @@ on:
       - '.github/run_all_tests.sh'
       - 'scripts/tests/test-cargo-toolchain-guard.sh'
       - 'scripts/tests/test-cargo-safe-toolchain-guard.sh'
+      - 'scripts/tests/test-fuzz-bounded.sh'
       - 'rust-toolchain.toml'
       - 'Cargo.toml'
       - '.github/workflows/publish-dry-run.yml'
@@ -217,6 +219,31 @@ jobs:
             echo "## Installer PATH contract self-test FAILED" >> "$GITHUB_STEP_SUMMARY"
             echo "" >> "$GITHUB_STEP_SUMMARY"
             echo "The installer PATH source contract regressed. Check the step output above for the failed case." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  installer-source-version-binding-self-test:
+    name: Installer source-version binding self-test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Run installer source-version binding self-test
+        run: bash scripts/tests/test-install-source-version-binding.sh
+
+      - name: Summary
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          if [ "$JOB_STATUS" = "success" ]; then
+            echo "## Installer source-version binding self-test passed" >> "$GITHUB_STEP_SUMMARY"
+            echo "Source-mode VERSION requests bind Cargo's exact selector and the staged perllsp identity, while malformed or unrelated identities fail closed before promotion." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "## Installer source-version binding self-test FAILED" >> "$GITHUB_STEP_SUMMARY"
+            echo "The source installer may be able to build or promote a registry subject different from the requested VERSION." >> "$GITHUB_STEP_SUMMARY"
           fi
 
   windows-fresh-path-oracle-self-test:
@@ -471,6 +498,36 @@ jobs:
             echo "## Cargo toolchain guard self-test FAILED" >> "$GITHUB_STEP_SUMMARY"
             echo "" >> "$GITHUB_STEP_SUMMARY"
             echo "The guard contract regressed — a bash entrypoint could again hand builds to a cargo older than the workspace rust-version and surface it as a manifest parse error. Check the step output above." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  fuzz-bounded-discovery-self-test:
+    name: fuzz-bounded discovery self-test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Syntax-check the wrapper
+        run: bash -n scripts/fuzz-bounded
+
+      - name: Run stubbed LF/CRLF discovery fixtures
+        run: bash scripts/tests/test-fuzz-bounded.sh
+
+      - name: Summary
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          if [ "$JOB_STATUS" = "success" ]; then
+            echo "## fuzz-bounded discovery self-test passed" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "The wrapper (issue #15059) accepts declared targets from LF and CRLF Python metadata, forwards the caller argv unmodified to cargo-fuzz, rejects unknown names before execution, and cannot print the success banner when metadata fails or yields no bin targets. Fixtures stub cargo/python and do not compile fuzz binaries." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "## fuzz-bounded discovery self-test FAILED" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "Target-name discovery at the Git Bash / Python boundary regressed. Check the fixture output above." >> "$GITHUB_STEP_SUMMARY"
           fi
 
   ripr-lane-termination-classifier-self-test:

@@ -11,10 +11,12 @@
 //!
 //! A session is *active* until exactly one [`StreamSession::settle`] call
 //! records its [`StreamTerminalOutcome`]. Settling is a compare-and-set: the
-//! first caller wins and every later caller observes `false`. Emission of the
-//! single `isFinal: true` progress value and removal of the manager entry are
-//! both gated on winning that transition, so a stream cannot emit two finals
-//! and cannot leave a retained entry behind.
+//! first caller wins and every later caller observes `false`. The streaming
+//! handler enqueues a final progress value before committing its sequence and
+//! terminal outcome; cancellation can settle independently. Queue acceptance
+//! does not acknowledge client delivery. Identity-checked removal releases the
+//! manager entry without evicting a successor. The cancellation-versus-send
+//! transaction and outbound delivery guarantees remain the scope of #14168.
 
 use std::collections::HashMap;
 use std::sync::Arc;

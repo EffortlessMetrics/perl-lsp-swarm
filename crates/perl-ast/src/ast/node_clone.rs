@@ -170,6 +170,10 @@ where
 {
     match kind {
         NodeKind::Heredoc { body_span, .. } => map_optional_location(body_span, map),
+        NodeKind::DataSection { marker_span, body_span, .. } => {
+            map_optional_location(marker_span, map);
+            map_optional_location(body_span, map);
+        }
         NodeKind::Try { catch_blocks, .. } => {
             for (catch_variable, _) in catch_blocks {
                 if let Some((_, location)) = catch_variable {
@@ -251,7 +255,6 @@ where
         | NodeKind::Transliteration { .. }
         | NodeKind::Use { .. }
         | NodeKind::No { .. }
-        | NodeKind::DataSection { .. }
         | NodeKind::Identifier { .. }
         | NodeKind::MissingExpression
         | NodeKind::MissingStatement
@@ -260,6 +263,28 @@ where
         | NodeKind::UnknownRest => {}
     }
     true
+}
+
+impl NodeKind {
+    /// Map every independent source span stored outside [`Node::location`]
+    /// in place.
+    ///
+    /// This is the in-place counterpart of the clone-path mapping engine
+    /// behind [`Node::clone_with_mapped_locations`]: incremental position
+    /// shifts call it so payload sub-spans move with the shift already
+    /// applied to [`Node::location`] instead of staying at their pre-shift
+    /// offsets. `map` must derive each result from the supplied location
+    /// only; invocation order is unspecified.
+    ///
+    /// Returns `false` when a recovery [`Token`] span cannot be remapped
+    /// without losing the token's validated byte width. The caller must then
+    /// discard the mutated tree rather than accept it.
+    pub fn map_payload_locations_in_place<F>(&mut self, map: F) -> bool
+    where
+        F: Fn(SourceLocation) -> SourceLocation,
+    {
+        map_payload_locations_with_recovery(self, &map, true)
+    }
 }
 
 fn preserve_location(location: SourceLocation) -> SourceLocation {
@@ -561,6 +586,35 @@ mod tests {
         assert!(
             matches!(phase, NodeKind::PhaseBlock { phase_span: Some(span), .. } if span == loc(10, 15))
         );
+
+        // A data section's marker and payload spans must shift with the node.
+        // Leaving them behind would make the exact ranges the HIR shell
+        // publishes point at unrelated bytes after any remap.
+        let mut data_section = NodeKind::DataSection {
+            marker: "__DATA__".to_string(),
+            marker_span: Some(loc(0, 8)),
+            body: Some("payload\n".to_string()),
+            body_span: Some(loc(9, 17)),
+        };
+        map_payload_locations(&mut data_section, &shift);
+        assert!(matches!(
+            data_section,
+            NodeKind::DataSection { marker_span: Some(m), body_span: Some(b), .. }
+                if m == loc(10, 18) && b == loc(19, 27)
+        ));
+
+        // A marker with no payload keeps an absent payload span absent.
+        let mut data_section_no_body = NodeKind::DataSection {
+            marker: "__END__".to_string(),
+            marker_span: Some(loc(0, 7)),
+            body: None,
+            body_span: None,
+        };
+        map_payload_locations(&mut data_section_no_body, &shift);
+        assert!(matches!(
+            data_section_no_body,
+            NodeKind::DataSection { marker_span: Some(m), body_span: None, .. } if m == loc(10, 17)
+        ));
 
         let mut class = NodeKind::Class {
             name: "Thing".to_string(),
