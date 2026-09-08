@@ -92,10 +92,6 @@ All notable changes to the Perl Language Server extension will be documented in 
 
 ### Fixed
 
-- **Run Health Check now reports the language server's actual startup and
-  recovery state.** An existing binary path no longer masks a rejected startup;
-  setup results are revalidated across one bounded lifecycle replacement, and
-  explicit-path diagnostics identify themselves as setup checks. (#15102)
 - **Extension activation no longer blocks on language-server startup.** UI and
   commands now register and activation returns immediately while the language
   client's startup tail completes in the background, instead of blocking

@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "owner_issue": 15069,
-  "reason": "PR #15104 preserves the formatter-required Markdown badge separator. Both hosted Linux smoke artifacts 10037841067 and 10037834538 from run 34177157278 measured readme.md at 25231 bytes, up one byte, and total inventory at 1857610 bytes. All other 28 paths and sizes match base c01b5a6a856227cab6bf97db67d67937ce07f4bd. Package creation, behavioral smoke, activation recovery and crash recovery passed on c1b82c19ee7d4f2bb44953cdd3ba76538d7f883e; inventory alone refused the undeclared byte increase. This declaration uses that measured inventory, not a new package or installed-smoke receipt. No validator, threshold or admission rule changes; fresh hosted transition validation remains required.",
-  "base_baseline_file_sha256": "043e9c99fbe2ad917624b248a50ec498c808480445e219f2589178c2c0dd694e",
-  "candidate_baseline_file_sha256": "5c73582a6a7ae22a9f648492731ef3315336bfb17553aee22bfb48c332f89411",
-  "base_inventory_sha256": "689fa5b8485cd88e79dc906275a51883b3d574dccff965435faffe678beb5ec7",
-  "candidate_inventory_sha256": "7780c5f86aebdd24b900a76bf412fcc05ad1c1acfd0b16717be6444bd884bcbb"
+  "owner_issue": 15102,
+  "reason": "PR #15146 changes registered Run Health Check behavior and its lifecycle proof. Fresh Windows x64 VSIX packaging at candidate 637eb2c8258d020c521e2df5104303dd77eb573a measured only out/extension.js growing from 1679643 to 1683100 bytes (+3457); all other 28 archive paths and sizes match the merge-base baseline, including changelog.md after moving the release note to the Changie fragment vscode-15146-Fixed-000000.yaml. This declaration records the exact measured archive; no validator, threshold, or admission rule changes.",
+  "base_baseline_file_sha256": "5c73582a6a7ae22a9f648492731ef3315336bfb17553aee22bfb48c332f89411",
+  "candidate_baseline_file_sha256": "b0c779e1273937b80819114b590accb01b2f17b65079876536c0af4c3f4a22aa",
+  "base_inventory_sha256": "7780c5f86aebdd24b900a76bf412fcc05ad1c1acfd0b16717be6444bd884bcbb",
+  "candidate_inventory_sha256": "a1b52bf67b6287f7e730d72427ede389a821374c63f2410baf37db46b98d2d56"
 }
