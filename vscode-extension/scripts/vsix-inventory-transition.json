@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
   "owner_issue": 14486,
-  "reason": "The #14486 retained process witness adapter is incorporated into the main-targeted #15158 health candidate. Against exact main candidate b6b6a881a, the measured ordinary transition changes out/extension.js from 1686496 to 1688827 bytes (+2331) and readme.md from 25231 to 25629 bytes (+398); the other 27 archive paths retain their measured sizes. The candidate total is 1867070 bytes versus main's 1864341 bytes (+2729). This declaration records the exact ordinary package transition without changing validator thresholds or admission rules; bundled installed-health evidence remains separate from this ordinary inventory.",
+  "reason": "The #14486 retained process witness adapter and same-claim #15153 startup settlement repair are incorporated into the main-targeted #15158 health candidate. Against exact main b6b6a881, the measured ordinary transition changes out/extension.js from 1686496 to 1688941 bytes (+2445) and readme.md from 25231 to 25629 bytes (+398); the other 27 archive paths retain their measured sizes. The candidate total is 1867184 bytes versus main 1864341 bytes (+2843). This declaration records the exact ordinary package transition without changing validator thresholds or admission rules; bundled installed-health evidence remains separate from this ordinary inventory.",
   "base_baseline_file_sha256": "eaef617cee329a98c217809c7b330c51c8ea246eb13b983ecc78d83e4487d945",
-  "candidate_baseline_file_sha256": "8f0bfe8bd6203ecbab140f1ab507eabc84329347f1fdb2d1bfa2ba0cdf7ec7cb",
+  "candidate_baseline_file_sha256": "7815d2caa890d361d4353aa3f94beaf304f7236b5e4330756a0b9bbc8e6e4b1a",
   "base_inventory_sha256": "2b68285babc5d03bd46afa00260919d43ed466415a40fc92e3a4ce79ed579766",
-  "candidate_inventory_sha256": "a00835dd0bfda6509b5a170bbea73f6b2923790d8d93f991d5878738b29658ff"
+  "candidate_inventory_sha256": "8978d708bce4b8071a4784d740589674b8c1cb311be07d2307aec9bd2e3b8525"
 }
