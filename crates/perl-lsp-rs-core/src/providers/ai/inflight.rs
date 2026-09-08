@@ -365,6 +365,10 @@ mod tests {
 
     /// A panicking request must not strand its slot: `Drop` runs during unwind.
     #[test]
+    #[expect(
+        clippy::panic,
+        reason = "issue:8300: deliberate unwind witness proves permit release"
+    )]
     fn permit_is_released_when_the_holder_panics() {
         let gate = Arc::new(InflightGate::new(1));
 

@@ -225,7 +225,9 @@ fn max_inflight_one_admits_only_one_concurrent_backend_call()
         "the refused request must never open a connection"
     );
     assert_eq!(provider.inflight_counters().active, 0, "every permit must be released");
-    assert_eq!(provider.inflight_counters().released, 1);
+    if provider.inflight_counters().released != 1 {
+        return Err(std::io::Error::other("the admitted permit must be released exactly once").into());
+    }
     assert_eq!(provider.inflight_counters().peak_active, 1);
     Ok(())
 }
