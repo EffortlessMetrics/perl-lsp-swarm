@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "owner_issue": 15153,
-  "reason": "The #15153 candidate's ordinary Windows x64 VSIX contains the governed 29 archive paths and no locally staged bundled server binary. Against the exact merge-base baseline, the measured transition changes out/extension.js from 1686496 to 1687826 bytes (+1330), readme.md from 25231 to 25629 bytes (+398), while package.json remains 59413 bytes and the other 26 archive paths retain their measured sizes. The candidate total is 1866069 bytes versus the base 1864341 bytes (+1728). This declaration records the exact ordinary package transition without changing validator thresholds or admission rules; bundled installed-health evidence is retained separately from this ordinary inventory.",
-  "base_baseline_file_sha256": "eaef617cee329a98c217809c7b330c51c8ea246eb13b983ecc78d83e4487d945",
-  "candidate_baseline_file_sha256": "cc0f7729e3a712e9cb5b99f54a20c4d834616dfbb9d00c0186ea3d54a068f47e",
-  "base_inventory_sha256": "2b68285babc5d03bd46afa00260919d43ed466415a40fc92e3a4ce79ed579766",
-  "candidate_inventory_sha256": "a2b2009ff9641760d51ad524764f1a174d986ac5f6b43b0569c503d100585373"
+  "owner_issue": 14486,
+  "reason": "The #14486 candidate's ordinary Windows x64 VSIX contains the governed 29 archive paths and no locally staged bundled server binary. Against the explicit #15158 stack baseline, the measured transition changes out/extension.js from 1687826 to 1688103 bytes (+277), while the other 28 archive paths retain their measured sizes. The candidate total is 1866346 bytes versus the base 1866069 bytes (+277). This declaration records the exact ordinary package transition without changing validator thresholds or admission rules; installed process-witness evidence remains a separate claim.",
+  "base_baseline_file_sha256": "cc0f7729e3a712e9cb5b99f54a20c4d834616dfbb9d00c0186ea3d54a068f47e",
+  "candidate_baseline_file_sha256": "0d07a116c8204f109abd093af42e449ac8063e65a9f03e8e1c63fe37cbe12619",
+  "base_inventory_sha256": "a2b2009ff9641760d51ad524764f1a174d986ac5f6b43b0569c503d100585373",
+  "candidate_inventory_sha256": "7f5805756847b4cbd3fb4f5e8fbf817129b9103438c9faae0489c7e90cd5ab52"
 }
