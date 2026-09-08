@@ -284,6 +284,7 @@ async function loadStepDefinitionDocuments(
       pattern,
       STEP_DEFINITION_EXCLUDE_GLOB,
       STEP_DEFINITION_FILE_LIMIT,
+      token,
     );
 
     for (const uri of uris) {

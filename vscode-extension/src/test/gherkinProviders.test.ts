@@ -748,6 +748,14 @@ describe('gherkin step-definition workspace envelope', () => {
 
       expect(decode).toHaveBeenCalledWith(expect.any(Uint8Array), { uri });
       expect(scan.documents.map((document) => document.text)).toEqual([text]);
+      const links = provideGherkinStepDefinitionLinks(
+        'Feature: Café\n  Scenario: Visit\n    Given café',
+        { line: 2, character: 12 } as vscode.Position,
+        scan.documents,
+      );
+      expect(links).toHaveLength(1);
+      expect(links?.[0]?.targetUri.toString()).toBe(uri.toString());
+      expect(links?.[0]?.targetSelectionRange?.start).toEqual(new vscode.Position(0, 0));
     } finally {
       decode.mockRestore();
       fs.rmSync(root, { recursive: true, force: true });
@@ -756,27 +764,47 @@ describe('gherkin step-definition workspace envelope', () => {
 
   test('returns no definition result when the production scan refuses the read budget', async () => {
     const root = makeEnvelopeWorkspace('provider-refusal');
+    const matchingDefinition = 'When qr/^the user logs in$/, sub { return; };\n#';
+    const featureText = 'Feature: Login\n  Scenario: Happy path\n    When the user logs in';
     const candidates = Array.from({ length: 42 }, (_unused, index) => {
       const candidate = path.join(root, `part_${index}.pm`);
-      fs.writeFileSync(candidate, Buffer.alloc(400 * 1024, 0x61));
+      const contents = Buffer.alloc(400 * 1024, 0x61);
+      if (index === 0) {
+        contents.write(matchingDefinition, 'utf8');
+      }
+      fs.writeFileSync(candidate, contents);
       return vscode.Uri.file(candidate);
     });
 
     try {
+      expect(
+        provideGherkinStepDefinitionLinks(
+          featureText,
+          { line: 2, character: 12 } as vscode.Position,
+          [{ uri: vscode.Uri.file(path.join(root, 'part_0.pm')), text: matchingDefinition }],
+        ),
+      ).toHaveLength(1);
       registerGherkinProviders();
       (vscode.workspace.findFiles as jest.Mock)
         .mockResolvedValueOnce(candidates)
         .mockResolvedValue([]);
       const provider = (vscode.languages.registerDefinitionProvider as jest.Mock).mock.calls[0][1];
+      const token = cancelled(false);
 
       const links = await provider.provideDefinition(
         {
-          getText: () => 'Feature: Login\n  Scenario: Happy path\n    When the user logs in',
+          getText: () => featureText,
         } as vscode.TextDocument,
         { line: 2, character: 12 } as vscode.Position,
-        cancelled(false),
+        token,
       );
 
+      expect(vscode.workspace.findFiles).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.any(String),
+        1000,
+        token,
+      );
       expect(links).toBeUndefined();
       expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(
         'Gherkin step-definition discovery stopped before the workspace was fully scanned; no definition result is available.',
