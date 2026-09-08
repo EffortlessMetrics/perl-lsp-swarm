@@ -68,6 +68,73 @@ fn active_client_round_trips_two_gated_requests_through_a_child_process() -> Res
     Ok(())
 }
 
+fn did_close_registration_round_trip(advertised: bool) -> Result<()> {
+    let workspace = FakeWorkspace::new()?;
+    let mode = if advertised { "advertised" } else { "unadvertised" };
+    let config = ScenarioConfig {
+        timeout: Duration::from_secs(5),
+        extra_env: vec![("UX_FIXTURE_DID_CLOSE".to_owned(), Some(mode.to_owned()))],
+        client_capability_overrides: json!({
+            "textDocument": { "synchronization": { "dynamicRegistration": advertised } }
+        }),
+        ..Default::default()
+    };
+    let client =
+        UxClient::spawn(env!("CARGO_BIN_EXE_ux_server_request_fixture"), &workspace, &config)?;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !client.peek_raw_events().iter().any(|event| {
+        event.get("method") == Some(&json!("test/ux-round-trip-complete"))
+            && event.pointer("/params/requests") == Some(&json!(1))
+    }) {
+        if let Some(error) = client.peek_transport_error() {
+            return Err(anyhow!("didClose {mode} round trip failed: {error}"));
+        }
+        if Instant::now() >= deadline {
+            return Err(anyhow!("didClose {mode} round trip did not complete"));
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    let requests = client.peek_server_requests();
+    if requests.len() != 1
+        || requests.first().and_then(|request| request.get("id"))
+            != Some(&json!("did-close-registration"))
+        || requests.first().and_then(|request| request.pointer("/params/registrations/0/method"))
+            != Some(&json!("textDocument/didClose"))
+        || requests.first().and_then(|request| {
+            request.pointer("/params/registrations/0/registerOptions/documentSelector")
+        }) != Some(&json!([{ "language": "perl" }]))
+    {
+        return Err(anyhow!("didClose request identity, selector, or evidence was not retained"));
+    }
+    let expected_violations = if advertised {
+        Vec::new()
+    } else {
+        vec![perl_lsp_ux_tests::CapabilityViolation {
+            id: json!("did-close-registration"),
+            method: "client/registerCapability".to_owned(),
+            capability: "textDocument.synchronization.dynamicRegistration".to_owned(),
+        }]
+    };
+    if client.peek_capability_violations() != expected_violations {
+        return Err(anyhow!("didClose {mode} capability evidence did not match advertisement"));
+    }
+    client.shutdown_and_wait(Duration::from_secs(2))?;
+    if let Some(error) = client.peek_transport_error() {
+        return Err(anyhow!("didClose {mode} shutdown failed: {error}"));
+    }
+    Ok(())
+}
+
+#[test]
+fn advertised_did_close_registration_round_trips_through_child() -> Result<()> {
+    did_close_registration_round_trip(true)
+}
+
+#[test]
+fn unadvertised_did_close_registration_is_rejected_through_child() -> Result<()> {
+    did_close_registration_round_trip(false)
+}
+
 fn assert_protocol_failure(mode: &str, expected: &str) -> Result<()> {
     let workspace = FakeWorkspace::new()?;
     let config = ScenarioConfig {
@@ -100,4 +167,9 @@ fn malformed_frame_from_child_is_a_transport_failure() -> Result<()> {
 #[test]
 fn invalid_json_from_child_is_a_transport_failure() -> Result<()> {
     assert_protocol_failure("invalid-json", "Failed to parse LSP JSON body")
+}
+
+#[test]
+fn partial_header_eof_from_child_is_a_transport_failure() -> Result<()> {
+    assert_protocol_failure("partial-header", "Unexpected EOF in LSP message headers")
 }

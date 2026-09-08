@@ -530,12 +530,17 @@ impl Drop for UxClient {
 fn read_one_message(reader: &mut impl BufRead) -> Result<Value> {
     // Parse LSP Content-Length headers.
     let mut content_length: Option<usize> = None;
+    let mut header_started = false;
     loop {
         let mut line = String::new();
         let n = reader.read_line(&mut line)?;
         if n == 0 {
+            if header_started {
+                return Err(anyhow!("Unexpected EOF in LSP message headers"));
+            }
             return Err(NormalEof.into());
         }
+        header_started = true;
         let trimmed = line.trim_end();
         if trimmed.is_empty() {
             break;
@@ -898,6 +903,7 @@ fn registration_capability_path(method: &str) -> Option<&'static str> {
         "workspace/willDeleteFiles" => "workspace.fileOperations.dynamicRegistration",
         "textDocument/completion" => "textDocument.completion.dynamicRegistration",
         "textDocument/didOpen"
+        | "textDocument/didClose"
         | "textDocument/didChange"
         | "textDocument/willSave"
         | "textDocument/willSaveWaitUntil"
@@ -1023,6 +1029,7 @@ mod tests {
         let mut reader = BufReader::new(server_stdout.as_slice());
         let stdin = Arc::new(Mutex::new(Vec::new()));
         let events = Arc::new(Mutex::new(VecDeque::new()));
+        let server_requests = Arc::new(Mutex::new(Vec::new()));
         let responses = Arc::new(Mutex::new(VecDeque::new()));
         let violations = Arc::new(Mutex::new(Vec::new()));
         let capabilities = capabilities_with(json!({
@@ -1056,7 +1063,11 @@ mod tests {
 
         let observed: Vec<Value> =
             events.lock().unwrap_or_else(|e| e.into_inner()).iter().cloned().collect();
-        assert_eq!(observed, vec![server_request]);
+        assert_eq!(observed, vec![server_request.clone()]);
+        let recorded = server_requests.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        if recorded != vec![server_request] {
+            return Err(anyhow!("server request evidence was not preserved separately"));
+        }
 
         let queued: Vec<Value> =
             responses.lock().unwrap_or_else(|e| e.into_inner()).iter().cloned().collect();
@@ -1078,6 +1089,7 @@ mod tests {
         let mut reader = BufReader::new(server_stdout.as_slice());
         let stdin = Arc::new(Mutex::new(BrokenWriter));
         let events = Arc::new(Mutex::new(VecDeque::new()));
+        let server_requests = Arc::new(Mutex::new(Vec::new()));
         let responses = Arc::new(Mutex::new(VecDeque::new()));
         let violations = Arc::new(Mutex::new(Vec::new()));
         let capabilities = capabilities_with(json!({
@@ -1138,6 +1150,32 @@ mod tests {
         closing.store(true, Ordering::Release);
         record_transport_error(&transport_error, &error, &closing);
         assert!(transport_error.lock().unwrap_or_else(|e| e.into_inner()).is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn partial_header_eof_remains_an_error_during_shutdown() -> Result<()> {
+        for input in [
+            "Content-Length: 10\r\n",
+            "Content-Length: 10",
+            "Content-Type: application/vscode-jsonrpc\r\n",
+        ] {
+            let mut reader = BufReader::new(input.as_bytes());
+            let error = read_one_message(&mut reader)
+                .err()
+                .ok_or_else(|| anyhow!("partial header unexpectedly produced a message"))?;
+            if is_normal_eof(&error) || !error.to_string().contains("EOF in LSP message headers") {
+                return Err(anyhow!(
+                    "partial header was not classified as framing failure: {error}"
+                ));
+            }
+            let slot = Mutex::new(None);
+            let closing = std::sync::atomic::AtomicBool::new(true);
+            record_transport_error(&slot, &error, &closing);
+            if slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).is_none() {
+                return Err(anyhow!("shutdown suppressed the partial-header failure"));
+            }
+        }
         Ok(())
     }
 
@@ -1383,7 +1421,6 @@ mod tests {
         assert!(response.get("error").is_none());
     }
 
-
     #[test]
     fn standard_dynamic_registration_paths_are_admitted() {
         let request = json!({
@@ -1439,9 +1476,9 @@ mod tests {
 
         assert_eq!(response["id"], "files-without-parent-support");
         assert_eq!(response["error"]["code"], -32601);
-        assert!(response["error"]["message"]
-            .as_str()
-            .is_some_and(|message| message.contains("workspace.fileOperations.dynamicRegistration")));
+        assert!(response["error"]["message"].as_str().is_some_and(|message| {
+            message.contains("workspace.fileOperations.dynamicRegistration")
+        }));
     }
 
     #[test]

@@ -86,6 +86,7 @@ fn main() -> io::Result<()> {
         let output = match mode.as_str() {
             "malformed-frame" => "Content-Length: nope\r\n\r\n{}",
             "invalid-json" => "Content-Length: 8\r\n\r\nnot json",
+            "partial-header" => "Content-Length: 10\r\n",
             _ => return Err(protocol_error(format!("unknown protocol failure mode: {mode}"))),
         };
         writer.write_all(output.as_bytes())?;
@@ -93,26 +94,54 @@ fn main() -> io::Result<()> {
         return Ok(());
     }
 
-    let requests = [
-        json!({
+    let did_close_mode = std::env::var("UX_FIXTURE_DID_CLOSE").ok();
+    let requests = if did_close_mode.is_some() {
+        vec![json!({
             "jsonrpc": "2.0",
-            "id": 41,
-            "method": "workspace/textDocumentContent/refresh",
-            "params": {}
-        }),
-        json!({
-            "jsonrpc": "2.0",
-            "id": "configuration-42",
-            "method": "workspace/configuration",
-            "params": { "items": [{ "section": "perl" }] }
-        }),
-    ];
+            "id": "did-close-registration",
+            "method": "client/registerCapability",
+            "params": {
+                "registrations": [{
+                    "id": "close",
+                    "method": "textDocument/didClose",
+                    "registerOptions": { "documentSelector": [{ "language": "perl" }] }
+                }]
+            }
+        })]
+    } else {
+        vec![
+            json!({
+                "jsonrpc": "2.0",
+                "id": 41,
+                "method": "workspace/textDocumentContent/refresh",
+                "params": {}
+            }),
+            json!({
+                "jsonrpc": "2.0",
+                "id": "configuration-42",
+                "method": "workspace/configuration",
+                "params": { "items": [{ "section": "perl" }] }
+            }),
+        ]
+    };
+    let request_count = requests.len();
     for request in requests {
         let id = request.get("id").cloned().unwrap_or(Value::Null);
         let method = request.get("method").and_then(Value::as_str).unwrap_or("");
         write_message(&mut writer, &request)?;
         let response = read_message(&mut reader)?;
-        expect_response(&response, &id, method)?;
+        if did_close_mode.as_deref() == Some("advertised") {
+            if response.get("id") != Some(&id)
+                || response.get("result") != Some(&Value::Null)
+                || response.get("error").is_some()
+            {
+                return Err(protocol_error(format!(
+                    "expected successful didClose registration with exact id: {response}"
+                )));
+            }
+        } else {
+            expect_response(&response, &id, method)?;
+        }
     }
 
     write_message(
@@ -120,7 +149,7 @@ fn main() -> io::Result<()> {
         &json!({
             "jsonrpc": "2.0",
             "method": "test/ux-round-trip-complete",
-            "params": { "requests": 2 }
+            "params": { "requests": request_count }
         }),
     )?;
 
