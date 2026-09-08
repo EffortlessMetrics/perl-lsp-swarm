@@ -2195,9 +2195,7 @@ async function initializeLanguageClient(context: vscode.ExtensionContext): Promi
           if (choice === 'View Logs') {
             outputChannel.show();
           } else if (choice === 'Run Health Check') {
-            if (isCurrentFailure()) {
-              void vscode.commands.executeCommand('perl-lsp.runHealthCheck');
-            }
+            void vscode.commands.executeCommand('perl-lsp.runHealthCheck');
           } else if (choice === 'Reinstall') {
             if (isCurrentFailure()) {
               void reinstallServerBinary(context);

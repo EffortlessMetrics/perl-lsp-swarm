@@ -8,6 +8,47 @@ import {
   assertCandidateBoundInstallSource,
   assertCandidateBoundPlatform,
 } from './runPublishedSmoke';
+import { assertSmokeSelector, run as runPublishedSuite } from './suite';
+
+void test('published smoke rejects a recovery leg without its failure selector', () => {
+  assert.throws(
+    () =>
+      assertSmokeSelector({
+        PERL_LSP_HEALTH_CHECK_RECOVERY_SMOKE: '1',
+      }),
+    /PERL_LSP_HEALTH_CHECK_RECOVERY_SMOKE requires PERL_LSP_HEALTH_CHECK_FAILURE_SMOKE=1/,
+  );
+  assert.doesNotThrow(() =>
+    assertSmokeSelector({
+      PERL_LSP_HEALTH_CHECK_FAILURE_SMOKE: '1',
+      PERL_LSP_HEALTH_CHECK_RECOVERY_SMOKE: '1',
+    }),
+  );
+});
+
+void test('published smoke run rejects the invalid recovery selector before loading a suite', async () => {
+  const previousFailure = process.env.PERL_LSP_HEALTH_CHECK_FAILURE_SMOKE;
+  const previousRecovery = process.env.PERL_LSP_HEALTH_CHECK_RECOVERY_SMOKE;
+  try {
+    delete process.env.PERL_LSP_HEALTH_CHECK_FAILURE_SMOKE;
+    process.env.PERL_LSP_HEALTH_CHECK_RECOVERY_SMOKE = '1';
+    await assert.rejects(
+      runPublishedSuite(),
+      /PERL_LSP_HEALTH_CHECK_RECOVERY_SMOKE requires PERL_LSP_HEALTH_CHECK_FAILURE_SMOKE=1/,
+    );
+  } finally {
+    if (previousFailure === undefined) {
+      delete process.env.PERL_LSP_HEALTH_CHECK_FAILURE_SMOKE;
+    } else {
+      process.env.PERL_LSP_HEALTH_CHECK_FAILURE_SMOKE = previousFailure;
+    }
+    if (previousRecovery === undefined) {
+      delete process.env.PERL_LSP_HEALTH_CHECK_RECOVERY_SMOKE;
+    } else {
+      process.env.PERL_LSP_HEALTH_CHECK_RECOVERY_SMOKE = previousRecovery;
+    }
+  }
+});
 
 void test('candidate-bound Marketplace latest is refused before installation', () => {
   assert.throws(

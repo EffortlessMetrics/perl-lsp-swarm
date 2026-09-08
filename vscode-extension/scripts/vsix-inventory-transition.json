@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
   "owner_issue": 15153,
-  "reason": "The #15158 stack now includes the #15159 process-witness repair in its ordinary Windows x64 VSIX. Against the exact main baseline, the measured transition changes out/extension.js from 1686496 to 1688103 bytes (+1607) and readme.md from 25231 to 25629 bytes (+398); package.json remains 59413 bytes and the other 26 archive paths retain their measured sizes. The candidate total is 1866346 bytes versus the main baseline 1864341 bytes (+2005). This declaration records the exact ordinary package transition without changing validator thresholds or admission rules; bundled installed-health evidence remains separate from this ordinary inventory.",
+  "reason": "The #15158 stack includes the #15159 process-witness repair and delayed health-action fix in its ordinary Windows x64 VSIX. Against the exact main baseline, the measured transition changes out/extension.js from 1686496 to 1688070 bytes (+1574) and readme.md from 25231 to 25629 bytes (+398); package.json remains 59413 bytes and the other 26 archive paths retain their measured sizes. The candidate total is 1866313 bytes versus the main baseline 1864341 bytes (+1972). This declaration records the exact ordinary package transition without changing validator thresholds or admission rules; bundled installed-health evidence remains separate from this ordinary inventory.",
   "base_baseline_file_sha256": "eaef617cee329a98c217809c7b330c51c8ea246eb13b983ecc78d83e4487d945",
-  "candidate_baseline_file_sha256": "0d07a116c8204f109abd093af42e449ac8063e65a9f03e8e1c63fe37cbe12619",
+  "candidate_baseline_file_sha256": "eb608f9f8d1fe2c86b5feb84d22477c15da72a2ea991964a54731e88544a116a",
   "base_inventory_sha256": "2b68285babc5d03bd46afa00260919d43ed466415a40fc92e3a4ce79ed579766",
-  "candidate_inventory_sha256": "7f5805756847b4cbd3fb4f5e8fbf817129b9103438c9faae0489c7e90cd5ab52"
+  "candidate_inventory_sha256": "7c58e49152f3a1bb8bb8a852cba6f9fda23658ca70ffcafaf7c5a2e829044f1d"
 }

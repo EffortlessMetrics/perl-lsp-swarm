@@ -1,7 +1,19 @@
 import * as path from 'path';
 import Mocha from 'mocha';
 
+export function assertSmokeSelector(environment: NodeJS.ProcessEnv = process.env): void {
+  if (
+    environment.PERL_LSP_HEALTH_CHECK_RECOVERY_SMOKE === '1' &&
+    environment.PERL_LSP_HEALTH_CHECK_FAILURE_SMOKE !== '1'
+  ) {
+    throw new Error(
+      'PERL_LSP_HEALTH_CHECK_RECOVERY_SMOKE requires PERL_LSP_HEALTH_CHECK_FAILURE_SMOKE=1',
+    );
+  }
+}
+
 export async function run(): Promise<void> {
+  assertSmokeSelector();
   const mocha = new Mocha({
     ui: 'tdd',
     color: true,
