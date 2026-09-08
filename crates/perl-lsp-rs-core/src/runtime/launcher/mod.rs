@@ -484,7 +484,7 @@ pub enum LaunchAction {
         json: bool,
     },
     /// Detect development-environment prerequisites on this machine (#12595):
-    /// symlink privilege, per-shell cargo/rustc identity vs the workspace
+    /// temporary symlink privilege, per-shell Cargo probes vs the workspace
     /// toolchain pin, bash flavor coverage, and Perl identity divergence.
     DoctorDevEnvironment {
         /// Output JSON instead of human-readable text.

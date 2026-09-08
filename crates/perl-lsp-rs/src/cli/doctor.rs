@@ -74,14 +74,14 @@ pub(super) fn run_doctor_critic_compatibility(json: bool) -> i32 {
     }
 }
 
-/// `perllsp --doctor --dev-environment`: read-only development-environment
+/// `perllsp --doctor --dev-environment`: bounded development-environment
 /// prerequisite report (#12595). Probes this machine for the four Windows
-/// clone-and-make findings behind the #11869 audit: symlink privilege
-/// (#12567), per-shell cargo/rustc identity versus the workspace toolchain
+/// clone-and-make findings behind the #11869 audit: temporary symlink
+/// privilege (#12567), per-shell Cargo probes versus the workspace toolchain
 /// pin, bash flavor coverage for repository POSIX entrypoints, and Perl
 /// identity divergence for DAP E2E / prove consumers. Typed statuses and
-/// copyable fix lines follow the #7212 posture; the arm never auto-mutates
-/// the machine beyond creating and removing one temporary symlink.
+/// copyable fix lines follow the #7212 posture; the symlink probe uses temporary
+/// files with best-effort cleanup and never installs or configures anything.
 pub(super) fn run_doctor_dev_environment(json: bool) -> i32 {
     let report = build_dev_environment_report();
     if json {
@@ -883,7 +883,8 @@ fn probe_symlink_privilege_in(base_dir: &Path) -> SymlinkPrivilegeReport {
         let _ = base_dir;
         SymlinkPrivilegeReport {
             status: STATUS_NOT_APPLICABLE,
-            detail: "file-symlink creation is unrestricted on this platform".to_string(),
+            detail: "the Windows symlink-privilege probe does not apply on this platform"
+                .to_string(),
             fix: None,
         }
     }
@@ -902,7 +903,7 @@ fn probe_symlink_privilege_windows(base_dir: &Path) -> SymlinkPrivilegeReport {
 }
 
 /// Create `link` pointing at `target`, classify the privilege outcome, then
-/// always remove both files again. Detail messages carry only the OS error
+/// attempt to remove both files again. Detail messages carry only the OS error
 /// code, never the probe paths (#7212 privacy posture).
 #[cfg(windows)]
 fn run_file_symlink_probe(target: &Path, link: &Path) -> SymlinkPrivilegeReport {
@@ -911,7 +912,7 @@ fn run_file_symlink_probe(target: &Path, link: &Path) -> SymlinkPrivilegeReport 
     let report = match outcome {
         Ok(()) => SymlinkPrivilegeReport {
             status: STATUS_PRESENT,
-            detail: "created and removed a temporary file symlink".to_string(),
+            detail: "temporary file symlink creation succeeded; cleanup was attempted".to_string(),
             fix: None,
         },
         Err(error) if error.raw_os_error() == Some(WINDOWS_ERROR_PRIVILEGE_NOT_HELD) => {
@@ -1484,13 +1485,17 @@ fn unreachable_cargo_report(flavor: &'static str, detail: &str) -> CargoToolchai
 // ── Bash flavors and repository entrypoints ────────────────────────────────
 
 fn native_shell_bash_report() -> BashFlavorReport {
-    if cfg!(windows) {
+    native_shell_bash_report_for_platform(cfg!(windows))
+}
+
+fn native_shell_bash_report_for_platform(windows_host: bool) -> BashFlavorReport {
+    if windows_host {
         BashFlavorReport {
             flavor: FLAVOR_NATIVE_SHELL,
             status: STATUS_PRESENT,
             bash_path: None,
-            runs_repo_entrypoints: Some(false),
-            note: "PowerShell/cmd cannot execute .sh entrypoints; use Git Bash or WSL".to_string(),
+            runs_repo_entrypoints: None,
+            note: "native Windows shell is available; repository .sh entrypoint execution is not proven; use Git Bash or WSL".to_string(),
             fix: None,
         }
     } else {
@@ -1498,8 +1503,8 @@ fn native_shell_bash_report() -> BashFlavorReport {
             flavor: FLAVOR_NATIVE_SHELL,
             status: STATUS_PRESENT,
             bash_path: None,
-            runs_repo_entrypoints: Some(true),
-            note: "the POSIX login shell runs repository .sh entrypoints directly".to_string(),
+            runs_repo_entrypoints: None,
+            note: "POSIX shell is available; repository .sh entrypoint execution is not proven by this probe".to_string(),
             fix: None,
         }
     }
@@ -1542,7 +1547,7 @@ fn git_bash_flavor_report_for_path(bash_exe: Option<PathBuf>) -> BashFlavorRepor
                 status: STATUS_PRESENT,
                 bash_path: Some(bash_exe.display().to_string()),
                 runs_repo_entrypoints: None,
-                note: "native POSIX bash is available; repository .sh entrypoint execution is not proven by this read-only probe".to_string(),
+                note: "native POSIX bash is available; repository .sh entrypoint execution is not proven by this probe".to_string(),
                 fix: None,
             }
         }
@@ -1588,7 +1593,7 @@ fn wsl_bash_flavor_report_from_status(status: Result<(), String>) -> BashFlavorR
             status: STATUS_PRESENT,
             bash_path: None,
             runs_repo_entrypoints: None,
-            note: "WSL is available; repository .sh entrypoint execution is not proven by this read-only probe; compare the wsl cargo flavor"
+            note: "WSL is available; repository .sh entrypoint execution is not proven by this probe; compare the wsl cargo flavor"
                 .to_string(),
             fix: None,
         },
@@ -1698,9 +1703,9 @@ fn render_dev_environment_report(report: &DevEnvironmentReport) -> String {
     }
 
     out.push_str("\nClaim boundary:\n");
-    out.push_str("  Read-only probes. Doctor creates and removes one temporary symlink, asks\n");
-    out.push_str("  reachable shells for cargo/perl versions, and never installs, moves, or\n");
-    out.push_str("  configures anything.\n");
+    out.push_str("  Bounded probes. Doctor uses temporary files for a symlink probe with\n");
+    out.push_str("  best-effort cleanup, probes Cargo flavors and native Perl identity,\n");
+    out.push_str("  and never installs, moves, or configures anything.\n");
     out
 }
 
@@ -3014,6 +3019,24 @@ mod tests {
             classify_windows_bash_path(r"D:\tools\busybox-bash.exe"),
             WindowsBashKind::OtherProvider
         );
+    }
+
+    #[test]
+    fn native_posix_shell_keeps_entrypoint_execution_unproven() {
+        let report = native_shell_bash_report_for_platform(false);
+
+        assert_eq!(report.status, STATUS_PRESENT);
+        assert_eq!(report.runs_repo_entrypoints, None);
+        assert!(report.note.contains("execution is not proven"));
+    }
+
+    #[test]
+    fn native_windows_shell_keeps_entrypoint_execution_unproven() {
+        let report = native_shell_bash_report_for_platform(true);
+
+        assert_eq!(report.status, STATUS_PRESENT);
+        assert_eq!(report.runs_repo_entrypoints, None);
+        assert!(report.note.contains("execution is not proven"));
     }
 
     #[test]
