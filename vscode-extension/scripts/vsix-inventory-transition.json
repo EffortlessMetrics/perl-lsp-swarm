@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "owner_issue": 15124,
-  "reason": "PR #15126 registers the build-script proof in the serialized receipt command while retaining the landed packaging wrapper. The fresh Windows x64 VSIX from the combined candidate tree measured total inventory at 1864341 bytes; package.json is 59413 bytes, 115 bytes below the captured main baseline 59528, while out/extension.js is 3384 bytes larger and the other 27 archive paths match. A same-environment rebuild of captured main 3e96f31f9e458bbf7030668e5c9d96866f4ccb74 produced the same 1686496-byte out/extension.js, so that bundle delta is baseline-generation drift rather than a candidate source delta. This declaration records the exact measured archive; no validator, threshold, or admission rule changes.",
-  "base_baseline_file_sha256": "6eb7b8787bbea24c30ef1c5185a80b03e404e974eb83ed653cbd8db33b6f5ecc",
-  "candidate_baseline_file_sha256": "eaef617cee329a98c217809c7b330c51c8ea246eb13b983ecc78d83e4487d945",
-  "base_inventory_sha256": "44a4ea77a0c71a226b925d62743d30fce3845d4448c5a942124253601214938b",
-  "candidate_inventory_sha256": "2b68285babc5d03bd46afa00260919d43ed466415a40fc92e3a4ce79ed579766"
+  "owner_issue": 9773,
+  "reason": "PR #14201 bounds Gherkin step-definition reads by attempted bytes and preserves dirty-buffer freshness. The merged candidate measured a fresh Windows x64 VSIX with 29 payload files and total inventory 1867081 bytes; out/extension.js is 1689236 bytes, 2740 bytes above the current-main baseline, while the other 28 archive paths match. The transition records this measured size-only candidate package under #9773; it does not claim atomic Windows no-follow or broader platform race exclusion.",
+  "base_baseline_file_sha256": "eaef617cee329a98c217809c7b330c51c8ea246eb13b983ecc78d83e4487d945",
+  "candidate_baseline_file_sha256": "16d85715426170c33df6b77d1a87a32697b2005b4f16113e66f0d95e8c0c550b",
+  "base_inventory_sha256": "2b68285babc5d03bd46afa00260919d43ed466415a40fc92e3a4ce79ed579766",
+  "candidate_inventory_sha256": "7e9125974ab612d9e20fe5df3f4470e93303b98287f2177f7c5add5c47651511"
 }
