@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "owner_issue": 15503,
-  "reason": "Issue #15503 records the migration-registry historical-era slice of #7837: era bounds become a comparable closed grammar, genuinely overlapping eras are rejected, and row selection is disambiguated by the registry envelope's own source_public_release, failing closed when no era at the value's scope covers it. After #15494 landed, the exact binaryless Linux combined package measures out/extension.js at 1687306 bytes, a declared +5118-byte size-only transition from the accepted #15494 base. No packaged file is added, removed, or renamed.",
-  "base_baseline_file_sha256": "18b0841c20e13679581d5e63fd0de300dc0d435852f63e422b6454e84b87c360",
-  "candidate_baseline_file_sha256": "4975456bf6937f17c1ebdb1d947103ebd3773cf2d455f5b2aa2475aa551b249a",
-  "base_inventory_sha256": "40c1690a3bf0175ee2dcfff78f4d6a72ff5d64322285cc5c2ed0fd91a7936442",
-  "candidate_inventory_sha256": "d45b4db58d565d8473bdbac8140ebaec65dec3624ae2151f2a82b4bdef7db9f1"
+  "owner_issue": 8109,
+  "reason": "The #14402 candidate removes the unsupported processId attach contract from vscode-extension/package.json, the launch snippet, and the debug configuration provider. The fresh Windows x64 VSIX produced from the exact merged candidate tree contains 29 payload files and measures 1863731 bytes; package.json is 59258 bytes, snippets/launch.json is 791 bytes, and out/extension.js is 1686389 bytes. The candidate baseline records that exact archive inventory. The prior main baseline is bound to the exact base commit b6b6a881a65baf79ddc17782271c4bb08c9bbf21. No package validator, threshold, or admission rule was widened.",
+  "base_baseline_file_sha256": "eaef617cee329a98c217809c7b330c51c8ea246eb13b983ecc78d83e4487d945",
+  "candidate_baseline_file_sha256": "37e80c93fbb7d511fdda1dd7e6252b89f0fe3d1a0dc9b375d15294a89a2d3142",
+  "base_inventory_sha256": "2b68285babc5d03bd46afa00260919d43ed466415a40fc92e3a4ce79ed579766",
+  "candidate_inventory_sha256": "fe9a32cce02e2b484df49429db455fb3057c3f2cb11b9b62a20d15aef7b54aed"
 }
