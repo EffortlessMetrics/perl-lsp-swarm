@@ -156,6 +156,16 @@ fn the_parent_command_fixture_rejects_unsupported_fields() -> Result<(), Box<dyn
 }
 
 #[test]
+fn missing_parent_fork_evidence_is_an_error() -> Result<(), Box<dyn std::error::Error>> {
+    let parent = merged_parent_json().replace(",\"isCrossRepository\":false", "");
+    let commands = healthy().on("gh pr view 7799", &parent);
+    if collect_request(&commands, 7799, "origin").is_ok() {
+        return Err("missing parent fork evidence was accepted".into());
+    }
+    Ok(())
+}
+
+#[test]
 fn an_unknown_parent_state_is_not_proven() -> Result<(), Box<dyn std::error::Error>> {
     for state in ["", "UNKNOWN", "merged", " MERGED "] {
         let parent = merged_parent_json().replace("\"MERGED\"", &format!("\"{state}\""));
@@ -195,6 +205,35 @@ fn malformed_or_duplicate_parent_state_is_an_error() -> Result<(), Box<dyn std::
             return Err(
                 format!("invalid parent state evidence was accepted: {state_fields}").into()
             );
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn malformed_parent_fork_evidence_is_an_error() -> Result<(), Box<dyn std::error::Error>> {
+    for value in ["null", "\"false\"", "0", "[]", "{}"] {
+        let parent = merged_parent_json()
+            .replace("\"isCrossRepository\":false", &format!("\"isCrossRepository\":{value}"));
+        let commands = healthy().on("gh pr view 7799", &parent);
+        if collect_request(&commands, 7799, "origin").is_ok() {
+            return Err(format!("non-boolean parent fork evidence was accepted: {value}").into());
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn duplicate_parent_fork_evidence_is_an_error() -> Result<(), Box<dyn std::error::Error>> {
+    for fields in [
+        r#""isCrossRepository":false,"isCrossRepository":true"#,
+        r#""isCrossRepository":true,"isCrossRepository":false"#,
+        r#""isCrossRepository":false,"isCrossRepository":false"#,
+    ] {
+        let parent = merged_parent_json().replace("\"isCrossRepository\":false", fields);
+        let commands = healthy().on("gh pr view 7799", &parent);
+        if collect_request(&commands, 7799, "origin").is_ok() {
+            return Err(format!("duplicate parent fork evidence was accepted: {fields}").into());
         }
     }
     Ok(())
