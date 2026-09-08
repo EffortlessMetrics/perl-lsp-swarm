@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "owner_issue": 14486,
-  "reason": "The VS Code lifecycle marks rejected startup calls as settled while keeping timed-out calls pending, so an explicitly observed late process exit can recover safely without weakening fail-closed cleanup.",
-  "base_baseline_file_sha256": "2e4b6ef935e824d6a3113b8001e00be0ecff3fb0fac90f74488fcaecc19e93be",
-  "candidate_baseline_file_sha256": "c7edce8e3d804b1970f9f1f92321aec3c16b09748d3f710bb2e06f3eeab9fcb6",
-  "base_inventory_sha256": "3c28638f05a67ce7cd20465a9ce753d8aeca0a21056ea1963ad2e41db1c8657d",
-  "candidate_inventory_sha256": "ce452d00118cc9ab81982eb787201487589db1c1ab1bd922b89ad0c4ce613ccc"
+  "owner_issue": 7418,
+  "reason": "The Windows Test Explorer adapter now reports no-TAP source-admission failures as errored selected files with full-path and conditional Unicode guidance while preserving real TAP assertion failures as failed.",
+  "base_baseline_file_sha256": "c7edce8e3d804b1970f9f1f92321aec3c16b09748d3f710bb2e06f3eeab9fcb6",
+  "candidate_baseline_file_sha256": "adf52f10212dd1c3fbfcaf9df521a5c4b9f620cb02c2db7fb151e8323d3facdd",
+  "base_inventory_sha256": "ce452d00118cc9ab81982eb787201487589db1c1ab1bd922b89ad0c4ce613ccc",
+  "candidate_inventory_sha256": "5ad13c627179e158278a1c36b9b9856e51b8f9ecca7df088caf3f566c0d5b46a"
 }
