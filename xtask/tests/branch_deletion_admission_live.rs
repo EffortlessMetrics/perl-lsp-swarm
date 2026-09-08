@@ -11,8 +11,8 @@ use std::collections::HashMap;
 use std::cell::RefCell;
 
 use xtask::branch_deletion_admission::{
-    DeletionAdmission, DeletionExecutor, ReadOnlyCommands, RecheckGate, RemoteIdentity,
-    branch_deletion_command, collect_request, evaluate, execute_admitted_deletion,
+    DeletionAdmission, DeletionExecutor, ParentTerminality, ReadOnlyCommands, RecheckGate,
+    RemoteIdentity, branch_deletion_command, collect_request, evaluate, execute_admitted_deletion,
     parse_remote_identity, recheck_gate, repository_from_remote_url, verify_remote_identity,
 };
 
@@ -56,6 +56,23 @@ impl FakeCommands {
 
 impl ReadOnlyCommands for FakeCommands {
     fn capture(&self, program: &str, args: &[&str]) -> color_eyre::eyre::Result<String> {
+        if program == "gh" && args.starts_with(&["pr", "view"]) {
+            // Independent CLI contract: https://cli.github.com/manual/gh_pr_view
+            // Prefix stubs must not conceal unsupported requested JSON fields.
+            let fields = args.windows(2).find_map(|pair| match pair {
+                ["--json", fields] => Some(*fields),
+                _ => None,
+            });
+            let mut requested: Vec<_> = fields.unwrap_or_default().split(',').collect();
+            requested.sort_unstable();
+            let expected = ["headRefName", "headRefOid", "isCrossRepository", "number", "state"];
+            if requested != expected {
+                return Err(color_eyre::eyre::eyre!(
+                    "unsupported parent JSON field contract: {requested:?}"
+                ));
+            }
+        }
+
         // Reject anything that could mutate: the adapter must stay read-only.
         let mutating = ["push", "delete", "commit", "merge", "close", "edit", "create"];
         for argument in args {
@@ -81,7 +98,7 @@ impl ReadOnlyCommands for FakeCommands {
 
 fn merged_parent_json() -> String {
     format!(
-        r#"{{"number":7799,"state":"MERGED","merged":true,"headRefName":"{BRANCH}","headRefOid":"{HEAD_SHA}","isCrossRepository":false}}"#
+        r#"{{"number":7799,"state":"MERGED","headRefName":"{BRANCH}","headRefOid":"{HEAD_SHA}","isCrossRepository":false}}"#
     )
 }
 
@@ -118,11 +135,77 @@ fn a_fully_read_unencumbered_subject_is_admitted() -> Result<(), Box<dyn std::er
 }
 
 #[test]
+fn the_parent_command_fixture_rejects_unsupported_fields() -> Result<(), Box<dyn std::error::Error>>
+{
+    let commands = healthy();
+    let result = commands.capture(
+        "gh",
+        &[
+            "pr",
+            "view",
+            "7799",
+            "--json",
+            "number,state,merged,headRefName,headRefOid,isCrossRepository",
+        ],
+    );
+    let error = result.err().ok_or("the fixture accepted unsupported field")?;
+    if !error.to_string().contains("unsupported parent JSON field contract") {
+        return Err(format!("fixture failed for the wrong reason: {error}").into());
+    }
+    Ok(())
+}
+
+#[test]
 fn missing_parent_fork_evidence_is_an_error() -> Result<(), Box<dyn std::error::Error>> {
     let parent = merged_parent_json().replace(",\"isCrossRepository\":false", "");
     let commands = healthy().on("gh pr view 7799", &parent);
     if collect_request(&commands, 7799, "origin").is_ok() {
         return Err("missing parent fork evidence was accepted".into());
+    }
+    Ok(())
+}
+
+#[test]
+fn an_unknown_parent_state_is_not_proven() -> Result<(), Box<dyn std::error::Error>> {
+    for state in ["", "UNKNOWN", "merged", " MERGED "] {
+        let parent = merged_parent_json().replace("\"MERGED\"", &format!("\"{state}\""));
+        let commands = healthy().on("gh pr view 7799", &parent);
+        let collected = collect_request(&commands, 7799, "origin")?;
+        if collected.request.parent.terminality != ParentTerminality::NotProven {
+            return Err(format!("unknown parent state {state:?} became proven").into());
+        }
+        let outcome = evaluate(&collected.request);
+        if outcome.admission == DeletionAdmission::SafeToDelete
+            || branch_deletion_command(&outcome).is_some()
+        {
+            return Err(format!("unknown parent state {state:?} authorized deletion").into());
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn malformed_or_duplicate_parent_state_is_an_error() -> Result<(), Box<dyn std::error::Error>> {
+    for state_fields in [
+        "",
+        r#""state":null,"#,
+        r#""state":true,"#,
+        r#""state":1,"#,
+        r#""state":[],"#,
+        r#""state":{},"#,
+        r#""state":"MERGED","state":"OPEN","#,
+        r#""state":"OPEN","state":"MERGED","#,
+        r#""state":"MERGED","state":"MERGED","#,
+    ] {
+        let parent = format!(
+            r#"{{"number":7799,{state_fields}"headRefName":"{BRANCH}","headRefOid":"{HEAD_SHA}","isCrossRepository":false}}"#
+        );
+        let commands = healthy().on("gh pr view 7799", &parent);
+        if collect_request(&commands, 7799, "origin").is_ok() {
+            return Err(
+                format!("invalid parent state evidence was accepted: {state_fields}").into()
+            );
+        }
     }
     Ok(())
 }
@@ -454,11 +537,11 @@ fn local_worktree_ownership_blocks_and_fails_closed() -> Result<(), Box<dyn std:
 /// A parent that is not merged retains, whatever else is true.
 #[test]
 fn a_non_terminal_parent_retains() -> Result<(), Box<dyn std::error::Error>> {
-    for (state, merged) in [("OPEN", false), ("CLOSED", false)] {
+    for state in ["OPEN", "CLOSED"] {
         let commands = healthy().on(
             "gh pr view 7799",
             &format!(
-                r#"{{"number":7799,"state":"{state}","merged":{merged},"headRefName":"{BRANCH}","headRefOid":"{HEAD_SHA}","isCrossRepository":false}}"#
+                r#"{{"number":7799,"state":"{state}","headRefName":"{BRANCH}","headRefOid":"{HEAD_SHA}","isCrossRepository":false}}"#
             ),
         );
         let outcome = evaluate(&collect_request(&commands, 7799, "origin")?.request);
@@ -590,7 +673,7 @@ fn the_deletion_path_refuses_every_retaining_outcome() -> Result<(), Box<dyn std
         healthy().on(
             "gh pr view 7799",
             &format!(
-                r#"{{"number":7799,"state":"OPEN","merged":false,"headRefName":"{BRANCH}","headRefOid":"{HEAD_SHA}","isCrossRepository":false}}"#
+                r#"{{"number":7799,"state":"OPEN","headRefName":"{BRANCH}","headRefOid":"{HEAD_SHA}","isCrossRepository":false}}"#
             ),
         ),
     ];
@@ -650,7 +733,7 @@ fn a_branch_name_with_shell_metacharacters_stays_one_argument()
         .on(
             "gh pr view 7799",
             &format!(
-                r#"{{"number":7799,"state":"MERGED","merged":true,"headRefName":"{hostile}","headRefOid":"{HEAD_SHA}","isCrossRepository":false}}"#
+                r#"{{"number":7799,"state":"MERGED","headRefName":"{hostile}","headRefOid":"{HEAD_SHA}","isCrossRepository":false}}"#
             ),
         )
         .on("git ls-remote origin", &format!("{HEAD_SHA}\trefs/heads/{hostile}\n"));
@@ -851,7 +934,7 @@ fn a_cross_repository_parent_retains() -> Result<(), Box<dyn std::error::Error>>
     let fork = healthy().on(
         "gh pr view 7799",
         &format!(
-            r#"{{"number":7799,"state":"MERGED","merged":true,"headRefName":"{BRANCH}","headRefOid":"{HEAD_SHA}","isCrossRepository":true}}"#
+            r#"{{"number":7799,"state":"MERGED","headRefName":"{BRANCH}","headRefOid":"{HEAD_SHA}","isCrossRepository":true}}"#
         ),
     );
     let collected = collect_request(&fork, 7799, "origin")?;
@@ -880,25 +963,25 @@ fn missing_or_ambiguous_repository_binding_retains() -> anyhow::Result<()> {
         (
             "missing",
             format!(
-                r#"{{"number":7799,"state":"MERGED","merged":true,"headRefName":"{BRANCH}","headRefOid":"{HEAD_SHA}"}}"#
+                r#"{{"number":7799,"state":"MERGED","headRefName":"{BRANCH}","headRefOid":"{HEAD_SHA}"}}"#
             ),
         ),
         (
             "null",
             format!(
-                r#"{{"number":7799,"state":"MERGED","merged":true,"headRefName":"{BRANCH}","headRefOid":"{HEAD_SHA}","isCrossRepository":null}}"#
+                r#"{{"number":7799,"state":"MERGED","headRefName":"{BRANCH}","headRefOid":"{HEAD_SHA}","isCrossRepository":null}}"#
             ),
         ),
         (
             "wrong type",
             format!(
-                r#"{{"number":7799,"state":"MERGED","merged":true,"headRefName":"{BRANCH}","headRefOid":"{HEAD_SHA}","isCrossRepository":"false"}}"#
+                r#"{{"number":7799,"state":"MERGED","headRefName":"{BRANCH}","headRefOid":"{HEAD_SHA}","isCrossRepository":"false"}}"#
             ),
         ),
         (
             "duplicate",
             format!(
-                r#"{{"number":7799,"state":"MERGED","merged":true,"headRefName":"{BRANCH}","headRefOid":"{HEAD_SHA}","isCrossRepository":false,"isCrossRepository":true}}"#
+                r#"{{"number":7799,"state":"MERGED","headRefName":"{BRANCH}","headRefOid":"{HEAD_SHA}","isCrossRepository":false,"isCrossRepository":true}}"#
             ),
         ),
     ] {

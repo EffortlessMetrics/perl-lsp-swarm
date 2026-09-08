@@ -155,11 +155,7 @@ describe('HealthWidgetDataSource — first-party error count', () => {
     const languages = makeLanguages([
       [uri('/ws/a.pl'), [diag(0, 'perl-lsp'), diag(0, 'other-extension')]],
     ]);
-    const source = new HealthWidgetDataSource(
-      widget,
-      languages,
-      makeWorkspace([0, 0, 0, 0, 0]),
-    );
+    const source = new HealthWidgetDataSource(widget, languages, makeWorkspace([0, 0, 0, 0, 0]));
 
     source.start();
 
@@ -175,17 +171,11 @@ describe('HealthWidgetDataSource — first-party error count', () => {
     widget.onStateChange(ClientState.Running);
 
     const languages = makeLanguages([[uri('/ws/a.pl'), [diag(0), diag(0)]]]);
-    const source = new HealthWidgetDataSource(
-      widget,
-      languages,
-      makeWorkspace([0, 0, 0, 0, 0]),
-    );
+    const source = new HealthWidgetDataSource(widget, languages, makeWorkspace([0, 0, 0, 0, 0]));
     source.start();
     expect(item.text).toBe('$(check) perl-lsp: 100 files | 2 errors');
 
-    languages.setDiagnostics([
-      [uri('/ws/a.pl'), [diag(0), diag(0, 'other-extension')]],
-    ]);
+    languages.setDiagnostics([[uri('/ws/a.pl'), [diag(0), diag(0, 'other-extension')]]]);
     languages.fire([uri('/ws/a.pl')]);
 
     expect(widget.errorCount).toBe(1);
@@ -199,14 +189,8 @@ describe('HealthWidgetDataSource — first-party error count', () => {
     widget.setFileCount(42);
     widget.onStateChange(ClientState.Running);
 
-    const languages = makeLanguages([
-      [uri('/ws/a.pl'), [diag(1), diag(0, 'other-extension')]],
-    ]);
-    const source = new HealthWidgetDataSource(
-      widget,
-      languages,
-      makeWorkspace([0, 0, 0, 0, 0]),
-    );
+    const languages = makeLanguages([[uri('/ws/a.pl'), [diag(1), diag(0, 'other-extension')]]]);
+    const source = new HealthWidgetDataSource(widget, languages, makeWorkspace([0, 0, 0, 0, 0]));
     source.start();
 
     expect(widget.errorCount).toBe(0);
