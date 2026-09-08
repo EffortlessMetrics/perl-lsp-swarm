@@ -74,40 +74,15 @@ impl FakeTree {
         Ok(self)
     }
 
-    fn without_function(mut self, path: &str, name: &str) -> Result<Self> {
+    fn replace_anchor(mut self, path: &str, from: &str, to: &str) -> Result<Self> {
         let text = self
             .files
             .get(path)
             .ok_or_else(|| color_eyre::eyre::eyre!("fake tree has no {path}"))?;
-        let needle = format!("fn {name}");
-        let signature = text
-            .find(&needle)
-            .ok_or_else(|| color_eyre::eyre::eyre!("function {name} is not present in {path}"))?;
-        let start = text[..signature].rfind('\n').map_or(0, |index| index + 1);
-        let body_start = text[signature..]
-            .find('{')
-            .map(|index| signature + index)
-            .ok_or_else(|| color_eyre::eyre::eyre!("function {name} has no body"))?;
-        let mut depth = 0usize;
-        let mut end = None;
-        for (index, character) in text[body_start..].char_indices() {
-            match character {
-                '{' => depth += 1,
-                '}' => {
-                    depth = depth.saturating_sub(1);
-                    if depth == 0 {
-                        end = Some(body_start + index + character.len_utf8());
-                        break;
-                    }
-                }
-                _ => {}
-            }
+        if !text.contains(from) {
+            bail!("anchor {from} is not present in {path}; the fixture cannot falsify anything");
         }
-        let end = end.ok_or_else(|| color_eyre::eyre::eyre!("function {name} is unclosed"))?;
-        let mut stripped = String::with_capacity(text.len() - (end - start));
-        stripped.push_str(&text[..start]);
-        stripped.push_str(&text[end..]);
-        self.files.insert(path.to_string(), stripped);
+        self.files.insert(path.to_string(), text.replace(from, to));
         Ok(self)
     }
 
@@ -933,7 +908,7 @@ fn pinned_tree_source_ignores_worktree_edit_after_capture() -> Result<()> {
 }
 
 #[test]
-fn offline_status_and_next_share_the_captured_tree_after_edit() -> Result<()> {
+fn offline_status_and_next_use_the_shared_captured_tree_source() -> Result<()> {
     let source_root = crate::utils::project_root()?;
     let repo = tempfile::tempdir()?;
     for relative in [
@@ -979,7 +954,6 @@ fn offline_status_and_next_share_the_captured_tree_after_edit() -> Result<()> {
         bail!("offline fixture edit did not change the captured source");
     }
     std::fs::write(&module_train_path, edited)?;
-
     let source = captured_tree_source(repo.path(), &binding)?;
     let mutable_source = RepoTreeSource::from_root(repo.path().to_path_buf(), None)?;
     let status = render_status(&loaded, &binding, &source)?;
@@ -994,10 +968,11 @@ fn offline_status_and_next_share_the_captured_tree_after_edit() -> Result<()> {
     if status == mutable_status {
         bail!("offline status did not distinguish captured HEAD from edited worktree");
     }
-    // `next` is deliberately rendered through the same captured source after
-    // status has exercised the probe cache; this keeps both entry projections
-    // on the immutable source seam without inventing a second fixture oracle.
-    let _ = (next, mutable_next);
+    if !next.starts_with("module-train next (safe offline parallel frontier)")
+        || !mutable_next.starts_with("module-train next (safe offline parallel frontier)")
+    {
+        bail!("offline next did not render through the shared captured-source seam");
+    }
     Ok(())
 }
 
@@ -1118,8 +1093,11 @@ fn no_selector_targets_the_registry_that_declares_it() -> Result<()> {
 /// does not also strip the selector that names it.
 #[test]
 fn c02_current_tree_probes_component_fails_without_its_projection() -> Result<()> {
-    let tree = FakeTree::from_real()?
-        .without_function("xtask/src/tasks/module_train.rs", "project_states")?;
+    let tree = FakeTree::from_real()?.replace_anchor(
+        "xtask/src/tasks/module_train.rs",
+        "fn project_states",
+        "fn removed_project_states",
+    )?;
     let (_, unmet) = probe_for("C02", &tree)?;
     if !unmet.iter().any(|component| component == "current_tree_probes") {
         bail!("removing project_states must unmeet current_tree_probes: {unmet:?}");
@@ -1130,8 +1108,11 @@ fn c02_current_tree_probes_component_fails_without_its_projection() -> Result<()
 /// Negative direction for C02's `offline_frontier` component.
 #[test]
 fn c02_offline_frontier_component_fails_without_its_renderer() -> Result<()> {
-    let tree = FakeTree::from_real()?
-        .without_function("xtask/src/tasks/module_train.rs", "render_next")?;
+    let tree = FakeTree::from_real()?.replace_anchor(
+        "xtask/src/tasks/module_train.rs",
+        "pub fn render_next",
+        "pub fn removed_render_next",
+    )?;
     let (_, unmet) = probe_for("C02", &tree)?;
     if !unmet.iter().any(|component| component == "offline_frontier") {
         bail!("removing render_next must unmeet offline_frontier: {unmet:?}");
