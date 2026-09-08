@@ -610,6 +610,13 @@ impl DebugAdapter {
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
 
+        // Capture the directory actually used by this child, not the independent
+        // workspace security boundary. Pin an absolute spelling so a relative
+        // launch cwd cannot later be reinterpreted against the adapter's cwd.
+        let debuggee_cwd = std::path::absolute(cmd.get_current_dir().unwrap_or(Path::new(".")))
+            .map_err(|error| format!("Cannot resolve debugger working directory: {error}"))?;
+        cmd.current_dir(&debuggee_cwd);
+
         // Allocate the execution-context id BEFORE spawning: a launch that
         // cannot mint a fresh id must fail without side effects.
         let Some(thread_id) = self.allocate_thread_id() else {
@@ -652,7 +659,7 @@ impl DebugAdapter {
                 self.apply_stored_function_breakpoints();
 
                 // Start output reader thread
-                self.start_output_reader();
+                self.start_output_reader(debuggee_cwd);
 
                 // Start debuggee watchdog if a wall-clock timeout was configured (#4640).
                 // The watchdog kills the perl -d process if it is still alive after
@@ -772,7 +779,7 @@ impl DebugAdapter {
     }
 
     /// Start thread to read debugger output with enhanced error recovery
-    pub(super) fn start_output_reader(&self) {
+    pub(super) fn start_output_reader(&self, debuggee_cwd: PathBuf) {
         let session = self.session.clone();
         let seq = self.seq.clone();
         let sender = self.event_sender.clone();
@@ -1236,6 +1243,7 @@ impl DebugAdapter {
                                                 &current_file,
                                                 i64::from(current_line),
                                                 observed_workspace_root.as_deref(),
+                                                &debuggee_cwd,
                                             )
                                         } else {
                                             BreakpointHitOutcome::default()

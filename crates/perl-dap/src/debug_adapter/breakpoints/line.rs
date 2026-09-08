@@ -512,6 +512,83 @@ mod source_boundary_tests {
         Ok(())
     }
 
+    #[test]
+    fn relative_debugger_logpoint_uses_debuggee_cwd_before_containment()
+    -> Result<(), Box<dyn Error>> {
+        let root = tempfile::tempdir()?;
+        let outside = tempfile::tempdir()?;
+        let cwd = root.path().join("subdir");
+        fs::create_dir_all(cwd.join("lib"))?;
+        fs::create_dir(root.path().join("lib"))?;
+        fs::create_dir(outside.path().join("lib"))?;
+        // Seed native filesystem spellings, matching admitted store keys even
+        // when the debugger uses forward slashes on Windows.
+        let source = cwd.join("lib").join("module.pl");
+        let decoy = root.path().join("lib").join("module.pl");
+        let outside_source = outside.path().join("lib").join("module.pl");
+        for path in [&source, &decoy, &outside_source] {
+            fs::write(path, "print 'fixture';\n")?;
+        }
+        let adapter = bounded_adapter(root.path())?;
+        // Trusted store fixtures exercise retained hit/logpoint semantics without
+        // promoting the handler's currently floored optional capabilities.
+        let logpoint = serde_json::from_value(json!({
+            "source": { "path": source_text(&source)? },
+            "breakpoints": [{ "line": 1, "hitCondition": "2", "logMessage": "relative hit" }],
+        }))?;
+        adapter.breakpoints.set_breakpoints(&logpoint);
+        for path in [&decoy, &outside_source] {
+            let ordinary = serde_json::from_value(json!({
+                "source": { "path": source_text(path)? }, "breakpoints": [{ "line": 1 }],
+            }))?;
+            adapter.breakpoints.set_breakpoints(&ordinary);
+            require(
+                adapter.breakpoints.register_breakpoint_hit(source_text(path)?, 1).should_stop,
+                "wrong-directory controls must contain verified stopping breakpoints",
+            )?;
+        }
+        let authority = root.path().canonicalize()?;
+        let first = DebugAdapter::register_observed_breakpoint_hit(
+            &adapter.breakpoints,
+            "lib/module.pl",
+            1,
+            Some(&authority),
+            &cwd,
+        );
+        require(
+            first.matched && !first.should_stop && first.log_messages.is_empty(),
+            "first relative hit must reach the cwd logpoint's hit condition, not the root decoy",
+        )?;
+        let second = DebugAdapter::register_observed_breakpoint_hit(
+            &adapter.breakpoints,
+            "lib/module.pl",
+            1,
+            Some(&authority),
+            &cwd,
+        );
+        require(
+            second.matched && !second.should_stop,
+            "second relative logpoint hit must remain a non-stopping match",
+        )?;
+        require_equal(
+            second.log_messages,
+            vec!["relative hit".to_string()],
+            "second hit must emit the cwd logpoint message",
+        )?;
+        let refused = DebugAdapter::register_observed_breakpoint_hit(
+            &adapter.breakpoints,
+            "lib/module.pl",
+            1,
+            Some(&authority),
+            outside.path(),
+        );
+        require(
+            !refused.matched && !refused.should_stop && refused.log_messages.is_empty(),
+            "outside debuggee cwd must not widen workspace authority",
+        )?;
+        Ok(())
+    }
+
     #[cfg(any(unix, windows))]
     #[test]
     fn admitted_debugger_alias_correlates_but_outside_alias_does_not() -> Result<(), Box<dyn Error>>
@@ -546,6 +623,7 @@ mod source_boundary_tests {
             source_text(&alias)?,
             1,
             Some(&authority),
+            root.path(),
         );
         require(
             outcome.matched && outcome.should_stop,
@@ -574,9 +652,10 @@ mod source_boundary_tests {
         )?;
         let outside_outcome = DebugAdapter::register_observed_breakpoint_hit(
             &adapter.breakpoints,
-            source_text(&escaping_alias)?,
+            "escaping_alias.pl",
             1,
             Some(&authority),
+            root.path(),
         );
         require(
             !outside_outcome.matched && !outside_outcome.should_stop,

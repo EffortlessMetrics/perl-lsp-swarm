@@ -430,8 +430,21 @@ impl DebugAdapter {
         source_path: &str,
         line: i64,
         workspace_root: Option<&Path>,
+        debuggee_cwd: &Path,
     ) -> crate::breakpoints::BreakpointHitOutcome {
-        Self::validate_source_path_at(source_path, workspace_root)
+        // Observed relative names belong to the debuggee's launch directory.
+        // Resolving them does not confer trust: containment is still checked
+        // independently against the configured workspace boundary below.
+        let observed = Path::new(source_path);
+        let resolved = if observed.is_absolute() {
+            observed.to_path_buf()
+        } else {
+            debuggee_cwd.join(observed)
+        };
+        let Some(resolved) = resolved.to_str() else {
+            return crate::breakpoints::BreakpointHitOutcome::default();
+        };
+        Self::validate_source_path_at(resolved, workspace_root)
             .ok()
             .as_deref()
             .and_then(Path::to_str)
