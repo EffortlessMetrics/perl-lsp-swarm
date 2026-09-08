@@ -250,8 +250,10 @@ mod tests {
 
     #[test]
     fn flags_predicate_or_negation_and_reverse() {
-        assert_eq!(rule_of("ready || !ready"), Some(RuleId::PredicateOrNegation));
-        assert_eq!(rule_of("!ready || ready"), Some(RuleId::PredicateOrNegation));
+        assert_eq!(rule_of("true || !true"), Some(RuleId::PredicateOrNegation));
+        assert_eq!(rule_of("!true || true"), Some(RuleId::PredicateOrNegation));
+        assert_eq!(rule_of("ready || !ready"), None);
+        assert_eq!(rule_of("!ready || ready"), None);
         assert_eq!(
             typed_rule("flag.is_some() || !flag.is_some()", &[("flag", QueryKind::Option)]),
             Some(RuleId::PredicateOrNegation)

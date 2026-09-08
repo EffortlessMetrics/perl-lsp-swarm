@@ -10,7 +10,8 @@ use syn::spanned::Spanned;
 use syn::visit::Visit;
 use syn::{
     BinOp, Expr, ExprClosure, ExprForLoop, ExprIf, ExprMacro, ExprWhile, File, Ident, ImplItemFn,
-    Item, ItemFn, ItemMacro, ItemMod, Local, Macro, Stmt, StmtMacro, TraitItemFn, UseTree,
+    Item, ItemFn, ItemImpl, ItemMacro, ItemMod, ItemTrait, Local, Macro, Signature, Stmt,
+    StmtMacro, TraitItemFn, UseTree,
 };
 
 const ASSERT_MACROS: &[&str] = &["assert", "debug_assert"];
@@ -107,17 +108,22 @@ impl AssertionVisitor<'_> {
         }
     }
 
-    fn push_fn_env(&mut self, inputs: &syn::punctuated::Punctuated<syn::FnArg, syn::token::Comma>) {
-        let mut env = TypeEnv::with_module_and_crate_root(
-            self.current_shadows(),
-            self.crate_root_shadows.clone(),
-        );
-        for input in inputs {
+    fn push_fn_env(&mut self, sig: &Signature) {
+        let mut shadows = self.current_shadows();
+        untrust_generic_params(&sig.generics, &mut shadows);
+        let mut env = TypeEnv::with_module_and_crate_root(shadows, self.crate_root_shadows.clone());
+        for input in &sig.inputs {
             if let syn::FnArg::Typed(typed) = input {
                 bind_pat_type(&mut env, &typed.pat, &typed.ty);
             }
         }
         self.env.push(env);
+    }
+
+    fn push_generic_shadows(&mut self, generics: &syn::Generics) {
+        let mut shadows = self.current_shadows();
+        untrust_generic_params(generics, &mut shadows);
+        self.module_shadows.push(shadows);
     }
 }
 
@@ -138,21 +144,33 @@ impl<'ast> Visit<'ast> for AssertionVisitor<'_> {
         }
     }
 
+    fn visit_item_impl(&mut self, node: &'ast ItemImpl) {
+        self.push_generic_shadows(&node.generics);
+        syn::visit::visit_item_impl(self, node);
+        self.module_shadows.pop();
+    }
+
+    fn visit_item_trait(&mut self, node: &'ast ItemTrait) {
+        self.push_generic_shadows(&node.generics);
+        syn::visit::visit_item_trait(self, node);
+        self.module_shadows.pop();
+    }
+
     fn visit_item_fn(&mut self, node: &'ast ItemFn) {
-        self.push_fn_env(&node.sig.inputs);
+        self.push_fn_env(&node.sig);
         syn::visit::visit_item_fn(self, node);
         self.env.pop();
     }
 
     fn visit_impl_item_fn(&mut self, node: &'ast ImplItemFn) {
-        self.push_fn_env(&node.sig.inputs);
+        self.push_fn_env(&node.sig);
         syn::visit::visit_impl_item_fn(self, node);
         self.env.pop();
     }
 
     fn visit_trait_item_fn(&mut self, node: &'ast TraitItemFn) {
         if let Some(block) = &node.default {
-            self.push_fn_env(&node.sig.inputs);
+            self.push_fn_env(&node.sig);
             syn::visit::visit_block(self, block);
             self.env.pop();
         }
@@ -317,6 +335,9 @@ fn collect_shadows<'a>(
             Item::Trait(item) => note_ident(&item.ident, &mut shadows),
             Item::TraitAlias(item) => note_ident(&item.ident, &mut shadows),
             Item::Fn(item) => note_ctor_ident(&item.sig.ident, &mut shadows),
+            Item::Mod(item) => note_ident(&item.ident, &mut shadows),
+            Item::Const(item) => note_ctor_ident(&item.ident, &mut shadows),
+            Item::Static(item) => note_ctor_ident(&item.ident, &mut shadows),
             _ => {}
         }
     }
@@ -499,6 +520,16 @@ fn note_ctor_ident(ident: &Ident, shadows: &mut PreludeShadow) {
     }
 }
 
+fn untrust_generic_params(generics: &syn::Generics, shadows: &mut PreludeShadow) {
+    for param in &generics.params {
+        match param {
+            syn::GenericParam::Type(ty) => note_ident(&ty.ident, shadows),
+            syn::GenericParam::Const(c) => note_ctor_ident(&c.ident, shadows),
+            syn::GenericParam::Lifetime(_) => {}
+        }
+    }
+}
+
 fn collect_use(
     tree: &UseTree,
     rooted: bool,
@@ -609,10 +640,10 @@ mod tests {
     #[test]
     fn scans_assert_macros_and_skips_non_assert_tokens() {
         let source = r#"
-            fn probe(value: Option<u8>, result: Result<(), ()>, ready: bool) {
+            fn probe(value: Option<u8>, result: Result<(), ()>) {
                 assert!(value.is_some() || value.is_none());
                 debug_assert!(result.is_ok() || result.is_err());
-                assert!(ready || !ready, "still a tautology");
+                assert!(true || !true, "still a tautology");
                 assert_eq!(1, 1);
                 let _ = value.is_some() || value.is_none();
                 if result.is_ok() || result.is_err() {
@@ -849,6 +880,41 @@ mod tests {
             }
             struct Toggle { flag: bool }
         "#;
+        assert!(rules(source).is_empty(), "{:?}", rules(source));
+    }
+
+    #[test]
+    fn overloaded_not_and_neg_are_not_tautologies() {
+        let source = r#"
+            use std::cell::Cell;
+            use std::ops::{Neg, Not};
+
+            #[derive(Clone, Copy)]
+            struct Flag(Cell<u8>);
+
+            impl Not for Flag {
+                type Output = bool;
+                fn not(self) -> bool {
+                    self.0.set(self.0.get().wrapping_add(1));
+                    false
+                }
+            }
+
+            impl Neg for Flag {
+                type Output = bool;
+                fn neg(self) -> bool {
+                    self.0.set(self.0.get().wrapping_add(1));
+                    false
+                }
+            }
+
+            fn probe(x: Flag, ready: bool) {
+                assert!(!x || !!x);
+                assert!(-x || !-x);
+                assert!(ready || !ready);
+                assert!(true || !true);
+            }
+        "#;
         assert_eq!(rules(source), vec![RuleId::PredicateOrNegation], "{:?}", rules(source));
     }
 
@@ -969,6 +1035,144 @@ mod tests {
             }
         "#;
         assert_eq!(rules(local_result), vec![RuleId::ResultOkOrErr], "{:?}", rules(local_result));
+    }
+
+    #[test]
+    fn generic_option_params_are_skipped_std_option_is_retained() {
+        let source = r#"
+            trait Query {
+                fn is_some(&self) -> bool;
+                fn is_none(&self) -> bool;
+            }
+            fn check<Option: Query>(x: Option) {
+                assert!(x.is_some() || x.is_none());
+            }
+            struct Holder;
+            impl<Option: Query> Holder {
+                fn check(x: Option) {
+                    assert!(x.is_some() || x.is_none());
+                }
+            }
+            trait HolderTrait<Option: Query> {
+                fn check(x: Option) {
+                    assert!(x.is_some() || x.is_none());
+                }
+            }
+            fn retain(value: std::option::Option<u8>) {
+                assert!(value.is_some() || value.is_none());
+            }
+        "#;
+        assert_eq!(rules(source), vec![RuleId::OptionSomeOrNone], "{:?}", rules(source));
+    }
+
+    #[test]
+    fn module_and_value_ctor_shadows_are_skipped_std_option_is_retained() {
+        let source = r#"
+            struct Probe;
+            impl Probe {
+                fn is_some(&self) -> bool { false }
+                fn is_none(&self) -> bool { false }
+            }
+            #[allow(non_snake_case)]
+            mod Option {
+                pub fn Some(_value: u8) -> super::Probe { super::Probe }
+            }
+            fn skip_module_ctor() {
+                assert!(Option::Some(1).is_some() || Option::Some(1).is_none());
+            }
+            fn retain_std() {
+                assert!(
+                    std::option::Option::Some(1).is_some()
+                        || std::option::Option::Some(1).is_none()
+                );
+            }
+        "#;
+        assert_eq!(rules(source), vec![RuleId::OptionSomeOrNone], "{:?}", rules(source));
+
+        let const_ctor = r#"
+            struct Probe;
+            impl Probe {
+                fn is_some(&self) -> bool { false }
+                fn is_none(&self) -> bool { false }
+            }
+            #[allow(non_upper_case_globals)]
+            const Some: fn(u8) -> Probe = |_| Probe;
+            fn skip_const_ctor() {
+                assert!(Some(1).is_some() || Some(1).is_none());
+            }
+            fn retain_std() {
+                assert!(
+                    std::option::Option::Some(1).is_some()
+                        || std::option::Option::Some(1).is_none()
+                );
+            }
+        "#;
+        assert_eq!(rules(const_ctor), vec![RuleId::OptionSomeOrNone], "{:?}", rules(const_ctor));
+
+        let let_ctor = r#"
+            struct Probe;
+            impl Probe {
+                fn is_some(&self) -> bool { false }
+                fn is_none(&self) -> bool { false }
+            }
+            fn skip_let_ctor() {
+                #[allow(non_snake_case)]
+                let Some = |_: u8| Probe;
+                assert!(Some(1).is_some() || Some(1).is_none());
+            }
+            fn retain_std() {
+                assert!(
+                    std::option::Option::Some(1).is_some()
+                        || std::option::Option::Some(1).is_none()
+                );
+            }
+        "#;
+        assert_eq!(rules(let_ctor), vec![RuleId::OptionSomeOrNone], "{:?}", rules(let_ctor));
+    }
+
+    #[test]
+    fn parent_item_shadows_are_not_in_scope_in_child_modules() {
+        let source = r#"
+            struct Option<T>(T);
+            impl<T> Option<T> {
+                fn is_some(&self) -> bool { false }
+                fn is_none(&self) -> bool { false }
+            }
+            fn skip_parent(x: Option<u8>) {
+                assert!(x.is_some() || x.is_none());
+            }
+            fn retain_std_parent(value: std::option::Option<u8>) {
+                assert!(value.is_some() || value.is_none());
+            }
+            mod child {
+                fn retain_prelude(value: Option<u8>) {
+                    assert!(value.is_some() || value.is_none());
+                }
+                fn retain_std(value: std::option::Option<u8>) {
+                    assert!(value.is_some() || value.is_none());
+                }
+            }
+            mod imported {
+                use super::Option;
+                fn skip_imported(x: Option<u8>) {
+                    assert!(x.is_some() || x.is_none());
+                }
+                fn retain_std(value: std::option::Option<u8>) {
+                    assert!(value.is_some() || value.is_none());
+                }
+            }
+        "#;
+        assert_eq!(
+            rules(source),
+            vec![
+                RuleId::OptionSomeOrNone,
+                RuleId::OptionSomeOrNone,
+                RuleId::OptionSomeOrNone,
+                RuleId::OptionSomeOrNone,
+            ],
+            "{:?}",
+            rules(source)
+        );
     }
 
     #[test]

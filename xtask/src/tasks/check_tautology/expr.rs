@@ -7,6 +7,8 @@
 //! when the current module declares or imports a shadowing Option/Result or
 //! Some/None/Ok/Err. Qualified `std::`/`core::` enum paths are refused when
 //! that namespace is a local module or import alias in the resolving scope.
+//! Unary `Not`/`Neg` are proven only for literals (and `Not` of a proven
+//! Option/Result query); untyped `!ready` is not bool `Not`.
 
 use std::collections::{BTreeMap, BTreeSet};
 use syn::{Expr, Lit, Pat, Path, Type, UnOp};
@@ -170,6 +172,12 @@ impl TypeEnv {
         }
         None
     }
+
+    /// True when `ident` is bound in some lexical scope, including as unknown.
+    /// A local `let Some = …` occupies the value namespace and is not prelude `Some`.
+    pub(crate) fn is_bound(&self, ident: &str) -> bool {
+        self.scopes.iter().rev().any(|scope| scope.contains_key(ident))
+    }
 }
 
 pub(crate) fn peel(expr: &Expr) -> &Expr {
@@ -186,15 +194,20 @@ pub(crate) fn expr_eq(left: &Expr, right: &Expr) -> bool {
 
 /// Returns true only for expressions the checker treats as free of observable
 /// evaluation effects. Function calls, arbitrary methods, unary dereference,
-/// and field access are excluded: they can run user `Deref`/`Index` code.
-/// Standard Option/Result queries are included only when the receiver is a
-/// proven Option/Result.
+/// field access, and overloaded `Not`/`Neg` are excluded: they can run user
+/// `Deref`/`Index`/`Not`/`Neg` code. Standard Option/Result queries are
+/// included only when the receiver is a proven Option/Result. Unary `Not` of a
+/// literal or of such a query is included (`bool` `Not`); `!ready` is not.
 pub(crate) fn is_side_effect_free(expr: &Expr, env: &TypeEnv) -> bool {
     match peel(expr) {
         Expr::Path(_) | Expr::Lit(_) | Expr::Const(_) => true,
         Expr::Reference(reference) => is_side_effect_free(&reference.expr, env),
-        Expr::Unary(unary) if matches!(unary.op, UnOp::Not(_) | UnOp::Neg(_)) => {
-            is_side_effect_free(&unary.expr, env)
+        Expr::Unary(unary) if matches!(unary.op, UnOp::Not(_)) => {
+            let inner = peel(&unary.expr);
+            matches!(inner, Expr::Lit(_)) || is_proven_query_method(inner, env)
+        }
+        Expr::Unary(unary) if matches!(unary.op, UnOp::Neg(_)) => {
+            matches!(peel(&unary.expr), Expr::Lit(_))
         }
         Expr::Tuple(tuple) => tuple.elems.iter().all(|elem| is_side_effect_free(elem, env)),
         Expr::Array(array) => array.elems.iter().all(|elem| is_side_effect_free(elem, env)),
@@ -210,21 +223,24 @@ pub(crate) fn is_side_effect_free(expr: &Expr, env: &TypeEnv) -> bool {
             true
         }
         Expr::Cast(cast) => is_side_effect_free(&cast.expr, env),
-        Expr::MethodCall(call)
-            if call.args.is_empty()
-                && call.turbofish.is_none()
-                && proven_query_kind(&call.receiver, env).is_some_and(|kind| {
-                    matches!(
-                        (kind, call.method.to_string().as_str()),
-                        (QueryKind::Option, "is_some" | "is_none")
-                            | (QueryKind::Result, "is_ok" | "is_err")
-                    )
-                }) =>
-        {
-            true
-        }
+        other if is_proven_query_method(other, env) => true,
         _ => false,
     }
+}
+
+fn is_proven_query_method(expr: &Expr, env: &TypeEnv) -> bool {
+    let Expr::MethodCall(call) = peel(expr) else {
+        return false;
+    };
+    call.args.is_empty()
+        && call.turbofish.is_none()
+        && proven_query_kind(&call.receiver, env).is_some_and(|kind| {
+            matches!(
+                (kind, call.method.to_string().as_str()),
+                (QueryKind::Option, "is_some" | "is_none")
+                    | (QueryKind::Result, "is_ok" | "is_err")
+            )
+        })
 }
 
 /// Option/Result identity proven from a constructor or an explicit ascription.
@@ -396,7 +412,7 @@ fn ctor_kind_for_owner(
     env: &TypeEnv,
 ) -> Option<QueryKind> {
     if segs.len() == 1 {
-        if rooted || env.ctor_untrusted(last) {
+        if rooted || env.ctor_untrusted(last) || env.is_bound(last) {
             return None;
         }
         return Some(expected);
@@ -718,7 +734,23 @@ mod tests {
         assert!(!is_side_effect_free(&expr("item.flag"), &env));
         assert!(!is_side_effect_free(&expr("!item.flag"), &env));
         assert!(is_side_effect_free(&expr("ready"), &env));
-        assert!(is_side_effect_free(&expr("!ready"), &env));
+        assert!(!is_side_effect_free(&expr("!ready"), &env));
+        assert!(is_side_effect_free(&expr("!true"), &env));
+        assert!(is_side_effect_free(&expr("!(false)"), &env));
+        assert!(!is_side_effect_free(&expr("-ready"), &env));
+        assert!(is_side_effect_free(&expr("-1"), &env));
+    }
+
+    #[test]
+    fn bound_ctor_names_are_not_prelude_constructors() {
+        let mut env = TypeEnv::new();
+        env.shadow("Some".to_string(), None);
+        assert_eq!(proven_query_kind(&expr("Some(1)"), &env), None);
+        assert_eq!(proven_query_kind(&expr("None"), &env), Some(QueryKind::Option));
+        assert_eq!(
+            proven_query_kind(&expr("std::option::Option::Some(1)"), &env),
+            Some(QueryKind::Option)
+        );
     }
 
     #[test]
