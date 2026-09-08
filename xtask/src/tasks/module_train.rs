@@ -27,7 +27,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use color_eyre::eyre::{Context, Result, bail};
 use serde::Deserialize;
@@ -1285,6 +1285,12 @@ fn git_output(root: &std::path::Path, args: &[&str]) -> Result<String> {
         .to_string())
 }
 
+fn captured_tree_source(root: &Path, binding: &TreeBinding) -> Result<RepoTreeSource> {
+    let tree_spec = format!("{}^{{tree}}", binding.tree_head);
+    let tree_oid = git_output(root, &["rev-parse", tree_spec.as_str()])?;
+    RepoTreeSource::from_root_at_revision(root.to_path_buf(), tree_oid)
+}
+
 /// Resolve the exact-tree binding. This slice binds the current checkout at
 /// `HEAD` only; checking out arbitrary trees is a recorded residual.
 ///
@@ -1435,16 +1441,18 @@ pub fn render_next(
 
 pub fn run_status(tree: &str) -> Result<()> {
     let loaded = load_manifest()?;
+    let root = crate::utils::project_root()?;
     let binding = tree_binding(tree)?;
-    let source = RepoTreeSource::from_project_root()?;
+    let source = captured_tree_source(&root, &binding)?;
     print!("{}", render_status(&loaded, &binding, &source)?);
     Ok(())
 }
 
 pub fn run_next(tree: &str) -> Result<()> {
     let loaded = load_manifest()?;
+    let root = crate::utils::project_root()?;
     let binding = tree_binding(tree)?;
-    let source = RepoTreeSource::from_project_root()?;
+    let source = captured_tree_source(&root, &binding)?;
     print!("{}", render_next(&loaded, &binding, &source)?);
     Ok(())
 }

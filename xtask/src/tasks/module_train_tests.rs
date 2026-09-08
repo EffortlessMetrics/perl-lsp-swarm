@@ -783,6 +783,18 @@ fn comments_and_literals_cannot_satisfy_dispatch_anchors() -> Result<()> {
 }
 
 #[test]
+fn malformed_selector_source_is_an_instrument_failure() -> Result<()> {
+    let tree = FakeTree::from_real()?.with_added("xtask/src/main.rs", "fn malformed(")?;
+    let error = probe_for("C02", &tree)
+        .err()
+        .ok_or_else(|| color_eyre::eyre::eyre!("malformed selector source must not look absent"))?;
+    if !error.to_string().contains("failed to inspect probe selector xtask/src/main.rs") {
+        bail!("malformed selector error lost its source context: {error}");
+    }
+    Ok(())
+}
+
+#[test]
 fn dispatch_variant_and_call_must_share_the_same_command_arm() -> Result<()> {
     let tree = FakeTree::from_real()?
         .without_anchor("xtask/src/main.rs", "ModuleTrainCommand::Status")?
@@ -879,6 +891,61 @@ fn pinned_tree_source_ignores_worktree_edit_after_capture() -> Result<()> {
         .ok_or_else(|| color_eyre::eyre::eyre!("captured probe path must exist"))?;
     if captured != "fn captured() {}\n" {
         bail!("pinned source read the mutable worktree instead of the captured tree");
+    }
+    Ok(())
+}
+
+#[test]
+fn offline_status_and_next_share_the_captured_tree_after_edit() -> Result<()> {
+    let source_root = crate::utils::project_root()?;
+    let repo = tempfile::tempdir()?;
+    for relative in [
+        "xtask/src/main.rs",
+        "xtask/src/tasks/module_train.rs",
+        "xtask/src/tasks/module_train_live.rs",
+        "xtask/src/tasks/module_train_probes.rs",
+    ] {
+        let destination = repo.path().join(relative);
+        if let Some(parent) = destination.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::copy(source_root.join(relative), &destination)?;
+    }
+    for args in [
+        vec!["init", "-q"],
+        vec!["config", "user.email", "test@example.invalid"],
+        vec!["config", "user.name", "test"],
+        vec!["add", "."],
+        vec!["commit", "-qm", "capture"],
+    ] {
+        let output =
+            std::process::Command::new("git").args(&args).current_dir(repo.path()).output()?;
+        if !output.status.success() {
+            bail!("git {:?} failed: {}", args, String::from_utf8_lossy(&output.stderr));
+        }
+    }
+    let head = std::process::Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(repo.path())
+        .output()?;
+    if !head.status.success() {
+        bail!("git rev-parse HEAD failed");
+    }
+    let tree_head = String::from_utf8(head.stdout)?.trim().to_string();
+    let binding = TreeBinding { tree_head, dirty_paths: 0, manifest_dirty: false };
+    let source = captured_tree_source(repo.path(), &binding)?;
+    let loaded = load_manifest()?;
+    let status_before = render_status(&loaded, &binding, &source)?;
+    let next_before = render_next(&loaded, &binding, &source)?;
+
+    let main_path = repo.path().join("xtask/src/main.rs");
+    let main = std::fs::read_to_string(&main_path)?;
+    let edited = main.replacen("ModuleTrainCommand::Status", "RemovedStatus", 1);
+    std::fs::write(&main_path, edited)?;
+    let status_after = render_status(&loaded, &binding, &source)?;
+    let next_after = render_next(&loaded, &binding, &source)?;
+    if status_before != status_after || next_before != next_after {
+        bail!("offline projections read mutable worktree bytes after capture");
     }
     Ok(())
 }
@@ -1002,9 +1069,11 @@ fn no_selector_targets_the_registry_that_declares_it() -> Result<()> {
 fn c02_current_tree_probes_component_fails_without_its_projection() -> Result<()> {
     let tree = FakeTree::from_real()?
         .without_anchor("xtask/src/tasks/module_train.rs", "fn project_states")?;
-    let (outcome, unmet) = probe_for("C02", &tree)?;
-    if !unmet.iter().any(|c| c == "current_tree_probes") {
-        bail!("removing project_states must unmeet current_tree_probes: {outcome:?} {unmet:?}");
+    let error = probe_for("C02", &tree)
+        .err()
+        .ok_or_else(|| color_eyre::eyre::eyre!("malformed projection source must fail closed"))?;
+    if !error.to_string().contains("failed to inspect probe selector") {
+        bail!("projection parse failure lost its selector context: {error}");
     }
     Ok(())
 }
@@ -1014,9 +1083,11 @@ fn c02_current_tree_probes_component_fails_without_its_projection() -> Result<()
 fn c02_offline_frontier_component_fails_without_its_renderer() -> Result<()> {
     let tree = FakeTree::from_real()?
         .without_anchor("xtask/src/tasks/module_train.rs", "fn render_next")?;
-    let (outcome, unmet) = probe_for("C02", &tree)?;
-    if !unmet.iter().any(|c| c == "offline_frontier") {
-        bail!("removing render_next must unmeet offline_frontier: {outcome:?} {unmet:?}");
+    let error = probe_for("C02", &tree)
+        .err()
+        .ok_or_else(|| color_eyre::eyre::eyre!("malformed renderer source must fail closed"))?;
+    if !error.to_string().contains("failed to inspect probe selector") {
+        bail!("renderer parse failure lost its selector context: {error}");
     }
     Ok(())
 }

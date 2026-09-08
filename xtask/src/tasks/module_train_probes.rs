@@ -10,7 +10,7 @@
 //! `no_selector_targets_the_registry_that_declares_it` pins the rule.
 
 use crate::tasks::staged::{StagedPathText, read_staged_path_text};
-use color_eyre::eyre::{Context, Result, bail};
+use color_eyre::eyre::{Context, Result, bail, eyre};
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -121,11 +121,7 @@ struct NodeProbeContract {
 /// a production implementation probe. This intentionally handles only the
 /// declaration and dispatch forms registered below; it is not a general Rust
 /// source index.
-fn semantic_anchor_present(source: &str, anchor: &str) -> bool {
-    let Ok(file) = syn::parse_file(source) else {
-        return false;
-    };
-
+fn semantic_anchor_present_in_file(file: &syn::File, anchor: &str) -> bool {
     if let Some(name) = anchor.strip_prefix("pub fn ") {
         return function_present(&file, name, true);
     }
@@ -153,10 +149,9 @@ fn semantic_anchor_present(source: &str, anchor: &str) -> bool {
     visitor.found
 }
 
-fn semantic_selector_present(source: &str, anchors: &[&str]) -> bool {
-    let Ok(file) = syn::parse_file(source) else {
-        return false;
-    };
+fn semantic_selector_present(source: &str, anchors: &[&str]) -> Result<bool> {
+    let file =
+        syn::parse_file(source).map_err(|error| eyre!("Rust selector parse failed: {error}"))?;
     if anchors.len() == 2
         && let Some(variant) = anchors.iter().copied().find(|anchor| {
             anchor.starts_with("ModuleTrainCommand::")
@@ -166,9 +161,9 @@ fn semantic_selector_present(source: &str, anchors: &[&str]) -> bool {
             anchor.starts_with("module_train::") || anchor.starts_with("module_train_live::")
         })
     {
-        return dispatch_pair_present(&file, variant, call);
+        return Ok(dispatch_pair_present(&file, variant, call));
     }
-    anchors.iter().all(|anchor| semantic_anchor_present(source, anchor))
+    Ok(anchors.iter().all(|anchor| semantic_anchor_present_in_file(&file, anchor)))
 }
 
 fn dispatch_variant_present(file: &syn::File, anchor: &str) -> bool {
@@ -572,7 +567,9 @@ pub(super) fn node_probe(
                 satisfied = false;
                 break;
             };
-            if !semantic_selector_present(&text, selector.anchors) {
+            if !semantic_selector_present(&text, selector.anchors)
+                .with_context(|| format!("failed to inspect probe selector {}", selector.path))?
+            {
                 satisfied = false;
                 break;
             }

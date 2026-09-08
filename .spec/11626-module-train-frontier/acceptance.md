@@ -18,6 +18,9 @@ supersession projection remain open residuals.
   plus every hard-ready leaf with writer class and conflict key, per-class
   groupings, visible limitations, and the ceilings-not-quotas law line.
 - `--tree` accepts only `HEAD`; anything else fails closed.
+- `status` and `next` capture the bound `HEAD` tree before probing. A dirty
+  worktree is reported in the binding block, but mutable worktree bytes are
+  never presented as the captured tree's implementation state.
 - No network, no GitHub, no mutation, no scheduling, no product behavior.
 
 ## §Hazards
