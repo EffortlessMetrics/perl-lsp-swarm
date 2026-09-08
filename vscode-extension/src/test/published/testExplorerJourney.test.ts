@@ -30,10 +30,10 @@ function remainingBudget(deadline: number, label: string): number {
   return remaining;
 }
 
-suite('Installed Test Explorer prove journey', function () {
+suite('Installed Test Explorer runAll journey', function () {
   this.timeout(120_000);
 
-  test('runs a special-character test through the installed Test Explorer profile', async function () {
+  test('executes a generated special-character fixture through testing.runAll', async function () {
     const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
     assert.ok(workspaceFolder, 'installed Test Explorer journey requires a workspace folder');
 
@@ -42,7 +42,7 @@ suite('Installed Test Explorer prove journey', function () {
       workspaceFolder.uri.fsPath,
       `test explorer & [1] {a,b} ${token}`,
     );
-    const fixture = path.join(fixtureDirectory, 'selected test.t');
+    const fixture = path.join(fixtureDirectory, 'generated test.t');
     const startMarker = path.join(fixtureDirectory, 'selected-test-start.json');
     const marker = path.join(fixtureDirectory, 'selected-test-marker.json');
     const previousMarker = process.env.PERL_LSP_TEST_EXPLORER_MARKER;
@@ -91,7 +91,7 @@ suite('Installed Test Explorer prove journey', function () {
       let runAttempts = 0;
       let ranFixture = false;
       // Refresh awaits discovery, but VS Code publishes TestItemCollection diffs on a debounce;
-      // each runAll is awaited before the next eligibility attempt, and the marker guards repeats.
+      // each runAll is awaited before the next bounded attempt, and the marker guards repeats.
       while (Date.now() < runDeadline) {
         runAttempts += 1;
         await vscode.commands.executeCommand('testing.runAll');
@@ -101,12 +101,12 @@ suite('Installed Test Explorer prove journey', function () {
       }
       assert.ok(
         ranFixture,
-        `testing.runAll did not execute the selected fixture after ${runAttempts} attempts`,
+        `testing.runAll did not execute the generated fixture after ${runAttempts} attempts`,
       );
       process.stdout.write(`[installed-test-explorer] runAll attempts: ${runAttempts}\n`);
       assert.ok(
         fs.existsSync(marker),
-        'testing.runAll returned before the fixture final marker was written',
+        'testing.runAll returned before the generated fixture final marker was written',
       );
       const starts = fs
         .readFileSync(startMarker, 'utf8')
