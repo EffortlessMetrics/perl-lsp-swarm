@@ -364,14 +364,14 @@ describe('bounded workspace step-definition scan', () => {
 
   it('marks a capped file listing incomplete instead of treating it as exhaustive', async () => {
     const filePath = await writeStepFile('capped_steps.pm', 'Given qr/^ok$/, sub { return; };\n');
-    findFiles.mockResolvedValue(Array.from({ length: 500 }, () => ({ fsPath: filePath })));
+    findFiles.mockResolvedValue(Array.from({ length: 501 }, () => ({ fsPath: filePath })));
 
     const result = await scan(async () => ({
       bytes: Buffer.from('Given qr/^ok$/, sub { return; };\n', 'utf8'),
       text: 'Given qr/^ok$/, sub { return; };\n',
       byteLength: Buffer.byteLength('Given qr/^ok$/, sub { return; };\n', 'utf8'),
     }));
-    expect(result.sources).toHaveLength(500);
+    expect(result.sources).toHaveLength(0);
     expect(result.complete).toBe(false);
   });
 

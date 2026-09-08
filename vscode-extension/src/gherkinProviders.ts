@@ -283,9 +283,17 @@ async function loadStepDefinitionDocuments(
     const uris = await vscode.workspace.findFiles(
       pattern,
       STEP_DEFINITION_EXCLUDE_GLOB,
-      STEP_DEFINITION_FILE_LIMIT,
+      STEP_DEFINITION_FILE_LIMIT + 1,
       token,
     );
+
+    if (uris.length > STEP_DEFINITION_FILE_LIMIT) {
+      return {
+        documents: [],
+        attemptedBytes: 0,
+        refusal: 'enumeration_truncated',
+      };
+    }
 
     for (const uri of uris) {
       seen.set(uri.toString(), uri);
@@ -297,7 +305,11 @@ async function loadStepDefinitionDocuments(
 }
 
 /** Typed refusal causes for the bounded step-definition workspace scan. */
-export type StepDefinitionScanRefusal = 'read_budget_exhausted' | 'retained_budget_exhausted';
+export type StepDefinitionScanRefusal =
+  | 'read_budget_exhausted'
+  | 'retained_budget_exhausted'
+  | 'file_over_limit'
+  | 'enumeration_truncated';
 
 /** Outcome of the bounded step-definition workspace scan. */
 export interface StepDefinitionScan {
@@ -357,6 +369,10 @@ export async function collectStepDefinitionDocuments(
     }
     attemptedBytes += bytes;
     const outcome = admitRetainedText(uri, text);
+    if (outcome === 'over-file-cap') {
+      refusal = 'file_over_limit';
+      return 'stop';
+    }
     if (outcome === 'over-retained-cap') {
       refusal = 'retained_budget_exhausted';
       return 'stop';
@@ -392,7 +408,12 @@ export async function collectStepDefinitionDocuments(
     }
 
     const read = await readBoundedFile(uri.fsPath, MAX_STEP_DEFINITION_FILE_BYTES);
-    attemptedBytes += read ? read.byteLength : MAX_STEP_DEFINITION_FILE_BYTES + 1;
+    attemptedBytes +=
+      read && 'kind' in read
+        ? MAX_STEP_DEFINITION_FILE_BYTES + 1
+        : read
+          ? read.byteLength
+          : MAX_STEP_DEFINITION_FILE_BYTES + 1;
 
     if (openDocumentFor(uri)) {
       if (admitOpenDocument(uri) === 'stop') {
@@ -403,6 +424,10 @@ export async function collectStepDefinitionDocuments(
 
     if (!read) {
       continue;
+    }
+    if ('kind' in read) {
+      refusal = 'file_over_limit';
+      break;
     }
     let text: string;
     try {
@@ -423,6 +448,10 @@ export async function collectStepDefinitionDocuments(
     }
 
     const outcome = admitRetainedText(uri, text);
+    if (outcome === 'over-file-cap') {
+      refusal = 'file_over_limit';
+      break;
+    }
     if (outcome === 'over-retained-cap') {
       refusal = 'retained_budget_exhausted';
       break;

@@ -2,7 +2,10 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { readBoundedFile } from '../gherkinStepDefinitions';
+import {
+  MAX_STEP_DEFINITION_FILE_BYTES,
+  readBoundedFile,
+} from '../gherkinStepDefinitions';
 import * as gherkinStepDefinitions from '../gherkinStepDefinitions';
 import {
   collectStepDefinitionDocuments,
@@ -554,8 +557,33 @@ describe('gherkin step-definition workspace envelope', () => {
         cancelled(false),
       );
 
-      expect(scan.documents.map((document) => document.uri.fsPath)).toEqual([small]);
+      expect(scan.documents).toHaveLength(0);
+      expect(scan.refusal).toBe('file_over_limit');
     } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('refuses an already-open document over the per-file byte cap', async () => {
+    const root = makeEnvelopeWorkspace('open-over-file-cap');
+    const candidate = path.join(root, 'steps.pm');
+    const text = 'a'.repeat( MAX_STEP_DEFINITION_FILE_BYTES + 1);
+    const openDocument = {
+      uri: vscode.Uri.file(candidate),
+      getText: () => text,
+    } as unknown as vscode.TextDocument;
+    (vscode.workspace as unknown as { textDocuments: unknown[] }).textDocuments = [openDocument];
+
+    try {
+      const scan = await collectStepDefinitionDocuments(
+        [vscode.Uri.file(candidate)],
+        cancelled(false),
+      );
+
+      expect(scan.documents).toHaveLength(0);
+      expect(scan.refusal).toBe('file_over_limit');
+    } finally {
+      (vscode.workspace as unknown as { textDocuments: unknown[] }).textDocuments = [];
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
@@ -693,7 +721,7 @@ describe('gherkin step-definition workspace envelope', () => {
       const scan = await collectStepDefinitionDocuments(candidates, cancelled(false));
 
       expect(scan.documents).toHaveLength(0);
-      expect(scan.refusal).toBe('read_budget_exhausted');
+      expect(scan.refusal).toBe('file_over_limit');
       expect(scan.attemptedBytes).toBeLessThanOrEqual(16 * 1024 * 1024);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
@@ -802,7 +830,7 @@ describe('gherkin step-definition workspace envelope', () => {
       expect(vscode.workspace.findFiles).toHaveBeenCalledWith(
         expect.any(String),
         expect.any(String),
-        1000,
+        1001,
         token,
       );
       expect(links).toBeUndefined();
