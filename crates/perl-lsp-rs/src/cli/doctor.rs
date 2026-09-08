@@ -1541,8 +1541,8 @@ fn git_bash_flavor_report_for_path(bash_exe: Option<PathBuf>) -> BashFlavorRepor
                 flavor: FLAVOR_GIT_BASH,
                 status: STATUS_PRESENT,
                 bash_path: Some(bash_exe.display().to_string()),
-                runs_repo_entrypoints: Some(true),
-                note: "repository .sh entrypoints run under this native POSIX bash".to_string(),
+                runs_repo_entrypoints: None,
+                note: "native POSIX bash is available; repository .sh entrypoint execution is not proven by this read-only probe".to_string(),
                 fix: None,
             }
         }
@@ -1570,33 +1570,34 @@ fn wsl_bash_flavor_report() -> BashFlavorReport {
     };
     let mut command = Command::new(&wsl_exe);
     command.arg("--status");
-    match run_command_with_timeout(command, DEV_ENV_PROBE_TIMEOUT_SECS) {
-        Ok(output) if output.status.success() => BashFlavorReport {
+    let status = match run_command_with_timeout(command, DEV_ENV_PROBE_TIMEOUT_SECS) {
+        Ok(output) if output.status.success() => Ok(()),
+        Ok(output) => Err(truncate_for_detail(
+            &format!("wsl.exe --status failed: {}", decode_shell_output(&output.stderr).trim()),
+            DETAIL_MAX_CHARS,
+        )),
+        Err(timeout_error) => Err(truncate_for_detail(&timeout_error, DETAIL_MAX_CHARS)),
+    };
+    wsl_bash_flavor_report_from_status(status)
+}
+
+fn wsl_bash_flavor_report_from_status(status: Result<(), String>) -> BashFlavorReport {
+    match status {
+        Ok(()) => BashFlavorReport {
             flavor: FLAVOR_WSL,
             status: STATUS_PRESENT,
             bash_path: None,
-            runs_repo_entrypoints: Some(true),
-            note: "entrypoints would run against the WSL filesystem and toolchains; compare the wsl cargo flavor"
+            runs_repo_entrypoints: None,
+            note: "WSL is available; repository .sh entrypoint execution is not proven by this read-only probe; compare the wsl cargo flavor"
                 .to_string(),
             fix: None,
         },
-        Ok(output) => BashFlavorReport {
+        Err(note) => BashFlavorReport {
             flavor: FLAVOR_WSL,
             status: STATUS_MISSING,
             bash_path: None,
             runs_repo_entrypoints: None,
-            note: truncate_for_detail(
-                &format!("wsl.exe --status failed: {}", decode_shell_output(&output.stderr).trim()),
-                DETAIL_MAX_CHARS,
-            ),
-            fix: None,
-        },
-        Err(timeout_error) => BashFlavorReport {
-            flavor: FLAVOR_WSL,
-            status: STATUS_MISSING,
-            bash_path: None,
-            runs_repo_entrypoints: None,
-            note: truncate_for_detail(&timeout_error, DETAIL_MAX_CHARS),
+            note,
             fix: None,
         },
     }
@@ -3022,7 +3023,8 @@ mod tests {
         assert_eq!(cargo_resolution, capability_resolution);
         let bash = git_bash_flavor_report_for_path(Some(capability_resolution));
         assert_eq!(bash.status, STATUS_PRESENT);
-        assert_eq!(bash.runs_repo_entrypoints, Some(true));
+        assert_eq!(bash.runs_repo_entrypoints, None);
+        assert!(bash.note.contains("execution is not proven"));
 
         let cargo = finish_reachable_cargo_report(
             FLAVOR_GIT_BASH,
@@ -3031,6 +3033,16 @@ mod tests {
         );
         assert_eq!(cargo.status, STATUS_PRESENT);
         assert_eq!(cargo.meets_workspace_pin, Some(true));
+        Ok(())
+    }
+
+    #[test]
+    fn wsl_status_success_keeps_entrypoint_execution_unproven() -> TestResult {
+        let report = wsl_bash_flavor_report_from_status(Ok(()));
+
+        assert_eq!(report.status, STATUS_PRESENT);
+        assert_eq!(report.runs_repo_entrypoints, None);
+        assert!(report.note.contains("execution is not proven"));
         Ok(())
     }
 
