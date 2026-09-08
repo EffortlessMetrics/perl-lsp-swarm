@@ -629,17 +629,23 @@ fn stdio_navigation_matches_exact_request_and_current_edit() -> Result<()> {
     )?;
     definition_after_readiness(&mut server, &client_uri, &module_uri, 1, 2)?;
 
-    let wrong_string_definition_id = json!("definition-π-wrong");
+    let numeric_definition_id = json!(123);
     server.send(&json!({
-        "jsonrpc": "2.0", "id": wrong_string_definition_id.clone(), "method": "textDocument/definition", "params": {
+        "jsonrpc": "2.0", "id": numeric_definition_id.clone(), "method": "textDocument/definition", "params": {
             "textDocument": { "uri": client_uri }, "position": { "line": 2, "character": 10 }
         }
     }))?;
-    let wrong_id = json!(123);
-    let mismatch = server.strict_response(&wrong_id, REQUEST_TIMEOUT);
+    let wrong_id = json!("123");
+    let mismatch_text = server
+        .strict_response(&wrong_id, REQUEST_TIMEOUT)
+        .err()
+        .context("strict response matching unexpectedly accepted a numeric ID as a string")?
+        .to_string();
     ensure!(
-        mismatch.is_err(),
-        "strict response matching must reject a numeric ID for the string-ID response"
+        mismatch_text.contains("unexpected terminal response")
+            && mismatch_text.contains("\"123\"")
+            && mismatch_text.contains("\"id\": 123"),
+        "numeric/string ID mismatch error lost expected or observed identity: {mismatch_text}"
     );
     let string_definition_id = json!("definition-π");
     server.send(&json!({
