@@ -395,8 +395,9 @@ impl LspServer {
     pub(super) fn handle_streaming_inline_completion_dispatch(
         &self,
         params: Option<Value>,
+        admission: Option<crate::runtime::stream_session::StreamAdmissionTicket>,
     ) -> Result<Option<Value>, JsonRpcError> {
-        self.handle_streaming_inline_completion(params)
+        self.handle_streaming_inline_completion(params, admission)
     }
 
     // Inline value

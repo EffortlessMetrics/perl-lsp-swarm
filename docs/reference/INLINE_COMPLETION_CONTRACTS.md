@@ -264,41 +264,193 @@ backing, so **no** `(@proposed)` marker — it is a perl-lsp extension, not an
 upstream-proposed method).
 
 - Handler: `handle_streaming_inline_completion`
-  (`crates/perl-lsp-rs/src/runtime/language/streaming.rs:20`).
-- Routed at `crates/perl-lsp-rs/src/runtime/dispatch/routing.rs:129`.
+  (`crates/perl-lsp-rs/src/runtime/language/streaming.rs`).
+- Routed at `crates/perl-lsp-rs/src/runtime/dispatch/routing.rs`.
 - Requires a `partialResultToken`; absent → one-shot fallback returning items
   directly (`streaming.rs`).
 - Emits `$/progress` notifications with payload
   `{ token, value: { kind: "perlInlineCompletionStream", sessionId, sequence,
-  isFinal, items } }` (`streaming.rs:99`, `:150`, `:197`). Each chunk carries
-  **cumulative** text (not a delta).
-- Session replacement is **scoped to the session key**. `StreamSessionManager::`
-  `start_session` (`crates/perl-lsp-rs/src/runtime/stream_session.rs:83`) cancels
-  the prior session only for the **same `SessionKey`** = (`uri`, `document_version`,
-  `line`, `character`) (`stream_session.rs:15`, `:91`). A second request at the
-  **same** cursor/version replaces and cancels the first (test
-  `streaming_completion_second_request_cancels_first_session`). A request at a
-  **different** position/version does **not** cancel an earlier in-flight stream
-  via `start_session`; that earlier stream is reclaimed on the next document edit
-  by `cancel_for_uri` (didChange/didClose, `stream_session.rs:104`) or
-  `cancel_for_uri_version` (older version, `stream_session.rs:118`). Cancellation
-  is honored mid-stream (`session.is_cancelled()`).
+  isFinal, items } }`. Each chunk carries **cumulative** text (not a delta).
+- Session replacement is **scoped to the document and ordered at ingress**.
+  An owned admission ticket carries the scheduler's read-arrival order through
+  dispatch. `StreamSessionManager::admit_session`
+  (`crates/perl-lsp-rs/src/runtime/stream_session.rs`) admits only a request newer
+  than the latest valid admission for the same `uri`, cancelling and evicting
+  the replaced session as `SupersededByNewRequest`. A delayed older request
+  cannot replace a newer stream, even after that newer stream completes or
+  fails: its admission watermark remains while older tickets are outstanding.
+  Invalid requests and pre-admission one-shot fallback do not advance that
+  watermark. One document exposes at most **one** active ghost-text stream;
+  other documents are independent. Streams are also reclaimed by `cancel_for_uri`
+  (didChange/didClose) and `cancel_for_uri_version` (older version), which settle
+  as `DocumentChangedOrClosed`. Cancellation is honored mid-stream
+  (`session.is_cancelled()`).
 - While streaming, the request result is JSON `null`; the items arrive via
   progress.
 
+#### Terminal contract
+
+Every stream reaches **exactly one** terminal disposition, recorded as a
+`StreamTerminalOutcome` (`stream_session.rs`) by a single compare-and-set
+`StreamSession::settle`. The first caller to settle wins; every later caller
+observes `false`. On the handler's final path, successful outbound enqueue
+precedes the sequence and terminal commits; cancellation can settle
+independently. Manager eviction checks session identity and preserves an
+already-recorded outcome rather than requiring a new successful settlement.
+
+**Invariants.**
+
+- **At most one final enqueue.** At most one `isFinal: true` progress value is
+  accepted by the outbound queue per stream: accepted candidate, filtered/empty,
+  deterministic fallback, clean EOF without an explicit final chunk, and backend
+  failure. A backend that ignores `StreamControl::Stop` and keeps sending final
+  chunks is refused by the settled-guard rather than producing a second one.
+  Cancellation or failure of every enqueue attempt can leave no final value
+  accepted; a final enqueue is not an acknowledgement from the client.
+- **No retained sessions.** Normal terminal paths promptly evict their entry
+  through `finish_if_current(key, session_id, outcome)`. The owned admission
+  ticket also provides an RAII backstop: dropping it removes only its exact
+  session, preserving any terminal outcome already recorded. Queue rejection,
+  queued-request disposal, and early returns retire the ticket without a later
+  edit or housekeeping sweep. Per-URI admission cells are transient: they retain
+  ordering only while tickets remain outstanding and disappear when the last
+  ticket retires. This cleanup structure is not a separately executed
+  panic/unwind witness or a guarantee about process termination.
+- **Session identity is load-bearing.** `finish_if_current` removes an entry only
+  while it is still the exact session that request started, so a stale task
+  finishing late cannot evict the replacement that reused its display key.
+- **Queue acceptance, not intent, commits state.** The outbound channel is bounded, so a
+  `$/progress` notification can fail transiently under backpressure. Both the
+  sequence value and the terminal outcome are therefore committed *after* a
+  successful enqueue: `pending_sequence` reads, `commit_sequence` consumes. A
+  rejected enqueue consumes no sequence value and does not settle the stream,
+  so the terminal is attempted once more by the tail owner. If no attempt is
+  accepted and no cancellation already settled the session, release records
+  `ProtocolEndedWithoutFinal` rather than a successful completion.
+- **Contiguous queue-accepted sequences.** A sequence value is consumed only
+  after the outbound queue accepts its frame. A frame suppressed by
+  `updateDebounceMs` pacing, skipped because its cumulative text was filtered, or
+  rejected by a failed enqueue consumes none, so those paths introduce no gaps
+  in the queue-accepted sequence. This does not prove client receipt or display.
+- **A failure is never a completion.** When the backend returns an error, the
+  partial cumulative text it produced is discarded rather than re-evaluated and
+  emitted as the terminal candidate. The configured `fallback` policy owns the
+  final content: deterministic items when `fallback` is true, an empty final
+  otherwise — the same decision the buffered route applies to a failed AI call.
+
+Successful enqueue is not confirmed transport delivery or editor rendering.
+Deterministic bounded-channel backpressure and cancellation-versus-send proof
+remain #14168; this handler does not provide an atomic cancellation/send
+transaction or a client acknowledgement protocol.
+
+**Supersession trade-off.** Because the scope is the document, a client showing
+one document in two views and requesting at both cursors gets one stream: the
+earlier valid ingress request's in-flight stream is cancelled, and callbacks that observe this
+state stop. Its request can resolve (`null`) without a final frame, which the
+client treats as a revocation. An enqueue racing cancellation remains within
+the #14168 boundary above. Supersession matches the
+request URI as spelled — the same string that forms the `SessionKey` — so a
+client that spells one document two ways can hold one stream per spelling; those
+are reclaimed by the didChange/didClose sweeps, which do compare URI variants.
+
+**Client side.** `vscode-extension/src/streamingCompletion.ts` treats an empty
+terminal value as an authoritative **revocation**, not an ignorable frame: it
+clears the cached candidate for that request identity and releases the progress
+registration and cancellation resources. A request that resolves without a
+terminal value, and a backend failure after partial text, revoke the same way.
+
+Revocation dismisses the on-screen suggestion with
+`editor.action.inlineSuggest.hide`, never with `…inlineSuggest.trigger`.
+Clearing the cache alone would leave the rendered suggestion visible, but
+`trigger` re-enters the provider at the exact cursor the server just answered
+"nothing" for, which would dispatch another backend generation that revokes
+again — a loop. `hide` dismisses without re-querying, so revocation costs no
+generation, needs no suppression state, and leaves a deliberate re-invocation at
+the same cursor free to retry. That matters because an AI backend is not
+deterministic: a user asking again is a real request, not a duplicate.
+
+Non-final updates and an accepted terminal candidate can request a widget
+refresh; revocation itself requests only dismissal. The actual editor's handling
+of an already-queued invocation after revocation, including any additional
+generation count, is not established by the controller fixtures. That remains
+part of the actual-editor proof owned by #2163; no exact extra-generation bound
+is claimed here.
+
+Terminal outcomes owned elsewhere: the document-lifecycle transitions of #8657 /
+#8666 / #10254 are not yet consumed here; stream revocation still follows raw
+didChange/didClose. See #10005 for the residual boundary.
+
 ### Proof tests
 
+Route and wire shape —
 `crates/perl-lsp-rs/tests/lsp_streaming_completion_tests.rs`:
-`streaming_completion_returns_null_and_emits_progress`,
-`streaming_completion_progress_has_valid_session_and_sequence`,
 `streaming_completion_without_ai_falls_back_to_one_shot`,
 `streaming_completion_with_streaming_disabled_falls_back`,
 `streaming_completion_without_partial_result_token_falls_back`,
-`streaming_completion_second_request_cancels_first_session`,
 `streaming_completion_on_closed_doc_returns_null`,
 `streaming_completion_missing_params_returns_error`,
 `streaming_completion_capability_advertised`,
-`streaming_completion_progress_schema_validation`.
+`streaming_completion_progress_schema_validation_armed`,
+`streaming_completion_mock_backend_cumulative_chunks`.
+
+Terminal contract — same file:
+`a_stream_emits_exactly_one_final_value`,
+`a_stop_ignoring_backend_cannot_emit_a_second_final`,
+`every_terminal_path_leaves_zero_retained_sessions`,
+`completion_stream_storm_retains_no_completed_sessions`,
+`a_new_cursor_supersedes_the_prior_document_stream` (concurrent; a sequential
+pair cannot distinguish document-scoped from per-key supersession, because each
+request releases its own session before the next starts),
+`coalesced_frames_consume_no_sequence_value`,
+`streaming_completion_sequence_starts_at_zero_after_filtered_prefix`,
+`streaming_completion_mock_backend_error_sends_final_progress`,
+`backend_error_without_fallback_terminates_empty`,
+`streaming_completion_mock_backend_cancel_previous_isolation`,
+`streaming_completion_cancel_rotates_session_identity`.
+
+Session identity and eviction —
+`crates/perl-lsp-rs/src/runtime/stream_session.rs` unit tests:
+`start_session_supersedes_other_cursors_in_the_same_document`,
+`start_session_leaves_other_documents_independent`,
+`repeated_requests_never_accumulate_sessions`,
+`finish_if_current_removes_the_exact_session`,
+`a_stale_session_cannot_finish_its_replacement`,
+`settle_records_exactly_one_outcome`,
+`cancel_with_preserves_an_already_recorded_outcome`,
+`a_pending_sequence_is_reused_until_it_is_committed`.
+
+Ingress admission ordering and ticket retirement -
+`crates/perl-lsp-rs/src/runtime/scheduler.rs` unit tests:
+`reverse_admission_keeps_later_stream_alive` and
+`ordinary_stream_admission_control`, plus the `stream_admission` cases for
+completed, failed, and invalid newer requests; forward order; another URI;
+buffered, automatic, and disabled-streaming fallback; and queued-ticket disposal
+and rejection. The reverse-order witness pauses the older request before
+admission and checks that the newer request continues and enqueues exactly one
+nonempty final value before its response acknowledgement. Manager-level
+`admission_tests` in `stream_session.rs` cover ticket identity, retirement, and
+the retained admission watermark.
+
+The candidate's owning-library serial run passed 2,033 tests. The default-parallel
+run failed two tests and is not claimed green or attributed to the baseline.
+These scheduler/manager fixtures do not establish actual-editor rendering,
+transport delivery, or separately executed panic/unwind behavior.
+
+Client revocation —
+`vscode-extension/src/test/streamingCompletion.test.ts`:
+`an empty terminal value revokes ghost text it previously showed`,
+`revocation dismisses the suggestion instead of re-querying`,
+`revoking ghost text starts no further backend generation`,
+`an explicit re-invocation after a revocation still retries`,
+`a non-empty terminal value keeps its candidate servable`,
+`the request resolving after a successful final does not revoke it`,
+`an empty intermediate frame is skipped, not treated as a revocation`,
+`an out-of-order terminal frame settles without installing its candidate`,
+`a frame arriving after the terminal value cannot reopen the stream`,
+`a request resolving without a terminal value revokes its partial text`,
+`a backend failure after partial text revokes it`,
+`a late rejection from a superseded stream cannot revoke its successor`,
+`a cancelled request settles quietly and stays retryable`.
 
 ### Invariant
 
