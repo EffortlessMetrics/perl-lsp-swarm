@@ -1,29 +1,33 @@
 /**
- * HealthWidgetDataSource — wires `HealthWidget` setters to the client-side
- * telemetry events that carry file/error counts.
+ * HealthWidgetDataSource — wires `HealthWidget` setters to client-visible
+ * first-party diagnostic and workspace-file observations.
  *
- * The perl-lsp server does not (as of the Index Lifecycle v1 spec) emit a
- * custom notification carrying workspace file/error counts, so the data source
- * derives them from VSCode's own surfaces:
+ * Counts remain explicitly bounded:
  *
- *   - **error count**: aggregated from `vscode.languages.getDiagnostics()`,
- *     scoped to Perl documents, on every `onDidChangeDiagnostics` event.
- *   - **file count**: the number of Perl source files in the workspace, via
- *     `vscode.workspace.findFiles`, refreshed once after activation.
- *
- * This closes the gap described in #4620: `HealthWidget.setFileCount` /
- * `setErrorCount` were implemented and unit-tested but never called from
- * production code, so the running-state status bar never showed the
- * `perl-lsp v<x>: <N> files | <M> errors` indicator the widget promises.
- *
- * The data source is best-effort: telemetry failures never throw into the
- * extension host. Counts are derived purely from client-visible state, so they
- * reflect what the user actually sees rather than server-internal counters.
+ * - error count includes only diagnostics whose source is the canonical
+ *   `perl-lsp` source;
+ * - file count de-duplicates URI subjects across globs;
+ * - a capped scan is rendered as a lower bound rather than an exact count;
+ * - failed or superseded scans clear the current count instead of retaining a
+ *   stale exact-looking value.
  */
 
 import type { HealthWidget } from './healthWidget';
-import * as vscode from 'vscode';
 import type { Diagnostic, DiagnosticSeverity, Disposable, Uri } from 'vscode';
+
+interface FileCreateDeleteEvent {
+  readonly files: readonly Uri[];
+}
+
+interface FileRenameEvent {
+  readonly files: readonly { readonly oldUri: Uri; readonly newUri: Uri }[];
+}
+
+interface FileSystemWatcherTelemetry extends Disposable {
+  onDidCreate(listener: (uri: Uri) => void): Disposable;
+  onDidChange(listener: (uri: Uri) => void): Disposable;
+  onDidDelete(listener: (uri: Uri) => void): Disposable;
+}
 
 /** Telemetry subset of `vscode.languages` used by the data source. */
 export interface LanguagesTelemetry {
@@ -34,13 +38,21 @@ export interface LanguagesTelemetry {
 /** Telemetry subset of `vscode.workspace` used by the data source. */
 export interface WorkspaceTelemetry {
   findFiles(include: string, exclude?: string | null, maxResults?: number): Thenable<Uri[]>;
+  onDidChangeWorkspaceFolders?(listener: () => void): Disposable;
+  onDidCreateFiles?(listener: (event: FileCreateDeleteEvent) => void): Disposable;
+  onDidDeleteFiles?(listener: (event: FileCreateDeleteEvent) => void): Disposable;
+  onDidRenameFiles?(listener: (event: FileRenameEvent) => void): Disposable;
+  createFileSystemWatcher?(globPattern: string): FileSystemWatcherTelemetry;
 }
 
-/** Perl source-file globs scanned for the workspace file count. */
+/** Perl source-file globs scanned for the current bounded file-count claim. */
 const PERL_FILE_GLOBS = ['**/*.pl', '**/*.pm', '**/*.t', '**/*.pod', '**/*.psgi'];
 
 /** Perl source-file extensions used to scope diagnostic aggregation. */
 const PERL_EXTENSIONS = new Set(['.pl', '.pm', '.t', '.pod', '.psgi']);
+
+/** Canonical source emitted by current `perllsp` diagnostics. */
+const PERL_LSP_DIAGNOSTIC_SOURCE = 'perl-lsp';
 
 /** Upper bound on a single `findFiles` scan to keep the count cheap. */
 const FILE_SCAN_CAP = 50_000;
@@ -49,79 +61,160 @@ const FILE_SCAN_CAP = 50_000;
 const FILE_SCAN_EXCLUDE = '{**/node_modules/**,**/.git/**,**/target/**,**/.vscode/**}';
 
 /**
- * Build a `HealthWidgetDataSource` from the real `vscode` surfaces.
+ * Build a `HealthWidgetDataSource` from the real VS Code surfaces.
  *
- * Kept as a factory so production wiring passes `vscode.languages` /
- * `vscode.workspace` directly while tests inject fakes.
+ * The optional scan cap is an explicit test seam; production uses the retained
+ * 50,000-subject cap.
  */
 export interface HealthWidgetDataSourceDeps {
   languages: LanguagesTelemetry;
   workspace: WorkspaceTelemetry;
+  fileScanCap?: number;
 }
 
 function isPerlFile(uri: Uri): boolean {
-  const path = (uri.fsPath ?? uri.toString()) as string;
-  const dot = path.lastIndexOf('.');
+  const uriPath = (uri.fsPath ?? uri.toString()) as string;
+  const dot = uriPath.lastIndexOf('.');
   if (dot < 0) {
     return false;
   }
-  return PERL_EXTENSIONS.has(path.slice(dot).toLowerCase());
+  return PERL_EXTENSIONS.has(uriPath.slice(dot).toLowerCase());
 }
 
-function isErrorDiagnostic(diagnostic: Diagnostic): boolean {
+function isPerlLspErrorDiagnostic(diagnostic: Diagnostic): boolean {
   // `DiagnosticSeverity.Error === 0`; compare numerically so a fake enum
   // value from tests still matches.
-  return (diagnostic.severity as DiagnosticSeverity | undefined) === 0;
+  return (
+    (diagnostic.severity as DiagnosticSeverity | undefined) === 0 &&
+    diagnostic.source === PERL_LSP_DIAGNOSTIC_SOURCE
+  );
+}
+
+function uriIdentity(uri: Uri): string {
+  return uri.toString();
+}
+
+function isRelevantWorkspaceFile(uri: Uri): boolean {
+  if (!isPerlFile(uri)) {
+    return false;
+  }
+  const path = ((uri.fsPath ?? uri.toString()) as string).replaceAll('\\', '/');
+  return !/(^|\/)(node_modules|\.git|target|\.vscode)(\/|$)/.test(path);
 }
 
 /**
- * Wires `HealthWidget.setFileCount` / `setErrorCount` to client-side telemetry.
+ * Wires first-party error and bounded file counts into `HealthWidget`.
  *
  * Call `start()` once the widget and status bar item are owned by the
- * extension; call `dispose()` on shutdown. The data source registers a
- * diagnostics-change listener and performs an initial refresh of both counts.
+ * extension; call `dispose()` on shutdown.
  */
 export class HealthWidgetDataSource {
   private readonly disposables: Disposable[] = [];
   private fileCountPromise: Promise<void> | undefined;
+  private fileCountGeneration = 0;
+  private fileCountInvalidated = false;
+  private started = false;
+  private disposed = false;
+  private readonly fileScanCap: number;
 
   constructor(
     private readonly widget: HealthWidget,
     private readonly languages: LanguagesTelemetry,
     private readonly workspace: WorkspaceTelemetry,
-  ) {}
+    fileScanCap = FILE_SCAN_CAP,
+  ) {
+    if (!Number.isInteger(fileScanCap) || fileScanCap < 1) {
+      throw new Error('HealthWidgetDataSource file scan cap must be a positive integer');
+    }
+    this.fileScanCap = fileScanCap;
+  }
 
   static fromDeps(widget: HealthWidget, deps: HealthWidgetDataSourceDeps): HealthWidgetDataSource {
-    return new HealthWidgetDataSource(widget, deps.languages, deps.workspace);
+    return new HealthWidgetDataSource(
+      widget,
+      deps.languages,
+      deps.workspace,
+      deps.fileScanCap ?? FILE_SCAN_CAP,
+    );
   }
 
   /** Register listeners and push the first file/error counts into the widget. */
   start(): void {
+    if (this.started || this.disposed) {
+      return;
+    }
+    this.started = true;
     this.disposables.push(
       this.languages.onDidChangeDiagnostics(() => {
         this.refreshErrorCount();
       }),
     );
-    // Refresh file count when workspace folders change. (UX polish)
-    this.disposables.push(
-      vscode.workspace.onDidChangeWorkspaceFolders(() => {
-        this.fileCountPromise = undefined;
-        void this.refreshFileCount();
-      }),
-    );
+
+    const invalidate = (): void => {
+      this.invalidateFileCount();
+    };
+    const folderListener = this.workspace.onDidChangeWorkspaceFolders?.(invalidate);
+    if (folderListener) {
+      this.disposables.push(folderListener);
+    }
+    const createListener = this.workspace.onDidCreateFiles?.((event) => {
+      if (event.files.some(isRelevantWorkspaceFile)) {
+        invalidate();
+      }
+    });
+    if (createListener) {
+      this.disposables.push(createListener);
+    }
+    const deleteListener = this.workspace.onDidDeleteFiles?.((event) => {
+      if (event.files.some(isRelevantWorkspaceFile)) {
+        invalidate();
+      }
+    });
+    if (deleteListener) {
+      this.disposables.push(deleteListener);
+    }
+    const renameListener = this.workspace.onDidRenameFiles?.((event) => {
+      if (event.files.some(({ oldUri, newUri }) =>
+        isRelevantWorkspaceFile(oldUri) || isRelevantWorkspaceFile(newUri))) {
+        invalidate();
+      }
+    });
+    if (renameListener) {
+      this.disposables.push(renameListener);
+    }
+
+    for (const glob of PERL_FILE_GLOBS) {
+      const watcher = this.workspace.createFileSystemWatcher?.(glob);
+      if (!watcher) {
+        continue;
+      }
+      this.disposables.push(watcher);
+      const watch = (uri: Uri): void => {
+        if (isRelevantWorkspaceFile(uri)) {
+          invalidate();
+        }
+      };
+      this.disposables.push(watcher.onDidCreate(watch));
+      this.disposables.push(watcher.onDidDelete(watch));
+    }
+
     this.refreshErrorCount();
     void this.refreshFileCount();
   }
 
-  /** Recompute the workspace-wide Perl error count from live diagnostics. */
+  /** Recompute the current first-party Perl LSP error count. */
   refreshErrorCount(): void {
+    if (this.disposed) {
+      return;
+    }
+
     let errors = 0;
     for (const [uri, diagnostics] of this.languages.getDiagnostics()) {
       if (!isPerlFile(uri)) {
         continue;
       }
       for (const diagnostic of diagnostics) {
-        if (isErrorDiagnostic(diagnostic)) {
+        if (isPerlLspErrorDiagnostic(diagnostic)) {
           errors += 1;
         }
       }
@@ -129,38 +222,90 @@ export class HealthWidgetDataSource {
     this.widget.setErrorCount(errors);
   }
 
+  /** Invalidate the prior file subject and schedule one current replacement scan. */
+  private invalidateFileCount(): void {
+    if (this.disposed) {
+      return;
+    }
+    this.fileCountGeneration += 1;
+    this.fileCountInvalidated = true;
+    this.widget.setFileCount(undefined);
+    if (!this.fileCountPromise) {
+      void this.refreshFileCount();
+    }
+  }
+
   /**
-   * Recompute the workspace Perl file count via `findFiles`.
+   * Recompute the bounded workspace Perl file count via `findFiles`.
    *
-   * Runs at most once per data-source lifetime: the count is stable until the
-   * workspace folders change, and a fresh activation rebuilds the data source.
-   * Concurrent callers share the in-flight scan promise so an `await` after
-   * `start()` waits for the real scan rather than returning as a no-op.
-   * Failures are swallowed — telemetry must never throw into the host.
+   * Concurrent callers share the current-generation scan. A file/root event
+   * invalidates the generation; an older scan cannot publish afterward.
    */
   refreshFileCount(): Promise<void> {
+    if (this.disposed) {
+      return Promise.resolve();
+    }
     if (this.fileCountPromise) {
       return this.fileCountPromise;
     }
-    this.fileCountPromise = this.runFileCountScan();
-    return this.fileCountPromise;
+    const generation = this.fileCountGeneration;
+    this.fileCountInvalidated = false;
+    const promise = this.runFileCountScan(generation);
+    this.fileCountPromise = promise;
+    void promise.then(() => {
+      if (this.fileCountPromise !== promise) {
+        return;
+      }
+      this.fileCountPromise = undefined;
+      if (!this.disposed && this.fileCountInvalidated) {
+        void this.refreshFileCount();
+      }
+    });
+    return promise;
   }
 
-  private async runFileCountScan(): Promise<void> {
+  private async runFileCountScan(generation: number): Promise<void> {
     try {
-      let total = 0;
+      const identities = new Set<string>();
+      let lowerBound = false;
       for (const glob of PERL_FILE_GLOBS) {
-        const uris = await this.workspace.findFiles(glob, FILE_SCAN_EXCLUDE, FILE_SCAN_CAP);
-        total += uris.length;
+        if (generation !== this.fileCountGeneration) {
+          return;
+        }
+        const uris = await this.workspace.findFiles(
+          glob,
+          FILE_SCAN_EXCLUDE,
+          this.fileScanCap + 1,
+        );
+        if (uris.length > this.fileScanCap) {
+          lowerBound = true;
+        }
+        for (const uri of uris.slice(0, this.fileScanCap)) {
+          identities.add(uriIdentity(uri));
+        }
       }
-      this.widget.setFileCount(total);
+
+      if (this.disposed || generation !== this.fileCountGeneration) {
+        return;
+      }
+      this.widget.setFileCount(identities.size, lowerBound);
     } catch {
-      // Best-effort telemetry: a failed scan leaves the count at its prior
-      // value (undefined → omitted from the status bar) rather than throwing.
+      if (this.disposed || generation !== this.fileCountGeneration) {
+        return;
+      }
+      // A failed replacement scan is unavailable, not the prior exact count.
+      this.widget.setFileCount(undefined);
     }
   }
 
   dispose(): void {
+    if (this.disposed) {
+      return;
+    }
+    this.disposed = true;
+    this.fileCountGeneration += 1;
+    this.fileCountInvalidated = false;
+    this.fileCountPromise = undefined;
     for (const disposable of this.disposables) {
       disposable.dispose();
     }

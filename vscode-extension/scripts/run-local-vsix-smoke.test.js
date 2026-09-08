@@ -14,6 +14,7 @@ const {
   crashRecoveryLegEnv,
   finalizeSmokeRun,
   interpretBehavioralSmokeExit,
+  runPublishedSmoke,
   interpretTransitionResult,
   publishCheckSummary,
   writeProjectionLine,
@@ -574,6 +575,95 @@ void test('an unavailable host-resolution receipt is not a product smoke failure
   assert.equal(result.host_resolution.requested_version, '1.125.0');
   assert.equal(result.host_resolution.requested_version, hostFailure.requested_version);
   assert.notEqual(result.host_resolution.requested_version, 'stable');
+});
+
+void test('a typed unsupported-platform child exit stays not_proven without a receipt', () => {
+  const receiptRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-platform-unwritable-'));
+  try {
+    const result = interpretBehavioralSmokeExit({
+      status: 2,
+      candidateBound: true,
+      platform: 'win32',
+      receiptsRoot: receiptRoot,
+      exists: () => false,
+    });
+    assert.equal(result.status, 'not_proven');
+    assert.equal(result.reason, 'candidate_bound_platform_unavailable');
+  } finally {
+    fs.rmSync(receiptRoot, { recursive: true, force: true });
+  }
+});
+
+void test('the typed unsupported-platform exit is failure outside its bound platform case', () => {
+  for (const input of [
+    { candidateBound: false, platform: 'win32' },
+    { candidateBound: true, platform: 'linux' },
+  ]) {
+    const result = interpretBehavioralSmokeExit({
+      status: 2,
+      ...input,
+      receiptsRoot: '/fixture',
+      exists: () => false,
+    });
+    assert.equal(result.status, 'failed');
+    assert.equal(result.reason, 'published_extension_smoke_failed');
+  }
+});
+
+void test('a spawn error is explicitly classified as not_proven', () => {
+  const result = interpretBehavioralSmokeExit({
+    status: null,
+    spawnError: new Error('spawn failed'),
+    receiptsRoot: '/fixture',
+    exists: () => false,
+  });
+  assert.equal(result.status, 'not_proven');
+  assert.equal(result.reason, 'spawn failed');
+});
+
+void test('a spawn error takes precedence over the typed platform exit', () => {
+  const result = interpretBehavioralSmokeExit({
+    status: 2,
+    spawnError: new Error('spawn failed before exit'),
+    candidateBound: true,
+    platform: 'win32',
+    receiptsRoot: '/fixture',
+    exists: () => false,
+  });
+  assert.equal(result.status, 'not_proven');
+  assert.equal(result.reason, 'spawn failed before exit');
+  assert.equal(result.exit_code, null);
+});
+
+void test('a compiler exit 2 is kept separate from the typed child platform exit', () => {
+  const calls = [];
+  const result = runPublishedSmoke({}, (file, args) => {
+    calls.push({ file, args });
+    return { pid: 1, status: 2, signal: null, output: [], stdout: '', stderr: '' };
+  });
+  assert.equal(result.phase, 'compile');
+  assert.equal(result.result.status, 2);
+  assert.equal(calls.length, 1);
+  assert.match(calls[0].args[0], /governed-tsc\.js$/);
+});
+
+void test('a child exit 2 is returned only after compilation succeeds', () => {
+  const calls = [];
+  const result = runPublishedSmoke({}, (file, args) => {
+    calls.push({ file, args });
+    return {
+      pid: 1,
+      status: calls.length === 1 ? 0 : 2,
+      signal: null,
+      output: [],
+      stdout: '',
+      stderr: '',
+    };
+  });
+  assert.equal(result.phase, 'child');
+  assert.equal(result.result.status, 2);
+  assert.equal(calls.length, 2);
+  assert.match(calls[1].args[0], /out[\\/]test[\\/]published[\\/]runPublishedSmoke\.js$/);
 });
 
 void test('network, cache, and runner host failures keep the host-resolution boundary', () => {
