@@ -73,57 +73,66 @@ void test('builds an exclusive candidate-bound Test Explorer child environment',
 });
 
 void test('does not turn missing or failed Test Explorer children into a pass', () => {
-  assert.deepEqual(
-    interpretTestExplorerExit({
-      phase: 'compile',
-      result: { status: 2, error: undefined },
-    }),
-    { status: 'failed', exit_code: 2, reason: 'published_smoke_compile_failed' },
-  );
-  assert.deepEqual(
-    interpretTestExplorerExit({
-      phase: 'compile',
-      result: { status: null, error: new Error('compiler unavailable') },
-    }),
-    { status: 'failed', exit_code: null, reason: 'published_smoke_compile_spawn_failed' },
-  );
-  assert.deepEqual(
-    interpretTestExplorerExit({
-      phase: 'child',
-      result: { status: 1, error: undefined },
-    }),
-    { status: 'failed', exit_code: 1, reason: 'test_explorer_journey_failed' },
-  );
-  assert.deepEqual(
-    interpretTestExplorerExit({
-      phase: 'child',
-      result: { status: null, error: undefined },
-    }),
-    { status: 'failed', exit_code: null, reason: 'test_explorer_journey_failed' },
-  );
-  assert.deepEqual(
-    interpretTestExplorerExit({
-      phase: 'child',
-      result: { status: null, error: new Error('child unavailable') },
-    }),
-    { status: 'not_proven', exit_code: null, reason: 'child unavailable' },
-  );
-  assert.deepEqual(
-    interpretTestExplorerExit(
-      {
+  const receiptsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-test-explorer-exit-'));
+  const previousReceiptsDir = process.env.PERL_LSP_SMOKE_RECEIPTS_DIR;
+  process.env.PERL_LSP_SMOKE_RECEIPTS_DIR = receiptsDir;
+  try {
+    assert.deepEqual(
+      interpretTestExplorerExit({
+        phase: 'compile',
+        result: { status: 2, error: undefined },
+      }),
+      { status: 'failed', exit_code: 2, reason: 'published_smoke_compile_failed' },
+    );
+    assert.deepEqual(
+      interpretTestExplorerExit({
+        phase: 'compile',
+        result: { status: null, error: new Error('compiler unavailable') },
+      }),
+      { status: 'failed', exit_code: null, reason: 'published_smoke_compile_spawn_failed' },
+    );
+    assert.deepEqual(
+      interpretTestExplorerExit({
         phase: 'child',
-        result: { status: 0, error: undefined },
+        result: { status: 1, error: undefined },
+      }),
+      { status: 'failed', exit_code: 1, reason: 'test_explorer_journey_failed' },
+    );
+    assert.deepEqual(
+      interpretTestExplorerExit({
+        phase: 'child',
+        result: { status: null, error: undefined },
+      }),
+      { status: 'failed', exit_code: null, reason: 'test_explorer_journey_failed' },
+    );
+    assert.deepEqual(
+      interpretTestExplorerExit({
+        phase: 'child',
+        result: { status: null, error: new Error('child unavailable') },
+      }),
+      { status: 'not_proven', exit_code: null, reason: 'child unavailable' },
+    );
+    assert.deepEqual(
+      interpretTestExplorerExit(
+        {
+          phase: 'child',
+          result: { status: 0, error: undefined },
+        },
+        { ok: true, receipt: { fixture: 'generated test.t', test_zero: 'generated test.t' } },
+      ),
+      {
+        status: 'pass',
+        exit_code: 0,
+        reason: 'test_explorer_child_completed',
+        fixture: 'generated test.t',
+        test_zero: 'generated test.t',
       },
-      { ok: true, receipt: { fixture: 'generated test.t', test_zero: 'generated test.t' } },
-    ),
-    {
-      status: 'pass',
-      exit_code: 0,
-      reason: 'test_explorer_child_completed',
-      fixture: 'generated test.t',
-      test_zero: 'generated test.t',
-    },
-  );
+    );
+  } finally {
+    if (previousReceiptsDir === undefined) delete process.env.PERL_LSP_SMOKE_RECEIPTS_DIR;
+    else process.env.PERL_LSP_SMOKE_RECEIPTS_DIR = previousReceiptsDir;
+    fs.rmSync(receiptsDir, { recursive: true, force: true });
+  }
 });
 
 void test('classifies unavailable Test Explorer host resolution as not-proven', () => {
