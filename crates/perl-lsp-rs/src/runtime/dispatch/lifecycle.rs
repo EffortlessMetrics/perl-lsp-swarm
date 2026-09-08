@@ -2,11 +2,22 @@
 //!
 //! Wraps LSP lifecycle requests (initialize, shutdown, exit).
 
+use super::super::outbound::WriterTerminalOutcome;
 use super::super::{JsonRpcError, LspServer, Ordering, Value, json};
+use std::time::Duration;
 
 const TRACE_LEVEL_OFF: &str = "off";
 const TRACE_LEVEL_MESSAGES: &str = "messages";
 const TRACE_LEVEL_VERBOSE: &str = "verbose";
+const OUTBOUND_SETTLEMENT_TIMEOUT: Duration = Duration::from_secs(5);
+
+fn outbound_exit_code(shutdown_received: bool, outcome: Option<&WriterTerminalOutcome>) -> i32 {
+    if shutdown_received && matches!(outcome, Some(WriterTerminalOutcome::NormalClose)) {
+        0
+    } else {
+        1
+    }
+}
 
 impl LspServer {
     fn normalize_trace_level(value: Option<&str>) -> &'static str {
@@ -115,8 +126,19 @@ impl LspServer {
 
     /// Handle exit request
     pub(super) fn handle_exit_dispatch(&self) -> Result<Option<Value>, JsonRpcError> {
-        // LSP spec: exit with 0 if shutdown was called, 1 otherwise
-        let exit_code = if self.shutdown_received.load(Ordering::Acquire) { 0 } else { 1 };
+        // `process::exit` skips destructors. Close all outbound admission gates
+        // and give the existing writer a bounded chance to flush frames that
+        // were already accepted. A timeout remains unsettled and is reported
+        // as such; it must never be treated as successful delivery.
+        let settlement = self.outbound.close_and_wait(OUTBOUND_SETTLEMENT_TIMEOUT);
+        match settlement.as_ref() {
+            Some(outcome) => outcome.report_settlement(),
+            None => tracing::error!("outbound writer did not settle before process exit"),
+        }
+        // LSP exit is successful only after shutdown and successful output
+        // settlement; failures and bounded-wait expiry are nonzero exits.
+        let exit_code =
+            outbound_exit_code(self.shutdown_received.load(Ordering::Acquire), settlement.as_ref());
         tracing::info!(exit_code, "LSP server exiting");
         // `process::exit` skips Rust destructors, including the non-blocking
         // file writer guard. Drain it explicitly so the final lifecycle log
@@ -199,6 +221,25 @@ mod tests {
     use proptest::prelude::*;
 
     type TestResult = Result<(), String>;
+
+    #[test]
+    fn exit_status_requires_shutdown_and_normal_writer_settlement() {
+        assert_eq!(outbound_exit_code(true, Some(&WriterTerminalOutcome::NormalClose)), 0);
+        assert_eq!(outbound_exit_code(false, Some(&WriterTerminalOutcome::NormalClose)), 1);
+        assert_eq!(
+            outbound_exit_code(
+                true,
+                Some(&WriterTerminalOutcome::WriteFailed {
+                    kind: std::io::ErrorKind::BrokenPipe,
+                    queued: 0,
+                    batch_messages: 1,
+                    batch_bytes: 1,
+                }),
+            ),
+            1
+        );
+        assert_eq!(outbound_exit_code(true, None), 1);
+    }
 
     // ── BDD lifecycle dispatch scenarios ────────────────────────────────────
 
