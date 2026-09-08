@@ -34,6 +34,7 @@ const {
   runDevSupervisor,
   createSignalBridge,
   inspectPosixProcessGroup,
+  flushCliOutput,
   createDefaultWatchChildren,
   parseSupervisorConfig,
 } = require('./dev-supervisor');
@@ -582,7 +583,8 @@ function runCli(config) {
 void test('the CLI proof harness reaches readiness and reports owned-stop cleanup honestly', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-dev-supervisor-run-'));
   tempDirs.push(dir);
-  const pidsFile = path.join(dir, 'pids.json');
+  const pidsFileOne = path.join(dir, 'one.pids.json');
+  const pidsFileTwo = path.join(dir, 'two.pids.json');
   const fixtureA = path.join(dir, 'a.cjs');
   const fixtureB = path.join(dir, 'b.cjs');
   fs.writeFileSync(fixtureA, READY_AND_STAY);
@@ -594,14 +596,14 @@ void test('the CLI proof harness reaches readiness and reports owned-stop cleanu
         command: process.execPath,
         args: [fixtureA],
         readyPattern: 'FIXTURE_READY',
-        env: { FIXTURE_PIDS_FILE: pidsFile },
+        env: { FIXTURE_PIDS_FILE: pidsFileOne },
       },
       {
         name: 'two',
         command: process.execPath,
         args: [fixtureB],
         readyPattern: 'FIXTURE_READY',
-        env: { FIXTURE_PIDS_FILE: pidsFile },
+        env: { FIXTURE_PIDS_FILE: pidsFileTwo },
       },
     ],
     readinessTimeoutMs: 8000,
@@ -622,8 +624,12 @@ void test('the CLI proof harness reaches readiness and reports owned-stop cleanu
       `\\[${REPORT_SCOPE}\\] ${readyMessage(2, 2).replace('(', '\\(').replace(')', '\\)')}`,
     ),
   );
-  const pids = JSON.parse(fs.readFileSync(pidsFile, 'utf8'));
-  assertAllGone(pids);
+  assert.ok(fs.existsSync(pidsFileOne), 'watcher one must record its pid independently');
+  assert.ok(fs.existsSync(pidsFileTwo), 'watcher two must record its pid independently');
+  assertAllGone([
+    ...JSON.parse(fs.readFileSync(pidsFileOne, 'utf8')),
+    ...JSON.parse(fs.readFileSync(pidsFileTwo, 'utf8')),
+  ]);
 });
 
 void test(
@@ -1157,6 +1163,56 @@ void test('late terminal output failure changes the settled result to red', asyn
   assert.equal(result.code, 1);
   assert.equal(result.reason, 'output-failure:stdout');
   assert.match(result.failures.join(' | '), /EPIPE/);
+});
+
+void test('CLI output flush is bounded and preserves drain failures', async () => {
+  class FlushOutput {
+    /** @param {'success' | 'callback-error' | 'throw' | 'hang'} mode */
+    constructor(mode) {
+      this.mode = mode;
+      this.writes = [];
+    }
+
+    /** @param {string} chunk @param {(error?: Error) => void} callback */
+    write(chunk, callback) {
+      this.writes.push(chunk);
+      if (this.mode === 'throw') {
+        throw Object.assign(new Error('closed output'), { code: 'EPIPE' });
+      }
+      if (this.mode === 'callback-error') {
+        queueMicrotask(() =>
+          callback(Object.assign(new Error('closed output'), { code: 'EPIPE' })),
+        );
+      } else if (this.mode === 'success') {
+        queueMicrotask(() => callback());
+      }
+      return true;
+    }
+  }
+  /** @param {FlushOutput[]} outputs @returns {NodeJS.WritableStream[]} */
+  const asStreams = (outputs) =>
+    /** @type {NodeJS.WritableStream[]} */ (/** @type {unknown} */ (outputs));
+
+  const success = new FlushOutput('success');
+  await flushCliOutput(asStreams([success, success]), 25);
+  assert.deepEqual(success.writes, ['', '']);
+
+  const callbackFailure = new FlushOutput('callback-error');
+  await assert.rejects(
+    flushCliOutput(asStreams([callbackFailure, new FlushOutput('success')]), 25),
+    /closed output/,
+  );
+
+  const synchronousFailure = new FlushOutput('throw');
+  await assert.rejects(
+    flushCliOutput(asStreams([synchronousFailure, new FlushOutput('success')]), 25),
+    /closed output/,
+  );
+
+  await assert.rejects(
+    flushCliOutput(asStreams([new FlushOutput('hang')]), 5),
+    /drain timed out after 5ms/,
+  );
 });
 
 function procStat(pid, state, processGroup = 100, startTime = 1) {

@@ -1136,15 +1136,20 @@ function loadConfigOverride() {
  * Lets final reporter writes drain without allowing inherited watcher pipes to
  * hold the CLI open forever after the terminal result has been published.
  *
+ * @param {NodeJS.WritableStream[]} [streams]
+ * @param {number} [timeoutMs]
  * @returns {Promise<void>}
  */
-function flushCliOutput() {
-  return new Promise((resolve) => {
+function flushCliOutput(
+  streams = [process.stdout, process.stderr],
+  timeoutMs = CLI_OUTPUT_FLUSH_TIMEOUT_MS,
+) {
+  return new Promise((resolve, reject) => {
     let settled = false;
-    let pending = 2;
+    let pending = streams.length;
     /** @type {NodeJS.Timeout | undefined} */
     let timer;
-    const finish = () => {
+    const finish = (error) => {
       if (settled) {
         return;
       }
@@ -1152,20 +1157,35 @@ function flushCliOutput() {
       if (timer !== undefined) {
         clearTimeout(timer);
       }
-      resolve();
+      if (error === undefined) {
+        resolve();
+      } else {
+        reject(error);
+      }
     };
-    timer = setTimeout(finish, CLI_OUTPUT_FLUSH_TIMEOUT_MS);
-    const drained = () => {
+    if (pending === 0) {
+      finish();
+      return;
+    }
+    timer = setTimeout(
+      () => finish(new Error(`stdout/stderr drain timed out after ${timeoutMs}ms`)),
+      timeoutMs,
+    );
+    const drained = (error) => {
+      if (error !== undefined) {
+        finish(error);
+        return;
+      }
       pending -= 1;
       if (pending === 0) {
         finish();
       }
     };
-    for (const stream of [process.stdout, process.stderr]) {
+    for (const stream of streams) {
       try {
         stream.write('', drained);
-      } catch {
-        drained();
+      } catch (error) {
+        finish(error);
       }
     }
   });
@@ -1209,7 +1229,10 @@ function createSignalBridge() {
  */
 function exitAfterCliOutput(code) {
   process.exitCode = code;
-  void flushCliOutput().then(() => process.exit(code));
+  void flushCliOutput().then(
+    () => process.exit(code),
+    () => process.exit(code === 0 ? 1 : code),
+  );
 }
 
 function main() {
@@ -1239,7 +1262,11 @@ function main() {
   controller
     .waitForExit()
     .then((result) => {
-      exitAfterCliOutput(result.code);
+      // runDevSupervisor has already completed its bounded final flush before
+      // settling the result. A second flush here would create a post-settle
+      // window where a late output error could be invisible to the exit code.
+      process.exitCode = result.code;
+      process.exit(result.code);
     })
     .catch((error) => {
       // runDevSupervisor resolves rather than throwing; this guards only a
@@ -1269,6 +1296,7 @@ module.exports = {
   stoppingMessage,
   exitedMessage,
   inspectPosixProcessGroup,
+  flushCliOutput,
   runDevSupervisor,
   createSignalBridge,
   createDefaultWatchChildren,
