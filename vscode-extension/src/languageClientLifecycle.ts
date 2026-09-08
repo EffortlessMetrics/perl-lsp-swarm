@@ -48,16 +48,44 @@ export interface LifecycleHooks<TClient extends LifecycleClient<TEvent>, TEvent 
   onStopped?(snapshot: LifecycleSnapshot): void | Promise<void>;
   onFailed?(snapshot: LifecycleSnapshot): void | Promise<void>;
   onCallbackError?(error: unknown, phase: LifecycleCallbackPhase): void | Promise<void>;
+  /**
+   * Capture an observation of the client's external resources immediately
+   * before `stop()` is invoked. The value is handed back to
+   * `isClientTerminal` untouched. Needed because vscode-languageclient clears
+   * its own `serverProcess` reference during `stop()`, so anything consulted
+   * afterwards can no longer see the process that must be gone.
+   */
+  captureStopWitness?(client: TClient): unknown;
+  /**
+   * Report whether the client and everything it owned have reached a
+   * terminal state.
+   *
+   * Consulted after every settled `stop()`, including successful stops:
+   * vscode-languageclient can reach `State.Stopped` before its server exits.
+   * Implementations may wait (bounded by `stopTimeoutMs`) for the process
+   * captured by `captureStopWitness` to exit. A stop that never settles is
+   * incomplete regardless of what this reports. Without this hook, only a
+   * successful stop establishes cleanup completion.
+   */
+  isClientTerminal?(client: TClient, witness: unknown): boolean | Promise<boolean>;
+  /** Report whether the client is still running after startup settles. */
+  isClientRunning?(client: TClient): boolean;
 }
 
 export interface LanguageClientLifecycleOptions {
   /** Maximum time allowed for each client stop or dispose operation. */
   stopTimeoutMs?: number;
+  /** Maximum time allowed for a client startup attempt to settle. */
+  startupTimeoutMs?: number;
 }
 
 export class LanguageClientLifecycleError extends Error {
-  constructor(message: string) {
-    super(message);
+  constructor(
+    message: string,
+    readonly reason: 'server-path-unresolved' | 'cleanup-incomplete' | 'lifecycle',
+    options?: ErrorOptions,
+  ) {
+    super(message, options);
     this.name = 'LanguageClientLifecycleError';
   }
 }
@@ -71,9 +99,19 @@ interface ActiveClient<TClient extends LifecycleClient<TEvent>, TEvent = unknown
 
 interface CleanupResult {
   readonly error: unknown | undefined;
+  /** True only when every lifecycle-owned client cleanup call completed successfully. */
+  readonly clientCleanupComplete: boolean;
+}
+
+interface BoundedOperationResult {
+  readonly completed: boolean;
+  readonly error: unknown;
+  /** True when the lifecycle's own bound elapsed before the operation settled. */
+  readonly timedOut: boolean;
 }
 
 const DEFAULT_STOP_TIMEOUT_MS = 5_000;
+const DEFAULT_STARTUP_TIMEOUT_MS = 30_000;
 
 /**
  * Owns the complete lifecycle of one language-client generation.
@@ -81,9 +119,14 @@ const DEFAULT_STOP_TIMEOUT_MS = 5_000;
  * A generation is invalidated before stopping or restarting. Any asynchronous
  * work that belongs to an older generation must finish its cleanup without
  * publishing a stale running state.
+ *
+ * This owner can establish completion of the client-facing listener/stop/
+ * dispose calls only. Exact child-process/resource terminality is a stronger
+ * external observation supplied by the process-lifecycle owner.
  */
 export class LanguageClientLifecycle<TClient extends LifecycleClient<TEvent>, TEvent = unknown> {
   private readonly stopTimeoutMs: number;
+  private readonly startupTimeoutMs: number;
   private state: LifecycleState = 'stopped';
   private generation = 0;
   private serverPath: string | null = null;
@@ -92,6 +135,7 @@ export class LanguageClientLifecycle<TClient extends LifecycleClient<TEvent>, TE
   private startPromise: Promise<TClient | undefined> | undefined;
   private restartPromise: Promise<TClient | undefined> | undefined;
   private stopPromise: Promise<void> | undefined;
+  private replacementBlockedError: unknown | undefined;
   private readonly cleanupPromises = new WeakMap<TClient, Promise<CleanupResult>>();
 
   constructor(
@@ -99,6 +143,7 @@ export class LanguageClientLifecycle<TClient extends LifecycleClient<TEvent>, TE
     options: LanguageClientLifecycleOptions = {},
   ) {
     this.stopTimeoutMs = options.stopTimeoutMs ?? DEFAULT_STOP_TIMEOUT_MS;
+    this.startupTimeoutMs = options.startupTimeoutMs ?? DEFAULT_STARTUP_TIMEOUT_MS;
   }
 
   get snapshot(): LifecycleSnapshot {
@@ -126,6 +171,9 @@ export class LanguageClientLifecycle<TClient extends LifecycleClient<TEvent>, TE
     }
     if (this.startPromise) {
       return this.startPromise;
+    }
+    if (this.replacementBlockedError !== undefined) {
+      return Promise.reject(this.replacementBlockedFailure());
     }
     if (this.state === 'running' && this.activeClient) {
       return Promise.resolve(this.activeClient.client);
@@ -168,6 +216,9 @@ export class LanguageClientLifecycle<TClient extends LifecycleClient<TEvent>, TE
   }
 
   private beginStart(): Promise<TClient | undefined> {
+    if (this.replacementBlockedError !== undefined) {
+      return Promise.reject(this.replacementBlockedFailure());
+    }
     if (this.startPromise) {
       return this.startPromise;
     }
@@ -205,7 +256,10 @@ export class LanguageClientLifecycle<TClient extends LifecycleClient<TEvent>, TE
         return undefined;
       }
       if (!serverPath) {
-        throw new LanguageClientLifecycleError('Language server path could not be resolved.');
+        throw new LanguageClientLifecycleError(
+          'Language server path could not be resolved.',
+          'server-path-unresolved',
+        );
       }
 
       this.serverPath = serverPath;
@@ -222,9 +276,22 @@ export class LanguageClientLifecycle<TClient extends LifecycleClient<TEvent>, TE
         this.notifyClientState(active as ActiveClient<TClient, TEvent>, event);
       });
 
-      await client.start();
+      const startResult = await this.runBounded(
+        'start',
+        () => client.start(),
+        this.startupTimeoutMs,
+      );
+      if (!startResult.completed) {
+        throw startResult.error;
+      }
+      if (this.hooks.isClientRunning && !this.hooks.isClientRunning(client)) {
+        throw new LanguageClientLifecycleError(
+          'Language client stopped before startup completed.',
+          'lifecycle',
+        );
+      }
       if (!this.isCurrentActive(active)) {
-        await this.shutdown(active);
+        this.recordCleanupResult(await this.shutdown(active));
         return undefined;
       }
 
@@ -232,7 +299,7 @@ export class LanguageClientLifecycle<TClient extends LifecycleClient<TEvent>, TE
         await this.hooks.onStarted(client, serverPath);
       }
       if (!this.isCurrentActive(active)) {
-        await this.shutdown(active);
+        this.recordCleanupResult(await this.shutdown(active));
         return undefined;
       }
 
@@ -240,16 +307,23 @@ export class LanguageClientLifecycle<TClient extends LifecycleClient<TEvent>, TE
       return client;
     } catch (error: unknown) {
       if (active) {
-        await this.shutdown(active);
+        this.recordCleanupResult(await this.shutdown(active));
       }
       if (!this.isCurrentGeneration(startGeneration)) {
         return undefined;
       }
 
-      this.error = error;
+      // When tearing down the failed startup also left client cleanup
+      // incomplete, the lifecycle is replacement-blocked: surface that block
+      // instead of the startup error, so callers present reload remediation
+      // rather than retry guidance for a lifecycle that can never admit a
+      // replacement. The startup error stays attached as diagnostic `cause`.
+      const surfaced =
+        this.replacementBlockedError !== undefined ? this.replacementBlockedFailure(error) : error;
+      this.error = surfaced;
       this.transition('failed', startGeneration);
       this.notifyCallback('failed', this.hooks.onFailed, this.snapshot);
-      throw error;
+      throw surfaced;
     }
   }
 
@@ -260,12 +334,18 @@ export class LanguageClientLifecycle<TClient extends LifecycleClient<TEvent>, TE
     this.serverPath = null;
     this.transition('stopping', stopGeneration);
 
-    const cleanup = active ? await this.shutdown(active) : { error: undefined };
-    if (cleanup.error !== undefined) {
-      this.error = cleanup.error;
+    const cleanup = active
+      ? await this.shutdown(active)
+      : this.replacementBlockedError !== undefined
+        ? { error: this.replacementBlockedError, clientCleanupComplete: false }
+        : { error: undefined, clientCleanupComplete: true };
+    if (!cleanup.clientCleanupComplete) {
+      this.recordCleanupResult(cleanup);
+      this.error = this.replacementBlockedFailure(cleanup.error);
       this.transition('failed', stopGeneration);
       this.notifyCallback('failed', this.hooks.onFailed, this.snapshot);
     } else {
+      this.replacementBlockedError = undefined;
       this.error = undefined;
       this.transition('stopped', stopGeneration);
       this.notifyCallback('stopped', this.hooks.onStopped, this.snapshot);
@@ -274,6 +354,9 @@ export class LanguageClientLifecycle<TClient extends LifecycleClient<TEvent>, TE
 
   private async runRestart(): Promise<TClient | undefined> {
     await this.stop();
+    if (this.replacementBlockedError !== undefined) {
+      throw this.replacementBlockedFailure();
+    }
     return this.beginStart();
   }
 
@@ -343,48 +426,117 @@ export class LanguageClientLifecycle<TClient extends LifecycleClient<TEvent>, TE
     }
 
     let firstError: unknown = undefined;
+    let clientCleanupComplete = true;
     if (active.listener) {
       try {
         active.listener.dispose();
       } catch (error: unknown) {
         firstError = error;
+        clientCleanupComplete = false;
       }
       active.listener = undefined;
     }
 
-    const stopError = await this.runBounded('stop', () => active.client.stop());
-    if (firstError === undefined && stopError !== undefined) {
-      firstError = stopError;
+    const witness = this.captureStopWitness(active.client);
+    const stopResult = await this.runBounded('stop', () => active.client.stop());
+    const stopCleanupComplete = this.hooks.isClientTerminal
+      ? await this.stopSettledTerminal(active.client, stopResult, witness)
+      : stopResult.completed;
+    if (!stopCleanupComplete) {
+      firstError ??= stopResult.error;
+      clientCleanupComplete = false;
     }
 
-    const disposeError = await this.runBounded('dispose', () => active.client.dispose());
-    if (firstError === undefined && disposeError !== undefined) {
-      firstError = disposeError;
+    const disposeResult = await this.runBounded('dispose', () => active.client.dispose());
+    if (!disposeResult.completed) {
+      firstError ??= disposeResult.error;
+      clientCleanupComplete = false;
     }
 
-    return { error: firstError };
+    return { error: firstError, clientCleanupComplete };
+  }
+
+  private captureStopWitness(client: TClient): unknown {
+    if (!this.hooks.captureStopWitness) {
+      return undefined;
+    }
+    try {
+      return this.hooks.captureStopWitness(client);
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * A settled stop establishes cleanup only when the external resources are
+   * terminal. Neither successful settlement nor a rejected handshake proves
+   * process exit. A stop that outlived the bound proves nothing; the terminal
+   * check is also bounded, and a check that hangs or throws is not proof.
+   */
+  private async stopSettledTerminal(
+    client: TClient,
+    stopResult: BoundedOperationResult,
+    witness: unknown,
+  ): Promise<boolean> {
+    if (stopResult.timedOut || !this.hooks.isClientTerminal) {
+      return false;
+    }
+    const isClientTerminal = this.hooks.isClientTerminal;
+    let terminal = false;
+    const result = await this.runBounded('terminal check', async () => {
+      terminal = (await isClientTerminal(client, witness)) === true;
+    });
+    return result.completed && terminal;
+  }
+
+  private recordCleanupResult(cleanup: CleanupResult): void {
+    if (cleanup.clientCleanupComplete) {
+      return;
+    }
+    this.replacementBlockedError =
+      cleanup.error ??
+      new LanguageClientLifecycleError(
+        'Language client cleanup calls did not complete successfully.',
+        'cleanup-incomplete',
+      );
+  }
+
+  private replacementBlockedFailure(cause?: unknown): LanguageClientLifecycleError {
+    const detail =
+      this.replacementBlockedError instanceof Error && this.replacementBlockedError.message
+        ? `: ${this.replacementBlockedError.message}`
+        : '';
+    return new LanguageClientLifecycleError(
+      `Language client cleanup is incomplete; replacement startup is blocked${detail}`,
+      'cleanup-incomplete',
+      cause === undefined ? undefined : { cause },
+    );
   }
 
   private async runBounded(
     operation: string,
     callback: () => void | Promise<void>,
-  ): Promise<unknown | undefined> {
+    timeoutMs = this.stopTimeoutMs,
+  ): Promise<BoundedOperationResult> {
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let timedOut = false;
     try {
       const operationPromise = Promise.resolve().then(callback);
       const timeoutPromise = new Promise<never>((_, reject) => {
         timer = setTimeout(() => {
+          timedOut = true;
           reject(
             new LanguageClientLifecycleError(
-              `Language client ${operation} timed out after ${this.stopTimeoutMs}ms.`,
+              `Language client ${operation} timed out after ${timeoutMs}ms.`,
+              'lifecycle',
             ),
           );
-        }, this.stopTimeoutMs);
+        }, timeoutMs);
       });
       await Promise.race([operationPromise, timeoutPromise]);
-      return undefined;
+      return { completed: true, error: undefined, timedOut: false };
     } catch (error: unknown) {
-      return error;
+      return { completed: false, error, timedOut };
     } finally {
       if (timer) {
         clearTimeout(timer);

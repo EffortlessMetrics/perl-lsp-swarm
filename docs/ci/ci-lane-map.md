@@ -40,6 +40,7 @@ them.
 | Lane id | Workflow | Job | Runner | Base LEM | Blocking? |
 |---|---|---|---|---:|---:|
 | `agent_capability_gate` | `agent-capability-gate.yml` | router + `agent-capability-gate-self-hosted` / `agent-capability-gate-hosted` | mixed (`workflow-nano` / `ubuntu-24.04` fallback) | 2 | no |
+| `critic_rule_proof` | `critic-rule-proof.yml` | `validate` | `ubuntu-24.04` | 8 | no |
 
 ## Label-gated lanes
 

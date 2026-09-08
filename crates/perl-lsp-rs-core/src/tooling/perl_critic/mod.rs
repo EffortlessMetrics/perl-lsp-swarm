@@ -16,6 +16,7 @@ mod service;
 #[cfg(test)]
 mod test_core_authority_policy;
 mod types;
+mod work_receipt;
 
 pub use analyzer::{CriticAnalyzer, hash_content};
 pub use built_in::{BuiltInAnalyzer, Policy};
@@ -52,10 +53,10 @@ pub use semantic::{
     native_finding_candidates_with_accounting, normalize_with_native_policy,
 };
 pub use service::{
-    NativeCriticRun, NativeCriticRunCompleteness, NativeCriticService, NativeCriticSubject,
-    NativeCriticWorkReceipt, RunGate,
+    NativeCriticRun, NativeCriticRunCompleteness, NativeCriticService, NativeCriticSubject, RunGate,
 };
 pub use types::{CriticConfig, Severity, Violation};
+pub use work_receipt::NativeCriticWorkReceipt;
 
 /// String-surface form classifiers shared by the native critic rules and the
 /// core lint emitters so both producers observe identical syntax shapes.

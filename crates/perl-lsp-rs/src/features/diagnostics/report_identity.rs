@@ -164,6 +164,11 @@ pub struct PullReportSubject {
     critic_root_id: WorkspaceRootId,
     accepted_critic_fingerprint: String,
     facts_generation: Option<u64>,
+    // Deliberately remains an opaque, normalized string fragment in this
+    // bounded PR. Typed provenance for project configuration belongs to the
+    // configuration authority; this field does not claim to model it.
+    project_version: Option<String>,
+    configuration_generation: Option<u64>,
     resolver_roots: BTreeSet<String>,
     projection: DiagnosticProjectionFragment,
 }
@@ -206,6 +211,13 @@ pub fn pull_report_subject(
         relative_path,
         document_generation,
         facts_generation: context.facts_generation,
+        project_version: context
+            .project_version
+            .as_deref()
+            .and_then(perl_lsp_rs_core::providers::diagnostics::version_compat::parse_configured_project_version)
+            .map(|version| format!("{}.{}", version.major, version.minor))
+            .or_else(|| context.project_version.as_ref().map(|raw| format!("invalid:{raw}"))),
+        configuration_generation: context.configuration_generation,
         projection: context.projection,
     })
 }
@@ -282,6 +294,16 @@ impl PullReportSubject {
         push_str(&mut canonical, "substrate", inner.as_str());
         push_str(&mut canonical, "position_encoding", self.projection.position_encoding.as_token());
         push_u64(&mut canonical, "markup_messages", u64::from(self.projection.markup_messages));
+        push_u64(
+            &mut canonical,
+            "configuration_generation",
+            self.configuration_generation.unwrap_or(0),
+        );
+        push_str(
+            &mut canonical,
+            "project_version",
+            self.project_version.as_deref().unwrap_or("<none>"),
+        );
         push_set(&mut canonical, "resolver_roots", &self.resolver_roots);
 
         let digest = ContentDigest::of_bytes(canonical.as_bytes());
@@ -487,6 +509,31 @@ mod tests {
         let mut context = baseline_context.clone();
         context.facts_generation = Some(9);
         assert_ne!(baseline, subject_for(&context, URI_A, CONTENT).compose().ok().unwrap());
+
+        // Project compatibility target: config-only changes must invalidate the ID.
+        let mut context = baseline_context.clone();
+        context.project_version = Some("5.20".to_string());
+        let project_id = subject_for(&context, URI_A, CONTENT).compose().ok().unwrap();
+        assert_ne!(baseline, project_id);
+        context.project_version = Some("v5.20".to_string());
+        assert_eq!(
+            project_id,
+            subject_for(&context, URI_A, CONTENT).compose().ok().unwrap(),
+            "equivalent project version spellings must share the effective identity"
+        );
+        context.project_version = Some("5.38".to_string());
+        assert_ne!(project_id, subject_for(&context, URI_A, CONTENT).compose().ok().unwrap());
+
+        context.configuration_generation = Some(1);
+        let generation_one = subject_for(&context, URI_A, CONTENT).compose().ok().unwrap();
+        context.configuration_generation = Some(2);
+        assert_ne!(generation_one, subject_for(&context, URI_A, CONTENT).compose().ok().unwrap());
+
+        context.project_version = Some("not-a-version".to_string());
+        context.configuration_generation = Some(3);
+        let invalid_one = subject_for(&context, URI_A, CONTENT).compose().ok().unwrap();
+        context.project_version = Some("5.20.1".to_string());
+        assert_ne!(invalid_one, subject_for(&context, URI_A, CONTENT).compose().ok().unwrap());
 
         // Resolver environment.
         let mut context = baseline_context.clone();

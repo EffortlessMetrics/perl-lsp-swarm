@@ -371,7 +371,12 @@ impl NativeCriticRegistry {
         self.rules.iter().map(|rule| rule.id()).collect()
     }
 
-    /// Count rules that will execute for the supplied include/exclude gates.
+    /// Count rules admitted by include/exclude for this registry.
+    ///
+    /// This is planned/registered work for the accepted profile, not a
+    /// producer-observed execution count. The method does not invoke
+    /// [`CriticRule::check`]: a clean rule that would emit no finding still
+    /// counts, and a skipped run must not call this for a non-zero receipt.
     #[must_use]
     pub fn enabled_rule_count(&self, config: &CriticConfig) -> usize {
         self.rules.iter().filter(|rule| rule_enabled(rule.as_ref(), config)).count()

@@ -25,8 +25,8 @@ use perl_parser_core::Node;
 
 use super::{
     BuiltInCriticObservation, CriticConfig, CriticContext, CriticFinding, CriticSourceIdentity,
-    CriticSuppressionMap, NativeCriticPolicy, NativeCriticRegistry, NormalizedCriticFinding,
-    account_unresolved_native_identities, built_in_observation_candidates,
+    CriticSuppressionMap, NativeCriticPolicy, NativeCriticRegistry, NativeCriticWorkReceipt,
+    NormalizedCriticFinding, account_unresolved_native_identities, built_in_observation_candidates,
     native_finding_candidates, normalize_with_native_policy,
 };
 use crate::config::EffectiveCriticState;
@@ -202,22 +202,6 @@ impl NativeCriticRunCompleteness {
     pub const fn is_publishable(&self) -> bool {
         matches!(self, Self::Complete | Self::Partial { .. } | Self::Disabled)
     }
-}
-
-/// Bounded work counters distinguishing what one run built, collected, and
-/// kept (#9062). No cross-run reuse exists yet, so no counter claims reuse.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct NativeCriticWorkReceipt {
-    /// Registered rules the run actually executed (zero when skipped).
-    pub rules_evaluated: usize,
-    /// Raw producer findings collected before normalization.
-    pub native_findings_collected: usize,
-    /// Producer-declared overlap observations admitted as candidates (#11918).
-    pub observation_candidates_collected: usize,
-    /// Producer findings rejected for an undeclared emission shape (#7475).
-    pub unresolved_producer_identities: usize,
-    /// Logical rows surviving post-merge policy application.
-    pub findings_after_policy: usize,
 }
 
 /// One protocol-neutral native critic run (#9062).
@@ -409,14 +393,11 @@ impl NativeCriticService {
         let context = CriticContext::new(subject.source, subject.ast, &critic_config);
         let registry =
             NativeCriticRegistry::for_profile_with_config(accepted.profile, &critic_config);
+        let mut work =
+            NativeCriticWorkReceipt::planned(&registry, &critic_config).record_evaluation_entered();
         let raw_findings = registry.check_unfiltered(&context);
-
-        let mut work = NativeCriticWorkReceipt {
-            rules_evaluated: registry.enabled_rule_count(&critic_config),
-            native_findings_collected: raw_findings.len(),
-            observation_candidates_collected: subject.overlap_observations.len(),
-            ..NativeCriticWorkReceipt::default()
-        };
+        work.native_findings_collected = raw_findings.len();
+        work.observation_candidates_collected = subject.overlap_observations.len();
 
         // Producer outputs enter the canonical normalized set (#7475): checked
         // identities at collection, alias merge, then policy applied exactly
@@ -485,7 +466,9 @@ impl NativeCriticService {
 mod tests {
     use super::{NativeCriticRunCompleteness, NativeCriticService, NativeCriticSubject, RunGate};
     use crate::config::{EffectiveCriticState, EffectiveNativeCriticConfig};
-    use crate::tooling::perl_critic::{CriticSourceIdentity, critic_source_identity_for_uri};
+    use crate::tooling::perl_critic::{
+        CriticSourceIdentity, NativeCriticWorkReceipt, critic_source_identity_for_uri,
+    };
 
     const STRICT_SOURCE: &str = "my $unused = 1;\n";
 
@@ -548,9 +531,9 @@ mod tests {
         assert_eq!(first.findings(), second.findings(), "label is not a finding input");
         assert_eq!(first.state_fingerprint(), second.state_fingerprint());
         assert_eq!(
-            first.work().rules_evaluated,
-            second.work().rules_evaluated,
-            "both transports evaluate the same rule set for one subject"
+            first.work().rules_registered,
+            second.work().rules_registered,
+            "both transports register the same rule set for one subject"
         );
         assert!(
             !first.findings().is_empty(),
@@ -570,9 +553,6 @@ mod tests {
             state.clone(),
             critic_source_identity_for_uri("file:///receipt-full.pm", 1),
         ));
-        if full.work().rules_evaluated == 0 {
-            return;
-        }
         if let EffectiveCriticState::Native(config) = &mut state {
             config.exclude = vec!["native.testing.require_use_strict".to_string()];
         }
@@ -584,9 +564,9 @@ mod tests {
             critic_source_identity_for_uri("file:///receipt-filtered.pm", 1),
         ));
         assert_eq!(
-            filtered.work().rules_evaluated + 1,
-            full.work().rules_evaluated,
-            "receipt must count executed rules, not the full registry"
+            filtered.work().rules_registered + 1,
+            full.work().rules_registered,
+            "receipt must count policy-admitted rules, not the full registry"
         );
     }
 
@@ -646,7 +626,11 @@ mod tests {
 
         assert_eq!(run.completeness(), &NativeCriticRunCompleteness::Disabled);
         assert!(run.is_publishable(), "disabled is the deliberate configured contribution");
-        assert_eq!(run.work().rules_evaluated, 0, "no rule may run while disabled");
+        assert_eq!(
+            run.work(),
+            NativeCriticWorkReceipt::skipped(),
+            "no rule may run while disabled"
+        );
         assert!(run.findings().is_empty());
         assert!(run.producer_findings().is_empty());
         assert_eq!(run.owning_root(), None);
@@ -698,7 +682,7 @@ mod tests {
 
         assert_eq!(run.completeness(), &NativeCriticRunCompleteness::Cancelled);
         assert!(!run.is_publishable());
-        assert_eq!(run.work().rules_evaluated, 0);
+        assert_eq!(run.work(), NativeCriticWorkReceipt::skipped());
     }
 
     #[test]
@@ -784,7 +768,7 @@ mod tests {
 
         assert_eq!(run.completeness(), &NativeCriticRunCompleteness::Cancelled);
         assert!(!run.is_publishable());
-        assert_eq!(run.work().rules_evaluated, 0);
+        assert_eq!(run.work(), NativeCriticWorkReceipt::skipped());
         assert!(run.producer_findings().is_empty());
     }
 
@@ -822,8 +806,8 @@ mod tests {
             "a run cancelled during evaluation can never populate current storage"
         );
         assert!(
-            run.work().rules_evaluated > 0,
-            "the pre-work consult passed, so rule evaluation really ran"
+            run.work().producer_evaluation_entered == 1,
+            "the pre-work consult passed and producer evaluation was entered"
         );
         assert!(
             !run.findings().is_empty(),

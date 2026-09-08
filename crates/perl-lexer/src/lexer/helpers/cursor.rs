@@ -26,7 +26,8 @@ impl PerlLexer<'_> {
     #[allow(clippy::inline_always)] // Performance critical in lexer hot path
     #[inline(always)]
     pub(crate) fn current_char(&self) -> Option<char> {
-        if self.position < self.input_bytes.len() {
+        let limit = self.scan_limit.unwrap_or(self.input_bytes.len());
+        if self.position < limit {
             if !self.input.is_char_boundary(self.position) {
                 return None;
             }
@@ -36,7 +37,7 @@ impl PerlLexer<'_> {
                 Some(byte as char)
             } else {
                 // For non-ASCII, fall back to proper UTF-8 parsing
-                self.input.get(self.position..).and_then(|s| s.chars().next())
+                self.input.get(self.position..limit).and_then(|s| s.chars().next())
             }
         } else {
             None
@@ -52,7 +53,8 @@ impl PerlLexer<'_> {
             return None;
         }
 
-        let rest = self.input.get(self.position..)?;
+        let limit = self.scan_limit.unwrap_or(self.input.len());
+        let rest = self.input.get(self.position..limit)?;
         let prefix_len = offset.checked_add(1)?;
         if let Some(prefix) = rest.as_bytes().get(..prefix_len)
             && prefix.is_ascii()
@@ -60,13 +62,16 @@ impl PerlLexer<'_> {
             return rest.as_bytes().get(offset).map(|&byte| byte as char);
         }
 
-        rest.chars().nth(offset)
+        let ch = rest.chars().nth(offset)?;
+        (self.position + rest.chars().take(offset + 1).map(char::len_utf8).sum::<usize>() <= limit)
+            .then_some(ch)
     }
 
     #[allow(clippy::inline_always)] // Performance critical in lexer hot path
     #[inline(always)]
     pub(crate) fn advance(&mut self) {
-        if self.position < self.input_bytes.len() {
+        let limit = self.scan_limit.unwrap_or(self.input_bytes.len());
+        if self.position < limit {
             if !self.input.is_char_boundary(self.position) {
                 self.normalize_char_boundary();
                 return;
@@ -75,7 +80,9 @@ impl PerlLexer<'_> {
             if byte < 128 {
                 // ASCII fast path
                 self.position += 1;
-            } else if let Some(ch) = self.input.get(self.position..).and_then(|s| s.chars().next())
+            } else if let Some(ch) =
+                self.input.get(self.position..limit).and_then(|s| s.chars().next())
+                && self.position + ch.len_utf8() <= limit
             {
                 self.position += ch.len_utf8();
             }
@@ -90,7 +97,8 @@ impl PerlLexer<'_> {
         }
 
         let pos = self.position.checked_add(offset)?;
-        if pos < self.input_bytes.len() { Some(self.input_bytes[pos]) } else { None }
+        let limit = self.scan_limit.unwrap_or(self.input_bytes.len());
+        if pos < limit { Some(self.input_bytes[pos]) } else { None }
     }
 
     /// Check if the next bytes match a pattern (ASCII only)
@@ -99,6 +107,10 @@ impl PerlLexer<'_> {
         if pattern.is_empty() {
             // An empty pattern matches nothing — returning true for empty
             // patterns caused incorrect delimiter matching in edge cases (#2381).
+            return false;
+        }
+        let limit = self.scan_limit.unwrap_or(self.input_bytes.len());
+        if self.position.checked_add(pattern.len()).is_none_or(|end| end > limit) {
             return false;
         }
 

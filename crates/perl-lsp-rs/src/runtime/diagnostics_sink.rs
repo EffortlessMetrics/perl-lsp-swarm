@@ -15,8 +15,9 @@
 //! candidate derived from a removed document instance is rejected by instance
 //! identity (`Arc::ptr_eq`), even when its numeric counter still matches.
 //!
-//! Lock order: sink lock (push only) → documents lock → workspace-folders/root
-//! lock → config lock. No path may acquire them in reverse order. Expensive
+//! Lock order: workspace identity → documents → config → sink (push only).
+//! Folder ownership is sampled before these guards and generation-fenced.
+//! No path may acquire folders while these guards are held. Expensive
 //! analysis and projection happen before this boundary; the final closure keeps
 //! these read-only authority guards through response selection or outbound
 //! enqueue, then releases them immediately.
@@ -29,7 +30,7 @@ use parking_lot::Mutex;
 use perl_lsp_rs_core::config::AcceptedCriticSnapshot;
 use serde_json::Value;
 
-use super::{LspServer, source_path_from_uri};
+use super::LspServer;
 
 /// Accepted parse state a push-diagnostics candidate was derived from.
 ///
@@ -41,6 +42,8 @@ pub(crate) struct PushDiagnosticIdentity {
     pub(crate) normalized_uri: String,
     pub(crate) document_instance: Arc<AtomicU32>,
     pub(crate) generation: u32,
+    pub(crate) workspace_generation: u64,
+    pub(crate) folder_config_generation: Option<u64>,
     /// Accepted native critic policy the candidate's critic rows were produced
     /// under (#13304), when the payload carries any. `None` means the payload
     /// is policy-independent: a clear, a syntax-only or fast parse-error
@@ -57,14 +60,22 @@ impl PushDiagnosticIdentity {
         normalized_uri: &str,
         document_instance: &Arc<AtomicU32>,
         generation: u32,
+        workspace_generation: u64,
     ) -> Self {
         Self {
             normalized_uri: normalized_uri.to_string(),
             document_instance: Arc::clone(document_instance),
             generation,
+            workspace_generation,
+            folder_config_generation: None,
             accepted_critic_snapshot: None,
             accepted_topology_generation: None,
         }
+    }
+
+    pub(crate) fn with_folder_config_generation(mut self, generation: Option<u64>) -> Self {
+        self.folder_config_generation = generation;
+        self
     }
 
     /// Bind the accepted critic policy the candidate's critic rows were
@@ -159,6 +170,43 @@ impl PushDiagnosticsSink {
 }
 
 impl LspServer {
+    pub(crate) fn project_config_for_uri(
+        &self,
+        uri: &str,
+    ) -> Option<perl_lsp_rs_core::config::ProjectConfig> {
+        self.folder_for_doc_uri(uri)
+            .and_then(|folder| folder.project_config)
+            .or_else(|| self.single_file_project_config.lock().clone())
+    }
+
+    pub(crate) fn project_config_generation_for_uri(&self, uri: &str) -> Option<u64> {
+        self.folder_for_doc_uri(uri).map(|folder| folder.project_config_generation).or_else(|| {
+            self.single_file_project_config.lock().as_ref()?;
+            Some(
+                self.single_file_project_config_generation
+                    .load(std::sync::atomic::Ordering::SeqCst),
+            )
+        })
+    }
+
+    pub(crate) fn set_single_file_project_config(
+        &self,
+        config: Option<perl_lsp_rs_core::config::ProjectConfig>,
+    ) {
+        let mut single_file_project_config = self.single_file_project_config.lock();
+        let changed = *single_file_project_config != config;
+        *single_file_project_config = config;
+        if changed {
+            self.single_file_project_config_generation
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    pub(crate) fn invalidate_workspace_identity(&self) {
+        let _identity_guard = self.workspace_identity_lock.lock();
+        self.workspace_identity_generation.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+
     /// Validate one staged diagnostic subject and commit its effect while all
     /// authorities that can move that subject remain locked.
     ///
@@ -171,11 +219,49 @@ impl LspServer {
         uri: &str,
         document_instance: &Arc<AtomicU32>,
         generation: u32,
+        workspace_generation: Option<u64>,
+        accepted_folder_config_generation: Option<u64>,
         accepted_critic_snapshot: Option<&AcceptedCriticSnapshot>,
         accepted_topology_generation: Option<u32>,
         commit: impl FnOnce() -> T,
     ) -> Result<T, DiagnosticSubjectRejection> {
         let normalized_uri = self.normalize_uri_key(uri);
+        // Resolve folder ownership before the identity critical section. The
+        // topology generation and unavailable phase fence this sample against
+        // a concurrent folder/configuration transaction.
+        let folder_config_generation = self.project_config_generation_for_uri(&normalized_uri);
+        let sampled_topology =
+            self.workspace_topology_generation.load(std::sync::atomic::Ordering::SeqCst);
+        let live_root = super::diagnostics::critic_root_for_document(
+            &normalized_uri,
+            &self.workspace_folders,
+            &self.root_path,
+            &self.single_file_project_config,
+        )
+        .map(|path| path.to_string_lossy().into_owned());
+        let _identity_guard = self.workspace_identity_lock.lock();
+        if !self.workspace_topology_stable.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(DiagnosticSubjectRejection::SupersededCriticPolicy);
+        }
+        if accepted_critic_snapshot
+            .is_some_and(|snapshot| live_root.as_deref() != snapshot.owning_root())
+        {
+            return Err(DiagnosticSubjectRejection::SupersededCriticPolicy);
+        }
+        if workspace_generation.is_some_and(|generation| {
+            self.workspace_identity_generation.load(std::sync::atomic::Ordering::SeqCst)
+                != generation
+                || folder_config_generation != accepted_folder_config_generation
+        }) {
+            return Err(DiagnosticSubjectRejection::SupersededGeneration);
+        }
+        let live_topology =
+            self.workspace_topology_generation.load(std::sync::atomic::Ordering::SeqCst);
+        if sampled_topology != live_topology
+            || accepted_topology_generation.is_some_and(|accepted| accepted != live_topology)
+        {
+            return Err(DiagnosticSubjectRejection::SupersededCriticPolicy);
+        }
         let documents = self.documents.lock();
         let Some(document) = documents.get(&normalized_uri) else {
             return Err(DiagnosticSubjectRejection::DocumentClosed);
@@ -187,69 +273,16 @@ impl LspServer {
             return Err(DiagnosticSubjectRejection::SupersededGeneration);
         }
 
-        if accepted_topology_generation.is_some() || accepted_critic_snapshot.is_some() {
-            let workspace_folders = self.workspace_folders.lock();
-            if !self.workspace_topology_stable.load(std::sync::atomic::Ordering::SeqCst) {
-                return Err(DiagnosticSubjectRejection::SupersededCriticPolicy);
-            }
-            if let Some(accepted_topology_generation) = accepted_topology_generation {
-                if self.workspace_topology_generation.load(std::sync::atomic::Ordering::SeqCst)
-                    != accepted_topology_generation
-                {
-                    return Err(DiagnosticSubjectRejection::SupersededCriticPolicy);
-                }
-            }
-            if let Some(snapshot) = accepted_critic_snapshot {
-                let root_path = self.root_path.lock();
-                let config = self.config.lock();
-                let live_root =
-                    super::best_workspace_folder_for_doc(&workspace_folders, &normalized_uri)
-                        .and_then(|folder| {
-                            folder.path.clone().or_else(|| source_path_from_uri(&folder.uri))
-                        })
-                        .or_else(|| root_path.clone())
-                        .map(|path| path.to_string_lossy().into_owned());
-                if live_root.as_deref() != snapshot.owning_root() || !snapshot.is_current(&config) {
-                    return Err(DiagnosticSubjectRejection::SupersededCriticPolicy);
-                }
-
-                let committed = commit();
-                drop(config);
-                drop(root_path);
-                drop(workspace_folders);
-                drop(documents);
-                return Ok(committed);
-            }
-            let committed = commit();
-            drop(workspace_folders);
-            drop(documents);
-            return Ok(committed);
+        // Hold policy authority through the irreversible effect, rather than
+        // carrying a pre-lock boolean across a concurrent configuration write.
+        let config = self.config.lock();
+        if let Some(snapshot) = accepted_critic_snapshot
+            && (live_root.as_deref() != snapshot.owning_root() || !snapshot.is_current(&config))
+        {
+            return Err(DiagnosticSubjectRejection::SupersededCriticPolicy);
         }
-
-        if let Some(snapshot) = accepted_critic_snapshot {
-            let workspace_folders = self.workspace_folders.lock();
-            let root_path = self.root_path.lock();
-            let config = self.config.lock();
-            let live_root =
-                super::best_workspace_folder_for_doc(&workspace_folders, &normalized_uri)
-                    .and_then(|folder| {
-                        folder.path.clone().or_else(|| source_path_from_uri(&folder.uri))
-                    })
-                    .or_else(|| root_path.clone())
-                    .map(|path| path.to_string_lossy().into_owned());
-            if live_root.as_deref() != snapshot.owning_root() || !snapshot.is_current(&config) {
-                return Err(DiagnosticSubjectRejection::SupersededCriticPolicy);
-            }
-
-            let committed = commit();
-            drop(config);
-            drop(root_path);
-            drop(workspace_folders);
-            drop(documents);
-            return Ok(committed);
-        }
-
         let committed = commit();
+        drop(config);
         drop(documents);
         Ok(committed)
     }
@@ -280,14 +313,16 @@ impl LspServer {
         after_staging: impl FnOnce(),
     ) -> PushDiagnosticsCommitOutcome {
         after_staging();
-        let mut committed = self.push_diagnostics_sink.committed.lock();
         let result = self.commit_if_diagnostic_subject_current(
             &identity.normalized_uri,
             &identity.document_instance,
             identity.generation,
+            Some(identity.workspace_generation),
+            identity.folder_config_generation,
             identity.accepted_critic_snapshot.as_ref(),
             identity.accepted_topology_generation,
             || {
+                let mut committed = self.push_diagnostics_sink.committed.lock();
                 self.enqueue_committed_push_diagnostic(
                     &mut committed,
                     identity,
@@ -467,9 +502,16 @@ mod tests {
             })))
             .expect("didOpen should succeed");
         let key = server.normalize_uri_key(uri);
+        let folder_generation = server.project_config_generation_for_uri(&key);
         let docs = server.documents.lock();
         let doc = docs.get(&key).expect("document must be open");
-        PushDiagnosticIdentity::for_document(&key, &doc.generation, doc.current_generation())
+        PushDiagnosticIdentity::for_document(
+            &key,
+            &doc.generation,
+            doc.current_generation(),
+            server.workspace_identity_generation.load(std::sync::atomic::Ordering::SeqCst),
+        )
+        .with_folder_config_generation(folder_generation)
     }
 
     fn frame_count(buf: &StdArc<parking_lot::Mutex<Vec<u8>>>) -> usize {
@@ -973,5 +1015,90 @@ mod tests {
         // URI; a closed-document rejection never adds to it.
         let after = server.test_last_committed_push_diagnostic(&identity.normalized_uri);
         assert!(after.is_none_or(|(_, sequence)| sequence >= 1));
+    }
+    #[test]
+    fn workspace_identity_invalidation_rejects_pre_reload_candidate() {
+        let (server, _buf) = make_server();
+        let identity = open_document(&server, "file:///sink_reload_test.pl", "my $x = 1;\n");
+
+        server.invalidate_workspace_identity();
+
+        assert_eq!(
+            server.commit_push_diagnostics(
+                &identity,
+                json!({ "uri": identity.normalized_uri, "diagnostics": [] }),
+                PushDiagnosticsDisposition::Clear,
+            ),
+            PushDiagnosticsCommitOutcome::RejectedSupersededGeneration
+        );
+    }
+
+    #[test]
+    fn workspace_folder_change_rejects_pre_change_candidate() {
+        let (server, _buf) = make_server();
+        let identity = open_document(&server, "file:///sink_folder_change_test.pl", "my $x = 1;\n");
+
+        server
+            .handle_did_change_workspace_folders(Some(json!({
+                "event": {
+                    "added": [{ "uri": "file:///sink-folder-root/", "name": "root" }],
+                    "removed": []
+                }
+            })))
+            .expect("workspace folder change should succeed");
+
+        assert_eq!(
+            server.commit_push_diagnostics(
+                &identity,
+                json!({ "uri": identity.normalized_uri, "diagnostics": [] }),
+                PushDiagnosticsDisposition::Clear,
+            ),
+            PushDiagnosticsCommitOutcome::RejectedSupersededGeneration
+        );
+    }
+
+    #[test]
+    fn folder_config_invalidation_rejects_only_owned_push_candidate() {
+        let (server, _buf) = make_server();
+        server.workspace_folders.lock().extend([
+            super::super::workspace_folder::WorkspaceFolderState::new(
+                "file:///sink-root-one/".to_string(),
+            ),
+            super::super::workspace_folder::WorkspaceFolderState::new(
+                "file:///sink-root-two/".to_string(),
+            ),
+        ]);
+
+        let first = open_document(&server, "file:///sink-root-one/first.pl", "my $x = 1;\n");
+        let second = open_document(&server, "file:///sink-root-two/second.pl", "my $y = 1;\n");
+        let first_generation = server
+            .workspace_folders
+            .lock()
+            .first()
+            .expect("first folder must exist")
+            .project_config_generation;
+
+        server.workspace_folders.lock()[0].project_config_generation += 1;
+
+        assert_eq!(
+            server.commit_push_diagnostics(
+                &first,
+                json!({ "uri": first.normalized_uri, "diagnostics": [] }),
+                PushDiagnosticsDisposition::Clear,
+            ),
+            PushDiagnosticsCommitOutcome::RejectedSupersededGeneration
+        );
+        assert_eq!(
+            server.commit_push_diagnostics(
+                &second,
+                json!({ "uri": second.normalized_uri, "diagnostics": [] }),
+                PushDiagnosticsDisposition::Clear,
+            ),
+            PushDiagnosticsCommitOutcome::SafeClearCommitted
+        );
+        assert_eq!(
+            server.workspace_folders.lock()[0].project_config_generation,
+            first_generation + 1
+        );
     }
 }

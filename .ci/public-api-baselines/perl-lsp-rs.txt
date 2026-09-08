@@ -145,6 +145,7 @@ pub fn perl_lsp::features::diagnostics::pull::DiagnosticData::deserialize<__D>(_
 pub struct perl_lsp::features::diagnostics::pull::PullDiagnosticsContext
 pub perl_lsp::features::diagnostics::pull::PullDiagnosticsContext::accepted_critic_snapshot: perl_lsp_rs_core::config::critic_state::AcceptedCriticSnapshot
 pub perl_lsp::features::diagnostics::pull::PullDiagnosticsContext::accepted_state_currentness: perl_lsp::features::diagnostics::pull::AcceptedStateCurrentness
+pub perl_lsp::features::diagnostics::pull::PullDiagnosticsContext::configuration_generation: core::option::Option<u64>
 pub perl_lsp::features::diagnostics::pull::PullDiagnosticsContext::critic_engine: perl_lsp_rs_core::config::CriticEngine
 pub perl_lsp::features::diagnostics::pull::PullDiagnosticsContext::facts_generation: core::option::Option<u64>
 pub perl_lsp::features::diagnostics::pull::PullDiagnosticsContext::identity_root_key: core::option::Option<alloc::string::String>
@@ -156,6 +157,7 @@ pub perl_lsp::features::diagnostics::pull::PullDiagnosticsContext::native_critic
 pub perl_lsp::features::diagnostics::pull::PullDiagnosticsContext::perlcritic_enabled: bool
 pub perl_lsp::features::diagnostics::pull::PullDiagnosticsContext::perlcritic_profile: core::option::Option<alloc::string::String>
 pub perl_lsp::features::diagnostics::pull::PullDiagnosticsContext::perlcritic_severity: i32
+pub perl_lsp::features::diagnostics::pull::PullDiagnosticsContext::project_version: core::option::Option<alloc::string::String>
 pub perl_lsp::features::diagnostics::pull::PullDiagnosticsContext::projection: perl_lsp::features::diagnostics::report_identity::DiagnosticProjectionFragment
 pub perl_lsp::features::diagnostics::pull::PullDiagnosticsContext::workspace_index: core::option::Option<alloc::sync::Arc<perl_workspace::workspace::workspace_index::WorkspaceIndex>>
 pub perl_lsp::features::diagnostics::pull::PullDiagnosticsContext::workspace_root: core::option::Option<std::path::PathBuf>
@@ -231,6 +233,7 @@ pub fn perl_lsp::features::diagnostics::report_identity::DiagnosticProjectionFra
 pub struct perl_lsp::features::diagnostics::PullDiagnosticsContext
 pub perl_lsp::features::diagnostics::PullDiagnosticsContext::accepted_critic_snapshot: perl_lsp_rs_core::config::critic_state::AcceptedCriticSnapshot
 pub perl_lsp::features::diagnostics::PullDiagnosticsContext::accepted_state_currentness: perl_lsp::features::diagnostics::pull::AcceptedStateCurrentness
+pub perl_lsp::features::diagnostics::PullDiagnosticsContext::configuration_generation: core::option::Option<u64>
 pub perl_lsp::features::diagnostics::PullDiagnosticsContext::critic_engine: perl_lsp_rs_core::config::CriticEngine
 pub perl_lsp::features::diagnostics::PullDiagnosticsContext::facts_generation: core::option::Option<u64>
 pub perl_lsp::features::diagnostics::PullDiagnosticsContext::identity_root_key: core::option::Option<alloc::string::String>
@@ -242,6 +245,7 @@ pub perl_lsp::features::diagnostics::PullDiagnosticsContext::native_critic_profi
 pub perl_lsp::features::diagnostics::PullDiagnosticsContext::perlcritic_enabled: bool
 pub perl_lsp::features::diagnostics::PullDiagnosticsContext::perlcritic_profile: core::option::Option<alloc::string::String>
 pub perl_lsp::features::diagnostics::PullDiagnosticsContext::perlcritic_severity: i32
+pub perl_lsp::features::diagnostics::PullDiagnosticsContext::project_version: core::option::Option<alloc::string::String>
 pub perl_lsp::features::diagnostics::PullDiagnosticsContext::projection: perl_lsp::features::diagnostics::report_identity::DiagnosticProjectionFragment
 pub perl_lsp::features::diagnostics::PullDiagnosticsContext::workspace_index: core::option::Option<alloc::sync::Arc<perl_workspace::workspace::workspace_index::WorkspaceIndex>>
 pub perl_lsp::features::diagnostics::PullDiagnosticsContext::workspace_root: core::option::Option<std::path::PathBuf>

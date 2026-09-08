@@ -44,6 +44,12 @@ use perl_semantic_facts::{AnchorId, FileId, SourceAnchor};
 /// Extract every supported Dancer2 hook declaration from `ast`, in source
 /// order, with per-declaration package/file identity and a source-order
 /// declaration index.
+///
+/// The auto-quoted/computed distinction for a bareword operand
+/// (`hook before => sub {...}` versus `hook(before, sub {...})`) is decided by
+/// the parser, which quotes the operand left of a fat comma as Perl does. This
+/// function therefore reads only `ast`: a literal operand arrives as a string
+/// node, and anything else stays a computed boundary.
 #[must_use]
 pub fn extract_dancer2_hook_declarations(
     ast: &Node,

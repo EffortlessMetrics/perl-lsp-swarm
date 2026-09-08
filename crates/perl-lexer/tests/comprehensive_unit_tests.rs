@@ -73,7 +73,7 @@ fn token_type_debug_formatting() {
         TokenType::QuoteRegex,
         TokenType::StringLiteral,
         TokenType::QuoteSingle,
-        TokenType::QuoteDouble,
+        TokenType::QuoteDouble(Vec::new()),
         TokenType::QuoteWords,
         TokenType::QuoteCommand,
         TokenType::HeredocStart,
@@ -351,8 +351,10 @@ fn with_body_tokens_emits_heredoc_body() -> R {
     let input = "print <<EOF;\nhello world\nEOF\n";
     let mut lexer = PerlLexer::with_body_tokens(input);
     let toks = lexer.collect_tokens();
-    let has_heredoc_body = toks.iter().any(|t| matches!(t.token_type, TokenType::HeredocBody(_)));
-    assert!(has_heredoc_body, "with_body_tokens should emit HeredocBody tokens");
+    let has_heredoc_body = toks.iter().any(|t| {
+        matches!(t.token_type, TokenType::HeredocBody(_) | TokenType::InterpolatedHeredocBody(_))
+    });
+    assert!(has_heredoc_body, "with_body_tokens should emit heredoc body tokens");
     Ok(())
 }
 
@@ -361,7 +363,9 @@ fn regular_lexer_omits_heredoc_body() -> R {
     let input = "print <<EOF;\nhello world\nEOF\n";
     let mut lexer = PerlLexer::new(input);
     let toks = lexer.collect_tokens();
-    let has_heredoc_body = toks.iter().any(|t| matches!(t.token_type, TokenType::HeredocBody(_)));
+    let has_heredoc_body = toks.iter().any(|t| {
+        matches!(t.token_type, TokenType::HeredocBody(_) | TokenType::InterpolatedHeredocBody(_))
+    });
     assert!(!has_heredoc_body, "default lexer should NOT emit HeredocBody tokens");
     Ok(())
 }
@@ -843,7 +847,7 @@ fn double_quoted_string() -> R {
     assert!(
         matches!(
             tok.token_type,
-            TokenType::StringLiteral | TokenType::InterpolatedString(_) | TokenType::QuoteDouble
+            TokenType::StringLiteral | TokenType::InterpolatedString(_) | TokenType::QuoteDouble(_)
         ),
         "got {:?}",
         tok.token_type
@@ -1299,7 +1303,11 @@ fn q_operator_curly() -> R {
 #[test]
 fn qq_operator_paren() -> R {
     let tok = first_token("qq(world)").ok_or("no token")?;
-    assert_eq!(tok.token_type, TokenType::QuoteDouble);
+    assert!(
+        matches!(tok.token_type, TokenType::QuoteDouble(_)),
+        "expected qq token, got {:?}",
+        tok.token_type
+    );
     Ok(())
 }
 
@@ -1370,7 +1378,7 @@ fn quote_op_without_delimiter_is_identifier() -> R {
 fn quote_ops_with_alternate_delimiters() -> R {
     let cases = [
         ("q<hello>", TokenType::QuoteSingle),
-        ("qq[world]", TokenType::QuoteDouble),
+        ("qq[world]", TokenType::QuoteDouble(Vec::new())),
         ("qw(a b)", TokenType::QuoteWords),
         ("qr{pat}", TokenType::QuoteRegex),
         ("s{old}{new}", TokenType::Substitution),

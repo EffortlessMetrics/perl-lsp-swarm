@@ -10,23 +10,83 @@ const mockLanguageClientSetTrace = jest.fn(async () => undefined);
 const mockLanguageClientOnDidChangeState = jest.fn(() => ({ dispose: jest.fn() }));
 const mockLanguageClientOnNotification = jest.fn(() => ({ dispose: jest.fn() }));
 const mockLanguageClientSendNotification = jest.fn(async () => undefined);
+const mockExecFile = jest.fn((...args: unknown[]) => {
+  const callback = args[args.length - 1] as (
+    error: Error | null,
+    stdout: string,
+    stderr: string,
+  ) => void;
+  callback(null, '', '');
+});
+
+jest.mock('child_process', () => ({
+  ...jest.requireActual('child_process'),
+  execFile: (...args: unknown[]) => mockExecFile(...args),
+}));
 
 jest.mock('vscode-languageclient/node', () => ({
-  LanguageClient: jest.fn().mockImplementation(() => ({
-    initializeResult: { capabilities: {} },
-    onDidChangeState: mockLanguageClientOnDidChangeState,
-    onNotification: mockLanguageClientOnNotification,
-    sendNotification: mockLanguageClientSendNotification,
-    setTrace: mockLanguageClientSetTrace,
-    start: mockLanguageClientStart,
-    stop: mockLanguageClientStop,
-    dispose: mockLanguageClientDispose,
-  })),
+  State: { Stopped: 1, Running: 2, Starting: 3 },
+  LanguageClient: jest.fn().mockImplementation(() => {
+    let state = 1;
+    const serverProcess = {
+      // Use the live Jest process so the production liveness probe cannot
+      // mistake a synthetic PID for an exited child on rejected cleanup.
+      pid: process.pid,
+      exitCode: null as number | null,
+      signalCode: null as string | null,
+      exitListeners: [] as Array<(code: number, signal: string | null) => void>,
+      once(_event: 'exit', listener: (code: number, signal: string | null) => void) {
+        this.exitListeners.push(listener);
+        return this;
+      },
+      removeListener(_event: 'exit', listener: (code: number, signal: string | null) => void) {
+        const index = this.exitListeners.indexOf(listener);
+        if (index >= 0) {
+          this.exitListeners.splice(index, 1);
+        }
+        return this;
+      },
+      exit() {
+        this.exitCode = 0;
+        for (const listener of [...this.exitListeners]) {
+          listener(0, null);
+        }
+      },
+    };
+    return {
+      get state() {
+        return state;
+      },
+      get serverProcess() {
+        return serverProcess;
+      },
+      initializeResult: { capabilities: {} },
+      onDidChangeState: mockLanguageClientOnDidChangeState,
+      onNotification: mockLanguageClientOnNotification,
+      sendNotification: mockLanguageClientSendNotification,
+      setTrace: mockLanguageClientSetTrace,
+      async start() {
+        state = 3;
+        await mockLanguageClientStart();
+        state = 2;
+      },
+      async stop() {
+        try {
+          await mockLanguageClientStop();
+          serverProcess.exit();
+        } finally {
+          // Match the client's terminal state even when its handshake rejects.
+          state = 1;
+        }
+      },
+      dispose: mockLanguageClientDispose,
+    };
+  }),
   Trace: { Off: 'off', Messages: 'messages', Verbose: 'verbose' },
   TransportKind: { stdio: 0 },
 }));
 
-import { activate, deactivate } from '../extension';
+import { activate, deactivate, serverNotRunningMessage } from '../extension';
 import { fakeDocument, setOpenDocuments, type FakeDocument } from './serverDemandDocuments';
 
 function makeContext(extensionPath: string): vscode.ExtensionContext {
@@ -303,6 +363,149 @@ describe('deferred language-server startup (#8180)', () => {
       .mocked(vscode.window.showErrorMessage)
       .mock.calls.map((call) => String(call[0]));
     expect(errorMessages.some((message) => message.includes('Failed to start'))).toBe(true);
+  });
+
+  test('registered health check rejects an existing binary after activation startup fails', async () => {
+    mockLanguageClientStart.mockImplementationOnce(async () => {
+      throw new Error('health-check startup refused');
+    });
+
+    await activate(makeContext(makeExtensionRoot()));
+
+    const result = (await vscode.commands.executeCommand('perl-lsp.runHealthCheck')) as {
+      ok: boolean;
+      checks: Array<{ label: string; status: string; detail: string }>;
+    };
+    const runtime = result.checks.find((check) => check.label === 'LSP runtime');
+
+    expect(result.ok).toBe(false);
+    expect(runtime).toEqual({
+      label: 'LSP runtime',
+      status: 'error',
+      detail: 'Language server failed to start: health-check startup refused',
+    });
+    expect(vscode.window.showInformationMessage).not.toHaveBeenCalledWith(
+      'Perl LSP health check passed.',
+      'Show Output',
+    );
+  });
+
+  test('registered health check settles while startup failure dialog remains open', async () => {
+    mockLanguageClientStart.mockImplementationOnce(async () => {
+      throw new Error('dialog-blocked startup refusal');
+    });
+    jest
+      .mocked(vscode.window.showErrorMessage)
+      .mockImplementationOnce(() => new Promise<undefined>(() => undefined));
+
+    await activate(makeContext(makeExtensionRoot()));
+
+    const result = await Promise.race([
+      vscode.commands.executeCommand('perl-lsp.runHealthCheck') as Promise<{
+        ok: boolean;
+        checks: Array<{ label: string; status: string }>;
+      }>,
+      new Promise<never>((_, reject) => {
+        setTimeout(() => reject(new Error('health check remained blocked by startup dialog')), 500);
+      }),
+    ]);
+    expect(result.ok).toBe(false);
+    expect(result.checks.find((check) => check.label === 'LSP runtime')?.status).toBe('error');
+  });
+
+  test('a late startup probe cannot overwrite a recovered generation', async () => {
+    let deferredProbe: ((error: Error | null, stdout: string, stderr: string) => void) | undefined;
+    mockExecFile.mockImplementationOnce((...args: unknown[]) => {
+      deferredProbe = args[args.length - 1] as typeof deferredProbe;
+    });
+    mockLanguageClientStart
+      .mockImplementationOnce(async () => {
+        throw new Error('deferred diagnosis startup refusal');
+      })
+      .mockImplementationOnce(async () => undefined);
+
+    setOpenDocuments([fakeDocument('perl')]);
+    await activate(makeContext(makeExtensionRoot()));
+    await waitForStarts(1);
+    await vscode.commands.executeCommand('perl-lsp.restart');
+    await waitForStarts(2);
+    expect(deferredProbe).toBeDefined();
+    const oldProbeError = Object.assign(new Error('old generation probe'), { code: 'EACCES' });
+    deferredProbe?.(oldProbeError, '', '');
+    await settle();
+
+    expect(serverNotRunningMessage()).toContain('Language Server is not running');
+    expect(serverNotRunningMessage()).not.toContain('old generation probe');
+    expect(serverNotRunningMessage()).not.toContain('permission denied');
+    expect(serverNotRunningMessage()).not.toContain('The binary does not have execute permission.');
+  });
+
+  test('a delayed health choice checks the recovered generation through the current command', async () => {
+    let resolveChoice: ((choice: string) => void) | undefined;
+    jest.mocked(vscode.window.showErrorMessage).mockImplementationOnce(() => {
+      const choice = new Promise<string | undefined>((resolve) => {
+        resolveChoice = (choice) => resolve(choice);
+      });
+      return choice as unknown as ReturnType<typeof vscode.window.showErrorMessage>;
+    });
+    mockLanguageClientStart
+      .mockImplementationOnce(async () => {
+        throw new Error('delayed dialog startup refusal');
+      })
+      .mockImplementationOnce(async () => undefined);
+
+    setOpenDocuments([fakeDocument('perl')]);
+    await activate(makeContext(makeExtensionRoot()));
+    await waitForStarts(1);
+    await vscode.commands.executeCommand('perl-lsp.restart');
+    await waitForStarts(2);
+    expect(resolveChoice).toBeDefined();
+
+    const callsBeforeChoice = jest.mocked(vscode.commands.executeCommand).mock.calls.length;
+    resolveChoice?.('Run Health Check');
+    await settle();
+
+    expect(
+      jest
+        .mocked(vscode.commands.executeCommand)
+        .mock.calls.slice(callsBeforeChoice)
+        .some(([command]) => command === 'perl-lsp.runHealthCheck'),
+    ).toBe(true);
+  });
+
+  test('a later health check reports recovery while keeping optional warnings separate', async () => {
+    mockLanguageClientStart
+      .mockImplementationOnce(async () => {
+        throw new Error('first health-check startup refused');
+      })
+      .mockImplementationOnce(async () => undefined);
+
+    await activate(makeContext(makeExtensionRoot()));
+
+    const first = (await vscode.commands.executeCommand('perl-lsp.runHealthCheck')) as {
+      ok: boolean;
+      checks: Array<{ label: string; status: string; detail: string }>;
+    };
+    const second = (await vscode.commands.executeCommand('perl-lsp.runHealthCheck')) as {
+      ok: boolean;
+      checks: Array<{ label: string; status: string; detail: string }>;
+    };
+
+    expect(first.ok).toBe(false);
+    expect(first.checks.find((check) => check.label === 'LSP runtime')).toMatchObject({
+      status: 'error',
+    });
+    expect(second.ok).toBe(true);
+    expect(second.checks.find((check) => check.label === 'LSP runtime')).toEqual({
+      label: 'LSP runtime',
+      status: 'ok',
+      detail: 'Language server is running.',
+    });
+    expect(
+      second.checks
+        .filter((check) => check.status === 'warning')
+        .every((check) => check.label !== 'LSP runtime'),
+    ).toBe(true);
   });
 
   test('a failed restart does not suppress fresh demand', async () => {

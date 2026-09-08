@@ -1,9 +1,9 @@
 //! `cargo xtask perl-kwalitee` — Perl distribution Kwalitee evaluation.
 //!
-//! This is the repo-local wrapper around the [`perl_kwalitee`] crate. The crate
-//! owns the indicator model, scoring, profiles, and receipt schema and is
-//! deliberately pure (no process spawning, no network). This module supplies
-//! the parts that require touching the live repository:
+//! This is the repo-local wrapper around the [`perl_release_readiness`] crate.
+//! The crate owns the indicator model, scoring, profiles, and receipt schema
+//! and is deliberately pure (no process spawning, no network). This module
+//! supplies the parts that require touching the live repository:
 //!
 //! - repository paths (workspace root, default receipt locations),
 //! - the current git commit and a timestamp for the receipt envelope,
@@ -22,7 +22,7 @@ use std::process::Command;
 use clap::ValueEnum;
 use color_eyre::eyre::{Result, bail};
 
-use perl_kwalitee::{
+use perl_release_readiness::{
     EvidencePaths, EvidenceRef, ExternalResult, KwaliteeOptions, KwaliteeProfile, KwaliteeReceipt,
     evaluate, explain as explain_indicator, indicator_ids,
 };
@@ -42,7 +42,7 @@ const PERLCRITIC_COMPAT_RECEIPT_REL: &str = "target/receipts/native-tooling/perl
 const DEFAULT_JSON_REL: &str = "target/receipts/kwalitee/perl-kwalitee.json";
 const DEFAULT_MARKDOWN_REL: &str = "target/receipts/kwalitee/perl-kwalitee.md";
 
-/// CLI-facing profile mirror of [`perl_kwalitee::KwaliteeProfile`].
+/// CLI-facing profile mirror of [`perl_release_readiness::KwaliteeProfile`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum PerlKwaliteeProfile {
     /// Fast per-PR profile; release-artifact indicators are not applicable.
@@ -455,7 +455,7 @@ mod tests {
                  and resolve the reported parity failure."
             ),
         );
-        assert_eq!(result.status, perl_kwalitee::IndicatorStatus::Fail);
+        assert_eq!(result.status, perl_release_readiness::IndicatorStatus::Fail);
         assert!(result.remediation.expect("remediation").contains(CRITIC_PARITY_TEST));
         assert!(result.evidence.iter().any(|e| e.value.contains(&err)));
     }

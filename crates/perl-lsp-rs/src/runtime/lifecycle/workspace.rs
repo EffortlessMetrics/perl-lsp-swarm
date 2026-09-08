@@ -142,37 +142,55 @@ impl LspServer {
     /// `window/showMessage` Warning is emitted naming the folders and keys, instead
     /// of silently discarding a folder's configuration.
     pub(crate) fn load_and_apply_project_config(&self) -> bool {
-        let mut folders = self.workspace_folders.lock();
+        // Discover before taking the workspace-folder lock because discovery
+        // takes the documents lock. This keeps lock acquisition ordered as
+        // documents -> workspace_folders for diagnostic/reload snapshots.
+        let single_file_config = if self.workspace_folders.lock().is_empty() {
+            self.discover_single_file_config()
+        } else {
+            Ok(None)
+        };
         let mut complete = true;
+        let mut folders = self.workspace_folders.lock();
 
         if folders.is_empty() {
-            drop(folders);
             // Single-file mode: try to discover .perl-lsp.toml from the
             // open document's directory. This is a common workflow — opening
             // a lone .pl file that has a .perl-lsp.toml next to it. (#UX15)
-            match self.discover_single_file_config() {
-                Ok(Some(config)) => {
-                    let mut server_config = self.config.lock();
-                    config.apply_to_server_config(&mut server_config);
-                }
-                Ok(None) => {}
-                Err(error) => {
+            let single_file_config = match single_file_config {
+                Ok(config) => config,
+                Err(msg) => {
                     complete = false;
-                    let user_msg = format!(
-                        "Perl LSP: {error} Fix the error in .perl-lsp.toml and reload the window \
-                         (Ctrl+Shift+P \u{2192} Developer: Reload Window) to apply your settings.",
-                    );
-                    tracing::warn!(message = %user_msg, "Project config warning");
-                    if let Err(notify_error) = self.notify(
-                        "window/showMessage",
-                        serde_json::json!({ "type": 2, "message": user_msg }),
+                    tracing::warn!(message = %msg, "Single-file project config warning");
+                    if let Err(error) = self.show_message(
+                        MessageType::Warning,
+                        &format!(
+                            "Perl LSP: {msg} Fix the error in .perl-lsp.toml and reload the window."
+                        ),
                     ) {
-                        tracing::warn!(error = %notify_error, "Failed to send showMessage warning");
+                        tracing::warn!(%error, "Failed to send single-file config warning");
                     }
+                    None
                 }
+            };
+            self.set_single_file_project_config(single_file_config.clone());
+            if let Some(config) = single_file_config {
+                if let Some(raw_version) = config.perl.version.as_deref()
+                    && perl_lsp_rs_core::providers::diagnostics::version_compat::parse_configured_project_version(raw_version).is_none()
+                {
+                    self.emit_invalid_project_version_warning(raw_version, "single-file project");
+                }
+                let mut server_config = self.config.lock();
+                config.apply_to_server_config(&mut server_config);
             }
             return complete;
         }
+
+        // Folder mode now owns per-folder configuration. Drop any retained
+        // single-file authority so a registered folder without its own
+        // `.perl-lsp.toml` cannot inherit a config discovered from an
+        // unrelated document directory (#13195 review).
+        self.set_single_file_project_config(None);
 
         // Collect (display_name, project_config) for folders that have a
         // .perl-lsp.toml, in workspace-folder iteration order, so the server-global
@@ -183,6 +201,7 @@ impl LspServer {
         for folder in folders.iter_mut() {
             // Try to load .perl-lsp.toml from this folder
             if let Some(folder_path) = &folder.path {
+                let previous_project_config = folder.project_config.clone();
                 folder.project_config = None;
 
                 // Start with initializationOptions.perl.* as the base layer, then
@@ -205,9 +224,27 @@ impl LspServer {
                 match perl_lsp_rs_core::config::load_project_config(folder_path) {
                     Ok(None) => {
                         // No .perl-lsp.toml found — normal, no action needed
+                        if previous_project_config.is_some() {
+                            folder.project_config_generation =
+                                folder.project_config_generation.saturating_add(1);
+                        }
                     }
                     Ok(Some(project_config)) => {
                         tracing::debug!(path = %folder_path.display(), "Loaded .perl-lsp.toml for folder");
+
+                        if previous_project_config.as_ref() != Some(&project_config) {
+                            folder.project_config_generation =
+                                folder.project_config_generation.saturating_add(1);
+                        }
+
+                        if let Some(raw_version) = project_config.perl.version.as_deref()
+                            && perl_lsp_rs_core::providers::diagnostics::version_compat::parse_configured_project_version(raw_version).is_none()
+                        {
+                            self.emit_invalid_project_version_warning(
+                                raw_version,
+                                &format!("project folder {}", folder_path.display()),
+                            );
+                        }
 
                         // Store project config in the folder state
                         folder.project_config = Some(project_config.clone());
@@ -231,6 +268,12 @@ impl LspServer {
                     }
                     Err(msg) => {
                         complete = false;
+                        // A malformed replacement is still a new accepted
+                        // configuration state. Advance the folder-local
+                        // generation so cached reports from the prior valid
+                        // config cannot be returned as unchanged.
+                        folder.project_config_generation =
+                            folder.project_config_generation.saturating_add(1);
                         let user_msg = format!(
                             "Perl LSP: {msg} \
                              Fix the error in .perl-lsp.toml and reload the window \
@@ -299,6 +342,31 @@ impl LspServer {
             return Ok(None);
         };
         perl_lsp_rs_core::config::load_project_config(dir).map_err(|error| error.to_string())
+    }
+
+    /// Re-run single-file project discovery after a document install.
+    ///
+    /// The initialize-time [`Self::load_and_apply_project_config`] pass runs
+    /// before any document can be open, so in single-file mode (no workspace
+    /// folders) its discovery always finds nothing. This cold didOpen-time
+    /// refresh is therefore the only production moment that can populate the
+    /// retained single-file authority; without it the documented
+    /// `[perl].version` PL900 fallback stays unreachable for the single-file
+    /// workflow (#13195 review).
+    pub(crate) fn refresh_single_file_project_config_if_unowned(&self) {
+        if self.workspace_folders.lock().is_empty() {
+            self.load_and_apply_project_config();
+        }
+    }
+
+    fn emit_invalid_project_version_warning(&self, raw_version: &str, authority: &str) {
+        let user_msg = format!(
+            "Perl LSP: invalid [perl].version {raw_version:?} in {authority}; expected a major.minor target such as 5.20 or v5.20. The project fallback is disabled until it is corrected."
+        );
+        tracing::warn!(message = %user_msg, "Invalid project Perl version");
+        if let Err(error) = self.show_message(MessageType::Warning, &user_msg) {
+            tracing::warn!(%error, "Failed to send invalid project version warning");
+        }
     }
 
     /// Emit a `window/showMessage` Warning describing the conflicting
