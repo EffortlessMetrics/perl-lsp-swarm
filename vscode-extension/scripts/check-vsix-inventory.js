@@ -139,13 +139,28 @@ function currentSourceBundleFile(platform = process.platform, arch = process.arc
   return `bin/${platform}-${arch}/${binaryName}`;
 }
 
+function exactVsixPath(argv) {
+  const index = argv.indexOf('--vsix');
+  if (index === -1) {
+    return null;
+  }
+  const value = argv[index + 1];
+  if (!value) {
+    throw new Error('--vsix requires a value');
+  }
+  return path.resolve(EXTENSION_ROOT, value);
+}
+
 function main() {
   const updateBaseline = process.argv.includes('--update-baseline');
   const baseline =
     updateBaseline && !fs.existsSync(BASELINE_PATH)
       ? null
       : JSON.parse(fs.readFileSync(BASELINE_PATH, 'utf8'));
-  const actual = summarizeInventory(collectPackagedFiles());
+  const vsixPath = exactVsixPath(process.argv.slice(2));
+  const actual = vsixPath
+    ? require('./check-vsix-inventory-transition').collectArchiveInventory(vsixPath).inventory
+    : summarizeInventory(collectPackagedFiles());
   if (updateBaseline) {
     fs.writeFileSync(BASELINE_PATH, `${JSON.stringify(actual, null, 2)}\n`);
     process.stdout.write(`Updated ${BASELINE_PATH}\n`);
@@ -176,15 +191,6 @@ function main() {
   }
 }
 
-if (require.main === module) {
-  try {
-    main();
-  } catch (error) {
-    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
-    process.exitCode = 1;
-  }
-}
-
 module.exports = {
   baselineForPlatform,
   classifyInventoryViolations,
@@ -194,3 +200,12 @@ module.exports = {
   platformForPackagedFile,
   summarizeInventory,
 };
+
+if (require.main === module) {
+  try {
+    main();
+  } catch (error) {
+    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+    process.exitCode = 1;
+  }
+}

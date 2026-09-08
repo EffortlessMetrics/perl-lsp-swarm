@@ -23,12 +23,22 @@ function runNode(script, args) {
   return true;
 }
 
-try {
-  if (!runNode(vsceEntry, ['package', '--out', vsixName])) {
-    process.exit(process.exitCode);
+function packageVsix(run = runNode) {
+  if (!run(vsceEntry, ['package', '--out', vsixName])) {
+    return false;
   }
-  runNode(path.join(__dirname, 'check-vsix-inventory-transition.js'), ['--vsix', vsixName]);
-} catch (error) {
-  process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
-  process.exitCode = 1;
+  return run(path.join(__dirname, 'check-vsix-inventory.js'), ['--vsix', vsixName]);
 }
+
+if (require.main === module) {
+  try {
+    if (!packageVsix()) {
+      process.exitCode ||= 1;
+    }
+  } catch (error) {
+    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+    process.exitCode = 1;
+  }
+}
+
+module.exports = { packageVsix, vsixName, vsceEntry };
