@@ -2037,3 +2037,33 @@ void test('a closed diagnostic channel does not mask a summary write failure', (
   assert.equal(receipt.overall, 'pass');
   assert.equal(receipt.instrument_failure, null);
 });
+
+for (const [key, label] of [
+  ['activation_failure_journey', 'activation-failure journey'],
+  ['crash_recovery_journey', 'crash-recovery journey'],
+]) {
+  void test(`absent required recovery stage ${key} stays visible without changing verdict`, () => {
+    if (typeof key !== 'string' || typeof label !== 'string') {
+      throw new Error('recovery-stage fixture requires a key and label');
+    }
+    const receipt = checkReceipt({ overall: 'pass' });
+    const remaining = { ...receipt.stages };
+    delete remaining[key];
+    receipt.stages = remaining;
+    const before = JSON.stringify(receipt);
+    const summary = composeCheckSummary(receipt);
+    if (!summary.headline.includes(`${label} absent from the receipt`)) {
+      throw new Error('missing required journey must be named in the headline');
+    }
+    if (
+      !summary.markdown.includes(
+        `| ${label} | ` + '`absent`' + ' | stage absent from the receipt |',
+      )
+    ) {
+      throw new Error('missing required journey must retain an explicit absent table row');
+    }
+    if (concludeRun(receipt, undefined, () => {}) !== 0 || JSON.stringify(receipt) !== before) {
+      throw new Error('presentation must preserve the original receipt and aggregate exit code');
+    }
+  });
+}

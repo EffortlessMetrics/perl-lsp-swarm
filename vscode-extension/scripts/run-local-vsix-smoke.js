@@ -863,7 +863,11 @@ function checkHeadline(receipt) {
   // declined it; one that reached a non-passing verdict decided this run.
   for (const key of CHECK_JOURNEY_STAGES) {
     const stage = stages[key];
-    if (!stage || stage.status === 'pass' || stage.status === 'not_run') {
+    if (!stage) {
+      segments.push(`${CHECK_STAGE_LABELS[key]} absent from the receipt`);
+      continue;
+    }
+    if (stage.status === 'pass' || stage.status === 'not_run') {
       continue;
     }
     const phrase = `${CHECK_STAGE_LABELS[key]} ${checkVerdictWord(stage.status)}`;
@@ -934,9 +938,12 @@ function composeCheckSummary(receipt) {
     );
   }
 
-  const rows = present.map(
+  const displayed = CHECK_STAGE_ORDER.filter(
+    (key) => stages[key] || CHECK_JOURNEY_STAGES.includes(key),
+  );
+  const rows = displayed.map(
     (key) =>
-      `| ${markdownCell(CHECK_STAGE_LABELS[key])} | \`${markdownCell(stages[key].status)}\` | ${markdownCell(checkStageDetail(stages[key]))} |`,
+      `| ${markdownCell(CHECK_STAGE_LABELS[key])} | \`${markdownCell(stages[key]?.status ?? 'absent')}\` | ${markdownCell(checkStageDetail(stages[key]))} |`,
   );
   const remaining = checkRemainingProof(stages);
   const lines = [
