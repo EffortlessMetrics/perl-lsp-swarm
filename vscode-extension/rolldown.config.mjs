@@ -12,7 +12,8 @@
 // Rolldown is ESM-only (no CJS export), so this config file is itself ESM
 // (.mjs) even though the rest of the extension's tooling is CommonJS.
 import { createHash } from 'node:crypto';
-import { builtinModules } from 'node:module';
+import { builtinModules, createRequire } from 'node:module';
+import { dirname, join } from 'node:path';
 import { defineConfig, RolldownMagicString } from 'rolldown';
 
 // Node built-ins must never be bundled — Node resolves `require('fs')` etc.
@@ -37,7 +38,17 @@ const external = (id) => id === 'vscode' || nodeBuiltins.has(id);
 
 const PINNED_LANGUAGE_CLIENT_SOURCE_SHA256 =
     'FB34F029620E1990B00F351D9A79CEEDA40432AA5D177FD4245BD62053DF05A8';
-const LANGUAGE_CLIENT_SOURCE_SUFFIX = '/node_modules/vscode-languageclient/lib/common/client.js';
+const resolvedLanguageClientEntry = createRequire(import.meta.url).resolve('vscode-languageclient');
+const LANGUAGE_CLIENT_SOURCE_ID = join(
+    dirname(dirname(dirname(resolvedLanguageClientEntry))),
+    'lib',
+    'common',
+    'client.js',
+);
+
+function normalizeModuleId(id) {
+    return id.replaceAll('\\', '/').toLowerCase();
+}
 
 /**
  * vscode-languageclient 10.1.1 returns the mutable `_onStart` field after
@@ -45,9 +56,8 @@ const LANGUAGE_CLIENT_SOURCE_SUFFIX = '/node_modules/vscode-languageclient/lib/c
  * the start operation. Keep this narrowly pinned to the exact resolved source
  * and hash until the dependency ships the equivalent upstream correction.
  */
-export function patchPinnedLanguageClientSource(source, id) {
-    const normalizedId = id.replaceAll('\\', '/');
-    if (!normalizedId.endsWith(LANGUAGE_CLIENT_SOURCE_SUFFIX)) {
+function patchPinnedLanguageClientDetails(source, id) {
+    if (normalizeModuleId(id) !== normalizeModuleId(LANGUAGE_CLIENT_SOURCE_ID)) {
         return null;
     }
     const sourceSha256 = createHash('sha256').update(source).digest('hex').toUpperCase();
@@ -77,31 +87,33 @@ export function patchPinnedLanguageClientSource(source, id) {
         );
     }
     const finalReturnOffset = start + returnOffsets[returnOffsets.length - 1];
-    return `${source.slice(0, finalReturnOffset)}        return promise;${source.slice(finalReturnOffset + returnText.length)}`;
+    return { start: finalReturnOffset, end: finalReturnOffset + returnText.length };
 }
 
+export function patchPinnedLanguageClientSource(source, id) {
+    const details = patchPinnedLanguageClientDetails(source, id);
+    if (details === null) return null;
+    return `${source.slice(0, details.start)}        return promise;${source.slice(details.end)}`;
+}
+
+let pinnedLanguageClientPatchApplied = false;
 const pinnedLanguageClientPatch = {
     name: 'patch-pinned-vscode-languageclient-start-promise',
+    buildStart() {
+        pinnedLanguageClientPatchApplied = false;
+    },
     transform(source, id) {
-        const patched = patchPinnedLanguageClientSource(source, id);
-        if (patched === null) return null;
-        let prefix = 0;
-        while (prefix < source.length && source[prefix] === patched[prefix]) prefix += 1;
-        let suffix = 0;
-        while (
-            suffix < source.length - prefix &&
-            suffix < patched.length - prefix &&
-            source[source.length - 1 - suffix] === patched[patched.length - 1 - suffix]
-        ) {
-            suffix += 1;
-        }
+        const details = patchPinnedLanguageClientDetails(source, id);
+        if (details === null) return null;
+        pinnedLanguageClientPatchApplied = true;
         const magic = new RolldownMagicString(source);
-        magic.overwrite(
-            prefix,
-            source.length - suffix,
-            patched.slice(prefix, patched.length - suffix),
-        );
+        magic.overwrite(details.start, details.end, '        return promise;');
         return { code: magic };
+    },
+    buildEnd() {
+        if (!pinnedLanguageClientPatchApplied) {
+            throw new Error(`Refusing to build without patching ${LANGUAGE_CLIENT_SOURCE_ID}.`);
+        }
     },
 };
 export default defineConfig({

@@ -52,6 +52,11 @@ describe('Rolldown bundle configuration', () => {
       const source = fs.readFileSync(sourcePath, 'utf8');
       const patched = patchPinnedLanguageClientSource(source, sourcePath);
       if (!patched || !patched.includes('return promise;')) process.exit(11);
+      const start = patched.indexOf('    async start() {');
+      const end = patched.indexOf('    createOnStartPromise()', start);
+      const body = patched.slice(start, end);
+      if ((body.match(/return this\\._onStart;/g) || []).length !== 1) process.exit(14);
+      if ((body.match(/return promise;/g) || []).length !== 1) process.exit(15);
       if (patchPinnedLanguageClientSource(source, 'other-module/client.js') !== null) process.exit(12);
       let rejected = false;
       try { patchPinnedLanguageClientSource(source + '\\n', sourcePath); } catch { rejected = true; }
