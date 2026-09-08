@@ -147,6 +147,20 @@ pub(crate) enum DiagnosticSubjectRejection {
     SupersededCriticPolicy,
 }
 
+/// Accepted subject authorities carried into the final diagnostic
+/// linearization boundary. Keeping these borrowed inputs together makes the
+/// boundary's lock and validation contract explicit without storing another
+/// authority or changing the publication state owner.
+pub(crate) struct DiagnosticSubject<'a> {
+    pub(crate) uri: &'a str,
+    pub(crate) document_instance: &'a Arc<AtomicU32>,
+    pub(crate) generation: u32,
+    pub(crate) workspace_generation: Option<u64>,
+    pub(crate) accepted_folder_config_generation: Option<u64>,
+    pub(crate) accepted_critic_snapshot: Option<&'a AcceptedCriticSnapshot>,
+    pub(crate) accepted_topology_generation: Option<u32>,
+}
+
 /// Last diagnostic publication this server committed for a normalized URI.
 struct CommittedPushDiagnostic {
     document_instance: Arc<AtomicU32>,
@@ -216,16 +230,10 @@ impl LspServer {
     /// staging step before entering this boundary.
     pub(crate) fn commit_if_diagnostic_subject_current<T>(
         &self,
-        uri: &str,
-        document_instance: &Arc<AtomicU32>,
-        generation: u32,
-        workspace_generation: Option<u64>,
-        accepted_folder_config_generation: Option<u64>,
-        accepted_critic_snapshot: Option<&AcceptedCriticSnapshot>,
-        accepted_topology_generation: Option<u32>,
+        subject: DiagnosticSubject<'_>,
         commit: impl FnOnce() -> T,
     ) -> Result<T, DiagnosticSubjectRejection> {
-        let normalized_uri = self.normalize_uri_key(uri);
+        let normalized_uri = self.normalize_uri_key(subject.uri);
         // Resolve folder ownership before the identity critical section. The
         // topology generation and unavailable phase fence this sample against
         // a concurrent folder/configuration transaction.
@@ -243,22 +251,25 @@ impl LspServer {
         if !self.workspace_topology_stable.load(std::sync::atomic::Ordering::SeqCst) {
             return Err(DiagnosticSubjectRejection::SupersededCriticPolicy);
         }
-        if accepted_critic_snapshot
+        if subject
+            .accepted_critic_snapshot
             .is_some_and(|snapshot| live_root.as_deref() != snapshot.owning_root())
         {
             return Err(DiagnosticSubjectRejection::SupersededCriticPolicy);
         }
-        if workspace_generation.is_some_and(|generation| {
+        if subject.workspace_generation.is_some_and(|generation| {
             self.workspace_identity_generation.load(std::sync::atomic::Ordering::SeqCst)
                 != generation
-                || folder_config_generation != accepted_folder_config_generation
+                || folder_config_generation != subject.accepted_folder_config_generation
         }) {
             return Err(DiagnosticSubjectRejection::SupersededGeneration);
         }
         let live_topology =
             self.workspace_topology_generation.load(std::sync::atomic::Ordering::SeqCst);
         if sampled_topology != live_topology
-            || accepted_topology_generation.is_some_and(|accepted| accepted != live_topology)
+            || subject
+                .accepted_topology_generation
+                .is_some_and(|accepted| accepted != live_topology)
         {
             return Err(DiagnosticSubjectRejection::SupersededCriticPolicy);
         }
@@ -266,17 +277,17 @@ impl LspServer {
         let Some(document) = documents.get(&normalized_uri) else {
             return Err(DiagnosticSubjectRejection::DocumentClosed);
         };
-        if !Arc::ptr_eq(&document.generation, document_instance) {
+        if !Arc::ptr_eq(&document.generation, subject.document_instance) {
             return Err(DiagnosticSubjectRejection::WrongDocumentInstance);
         }
-        if document.current_generation() != generation {
+        if document.current_generation() != subject.generation {
             return Err(DiagnosticSubjectRejection::SupersededGeneration);
         }
 
         // Hold policy authority through the irreversible effect, rather than
         // carrying a pre-lock boolean across a concurrent configuration write.
         let config = self.config.lock();
-        if let Some(snapshot) = accepted_critic_snapshot
+        if let Some(snapshot) = subject.accepted_critic_snapshot
             && (live_root.as_deref() != snapshot.owning_root() || !snapshot.is_current(&config))
         {
             return Err(DiagnosticSubjectRejection::SupersededCriticPolicy);
@@ -314,13 +325,15 @@ impl LspServer {
     ) -> PushDiagnosticsCommitOutcome {
         after_staging();
         let result = self.commit_if_diagnostic_subject_current(
-            &identity.normalized_uri,
-            &identity.document_instance,
-            identity.generation,
-            Some(identity.workspace_generation),
-            identity.folder_config_generation,
-            identity.accepted_critic_snapshot.as_ref(),
-            identity.accepted_topology_generation,
+            DiagnosticSubject {
+                uri: &identity.normalized_uri,
+                document_instance: &identity.document_instance,
+                generation: identity.generation,
+                workspace_generation: Some(identity.workspace_generation),
+                accepted_folder_config_generation: identity.folder_config_generation,
+                accepted_critic_snapshot: identity.accepted_critic_snapshot.as_ref(),
+                accepted_topology_generation: identity.accepted_topology_generation,
+            },
             || {
                 let mut committed = self.push_diagnostics_sink.committed.lock();
                 self.enqueue_committed_push_diagnostic(
