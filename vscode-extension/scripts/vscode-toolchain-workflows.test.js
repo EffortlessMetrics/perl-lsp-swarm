@@ -54,15 +54,15 @@ void test('current-source inventory uses PR merge-base while manual runs keep ac
   const source = readWorkflow('vscode-current-source-linux-smoke.yml');
   assert.match(
     source,
-    /PERL_LSP_PACKAGE_BASE_MODE: \$\{\{ github\.event_name == 'pull_request' && 'pull_request' \|\| 'accepted' \}\}/,
+    /^          PERL_LSP_PACKAGE_BASE_MODE: \$\{\{ github\.event_name == 'pull_request' && 'pull_request' \|\| 'accepted' \}\}$/m,
   );
   assert.match(
     source,
-    /PERL_LSP_PACKAGE_PR_BASE_SHA: \$\{\{ github\.event_name == 'pull_request' && github\.event\.pull_request\.base\.sha \|\| '' \}\}/,
+    /^          PERL_LSP_PACKAGE_PR_BASE_SHA: \$\{\{ github\.event_name == 'pull_request' && github\.event\.pull_request\.base\.sha \|\| '' \}\}$/m,
   );
   assert.match(
     source,
-    /PERL_LSP_PACKAGE_BASE_SHA: \$\{\{ github\.event_name == 'workflow_dispatch' && inputs\.accepted_base_sha \|\| '' \}\}/,
+    /^          PERL_LSP_PACKAGE_BASE_SHA: \$\{\{ github\.event_name == 'workflow_dispatch' && inputs\.accepted_base_sha \|\| '' \}\}$/m,
   );
   assert.doesNotMatch(
     source,

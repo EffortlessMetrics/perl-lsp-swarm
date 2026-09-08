@@ -498,7 +498,7 @@ function interpretTransitionResult(
   };
 }
 
-function runInventoryTransition(env, expectedRevision, vsixPath) {
+function inventoryTransitionArgs(env, vsixPath) {
   const scriptPath = path.join(__dirname, 'check-vsix-inventory-transition.js');
   const args = [scriptPath, '--vsix', vsixPath];
   const explicitBase = (env.PERL_LSP_PACKAGE_BASE_SHA || '').trim();
@@ -508,6 +508,11 @@ function runInventoryTransition(env, expectedRevision, vsixPath) {
   } else if (explicitBase) {
     args.push('--base', explicitBase);
   }
+  return args;
+}
+
+function runInventoryTransition(env, expectedRevision, vsixPath) {
+  const args = inventoryTransitionArgs(env, vsixPath);
   const result = spawnSync(process.execPath, args, {
     cwd: root,
     env,
@@ -2655,6 +2660,7 @@ module.exports = {
   interpretBehavioralSmokeExit,
   runPublishedSmoke,
   interpretTransitionResult,
+  inventoryTransitionArgs,
   publishCheckSummary,
   writeProjectionLine,
   readHostResolutionFailureReceipt,

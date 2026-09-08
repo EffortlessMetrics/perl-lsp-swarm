@@ -381,14 +381,15 @@ void test('uses a temporary git fork and rejects an unrelated event base', () =>
     const mergeBase = git(directory, ['rev-parse', 'HEAD']);
 
     git(directory, ['checkout', '-q', '-b', 'candidate']);
-    fs.writeFileSync(path.join(directory, 'package.txt'), 'candidate package\n');
-    git(directory, ['commit', '-qam', 'candidate package']);
+    fs.writeFileSync(path.join(directory, 'test.rs'), 'candidate test\n');
+    git(directory, ['add', 'test.rs']);
+    git(directory, ['commit', '-q', '-m', 'candidate test']);
     const candidate = git(directory, ['rev-parse', 'HEAD']);
 
     git(directory, ['checkout', '-q', 'main']);
-    fs.writeFileSync(path.join(directory, 'main.txt'), 'event base\n');
-    git(directory, ['add', 'main.txt']);
-    git(directory, ['commit', '-q', '-m', 'event base']);
+    fs.writeFileSync(path.join(directory, 'package.txt'), 'base package update\n');
+    git(directory, ['add', 'package.txt']);
+    git(directory, ['commit', '-q', '-m', 'event package']);
     const eventBase = git(directory, ['rev-parse', 'HEAD']);
     const resolve = (revision) => git(directory, ['rev-parse', `${revision}^{commit}`]);
     const runGitOptional = (args) => {
@@ -407,6 +408,19 @@ void test('uses a temporary git fork and rejects an unrelated event base', () =>
       }),
       mergeBase,
     );
+    assert.equal(git(directory, ['diff', '--name-only', mergeBase, candidate]), 'test.rs');
+    assert.equal(git(directory, ['diff', '--name-only', mergeBase, eventBase]), 'package.txt');
+    const unchanged = document({ 'package.txt': 2 });
+    const result = evaluateTransition({
+      actual: unchanged.value,
+      baseDocument: unchanged,
+      candidateDocument: unchanged,
+      declaration: null,
+      platform: 'linux',
+      arch: 'x64',
+    });
+    assert.equal(result.state, 'no_change');
+    assert.equal(result.passed, true);
 
     git(directory, ['checkout', '-q', '--orphan', 'unrelated']);
     fs.writeFileSync(path.join(directory, 'unrelated.txt'), 'unrelated\n');
