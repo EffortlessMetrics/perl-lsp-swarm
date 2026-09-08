@@ -543,8 +543,8 @@ pub fn discover(config: DiscoverConfig) -> Result<()> {
         commit: current_commit(),
         timestamp: Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
         perl_ref: perl_tree_ref(&perl_tree),
-        prepared_tree: perl_tree.display().to_string(),
-        host_perl: scheduler_perl.display().to_string(),
+        prepared_tree: receipt_path_display(&perl_tree),
+        host_perl: receipt_path_display(&scheduler_perl),
         runner: config.runner,
         profile: config.profile,
         tests,
@@ -3331,8 +3331,10 @@ pub fn run_mode(config: RunConfig) -> Result<()> {
     let scheduler_perl = resolve_scheduler_perl(&run_tree, config.host_perl.as_deref())?;
     // The receipt records the interpreter identity deterministically per
     // prepared tree: the terminal-admission gate compares parse and compile
-    // reports, and the run-copy path carries a per-run nonce.
-    let receipt_host_perl = config.host_perl.clone().unwrap_or_else(|| perl_tree.join("perl"));
+    // reports, and the run-copy path carries a per-run nonce. Resolving
+    // against the canonical tree keeps the recorded identity identical to
+    // the discovery phase and applies the same validation (#15138).
+    let receipt_host_perl = resolve_scheduler_perl(&perl_tree, config.host_perl.as_deref())?;
     let dumptests_args = if selected_tests.is_empty() {
         profile_runner_args(config.profile, &t_dir, config.runner)?
     } else {
@@ -3948,9 +3950,15 @@ fn resolve_scheduler_perl(perl_tree: &Path, host_perl: Option<&Path>) -> Result<
                 override_perl.display()
             );
         }
-        return Ok(override_perl.to_path_buf());
+        // Scheduler commands run with cwd set to the tree's t/ directory, so
+        // a relative override would silently resolve against the wrong base.
+        return override_perl.canonicalize().with_context(|| {
+            format!("canonicalizing --host-perl override: {}", override_perl.display())
+        });
     }
-    let tree_perl = perl_tree.join("perl");
+    // Upstream `make test` semantics: the scheduler runs under the prepared
+    // tree's own built perl — `perl.exe` where that is the platform name.
+    let tree_perl = perl_tree.join(format!("perl{}", std::env::consts::EXE_SUFFIX));
     if !tree_perl.is_file() {
         bail!(
             "prepared Perl tree has no built perl at {}; pass --host-perl to override with a version-matched interpreter",
@@ -3958,6 +3966,20 @@ fn resolve_scheduler_perl(perl_tree: &Path, host_perl: Option<&Path>) -> Result<
         );
     }
     Ok(tree_perl)
+}
+
+/// Record a path in a public receipt without host identity: project-rooted
+/// paths are stored relative to the repository root, anything else verbatim
+/// (the public-evidence gate fail-closes on absolute paths it can see).
+fn receipt_path_display(path: &Path) -> String {
+    let display = match project_root() {
+        Ok(root) => {
+            let root = root.canonicalize().unwrap_or(root);
+            path.strip_prefix(&root).unwrap_or(path).display().to_string()
+        }
+        Err(_) => path.display().to_string(),
+    };
+    display.replace('\\', "/")
 }
 
 fn validate_runner_script(t_dir: &Path, runner: HarnessRunner) -> Result<PathBuf> {
@@ -5892,9 +5914,9 @@ fn build_run_report(input: BuildRunReportInput<'_>) -> RunReport {
         commit: current_commit(),
         timestamp: Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
         perl_ref: perl_tree_ref(input.perl_tree),
-        prepared_tree: input.perl_tree.display().to_string(),
-        run_tree: input.run_tree.display().to_string(),
-        host_perl: input.host_perl.display().to_string(),
+        prepared_tree: receipt_path_display(input.perl_tree),
+        run_tree: receipt_path_display(input.run_tree),
+        host_perl: receipt_path_display(input.host_perl),
         runner: input.config.runner,
         mode: input.config.mode,
         profile: input.config.profile,
@@ -9722,7 +9744,41 @@ mod tests {
 
         let resolved = resolve_scheduler_perl(&perl_tree, Some(&override_perl))?;
 
-        assert_eq!(resolved, override_perl);
+        assert_eq!(resolved, override_perl.canonicalize()?);
+        Ok(())
+    }
+
+    #[test]
+    fn scheduler_perl_override_is_canonicalized_for_the_t_dir_cwd() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let perl_tree = temp.path().join("prepared-perl");
+        fs::create_dir_all(&perl_tree)?;
+        fs::write(perl_tree.join("perl"), "sentinel built perl\n")?;
+        let override_perl = temp.path().join("version-matched-perl");
+        fs::write(&override_perl, "sentinel override perl\n")?;
+        let dotted = temp.path().join(".").join("version-matched-perl");
+
+        let resolved = resolve_scheduler_perl(&perl_tree, Some(&dotted))?;
+
+        assert_eq!(resolved, override_perl.canonicalize()?);
+        Ok(())
+    }
+
+    #[test]
+    fn receipt_path_display_records_project_paths_without_host_identity() -> TestResult {
+        let root = project_root()?.canonicalize()?;
+        let inside = root.join("target").join("perl-core").join("smoke").join("base");
+        let recorded = receipt_path_display(&inside);
+        assert_eq!(recorded, "target/perl-core/smoke/base", "unexpected: {recorded}");
+        Ok(())
+    }
+
+    #[test]
+    fn receipt_path_display_keeps_paths_outside_the_project_verbatim() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let outside = temp.path().join("prepared-perl").join("perl");
+        let recorded = receipt_path_display(&outside);
+        assert_eq!(recorded, outside.display().to_string().replace('\\', "/"));
         Ok(())
     }
 
@@ -9810,7 +9866,12 @@ mod tests {
         assert_eq!(report.runner, HarnessRunner::Test);
         assert_eq!(report.profile, HarnessProfile::Base);
         assert_eq!(report.prepared_tree, perl_tree.canonicalize()?.display().to_string());
-        assert_eq!(report.host_perl, "/bin/sh");
+        // The override is recorded in its canonicalized form: the true
+        // interpreter identity, resolvable from the scheduler's t/ cwd.
+        assert_eq!(
+            report.host_perl,
+            PathBuf::from("/bin/sh").canonicalize()?.display().to_string()
+        );
         assert_eq!(
             report.tests,
             vec![DiscoveredTest { path: "base/ok.t".into(), root: "base".into() }]
