@@ -50,6 +50,7 @@ on:
       - 'scripts/ci/test_validate_dependabot_contract.py'
       - 'scripts/ci/validate_dependabot_cooldown.py'
       - 'scripts/ci/test_validate_dependabot_cooldown.py'
+      - 'vscode-extension/.npmrc'
       - 'docs/reference/WORKTREE_PROTOCOL.md'
       - 'docs/project/CI_LOCAL_VALIDATION.md'
       - 'scripts/ci/check_perl_lsp_rs_core_package.py'

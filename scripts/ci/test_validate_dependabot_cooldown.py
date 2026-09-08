@@ -13,10 +13,10 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 from validate_dependabot_contract import CONFIG_PATH, MANAGEMENT_GUIDE, QUICK_REFERENCE  # noqa: E402
-from validate_dependabot_cooldown import validate  # noqa: E402
+from validate_dependabot_cooldown import NPMRC_PATH, validate  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
-SURFACES = (CONFIG_PATH, MANAGEMENT_GUIDE, QUICK_REFERENCE)
+SURFACES = (CONFIG_PATH, MANAGEMENT_GUIDE, QUICK_REFERENCE, NPMRC_PATH)
 
 
 def _clone(tmp: Path) -> None:
@@ -71,6 +71,24 @@ class DependabotCooldownTests(unittest.TestCase):
             _clone(tmp)
             _rewrite(tmp, QUICK_REFERENCE, "default-days: 14", "default-days: 7")
             self.assertTrue(any(item.startswith("cooldown-guide-drift:") for item in validate(tmp)))
+
+    def test_npmrc_missing_gate_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            tmp = Path(temp)
+            _clone(tmp)
+            _rewrite(tmp, NPMRC_PATH, "min-release-age=14\n", "")
+            self.assertTrue(
+                any(item.startswith("npmrc-min-release-age-drift:") for item in validate(tmp))
+            )
+
+    def test_npmrc_seconds_confusion_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            tmp = Path(temp)
+            _clone(tmp)
+            _rewrite(tmp, NPMRC_PATH, "min-release-age=14", "min-release-age=1209600")
+            self.assertTrue(
+                any(item.startswith("npmrc-min-release-age-drift:") for item in validate(tmp))
+            )
 
 
 if __name__ == "__main__":

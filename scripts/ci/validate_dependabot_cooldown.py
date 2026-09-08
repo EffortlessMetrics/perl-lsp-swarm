@@ -18,6 +18,8 @@ from validate_dependabot_contract import (
 
 EXPECTED_DEFAULT_DAYS = 14
 GUIDES = (MANAGEMENT_GUIDE, QUICK_REFERENCE)
+NPMRC_PATH = Path("vscode-extension/.npmrc")
+EXPECTED_MIN_RELEASE_AGE = "14"
 
 
 def _read(root: Path, rel: Path) -> str:
@@ -73,6 +75,26 @@ def validate(root: Path) -> list[str]:
         if not has_age or "default-days: 14" not in text:
             findings.append(
                 f"cooldown-guide-drift: {guide.as_posix()} must state the 14-day cooldown and default-days: 14"
+            )
+
+    # The npm resolver half of the admission boundary: exactly one
+    # `min-release-age=14` (days) setting. A missing line or any other
+    # value (for example seconds confusion) is drift. Lines for the
+    # `min-release-age-exclude` key do not match this prefix.
+    try:
+        npmrc = _read(root, NPMRC_PATH)
+    except RuntimeError as exc:
+        findings.append(f"npmrc-unreadable: {exc}")
+    else:
+        values = [
+            line.split("=", 1)[1].strip()
+            for line in npmrc.splitlines()
+            if line.strip().startswith("min-release-age=")
+        ]
+        if values != [EXPECTED_MIN_RELEASE_AGE]:
+            findings.append(
+                f"npmrc-min-release-age-drift: {NPMRC_PATH.as_posix()} must set"
+                f" min-release-age={EXPECTED_MIN_RELEASE_AGE} (days); got {values!r}"
             )
 
     return sorted(findings)

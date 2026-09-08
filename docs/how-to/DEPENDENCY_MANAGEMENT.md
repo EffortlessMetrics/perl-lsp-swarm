@@ -44,7 +44,11 @@ Sources: [npm v11 configuration](https://docs.npmjs.com/cli/v11/commands/npm-ins
 [implementation plan #15107](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/15107).
 Run `python scripts/ci/test_validate_dependabot_contract.py` and
 `python scripts/ci/validate_dependabot_contract.py --repo-root .` to check the
-Dependabot scalars and existing guidance contract. This validator does not execute
+Dependabot scalars and existing guidance contract, and
+`python scripts/ci/test_validate_dependabot_cooldown.py` plus
+`python scripts/ci/validate_dependabot_cooldown.py --repo-root .` to check the
+`default-days: 14` cooldown rows, the `vscode-extension/.npmrc` `min-release-age=14`
+gate, and cooldown guidance against drift. These validators do not execute
 npm resolution or prove GitHub's hosted cooldown behavior.
 
 ## Update Strategy
