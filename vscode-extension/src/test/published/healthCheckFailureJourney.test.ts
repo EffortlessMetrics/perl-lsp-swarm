@@ -99,11 +99,8 @@ suite('Installed Health Check failure and recovery', function () {
 
     const metricsBeforeRestart = activation?.getLanguageClientStartupMetrics?.();
     assert.ok(metricsBeforeRestart, 'startup metrics must be exported by the installed extension');
-    assert.equal(
-      metricsBeforeRestart.server_start_status,
-      'error',
-      JSON.stringify(metricsBeforeRestart),
-    );
+    assert.equal(metricsBeforeRestart.server_start_status, 'ok', JSON.stringify(metricsBeforeRestart));
+    assert.equal(metricsBeforeRestart.initialize_status, 'error', JSON.stringify(metricsBeforeRestart));
     assert.equal(
       typeof metricsBeforeRestart.server_start_ms,
       'number',
@@ -129,11 +126,8 @@ suite('Installed Health Check failure and recovery', function () {
       'running',
       JSON.stringify(metricsAfterRestart),
     );
-    assert.equal(
-      metricsAfterRestart.server_start_status,
-      'error',
-      JSON.stringify(metricsAfterRestart),
-    );
+    assert.equal(metricsAfterRestart.server_start_status, 'ok', JSON.stringify(metricsAfterRestart));
+    assert.equal(metricsAfterRestart.initialize_status, 'error', JSON.stringify(metricsAfterRestart));
     const bundledProcesses = await scanProcessesUnderDirectory(path.dirname(bundledPath));
     assert.equal(
       bundledProcesses.length,
