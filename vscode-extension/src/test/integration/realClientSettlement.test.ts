@@ -31,6 +31,7 @@ function writeFixture(directory: string): string {
       '}',
       'function handle(message) {',
       "  if (message.method === 'initialize') {",
+      '    fs.writeFileSync(`${control}.received`, String(process.pid));',
       '    if (fs.existsSync(`${control}.timeout`)) return;',
       '    if (fs.existsSync(`${control}.allow`)) {',
       "      send({ jsonrpc: '2.0', id: message.id, result: { capabilities: {} } });",
@@ -132,21 +133,12 @@ function createLifecycle(
         if (witness !== undefined) {
           observedExit.set(
             client,
-            new Promise<void>((resolve, reject) => {
+            new Promise<void>((resolve) => {
               if (witness.exitCode !== null || witness.signalCode !== null) {
                 resolve();
                 return;
               }
-              const timer = setTimeout(() => {
-                witness.removeListener('exit', onExit);
-                reject(
-                  new Error(`timed out waiting for child ${String(witness.pid)} to emit exit`),
-                );
-              }, 5_000);
-              const onExit = (): void => {
-                clearTimeout(timer);
-                resolve();
-              };
+              const onExit = (): void => resolve();
               witness.once('exit', onExit);
             }),
           );
@@ -189,7 +181,47 @@ async function releaseClient(
   if (witness.exitCode !== null || witness.signalCode !== null) return;
   const exit = observedExit(client);
   fs.writeFileSync(`${control}.exit`, 'exit', 'utf8');
-  await exit;
+  const settled = await Promise.race([
+    exit.then(() => true),
+    new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 5_000)),
+  ]);
+  if (settled || witness.exitCode !== null || witness.signalCode !== null) return;
+
+  const kill = (witness as ServerProcessLike & { kill?: () => boolean }).kill;
+  if (typeof kill !== 'function') {
+    throw new Error('owned child must expose an exact-handle kill fallback');
+  }
+  const forcedExit = new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      witness.removeListener('exit', onExit);
+      reject(new Error(`owned child ${String(witness.pid)} did not exit after kill`));
+    }, 5_000);
+    const onExit = (): void => {
+      clearTimeout(timer);
+      resolve();
+    };
+    witness.once('exit', onExit);
+  });
+  assert.equal(kill(), true, 'exact-handle child termination request failed');
+  await forcedExit;
+}
+
+async function cleanupClients(
+  clients: ProcessBoundLanguageClient[],
+  control: string,
+  observedExit: (client: ProcessBoundLanguageClient) => Promise<void>,
+): Promise<void> {
+  const errors: unknown[] = [];
+  for (const client of clients) {
+    try {
+      await releaseClient(client, control, observedExit);
+    } catch (error: unknown) {
+      errors.push(error);
+    }
+  }
+  if (errors.length > 0) {
+    throw new AggregateError(errors, 'real settlement fixture cleanup failed');
+  }
 }
 
 suite('Real language-client process settlement', function () {
@@ -218,9 +250,7 @@ suite('Real language-client process settlement', function () {
       await assert.rejects(lifecycle.restart(), /replacement startup is blocked/);
       assert.equal(created(), 1);
     } finally {
-      for (const client of clients) {
-        await releaseClient(client, control, observedExit);
-      }
+      await cleanupClients(clients, control, observedExit);
       fs.rmSync(directory, { recursive: true, force: true });
     }
   });
@@ -240,6 +270,10 @@ suite('Real language-client process settlement', function () {
       observedExit = createdLifecycle.observedExit;
       clients = createdLifecycle.clients;
       await assert.rejects(lifecycle.start(), /replacement startup is blocked/);
+      await waitForFile(`${control}.received`);
+      const timedOutWitness = serverProcessOf(clients[0]);
+      assert.ok(timedOutWitness);
+      assert.equal(fs.readFileSync(`${control}.received`, 'utf8'), String(timedOutWitness.pid));
       assert.equal(created(), 1);
       await assert.rejects(lifecycle.restart(), /replacement startup is blocked/);
       const firstClient = clients[0];
@@ -248,9 +282,7 @@ suite('Real language-client process settlement', function () {
       await assert.rejects(lifecycle.restart(), /replacement startup is blocked/);
       assert.equal(created(), 1);
     } finally {
-      for (const client of clients) {
-        await releaseClient(client, control, observedExit);
-      }
+      await cleanupClients(clients, control, observedExit);
       fs.rmSync(directory, { recursive: true, force: true });
     }
   });
@@ -285,17 +317,23 @@ suite('Real language-client process settlement', function () {
       fs.writeFileSync(`${control}.exit`, 'exit', 'utf8');
       await exit;
       fs.rmSync(`${control}.exit`, { force: true });
+      fs.rmSync(`${control}.initialized`, { force: true });
       const replacement = await lifecycle.restart();
       assert.ok(replacement);
       await waitForFile(`${control}.initialized`);
       assert.equal(created(), 2);
+      const replacementWitness = serverProcessOf(replacement);
+      assert.ok(replacementWitness);
+      assert.equal(
+        fs.readFileSync(`${control}.initialized`, 'utf8'),
+        String(replacementWitness.pid),
+      );
+      assert.equal(lifecycle.snapshot.state, 'running');
       await lifecycle.stop();
       assert.equal(lifecycle.snapshot.state, 'stopped');
     } finally {
       fs.rmSync(`${control}.hold`, { force: true });
-      for (const client of clients) {
-        await releaseClient(client, control, observedExit);
-      }
+      await cleanupClients(clients, control, observedExit);
       fs.rmSync(directory, { recursive: true, force: true });
     }
   });
