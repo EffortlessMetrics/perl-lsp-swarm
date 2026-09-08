@@ -216,6 +216,9 @@ pub struct LspServer {
     /// invalidates in-flight diagnostic subjects, even when the selected root
     /// string happens to remain unchanged.
     pub(crate) workspace_topology_generation: Arc<AtomicU32>,
+    /// False while workspace membership and its matching configuration are
+    /// being published as one topology transition.
+    pub(crate) workspace_topology_stable: Arc<AtomicBool>,
     /// Root path for module resolution
     root_path: Arc<Mutex<Option<PathBuf>>>,
     /// `.perltidyrc` profile path discovered from the workspace root during

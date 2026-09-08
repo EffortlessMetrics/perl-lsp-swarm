@@ -187,12 +187,17 @@ impl LspServer {
             return Err(DiagnosticSubjectRejection::SupersededGeneration);
         }
 
-        if let Some(accepted_topology_generation) = accepted_topology_generation {
+        if accepted_topology_generation.is_some() || accepted_critic_snapshot.is_some() {
             let workspace_folders = self.workspace_folders.lock();
-            if self.workspace_topology_generation.load(std::sync::atomic::Ordering::SeqCst)
-                != accepted_topology_generation
-            {
+            if !self.workspace_topology_stable.load(std::sync::atomic::Ordering::SeqCst) {
                 return Err(DiagnosticSubjectRejection::SupersededCriticPolicy);
+            }
+            if let Some(accepted_topology_generation) = accepted_topology_generation {
+                if self.workspace_topology_generation.load(std::sync::atomic::Ordering::SeqCst)
+                    != accepted_topology_generation
+                {
+                    return Err(DiagnosticSubjectRejection::SupersededCriticPolicy);
+                }
             }
             if let Some(snapshot) = accepted_critic_snapshot {
                 let root_path = self.root_path.lock();
@@ -639,6 +644,28 @@ mod tests {
             ),
             PushDiagnosticsCommitOutcome::CommittedCurrent
         );
+    }
+
+    #[test]
+    fn unstable_workspace_topology_rejects_accepted_subject() {
+        let (server, buf) = make_server();
+        let uri = "file:///sink_unstable_topology_test.pl";
+        let identity = open_document(&server, uri, "my $x = 1;\n");
+        assert!(wait_for_frames(&buf, 1), "didOpen publication must flush first");
+        let accepted_generation =
+            server.workspace_topology_generation.load(std::sync::atomic::Ordering::SeqCst);
+        let bound = identity.with_accepted_topology_generation(accepted_generation);
+
+        server.workspace_topology_stable.store(false, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(
+            server.commit_push_diagnostics(
+                &bound,
+                json!({ "uri": uri, "version": 1, "diagnostics": [] }),
+                PushDiagnosticsDisposition::Replacement,
+            ),
+            PushDiagnosticsCommitOutcome::RejectedSupersededCriticPolicy
+        );
+        server.workspace_topology_stable.store(true, std::sync::atomic::Ordering::SeqCst);
     }
 
     /// #13304: two distinct accepted filter shapes can alias under the legacy

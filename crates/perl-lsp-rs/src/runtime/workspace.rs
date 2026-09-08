@@ -2135,8 +2135,12 @@ impl LspServer {
             #[cfg(feature = "workspace")]
             let _indexing_transition = self.indexing_transition_lock.lock();
 
+            // Membership and the configuration loaded for that membership are
+            // one publication unit.  Readers may continue, but the sink must
+            // reject subjects until both authorities are installed.
             if !change.added.is_empty() {
                 let mut workspace_folders = self.workspace_folders.lock();
+                self.workspace_topology_stable.store(false, std::sync::atomic::Ordering::SeqCst);
                 // Invalidate subjects while the topology guard is held so an
                 // added root cannot race a reader with the old generation.
                 self.workspace_topology_generation
@@ -2167,7 +2171,12 @@ impl LspServer {
                 // concurrent diagnostic commit.  Capture the exact removed
                 // identities, release the topology guard, then retire their
                 // document/index state in a second phase.
-                self.apply_workspace_folder_removal(&removed_uris);
+                let mut workspace_folders = self.workspace_folders.lock();
+                self.workspace_topology_stable.store(false, std::sync::atomic::Ordering::SeqCst);
+                workspace_folders.retain(|f| !removed_uris.contains(&f.uri));
+                self.workspace_topology_generation
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                drop(workspace_folders);
 
                 for uri in &change.removed {
                     tracing::debug!(uri, "Removed workspace folder");
@@ -2180,9 +2189,6 @@ impl LspServer {
             // before issuing a fresh `workspace/configuration` pull.
             self.pending_workspace_configuration_requests.lock().clear();
 
-            // Load config for all folders after changes
-            self.load_and_apply_project_config();
-
             // Update workspace index with new folder list
             #[cfg(feature = "workspace")]
             {
@@ -2192,6 +2198,13 @@ impl LspServer {
                     // Removed folders were evicted above before folder
                     // membership was updated.
                 }
+            }
+
+            // Load config only after the index has accepted the same folder
+            // membership, so new topology cannot observe the old policy.
+            let config_complete = self.load_and_apply_project_config();
+            if config_complete {
+                self.workspace_topology_stable.store(true, std::sync::atomic::Ordering::SeqCst);
             }
 
             #[cfg(feature = "workspace")]
@@ -2230,6 +2243,7 @@ impl LspServer {
     /// guard returned here has been dropped; keeping that separation prevents
     /// a `workspace_folders -> documents` lock inversion with diagnostic
     /// publication.
+    #[cfg(test)]
     fn apply_workspace_folder_removal(&self, removed_uris: &std::collections::HashSet<String>) {
         let mut workspace_folders = self.workspace_folders.lock();
         workspace_folders.retain(|f| !removed_uris.contains(&f.uri));
@@ -3709,6 +3723,35 @@ mod tests {
             generation_before + 1,
             "added workspace folders must invalidate in-flight subjects"
         );
+        assert!(
+            server.workspace_topology_stable.load(std::sync::atomic::Ordering::SeqCst),
+            "a completed folder/configuration transition publishes stable authority"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn workspace_folder_configuration_failure_stays_unstable_until_recovery()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        std::fs::write(temp.path().join(".perl-lsp.toml"), "[perl\n")?;
+        let uri = url::Url::from_file_path(temp.path()).map_err(|_| "temp path URI")?.to_string();
+        let server = LspServer::new();
+
+        server.handle_did_change_workspace_folders(Some(json!({
+            "event": { "added": [{ "uri": uri, "name": "broken" }], "removed": [] }
+        })))?;
+        assert!(!server.workspace_topology_stable.load(std::sync::atomic::Ordering::SeqCst));
+
+        std::fs::write(temp.path().join(".perl-lsp.toml"), "[perl]\n")?;
+        server.handle_did_change_workspace_folders(Some(json!({
+            "event": { "added": [], "removed": [{ "uri": uri }] }
+        })))?;
+        let uri = url::Url::from_file_path(temp.path()).map_err(|_| "temp path URI")?.to_string();
+        server.handle_did_change_workspace_folders(Some(json!({
+            "event": { "added": [{ "uri": uri, "name": "recovered" }], "removed": [] }
+        })))?;
+        assert!(server.workspace_topology_stable.load(std::sync::atomic::Ordering::SeqCst));
         Ok(())
     }
 

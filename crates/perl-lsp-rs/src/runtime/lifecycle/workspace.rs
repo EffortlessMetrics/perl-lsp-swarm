@@ -141,18 +141,24 @@ impl LspServer {
     /// or more folders set the same global key to different values, a single
     /// `window/showMessage` Warning is emitted naming the folders and keys, instead
     /// of silently discarding a folder's configuration.
-    pub(crate) fn load_and_apply_project_config(&self) {
+    pub(crate) fn load_and_apply_project_config(&self) -> bool {
         let mut folders = self.workspace_folders.lock();
+        let mut complete = true;
 
         if folders.is_empty() {
+            drop(folders);
             // Single-file mode: try to discover .perl-lsp.toml from the
             // open document's directory. This is a common workflow — opening
             // a lone .pl file that has a .perl-lsp.toml next to it. (#UX15)
-            if let Some(config) = self.discover_single_file_config() {
-                let mut server_config = self.config.lock();
-                config.apply_to_server_config(&mut server_config);
+            match self.discover_single_file_config() {
+                Ok(Some(config)) => {
+                    let mut server_config = self.config.lock();
+                    config.apply_to_server_config(&mut server_config);
+                }
+                Ok(None) => {}
+                Err(_) => complete = false,
             }
-            return;
+            return complete;
         }
 
         // Collect (display_name, project_config) for folders that have a
@@ -211,6 +217,7 @@ impl LspServer {
                         global_configs.push((folder.display_name().to_string(), project_config));
                     }
                     Err(msg) => {
+                        complete = false;
                         let user_msg = format!(
                             "Perl LSP: {msg} \
                              Fix the error in .perl-lsp.toml and reload the window \
@@ -258,18 +265,27 @@ impl LspServer {
         // and initialization-option state may be applied; server→client requests
         // are not legal until after InitializeResult has been returned (#7708).
         drop(folders);
+        complete
     }
 
     /// In single-file mode, try to discover `.perl-lsp.toml` from the
     /// directory of the first open document. (#UX15)
-    fn discover_single_file_config(&self) -> Option<perl_lsp_rs_core::config::ProjectConfig> {
+    fn discover_single_file_config(
+        &self,
+    ) -> Result<Option<perl_lsp_rs_core::config::ProjectConfig>, String> {
         let documents = self.documents.lock();
-        let uri = documents.keys().next()?.to_string();
+        let Some(uri) = documents.keys().next().map(ToString::to_string) else {
+            return Ok(None);
+        };
         drop(documents);
 
-        let path = super::super::source_path_from_uri(&uri)?;
-        let dir = std::path::Path::new(&path).parent()?;
-        perl_lsp_rs_core::config::load_project_config(dir).ok().flatten()
+        let Some(path) = super::super::source_path_from_uri(&uri) else {
+            return Ok(None);
+        };
+        let Some(dir) = std::path::Path::new(&path).parent() else {
+            return Ok(None);
+        };
+        perl_lsp_rs_core::config::load_project_config(dir).map_err(|error| error.to_string())
     }
 
     /// Emit a `window/showMessage` Warning describing the conflicting
