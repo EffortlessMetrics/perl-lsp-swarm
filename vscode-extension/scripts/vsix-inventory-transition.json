@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
   "owner_issue": 15124,
-  "reason": "PR #15126 serializes the extension receipt test command and adds build-script.test.js. Hosted current-source Linux smoke run 34197500115 job 101968402493 measured package.json at 59435 bytes and total inventory at 1857510 bytes, with the other 28 paths unchanged. Package creation and behavioral smoke passed; strict inventory alone required this exact measured declaration. This update changes no validator, threshold, or admission rule. It is measured against a04abe4d6b8ed65690c8941c4902af76f36c4de5 with base b97f4fa98583f716bd01b656ac8d5ec3765c3845; the pending #15123 package archive baseline must be reconciled when the candidates are combined.",
-  "base_baseline_file_sha256": "5c73582a6a7ae22a9f648492731ef3315336bfb17553aee22bfb48c332f89411",
-  "candidate_baseline_file_sha256": "23539304192f68936750069db220f855a6fd4a0425e8e814f524fe30077b6114",
-  "base_inventory_sha256": "7780c5f86aebdd24b900a76bf412fcc05ad1c1acfd0b16717be6444bd884bcbb",
-  "candidate_inventory_sha256": "b0dc966e5eebd0cf256069b5ed0bf47867489c58b34c00f9b329b09232893343"
+  "reason": "PR #15126 registers the build-script proof in the serialized receipt command while retaining the landed packaging wrapper. On the combined candidate 72492cd565d21f6f8721a0499d9e634d879a785e, the fresh Windows x64 VSIX measured total inventory at 1857488 bytes; package.json is 59413 bytes, 115 bytes below the merge-base 59528, and the other 28 archive paths match the merge-base baseline. This declaration records the exact measured archive; no validator, threshold, or admission rule changes.",
+  "base_baseline_file_sha256": "4edd01ebb5a7ca17295226af8c866a172d1d424c9aa7cd342c7dd9e15d799db8",
+  "candidate_baseline_file_sha256": "6f070def2dff72b45a33f8187b64f4e599eca6798a430a6db7a348cc19562f58",
+  "base_inventory_sha256": "5f414273d8913857ebb2aef8a14fbf4c1613fb0ce71a95a94a82b846349ad4ff",
+  "candidate_inventory_sha256": "332167d38ae62ab4235dd4d90b1682d883bd1f3bab2571e2fa51e731ee2206d7"
 }
