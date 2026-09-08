@@ -757,9 +757,14 @@ fn comments_and_literals_cannot_satisfy_dispatch_anchors() -> Result<()> {
             r#"
                 // ModuleTrainCommand::Status
                 const DOCUMENTATION: &str = "module_train::run_status";
-                #[cfg(test)]
-                fn decoy() {
-                    let _ = module_train::run_status;
+                #[cfg(not(test))]
+                fn unrelated_dispatch(command: ModuleTrainCommand) {
+                    match command {
+                        ModuleTrainCommand::Status { tree } => {
+                            module_train::run_status(&tree);
+                        }
+                        _ => {}
+                    }
                 }
             "#,
         );
