@@ -955,22 +955,43 @@ mod shutdown_tests {
     /// this asserts the bounded path — the child is force-killed and reaped
     /// well inside its own sleep.
     #[test]
-    fn a_child_that_closes_stdout_but_keeps_running_is_not_waited_on_forever() {
-        // Closes stdout immediately, then stays alive far longer than any
-        // shutdown bound this harness uses.
-        let mut child = spawn_shell("exec 1>&-; sleep 300");
-
-        let started = Instant::now();
-        reap_or_kill(&mut child);
-        let elapsed = started.elapsed();
-
-        assert!(
-            elapsed < Duration::from_secs(10),
-            "cleanup must not block on a live child that closed its output; took {elapsed:?}"
-        );
-        // The child is reaped: a second wait resolves immediately rather than
-        // leaving a zombie behind.
-        assert!(child.try_wait().is_ok(), "child must have been reaped");
+    fn a_child_that_closes_stdout_but_keeps_running_is_not_waited_on_forever() -> anyhow::Result<()>
+    {
+        use std::io::Read;
+        // A shell builtin waits on the still-open stdin pipe; no sleeping
+        // descendant survives a failed assertion or a broken cleanup helper.
+        let mut child = Command::new("/bin/sh")
+            .args(["-c", "exec 1>&-; read ignored"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()?;
+        let result = (|| -> anyhow::Result<()> {
+            let mut stdout =
+                child.stdout.take().ok_or_else(|| anyhow::anyhow!("missing child stdout"))?;
+            let (sender, receiver) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let mut bytes = Vec::new();
+                let _ = sender.send(stdout.read_to_end(&mut bytes));
+            });
+            let bytes = receiver.recv_timeout(Duration::from_secs(10))??;
+            anyhow::ensure!(bytes == 0, "fixture stdout must close without output");
+            anyhow::ensure!(child.try_wait()?.is_none(), "fixture must still be alive after EOF");
+            let started = Instant::now();
+            reap_or_kill(&mut child);
+            anyhow::ensure!(
+                started.elapsed() < Duration::from_secs(10),
+                "cleanup exceeded its bound"
+            );
+            anyhow::ensure!(child.try_wait()?.is_some(), "cleanup must leave a reaped child");
+            Ok(())
+        })();
+        // Preserve the fixture even when a no-op cleanup mutation is detected.
+        if child.try_wait()?.is_none() {
+            child.kill()?;
+            child.wait()?;
+        }
+        result
     }
 
     /// The ordinary path: a child that already exited is collected without
