@@ -2146,50 +2146,61 @@ async function initializeLanguageClient(context: vscode.ExtensionContext): Promi
       return false;
     }
 
-    // Probe the binary to get an actionable OS-level diagnosis (#3280).
-    // If the probe result is Unknown (binary gave no useful output), fall
-    // back to the health check (#3312) which can detect missing Perl etc.
-    // lastStartupDiagnosis is updated so that serverNotRunningMessage() in
-    // command handlers surfaces the specific root cause rather than a generic prompt.
-    const probeResult = await probeStartupFailure(lifecycle.serverPath);
-    let healthMsg: string | undefined;
-    if (probeResult.kind === StartupErrorKind.Unknown) {
-      const onboarding = new OnboardingManager(context, outputChannel);
-      healthMsg = await onboarding.runStartupDiagnostics(lifecycle.serverPath);
-    }
-    // Cache the structured diagnosis so serverNotRunningMessage() can format
-    // it; when healthMsg overrides the hint, wrap it as a synthetic diagnosis.
-    lastStartupDiagnosis =
-      healthMsg && probeResult.kind === StartupErrorKind.Unknown
-        ? { kind: StartupErrorKind.Unknown, hint: healthMsg, remediation: probeResult.remediation }
-        : probeResult;
-    const dialogMessage = formatStartupFailureDialog(probeResult, healthMsg);
+    const failedServerPath = lifecycle.serverPath;
+    void (async () => {
+      // Probe the binary to get an actionable OS-level diagnosis (#3280).
+      // If the probe result is Unknown (binary gave no useful output), fall
+      // back to the health check (#3312) which can detect missing Perl etc.
+      // lastStartupDiagnosis is updated so that serverNotRunningMessage() in
+      // command handlers surfaces the specific root cause rather than a generic prompt.
+      const probeResult = await probeStartupFailure(failedServerPath);
+      let healthMsg: string | undefined;
+      if (probeResult.kind === StartupErrorKind.Unknown) {
+        const onboarding = new OnboardingManager(context, outputChannel);
+        healthMsg = await onboarding.runStartupDiagnostics(failedServerPath);
+      }
+      // Cache the structured diagnosis so serverNotRunningMessage() can format
+      // it; when healthMsg overrides the hint, wrap it as a synthetic diagnosis.
+      lastStartupDiagnosis =
+        healthMsg && probeResult.kind === StartupErrorKind.Unknown
+          ? {
+              kind: StartupErrorKind.Unknown,
+              hint: healthMsg,
+              remediation: probeResult.remediation,
+            }
+          : probeResult;
+      const dialogMessage = formatStartupFailureDialog(probeResult, healthMsg);
 
-    void vscode.window
-      .showErrorMessage(
-        dialogMessage,
-        'View Logs',
-        'Run Health Check',
-        'Reinstall',
-        'Check serverPath Setting',
-      )
-      .then((choice) => {
-        if (choice === 'View Logs') {
-          outputChannel.show();
-        } else if (choice === 'Run Health Check') {
-          void vscode.commands.executeCommand(
-            'perl-lsp.runHealthCheck',
-            lifecycle.serverPath ?? undefined,
-          );
-        } else if (choice === 'Reinstall') {
-          void reinstallServerBinary(context);
-        } else if (choice === 'Check serverPath Setting') {
-          void vscode.commands.executeCommand(
-            'workbench.action.openSettings',
-            'perl-lsp.serverPath',
-          );
-        }
-      });
+      void vscode.window
+        .showErrorMessage(
+          dialogMessage,
+          'View Logs',
+          'Run Health Check',
+          'Reinstall',
+          'Check serverPath Setting',
+        )
+        .then((choice) => {
+          if (choice === 'View Logs') {
+            outputChannel.show();
+          } else if (choice === 'Run Health Check') {
+            void vscode.commands.executeCommand(
+              'perl-lsp.runHealthCheck',
+              lifecycle.serverPath ?? undefined,
+            );
+          } else if (choice === 'Reinstall') {
+            void reinstallServerBinary(context);
+          } else if (choice === 'Check serverPath Setting') {
+            void vscode.commands.executeCommand(
+              'workbench.action.openSettings',
+              'perl-lsp.serverPath',
+            );
+          }
+        });
+    })().catch((diagnosticError: unknown) => {
+      const message =
+        diagnosticError instanceof Error ? diagnosticError.message : String(diagnosticError);
+      outputChannel.error(`[startup] Failure diagnosis failed: ${message}`);
+    });
     return false;
   }
 }
