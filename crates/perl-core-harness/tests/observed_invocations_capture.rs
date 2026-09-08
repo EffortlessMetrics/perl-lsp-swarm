@@ -1660,3 +1660,30 @@ fn unreadable_trace_channel_retains_io_error_without_fabricated_trace() -> Resul
     )?;
     Ok(())
 }
+
+#[test]
+fn later_receipt_staging_failure_leaves_no_partial_capture() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let tree = fixture_tree(temp.path(), "clean", &["if.t"])?;
+    let patch = write_patch_spec(temp.path(), ORDINARY_ARTIFACT)?;
+    let mut config = config_for(&tree, &patch, temp.path(), "component_base", default_limits());
+    let barrier = temp.path().join("not-a-directory");
+    fs::write(&barrier, b"preserve")?;
+    config.work_output = barrier.join("work.json");
+    let Err(error) = observe_invocations_command(&config) else {
+        bail!("the later receipt destination must fail publication");
+    };
+    color_eyre::eyre::ensure!(
+        error.to_string().contains("creating receipt directory"),
+        "fixture must reach receipt staging, not fail preflight: {error}"
+    );
+    color_eyre::eyre::ensure!(
+        !config.output.exists() && !config.trace_output.exists(),
+        "a later publication failure must not leave earlier capture receipts"
+    );
+    color_eyre::eyre::ensure!(
+        fs::read(&barrier)? == b"preserve",
+        "the unrelated obstruction must remain unchanged"
+    );
+    Ok(())
+}

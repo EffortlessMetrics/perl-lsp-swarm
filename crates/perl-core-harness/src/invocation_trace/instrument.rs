@@ -22,7 +22,7 @@
 
 use crate::artifacts::{
     CaptureLimits, Options, parse_deadline_with_default, reject_output_aliases,
-    reject_subject_destinations, run_bounded_command_with_limit, sanitize_perl_env, write_json,
+    reject_subject_destinations, run_bounded_command_with_limit, sanitize_perl_env,
 };
 use crate::build::{find_target, sha256_bytes};
 use crate::invocation_trace::build::{
@@ -100,6 +100,19 @@ pub const LIMITATION_HEADER_IS_PLAN_FRAMING: &str = "header_frame_is_process_pla
 /// Mandatory limitation retained by every instrumentation work receipt.
 pub const LIMITATION_DISPOSABLE_MANIFEST: &str =
     "prepared_tree_manifests_bind_the_disposable_copy_only";
+
+fn receipt_json(value: &impl Serialize) -> Result<Vec<u8>> {
+    let mut bytes = serde_json::to_vec_pretty(value).context("serializing JSON evidence")?;
+    bytes.push(b'\n');
+    Ok(bytes)
+}
+
+fn validate_copied_runner(manifest: &BTreeMap<String, String>, expected: &str) -> Result<()> {
+    if manifest.get("t/TEST").map(String::as_str) != Some(expected) {
+        bail!("copied t/TEST differs from the ordinary artifact reviewed for patching");
+    }
+    Ok(())
+}
 
 static INSTRUMENT_NONCE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -680,6 +693,7 @@ pub fn observe_invocations(config: &ObserveInvocationsConfig) -> Result<Instrume
     let run_directory = tempfile::tempdir().context("creating the instrumented-run directory")?;
     let instrumented_tree = run_directory.path().join("instrumented-tree");
     let manifest_before = copy_prepared_tree(&perl_tree, &instrumented_tree)?;
+    validate_copied_runner(&manifest_before, &ordinary_digest)?;
     let instrumented_artifact_path = instrumented_tree.join("t").join("TEST");
     fs::write(&instrumented_artifact_path, &instrumented_bytes).with_context(|| {
         format!("writing instrumented artifact {}", instrumented_artifact_path.display())
@@ -1212,19 +1226,12 @@ pub fn observe_invocations_command(config: &ObserveInvocationsConfig) -> Result<
     validate_receipt_destinations(config)?;
     invalidate_stale_outputs(config)?;
     let observation = observe_invocations(config)?;
-    if let Some(parent) = &observation.parent {
-        write_json(&config.output, parent)?;
-    }
-    if let Some(trace) = &observation.trace {
-        write_json(&config.trace_output, trace)?;
-    }
-    write_json(&config.work_output, &observation.work)?;
     let matrix = read_matrix(&config.matrix)?;
     if let Some(parent) = &observation.parent {
         crate::observed_discovery::build::check_observed_discovery_against(&matrix, parent)
             .map_err(|error| {
                 color_eyre::eyre::eyre!(
-                    "written parent receipt {} does not reconstruct against the pinned matrix: \
+                    "parent receipt {} does not reconstruct against the pinned matrix: \
                      {error}",
                     config.output.display()
                 )
@@ -1234,12 +1241,22 @@ pub fn observe_invocations_command(config: &ObserveInvocationsConfig) -> Result<
         crate::invocation_trace::build::check_invocation_trace_against(parent, trace).map_err(
             |error| {
                 color_eyre::eyre::eyre!(
-                    "written trace receipt {} does not reconstruct against its parent: {error}",
+                    "trace receipt {} does not reconstruct against its parent: {error}",
                     config.trace_output.display()
                 )
             },
         )?;
     }
+    // Validate and serialize the complete observation before publishing any file.
+    let mut receipts = Vec::new();
+    if let Some(parent) = &observation.parent {
+        receipts.push((config.output.as_path(), receipt_json(parent)?));
+    }
+    if let Some(trace) = &observation.trace {
+        receipts.push((config.trace_output.as_path(), receipt_json(trace)?));
+    }
+    receipts.push((config.work_output.as_path(), receipt_json(&observation.work)?));
+    super::receipt_publication::publish(&receipts)?;
     let work = &observation.work.payload;
     tracing::info!(
         target = %config.target_id,
@@ -2032,6 +2049,22 @@ mod contract_tests {
         color_eyre::eyre::ensure!(empty == (Vec::new(), false), "empty channel remains readable");
         let failure = super::read_optional_trace(dir.path());
         color_eyre::eyre::ensure!(failure.is_err(), "a directory is not an absent trace channel");
+        Ok(())
+    }
+    #[test]
+    fn copied_runner_must_match_the_pre_patch_subject() -> Result<()> {
+        let mut manifest = std::collections::BTreeMap::new();
+        color_eyre::eyre::ensure!(
+            super::validate_copied_runner(&manifest, "reviewed").is_err(),
+            "missing copied runner must refuse execution"
+        );
+        manifest.insert("t/TEST".to_string(), "changed-during-copy".to_string());
+        color_eyre::eyre::ensure!(
+            super::validate_copied_runner(&manifest, "reviewed").is_err(),
+            "copy drift must refuse execution before patching"
+        );
+        manifest.insert("t/TEST".to_string(), "reviewed".to_string());
+        super::validate_copied_runner(&manifest, "reviewed")?;
         Ok(())
     }
 }

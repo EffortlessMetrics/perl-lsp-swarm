@@ -143,6 +143,8 @@ pub mod invocation_trace {
     /// Receipt, frame, field-state, row, subject, and work types.
     #[path = "model.rs"]
     pub mod model;
+    #[path = "receipt_publication.rs"]
+    mod receipt_publication;
     /// Fail-closed validation reconstructing frames from retained raw bytes.
     #[path = "validate.rs"]
     pub mod validate;
