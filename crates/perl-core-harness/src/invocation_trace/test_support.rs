@@ -8,7 +8,7 @@ use crate::invocation_trace::decode::{
 };
 use crate::invocation_trace::model::{
     EffectiveInvocationField, EffectiveInvocationFields, EffectiveInvocationRow, RowSubjectBinding,
-    ScriptRole, TraceSubjectIdentity,
+    ScriptRole, TraceHeader, TraceSubjectIdentity, TraceTerminal,
 };
 use crate::io::read_matrix;
 use crate::model::{TargetMatrixEntry, UpstreamTargetMatrix};
