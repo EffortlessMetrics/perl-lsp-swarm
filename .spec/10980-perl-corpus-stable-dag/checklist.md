@@ -78,6 +78,10 @@ generator, scheduler, workflow, or GitHub state.
   routes, the three consumer families, the parser-accuracy strata, the #11030 children)
   must keep distinct exclusive keys; a shared key without an ordering path is a
   rejection, not a warning.
+
+- The declared parallel generator successors #11580 and #11034 must not acquire a
+  direct or transitive hard dependency path. Evidence edges remain non-ordering and
+  do not trigger this programme-specific law.
 - Lineage rows must not carry status words (open/merged/closed/draft/landed); the
   checker scans for them.
 - After any manifest edit: `cargo xtask perl-corpus-train graph` then `check`.

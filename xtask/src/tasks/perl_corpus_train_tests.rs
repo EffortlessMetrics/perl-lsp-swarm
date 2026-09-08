@@ -368,20 +368,43 @@ fn falsifier_10_omitting_a_current_expectation_leaf_fails() -> Result<()> {
 fn falsifier_11_serializing_disjoint_or_parallelizing_conflicting_nodes_fails() -> Result<()> {
     // #11032 and #11034 are disjoint successors of #7020; a hard edge between
     // them would serialize disjoint authority. The manifest must carry none.
-    let doc = load(MANIFEST_PATH)?;
-    let nodes = doc.get("nodes").and_then(Value::as_array).ok_or_else(|| eyre!("nodes"))?;
     for (source, target) in [
         ("pc_property_suites_11580", "pc_fixture_promotion_11034"),
         ("pc_fixture_promotion_11034", "pc_property_suites_11580"),
     ] {
-        let has_edge = nodes.iter().any(|node| {
-            node.get("node_id").and_then(Value::as_str) == Some(source)
-                && node.get("dependencies").and_then(Value::as_array).is_some_and(|deps| {
-                    deps.iter().any(|dep| dep.get("target").and_then(Value::as_str) == Some(target))
-                })
-        });
-        if has_edge {
-            bail!("{source} -> {target} serializes disjoint authority");
+        let mut doc = load(MANIFEST_PATH)?;
+        add_dependency(&mut doc, source, target, "hard")?;
+        assert_code(&doc, "DECLARED_PARALLEL_SERIALIZED")?;
+    }
+
+    // Evidence records an observation and does not serialize implementation
+    // work, even for this explicitly parallel pair.
+    let mut doc = load(MANIFEST_PATH)?;
+    add_dependency(&mut doc, "pc_property_suites_11580", "pc_fixture_promotion_11034", "evidence")?;
+    if codes(&doc).iter().any(|code| code == "DECLARED_PARALLEL_SERIALIZED") {
+        bail!("an evidence edge must not serialize declared parallel successors");
+    }
+
+    // The programme declaration cannot be bypassed through an intermediary.
+    // Repair both reverse-consumer lists so these remain schema-valid graph
+    // mutations rather than malformed fixtures.
+    for (source, intermediary, target) in [
+        (
+            "pc_property_suites_11580",
+            "pc_parser_accuracy_generated_11586",
+            "pc_fixture_promotion_11034",
+        ),
+        (
+            "pc_fixture_promotion_11034",
+            "pc_property_profile_retirement_11581",
+            "pc_property_suites_11580",
+        ),
+    ] {
+        let mut doc = load(MANIFEST_PATH)?;
+        add_dependency(&mut doc, source, intermediary, "hard")?;
+        assert_code(&doc, "DECLARED_PARALLEL_SERIALIZED")?;
+        if !has_dependency(&doc, intermediary, target) {
+            bail!("the indirect parallelism control lost {intermediary} -> {target}");
         }
     }
     // Conversely, #6996 and #6999 share the expectation-relationship
@@ -401,6 +424,38 @@ fn falsifier_11_serializing_disjoint_or_parallelizing_conflicting_nodes_fails() 
         list.retain(|id| id.as_str() != Some("pc_fixture_expectation_identity_6999"));
     }
     assert_code(&doc, "CONFLICT_KEY_PARALLEL_COLLISION")
+}
+
+fn has_dependency(doc: &Value, source: &str, target: &str) -> bool {
+    doc.get("nodes")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .find(|node| node.get("node_id").and_then(Value::as_str) == Some(source))
+        .and_then(|node| node.get("dependencies"))
+        .and_then(Value::as_array)
+        .is_some_and(|deps| {
+            deps.iter().any(|dep| dep.get("target").and_then(Value::as_str) == Some(target))
+        })
+}
+
+fn add_dependency(doc: &mut Value, source: &str, target: &str, class: &str) -> Result<()> {
+    let node = node_mut(doc, source)?;
+    node.get_mut("dependencies")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| eyre!("{source}: dependencies array"))?
+        .push(serde_json::json!({
+            "target": target,
+            "class": class,
+            "provenance": "mutation"
+        }));
+    let target_node = node_mut(doc, target)?;
+    target_node
+        .get_mut("consumed_by")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| eyre!("{target}: consumed_by array"))?
+        .push(Value::String(source.to_string()));
+    Ok(())
 }
 
 #[test]

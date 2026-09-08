@@ -80,6 +80,11 @@ const HORIZON_ORDER: &[&str] = &[
 ];
 /// Horizons a foundation/topology/etc. node may never hard-depend on.
 const EXTERNAL_HORIZONS: &[&str] = &["package_externalization", "publication_manual"];
+/// Programme-owned successors that the stable graph declares independent.
+/// Only these explicit pairs are checked; shared-key reachability remains the
+/// generic writer-conflict law for every other node pair.
+const DECLARED_PARALLEL_PAIRS: &[(&str, &str)] =
+    &[("pc_property_suites_11580", "pc_fixture_promotion_11034")];
 
 /// Object keys banned anywhere in stable bytes: no mutable GitHub, task,
 /// agent, run, writer, or frontier state.
@@ -775,6 +780,25 @@ fn reachability<'a>(graph: &Graph<'a>) -> BTreeMap<&'a str, BTreeSet<&'a str>> {
     closure
 }
 
+/// Reject a hard path between programme-owned successors declared parallel.
+/// Evidence edges intentionally do not count as ordering: they may remain
+/// observed while the successor is still not proven.
+fn declared_parallel_problems(graph: &Graph<'_>, violations: &mut Vec<Violation>) {
+    let closure = reachability(graph);
+    for (left, right) in DECLARED_PARALLEL_PAIRS {
+        let ordered = closure.get(left).is_some_and(|targets| targets.contains(right))
+            || closure.get(right).is_some_and(|targets| targets.contains(left));
+        if ordered {
+            violations.push(Violation::new(
+                "DECLARED_PARALLEL_SERIALIZED",
+                format!(
+                    "declared parallel successors {left} and {right} are joined by a hard dependency path"
+                ),
+            ));
+        }
+    }
+}
+
 /// Supersession links form a consistent history: a node carries at most one
 /// retirement disposition, never points at itself, `superseded_by` and
 /// `supersedes` mirror each other exactly, and following dispositions never
@@ -912,6 +936,7 @@ pub fn validate_document(doc: &Value) -> Vec<Violation> {
             format!("hard/evidence dependency cycle: {}", cycle.join(" -> ")),
         ));
     }
+    declared_parallel_problems(&graph, &mut violations);
     conflict_problems(doc, &graph, &mut violations);
     violations
 }
