@@ -1009,12 +1009,133 @@ fn missing_member_manifest_is_not_proven() {
         inventory.instruments.iter().any(|instrument| {
             instrument.kind == "test_topology"
                 && instrument.status == InstrumentStatus::NotProven
-                && instrument.subject.ends_with("crates/ghost/Cargo.toml")
+                && instrument.detail.contains("cargo metadata failed")
+                && (instrument.subject.ends_with("crates/ghost/Cargo.toml")
+                    || instrument.subject == "Cargo.toml")
         }),
         "missing member was a silent skip: {:?}",
         inventory.instruments
     );
+    assert!(
+        inventory.population.packages.is_empty(),
+        "failed cargo metadata still emitted packages: {:?}",
+        inventory.population.packages
+    );
     assert!(!inventory.counts.observation_complete);
+}
+
+#[test]
+fn cargo_test_false_and_required_features_follow_cargo_not_handwritten_inference() {
+    // Handwritten autodiscovery would admit src/main.rs (default bin) and
+    // tests/disabled.rs (tests/*.rs) even with test=false, and would not record
+    // required-features on tests/gated.rs. The denominator must follow Cargo.
+    let temp = tempfile::tempdir().expect("temp");
+    write_policy(temp.path());
+    write_empty_registry(temp.path());
+    write_package(temp.path(), "alpha", "pub fn ok() {}\n", &[]);
+    fs::write(
+        temp.path().join("crates/alpha/Cargo.toml"),
+        r#"[package]
+name = "alpha"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+need-me = []
+
+[[bin]]
+name = "alpha-bin"
+path = "src/main.rs"
+test = false
+
+[[test]]
+name = "disabled"
+path = "tests/disabled.rs"
+test = false
+
+[[test]]
+name = "gated"
+path = "tests/gated.rs"
+required-features = ["need-me"]
+"#,
+    )
+    .expect("manifest");
+    fs::write(
+        temp.path().join("crates/alpha/src/main.rs"),
+        "fn main() { let _ = Some(1).unwrap(); }\n",
+    )
+    .expect("bin");
+    fs::write(
+        temp.path().join("crates/alpha/tests/disabled.rs"),
+        "#[test]\nfn disabled() { let _ = Some(1).unwrap(); }\n",
+    )
+    .expect("disabled");
+    fs::write(
+        temp.path().join("crates/alpha/tests/gated.rs"),
+        "#[test]\nfn gated() { let _ = Some(1).unwrap(); }\n",
+    )
+    .expect("gated");
+
+    let inventory = inventory_at(temp.path());
+    let handwritten_would_include = [
+        "crates/alpha/src/main.rs",
+        "crates/alpha/tests/disabled.rs",
+        "crates/alpha/tests/gated.rs",
+        "crates/alpha/src/lib.rs",
+    ];
+    let files: Vec<_> = inventory.population.files.iter().map(|file| file.path.as_str()).collect();
+    assert!(
+        handwritten_would_include.iter().any(|path| files.iter().any(|file| file.ends_with(*path))),
+        "fixture produced no Cargo-admitted files: {files:?}"
+    );
+    assert!(
+        !inventory.population.files.iter().any(|file| file.path.ends_with("src/main.rs")),
+        "test=false bin followed handwritten inference: {:?}",
+        inventory.population.files
+    );
+    assert!(
+        !inventory.rows.iter().any(|row| row.path.ends_with("src/main.rs")),
+        "test=false bin unwrap became debt: {:?}",
+        inventory.rows
+    );
+    assert!(
+        !inventory.population.files.iter().any(|file| file.path.ends_with("tests/disabled.rs")),
+        "test=false integration target followed handwritten autodiscovery: {:?}",
+        inventory.population.files
+    );
+    assert!(
+        !inventory.rows.iter().any(|row| row.path.ends_with("tests/disabled.rs")),
+        "test=false integration unwrap became debt: {:?}",
+        inventory.rows
+    );
+    let gated = inventory
+        .population
+        .files
+        .iter()
+        .find(|file| file.path.ends_with("tests/gated.rs"))
+        .expect("gated target missing from Cargo population");
+    assert_eq!(gated.required_features, vec!["need-me".to_string()]);
+    assert_eq!(gated.target_name, "gated");
+    assert!(
+        inventory
+            .rows
+            .iter()
+            .any(|row| row.path.ends_with("tests/gated.rs") && row.site_family == "unwrap"),
+        "required-features target unwrap omitted: {:?}",
+        inventory.rows
+    );
+    let result = check_inventory(xtask::no_panic_debt::CheckRequest {
+        root: temp.path(),
+        current: &inventory,
+        artifact: None,
+        baseline: None,
+    })
+    .expect("check");
+    assert!(
+        result.ok,
+        "Cargo-excluded test=false files were treated as missing population holes: {:?}",
+        result.findings
+    );
 }
 
 #[test]

@@ -58,7 +58,9 @@ pub(crate) fn scan(
             package: package_from_path(root, &path).unwrap_or_else(|| "unknown".to_string()),
             target_kind: TargetKind::UnitTest,
             path: relative,
+            target_name: String::new(),
             feature: None,
+            required_features: Vec::new(),
             platform: None,
         });
         match scan_file(root, &file, vocabulary, true, true) {

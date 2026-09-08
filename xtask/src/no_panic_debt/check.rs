@@ -2,7 +2,7 @@ use super::model::{DebtStatus, InstrumentStatus, Inventory};
 use super::projection::{canonical_json, semantic_delta};
 use super::read_to_string;
 use color_eyre::eyre::{Result, eyre};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 pub struct CheckRequest<'a> {
     pub root: &'a Path,
@@ -146,12 +146,24 @@ pub fn integrity_findings(root: &Path, inventory: &Inventory) -> Vec<String> {
         }
     }
 
-    let on_disk_tests = collect_test_files(root, inventory);
-    let known: std::collections::BTreeSet<_> =
-        inventory.population.files.iter().map(|file| file.path.as_str()).collect();
-    for path in on_disk_tests {
-        if !known.contains(path.as_str()) {
-            findings.push(format!("test-bearing file missing from population: {path}"));
+    match super::topology::cargo_test_src_paths(root) {
+        Ok(on_disk_tests) => {
+            let known: std::collections::BTreeSet<_> =
+                inventory.population.files.iter().map(|file| file.path.as_str()).collect();
+            for path in on_disk_tests {
+                if !known.contains(path.as_str()) {
+                    findings.push(format!("test-bearing file missing from population: {path}"));
+                }
+            }
+        }
+        Err(err) => {
+            let topology_failed = inventory.instruments.iter().any(|instrument| {
+                instrument.kind == "test_topology"
+                    && instrument.status == InstrumentStatus::NotProven
+            });
+            if !topology_failed {
+                findings.push(format!("cargo metadata integrity read failed: {err}"));
+            }
         }
     }
 
@@ -169,56 +181,4 @@ pub fn integrity_findings(root: &Path, inventory: &Inventory) -> Vec<String> {
 fn load_inventory(path: &Path) -> Result<Inventory> {
     let raw = read_to_string(path)?;
     serde_json::from_str(&raw).map_err(|err| eyre!("parsing {}: {err}", path.display()))
-}
-
-fn collect_test_files(root: &Path, inventory: &Inventory) -> Vec<String> {
-    let mut package_roots = std::collections::BTreeSet::new();
-    package_roots.insert(root.join("crates"));
-    package_roots.insert(root.join("xtask"));
-    for package in &inventory.population.packages {
-        if let Some(parent) = Path::new(&package.manifest).parent() {
-            package_roots.insert(root.join(parent));
-        }
-    }
-    let mut files = Vec::new();
-    let mut seen = std::collections::BTreeSet::new();
-    for base in package_roots {
-        collect_package_test_files(root, &base, &mut files, &mut seen);
-    }
-    files.sort();
-    files.dedup();
-    files
-}
-
-fn collect_package_test_files(
-    root: &Path,
-    base: &Path,
-    files: &mut Vec<String>,
-    seen: &mut std::collections::BTreeSet<PathBuf>,
-) {
-    let manifest = base.join("Cargo.toml");
-    if manifest.is_file() {
-        if !seen.insert(manifest) {
-            return;
-        }
-        files.extend(super::topology::test_bearing_files_for_package(root, base));
-        return;
-    }
-    if !base.is_dir() {
-        return;
-    }
-    let Ok(entries) = std::fs::read_dir(base) else {
-        return;
-    };
-    let mut children: Vec<_> = entries.flatten().map(|entry| entry.path()).collect();
-    children.sort();
-    for child in children {
-        let name = child.file_name().and_then(|name| name.to_str()).unwrap_or("");
-        if name == "target" || name == ".git" {
-            continue;
-        }
-        if child.is_dir() && child.join("Cargo.toml").is_file() {
-            collect_package_test_files(root, &child, files, seen);
-        }
-    }
 }

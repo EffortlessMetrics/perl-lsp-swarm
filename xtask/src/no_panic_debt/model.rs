@@ -142,7 +142,11 @@ pub struct FileRecord {
     pub package: String,
     pub target_kind: TargetKind,
     pub path: String,
+    #[serde(default)]
+    pub target_name: String,
     pub feature: Option<String>,
+    #[serde(default)]
+    pub required_features: Vec<String>,
     pub platform: Option<String>,
 }
 

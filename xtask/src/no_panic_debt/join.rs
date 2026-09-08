@@ -231,7 +231,7 @@ pub(crate) fn join(
         "observation only; not a second allowlist".to_string(),
         "ordinary generation does not call GitHub".to_string(),
         "assert!/assert_eq! are not classified as panic-family debt".to_string(),
-        "population is Cargo autodiscovery plus explicit target paths; cargo-metadata cfg/target tables are not a second interpreter".to_string(),
+        "population is Cargo metadata test=true target roots plus bounded module-edge traversal; handwritten manifest autodiscovery is not the authority".to_string(),
     ];
     if instruments.iter().any(|instrument| instrument.status == InstrumentStatus::NotProven)
         || rows.iter().any(|row| row.status == DebtStatus::InstrumentNotProven)
