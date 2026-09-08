@@ -59,7 +59,7 @@ void test('unsupported candidate-bound platform writes a typed unavailable bound
 });
 
 void test('the published-smoke child emits the unsupported-platform boundary before host work', () => {
-  const receiptRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-platform-child-'));
+  const receiptRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'perl lsp-platform-child-'));
   const preloadPath = path.join(receiptRoot, 'force-windows-platform.cjs');
   try {
     fs.writeFileSync(
@@ -67,21 +67,22 @@ void test('the published-smoke child emits the unsupported-platform boundary bef
       "Object.defineProperty(process, 'platform', { value: 'win32' });\n" +
         "Object.defineProperty(process, 'arch', { value: 'x64' });\n",
     );
-    const result = spawnSync(process.execPath, [path.join(__dirname, 'runPublishedSmoke.js')], {
-      env: {
-        ...process.env,
-        PERL_LSP_CURRENT_SOURCE_SHA: 'candidate-sha',
-        PERL_LSP_PUBLISHED_EXTENSION_SOURCE: 'vsix',
-        PERL_LSP_PUBLISHED_EXTENSION_VERSION: '0.17.0',
-        PERL_LSP_PUBLISHED_VSIX_PATH: path.join(receiptRoot, 'candidate.vsix'),
-        PERL_LSP_SMOKE_RECEIPTS_DIR: receiptRoot,
-        NODE_OPTIONS: [process.env.NODE_OPTIONS, `--require=${preloadPath}`]
-          .filter(Boolean)
-          .join(' '),
+    const result = spawnSync(
+      process.execPath,
+      ['--require', preloadPath, path.join(__dirname, 'runPublishedSmoke.js')],
+      {
+        env: {
+          ...process.env,
+          PERL_LSP_CURRENT_SOURCE_SHA: 'candidate-sha',
+          PERL_LSP_PUBLISHED_EXTENSION_SOURCE: 'vsix',
+          PERL_LSP_PUBLISHED_EXTENSION_VERSION: '0.17.0',
+          PERL_LSP_PUBLISHED_VSIX_PATH: path.join(receiptRoot, 'candidate.vsix'),
+          PERL_LSP_SMOKE_RECEIPTS_DIR: receiptRoot,
+        },
+        encoding: 'utf8',
+        windowsHide: true,
       },
-      encoding: 'utf8',
-      windowsHide: true,
-    });
+    );
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /restricted to Linux/);
     const receiptPath = path.join(receiptRoot, CANDIDATE_PLATFORM_UNAVAILABLE_RECEIPT_NAME);
