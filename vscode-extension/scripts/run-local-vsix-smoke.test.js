@@ -41,6 +41,7 @@ void test('builds an exclusive candidate-bound Test Explorer child environment',
       PERL_LSP_HEALTH_CHECK_FAILURE_SMOKE: '1',
       PERL_LSP_ACTIVATION_FAILURE_SMOKE: '1',
       PERL_LSP_CRASH_RECOVERY_SMOKE: '1',
+      PERL_LSP_TEST_EXPLORER_JOURNEY: '1',
     },
     'a'.repeat(40),
     'candidate.vsix',
@@ -59,6 +60,7 @@ void test('builds an exclusive candidate-bound Test Explorer child environment',
   assert.equal(environment.PERL_LSP_HEALTH_CHECK_FAILURE_SMOKE, undefined);
   assert.equal(environment.PERL_LSP_ACTIVATION_FAILURE_SMOKE, undefined);
   assert.equal(environment.PERL_LSP_CRASH_RECOVERY_SMOKE, undefined);
+  assert.equal(environment.PERL_LSP_TEST_EXPLORER_JOURNEY, undefined);
 });
 
 void test('does not turn missing or failed Test Explorer children into a pass', () => {
@@ -101,6 +103,11 @@ void test('requires a fresh candidate-bound Test Explorer completion receipt', (
     outcome: 'completed',
     source_revision: 'a'.repeat(40),
     server_source_revision: 'a'.repeat(40),
+    server_artifact_sha256: 'd'.repeat(64),
+    binary_resolution_source: 'bundled',
+    binary_resolution_status: 'ok',
+    binary_resolution_path: 'bin/linux-x64/perllsp',
+    binary_resolution_sha256: 'd'.repeat(64),
     vsix_sha256: 'b'.repeat(64),
     fixture: 'fixture.t',
     test_zero: 'fixture.t',
@@ -111,6 +118,7 @@ void test('requires a fresh candidate-bound Test Explorer completion receipt', (
         receiptFile,
         expectedRevision: valid.source_revision,
         expectedServerSourceSha: valid.server_source_revision,
+        expectedServerArtifactSha256: valid.server_artifact_sha256,
         expectedVsixSha256: valid.vsix_sha256,
         readFile: () => JSON.stringify(valid),
         exists: () => true,
@@ -122,6 +130,7 @@ void test('requires a fresh candidate-bound Test Explorer completion receipt', (
         receiptFile,
         expectedRevision: 'c'.repeat(40),
         expectedServerSourceSha: valid.server_source_revision,
+        expectedServerArtifactSha256: valid.server_artifact_sha256,
         expectedVsixSha256: valid.vsix_sha256,
         readFile: () => JSON.stringify(valid),
         exists: () => true,
@@ -133,6 +142,7 @@ void test('requires a fresh candidate-bound Test Explorer completion receipt', (
         receiptFile,
         expectedRevision: valid.source_revision,
         expectedServerSourceSha: valid.server_source_revision,
+        expectedServerArtifactSha256: valid.server_artifact_sha256,
         expectedVsixSha256: valid.vsix_sha256,
         readFile: () => JSON.stringify({ ...valid, test_zero: 'other-fixture.t' }),
         exists: () => true,
@@ -144,6 +154,7 @@ void test('requires a fresh candidate-bound Test Explorer completion receipt', (
         receiptFile,
         expectedRevision: valid.source_revision,
         expectedServerSourceSha: valid.server_source_revision,
+        expectedServerArtifactSha256: valid.server_artifact_sha256,
         expectedVsixSha256: valid.vsix_sha256,
         readFile: () => JSON.stringify(valid),
         exists: () => false,
@@ -155,6 +166,7 @@ void test('requires a fresh candidate-bound Test Explorer completion receipt', (
         receiptFile,
         expectedRevision: valid.source_revision,
         expectedServerSourceSha: valid.server_source_revision,
+        expectedServerArtifactSha256: valid.server_artifact_sha256,
         expectedVsixSha256: 'c'.repeat(64),
         readFile: () => JSON.stringify(valid),
         exists: () => true,

@@ -114,7 +114,7 @@ jobs:
           PERL_LSP_SMOKE_SOURCE_LABEL: hosted-linux-current-source
           # The local runner keeps this installed Test Explorer leg separate
           # from first-hour smoke while reusing the same staged VSIX/server.
-          PERL_LSP_TEST_EXPLORER_SMOKE: '1'
+          PERL_LSP_TEST_EXPLORER_JOURNEY: '1'
         run: xvfb-run -a npm run test:published:local
 
       - name: Record exact-subject scheduling result

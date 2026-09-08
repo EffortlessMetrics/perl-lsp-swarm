@@ -59,7 +59,7 @@ void test('current-source Linux smoke enables the candidate-bound Test Explorer 
     smokeIndex,
     nextStepIndex === -1 ? source.length : smokeIndex + 1 + nextStepIndex,
   );
-  assert.match(smokeStep, /PERL_LSP_TEST_EXPLORER_SMOKE: '1'/);
+  assert.match(smokeStep, /PERL_LSP_TEST_EXPLORER_JOURNEY: '1'/);
   assert.match(smokeStep, /run: xvfb-run -a npm run test:published:local/);
   assert.match(source, /same staged VSIX\/server/);
 });

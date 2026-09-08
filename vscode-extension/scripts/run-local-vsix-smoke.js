@@ -73,6 +73,8 @@ function testExplorerSmokeEnv(baseEnv, revision, vsixPath, vsixSha256) {
       smokePlatformLabel(),
       'test_explorer_journey_receipt.json',
     ),
+    PERL_LSP_SERVER_ARTIFACT_SHA256:
+      serverPath && fs.existsSync(serverPath) ? sha256File(serverPath) : '',
     PERL_LSP_VSIX_SHA256: vsixSha256,
   };
   delete env.PERL_LSP_CURRENT_SOURCE_SMOKE;
@@ -83,6 +85,7 @@ function testExplorerSmokeEnv(baseEnv, revision, vsixPath, vsixSha256) {
   delete env.PERL_LSP_ACTIVATION_FAILURE_LEG;
   delete env.PERL_LSP_CRASH_RECOVERY_SMOKE;
   delete env.PERL_LSP_CRASH_RECOVERY_LEG;
+  delete env.PERL_LSP_TEST_EXPLORER_JOURNEY;
   delete env.PERL_LSP_FIRST_HOUR_ONLY;
   delete env.PERL_LSP_FIRST_HOUR_RECEIPT;
   delete env.PERL_LSP_FIRST_HOUR_SERVER_PATH;
@@ -93,6 +96,7 @@ function validateTestExplorerReceipt({
   receiptFile,
   expectedRevision,
   expectedServerSourceSha,
+  expectedServerArtifactSha256,
   expectedVsixSha256,
   readFile = (file) => fs.readFileSync(file, 'utf8'),
   exists = (file) => fs.existsSync(file),
@@ -123,6 +127,27 @@ function validateTestExplorerReceipt({
   }
   if (receipt?.server_source_revision !== expectedServerSourceSha) {
     violations.push('Test Explorer child server revision is not the staged server');
+  }
+  if (
+    receipt?.server_artifact_sha256 !== expectedServerArtifactSha256 ||
+    !/^[0-9a-f]{64}$/i.test(String(receipt?.server_artifact_sha256 ?? ''))
+  ) {
+    violations.push('Test Explorer child server artifact digest is not the staged server');
+  }
+  if (receipt?.binary_resolution_source !== 'bundled') {
+    violations.push('Test Explorer child did not report the bundled server as its source');
+  }
+  if (receipt?.binary_resolution_status !== 'ok') {
+    violations.push('Test Explorer child did not report successful server resolution');
+  }
+  if (
+    typeof receipt?.binary_resolution_path !== 'string' ||
+    receipt.binary_resolution_path.length === 0
+  ) {
+    violations.push('Test Explorer child did not report the selected server path');
+  }
+  if (receipt?.binary_resolution_sha256 !== receipt?.server_artifact_sha256) {
+    violations.push('Test Explorer child selected a server with a different digest');
   }
   if (!expectedVsixSha256 || receipt?.vsix_sha256 !== expectedVsixSha256) {
     violations.push('Test Explorer child VSIX digest is not the package this run created');
@@ -197,6 +222,7 @@ function runTestExplorerJourneyStage(baseEnv, revision, vsixPath, vsixSha256) {
           receiptFile,
           expectedRevision: revision,
           expectedServerSourceSha: serverSourceRevision || revision,
+          expectedServerArtifactSha256: env.PERL_LSP_SERVER_ARTIFACT_SHA256,
           expectedVsixSha256: vsixSha256,
         })
       : { ok: false, violations: ['Test Explorer child did not complete successfully'] };
@@ -2503,7 +2529,7 @@ function main() {
 
   const destination = receiptPath(revision);
   const receipt = initialReceipt(revision);
-  const testExplorerRequested = process.env.PERL_LSP_TEST_EXPLORER_SMOKE === '1';
+  const testExplorerRequested = process.env.PERL_LSP_TEST_EXPLORER_JOURNEY === '1';
   if (testExplorerRequested) {
     receipt.stages.test_explorer_journey = { status: 'not_run', reason: 'not_started' };
   }
@@ -2572,11 +2598,13 @@ function main() {
   const runStageBody = () => {
     try {
       restoreStagedServer = stageServerForPackage(serverPath);
+      /** @type {NodeJS.ProcessEnv} */
       const packageEnv = {
         ...process.env,
         PERL_LSP_CURRENT_SOURCE_SMOKE: '1',
         PERL_LSP_SMOKE_RECEIPTS_DIR: receiptsRoot(),
       };
+      delete packageEnv.PERL_LSP_TEST_EXPLORER_JOURNEY;
       const packageResult = runNpm(
         ['exec', '--offline', '--no', '--', 'vsce', 'package'],
         packageEnv,
@@ -2669,6 +2697,7 @@ function main() {
         // its selector exclusive so the second Test Explorer leg can reuse the
         // same staged VSIX after this process completes.
         delete smokeEnv.PERL_LSP_TEST_EXPLORER_SMOKE;
+        delete smokeEnv.PERL_LSP_TEST_EXPLORER_JOURNEY;
 
         // Clear any receipt left by an earlier run so a stale artifact can
         // never be mistaken for this run's behavioral evidence.
