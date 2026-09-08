@@ -10,7 +10,7 @@ const TRACE_LEVEL_MESSAGES: &str = "messages";
 const TRACE_LEVEL_VERBOSE: &str = "verbose";
 const OUTBOUND_SETTLEMENT_TIMEOUT: Duration = Duration::from_secs(5);
 
-fn outbound_exit_code(shutdown_received: bool) -> i32 {
+fn protocol_exit_code(shutdown_received: bool) -> i32 {
     if shutdown_received { 0 } else { 1 }
 }
 
@@ -133,7 +133,7 @@ impl LspServer {
         // LSP exit status is defined by whether shutdown was received. Writer
         // settlement remains independent evidence and must not change that
         // protocol status when shutdown was accepted.
-        let exit_code = outbound_exit_code(self.shutdown_received.load(Ordering::Acquire));
+        let exit_code = protocol_exit_code(self.shutdown_received.load(Ordering::Acquire));
         tracing::info!(exit_code, "LSP server exiting");
         // `process::exit` skips Rust destructors, including the non-blocking
         // file writer guard. Drain it explicitly so the final lifecycle log
@@ -219,8 +219,8 @@ mod tests {
 
     #[test]
     fn exit_status_follows_shutdown_independently_of_writer_settlement() {
-        assert_eq!(outbound_exit_code(true), 0);
-        assert_eq!(outbound_exit_code(false), 1);
+        assert_eq!(protocol_exit_code(true), 0);
+        assert_eq!(protocol_exit_code(false), 1);
     }
 
     // ── BDD lifecycle dispatch scenarios ────────────────────────────────────
