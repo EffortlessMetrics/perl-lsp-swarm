@@ -295,7 +295,9 @@ fn test_e2e_attach_workflow_stopped_event() -> TestResult {
         Ok(()) => return Err("native PID attach unexpectedly succeeded".into()),
         Err(error) => error,
     };
-    assert!(error.contains("not supported"), "unexpected refusal: {error}");
+    if !error.contains("not supported") {
+        return Err(format!("unexpected refusal: {error}").into());
+    }
     Ok(())
 }
 
@@ -310,7 +312,9 @@ fn test_e2e_attach_workflow_stop_on_entry() -> TestResult {
         Ok(()) => return Err("native PID attach unexpectedly succeeded".into()),
         Err(error) => error,
     };
-    assert!(error.contains("not supported"), "unexpected refusal: {error}");
+    if !error.contains("not supported") {
+        return Err(format!("unexpected refusal: {error}").into());
+    }
     Ok(())
 }
 
