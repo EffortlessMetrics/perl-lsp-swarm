@@ -437,6 +437,7 @@ describe('deferred language-server startup (#8180)', () => {
     expect(serverNotRunningMessage()).toContain('Language Server is not running');
     expect(serverNotRunningMessage()).not.toContain('old generation probe');
     expect(serverNotRunningMessage()).not.toContain('permission denied');
+    expect(serverNotRunningMessage()).not.toContain('The binary does not have execute permission.');
   });
 
   test('a later health check reports recovery while keeping optional warnings separate', async () => {

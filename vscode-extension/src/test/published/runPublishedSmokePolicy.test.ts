@@ -8,6 +8,23 @@ import {
   assertCandidateBoundInstallSource,
   assertCandidateBoundPlatform,
 } from './runPublishedSmoke';
+import { assertSmokeSelector } from './suite';
+
+void test('published smoke rejects a recovery leg without its failure selector', () => {
+  assert.throws(
+    () =>
+      assertSmokeSelector({
+        PERL_LSP_HEALTH_CHECK_RECOVERY_SMOKE: '1',
+      }),
+    /PERL_LSP_HEALTH_CHECK_RECOVERY_SMOKE requires PERL_LSP_HEALTH_CHECK_FAILURE_SMOKE=1/,
+  );
+  assert.doesNotThrow(() =>
+    assertSmokeSelector({
+      PERL_LSP_HEALTH_CHECK_FAILURE_SMOKE: '1',
+      PERL_LSP_HEALTH_CHECK_RECOVERY_SMOKE: '1',
+    }),
+  );
+});
 
 void test('candidate-bound Marketplace latest is refused before installation', () => {
   assert.throws(
