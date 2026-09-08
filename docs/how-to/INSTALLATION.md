@@ -170,7 +170,7 @@ Use the [manual archive](#manual-archive) for both `perllsp.exe` and
 
 ### Published PowerShell script
 
-The script served from `perl-lsp/master` selects
+The [published script at commit 866d832](https://github.com/EffortlessMetrics/perl-lsp/blob/866d83285b69c7a80276735cbdc2b20d66694d86/install.ps1) selects
 `perllsp-<version>-x86_64-pc-windows-msvc.zip`. It supports x86_64 Windows
 and selects the same x64 archive on Windows 11 ARM64, where x64 emulation is
 available. Windows 10 ARM64 cannot run that archive; the script rejects the
@@ -185,16 +185,18 @@ verification or independent publisher provenance.
 
 It installs `perllsp.exe` into `%USERPROFILE%\.local\bin` by default. It does
 not install `perl-dap.exe`, atomically promote a server/adapter pair, or
-provide health-driven rollback. If the directory is missing from your User
-PATH, the script prints instructions; it does not update PATH automatically.
-After adding the directory, open a new terminal and verify `perllsp --version`
-before configuring your editor.
+provide health-driven rollback. It may print PATH instructions, but a similar
+directory name can make its PATH check report success incorrectly. It does
+not update PATH automatically. Open **Edit environment variables for your
+account** from Start, select **Path** under **User variables**, and add the
+exact install directory as a separate entry if it is absent. Open a new
+terminal and verify `perllsp --version` before configuring your editor.
 
-Download and inspect the script before running it. Pass `-Version` to select
-a release and `-InstallDir` to change the install directory:
+Download and inspect this same script revision before running it. Pass
+`-Version` to select a release and `-InstallDir` to change the install directory:
 
 ```powershell
-irm https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/master/install.ps1 -OutFile install.ps1
+irm https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/866d83285b69c7a80276735cbdc2b20d66694d86/install.ps1 -OutFile install.ps1
 # Review install.ps1, then:
 .\install.ps1 -Version 0.17.0 -InstallDir C:\tools\bin
 ```
