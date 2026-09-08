@@ -58,11 +58,12 @@ export async function run(): Promise<void> {
   const selectedSmokeCount = [
     currentSourceSmoke,
     packagedBundleSmoke,
+    healthCheckFailureSmoke,
     activationFailureSmoke,
     crashRecoverySmoke,
     testExplorerSmoke,
   ].filter(Boolean).length;
-  if (testExplorerSmoke && selectedSmokeCount > 1) {
+  if (selectedSmokeCount > 1) {
     throw new Error('Published smoke selectors are mutually exclusive.');
   }
   const smokeTestPaths = crashRecoverySmoke
@@ -75,9 +76,9 @@ export async function run(): Promise<void> {
           ? [path.resolve(__dirname, '../healthCheckFailureJourney.test.js')]
           : testExplorerSmoke
             ? [path.resolve(__dirname, '../testExplorerJourney.test.js')]
-          : currentSourceSmoke
-            ? [path.resolve(__dirname, '../../integration/firstHourReceipt.test.js')]
-            : [path.resolve(__dirname, '../managedBinaryPublishedSmoke.test.js')];
+            : currentSourceSmoke
+              ? [path.resolve(__dirname, '../../integration/firstHourReceipt.test.js')]
+              : [path.resolve(__dirname, '../managedBinaryPublishedSmoke.test.js')];
   for (const smokeTestPath of smokeTestPaths) {
     mocha.addFile(smokeTestPath);
   }
