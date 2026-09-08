@@ -1033,8 +1033,21 @@ fn standard_git_bash_location() -> Option<PathBuf> {
     }
 }
 
+/// Resolve Git Bash using the same PATH-then-standard-install fallback for
+/// both the Bash capability row and its shell-mediated Cargo probe.
+fn resolve_git_bash_executable() -> Option<PathBuf> {
+    resolve_git_bash_executable_with(resolve_tool_on_path, standard_git_bash_location)
+}
+
+fn resolve_git_bash_executable_with(
+    resolve_on_path: impl FnOnce(&str) -> Option<PathBuf>,
+    fallback: impl FnOnce() -> Option<PathBuf>,
+) -> Option<PathBuf> {
+    resolve_on_path("bash").or_else(fallback)
+}
+
 fn probe_git_bash_cargo() -> CargoToolchainReport {
-    let bash_exe = resolve_tool_on_path("bash").or_else(standard_git_bash_location);
+    let bash_exe = resolve_git_bash_executable();
     let Some(bash_exe) = bash_exe else {
         return unreachable_cargo_report(
             FLAVOR_GIT_BASH,
@@ -1305,11 +1318,14 @@ fn reachable_cargo_status(
     provenance: Option<CargoProvenance>,
     version: Option<VersionTriple>,
 ) -> (&'static str, Option<bool>) {
-    let below_pin = version.map(version_below_workspace_pin);
+    let Some(version) = version else {
+        return (STATUS_PROBE_ERROR, None);
+    };
+    let below_pin = version_below_workspace_pin(version);
     match (provenance, below_pin) {
-        (Some(CargoProvenance::NonRustup), _) => (STATUS_NON_RUSTUP, below_pin.map(|below| !below)),
-        (_, Some(true)) => (STATUS_STALE, Some(false)),
-        _ => (STATUS_PRESENT, below_pin.map(|below| !below)),
+        (Some(CargoProvenance::NonRustup), _) => (STATUS_NON_RUSTUP, Some(!below_pin)),
+        (_, true) => (STATUS_STALE, Some(false)),
+        _ => (STATUS_PRESENT, Some(!below_pin)),
     }
 }
 
@@ -1421,6 +1437,11 @@ fn finish_reachable_cargo_report(
     let parsed_version = version_line.as_deref().and_then(parse_cargo_version_line);
     let provenance = binary.as_deref().and_then(Path::to_str).map(classify_cargo_provenance);
     let (status, meets_workspace_pin) = reachable_cargo_status(provenance, parsed_version);
+    let error = if parsed_version.is_none() {
+        Some(cargo_version_probe_error(version_output))
+    } else {
+        None
+    };
     CargoToolchainReport {
         flavor,
         status,
@@ -1430,9 +1451,20 @@ fn finish_reachable_cargo_report(
         meets_workspace_pin,
         honors_toolchain_file: provenance
             .map(|provenance| provenance == CargoProvenance::RustupShim),
-        error: None,
+        error,
         fix: cargo_fix_line(flavor, status),
     }
+}
+
+fn cargo_version_probe_error(version_output: &str) -> String {
+    let output = version_output.trim();
+    if output.is_empty() {
+        return "cargo --version returned no parseable version banner".to_string();
+    }
+    format!(
+        "cargo --version returned an unparseable version banner: {}",
+        truncate_for_detail(output, DETAIL_MAX_CHARS)
+    )
 }
 
 fn unreachable_cargo_report(flavor: &'static str, detail: &str) -> CargoToolchainReport {
@@ -1474,7 +1506,11 @@ fn native_shell_bash_report() -> BashFlavorReport {
 }
 
 fn git_bash_flavor_report() -> BashFlavorReport {
-    match resolve_tool_on_path("bash") {
+    git_bash_flavor_report_for_path(resolve_git_bash_executable())
+}
+
+fn git_bash_flavor_report_for_path(bash_exe: Option<PathBuf>) -> BashFlavorReport {
+    match bash_exe {
         None => BashFlavorReport {
             flavor: FLAVOR_GIT_BASH,
             status: STATUS_MISSING,
@@ -2907,8 +2943,26 @@ mod tests {
 
         let (unparsable, unparsable_meets) =
             reachable_cargo_status(Some(CargoProvenance::RustupShim), None);
-        assert_eq!(unparsable, STATUS_PRESENT);
+        assert_eq!(unparsable, STATUS_PROBE_ERROR);
         assert_eq!(unparsable_meets, None);
+    }
+
+    #[test]
+    fn successful_unparseable_cargo_probe_is_red_with_bounded_evidence() -> TestResult {
+        let report = finish_reachable_cargo_report(
+            FLAVOR_NATIVE_SHELL,
+            Some(PathBuf::from(r"C:\Users\dev\.cargo\bin\cargo.exe")),
+            "cargo development-build 2026-09-08",
+        );
+
+        assert_eq!(report.status, STATUS_PROBE_ERROR);
+        assert_eq!(report.meets_workspace_pin, None);
+        assert_eq!(report.fix, None);
+        let error = report.error.ok_or("unparseable cargo error")?;
+        assert!(error.contains("unparseable version banner"));
+        assert!(error.contains("cargo development-build"));
+        assert!(error.chars().count() <= DETAIL_MAX_CHARS + 80);
+        Ok(())
     }
 
     #[test]
@@ -2953,6 +3007,31 @@ mod tests {
             classify_windows_bash_path(r"D:\tools\busybox-bash.exe"),
             WindowsBashKind::OtherProvider
         );
+    }
+
+    #[test]
+    fn git_bash_fallback_only_resolution_keeps_capability_and_cargo_rows_aligned() -> TestResult {
+        let fallback = PathBuf::from(r"C:\Program Files\Git\bin\bash.exe");
+        let cargo_resolution =
+            resolve_git_bash_executable_with(|_| None, || Some(fallback.clone()))
+                .ok_or("fallback Git Bash path")?;
+        let capability_resolution =
+            resolve_git_bash_executable_with(|_| None, || Some(fallback.clone()))
+                .ok_or("fallback Git Bash path")?;
+
+        assert_eq!(cargo_resolution, capability_resolution);
+        let bash = git_bash_flavor_report_for_path(Some(capability_resolution));
+        assert_eq!(bash.status, STATUS_PRESENT);
+        assert_eq!(bash.runs_repo_entrypoints, Some(true));
+
+        let cargo = finish_reachable_cargo_report(
+            FLAVOR_GIT_BASH,
+            Some(PathBuf::from(r"C:\Users\dev\.cargo\bin\cargo.exe")),
+            "cargo 1.95.0 (8f3d0b0ac 2026-01-30)",
+        );
+        assert_eq!(cargo.status, STATUS_PRESENT);
+        assert_eq!(cargo.meets_workspace_pin, Some(true));
+        Ok(())
     }
 
     #[test]
