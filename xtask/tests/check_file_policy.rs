@@ -138,6 +138,10 @@ fn git_reading_child_scrubs_repo_and_index_redirects() -> Result<()> {
     for ambient in
         [("GIT_DIR", hostile_git_dir.as_path()), ("GIT_INDEX_FILE", hostile_index.as_path())]
     {
+        let receipt_path = root.join("target/policy/file-policy-report.json");
+        if receipt_path.exists() {
+            fs::remove_file(&receipt_path)?;
+        }
         let output = run_check_with_ambient(&root, &["--mode", "advisory"], &[ambient])?;
         ensure!(
             output.status.success(),
@@ -145,10 +149,12 @@ fn git_reading_child_scrubs_repo_and_index_redirects() -> Result<()> {
             ambient.0,
             String::from_utf8_lossy(&output.stderr)
         );
-        let stdout = String::from_utf8(output.stdout)?;
+        let receipt: Value = serde_json::from_str(&fs::read_to_string(&receipt_path)?)?;
         ensure!(
-            stdout.contains("total tracked: 2") && stdout.contains("README.md"),
-            "{} redirect hid the fixture inventory: {stdout}",
+            receipt.get("total_tracked").and_then(Value::as_u64) == Some(2)
+                && receipt.get("non_rust").and_then(Value::as_u64) == Some(1)
+                && receipt.get("unclassified").and_then(Value::as_u64) == Some(1),
+            "{} redirect hid the fixture inventory: {receipt}",
             ambient.0
         );
     }
