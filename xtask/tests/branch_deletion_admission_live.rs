@@ -419,7 +419,7 @@ fn a_non_terminal_parent_retains() -> Result<(), Box<dyn std::error::Error>> {
         let commands = healthy().on(
             "gh pr view 7799",
             &format!(
-                r#"{{"number":7799,"state":"{state}","merged":{merged},"headRefName":"{BRANCH}","headRefOid":"{HEAD_SHA}"}}"#
+                r#"{{"number":7799,"state":"{state}","merged":{merged},"headRefName":"{BRANCH}","headRefOid":"{HEAD_SHA}","isCrossRepository":false}}"#
             ),
         );
         let outcome = evaluate(&collect_request(&commands, 7799, "origin")?.request);
@@ -551,7 +551,7 @@ fn the_deletion_path_refuses_every_retaining_outcome() -> Result<(), Box<dyn std
         healthy().on(
             "gh pr view 7799",
             &format!(
-                r#"{{"number":7799,"state":"OPEN","merged":false,"headRefName":"{BRANCH}","headRefOid":"{HEAD_SHA}"}}"#
+                r#"{{"number":7799,"state":"OPEN","merged":false,"headRefName":"{BRANCH}","headRefOid":"{HEAD_SHA}","isCrossRepository":false}}"#
             ),
         ),
     ];
@@ -611,7 +611,7 @@ fn a_branch_name_with_shell_metacharacters_stays_one_argument()
         .on(
             "gh pr view 7799",
             &format!(
-                r#"{{"number":7799,"state":"MERGED","merged":true,"headRefName":"{hostile}","headRefOid":"{HEAD_SHA}"}}"#
+                r#"{{"number":7799,"state":"MERGED","merged":true,"headRefName":"{hostile}","headRefOid":"{HEAD_SHA}","isCrossRepository":false}}"#
             ),
         )
         .on("git ls-remote origin", &format!("{HEAD_SHA}\trefs/heads/{hostile}\n"));
@@ -830,6 +830,45 @@ fn a_cross_repository_parent_retains() -> Result<(), Box<dyn std::error::Error>>
     let same_but_owned = evaluate(&collect_request(&healthy(), 7799, "origin")?.request);
     assert_eq!(same_but_owned.admission, DeletionAdmission::SafeToDelete);
     Ok(())
+}
+
+/// Repository binding evidence is required before a parent can enter the
+/// admission graph. Missing, null, wrong-type, and duplicate values must all
+/// retain rather than becoming the same-repository default.
+#[test]
+fn missing_or_ambiguous_repository_binding_retains() {
+    for (label, parent) in [
+        (
+            "missing",
+            format!(
+                r#"{{"number":7799,"state":"MERGED","merged":true,"headRefName":"{BRANCH}","headRefOid":"{HEAD_SHA}"}}"#
+            ),
+        ),
+        (
+            "null",
+            format!(
+                r#"{{"number":7799,"state":"MERGED","merged":true,"headRefName":"{BRANCH}","headRefOid":"{HEAD_SHA}","isCrossRepository":null}}"#
+            ),
+        ),
+        (
+            "wrong type",
+            format!(
+                r#"{{"number":7799,"state":"MERGED","merged":true,"headRefName":"{BRANCH}","headRefOid":"{HEAD_SHA}","isCrossRepository":"false"}}"#
+            ),
+        ),
+        (
+            "duplicate",
+            format!(
+                r#"{{"number":7799,"state":"MERGED","merged":true,"headRefName":"{BRANCH}","headRefOid":"{HEAD_SHA}","isCrossRepository":false,"isCrossRepository":true}}"#
+            ),
+        ),
+    ] {
+        let commands = healthy().on("gh pr view 7799", &parent);
+        assert!(
+            collect_request(&commands, 7799, "origin").is_err(),
+            "{label} repository-binding evidence must not be accepted",
+        );
+    }
 }
 
 /// A command surface on which a child pull request is opened *after* the
