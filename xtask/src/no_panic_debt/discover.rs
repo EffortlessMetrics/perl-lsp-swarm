@@ -616,16 +616,6 @@ fn meta_list_requires_test(meta: &Meta) -> bool {
     cfg_predicate_requires_test(list.tokens.clone())
 }
 
-fn cfg_attr_predicate_requires_test(meta: &Meta) -> bool {
-    let Meta::List(list) = meta else {
-        return false;
-    };
-    split_top_level_commas(list.tokens.clone())
-        .into_iter()
-        .next()
-        .is_some_and(cfg_predicate_requires_test)
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum CfgAttrCover {
     Effective,
@@ -665,7 +655,7 @@ fn cfg_predicate_cover_kind(tokens: proc_macro2::TokenStream) -> CfgAttrCover {
                 .into_iter()
                 .map(cfg_predicate_cover_kind)
                 .collect();
-            if kinds.iter().any(|kind| *kind == CfgAttrCover::Inactive) {
+            if kinds.contains(&CfgAttrCover::Inactive) {
                 CfgAttrCover::Inactive
             } else if !kinds.is_empty() && kinds.iter().all(|kind| *kind == CfgAttrCover::Effective)
             {
@@ -1110,8 +1100,6 @@ mod tests {
             _ => None,
         }
         .ok_or_else(|| color_eyre::eyre::eyre!("missing not-test cfg_attr"))?;
-        assert!(!cfg_attr_predicate_requires_test(&not_attr.meta));
-        assert!(cfg_attr_predicate_requires_test(&allow_attr.meta));
         assert_eq!(cfg_attr_cover_kind(&not_attr.meta), CfgAttrCover::Inactive);
         assert_eq!(cfg_attr_cover_kind(&allow_attr.meta), CfgAttrCover::Effective);
         let feature_item = syn::parse_file(
