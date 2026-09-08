@@ -179,12 +179,15 @@ The reviewed PR delta and the actual merge-parent delta have different bases:
 
 ```text
 git diff <review-base> <reviewed-head> -- <claim-paths>
-git show --no-patch --format=%P <merge>
-git diff <merge-parent> <merge> -- <claim-paths>
+git rev-parse <merge>^1
+git diff <merge>^1 <merge> -- <claim-paths>
 ```
 
-Use the review's comparison base for the first command and the merge commit's actual
-parent for the third. A squash merge inherits main's intervening contributions; it
+Use the review's comparison base for the first command. The second command selects
+one parent explicitly, including for a normal multi-parent merge. Verify through
+commit/PR history that this first parent is the target branch's pre-merge mainline
+before interpreting the third command; do not substitute the topic parent or all
+parents as the comparison base. A squash merge inherits main's intervening contributions; it
 does not need whole-file equality with the reviewed branch. Inspect the landed claim,
 including reviewed behavior that was already present in the merge parent. If current
 main moved again, distinguish that later delta from the merge's own effect.

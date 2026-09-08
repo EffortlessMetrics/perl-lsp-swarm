@@ -69,6 +69,33 @@ fn merge_requires_review_and_integration() -> Result<(), Box<dyn std::error::Err
     Ok(())
 }
 
+fn check_reconciliation_boundaries(
+    skill: &str,
+    provider: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let reconciliation =
+        skill.split_once("## Reconciliation\n").ok_or("missing reconciliation procedure")?.1;
+    let reconciliation =
+        reconciliation.split_once("\n## ").map_or(reconciliation, |(section, _)| section);
+    for marker in [
+        "git diff <review-base> <reviewed-head> -- <claim-paths>",
+        "git rev-parse <merge>^1",
+        "git diff <merge>^1 <merge> -- <claim-paths>",
+        "does not need whole-file equality",
+        "Provenance does not prove semantic independence",
+        "proof/review before claiming the landed result",
+        "only for a decision outside existing authority",
+        "existing stop/ownership rules for unexpected local uncommitted",
+        "When another\nauthorized claim can progress",
+        "no remaining useful authorized action",
+    ] {
+        if !reconciliation.contains(marker) {
+            return Err(format!("{provider} reconciliation lost boundary {marker:?}").into());
+        }
+    }
+    Ok(())
+}
+
 /// Static procedure-preservation check, not proof of an agent's reconciliation
 /// behavior. Actual comparison evidence and independent judgment remain necessary.
 #[test]
@@ -78,22 +105,16 @@ fn reconciliation_preserves_comparison_and_authority_boundaries()
     for provider in [".agents", ".claude"] {
         let skill =
             fs::read_to_string(root.join(provider).join("skills/merge-reconcile/SKILL.md"))?;
-        let reconciliation =
-            skill.split_once("## Reconciliation\n").ok_or("missing reconciliation procedure")?.1;
-        for marker in [
-            "git diff <review-base> <reviewed-head> -- <claim-paths>",
-            "git diff <merge-parent> <merge> -- <claim-paths>",
-            "does not need whole-file equality",
-            "Provenance does not prove semantic independence",
-            "proof/review before claiming the landed result",
-            "only for a decision outside existing authority",
-            "existing stop/ownership rules for unexpected local uncommitted",
-            "When another\nauthorized claim can progress",
-            "no remaining useful authorized action",
-        ] {
-            if !reconciliation.contains(marker) {
-                return Err(format!("{provider} reconciliation lost boundary {marker:?}").into());
-            }
+        check_reconciliation_boundaries(&skill, provider)?;
+
+        let discovery = "git rev-parse <merge>^1";
+        let without_discovery = skill.replacen(discovery, "", 1);
+        if check_reconciliation_boundaries(&without_discovery, provider).is_ok() {
+            return Err(format!("{provider} accepted missing parent discovery").into());
+        }
+        let misplaced_discovery = format!("{without_discovery}\n## Later procedure\n{discovery}\n");
+        if check_reconciliation_boundaries(&misplaced_discovery, provider).is_ok() {
+            return Err(format!("{provider} accepted discovery outside reconciliation").into());
         }
     }
     Ok(())
