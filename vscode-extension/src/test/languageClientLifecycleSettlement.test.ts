@@ -5,7 +5,11 @@ import {
   type LifecycleClient,
   type LifecycleDisposable,
 } from '../languageClientLifecycle';
-import { awaitServerProcessExit, type ServerProcessLike } from '../serverProcessTermination';
+import {
+  awaitServerProcessExit,
+  serverProcessOf,
+  type ServerProcessLike,
+} from '../serverProcessTermination';
 
 class DeferredVoid {
   readonly promise: Promise<undefined>;
@@ -30,6 +34,31 @@ class DeferredVoid {
 /** Stands in for the server child process the real node client owns. */
 class FakeServerProcess {
   exited = false;
+  pid = 4242;
+  exitCode: number | null = null;
+  signalCode: string | null = null;
+  private readonly exitListeners: Array<(...args: unknown[]) => void> = [];
+
+  once(_event: 'exit', listener: (...args: unknown[]) => void): this {
+    this.exitListeners.push(listener);
+    return this;
+  }
+
+  removeListener(_event: 'exit', listener: (...args: unknown[]) => void): this {
+    const index = this.exitListeners.indexOf(listener);
+    if (index >= 0) {
+      this.exitListeners.splice(index, 1);
+    }
+    return this;
+  }
+
+  exit(): void {
+    this.exited = true;
+    this.exitCode = 0;
+    for (const listener of [...this.exitListeners]) {
+      listener(0, null);
+    }
+  }
 }
 
 class FakeClient implements LifecycleClient {
@@ -209,16 +238,13 @@ describe('LanguageClientLifecycle client cleanup admission', () => {
           return false;
         }
         const child = witness as FakeServerProcess | undefined;
-        if (child === undefined) {
-          return true;
-        }
-        // Bounded wait for the exit, like awaitServerProcessExit.
-        for (let i = 0; i < 3 && !child.exited; i += 1) {
-          await Promise.resolve();
-        }
-        return child.exited;
+        return await awaitServerProcessExit(
+          child,
+          50,
+          (pid) => child?.pid === pid && child.exited === false,
+        );
       },
-      (client) => client.serverProcess,
+      (client) => serverProcessOf(client),
     );
   }
 
@@ -244,6 +270,26 @@ describe('LanguageClientLifecycle client cleanup admission', () => {
     expect(clients).toHaveLength(1);
     expect(controller.snapshot.state).toBe('failed');
   });
+
+  test.each(['shutdown', 'close'] as const)(
+    'a library %s failure that clears the process handle still blocks replacement',
+    async (failureMode) => {
+      const { controller, clients } = makeProcessBoundController();
+      const first = await controller.start();
+      const child = first!.serverProcess!;
+      first!.stop.mockImplementation(async () => {
+        first!.terminal = true;
+        first!.serverProcess = undefined;
+        throw new Error(`Client ${failureMode} failed`);
+      });
+
+      await expect(controller.restart()).rejects.toMatchObject({ reason: 'cleanup-incomplete' });
+      expect(clients).toHaveLength(1);
+      expect(first!.serverProcess).toBeUndefined();
+      expect(child.exited).toBe(false);
+      expect(controller.snapshot.state).toBe('failed');
+    },
+  );
 
   test('a Stopped client whose captured server process has exited admits the replacement (#14155)', async () => {
     const { controller, clients } = makeProcessBoundController();
