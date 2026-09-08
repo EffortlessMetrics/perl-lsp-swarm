@@ -1349,6 +1349,9 @@ mod tests {
 
     #[test]
     fn test_notify_index_ready_wait_entered_forwards_to_readiness_observer() -> Result<()> {
+        // Same process-global wait-entered slot as the readiness contract
+        // tests (#15016). Serialize with every other notify-capable wait.
+        let _serial = crate::runtime::readiness::readiness_wait_path_test_lock();
         let server = LspServer::new();
         let coordinator = server
             .index_coordinator

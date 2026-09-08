@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const zlib = require('node:zlib');
+const { spawnSync } = require('node:child_process');
 const { test } = require('node:test');
 const AdmZip = require('adm-zip');
 const {
@@ -392,6 +393,38 @@ void test('an archive with no extension payload cannot authorize a transition', 
     zip.writeZip(vsixPath);
 
     assert.throws(() => collectArchiveInventory(vsixPath), /no extension\/ payload entries/);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+void test('rejects a payload corrupted without damaging the central directory', () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-vsix-archive-'));
+  try {
+    const entryName = 'extension/package.json';
+    const archive = storedZip([
+      [entryName, '{"name":"perl-lsp-rs"}'],
+      ['[Content_Types].xml', '<Types/>'],
+    ]);
+    const payloadOffset = 30 + Buffer.byteLength(entryName);
+    archive[payloadOffset] = (archive[payloadOffset] ?? 0) ^ 0xff;
+    const vsixPath = path.join(directory, 'payload-corrupt.vsix');
+    fs.writeFileSync(vsixPath, archive);
+
+    assert.throws(
+      () => collectArchiveInventory(vsixPath),
+      /CRC mismatch|unable to read VSIX archive entry/,
+    );
+    const checker = spawnSync(
+      process.execPath,
+      [path.join(__dirname, 'check-vsix-inventory.js'), '--vsix', vsixPath],
+      { cwd: path.resolve(__dirname, '..'), encoding: 'utf8', windowsHide: true },
+    );
+    assert.notEqual(checker.status, 0, `corrupt archive unexpectedly passed: ${checker.stdout}`);
+    assert.match(
+      `${checker.stdout}\n${checker.stderr}`,
+      /CRC mismatch|unable to read VSIX archive entry/,
+    );
   } finally {
     fs.rmSync(directory, { recursive: true, force: true });
   }

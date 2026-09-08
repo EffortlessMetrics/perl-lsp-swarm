@@ -46,6 +46,21 @@ created = "2026-08-15"
 review_after = "2026-11-15"
 
 [[allow]]
+id = "non-rust-changelog-product-12815-fixture"
+path = "xtask/tests/fixtures/product-12815-Fixed-221500.yaml"
+kind = "test_fixture"
+language = "yaml"
+surface = "fixtures"
+classification = "test"
+owner = "tooling/changelog"
+reason = "Permanent Changie fragment fixture preserving the product-12815 folded-body regression after release batching removes unreleased entries."
+covered_by = [
+  "cargo test -p xtask --bin xtask tasks::changelog::tests::repaired_product_12815_fragment_is_schema_valid -- --exact --nocapture",
+]
+created = "2026-09-02"
+review_after = "2027-03-02"
+
+[[allow]]
 id = "non-rust-generated-badge-endpoints"
 glob = "badges/*.json"
 kind = "generated_badge_endpoint"
@@ -196,6 +211,21 @@ covered_by = [
 ]
 created = "2026-08-24"
 review_after = "2026-11-24"
+
+[[allow]]
+id = "non-rust-ripr-010-consumer-fixtures"
+glob = "xtask/tests/fixtures/ripr-0.10/*.json"
+kind = "test_fixture"
+language = "json"
+surface = "fixtures"
+classification = "test"
+owner = "ci/ripr-consumer"
+reason = "Captured `ripr check --format json` output from the published 0.9.0 and 0.10.0 releases over one identical diff, pinning the producer output schema across the #9113 consumer migration. The repository has a recorded regression where a RIPR version bump changed JSON fields and the consumer silently stopped matching them (docs/learnings/2026-06-ripr-output-schema-break.md); hand-authored JSON cannot catch that class because it encodes the assumption under test. Regenerating them by hand would defeat their purpose — they change only when a reviewed producer release is intended. Provenance is in the sibling README.md."
+covered_by = [
+  "cargo test -p xtask --bin xtask ripr_evidence --locked",
+]
+created = "2026-09-07"
+review_after = "2027-03-07"
 
 [[allow]]
 id = "non-rust-lsp-318-changelog-fixture"

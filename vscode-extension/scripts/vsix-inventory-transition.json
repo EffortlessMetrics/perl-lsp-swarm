@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "owner_issue": 14155,
-  "reason": "Accept the combined landed #14857 lifecycle and #14621 per-file configuration package, plus the #14919 Marketplace README refresh. Measured with Node 26.5.0 and npm 11.18.0 from an actual VSIX at main 42007301a43ad5287aa00df8e26683f9795655b9. The 29 payload paths are unchanged: out/extension.js grows by 1130 bytes to 1679645; readme.md grows by 8 bytes to 25230; total payload is 1857611 bytes. Installed behavior remains a separate proof surface.",
-  "base_baseline_file_sha256": "a0ff6132d090487820a562be18de96e17a9e0b6f1c22c5304386519490aac8c5",
-  "candidate_baseline_file_sha256": "71482686ee9c9e65c120c19a814034fd537dc61e826306b406d5b137cb1b2a5b",
-  "base_inventory_sha256": "58b0b7699290c02ba693c03393cc5fc7771c687386499ebd1d426ac3850b1b02",
-  "candidate_inventory_sha256": "0b5940446ee784e69435a7bf1f2f44f7ea49e17832178a82a559012a25c22584"
+  "owner_issue": 15121,
+  "reason": "The ordinary package command now measures the exact versioned VSIX archive and validates every payload. Fresh Windows packaging preserved the archive file set and names; package.json is 59528 bytes after binding the standalone check to the metadata-derived artifact name and exact release workflow path. This declaration records the measured candidate inventory; installed behavior remains an independent stage.",
+  "base_baseline_file_sha256": "5c73582a6a7ae22a9f648492731ef3315336bfb17553aee22bfb48c332f89411",
+  "candidate_baseline_file_sha256": "4edd01ebb5a7ca17295226af8c866a172d1d424c9aa7cd342c7dd9e15d799db8",
+  "base_inventory_sha256": "7780c5f86aebdd24b900a76bf412fcc05ad1c1acfd0b16717be6444bd884bcbb",
+  "candidate_inventory_sha256": "5f414273d8913857ebb2aef8a14fbf4c1613fb0ce71a95a94a82b846349ad4ff"
 }
