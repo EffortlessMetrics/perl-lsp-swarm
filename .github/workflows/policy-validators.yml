@@ -48,6 +48,8 @@ on:
       - '.github/dependabot.yml'
       - 'scripts/ci/validate_dependabot_contract.py'
       - 'scripts/ci/test_validate_dependabot_contract.py'
+      - 'scripts/ci/validate_dependabot_cooldown.py'
+      - 'scripts/ci/test_validate_dependabot_cooldown.py'
       - 'docs/reference/WORKTREE_PROTOCOL.md'
       - 'docs/project/CI_LOCAL_VALIDATION.md'
       - 'scripts/ci/check_perl_lsp_rs_core_package.py'
@@ -152,6 +154,11 @@ jobs:
         run: |
           python3 scripts/ci/test_validate_dependabot_contract.py
           python3 scripts/ci/validate_dependabot_contract.py --repo-root .
+
+      - name: Validate Dependabot cooldown contract
+        run: |
+          python3 scripts/ci/test_validate_dependabot_cooldown.py
+          python3 scripts/ci/validate_dependabot_cooldown.py --repo-root .
 
       - name: Validate exposed-surface disposition contract
         run: |
