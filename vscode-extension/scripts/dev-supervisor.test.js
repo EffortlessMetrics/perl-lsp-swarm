@@ -291,17 +291,18 @@ function assertStoppedOrZombie(pid) {
   try {
     process.kill(pid, 0);
   } catch (error) {
-    const code =
-      error && typeof error === 'object' && 'code' in error ? error.code : undefined;
-    assert.ok(code === 'ESRCH' || code === 'ENOENT', `unexpected PID probe failure: ${String(code)}`);
+    const code = error && typeof error === 'object' && 'code' in error ? error.code : undefined;
+    assert.ok(
+      code === 'ESRCH' || code === 'ENOENT',
+      `unexpected PID probe failure: ${String(code)}`,
+    );
     return;
   }
   let stat;
   try {
     stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
   } catch (error) {
-    const code =
-      error && typeof error === 'object' && 'code' in error ? error.code : undefined;
+    const code = error && typeof error === 'object' && 'code' in error ? error.code : undefined;
     assert.equal(code, 'ENOENT', `PID remained probeable but /proc read failed: ${String(code)}`);
     return;
   }

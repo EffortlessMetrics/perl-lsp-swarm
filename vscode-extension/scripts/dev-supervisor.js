@@ -343,7 +343,10 @@ function inspectPosixProcessGroup(pid, procRoot = '/proc', procFs = fs) {
       if (closeParen < 0) {
         return null;
       }
-      const fields = stat.slice(closeParen + 1).trim().split(/\s+/);
+      const fields = stat
+        .slice(closeParen + 1)
+        .trim()
+        .split(/\s+/);
       const state = fields[0];
       const processGroup = fields[2];
       const startTime = fields[19];
@@ -1239,7 +1242,12 @@ function exitAfterCliOutput(code) {
 function main() {
   const reporter = createReporter(REPORT_SCOPE);
   const signalBridge = createSignalBridge();
-  for (const signal of /** @type {NodeJS.Signals[]} */ (['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGBREAK'])) {
+  for (const signal of /** @type {NodeJS.Signals[]} */ ([
+    'SIGINT',
+    'SIGTERM',
+    'SIGHUP',
+    'SIGBREAK',
+  ])) {
     process.on(signal, () => {
       signalBridge.handle(signal);
     });
