@@ -6,6 +6,7 @@ const { test } = require('node:test');
 const {
   activationFailureLegEnv,
   bundleTargetForPlatform,
+  clearSmokeStageReceipts,
   composeActivationRecoveryReceipt,
   composeCheckSummary,
   composeCrashRecoveryReceipt,
@@ -586,15 +587,47 @@ void test('an unsupported candidate-bound platform is not a product smoke failur
     disposition: 'unavailable',
     error: 'candidate-bound installed acceptance is restricted to Linux',
   };
-  const result = interpretBehavioralSmokeExit({
-    status: 1,
-    receiptsRoot: '/fixture',
-    exists: (file) => file.endsWith('vscode_candidate_platform_unavailable.json'),
-    readFile: () => JSON.stringify(platformUnavailable),
-  });
-  assert.equal(result.status, 'not_proven');
-  assert.equal(result.reason, 'candidate_bound_platform_unavailable');
-  assert.deepEqual(result.platform_unavailable, platformUnavailable);
+  const receiptRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-platform-parent-'));
+  try {
+    fs.writeFileSync(
+      path.join(receiptRoot, 'vscode_candidate_platform_unavailable.json'),
+      JSON.stringify(platformUnavailable),
+    );
+    const result = interpretBehavioralSmokeExit({
+      status: 1,
+      receiptsRoot: receiptRoot,
+    });
+    assert.equal(result.status, 'not_proven');
+    assert.equal(result.reason, 'candidate_bound_platform_unavailable');
+    assert.deepEqual(result.platform_unavailable, platformUnavailable);
+  } finally {
+    fs.rmSync(receiptRoot, { recursive: true, force: true });
+  }
+});
+
+void test('a stale unsupported-platform receipt is cleared before the next child run', () => {
+  const receiptRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-platform-stale-'));
+  const priorRoot = process.env.PERL_LSP_SMOKE_RECEIPTS_DIR;
+  const priorLabel = process.env.PERL_LSP_SMOKE_SOURCE_LABEL;
+  try {
+    process.env.PERL_LSP_SMOKE_RECEIPTS_DIR = receiptRoot;
+    process.env.PERL_LSP_SMOKE_SOURCE_LABEL = 'current-source';
+    fs.writeFileSync(
+      path.join(receiptRoot, 'vscode_candidate_platform_unavailable.json'),
+      '{"stale":true}',
+    );
+    clearSmokeStageReceipts(receiptRoot);
+    assert.equal(
+      fs.existsSync(path.join(receiptRoot, 'vscode_candidate_platform_unavailable.json')),
+      false,
+    );
+  } finally {
+    if (priorRoot === undefined) delete process.env.PERL_LSP_SMOKE_RECEIPTS_DIR;
+    else process.env.PERL_LSP_SMOKE_RECEIPTS_DIR = priorRoot;
+    if (priorLabel === undefined) delete process.env.PERL_LSP_SMOKE_SOURCE_LABEL;
+    else process.env.PERL_LSP_SMOKE_SOURCE_LABEL = priorLabel;
+    fs.rmSync(receiptRoot, { recursive: true, force: true });
+  }
 });
 
 void test('network, cache, and runner host failures keep the host-resolution boundary', () => {

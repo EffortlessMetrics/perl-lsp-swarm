@@ -506,6 +506,16 @@ function childReceiptPath() {
   return path.join(receiptsRoot(), smokeSourceLabel(), smokePlatformLabel(), CHILD_RECEIPT_NAME);
 }
 
+function clearSmokeStageReceipts(root = receiptsRoot()) {
+  for (const receiptFile of [
+    path.join(root, smokeSourceLabel(), smokePlatformLabel(), CHILD_RECEIPT_NAME),
+    hostResolutionFailurePath(root),
+    candidatePlatformUnavailablePath(root),
+  ]) {
+    fs.rmSync(receiptFile, { force: true });
+  }
+}
+
 /**
  * A zero exit code from the extension-host smoke is not behavioral proof: a
  * no-op script, a swallowed receipt write, or a receipt left behind by an
@@ -626,8 +636,7 @@ function validateChildSmokeReceipt({
 /** Must match `HOST_RESOLUTION_FAILURE_RECEIPT_NAME` in vscodeHostResolution.ts. */
 const HOST_RESOLUTION_FAILURE_RECEIPT = 'vscode_host_resolution_failure.json';
 /** Must match `CANDIDATE_PLATFORM_UNAVAILABLE_RECEIPT_NAME` in runPublishedSmoke.ts. */
-const CANDIDATE_PLATFORM_UNAVAILABLE_RECEIPT =
-  'vscode_candidate_platform_unavailable.json';
+const CANDIDATE_PLATFORM_UNAVAILABLE_RECEIPT = 'vscode_candidate_platform_unavailable.json';
 
 function hostResolutionFailurePath(root = receiptsRoot()) {
   return path.join(root, HOST_RESOLUTION_FAILURE_RECEIPT);
@@ -713,6 +722,7 @@ function readCandidatePlatformUnavailableReceipt(
  *   exit_code: number | null,
  *   reason: string,
  *   host_resolution?: Record<string, unknown>,
+ *   platform_unavailable?: Record<string, unknown>,
  * }}
  */
 function interpretBehavioralSmokeExit({
@@ -2499,9 +2509,7 @@ function main() {
         // never be mistaken for this run's behavioral evidence.
         const childReceiptFile = childReceiptPath();
         try {
-          fs.rmSync(childReceiptFile, { force: true });
-          fs.rmSync(hostResolutionFailurePath(), { force: true });
-          fs.rmSync(candidatePlatformUnavailablePath(), { force: true });
+          clearSmokeStageReceipts(receiptsRoot());
         } catch (error) {
           receipt.stages.behavioral_smoke = {
             status: 'not_proven',
@@ -2634,6 +2642,7 @@ module.exports = {
   composeCrashRecoveryReceipt,
   computeOverallStatus,
   concludeRun,
+  clearSmokeStageReceipts,
   crashRecoveryLegEnv,
   finalizeSmokeRun,
   initialReceipt,
