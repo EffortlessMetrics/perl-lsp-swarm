@@ -711,15 +711,18 @@ fn revision_sha(repo: &Path, revision: &str) -> Result<String> {
 ///   the current failure.
 ///
 /// Both follow from the same rule, so both are cleared together here: once a
-/// generation attempt starts, nothing it regenerates may survive it. This runs
+/// generation attempt successfully clears these files, none of their old copies
+/// may survive later failures. A removal error aborts and may retain old readable
+/// artifacts (#15097); the workflow still propagates the generation failure. This runs
 /// before every fallible step — revision checks, diff resolution, the diff
 /// write, and the producer invocation — because each of them can fail and leave
 /// the previous run's artifacts otherwise readable.
 ///
 /// This does not conflict with preserving a refused envelope's payload: the
 /// current producer output is written back to `raw-check.json` immediately after
-/// `run_ripr_check` succeeds and *before* the envelope check, so a malformed
-/// envelope still leaves its own bytes behind — just never someone else's.
+/// `run_ripr_check` returns valid JSON and before the envelope check, so a
+/// refused envelope leaves its own bytes behind. JSON syntax failures occur
+/// before that write and do not preserve their current malformed bytes.
 fn clear_stale_pr_artifacts(repo: &Path) -> Result<()> {
     for relative in [PR_EVIDENCE_JSON, PR_EVIDENCE_MD, PR_RAW_CHECK_JSON, PR_DIFF, PR_DIFF_RECEIPT]
     {
@@ -736,9 +739,9 @@ fn clear_stale_pr_artifacts(repo: &Path) -> Result<()> {
 }
 
 fn write_pr_evidence(repo: &Path, options: &PrEvidenceOptions) -> Result<()> {
-    // First, before anything fallible: this run owns these artifacts now, so no
-    // failure below may leave an earlier run's copies readable to the always-run
-    // validator or artifact upload (#9113 review).
+    // Invalidate before revision, diff, or producer work. Once clearing succeeds,
+    // later failures cannot expose earlier copies to the always-run validator
+    // or artifact upload (#9113 review). Removal failures remain #15097.
     clear_stale_pr_artifacts(repo)?;
     verify_revision(repo, &options.base)?;
     verify_revision(repo, &options.head)?;
@@ -3843,6 +3846,8 @@ fn bullet_list(values: &[String]) -> String {
 mod tests {
     use super::*;
 
+    use color_eyre::eyre::ContextCompat;
+
     // ---------------------------------------------------------------------
     // #9113: RIPR 0.9.0 → 0.10.0 consumer migration.
     //
@@ -3861,8 +3866,8 @@ mod tests {
     const REAL_009_CHECK: &str =
         include_str!("../../tests/fixtures/ripr-0.10/weakly-exposed-check-0.9.json");
 
-    fn parse_check(raw: &str) -> Value {
-        serde_json::from_str(raw).expect("captured ripr output must be valid JSON")
+    fn parse_check(raw: &str) -> Result<Value> {
+        serde_json::from_str(raw).context("captured ripr output must be valid JSON")
     }
 
     fn counts_for(check: &Value) -> RiprPrSummaryCounts {
@@ -3871,12 +3876,12 @@ mod tests {
     }
 
     #[test]
-    fn real_ripr_010_output_still_reaches_the_actionable_bucket() {
-        let check = parse_check(REAL_010_CHECK);
+    fn real_ripr_010_output_still_reaches_the_actionable_bucket() -> Result<()> {
+        let check = parse_check(REAL_010_CHECK)?;
 
         // The envelope 0.10 actually emits is accepted, not merely tolerated.
         validate_check_envelope(&check)
-            .expect("real 0.10 output must satisfy the producer contract");
+            .context("real 0.10 output must satisfy the producer contract")?;
 
         let counts = counts_for(&check);
 
@@ -3887,24 +3892,41 @@ mod tests {
         // that `ripr_pr_summary_counts` matches against its recognized set. A
         // 0.10 that renamed either one collapses this to 0 while the fixture
         // still parses as valid JSON.
-        assert_eq!(
-            counts.weakly_exposed, 1,
+        color_eyre::eyre::ensure!(
+            (counts.weakly_exposed) == (1),
             "real 0.10 output must still land in the actionable bucket the gate counts"
         );
-        assert_eq!(counts.reachable_unrevealed, 0);
-        assert_eq!(counts.no_static_path, 0);
+        color_eyre::eyre::ensure!(
+            (counts.reachable_unrevealed) == (0),
+            "proof predicate failed: {}",
+            stringify!((counts.reachable_unrevealed) == (0))
+        );
+        color_eyre::eyre::ensure!(
+            (counts.no_static_path) == (0),
+            "proof predicate failed: {}",
+            stringify!((counts.no_static_path) == (0))
+        );
+        Ok(())
     }
 
     #[test]
-    fn ripr_010_is_schema_compatible_with_009_for_every_consumed_field() {
-        let old = parse_check(REAL_009_CHECK);
-        let new = parse_check(REAL_010_CHECK);
+    fn ripr_010_is_schema_compatible_with_009_for_every_consumed_field() -> Result<()> {
+        let old = parse_check(REAL_009_CHECK)?;
+        let new = parse_check(REAL_010_CHECK)?;
 
         // The declared break signal did move, so these really are two different
         // producer schemas and the comparison below is not comparing one release
         // against itself.
-        assert_eq!(old.get("schema_version").and_then(Value::as_str), Some("0.1"));
-        assert_eq!(new.get("schema_version").and_then(Value::as_str), Some("0.2"));
+        color_eyre::eyre::ensure!(
+            (old.get("schema_version").and_then(Value::as_str)) == (Some("0.1")),
+            "proof predicate failed: {}",
+            stringify!((old.get("schema_version").and_then(Value::as_str)) == (Some("0.1")))
+        );
+        color_eyre::eyre::ensure!(
+            (new.get("schema_version").and_then(Value::as_str)) == (Some("0.2")),
+            "proof predicate failed: {}",
+            stringify!((new.get("schema_version").and_then(Value::as_str)) == (Some("0.2")))
+        );
 
         // Every `summary` key the consumer may read survives the bump. Asserting
         // over the whole key set (not just the three required counts) is what
@@ -3917,9 +3939,8 @@ mod tests {
                 .map(|summary| summary.keys().cloned().collect())
                 .unwrap_or_default()
         };
-        assert_eq!(
-            keys(&old),
-            keys(&new),
+        color_eyre::eyre::ensure!(
+            (keys(&old)) == (keys(&new)),
             "0.10 changed the `summary` key set; every removed key would be read as zero"
         );
 
@@ -3927,100 +3948,119 @@ mod tests {
         // bump. This is the actual migration claim: not "0.10 parses", but
         // "0.10 does not move the number the required check acts on".
         let (old_counts, new_counts) = (counts_for(&old), counts_for(&new));
-        assert_eq!(
-            (old_counts.weakly_exposed, old_counts.reachable_unrevealed, old_counts.no_static_path),
-            (new_counts.weakly_exposed, new_counts.reachable_unrevealed, new_counts.no_static_path),
+        color_eyre::eyre::ensure!(
+            ((
+                old_counts.weakly_exposed,
+                old_counts.reachable_unrevealed,
+                old_counts.no_static_path
+            )) == ((
+                new_counts.weakly_exposed,
+                new_counts.reachable_unrevealed,
+                new_counts.no_static_path
+            )),
             "the reviewed bump must not change the actionable counts for identical input"
         );
+        Ok(())
     }
 
     #[test]
-    fn a_removed_summary_count_is_an_instrument_failure_not_a_clean_result() {
+    fn a_removed_summary_count_is_an_instrument_failure_not_a_clean_result() -> Result<()> {
         // The required negative control from #9113: "0.9-shaped output with a
         // field removed must not silently become clean."
         for key in REQUIRED_CHECK_SUMMARY_COUNTS {
-            let mut check = parse_check(REAL_010_CHECK);
+            let mut check = parse_check(REAL_010_CHECK)?;
             check
                 .get_mut("summary")
                 .and_then(Value::as_object_mut)
-                .expect("fixture has a summary object")
+                .context("fixture has a summary object")?
                 .remove(key);
 
             // Counting alone cannot tell this apart from a clean run — that is
             // precisely the defect, and asserting it here keeps the negative
             // control honest about *why* the envelope check has to exist.
-            assert_eq!(
-                counts_for(&check).weakly_exposed,
-                if key == "weakly_exposed" { 0 } else { 1 },
+            color_eyre::eyre::ensure!(
+                (counts_for(&check).weakly_exposed)
+                    == (if key == "weakly_exposed" { 0 } else { 1 }),
                 "counting reads a removed `{key}` as zero, so refusal must happen at ingest"
             );
 
-            let refusal = validate_check_envelope(&check)
-                .expect_err("a removed required count must be refused, not counted as zero");
-            assert!(
+            let refusal = validate_check_envelope(&check).err().ok_or_else(|| {
+                eyre!("a removed required count must be refused, not counted as zero")
+            })?;
+            color_eyre::eyre::ensure!(
                 refusal.to_string().contains(key),
                 "refusal must name the missing field, got: {refusal}"
             );
         }
+        Ok(())
     }
 
     #[test]
-    fn a_malformed_summary_count_is_refused_rather_than_coerced() {
+    fn a_malformed_summary_count_is_refused_rather_than_coerced() -> Result<()> {
         for malformed in [json!("3"), json!(-1), json!(1.5), json!(null), json!({})] {
-            let mut check = parse_check(REAL_010_CHECK);
+            let mut check = parse_check(REAL_010_CHECK)?;
             check
                 .get_mut("summary")
                 .and_then(Value::as_object_mut)
-                .expect("fixture has a summary object")
+                .context("fixture has a summary object")?
                 .insert("weakly_exposed".to_string(), malformed.clone());
 
-            assert!(
+            color_eyre::eyre::ensure!(
                 validate_check_envelope(&check).is_err(),
                 "a non-integer count must be an instrument failure, not coerced to zero: \
                  {malformed}"
             );
         }
+        Ok(())
     }
 
     #[test]
-    fn a_missing_findings_array_is_refused() {
+    fn a_missing_findings_array_is_refused() -> Result<()> {
         // Without `findings[]` no suppression can be applied by path or
         // classification, so a summary-only envelope would silently report
         // unsuppressed totals as if the policy had been consulted.
-        let mut check = parse_check(REAL_010_CHECK);
-        check.as_object_mut().expect("object").remove("findings");
-        validate_check_envelope(&check)
-            .expect_err("summary-only output must be refused, not treated as unsuppressed truth");
+        let mut check = parse_check(REAL_010_CHECK)?;
+        check.as_object_mut().context("object")?.remove("findings");
+        validate_check_envelope(&check).err().ok_or_else(|| {
+            eyre!("summary-only output must be refused, not treated as unsuppressed truth")
+        })?;
+        Ok(())
     }
 
     #[test]
-    fn a_genuinely_clean_run_is_still_accepted() {
+    fn a_genuinely_clean_run_is_still_accepted() -> Result<()> {
         // The complement that keeps the refusal from being a blunt instrument:
         // explicit zeros are a real result and must pass. Real producer output
         // for a diff touching no Rust carries exactly this shape, which is why
         // absence can be treated as a break without failing docs-only PRs.
-        let mut check = parse_check(REAL_010_CHECK);
-        let summary = check.get_mut("summary").and_then(Value::as_object_mut).expect("summary");
+        let mut check = parse_check(REAL_010_CHECK)?;
+        let summary = check.get_mut("summary").and_then(Value::as_object_mut).context("summary")?;
         for key in REQUIRED_CHECK_SUMMARY_COUNTS {
             summary.insert(key.to_string(), json!(0));
         }
-        check["findings"] = json!([]);
+        *check.get_mut("findings").ok_or_else(|| eyre!("fixture findings must exist"))? = json!([]);
 
-        validate_check_envelope(&check).expect("an explicitly-zero envelope is clean, not broken");
-        assert_eq!(counts_for(&check).weakly_exposed, 0);
+        validate_check_envelope(&check)
+            .context("an explicitly-zero envelope is clean, not broken")?;
+        color_eyre::eyre::ensure!(
+            (counts_for(&check).weakly_exposed) == (0),
+            "proof predicate failed: {}",
+            stringify!((counts_for(&check).weakly_exposed) == (0))
+        );
+        Ok(())
     }
 
-    fn rules_for(patterns: &[&str]) -> RiprSuppressionRules {
+    fn rules_for(patterns: &[&str]) -> Result<RiprSuppressionRules> {
         let mut rules = RiprSuppressionRules::default();
         for pattern in patterns {
             rules.display_patterns.push((*pattern).to_string());
-            rules.path_patterns.push(Pattern::new(pattern).expect("test glob must be valid"));
+            rules.path_patterns.push(Pattern::new(pattern).context("test glob must be valid")?);
             // Empty = no classification filter, matching how the current matcher
             // treats `policy/ripr-suppressions.toml` classification lists as
             // documentary rather than selective.
             rules.classification_patterns.push(Vec::new());
         }
-        rules
+        Ok(rules)
     }
 
     fn counts_with(check: &Value, rules: &RiprSuppressionRules) -> RiprPrSummaryCounts {
@@ -4029,36 +4069,59 @@ mod tests {
     }
 
     #[test]
-    fn suppression_selects_exactly_the_intended_finding_on_real_010_output() {
-        let check = parse_check(REAL_010_CHECK);
+    fn suppression_selects_exactly_the_intended_finding_on_real_010_output() -> Result<()> {
+        let check = parse_check(REAL_010_CHECK)?;
         // The captured finding's `probe.file` is `./src/lib.rs`.
 
         // Positive control: a rule whose path matches moves the finding out of
         // the actionable bucket and into the policy-suppressed count. Both
         // halves are asserted — a matcher that dropped findings entirely would
         // also zero the bucket, and only `suppressed_by_policy` tells them apart.
-        let matched = counts_with(&check, &rules_for(&["src/lib.rs"]));
-        assert_eq!(matched.weakly_exposed, 0, "a matching rule must clear the actionable bucket");
-        assert_eq!(matched.suppressed_by_policy, 1, "the finding must be accounted as suppressed");
+        let matched = counts_with(&check, &rules_for(&["src/lib.rs"])?);
+        color_eyre::eyre::ensure!(
+            (matched.weakly_exposed) == (0),
+            "a matching rule must clear the actionable bucket"
+        );
+        color_eyre::eyre::ensure!(
+            (matched.suppressed_by_policy) == (1),
+            "the finding must be accounted as suppressed"
+        );
 
         // Same, through a glob, since the real policy file is glob-shaped.
-        let globbed = counts_with(&check, &rules_for(&["src/**"]));
-        assert_eq!(globbed.weakly_exposed, 0);
-        assert_eq!(globbed.suppressed_by_policy, 1);
+        let globbed = counts_with(&check, &rules_for(&["src/**"])?);
+        color_eyre::eyre::ensure!(
+            (globbed.weakly_exposed) == (0),
+            "proof predicate failed: {}",
+            stringify!((globbed.weakly_exposed) == (0))
+        );
+        color_eyre::eyre::ensure!(
+            (globbed.suppressed_by_policy) == (1),
+            "proof predicate failed: {}",
+            stringify!((globbed.suppressed_by_policy) == (1))
+        );
 
         // Negative control: an unsuppressed finding stays visible and blocking.
         // Without this, a matcher that suppressed everything would pass the
         // positive controls above.
-        let unmatched = counts_with(&check, &rules_for(&["crates/somewhere-else/**"]));
-        assert_eq!(
-            unmatched.weakly_exposed, 1,
+        let unmatched = counts_with(&check, &rules_for(&["crates/somewhere-else/**"])?);
+        color_eyre::eyre::ensure!(
+            (unmatched.weakly_exposed) == (1),
             "a non-matching rule must leave the finding visible to the gate"
         );
-        assert_eq!(unmatched.suppressed_by_policy, 0);
+        color_eyre::eyre::ensure!(
+            (unmatched.suppressed_by_policy) == (0),
+            "proof predicate failed: {}",
+            stringify!((unmatched.suppressed_by_policy) == (0))
+        );
 
         // And the no-policy baseline agrees with the non-matching rule, so the
         // rule set is doing the selecting rather than the fixture.
-        assert_eq!(counts_for(&check).weakly_exposed, 1);
+        color_eyre::eyre::ensure!(
+            (counts_for(&check).weakly_exposed) == (1),
+            "proof predicate failed: {}",
+            stringify!((counts_for(&check).weakly_exposed) == (1))
+        );
+        Ok(())
     }
 
     /// Write a fake `ripr` that answers `--format json` with `check_json`.
@@ -4134,11 +4197,11 @@ esac
         let repo = evidence_repo()?;
 
         // A real 0.10-shaped envelope with exactly one required count removed.
-        let mut broken = parse_check(REAL_010_CHECK);
+        let mut broken = parse_check(REAL_010_CHECK)?;
         broken
             .get_mut("summary")
             .and_then(Value::as_object_mut)
-            .expect("summary")
+            .context("summary")?
             .remove("weakly_exposed");
 
         let bin_dir = tempfile::tempdir()?;
@@ -4146,14 +4209,15 @@ esac
         let _guard = override_ripr_bin(&fake)?;
 
         let error = write_pr_evidence(repo.path(), &evidence_options())
-            .expect_err("evidence generation must abort on a broken producer envelope");
-        assert!(
+            .err()
+            .ok_or_else(|| eyre!("evidence generation must abort on a broken producer envelope"))?;
+        color_eyre::eyre::ensure!(
             error.to_string().contains("weakly_exposed"),
             "the refusal must name the missing count, got: {error}"
         );
 
         // No evidence packet was left behind claiming a clean result.
-        assert!(
+        color_eyre::eyre::ensure!(
             !repo.path().join(PR_EVIDENCE_JSON).exists(),
             "a refused run must not write an evidence packet"
         );
@@ -4165,10 +4229,10 @@ esac
         // writing this file would upload an evidence directory missing the only
         // thing that explains the refusal.
         let raw = fs::read_to_string(repo.path().join(PR_RAW_CHECK_JSON))
-            .expect("the raw producer payload must survive a refusal for offline diagnosis");
-        let recovered: Value =
-            serde_json::from_str(&raw).expect("preserved raw output must be the producer's bytes");
-        assert!(
+            .context("the raw producer payload must survive a refusal for offline diagnosis")?;
+        let recovered: Value = serde_json::from_str(&raw)
+            .context("preserved raw output must be the producer's bytes")?;
+        color_eyre::eyre::ensure!(
             recovered.get("summary").is_some_and(|summary| summary.get("weakly_exposed").is_none()),
             "the preserved payload must be the offending envelope, not a repaired one"
         );
@@ -4200,31 +4264,40 @@ esac
             let _guard = override_ripr_bin(&fake)?;
             write_pr_evidence(repo.path(), &options)?;
             check_pr_evidence(repo.path(), &options)
-                .expect("freshly written evidence must validate");
+                .context("freshly written evidence must validate")?;
         }
-        assert!(repo.path().join(PR_EVIDENCE_JSON).exists());
-        assert!(repo.path().join(PR_EVIDENCE_MD).exists());
+        color_eyre::eyre::ensure!(
+            repo.path().join(PR_EVIDENCE_JSON).exists(),
+            "proof predicate failed: {}",
+            stringify!(repo.path().join(PR_EVIDENCE_JSON).exists())
+        );
+        color_eyre::eyre::ensure!(
+            repo.path().join(PR_EVIDENCE_MD).exists(),
+            "proof predicate failed: {}",
+            stringify!(repo.path().join(PR_EVIDENCE_MD).exists())
+        );
 
         // Second run, same revisions, broken producer envelope.
-        let mut broken = parse_check(REAL_010_CHECK);
+        let mut broken = parse_check(REAL_010_CHECK)?;
         broken
             .get_mut("summary")
             .and_then(Value::as_object_mut)
-            .expect("summary")
+            .context("summary")?
             .remove("weakly_exposed");
         {
             let fake = write_fake_ripr_check_binary(bin_dir.path(), &broken.to_string())?;
             let _guard = override_ripr_bin(&fake)?;
             write_pr_evidence(repo.path(), &options)
-                .expect_err("the broken envelope must still be refused");
+                .err()
+                .ok_or_else(|| eyre!("the broken envelope must still be refused"))?;
         }
 
         // The previous run's packet must be gone, not merely superseded.
-        assert!(
+        color_eyre::eyre::ensure!(
             !repo.path().join(PR_EVIDENCE_JSON).exists(),
             "a refused rerun must not leave the earlier packet on disk"
         );
-        assert!(
+        color_eyre::eyre::ensure!(
             !repo.path().join(PR_EVIDENCE_MD).exists(),
             "a refused rerun must not leave the earlier markdown on disk"
         );
@@ -4233,10 +4306,15 @@ esac
         // stale evidence for these revisions. This is the assertion that makes
         // the whole operation fail closed, not just its ingest.
         check_pr_evidence(repo.path(), &options)
-            .expect_err("stale evidence must not validate after a refused rerun");
+            .err()
+            .ok_or_else(|| eyre!("stale evidence must not validate after a refused rerun"))?;
 
         // The offending payload still survives for diagnosis.
-        assert!(repo.path().join(PR_RAW_CHECK_JSON).exists());
+        color_eyre::eyre::ensure!(
+            repo.path().join(PR_RAW_CHECK_JSON).exists(),
+            "proof predicate failed: {}",
+            stringify!(repo.path().join(PR_RAW_CHECK_JSON).exists())
+        );
         Ok(())
     }
 
@@ -4267,9 +4345,11 @@ esac
             base: "refs/heads/does-not-exist".to_string(),
             ..evidence_options()
         };
-        write_pr_evidence(repo.path(), &bogus).expect_err("an unresolvable base must fail");
+        write_pr_evidence(repo.path(), &bogus)
+            .err()
+            .ok_or_else(|| eyre!("an unresolvable base must fail"))?;
 
-        assert!(
+        color_eyre::eyre::ensure!(
             !repo.path().join(PR_EVIDENCE_JSON).exists(),
             "an early failure must not leave the previous packet acceptable"
         );
@@ -4278,11 +4358,11 @@ esac
         // would publish an earlier run's diff as this failed run's artifacts.
         // Safe to clear: `resolve_committed_diff` derives the receipt from git
         // rather than from this file, and `write_pr_diff` rewrites both.
-        assert!(
+        color_eyre::eyre::ensure!(
             !repo.path().join(PR_DIFF).exists(),
             "an early failure must not publish the previous run's diff"
         );
-        assert!(
+        color_eyre::eyre::ensure!(
             !repo.path().join(PR_DIFF_RECEIPT).exists(),
             "an early failure must not publish the previous run's committed-diff receipt"
         );
@@ -4290,7 +4370,8 @@ esac
         // real acceptance test of the leftovers rather than a second failure for
         // the same reason the generation failed.
         check_pr_evidence(repo.path(), &options)
-            .expect_err("stale evidence must not validate after an early failure");
+            .err()
+            .ok_or_else(|| eyre!("stale evidence must not validate after an early failure"))?;
         Ok(())
     }
 
@@ -4312,7 +4393,10 @@ esac
             let _guard = override_ripr_bin(&fake)?;
             write_pr_evidence(repo.path(), &options)?;
         }
-        assert!(repo.path().join(PR_RAW_CHECK_JSON).exists(), "first run wrote a payload");
+        color_eyre::eyre::ensure!(
+            repo.path().join(PR_RAW_CHECK_JSON).exists(),
+            "first run wrote a payload"
+        );
 
         // A producer that exits non-zero without emitting anything.
         let failing = bin_dir.path().join("ripr");
@@ -4324,13 +4408,19 @@ esac
             fs::set_permissions(&failing, permissions)?;
         }
         let _guard = override_ripr_bin(&failing)?;
-        write_pr_evidence(repo.path(), &options).expect_err("a failing producer must abort");
+        write_pr_evidence(repo.path(), &options)
+            .err()
+            .ok_or_else(|| eyre!("a failing producer must abort"))?;
 
-        assert!(
+        color_eyre::eyre::ensure!(
             !repo.path().join(PR_RAW_CHECK_JSON).exists(),
             "an earlier run's payload must not be uploaded as this failure's diagnostic"
         );
-        assert!(!repo.path().join(PR_EVIDENCE_JSON).exists());
+        color_eyre::eyre::ensure!(
+            !repo.path().join(PR_EVIDENCE_JSON).exists(),
+            "proof predicate failed: {}",
+            stringify!(!repo.path().join(PR_EVIDENCE_JSON).exists())
+        );
         Ok(())
     }
 
@@ -4344,8 +4434,11 @@ esac
         let _guard = override_ripr_bin(&fake)?;
 
         write_pr_evidence(repo.path(), &evidence_options())
-            .expect("real 0.10 output must flow through evidence generation");
-        assert!(repo.path().join(PR_EVIDENCE_JSON).exists(), "an accepted run writes its packet");
+            .context("real 0.10 output must flow through evidence generation")?;
+        color_eyre::eyre::ensure!(
+            repo.path().join(PR_EVIDENCE_JSON).exists(),
+            "an accepted run writes its packet"
+        );
         Ok(())
     }
 

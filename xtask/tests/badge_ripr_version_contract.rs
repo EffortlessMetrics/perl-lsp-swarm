@@ -55,12 +55,12 @@ fn sole_pinned_version(
     let found: Vec<String> = text
         .match_indices(prefix)
         .filter_map(|(start, _)| {
-            let rest = &text[start + prefix.len()..];
-            rest.find(suffix).map(|end| rest[..end].to_string())
+            let rest = text.get(start + prefix.len()..)?;
+            rest.find(suffix).and_then(|end| rest.get(..end).map(str::to_owned))
         })
         .collect();
     match found.len() {
-        1 => Ok(found[0].clone()),
+        1 => found.first().cloned().ok_or_else(|| format!("{label}: missing matched version")),
         0 => Err(format!(
             "{label} declares no reviewed RIPR version matching `{prefix}…{suffix}`; \
              the version contract can no longer police this consumer"
@@ -234,12 +234,14 @@ fn badge_consumer_accepts_exactly_the_reviewed_producer_release()
         "scripts/generate-badges.py",
     )?;
 
-    assert_eq!(
-        expected_by_consumer, reviewed_version,
-        "scripts/generate-badges.py accepts producer receipts stamped \
+    if !((expected_by_consumer) == (reviewed_version)) {
+        return Err(format!(
+            "scripts/generate-badges.py accepts producer receipts stamped \
          {expected_by_consumer:?} while the routed RIPR lanes stamp {reviewed_version:?}; \
          every default-branch badge receipt would be rejected as unreviewed"
-    );
+        )
+        .into());
+    };
 
     Ok(())
 }
@@ -266,11 +268,13 @@ fn documented_ripr_install_instructions_name_the_reviewed_release()
         " --locked",
         "docs/ci/ripr.md",
     )?;
-    assert_eq!(
-        documented_install, reviewed_version,
-        "docs/ci/ripr.md documents installing RIPR {documented_install:?} while the routed \
+    if !((documented_install) == (reviewed_version)) {
+        return Err(format!(
+            "docs/ci/ripr.md documents installing RIPR {documented_install:?} while the routed \
          lanes run {reviewed_version:?}"
-    );
+        )
+        .into());
+    };
 
     // The same document states the version in prose as well as in the copyable
     // command. Guarding only the command is what let these two disagree: the
@@ -283,11 +287,13 @@ fn documented_ripr_install_instructions_name_the_reviewed_release()
         "`",
         "docs/ci/ripr.md (Toolchain prose)",
     )?;
-    assert_eq!(
-        documented_toolchain, reviewed_version,
-        "docs/ci/ripr.md's Toolchain section names RIPR {documented_toolchain:?} while the \
+    if !((documented_toolchain) == (reviewed_version)) {
+        return Err(format!(
+            "docs/ci/ripr.md's Toolchain section names RIPR {documented_toolchain:?} while the \
          routed lanes run {reviewed_version:?}"
-    );
+        )
+        .into());
+    };
 
     let checklist = fs::read_to_string(root.join("docs/agents/SPEC_UPDATE_CHECKLIST.md"))?;
     let documented_pin = sole_pinned_version(
@@ -296,11 +302,13 @@ fn documented_ripr_install_instructions_name_the_reviewed_release()
         "`",
         "docs/agents/SPEC_UPDATE_CHECKLIST.md",
     )?;
-    assert_eq!(
-        documented_pin, reviewed_version,
-        "docs/agents/SPEC_UPDATE_CHECKLIST.md records the RIPR pin as {documented_pin:?} \
+    if !((documented_pin) == (reviewed_version)) {
+        return Err(format!(
+            "docs/agents/SPEC_UPDATE_CHECKLIST.md records the RIPR pin as {documented_pin:?} \
          while the routed lanes run {reviewed_version:?}"
-    );
+        )
+        .into());
+    };
 
     Ok(())
 }
