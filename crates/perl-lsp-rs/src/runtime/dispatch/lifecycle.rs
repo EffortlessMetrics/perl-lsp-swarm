@@ -2,7 +2,6 @@
 //!
 //! Wraps LSP lifecycle requests (initialize, shutdown, exit).
 
-use super::super::outbound::WriterTerminalOutcome;
 use super::super::{JsonRpcError, LspServer, Ordering, Value, json};
 use std::time::Duration;
 
@@ -11,12 +10,8 @@ const TRACE_LEVEL_MESSAGES: &str = "messages";
 const TRACE_LEVEL_VERBOSE: &str = "verbose";
 const OUTBOUND_SETTLEMENT_TIMEOUT: Duration = Duration::from_secs(5);
 
-fn outbound_exit_code(shutdown_received: bool, outcome: Option<&WriterTerminalOutcome>) -> i32 {
-    if shutdown_received && matches!(outcome, Some(WriterTerminalOutcome::NormalClose)) {
-        0
-    } else {
-        1
-    }
+fn outbound_exit_code(shutdown_received: bool) -> i32 {
+    if shutdown_received { 0 } else { 1 }
 }
 
 impl LspServer {
@@ -135,10 +130,10 @@ impl LspServer {
             Some(outcome) => outcome.report_settlement(),
             None => tracing::error!("outbound writer did not settle before process exit"),
         }
-        // LSP exit is successful only after shutdown and successful output
-        // settlement; failures and bounded-wait expiry are nonzero exits.
-        let exit_code =
-            outbound_exit_code(self.shutdown_received.load(Ordering::Acquire), settlement.as_ref());
+        // LSP exit status is defined by whether shutdown was received. Writer
+        // settlement remains independent evidence and must not change that
+        // protocol status when shutdown was accepted.
+        let exit_code = outbound_exit_code(self.shutdown_received.load(Ordering::Acquire));
         tracing::info!(exit_code, "LSP server exiting");
         // `process::exit` skips Rust destructors, including the non-blocking
         // file writer guard. Drain it explicitly so the final lifecycle log
@@ -223,22 +218,9 @@ mod tests {
     type TestResult = Result<(), String>;
 
     #[test]
-    fn exit_status_requires_shutdown_and_normal_writer_settlement() {
-        assert_eq!(outbound_exit_code(true, Some(&WriterTerminalOutcome::NormalClose)), 0);
-        assert_eq!(outbound_exit_code(false, Some(&WriterTerminalOutcome::NormalClose)), 1);
-        assert_eq!(
-            outbound_exit_code(
-                true,
-                Some(&WriterTerminalOutcome::WriteFailed {
-                    kind: std::io::ErrorKind::BrokenPipe,
-                    queued: 0,
-                    batch_messages: 1,
-                    batch_bytes: 1,
-                }),
-            ),
-            1
-        );
-        assert_eq!(outbound_exit_code(true, None), 1);
+    fn exit_status_follows_shutdown_independently_of_writer_settlement() {
+        assert_eq!(outbound_exit_code(true), 0);
+        assert_eq!(outbound_exit_code(false), 1);
     }
 
     // ── BDD lifecycle dispatch scenarios ────────────────────────────────────
