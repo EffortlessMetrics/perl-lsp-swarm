@@ -1074,7 +1074,7 @@ fn captured_mid_run_timeout_yields_not_proven_with_retained_rows() -> Result<()>
     let started = std::time::Instant::now();
     let observation = observe_invocations(&config)?;
     color_eyre::eyre::ensure!(
-        started.elapsed() < Duration::from_secs(45),
+        started.elapsed() < Duration::from_secs(20),
         "supervision must bound the hung runner"
     );
     let parent = observation
@@ -1174,13 +1174,13 @@ fn patch_drift_missing_and_ambiguous_anchors_refuse_before_any_process() -> Resu
         "ambiguous-anchor refusal: {error}"
     );
     // The pure patch tool carries the same typed refusals.
-    let Err(error) = apply_exact_patch(ORDINARY_ARTIFACT.as_bytes(), &ambiguous_spec) else {
-        bail!("the pure tool must refuse a drifted subject");
+    let Err(error) = apply_exact_patch(ambiguous_artifact.as_bytes(), &ambiguous_spec) else {
+        bail!("the pure tool must refuse an ambiguous anchor");
     };
     color_eyre::eyre::ensure!(
-        error.message().contains("measures"),
+        error.message().contains("anchors 2 times"),
         "capture contract failed: {}",
-        stringify!(error.message().contains("measures"))
+        stringify!(error.message().contains("anchors 2 times"))
     );
     Ok(())
 }
@@ -1413,7 +1413,7 @@ fn failed_reruns_clear_stale_successful_outputs() -> Result<()> {
         bail!("a malformed patch specification must fail before capture");
     };
     color_eyre::eyre::ensure!(
-        error.to_string().contains("patch"),
+        error.to_string().contains("decoding patch specification"),
         "unexpected setup error: {error}"
     );
     color_eyre::eyre::ensure!(
@@ -1515,10 +1515,17 @@ fn outputs_cannot_alias_the_matrix_or_the_reviewed_patch() -> Result<()> {
 
     let mut aliased_matrix =
         config_for(&tree, &patch, temp.path(), "component_base", default_limits());
-    aliased_matrix.output = matrix_path().join("01-components-a.json");
-    let Err(_) = observe_invocations(&aliased_matrix) else {
+    let matrix_entry = matrix_path().join("01-components-a.json");
+    let matrix_before = fs::read(&matrix_entry)?;
+    aliased_matrix.output = matrix_entry.clone();
+    let Err(error) = observe_invocations(&aliased_matrix) else {
         bail!("an output aliasing the pinned matrix must refuse");
     };
+    color_eyre::eyre::ensure!(
+        error.to_string().contains("would overwrite the pinned target matrix"),
+        "unexpected matrix alias refusal: {error}"
+    );
+    require_equal(&fs::read(&matrix_entry)?, &matrix_before, "pinned matrix remains intact")?;
     Ok(())
 }
 
