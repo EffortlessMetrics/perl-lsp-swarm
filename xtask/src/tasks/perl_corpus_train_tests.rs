@@ -374,26 +374,20 @@ fn falsifier_11_serializing_disjoint_or_parallelizing_conflicting_nodes_fails() 
     ] {
         let mut doc = load(MANIFEST_PATH)?;
         add_dependency(&mut doc, source, target, "hard")?;
-        assert_code(&doc, "DECLARED_PARALLEL_SERIALIZED")?;
+        assert_exact_codes(&doc, &["DECLARED_PARALLEL_SERIALIZED"])?;
     }
 
     // Evidence records an observation and does not serialize implementation
     // work, even for this explicitly parallel pair.
     let mut doc = load(MANIFEST_PATH)?;
     add_dependency(&mut doc, "pc_property_suites_11580", "pc_fixture_promotion_11034", "evidence")?;
-    if codes(&doc).iter().any(|code| code == "DECLARED_PARALLEL_SERIALIZED") {
-        bail!("an evidence edge must not serialize declared parallel successors");
-    }
+    assert_exact_codes(&doc, &[])?;
 
     // The programme declaration cannot be bypassed through an intermediary.
     // Repair both reverse-consumer lists so these remain schema-valid graph
     // mutations rather than malformed fixtures.
     for (source, intermediary, target) in [
-        (
-            "pc_property_suites_11580",
-            "pc_parser_accuracy_generated_11586",
-            "pc_fixture_promotion_11034",
-        ),
+        ("pc_property_suites_11580", "pc_community_journeys_11589", "pc_fixture_promotion_11034"),
         (
             "pc_fixture_promotion_11034",
             "pc_property_profile_retirement_11581",
@@ -402,7 +396,7 @@ fn falsifier_11_serializing_disjoint_or_parallelizing_conflicting_nodes_fails() 
     ] {
         let mut doc = load(MANIFEST_PATH)?;
         add_dependency(&mut doc, source, intermediary, "hard")?;
-        assert_code(&doc, "DECLARED_PARALLEL_SERIALIZED")?;
+        assert_exact_codes(&doc, &["DECLARED_PARALLEL_SERIALIZED"])?;
         if !has_dependency(&doc, intermediary, target) {
             bail!("the indirect parallelism control lost {intermediary} -> {target}");
         }
@@ -437,6 +431,15 @@ fn has_dependency(doc: &Value, source: &str, target: &str) -> bool {
         .is_some_and(|deps| {
             deps.iter().any(|dep| dep.get("target").and_then(Value::as_str) == Some(target))
         })
+}
+
+fn assert_exact_codes(doc: &Value, expected: &[&str]) -> Result<()> {
+    let actual = codes(doc).into_iter().collect::<std::collections::BTreeSet<_>>();
+    let expected = expected.iter().map(|code| (*code).to_string()).collect();
+    if actual != expected {
+        bail!("expected exactly {expected:?}, got {actual:?}");
+    }
+    Ok(())
 }
 
 fn add_dependency(doc: &mut Value, source: &str, target: &str, class: &str) -> Result<()> {
