@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "owner_issue": 7854,
-  "reason": "The merged candidate carries the activation ownership and health widget changes. The fresh Windows x64 VSIX measured 29 files and 1864341 bytes versus the merge-base baseline of 29 files and 1861072 bytes (+3269): out/extension.js grew by 3384 bytes while package.json decreased by 115 bytes; the other 27 archive paths and sizes match. This declaration records the exact measured packaging transition; no validator, threshold, or admission rule changes.",
+  "owner_issue": 15124,
+  "reason": "PR #15126 registers the build-script proof in the serialized receipt command while retaining the landed packaging wrapper. The fresh Windows x64 VSIX from the combined candidate tree measured total inventory at 1864341 bytes; package.json is 59413 bytes, 115 bytes below the captured main baseline 59528, while out/extension.js is 3384 bytes larger and the other 27 archive paths match. A same-environment rebuild of captured main 3e96f31f9e458bbf7030668e5c9d96866f4ccb74 produced the same 1686496-byte out/extension.js, so that bundle delta is baseline-generation drift rather than a candidate source delta. This declaration records the exact measured archive; no validator, threshold, or admission rule changes.",
   "base_baseline_file_sha256": "6eb7b8787bbea24c30ef1c5185a80b03e404e974eb83ed653cbd8db33b6f5ecc",
   "candidate_baseline_file_sha256": "eaef617cee329a98c217809c7b330c51c8ea246eb13b983ecc78d83e4487d945",
   "base_inventory_sha256": "44a4ea77a0c71a226b925d62743d30fce3845d4448c5a942124253601214938b",
