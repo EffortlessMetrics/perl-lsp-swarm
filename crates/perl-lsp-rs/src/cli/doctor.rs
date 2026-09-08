@@ -634,6 +634,7 @@ fn dev_env_status_codes() -> [&'static str; 7] {
 }
 
 const PROVENANCE_RUSTUP_SHIM: &str = "rustup_shim";
+const PROVENANCE_RUSTUP_TOOLCHAIN: &str = "rustup_toolchain";
 const PROVENANCE_NON_RUSTUP: &str = "non_rustup";
 const PROVENANCE_UNKNOWN: &str = "unknown";
 
@@ -677,6 +678,7 @@ const FIX_PERL_MISSING_WINDOWS: &str =
     "fix: install a native perl (for example Strawberry Perl) ahead of MSYS entries on PATH";
 const FIX_PERL_MISSING_UNIX: &str =
     "fix: install a system perl via the distribution package manager";
+const FIX_CARGO_DIRECT_RUSTUP_TOOLCHAIN: &str = "fix: use rustup's cargo shim (for example ~/.cargo/bin/cargo) so rust-toolchain.toml selects this workspace's channel";
 
 /// Marker walked up from the working directory to locate the checkout.
 const REPO_ENTRYPOINT_MARKER: &str = ".github/run_all_tests.sh";
@@ -1012,11 +1014,13 @@ fn parse_version_word(word: &str) -> Option<VersionTriple> {
 }
 
 /// How a reachable cargo was installed, decided purely from its resolved
-/// path: rustup shims live under `.cargo/bin`/`.rustup` and honor
-/// rust-toolchain.toml; anything else (apt/distro cargo) ignores it.
+/// path: rustup shims live under `.cargo/bin` and honor rust-toolchain.toml;
+/// direct `.rustup/toolchains` binaries are rustup-installed but bypass the
+/// shim; anything else (apt/distro cargo) ignores the pin.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CargoProvenance {
     RustupShim,
+    RustupToolchain,
     NonRustup,
 }
 
@@ -1024,18 +1028,25 @@ impl CargoProvenance {
     const fn code(self) -> &'static str {
         match self {
             Self::RustupShim => PROVENANCE_RUSTUP_SHIM,
+            Self::RustupToolchain => PROVENANCE_RUSTUP_TOOLCHAIN,
             Self::NonRustup => PROVENANCE_NON_RUSTUP,
         }
     }
 }
 
 /// How a reachable cargo was installed, decided purely from its resolved
-/// path: rustup shims live under `.cargo/bin`/`.rustup` and honor
-/// rust-toolchain.toml; anything else (apt/distro cargo) ignores it.
+/// path: rustup shims live under `.cargo/bin` and honor rust-toolchain.toml;
+/// direct `.rustup/toolchains` binaries are rustup-installed but bypass the
+/// shim; anything else (apt/distro cargo) ignores the pin.
 fn classify_cargo_provenance(cargo_path: &str) -> CargoProvenance {
     let normalized = cargo_path.to_lowercase().replace('\\', "/");
-    if normalized.contains(".cargo/bin") || normalized.contains(".rustup") {
+    if normalized.contains(".cargo/bin") {
         return CargoProvenance::RustupShim;
+    }
+    if normalized.contains("/.rustup/toolchains/") {
+        // A direct toolchain binary is rustup-installed, but it bypasses the
+        // rustup shim and therefore does not select rust-toolchain.toml.
+        return CargoProvenance::RustupToolchain;
     }
     // A rustup proxy under a custom CARGO_HOME (the repository explicitly
     // supports that layout) lives in "$CARGO_HOME/bin" and still honors
@@ -1073,7 +1084,7 @@ fn probe_native_cargo() -> CargoToolchainReport {
 /// "Git Bash missing".
 fn standard_git_bash_location() -> Option<PathBuf> {
     if cfg!(windows) {
-        [r"C:\\Program Files\\Git\\bin\\bash.exe", r"C:\\Program Files (x86)\\Git\\bin\\bash.exe"]
+        [r"C:\Program Files\Git\bin\bash.exe", r"C:\Program Files (x86)\Git\bin\bash.exe"]
             .iter()
             .map(PathBuf::from)
             .find(|candidate| candidate.exists())
@@ -1092,7 +1103,15 @@ fn resolve_git_bash_executable_with(
     resolve_on_path: impl FnOnce(&str) -> Option<PathBuf>,
     fallback: impl FnOnce() -> Option<PathBuf>,
 ) -> Option<PathBuf> {
-    resolve_on_path("bash").or_else(fallback)
+    match resolve_on_path("bash") {
+        Some(path)
+            if classify_windows_bash_path(&path.to_string_lossy())
+                == WindowsBashKind::PosixProvider =>
+        {
+            Some(path)
+        }
+        Some(_) | None => fallback(),
+    }
 }
 
 fn probe_git_bash_cargo_for_path(bash_exe: Option<PathBuf>) -> CargoToolchainReport {
@@ -1274,10 +1293,16 @@ fn other_named_identities(
 /// identities (#12595: common locations only — never a filesystem scan).
 fn common_perl_candidate_paths(windows_host: bool) -> Vec<PathBuf> {
     if windows_host {
+        let program_files = std::env::var("ProgramFiles")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| r"C:\Program Files".to_string());
         vec![
             PathBuf::from("C:\\Strawberry\\perl\\bin\\perl.exe"),
+            PathBuf::from("C:\\Perl64\\bin\\perl.exe"),
             PathBuf::from("C:\\msys64\\usr\\bin\\perl.exe"),
             PathBuf::from("C:\\cygwin64\\usr\\bin\\perl.exe"),
+            PathBuf::from(program_files).join(r"Strawberry\perl\bin\perl.exe"),
         ]
     } else {
         vec![PathBuf::from("/usr/bin/perl")]
@@ -1490,6 +1515,12 @@ fn finish_reachable_cargo_report(
     } else {
         None
     };
+    let fix = match provenance {
+        Some(CargoProvenance::RustupToolchain) => {
+            Some(FIX_CARGO_DIRECT_RUSTUP_TOOLCHAIN.to_string())
+        }
+        _ => cargo_fix_line(flavor, status),
+    };
     CargoToolchainReport {
         flavor,
         status,
@@ -1500,7 +1531,7 @@ fn finish_reachable_cargo_report(
         honors_toolchain_file: provenance
             .map(|provenance| provenance == CargoProvenance::RustupShim),
         error,
-        fix: cargo_fix_line(flavor, status),
+        fix,
     }
 }
 
@@ -1683,6 +1714,10 @@ fn render_dev_environment_report(report: &DevEnvironmentReport) -> String {
             "      meets workspace pin ({}): {}\n",
             report.workspace_rust_version,
             render_optional_bool(cargo.meets_workspace_pin)
+        ));
+        out.push_str(&format!(
+            "      honors rust-toolchain.toml: {}\n",
+            render_optional_bool(cargo.honors_toolchain_file)
         ));
         if let Some(error) = &cargo.error {
             out.push_str(&format!("      error: {error}\n"));
@@ -3028,13 +3063,28 @@ mod tests {
         );
         assert_eq!(
             classify_cargo_provenance("/home/dev/.rustup/toolchains/1.95.0-x86_64/bin/cargo"),
-            CargoProvenance::RustupShim
+            CargoProvenance::RustupToolchain
         );
         assert_eq!(
             classify_cargo_provenance("/usr/bin/cargo"),
             CargoProvenance::NonRustup,
             "apt/distro cargo must not pass as a rustup shim (#12595)"
         );
+    }
+
+    #[test]
+    fn direct_rustup_toolchain_does_not_claim_to_honor_workspace_pin() {
+        let report = finish_reachable_cargo_report(
+            FLAVOR_NATIVE_SHELL,
+            Some(PathBuf::from("/home/dev/.rustup/toolchains/1.95.0-x86_64/bin/cargo")),
+            "cargo 1.95.0 (8f3d0b0ac 2026-01-30)",
+        );
+
+        assert_eq!(report.status, STATUS_PRESENT);
+        assert_eq!(report.provenance, PROVENANCE_RUSTUP_TOOLCHAIN);
+        assert_eq!(report.honors_toolchain_file, Some(false));
+        assert_eq!(report.meets_workspace_pin, Some(true));
+        assert_eq!(report.fix.as_deref(), Some(FIX_CARGO_DIRECT_RUSTUP_TOOLCHAIN));
     }
 
     #[test]
@@ -3105,6 +3155,19 @@ mod tests {
         assert_eq!(bash.runs_repo_entrypoints, None);
         assert_eq!(bash.bash_path.as_deref(), Some(r"C:\Program Files\Git\bin\bash.exe"));
         assert!(bash.note.contains("execution is not proven"));
+        Ok(())
+    }
+
+    #[test]
+    fn git_bash_non_posix_path_falls_back_to_standard_install() -> TestResult {
+        let fallback = PathBuf::from(r"C:\Program Files\Git\bin\bash.exe");
+        let resolved = resolve_git_bash_executable_with(
+            |_| Some(PathBuf::from(r"C:\Windows\System32\bash.exe")),
+            || Some(fallback.clone()),
+        )
+        .ok_or("standard Git Bash fallback")?;
+
+        assert_eq!(resolved, fallback);
         Ok(())
     }
 
@@ -3243,10 +3306,17 @@ mod tests {
     #[test]
     fn common_perl_candidate_paths_probe_common_locations_only() {
         let windows_candidates = common_perl_candidate_paths(true);
-        assert_eq!(windows_candidates.len(), 3);
+        assert_eq!(windows_candidates.len(), 5);
         assert!(
             windows_candidates.iter().any(|path| path.display().to_string().contains("Strawberry"))
         );
+        assert!(
+            windows_candidates.iter().any(|path| path.display().to_string().contains("Perl64"))
+        );
+        assert!(windows_candidates.iter().any(|path| {
+            path.display().to_string().contains("Program Files")
+                && path.display().to_string().contains("Strawberry")
+        }));
         assert_eq!(common_perl_candidate_paths(false).len(), 1);
     }
 
@@ -3361,6 +3431,7 @@ mod tests {
         assert!(rendered.contains("Developer Mode"));
         assert!(rendered.contains("- wsl: non_rustup | /usr/bin/cargo | cargo 1.75.0"));
         assert!(rendered.contains("meets workspace pin (1.95): no"));
+        assert!(rendered.contains("honors rust-toolchain.toml: no"));
         assert!(rendered.contains("WARNING: additional distinct identities"));
         assert!(rendered.contains("strawberry"));
         assert!(rendered.contains(BASH_PREREQUISITE_LINE));
