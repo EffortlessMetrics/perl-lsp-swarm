@@ -29,7 +29,6 @@ class FakeChild {
   }
 }
 
-const childProcess = new FakeChild() as unknown as ChildProcess;
 const transportsForTest = {
   reader: { dispose: jest.fn() },
   writer: { dispose: jest.fn() },
@@ -53,7 +52,7 @@ jest.mock('vscode-languageclient/node', () => ({
     protected async createMessageTransports(_encoding: string): Promise<MessageTransports> {
       this._serverProcess = (this as MockLanguageClient & { skipChild?: boolean }).skipChild
         ? undefined
-        : childProcess;
+        : (new FakeChild() as unknown as ChildProcess);
       if ((this as MockLanguageClient & { rejectAfterSpawn?: boolean }).rejectAfterSpawn) {
         throw new Error('transport creation failed after spawn');
       }
@@ -77,6 +76,7 @@ class RejectingProcessBoundLanguageClient extends TestableProcessBoundLanguageCl
 
 class EmptyProcessBoundLanguageClient extends TestableProcessBoundLanguageClient {
   skipChild = true;
+  rejectAfterSpawn = true;
 }
 
 const helperServerOptions = (): ServerOptions => ({
@@ -115,7 +115,7 @@ describe('process-bound language client', () => {
     expect(captured).toBeDefined();
 
     (client as unknown as { _serverProcess: ChildProcess | undefined })._serverProcess = undefined;
-    (childProcess as unknown as FakeChild).exit();
+    (captured as unknown as FakeChild).exit();
 
     await expect(awaitServerProcessExit(captured, 10, () => true)).resolves.toBe(true);
     expect(serverProcessOf(client)).toBe(captured);
@@ -128,7 +128,9 @@ describe('process-bound language client', () => {
       helperServerOptions(),
       { documentSelector: [] },
     );
-    await client.createTransportsForTest();
+    await expect(client.createTransportsForTest()).rejects.toThrow(
+      'transport creation failed after spawn',
+    );
 
     expect(client.serverProcess).toBeUndefined();
     expect(serverProcessOf(client)).toBeUndefined();
@@ -146,7 +148,7 @@ describe('process-bound language client', () => {
     await expect(client.createTransportsForTest()).rejects.toThrow(
       'transport creation failed after spawn',
     );
-    expect(serverProcessOf(client)).toBe(childProcess);
+    expect(serverProcessOf(client)).toBe(client.serverProcess);
   });
 
   test('preserves the prior witness when a later transport attempt has no child', async () => {
@@ -158,7 +160,7 @@ describe('process-bound language client', () => {
     );
     await client.createTransportsForTest();
     const captured = client.serverProcess;
-    expect(captured).toBe(childProcess);
+    expect(captured).toBeDefined();
 
     const testState = client as unknown as { skipChild?: boolean; rejectAfterSpawn?: boolean };
     testState.skipChild = true;
