@@ -15,39 +15,62 @@ function runBuild(failAt = '') {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-build-script-'));
   const fakeNpm = path.join(directory, 'npm');
   const logPath = path.join(directory, 'calls.log');
-  fs.writeFileSync(
-    fakeNpm,
-    `#!/bin/sh
+  try {
+    fs.writeFileSync(
+      fakeNpm,
+      `#!/bin/sh
 step="$1"
 if [ "$1" = "run" ]; then step="$2"; fi
 printf '%s\\n' "$step" >> "$FAKE_NPM_LOG"
 if [ "$step" = "$FAKE_NPM_FAIL_AT" ]; then exit 23; fi
 exit 0
 `,
-    { mode: 0o755 },
-  );
-  const result = spawnSync(bashPath, [buildScript], {
-    cwd: extensionRoot,
-    encoding: 'utf8',
-    env: {
+      { mode: 0o755 },
+    );
+    const env = {
       ...process.env,
-      PATH: `${directory};${process.env.PATH}`,
+      PATH: [directory, process.env.PATH].filter(Boolean).join(path.delimiter),
       FAKE_NPM_LOG: logPath,
       FAKE_NPM_FAIL_AT: failAt,
-    },
-    windowsHide: true,
-  });
-  const log = fs.existsSync(logPath)
-    ? fs.readFileSync(logPath, 'utf8').trim().split(/\r?\n/).filter(Boolean)
-    : [];
-  fs.rmSync(directory, { recursive: true, force: true });
-  return { result, log };
+      FAKE_NPM: fakeNpm,
+    };
+    const resolveCommand =
+      process.platform === 'win32' ? 'cygpath -w "$(command -v npm)"' : 'command -v npm';
+    const resolved = spawnSync(bashPath, ['-lc', resolveCommand], {
+      cwd: extensionRoot,
+      encoding: 'utf8',
+      env,
+      windowsHide: true,
+    });
+    assert.equal(resolved.status, 0, resolved.stderr);
+    const normalizeExecutable = (value) => {
+      let normalized = value.trim().replaceAll('\\', '/').toLowerCase();
+      if (process.platform === 'win32' && /^\/[a-z]\//.test(normalized)) {
+        normalized = `${normalized[1]}:${normalized.slice(2)}`;
+      }
+      return path.posix.normalize(normalized);
+    };
+    assert.equal(normalizeExecutable(resolved.stdout), normalizeExecutable(fakeNpm));
+    const result = spawnSync(bashPath, [buildScript], {
+      cwd: extensionRoot,
+      encoding: 'utf8',
+      env,
+      windowsHide: true,
+    });
+    const log = fs.existsSync(logPath)
+      ? fs.readFileSync(logPath, 'utf8').trim().split(/\r?\n/).filter(Boolean)
+      : [];
+    return { result, log };
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
 }
 
 for (const step of steps) {
   void test(`build.sh stops when ${step} fails`, () => {
     const { result, log } = runBuild(step);
     assert.notEqual(result.status, 0, `${step} failure was reported as success`);
+    assert.doesNotMatch(result.stdout, /Build complete!/);
     assert.deepEqual(log, steps.slice(0, steps.indexOf(step) + 1));
   });
 }
@@ -55,5 +78,6 @@ for (const step of steps) {
 void test('build.sh completes every step when the tools succeed', () => {
   const { result, log } = runBuild();
   assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Build complete!/);
   assert.deepEqual(log, steps);
 });
