@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
   "owner_issue": 15153,
-  "reason": "The merged startup-settlement repair and its installed Health Check proof produce a Windows x64 VSIX with the existing bundled perllsp.exe artifact and a 4912-byte out/extension.js growth. Against the exact merge-base baseline, the measured transition adds bin/win32-x64/perllsp.exe (25147904 bytes) and grows out/extension.js from 1683112 to 1688024 bytes; all other archive paths retain their measured sizes. This declaration records the exact ordinary package transition for #15153 without changing validator thresholds or admission rules.",
+  "reason": "The #15153 candidate's ordinary Windows x64 VSIX intentionally contains the governed 29 archive paths and no locally staged bundled server binary. Against the exact merge-base baseline, the measured transition grows out/extension.js from 1683112 to 1687830 bytes (+4718) and readme.md from 25231 to 25629 bytes (+398); all other 27 archive paths retain their measured sizes. The candidate total is 1866188 bytes versus the base 1861072 bytes. This declaration records the exact ordinary package transition without changing validator thresholds or admission rules; bundled installed-health evidence is retained separately from this ordinary inventory.",
   "base_baseline_file_sha256": "6eb7b8787bbea24c30ef1c5185a80b03e404e974eb83ed653cbd8db33b6f5ecc",
-  "candidate_baseline_file_sha256": "0bf275ae40b9f21854f4982c919bed632dc8912a9782bdd2fa310c1a47d2bcd7",
+  "candidate_baseline_file_sha256": "66f305cc8169f553093ca93c7c93b6ec580bac67df43db023ffe24689ad0e470",
   "base_inventory_sha256": "44a4ea77a0c71a226b925d62743d30fce3845d4448c5a942124253601214938b",
-  "candidate_inventory_sha256": "fcbdf33d10fecbdf513eea352225e5bf0058784217c31bdcb69c6842fc72d4c8"
+  "candidate_inventory_sha256": "db17058c5cf487df76b0d9b88b2bd0c08d6c62248d2261fc1e031feca34255d8"
 }

@@ -120,7 +120,7 @@ suite('Installed Health Check failure and recovery', function () {
     const runtime = check(afterRestart, 'LSP runtime');
     assert.equal(afterRestart.ok, false, JSON.stringify(afterRestart, null, 2));
     assert.equal(runtime.status, 'error', JSON.stringify(afterRestart, null, 2));
-    assert.match(runtime.detail, /cleanup|reload|replacement|failed to start/i);
+    assert.match(runtime.detail, /cleanup|reload|replacement/i);
     const metricsAfterRestart = activation?.getLanguageClientStartupMetrics?.();
     assert.ok(metricsAfterRestart, 'startup metrics must remain available after blocked restart');
     assert.notEqual(
