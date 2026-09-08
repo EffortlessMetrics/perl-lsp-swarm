@@ -5,7 +5,8 @@
 //! checker skips rather than emitting a finding. A terminal identifier such as
 //! `custom::Option` is not a proven std enum. Bare prelude names are refused
 //! when the current module declares or imports a shadowing Option/Result or
-//! Some/None/Ok/Err.
+//! Some/None/Ok/Err. Qualified `std::`/`core::` enum paths are refused when
+//! that namespace is a local module or import alias in the resolving scope.
 
 use std::collections::{BTreeMap, BTreeSet};
 use syn::{Expr, Lit, Pat, Path, Type, UnOp};
@@ -16,11 +17,14 @@ pub(crate) enum QueryKind {
     Result,
 }
 
-/// Module-level names that shadow prelude Option/Result or Some/None/Ok/Err.
+/// Module-level names that shadow prelude Option/Result, Some/None/Ok/Err, or
+/// the `std`/`core` namespaces those qualified paths depend on.
 #[derive(Debug, Clone, Default, Eq, PartialEq)]
 pub(crate) struct PreludeShadow {
     types: BTreeSet<QueryKind>,
     ctors: BTreeSet<String>,
+    std_untrusted: bool,
+    core_untrusted: bool,
 }
 
 impl PreludeShadow {
@@ -30,6 +34,14 @@ impl PreludeShadow {
 
     pub(crate) fn untrust_ctor(&mut self, name: impl Into<String>) {
         self.ctors.insert(name.into());
+    }
+
+    pub(crate) fn untrust_namespace(&mut self, name: &str) {
+        match name {
+            "std" => self.std_untrusted = true,
+            "core" => self.core_untrusted = true,
+            _ => {}
+        }
     }
 
     pub(crate) fn untrust_all_prelude(&mut self) {
@@ -47,19 +59,33 @@ impl PreludeShadow {
     fn ctor_untrusted(&self, name: &str) -> bool {
         self.ctors.contains(name)
     }
+
+    pub(crate) fn namespace_untrusted(&self, name: &str) -> bool {
+        match name {
+            "std" => self.std_untrusted,
+            "core" => self.core_untrusted,
+            _ => false,
+        }
+    }
 }
 
 /// Lexical Option/Result ascriptions. Inner scopes shadow outer names, including
 /// with an explicit unknown binding so an untyped `let` hides a prior Option.
+/// `shadows` is the current module; `crate_root_shadows` governs `::std`/`::core`.
 #[derive(Debug, Clone)]
 pub(crate) struct TypeEnv {
     scopes: Vec<BTreeMap<String, Option<QueryKind>>>,
     shadows: PreludeShadow,
+    crate_root_shadows: PreludeShadow,
 }
 
 impl Default for TypeEnv {
     fn default() -> Self {
-        Self { scopes: vec![BTreeMap::new()], shadows: PreludeShadow::default() }
+        Self {
+            scopes: vec![BTreeMap::new()],
+            shadows: PreludeShadow::default(),
+            crate_root_shadows: PreludeShadow::default(),
+        }
     }
 }
 
@@ -69,7 +95,18 @@ impl TypeEnv {
     }
 
     pub(crate) fn with_shadows(shadows: PreludeShadow) -> Self {
-        Self { scopes: vec![BTreeMap::new()], shadows }
+        Self {
+            scopes: vec![BTreeMap::new()],
+            shadows,
+            crate_root_shadows: PreludeShadow::default(),
+        }
+    }
+
+    pub(crate) fn with_module_and_crate_root(
+        module: PreludeShadow,
+        crate_root: PreludeShadow,
+    ) -> Self {
+        Self { scopes: vec![BTreeMap::new()], shadows: module, crate_root_shadows: crate_root }
     }
 
     pub(crate) fn type_untrusted(&self, kind: QueryKind) -> bool {
@@ -260,7 +297,7 @@ pub(crate) fn option_or_result_kind_in(ty: &Type, env: &TypeEnv) -> Option<Query
     if path.qself.is_some() {
         return None;
     }
-    let kind = std_enum_kind(&path.path)?;
+    let kind = std_enum_kind(&path.path, env)?;
     if path.path.leading_colon.is_none()
         && path.path.segments.len() == 1
         && env.type_untrusted(kind)
@@ -302,8 +339,17 @@ fn constructor_query_kind(expr: &Expr, env: &TypeEnv) -> Option<QueryKind> {
 /// `custom::Option` and `crate::Result` are not the prelude or std enums.
 /// Bare `Option`/`Result` (no leading `::`) are the prelude names unless the
 /// current module shadows them; `::Option` is crate-root and is refused.
-fn std_enum_kind(path: &Path) -> Option<QueryKind> {
-    std_enum_kind_from_idents(path.leading_colon.is_some(), &path_idents(path))
+/// Qualified `std::`/`core::` paths are refused when that namespace is a local
+/// module or alias in the resolving scope (`::std` uses crate-root shadows).
+fn std_enum_kind(path: &Path, env: &TypeEnv) -> Option<QueryKind> {
+    trusted_std_enum_kind(path.leading_colon.is_some(), &path_idents(path), env)
+}
+
+fn trusted_std_enum_kind(rooted: bool, segs: &[String], env: &TypeEnv) -> Option<QueryKind> {
+    if std_path_namespace_untrusted(rooted, segs, &env.shadows, &env.crate_root_shadows) {
+        return None;
+    }
+    std_enum_kind_from_idents(rooted, segs)
 }
 
 fn none_path_kind(path: &Path, env: &TypeEnv) -> Option<QueryKind> {
@@ -335,7 +381,7 @@ fn ctor_kind_for_owner(
         }
         return Some(expected);
     }
-    let owner = std_enum_kind_from_idents(rooted, &segs[..segs.len() - 1])?;
+    let owner = trusted_std_enum_kind(rooted, &segs[..segs.len() - 1], env)?;
     if owner != expected {
         return None;
     }
@@ -360,7 +406,15 @@ pub(crate) fn std_enum_kind_from_idents(rooted: bool, segs: &[String]) -> Option
     }
 }
 
-pub(crate) fn imported_path_is_std_enum_or_ctor(rooted: bool, segs: &[String]) -> bool {
+pub(crate) fn imported_path_is_std_enum_or_ctor(
+    rooted: bool,
+    segs: &[String],
+    module: &PreludeShadow,
+    crate_root: &PreludeShadow,
+) -> bool {
+    if std_path_namespace_untrusted(rooted, segs, module, crate_root) {
+        return false;
+    }
     if std_enum_kind_from_idents(rooted, segs).is_some() {
         return true;
     }
@@ -382,7 +436,15 @@ pub(crate) fn imported_path_is_std_enum_or_ctor(rooted: bool, segs: &[String]) -
     }
 }
 
-pub(crate) fn import_prefix_is_std_namespace(prefix: &[String]) -> bool {
+pub(crate) fn import_prefix_is_std_namespace(
+    rooted: bool,
+    prefix: &[String],
+    module: &PreludeShadow,
+    crate_root: &PreludeShadow,
+) -> bool {
+    if std_path_namespace_untrusted(rooted, prefix, module, crate_root) {
+        return false;
+    }
     let names: Vec<&str> = prefix.iter().map(String::as_str).collect();
     matches!(
         names.as_slice(),
@@ -393,6 +455,21 @@ pub(crate) fn import_prefix_is_std_namespace(prefix: &[String]) -> bool {
             | ["std", "result"]
             | ["core", "result"]
     )
+}
+
+/// Relative `std::`/`core::` paths use the current module; `::std`/`::core`
+/// use crate-root namespace shadows.
+pub(crate) fn std_path_namespace_untrusted(
+    rooted: bool,
+    segs: &[String],
+    module: &PreludeShadow,
+    crate_root: &PreludeShadow,
+) -> bool {
+    let Some(first) = segs.first() else {
+        return false;
+    };
+    let shadows = if rooted { crate_root } else { module };
+    shadows.namespace_untrusted(first)
 }
 
 fn simple_ident(path: &Path) -> Option<String> {
@@ -534,6 +611,33 @@ mod tests {
             Some(QueryKind::Option)
         );
         assert_eq!(proven_query_kind(&expr("Option::Some(1)"), &env), None);
+    }
+
+    #[test]
+    fn local_std_and_core_namespaces_refuse_qualified_std_paths() {
+        let mut std_shadow = PreludeShadow::default();
+        std_shadow.untrust_namespace("std");
+        let env = TypeEnv::with_shadows(std_shadow.clone());
+        assert_eq!(option_or_result_kind_in(&ty("std::option::Option<u8>"), &env), None);
+        assert_eq!(option_or_result_kind_in(&ty("Option<u8>"), &env), Some(QueryKind::Option));
+        assert_eq!(
+            option_or_result_kind_in(&ty("::std::option::Option<u8>"), &env),
+            Some(QueryKind::Option)
+        );
+        assert_eq!(proven_query_kind(&expr("std::option::Option::Some(1)"), &env), None);
+
+        let env_rooted = TypeEnv::with_module_and_crate_root(PreludeShadow::default(), std_shadow);
+        assert_eq!(option_or_result_kind_in(&ty("::std::option::Option<u8>"), &env_rooted), None);
+        assert_eq!(
+            option_or_result_kind_in(&ty("std::option::Option<u8>"), &env_rooted),
+            Some(QueryKind::Option)
+        );
+
+        let mut core_shadow = PreludeShadow::default();
+        core_shadow.untrust_namespace("core");
+        let env_core = TypeEnv::with_shadows(core_shadow);
+        assert_eq!(option_or_result_kind_in(&ty("core::option::Option<u8>"), &env_core), None);
+        assert_eq!(option_or_result_kind_in(&ty("core::result::Result<(), ()>"), &env_core), None);
     }
 
     #[test]

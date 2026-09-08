@@ -41,6 +41,7 @@ pub fn scan_ast(path: &str, file: &File) -> Vec<Finding> {
         findings: Vec::new(),
         env: Vec::new(),
         module_shadows: Vec::new(),
+        crate_root_shadows: PreludeShadow::default(),
     };
     visitor.visit_file(file);
     visitor.findings.sort();
@@ -52,11 +53,17 @@ struct AssertionVisitor<'a> {
     findings: Vec<Finding>,
     env: Vec<TypeEnv>,
     module_shadows: Vec<PreludeShadow>,
+    crate_root_shadows: PreludeShadow,
 }
 
 impl AssertionVisitor<'_> {
     fn current_env(&self) -> TypeEnv {
-        self.env.last().cloned().unwrap_or_else(|| TypeEnv::with_shadows(self.current_shadows()))
+        self.env.last().cloned().unwrap_or_else(|| {
+            TypeEnv::with_module_and_crate_root(
+                self.current_shadows(),
+                self.crate_root_shadows.clone(),
+            )
+        })
     }
 
     fn current_shadows(&self) -> PreludeShadow {
@@ -101,7 +108,10 @@ impl AssertionVisitor<'_> {
     }
 
     fn push_fn_env(&mut self, inputs: &syn::punctuated::Punctuated<syn::FnArg, syn::token::Comma>) {
-        let mut env = TypeEnv::with_shadows(self.current_shadows());
+        let mut env = TypeEnv::with_module_and_crate_root(
+            self.current_shadows(),
+            self.crate_root_shadows.clone(),
+        );
         for input in inputs {
             if let syn::FnArg::Typed(typed) = input {
                 bind_pat_type(&mut env, &typed.pat, &typed.ty);
@@ -113,14 +123,16 @@ impl AssertionVisitor<'_> {
 
 impl<'ast> Visit<'ast> for AssertionVisitor<'_> {
     fn visit_file(&mut self, node: &'ast File) {
-        self.module_shadows.push(collect_shadows(&node.items));
+        let crate_root = collect_shadows(&node.items, None);
+        self.crate_root_shadows = crate_root.clone();
+        self.module_shadows.push(crate_root);
         syn::visit::visit_file(self, node);
         self.module_shadows.pop();
     }
 
     fn visit_item_mod(&mut self, node: &'ast ItemMod) {
         if let Some((_, items)) = &node.content {
-            self.module_shadows.push(collect_shadows(items));
+            self.module_shadows.push(collect_shadows(items, Some(&self.crate_root_shadows)));
             syn::visit::visit_item_mod(self, node);
             self.module_shadows.pop();
         }
@@ -266,8 +278,11 @@ impl AssertionVisitor<'_> {
     }
 }
 
-fn collect_shadows(items: &[Item]) -> PreludeShadow {
+fn collect_shadows(items: &[Item], crate_root: Option<&PreludeShadow>) -> PreludeShadow {
     let mut shadows = PreludeShadow::default();
+    collect_namespace_shadows(items, &mut shadows);
+    let module_ns = shadows.clone();
+    let crate_ns_owned = crate_root.cloned().unwrap_or_else(|| module_ns.clone());
     for item in items {
         match item {
             Item::Struct(item) => note_ident(&item.ident, &mut shadows),
@@ -282,10 +297,59 @@ fn collect_shadows(items: &[Item]) -> PreludeShadow {
     }
     for item in items {
         if let Item::Use(item_use) = item {
-            collect_use(&item_use.tree, item_use.leading_colon.is_some(), &[], &mut shadows);
+            collect_use(
+                &item_use.tree,
+                item_use.leading_colon.is_some(),
+                &[],
+                &mut shadows,
+                &module_ns,
+                &crate_ns_owned,
+            );
         }
     }
     shadows
+}
+
+fn collect_namespace_shadows(items: &[Item], shadows: &mut PreludeShadow) {
+    for item in items {
+        match item {
+            Item::Mod(item_mod) => untrust_namespace_ident(&item_mod.ident, shadows),
+            Item::ExternCrate(ext) => {
+                if let Some((_, rename)) = &ext.rename {
+                    untrust_namespace_rename(&ext.ident, rename, shadows);
+                }
+            }
+            Item::Use(item_use) => collect_use_namespace_aliases(&item_use.tree, shadows),
+            _ => {}
+        }
+    }
+}
+
+fn collect_use_namespace_aliases(tree: &UseTree, shadows: &mut PreludeShadow) {
+    match tree {
+        UseTree::Rename(rename) => untrust_namespace_rename(&rename.ident, &rename.rename, shadows),
+        UseTree::Path(path) => collect_use_namespace_aliases(&path.tree, shadows),
+        UseTree::Group(group) => {
+            for item in &group.items {
+                collect_use_namespace_aliases(item, shadows);
+            }
+        }
+        UseTree::Name(_) | UseTree::Glob(_) => {}
+    }
+}
+
+fn untrust_namespace_ident(ident: &Ident, shadows: &mut PreludeShadow) {
+    let name = ident.to_string();
+    if matches!(name.as_str(), "std" | "core") {
+        shadows.untrust_namespace(&name);
+    }
+}
+
+fn untrust_namespace_rename(ident: &Ident, rename: &Ident, shadows: &mut PreludeShadow) {
+    let bound = rename.to_string();
+    if matches!(bound.as_str(), "std" | "core") && ident.to_string() != bound {
+        shadows.untrust_namespace(&bound);
+    }
 }
 
 fn note_ident(ident: &Ident, shadows: &mut PreludeShadow) {
@@ -304,38 +368,59 @@ fn note_ctor_ident(ident: &Ident, shadows: &mut PreludeShadow) {
     }
 }
 
-fn collect_use(tree: &UseTree, rooted: bool, prefix: &[String], shadows: &mut PreludeShadow) {
+fn collect_use(
+    tree: &UseTree,
+    rooted: bool,
+    prefix: &[String],
+    shadows: &mut PreludeShadow,
+    module_ns: &PreludeShadow,
+    crate_ns: &PreludeShadow,
+) {
     match tree {
         UseTree::Path(path) => {
             let mut next = prefix.to_vec();
             next.push(path.ident.to_string());
-            collect_use(&path.tree, rooted, &next, shadows);
+            collect_use(&path.tree, rooted, &next, shadows, module_ns, crate_ns);
         }
         UseTree::Name(name) => {
             let mut full = prefix.to_vec();
             full.push(name.ident.to_string());
-            untrust_imported(rooted, &full, &name.ident.to_string(), shadows);
+            untrust_imported(rooted, &full, &name.ident.to_string(), shadows, module_ns, crate_ns);
         }
         UseTree::Rename(rename) => {
             let mut full = prefix.to_vec();
             full.push(rename.ident.to_string());
-            untrust_imported(rooted, &full, &rename.rename.to_string(), shadows);
+            untrust_imported(
+                rooted,
+                &full,
+                &rename.rename.to_string(),
+                shadows,
+                module_ns,
+                crate_ns,
+            );
         }
         UseTree::Glob(_) => {
-            if !import_prefix_is_std_namespace(prefix) {
+            if !import_prefix_is_std_namespace(rooted, prefix, module_ns, crate_ns) {
                 shadows.untrust_all_prelude();
             }
         }
         UseTree::Group(group) => {
             for tree in &group.items {
-                collect_use(tree, rooted, prefix, shadows);
+                collect_use(tree, rooted, prefix, shadows, module_ns, crate_ns);
             }
         }
     }
 }
 
-fn untrust_imported(rooted: bool, full: &[String], bound: &str, shadows: &mut PreludeShadow) {
-    if imported_path_is_std_enum_or_ctor(rooted, full) {
+fn untrust_imported(
+    rooted: bool,
+    full: &[String],
+    bound: &str,
+    shadows: &mut PreludeShadow,
+    module_ns: &PreludeShadow,
+    crate_ns: &PreludeShadow,
+) {
+    if imported_path_is_std_enum_or_ctor(rooted, full, module_ns, crate_ns) {
         return;
     }
     match bound {
@@ -746,5 +831,83 @@ mod tests {
             }
         "#;
         assert_eq!(rules(local_result), vec![RuleId::ResultOkOrErr], "{:?}", rules(local_result));
+    }
+
+    #[test]
+    fn local_std_core_namespace_aliases_are_skipped_real_std_is_retained() {
+        let source = r#"
+            mod std {
+                pub mod option {
+                    pub struct Option;
+                    impl Option {
+                        pub fn is_some(&self) -> bool { false }
+                        pub fn is_none(&self) -> bool { false }
+                    }
+                }
+            }
+            fn skip_aliased_std(x: std::option::Option) {
+                assert!(x.is_some() || x.is_none());
+            }
+            fn skip_global_std(x: ::std::option::Option) {
+                assert!(x.is_some() || x.is_none());
+            }
+            fn retain_prelude(x: Option<u8>) {
+                assert!(x.is_some() || x.is_none());
+            }
+            mod child {
+                fn retain_extern_std(x: std::option::Option<u8>) {
+                    assert!(x.is_some() || x.is_none());
+                }
+            }
+        "#;
+        assert_eq!(
+            rules(source),
+            vec![RuleId::OptionSomeOrNone, RuleId::OptionSomeOrNone],
+            "{:?}",
+            rules(source)
+        );
+
+        let core_alias = r#"
+            mod custom {
+                pub mod option {
+                    pub struct Option;
+                    impl Option {
+                        pub fn is_some(&self) -> bool { false }
+                        pub fn is_none(&self) -> bool { false }
+                    }
+                }
+            }
+            use custom as core;
+            fn skip_core_alias(x: core::option::Option) {
+                assert!(x.is_some() || x.is_none());
+            }
+            fn retain_prelude(x: Option<u8>) {
+                assert!(x.is_some() || x.is_none());
+            }
+        "#;
+        assert_eq!(rules(core_alias), vec![RuleId::OptionSomeOrNone], "{:?}", rules(core_alias));
+
+        let extern_alias = r#"
+            extern crate custom as std;
+            fn skip_extern_std(x: std::option::Option) {
+                assert!(x.is_some() || x.is_none());
+            }
+            fn retain_prelude(x: Option<u8>) {
+                assert!(x.is_some() || x.is_none());
+            }
+        "#;
+        assert_eq!(
+            rules(extern_alias),
+            vec![RuleId::OptionSomeOrNone],
+            "{:?}",
+            rules(extern_alias)
+        );
+
+        let real_std = r#"
+            fn retain_std(x: std::option::Option<u8>) {
+                assert!(x.is_some() || x.is_none());
+            }
+        "#;
+        assert_eq!(rules(real_std), vec![RuleId::OptionSomeOrNone], "{:?}", rules(real_std));
     }
 }
