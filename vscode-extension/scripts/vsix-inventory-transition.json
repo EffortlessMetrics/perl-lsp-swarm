@@ -1,9 +1,9 @@
 {
-  "candidate_baseline_file_sha256": "4a6a6fe3aed1a697ee322f792ef2559cba0cc65f431c241abd54ac4eca366eb9",
-  "reason": "PR #14744 integrates main #15163 and preserves the opt-in supervisor workflow. The fresh Windows x64 VSIX has 29 payload files and 1866923 bytes. Relative to main 5bea310bf9330b11fbbc24344c79641d35397735, the only measured inventory delta is package.json +112 bytes (59413 to 59525). Development scripts remain excluded. No inventory validator or threshold is weakened.",
-  "candidate_inventory_sha256": "ecb86cf0aba484eceb5f99c553593538a3cdbe386f3c193c411d279da169eb49",
-  "base_inventory_sha256": "d44214d4914ba1bd8b35d300c9571675e8ae3a7ae526ea017d96c4dc6ff3ea92",
+  "schema_version": 1,
   "owner_issue": 9848,
-  "base_baseline_file_sha256": "4e148581fe7caff83e13b7d0f617d58c7a957fbc1bb5f1c8b617b9fbd2bd83da",
-  "schema_version": 1
+  "reason": "PR #14744 integrates current main dd30ebbaf5 after the lifecycle package change. The measured Windows x64 archive has 29 payload files and 1869755 bytes. Only package.json grows by 112 bytes versus main; development scripts remain excluded. No inventory validator or threshold is weakened.",
+  "base_baseline_file_sha256": "03b0339c3c4bfcfd8f9dc9aa74e8d0f578231ea4beddfefba20a303050bf5035",
+  "candidate_baseline_file_sha256": "caa82bcc2c54ae0a43079cc47bc41813c9d8a48855fe6a954ae28c9b35c728ab",
+  "base_inventory_sha256": "25bb3d522c7662251cbea5f1f42b8fa5ccbaeb7ce32bd918d7b1e45812b5dfd9",
+  "candidate_inventory_sha256": "73892c0ca50ca2f4dc37885d002e93db760e7043efe1d9b46bb83ecc5813f585"
 }
