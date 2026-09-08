@@ -4,7 +4,11 @@ import {
   formatIssueDiagnosticInfo,
   reportIssueCommand,
 } from '../supportCommands';
-import { formatSupportPacketHuman, validateSupportPacket } from '../supportPacket';
+import {
+  formatSupportPacketHuman,
+  serializeSupportPacketJson,
+  validateSupportPacket,
+} from '../supportPacket';
 
 function dependencies() {
   return {
@@ -469,16 +473,57 @@ describe('support command implementations', () => {
     expect(vscode.env.clipboard.writeText).not.toHaveBeenCalled();
   });
 
-  test('server-version probe failure degrades to bounded missing evidence', async () => {
+  test.each(['unavailable', '', '   '])(
+    'resolved unavailable server evidence stays not proven (%j)',
+    async (serverVersion) => {
+      const deps = dependencies();
+      deps.getServerVersion.mockResolvedValueOnce(serverVersion);
+      (vscode.window.showInformationMessage as jest.Mock).mockResolvedValueOnce(
+        'Copy Support Packet',
+      );
+
+      await expect(reportIssueCommand(deps)).resolves.toBeUndefined();
+      const copied = (vscode.env.clipboard.writeText as jest.Mock).mock.calls[0]?.[0] as string;
+      expect(copied).toContain('perllsp: unknown not_proven not_proven');
+    },
+  );
+
+  test('rejected server-version probe degrades without claiming absence or leaking the error', async () => {
     const deps = dependencies();
-    deps.getServerVersion.mockRejectedValueOnce(new Error('probe failed'));
+    deps.getServerVersion.mockRejectedValueOnce(new Error('probe failed: C:\\private\\server'));
     (vscode.window.showInformationMessage as jest.Mock).mockResolvedValueOnce(
       'Copy Support Packet',
     );
 
     await expect(reportIssueCommand(deps)).resolves.toBeUndefined();
     const copied = (vscode.env.clipboard.writeText as jest.Mock).mock.calls[0]?.[0] as string;
-    expect(copied).toContain('perllsp: unknown known_absent missing');
+    expect(copied).toContain('perllsp: unknown not_proven not_proven');
+    expect(copied).not.toContain('known_absent');
+    expect(copied).not.toContain('missing');
     expect(copied).not.toContain('probe failed');
+    expect(copied).not.toContain('private');
+  });
+
+  test('unavailable server evidence stays not proven in the JSON packet', () => {
+    const packet = buildBasicSupportPacket({
+      serverVersion: 'unavailable',
+      extensionVersion: '0.17.0',
+      editorVersion: '1.128.1',
+      platform: 'win32',
+      arch: 'x64',
+    });
+
+    const serialized = JSON.parse(serializeSupportPacketJson(packet)) as {
+      perllsp: {
+        state: string;
+        version: { state: string; value: string | null };
+        compatibility: string;
+      };
+    };
+    expect(serialized.perllsp).toMatchObject({
+      state: 'not_proven',
+      version: { state: 'not_proven', value: null },
+      compatibility: 'not_proven',
+    });
   });
 });
