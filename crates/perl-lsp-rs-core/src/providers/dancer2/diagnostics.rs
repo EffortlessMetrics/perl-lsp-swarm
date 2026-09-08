@@ -54,6 +54,7 @@ pub fn bounded_diagnostics(
     if !activations.has_exact() {
         return diagnostics;
     }
+    let declared = declared_sub_names(ast);
 
     for activation in &activations.packages {
         if !activation.facts.is_exact() {
@@ -104,9 +105,8 @@ pub fn bounded_diagnostics(
         if !handler_only.is_empty() {
             let mut usages = Vec::new();
             collect_keyword_usages(ast, &handler_only, &mut usages);
-            let declared = declared_sub_names(ast);
             for (name, start, end) in usages {
-                if declared.contains(&name) {
+                if declared.contains(&(package.to_string(), name.clone())) {
                     // A local `sub <name>` declaration owns the name: using
                     // it is ordinary Perl, not a framework keyword use.
                     continue;
@@ -165,19 +165,23 @@ fn collect_keyword_usages(node: &Node, names: &[&str], out: &mut Vec<(String, u3
     }
 }
 
-/// Names of subroutine declarations in the file (any package).
-fn declared_sub_names(node: &Node) -> std::collections::HashSet<String> {
+/// Names of subroutine declarations paired with their lexical package owners.
+fn declared_sub_names(ast: &Node) -> std::collections::HashSet<(String, String)> {
     let mut names = std::collections::HashSet::new();
-    collect_declared_sub_names(node, &mut names);
+    collect_declared_sub_names(ast, ast, &mut names);
     names
 }
 
-fn collect_declared_sub_names(node: &Node, names: &mut std::collections::HashSet<String>) {
+fn collect_declared_sub_names(
+    ast: &Node,
+    node: &Node,
+    names: &mut std::collections::HashSet<(String, String)>,
+) {
     if let NodeKind::Subroutine { name: Some(name), .. } = &node.kind {
-        names.insert(name.clone());
+        names.insert((current_package_at(ast, node.location.start).to_string(), name.clone()));
     }
     for child in node.children() {
-        collect_declared_sub_names(child, names);
+        collect_declared_sub_names(ast, child, names);
     }
 }
 
@@ -362,6 +366,33 @@ mod tests {
             {
                 return Err(format!("{version}: unsupported 1.x version produced provider output"));
             }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn sibling_subroutine_does_not_own_another_packages_keyword() -> Result<(), String> {
+        for source in [
+            "package Other; sub content { 1 }; package App; use Dancer2; content; get '/x' => sub { content; };",
+            "package App; use Dancer2; { package Other; sub content { 1 }; } content; get '/x' => sub { content; };",
+        ] {
+            let (activations, facts, ast) = setup(source);
+            let diagnostics = bounded_diagnostics(&ast, &activations, &facts);
+            let expected_offset = source.find("content;").ok_or("missing outside keyword")?;
+            let diagnostic = diagnostics.first().ok_or("sibling declaration suppressed misuse")?;
+            if diagnostics.len() != 1
+                || diagnostic.code != "dancer2.handler-only-keyword-outside-handler"
+                || usize::try_from(diagnostic.start).map_err(|error| error.to_string())?
+                    != expected_offset
+            {
+                return Err(format!("wrong package or handler diagnostic: {diagnostics:?}"));
+            }
+        }
+        let local = "package App; use Dancer2; sub content { 1 }; content;";
+        let (activations, facts, ast) = setup(local);
+        let diagnostics = bounded_diagnostics(&ast, &activations, &facts);
+        if !diagnostics.is_empty() {
+            return Err(format!("same-package declaration lost ownership: {diagnostics:?}"));
         }
         Ok(())
     }

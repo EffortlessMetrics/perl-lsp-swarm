@@ -355,17 +355,22 @@ fn keyword_hover(
         // Perl hover path covers it.
         return None;
     }
-    let content = format!(
-        "**Dancer2 DSL keyword `{keyword_name}`** (`Dancer2` {version})\n- availability: \
-         {}\n- keyword contract: `{dsl_contract_version}`\n- provenance: \
-         canonical import fact of this activation (package `{package}`)",
-        match facts.keywords.iter().find(|keyword| keyword.keyword == keyword_name)?.scope {
+    let keyword = facts.keywords.iter().find(|keyword| keyword.keyword == keyword_name)?;
+    let availability = if keyword.deprecated {
+        "deprecated; invoking this keyword fails in the reviewed Dancer2 contract".to_string()
+    } else {
+        match keyword.scope {
             DslKeywordScope::Global => {
                 "global (available in any package scope that activated the DSL)".to_string()
             }
             DslKeywordScope::RouteHandlerOnly => request_context_availability(file_facts, offset),
             _ => "unknown scope".to_string(),
-        },
+        }
+    };
+    let content = format!(
+        "**Dancer2 DSL keyword `{keyword_name}`** (`Dancer2` {version})\n- availability: \
+         {availability}\n- keyword contract: `{dsl_contract_version}`\n- provenance: \
+         canonical import fact of this activation (package `{package}`)",
     );
     Some(RouteHoverProjection::Keyword { content })
 }
@@ -921,6 +926,36 @@ get '/x' => sub { 1 };
         );
         assert!(!family.routes.is_empty(), "the producer still mints 1.x routes");
     }
+    #[test]
+    fn deprecated_keyword_hover_states_that_invocation_fails() -> Result<(), String> {
+        let source =
+            "use Dancer2;\nget '/x' => sub { context; header; headers; push_header; request; };";
+        for version in ["1.0.0", "1.1.1"] {
+            let setup = setup_with_version(source, version);
+            for keyword in ["context", "header", "headers", "push_header", "request"] {
+                let offset = source.find(keyword).ok_or("missing keyword offset")?;
+                let projection = hover_projection_at(
+                    &setup.activations,
+                    &setup.facts,
+                    &setup.ast,
+                    "main",
+                    offset,
+                )
+                .ok_or("missing keyword hover")?;
+                let RouteHoverProjection::Keyword { content } = projection else {
+                    return Err(format!("{version}: wrong hover kind for {keyword}"));
+                };
+                let expected_deprecated = keyword != "request";
+                if content.contains("deprecated") != expected_deprecated
+                    || content.contains("invoking this keyword fails") != expected_deprecated
+                {
+                    return Err(format!("{version}: dishonest {keyword} hover: {content}"));
+                }
+            }
+        }
+        Ok(())
+    }
+
     #[test]
     fn versioned_keyword_hover_uses_the_activation_contract() {
         let source = "use Dancer2;\nget '/x' => sub { params; };";

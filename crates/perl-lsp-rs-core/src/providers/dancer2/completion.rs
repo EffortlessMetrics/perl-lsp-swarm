@@ -4,6 +4,8 @@
 //! [`Dancer2KeywordImportFact`]s under exact activation:
 //!
 //! - `!keyword` exclusions are honored: an excluded keyword is never offered;
+//! - deprecated exports remain canonical facts but are not offered as usable
+//!   keywords: their reviewed upstream implementations fail when invoked;
 //! - request-scoped keywords (the reviewed `is_global => 0` vocabulary) are
 //!   offered only where the canonical handler-context facts establish request
 //!   context: inside an exact inline route handler (#8921) or inside an
@@ -90,8 +92,8 @@ pub fn keyword_completion_candidates(
         request_context.filter(|context| context.establishes_request_context());
     let mut candidates = Vec::new();
     for keyword in &activation.facts.keywords {
-        if keyword.state != Dancer2KeywordState::Imported {
-            // `!keyword` at the activating import: never offered.
+        if keyword.state != Dancer2KeywordState::Imported || keyword.deprecated {
+            // Exclusions and deprecated upstream failure stubs are never offered.
             continue;
         }
         if locally_declared_subnames(&keyword.keyword) {
@@ -564,6 +566,41 @@ get '/x' => sub { params; };
             candidates.iter().map(|candidate| candidate.label.as_str()).collect();
         assert!(!labels.contains(&"get"), "excluded `get` offered: {labels:?}");
         assert!(labels.contains(&"post"));
+    }
+
+    #[test]
+    fn deprecated_exports_are_not_offered_as_usable_keywords() -> Result<(), String> {
+        let source = "use Dancer2;\nget '/x' => sub { params; };\nhook before => sub { request; };";
+        for version in ["1.0.0", "1.1.1"] {
+            let (activations, facts) = setup_with_version(source, version);
+            let activation = activations.for_package("main").ok_or("missing activation")?;
+            if activation.facts.keywords.iter().filter(|keyword| keyword.deprecated).count() != 4 {
+                return Err(format!(
+                    "{version}: deprecated exports were lost from canonical facts"
+                ));
+            }
+            for needle in ["params;", "request;"] {
+                let offset = source.find(needle).ok_or("missing handler offset")?;
+                let candidates = keyword_completion_candidates(
+                    &activations,
+                    &facts,
+                    "main",
+                    offset,
+                    &none_declared,
+                );
+                for deprecated in ["context", "header", "headers", "push_header"] {
+                    if candidates.iter().any(|candidate| candidate.label == deprecated) {
+                        return Err(format!("{version}: {deprecated} was offered at {needle}"));
+                    }
+                }
+                for available in ["request", "params", "response_header", "push_response_header"] {
+                    if !candidates.iter().any(|candidate| candidate.label == available) {
+                        return Err(format!("{version}: {available} was withheld at {needle}"));
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 
     #[test]
