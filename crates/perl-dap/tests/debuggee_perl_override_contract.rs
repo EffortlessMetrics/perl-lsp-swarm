@@ -223,13 +223,14 @@ fn attach_does_not_resolve_launch_pin_during_initialization() -> Result<(), Box<
     EnvGuard::set(DEBUGGEE_PERL_OVERRIDE_ENV, BOGUS_PIN);
 
     // Attach is independent of launch-interpreter selection. A rejected launch
-    // pin must therefore not prevent initialize/attach from reaching the real
+    // pin must therefore not prevent initialize/PID-refusal from reaching the real
     // adapter; resolution belongs to the first launch helper that needs it.
     let mut session = DapWorkflowSession::new(workflow_timeout())?;
-    session.attach(std::process::id(), false)?;
-    let stopped = session.wait_stopped()?;
-    if stopped.reason != "attach" {
-        return Err(format!("attach must stop with reason=attach, got {}", stopped.reason).into());
+    let attach_error = session
+        .attach(std::process::id(), false)
+        .expect_err("native PID attach must be unsupported");
+    if !attach_error.contains("not supported") {
+        return Err(format!("unexpected PID attach refusal: {attach_error}").into());
     }
     let launch_error = common::resolve_launch_perl_path()
         .err()
