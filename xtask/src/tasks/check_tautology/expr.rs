@@ -67,6 +67,22 @@ impl PreludeShadow {
             _ => false,
         }
     }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.types.is_empty()
+            && self.ctors.is_empty()
+            && !self.std_untrusted
+            && !self.core_untrusted
+    }
+
+    pub(crate) fn merged(&self, other: &PreludeShadow) -> PreludeShadow {
+        let mut out = self.clone();
+        out.types.extend(other.types.iter().copied());
+        out.ctors.extend(other.ctors.iter().cloned());
+        out.std_untrusted |= other.std_untrusted;
+        out.core_untrusted |= other.core_untrusted;
+        out
+    }
 }
 
 /// Lexical Option/Result ascriptions. Inner scopes shadow outer names, including
@@ -115,6 +131,10 @@ impl TypeEnv {
 
     pub(crate) fn ctor_untrusted(&self, name: &str) -> bool {
         self.shadows.ctor_untrusted(name)
+    }
+
+    pub(crate) fn replace_shadows(&mut self, shadows: PreludeShadow) -> PreludeShadow {
+        std::mem::replace(&mut self.shadows, shadows)
     }
 
     pub(crate) fn push_scope(&mut self) {
@@ -392,7 +412,16 @@ fn ctor_kind_for_owner(
 }
 
 fn path_idents(path: &Path) -> Vec<String> {
-    path.segments.iter().map(|segment| segment.ident.to_string()).collect()
+    path.segments.iter().map(|segment| ident_unraw(&segment.ident)).collect()
+}
+
+/// Strip a raw-identifier prefix so `r#std` compares as `std`.
+pub(crate) fn ident_unraw(ident: &syn::Ident) -> String {
+    let name = ident.to_string();
+    match name.strip_prefix("r#") {
+        Some(unraw) => unraw.to_string(),
+        None => name,
+    }
 }
 
 pub(crate) fn std_enum_kind_from_idents(rooted: bool, segs: &[String]) -> Option<QueryKind> {
@@ -498,7 +527,9 @@ pub(crate) fn is_known_reflexive_eq_operand(expr: &Expr) -> bool {
             is_known_reflexive_eq_operand(&repeat.expr)
                 && is_known_reflexive_eq_operand(&repeat.len)
         }
-        Expr::Cast(cast) => is_known_reflexive_eq_operand(&cast.expr),
+        Expr::Cast(cast) if !matches!(peel_type(&cast.ty), Type::Ptr(_)) => {
+            is_known_reflexive_eq_operand(&cast.expr)
+        }
         _ => false,
     }
 }
@@ -719,5 +750,7 @@ mod tests {
         assert!(is_known_reflexive_eq_operand(&expr("1 as i32")));
         assert!(is_known_reflexive_eq_operand(&expr("[1, 2]")));
         assert!(is_known_reflexive_eq_operand(&expr("[0; 3]")));
+        assert!(!is_known_reflexive_eq_operand(&expr("&1 as *const i32")));
+        assert!(!is_known_reflexive_eq_operand(&expr("&1 as *mut i32")));
     }
 }

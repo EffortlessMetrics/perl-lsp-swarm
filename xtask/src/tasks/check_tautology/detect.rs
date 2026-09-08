@@ -282,6 +282,8 @@ mod tests {
         assert_eq!(eq_rule("[1, 2]", "[1, 2]"), Some(RuleId::AssertEqIdentical));
         assert_eq!(eq_rule("[0; 3]", "[0; 3]"), Some(RuleId::AssertEqIdentical));
         assert_eq!(eq_rule("1.0", "1.0"), Some(RuleId::AssertEqIdentical));
+        assert_eq!(eq_rule("&1 as *const i32", "&1 as *const i32"), None);
+        assert_eq!(eq_rule("&1 as *mut i32", "&1 as *mut i32"), None);
     }
 
     #[test]
