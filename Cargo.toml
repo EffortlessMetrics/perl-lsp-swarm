@@ -8,6 +8,12 @@ members = [
     # Tier 1 leaf — no parser/workspace/LSP/DAP deps. Dependency contract
     # asserted in tests/dependency_contract.rs.
     "crates/perl-source-identity",
+    # perl-evidence-envelope: evidence_envelope.v1 core types and deterministic
+    # envelope identity (#15057). Tier 1 leaf — no parser/workspace/LSP/DAP
+    # deps; depends on perl-source-identity for ContentDigest/ProjectId.
+    # publish = false: internal evidence infrastructure until it has
+    # consumers. Dependency contract asserted in tests/dependency_contract.rs.
+    "crates/perl-evidence-envelope",
     "crates/perl-pragma",
     "crates/perl-regex",
     "crates/perl-lexer",
@@ -237,6 +243,11 @@ perl-ast-v2 = { path = "crates/perl-ast-v2", version = "0.17.0" }
 perl-token = { path = "crates/perl-token", version = "0.17.0" }
 # perl-source-identity: source_identity.v1 core types (#7652). No internal deps.
 perl-source-identity = { path = "crates/perl-source-identity", version = "0.17.0" }
+# perl-evidence-envelope: evidence_envelope.v1 core types (#15057). Direct
+# dependencies are serde, sha2, and perl-source-identity (ContentDigest,
+# ProjectId) — the last being its only internal one. Exact closure asserted
+# by crates/perl-evidence-envelope/tests/dependency_contract.rs.
+perl-evidence-envelope = { path = "crates/perl-evidence-envelope", version = "0.17.0" }
 perl-regex = { path = "crates/perl-regex", version = "0.17.0" }
 perl-pragma = { path = "crates/perl-pragma", version = "0.17.0" }
 perl-lexer = { path = "crates/perl-lexer", version = "0.17.0" }
@@ -421,9 +432,11 @@ await_holding_refcell_ref = "deny"
 # This row covers non-std guards only — borrowed `parking_lot` mutex and
 # read/write guards. Standard-library guards are owned by the
 # `rust::let_underscore_lock` row below; the two identities partition the
-# surface and do not overlap. Both rows match only `let _ = <borrowed guard>`;
-# owned arc guards, `drop(m.lock())`, and mapped guards are outside what either
-# lint sees. That measured gap is #14579.
+# surface and do not overlap. Both rows match only `let _ = <borrowed guard>`.
+# #14579 ruled on the rest: owned arc guards and mapped guards are `#[must_use]`
+# and belong to `clippy::let_underscore_must_use` (tracked; activated by
+# #11240), while `drop(m.lock())` is seen by no Clippy lint at any level and
+# stays with the #11236 deliberate-discard contract.
 let_underscore_lock = "deny"
 # mutex_atomic: prefer proper Mutex over atomic-loaded Mutex guards (#2899).
 mutex_atomic = "warn"

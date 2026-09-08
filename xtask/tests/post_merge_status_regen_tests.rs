@@ -70,6 +70,8 @@ fn assert_dispatch_loop_behavior(
     dispatch_run: &str,
     dispatch_order: &[String],
     branch: &str,
+    base_sha: &str,
+    head_sha: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use std::process::{Command, Output};
 
@@ -77,19 +79,26 @@ fn assert_dispatch_loop_behavior(
     let stub_dir = temp_dir.path().join("bin");
     fs::create_dir(&stub_dir)?;
     let stub_gh = stub_dir.join("gh");
+    // Record the full argument vector for every call and tolerate any arity:
+    // ci.yml's workflow_dispatch requires `-f base_sha=… -f head_sha=…`
+    // (#13019), so a five-arg stub would reject exactly the call this fixture
+    // must admit — and did, leaving this test red on main unobserved (#15100).
     fs::write(
         &stub_gh,
         "#!/usr/bin/env bash\n\
-         printf '%s|%s|%s|%s|%s\\n' \"$1\" \"$2\" \"$3\" \"$4\" \"$5\" >> \"$GH_LOG\"\n\
-         if [ \"$#\" -ne 5 ]; then exit 2; fi\n\
-         if [ \"${FAIL_WORKFLOW:-}\" = \"$3\" ]; then exit 1; fi\n",
+         printf '%s\\n' \"$*\" >> \"$GH_LOG\"\n\
+         if [ -n \"${FAIL_WORKFLOW:-}\" ] && [ \"$FAIL_WORKFLOW\" = \"${3:-}\" ]; then exit 1; fi\n",
     )?;
     use std::os::unix::fs::PermissionsExt;
     let mut permissions = fs::metadata(&stub_gh)?.permissions();
     permissions.set_mode(0o755);
     fs::set_permissions(&stub_gh, permissions)?;
+    // Stub every dispatch call, not just the first: the ci.yml special case
+    // precedes the bare `elif` dispatch, and an unstubbed suffix would invoke
+    // the real gh — failing hermeticity and, on an authenticated machine,
+    // dispatching real workflows.
     let simulation_run =
-        dispatch_run.replacen("gh workflow run", &format!("{} workflow run", stub_gh.display()), 1);
+        dispatch_run.replace("gh workflow run", &format!("{} workflow run", stub_gh.display()));
     assert_ne!(simulation_run, dispatch_run, "dispatch step must invoke gh workflow run");
 
     let run_dispatch = |fail_workflow: Option<&str>, log_name: &str| {
@@ -104,6 +113,8 @@ fn assert_dispatch_loop_behavior(
             .arg(&simulation_run)
             .env("PATH", path)
             .env("BRANCH", branch)
+            .env("BASE_SHA", base_sha)
+            .env("GENERATED_HEAD_SHA", head_sha)
             .env("GH_LOG", &log_path);
         if let Some(fail_workflow) = fail_workflow {
             command.env("FAIL_WORKFLOW", fail_workflow);
@@ -134,9 +145,20 @@ fn assert_dispatch_loop_behavior(
         "all-success dispatch run failed: {}",
         String::from_utf8_lossy(&success_output.stderr)
     );
+    // ci.yml's workflow_dispatch requires the dispatched subject's exact
+    // base/head SHAs (#13019); every other required workflow declares no
+    // dispatch inputs and stays bare (#13355).
     let expected_calls = dispatch_order
         .iter()
-        .map(|workflow| format!("workflow|run|{workflow}|--ref|{branch}"))
+        .map(|workflow| {
+            if workflow == "ci.yml" {
+                format!(
+                    "workflow run {workflow} --ref {branch} -f base_sha={base_sha} -f head_sha={head_sha}"
+                )
+            } else {
+                format!("workflow run {workflow} --ref {branch}")
+            }
+        })
         .collect::<Vec<_>>();
     assert_eq!(success_calls, expected_calls, "all required dispatches must run in workflow order");
 
@@ -376,8 +398,28 @@ fn test_post_merge_workflow_dispatches_all_required_checks()
         "generated-PR dispatch step must continue after an individual failure and fail overall"
     );
 
+    // The ci.yml dispatch arm reads its subject identity from step env
+    // (#13355); both names must be declared so the simulated invocation is
+    // the one the workflow really makes.
+    let step_env = dispatch_step
+        .get("env")
+        .and_then(Value::as_mapping)
+        .ok_or("generated-PR dispatch step must declare env")?;
+    for required_env in ["BASE_SHA", "GENERATED_HEAD_SHA"] {
+        assert!(
+            step_env.keys().any(|key| key.as_str() == Some(required_env)),
+            "generated-PR dispatch step must declare {required_env} for the ci.yml subject inputs"
+        );
+    }
+
     #[cfg(unix)]
-    assert_dispatch_loop_behavior(dispatch_run, &dispatch_order, dispatch_branch)?;
+    assert_dispatch_loop_behavior(
+        dispatch_run,
+        &dispatch_order,
+        dispatch_branch,
+        "0123456789abcdef0123456789abcdef01234567",
+        "89abcdef0123456789abcdef0123456789abcdef",
+    )?;
 
     Ok(())
 }
