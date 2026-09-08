@@ -344,6 +344,7 @@ fn collect_shadows<'a>(
             Item::Const(item) => note_ctor_ident(&item.ident, &mut shadows),
             Item::Static(item) => note_ctor_ident(&item.ident, &mut shadows),
             Item::Macro(item) => note_item_macro(item, &mut shadows),
+            Item::ExternCrate(ext) => note_ident(extern_crate_bound_ident(ext), &mut shadows),
             _ => {}
         }
     }
@@ -519,6 +520,13 @@ fn note_ident(ident: &Ident, shadows: &mut PreludeShadow) {
     }
 }
 
+fn extern_crate_bound_ident(ext: &syn::ItemExternCrate) -> &Ident {
+    match &ext.rename {
+        Some((_, rename)) => rename,
+        None => &ext.ident,
+    }
+}
+
 fn note_ctor_ident(ident: &Ident, shadows: &mut PreludeShadow) {
     let name = ident_unraw(ident);
     if matches!(name.as_str(), "Some" | "None" | "Ok" | "Err") {
@@ -575,16 +583,18 @@ fn collect_use(
             collect_use(&path.tree, rooted, &next, shadows, module_ns, crate_ns);
         }
         UseTree::Name(name) => {
+            let ident = ident_unraw(&name.ident);
+            if ident == "self" {
+                // `use custom::Option::{self}` binds `Option`, not `self`.
+                let Some(bound) = prefix.last() else {
+                    return;
+                };
+                untrust_imported(rooted, prefix, bound, shadows, module_ns, crate_ns);
+                return;
+            }
             let mut full = prefix.to_vec();
-            full.push(ident_unraw(&name.ident));
-            untrust_imported(
-                rooted,
-                &full,
-                &ident_unraw(&name.ident),
-                shadows,
-                module_ns,
-                crate_ns,
-            );
+            full.push(ident.clone());
+            untrust_imported(rooted, &full, &ident, shadows, module_ns, crate_ns);
         }
         UseTree::Rename(rename) => {
             let mut full = prefix.to_vec();
@@ -1293,6 +1303,117 @@ mod tests {
             "{:?}",
             rules(source)
         );
+    }
+
+    #[test]
+    fn grouped_self_option_imports_are_skipped_std_self_import_is_retained() {
+        let source = r#"
+            mod custom {
+                pub struct Option;
+                impl Option {
+                    fn is_some(&self) -> bool { false }
+                    fn is_none(&self) -> bool { false }
+                }
+            }
+            use custom::Option::{self};
+            fn skip_grouped_self(x: Option) {
+                assert!(x.is_some() || x.is_none());
+            }
+            fn retain_std(value: std::option::Option<u8>) {
+                assert!(value.is_some() || value.is_none());
+            }
+        "#;
+        assert_eq!(rules(source), vec![RuleId::OptionSomeOrNone], "{:?}", rules(source));
+
+        let std_self = r#"
+            use std::option::Option::{self};
+            fn retain_std_self(value: Option<u8>) {
+                assert!(value.is_some() || value.is_none());
+            }
+        "#;
+        assert_eq!(rules(std_self), vec![RuleId::OptionSomeOrNone], "{:?}", rules(std_self));
+
+        let block_local = r#"
+            fn skip_block() {
+                use custom::Option::{self};
+                let x: Option = Option;
+                assert!(x.is_some() || x.is_none());
+            }
+            fn retain_prelude(x: Option<u8>) {
+                assert!(x.is_some() || x.is_none());
+            }
+            mod custom {
+                pub struct Option;
+                impl Option {
+                    fn is_some(&self) -> bool { false }
+                    fn is_none(&self) -> bool { false }
+                }
+            }
+        "#;
+        assert_eq!(rules(block_local), vec![RuleId::OptionSomeOrNone], "{:?}", rules(block_local));
+
+        let result_self = r#"
+            mod custom {
+                pub struct Result;
+                impl Result {
+                    fn is_ok(&self) -> bool { false }
+                    fn is_err(&self) -> bool { false }
+                }
+            }
+            use custom::Result::{self};
+            fn skip_result(x: Result) {
+                assert!(x.is_ok() || x.is_err());
+            }
+            fn retain_std(value: std::result::Result<(), ()>) {
+                assert!(value.is_ok() || value.is_err());
+            }
+        "#;
+        assert_eq!(rules(result_self), vec![RuleId::ResultOkOrErr], "{:?}", rules(result_self));
+    }
+
+    #[test]
+    fn extern_crate_option_aliases_are_skipped_std_option_is_retained() {
+        let source = r#"
+            struct Probe;
+            impl Probe {
+                fn is_some(&self) -> bool { false }
+                fn is_none(&self) -> bool { false }
+            }
+            extern crate custom as Option;
+            impl Option {
+                #[allow(non_snake_case)]
+                fn Some(_value: u8) -> Probe { Probe }
+            }
+            fn skip_aliased_crate() {
+                assert!(Option::Some(1).is_some() || Option::Some(1).is_none());
+            }
+            fn retain_std() {
+                assert!(
+                    std::option::Option::Some(1).is_some()
+                        || std::option::Option::Some(1).is_none()
+                );
+            }
+        "#;
+        assert_eq!(rules(source), vec![RuleId::OptionSomeOrNone], "{:?}", rules(source));
+
+        let as_some = r#"
+            struct Probe;
+            impl Probe {
+                fn is_some(&self) -> bool { false }
+                fn is_none(&self) -> bool { false }
+            }
+            extern crate custom as Some;
+            fn skip_aliased_some() {
+                assert!(Some(1).is_some() || Some(1).is_none());
+            }
+            fn retain_std() {
+                assert!(
+                    std::option::Option::Some(1).is_some()
+                        || std::option::Option::Some(1).is_none()
+                );
+            }
+        "#;
+        assert_eq!(rules(as_some), vec![RuleId::OptionSomeOrNone], "{:?}", rules(as_some));
     }
 
     #[test]
