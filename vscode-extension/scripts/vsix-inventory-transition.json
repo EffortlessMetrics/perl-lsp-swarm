@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "owner_issue": 14486,
-  "reason": "The VS Code lifecycle retains the exact process subject after a settled stop rejection and permits explicit replacement only after terminal observation. Against current main, the measured combined transition changes out/extension.js from 1695699 to 1697405 bytes (+1706); all other ordinary archive paths remain unchanged. Installed process no-overlap evidence remains separate from ordinary inventory.",
+  "owner_issue": 9848,
+  "reason": "PR #14744 integrates current main 5ea598dce3 after the Gherkin provider repair. The measured Windows x64 archive has 29 payload files and 1874054 bytes. Only package.json grows by 112 bytes versus main; development scripts remain excluded. No inventory validator or threshold is weakened.",
   "base_baseline_file_sha256": "0d198ce853fe7ae725af3cc8ecca63b076d9e2c2da703a6361e9e0b61c04d4cd",
-  "candidate_baseline_file_sha256": "ccbeba5fa725c50ea6fbb81c60859775e13744bf71bea245dca64061856fce4b",
+  "candidate_baseline_file_sha256": "2e4b6ef935e824d6a3113b8001e00be0ecff3fb0fac90f74488fcaecc19e93be",
   "base_inventory_sha256": "6cdb4885f6b6b20c8f48e895a8718274454048e5527847b93b7081ec7518d404",
-  "candidate_inventory_sha256": "c39ad38293080129b3ee4ac9b1eeb5f7cfd55d7268b6c1ee351f128e12b816fd"
+  "candidate_inventory_sha256": "3c28638f05a67ce7cd20465a9ce753d8aeca0a21056ea1963ad2e41db1c8657d"
 }
