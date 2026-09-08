@@ -12,6 +12,19 @@ export async function run(): Promise<void> {
   const packagedBundleSmoke = process.env.PERL_LSP_PACKAGED_BUNDLE_SMOKE === '1';
   const healthCheckFailureSmoke = process.env.PERL_LSP_HEALTH_CHECK_FAILURE_SMOKE === '1';
   const activationFailureSmoke = process.env.PERL_LSP_ACTIVATION_FAILURE_SMOKE === '1';
+  const conflictingHealthMode = [
+    ['PERL_LSP_ACTIVATION_FAILURE_SMOKE', activationFailureSmoke],
+    ['PERL_LSP_CRASH_RECOVERY_SMOKE', process.env.PERL_LSP_CRASH_RECOVERY_SMOKE === '1'],
+    ['PERL_LSP_PACKAGED_BUNDLE_SMOKE', packagedBundleSmoke],
+    ['PERL_LSP_CURRENT_SOURCE_SMOKE', currentSourceSmoke],
+  ]
+    .filter(([, enabled]) => enabled)
+    .map(([name]) => name);
+  if (healthCheckFailureSmoke && conflictingHealthMode.length > 0) {
+    throw new Error(
+      `PERL_LSP_HEALTH_CHECK_FAILURE_SMOKE cannot be combined with ${conflictingHealthMode.join(', ')}`,
+    );
+  }
   const activationFailureLeg = process.env.PERL_LSP_ACTIVATION_FAILURE_LEG ?? '';
   if (
     activationFailureSmoke &&

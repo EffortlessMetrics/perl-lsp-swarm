@@ -45,27 +45,16 @@ function nativeGitPath(): string {
   return path.resolve(candidate);
 }
 
+function healthFailureObservationPath(): string {
+  const receiptsRoot = process.env.PERL_LSP_SMOKE_RECEIPTS_DIR;
+  assert.ok(receiptsRoot, 'published smoke must provide a receipts directory');
+  return path.join(receiptsRoot, 'health-check-failure-process-observation.json');
+}
+
 function check(result: HealthCheckResult, label: string): { status: string; detail: string } {
   const found = result.checks.find((entry) => entry.label === label);
   assert.ok(found, `health result is missing ${label}: ${JSON.stringify(result)}`);
   return found;
-}
-
-async function waitForLifecycleRunning(
-  activation: { getLanguageClientStartupMetrics?: () => Record<string, unknown> } | undefined,
-): Promise<void> {
-  await withTimeout(
-    'language server lifecycle recovery',
-    (async () => {
-      for (;;) {
-        if (activation?.getLanguageClientStartupMetrics?.().lifecycle_state === 'running') {
-          return;
-        }
-        await delay(100);
-      }
-    })(),
-    45_000,
-  );
 }
 
 async function waitForFailedHealth(): Promise<HealthCheckResult> {
@@ -79,7 +68,7 @@ async function waitForFailedHealth(): Promise<HealthCheckResult> {
 suite('Installed Health Check failure and recovery', function () {
   this.timeout(240_000);
 
-  test('reports startup failure and recovers through the real restart command', async function () {
+  test('reports blocked replacement after a failed startup and preserves the failure', async function () {
     if (process.env.PERL_LSP_HEALTH_CHECK_RECOVERY_SMOKE === '1') {
       this.skip();
     }
@@ -108,12 +97,57 @@ suite('Installed Health Check failure and recovery', function () {
       JSON.stringify(settledFailure, null, 2),
     );
 
+    const metricsBeforeRestart = activation?.getLanguageClientStartupMetrics?.();
+    assert.ok(metricsBeforeRestart, 'startup metrics must be exported by the installed extension');
+    assert.equal(
+      metricsBeforeRestart.server_start_status,
+      'error',
+      JSON.stringify(metricsBeforeRestart),
+    );
+    assert.equal(
+      typeof metricsBeforeRestart.server_start_ms,
+      'number',
+      JSON.stringify(metricsBeforeRestart),
+    );
+
+    const bundledPath = bundledBinaryPath(extension.extensionPath);
+    await config.update('serverPath', bundledPath, vscode.ConfigurationTarget.Global);
     await withTimeout(
       'blocked restart decision',
       vscode.commands.executeCommand('perl-lsp.restart'),
       20_000,
     );
-    assert.notEqual(activation?.getLanguageClientStartupMetrics?.().lifecycle_state, 'running');
+    const afterRestart = (await waitForFailedHealth()) as HealthCheckResult;
+    const runtime = check(afterRestart, 'LSP runtime');
+    assert.equal(afterRestart.ok, false, JSON.stringify(afterRestart, null, 2));
+    assert.equal(runtime.status, 'error', JSON.stringify(afterRestart, null, 2));
+    assert.match(runtime.detail, /cleanup|reload|replacement|failed to start/i);
+    const metricsAfterRestart = activation?.getLanguageClientStartupMetrics?.();
+    assert.ok(metricsAfterRestart, 'startup metrics must remain available after blocked restart');
+    assert.notEqual(
+      metricsAfterRestart.lifecycle_state,
+      'running',
+      JSON.stringify(metricsAfterRestart),
+    );
+    assert.equal(
+      metricsAfterRestart.server_start_status,
+      'error',
+      JSON.stringify(metricsAfterRestart),
+    );
+    const bundledProcesses = await scanProcessesUnderDirectory(path.dirname(bundledPath));
+    assert.equal(
+      bundledProcesses.length,
+      0,
+      `blocked restart must not launch the bundled server: ${JSON.stringify(bundledProcesses)}`,
+    );
+    fs.writeFileSync(
+      healthFailureObservationPath(),
+      JSON.stringify(
+        { bundledDirectory: path.dirname(bundledPath), insideHost: bundledProcesses },
+        null,
+        2,
+      ),
+    );
   });
 
   test('starts the bundled server in a fresh host and reports healthy runtime', async function () {

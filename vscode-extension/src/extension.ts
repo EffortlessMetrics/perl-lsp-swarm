@@ -443,6 +443,23 @@ export function _setLastStartupDiagnosisForTest(
 }
 
 /**
+ * A detached startup probe may finish after a replacement generation exists.
+ * Its diagnosis is only authoritative while the failed generation and path
+ * still own the lifecycle failure.
+ */
+export function isCurrentStartupFailure(
+  snapshot: { generation: number; state: string; serverPath: string | null },
+  failedGeneration: number,
+  failedServerPath: string,
+): boolean {
+  return (
+    snapshot.generation === failedGeneration &&
+    snapshot.state === 'failed' &&
+    snapshot.serverPath === failedServerPath
+  );
+}
+
+/**
  * Test helper — reset mid-session crash-recovery state between cases.
  * @internal
  */
@@ -2160,14 +2177,8 @@ async function initializeLanguageClient(context: vscode.ExtensionContext): Promi
         const onboarding = new OnboardingManager(context, outputChannel);
         healthMsg = await onboarding.runStartupDiagnostics(failedServerPath);
       }
-      const isCurrentFailure = (): boolean => {
-        const current = lifecycle.snapshot;
-        return (
-          current.generation === failedGeneration &&
-          current.state === 'failed' &&
-          current.serverPath === failedServerPath
-        );
-      };
+      const isCurrentFailure = (): boolean =>
+        isCurrentStartupFailure(lifecycle.snapshot, failedGeneration, failedServerPath);
       if (!isCurrentFailure()) {
         return;
       }
