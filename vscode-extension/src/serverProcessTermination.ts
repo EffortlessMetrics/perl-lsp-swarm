@@ -66,7 +66,8 @@ function isServerProcessLike(value: unknown): value is ServerProcessLike {
     (candidate.pid as number) > 0 &&
     (candidate.exitCode === null ||
       (typeof candidate.exitCode === 'number' && Number.isInteger(candidate.exitCode))) &&
-    (candidate.signalCode === null || typeof candidate.signalCode === 'string') &&
+    (candidate.signalCode === null ||
+      (typeof candidate.signalCode === 'string' && candidate.signalCode.length > 0)) &&
     typeof candidate.once === 'function' &&
     typeof candidate.removeListener === 'function'
   );

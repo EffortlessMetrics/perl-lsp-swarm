@@ -90,6 +90,17 @@ describe('server process termination observation (#14155)', () => {
         },
       }),
     ).toBeUndefined();
+    expect(
+      serverProcessOf({
+        serverProcess: {
+          pid: 1,
+          exitCode: null,
+          signalCode: '',
+          once: jest.fn(),
+          removeListener: jest.fn(),
+        },
+      }),
+    ).toBeUndefined();
     expect(serverProcessOf({})).toBeUndefined();
     expect(serverProcessOf(undefined)).toBeUndefined();
   });
