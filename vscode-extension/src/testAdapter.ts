@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
-import { spawn, type SpawnOptions } from 'child_process';
+import { spawn, type ChildProcess, type SpawnOptions } from 'child_process';
 import { StringDecoder } from 'string_decoder';
 
 const WINDOWS_TREE_KILL_TIMEOUT_MS = 5_000;
@@ -116,6 +116,8 @@ export interface BoundedProcessOptions extends Omit<SpawnOptions, 'signal' | 'st
   killProcess?: (proc: ReturnType<typeof spawn>, signal: NodeJS.Signals) => boolean;
   /** Test seam for Windows process-tree cleanup; production callers leave this unset. */
   killProcessTree?: (pid: number | undefined) => Promise<TreeKillResult>;
+  /** Test seam for child lifecycle ordering; production callers leave this unset. */
+  spawnProcess?: typeof spawn;
 }
 
 /**
@@ -139,9 +141,10 @@ export function runBoundedProcess(
       terminationWatchdogMs = DEFAULT_TERMINATION_WATCHDOG_MS,
       killProcess,
       killProcessTree,
+      spawnProcess,
       ...spawnOptions
     } = options;
-    const proc = spawn(command, [...args], {
+    const proc: ChildProcess = (spawnProcess ?? spawn)(command, [...args], {
       ...spawnOptions,
       stdio: 'pipe',
     });

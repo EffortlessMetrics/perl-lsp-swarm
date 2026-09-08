@@ -3,6 +3,8 @@ import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import type { ChildProcess } from 'child_process';
+import { EventEmitter } from 'events';
+import { PassThrough } from 'stream';
 import {
   describeFileFailure,
   parseSubtestResults,
@@ -11,6 +13,20 @@ import {
   runBoundedProcess,
   resolveProveCommand,
 } from '../testAdapter';
+
+function fakeChildProcess(): ChildProcess {
+  const child = new EventEmitter() as ChildProcess;
+  Object.assign(child, {
+    pid: 7418,
+    exitCode: null,
+    signalCode: null,
+    stdin: new PassThrough(),
+    stdout: new PassThrough(),
+    stderr: new PassThrough(),
+    kill: jest.fn(() => true),
+  });
+  return child;
+}
 
 describe('test adapter TAP parsing', () => {
   test('summarizes top-level TAP without counting indented subtests', () => {
@@ -616,6 +632,71 @@ describe('bounded prove process execution', () => {
     expect(result.diagnostic).toContain('injected tree cleanup failure');
     expect(cleanupCalls).toBe(1);
   }, 30_000);
+
+  test('does not start tree cleanup after exit but before close', async () => {
+    if (process.platform !== 'win32') {
+      return;
+    }
+
+    const child = fakeChildProcess();
+    let cleanupCalls = 0;
+    const controller = new AbortController();
+    try {
+      const resultPromise = runBoundedProcess(process.execPath, [], {
+        shell: false,
+        signal: controller.signal,
+        timeoutMs: 5_000,
+        maxOutputBytes: 32,
+        terminationGraceMs: 25,
+        spawnProcess: (() => child) as never,
+        killProcessTree: async () => {
+          cleanupCalls += 1;
+          return { ok: true as const };
+        },
+      });
+      child.emit('exit', 0, null);
+      controller.abort();
+      expect(cleanupCalls).toBe(0);
+      child.emit('close', 0, null);
+      const result = await resultPromise;
+      expect(result.outcome).toBe('termination_failed');
+      expect(result.diagnostic).toContain('already exited');
+    } finally {
+      child.removeAllListeners();
+    }
+  });
+
+  test('preserves cleanup failure when close precedes cleanup completion', async () => {
+    if (process.platform !== 'win32') {
+      return;
+    }
+
+    const child = fakeChildProcess();
+    let resolveCleanup: ((result: { ok: false; diagnostic: string }) => void) | undefined;
+    const controller = new AbortController();
+    try {
+      const resultPromise = runBoundedProcess(process.execPath, [], {
+        shell: false,
+        signal: controller.signal,
+        timeoutMs: 5_000,
+        maxOutputBytes: 32,
+        terminationGraceMs: 25,
+        spawnProcess: (() => child) as never,
+        killProcessTree: async () =>
+          new Promise((resolve) => {
+            resolveCleanup = resolve;
+          }),
+      });
+      controller.abort();
+      child.emit('close', 0, null);
+      resolveCleanup?.({ ok: false, diagnostic: 'injected cleanup failure after close' });
+      const result = await resultPromise;
+      expect(result.outcome).toBe('termination_failed');
+      expect(result.diagnostic).toContain('after close');
+    } finally {
+      child.removeAllListeners();
+    }
+  });
 
   test('terminates a direct Windows parent and its started child', async () => {
     if (process.platform !== 'win32') {
