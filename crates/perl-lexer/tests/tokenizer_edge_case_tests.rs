@@ -18,10 +18,10 @@ fn collect_kinds(src: &str) -> Vec<TokenKind> {
     let mut s = TokenStream::new(src);
     let mut kinds = Vec::new();
     while let Ok(t) = s.next() {
-        if t.kind == TokenKind::Eof {
+        if t.kind() == TokenKind::Eof {
             break;
         }
-        kinds.push(t.kind);
+        kinds.push(t.kind());
     }
     kinds
 }
@@ -30,7 +30,7 @@ fn collect_texts(src: &str) -> Vec<String> {
     let mut s = TokenStream::new(src);
     let mut texts = Vec::new();
     while let Ok(t) = s.next() {
-        if t.kind == TokenKind::Eof {
+        if t.kind() == TokenKind::Eof {
             break;
         }
         texts.push(t.text.to_string());
@@ -40,7 +40,7 @@ fn collect_texts(src: &str) -> Vec<String> {
 
 fn first_kind(src: &str) -> TokenKind {
     let mut s = TokenStream::new(src);
-    must(s.peek()).kind
+    must(s.peek()).kind()
 }
 
 fn first_text(src: &str) -> String {

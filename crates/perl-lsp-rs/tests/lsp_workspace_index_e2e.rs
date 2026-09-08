@@ -1,5 +1,3 @@
-#![allow(clippy::collapsible_if)]
-
 use perl_lsp::{JsonRpcRequest, LspServer};
 use perl_parser::workspace_index::WorkspaceIndex;
 use serde_json::json;
@@ -281,10 +279,10 @@ fn test_cross_file_definition() -> Result<(), Box<dyn std::error::Error>> {
             } else if let Some(locations) = result.as_array() {
                 // Handle multiple locations
                 assert!(!locations.is_empty(), "Should have at least one location");
-                if let Some(first) = locations.first() {
-                    if let Some(uri) = first.get("uri").and_then(|u| u.as_str()) {
-                        assert!(uri.contains("Lib.pm"), "Definition should be in Lib.pm");
-                    }
+                if let Some(first) = locations.first()
+                    && let Some(uri) = first.get("uri").and_then(|u| u.as_str())
+                {
+                    assert!(uri.contains("Lib.pm"), "Definition should be in Lib.pm");
                 }
             }
         }

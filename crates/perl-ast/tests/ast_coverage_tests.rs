@@ -331,7 +331,15 @@ fn for_each_child_leaf_nodes_visit_nothing() -> Result<(), Box<dyn std::error::E
             loc(0, 13),
         ),
         Node::new(NodeKind::Prototype { content: "$@".to_string() }, loc(0, 4)),
-        Node::new(NodeKind::DataSection { marker: "__DATA__".to_string(), body: None }, loc(0, 8)),
+        Node::new(
+            NodeKind::DataSection {
+                marker: "__DATA__".to_string(),
+                marker_span: None,
+                body: None,
+                body_span: None,
+            },
+            loc(0, 8),
+        ),
         Node::new(
             NodeKind::Format {
                 name: "STDOUT".to_string(),
@@ -768,7 +776,7 @@ fn sexp_regex_with_embedded_code() -> Result<(), Box<dyn std::error::Error>> {
         loc(0, 20),
     );
     let sexp = node.to_sexp();
-    assert!(sexp.contains("risk:code"), "got: {sexp}");
+    assert!(sexp.contains("(has_embedded_code true)"), "got: {sexp}");
     Ok(())
 }
 
@@ -837,7 +845,7 @@ fn sexp_match_with_embedded_code() -> Result<(), Box<dyn std::error::Error>> {
         loc(0, 20),
     );
     let sexp = node.to_sexp();
-    assert!(sexp.contains("risk:code"), "got: {sexp}");
+    assert!(sexp.contains("(has_embedded_code true)"), "got: {sexp}");
     Ok(())
 }
 
@@ -855,7 +863,7 @@ fn sexp_substitution_negated() -> Result<(), Box<dyn std::error::Error>> {
         loc(0, 20),
     );
     let sexp = node.to_sexp();
-    assert!(sexp.contains("(negated)"), "got: {sexp}");
+    assert!(sexp.contains("(negated true)"), "got: {sexp}");
     Ok(())
 }
 
@@ -873,7 +881,7 @@ fn sexp_substitution_with_embedded_code() -> Result<(), Box<dyn std::error::Erro
         loc(0, 20),
     );
     let sexp = node.to_sexp();
-    assert!(sexp.contains("risk:code"), "got: {sexp}");
+    assert!(sexp.contains("(has_embedded_code true)"), "got: {sexp}");
     Ok(())
 }
 
@@ -890,7 +898,7 @@ fn sexp_transliteration_negated() -> Result<(), Box<dyn std::error::Error>> {
         loc(0, 20),
     );
     let sexp = node.to_sexp();
-    assert!(sexp.contains("(negated)"), "got: {sexp}");
+    assert!(sexp.contains("(negated true)"), "got: {sexp}");
     Ok(())
 }
 
@@ -901,7 +909,7 @@ fn sexp_use_with_filter_risk() -> Result<(), Box<dyn std::error::Error>> {
         loc(0, 20),
     );
     let sexp = node.to_sexp();
-    assert!(sexp.contains("(risk:filter)"), "got: {sexp}");
+    assert!(sexp.contains("(has_filter_risk true)"), "got: {sexp}");
     Ok(())
 }
 
@@ -916,7 +924,7 @@ fn sexp_use_with_args() -> Result<(), Box<dyn std::error::Error>> {
         loc(0, 20),
     );
     let sexp = node.to_sexp();
-    assert!(sexp.contains("(use strict (refs subs))"), "got: {sexp}");
+    assert!(sexp.contains("(args refs subs)"), "got: {sexp}");
     Ok(())
 }
 
@@ -927,7 +935,7 @@ fn sexp_use_no_args() -> Result<(), Box<dyn std::error::Error>> {
         loc(0, 11),
     );
     let sexp = node.to_sexp();
-    assert_eq!(sexp, "(use strict)");
+    assert_eq!(sexp, "(use (module strict))");
     Ok(())
 }
 
@@ -938,7 +946,7 @@ fn sexp_no_no_args() -> Result<(), Box<dyn std::error::Error>> {
         loc(0, 10),
     );
     let sexp = node.to_sexp();
-    assert_eq!(sexp, "(no strict)");
+    assert_eq!(sexp, "(no (module strict))");
     Ok(())
 }
 
@@ -953,7 +961,7 @@ fn sexp_no_with_args() -> Result<(), Box<dyn std::error::Error>> {
         loc(0, 20),
     );
     let sexp = node.to_sexp();
-    assert!(sexp.contains("(no warnings (once))"), "got: {sexp}");
+    assert!(sexp.contains("(no (module warnings) (args once))"), "got: {sexp}");
     Ok(())
 }
 
@@ -961,7 +969,7 @@ fn sexp_no_with_args() -> Result<(), Box<dyn std::error::Error>> {
 fn sexp_readline_with_filehandle() -> Result<(), Box<dyn std::error::Error>> {
     let node = Node::new(NodeKind::Readline { filehandle: Some("STDIN".to_string()) }, loc(0, 7));
     let sexp = node.to_sexp();
-    assert_eq!(sexp, "(readline STDIN)");
+    assert_eq!(sexp, "(readline (filehandle STDIN))");
     Ok(())
 }
 
@@ -977,7 +985,7 @@ fn sexp_readline_without_filehandle() -> Result<(), Box<dyn std::error::Error>> 
 fn sexp_glob_pattern() -> Result<(), Box<dyn std::error::Error>> {
     let node = Node::new(NodeKind::Glob { pattern: "*.pl".to_string() }, loc(0, 6));
     let sexp = node.to_sexp();
-    assert_eq!(sexp, "(glob *.pl)");
+    assert_eq!(sexp, "(glob (pattern *.pl))");
     Ok(())
 }
 
@@ -985,7 +993,7 @@ fn sexp_glob_pattern() -> Result<(), Box<dyn std::error::Error>> {
 fn sexp_typeglob() -> Result<(), Box<dyn std::error::Error>> {
     let node = Node::new(NodeKind::Typeglob { name: "main::foo".to_string() }, loc(0, 10));
     let sexp = node.to_sexp();
-    assert_eq!(sexp, "(typeglob main::foo)");
+    assert_eq!(sexp, "(typeglob (name main::foo))");
     Ok(())
 }
 
@@ -996,7 +1004,7 @@ fn sexp_loop_control_with_label() -> Result<(), Box<dyn std::error::Error>> {
         loc(0, 11),
     );
     let sexp = node.to_sexp();
-    assert_eq!(sexp, "(last OUTER)");
+    assert_eq!(sexp, "(last (op last) (label OUTER))");
     Ok(())
 }
 
@@ -1004,7 +1012,7 @@ fn sexp_loop_control_with_label() -> Result<(), Box<dyn std::error::Error>> {
 fn sexp_loop_control_without_label() -> Result<(), Box<dyn std::error::Error>> {
     let node = Node::new(NodeKind::LoopControl { op: "next".to_string(), label: None }, loc(0, 4));
     let sexp = node.to_sexp();
-    assert_eq!(sexp, "(next)");
+    assert_eq!(sexp, "(next (op next))");
     Ok(())
 }
 
@@ -1012,7 +1020,7 @@ fn sexp_loop_control_without_label() -> Result<(), Box<dyn std::error::Error>> {
 fn sexp_loop_control_redo() -> Result<(), Box<dyn std::error::Error>> {
     let node = Node::new(NodeKind::LoopControl { op: "redo".to_string(), label: None }, loc(0, 4));
     let sexp = node.to_sexp();
-    assert_eq!(sexp, "(redo)");
+    assert_eq!(sexp, "(redo (op redo))");
     Ok(())
 }
 
@@ -1020,7 +1028,7 @@ fn sexp_loop_control_redo() -> Result<(), Box<dyn std::error::Error>> {
 fn sexp_prototype() -> Result<(), Box<dyn std::error::Error>> {
     let node = Node::new(NodeKind::Prototype { content: "$@%".to_string() }, loc(0, 5));
     let sexp = node.to_sexp();
-    assert_eq!(sexp, "(prototype)");
+    assert_eq!(sexp, "(prototype (content $@%))");
     Ok(())
 }
 
@@ -1101,7 +1109,7 @@ fn sexp_labeled_statement() -> Result<(), Box<dyn std::error::Error>> {
         loc(0, 10),
     );
     let sexp = node.to_sexp();
-    assert_eq!(sexp, "(labeled_statement LOOP (number 1))");
+    assert_eq!(sexp, "(labeled_statement (label LOOP) (statement (number (value 1))))");
     Ok(())
 }
 
@@ -1116,7 +1124,7 @@ fn sexp_format() -> Result<(), Box<dyn std::error::Error>> {
         loc(0, 30),
     );
     let sexp = node.to_sexp();
-    assert!(sexp.starts_with("(format STDOUT"), "got: {sexp}");
+    assert!(sexp.starts_with("(format (name STDOUT)"), "got: {sexp}");
     Ok(())
 }
 
@@ -1132,16 +1140,23 @@ fn sexp_class() -> Result<(), Box<dyn std::error::Error>> {
         loc(0, 20),
     );
     let sexp = node.to_sexp();
-    assert!(sexp.starts_with("(class Point"), "got: {sexp}");
+    assert!(sexp.starts_with("(class (name Point)"), "got: {sexp}");
     Ok(())
 }
 
 #[test]
 fn sexp_data_section_without_body() -> Result<(), Box<dyn std::error::Error>> {
-    let node =
-        Node::new(NodeKind::DataSection { marker: "__END__".to_string(), body: None }, loc(0, 7));
+    let node = Node::new(
+        NodeKind::DataSection {
+            marker: "__END__".to_string(),
+            marker_span: None,
+            body: None,
+            body_span: None,
+        },
+        loc(0, 7),
+    );
     let sexp = node.to_sexp();
-    assert_eq!(sexp, "(data_section __END__)");
+    assert_eq!(sexp, "(data_section (marker __END__))");
     Ok(())
 }
 
@@ -1149,7 +1164,7 @@ fn sexp_data_section_without_body() -> Result<(), Box<dyn std::error::Error>> {
 fn sexp_identifier() -> Result<(), Box<dyn std::error::Error>> {
     let node = ident("foo_bar");
     let sexp = node.to_sexp();
-    assert_eq!(sexp, "(identifier foo_bar)");
+    assert_eq!(sexp, "(identifier (name foo_bar))");
     Ok(())
 }
 
@@ -1200,7 +1215,7 @@ fn sexp_variable_declaration_with_initializer() -> Result<(), Box<dyn std::error
     );
     let sexp = node.to_sexp();
     assert!(sexp.starts_with("(my_declaration"), "got: {sexp}");
-    assert!(sexp.contains("number 42"), "got: {sexp}");
+    assert!(sexp.contains("(number (value 42))"), "got: {sexp}");
     Ok(())
 }
 
@@ -1251,7 +1266,7 @@ fn sexp_variable_list_declaration_with_attrs_and_init() -> Result<(), Box<dyn st
     );
     let sexp = node.to_sexp();
     assert!(sexp.contains("attributes"), "got: {sexp}");
-    assert!(sexp.contains("number 0"), "got: {sexp}");
+    assert!(sexp.contains("(number (value 0))"), "got: {sexp}");
     Ok(())
 }
 
@@ -1266,7 +1281,7 @@ fn sexp_package_with_block() -> Result<(), Box<dyn std::error::Error>> {
         loc(0, 30),
     );
     let sexp = node.to_sexp();
-    assert!(sexp.starts_with("(package Foo::Bar"), "got: {sexp}");
+    assert!(sexp.starts_with("(package (name Foo::Bar)"), "got: {sexp}");
     assert!(sexp.contains("block"), "got: {sexp}");
     Ok(())
 }
@@ -1278,7 +1293,7 @@ fn sexp_package_without_block() -> Result<(), Box<dyn std::error::Error>> {
         loc(0, 12),
     );
     let sexp = node.to_sexp();
-    assert_eq!(sexp, "(package Foo)");
+    assert_eq!(sexp, "(package (name Foo))");
     Ok(())
 }
 
@@ -1302,7 +1317,7 @@ fn sexp_phase_block() -> Result<(), Box<dyn std::error::Error>> {
 #[test]
 fn sexp_return_with_and_without_value() -> Result<(), Box<dyn std::error::Error>> {
     let with = Node::new(NodeKind::Return { value: Some(Box::new(num("42"))) }, loc(0, 10));
-    assert_eq!(with.to_sexp(), "(return (number 42))");
+    assert_eq!(with.to_sexp(), "(return (value (number (value 42))))");
 
     let without = Node::new(NodeKind::Return { value: None }, loc(0, 6));
     assert_eq!(without.to_sexp(), "(return)");
@@ -1548,7 +1563,7 @@ fn sexp_builtin_function_calls() -> Result<(), Box<dyn std::error::Error>> {
             loc(0, 10),
         );
         let sexp = node.to_sexp();
-        assert!(sexp.starts_with(&format!("(call {name}")), "builtin={name}, got: {sexp}");
+        assert!(sexp.starts_with(&format!("(call (name {name})")), "builtin={name}, got: {sexp}");
     }
     Ok(())
 }
@@ -1608,8 +1623,12 @@ fn sexp_for_no_init_no_condition_no_update() -> Result<(), Box<dyn std::error::E
         loc(0, 10),
     );
     let sexp = node.to_sexp();
-    // Should have empty () placeholders
-    assert!(sexp.contains("(for () () ()"), "got: {sexp}");
+    // Optional absent fields are omitted; only the required body remains.
+    assert!(sexp.starts_with("(for"), "got: {sexp}");
+    assert!(sexp.contains("(body "), "got: {sexp}");
+    assert!(!sexp.contains("(init "), "got: {sexp}");
+    assert!(!sexp.contains("(condition "), "got: {sexp}");
+    assert!(!sexp.contains("(update "), "got: {sexp}");
     Ok(())
 }
 
@@ -1633,7 +1652,7 @@ fn sexp_named_subroutine_with_prototype() -> Result<(), Box<dyn std::error::Erro
         loc(0, 30),
     );
     let sexp = node.to_sexp();
-    assert!(sexp.contains("(sub test_fn"), "got: {sexp}");
+    assert!(sexp.contains("(sub (name test_fn)"), "got: {sexp}");
     assert!(sexp.contains("prototype"), "got: {sexp}");
     Ok(())
 }

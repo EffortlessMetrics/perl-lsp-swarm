@@ -9,6 +9,70 @@ export interface TextDocumentNotificationClient {
   sendNotification(method: string, params: unknown): Promise<void>;
 }
 
+export interface ReadyTextDocumentNotificationClient extends TextDocumentNotificationClient {
+  readonly state: number;
+  onDidChangeState(listener: (event: { readonly newState: number }) => void): { dispose(): void };
+}
+
+export class StaleDocumentReplayError extends Error {
+  constructor() {
+    super('Language-client generation became stale during open-document replay.');
+    this.name = 'StaleDocumentReplayError';
+  }
+}
+
+async function waitForClientState(
+  client: ReadyTextDocumentNotificationClient,
+  runningState: number,
+  timeoutMs: number,
+): Promise<void> {
+  if (client.state === runningState) {
+    return;
+  }
+
+  await new Promise<void>((resolve, reject) => {
+    let subscription: { dispose(): void } | undefined;
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    let settled = false;
+    const finish = (error?: Error): void => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      if (timeout !== undefined) {
+        clearTimeout(timeout);
+      }
+      subscription?.dispose();
+      if (error) {
+        reject(error);
+      } else {
+        resolve();
+      }
+    };
+    subscription = client.onDidChangeState((event) => {
+      if (event.newState !== runningState) {
+        return;
+      }
+      finish();
+    });
+    timeout = setTimeout(
+      () => finish(new Error(`Language client did not reach Running within ${timeoutMs}ms.`)),
+      timeoutMs,
+    );
+    // Close the registration race if Running arrived between the first state
+    // read and listener installation.
+    if (client.state === runningState) {
+      finish();
+    }
+  });
+}
+
+function assertCurrentGeneration(isCurrent: () => boolean): void {
+  if (!isCurrent()) {
+    throw new StaleDocumentReplayError();
+  }
+}
+
 /**
  * Replay open Perl buffers after replacing a language-client generation.
  *
@@ -35,5 +99,27 @@ export async function replayOpenPerlDocuments(
         text: document.text,
       },
     });
+  }
+}
+
+/** Wait for observable client readiness, then replay only while this generation owns the client. */
+export async function replayOpenPerlDocumentsWhenReady(
+  client: ReadyTextDocumentNotificationClient,
+  documents: readonly OpenTextDocumentSnapshot[],
+  runningState: number,
+  isCurrent: () => boolean,
+  timeoutMs: number,
+): Promise<void> {
+  assertCurrentGeneration(isCurrent);
+  await waitForClientState(client, runningState, timeoutMs);
+  assertCurrentGeneration(isCurrent);
+
+  for (const document of documents) {
+    if (document.languageId !== 'perl') {
+      continue;
+    }
+    assertCurrentGeneration(isCurrent);
+    await replayOpenPerlDocuments(client, [document]);
+    assertCurrentGeneration(isCurrent);
   }
 }

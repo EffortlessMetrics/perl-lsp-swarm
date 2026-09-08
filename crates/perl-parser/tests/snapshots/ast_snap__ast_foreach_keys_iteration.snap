@@ -2,4 +2,4 @@
 source: crates/perl-parser/tests/ast_snap.rs
 expression: "parse_sexp(\"for my $k (keys %h) { print $k; }\")"
 ---
-(source_file (foreach (my_declaration (variable $ k)) (call keys ((variable % h))) (block (expression_statement (call print ((variable $ k)))))))
+(source_file (statements (foreach (variable (my_declaration (declarator my) (variable (variable (sigil $) (name k))))) (list (call (name keys) (args (variable (sigil %) (name h))))) (body (block (statements (expression_statement (expression (call (name print) (args (variable (sigil $) (name k))))))))))))

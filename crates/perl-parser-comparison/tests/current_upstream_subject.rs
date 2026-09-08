@@ -3,6 +3,7 @@
     clippy::expect_used,
     reason = "expect_err keeps negative-pin assertions compact in this integration test"
 )]
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 use std::error::Error;
 use std::fs;

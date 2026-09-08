@@ -1,6 +1,5 @@
 ---
 source: crates/perl-parser/tests/ast_snap.rs
-assertion_line: 274
 expression: "parse_sexp(\"my $x = \\\"oops;\\nmy $y = 1;\")"
 ---
-(source_file (ERROR "expected expression, found unknown token at position 8") (my_declaration (variable $ y)(number 1)))
+(source_file (statements (ERROR (message "expected expression, found unknown token at position 8") (found Unknown "\"oops;"))) (statements (my_declaration (declarator my) (variable (variable (sigil $) (name y))) (initializer (number (value 1))))))

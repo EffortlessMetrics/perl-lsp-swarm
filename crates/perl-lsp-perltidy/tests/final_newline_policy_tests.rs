@@ -5,6 +5,7 @@
 //! trim removing the one final newline, partial CRLF splitting, evidence
 //! reporting preserved after conversion, and `str::lines()` trailing-loss
 //! returning as terminal authority.
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 use perl_lsp_perltidy::native::{
     FinalNewlinePolicy, TerminalSequence, apply_terminal_sequence_policy, source_convention,

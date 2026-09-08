@@ -16,6 +16,7 @@ A pure Rust Perl parser built on the [Pest](https://pest.rs/) PEG parser generat
 | `PrattParser` | Operator-precedence parser for Perl's expression grammar |
 | `SexpFormatter` | Configurable S-expression output (positions, compact mode) |
 | `ParseError` / `ParseResult` | Error types with position-aware diagnostics |
+| `ParseOutcome` / `ParseAttempt` / `SourceRange` | Typed completeness, diagnostic, rejection, and instrument-failure vocabulary. Not used by `parse()` yet |
 
 ## Usage
 

@@ -1932,11 +1932,9 @@ impl PureRustPerlParser {
                         Rule::for_init => {
                             init = self.build_node(p)?.map(Box::new);
                         }
-                        Rule::assignment_expression => {
+                        Rule::assignment_expression if init.is_none() && condition.is_none() => {
                             // For C-style initialization without for_init wrapper
-                            if init.is_none() && condition.is_none() {
-                                init = self.build_node(p)?.map(Box::new);
-                            }
+                            init = self.build_node(p)?.map(Box::new);
                         }
                         Rule::expression => {
                             if is_c_style {

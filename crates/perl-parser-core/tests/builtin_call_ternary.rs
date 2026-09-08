@@ -9,7 +9,7 @@
 //! the same way when called with explicit parentheses.
 //!
 //! Note on sexp format:
-//! - `defined` and `ref` use `(call defined (...))` / `(call ref (...))`
+//! - `defined` and `ref` use `(call (name defined) (...))` / `(call (name ref) (...))`
 //! - other builtins like `chr`, `length` use `(ambiguous_function_call_expression ...)`
 
 use perl_parser_core::Parser;
@@ -32,7 +32,7 @@ fn test_defined_paren_arg_ternary_top_level() {
     );
     // The call should NOT contain the ternary as an argument
     assert!(
-        !sexp.contains("(call defined ((ternary"),
+        !sexp.contains("(call (name defined) (args (ternary"),
         "defined should NOT absorb the ternary into its args, got: {sexp}"
     );
 }
@@ -46,7 +46,7 @@ fn test_ref_paren_arg_ternary_top_level() {
         "expected ternary at top level for 'ref($x) ? 1 : 0', got: {sexp}"
     );
     assert!(
-        !sexp.contains("(call ref ((ternary"),
+        !sexp.contains("(call (name ref) (args (ternary"),
         "ref should NOT absorb the ternary into its args, got: {sexp}"
     );
 }
@@ -61,7 +61,7 @@ fn test_chr_paren_arg_ternary_top_level() {
     );
     // chr uses ambiguous_function_call_expression format, not (call chr ...)
     assert!(
-        !sexp.contains("(ambiguous_function_call_expression (function) (ternary"),
+        !sexp.contains("(args (ternary"),
         "chr should NOT absorb the ternary into its args, got: {sexp}"
     );
 }
@@ -75,7 +75,7 @@ fn test_length_paren_arg_ternary_top_level() {
         "expected ternary at top level for 'length($s) ? \"a\" : \"b\"', got: {sexp}"
     );
     assert!(
-        !sexp.contains("(ambiguous_function_call_expression (function) (ternary"),
+        !sexp.contains("(args (ternary"),
         "length should NOT absorb the ternary into its args, got: {sexp}"
     );
 }
@@ -89,7 +89,7 @@ fn test_defined_paren_arg_no_ternary_clean() {
         "defined($x) should parse cleanly without ternary, got: {sexp}"
     );
     assert!(
-        sexp.contains("(call defined"),
+        sexp.contains("(call (name defined)"),
         "defined call should appear in the parse output, got: {sexp}"
     );
 }
@@ -100,7 +100,7 @@ fn test_chr_paren_arg_no_ternary_clean() {
     let sexp = parse_sexp("chr($x);");
     assert!(!sexp.contains("ERROR"), "chr($x) should parse cleanly without ternary, got: {sexp}");
     assert!(
-        sexp.contains("(ambiguous_function_call_expression (function)"),
+        sexp.contains("(ambiguous_function_call_expression (name chr)"),
         "chr call should appear in the parse output, got: {sexp}"
     );
 }

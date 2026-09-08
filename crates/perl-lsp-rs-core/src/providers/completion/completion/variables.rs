@@ -3,7 +3,12 @@
 //! Provides completion for scalar, array, and hash variables with scope analysis.
 //! Variables are ranked by scope distance: immediate scope > parent scope >
 //! package level, giving users the most relevant completions first.
+//!
+//! Every local variable path admits candidates through
+//! [`lexical_visibility`] BEFORE construction: a binding that is not visible
+//! at the cursor never becomes a candidate, regardless of rank (#8941).
 
+use super::lexical_visibility::{admit, select_exact_identities};
 use super::scope_distance::compute_scope_sort_key;
 use super::{context::CompletionContext, items::CompletionItem, items::InsertTextFormat};
 use perl_semantic_analyzer::symbol::{SymbolKind, SymbolTable};
@@ -24,50 +29,51 @@ pub fn add_variable_completions(
     let prefix_without_sigil = context.prefix.trim_start_matches(sigil);
 
     for (name, symbols) in &symbol_table.symbols {
-        for symbol in symbols {
-            if symbol.kind == kind && name.starts_with(prefix_without_sigil) {
-                // Skip lexical variables declared textually AFTER the cursor
-                // position — they're not yet in scope. (#5073)
-                // 'our' package globals are visible regardless of position.
-                let is_package_global = symbol.declaration.as_deref() == Some("our");
-                if !is_package_global && symbol.location.start > context.position {
-                    continue;
-                }
+        if !name.starts_with(prefix_without_sigil) {
+            continue;
+        }
 
-                let insert_text = format!("{}{}", sigil, name);
+        // Admission before candidate construction (#8941): sibling/child/
+        // ended scopes and future declarations contribute nothing; shadowed
+        // outers are dropped so one label resolves to exactly one binding.
+        let admitted: Vec<&perl_semantic_analyzer::symbol::Symbol> = symbols
+            .iter()
+            .filter(|symbol| symbol.kind == kind)
+            .filter(|symbol| {
+                admit(symbol_table, context.cursor_scope_id, context.position, symbol).is_visible()
+            })
+            .collect();
+        let selected = select_exact_identities(symbol_table, admitted);
 
-                let scope_sort_key =
-                    compute_scope_sort_key(symbol_table, context.cursor_scope_id, symbol.scope_id);
+        for symbol in selected {
+            let insert_text = format!("{}{}", sigil, name);
 
-                completions.push(CompletionItem {
-                    label: Cow::Owned(insert_text.clone()),
-                    kind: super::items::CompletionItemKind::Variable,
-                    detail: Some(Cow::Owned(
-                        format!(
-                            "{} {}{}",
-                            symbol.declaration.as_deref().unwrap_or(""),
-                            sigil,
-                            name
-                        )
+            let scope_sort_key =
+                compute_scope_sort_key(symbol_table, context.cursor_scope_id, symbol.scope_id);
+
+            completions.push(CompletionItem {
+                label: Cow::Owned(insert_text.clone()),
+                kind: super::items::CompletionItemKind::Variable,
+                detail: Some(Cow::Owned(
+                    format!("{} {}{}", symbol.declaration.as_deref().unwrap_or(""), sigil, name)
                         .trim()
                         .to_string(),
-                    )),
-                    documentation: symbol.documentation.clone().map(Cow::Owned),
-                    insert_text: Some(Cow::Owned(insert_text.clone())),
-                    sort_text: Some(Cow::Owned(format!("1{scope_sort_key}_{name}"))),
-                    // Include the sigil in filter_text so strict-filtering
-                    // clients match when the user types the sigil prefix
-                    // (e.g. `$c` matching `$count`). Without it, filter_text
-                    // is just "count" and the sigil prefix never matches.
-                    // (#5050 item 4)
-                    filter_text: Some(Cow::Owned(insert_text)),
-                    additional_edits: vec![],
-                    text_edit_range: Some((context.prefix_start, context.position)),
-                    commit_characters: None,
-                    insert_text_format: InsertTextFormat::PlainText,
-                    label_details: None,
-                });
-            }
+                )),
+                documentation: symbol.documentation.clone().map(Cow::Owned),
+                insert_text: Some(Cow::Owned(insert_text.clone())),
+                sort_text: Some(Cow::Owned(format!("1{scope_sort_key}_{name}"))),
+                // Include the sigil in filter_text so strict-filtering
+                // clients match when the user types the sigil prefix
+                // (e.g. `$c` matching `$count`). Without it, filter_text
+                // is just "count" and the sigil prefix never matches.
+                // (#5050 item 4)
+                filter_text: Some(Cow::Owned(insert_text)),
+                additional_edits: vec![],
+                text_edit_range: Some((context.prefix_start, context.position)),
+                commit_characters: None,
+                insert_text_format: InsertTextFormat::PlainText,
+                label_details: None,
+            });
         }
     }
 }
@@ -177,7 +183,8 @@ pub fn add_special_variables(
 
 /// Add all variables without sigils (for interpolation contexts)
 ///
-/// Uses scope-distance ranking so closer variables sort before distant ones,
+/// Uses the same cursor-visibility admission as the sigil path (#8941) and
+/// scope-distance ranking so closer variables sort before distant ones,
 /// while keeping the `5x_` prefix to rank below sigil-prefixed completions.
 pub fn add_all_variables(
     completions: &mut Vec<CompletionItem>,
@@ -186,36 +193,46 @@ pub fn add_all_variables(
 ) {
     // Only add if the prefix doesn't already have a sigil
     if !context.prefix.starts_with(['$', '@', '%', '&']) {
+        let mut admitted: Vec<&perl_semantic_analyzer::symbol::Symbol> = Vec::new();
+
         for (name, symbols) in &symbol_table.symbols {
             for symbol in symbols {
-                if symbol.kind.is_variable() && name.starts_with(&context.prefix) {
-                    let sigil = symbol.kind.sigil().unwrap_or("");
-                    let scope_sort_key = compute_scope_sort_key(
-                        symbol_table,
-                        context.cursor_scope_id,
-                        symbol.scope_id,
-                    );
-                    completions.push(CompletionItem {
-                        label: Cow::Owned(format!("{}{}", sigil, name)),
-                        kind: super::items::CompletionItemKind::Variable,
-                        detail: Some(Cow::Owned(format!(
-                            "{} variable",
-                            symbol.declaration.as_deref().unwrap_or("")
-                        ))),
-                        documentation: symbol.documentation.clone().map(Cow::Owned),
-                        insert_text: Some(Cow::Owned(format!("{}{}", sigil, name))),
-                        sort_text: Some(Cow::Owned(format!("5{scope_sort_key}_{name}"))),
-                        // Include the sigil in filter_text so strict-filtering
-                        // clients can match the typed prefix ($c → $count) (#5050 item 4).
-                        filter_text: Some(Cow::Owned(format!("{sigil}{name}"))),
-                        additional_edits: vec![],
-                        text_edit_range: Some((context.prefix_start, context.position)),
-                        commit_characters: None,
-                        insert_text_format: InsertTextFormat::PlainText,
-                        label_details: None,
-                    });
+                if symbol.kind.is_variable()
+                    && name.starts_with(&context.prefix)
+                    && admit(symbol_table, context.cursor_scope_id, context.position, symbol)
+                        .is_visible()
+                {
+                    admitted.push(symbol);
                 }
             }
+        }
+
+        let selected = select_exact_identities(symbol_table, admitted);
+
+        for symbol in selected {
+            let name = symbol.name.as_str();
+            let sigil = symbol.kind.sigil().unwrap_or("");
+            let scope_sort_key =
+                compute_scope_sort_key(symbol_table, context.cursor_scope_id, symbol.scope_id);
+            completions.push(CompletionItem {
+                label: Cow::Owned(format!("{}{}", sigil, name)),
+                kind: super::items::CompletionItemKind::Variable,
+                detail: Some(Cow::Owned(format!(
+                    "{} variable",
+                    symbol.declaration.as_deref().unwrap_or("")
+                ))),
+                documentation: symbol.documentation.clone().map(Cow::Owned),
+                insert_text: Some(Cow::Owned(format!("{}{}", sigil, name))),
+                sort_text: Some(Cow::Owned(format!("5{scope_sort_key}_{name}"))),
+                // Include the sigil in filter_text so strict-filtering
+                // clients can match the typed prefix ($c → $count) (#5050 item 4).
+                filter_text: Some(Cow::Owned(format!("{sigil}{name}"))),
+                additional_edits: vec![],
+                text_edit_range: Some((context.prefix_start, context.position)),
+                commit_characters: None,
+                insert_text_format: InsertTextFormat::PlainText,
+                label_details: None,
+            });
         }
     }
 }

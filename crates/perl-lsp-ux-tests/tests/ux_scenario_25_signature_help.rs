@@ -94,10 +94,10 @@ fn scenario_25_builtin_result_is_well_formed_when_present() -> Result<()> {
         "signatureHelp on builtin join returned an error: {response:?}"
     );
 
-    if let Some(result) = response.get("result") {
-        if !result.is_null() {
-            assert_signature_help_structure(result)?;
-        }
+    if let Some(result) = response.get("result")
+        && !result.is_null()
+    {
+        assert_signature_help_structure(result)?;
     }
 
     harness.assert_no_crash();

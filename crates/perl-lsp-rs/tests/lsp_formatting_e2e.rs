@@ -1,5 +1,3 @@
-#![allow(clippy::collapsible_if)]
-
 use serde_json::json;
 
 mod support;
@@ -216,11 +214,11 @@ sub third{my$c=3;return$c;}\n\
             "ranges": [
                 {
                     "start": {"line": 1, "character": 0},
-                    "end": {"line": 2, "character": 28}
+                    "end": {"line": 2, "character": 27}
                 },
                 {
                     "start": {"line": 7, "character": 0},
-                    "end": {"line": 8, "character": 28}
+                    "end": {"line": 8, "character": 27}
                 }
             ],
             "options": {"tabSize": 4, "insertSpaces": true}

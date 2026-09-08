@@ -3,7 +3,7 @@
 ## Phase 1 (shipped)
 
 - `Parser` / `Tree` / `Node<'tree>` types with tree-sitter-compatible API shape
-- `to_sexp()` — tree-sitter-compatible S-expression output
+- `to_sexp()` — native debug S-expression (not a Tree-sitter CST; see issue 8047)
 - `kind()`, `native_kind()`, `grammar_kind()`, `child_count()`, `child()`, `children()` — tree traversal
 - `start_byte()`, `end_byte()`, `start_position()`, `end_position()`, `utf8_text()` — source location and extraction
 - `is_leaf()`, `inner()`, `tree_source()` — utility and escape hatch

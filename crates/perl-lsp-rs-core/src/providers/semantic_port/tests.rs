@@ -820,7 +820,32 @@ fn malformed_ranges_fail_before_degraded_policy() {
         ProviderFactGenerationScope::Document,
         malformed,
     );
-    assert_eq!(result.err(), Some(ProviderQueryContractError::MalformedFact(FactId(1))));
+    assert_eq!(
+        result.err(),
+        Some(ProviderQueryContractError::MalformedFact {
+            fact_id: FactId(1),
+            violation: EnvelopeStructureViolation::AnchorRangeInverted,
+        })
+    );
+}
+
+#[test]
+fn malformed_fact_error_names_the_failed_invariant() {
+    let mut empty_package =
+        exact_envelope(2, 42, SemanticFactKind::Declaration, 1, 10, 20, SemanticProducer::Parser);
+    empty_package.package = Some("  ".to_string());
+    let result = ProviderQueryFact::from_envelope(
+        ProviderQueryFactRole::Value,
+        ProviderFactGenerationScope::Document,
+        empty_package,
+    );
+    assert_eq!(
+        result.err(),
+        Some(ProviderQueryContractError::MalformedFact {
+            fact_id: FactId(2),
+            violation: EnvelopeStructureViolation::EmptyPackageName,
+        })
+    );
 }
 
 #[test]

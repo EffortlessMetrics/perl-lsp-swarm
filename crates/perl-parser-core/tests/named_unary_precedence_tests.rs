@@ -23,10 +23,13 @@ fn defined_arrow_hash_deref_in_if() {
 fn ref_arrow_hash_deref_eq_comparison() {
     let sexp = parse_ok("ref $obj->{list} eq 'ARRAY';");
     assert!(sexp.contains("(binary_eq"), "expected binary_eq root, got: {sexp}");
-    assert!(sexp.contains("(call ref (("), "expected ref call on the left-hand side, got: {sexp}");
-    assert!(!sexp.contains("(call ref ((binary_eq"), "ref ate binary_eq: {sexp}");
     assert!(
-        !sexp.contains("(function_call_expression (function)) (identifier eq)"),
+        sexp.contains("(call (name ref) (args ("),
+        "expected ref call on the left-hand side, got: {sexp}"
+    );
+    assert!(!sexp.contains("(call (name ref) (args (binary_eq"), "ref ate binary_eq: {sexp}");
+    assert!(
+        !sexp.contains("(function_call_expression (function)) (identifier (name eq))"),
         "ref split into multiple statements: {sexp}"
     );
 }
@@ -35,10 +38,13 @@ fn ref_arrow_hash_deref_eq_comparison() {
 fn ref_variable_eq_comparison() {
     let sexp = parse_ok("ref $ref eq 'HASH';");
     assert!(sexp.contains("(binary_eq"), "expected binary_eq root, got: {sexp}");
-    assert!(sexp.contains("(call ref (("), "expected ref call on the left-hand side, got: {sexp}");
-    assert!(!sexp.contains("(call ref ((binary_eq"), "ref ate binary_eq: {sexp}");
     assert!(
-        !sexp.contains("(function_call_expression (function)) (identifier eq)"),
+        sexp.contains("(call (name ref) (args ("),
+        "expected ref call on the left-hand side, got: {sexp}"
+    );
+    assert!(!sexp.contains("(call (name ref) (args (binary_eq"), "ref ate binary_eq: {sexp}");
+    assert!(
+        !sexp.contains("(function_call_expression (function)) (identifier (name eq))"),
         "ref split into multiple statements: {sexp}"
     );
 }

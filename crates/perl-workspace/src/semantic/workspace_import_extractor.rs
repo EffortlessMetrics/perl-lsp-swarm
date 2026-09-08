@@ -168,10 +168,10 @@ fn parse_use_lib_literal(s: &str) -> Option<UseLibLiteral<'_>> {
 
 fn walk(node: &Node, file_id: FileId, out: &mut Vec<ImportSpec>) {
     // Handle `use` statements.
-    if let NodeKind::Use { module, args, .. } = &node.kind {
-        if let Some(spec) = classify_use(module, args, file_id, node) {
-            out.push(spec);
-        }
+    if let NodeKind::Use { module, args, .. } = &node.kind
+        && let Some(spec) = classify_use(module, args, file_id, node)
+    {
+        out.push(spec);
     }
 
     // Detect standalone `ClassName->import(@names)` method calls where the
@@ -641,10 +641,10 @@ fn parse_quote_operator_content<'a>(s: &'a str, operator: &str) -> Option<&'a st
 }
 
 fn unquote(s: &str) -> &str {
-    if (s.starts_with('\'') && s.ends_with('\'')) || (s.starts_with('"') && s.ends_with('"')) {
-        if s.len() >= 2 {
-            return &s[1..s.len() - 1];
-        }
+    if ((s.starts_with('\'') && s.ends_with('\'')) || (s.starts_with('"') && s.ends_with('"')))
+        && s.len() >= 2
+    {
+        return &s[1..s.len() - 1];
     }
     s
 }

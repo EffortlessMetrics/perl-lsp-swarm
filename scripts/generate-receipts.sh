@@ -4,6 +4,9 @@
 
 set -euo pipefail
 
+# Toolchain guard (#12593): refuse a stale non-rustup cargo before any build work.
+. "$(dirname -- "${BASH_SOURCE[0]}")/lib/cargo-toolchain-guard.sh" && cargo_toolchain_guard
+
 # Set locale to C for consistent number formatting (prevent comma separators)
 export LC_ALL=C
 

@@ -2053,10 +2053,8 @@ impl FileSemanticSnapshotV1 {
 
         // Predecessor applicability and relation.
         match terminal_state {
-            SemanticSnapshotTerminalState::CompleteFreshFull => {
-                if predecessor.is_some() {
-                    return Err(E::PredecessorNotApplicable { terminal: terminal_state });
-                }
+            SemanticSnapshotTerminalState::CompleteFreshFull if predecessor.is_some() => {
+                return Err(E::PredecessorNotApplicable { terminal: terminal_state });
             }
             SemanticSnapshotTerminalState::CompleteIncremental => {
                 let pred =

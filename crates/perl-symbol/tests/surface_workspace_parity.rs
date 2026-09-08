@@ -2,6 +2,7 @@
 //!
 //! These fixtures intentionally use real parser input (not hand-built AST nodes)
 //! so `extract_symbol_decls()` behavior is locked against concrete Perl snippets.
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 use anyhow::Result;
 use perl_parser_core::Parser;

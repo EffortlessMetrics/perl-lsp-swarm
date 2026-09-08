@@ -42,10 +42,10 @@ mod tests {
             });
             if let NodeKind::Program { statements } = &ast.kind {
                 let stmt = &statements[0];
-                if let NodeKind::ExpressionStatement { expression } = &stmt.kind {
-                    if let NodeKind::Glob { pattern } = &expression.kind {
-                        assert_eq!(pattern, p);
-                    }
+                if let NodeKind::ExpressionStatement { expression } = &stmt.kind
+                    && let NodeKind::Glob { pattern } = &expression.kind
+                {
+                    assert_eq!(pattern, p);
                 }
             }
         }
@@ -62,11 +62,11 @@ mod tests {
         });
         if let NodeKind::Program { statements } = &ast.kind {
             let stmt = &statements[0];
-            if let NodeKind::ExpressionStatement { expression } = &stmt.kind {
-                if let NodeKind::FunctionCall { name, args } = &expression.kind {
-                    assert_eq!(name, "glob");
-                    assert_eq!(args.len(), 1);
-                }
+            if let NodeKind::ExpressionStatement { expression } = &stmt.kind
+                && let NodeKind::FunctionCall { name, args } = &expression.kind
+            {
+                assert_eq!(name, "glob");
+                assert_eq!(args.len(), 1);
             }
         }
     }

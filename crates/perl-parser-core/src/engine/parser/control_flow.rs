@@ -526,7 +526,7 @@ impl<'a> Parser<'a> {
         let start = self.current_position();
         // Consume 'return' via consume_token so `last_end_position` advances past
         // the keyword; capture its end for the valueless fallback span (#4861).
-        let return_end = self.consume_token()?.end;
+        let return_end = self.consume_token()?.end();
 
         // Check if we have a value to return - only stop at clear ends or statement modifiers.
         // Word operators (or, and, xor) belong to the enclosing statement, not the return value.
@@ -558,7 +558,7 @@ impl<'a> Parser<'a> {
         let start = self.current_position();
         // Consume 'return' via consume_token so `last_end_position` advances past
         // the keyword; capture its end for the valueless fallback span (#4861).
-        let return_end = self.consume_token()?.end;
+        let return_end = self.consume_token()?.end();
 
         // Determine whether there is a return value.
         // Stop at all expression-level boundaries as well as statement-level ones.
@@ -586,7 +586,7 @@ impl<'a> Parser<'a> {
 
     /// Parse eval expression/block
     fn parse_eval(&mut self) -> ParseResult<Node> {
-        let start = self.consume_token()?.start; // consume 'eval'
+        let start = self.consume_token()?.start(); // consume 'eval'
 
         // Eval can take either a block or a string expression
         if self.peek_kind() == Some(TokenKind::LeftBrace) {
@@ -617,7 +617,7 @@ impl<'a> Parser<'a> {
     /// 2. For the plain-Identifier case, inspect the fully-parsed target to distinguish
     ///    Label (plain Identifier node) from Expr (complex expression like `E . $suffix`).
     fn parse_goto(&mut self) -> ParseResult<Node> {
-        let start = self.consume_token()?.start; // consume 'goto'
+        let start = self.consume_token()?.start(); // consume 'goto'
         self.mark_not_stmt_start();
 
         // Phase 1: Quick detection of & (always Sub form)
@@ -652,7 +652,7 @@ impl<'a> Parser<'a> {
 
     /// Parse `defer { ... }` block (Perl 5.36+ experimental, stable in 5.40)
     pub(crate) fn parse_defer(&mut self) -> ParseResult<Node> {
-        let start = self.consume_token()?.start; // consume 'defer'
+        let start = self.consume_token()?.start(); // consume 'defer'
         let block = self.parse_block()?;
         let end = block.location.end;
         Ok(Node::new(NodeKind::Defer { block: Box::new(block) }, SourceLocation { start, end }))
@@ -660,7 +660,7 @@ impl<'a> Parser<'a> {
 
     /// Parse try/catch/finally block
     fn parse_try(&mut self) -> ParseResult<Node> {
-        let start = self.consume_token()?.start; // consume 'try'
+        let start = self.consume_token()?.start(); // consume 'try'
 
         // Parse the try body
         let body = self.parse_block()?;
@@ -761,7 +761,7 @@ impl<'a> Parser<'a> {
 
     /// Parse do expression/block
     fn parse_do(&mut self) -> ParseResult<Node> {
-        let start = self.consume_token()?.start; // consume 'do'
+        let start = self.consume_token()?.start(); // consume 'do'
 
         // Do can take either a block or a string (filename)
         if self.peek_kind() == Some(TokenKind::LeftBrace) {
@@ -779,7 +779,7 @@ impl<'a> Parser<'a> {
 
     /// Parse given statement
     fn parse_given_statement(&mut self) -> ParseResult<Node> {
-        let start = self.consume_token()?.start; // consume 'given'
+        let start = self.consume_token()?.start(); // consume 'given'
 
         // Parse the expression in parentheses
         self.expect(TokenKind::LeftParen)?;
@@ -833,6 +833,7 @@ impl<'a> Parser<'a> {
                         if matches!(
                             e,
                             ParseError::RecursionLimit
+                                | ParseError::RecursionDepthExhausted { .. }
                                 | ParseError::NestingTooDeep { .. }
                                 | ParseError::Cancelled
                         ) {
@@ -870,7 +871,7 @@ impl<'a> Parser<'a> {
 
     /// Parse when statement
     fn parse_when_statement(&mut self) -> ParseResult<Node> {
-        let start = self.consume_token()?.start; // consume 'when'
+        let start = self.consume_token()?.start(); // consume 'when'
 
         // Parse the condition in parentheses
         self.expect(TokenKind::LeftParen)?;
@@ -901,7 +902,7 @@ impl<'a> Parser<'a> {
         // Record a descriptive error
         self.record_error(ParseError::syntax(
             "'else' without preceding 'if' or 'unless'",
-            else_token.start,
+            else_token.start(),
         ));
 
         // Try to consume the block so we don't leave it orphaned
@@ -947,7 +948,7 @@ impl<'a> Parser<'a> {
         // Record a descriptive error
         self.record_error(ParseError::syntax(
             "'elsif' without preceding 'if' or 'unless'",
-            elsif_token.start,
+            elsif_token.start(),
         ));
 
         // Parse the elsif condition
@@ -1016,7 +1017,7 @@ impl<'a> Parser<'a> {
 
     /// Parse default statement
     fn parse_default_statement(&mut self) -> ParseResult<Node> {
-        let start = self.consume_token()?.start; // consume 'default'
+        let start = self.consume_token()?.start(); // consume 'default'
 
         // Parse the body block
         let body = self.parse_block()?;

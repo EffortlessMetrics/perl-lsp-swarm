@@ -3,6 +3,7 @@
 //!
 //! Each test exercises a different `walk_rs_files`-based code path in the binary
 //! so that the --tests coverage profile covers the changed main.rs call sites.
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 use std::env;
 use std::fs;

@@ -4,6 +4,7 @@
 //! The primary entry point is the binary in `main.rs`.
 
 #![warn(missing_docs)]
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 use regex::Regex;
 use std::fs;

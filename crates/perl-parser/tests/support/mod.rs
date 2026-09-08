@@ -2,8 +2,6 @@
 //!
 //! Provides robust assertion helpers and utilities for testing LSP functionality
 
-#![allow(clippy::collapsible_if)]
-
 pub mod client_caps;
 pub mod env_guard;
 pub mod parser_error_helpers;
@@ -162,23 +160,23 @@ pub fn expect_arr(v: &Option<Value>) -> &Vec<Value> {
 /// Assert hover response has meaningful text content
 #[allow(dead_code)]
 pub fn assert_hover_has_text(v: &Option<Value>) {
-    if let Some(hover) = v {
-        if !hover.is_null() {
-            let obj_opt = hover.as_object();
-            assert!(obj_opt.is_some(), "Hover should be object, got: {:?}", hover);
-            let obj = obj_opt.unwrap_or_else(|| unreachable!());
-            assert!(obj.contains_key("contents"), "hover must have contents field");
+    if let Some(hover) = v
+        && !hover.is_null()
+    {
+        let obj_opt = hover.as_object();
+        assert!(obj_opt.is_some(), "Hover should be object, got: {:?}", hover);
+        let obj = obj_opt.unwrap_or_else(|| unreachable!());
+        assert!(obj.contains_key("contents"), "hover must have contents field");
 
-            let contents = &obj["contents"];
-            let has_text = contents.is_string()
-                || contents.get("value").and_then(|s| s.as_str()).is_some()
-                || contents.get("kind").is_some();
-            assert!(has_text, "hover must include text/markdown content");
+        let contents = &obj["contents"];
+        let has_text = contents.is_string()
+            || contents.get("value").and_then(|s| s.as_str()).is_some()
+            || contents.get("kind").is_some();
+        assert!(has_text, "hover must include text/markdown content");
 
-            // Optional: check range if present
-            if let Some(range) = obj.get("range") {
-                assert_range_valid(range, "hover range");
-            }
+        // Optional: check range if present
+        if let Some(range) = obj.get("range") {
+            assert_range_valid(range, "hover range");
         }
     }
 }
@@ -186,34 +184,27 @@ pub fn assert_hover_has_text(v: &Option<Value>) {
 /// Assert completion response has items with proper structure
 #[allow(dead_code)]
 pub fn assert_completion_has_items(v: &Option<Value>) {
-    if let Some(comp) = v {
-        if !comp.is_null() {
-            let items = if let Some(arr) = comp.as_array() {
-                arr
-            } else if let Some(obj) = comp.as_object() {
-                let items_opt = obj.get("items").and_then(|v| v.as_array());
-                assert!(
-                    items_opt.is_some(),
-                    "Completion object must have items array, got: {:?}",
-                    obj
-                );
-                items_opt.unwrap_or_else(|| unreachable!())
-            } else {
-                unreachable!(
-                    "Completion response must be array or object with items, got: {:?}",
-                    comp
-                );
-            };
+    if let Some(comp) = v
+        && !comp.is_null()
+    {
+        let items = if let Some(arr) = comp.as_array() {
+            arr
+        } else if let Some(obj) = comp.as_object() {
+            let items_opt = obj.get("items").and_then(|v| v.as_array());
+            assert!(items_opt.is_some(), "Completion object must have items array, got: {:?}", obj);
+            items_opt.unwrap_or_else(|| unreachable!())
+        } else {
+            unreachable!("Completion response must be array or object with items, got: {:?}", comp);
+        };
 
-            assert!(!items.is_empty(), "completion must return at least one item");
+        assert!(!items.is_empty(), "completion must return at least one item");
 
-            // Validate first item has required fields
-            if let Some(first) = items.first() {
-                let item_opt = first.as_object();
-                assert!(item_opt.is_some(), "Completion item must be object, got: {:?}", first);
-                let item = item_opt.unwrap_or_else(|| unreachable!());
-                assert!(item.contains_key("label"), "completion item must have label");
-            }
+        // Validate first item has required fields
+        if let Some(first) = items.first() {
+            let item_opt = first.as_object();
+            assert!(item_opt.is_some(), "Completion item must be object, got: {:?}", first);
+            let item = item_opt.unwrap_or_else(|| unreachable!());
+            assert!(item.contains_key("label"), "completion item must have label");
         }
     }
 }
@@ -262,29 +253,29 @@ pub fn assert_references_found(v: &Option<Value>) {
 /// Assert references are found with minimum count validation
 #[allow(dead_code)]
 pub fn assert_references_found_with_min(v: &Option<Value>, min_refs: Option<usize>) {
-    if let Some(refs_val) = v {
-        if !refs_val.is_null() {
-            let refs_opt = refs_val.as_array();
-            assert!(refs_opt.is_some(), "References should be array, got: {:?}", refs_val);
-            let refs = refs_opt.unwrap_or_else(|| unreachable!());
+    if let Some(refs_val) = v
+        && !refs_val.is_null()
+    {
+        let refs_opt = refs_val.as_array();
+        assert!(refs_opt.is_some(), "References should be array, got: {:?}", refs_val);
+        let refs = refs_opt.unwrap_or_else(|| unreachable!());
 
-            if let Some(min) = min_refs {
-                assert!(
-                    refs.len() >= min,
-                    "expected at least {} references, found {}",
-                    min,
-                    refs.len()
-                );
-            }
+        if let Some(min) = min_refs {
+            assert!(
+                refs.len() >= min,
+                "expected at least {} references, found {}",
+                min,
+                refs.len()
+            );
+        }
 
-            for reference in refs {
-                let ref_obj_opt = reference.as_object();
-                assert!(ref_obj_opt.is_some(), "Reference must be object, got: {:?}", reference);
-                let ref_obj = ref_obj_opt.unwrap_or_else(|| unreachable!());
-                assert!(ref_obj.contains_key("uri"), "reference must have uri");
-                assert!(ref_obj.contains_key("range"), "reference must have range");
-                assert_range_valid(&ref_obj["range"], "reference range");
-            }
+        for reference in refs {
+            let ref_obj_opt = reference.as_object();
+            assert!(ref_obj_opt.is_some(), "Reference must be object, got: {:?}", reference);
+            let ref_obj = ref_obj_opt.unwrap_or_else(|| unreachable!());
+            assert!(ref_obj.contains_key("uri"), "reference must have uri");
+            assert!(ref_obj.contains_key("range"), "reference must have range");
+            assert_range_valid(&ref_obj["range"], "reference range");
         }
     }
 }
@@ -292,44 +283,41 @@ pub fn assert_references_found_with_min(v: &Option<Value>, min_refs: Option<usiz
 /// Assert call hierarchy has items with proper structure
 #[allow(dead_code)]
 pub fn assert_call_hierarchy_items(v: &Option<Value>, expected_name: Option<&str>) {
-    if let Some(ch_val) = v {
-        if !ch_val.is_null() {
-            let items_opt = ch_val.as_array();
-            assert!(items_opt.is_some(), "Call hierarchy should be array, got: {:?}", ch_val);
-            let items = items_opt.unwrap_or_else(|| unreachable!());
+    if let Some(ch_val) = v
+        && !ch_val.is_null()
+    {
+        let items_opt = ch_val.as_array();
+        assert!(items_opt.is_some(), "Call hierarchy should be array, got: {:?}", ch_val);
+        let items = items_opt.unwrap_or_else(|| unreachable!());
 
-            if !items.is_empty() {
-                for item in items {
-                    let item_obj_opt = item.as_object();
-                    assert!(
-                        item_obj_opt.is_some(),
-                        "Call hierarchy item must be object, got: {:?}",
-                        item
-                    );
-                    let item_obj = item_obj_opt.unwrap_or_else(|| unreachable!());
-                    assert!(item_obj.contains_key("name"), "call hierarchy item must have name");
-                    assert!(item_obj.contains_key("uri"), "call hierarchy item must have uri");
-                    assert!(item_obj.contains_key("range"), "call hierarchy item must have range");
+        if !items.is_empty() {
+            for item in items {
+                let item_obj_opt = item.as_object();
+                assert!(
+                    item_obj_opt.is_some(),
+                    "Call hierarchy item must be object, got: {:?}",
+                    item
+                );
+                let item_obj = item_obj_opt.unwrap_or_else(|| unreachable!());
+                assert!(item_obj.contains_key("name"), "call hierarchy item must have name");
+                assert!(item_obj.contains_key("uri"), "call hierarchy item must have uri");
+                assert!(item_obj.contains_key("range"), "call hierarchy item must have range");
 
-                    // Either selectionRange or detail should be present
-                    let has_selection = item_obj.contains_key("selectionRange");
-                    let has_detail = item_obj.contains_key("detail");
-                    assert!(
-                        has_selection || has_detail,
-                        "call hierarchy item must have selectionRange or detail"
-                    );
-                }
+                // Either selectionRange or detail should be present
+                let has_selection = item_obj.contains_key("selectionRange");
+                let has_detail = item_obj.contains_key("detail");
+                assert!(
+                    has_selection || has_detail,
+                    "call hierarchy item must have selectionRange or detail"
+                );
+            }
 
-                // Check for expected name if provided
-                if let Some(name) = expected_name {
-                    let found = items.iter().any(|item| {
-                        item.get("name")
-                            .and_then(|n| n.as_str())
-                            .map(|n| n == name)
-                            .unwrap_or(false)
-                    });
-                    assert!(found, "call hierarchy should contain '{}'", name);
-                }
+            // Check for expected name if provided
+            if let Some(name) = expected_name {
+                let found = items.iter().any(|item| {
+                    item.get("name").and_then(|n| n.as_str()).map(|n| n == name).unwrap_or(false)
+                });
+                assert!(found, "call hierarchy should contain '{}'", name);
             }
         }
     }
@@ -369,27 +357,27 @@ pub fn assert_folding_ranges_valid(v: &Option<Value>) {
 /// Assert code actions are available with validation
 #[allow(dead_code)]
 pub fn assert_code_actions_available(v: &Option<Value>) {
-    if let Some(actions) = v {
-        if !actions.is_null() {
-            let arr_opt = actions.as_array();
-            assert!(arr_opt.is_some(), "Code actions should be array, got: {:?}", actions);
-            let arr = arr_opt.unwrap_or_else(|| unreachable!());
+    if let Some(actions) = v
+        && !actions.is_null()
+    {
+        let arr_opt = actions.as_array();
+        assert!(arr_opt.is_some(), "Code actions should be array, got: {:?}", actions);
+        let arr = arr_opt.unwrap_or_else(|| unreachable!());
 
-            for action in arr {
-                let action_obj_opt = action.as_object();
-                assert!(action_obj_opt.is_some(), "Code action must be object, got: {:?}", action);
-                let action_obj = action_obj_opt.unwrap_or_else(|| unreachable!());
-                assert!(action_obj.contains_key("title"), "code action must have title");
+        for action in arr {
+            let action_obj_opt = action.as_object();
+            assert!(action_obj_opt.is_some(), "Code action must be object, got: {:?}", action);
+            let action_obj = action_obj_opt.unwrap_or_else(|| unreachable!());
+            assert!(action_obj.contains_key("title"), "code action must have title");
 
-                // Must have either command or edit
-                let has_command = action_obj.contains_key("command");
-                let has_edit = action_obj.contains_key("edit");
-                assert!(has_command || has_edit, "code action must have command or edit");
+            // Must have either command or edit
+            let has_command = action_obj.contains_key("command");
+            let has_edit = action_obj.contains_key("edit");
+            assert!(has_command || has_edit, "code action must have command or edit");
 
-                // If has kind, validate it's a string
-                if let Some(kind) = action_obj.get("kind") {
-                    assert!(kind.is_string(), "code action kind must be string");
-                }
+            // If has kind, validate it's a string
+            if let Some(kind) = action_obj.get("kind") {
+                assert!(kind.is_string(), "code action kind must be string");
             }
         }
     }
@@ -398,47 +386,47 @@ pub fn assert_code_actions_available(v: &Option<Value>) {
 /// Assert workspace symbols have proper structure
 #[allow(dead_code)]
 pub fn assert_workspace_symbols_valid(v: &Option<Value>, expected_name: Option<&str>) {
-    if let Some(symbols) = v {
-        if !symbols.is_null() {
-            let arr_opt = symbols.as_array();
-            assert!(arr_opt.is_some(), "Workspace symbols should be array, got: {:?}", symbols);
-            let arr = arr_opt.unwrap_or_else(|| unreachable!());
+    if let Some(symbols) = v
+        && !symbols.is_null()
+    {
+        let arr_opt = symbols.as_array();
+        assert!(arr_opt.is_some(), "Workspace symbols should be array, got: {:?}", symbols);
+        let arr = arr_opt.unwrap_or_else(|| unreachable!());
 
-            if !arr.is_empty() {
-                // Validate each symbol
-                for symbol in arr {
-                    let sym_obj_opt = symbol.as_object();
-                    assert!(
-                        sym_obj_opt.is_some(),
-                        "Workspace symbol must be object, got: {:?}",
-                        symbol
-                    );
-                    let sym_obj = sym_obj_opt.unwrap_or_else(|| unreachable!());
-                    assert!(sym_obj.contains_key("name"), "workspace symbol must have name");
+        if !arr.is_empty() {
+            // Validate each symbol
+            for symbol in arr {
+                let sym_obj_opt = symbol.as_object();
+                assert!(
+                    sym_obj_opt.is_some(),
+                    "Workspace symbol must be object, got: {:?}",
+                    symbol
+                );
+                let sym_obj = sym_obj_opt.unwrap_or_else(|| unreachable!());
+                assert!(sym_obj.contains_key("name"), "workspace symbol must have name");
 
-                    // Must have either location or containerName
-                    let has_location = sym_obj.contains_key("location");
-                    let has_container = sym_obj.contains_key("containerName");
-                    assert!(
-                        has_location || has_container,
-                        "workspace symbol must have location or containerName"
-                    );
+                // Must have either location or containerName
+                let has_location = sym_obj.contains_key("location");
+                let has_container = sym_obj.contains_key("containerName");
+                assert!(
+                    has_location || has_container,
+                    "workspace symbol must have location or containerName"
+                );
 
-                    if let Some(loc) = sym_obj.get("location") {
-                        assert_location_valid(loc, "workspace symbol location");
-                    }
+                if let Some(loc) = sym_obj.get("location") {
+                    assert_location_valid(loc, "workspace symbol location");
                 }
+            }
 
-                // Check for expected name if provided
-                if let Some(name) = expected_name {
-                    let found = arr.iter().any(|s| {
-                        s.get("name")
-                            .and_then(|n| n.as_str())
-                            .map(|n| n.contains(name))
-                            .unwrap_or(false)
-                    });
-                    assert!(found, "Should find {}-related symbols", name);
-                }
+            // Check for expected name if provided
+            if let Some(name) = expected_name {
+                let found = arr.iter().any(|s| {
+                    s.get("name")
+                        .and_then(|n| n.as_str())
+                        .map(|n| n.contains(name))
+                        .unwrap_or(false)
+                });
+                assert!(found, "Should find {}-related symbols", name);
             }
         }
     }

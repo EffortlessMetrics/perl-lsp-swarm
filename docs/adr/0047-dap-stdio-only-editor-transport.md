@@ -9,13 +9,13 @@
 
 ## Context
 
-`perl-dap` still offers two editor-facing TCP listeners on current `main`:
+When this ADR was accepted, `perl-dap` offered two editor-facing TCP listeners:
 
 1. native `--socket` / `--port` → `run_socket` / `TcpListener::bind(127.0.0.1)` in
-   `crates/perl-dap/src/debug_adapter/transport.rs`;
+   `crates/perl-dap/src/debug_adapter/transport.rs` (removed by #10565);
 2. optional `--socket` wrappers around `--external-peer` and
    `--external-peer-listen` via `bind_editor_listener` in
-   `crates/perl-dap/src/main.rs`.
+   `crates/perl-dap/src/main.rs` (owned by #10566).
 
 Those listeners are unauthenticated ambient DAP endpoints. An authenticated
 editor socket would require a new out-of-band credential handoff and
@@ -46,10 +46,13 @@ stdio. Helix and Kubernetes declare stdio and remain `not_proven` as installed
 proof. A generic DAP client that *might* speak TCP is not a product
 requirement.
 
-This ADR freezes architecture truth. It does not remove runtime transports.
-CLI flags, `run_socket`, and `bind_editor_listener` remain until #10565 /
-#10566. Debugger-peer TCP is not in scope. Editor-socket authentication is
-rejected as a design for this train.
+This ADR froze architecture truth before code removal. Native editor
+`run_socket` was later removed by #10565. #10566 then removed
+`bind_editor_listener` and the remaining external-peer editor-socket wrapper.
+`--socket`/`--port` still parse via shared `TransportArgs` and fail before bind
+on every `perl-dap` path, including `--external-peer` / `--external-peer-listen`.
+Debugger-peer TCP is not in scope. Editor-socket authentication is rejected as a
+design for this train.
 
 ## Decision Drivers
 
@@ -113,18 +116,30 @@ supported client that requires editor TCP.
 - First-mile docs, crate landing rustdoc, and the book pointer must not teach
   `perl-dap --socket` as a product run mode. Historical ADRs may retain the
   command as history.
-- Help text and runtime flags remain until #10565; they are inventoried as
-  `retire`, not `supported`.
-- #10565 / #10566 may remove the two production editor-socket surfaces only
-  after this inventory remains current.
+- Native `#10565` removed production `run_socket` / the native editor
+  `TcpListener`. Shared `TransportArgs` `--socket`/`--port` remain parsed and
+  inventoried as `retire`; native use fails before bind with a `--stdio`
+  migration.
+- #10566 removed the remaining external-peer editor-socket wrapper. The same
+  flags now fail before bind on `--external-peer` / `--external-peer-listen`
+  with a stdio migration that preserves the selected peer backend. They are not
+  silently ignored.
+- #10567 proves stdio-only editor authority and zero ambient DAP listeners
+  across every process mode. The composed proof lives in
+  `crates/perl-dap/tests/dap_editor_transport_security.rs` and
+  `scripts/ci/dap_editor_transport_security.py`. Missing socket observation is
+  `not_proven` / `instrument_failure`, never a zero-listener pass. Do not
+  implement #7486 or editor-socket authentication in the PR that lands a later
+  child.
 - If later evidence proves a current supported client requires editor TCP,
   `ruling_status` cannot stay `accepted` and #7486 must be amended before
-  removal.
+  further removal.
 
 ## Follow-up obligations
 
-- #10565 — remove native editor `--socket` / `run_socket`.
-- #10566 — remove external-peer editor socket wrappers; keep peer-only TCP.
-- #10567 — prove stdio-only editor authority and zero ambient DAP listeners.
-- Do not implement those leaves, #7486, or editor-socket authentication in the
-  PR that lands this ADR.
+- #10565 — native editor `--socket` / `run_socket` production admission removed.
+- #10566 — external-peer editor socket wrappers removed; peer-only TCP retained.
+- #10567 — composed stdio-only editor-authority / zero ambient listener proof
+  (`dap_editor_transport_security.v1`).
+- Do not implement #7486 or editor-socket authentication in the PR that lands
+  a later child.

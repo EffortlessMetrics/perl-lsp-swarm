@@ -1,0 +1,9 @@
+project: product
+component: Debugger
+kind: Security
+body: External-peer perl-dap modes now expose DAP only over child stdio. Editor `--socket`/`--port` fail before bind with a stdio migration that preserves `--external-peer` / `--external-peer-listen`. Authenticated debugger-peer TCP remains the only retained listener.
+time: 2026-08-26T09:30:00Z
+custom:
+  PR: "12723"
+  Slug: dap-peer-editor-stdio-only
+  Breaking: "no"

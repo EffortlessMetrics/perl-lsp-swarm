@@ -4,6 +4,7 @@
 //! into structured [`StackFrame`] representations.
 
 use super::{Source, StackFrame, StackFramePresentationHint};
+use crate::parse_origin::{OriginatedParseError, OriginatedParseInput};
 use regex::Regex;
 use std::sync::LazyLock;
 use thiserror::Error;
@@ -20,14 +21,24 @@ pub enum StackParseError {
     RegexError(#[from] regex::Error),
 }
 
-impl perl_parser_core::ErrorClass for StackParseError {
-    fn error_class(&self) -> perl_parser_core::ErrorCategory {
-        // Both variants are adapter/parser gaps — the engine output shape
-        // or our regex constants are outside user control.
+/// Classifiable portion of [`StackParseError`].
+///
+/// [`StackParseError::UnrecognizedFormat`] is intentionally absent. That
+/// variant is classified only after the caller wraps it with
+/// [`crate::parse_origin::OriginatedParseInput`].
+#[derive(Debug, Clone, Copy)]
+pub enum FixedOriginStackParseError<'a> {
+    /// Internal constant regex failed to compile — adapter bug.
+    RegexError(&'a regex::Error),
+}
+
+impl StackParseError {
+    /// Returns the fixed-origin view when the variant does not depend on parse mode.
+    #[must_use]
+    pub fn as_fixed_origin(&self) -> Option<FixedOriginStackParseError<'_>> {
         match self {
-            Self::UnrecognizedFormat(_) | Self::RegexError(_) => {
-                perl_parser_core::ErrorCategory::Bug
-            }
+            Self::RegexError(error) => Some(FixedOriginStackParseError::RegexError(error)),
+            Self::UnrecognizedFormat(_) => None,
         }
     }
 }
@@ -213,6 +224,25 @@ impl PerlStackParser {
         self
     }
 
+    /// Parses a single originated stack-frame line.
+    ///
+    /// Origin is taken from `input`; this method does not inspect the payload
+    /// text to choose a category.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StackParseError::UnrecognizedFormat`] wrapped with the
+    /// supplied origin when the line matches no known frame grammar.
+    pub fn parse_frame_originated(
+        &mut self,
+        input: OriginatedParseInput<'_>,
+        id: i64,
+    ) -> Result<StackFrame, OriginatedParseError<StackParseError>> {
+        self.parse_frame(input.text(), id).ok_or_else(|| {
+            input.attach(StackParseError::UnrecognizedFormat(input.text().to_string()))
+        })
+    }
+
     /// Parses a single stack frame line.
     ///
     /// # Arguments
@@ -365,6 +395,33 @@ impl PerlStackParser {
             .unwrap_or_else(|| "<unknown>".to_string());
 
         StackFrame::new(id, name, None, 0)
+    }
+
+    /// Parses originated multi-line stack trace output.
+    ///
+    /// Unrecognized lines are skipped, matching [`Self::parse_stack_trace`].
+    /// Each skipped line still crosses the origin boundary so callers can
+    /// classify it separately without changing the success set.
+    pub fn parse_stack_trace_originated(
+        &mut self,
+        input: OriginatedParseInput<'_>,
+    ) -> Vec<StackFrame> {
+        // Reset auto-ID counter for new trace
+        if self.auto_assign_ids {
+            self.next_id = self.starting_id;
+        }
+
+        input
+            .text()
+            .lines()
+            .filter_map(|line| {
+                let line = line.trim();
+                if line.is_empty() {
+                    return None;
+                }
+                self.parse_frame_originated(input.with_text(line), 0).ok()
+            })
+            .collect()
     }
 
     /// Parses multi-line stack trace output.

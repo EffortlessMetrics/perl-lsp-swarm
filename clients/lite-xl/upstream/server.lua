@@ -24,7 +24,10 @@
 
 local json = require "plugins.lsp.json"
 local util = require "plugins.lsp.util"
-local diagnostics = require "plugins.lsp.diagnostics"
+-- Local patch (#11172): the initialize advertisement is folded from the
+-- profile-scoped capability manifest, so the wire payload can never exceed
+-- the reconciled capability/affordance matrix.
+local capability_manifest = require "plugins.lsp.capability_manifest"
 local Object = require "core.object"
 
 ---Visible truncation marker appended by bounded text excerpts (#11155).
@@ -397,6 +400,11 @@ function Server:new(options)
   self.response_list = {}
   self.notification_list = {}
   self.raw_list = {}
+  -- Response-obligation correlation (#10785): ids of accepted server
+  -- requests still awaiting their handler's terminal reply, and ids whose
+  -- terminal reply is already queued. Both die with the generation.
+  self.pending_response_ids = {}
+  self.answered_response_ids = {}
   self.command = options.command
   self.write_fails = 0
   self.fatal_error = false
@@ -453,8 +461,29 @@ function Server:initialize(workspace, editor_name, editor_version)
   self.editor_name = editor_name or "unknown"
   self.editor_version = editor_version or "0.1"
 
+  -- Local patch (#11172): user overrides may claim anything, but claims
+  -- over known unimplemented rows are warned about once here instead of
+  -- silently becoming support evidence.
+  local unsupported_claims =
+    capability_manifest.unsupported_custom_claims(self.custom_capabilities)
+  if #unsupported_claims > 0 then
+    local claimed_paths = {}
+    for _, claim in ipairs(unsupported_claims) do
+      claimed_paths[#claimed_paths + 1] = claim.path
+    end
+    self:log(
+      "[LSP] warning: custom capabilities claim unimplemented client features: %s",
+      table.concat(claimed_paths, ", ")
+    )
+  end
+
   self:push_request('initialize', {
-    timeout = 10,
+    -- Local patch (#10657): initialize pacing is policy-owned. The legacy
+    -- hardcoded timeout = 10 was retry spacing under the resend model; with
+    -- single-send semantics an explicit short value would terminally expire
+    -- the ONLY initialize emission of cold/large-workspace servers, so the
+    -- longer INITIALIZE_REQUEST_TIMEOUT policy applies instead (still one
+    -- emission under id 1).
     params = {
       processId = system["get_process_id"] and system.get_process_id() or nil,
       clientInfo = {
@@ -468,145 +497,25 @@ function Server:initialize(workspace, editor_name, editor_version)
         {uri = root_uri, name = util.getpathname(workspace)}
       },
       initializationOptions = self.init_options,
-      capabilities = util.deep_merge({
-        workspace = {
-          configuration = true -- 'workspace/configuration' requests
-        },
-        textDocument = {
-          synchronization = {
-            -- willSave = true,
-            -- willSaveWaitUntil = true,
-            didSave = true,
-            -- dynamicRegistration = false -- not supported
-          },
-          completion = {
-            -- dynamicRegistration = false, -- not supported
-            completionItem = {
-              -- Snippets are required by css-languageserver
-              snippetSupport = self.snippets or self.fake_snippets,
-              -- commitCharactersSupport = true,
-              documentationFormat = {'plaintext'},
-              -- deprecatedSupport = false, -- simple autocompletion list
-              -- preselectSupport = true
-              -- tagSupport = {valueSet = {}},
-              insertReplaceSupport = true,
-              resolveSupport = {properties = {'documentation', 'detail', 'additionalTextEdits'}},
-              -- insertTextModeSupport = {valueSet = {}}
-            },
-            completionItemKind = {
-              valueSet = Server.get_completion_items_kind_list()
-            }
-            -- contextSupport = true
-          },
-          hover = {
-            -- dynamicRegistration = false, -- not supported
-            contentFormat = {'markdown', 'plaintext'}
-          },
-          signatureHelp = {
-            -- dynamicRegistration = false, -- not supported
-            signatureInformation = {
-              documentationFormat = {'plaintext'}
-              -- parameterInformation = {labelOffsetSupport = true},
-              -- activeParameterSupport = true
-            }
-            -- contextSupport = true
-          },
-          -- references = {dynamicRegistration = false}, -- not supported
-          -- documentHighlight = {dynamicRegistration = false}, -- not supported
-          documentSymbol = {
-            -- dynamicRegistration = false, -- not supported
-            symbolKind = {valueSet = Server.get_symbols_kind_list()}
-            -- hierarchicalDocumentSymbolSupport = true,
-            -- tagSupport = {valueSet = {}},
-            -- labelSupport = true
-          },
-          -- diagnostic = {
-          --   dynamicRegistration = true,
-          --   relatedDocumentSupport = false
-          -- },
-          -- formatting = {dynamicRegistration = false},-- not supported
-          -- rangeFormatting = {dynamicRegistration = false}, -- not supported
-          -- onTypeFormatting = {dynamicRegistration = false}, -- not supported
-          -- declaration = {
-          --  dynamicRegistration = false, -- not supported
-          --  linkSupport = true
-          -- }
-          -- definition = {
-          --  dynamicRegistration = false, -- not supported
-          --  linkSupport = true
-          -- },
-          -- typeDefinition = {
-          --  dynamicRegistration = false, -- not supported
-          --  linkSupport = true
-          -- },
-          -- implementation = {
-          --  dynamicRegistration = false, -- not supported
-          --  linkSupport = true
-          -- },
-          -- codeAction = {
-          --  dynamicRegistration = false, -- not supported
-          --  codeActionLiteralSupport = {valueSet = {}},
-          --  isPreferredSupport = true,
-          --  disabledSupport = true,
-          --  dataSupport = true,
-          --  resolveSupport = {properties = {}},
-          --  honorsChangeAnnotations = true
-          -- },
-          -- codeLens = {dynamicRegistration = false}, -- not supported
-          -- documentLink = {
-          --  dynamicRegistration = false, -- not supported
-          --  tooltipSupport = true
-          -- },
-          -- colorProvider = {dynamicRegistration = false}, -- not supported
-          -- rename = {
-          --  dynamicRegistration = false, -- not supported
-          --  prepareSupport = false
-          -- },
-          publishDiagnostics = {
-            relatedInformation = true,
-            tagSupport = {
-              valueSet = {
-                diagnostics.tag.UNNECESSARY,
-                diagnostics.tag.DEPRECATED
-              }
-            },
-            versionSupport = true,
-            codeDescriptionSupport = true,
-            dataSupport = false
-          },
-          -- foldingRange = {
-          --  dynamicRegistration = false, -- not supported
-          --  rangeLimit = ?,
-          --  lineFoldingOnly = true
-          -- },
-          -- selectionRange = {dynamicRegistration = false}, -- not supported
-          -- linkedEditingRange = {dynamicRegistration = false}, -- not supported
-          -- callHierarchy = {dynamicRegistration = false}, -- not supported
-          -- semanticTokens = {
-          --  dynamicRegistration = false, -- not supported
-          --  requests = {},
-          --  tokenTypes = {},
-          --  tokenModifiers = {},
-          --  formats = {},
-          --  overlappingTokenSupport = true,
-          --  multilineTokenSupport = true
-          -- },
-          -- moniker = {dynamicRegistration = false} -- not supported
-        },
-        window = {
-          -- workDoneProgress = true,
-          -- showMessage = {},
-          showDocument = { support = true }
-        },
-        general = {
-          -- regularExpressions = {},
-          -- markdown = {},
-          positionEncodings = {
+      -- Local patch (#11172): capabilities are the manifest's exact truth -
+      -- every advertised leaf has an implemented consumer and deterministic
+      -- proof; unconsumed leaves (publishDiagnostics relatedInformation,
+      -- tagSupport, codeDescriptionSupport) stay absent. User overrides
+      -- merge on top as user freedom, never as repository evidence.
+      capabilities = util.deep_merge(
+        capability_manifest.client_capabilities({
+          -- Normalized to a strict boolean: an absent snippets dependency
+          -- is a real false, not a missing producer.
+          snippet_support = (self.snippets or self.fake_snippets)
+            and true or false,
+          completion_item_kinds = Server.get_completion_items_kind_list(),
+          symbol_kinds = Server.get_symbols_kind_list(),
+          position_encoding_list = {
             Server.position_encoding_kind.UTF16
-          }
-        },
-        -- experimental = nil
-      }, self.custom_capabilities)
+          },
+        }),
+        self.custom_capabilities
+      )
     },
     callback = function(server, response)
       if server.verbose then
@@ -718,7 +627,7 @@ function Server:respond(id, result)
   local data = json.encode(message)
 
   if self.verbose then
-    self:log("Responding to '%d':\n%s", id, util.jsonprettify(data))
+    self:log("Responding to '%s':\n%s", tostring(id), util.jsonprettify(data))
   end
 
   local sent, errmsg = self:write_request(data)
@@ -748,7 +657,7 @@ function Server:respond_error(id, error_message, error_code)
   local data = json.encode(message)
 
   if self.verbose then
-    self:log("Responding error to '%d':\n%s", id, util.jsonprettify(data))
+    self:log("Responding error to '%s':\n%s", tostring(id), util.jsonprettify(data))
   end
 
   local sent, errmsg = self:write_request(data)
@@ -814,80 +723,121 @@ function Server:process_notifications()
   end
 end
 
----Sends one of the queued client requests.
+---Default timeout policy for one sent request's response window (#10657).
+---A request is emitted at most once per server generation; expiry is a
+---terminal disposition, never a re-emission. Initialize keeps the longer
+---policy the protocol reality needs (cold servers, large workspaces) while
+---still never transmitting the same initialize frame twice under id 1.
+Server.DEFAULT_REQUEST_TIMEOUT = 30
+Server.INITIALIZE_REQUEST_TIMEOUT = 120
+
+---One injectable clock input for request send/deadline decisions (#10657,
+---clock-authority comment). The default stays wall-compatible with the
+---#11103 fake-time harness; Lite XL integrations and tests can supply a
+---monotonic source so wall-clock jumps cannot resend, prematurely expire,
+---or indefinitely retain an operation.
+function Server:now()
+  return os.time()
+end
+
+---Sends due queued client requests exactly once each (#10657). The first
+---successful write of an operation is its only emission; when its response
+---window expires the correlation is removed exactly once through one typed
+---"timeout" disposition (timeout_callback receives the request and the
+---disposition), and a later server response for that id is stale - it finds
+---no correlation and cannot run the original callback. Transport write
+---failures are not semantic events: the unsent operation keeps its identity
+---for a later tick while recovery/teardown remains owned by send_data and
+---the process lifecycle.
 function Server:process_requests()
   if not self.proc then return end
 
-  local remove_request = nil
+  local expired_index = nil
+  local expired_request = nil
+
   for index, request in ipairs(self.request_list) do
-    if request.timestamp < os.time() then
+    -- Queued operations enter with timestamp 0 (immediately due); sent
+    -- operations come due at their response deadline; a transport failure
+    -- re-paces the same unsent operation one tick later (#10657 keeps the
+    -- upstream transport-retry pacing).
+    if request.timestamp <= self:now() then
       -- only process when initialized or the initialize request
       -- which should be the first one.
-      if not self.initialized and request.id ~= 1 then
+      if not self.initialized and request.method ~= "initialize" then
         return nil
       end
 
-      local message = {
-        jsonrpc = '2.0',
-        id = request.id,
-        method = request.method,
-        params = request.params or {}
-      }
+      if request.times_sent == 0 then
+        local message = {
+          jsonrpc = '2.0',
+          id = request.id,
+          method = request.method,
+          params = request.params or {}
+        }
 
-      local data = json.encode(message)
+        local data = json.encode(message)
 
-      local written, errmsg = self:write_request(data)
+        local written, errmsg = self:write_request(data)
 
-      if self.verbose then
-        if written then
-          self:log(
-            "Sent request '%s':\n%s",
-            request.method,
-            util.jsonprettify(data)
-          )
-        else
-          self:log(
-            "Failed sending request '%s' with error: %s\n%s",
-            request.method,
-            errmsg or "unknown",
-            util.jsonprettify(data)
-          )
+        if self.verbose then
+          if written then
+            self:log(
+              "Sent request '%s':\n%s",
+              request.method,
+              util.jsonprettify(data)
+            )
+          else
+            self:log(
+              "Failed sending request '%s' with error: %s\n%s",
+              request.method,
+              errmsg or "unknown",
+              util.jsonprettify(data)
+            )
+          end
         end
-      end
 
-      if written then
-        local time = request.timeout or 1
-        request.timestamp = os.time() + time
+        if written then
+          local time = request.timeout
+            or (
+              request.method == "initialize"
+              and Server.INITIALIZE_REQUEST_TIMEOUT
+            )
+            or Server.DEFAULT_REQUEST_TIMEOUT
+          request.timestamp = self:now() + time
 
-        self.write_fails = 0
+          self.write_fails = 0
 
-        -- if request has been sent more than 2 times remove them
-        request.times_sent = request.times_sent + 1
-        if
-          request.times_sent > 1
-          and
-          request.id ~= 1 -- Initialize request may take some time
-        then
-          remove_request = index
-          break
-        else
+          -- Single-send (#10657): mark emitted; this operation will never
+          -- be re-encoded or rewritten onto the wire again.
+          request.times_sent = 1
+
           return request
+        else
+          request.timestamp = self:now() + 1
+          self:shutdown_if_needed()
+          return nil
         end
       else
-        request.timestamp = os.time() + 1
-        self:shutdown_if_needed()
-        return nil
+        -- Deadline reached without a terminal response (#10657): remove
+        -- the correlation exactly once and hand back one typed timeout
+        -- disposition. No manufactured result, no server teardown, no
+        -- second frame with this id.
+        expired_index = index
+        expired_request = request
+        break
       end
     end
   end
 
-  if remove_request then
-    local request = table.remove(self.request_list, remove_request)
-    if self.verbose then
-      self:log("Request '%s' expired without response", remove_request)
-    end
-    if request.timeout_callback then
-      request.timeout_callback(request)
+  if expired_index then
+    table.remove(self.request_list, expired_index)
+    self:log(
+      "Request '%s' timed out after one send (id %s)",
+      tostring(expired_request.method),
+      tostring(expired_request.id)
+    )
+    if expired_request.timeout_callback then
+      expired_request.timeout_callback(expired_request, "timeout")
     end
   end
 
@@ -940,10 +890,18 @@ function Server:process_client_responses()
       id = response.id
     }
 
-    if response.result then
+    -- Explicit representation (#10785): admission already decided this
+    -- entry's branch; the send loop encodes exactly that member instead of
+    -- re-applying Lua truthiness (a queued result:false must reach the
+    -- wire as result:false, never as an error frame).
+    if response.error ~= nil then
+      message.error = response.error
+    elseif response.result ~= nil then
       message.result = response.result
     else
-      message.error = response.error
+      -- Unreachable through push_response admission (#10785): keep the
+      -- obligation's frame valid rather than emitting a member-less reply.
+      message.result = json.null
     end
 
     local data = json.encode(message)
@@ -1273,24 +1231,75 @@ end
 ---or a regular response, one of both. A response is an obligation toward
 ---the server (#10785): it is always admitted and never dropped by any rate
 ---mechanism (#10833).
+---
+---Local patch (#10785): the result-vs-error branch is explicit, never Lua
+---truthiness. A non-nil `error` argument selects the error branch and must
+---be a real JSON-RPC error object - one missing code/message is wrapped into
+---one typed internal error so an invalid payload can never silently produce
+---a member-less or malformed frame. Otherwise ANY result value travels
+---verbatim, including boolean false, 0, "", json.null and empty arrays and
+---objects. Exactly one terminal response is admitted per accepted
+---server-request occurrence: a duplicate handler attempt is rejected with a
+---typed disposition instead of emitting a second frame, and the answered
+---marker persists until the server admits a genuinely new request with that
+---id or the generation tears down (#10785 review), so a late asynchronous
+---handler replay can never double-send.
 ---@param method string
----@param id integer
----@param result table|nil
----@param error table|nil
----@return string disposition Always "queued"
+---@param id any JSON-RPC request id, echoed verbatim (number or string)
+---@param result any Result payload; falsey values keep their identity
+---@param error table|nil JSON-RPC error object; presence selects the branch
+---@return string disposition One of "queued" or "rejected_duplicate"
 function Server:push_response(method, id, result, error)
   if self.verbose then
     self:log("Adding response %s to %s", tostring(id), tostring(method))
   end
 
-  -- Store the response for later processing on loop
+  -- Exactly one terminal response per accepted server request (#10785):
+  -- a second handler attempt for an already-answered id is rejected
+  -- instead of double-sending.
+  if id ~= nil and self.answered_response_ids[id] then
+    self:log(
+      "Duplicate client response for server request id %s rejected",
+      tostring(id)
+    )
+    return "rejected_duplicate"
+  end
+
+  -- Store the response for later processing on loop. Admission decides the
+  -- branch exactly once so the send loop cannot re-apply truthiness.
   local response = {
     id = id
   }
-  if result then
-    response.result = result
-  else
+  if error ~= nil then
+    if
+      type(error) ~= "table"
+      or type(error.code) ~= "number"
+      or type(error.message) ~= "string"
+    then
+      self:log(
+        "Invalid client error payload for '%s' (%s); answering one typed internal error",
+        tostring(method),
+        type(error) ~= "table"
+          and ("error value was " .. type(error))
+          or (
+            type(error.code) ~= "number"
+            and "error code is not a number"
+            or "error message is not a string"
+          )
+      )
+      error = {
+        code = Server.error_code.InternalError,
+        message = "Internal error: invalid client error payload",
+      }
+    end
     response.error = error
+  else
+    response.result = result
+  end
+
+  if id ~= nil then
+    self.pending_response_ids[id] = nil
+    self.answered_response_ids[id] = true
   end
 
   table.insert(self.response_list, response)
@@ -1834,6 +1843,17 @@ function Server:send_request_signal(request)
     return
   end
 
+  -- Accepted server request (#10785): register its pending terminal-reply
+  -- obligation so teardown can dispose of unanswered ids explicitly and a
+  -- replacement generation starts clean. A genuinely new request occurrence
+  -- with a reused id supersedes the previous occurrence's correlation
+  -- (#10785 review); a late handler replay for the OLD occurrence stays
+  -- rejected instead of emitting a second terminal frame.
+  if request.id ~= nil then
+    self.pending_response_ids[request.id] = true
+    self.answered_response_ids[request.id] = nil
+  end
+
   if self.request_listeners[request.method] then
     for _, l in ipairs(self.request_listeners[request.method]) do
       l(self, request)
@@ -1930,10 +1950,15 @@ function Server:stop()
   self.initialized = false
   self.proc = nil
 
+  -- Explicit obligation teardown (#10785): unsent queued responses and
+  -- unanswered accepted-request obligations die with this generation so
+  -- old ids cannot leak into, or be satisfied by, a replacement server.
   self.request_list = {}
   self.response_list = {}
   self.notification_list = {}
   self.raw_list = {}
+  self.pending_response_ids = {}
+  self.answered_response_ids = {}
 end
 
 ---Shutdown the server if not running or amount of write fails

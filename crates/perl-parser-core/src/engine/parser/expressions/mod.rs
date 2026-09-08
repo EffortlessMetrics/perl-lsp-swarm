@@ -23,7 +23,7 @@ impl<'a> Parser<'a> {
         let source_end = self
             .tokens
             .peek()
-            .map(|token| token.start)
+            .map(|token| token.start())
             .unwrap_or(self.src_bytes.len())
             .min(self.src_bytes.len());
         let geometry = self

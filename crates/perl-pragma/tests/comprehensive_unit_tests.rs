@@ -2,6 +2,7 @@
 //!
 //! Tests cover PragmaState, PragmaTracker::build, and PragmaTracker::state_for_offset
 //! across all public API surface including edge cases.
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 use perl_ast::SourceLocation;
 use perl_ast::ast::{Node, NodeKind};

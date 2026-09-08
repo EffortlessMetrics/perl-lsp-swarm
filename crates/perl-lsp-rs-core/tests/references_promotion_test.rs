@@ -130,10 +130,11 @@ fn body_idx_for_occurrence(
     let (expected_start, expected_end) = nth_byte_range(source, needle, occurrence)?;
     for body in &receipt.bodies {
         for fact in &body.facts {
-            if let Some(range) = fact.source_anchor.range.as_ref() {
-                if range.start == expected_start && range.end == expected_end {
-                    return Ok(fact.body_idx);
-                }
+            if let Some(range) = fact.source_anchor.range.as_ref()
+                && range.start == expected_start
+                && range.end == expected_end
+            {
+                return Ok(fact.body_idx);
             }
         }
     }

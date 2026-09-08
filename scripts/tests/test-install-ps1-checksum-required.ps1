@@ -38,7 +38,6 @@ Remove-Item Env:PROCESSOR_ARCHITEW6432 -ErrorAction SilentlyContinue
 
 $Asset = "perllsp-0.18.0-x86_64-pc-windows-msvc.zip"
 $Log = Join-Path $CaseRoot "requests.log"
-$ExpandSentinel = Join-Path $CaseRoot "expanded"
 $InstallDir = Join-Path $CaseRoot "install"
 
 function Invoke-WebRequest {
@@ -103,21 +102,7 @@ function Invoke-WebRequest {
     throw "unexpected request: $Uri"
 }
 
-function Expand-Archive {
-    param(
-        [Parameter(Mandatory = $true)][string]$Path,
-        [Parameter(Mandatory = $true)][string]$DestinationPath,
-        [switch]$Force
-    )
-
-    Set-Content -LiteralPath $ExpandSentinel -Encoding ascii -Value "expanded"
-    $Extracted = Join-Path $DestinationPath "perllsp-0.18.0-x86_64-pc-windows-msvc"
-    New-Item -ItemType Directory -Path $Extracted -Force | Out-Null
-    Set-Content -LiteralPath (Join-Path $Extracted "perllsp.exe") -Encoding ascii -Value "test server"
-    Set-Content -LiteralPath (Join-Path $Extracted "perl-dap.exe") -Encoding ascii -Value "test dap"
-}
-
-& $Installer -Version "0.18.0" -InstallDir $InstallDir
+& $Installer -Version "0.18.0" -InstallDir $InstallDir -NoModifyPath
 $InstallerSucceeded = $?
 if (-not $InstallerSucceeded) {
     exit 1
@@ -125,21 +110,47 @@ if (-not $InstallerSucceeded) {
 '@ | Set-Content -LiteralPath $Harness -Encoding utf8
 
 $Payload = Join-Path $TempRoot "archive.zip"
-Set-Content -LiteralPath $Payload -Encoding ascii -NoNewline -Value "bounded archive bytes`n"
+Add-Type -AssemblyName System.IO.Compression
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+if (Test-Path -LiteralPath $Payload) {
+    Remove-Item -LiteralPath $Payload -Force
+}
+$Zip = [System.IO.Compression.ZipFile]::Open($Payload, [System.IO.Compression.ZipArchiveMode]::Create)
+try {
+    $Files = @{
+        "perllsp.exe" = [Text.Encoding]::ASCII.GetBytes("test server")
+        "perl-dap.exe" = [Text.Encoding]::ASCII.GetBytes("test dap")
+        "README.md" = [Text.Encoding]::ASCII.GetBytes("readme`n")
+        "LICENSE-APACHE" = [Text.Encoding]::ASCII.GetBytes("apache`n")
+        "LICENSE-MIT" = [Text.Encoding]::ASCII.GetBytes("mit`n")
+        "SHA256SUMS.txt" = [Text.Encoding]::ASCII.GetBytes("sums`n")
+    }
+    foreach ($Name in $Files.Keys) {
+        $Entry = $Zip.CreateEntry($Name)
+        $Stream = $Entry.Open()
+        try {
+            $Stream.Write($Files[$Name], 0, $Files[$Name].Length)
+        } finally {
+            $Stream.Dispose()
+        }
+    }
+} finally {
+    $Zip.Dispose()
+}
 $PayloadHash = (Get-FileHash -LiteralPath $Payload -Algorithm SHA256).Hash.ToLowerInvariant()
 
 $Cases = @(
-    @{ Name = "valid"; Expected = 0; AssetRequested = $true; Expanded = $true },
-    @{ Name = "valid-binary-crlf"; Expected = 0; AssetRequested = $true; Expanded = $true },
-    @{ Name = "missing-manifest"; Expected = 1; AssetRequested = $false; Expanded = $false },
-    @{ Name = "missing-row"; Expected = 1; AssetRequested = $false; Expanded = $false },
-    @{ Name = "substring-row"; Expected = 1; AssetRequested = $false; Expanded = $false },
-    @{ Name = "duplicate-row"; Expected = 1; AssetRequested = $false; Expanded = $false },
-    @{ Name = "uppercase-row"; Expected = 1; AssetRequested = $false; Expanded = $false },
-    @{ Name = "uppercase-asset-row"; Expected = 1; AssetRequested = $false; Expanded = $false },
-    @{ Name = "malformed-duplicate-row"; Expected = 1; AssetRequested = $false; Expanded = $false },
-    @{ Name = "short-row"; Expected = 1; AssetRequested = $false; Expanded = $false },
-    @{ Name = "mismatch"; Expected = 1; AssetRequested = $true; Expanded = $false }
+    @{ Name = "valid"; Expected = 0; AssetRequested = $true },
+    @{ Name = "valid-binary-crlf"; Expected = 0; AssetRequested = $true },
+    @{ Name = "missing-manifest"; Expected = 1; AssetRequested = $false },
+    @{ Name = "missing-row"; Expected = 1; AssetRequested = $false },
+    @{ Name = "substring-row"; Expected = 1; AssetRequested = $false },
+    @{ Name = "duplicate-row"; Expected = 1; AssetRequested = $false },
+    @{ Name = "uppercase-row"; Expected = 1; AssetRequested = $false },
+    @{ Name = "uppercase-asset-row"; Expected = 1; AssetRequested = $false },
+    @{ Name = "malformed-duplicate-row"; Expected = 1; AssetRequested = $false },
+    @{ Name = "short-row"; Expected = 1; AssetRequested = $false },
+    @{ Name = "mismatch"; Expected = 1; AssetRequested = $true }
 )
 
 try {
@@ -161,9 +172,11 @@ try {
             }
         )
         $AssetRequest = @($Requests | Where-Object { $_ -like "*.zip" }).Count -eq 1
-        $Expanded = Test-Path -LiteralPath (Join-Path $CaseRoot "expanded")
-        $ServerInstalled = Test-Path -LiteralPath (Join-Path $CaseRoot "install/perllsp.exe")
-        $DapInstalled = Test-Path -LiteralPath (Join-Path $CaseRoot "install/perl-dap.exe")
+        $installDir = Join-Path $CaseRoot "install"
+        $ServerCmd = Test-Path -LiteralPath (Join-Path $installDir "perllsp.cmd")
+        $DapCmd = Test-Path -LiteralPath (Join-Path $installDir "perl-dap.cmd")
+        $ServerExe = Test-Path -LiteralPath (Join-Path $installDir "perllsp.exe")
+        $DapExe = Test-Path -LiteralPath (Join-Path $installDir "perl-dap.exe")
 
         $Problems = [System.Collections.Generic.List[string]]::new()
         if ($Status -ne $Case.Expected) {
@@ -175,14 +188,14 @@ try {
         if ($AssetRequest -ne $Case.AssetRequested) {
             $Problems.Add("asset request expected=$($Case.AssetRequested) actual=$AssetRequest")
         }
-        if ($Expanded -ne $Case.Expanded) {
-            $Problems.Add("extraction expected=$($Case.Expanded) actual=$Expanded")
-        }
         if ($Case.Expected -eq 0) {
-            if (-not ($ServerInstalled -and $DapInstalled)) {
-                $Problems.Add("successful case did not install both binaries")
+            if (-not ($ServerCmd -and $DapCmd)) {
+                $Problems.Add("successful case did not install both PATH selectors")
             }
-        } elseif ($ServerInstalled -or $DapInstalled) {
+            if ($ServerExe -or $DapExe) {
+                $Problems.Add("successful case published independent PATH copies")
+            }
+        } elseif ($ServerCmd -or $DapCmd -or $ServerExe -or $DapExe) {
             $Problems.Add("failed case changed the install destination")
         }
 

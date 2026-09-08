@@ -864,19 +864,29 @@ fn process_snapshots_parse_deterministically_and_reject_garbage() -> Result<()> 
 
 #[test]
 fn surviving_process_comparison_catches_an_intentional_leak() -> Result<()> {
-    let before = parse_process_snapshot("10 /usr/bin/perllsp --stdio\n20 vim -es")?;
-    let after = parse_process_snapshot("10 /usr/bin/perllsp --stdio\n31 /tmp/x/perllsp --stdio")?;
-    let survivors = surviving_processes(&before, &after, "perllsp");
+    // POSIX needles are the full configured executable path, exactly as the
+    // runners pass them; since the component-boundary law (#12794 P1) a bare
+    // name never matches mid-path, so fixtures use caller-shaped needles.
+    let before = parse_process_snapshot(
+        "10 /usr/bin/perllsp --stdio\n20 vim -es\n15 /tmp/x/perllsp --stdio",
+    )?;
+    let after = parse_process_snapshot(
+        "15 /tmp/x/perllsp --stdio\n21 kate settings\n31 /tmp/x/perllsp --stdio",
+    )?;
+    let survivors = surviving_processes(&before, &after, "/tmp/x/perllsp");
     ensure!(survivors.len() == 1, "the leaked perllsp must be detected");
-    ensure!(survivors[0].pid == 31, "the survivor is the new process");
-
-    let clean = parse_process_snapshot("10 /usr/bin/perllsp --stdio")?;
     ensure!(
-        surviving_processes(&before, &clean, "perllsp").is_empty(),
+        survivors[0].pid == 31,
+        "the survivor is the candidate process new since the before-snapshot"
+    );
+
+    let clean = parse_process_snapshot("15 /tmp/x/perllsp --stdio")?;
+    ensure!(
+        surviving_processes(&before, &clean, "/tmp/x/perllsp").is_empty(),
         "a pre-existing process that ends is not a survivor"
     );
-    // The needle binds the exact candidate file name: unrelated processes
-    // never match.
+    // The needle binds the exact candidate path: unrelated new processes and
+    // prefix-sharing helper names never match.
     ensure!(
         surviving_processes(&before, &after, "vim").is_empty(),
         "the comparison is scoped to the candidate needle"

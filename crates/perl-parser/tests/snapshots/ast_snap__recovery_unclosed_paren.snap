@@ -1,5 +1,5 @@
 ---
-source: crates/perl-parser/tests/ast_snapshot_tests.rs
+source: crates/perl-parser/tests/ast_snap.rs
 expression: "parse_sexp(\"print(\\\"hello\\\";\")"
 ---
-(source_file (call print ((string_interpolated "\"hello\""))))
+(source_file (statements (expression_statement (expression (call (name print) (args (string_interpolated (value "\"hello\"") (interpolated true))))))))

@@ -23,7 +23,9 @@ $Repo = "EffortlessMetrics/perl-lsp"
 # The release workflow packages the binary as `perllsp` on every platform
 # (see .github/workflows/release.yml — NAME="perllsp"), and every editor doc
 # / README / POSIX installer (scripts/install.sh) uses `perllsp`. Install the
-# Windows binary as `perllsp.exe` so the name matches POSIX and the docs.
+# Windows candidate stores `perllsp.exe`; PATH-visible names are `perllsp.cmd`
+# / `perl-dap.cmd` shims that follow `.perl-lsp\current` so unelevated hosts
+# never publish independent copies.
 $Name = "perllsp"
 # The release archive also carries the debug adapter (`perl-dap.exe`) — see
 # .github/workflows/release.yml, which builds `-p perl-dap` for every target.
@@ -210,6 +212,798 @@ function Get-WindowsBuildNumber {
     }
 }
 
+$script:ArchiveSafetyPolicyId = "standalone-archive-safety.v1"
+$script:ArchiveSafetyMaxCompressedBytes = 268435456
+$script:ArchiveSafetyMaxUncompressedBytes = 536870912
+$script:ArchiveSafetyMaxEntryBytes = 268435456
+$script:ArchiveSafetyMaxEntries = 32
+$script:ArchiveSafetyMaxPathBytes = 255
+$script:ArchiveSafetyMaxPathDepth = 3
+$script:ArchiveSafetyRequiredWindows = @(
+    "perllsp.exe",
+    "perl-dap.exe",
+    "README.md",
+    "LICENSE-APACHE",
+    "LICENSE-MIT",
+    "SHA256SUMS.txt"
+)
+$script:ArchiveSafetyAllowedExecutables = @("perllsp.exe", "perl-dap.exe")
+
+function Get-StandaloneArchiveSafetyPolicyId {
+    return $script:ArchiveSafetyPolicyId
+}
+
+function Get-ArchiveSafetyLimit {
+    param(
+        [Parameter(Mandatory = $true)][ValidateSet("compressed", "uncompressed", "entry", "entries")][string]$Name
+    )
+
+    $override = $null
+    switch ($Name) {
+        "compressed" {
+            $override = $env:PERL_LSP_ARCHIVE_SAFETY_MAX_COMPRESSED_BYTES
+            if ($override) { return [int64]$override }
+            return [int64]$script:ArchiveSafetyMaxCompressedBytes
+        }
+        "uncompressed" {
+            $override = $env:PERL_LSP_ARCHIVE_SAFETY_MAX_UNCOMPRESSED_BYTES
+            if ($override) { return [int64]$override }
+            return [int64]$script:ArchiveSafetyMaxUncompressedBytes
+        }
+        "entry" {
+            $override = $env:PERL_LSP_ARCHIVE_SAFETY_MAX_ENTRY_BYTES
+            if ($override) { return [int64]$override }
+            return [int64]$script:ArchiveSafetyMaxEntryBytes
+        }
+        "entries" {
+            $override = $env:PERL_LSP_ARCHIVE_SAFETY_MAX_ENTRIES
+            if ($override) { return [int]$override }
+            return [int]$script:ArchiveSafetyMaxEntries
+        }
+    }
+}
+
+function ConvertTo-SafeArchiveMemberPath {
+    param([Parameter(Mandatory = $true)][string]$Name)
+
+    if ($Name -match "[\r\n\t]") {
+        throw "unsafe archive member path: $Name"
+    }
+    if ($Name.Contains("\") -or $Name.Contains(":") -or $Name.StartsWith("/") -or $Name.StartsWith("//")) {
+        throw "unsafe archive member path: $Name"
+    }
+    if ($Name -match '^[A-Za-z]:') {
+        throw "unsafe archive member path: $Name"
+    }
+    if ($Name.Length -gt $script:ArchiveSafetyMaxPathBytes) {
+        throw "unsafe archive member path: $Name"
+    }
+
+    $inspect = $Name.TrimEnd("/")
+    if ([string]::IsNullOrEmpty($inspect)) {
+        throw "unsafe archive member path: $Name"
+    }
+
+    $parts = $inspect.Split("/")
+    if ($parts.Count -gt $script:ArchiveSafetyMaxPathDepth) {
+        throw "unsafe archive member path: $Name"
+    }
+    foreach ($part in $parts) {
+        if ($part -in @("", ".", "..")) {
+            throw "unsafe archive member path: $Name"
+        }
+        if ($part -notmatch '^[A-Za-z0-9._-]+$') {
+            throw "unsafe archive member path: $Name"
+        }
+        if ($part.EndsWith(".") -or $part.EndsWith(" ")) {
+            throw "unsafe archive member path: $Name"
+        }
+        $folded = $part.ToLowerInvariant()
+        if ($folded -match '^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$') {
+            throw "unsafe archive member path: $Name"
+        }
+    }
+    return $inspect
+}
+
+function Test-ZipEntryIsSymlink {
+    param($Entry)
+    $mode = ($Entry.ExternalAttributes -shr 16) -band 0xFFFF
+    return (($mode -band 0xF000) -eq 0xA000)
+}
+
+function Test-ZipEntryIsExecutable {
+    param(
+        [Parameter(Mandatory = $true)][string]$Basename,
+        $Entry
+    )
+    if ($Basename.ToLowerInvariant() -match '\.(exe|bat|cmd)$') {
+        return $true
+    }
+    $mode = ($Entry.ExternalAttributes -shr 16) -band 0xFFFF
+    # Unix exec bits (owner/group/other), decimal 73 == 0o111.
+    return (($mode -band 73) -ne 0)
+}
+
+function Get-StagedMemberSha256 {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+}
+
+function Invoke-StandaloneArchiveStaging {
+    param(
+        [Parameter(Mandatory = $true)][string]$ArchivePath,
+        [Parameter(Mandatory = $true)][string]$StagingParent,
+        [Parameter(Mandatory = $true)][string]$PackageName
+    )
+
+    Add-Type -AssemblyName System.IO.Compression
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+
+    if (-not (Test-Path -LiteralPath $ArchivePath)) {
+        throw "verified archive is missing"
+    }
+
+    $maxCompressed = Get-ArchiveSafetyLimit -Name compressed
+    $maxUncompressed = Get-ArchiveSafetyLimit -Name uncompressed
+    $maxEntry = Get-ArchiveSafetyLimit -Name entry
+    $maxEntries = Get-ArchiveSafetyLimit -Name entries
+    $compressed = (Get-Item -LiteralPath $ArchivePath).Length
+    if ($compressed -gt $maxCompressed) {
+        throw "archive compressed size $compressed exceeds policy ceiling $maxCompressed"
+    }
+
+    $stagingRoot = Join-Path $StagingParent ("perl-lsp-stage-" + [guid]::NewGuid().ToString("N"))
+    New-Item -ItemType Directory -Path $stagingRoot -Force | Out-Null
+
+    try {
+        $archive = [System.IO.Compression.ZipFile]::OpenRead($ArchivePath)
+        try {
+            if ($archive.Entries.Count -gt $maxEntries) {
+                throw "archive entry count $($archive.Entries.Count) exceeds policy ceiling $maxEntries"
+            }
+
+            $seenExact = New-Object 'System.Collections.Generic.HashSet[string]'
+            $seenFolded = New-Object 'System.Collections.Generic.HashSet[string]'
+            $accepted = New-Object System.Collections.Generic.List[object]
+            $basenames = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
+
+            foreach ($entry in $archive.Entries) {
+                $raw = $entry.FullName
+                if ($raw.EndsWith("/")) {
+                    $normalized = ConvertTo-SafeArchiveMemberPath -Name $raw
+                    if ($normalized -ne $PackageName) {
+                        throw "unexpected directory member: $normalized"
+                    }
+                    continue
+                }
+
+                $normalized = ConvertTo-SafeArchiveMemberPath -Name $raw
+                if (-not $seenExact.Add($normalized)) {
+                    throw "duplicate archive member: $normalized"
+                }
+                $folded = $normalized.ToLowerInvariant()
+                if (-not $seenFolded.Add($folded)) {
+                    throw "case-fold collision: $normalized"
+                }
+                if (Test-ZipEntryIsSymlink -Entry $entry) {
+                    throw "archive links are not accepted: $normalized"
+                }
+
+                $basename = [IO.Path]::GetFileName($normalized)
+                if (Test-ZipEntryIsExecutable -Basename $basename -Entry $entry) {
+                    if ($script:ArchiveSafetyAllowedExecutables -notcontains $basename) {
+                        throw "unexpected executable member: $normalized"
+                    }
+                }
+
+                $nested = $normalized.Contains("/")
+                if ($nested) {
+                    $expected = "$PackageName/$basename"
+                    if ($normalized -ne $expected) {
+                        throw "member is outside the package directory: $normalized"
+                    }
+                }
+                if ($script:ArchiveSafetyRequiredWindows -notcontains $basename) {
+                    throw "unexpected archive member: $normalized"
+                }
+                if ($entry.Length -gt $maxEntry) {
+                    throw "archive entry size $($entry.Length) exceeds policy ceiling $maxEntry"
+                }
+                if (-not $basenames.Add($basename)) {
+                    throw "duplicate archive member: $basename"
+                }
+                $accepted.Add([pscustomobject]@{ Entry = $entry; Normalized = $normalized; Basename = $basename })
+            }
+
+            foreach ($required in $script:ArchiveSafetyRequiredWindows) {
+                if (-not $basenames.Contains($required)) {
+                    throw "missing required member: $required"
+                }
+            }
+
+            $nestedCount = @($accepted | Where-Object { $_.Normalized.Contains("/") }).Count
+            if ($nestedCount -ne 0 -and $nestedCount -ne $accepted.Count) {
+                throw "mixed flat and nested archive layout is not accepted"
+            }
+
+            $declaredTotal = [int64]0
+            foreach ($item in $accepted) {
+                $declaredTotal += $item.Entry.Length
+                if ($declaredTotal -gt $maxUncompressed) {
+                    throw "archive uncompressed size $declaredTotal exceeds policy ceiling $maxUncompressed"
+                }
+            }
+
+            $extractRoot = $stagingRoot
+            if ($nestedCount -eq $accepted.Count) {
+                $extractRoot = Join-Path $stagingRoot $PackageName
+                New-Item -ItemType Directory -Path $extractRoot -Force | Out-Null
+            }
+
+            $actualTotal = [int64]0
+            $buffer = New-Object byte[] 65536
+            foreach ($item in $accepted) {
+                $dest = Join-Path $extractRoot $item.Basename
+                $source = $item.Entry.Open()
+                $sz = [int64]0
+                try {
+                    $target = [IO.File]::Open($dest, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+                    try {
+                        while (($n = $source.Read($buffer, 0, $buffer.Length)) -gt 0) {
+                            if (($sz + $n) -gt $maxEntry) {
+                                throw "archive entry size $($sz + $n) exceeds policy ceiling $maxEntry"
+                            }
+                            if (($actualTotal + $n) -gt $maxUncompressed) {
+                                throw "archive uncompressed size $($actualTotal + $n) exceeds policy ceiling $maxUncompressed"
+                            }
+                            $target.Write($buffer, 0, $n)
+                            $sz += $n
+                            $actualTotal += $n
+                        }
+                    } finally {
+                        $target.Dispose()
+                    }
+                } finally {
+                    $source.Dispose()
+                }
+            }
+
+            $extractDir = $extractRoot
+            if ($nestedCount -eq 0) {
+                $extractDir = $extractRoot
+            }
+
+            $server = Join-Path $extractDir "perllsp.exe"
+            $dap = Join-Path $extractDir "perl-dap.exe"
+            if (-not (Test-Path -LiteralPath $server) -or -not (Test-Path -LiteralPath $dap)) {
+                throw "expected binaries were not staged from the release archive"
+            }
+
+            $archiveHash = Get-StagedMemberSha256 -Path $ArchivePath
+            $memberParts = foreach ($required in $script:ArchiveSafetyRequiredWindows) {
+                $hash = Get-StagedMemberSha256 -Path (Join-Path $extractDir $required)
+                "$required`:$hash"
+            }
+            $layout = if ($nestedCount -eq $accepted.Count) { "windows_nested_v1" } else { "windows_flat_v1" }
+            $receipt = "archive_safety_receipt policy=$($script:ArchiveSafetyPolicyId) layout=$layout archive_sha256=$archiveHash members=$($memberParts -join ',')"
+            if ($receipt -match [regex]::Escape($stagingRoot) -or $receipt -match [regex]::Escape($ArchivePath)) {
+                throw "archive safety receipt contained a private path"
+            }
+            Write-Info $receipt
+            Write-Info "staged accepted topology members"
+            return $extractDir
+        } finally {
+            $archive.Dispose()
+        }
+    } catch {
+        if (Test-Path -LiteralPath $stagingRoot) {
+            Remove-Item -LiteralPath $stagingRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+        throw
+    }
+}
+
+function Get-StandaloneProductStore {
+    param([Parameter(Mandatory = $true)][string]$InstallDir)
+    return (Join-Path $InstallDir ".perl-lsp")
+}
+
+function Invoke-ProductUnitFaultIfRequested {
+    param([Parameter(Mandatory = $true)][string]$Barrier, [bool]$AllowFault = $true)
+    if (-not $AllowFault) {
+        return
+    }
+    if ($env:PERL_LSP_INSTALL_FAULT -eq $Barrier) {
+        throw "injected product-unit fault: $Barrier"
+    }
+}
+
+function Invoke-ProductUnitObserveIfRequested {
+    param(
+        [Parameter(Mandatory = $true)][string]$Barrier,
+        [Parameter(Mandatory = $true)][string]$InstallDir
+    )
+    if ($env:PERL_LSP_INSTALL_OBSERVE -ne $Barrier) {
+        return
+    }
+    $file = [string]$env:PERL_LSP_INSTALL_OBSERVE_FILE
+    if ([string]::IsNullOrWhiteSpace($file)) {
+        throw "PERL_LSP_INSTALL_OBSERVE_FILE is required for observation barrier $Barrier"
+    }
+    $cur = Get-StandaloneCurrentObservation -InstallDir $InstallDir
+    $path = Get-StandalonePathVisibleObservation -InstallDir $InstallDir
+    # Keep the first hit. Post-commit selector repair must not overwrite the
+    # pre-commit between_path_members snapshot.
+    if (Test-Path -LiteralPath $file) {
+        return
+    }
+    Set-Content -LiteralPath $file -Value ($cur + "`n" + $path) -Encoding ascii
+    if ($path -like "state=mixed*") {
+        throw "path-visible product unit became mixed at $Barrier"
+    }
+}
+
+function Get-ProductUnitCandidateId {
+    param(
+        [Parameter(Mandatory = $true)][string]$Disposition,
+        [Parameter(Mandatory = $true)][string]$ServerSha256,
+        [Parameter(Mandatory = $true)][string]$DapSha256
+    )
+    $tmp = Join-Path ([IO.Path]::GetTempPath()) ("perl-lsp-unit-" + [guid]::NewGuid().ToString("N"))
+    $payload = New-Object System.IO.MemoryStream
+    try {
+        $enc = [Text.Encoding]::UTF8
+        foreach ($part in @(
+                "perl-lsp-swarm:standalone-product-unit.v1",
+                $Disposition,
+                $ServerSha256,
+                $DapSha256
+            )) {
+            $bytes = $enc.GetBytes($part)
+            $payload.Write($bytes, 0, $bytes.Length)
+            $payload.WriteByte(0)
+        }
+        [IO.File]::WriteAllBytes($tmp, $payload.ToArray())
+        return Get-StagedMemberSha256 -Path $tmp
+    } finally {
+        $payload.Dispose()
+        if (Test-Path -LiteralPath $tmp) {
+            Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
+function Write-ProductUnitManifest {
+    param(
+        [Parameter(Mandatory = $true)][string]$Directory,
+        [Parameter(Mandatory = $true)][string]$Disposition,
+        [Parameter(Mandatory = $true)][string]$CandidateId,
+        [Parameter(Mandatory = $true)][string]$ServerSha256,
+        [Parameter(Mandatory = $true)][string]$DapSha256
+    )
+    $body = @(
+        "schema=standalone_product_unit.v1",
+        "disposition=$Disposition",
+        "candidate_id=$CandidateId",
+        "server_sha256=$ServerSha256",
+        "dap_sha256=$DapSha256"
+    ) -join "`n"
+    Set-Content -LiteralPath (Join-Path $Directory "product_unit.v1") -Value $body -Encoding ascii
+}
+
+function Get-StagedProductUnitDisposition {
+    param(
+        [Parameter(Mandatory = $true)][string]$ExtractDir,
+        [Parameter(Mandatory = $true)][ValidateSet("release", "source")][string]$Mode
+    )
+    $server = Join-Path $ExtractDir "$Name.exe"
+    $dap = Join-Path $ExtractDir "$DapName.exe"
+    if (-not (Test-Path -LiteralPath $server) -or [IO.File]::GetAttributes($server).HasFlag([IO.FileAttributes]::ReparsePoint)) {
+        throw "staged product unit is missing a regular perllsp member"
+    }
+    if ($Mode -eq "source") {
+        return "advanced_source_server_only"
+    }
+    if (-not (Test-Path -LiteralPath $dap) -or [IO.File]::GetAttributes($dap).HasFlag([IO.FileAttributes]::ReparsePoint)) {
+        throw "archive product unit requires a complete perllsp/perl-dap pair"
+    }
+    return "archive_pair_required"
+}
+
+function Initialize-StandaloneNativeFile {
+    if (-not ("PerlLspNative.File" -as [type])) {
+        Add-Type -Namespace PerlLspNative -Name File -MemberDefinition @"
+[System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true, CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+public static extern bool MoveFileEx(string lpExistingFileName, string lpNewFileName, uint dwFlags);
+"@
+    }
+}
+
+function Invoke-StandaloneMoveFileReplace {
+    param(
+        [Parameter(Mandatory = $true)][string]$From,
+        [Parameter(Mandatory = $true)][string]$To
+    )
+    Initialize-StandaloneNativeFile
+    $replace = [uint32]1
+    $none = [uint32]0
+    if (-not (Test-Path -LiteralPath $To)) {
+        if ([PerlLspNative.File]::MoveFileEx($From, $To, $none)) {
+            return
+        }
+        $code = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+        throw "atomic pointer publish failed (win32=$code)"
+    }
+    if ([PerlLspNative.File]::MoveFileEx($From, $To, $replace)) {
+        return
+    }
+    $code = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+    throw "atomic pointer replace failed (win32=$code)"
+}
+
+function Write-StandalonePointerFile {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$RelativeTarget
+    )
+    $tmp = "$Path.tmp.$PID.$([guid]::NewGuid().ToString("N"))"
+    if (Test-Path -LiteralPath $tmp) {
+        Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
+    }
+    Set-Content -LiteralPath $tmp -Value $RelativeTarget -Encoding ascii -NoNewline
+    try {
+        Invoke-StandaloneMoveFileReplace -From $tmp -To $Path
+    } catch {
+        if (Test-Path -LiteralPath $tmp) {
+            Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
+        }
+        throw
+    }
+}
+
+function Read-StandalonePointerRelative {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Store
+    )
+    if (-not (Test-Path -LiteralPath $Path)) {
+        return $null
+    }
+    $item = Get-Item -LiteralPath $Path -Force
+    if ($item.PSIsContainer -or $item.Attributes.HasFlag([IO.FileAttributes]::ReparsePoint)) {
+        $old = $item.Target
+        if ($old -is [array]) { $old = $old[0] }
+        if ([string]::IsNullOrWhiteSpace([string]$old)) {
+            return $null
+        }
+        if ([IO.Path]::IsPathRooted([string]$old)) {
+            return "candidates\" + [IO.Path]::GetFileName([string]$old)
+        }
+        return [string]$old
+    }
+    return ((Get-Content -LiteralPath $Path -Raw).Trim())
+}
+
+function Get-StandaloneCurrentDir {
+    param([Parameter(Mandatory = $true)][string]$InstallDir)
+    $store = Get-StandaloneProductStore -InstallDir $InstallDir
+    $current = Join-Path $store "current"
+    $rel = Read-StandalonePointerRelative -Path $current -Store $store
+    if ([string]::IsNullOrWhiteSpace($rel)) {
+        return $null
+    }
+    $item = Get-Item -LiteralPath $current -Force
+    if ($item.PSIsContainer) {
+        return $current
+    }
+    return [IO.Path]::GetFullPath((Join-Path $store $rel))
+}
+
+function Write-StandaloneCmdShim {
+    param(
+        [Parameter(Mandatory = $true)][string]$ShimPath,
+        [Parameter(Mandatory = $true)][string]$ExeName
+    )
+    $body = @"
+@echo off
+setlocal EnableExtensions
+set "STORE=%~dp0.perl-lsp"
+set /p TARGET=<"%STORE%\current"
+"%STORE%\%TARGET%\$ExeName" %*
+"@
+    $tmp = "$ShimPath.tmp.$PID.$([guid]::NewGuid().ToString("N"))"
+    Set-Content -LiteralPath $tmp -Value $body -Encoding ascii
+    try {
+        Invoke-StandaloneMoveFileReplace -From $tmp -To $ShimPath
+    } catch {
+        if (Test-Path -LiteralPath $tmp) {
+            Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
+        }
+        throw
+    }
+}
+
+function Publish-ImmutableStandaloneCandidate {
+    param(
+        [Parameter(Mandatory = $true)][string]$SourceDir,
+        [Parameter(Mandatory = $true)][string]$InstallDir,
+        [Parameter(Mandatory = $true)][string]$Disposition,
+        [bool]$AllowFault = $true
+    )
+    $store = Get-StandaloneProductStore -InstallDir $InstallDir
+    $serverSrc = Join-Path $SourceDir "$Name.exe"
+    $serverHash = Get-StagedMemberSha256 -Path $serverSrc
+    $dapHash = "-"
+    $dapSrc = Join-Path $SourceDir "$DapName.exe"
+    if ($Disposition -eq "archive_pair_required") {
+        $dapHash = Get-StagedMemberSha256 -Path $dapSrc
+    }
+    $id = Get-ProductUnitCandidateId -Disposition $Disposition -ServerSha256 $serverHash -DapSha256 $dapHash
+    $dest = Join-Path $store "candidates\$id"
+    New-Item -ItemType Directory -Path (Join-Path $store "candidates") -Force | Out-Null
+    New-Item -ItemType Directory -Path (Join-Path $store "attempts") -Force | Out-Null
+    if (Test-Path -LiteralPath $dest) {
+        $existingServer = Get-StagedMemberSha256 -Path (Join-Path $dest "$Name.exe")
+        if ($existingServer -ne $serverHash) {
+            throw "immutable candidate already exists with different perllsp bytes"
+        }
+        if ($Disposition -eq "archive_pair_required") {
+            $existingDap = Get-StagedMemberSha256 -Path (Join-Path $dest "$DapName.exe")
+            if ($existingDap -ne $dapHash) {
+                throw "immutable candidate already exists with different perl-dap bytes"
+            }
+        }
+        return $id
+    }
+    Invoke-ProductUnitFaultIfRequested -Barrier "before_publish" -AllowFault $AllowFault
+    $attempt = Join-Path $store ("attempts\att-" + [guid]::NewGuid().ToString("N"))
+    New-Item -ItemType Directory -Path $attempt -Force | Out-Null
+    Copy-Item -LiteralPath $serverSrc -Destination (Join-Path $attempt "$Name.exe")
+    if ($Disposition -eq "archive_pair_required") {
+        Copy-Item -LiteralPath $dapSrc -Destination (Join-Path $attempt "$DapName.exe")
+    }
+    Write-ProductUnitManifest -Directory $attempt -Disposition $Disposition -CandidateId $id -ServerSha256 $serverHash -DapSha256 $dapHash
+    Move-Item -LiteralPath $attempt -Destination $dest
+    return $id
+}
+
+function Set-StandaloneCurrentSelection {
+    param(
+        [Parameter(Mandatory = $true)][string]$InstallDir,
+        [Parameter(Mandatory = $true)][string]$CandidateId,
+        [bool]$AllowFault = $true
+    )
+    $store = Get-StandaloneProductStore -InstallDir $InstallDir
+    $current = Join-Path $store "current"
+    Invoke-ProductUnitFaultIfRequested -Barrier "before_commit" -AllowFault $AllowFault
+    $oldRel = Read-StandalonePointerRelative -Path $current -Store $store
+    if (-not [string]::IsNullOrWhiteSpace($oldRel)) {
+        Write-StandalonePointerFile -Path (Join-Path $store "previous") -RelativeTarget $oldRel
+    }
+    Write-StandalonePointerFile -Path $current -RelativeTarget "candidates\$CandidateId"
+}
+
+function Set-StandalonePathVisibleSelectors {
+    param(
+        [Parameter(Mandatory = $true)][string]$InstallDir,
+        [bool]$AllowFault = $true,
+        [string]$Disposition = "",
+        [switch]$PermitStaleDapRemoval,
+        [switch]$ExistingOnly
+    )
+    Invoke-ProductUnitFaultIfRequested -Barrier "before_selectors" -AllowFault $AllowFault
+    $serverDest = Join-Path $InstallDir "$Name.cmd"
+    $dapDest = Join-Path $InstallDir "$DapName.cmd"
+    if (-not $ExistingOnly -or (Test-Path -LiteralPath $serverDest)) {
+        Write-StandaloneCmdShim -ShimPath $serverDest -ExeName "$Name.exe"
+    }
+    Invoke-ProductUnitObserveIfRequested -Barrier "between_path_members" -InstallDir $InstallDir
+    $wantDap = $Disposition -ne "advanced_source_server_only" -and $Disposition -ne "historical_server_only"
+    if ($Disposition -eq "") {
+        $currentDir = Get-StandaloneCurrentDir -InstallDir $InstallDir
+        $wantDap = $currentDir -and (Test-Path -LiteralPath (Join-Path $currentDir "$DapName.exe"))
+    }
+    if ($wantDap -and (-not $ExistingOnly -or (Test-Path -LiteralPath $dapDest))) {
+        Write-StandaloneCmdShim -ShimPath $dapDest -ExeName "$DapName.exe"
+    } elseif (-not $ExistingOnly -and $PermitStaleDapRemoval -and (Test-Path -LiteralPath $dapDest)) {
+        # Stale-DAP cleanup is post-commit only: removing the selector before
+        # the current-pointer commit would leave the previous paired candidate
+        # current with no PATH-visible adapter if the commit fails.
+        Remove-Item -LiteralPath $dapDest -Force
+    }
+    foreach ($legacyExe in @((Join-Path $InstallDir "$Name.exe"), (Join-Path $InstallDir "$DapName.exe"))) {
+        if (Test-Path -LiteralPath $legacyExe) {
+            Remove-Item -LiteralPath $legacyExe -Force
+        }
+    }
+}
+
+function Get-StandaloneCurrentObservation {
+    param([Parameter(Mandatory = $true)][string]$InstallDir)
+    $store = Get-StandaloneProductStore -InstallDir $InstallDir
+    $current = Join-Path $store "current"
+    $dir = Get-StandaloneCurrentDir -InstallDir $InstallDir
+    if (-not $dir -or -not (Test-Path -LiteralPath $current)) {
+        return "state=none"
+    }
+    $rel = Read-StandalonePointerRelative -Path $current -Store $store
+    $id = if ($rel) { [IO.Path]::GetFileName($rel.TrimEnd('\', '/')) } else { "" }
+    $manifest = Join-Path $dir "product_unit.v1"
+    $disposition = "unknown"
+    if (Test-Path -LiteralPath $manifest) {
+        $disposition = ((Select-String -Path $manifest -Pattern '^disposition=(.+)$').Matches[0].Groups[1].Value)
+    }
+    $server = "-"
+    $dap = "-"
+    $serverPath = Join-Path $dir "$Name.exe"
+    if (Test-Path -LiteralPath $serverPath) {
+        $server = Get-StagedMemberSha256 -Path $serverPath
+    }
+    $dapPath = Join-Path $dir "$DapName.exe"
+    if (Test-Path -LiteralPath $dapPath) {
+        $dap = Get-StagedMemberSha256 -Path $dapPath
+    }
+    return "state=selected disposition=$disposition candidate_id=$id server_sha256=$server dap_sha256=$dap"
+}
+
+function Get-StandalonePathMemberSha256 {
+    param(
+        [Parameter(Mandatory = $true)][string]$InstallDir,
+        [Parameter(Mandatory = $true)][string]$ExeName
+    )
+    $exe = Join-Path $InstallDir $ExeName
+    $cmd = Join-Path $InstallDir ([IO.Path]::ChangeExtension($ExeName, ".cmd"))
+    if (Test-Path -LiteralPath $exe) {
+        $item = Get-Item -LiteralPath $exe -Force
+        if ($item.Attributes.HasFlag([IO.FileAttributes]::ReparsePoint)) {
+            return Get-StagedMemberSha256 -Path $exe
+        }
+        if (-not $item.PSIsContainer) {
+            return Get-StagedMemberSha256 -Path $exe
+        }
+    }
+    if (Test-Path -LiteralPath $cmd) {
+        $dir = Get-StandaloneCurrentDir -InstallDir $InstallDir
+        if ($dir) {
+            $resolved = Join-Path $dir $ExeName
+            if (Test-Path -LiteralPath $resolved) {
+                return Get-StagedMemberSha256 -Path $resolved
+            }
+        }
+        return "-"
+    }
+    return "-"
+}
+
+function Get-StandalonePathVisibleObservation {
+    param([Parameter(Mandatory = $true)][string]$InstallDir)
+    $server = Get-StandalonePathMemberSha256 -InstallDir $InstallDir -ExeName "$Name.exe"
+    $dap = Get-StandalonePathMemberSha256 -InstallDir $InstallDir -ExeName "$DapName.exe"
+    $current = Get-StandaloneCurrentObservation -InstallDir $InstallDir
+    $curServer = "-"
+    $curDap = "-"
+    if ($current -match 'server_sha256=([0-9a-f]+|-)') { $curServer = $Matches[1] }
+    if ($current -match 'dap_sha256=([0-9a-f]+|-)') { $curDap = $Matches[1] }
+    $serverMatches = ($server -eq $curServer)
+    $dapMatches = ($dap -eq $curDap)
+    if (($curServer -ne "-") -and ($curDap -ne "-") -and (($server -ne "-") -xor ($dap -ne "-"))) {
+        return "state=mixed server_sha256=$server dap_sha256=$dap"
+    }
+    if (($server -ne "-") -and ($dap -ne "-") -and ($serverMatches -xor $dapMatches)) {
+        return "state=mixed server_sha256=$server dap_sha256=$dap"
+    }
+    return "state=path_visible server_sha256=$server dap_sha256=$dap"
+}
+
+function ConvertTo-StandaloneLegacyCandidate {
+    param([Parameter(Mandatory = $true)][string]$InstallDir)
+    $server = Join-Path $InstallDir "$Name.exe"
+    $dap = Join-Path $InstallDir "$DapName.exe"
+    if (-not (Test-Path -LiteralPath $server)) {
+        return $null
+    }
+    $sitem = Get-Item -LiteralPath $server
+    if ($sitem.Attributes.HasFlag([IO.FileAttributes]::ReparsePoint)) {
+        return $null
+    }
+    $tmp = Join-Path ([IO.Path]::GetTempPath()) ("perl-lsp-legacy-" + [guid]::NewGuid().ToString("N"))
+    New-Item -ItemType Directory -Path $tmp -Force | Out-Null
+    Copy-Item -LiteralPath $server -Destination (Join-Path $tmp "$Name.exe")
+    $disposition = "historical_server_only"
+    if ((Test-Path -LiteralPath $dap) -and -not (Get-Item -LiteralPath $dap).Attributes.HasFlag([IO.FileAttributes]::ReparsePoint)) {
+        Copy-Item -LiteralPath $dap -Destination (Join-Path $tmp "$DapName.exe")
+        $disposition = "archive_pair_required"
+    }
+    return @{ Dir = $tmp; Disposition = $disposition }
+}
+
+function Install-StandaloneProductUnit {
+    param(
+        [Parameter(Mandatory = $true)][string]$ExtractDir,
+        [Parameter(Mandatory = $true)][string]$InstallDir,
+        [ValidateSet("release", "source")][string]$Mode = "release"
+    )
+    if (-not (Test-Path -LiteralPath $InstallDir)) {
+        New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
+    }
+    $disposition = Get-StagedProductUnitDisposition -ExtractDir $ExtractDir -Mode $Mode
+    $store = Get-StandaloneProductStore -InstallDir $InstallDir
+    New-Item -ItemType Directory -Path $store -Force | Out-Null
+
+    $legacy = ConvertTo-StandaloneLegacyCandidate -InstallDir $InstallDir
+    if ($null -ne $legacy) {
+        $legacyId = Publish-ImmutableStandaloneCandidate -SourceDir $legacy.Dir -InstallDir $InstallDir -Disposition $legacy.Disposition -AllowFault $false
+        Remove-Item -LiteralPath $legacy.Dir -Recurse -Force -ErrorAction SilentlyContinue
+        Set-StandaloneCurrentSelection -InstallDir $InstallDir -CandidateId $legacyId -AllowFault $false
+        Set-StandalonePathVisibleSelectors -InstallDir $InstallDir -AllowFault $false -Disposition $legacy.Disposition -PermitStaleDapRemoval
+    }
+
+    $id = Publish-ImmutableStandaloneCandidate -SourceDir $ExtractDir -InstallDir $InstallDir -Disposition $disposition
+    $hadServer = Test-Path -LiteralPath (Join-Path $InstallDir "$Name.cmd")
+    $hadDap = Test-Path -LiteralPath (Join-Path $InstallDir "$DapName.cmd")
+    try {
+        Set-StandalonePathVisibleSelectors -InstallDir $InstallDir -Disposition $disposition
+        Set-StandaloneCurrentSelection -InstallDir $InstallDir -CandidateId $id
+    } catch {
+        if (-not $hadServer) {
+            $serverDest = Join-Path $InstallDir "$Name.cmd"
+            if (Test-Path -LiteralPath $serverDest) {
+                Remove-Item -LiteralPath $serverDest -Force
+            }
+        }
+        if (-not $hadDap) {
+            $dapDest = Join-Path $InstallDir "$DapName.cmd"
+            if (Test-Path -LiteralPath $dapDest) {
+                Remove-Item -LiteralPath $dapDest -Force
+            }
+        }
+        throw
+    }
+    Set-StandalonePathVisibleSelectors -InstallDir $InstallDir -Disposition $disposition -PermitStaleDapRemoval
+
+    $previous = "none"
+    $prevPath = Join-Path $store "previous"
+    $prevRel = Read-StandalonePointerRelative -Path $prevPath -Store $store
+    if (-not [string]::IsNullOrWhiteSpace($prevRel)) {
+        $previous = [IO.Path]::GetFileName($prevRel.TrimEnd('\', '/'))
+    }
+    $currentDir = Get-StandaloneCurrentDir -InstallDir $InstallDir
+    if (-not $currentDir) {
+        throw "product-unit current pointer did not resolve after commit"
+    }
+    $serverHash = Get-StagedMemberSha256 -Path (Join-Path $currentDir "$Name.exe")
+    $dapHash = "-"
+    $currentDap = Join-Path $currentDir "$DapName.exe"
+    if (Test-Path -LiteralPath $currentDap) {
+        $dapHash = Get-StagedMemberSha256 -Path $currentDap
+    }
+    $receipt = "product_unit_receipt disposition=$disposition candidate_id=$id previous=$previous server_sha256=$serverHash dap_sha256=$dapHash state=selected"
+    if ($receipt.Contains($InstallDir) -or $receipt.Contains($ExtractDir)) {
+        throw "product-unit receipt contained a private path"
+    }
+    Write-Info $receipt
+    Write-Success "Installed $Name to $(Join-Path $InstallDir "$Name.cmd")"
+    if ($dapHash -ne "-") {
+        Write-Success "Installed $DapName to $(Join-Path $InstallDir "$DapName.cmd")"
+    }
+    $dapDestPath = $null
+    if ($dapHash -ne "-") {
+        $dapDestPath = Join-Path $InstallDir "$DapName.cmd"
+    }
+    return [pscustomobject]@{
+        DapInstalled = ($dapHash -ne "-")
+        DestPath     = (Join-Path $InstallDir "$Name.cmd")
+        DapDestPath  = $dapDestPath
+        CandidateId  = $id
+        Receipt      = $receipt
+    }
+}
+
+if ($env:PERL_LSP_INSTALLER_LIBRARY_ONLY -eq '1') {
+    return
+}
+
 if (-not ($IsArm64Host -or $HostArch -eq "AMD64")) {
     Write-Error "Unsupported architecture: $HostArch. Windows releases ship x86_64 and ARM64 builds only. Build from source: https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/how-to/INSTALLATION.md"
 }
@@ -352,60 +1146,26 @@ try {
     }
     Write-Success "Checksum verified"
 
-    # Extract archive
-    Write-Info "Extracting archive"
-    $ExtractDir = Join-Path $TempDir "extract"
-    Expand-Archive -Path $ZipPath -DestinationPath $ExtractDir -Force
-    
-    # Find the binary
-    $ExtractedDir = Join-Path $ExtractDir "$Name-$VersionNum-$Target"
-    if (-not (Test-Path $ExtractedDir)) {
-        # Try without nested directory
-        $ExtractedDir = $ExtractDir
-    }
+    # Inspect the verified zip and extract only accepted topology members
+    # into a private staging root. Expand-Archive is not the safety boundary.
+    Write-Info "Inspecting release archive"
+    $PackageName = "$Name-$VersionNum-$Target"
+    $ExtractedDir = Invoke-StandaloneArchiveStaging -ArchivePath $ZipPath -StagingParent $TempDir -PackageName $PackageName
     
     $BinaryPath = Join-Path $ExtractedDir "$Name.exe"
     if (-not (Test-Path $BinaryPath)) {
         Write-Error "Binary not found at $BinaryPath"
     }
     
-    # Create install directory
+    # Create install directory and atomically promote the staged product unit.
     if (-not (Test-Path $InstallDir)) {
         New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
     }
-    
-    # Install binary
-    $DestPath = Join-Path $InstallDir "$Name.exe"
-    Write-Info "Installing $Name to $DestPath"
-    
-    # Remove old binary if exists
-    if (Test-Path $DestPath) {
-        Remove-Item $DestPath -Force
-    }
-    
-    # Copy binary
-    Copy-Item -Path $BinaryPath -Destination $DestPath -Force
-    
-    Write-Success "Installed $Name to $DestPath"
 
-    # Install the perl-dap companion binary when the archive carries it.
-    # Mirrors the optional-DAP copy in scripts/install.sh: present since
-    # v0.9.1, so treat absence as a warning rather than a hard failure to stay
-    # compatible with older archives.
-    $DapInstalled = $false
-    $DapSourcePath = Join-Path $ExtractedDir "$DapName.exe"
-    $DapDestPath = Join-Path $InstallDir "$DapName.exe"
-    if (Test-Path $DapSourcePath) {
-        Write-Info "Installing $DapName to $DapDestPath"
-        if (Test-Path $DapDestPath) {
-            Remove-Item $DapDestPath -Force
-        }
-        Copy-Item -Path $DapSourcePath -Destination $DapDestPath -Force
-        Write-Success "Installed $DapName to $DapDestPath"
-        $DapInstalled = $true
-    } else {
-        Write-Warn "$DapName.exe not found in the release archive - debugging support will be unavailable"
-    }
+    $Promotion = Install-StandaloneProductUnit -ExtractDir $ExtractedDir -InstallDir $InstallDir -Mode release
+    $DestPath = $Promotion.DestPath
+    $DapInstalled = $Promotion.DapInstalled
+    $DapDestPath = $Promotion.DapDestPath
 
     # Verify installation
     try {

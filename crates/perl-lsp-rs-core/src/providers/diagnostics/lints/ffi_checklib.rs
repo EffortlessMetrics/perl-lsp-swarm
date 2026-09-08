@@ -113,16 +113,14 @@ fn collect_checklib_arguments(args: &[Node]) -> (Vec<String>, Vec<String>) {
         };
 
         match key.as_str() {
-            "lib" | "libpath" => {
-                if index + 1 < args.len() {
-                    if key == "lib" {
-                        libs.extend(extract_literal_strings(&args[index + 1]));
-                    } else {
-                        libpaths.extend(extract_literal_strings(&args[index + 1]));
-                    }
-                    index += 2;
-                    continue;
+            "lib" | "libpath" if index + 1 < args.len() => {
+                if key == "lib" {
+                    libs.extend(extract_literal_strings(&args[index + 1]));
+                } else {
+                    libpaths.extend(extract_literal_strings(&args[index + 1]));
                 }
+                index += 2;
+                continue;
             }
             _ => {}
         }
@@ -349,16 +347,12 @@ fn dedup_paths(values: &mut Vec<PathBuf>) {
 
 #[cfg(test)]
 mod tests {
-    #![expect(
-        clippy::unwrap_used,
-        reason = "tracked conversion debt: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3021"
-    )]
     use super::*;
 
     use std::fs;
 
     use perl_parser::Parser;
-    use perl_tdd_support::must;
+    use perl_test_must::{must, must_with};
     use tempfile::tempdir;
 
     fn diagnostics_for(source: &str) -> Vec<Diagnostic> {
@@ -372,9 +366,15 @@ mod tests {
         for candidate in candidate_library_names(lib) {
             let path = dir.join(candidate);
             if let Some(parent) = path.parent() {
-                fs::create_dir_all(parent).unwrap();
+                must_with(
+                    fs::create_dir_all(parent),
+                    format_args!("create FFI::CheckLib fixture parent {}", parent.display()),
+                );
             }
-            fs::write(path, b"").unwrap();
+            must_with(
+                fs::write(&path, b""),
+                format_args!("write FFI::CheckLib fixture library {}", path.display()),
+            );
         }
     }
 
@@ -390,7 +390,7 @@ mod tests {
 
     #[test]
     fn explicit_libpath_suppresses_missing_library() {
-        let tempdir = tempdir().unwrap();
+        let tempdir = must_with(tempdir(), "create FFI::CheckLib fixture directory");
         write_library(tempdir.path(), "ffi_checklib_present_3574");
 
         let source = format!(
@@ -404,7 +404,7 @@ mod tests {
 
     #[test]
     fn array_library_list_reports_only_missing_entries() {
-        let tempdir = tempdir().unwrap();
+        let tempdir = must_with(tempdir(), "create FFI::CheckLib fixture directory");
         write_library(tempdir.path(), "ffi_checklib_present_3574");
 
         let source = format!(
@@ -433,7 +433,7 @@ mod tests {
 
     #[test]
     fn hash_literal_libpath_array_suppresses_missing_library() {
-        let tempdir = tempdir().unwrap();
+        let tempdir = must_with(tempdir(), "create FFI::CheckLib fixture directory");
         write_library(tempdir.path(), "ffi_checklib_present_3574_hash");
 
         let source = format!(
@@ -450,7 +450,7 @@ mod tests {
 
     #[test]
     fn qualified_call_is_detected_without_import() {
-        let tempdir = tempdir().unwrap();
+        let tempdir = must_with(tempdir(), "create FFI::CheckLib fixture directory");
         write_library(tempdir.path(), "ffi_checklib_present_3574");
 
         let source = format!(
@@ -473,7 +473,7 @@ mod tests {
 
     #[test]
     fn platypus_bundle_import_is_treated_as_supporting_context() {
-        let tempdir = tempdir().unwrap();
+        let tempdir = must_with(tempdir(), "create FFI::CheckLib fixture directory");
         write_library(tempdir.path(), "ffi_checklib_present_3574");
 
         let source = format!(

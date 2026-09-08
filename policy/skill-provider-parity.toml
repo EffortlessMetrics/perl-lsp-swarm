@@ -1,0 +1,24 @@
+# Cross-provider skill parity allowlist (#12802)
+#
+# docs/agents/SKILL_CONTRACT.md requires substantive skills to be
+# operationally complete in BOTH provider implementations (.claude/skills and
+# .agents/skills). `cargo xtask agent-flow check` enforces that by comparing
+# the provider skill-name sets and failing on any skill present in exactly
+# one root — unless it is named here with the reason that single-provider
+# state is deliberate (or temporarily tolerated debt with an owner).
+#
+# An entry is stale — and fails the check — when its skill exists in every
+# provider root (the parity debt is fixed; remove the entry) or in no
+# provider root (the skill is gone; remove the entry).
+
+[[allow]]
+skill = "scout-issue"
+root = ".claude/skills"
+reason = "Untwinned legacy skill (issue templates for scout agents). Single-provider state is parity debt, not intent; twinning into .agents/skills is the follow-up. Allowlisted so the ratchet blocks NEW drift while this debt is open."
+created = "2026-08-26"
+
+[[allow]]
+skill = "swarm-metrics"
+root = ".claude/skills"
+reason = "Untwinned legacy skill (.ops-perl-lsp/swarm-metrics.jsonl analyzer). Same disposition as scout-issue: debt with a twinning follow-up, not deliberate divergence."
+created = "2026-08-26"

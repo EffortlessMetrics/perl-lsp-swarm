@@ -1,3 +1,4 @@
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 use perl_regex::analyzer::{
     FeatureState, ModifierSequence, PerlVersion, RegexLanguageProfile, RegexOperator,
 };
@@ -227,6 +228,45 @@ fn policy_limits_consume_the_same_group_and_unicode_events()
     assert!(codes.contains(&RegexDiagnosticCode::BranchResetBranchLimit));
     assert!(codes.contains(&RegexDiagnosticCode::UnicodePropertyLimit));
     assert!(analysis.completeness.is_policy_limited());
+    Ok(())
+}
+
+#[test]
+fn policy_limit_diagnostics_keep_identity_range_and_emit_once()
+-> Result<(), Box<dyn std::error::Error>> {
+    let validator = RegexValidator::with_config(RegexValidationConfig {
+        max_nesting: 1,
+        max_unicode_properties: 1,
+        max_branch_reset_branches: 1,
+    });
+    let pattern = r"(?<=(?<=a))(?<=(?<=b))(?|(?|x)|y|z)\p{L}\p{N}";
+    let analysis = validator.analyze(pattern);
+
+    let lookbehind = analysis
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.code == RegexDiagnosticCode::LookbehindNestingLimit)
+        .collect::<Vec<_>>();
+    assert_eq!(lookbehind.len(), 1);
+    assert_eq!(lookbehind[0].limit, Some(1));
+    assert_eq!(lookbehind[0].range.start, 4);
+    assert_eq!(lookbehind[0].range.end, 8);
+
+    let branch_reset = analysis
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.code == RegexDiagnosticCode::BranchResetNestingLimit)
+        .collect::<Vec<_>>();
+    assert_eq!(branch_reset.len(), 1);
+    assert_eq!(branch_reset[0].limit, Some(1));
+
+    let branches = analysis
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.code == RegexDiagnosticCode::BranchResetBranchLimit)
+        .collect::<Vec<_>>();
+    assert_eq!(branches.len(), 1);
+    assert_eq!(branches[0].limit, Some(1));
     Ok(())
 }
 

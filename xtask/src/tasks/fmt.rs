@@ -162,6 +162,41 @@ pub(crate) fn owning_package<'a>(
         .max_by_key(|package| package.dir.as_os_str().len())
 }
 
+/// Whether a staged path may be rewritten in place by the staged formatter.
+///
+/// Both sides have to agree, and for different reasons. `read_to_string`
+/// follows a symlink, while [`commit_formatted`] renames a regular temp file
+/// over the path — so formatting a staged `foo.rs` symlink replaces the link
+/// with a regular file holding its target's bytes, content that can originate
+/// outside the repository entirely. The index is what actually gets committed,
+/// so an entry git records as a symlink is refused even when the worktree copy
+/// currently looks regular, and the reverse. Measured before the refusal
+/// existed: `git add` recorded a `120000 -> 100644` type *and* content change
+/// inside the author's own commit.
+///
+/// `index_mode` is the staged mode from `git ls-files --stage`. Only the two
+/// regular blob modes are rewritable: `120000` (symlink) and `160000`
+/// (gitlink/submodule) are refused, as is any mode git may add later — the
+/// rule fails closed on anything unrecognised.
+///
+/// `None` means "the index says nothing that contradicts the worktree", not
+/// "safe to rewrite". It is a fallback, never a permission: the worktree check
+/// still has to pass on its own, so an absent entry cannot admit a *worktree*
+/// symlink. It can still admit a path the index calls `120000` whose worktree
+/// copy looks regular, so `None` must mean "this path genuinely has no index
+/// entry" and never "we could not read one" — [`parse_staged_index_modes`]
+/// refuses rather than dropping a record precisely to keep that true.
+/// [`run_staged`] never reaches it — it takes staged paths from
+/// [`classify_staged_paths`] and modes from [`staged_index_modes`], both read
+/// off the same index, so every path it passes here has an entry. The case
+/// exists for a future caller that derives `index_mode` some other way.
+pub(crate) fn is_rewritable_staged_file(
+    worktree_is_regular: bool,
+    index_mode: Option<&str>,
+) -> bool {
+    worktree_is_regular && index_mode.is_none_or(|mode| mode == "100644" || mode == "100755")
+}
+
 /// Formats the staged Rust diff and re-stages it.
 ///
 /// This is the apply half of the `rustfmt_staged` commit gate: that check
@@ -249,25 +284,17 @@ pub fn run_staged() -> Result<()> {
             // subdirectory, so resolve against the git root.
             let absolute = root.join(path);
 
-            // Only ever rewrite a regular file, checked on both sides.
-            //
-            // `read_to_string` follows a symlink, but the commit phase renames
-            // a regular temp file over the link — so a staged `foo.rs` symlink
-            // became a regular file holding its target's bytes, and `git add`
-            // recorded that as a 120000 -> 100644 type change. Measured before
-            // the fix, with a target outside the source tree.
-            //
-            // The worktree type alone is not enough: the index is what gets
-            // committed, so an entry the index calls a symlink is refused even
-            // if the worktree copy currently looks regular (and vice versa).
+            // Only ever rewrite a regular file, checked on both sides — see
+            // [`is_rewritable_staged_file`] for why the index mode is consulted
+            // as well as the worktree type.
             let worktree_regular = std::fs::symlink_metadata(&absolute)
                 .with_context(|| format!("failed to stat staged file {}", path.display()))?
                 .file_type()
                 .is_file();
-            let index_regular = index_modes
-                .get(path.as_path())
-                .is_none_or(|mode| mode == "100644" || mode == "100755");
-            if !worktree_regular || !index_regular {
+            if !is_rewritable_staged_file(
+                worktree_regular,
+                index_modes.get(path.as_path()).map(String::as_str),
+            ) {
                 irregular.push(path.as_path());
                 continue;
             }
@@ -646,15 +673,34 @@ fn staged_index_modes() -> Result<HashMap<PathBuf, String>> {
         return Err(eyre!("git ls-files -s -z failed"));
     }
 
+    parse_staged_index_modes(&out.stdout)
+}
+
+/// Parses `git ls-files -s -z` output into `path -> index mode`.
+///
+/// Refuses the whole run on any record it cannot parse, rather than skipping
+/// it. Skipping is not neutral here: a dropped record leaves its path with no
+/// entry, and [`is_rewritable_staged_file`] reads an absent mode as "no
+/// objection". An index entry we failed to parse would therefore become
+/// permission to rewrite — turning an unreadable `120000` into exactly the
+/// symlink rewrite the mode check exists to prevent. Refusing matches
+/// [`bytes_to_path`]: formatting the wrong file is worse than refusing.
+fn parse_staged_index_modes(stdout: &[u8]) -> Result<HashMap<PathBuf, String>> {
     let mut modes = HashMap::new();
-    for record in out.stdout.split(|byte| *byte == 0).filter(|record| !record.is_empty()) {
+    for record in stdout.split(|byte| *byte == 0).filter(|record| !record.is_empty()) {
         let Some(tab) = record.iter().position(|byte| *byte == b'\t') else {
-            continue;
+            return Err(eyre!(
+                "git ls-files -s -z produced a record with no tab separator; refusing to \
+                 rewrite staged files against an index entry that cannot be read"
+            ));
         };
         let (meta, path) = record.split_at(tab);
         let Some(mode) = String::from_utf8_lossy(meta).split_whitespace().next().map(String::from)
         else {
-            continue;
+            return Err(eyre!(
+                "git ls-files -s -z produced a record with no mode field; refusing to \
+                 rewrite staged files against an index entry that cannot be read"
+            ));
         };
         modes.insert(bytes_to_path(&path[1..])?, mode);
     }
@@ -856,7 +902,7 @@ mod tests {
     use super::{
         CargoMetadata, CargoPackage, CrateFailure, StagedFormatAction, WorkspacePackage,
         classify_staged_paths, collect_workspace_manifest_paths, format_failure_report,
-        parse_unformatted_files,
+        is_rewritable_staged_file, parse_unformatted_files,
     };
     use color_eyre::eyre::Result;
     use std::collections::HashSet;
@@ -956,6 +1002,119 @@ mod tests {
         assert_eq!(owner_name("src/lib.rs", &dirs).as_deref(), Some("root-crate"));
         // ...and must not shadow a more specific package.
         assert_eq!(owner_name("xtask/src/main.rs", &dirs).as_deref(), Some("xtask"));
+    }
+
+    // `is_rewritable_staged_file` — the staged symlink / irregular index-mode
+    // refusal (#9555). Formatting a staged symlink replaces it with a regular
+    // file holding its target's bytes, so every case below that returns `false`
+    // is a file the formatter must leave alone. These are the pure-function
+    // half of the rule applied in `run_staged`; deleting either side of the
+    // `&&` there turns one of these red.
+
+    #[test]
+    fn a_staged_symlink_is_never_rewritten() {
+        // The index says symlink; the worktree agrees. The original defect.
+        assert!(!is_rewritable_staged_file(false, Some("120000")));
+    }
+
+    #[test]
+    fn a_worktree_symlink_is_refused_even_when_the_index_calls_it_regular() {
+        // The worktree is what `read_to_string` follows, so a link here is
+        // refused whatever the index currently records.
+        assert!(!is_rewritable_staged_file(false, Some("100644")));
+    }
+
+    #[test]
+    fn a_regular_worktree_file_the_index_calls_a_symlink_is_refused() {
+        // The index is what gets committed, so its mode is decisive even when
+        // the worktree copy looks safe to rewrite.
+        assert!(!is_rewritable_staged_file(true, Some("120000")));
+    }
+
+    #[test]
+    fn a_staged_gitlink_is_never_rewritten() {
+        // 160000 is a submodule pointer, not a blob the formatter can rewrite.
+        assert!(!is_rewritable_staged_file(true, Some("160000")));
+    }
+
+    #[test]
+    fn an_unrecognised_index_mode_fails_closed() {
+        // The rule admits two modes by name rather than excluding known-bad
+        // ones, so a mode git adds later is refused rather than rewritten.
+        // Both inputs are well-formed six-digit modes `git ls-files --stage`
+        // does not currently emit, which is the shape a future mode would
+        // arrive in — a malformed mode is not reachable through
+        // `staged_index_modes` and would prove nothing about this rule.
+        assert!(!is_rewritable_staged_file(true, Some("100600")));
+        assert!(!is_rewritable_staged_file(true, Some("100000")));
+    }
+
+    #[test]
+    fn a_regular_staged_blob_is_rewritable_in_both_modes() {
+        assert!(is_rewritable_staged_file(true, Some("100644")));
+        assert!(is_rewritable_staged_file(true, Some("100755")));
+    }
+
+    #[test]
+    fn a_regular_file_with_no_index_entry_is_rewritable() {
+        // No index entry means nothing contradicts the worktree type.
+        assert!(is_rewritable_staged_file(true, None));
+    }
+
+    #[test]
+    fn a_worktree_symlink_with_no_index_entry_is_refused() {
+        // The absent-entry case must not become a blanket accept.
+        assert!(!is_rewritable_staged_file(false, None));
+    }
+
+    // `parse_staged_index_modes` — the parser half of the symlink refusal
+    // (#9555 review). `is_rewritable_staged_file` reads an absent mode as "no
+    // objection", so a record this parser drops becomes permission to rewrite.
+    // These pin that an unreadable record refuses the run instead.
+
+    fn record(meta: &str, path: &str) -> Vec<u8> {
+        format!("{meta}\t{path}\0").into_bytes()
+    }
+
+    #[test]
+    fn well_formed_index_records_parse_to_their_modes() {
+        let mut input = record("100644 abc123 0", "src/lib.rs");
+        input.extend(record("120000 def456 0", "src/link.rs"));
+        let modes = super::parse_staged_index_modes(&input).expect("well-formed input parses");
+        assert_eq!(modes.get(Path::new("src/lib.rs")).map(String::as_str), Some("100644"));
+        assert_eq!(modes.get(Path::new("src/link.rs")).map(String::as_str), Some("120000"));
+    }
+
+    #[test]
+    fn a_record_with_no_tab_refuses_rather_than_dropping_the_path() {
+        // Dropping it would leave the path with no mode, which the predicate
+        // reads as permission — the exact bypass this refusal closes.
+        let input = b"100644 abc123 0 src/lib.rs\0".to_vec();
+        let error = super::parse_staged_index_modes(&input).expect_err("must refuse");
+        assert!(format!("{error}").contains("no tab separator"), "unexpected: {error}");
+    }
+
+    #[test]
+    fn a_record_with_no_mode_field_refuses_rather_than_dropping_the_path() {
+        let input = record("", "src/lib.rs");
+        let error = super::parse_staged_index_modes(&input).expect_err("must refuse");
+        assert!(format!("{error}").contains("no mode field"), "unexpected: {error}");
+    }
+
+    #[test]
+    fn an_unreadable_index_record_never_reaches_the_predicate_as_none() {
+        // End-to-end of the reported bypass: a staged symlink whose record is
+        // malformed must not arrive at `is_rewritable_staged_file` as `None`
+        // (which, with a regular-looking worktree file, would return true).
+        let input = b"120000 def456 0 src/link.rs\0".to_vec();
+        assert!(super::parse_staged_index_modes(&input).is_err());
+        assert!(is_rewritable_staged_file(true, None), "None is permissive by design");
+    }
+
+    #[test]
+    fn empty_index_output_is_an_empty_map_not_an_error() {
+        let modes = super::parse_staged_index_modes(b"").expect("empty input is not an anomaly");
+        assert!(modes.is_empty());
     }
 
     #[test]
@@ -1439,8 +1598,26 @@ mod tests {
         // strip_prefix fails, the dir stays absolute, and an absolute dir can
         // never prefix-match a repository-relative git path. Those files fall
         // through to the gate rather than being misattributed.
-        let metadata = sample_metadata();
-        let packages = super::workspace_packages(&metadata, Path::new("/somewhere/else"));
+        //
+        // #12790: the fixture paths must be genuinely absolute on the host —
+        // a leading `/` without a drive prefix is not absolute on Windows
+        // (`Path::is_absolute` requires prefix + root), so POSIX-flavored
+        // literals fail the assertion there even though the ownership
+        // semantics under test are platform-neutral.
+        #[cfg(windows)]
+        const ABS_REPO: &str = r"C:\repo";
+        #[cfg(not(windows))]
+        const ABS_REPO: &str = "/repo";
+        #[cfg(windows)]
+        let outside_root = Path::new(r"D:\somewhere\else");
+        #[cfg(not(windows))]
+        let outside_root = Path::new("/somewhere/else");
+
+        let mut metadata = sample_metadata();
+        for package in &mut metadata.packages {
+            package.manifest_path = package.manifest_path.replacen("/repo", ABS_REPO, 1);
+        }
+        let packages = super::workspace_packages(&metadata, outside_root);
         assert!(
             packages.iter().all(|package| package.dir.is_absolute()),
             "packages outside the given root must keep absolute dirs: {packages:?}"

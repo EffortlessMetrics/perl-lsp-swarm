@@ -32,6 +32,10 @@ log.html
 sbom-*.json
 SHA256SUMS
 
+# Lite XL composed candidate trees and receipts (#11170), deterministic
+# and reproducible on demand via clients/lite-xl/compose.lua
+clients/lite-xl/generated/
+
 # Property test regression files
 **/tests/_proptest-regressions/
 
@@ -222,6 +226,8 @@ plans/*
 !plans/lsp-freshness/implementation-plan.md
 !plans/spec-governance/
 !plans/spec-governance/implementation-plan.md
+!plans/install-route-classification/
+!plans/install-route-classification/implementation-plan.md
 scanner_comparison/
 issue_updates/
 

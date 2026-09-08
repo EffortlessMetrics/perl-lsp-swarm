@@ -24,7 +24,7 @@ fn main() {
         match stream.next() {
             Ok(token) => {
                 println!("  {:?}", token);
-                if token.kind == TokenKind::Eof {
+                if token.kind() == TokenKind::Eof {
                     break;
                 }
             }

@@ -75,7 +75,7 @@
 //! assert_eq!(comparison.outcome(), ConformanceOutcome::MatchesExpected);
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
-
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 #![deny(unreachable_pub)]
 #![warn(rust_2018_idioms)]
 #![warn(missing_docs)]

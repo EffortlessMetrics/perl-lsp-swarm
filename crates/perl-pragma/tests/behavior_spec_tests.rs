@@ -2,6 +2,7 @@
 //!
 //! These scenarios describe pragma behavior from a consumer point of view:
 //! "Given <context>, when <construct appears>, then <effective state>."
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 use perl_ast::SourceLocation;
 use perl_ast::ast::{Node, NodeKind};

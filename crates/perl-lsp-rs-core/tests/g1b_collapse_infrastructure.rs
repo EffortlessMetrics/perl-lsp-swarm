@@ -7,8 +7,7 @@
 //! 4. published-crate-baseline.txt is updated from 59 to 49
 //! 5. Snapshot files have been migrated to the correct location
 
-#![allow(clippy::expect_used)]
-
+use perl_test_must::must_with;
 use std::fs;
 
 // Helper to get the workspace root
@@ -137,10 +136,12 @@ fn test_published_crate_baseline_updated() {
     let baseline_path = root.join("xtask/published-crate-baseline.txt");
     assert!(baseline_path.exists(), "xtask/published-crate-baseline.txt should exist");
 
-    let content = fs::read_to_string(baseline_path)
-        .expect("Failed to read xtask/published-crate-baseline.txt");
+    let content = must_with(
+        fs::read_to_string(baseline_path),
+        "Failed to read xtask/published-crate-baseline.txt",
+    );
     let trimmed = content.trim();
-    let count: u32 = trimmed.parse().expect("baseline should be a number");
+    let count: u32 = must_with(trimmed.parse(), "baseline should be a number");
 
     // History: G1a → 59; G1b → 49 (59-10); G2 → 44 (49-5); G3 → 37 (44-7)
     // The baseline must be <= 44 (G2 was the last confirmed reduction before G3)
@@ -165,7 +166,7 @@ fn test_perl_lsp_cargo_toml_no_g1b_deps() {
     assert!(cargo_path.exists(), "crates/perl-lsp-rs/Cargo.toml should exist");
 
     let content =
-        fs::read_to_string(cargo_path).expect("Failed to read crates/perl-lsp-rs/Cargo.toml");
+        must_with(fs::read_to_string(cargo_path), "Failed to read crates/perl-lsp-rs/Cargo.toml");
 
     // These 10 dependencies should be removed after G1b collapse
     let forbidden_deps = [
@@ -200,7 +201,7 @@ fn test_perl_lsp_cargo_toml_has_core_dep() {
     assert!(cargo_path.exists(), "crates/perl-lsp-rs/Cargo.toml should exist");
 
     let content =
-        fs::read_to_string(cargo_path).expect("Failed to read crates/perl-lsp-rs/Cargo.toml");
+        must_with(fs::read_to_string(cargo_path), "Failed to read crates/perl-lsp-rs/Cargo.toml");
 
     // perl-lsp-rs-core must remain
     assert!(
@@ -219,7 +220,7 @@ fn test_perl_lsp_src_features_rename_migrated() {
     let root = get_workspace_root();
     let file = root.join("crates/perl-lsp-rs/src/features/rename.rs");
     if file.exists() {
-        let content = fs::read_to_string(file).expect("Failed to read features/rename.rs");
+        let content = must_with(fs::read_to_string(file), "Failed to read features/rename.rs");
 
         // Should use new path
         assert!(
@@ -241,7 +242,8 @@ fn test_perl_lsp_src_features_diagnostics_migrated() {
     let root = get_workspace_root();
     let file = root.join("crates/perl-lsp-rs/src/features/diagnostics/mod.rs");
     if file.exists() {
-        let content = fs::read_to_string(file).expect("Failed to read features/diagnostics/mod.rs");
+        let content =
+            must_with(fs::read_to_string(file), "Failed to read features/diagnostics/mod.rs");
 
         // Should use new path
         assert!(
@@ -345,7 +347,7 @@ fn test_diag_snap_uses_new_provider_path() {
     let root = get_workspace_root();
     let test_file = root.join("crates/perl-lsp-rs-core/tests/diag_snap.rs");
     if test_file.exists() {
-        let content = fs::read_to_string(test_file).expect("Failed to read diag_snap.rs");
+        let content = must_with(fs::read_to_string(test_file), "Failed to read diag_snap.rs");
 
         // Should have the new path
         assert!(

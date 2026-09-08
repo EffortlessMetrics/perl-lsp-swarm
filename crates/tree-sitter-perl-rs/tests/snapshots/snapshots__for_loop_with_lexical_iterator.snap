@@ -2,4 +2,4 @@
 source: crates/tree-sitter-perl-rs/tests/snapshots.rs
 expression: sexp
 ---
-(source_file (foreach (my_declaration (variable $ item)) (variable @ items) (block (expression_statement (call print ((variable $ item) (string_interpolated "\"\\n\"")))))))
+(source_file (statements (foreach (variable (my_declaration (declarator my) (variable (variable (sigil $) (name item))))) (list (variable (sigil @) (name items))) (body (block (statements (expression_statement (expression (call (name print) (args (variable (sigil $) (name item))) (args (string_interpolated (value "\"\\n\"") (interpolated true))))))))))))

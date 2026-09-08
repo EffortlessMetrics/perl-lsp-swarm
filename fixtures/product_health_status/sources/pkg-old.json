@@ -1,0 +1,14 @@
+{
+  "schema": "fixture.v1",
+  "packet_id": "pkg-old",
+  "selector": "fixture.subject",
+  "rail_id": "fixture.package",
+  "subject": "package@fixture-tree",
+  "source_result": "pass",
+  "state": "current",
+  "supersedes": null,
+  "digest": "sha256:2c4da878559d4a86bf2cd64cb97fa2291c816d77af1be6490739d69cdb8eaaca",
+  "limitations": [],
+  "nonclaims": [],
+  "detail": {}
+}

@@ -1,0 +1,2686 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://effortlessmetrics.dev/schemas/perl_core_harness_upstream_effective_invocation_trace.v1.schema.json",
+  "title": "Perl core harness upstream effective invocation trace receipt v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "evidence_class",
+    "payload_digest",
+    "payload"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "perl_core_harness.upstream_effective_invocation_trace.v1"
+    },
+    "evidence_class": {
+      "const": "instrumented_upstream"
+    },
+    "payload_digest": {
+      "type": "string",
+      "pattern": "^[0-9a-fA-F]{64}$"
+    },
+    "payload": {
+      "$ref": "#/$defs/payload"
+    }
+  },
+  "$defs": {
+    "payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "subject",
+        "runner",
+        "runner_artifact",
+        "header",
+        "terminal",
+        "trace",
+        "trace_decode",
+        "rows",
+        "work",
+        "limitations",
+        "claim_boundary"
+      ],
+      "properties": {
+        "subject": {
+          "$ref": "#/$defs/subject"
+        },
+        "runner": {
+          "enum": [
+            "test",
+            "harness"
+          ]
+        },
+        "runner_artifact": {
+          "$ref": "#/$defs/artifact"
+        },
+        "header": {
+          "$ref": "#/$defs/header"
+        },
+        "terminal": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/terminal"
+            }
+          ]
+        },
+        "trace": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "bytes_hex",
+            "truncated"
+          ],
+          "properties": {
+            "bytes_hex": {
+              "type": "string",
+              "pattern": "^([0-9a-f]{2})*$"
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          }
+        },
+        "trace_decode": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "outcome"
+              ],
+              "properties": {
+                "outcome": {
+                  "const": "complete"
+                }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "outcome",
+                "reason"
+              ],
+              "properties": {
+                "outcome": {
+                  "const": "malformed"
+                },
+                "reason": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          ]
+        },
+        "rows": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/row"
+          }
+        },
+        "work": {
+          "$ref": "#/$defs/work"
+        },
+        "limitations": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "claim_boundary": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "subject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "repository_commit",
+        "perl_ref",
+        "prepared_tree_identity",
+        "host_perl_identity",
+        "matrix_fingerprint",
+        "target_id",
+        "target_contract_digest",
+        "variant_target_id",
+        "instrumentation_id",
+        "trace_session_id",
+        "parent_process_nonce",
+        "parent_receipt_digest"
+      ],
+      "properties": {
+        "repository_commit": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40,64}$"
+        },
+        "perl_ref": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "prepared_tree_identity": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "host_perl_identity": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "matrix_fingerprint": {
+          "type": "string",
+          "pattern": "^[0-9a-fA-F]{64}$"
+        },
+        "target_id": {
+          "type": "string",
+          "pattern": "^[a-z0-9_]+$"
+        },
+        "target_contract_digest": {
+          "type": "string",
+          "pattern": "^[0-9a-fA-F]{64}$"
+        },
+        "variant_target_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[a-z0-9_]+$"
+        },
+        "instrumentation_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "trace_session_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "parent_process_nonce": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "parent_receipt_digest": {
+          "type": "string",
+          "pattern": "^[0-9a-fA-F]{64}$"
+        }
+      }
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "canonical_path",
+        "content_sha256"
+      ],
+      "properties": {
+        "canonical_path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "content_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-fA-F]{64}$"
+        }
+      }
+    },
+    "header": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "trace_session_id",
+        "parent_process_nonce",
+        "parent_receipt_digest",
+        "expected_row_count",
+        "encoding",
+        "newline"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": "perl_core_harness.upstream_effective_invocation_trace.v1"
+        },
+        "trace_session_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "parent_process_nonce": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "parent_receipt_digest": {
+          "type": "string",
+          "pattern": "^[0-9a-fA-F]{64}$"
+        },
+        "expected_row_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "encoding": {
+          "const": "utf-8"
+        },
+        "newline": {
+          "const": "lf"
+        }
+      }
+    },
+    "terminal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "row_count",
+        "integrity_sha256",
+        "completion"
+      ],
+      "properties": {
+        "row_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "integrity_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-fA-F]{64}$"
+        },
+        "completion": {
+          "$ref": "#/$defs/completion"
+        }
+      }
+    },
+    "completion": {
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "cancelled",
+            "instrument_failed",
+            "unknown"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "exit_status"
+          ],
+          "properties": {
+            "exit_status": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "code"
+              ],
+              "properties": {
+                "code": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "signalled"
+          ],
+          "properties": {
+            "signalled": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "signal"
+              ],
+              "properties": {
+                "signal": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "timed_out"
+          ],
+          "properties": {
+            "timed_out": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "deadline_millis"
+              ],
+              "properties": {
+                "deadline_millis": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "row": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sequence",
+        "row_id",
+        "raw_line",
+        "subject",
+        "fields",
+        "disposition",
+        "state",
+        "row_fingerprint",
+        "projection"
+      ],
+      "properties": {
+        "sequence": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "row_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "raw_line": {
+          "type": "string"
+        },
+        "subject": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "trace_session_id",
+            "parent_receipt_digest",
+            "parent_member_path",
+            "runner",
+            "target_id",
+            "variant_target_id",
+            "instrumentation_id"
+          ],
+          "properties": {
+            "trace_session_id": {
+              "type": "string"
+            },
+            "parent_receipt_digest": {
+              "type": "string"
+            },
+            "parent_member_path": {
+              "type": "string"
+            },
+            "runner": {
+              "enum": [
+                "test",
+                "harness",
+                "direct_fallback"
+              ]
+            },
+            "target_id": {
+              "type": "string"
+            },
+            "variant_target_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "instrumentation_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        },
+        "fields": {
+          "$ref": "#/$defs/fields"
+        },
+        "disposition": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "kind"
+              ],
+              "properties": {
+                "kind": {
+                  "const": "accepted"
+                }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "kind",
+                "detail"
+              ],
+              "properties": {
+                "kind": {
+                  "const": "duplicate_row_id"
+                },
+                "detail": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "row_id"
+                  ],
+                  "properties": {
+                    "row_id": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "kind",
+                "detail"
+              ],
+              "properties": {
+                "kind": {
+                  "const": "out_of_order_sequence"
+                },
+                "detail": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "expected",
+                    "actual"
+                  ],
+                  "properties": {
+                    "expected": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "actual": {
+                      "type": "integer",
+                      "minimum": 0
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "kind",
+                "detail"
+              ],
+              "properties": {
+                "kind": {
+                  "const": "cross_run_interleaved"
+                },
+                "detail": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "session_id"
+                  ],
+                  "properties": {
+                    "session_id": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "kind",
+                "detail"
+              ],
+              "properties": {
+                "kind": {
+                  "const": "malformed_frame"
+                },
+                "detail": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "reason"
+                  ],
+                  "properties": {
+                    "reason": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  }
+                }
+              }
+            }
+          ]
+        },
+        "state": {
+          "enum": [
+            "observed_complete",
+            "observed_partial",
+            "runner_failed",
+            "instrument_failed",
+            "subject_mismatch",
+            "not_proven"
+          ]
+        },
+        "row_fingerprint": {
+          "type": "string",
+          "pattern": "^[0-9a-fA-F]{64}$"
+        },
+        "projection": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "outcome",
+                "digest"
+              ],
+              "properties": {
+                "outcome": {
+                  "const": "projected"
+                },
+                "digest": {
+                  "type": "string",
+                  "pattern": "^[0-9a-fA-F]{64}$"
+                }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "outcome",
+                "reason"
+              ],
+              "properties": {
+                "outcome": {
+                  "const": "rejected"
+                },
+                "reason": {
+                  "enum": [
+                    "observation_not_complete",
+                    "frame_not_accepted",
+                    "field_not_observed",
+                    "invalid_observed_value",
+                    "subject_mismatch",
+                    "direct_probe_authority"
+                  ]
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "fields": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "member_identity",
+        "source_form",
+        "script_path",
+        "script_role",
+        "run_cwd",
+        "return_directory",
+        "interpreter_switches",
+        "include_roots",
+        "test_init",
+        "taint_mode",
+        "utf8_mode",
+        "wrapper_arguments",
+        "script_arguments",
+        "environment",
+        "scheduling",
+        "capture_point",
+        "upstream_operation"
+      ],
+      "properties": {
+        "member_identity": {
+          "$ref": "#/$defs/field_string"
+        },
+        "source_form": {
+          "$ref": "#/$defs/field_source_form"
+        },
+        "script_path": {
+          "$ref": "#/$defs/field_string"
+        },
+        "script_role": {
+          "$ref": "#/$defs/field_script_role"
+        },
+        "run_cwd": {
+          "$ref": "#/$defs/field_string"
+        },
+        "return_directory": {
+          "$ref": "#/$defs/field_string"
+        },
+        "interpreter_switches": {
+          "$ref": "#/$defs/field_string_array"
+        },
+        "include_roots": {
+          "$ref": "#/$defs/field_string_array"
+        },
+        "test_init": {
+          "$ref": "#/$defs/field_test_init"
+        },
+        "taint_mode": {
+          "$ref": "#/$defs/field_taint_mode"
+        },
+        "utf8_mode": {
+          "$ref": "#/$defs/field_utf8_mode"
+        },
+        "wrapper_arguments": {
+          "$ref": "#/$defs/field_string_array"
+        },
+        "script_arguments": {
+          "$ref": "#/$defs/field_string_array"
+        },
+        "environment": {
+          "$ref": "#/$defs/field_environment"
+        },
+        "scheduling": {
+          "$ref": "#/$defs/field_scheduling"
+        },
+        "capture_point": {
+          "$ref": "#/$defs/field_capture_point"
+        },
+        "upstream_operation": {
+          "$ref": "#/$defs/field_string"
+        }
+      }
+    },
+    "field_reasons": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "payload"
+          ],
+          "properties": {
+            "state": {
+              "const": "not_applicable"
+            },
+            "payload": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "reason"
+              ],
+              "properties": {
+                "reason": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "payload"
+          ],
+          "properties": {
+            "state": {
+              "const": "not_observed"
+            },
+            "payload": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "reason"
+              ],
+              "properties": {
+                "reason": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "payload"
+          ],
+          "properties": {
+            "state": {
+              "const": "malformed"
+            },
+            "payload": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "reason"
+              ],
+              "properties": {
+                "reason": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "payload"
+          ],
+          "properties": {
+            "state": {
+              "const": "instrument_failure"
+            },
+            "payload": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "reason"
+              ],
+              "properties": {
+                "reason": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "field_string": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "payload"
+          ],
+          "properties": {
+            "state": {
+              "const": "observed"
+            },
+            "payload": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "value"
+              ],
+              "properties": {
+                "value": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "payload"
+          ],
+          "properties": {
+            "state": {
+              "const": "ambiguous"
+            },
+            "payload": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "candidates",
+                "reason"
+              ],
+              "properties": {
+                "candidates": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "reason": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "payload"
+          ],
+          "properties": {
+            "state": {
+              "const": "not_applicable"
+            },
+            "payload": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "reason"
+              ],
+              "properties": {
+                "reason": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "payload"
+          ],
+          "properties": {
+            "state": {
+              "const": "not_observed"
+            },
+            "payload": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "reason"
+              ],
+              "properties": {
+                "reason": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "payload"
+          ],
+          "properties": {
+            "state": {
+              "const": "malformed"
+            },
+            "payload": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "reason"
+              ],
+              "properties": {
+                "reason": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "payload"
+          ],
+          "properties": {
+            "state": {
+              "const": "instrument_failure"
+            },
+            "payload": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "reason"
+              ],
+              "properties": {
+                "reason": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "field_string_array": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "payload"
+          ],
+          "properties": {
+            "state": {
+              "const": "observed"
+            },
+            "payload": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "value"
+              ],
+              "properties": {
+                "value": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "payload"
+          ],
+          "properties": {
+            "state": {
+              "const": "ambiguous"
+            },
+            "payload": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "candidates",
+                "reason"
+              ],
+              "properties": {
+                "candidates": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "reason": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "payload"
+          ],
+          "properties": {
+            "state": {
+              "const": "not_applicable"
+            },
+            "payload": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "reason"
+              ],
+              "properties": {
+                "reason": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "payload"
+          ],
+          "properties": {
+            "state": {
+              "const": "not_observed"
+            },
+            "payload": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "reason"
+              ],
+              "properties": {
+                "reason": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "payload"
+          ],
+          "properties": {
+            "state": {
+              "const": "malformed"
+            },
+            "payload": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "reason"
+              ],
+              "properties": {
+                "reason": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "payload"
+          ],
+          "properties": {
+            "state": {
+              "const": "instrument_failure"
+            },
+            "payload": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "reason"
+              ],
+              "properties": {
+                "reason": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "field_source_form": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "payload"
+          ],
+          "properties": {
+            "state": {
+              "const": "observed"
+            },
+            "payload": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "value"
+              ],
+              "properties": {
+                "value": {
+                  "enum": [
+                    "dot_t",
+                    "test_pl"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "payload"
+          ],
+          "properties": {
+            "state": {
+              "const": "ambiguous"
+            },
+            "payload": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "candidates",
+                "reason"
+              ],
+              "properties": {
+                "candidates": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "reason": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "payload"
+          ],
+          "properties": {
+            "state": {
+              "const": "not_applicable"
+            },
+            "payload": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "reason"
+              ],
+              "properties": {
+                "reason": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "payload"
+          ],
+          "properties": {
+            "state": {
+              "const": "not_observed"
+            },
+            "payload": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "reason"
+              ],
+              "properties": {
+                "reason": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "payload"
+          ],
+          "properties": {
+            "state": {
+              "const": "malformed"
+            },
+            "payload": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "reason"
+              ],
+              "properties": {
+                "reason": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "payload"
+          ],
+          "properties": {
+            "state": {
+              "const": "instrument_failure"
+            },
+            "payload": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "reason"
+              ],
+              "properties": {
+                "reason": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "field_script_role": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "payload"
+          ],
+          "properties": {
+            "state": {
+              "const": "observed"
+            },
+            "payload": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "value"
+              ],
+              "properties": {
+                "value": {
+                  "enum": [
+                    "base",
+                    "comp",
+                    "run",
+                    "other"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "payload"
+          ],
+          "properties": {
+            "state": {
+              "const": "ambiguous"
+            },
+            "payload": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "candidates",
+                "reason"
+              ],
+              "properties": {
+                "candidates": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "reason": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "payload"
+          ],
+          "properties": {
+            "state": {
+              "const": "not_applicable"
+            },
+            "payload": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "reason"
+              ],
+              "properties": {
+                "reason": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "payload"
+          ],
+          "properties": {
+            "state": {
+              "const": "not_observed"
+            },
+            "payload": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "reason"
+              ],
+              "properties": {
+                "reason": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "payload"
+          ],
+          "properties": {
+            "state": {
+              "const": "malformed"
+            },
+            "payload": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "reason"
+              ],
+              "properties": {
+                "reason": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "payload"
+          ],
+          "properties": {
+            "state": {
+              "const": "instrument_failure"
+            },
+            "payload": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "reason"
+              ],
+              "properties": {
+                "reason": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "field_test_init": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "payload"
+          ],
+          "properties": {
+            "state": {
+              "const": "observed"
+            },
+            "payload": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "value"
+              ],
+              "properties": {
+                "value": {
+                  "enum": [
+                    "standard",
+                    "u1",
+                    "u2",
+                    "u2t",
+                    "a",
+                    "nc"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "payload"
+          ],
+          "properties": {
+            "state": {
+              "const": "ambiguous"
+            },
+            "payload": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "candidates",
+                "reason"
+              ],
+              "properties": {
+                "candidates": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "reason": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "payload"
+          ],
+          "properties": {
+            "state": {
+              "const": "not_applicable"
+            },
+            "payload": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "reason"
+              ],
+              "properties": {
+                "reason": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "payload"
+          ],
+          "properties": {
+            "state": {
+              "const": "not_observed"
+            },
+            "payload": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "reason"
+              ],
+              "properties": {
+                "reason": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "payload"
+          ],
+          "properties": {
+            "state": {
+              "const": "malformed"
+            },
+            "payload": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "reason"
+              ],
+              "properties": {
+                "reason": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "payload"
+          ],
+          "properties": {
+            "state": {
+              "const": "instrument_failure"
+            },
+            "payload": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "reason"
+              ],
+              "properties": {
+                "reason": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "field_taint_mode": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "payload"
+          ],
+          "properties": {
+            "state": {
+              "const": "observed"
+            },
+            "payload": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "value"
+              ],
+              "properties": {
+                "value": {
+                  "enum": [
+                    "none",
+                    "taint_warnings",
+                    "taint_mode"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "payload"
+          ],
+          "properties": {
+            "state": {
+              "const": "ambiguous"
+            },
+            "payload": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "candidates",
+                "reason"
+              ],
+              "properties": {
+                "candidates": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "reason": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "payload"
+          ],
+          "properties": {
+            "state": {
+              "const": "not_applicable"
+            },
+            "payload": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "reason"
+              ],
+              "properties": {
+                "reason": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "payload"
+          ],
+          "properties": {
+            "state": {
+              "const": "not_observed"
+            },
+            "payload": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "reason"
+              ],
+              "properties": {
+                "reason": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "payload"
+          ],
+          "properties": {
+            "state": {
+              "const": "malformed"
+            },
+            "payload": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "reason"
+              ],
+              "properties": {
+                "reason": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "payload"
+          ],
+          "properties": {
+            "state": {
+              "const": "instrument_failure"
+            },
+            "payload": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "reason"
+              ],
+              "properties": {
+                "reason": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "field_utf8_mode": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "payload"
+          ],
+          "properties": {
+            "state": {
+              "const": "observed"
+            },
+            "payload": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "value"
+              ],
+              "properties": {
+                "value": {
+                  "enum": [
+                    "none",
+                    "utf8"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "payload"
+          ],
+          "properties": {
+            "state": {
+              "const": "ambiguous"
+            },
+            "payload": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "candidates",
+                "reason"
+              ],
+              "properties": {
+                "candidates": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "reason": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "payload"
+          ],
+          "properties": {
+            "state": {
+              "const": "not_applicable"
+            },
+            "payload": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "reason"
+              ],
+              "properties": {
+                "reason": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "payload"
+          ],
+          "properties": {
+            "state": {
+              "const": "not_observed"
+            },
+            "payload": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "reason"
+              ],
+              "properties": {
+                "reason": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "payload"
+          ],
+          "properties": {
+            "state": {
+              "const": "malformed"
+            },
+            "payload": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "reason"
+              ],
+              "properties": {
+                "reason": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "payload"
+          ],
+          "properties": {
+            "state": {
+              "const": "instrument_failure"
+            },
+            "payload": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "reason"
+              ],
+              "properties": {
+                "reason": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "field_capture_point": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "payload"
+          ],
+          "properties": {
+            "state": {
+              "const": "observed"
+            },
+            "payload": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "value"
+              ],
+              "properties": {
+                "value": {
+                  "enum": [
+                    "member_scan",
+                    "invocation_decision",
+                    "process_spawn"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "payload"
+          ],
+          "properties": {
+            "state": {
+              "const": "ambiguous"
+            },
+            "payload": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "candidates",
+                "reason"
+              ],
+              "properties": {
+                "candidates": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "reason": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "payload"
+          ],
+          "properties": {
+            "state": {
+              "const": "not_applicable"
+            },
+            "payload": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "reason"
+              ],
+              "properties": {
+                "reason": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "payload"
+          ],
+          "properties": {
+            "state": {
+              "const": "not_observed"
+            },
+            "payload": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "reason"
+              ],
+              "properties": {
+                "reason": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "payload"
+          ],
+          "properties": {
+            "state": {
+              "const": "malformed"
+            },
+            "payload": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "reason"
+              ],
+              "properties": {
+                "reason": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "payload"
+          ],
+          "properties": {
+            "state": {
+              "const": "instrument_failure"
+            },
+            "payload": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "reason"
+              ],
+              "properties": {
+                "reason": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "field_environment": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "payload"
+          ],
+          "properties": {
+            "state": {
+              "const": "observed"
+            },
+            "payload": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "value"
+              ],
+              "properties": {
+                "value": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "variables",
+                    "sha256"
+                  ],
+                  "properties": {
+                    "variables": {
+                      "type": "object",
+                      "additionalProperties": {
+                        "type": "string"
+                      }
+                    },
+                    "sha256": {
+                      "type": "string",
+                      "pattern": "^[0-9a-fA-F]{64}$"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "payload"
+          ],
+          "properties": {
+            "state": {
+              "const": "ambiguous"
+            },
+            "payload": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "candidates",
+                "reason"
+              ],
+              "properties": {
+                "candidates": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "reason": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "payload"
+          ],
+          "properties": {
+            "state": {
+              "const": "not_applicable"
+            },
+            "payload": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "reason"
+              ],
+              "properties": {
+                "reason": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "payload"
+          ],
+          "properties": {
+            "state": {
+              "const": "not_observed"
+            },
+            "payload": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "reason"
+              ],
+              "properties": {
+                "reason": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "payload"
+          ],
+          "properties": {
+            "state": {
+              "const": "malformed"
+            },
+            "payload": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "reason"
+              ],
+              "properties": {
+                "reason": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "payload"
+          ],
+          "properties": {
+            "state": {
+              "const": "instrument_failure"
+            },
+            "payload": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "reason"
+              ],
+              "properties": {
+                "reason": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "field_scheduling": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "payload"
+          ],
+          "properties": {
+            "state": {
+              "const": "observed"
+            },
+            "payload": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "value"
+              ],
+              "properties": {
+                "value": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "jobs",
+                    "asap",
+                    "state_ordering",
+                    "properties"
+                  ],
+                  "properties": {
+                    "jobs": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ],
+                      "minimum": 0
+                    },
+                    "asap": {
+                      "type": "boolean"
+                    },
+                    "state_ordering": {
+                      "type": "boolean"
+                    },
+                    "properties": {
+                      "type": "object",
+                      "additionalProperties": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "payload"
+          ],
+          "properties": {
+            "state": {
+              "const": "ambiguous"
+            },
+            "payload": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "candidates",
+                "reason"
+              ],
+              "properties": {
+                "candidates": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "reason": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "payload"
+          ],
+          "properties": {
+            "state": {
+              "const": "not_applicable"
+            },
+            "payload": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "reason"
+              ],
+              "properties": {
+                "reason": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "payload"
+          ],
+          "properties": {
+            "state": {
+              "const": "not_observed"
+            },
+            "payload": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "reason"
+              ],
+              "properties": {
+                "reason": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "payload"
+          ],
+          "properties": {
+            "state": {
+              "const": "malformed"
+            },
+            "payload": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "reason"
+              ],
+              "properties": {
+                "reason": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "payload"
+          ],
+          "properties": {
+            "state": {
+              "const": "instrument_failure"
+            },
+            "payload": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "reason"
+              ],
+              "properties": {
+                "reason": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "work": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "trace_bytes_consumed",
+        "trace_frames_consumed",
+        "trace_rows_consumed",
+        "complete_rows",
+        "partial_rows",
+        "malformed_rows",
+        "conflicting_rows",
+        "runner_failed_rows",
+        "instrument_failed_rows",
+        "subject_mismatch_rows",
+        "not_proven_rows",
+        "fields_observed",
+        "fields_not_applicable",
+        "fields_not_observed",
+        "fields_ambiguous",
+        "fields_malformed",
+        "fields_instrument_failed",
+        "canonical_plan_projections_attempted",
+        "canonical_plan_projections_accepted",
+        "canonical_plan_projections_rejected",
+        "source_reads",
+        "filesystem_scans",
+        "runner_processes",
+        "direct_probe_inputs"
+      ],
+      "properties": {
+        "trace_bytes_consumed": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "trace_frames_consumed": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "trace_rows_consumed": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "complete_rows": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "partial_rows": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "malformed_rows": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "conflicting_rows": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "runner_failed_rows": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "instrument_failed_rows": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "subject_mismatch_rows": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "not_proven_rows": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "fields_observed": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "fields_not_applicable": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "fields_not_observed": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "fields_ambiguous": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "fields_malformed": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "fields_instrument_failed": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "canonical_plan_projections_attempted": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "canonical_plan_projections_accepted": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "canonical_plan_projections_rejected": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "source_reads": {
+          "const": 0
+        },
+        "filesystem_scans": {
+          "const": 0
+        },
+        "runner_processes": {
+          "const": 0
+        },
+        "direct_probe_inputs": {
+          "const": 0
+        }
+      }
+    }
+  }
+}

@@ -95,14 +95,19 @@ fn unterminated_expect_term_slash_regex_emits_recovery_then_eof() {
 
         let recovery = tokens
             .iter()
-            .find(|token| token.start == slash_at && token.token_type.is_recovery_token())
-            .unwrap_or_else(|| {
-                panic!(
-                    "expected recovery covering unterminated `/' for {input:?}; tokens={tokens:?}"
-                )
-            });
-        assert_eq!(recovery.end, input.len(), "recovery must consume through EOF for {input:?}");
-        assert_eq!(recovery.text.as_ref(), &input[slash_at..]);
+            .find(|token| token.start == slash_at && token.token_type.is_recovery_token());
+        assert!(
+            recovery.is_some(),
+            "expected recovery covering unterminated `/' for {input:?}; tokens={tokens:?}"
+        );
+        if let Some(recovery) = recovery {
+            assert_eq!(
+                recovery.end,
+                input.len(),
+                "recovery must consume through EOF for {input:?}"
+            );
+            assert_eq!(recovery.text.as_ref(), &input[slash_at..]);
+        }
         assert!(
             !tokens.iter().any(|token| {
                 token.start == slash_at
@@ -118,13 +123,13 @@ fn lossy_invalid_utf8_after_slash_emits_recovery_then_eof() {
     let input = String::from_utf8_lossy(&[b'/', 0xFF, 0x00]);
     assert_terminates_with_valid_spans(&input);
     let tokens = PerlLexer::new(&input).collect_tokens();
-    let recovery = tokens
-        .iter()
-        .find(|token| token.token_type.is_recovery_token())
-        .unwrap_or_else(|| panic!("expected recovery for {input:?}; tokens={tokens:?}"));
-    assert_eq!(recovery.start, 0);
-    assert_eq!(recovery.end, input.len());
-    assert_eq!(tokens.last().map(|token| &token.token_type), Some(&TokenType::EOF));
+    let recovery = tokens.iter().find(|token| token.token_type.is_recovery_token());
+    assert!(recovery.is_some(), "expected recovery for {input:?}; tokens={tokens:?}");
+    if let Some(recovery) = recovery {
+        assert_eq!(recovery.start, 0);
+        assert_eq!(recovery.end, input.len());
+        assert_eq!(tokens.last().map(|token| &token.token_type), Some(&TokenType::EOF));
+    }
 }
 
 /// Opposite-direction: a closed `/…/` that contains NUL is a regex, not recovery.
@@ -161,21 +166,30 @@ fn division_after_number_with_nul_still_emits_eof() {
 #[test]
 fn unterminated_regex_is_line_bounded_so_followup_statement_lexes() {
     let input = "if ($text =~ /abc) { print 1; }\nmy $ok = 1;";
-    assert_terminates_with_valid_spans(input);
-    let tokens = PerlLexer::new(input).collect_tokens();
-    let slash_at = input.find('/').expect("fixture contains `/`");
-    let newline_at = input.find('\n').expect("fixture contains a newline");
-    let recovery = tokens
-        .iter()
-        .find(|token| token.start == slash_at && token.token_type.is_recovery_token())
-        .unwrap_or_else(|| panic!("expected unterminated-regex recovery; tokens={tokens:?}"));
-    assert_eq!(recovery.end, newline_at);
-    assert_eq!(recovery.text.as_ref(), &input[slash_at..newline_at]);
-    assert!(
-        tokens.iter().any(|token| token.start > newline_at && token.text.as_ref().contains("ok")),
-        "follow-up `my $ok` must still be tokenized; tokens={tokens:?}"
-    );
-    assert_eq!(tokens.last().map(|token| &token.token_type), Some(&TokenType::EOF));
+    let slash_at = input.find('/');
+    assert!(slash_at.is_some(), "fixture contains `/`");
+    let newline_at = input.find('\n');
+    assert!(newline_at.is_some(), "fixture contains a newline");
+
+    if let (Some(slash_at), Some(newline_at)) = (slash_at, newline_at) {
+        assert_terminates_with_valid_spans(input);
+        let tokens = PerlLexer::new(input).collect_tokens();
+        let recovery = tokens
+            .iter()
+            .find(|token| token.start == slash_at && token.token_type.is_recovery_token());
+        assert!(recovery.is_some(), "expected unterminated-regex recovery; tokens={tokens:?}");
+        if let Some(recovery) = recovery {
+            assert_eq!(recovery.end, newline_at);
+            assert_eq!(recovery.text.as_ref(), &input[slash_at..newline_at]);
+            assert!(
+                tokens
+                    .iter()
+                    .any(|token| token.start > newline_at && token.text.as_ref().contains("ok")),
+                "follow-up `my $ok` must still be tokenized; tokens={tokens:?}"
+            );
+            assert_eq!(tokens.last().map(|token| &token.token_type), Some(&TokenType::EOF));
+        }
+    }
 }
 
 fn assert_terminates_with_valid_spans(input: &str) {

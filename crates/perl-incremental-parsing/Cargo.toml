@@ -1,5 +1,6 @@
 [package]
 name = "perl-incremental-parsing"
+autobenches = false
 publish = false
 version.workspace = true
 edition.workspace = true
@@ -37,6 +38,16 @@ lsp-types.workspace = true
 perl-lexer = { workspace = true }
 ropey.workspace = true
 serde_json.workspace = true
+
+# Criterion bench: `harness = false` is REQUIRED because the nightly
+# "Performance Benchmarks" job invokes this target with `-- --noplot` (a
+# Criterion-only flag). Without an explicit [[bench]] stanza the target falls
+# back to libtest autodiscovery (harness = true) and libtest rejects the flag:
+#   error: Unrecognized option: 'noplot'
+[[bench]]
+name = "incremental_parsing_benchmarks"
+harness = false
+
 
 [package.metadata.docs.rs]
 all-features = true

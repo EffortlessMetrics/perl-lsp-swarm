@@ -3,6 +3,11 @@ schema = 2
 # No lint currently has accepted source-level debt under this ledger.
 #
 # The historical clippy::collapsible_if burn-down removed all 293 recorded
-# findings across #6375-#6380. Its remaining explicit Cargo/ledger ratchet is
-# owned by #6305 and represented as a review-dated deferred_due disposition in
-# policy/clippy-lints.toml; completed history is not current debt.
+# findings across #6375-#6380, and #6305 activated the explicit Cargo deny and
+# the active clippy::collapsible_if row in policy/clippy-lints.d/00-active.toml
+# after a warn-forced zero-finding all-targets remeasurement plus 38 fresh
+# test-target fixes. Historical blanket crate-level allows in seven crates still
+# mask 257 force-warn-measured sites; those residuals are owned by #12730-#12736
+# rather than debt rows, because each child removes its blanket allow and
+# collapses its sites under the now-active deny. Completed burn-down history is
+# retained as non-authoritative evidence only.

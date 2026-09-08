@@ -57,13 +57,13 @@ mod tests {
         });
         if let NodeKind::Program { statements } = &ast.kind {
             let stmt = &statements[0];
-            if let NodeKind::ExpressionStatement { expression } = &stmt.kind {
-                if let NodeKind::Tie { variable, .. } = &expression.kind {
-                    if let NodeKind::VariableDeclaration { declarator, .. } = &variable.kind {
-                        assert_eq!(declarator, "my");
-                    } else {
-                        unreachable!("Expected VariableDeclaration, got {:?}", variable.kind);
-                    }
+            if let NodeKind::ExpressionStatement { expression } = &stmt.kind
+                && let NodeKind::Tie { variable, .. } = &expression.kind
+            {
+                if let NodeKind::VariableDeclaration { declarator, .. } = &variable.kind {
+                    assert_eq!(declarator, "my");
+                } else {
+                    unreachable!("Expected VariableDeclaration, got {:?}", variable.kind);
                 }
             }
         }
@@ -298,13 +298,13 @@ mod tests {
         });
         if let NodeKind::Program { statements } = &ast.kind {
             let stmt = &statements[0];
-            if let NodeKind::ExpressionStatement { expression } = &stmt.kind {
-                if let NodeKind::Tie { variable, .. } = &expression.kind {
-                    if let NodeKind::VariableDeclaration { declarator, .. } = &variable.kind {
-                        assert_eq!(declarator, "our");
-                    } else {
-                        unreachable!("Expected VariableDeclaration, got {:?}", variable.kind);
-                    }
+            if let NodeKind::ExpressionStatement { expression } = &stmt.kind
+                && let NodeKind::Tie { variable, .. } = &expression.kind
+            {
+                if let NodeKind::VariableDeclaration { declarator, .. } = &variable.kind {
+                    assert_eq!(declarator, "our");
+                } else {
+                    unreachable!("Expected VariableDeclaration, got {:?}", variable.kind);
                 }
             }
         }

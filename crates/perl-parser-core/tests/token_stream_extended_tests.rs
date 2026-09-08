@@ -10,7 +10,7 @@ fn on_stmt_boundary_resets_peek() -> Result<(), Box<dyn std::error::Error>> {
     // After reset, peek should still work
     if let Ok(token) = stream.peek() {
         // We should get a valid token (the reparsed first token)
-        let _ = format!("{:?}", token.kind);
+        let _ = format!("{:?}", token.kind());
     }
     Ok(())
 }
@@ -24,7 +24,7 @@ fn invalidate_peek_clears_cache() -> Result<(), Box<dyn std::error::Error>> {
     stream.invalidate_peek();
     // Should still work after invalidation
     if let Ok(token) = stream.peek() {
-        let _ = format!("{:?}", token.kind);
+        let _ = format!("{:?}", token.kind());
     }
     Ok(())
 }
@@ -52,7 +52,7 @@ fn enter_format_mode_does_not_crash() -> Result<(), Box<dyn std::error::Error>> 
     stream.enter_format_mode();
     // Should still be able to get tokens
     if let Ok(token) = stream.peek() {
-        let _ = format!("{:?}", token.kind);
+        let _ = format!("{:?}", token.kind());
     }
     Ok(())
 }

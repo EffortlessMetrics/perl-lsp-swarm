@@ -45,16 +45,16 @@ pub fn plan_shard_replacement(
     old: Option<ShardCategoryHashes>,
     new: ShardCategoryHashes,
 ) -> ShardReplaceResult {
-    if let Some(old_hashes) = old {
-        if old_hashes.content_hash == new.content_hash {
-            return ShardReplaceResult {
-                content_unchanged: true,
-                anchors_updated: false,
-                entities_updated: false,
-                occurrences_updated: false,
-                edges_updated: false,
-            };
-        }
+    if let Some(old_hashes) = old
+        && old_hashes.content_hash == new.content_hash
+    {
+        return ShardReplaceResult {
+            content_unchanged: true,
+            anchors_updated: false,
+            entities_updated: false,
+            occurrences_updated: false,
+            edges_updated: false,
+        };
     }
 
     ShardReplaceResult {

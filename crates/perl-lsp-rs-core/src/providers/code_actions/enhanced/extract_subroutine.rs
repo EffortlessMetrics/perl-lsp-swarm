@@ -159,10 +159,8 @@ pub fn collect_variables(node: &Node, vars: &mut HashSet<String>) {
 
 fn collect_variables_inner(node: &Node, vars: &mut HashSet<String>, locals: &mut HashSet<String>) {
     match &node.kind {
-        NodeKind::Variable { name, .. } => {
-            if !locals.contains(name.as_str()) {
-                vars.insert(name.clone());
-            }
+        NodeKind::Variable { name, .. } if !locals.contains(name.as_str()) => {
+            vars.insert(name.clone());
         }
         NodeKind::Block { statements } => {
             for stmt in statements {

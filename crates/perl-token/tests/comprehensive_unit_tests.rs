@@ -1,3 +1,4 @@
+#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 //! Comprehensive unit tests for the `perl-token` crate.
 //!
 //! Covers:
@@ -7,6 +8,7 @@
 //! - TokenKind variant exhaustiveness
 //! - TokenKind Copy / Clone / Eq / Debug
 //! - Edge cases: empty text, zero-length spans, unicode, large offsets
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 use perl_parser_core::percentile::nearest_rank_percentile;
 use perl_token::{Token, TokenKind};
@@ -18,26 +20,26 @@ use std::sync::Arc;
 
 #[test]
 fn token_new_basic_fields() {
-    let t = Token::new(TokenKind::My, "my", 0, 2);
-    assert_eq!(t.kind, TokenKind::My);
+    let t = Token::new_checked(TokenKind::My, "my", 0, 2).expect("valid token");
+    assert_eq!(t.kind(), TokenKind::My);
     assert_eq!(&*t.text, "my");
-    assert_eq!(t.start, 0);
-    assert_eq!(t.end, 2);
+    assert_eq!(t.start(), 0);
+    assert_eq!(t.end(), 2);
 }
 
 #[test]
 fn token_new_accepts_string() {
     let s = String::from("hello");
-    let t = Token::new(TokenKind::String, s, 5, 12);
+    let t = Token::new_checked(TokenKind::String, s, 5, 10).expect("valid token");
     assert_eq!(&*t.text, "hello");
-    assert_eq!(t.start, 5);
-    assert_eq!(t.end, 12);
+    assert_eq!(t.start(), 5);
+    assert_eq!(t.end(), 10);
 }
 
 #[test]
 fn token_new_accepts_arc_str() {
     let arc: Arc<str> = Arc::from("world");
-    let t = Token::new(TokenKind::Identifier, arc.clone(), 0, 5);
+    let t = Token::new_checked(TokenKind::Identifier, arc.clone(), 0, 5).expect("valid token");
     assert_eq!(&*t.text, "world");
     // Shared Arc: strong count should be 2
     assert_eq!(Arc::strong_count(&arc), 2);
@@ -45,45 +47,48 @@ fn token_new_accepts_arc_str() {
 
 #[test]
 fn token_new_empty_text() {
-    let t = Token::new(TokenKind::Eof, "", 100, 100);
+    let t = Token::new_checked(TokenKind::Eof, "", 100, 100).expect("valid token");
     assert_eq!(&*t.text, "");
-    assert_eq!(t.start, 100);
-    assert_eq!(t.end, 100);
+    assert_eq!(t.start(), 100);
+    assert_eq!(t.end(), 100);
 }
 
 #[test]
-fn token_new_zero_length_span() {
-    let t = Token::new(TokenKind::Semicolon, ";", 42, 42);
-    assert_eq!(t.start, t.end);
-    assert!(t.is_empty());
+fn token_new_zero_length_span_rejects_non_eof() {
+    assert_eq!(
+        Token::new_checked(TokenKind::Semicolon, ";", 42, 42),
+        Err(perl_token::TokenSpanError::EmptySpanNotAllowed { kind: TokenKind::Semicolon, at: 42 })
+    );
 }
 
 #[test]
 fn token_len_reports_span_width() {
-    let t = Token::new(TokenKind::Identifier, "hello", 7, 12);
+    let t = Token::new_checked(TokenKind::Identifier, "hello", 7, 12).expect("valid token");
     assert_eq!(t.len(), 5);
     assert!(!t.is_empty());
 }
 
 #[test]
-fn token_len_saturates_for_malformed_span() {
-    let t = Token::new(TokenKind::Unknown, "?", 12, 7);
-    assert_eq!(t.len(), 0);
-    assert!(t.is_empty());
+fn token_new_checked_rejects_malformed_span() {
+    assert_eq!(
+        Token::new_checked(TokenKind::Unknown, "?", 12, 7),
+        Err(perl_token::TokenSpanError::EndBeforeStart { start: 12, end: 7 })
+    );
 }
 
 #[test]
 fn token_new_large_offsets() {
     let big = usize::MAX - 1;
-    let t = Token::new(TokenKind::Number, "99", big, usize::MAX);
-    assert_eq!(t.start, big);
-    assert_eq!(t.end, usize::MAX);
+    let t = Token::new_checked(TokenKind::Number, "9", big, usize::MAX).expect("valid token");
+    assert_eq!(t.start(), big);
+    assert_eq!(t.end(), usize::MAX);
 }
 
 #[test]
 fn token_new_unicode_text() {
-    let t = Token::new(TokenKind::String, "héllo wörld 🦀", 0, 19);
-    assert_eq!(&*t.text, "héllo wörld 🦀");
+    let text = "héllo wörld 🦀";
+    let t = Token::new_checked(TokenKind::String, text, 0, text.len()).expect("valid token");
+    assert_eq!(&*t.text, text);
 }
 
 // ---------------------------------------------------------------------------
@@ -92,14 +97,14 @@ fn token_new_unicode_text() {
 
 #[test]
 fn token_clone_is_equal() {
-    let t = Token::new(TokenKind::Sub, "sub", 10, 13);
+    let t = Token::new_checked(TokenKind::Sub, "sub", 10, 13).expect("valid token");
     let c = t.clone();
     assert_eq!(t, c);
 }
 
 #[test]
 fn token_clone_shares_arc() {
-    let t = Token::new(TokenKind::Identifier, "foo_bar", 0, 7);
+    let t = Token::new_checked(TokenKind::Identifier, "foo_bar", 0, 7).expect("valid token");
     let c = t.clone();
     // Arc::ptr_eq confirms they share the same allocation
     assert!(Arc::ptr_eq(&t.text, &c.text));
@@ -111,36 +116,36 @@ fn token_clone_shares_arc() {
 
 #[test]
 fn token_eq_same_fields() {
-    let a = Token::new(TokenKind::If, "if", 0, 2);
-    let b = Token::new(TokenKind::If, "if", 0, 2);
+    let a = Token::new_checked(TokenKind::If, "if", 0, 2).expect("valid token");
+    let b = Token::new_checked(TokenKind::If, "if", 0, 2).expect("valid token");
     assert_eq!(a, b);
 }
 
 #[test]
 fn token_ne_different_kind() {
-    let a = Token::new(TokenKind::If, "if", 0, 2);
-    let b = Token::new(TokenKind::Else, "if", 0, 2);
+    let a = Token::new_checked(TokenKind::If, "if", 0, 2).expect("valid token");
+    let b = Token::new_checked(TokenKind::Else, "if", 0, 2).expect("valid token");
     assert_ne!(a, b);
 }
 
 #[test]
 fn token_ne_different_text() {
-    let a = Token::new(TokenKind::Identifier, "foo", 0, 3);
-    let b = Token::new(TokenKind::Identifier, "bar", 0, 3);
+    let a = Token::new_checked(TokenKind::Identifier, "foo", 0, 3).expect("valid token");
+    let b = Token::new_checked(TokenKind::Identifier, "bar", 0, 3).expect("valid token");
     assert_ne!(a, b);
 }
 
 #[test]
 fn token_ne_different_start() {
-    let a = Token::new(TokenKind::Number, "1", 0, 1);
-    let b = Token::new(TokenKind::Number, "1", 5, 1);
+    let a = Token::new_checked(TokenKind::Number, "1", 0, 1).expect("valid token");
+    let b = Token::new_checked(TokenKind::Number, "1", 5, 6).expect("valid token");
     assert_ne!(a, b);
 }
 
 #[test]
 fn token_ne_different_end() {
-    let a = Token::new(TokenKind::Number, "1", 0, 1);
-    let b = Token::new(TokenKind::Number, "1", 0, 6);
+    let a = Token::new_checked(TokenKind::Number, "1", 0, 1).expect("valid token");
+    let b = Token::new_checked(TokenKind::Number, "123456", 0, 6).expect("valid token");
     assert_ne!(a, b);
 }
 
@@ -150,7 +155,7 @@ fn token_ne_different_end() {
 
 #[test]
 fn token_debug_contains_kind_and_text() {
-    let t = Token::new(TokenKind::Return, "return", 0, 6);
+    let t = Token::new_checked(TokenKind::Return, "return", 0, 6).expect("valid token");
     let dbg = format!("{t:?}");
     assert!(dbg.contains("Return"), "expected 'Return' in debug: {dbg}");
     assert!(dbg.contains("return"), "expected 'return' in debug: {dbg}");
@@ -476,13 +481,6 @@ fn token_kind_clone_equals_original() {
 }
 
 #[test]
-fn token_kind_eq_is_reflexive() {
-    for kind in all_token_kinds() {
-        assert_eq!(kind, kind);
-    }
-}
-
-#[test]
 fn token_kind_eq_is_symmetric() {
     let a = TokenKind::Arrow;
     let b = TokenKind::Arrow;
@@ -558,11 +556,11 @@ fn keyword_token_round_trip() {
     let mut offset = 0;
     for (kind, text) in keywords {
         let end = offset + text.len();
-        let tok = Token::new(*kind, *text, offset, end);
-        assert_eq!(tok.kind, *kind);
+        let tok = Token::new_checked(*kind, *text, offset, end).expect("valid token");
+        assert_eq!(tok.kind(), *kind);
         assert_eq!(&*tok.text, *text);
-        assert_eq!(tok.start, offset);
-        assert_eq!(tok.end, end);
+        assert_eq!(tok.start(), offset);
+        assert_eq!(tok.end(), end);
         offset = end + 1; // simulate whitespace gap
     }
 }
@@ -635,8 +633,8 @@ fn operator_token_round_trip() {
     ];
 
     for (kind, text) in operators {
-        let tok = Token::new(*kind, *text, 0, text.len());
-        assert_eq!(tok.kind, *kind, "operator {text}");
+        let tok = Token::new_checked(*kind, *text, 0, text.len()).expect("valid token");
+        assert_eq!(tok.kind(), *kind, "operator {text}");
         assert_eq!(&*tok.text, *text);
     }
 }
@@ -659,8 +657,8 @@ fn delimiter_token_round_trip() {
     ];
 
     for (kind, text) in delimiters {
-        let tok = Token::new(*kind, *text, 0, text.len());
-        assert_eq!(tok.kind, *kind, "delimiter {text}");
+        let tok = Token::new_checked(*kind, *text, 0, text.len()).expect("valid token");
+        assert_eq!(tok.kind(), *kind, "delimiter {text}");
         assert_eq!(&*tok.text, *text);
     }
 }
@@ -694,8 +692,8 @@ fn literal_token_round_trip() {
     ];
 
     for (kind, text) in literals {
-        let tok = Token::new(*kind, *text, 0, text.len());
-        assert_eq!(tok.kind, *kind, "literal {text}");
+        let tok = Token::new_checked(*kind, *text, 0, text.len()).expect("valid token");
+        assert_eq!(tok.kind(), *kind, "literal {text}");
         assert_eq!(&*tok.text, *text);
     }
 }
@@ -706,8 +704,8 @@ fn literal_token_round_trip() {
 
 #[test]
 fn identifier_token() {
-    let tok = Token::new(TokenKind::Identifier, "some_func", 0, 9);
-    assert_eq!(tok.kind, TokenKind::Identifier);
+    let tok = Token::new_checked(TokenKind::Identifier, "some_func", 0, 9).expect("valid token");
+    assert_eq!(tok.kind(), TokenKind::Identifier);
     assert_eq!(&*tok.text, "some_func");
 }
 
@@ -722,8 +720,8 @@ fn sigil_tokens() {
     ];
 
     for (kind, text) in sigils {
-        let tok = Token::new(*kind, *text, 0, 1);
-        assert_eq!(tok.kind, *kind, "sigil {text}");
+        let tok = Token::new_checked(*kind, *text, 0, 1).expect("valid token");
+        assert_eq!(tok.kind(), *kind, "sigil {text}");
         assert_eq!(&*tok.text, *text);
     }
 }
@@ -734,15 +732,15 @@ fn sigil_tokens() {
 
 #[test]
 fn eof_token() {
-    let tok = Token::new(TokenKind::Eof, "", 500, 500);
-    assert_eq!(tok.kind, TokenKind::Eof);
+    let tok = Token::new_checked(TokenKind::Eof, "", 500, 500).expect("valid token");
+    assert_eq!(tok.kind(), TokenKind::Eof);
     assert_eq!(&*tok.text, "");
 }
 
 #[test]
 fn unknown_token() {
-    let tok = Token::new(TokenKind::Unknown, "\x01", 0, 1);
-    assert_eq!(tok.kind, TokenKind::Unknown);
+    let tok = Token::new_checked(TokenKind::Unknown, "\x01", 0, 1).expect("valid token");
+    assert_eq!(tok.kind(), TokenKind::Unknown);
 }
 
 // ---------------------------------------------------------------------------
@@ -753,50 +751,50 @@ fn unknown_token() {
 fn token_sequence_my_x_assign_42() {
     // Simulates: my $x = 42;
     let tokens = [
-        Token::new(TokenKind::My, "my", 0, 2),
-        Token::new(TokenKind::ScalarSigil, "$", 3, 4),
-        Token::new(TokenKind::Identifier, "x", 4, 5),
-        Token::new(TokenKind::Assign, "=", 6, 7),
-        Token::new(TokenKind::Number, "42", 8, 10),
-        Token::new(TokenKind::Semicolon, ";", 10, 11),
+        Token::new_checked(TokenKind::My, "my", 0, 2).expect("valid token"),
+        Token::new_checked(TokenKind::ScalarSigil, "$", 3, 4).expect("valid token"),
+        Token::new_checked(TokenKind::Identifier, "x", 4, 5).expect("valid token"),
+        Token::new_checked(TokenKind::Assign, "=", 6, 7).expect("valid token"),
+        Token::new_checked(TokenKind::Number, "42", 8, 10).expect("valid token"),
+        Token::new_checked(TokenKind::Semicolon, ";", 10, 11).expect("valid token"),
     ];
 
     assert_eq!(tokens.len(), 6);
-    assert_eq!(tokens[0].kind, TokenKind::My);
-    assert_eq!(tokens[1].kind, TokenKind::ScalarSigil);
-    assert_eq!(tokens[2].kind, TokenKind::Identifier);
-    assert_eq!(tokens[3].kind, TokenKind::Assign);
-    assert_eq!(tokens[4].kind, TokenKind::Number);
-    assert_eq!(tokens[5].kind, TokenKind::Semicolon);
+    assert_eq!(tokens[0].kind(), TokenKind::My);
+    assert_eq!(tokens[1].kind(), TokenKind::ScalarSigil);
+    assert_eq!(tokens[2].kind(), TokenKind::Identifier);
+    assert_eq!(tokens[3].kind(), TokenKind::Assign);
+    assert_eq!(tokens[4].kind(), TokenKind::Number);
+    assert_eq!(tokens[5].kind(), TokenKind::Semicolon);
 }
 
 #[test]
 fn token_sequence_sub_declaration() {
     // Simulates: sub greet { }
     let tokens = [
-        Token::new(TokenKind::Sub, "sub", 0, 3),
-        Token::new(TokenKind::Identifier, "greet", 4, 9),
-        Token::new(TokenKind::LeftBrace, "{", 10, 11),
-        Token::new(TokenKind::RightBrace, "}", 12, 13),
+        Token::new_checked(TokenKind::Sub, "sub", 0, 3).expect("valid token"),
+        Token::new_checked(TokenKind::Identifier, "greet", 4, 9).expect("valid token"),
+        Token::new_checked(TokenKind::LeftBrace, "{", 10, 11).expect("valid token"),
+        Token::new_checked(TokenKind::RightBrace, "}", 12, 13).expect("valid token"),
     ];
 
-    assert_eq!(tokens.first().map(|t| t.kind), Some(TokenKind::Sub));
-    assert_eq!(tokens.last().map(|t| t.kind), Some(TokenKind::RightBrace));
+    assert_eq!(tokens.first().map(|t| t.kind()), Some(TokenKind::Sub));
+    assert_eq!(tokens.last().map(|t| t.kind()), Some(TokenKind::RightBrace));
 }
 
 #[test]
 fn token_sequence_method_call() {
     // Simulates: $obj->method()
     let tokens = [
-        Token::new(TokenKind::ScalarSigil, "$", 0, 1),
-        Token::new(TokenKind::Identifier, "obj", 1, 4),
-        Token::new(TokenKind::Arrow, "->", 4, 6),
-        Token::new(TokenKind::Identifier, "method", 6, 12),
-        Token::new(TokenKind::LeftParen, "(", 12, 13),
-        Token::new(TokenKind::RightParen, ")", 13, 14),
+        Token::new_checked(TokenKind::ScalarSigil, "$", 0, 1).expect("valid token"),
+        Token::new_checked(TokenKind::Identifier, "obj", 1, 4).expect("valid token"),
+        Token::new_checked(TokenKind::Arrow, "->", 4, 6).expect("valid token"),
+        Token::new_checked(TokenKind::Identifier, "method", 6, 12).expect("valid token"),
+        Token::new_checked(TokenKind::LeftParen, "(", 12, 13).expect("valid token"),
+        Token::new_checked(TokenKind::RightParen, ")", 13, 14).expect("valid token"),
     ];
 
-    assert_eq!(tokens[2].kind, TokenKind::Arrow);
+    assert_eq!(tokens[2].kind(), TokenKind::Arrow);
     assert_eq!(&*tokens[2].text, "->");
 }
 
@@ -804,16 +802,16 @@ fn token_sequence_method_call() {
 fn token_sequence_package_qualified() {
     // Simulates: Foo::Bar::baz
     let tokens = [
-        Token::new(TokenKind::Identifier, "Foo", 0, 3),
-        Token::new(TokenKind::DoubleColon, "::", 3, 5),
-        Token::new(TokenKind::Identifier, "Bar", 5, 8),
-        Token::new(TokenKind::DoubleColon, "::", 8, 10),
-        Token::new(TokenKind::Identifier, "baz", 10, 13),
+        Token::new_checked(TokenKind::Identifier, "Foo", 0, 3).expect("valid token"),
+        Token::new_checked(TokenKind::DoubleColon, "::", 3, 5).expect("valid token"),
+        Token::new_checked(TokenKind::Identifier, "Bar", 5, 8).expect("valid token"),
+        Token::new_checked(TokenKind::DoubleColon, "::", 8, 10).expect("valid token"),
+        Token::new_checked(TokenKind::Identifier, "baz", 10, 13).expect("valid token"),
     ];
 
     assert_eq!(tokens.len(), 5);
-    assert_eq!(tokens[1].kind, TokenKind::DoubleColon);
-    assert_eq!(tokens[3].kind, TokenKind::DoubleColon);
+    assert_eq!(tokens[1].kind(), TokenKind::DoubleColon);
+    assert_eq!(tokens[3].kind(), TokenKind::DoubleColon);
 }
 
 // ---------------------------------------------------------------------------
@@ -823,21 +821,28 @@ fn token_sequence_package_qualified() {
 #[test]
 fn token_with_multiline_text() {
     let heredoc = "line1\nline2\nline3\n";
-    let tok = Token::new(TokenKind::HeredocBody, heredoc, 0, heredoc.len());
+    let tok =
+        Token::new_checked(TokenKind::HeredocBody, heredoc, 0, heredoc.len()).expect("valid token");
     assert_eq!(&*tok.text, heredoc);
     assert!(tok.text.contains('\n'));
 }
 
 #[test]
 fn token_with_null_byte() {
-    let tok = Token::new(TokenKind::String, "a\0b", 0, 3);
+    let tok = Token::new_checked(TokenKind::String, "a\0b", 0, 3).expect("valid token");
     assert_eq!(&*tok.text, "a\0b");
 }
 
 #[test]
 fn many_tokens_in_vec() {
-    let tokens: Vec<Token> =
-        (0..1000).map(|i| Token::new(TokenKind::Number, i.to_string(), i * 4, i * 4 + 3)).collect();
+    let tokens: Vec<Token> = (0..1000)
+        .map(|i| {
+            let text = i.to_string();
+            let start = i * 4;
+            let end = start + text.len();
+            Token::new_checked(TokenKind::Number, text, start, end).expect("valid token")
+        })
+        .collect();
 
     assert_eq!(tokens.len(), 1000);
     assert_eq!(&*tokens[0].text, "0");

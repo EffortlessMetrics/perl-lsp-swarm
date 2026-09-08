@@ -280,7 +280,7 @@ fn ci_workflow_includes_clippy_full_in_matrix() -> Result<(), Box<dyn std::error
 /// TEST: unit_routed_full runs on every PR via pr-smoke (--tier pr_fast)
 ///
 /// The gate is in tier pr_fast, so it runs in the pr-smoke job with:
-///   cargo xtask gates --tier pr-fast --base origin/main
+///   cargo xtask gates --tier pr-fast --subject target/receipts/ci-subject.json
 /// This properly resolves {package_args} for the rust_scoped gate.
 ///
 /// It does NOT appear in merge-gate-shards because that shard uses --gate <name>,
@@ -294,11 +294,11 @@ fn ci_workflow_runs_unit_routed_full_in_pr_smoke() -> Result<(), Box<dyn std::er
     // Verify that pr-smoke job runs --tier pr-fast
     // which includes all pr_fast gates (including unit_routed_full)
     let has_pr_fast_tier = workflow.contains("gates --tier pr-fast");
-    let has_base_origin_main = workflow.contains("--base origin/main");
+    let has_immutable_subject = workflow.contains("--subject target/receipts/ci-subject.json");
 
     assert!(
-        has_pr_fast_tier && has_base_origin_main,
-        "pr-smoke job must run gates --tier pr-fast --base origin/main \
+        has_pr_fast_tier && has_immutable_subject,
+        "pr-smoke job must run gates --tier pr-fast against the immutable CI subject \
          to properly resolve package_args for rust_scoped gates like unit_routed_full"
     );
     assert!(
@@ -325,7 +325,7 @@ fn ci_workflow_runs_unit_routed_full_in_pr_smoke() -> Result<(), Box<dyn std::er
         "2700s",
         "/debug/xtask",
         "gates --tier pr-fast",
-        "--base origin/main",
+        "--subject target/receipts/ci-subject.json",
         "--receipt",
     ] {
         assert!(

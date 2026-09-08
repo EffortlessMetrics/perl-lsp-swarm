@@ -1,3 +1,4 @@
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 use perl_semantic_facts::FileId;
 use perl_symbol::{SymbolDecl, SymbolKind, VarKind, symbol_decls_to_semantic_facts};
 

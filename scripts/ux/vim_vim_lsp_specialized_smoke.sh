@@ -18,6 +18,8 @@
 set -euo pipefail
 
 repo_root=$(cd "$(dirname "$0")/../.." && pwd)
+. "${repo_root}/scripts/lib/cargo-toolchain-guard.sh"
+cargo_toolchain_guard
 # #11369: the pinned vim-lsp subject lives in one governed manifest.
 subject_manifest="${repo_root}/.ci/editor-clients/vim-vim-lsp-subject.v1.json"
 vim_bin=${VIM:-vim}

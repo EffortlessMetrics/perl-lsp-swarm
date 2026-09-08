@@ -1,0 +1,159 @@
+# ripr-infra-retry - bounded automatic retry of runner-evicted ripr lanes
+#
+# #6807 slice 2: the ripr gate (ripr.yml) classifies a lane killed by the
+# platform (shutdown signal / SIGTERM / exit 143 / API cancellation) as
+# infra-no-proof and leaves a `ripr-gate-classification` artifact holding that
+# verdict. This workflow fires when a ripr run completes with failure and, if
+# and only if the gate's own classification artifact says infra-no-proof,
+# reruns the failed jobs once for the same exact SHA — an infra kill leaves
+# the evaluated tree unchanged, so a rerun re-runs the same head.
+#
+# Bound: exactly one automatic retry. The retry fires only while the completed
+# run is on attempt 1; attempt 2+ falls back to the documented manual path
+# (`gh run rerun <run-id> --failed`, printed by the gate itself). The bound
+# needs no state: re-running failed jobs increments run_attempt, and the
+# workflow_run event for the retried completion arrives with run_attempt >= 2.
+# Deliveries are serialized per source run (concurrency group + live re-read
+# before arming) so duplicate events cannot double-arm the single retry.
+#
+# Security posture: this workflow runs in the default-branch context with an
+# actions:write token, so it must never check out or execute candidate code.
+# It makes API calls only. The classification artifact is treated strictly as
+# data: fields are extracted with grep against exact line patterns, never
+# sourced, and only the event-provided run id is used for the rerun call.
+#
+# Known boundary: if the gate job itself is evicted before it can classify,
+# no artifact exists and no retry fires — the gate's manual rerun message is
+# the recovery path for that rarer class. This keeps exactly one classifier
+# (the gate) instead of duplicating the log-inspection logic here.
+
+name: ripr-infra-retry
+
+on:
+  workflow_run:
+    workflows: [ripr]
+    types: [completed]
+
+permissions:
+  contents: read
+  # rerun-failed-jobs and artifact download.
+  actions: write
+
+# Serialize duplicate completed-event deliveries for the same source run so a
+# racing second responder observes the already-armed attempt (run_attempt >= 2)
+# and exits on the bound instead of issuing a second rerun (review round 2).
+concurrency:
+  group: ripr-infra-retry-${{ github.event.workflow_run.id }}
+  cancel-in-progress: false
+
+jobs:
+  retry-on-eviction:
+    name: Bounded retry on infra-no-proof
+    if: github.event.workflow_run.conclusion == 'failure'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Retry once when the gate classified the failure as infra-no-proof
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+
+          summary() {
+            {
+              echo "### ripr infra-no-proof auto-retry (#6807)"
+              echo ""
+              echo "- run: \`${RUN_ID}\` (attempt \`${RUN_ATTEMPT}\`)"
+              echo "- head: \`${HEAD_SHA}\`"
+              for line in "$@"; do echo "- ${line}"; done
+            } >> "$GITHUB_STEP_SUMMARY"
+          }
+
+          # Bound: exactly one automatic retry. A retried completion arrives
+          # here with run_attempt >= 2 and takes the manual path instead.
+          if [ "${RUN_ATTEMPT}" != "1" ]; then
+            # #12563: surface the exhausted bound loudly as NOT_PROVEN — no
+            # terminal receipt exists for this SHA and no further automation
+            # will run for it.
+            echo "RIPR_GATE_VERDICT=not-proven-infra-retry-exhausted"
+            echo "::error::NOT_PROVEN (#12563): ripr run ${RUN_ID} was still infra-evicted on attempt ${RUN_ATTEMPT}; the single automatic same-head retry is exhausted. No proof exists for this SHA until a manual \`gh run rerun ${RUN_ID} --failed\` completes."
+            echo "::notice::run attempt ${RUN_ATTEMPT} — automatic retry is exhausted; use the gate's documented manual rerun for this head."
+            summary "decision: \`skip (retry bound reached — manual rerun path applies)\`" \
+                    "verdict: \`not-proven-infra-retry-exhausted (NOT_PROVEN)\`"
+            exit 0
+          fi
+
+          # Locate the gate's classification artifact. Absence means the gate
+          # did not classify this as infra-no-proof (genuine ripr failure, or
+          # the gate job itself was killed before classifying): no retry.
+          artifact_id=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}/artifacts?per_page=100" \
+            --jq '.artifacts[] | select(.name == "ripr-gate-classification") | .id' | head -1)
+          if [ -z "${artifact_id}" ]; then
+            echo "::notice::no ripr-gate-classification artifact on run ${RUN_ID} — not an infra-no-proof classification; no automatic retry."
+            summary "decision: \`skip (no infra-no-proof classification)\`"
+            exit 0
+          fi
+
+          # Download and read the verdict strictly as data: grep exact field
+          # lines, never source the file.
+          workdir=$(mktemp -d)
+          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${artifact_id}/zip" > "${workdir}/classification.zip"
+          unzip -o -q "${workdir}/classification.zip" -d "${workdir}"
+          classification_file="${workdir}/ripr-gate-classification.env"
+          if [ ! -f "${classification_file}" ]; then
+            echo "::notice::artifact ${artifact_id} did not contain ripr-gate-classification.env — no automatic retry."
+            summary "decision: \`skip (classification file missing from artifact)\`"
+            exit 0
+          fi
+          if ! grep -qx 'classification=infra-no-proof' "${classification_file}"; then
+            echo "::notice::classification is not infra-no-proof — genuine ripr failures are never auto-retried."
+            summary "decision: \`skip (classification is not infra-no-proof)\`"
+            exit 0
+          fi
+          gate_head=$(grep -oE '^head_sha=[0-9a-f]{40}$' "${classification_file}" | cut -d= -f2 || true)
+          gate_run_id=$(grep -oE '^run_id=[0-9]+$' "${classification_file}" | cut -d= -f2 || true)
+          lane_name=$(grep -oE '^lane_name=.+$' "${classification_file}" | cut -d= -f2- || true)
+          lane_job_id=$(grep -oE '^lane_job_id=[0-9]+$' "${classification_file}" | cut -d= -f2 || true)
+
+          # Sanity: the artifact must describe THIS run. Compare the recorded
+          # run id — not the head SHA: for pull_request runs the gate's
+          # GITHUB_SHA is the evaluated refs/pull/<n>/merge commit while
+          # workflow_run.head_sha is the PR branch tip, so a head comparison
+          # would skip every genuine PR eviction (verified on run
+          # 32969627737: event head_sha == PR branch tip, gate head == merge
+          # ref). rerun-failed-jobs re-runs the same run and therefore the
+          # same evaluated tree regardless of which identity names it.
+          if [ -z "${gate_run_id}" ] || [ "${gate_run_id}" != "${RUN_ID}" ]; then
+            echo "::notice::classification run id (${gate_run_id:-invalid}) does not match event run ${RUN_ID} — no automatic retry."
+            summary "decision: \`skip (run-id mismatch between classification and event)\`"
+            exit 0
+          fi
+
+          echo "::notice::gate classified run ${RUN_ID} as infra-no-proof (lane: ${lane_name:-unknown}, job: ${lane_job_id:-unknown}); re-running failed jobs for the same evaluated tree."
+          # Re-read the live run immediately before arming (review round 2):
+          # a duplicate delivery that queued behind the concurrency group must
+          # observe the bumped attempt / in-flight status and skip, so the
+          # one-retry bound holds even under racing event deliveries. The
+          # rerun API additionally rejects non-completed runs server-side.
+          live_state=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}" \
+            --jq '"\(.run_attempt) \(.status)"')
+          live_attempt=${live_state%% *}
+          live_status=${live_state#* }
+          if [ "${live_attempt}" != "1" ] || [ "${live_status}" != "completed" ]; then
+            echo "::notice::run ${RUN_ID} is attempt ${live_attempt:-unknown}/status ${live_status:-unknown} before arming — the retry is already armed or consumed; no second automatic retry."
+            summary "decision: \`skip (bound already armed or consumed — race with another delivery)\`"
+            exit 0
+          fi
+          gh api -X POST "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}/rerun-failed-jobs"
+
+          summary \
+            "decision: \`retry (infra-no-proof)\`" \
+            "lane: \`${lane_name:-unknown}\` (job \`${lane_job_id:-unknown}\`)" \
+            "evaluated head (gate): \`${gate_head:-unknown}\`" \
+            "branch head (event): \`${HEAD_SHA}\`" \
+            "action: \`rerun-failed-jobs\` (attempt 2, same evaluated tree)"
+          echo "ripr-infra-retry: re-queued failed jobs of run ${RUN_ID} (evaluated ${gate_head:-unknown})"

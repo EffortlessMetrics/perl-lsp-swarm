@@ -16,7 +16,7 @@ fn hash_slice_qw_slash_delimiter_keeps_following_block_statement() {
     let source = "sub verify { my ($got, $exists) = @params{qw/got exists/}; return 0; }";
     let sexp = parse(source).to_sexp();
     assert!(
-        sexp.contains("(return (number 0))"),
+        sexp.contains("(return (value (number (value 0))))"),
         "expected return statement after hash-slice qw expression for source:\n{source}\n\nsexp:\n{sexp}",
     );
 }

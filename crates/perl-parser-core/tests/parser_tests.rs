@@ -261,7 +261,9 @@ fn parse_output_budget_usage_tracked() -> Result<(), Box<dyn std::error::Error>>
     let mut parser = Parser::new("my $x = ;");
     let output = parser.parse_with_recovery();
 
-    // Budget tracker should reflect diagnostics
-    assert_eq!(output.budget_usage.errors_emitted, output.diagnostics.len());
+    // Live tracker: depth was recorded and unwound. Diagnostic charging is B02.
+    assert_eq!(output.budget_usage.current_depth, 0);
+    assert!(output.budget_usage.max_depth_reached > 0);
+    assert_eq!(output.budget_usage.errors_emitted, 0);
     Ok(())
 }

@@ -20,9 +20,11 @@ only change with explicit, reviewed intent.
 
 ## Public API
 
-- **`Token`** -- a token with `kind: TokenKind`, `text: Arc<str>`, `start: usize`, `end: usize`
-- **`TokenRef<'src>`** -- borrowed token view with `kind`, `text: &'src str`, `start`, `end` for allocation-sensitive paths
-- **`TokenKind`** -- enum classifying every Perl token: keywords, operators, delimiters, literals, sigils, and special tokens
+- **`Token`** -- `text` is public; `kind()` is a read accessor; byte geometry is private. Construct with [`Token::new_checked`], [`Token::eof_at`], or [`Token::unknown_at`], and read offsets via `start()` / `end()`. Change kind with [`Token::with_kind`]. `text.len()` must equal `end - start`; empty `Eof` / `Unknown` tokens must have empty text.
+- **`TokenRef<'src>`** -- borrowed token view with the same geometry seal; construct with [`TokenRef::new_checked`].
+- **`TokenSpan`** -- ordered byte span with private fields; construct with [`TokenSpan::try_new`].
+- **`TokenKind`** -- closed/exhaustive enum classifying every Perl token: keywords, operators, delimiters, literals, sigils, and special tokens (#2898)
+- **`Token` / `TokenRef` / `TokenSpan` / `TokenSpanError` / `TokenCategory` / `TokenKindMetadata`** -- `#[non_exhaustive]` (#2898). This crate has no `TokenOrigin` or `TokenStatus` types.
 - **Spelling tables** -- `KEYWORD_SPELLINGS`, `OPERATOR_SPELLINGS`, `DELIMITER_SPELLINGS`, and `SIGIL_SPELLINGS` define fixed source spellings and power `TokenKind::canonical_spelling()`
 
 ## Usage
@@ -30,10 +32,12 @@ only change with explicit, reviewed intent.
 ```rust
 use perl_token::{Token, TokenKind, TokenRef};
 
-let tok = Token::new(TokenKind::Identifier, "foo", 0, 3);
-assert_eq!(tok.kind, TokenKind::Identifier);
+let tok = Token::new_checked(TokenKind::Identifier, "foo", 0, 3).expect("valid token");
+assert_eq!(tok.kind(), TokenKind::Identifier);
+assert_eq!(tok.start(), 0);
+assert_eq!(tok.end(), 3);
 
-let borrowed = TokenRef::new(TokenKind::Identifier, "foo", 0, 3);
+let borrowed = TokenRef::new_checked(TokenKind::Identifier, "foo", 0, 3).expect("valid token");
 let owned = borrowed.to_owned_token();
 assert_eq!(owned, tok);
 ```
@@ -53,9 +57,10 @@ Borrowed view from owned tokens:
 ```rust
 use perl_token::{Token, TokenKind};
 
-let tok = Token::new(TokenKind::My, "my", 0, 2);
+let tok = Token::new_checked(TokenKind::My, "my", 0, 2).expect("valid token");
 let borrowed = tok.as_ref_token();
 assert_eq!(borrowed.text, "my");
+assert_eq!(borrowed.start(), 0);
 ```
 
 ## Benchmark scorecard

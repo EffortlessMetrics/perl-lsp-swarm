@@ -427,11 +427,11 @@ fn lexer_regex_literal_embedded_comments() -> TestResult {
 ///
 /// Tests feature spec: ROADMAP.md#regex-literal-handling
 #[test]
-fn lexer_regex_literal_malformed_unclosed() {
+fn lexer_regex_literal_malformed_unclosed() -> TestResult {
     let code = "/pattern";
     let mut lexer = PerlLexer::new(code);
 
-    let tok = lexer.next_token().expect("unterminated regex recovery");
+    let tok = lexer.next_token().ok_or("unterminated regex recovery")?;
     assert!(
         tok.token_type.is_recovery_token(),
         "Expected recovery token for malformed regex, got {:?}",
@@ -439,8 +439,9 @@ fn lexer_regex_literal_malformed_unclosed() {
     );
     assert_eq!(tok.text.as_ref(), code);
 
-    let eof = lexer.next_token().expect("EOF after unterminated regex");
+    let eof = lexer.next_token().ok_or("EOF after unterminated regex")?;
     assert_eq!(eof.token_type, TokenType::EOF);
+    Ok(())
 }
 
 /// Test malformed regex (unbalanced groups)

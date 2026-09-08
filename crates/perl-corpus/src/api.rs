@@ -1,3 +1,4 @@
+pub(crate) mod root;
 mod topology;
 
 pub use crate::cases::{
@@ -15,8 +16,8 @@ pub use crate::continue_redo::{
     valid_cases as valid_continue_redo_cases,
 };
 pub use crate::files::{
-    CORPUS_ROOT_ENV, CorpusFile, CorpusLayer, CorpusPaths, get_all_test_files, get_corpus_files,
-    get_corpus_files_from, get_fuzz_files, get_test_files,
+    CorpusFile, CorpusLayer, CorpusPaths, ResolvedCorpusPaths, get_all_test_files,
+    get_corpus_files, get_corpus_files_from, get_fuzz_files, get_test_files,
 };
 pub use crate::format_statements::{
     FormatStatementCase, FormatStatementGenerator, find_format_case, format_statement_cases,
@@ -37,7 +38,22 @@ pub use crate::tie_interface::{
     TieInterfaceCase, find_tie_case, tie_cases_by_tag, tie_cases_by_tags_all,
     tie_cases_by_tags_any, tie_interface_cases,
 };
+pub use root::{CORPUS_ROOT_ENV, CorpusRoot, CorpusRootError, CorpusRootSource};
 pub use topology::{
     AssetRequirement, CORPUS_TOPOLOGY_SCHEMA_VERSION, CorpusAsset, CorpusAssetKind,
     CorpusAssetLayer, CorpusTopology, CorpusTopologyError,
 };
+
+/// Serializes every test that reads or mutates the process-wide current
+/// directory.
+///
+/// `std::env::set_current_dir` is per-process, not per-thread, so a test that
+/// enters a temporary directory moves relative-path resolution out from under
+/// any concurrently running test that resolved a path against the previous
+/// current directory. With `--test-threads` above one that is a real race, not
+/// a hypothetical: it is why the relative runtime-root binding test failed on
+/// `main` against a path that no longer existed. Every test in this module
+/// tree that touches the current directory must hold this lock for the whole
+/// window between reading it and resolving against it.
+#[cfg(test)]
+pub(crate) static CWD_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());

@@ -1,5 +1,5 @@
 ---
-source: crates/perl-parser/tests/ast_snapshot_tests.rs
+source: crates/perl-parser/tests/ast_snap.rs
 expression: "parse_sexp(\"package My::Module;\")"
 ---
-(source_file (package My::Module))
+(source_file (statements (package (name My::Module))))

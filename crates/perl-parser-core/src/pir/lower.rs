@@ -16,11 +16,63 @@ use crate::hir::{
 };
 
 use super::model::{
-    LexicalName, PIR_RECEIPT_VERSION, PirAnchorCoverage, PirCallee, PirContext,
-    PirDynamicBoundaryKind, PirEdge, PirEdgeKind, PirGraph, PirId, PirLiteralKind, PirLoweringMode,
-    PirMethod, PirNode, PirOperation, PirReceipt, PirReceiver, PirRegexModifiers, PirRegexTarget,
-    PirSourceAnchor, PirTargetAccess, SymbolName,
+    LexicalName, PIR_RECEIPT_VERSION, PirAccessMode, PirAnchorCoverage, PirCallee, PirContext,
+    PirDynamicBoundaryKind, PirEdge, PirEdgeKind, PirEvaluationDemand, PirGraph, PirId,
+    PirLiteralKind, PirLoweringMode, PirMethod, PirNode, PirOperation, PirReceipt, PirReceiver,
+    PirRegexModifiers, PirRegexTarget, PirSourceAnchor, PirTargetAccess, SymbolName,
 };
+
+/// Place access implied by an operation family, or `None` when the operation
+/// does not access a place.
+///
+/// Only operations whose family names a place carry an access fact. Literals,
+/// calls, assignment expressions, control nodes, returns, dynamic boundaries,
+/// and regex literals produce or consume values without touching a place, so
+/// they carry no access fact rather than a fabricated `Read`. Dereferences are
+/// also left without an access fact: element-place identity is owned by the
+/// place model (#4847) and is not proven here.
+fn access_for_operation(operation: &PirOperation) -> Option<PirAccessMode> {
+    match operation {
+        PirOperation::LexicalRead { .. } | PirOperation::StashRead { .. } => {
+            Some(PirAccessMode::Read)
+        }
+        PirOperation::LexicalWrite { .. } | PirOperation::StashWrite { .. } => {
+            Some(PirAccessMode::Write)
+        }
+        PirOperation::Modify { .. } | PirOperation::StashModify { .. } => {
+            Some(PirAccessMode::ReadModifyWrite)
+        }
+        PirOperation::Match { target, access, .. }
+        | PirOperation::Substitution { target, access, .. }
+        | PirOperation::Transliteration { target, access, .. } => {
+            regex_target_access(target, *access)
+        }
+        _ => None,
+    }
+}
+
+/// Place access of a regex-family operation on its bound target.
+///
+/// A bound expression (`foo() =~ ...`) is not a place, so it carries no access
+/// fact. A named place (or a `DefaultTopic`, should lowering ever construct
+/// one) is read by a match and by a `/r` mutate-copy, and read-then-written by
+/// an in-place `s///` or `tr///`.
+fn regex_target_access(target: &PirRegexTarget, access: PirTargetAccess) -> Option<PirAccessMode> {
+    match target {
+        PirRegexTarget::Expression { .. } => None,
+        _ => Some(match access {
+            PirTargetAccess::Mutate => PirAccessMode::ReadModifyWrite,
+            PirTargetAccess::MutateCopy | PirTargetAccess::ReadOnly => PirAccessMode::Read,
+        }),
+    }
+}
+
+fn demand_for_operation(operation: &PirOperation) -> PirEvaluationDemand {
+    match operation {
+        PirOperation::Branch { .. } | PirOperation::Loop { .. } => PirEvaluationDemand::TruthTest,
+        _ => PirEvaluationDemand::Value,
+    }
+}
 
 /// Lower a [`HirFile`] into a PIR v0 graph with no caller-supplied identity.
 #[must_use]
@@ -144,11 +196,7 @@ impl Lowerer {
             }
             HirKind::DerefExpr(deref) => self.lower_deref(item, deref),
             HirKind::DynamicBoundary(boundary) => {
-                self.lower_dynamic_boundary(
-                    item,
-                    map_boundary_kind(boundary.kind),
-                    boundary.reason.clone(),
-                );
+                self.lower_dynamic_boundary(item, boundary.kind, boundary.reason.clone());
             }
             HirKind::LiteralExpr(literal) => self.lower_literal(item, literal.kind),
             HirKind::RegexExpr(regex) => self.lower_regex_literal(item, regex),
@@ -205,7 +253,21 @@ impl Lowerer {
     }
 
     fn lower_variable_decl(&mut self, item: &HirItem, decl: &crate::hir::VariableDecl) {
+        // A declaration-shaped legacy call (`field $x = 1`) reaches flat
+        // lowering as a `VariableDecl` too, but it declares nothing. Emitting
+        // the write below would publish a lexical binding the program never
+        // creates — the same false fact body PIR stopped publishing. Flat
+        // lowering carries no scope cursor, so it cannot resolve the argument's
+        // real storage; declaring the omission is honest where guessing is not.
+        let is_legacy_call =
+            DeclStorageClass::from_str(&decl.declarator) == DeclStorageClass::Unknown;
+        if is_legacy_call {
+            *self.unsupported.entry("LegacyFieldCall").or_insert(0) += 1;
+        }
         for variable in &decl.variables {
+            if is_legacy_call {
+                continue;
+            }
             let anchor = PirSourceAnchor::explicit(variable.range, item.id);
             let operation = if is_stash_declarator(&decl.declarator) {
                 PirOperation::StashWrite {
@@ -223,8 +285,13 @@ impl Lowerer {
                     },
                 }
             };
-            // The declaration names a write target, which is a known lvalue.
-            self.push_node(item, anchor, operation, PirContext::Lvalue, None);
+            // The declaration names a write target; `access_for_operation`
+            // classifies the write. The flat path cannot prove whether the
+            // place is assigned in scalar or list context (`my ($x) = ...`
+            // is a list assignment with a scalar sigil), so the value
+            // context stays `Unknown` rather than borrowing the statement's
+            // `Void` or guessing from the sigil.
+            self.push_node(item, anchor, operation, PirContext::Unknown, None);
         }
 
         if decl.has_initializer {
@@ -388,17 +455,24 @@ impl Lowerer {
     fn lower_dynamic_boundary(
         &mut self,
         item: &HirItem,
-        kind: PirDynamicBoundaryKind,
+        hir_kind: DynamicBoundaryKind,
         reason: String,
     ) -> PirId {
+        let kind = map_boundary_kind(hir_kind);
         let anchor = PirSourceAnchor::dynamic_boundary(item.range, item.id);
-        let id = self.push_node(
-            item,
-            anchor,
-            PirOperation::DynamicBoundary { kind, reason },
-            PirContext::Unknown,
-            None,
-        );
+        let operation = PirOperation::DynamicBoundary { kind, reason };
+        let id = if matches!(
+            hir_kind,
+            DynamicBoundaryKind::TiedPlaceBinding | DynamicBoundaryKind::TiedPlaceRelease
+        ) {
+            // Tie and untie are the post-order boundary forms in flat HIR:
+            // their operands precede the hidden dispatch boundary. When one is
+            // nested, splice that boundary before the already-lowered consumer
+            // without changing adjacency for the pre-order boundary families.
+            self.push_node_maybe_operand(item, anchor, operation, None)
+        } else {
+            self.push_node(item, anchor, operation, PirContext::Unknown, None)
+        };
         // Control may not return through a dynamic boundary; record the exit
         // edge instead of dropping it.
         self.edges.push(PirEdge { from: id, to: None, kind: PirEdgeKind::DynamicExit });
@@ -406,28 +480,28 @@ impl Lowerer {
             // Hold this boundary for the coderef call HIR emits next.
             self.pending_dynamic_callee = Some(id);
         }
-        if kind == PirDynamicBoundaryKind::SymbolicReference {
-            if let Some(deref_id) = self.pending_deref.take() {
-                if let Some(deref) = self.nodes.iter_mut().find(|node| {
-                    node.id == deref_id && node.source_anchor.range == Some(item.range)
-                }) {
-                    deref.dynamic_boundary = Some(id);
-                }
-            }
+        if kind == PirDynamicBoundaryKind::SymbolicReference
+            && let Some(deref_id) = self.pending_deref.take()
+            && let Some(deref) = self
+                .nodes
+                .iter_mut()
+                .find(|node| node.id == deref_id && node.source_anchor.range == Some(item.range))
+        {
+            deref.dynamic_boundary = Some(id);
         }
-        if kind == PirDynamicBoundaryKind::EmbeddedRegexCode {
-            if let Some(owner_id) = self.pending_regex_boundary_owner.take() {
-                // Key solely on the unique node id: the pending owner is the
-                // immediately-preceding regex op and is cleared for any other
-                // item, so id alone identifies it. Do not re-guard on the range
-                // — that would silently drop the link (leaving `embedded_code:
-                // true` with `dynamic_boundary: None`, an invariant break) if a
-                // future HIR change emitted the boundary with its own sub-range.
-                if let Some(owner) = self.nodes.iter_mut().find(|node| node.id == owner_id) {
-                    owner.dynamic_boundary = Some(id);
-                } else {
-                    debug_assert!(false, "pending_regex_boundary_owner pointed at a missing node");
-                }
+        if kind == PirDynamicBoundaryKind::EmbeddedRegexCode
+            && let Some(owner_id) = self.pending_regex_boundary_owner.take()
+        {
+            // Key solely on the unique node id: the pending owner is the
+            // immediately-preceding regex op and is cleared for any other
+            // item, so id alone identifies it. Do not re-guard on the range
+            // — that would silently drop the link (leaving `embedded_code:
+            // true` with `dynamic_boundary: None`, an invariant break) if a
+            // future HIR change emitted the boundary with its own sub-range.
+            if let Some(owner) = self.nodes.iter_mut().find(|node| node.id == owner_id) {
+                owner.dynamic_boundary = Some(id);
+            } else {
+                debug_assert!(false, "pending_regex_boundary_owner pointed at a missing node");
             }
         }
         id
@@ -445,7 +519,7 @@ impl Lowerer {
         // Statement branches are control-flow forks that yield no value at
         // statement level. A ternary is different: it is a value-producing
         // conditional expression that may participate in an lvalue context,
-        // but the flat path cannot prove its enclosing Scalar/List/Lvalue
+        // but the flat path cannot prove its enclosing Scalar/List
         // context. Keep it Unknown, matching the body path, rather than
         // claiming Void and losing the value-producing distinction.
         let context = match branch.keyword {
@@ -538,11 +612,15 @@ impl Lowerer {
         self.last_in_scope.insert(scope, id);
 
         let is_parent = is_expression_parent(&operation);
+        let demand = demand_for_operation(&operation);
+        let access = access_for_operation(&operation);
         self.nodes.push(PirNode {
             id,
             source_anchor,
             operation,
             context,
+            demand,
+            access,
             dynamic_boundary,
             scope,
             package_context: item.package_context.clone(),
@@ -582,11 +660,15 @@ impl Lowerer {
         self.edges.push(PirEdge { from: id, to: Some(parent), kind: PirEdgeKind::Fallthrough });
 
         let is_parent = is_expression_parent(&operation);
+        let demand = demand_for_operation(&operation);
+        let access = access_for_operation(&operation);
         self.nodes.push(PirNode {
             id,
             source_anchor,
             operation,
             context: PirContext::Unknown,
+            demand,
+            access,
             dynamic_boundary,
             scope: item.scope_context,
             package_context: item.package_context.clone(),
@@ -666,12 +748,18 @@ fn build_receipt(
 ) -> PirReceipt {
     let mut operation_counts = std::collections::BTreeMap::new();
     let mut context_counts = std::collections::BTreeMap::new();
+    let mut demand_counts = std::collections::BTreeMap::new();
+    let mut access_counts = std::collections::BTreeMap::new();
     let mut dynamic_boundary_counts = std::collections::BTreeMap::new();
     let mut coverage = PirAnchorCoverage::default();
 
     for node in nodes {
         *operation_counts.entry(node.operation.name()).or_insert(0) += 1;
         *context_counts.entry(node.context.name()).or_insert(0) += 1;
+        *demand_counts.entry(node.demand.name()).or_insert(0) += 1;
+        if let Some(access) = node.access {
+            *access_counts.entry(access.name()).or_insert(0) += 1;
+        }
         if node.source_anchor.is_anchored() {
             coverage.anchored += 1;
         } else {
@@ -692,6 +780,8 @@ fn build_receipt(
         edge_count,
         operation_counts,
         context_counts,
+        demand_counts,
+        access_counts,
         source_anchor_coverage: coverage,
         dynamic_boundary_counts,
         unsupported_construct_counts,
@@ -726,6 +816,14 @@ fn map_boundary_kind(kind: DynamicBoundaryKind) -> PirDynamicBoundaryKind {
         DynamicBoundaryKind::Autoload => PirDynamicBoundaryKind::Autoload,
         DynamicBoundaryKind::SymbolicReferenceDeref => PirDynamicBoundaryKind::SymbolicReference,
         DynamicBoundaryKind::EmbeddedRegexCode => PirDynamicBoundaryKind::EmbeddedRegexCode,
+        // Tie/untie reach PIR as unclassified boundaries on purpose. The
+        // boundary itself is real — control leaves through hidden TIE*/UNTIE
+        // dispatch — so it must not be dropped, but PIR has no tied-place
+        // concept to classify it with yet. Giving it one is #6683's work, not
+        // this mapping's; `Unknown` states exactly what is known today.
+        DynamicBoundaryKind::TiedPlaceBinding | DynamicBoundaryKind::TiedPlaceRelease => {
+            PirDynamicBoundaryKind::Unknown
+        }
     }
 }
 
@@ -817,6 +915,9 @@ fn hir_kind_name(kind: &HirKind) -> &'static str {
         HirKind::HeredocMigrationAdapter(_) => "HeredocMigrationAdapter",
         HirKind::ReadlineMigrationAdapter(_) => "ReadlineMigrationAdapter",
         HirKind::GlobMigrationAdapter(_) => "GlobMigrationAdapter",
+        // Not yet lowered by PIR v0; falls through to the `other =>`
+        // unsupported-count fallback in `lower_item`, keyed by this name.
+        HirKind::DataSectionDecl(_) => "DataSectionDecl",
     }
 }
 
@@ -884,6 +985,8 @@ pub fn lower_hir_bodies_with_identity(file: &HirFile, source_identity: Option<St
             edge_count: 0,
             operation_counts: Default::default(),
             context_counts: Default::default(),
+            demand_counts: Default::default(),
+            access_counts: Default::default(),
             source_anchor_coverage: Default::default(),
             dynamic_boundary_counts: Default::default(),
             unsupported_construct_counts: Default::default(),
@@ -952,6 +1055,24 @@ impl BodyLowerer {
         };
         match stmt {
             HirStmt::Let { name, sigil, storage, init, binding_range } => {
+                if *storage == DeclStorageClass::Unknown {
+                    // Parser-shaped legacy calls (for example `field $x = 1`)
+                    // do not bind a lexical declaration. For `Unknown` storage
+                    // the `init` slot carries the call's argument expression —
+                    // the assignment for `field $x = 1`, the read for the bare
+                    // `field $x` — and HIR has already resolved that target
+                    // against the visible scope. Lower it plainly; assuming a
+                    // package slot here would drop a preceding lexical's
+                    // call-site reference, which `extract_lexical_facts` only
+                    // sees as a `LexicalRead`/`LexicalWrite`.
+                    // Keep the call boundary visible to completeness consumers:
+                    // the callee's runtime behavior remains unmodeled.
+                    *self.unsupported.entry("LegacyFieldCall").or_insert(0) += 1;
+                    if let Some(arg_id) = init {
+                        self.lower_expr(body, *arg_id, file);
+                    }
+                    return;
+                }
                 // Emit exactly ONE Write op for the declaration target.
                 // `storage` determines whether this is a lexical (my/state) or
                 // package (our) slot. Ignoring `storage` was the root cause of
@@ -969,38 +1090,68 @@ impl BodyLowerer {
                 // declaration form — including bare declarations WITHOUT an
                 // initialiser (`my $x;` / `our $x;`), which the previous
                 // init-LHS-or-statement-span fallback mis-anchored at the statement.
-                {
+                if name.as_str() == "<unknown>" {
+                    // A placeholder Let is not a real symbol. Do not emit a
+                    // stash/lexical write of `<unknown>`; lower the initializer
+                    // so the actual target (or a fail-closed marker) remains.
+                    *self.unsupported.entry("PlaceholderDeclarationName").or_insert(0) += 1;
+                } else {
                     let anchor = self.make_body_anchor(*binding_range);
                     let op = match storage {
                         // `our` binds a package/stash symbol; `local` dynamically
                         // scopes a package/global slot. Both are stash writes.
                         DeclStorageClass::Our | DeclStorageClass::Local => {
-                            PirOperation::StashWrite {
+                            Some(PirOperation::StashWrite {
                                 symbol: SymbolName {
                                     sigil: sigil_str(sigil),
                                     name: name.clone(),
                                     package: None, // package context not yet threaded into body arena
                                 },
-                            }
+                            })
                         }
-                        // my / state / any other declarator → lexical write
-                        _ => PirOperation::LexicalWrite {
-                            name: LexicalName { sigil: sigil_str(sigil), name: name.clone() },
-                        },
+                        // `my` and `state` are lexical writes. An unknown
+                        // parser-shaped declarator is a legacy call, not a
+                        // declaration, and must not publish a binding.
+                        DeclStorageClass::My | DeclStorageClass::State => {
+                            Some(PirOperation::LexicalWrite {
+                                name: LexicalName { sigil: sigil_str(sigil), name: name.clone() },
+                            })
+                        }
+                        DeclStorageClass::Unknown => None,
                     };
-                    self.push_body_node(anchor, op, PirContext::Lvalue, None, file);
+                    // The write access comes from `access_for_operation`; the
+                    // value context of the declared place is not proven by
+                    // this lowering (scalar versus list assignment shape), so
+                    // it stays `Unknown` rather than the statement's `Void`.
+                    if let Some(op) = op {
+                        self.push_body_node(anchor, op, PirContext::Unknown, None, file);
+                    }
                 }
-                // Lower the RHS of the initialiser. The init expr in the HIR body
-                // is an HirExpr::Assign { lhs: Variable(Write), rhs, mode: Simple }.
-                // We skip the Assign wrapper and lower only the rhs to avoid
-                // re-emitting the LHS Variable as a second Write.
+                // Lower the initialiser. A simple initialiser is
+                // HirExpr::Assign { lhs: Variable(Write), rhs, mode: Simple }; the
+                // declaration write above already covers its LHS, so lower only
+                // the rhs to avoid re-emitting the LHS Variable as a second Write.
+                // A read-modify-write initialiser (`local $x += EXPR`, `.=`, `x=`)
+                // is a real modification of the slot on top of the localization,
+                // so lower the whole Assign: the RMW arm emits one Modify node for
+                // the place plus the RHS read, never a second plain Write.
+                // A simple initialiser whose target is not a plain variable is
+                // not covered by the declaration write above; lower the whole
+                // Assign so the real target reaches PIR (today as the fail-closed
+                // `Subscript` marker) instead of vanishing. Canonical HIR no
+                // longer emits Let { name: "<unknown>" } for those targets
+                // (#14809); this arm remains for any residual non-variable init.
                 if let Some(init_id) = init {
-                    if let Some(HirExpr::Assign { rhs, .. }) = body.expr(*init_id) {
-                        self.lower_expr(body, *rhs, file);
-                    } else {
-                        // Not an Assign node (shouldn't happen in well-formed HIR,
-                        // but handle defensively — lower the init as-is).
-                        self.lower_expr(body, *init_id, file);
+                    match body.expr(*init_id) {
+                        Some(HirExpr::Assign { lhs, rhs, mode: AssignMode::Simple })
+                            if matches!(body.expr(*lhs), Some(HirExpr::Variable(_))) =>
+                        {
+                            self.lower_expr(body, *rhs, file);
+                        }
+                        // ReadModifyWrite, a non-variable target, or not an Assign
+                        // node (shouldn't happen in well-formed HIR): lower the
+                        // init as-is.
+                        _ => self.lower_expr(body, *init_id, file),
                     }
                 }
             }
@@ -1080,8 +1231,13 @@ impl BodyLowerer {
                             // Lower RHS as a Read operand.
                             self.lower_expr(body, *rhs, file);
                         } else {
-                            // Non-variable LHS for compound assign → unsupported (fail-closed).
+                            // Non-variable LHS for compound assign → unsupported
+                            // (fail-closed), but still walk the place and RHS so
+                            // an element target (`local $h{k} .= …`) reaches PIR
+                            // as Subscript rather than vanishing.
                             *self.unsupported.entry("CompoundAssignNonVarLhs").or_insert(0) += 1;
+                            self.lower_expr(body, *lhs, file);
+                            self.lower_expr(body, *rhs, file);
                         }
                     }
                 }
@@ -1585,11 +1741,15 @@ impl BodyLowerer {
         self.last_in_scope.insert(scope, id);
 
         let _ = file; // reserved for future scope/package lookup from ScopeGraph
+        let demand = demand_for_operation(&operation);
+        let access = access_for_operation(&operation);
         self.nodes.push(PirNode {
             id,
             source_anchor,
             operation,
             context,
+            demand,
+            access,
             dynamic_boundary,
             scope,
             package_context: None, // deferred: body arenas don't carry package_context yet
@@ -1776,7 +1936,7 @@ mod tests {
         let graph = lower("my $x = 1;");
         assert_eq!(graph.nodes.len(), 3);
         assert_eq!(graph.nodes[0].operation.name(), "LexicalWrite");
-        assert_eq!(graph.nodes[0].context, PirContext::Lvalue);
+        assert_eq!(graph.nodes[0].access, Some(PirAccessMode::Write));
         assert_eq!(graph.nodes[1].operation.name(), "Assign");
         assert_eq!(graph.nodes[1].context, PirContext::Void);
         assert!(matches!(
@@ -2107,6 +2267,29 @@ mod tests {
             graph.receipt.unsupported_construct_counts.get("StatementModifierShell"),
             Some(&1)
         );
+    }
+
+    #[test]
+    fn data_section_counted_in_receipt_under_its_own_key() {
+        // PIR v0 does not lower `__DATA__`/`__END__`, so the HIR shell must
+        // stay visible in the receipt under its own name rather than vanishing
+        // or being absorbed into another construct's count.  This pins the
+        // fallback key, which is public receipt surface.
+        let graph = lower("1;\n__DATA__\npayload\n");
+        assert_eq!(
+            graph.receipt.unsupported_construct_counts.get("DataSectionDecl"),
+            Some(&1),
+            "a lowered data section must be counted once under DataSectionDecl"
+        );
+    }
+
+    #[test]
+    fn end_marker_shares_the_data_section_receipt_key() {
+        // `__END__` and `__DATA__` are distinct HIR markers but one PIR
+        // construct, so they must not split the receipt into two keys.
+        let graph = lower("1;\n__END__\npayload\n");
+        assert_eq!(graph.receipt.unsupported_construct_counts.get("DataSectionDecl"), Some(&1));
+        assert_eq!(graph.receipt.unsupported_construct_counts.get("DataSectionMarker"), None);
     }
 
     #[test]

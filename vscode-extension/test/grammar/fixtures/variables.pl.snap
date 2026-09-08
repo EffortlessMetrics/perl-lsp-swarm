@@ -94,9 +94,7 @@
 #            ^^^^ source.perl variable.other.scalar.perl
 #                ^ source.perl
 #                 ^^ source.perl keyword.operator.arrow.perl
-#                   ^ source.perl
-#                    ^^ source.perl keyword.operator.comparison.perl
-#                      ^^^^^^^ source.perl
+#                   ^^^^^^^^^^ source.perl
 >my $special = $@;
 #^^ source.perl keyword.other.perl
 #  ^ source.perl

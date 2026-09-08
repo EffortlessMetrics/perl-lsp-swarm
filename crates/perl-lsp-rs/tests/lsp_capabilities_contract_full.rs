@@ -1,4 +1,3 @@
-#![allow(clippy::collapsible_if)]
 #![allow(unused_imports)]
 
 use perl_lsp::{JsonRpcRequest, LspServer};

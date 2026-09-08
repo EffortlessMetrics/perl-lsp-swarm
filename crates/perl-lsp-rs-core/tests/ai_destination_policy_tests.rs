@@ -9,6 +9,7 @@ use perl_lsp_rs_core::providers::inline_completion::{
     StreamControl,
 };
 use perl_tdd_support::{must, must_some};
+use perl_test_must::{must_err, must_with};
 use std::io::{Read, Write};
 use std::net::{IpAddr, Ipv4Addr, TcpListener};
 use std::sync::Arc;
@@ -34,7 +35,7 @@ fn backend_request() -> BackendRequest {
 
 #[test]
 fn rejects_remote_http_endpoint() {
-    let err = validate_endpoint("http://api.example.com/v1/chat/completions", false).unwrap_err();
+    let err = must_err(validate_endpoint("http://api.example.com/v1/chat/completions", false));
     let message = err.to_string();
     assert!(
         message.contains("HTTPS") || message.contains("disallowed") || message.contains("resolve"),
@@ -59,10 +60,11 @@ fn accepts_loopback_http_only_with_local_model_mode() -> Result<(), Box<dyn std:
 
 #[test]
 fn rejects_localhost_when_resolver_returns_private_address() {
-    let err = validate_endpoint_with_resolver("http://localhost:8080/v1", true, &|_host, _port| {
-        Ok(vec![IpAddr::V4(Ipv4Addr::new(192, 168, 0, 2))])
-    })
-    .unwrap_err();
+    let err = must_err(validate_endpoint_with_resolver(
+        "http://localhost:8080/v1",
+        true,
+        &|_host, _port| Ok(vec![IpAddr::V4(Ipv4Addr::new(192, 168, 0, 2))]),
+    ));
     assert!(err.to_string().contains("loopback"));
 }
 
@@ -71,10 +73,11 @@ fn rejects_private_and_metadata_targets_via_injected_resolver() {
     for (url, ip) in [
         ("https://internal.example/v1", IpAddr::V4(Ipv4Addr::new(10, 1, 2, 3))),
         ("https://metadata.example/v1", IpAddr::V4(Ipv4Addr::new(169, 254, 169, 254))),
-        ("https://[fd00::1]/v1", IpAddr::V6("fd00::1".parse().expect("valid ipv6 literal"))),
+        ("https://[fd00::1]/v1", IpAddr::V6(must_with("fd00::1".parse(), "valid ipv6 literal"))),
     ] {
-        let err = validate_endpoint_with_resolver(url, false, &move |_host, _port| Ok(vec![ip]))
-            .unwrap_err();
+        let err = must_err(validate_endpoint_with_resolver(url, false, &move |_host, _port| {
+            Ok(vec![ip])
+        }));
         assert!(
             err.to_string().contains("disallowed"),
             "expected disallowed address for {url}, got {err}"
@@ -86,7 +89,7 @@ fn rejects_private_and_metadata_targets_via_injected_resolver() {
 fn accepts_bracketed_ipv6_loopback_with_explicit_port() -> Result<(), Box<dyn std::error::Error>> {
     let approved =
         validate_endpoint_with_resolver("https://[::1]:11434/v1", false, &|_host, _port| {
-            Ok(vec![IpAddr::V6("::1".parse().expect("valid ipv6 literal"))])
+            Ok(vec![IpAddr::V6(must_with("::1".parse(), "valid ipv6 literal"))])
         })?;
     assert_eq!(approved.host, "::1");
     assert_eq!(approved.port, 11434);
@@ -187,9 +190,15 @@ fn redirect_response_is_not_followed_and_does_not_reach_secondary_host()
         provider.stream(&backend_request(), &mut |_chunk: StreamChunk| StreamControl::Continue);
     assert!(result.is_err(), "redirect response must not be treated as SSE success");
 
-    redirect_worker.join().expect("redirect worker panicked").expect("redirect worker failed");
+    must_with(
+        must_with(redirect_worker.join(), "redirect worker panicked"),
+        "redirect worker failed",
+    );
     thread::sleep(Duration::from_millis(100));
-    secondary_worker.join().expect("secondary worker panicked").expect("secondary worker failed");
+    must_with(
+        must_with(secondary_worker.join(), "secondary worker panicked"),
+        "secondary worker failed",
+    );
 
     assert!(
         !secondary_hit.load(std::sync::atomic::Ordering::SeqCst),
@@ -228,21 +237,21 @@ fn stream_rejects_disallowed_endpoint_before_network_io() {
 
 #[test]
 fn rejects_ipv4_mapped_private_via_injected_resolver() {
-    let mapped: IpAddr = "::ffff:10.0.0.5".parse().expect("valid ipv4-mapped literal");
-    let err =
-        validate_endpoint_with_resolver("https://mapped.example/v1", false, &move |_h, _p| {
-            Ok(vec![mapped])
-        })
-        .unwrap_err();
+    let mapped: IpAddr = must_with("::ffff:10.0.0.5".parse(), "valid ipv4-mapped literal");
+    let err = must_err(validate_endpoint_with_resolver(
+        "https://mapped.example/v1",
+        false,
+        &move |_h, _p| Ok(vec![mapped]),
+    ));
     assert!(err.to_string().contains("disallowed"), "got {err}");
 }
 
 #[test]
 fn rejects_cgnat_via_injected_resolver() {
-    let err = validate_endpoint_with_resolver("https://cgnat.example/v1", false, &|_h, _p| {
-        Ok(vec![IpAddr::V4(Ipv4Addr::new(100, 64, 0, 1))])
-    })
-    .unwrap_err();
+    let err =
+        must_err(validate_endpoint_with_resolver("https://cgnat.example/v1", false, &|_h, _p| {
+            Ok(vec![IpAddr::V4(Ipv4Addr::new(100, 64, 0, 1))])
+        }));
     assert!(err.to_string().contains("disallowed"), "got {err}");
 }
 
@@ -255,12 +264,11 @@ fn rejects_ipv6_transition_embeddings_via_injected_resolver() {
         ("site-local", "fec0::1"),
     ] {
         let parsed: IpAddr = must(ip.parse());
-        let err = validate_endpoint_with_resolver(
+        let err = must_err(validate_endpoint_with_resolver(
             "https://transition.example/v1",
             false,
             &move |_h, _p| Ok(vec![parsed]),
-        )
-        .unwrap_err();
+        ));
         assert!(
             err.to_string().contains("disallowed"),
             "{label} ({ip}) should be disallowed, got {err}"
@@ -333,7 +341,7 @@ fn stream_pins_validated_loopback_ips_for_connect() -> Result<(), Box<dyn std::e
     })?;
     assert!(saw_chunk, "pinned-IP agent must complete SSE against loopback listener");
 
-    worker.join().expect("worker panicked").expect("worker failed");
+    must_with(must_with(worker.join(), "worker panicked"), "worker failed");
     Ok(())
 }
 

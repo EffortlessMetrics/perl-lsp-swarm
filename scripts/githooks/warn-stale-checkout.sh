@@ -17,6 +17,11 @@
 
 set -euo pipefail
 
+# This hook is deliberately warning-only and must remain usable before a
+# checkout has a working toolchain. Its Cargo invocation is not a build
+# entrypoint, so it is an explicit non-blocking exception to #12593.
+# cargo-toolchain-guard: exempt — freshness warnings must never block checkout.
+
 # Locate cargo — fall back gracefully if not available.
 if ! command -v cargo &>/dev/null; then
     exit 0

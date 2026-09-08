@@ -1,0 +1,153 @@
+#!/usr/bin/env bash
+# Classify how a ripr evidence lane terminated, from its own job log only.
+#
+# Claims: #12563 / #6807, complementing #12771 (bounded auto-retry handoff).
+# This script is THE single eviction classifier consumed by the required
+# `ripr+ New Gap Gate` aggregator in .github/workflows/ripr.yml; the bounded
+# responder ripr-infra-retry.yml keeps consuming the gate's classification
+# artifact strictly as data. The decision boundary is audited on every
+# application via this output being echoed into the gate's run log.
+#
+# Decision boundary:
+#   1. A genuine ripr red ALWAYS outranks infra markers. If the lane printed
+#      the terminal quality-gate receipt line ("quality gate failed; see
+#      receipt ...", xtask/src/tasks/quality_gate.rs bail!), the analysis
+#      completed and found gaps -> classification=ripr-failure. Such a log
+#      must NEVER take the infra/retry path even if the runner was torn down
+#      later during artifact upload.
+#   2. Infra termination requires platform teardown evidence produced by the
+#      runner itself, not by the analyzed workload (same marker set as the
+#      landed #12771 classifier):
+#        "The runner has received a shutdown signal"
+#        "Process completed with exit code 143."
+#        "The operation was canceled."
+#   3. A truncated (capped) scan fails closed: if the complete log was not
+#      inspected, the classifier can never rule out a genuine receipt beyond
+#      the truncation point, so it returns ripr-failure even when a teardown
+#      marker sits inside the scanned prefix (#12563 review P2).
+#   4. Anything else is fail-closed to ripr-failure: absence of evidence is
+#      a blocking red, never a pass and never a retry.
+#
+# Output (machine-checkable; first line is what the gate greps):
+#   classification=<infra-no-proof|ripr-failure>
+#   gap_receipt_matches=<n>
+#   shutdown_signal_matches=<n>
+#   sigterm143_matches=<n>
+#   op_cancelled_matches=<n>
+#   log_lines_scanned=<n>
+#   bytes_scanned=<n>
+#   partial_read=<true|false>              true when the size cap truncated
+#   verdict=<same as classification>       explicit alias for auditability
+#   decision_boundary="<one-line summary>"
+#
+# Exit status is ALWAYS 0 for a performed classification (the verdict is the
+# data); non-zero only signals misuse (bad arguments). Retrieval problems are
+# reported as ripr-failure so callers fail closed deterministically.
+
+set -u
+
+usage() {
+  printf 'usage: %s <logfile|-> [max_bytes]\n' "${0##*/}" >&2
+}
+
+MAX_BYTES_DEFAULT=$((16 * 1024 * 1024)) # bounded reads; logs are capped
+
+classify_error() {
+  cat <<'EOF'
+classification=ripr-failure
+gap_receipt_matches=0
+shutdown_signal_matches=0
+sigterm143_matches=0
+op_cancelled_matches=0
+log_lines_scanned=0
+bytes_scanned=0
+partial_read=false
+verdict=ripr-failure
+EOF
+  printf 'decision_boundary="retrieval failure fails closed to blocking red; infra path needs positive teardown evidence"\n' >&2
+}
+
+emit_verdict() {
+  local file="$1" bytes="$2" capped="$3"
+  local lines gap_hits shut_hits term143_hits cancel_hits class
+
+  lines=$(wc -l <"$file" 2>/dev/null || printf '0')
+  # Plain -c over a fully-read temp file; no SIGPIPE hazard (#6807 follow-up).
+  gap_hits=$(grep -cE 'quality gate failed; see receipt' "$file" 2>/dev/null || true)
+  shut_hits=$(grep -cE 'The runner has received a shutdown signal' "$file" 2>/dev/null || true)
+  term143_hits=$(grep -cE 'Process completed with exit code 143\.' "$file" 2>/dev/null || true)
+  cancel_hits=$(grep -cE 'The operation was canceled' "$file" 2>/dev/null || true)
+
+  if [ "$gap_hits" -gt 0 ]; then
+    # Boundary rule 1: a genuine terminal red outranks every infra marker,
+    # so a real failure still reds even when teardown noise follows it.
+    class="ripr-failure"
+  elif [ "$capped" = "true" ]; then
+    # Boundary rule 2 (fail closed on partial evidence, #12563 review P2):
+    # a capped scan cannot prove absence of a genuine gap receipt beyond the
+    # truncation point, so it must never produce infra-no-proof even when a
+    # teardown marker sits inside the scanned prefix.
+    class="ripr-failure"
+  elif [ "$shut_hits" -gt 0 ] || [ "$term143_hits" -gt 0 ] || [ "$cancel_hits" -gt 0 ]; then
+    # Boundary rule 3: positive runner-teardown evidence only.
+    class="infra-no-proof"
+  else
+    # Boundary rule 4: fail closed on silence too.
+    class="ripr-failure"
+  fi
+
+  cat <<EOF
+classification=$class
+gap_receipt_matches=$gap_hits
+shutdown_signal_matches=$shut_hits
+sigterm143_matches=$term143_hits
+op_cancelled_matches=$cancel_hits
+log_lines_scanned=$lines
+bytes_scanned=$bytes
+partial_read=$capped
+verdict=$class
+decision_boundary="genuine gap receipt outranks infra markers; retry requires positive runner-teardown evidence"
+EOF
+}
+
+main() {
+  if [ "$#" -lt 1 ] || [ "$#" -gt 2 ]; then
+    usage
+    exit 64
+  fi
+  local input="$1"
+  local max_bytes="${2:-$MAX_BYTES_DEFAULT}"
+  case "$max_bytes" in
+    ''|*[!0-9]*) usage; exit 64 ;;
+  esac
+
+  local tmp=""
+  if ! tmp="$(mktemp)"; then
+    classify_error
+    return 0
+  fi
+  # Embed the resolved path now so the EXIT-time expansion cannot lose it.
+  # shellcheck disable=SC2064  # expansion now is intended: fixed path
+  trap 'rm -f "'"${tmp}"'"' EXIT
+
+  if [ "$input" = "-" ]; then
+    head -c "$max_bytes" >"$tmp" || true
+  elif [ ! -f "$input" ]; then
+    classify_error
+    return 0
+  else
+    head -c "$max_bytes" "$input" >"$tmp" || true
+  fi
+
+  # partial-read detection: a truncated scan cannot prove absence of a
+  # receipt; fail-closed below still holds either way.
+  local full_size capped=false
+  if [ "${input}" != "-" ] && [ -f "$input" ]; then
+    full_size=$(wc -c <"$input" 2>/dev/null || printf '0')
+    if [ "$full_size" -gt "$max_bytes" ]; then capped=true; fi
+  fi
+
+  emit_verdict "$tmp" "$(wc -c <"$tmp" 2>/dev/null || printf '0')" "$capped"
+}
+
+main "$@"

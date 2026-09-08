@@ -8,6 +8,7 @@
 //! #10928/#10935) will consume it. This file follows the
 //! `ripr_seam_proof_*` harness convention; its plumbing is suppressed from
 //! diff-scoped seam counting (policy/ripr-suppressions.toml, ripr#1428).
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 use perl_semantic_facts::reachability_operation::{
     ReachabilityBoundedView, ReachabilityCancellationPolling, ReachabilityChargeError,

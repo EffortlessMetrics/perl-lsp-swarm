@@ -317,5 +317,5 @@ fn lexical_declaration_recovery_preserves_following_code_without_normalizing_ele
     );
     assert_eq!(after_declaration_spans.len(), 1);
     assert!(after_declaration_spans[0].starts_with("my $after = 2"));
-    assert!(!output.terminated_early, "local declaration recovery must preserve following code");
+    assert!(!output.terminated_early(), "local declaration recovery must preserve following code");
 }

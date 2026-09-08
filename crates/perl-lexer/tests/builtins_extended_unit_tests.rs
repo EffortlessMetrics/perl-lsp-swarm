@@ -3,7 +3,6 @@
 //! Complements `comprehensive_unit_tests.rs` with additional coverage for:
 //! - PHF map iteration and entry consistency
 //! - Parameter name semantics (FILEHANDLE, SCALAR, LIST patterns)
-#![allow(clippy::panic)]
 //! - Cross-module alignment between PHF and HashMap signatures
 //! - Signature variant ordering (most-specific-first convention)
 //! - Edge cases around whitespace, unicode, and boundary inputs

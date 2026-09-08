@@ -43,8 +43,10 @@ use perl_workspace::workspace::workspace_index::{FileFactShard, WorkspaceIndex};
 use serde::{Deserialize, Serialize};
 
 use crate::allocation_tracker::{get_current_memory_usage, measure_allocations};
+use crate::tasks::metrics::parser_accuracy_metamorphic_registry;
 use crate::tasks::metrics::ratchet::MetricReceipt;
 use crate::utils::project_root;
+use xtask::parser_accuracy_legacy_population::legacy_whitespace_case_applies;
 
 mod failure_packet;
 
@@ -1077,6 +1079,28 @@ fn build_status_artifact(
     cadence: Cadence,
 ) -> Result<(ParserAccuracyManifest, ParserAccuracyArtifact)> {
     let start = Instant::now();
+    // #13659: consult the authored metamorphic safe-point/region registry
+    // before scoring. A drifted registry (stale pinned digests, unresolvable
+    // anchors, or admitted propositions that no longer validate) fails the run
+    // closed instead of scoring against unresolvable propositions.
+    //
+    // Telemetry boundary: the gate intentionally precedes the measured scoring
+    // body so a drifted registry costs no scoring work. `metric_runtime`
+    // covers the whole run including this gate; the allocation metrics
+    // attribute the scoring body only (`measure_allocations` below).
+    let registry_inconsistencies =
+        parser_accuracy_metamorphic_registry::authored_registry_inconsistencies();
+    if !registry_inconsistencies.is_empty() {
+        let details = registry_inconsistencies
+            .iter()
+            .map(|inconsistency| format!("{}: {}", inconsistency.case_id, inconsistency.detail))
+            .collect::<Vec<_>>()
+            .join("; ");
+        bail!(
+            "registered metamorphic safe-point/region registry is inconsistent ({} findings): {details}",
+            registry_inconsistencies.len()
+        );
+    }
     let manifest = read_manifest(root, manifest_path)?;
     let rss_before = get_current_memory_usage().ok();
     let (artifact, allocation_measurement) =
@@ -2982,10 +3006,10 @@ fn collect_parser_tokens(source: &str) -> Result<Vec<String>> {
     loop {
         let token =
             stream.next().map_err(|err| eyre!("tokenizing parser accuracy fixture: {err}"))?;
-        if token.kind == TokenKind::Eof {
+        if token.kind() == TokenKind::Eof {
             break;
         }
-        tokens.push(format!("{:?}:{}", token.kind, token.text));
+        tokens.push(format!("{:?}:{}", token.kind(), token.text));
     }
     Ok(tokens)
 }
@@ -3116,7 +3140,11 @@ fn score_manifest_determinism(
 }
 
 fn whitespace_invariance_variant(source: &str) -> Option<String> {
-    if has_metamorphic_literal_boundary(source) {
+    // The sampled whitespace population must derive from the same
+    // production-owned legacy applicability rule whose canonical identity the
+    // population emitter pins (#13654); this module retains no independent
+    // predicate for that gate.
+    if !legacy_whitespace_case_applies(source) {
         return None;
     }
 
@@ -6659,6 +6687,9 @@ fn git_commit(root: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use xtask::parser_accuracy_legacy_population::{
+        LegacyApplicability, LegacyFixtureInput, build_legacy_whitespace_population,
+    };
 
     fn tags(values: &[LineTag]) -> BTreeSet<LineTag> {
         values.iter().copied().collect()
@@ -9507,6 +9538,42 @@ sub dynamic_boundary_case {
             Some("package Demo;  \r\n1;  \r\n".to_string())
         );
         assert!(whitespace_invariance_variant("print <<'EOF';\nEOF\n").is_none());
+    }
+
+    #[test]
+    fn whitespace_sample_gate_matches_legacy_population_projection() {
+        // The scorer's whitespace denominator must classify every source
+        // exactly as the pinned legacy population projection does (#13654).
+        let sources = [
+            "package Demo;\n\n1;\n",
+            "package Demo;\r\n1;\r\n",
+            "print <<'EOF';\nEOF\n",
+            "package Demo;\n__DATA__\nbody\n",
+            "package Demo;\n__END__\n",
+            "\n\n   \n",
+            "",
+            "my $x = 1; # trailing   \n",
+        ];
+        for source in sources {
+            let population = build_legacy_whitespace_population(
+                1,
+                vec![LegacyFixtureInput::new(
+                    "gate_probe".to_owned(),
+                    "fixtures/gate_probe.pl".to_owned(),
+                    source.as_bytes().to_vec(),
+                )],
+            )
+            .unwrap_or_else(|error| {
+                panic!("probe population for {source:?} must project: {error:?}")
+            });
+            let row = &population.rows()[0];
+            let projected_applied = row.legacy_applicability == LegacyApplicability::Applied;
+            assert_eq!(
+                whitespace_invariance_variant(source).is_some(),
+                projected_applied,
+                "scorer whitespace gate diverged from pinned projection for {source:?}"
+            );
+        }
     }
 
     #[test]

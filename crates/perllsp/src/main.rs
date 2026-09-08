@@ -1,4 +1,6 @@
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 mod claude;
+mod mcp;
 
 use perllsp::protocol::product_identity::{
     BinaryIdentityPacketV1, IdentityOutputFormat, requested_identity_output,
@@ -35,6 +37,10 @@ fn main() -> std::process::ExitCode {
             return std::process::ExitCode::FAILURE;
         }
         return std::process::ExitCode::SUCCESS;
+    }
+
+    if let Some(code) = mcp::try_run(&args) {
+        return std::process::ExitCode::from(code);
     }
 
     match run_claude_product_command(&args) {

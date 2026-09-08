@@ -43,6 +43,8 @@ const FORBIDDEN_SUPPORT_CLAIM_PHRASES: &[&str] = &[
     "generated symbols fully supported",
     "compiler-backed tokens broadly live",
     "full dynamic Perl inference",
+    "@INC integration complete",
+    "full @INC support",
 ];
 
 const REQUIRED_PROVIDER_SURFACES: &[&str] = &[
@@ -137,6 +139,7 @@ struct ValidationStats {
 pub fn run() -> Result<()> {
     let root = project_root()?;
     let stats = validate_docs(&root, PROVIDER_MATRIX, SUPPORT_TIERS)?;
+    crate::tasks::inc_claim_boundary::check()?;
     println!(
         "provider confidence matrix check passed: {} provider rows, {} support rows, {} relative links",
         stats.provider_rows, stats.support_rows, stats.links_checked
@@ -147,6 +150,7 @@ pub fn run() -> Result<()> {
 pub fn run_support_claims() -> Result<()> {
     let root = project_root()?;
     let stats = validate_support_claim_doc(&root, SUPPORT_TIERS)?;
+    crate::tasks::inc_claim_boundary::check()?;
     println!(
         "support claim map check passed: {} support rows, {} relative links",
         stats.support_rows, stats.links_checked
@@ -714,6 +718,31 @@ after";
 
         let result = validate_support_claim_doc(root, "docs/project/status/SUPPORT_TIERS.md");
         assert!(result.is_err(), "forbidden broad claims must fail validation");
+        Ok(())
+    }
+
+    #[test]
+    fn support_claim_map_rejects_unqualified_inc_integration_complete() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let root = temp.path();
+        let status_dir = root.join("docs").join("project").join("status");
+        fs::create_dir_all(&status_dir)?;
+        fs::write(status_dir.join("provider_confidence_matrix.md"), provider_fixture())?;
+        fs::write(
+            status_dir.join("SUPPORT_TIERS.md"),
+            support_fixture_for_claim(
+                REQUIRED_SUPPORT_SURFACES,
+                "provider_confidence_matrix.md",
+                "Module resolution / `@INC` consistency",
+                "perl-lsp @INC integration complete",
+            ),
+        )?;
+
+        let result = validate_support_claim_doc(root, "docs/project/status/SUPPORT_TIERS.md");
+        assert!(
+            result.is_err(),
+            "unqualified @INC integration complete must fail support-claim validation"
+        );
         Ok(())
     }
 

@@ -10,7 +10,7 @@ lsp_version = "3.18.0"
 id = "lsp.completion"
 area = "textDocument"
 spec = "3.0"
-maturity = "ga"
+maturity = "not_proven"
 advertised = true
 description = "Code completion"
 
@@ -18,7 +18,7 @@ description = "Code completion"
 id = "lsp.hover"
 area = "textDocument"
 spec = "3.0"
-maturity = "ga"
+maturity = "not_proven"
 advertised = true
 description = "Hover information"
 
@@ -26,7 +26,7 @@ description = "Hover information"
 id = "lsp.signature_help"
 area = "textDocument"
 spec = "3.0"
-maturity = "ga"
+maturity = "not_proven"
 advertised = true
 description = "Function signature help"
 
@@ -34,7 +34,7 @@ description = "Function signature help"
 id = "lsp.diagnostics"
 area = "textDocument"
 spec = "3.0"
-maturity = "ga"
+maturity = "not_proven"
 advertised = true
 description = "Error diagnostics"
 
@@ -42,7 +42,7 @@ description = "Error diagnostics"
 id = "lsp.definition"
 area = "textDocument"
 spec = "3.0"
-maturity = "ga"
+maturity = "not_proven"
 advertised = true
 description = "Go to definition"
 
@@ -50,7 +50,7 @@ description = "Go to definition"
 id = "lsp.references"
 area = "textDocument"
 spec = "3.0"
-maturity = "ga"
+maturity = "not_proven"
 advertised = true
 description = "Find references"
 
@@ -58,7 +58,7 @@ description = "Find references"
 id = "lsp.document_symbols"
 area = "textDocument"
 spec = "3.0"
-maturity = "ga"
+maturity = "not_proven"
 advertised = true
 description = "Document outline"
 
@@ -66,7 +66,7 @@ description = "Document outline"
 id = "lsp.formatting"
 area = "textDocument"
 spec = "3.0"
-maturity = "ga"
+maturity = "not_proven"
 advertised = true
 description = "Document formatting"
 
@@ -74,7 +74,7 @@ description = "Document formatting"
 id = "lsp.folding_ranges"
 area = "textDocument"
 spec = "3.10"
-maturity = "ga"
+maturity = "not_proven"
 advertised = true
 description = "Code folding"
 
@@ -83,7 +83,7 @@ description = "Code folding"
 id = "lsp.rename"
 area = "textDocument"
 spec = "3.0"
-maturity = "ga"
+maturity = "not_proven"
 advertised = false  # Disabled for testing
 description = "Symbol renaming"
 
@@ -91,7 +91,7 @@ description = "Symbol renaming"
 id = "lsp.code_actions"
 area = "textDocument"
 spec = "3.8"
-maturity = "ga"
+maturity = "not_proven"
 advertised = false  # Disabled for testing
 description = "Quick fixes and refactorings"
 
@@ -99,7 +99,7 @@ description = "Quick fixes and refactorings"
 id = "lsp.workspace_symbols"
 area = "workspace"
 spec = "3.0"
-maturity = "ga"
+maturity = "not_proven"
 advertised = false  # Disabled for testing
 description = "Workspace symbol search"
 
@@ -115,7 +115,7 @@ description = "Semantic highlighting"
 id = "lsp.inlay_hints"
 area = "textDocument"
 spec = "3.16"
-maturity = "ga"
+maturity = "not_proven"
 advertised = false  # Disabled for testing
 description = "Parameter hints"
 
@@ -123,7 +123,7 @@ description = "Parameter hints"
 id = "lsp.document_links"
 area = "textDocument"
 spec = "3.0"
-maturity = "ga"
+maturity = "not_proven"
 advertised = false  # Disabled for testing
 description = "Module links"
 
@@ -131,7 +131,7 @@ description = "Module links"
 id = "lsp.selection_ranges"
 area = "textDocument"
 spec = "3.15"
-maturity = "ga"
+maturity = "not_proven"
 advertised = false  # Disabled for testing
 description = "Smart selection"
 
@@ -139,7 +139,7 @@ description = "Smart selection"
 id = "lsp.on_type_formatting"
 area = "textDocument"
 spec = "3.0"
-maturity = "ga"
+maturity = "not_proven"
 advertised = false  # Disabled for testing
 description = "Auto-formatting on type"
 

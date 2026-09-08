@@ -1,6 +1,5 @@
 ---
 source: crates/perl-parser/tests/ast_snap.rs
-assertion_line: 257
 expression: "parse_sexp(\"my @vals = qw(foo bar;\\nmy $ok = 1;\")"
 ---
-(source_file (my_declaration (variable @ vals)(array (string "foo") (string "bar;"))) (my_declaration (variable $ ok)(number 1)))
+(source_file (statements (my_declaration (declarator my) (variable (variable (sigil @) (name vals))) (initializer (array (elements (string (value foo))) (elements (string (value "bar;"))))))) (statements (my_declaration (declarator my) (variable (variable (sigil $) (name ok))) (initializer (number (value 1))))))

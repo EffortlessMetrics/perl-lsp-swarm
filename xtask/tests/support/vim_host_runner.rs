@@ -25,9 +25,11 @@
 //!   root markers and filetype policy; the driver observes native Vim
 //!   detection and this substrate rejects pre-forced filetypes.
 //! - The generic process-tree cleanup boundary (#8734) and the shared
-//!   fail-closed host primitives (#10894, open) stay consumed-not-duplicated:
-//!   this substrate keeps the same fail-closed semantics the Emacs runner
-//!   landed, and #10894 may extract them unchanged later.
+//!   host-execution/receipt primitives (#10894) are consumed, not duplicated:
+//!   bounded execution, process-ledger comparison, redaction/bounding,
+//!   receipt-freshness refusal, and cleanup laws live in
+//!   `xtask::editor_host` and this substrate keeps only Vim-specific subject,
+//!   event, and journey knowledge.
 //!
 //! Fail-closed laws:
 //!
@@ -43,19 +45,14 @@
 //! - a receipt whose registration detail does not bind the planned candidate
 //!   digest, or whose buffer attachment was pre-forced, cannot pass.
 
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{Context, Result, ensure};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::{OsStr, OsString};
-use std::fmt::Write as _;
 use std::fs;
-use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitStatus, Stdio};
-use std::thread;
-use std::time::{Duration, Instant};
+use std::process::{Command, Stdio};
 use xtask::editor_client_compat::{
     ArtifactKind, CANONICAL_EXPECTATION_SET_ID, CapabilityIdentity, CleanupResult,
     ClientSourceState, DiagnosticMode, DiagnosticsIdentity, EditorClientCompatReceipt,
@@ -64,10 +61,19 @@ use xtask::editor_client_compat::{
     RegistrationState, SCHEMA_VERSION as RECEIPT_SCHEMA_VERSION, ServerIdentity,
     WorkspaceFixtureIdentity, canonical_expectation_set_digest, fixture_digest,
 };
+use xtask::editor_host::{
+    BoundedRun, HostProcessLedger, PathRedaction, ProbeCapture, judge_cleanup,
+    validate_safe_identity, write_artifact,
+};
+
+// The shared #10894 mechanics this substrate consumes from one authority.
+pub use xtask::editor_host::{
+    ProcessProbeLine, parse_process_snapshot, parse_windows_process_snapshot, probe_process_table,
+    render_process_snapshot, surviving_processes,
+};
 
 pub const RUN_PLAN_SCHEMA_VERSION: &str = "vim_host_run_plan.v1";
 pub const DRIVER_SCHEMA_VERSION: &str = "vim_host_driver.v1";
-const MAX_CAPTURE_BYTES: usize = 1024 * 1024;
 
 /// The one exact client subject this runner can execute today: the pinned
 /// `prabirshrestha/vim-lsp` upstream commit selected by #11369. A newer
@@ -587,6 +593,21 @@ impl HermeticVimLayout {
         server_name: &str,
         root_markers: &[String],
     ) -> Result<BTreeMap<OsString, OsString>> {
+        self.environment_with_extras(plan, server_name, root_markers, &[])
+    }
+
+    /// Same hermetic environment plus journey-scoped extras (#10946): the
+    /// scenario module delivers its own fail-closed run contract (expected
+    /// and decoy root identities, the governed defect coordinates) through
+    /// the same explicit absolute-value channel, never through the ambient
+    /// environment.
+    pub fn environment_with_extras(
+        &self,
+        plan: &VimHostRunPlan,
+        server_name: &str,
+        root_markers: &[String],
+        extras: &[(OsString, OsString)],
+    ) -> Result<BTreeMap<OsString, OsString>> {
         let mut environment = BTreeMap::new();
         for key in [
             "PATH",
@@ -651,6 +672,14 @@ impl HermeticVimLayout {
         // debug build and CI runners are slower; 90s keeps every barrier honest
         // while the parent-owned run deadline still bounds the whole journey.
         environment.insert(OsString::from("PERLLSP_VIM_HOST_BUDGET_MS"), OsString::from("90000"));
+        for (key, value) in extras {
+            ensure!(
+                key.to_str().is_some_and(|text| text.starts_with("PERLLSP_VIM_HOST_")),
+                "journey extras must stay inside the PERLLSP_VIM_HOST_ channel: {:?}",
+                key
+            );
+            environment.insert(key.clone(), value.clone());
+        }
         Ok(environment)
     }
 }
@@ -667,10 +696,21 @@ pub fn build_vim_command(
     server_name: &str,
     root_markers: &[String],
 ) -> Result<Command> {
+    build_vim_command_with_extras(plan, layout, server_name, root_markers, &[])
+}
+
+/// [`build_vim_command`] plus journey-scoped environment extras (#10946).
+pub fn build_vim_command_with_extras(
+    plan: &VimHostRunPlan,
+    layout: &HermeticVimLayout,
+    server_name: &str,
+    root_markers: &[String],
+    extras: &[(OsString, OsString)],
+) -> Result<Command> {
     plan.validate()?;
     let mut command = Command::new(&plan.paths.vim_executable);
     command.env_clear();
-    for (key, value) in layout.environment(plan, server_name, root_markers)? {
+    for (key, value) in layout.environment_with_extras(plan, server_name, root_markers, extras)? {
         command.env(key, value);
     }
     command
@@ -704,6 +744,32 @@ pub enum DriverEventKind {
     RootSelected,
     FixtureOpened,
     DiagnosticsObserved,
+    /// #10946 diagnostics-lifecycle events. They extend the minimal #10944
+    /// journey (same ordering tier as `diagnostics_observed`); the minimal
+    /// journey never emits them and `require_complete` still binds only the
+    /// #10944 barriers, so the two journeys stay independently valid.
+    DefectStateObserved,
+    DefectFixApplied,
+    CurrentStateObserved,
+    /// #11390 freshness-generation events. Unlike every #10944/#10946 kind,
+    /// these four may repeat within one journey: the freshness journey walks
+    /// multiple source/config generations in a single host run. Each carries a
+    /// monotone 1-based index detail with a per-kind cap, so an unordered,
+    /// duplicated, or overlong barrier stream is rejected here even before the
+    /// scenario judgment checks the exact phase sequence. The two earlier
+    /// journeys never emit them.
+    ExternalMutationApplied,
+    StaleGenerationHeld,
+    ClientMaterializationApplied,
+    GenerationCurrentObserved,
+    /// #11396 save-format events. Same repeating law as the #11390 kinds: the
+    /// save journey walks several ordinary saves in one host run, each with
+    /// exactly one configured-owner settlement, plus stale-result holds. Each
+    /// carries a monotone 1-based per-kind index with a cap; the earlier
+    /// journeys never emit them.
+    SaveOwnerConfigured,
+    SaveSettlementObserved,
+    StaleResultHoldObserved,
     ShutdownStarted,
     ShutdownCompleted,
     DriverFailed,
@@ -746,6 +812,15 @@ pub fn validate_driver_events(events: &[DriverEvent], require_complete: bool) ->
     ensure!(!events.is_empty(), "driver emitted no events");
     let mut singleton = BTreeSet::new();
     let mut last_lifecycle_rank = 0_u8;
+    // Monotone last-seen indexes for the #11390 repeating freshness kinds.
+    let mut freshness_mutation_index = 0_u32;
+    let mut freshness_hold_index = 0_u32;
+    let mut freshness_materialization_index = 0_u32;
+    let mut freshness_generation_index = 0_u32;
+    // Monotone last-seen indexes for the #11396 repeating save-format kinds.
+    let mut save_owner_index = 0_u32;
+    let mut save_settlement_index = 0_u32;
+    let mut save_hold_index = 0_u32;
 
     for (index, event) in events.iter().enumerate() {
         ensure!(event.schema_version == DRIVER_SCHEMA_VERSION, "unexpected driver event schema");
@@ -769,12 +844,7 @@ pub fn validate_driver_events(events: &[DriverEvent], require_complete: bool) ->
                     .get("candidate_sha256")
                     .context("registration_selected omitted candidate_sha256")?;
                 validate_sha256(digest, "registration candidate_sha256")?;
-                let rank = lifecycle_rank(event.kind);
-                ensure!(
-                    rank >= last_lifecycle_rank,
-                    "driver lifecycle events arrived out of order"
-                );
-                last_lifecycle_rank = rank;
+                update_lifecycle_rank(event.kind, &mut last_lifecycle_rank)?;
             }
             DriverEventKind::BufferEnabled => {
                 ensure!(
@@ -809,6 +879,274 @@ pub fn validate_driver_events(events: &[DriverEvent], require_complete: bool) ->
                     event.details.get("mode") == Some(&"push".to_string()),
                     "diagnostics_observed must bind the observed push update path"
                 );
+                update_lifecycle_rank(event.kind, &mut last_lifecycle_rank)?;
+            }
+            DriverEventKind::DefectStateObserved => {
+                ensure!(
+                    singleton.insert(DriverEventKind::DefectStateObserved),
+                    "duplicate singleton driver event"
+                );
+                ensure!(
+                    event.details.get("state_source") == Some(&"client_state".to_string()),
+                    "defect_state_observed must come from the client's own diagnostics state"
+                );
+                ensure!(
+                    event.details.get("errors").is_some_and(|value| value.parse::<u32>().is_ok()),
+                    "defect_state_observed must report the client-state error count"
+                );
+                update_lifecycle_rank(event.kind, &mut last_lifecycle_rank)?;
+            }
+            DriverEventKind::DefectFixApplied => {
+                ensure!(
+                    singleton.insert(DriverEventKind::DefectFixApplied),
+                    "duplicate singleton driver event"
+                );
+                ensure!(
+                    event.details.get("edit_path") == Some(&"buffer_did_change".to_string()),
+                    "defect_fix_applied must bind the real buffer didChange flush path"
+                );
+                update_lifecycle_rank(event.kind, &mut last_lifecycle_rank)?;
+            }
+            DriverEventKind::CurrentStateObserved => {
+                ensure!(
+                    singleton.insert(DriverEventKind::CurrentStateObserved),
+                    "duplicate singleton driver event"
+                );
+                ensure!(
+                    event.details.get("state_source") == Some(&"client_state".to_string()),
+                    "current_state_observed must come from the client's own diagnostics state"
+                );
+                ensure!(
+                    event.details.get("discriminator_absent") == Some(&"1".to_string()),
+                    "current_state_observed must prove the old discriminator absent"
+                );
+                ensure!(
+                    event.details.get("barrier") == Some(&"diagnostics_event_and_wire".to_string()),
+                    "current_state_observed must bind the deterministic currentness barrier"
+                );
+                update_lifecycle_rank(event.kind, &mut last_lifecycle_rank)?;
+            }
+            DriverEventKind::ExternalMutationApplied => {
+                validate_repeating_freshness_event(
+                    event,
+                    "mutation_index",
+                    EXTERNAL_MUTATION_CAP,
+                    &mut freshness_mutation_index,
+                )?;
+                ensure!(
+                    matches!(
+                        event.details.get("mutation").map(String::as_str),
+                        Some("in_place") | Some("atomic_replace")
+                    ),
+                    "external_mutation_applied must name in_place or atomic_replace"
+                );
+                ensure!(
+                    matches!(
+                        event.details.get("target").map(String::as_str),
+                        Some("governed") | Some("decoy") | Some("project_config")
+                    ),
+                    "external_mutation_applied must name the governed, decoy, or project_config \
+                     target"
+                );
+                ensure!(
+                    event.details.contains_key("disk_generation"),
+                    "external_mutation_applied must name the new on-disk generation"
+                );
+                update_lifecycle_rank(event.kind, &mut last_lifecycle_rank)?;
+            }
+            DriverEventKind::StaleGenerationHeld => {
+                validate_repeating_freshness_event(
+                    event,
+                    "hold_index",
+                    STALE_GENERATION_HOLD_CAP,
+                    &mut freshness_hold_index,
+                )?;
+                ensure!(
+                    event.details.contains_key("held_generation")
+                        && event.details.contains_key("current_generation"),
+                    "stale_generation_held must name the held and current generations"
+                );
+                ensure!(
+                    event
+                        .details
+                        .get("window_ms")
+                        .and_then(|value| value.parse::<u64>().ok())
+                        .is_some_and(|window| window >= MIN_STALE_WINDOW_MS),
+                    "stale_generation_held must carry a bounded observation window of at least \
+                     {MIN_STALE_WINDOW_MS}ms"
+                );
+                ensure!(
+                    event.details.get("state_held") == Some(&"1".to_string()),
+                    "stale_generation_held must prove the client-state claim held for the whole                      window"
+                );
+                update_lifecycle_rank(event.kind, &mut last_lifecycle_rank)?;
+            }
+            DriverEventKind::ClientMaterializationApplied => {
+                validate_repeating_freshness_event(
+                    event,
+                    "materialization_index",
+                    CLIENT_MATERIALIZATION_CAP,
+                    &mut freshness_materialization_index,
+                )?;
+                ensure!(
+                    matches!(
+                        event.details.get("materialization").map(String::as_str),
+                        Some("client_close_reopen")
+                            | Some("settings_push")
+                            | Some("server_restart")
+                    ),
+                    "client_materialization_applied must name the exact client route that \
+                     materialized the generation"
+                );
+                ensure!(
+                    event.details.contains_key("picks_generation"),
+                    "client_materialization_applied must name the generation it picks up"
+                );
+                update_lifecycle_rank(event.kind, &mut last_lifecycle_rank)?;
+            }
+            DriverEventKind::GenerationCurrentObserved => {
+                validate_repeating_freshness_event(
+                    event,
+                    "generation_index",
+                    GENERATION_CURRENT_CAP,
+                    &mut freshness_generation_index,
+                )?;
+                ensure!(
+                    event.details.get("state_source") == Some(&"client_state".to_string()),
+                    "generation_current_observed must come from the client's own diagnostics state"
+                );
+                ensure!(
+                    event.details.get("barrier") == Some(&"diagnostics_event_and_wire".to_string()),
+                    "generation_current_observed must bind the deterministic currentness barrier"
+                );
+                ensure!(
+                    event.details.get("errors").is_some_and(|value| value.parse::<u32>().is_ok())
+                        && event
+                            .details
+                            .get("warnings")
+                            .is_some_and(|value| value.parse::<u32>().is_ok()),
+                    "generation_current_observed must report numeric client-state error and \
+                     warning counts"
+                );
+                ensure!(
+                    event.details.contains_key("generation"),
+                    "generation_current_observed must name the accepted generation"
+                );
+                update_lifecycle_rank(event.kind, &mut last_lifecycle_rank)?;
+            }
+            DriverEventKind::SaveOwnerConfigured => {
+                validate_repeating_save_event(
+                    event,
+                    "owner_index",
+                    SAVE_OWNER_CONFIGURED_CAP,
+                    &mut save_owner_index,
+                )?;
+                ensure!(
+                    event
+                        .details
+                        .get("owner_count")
+                        .is_some_and(|value| value.parse::<u32>().is_ok()),
+                    "save_owner_configured must report a numeric owner_count"
+                );
+                ensure!(
+                    matches!(
+                        event.details.get("route").map(String::as_str),
+                        Some("bufwritepre_autocmd") | Some("none")
+                    ),
+                    "save_owner_configured must name the bufwritepre_autocmd route or its absence"
+                );
+                ensure!(
+                    event.details.get("action").map(String::as_str)
+                        == Some("lsp_document_format_sync")
+                        || event.details.get("route").map(String::as_str) == Some("none"),
+                    "save_owner_configured must delegate to the canonical sync format action"
+                );
+                ensure!(
+                    event
+                        .details
+                        .get("timeout_ms")
+                        .is_some_and(|value| value.parse::<u64>().is_ok()),
+                    "save_owner_configured must report a numeric bounded sync timeout"
+                );
+                update_lifecycle_rank(event.kind, &mut last_lifecycle_rank)?;
+            }
+            DriverEventKind::SaveSettlementObserved => {
+                validate_repeating_save_event(
+                    event,
+                    "save_index",
+                    SAVE_SETTLEMENT_CAP,
+                    &mut save_settlement_index,
+                )?;
+                ensure!(
+                    matches!(
+                        event.details.get("trigger").map(String::as_str),
+                        Some("bufwritepre_save") | Some("manual_comparator") | Some("none")
+                    ),
+                    "save_settlement_observed must name the bufwritepre_save, manual_comparator, \
+                     or no trigger"
+                );
+                ensure!(
+                    matches!(
+                        event.details.get("disposition").map(String::as_str),
+                        Some("applied")
+                            | Some("no_change")
+                            | Some("disabled")
+                            | Some("refused")
+                            | Some("failure")
+                            | Some("stale_rejected")
+                    ),
+                    "save_settlement_observed must name a declared save disposition"
+                );
+                ensure!(
+                    matches!(
+                        event.details.get("response_kind").map(String::as_str),
+                        Some("edits") | Some("empty") | Some("error") | Some("absent")
+                    ),
+                    "save_settlement_observed must name the settled response kind"
+                );
+                for key in ["requests_before", "requests_after", "owner_count"] {
+                    ensure!(
+                        event.details.get(key).is_some_and(|value| value.parse::<u32>().is_ok()),
+                        "save_settlement_observed must report a numeric {key}"
+                    );
+                }
+                for key in ["buffer_sha256", "file_sha256"] {
+                    ensure!(
+                        event
+                            .details
+                            .get(key)
+                            .is_some_and(|value| validate_sha256(value, key).is_ok()),
+                        "save_settlement_observed must report the exact {key} bytes identity"
+                    );
+                }
+                update_lifecycle_rank(event.kind, &mut last_lifecycle_rank)?;
+            }
+            DriverEventKind::StaleResultHoldObserved => {
+                validate_repeating_save_event(
+                    event,
+                    "hold_index",
+                    STALE_RESULT_HOLD_CAP,
+                    &mut save_hold_index,
+                )?;
+                ensure!(
+                    event
+                        .details
+                        .get("window_ms")
+                        .and_then(|value| value.parse::<u64>().ok())
+                        .is_some_and(|window| window >= MIN_STALE_WINDOW_MS),
+                    "stale_result_hold_observed must carry a bounded observation window of at \
+                     least {MIN_STALE_WINDOW_MS}ms"
+                );
+                ensure!(
+                    event.details.get("bytes_held") == Some(&"1".to_string()),
+                    "stale_result_hold_observed must prove the byte state held for the whole window"
+                );
+                ensure!(
+                    event.details.get("late_response_rejected") == Some(&"1".to_string()),
+                    "stale_result_hold_observed must prove the late result was released and \
+                     never applied"
+                );
+                update_lifecycle_rank(event.kind, &mut last_lifecycle_rank)?;
             }
             kind => {
                 ensure!(singleton.insert(kind), "duplicate singleton driver event");
@@ -856,129 +1194,112 @@ fn lifecycle_rank(kind: DriverEventKind) -> u8 {
         DriverEventKind::BufferEnabled => 6,
         DriverEventKind::InitializeObserved => 7,
         DriverEventKind::RootSelected => 8,
-        DriverEventKind::DiagnosticsObserved => 9,
-        DriverEventKind::ShutdownStarted => 10,
-        DriverEventKind::ShutdownCompleted => 11,
-        DriverEventKind::DriverFailed => 11,
+        // The #10946 diagnostics tier carries its own strict order: wire push
+        // observed, then the client-state defect observation, then the fix
+        // edit, then the post-edit current state — all strictly before
+        // shutdown. Ranks are internal; only their order is contractual.
+        DriverEventKind::DiagnosticsObserved => 40,
+        DriverEventKind::DefectStateObserved => 41,
+        DriverEventKind::DefectFixApplied => 42,
+        DriverEventKind::CurrentStateObserved => 43,
+        // The #11390 freshness-generation tier: the four repeating kinds share
+        // one rank (their phases interleave legitimately — a mutation, its
+        // stale-hold window, its materialization, its current observation),
+        // with per-kind monotone indexes carrying the order. All strictly
+        // before shutdown. The #11396 save-format kinds join the same tier for
+        // the same reason: source/config mutations and materializations
+        // interleave with save settlements inside one journey.
+        DriverEventKind::ExternalMutationApplied
+        | DriverEventKind::StaleGenerationHeld
+        | DriverEventKind::ClientMaterializationApplied
+        | DriverEventKind::GenerationCurrentObserved
+        | DriverEventKind::SaveOwnerConfigured
+        | DriverEventKind::SaveSettlementObserved
+        | DriverEventKind::StaleResultHoldObserved => 44,
+        DriverEventKind::ShutdownStarted => 50,
+        DriverEventKind::ShutdownCompleted => 51,
+        DriverEventKind::DriverFailed => 51,
     }
 }
 
-// ---------------------------------------------------------------------------
-// Deterministic process-set comparison
-// ---------------------------------------------------------------------------
+/// Per-kind occurrence caps for the #11390 repeating freshness events. The
+/// caps bound the authored journeys (mutations across source and config
+/// generations; holds for each stale window; materializations for each reload,
+/// push, and restart; one current observation per accepted generation); a
+/// stream exceeding a cap is an instrument fault, never evidence.
+pub const EXTERNAL_MUTATION_CAP: u32 = 6;
+pub const STALE_GENERATION_HOLD_CAP: u32 = 6;
+pub const CLIENT_MATERIALIZATION_CAP: u32 = 10;
+pub const GENERATION_CURRENT_CAP: u32 = 12;
+/// Per-kind occurrence caps for the #11396 repeating save-format events: the
+/// authored journey re-arms the owner a bounded number of times (single,
+/// removed for the disabled leg, re-armed after each restart) and walks seven
+/// settlements plus one stale-result hold.
+pub const SAVE_OWNER_CONFIGURED_CAP: u32 = 8;
+pub const SAVE_SETTLEMENT_CAP: u32 = 10;
+pub const STALE_RESULT_HOLD_CAP: u32 = 4;
+/// The minimum honest absence-observation window for a stale-generation hold:
+/// below this the "no spontaneous republish" claim carries no observation.
+pub const MIN_STALE_WINDOW_MS: u64 = 2000;
 
-/// One observed process line from the platform probe.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct ProcessProbeLine {
-    pub pid: u32,
-    pub args: String,
+/// Validate one repeating #11390 freshness event: its index detail is numeric,
+/// exactly one greater than the last seen index for its kind (monotone,
+/// gap-free), and within the kind's cap.
+fn validate_repeating_freshness_event(
+    event: &DriverEvent,
+    index_key: &str,
+    cap: u32,
+    last_index: &mut u32,
+) -> Result<()> {
+    validate_repeating_index(event, index_key, cap, last_index)
 }
 
-/// Parse a `ps -eo pid=,args=` style snapshot into deterministic lines.
-/// Lines not matching the `pid args` shape are rejected: an unparseable
-/// process probe is evidence failure, not a silent empty set.
-pub fn parse_process_snapshot(text: &str) -> Result<Vec<ProcessProbeLine>> {
-    let mut lines = Vec::new();
-    for line in text.lines() {
-        let trimmed = line.trim_start();
-        if trimmed.is_empty() {
-            continue;
-        }
-        let mut split = trimmed.splitn(2, char::is_whitespace);
-        let pid = split.next().unwrap_or_default();
-        let args = split.next().unwrap_or_default().trim();
-        let pid: u32 = pid
-            .parse()
-            .with_context(|| format!("process snapshot line is not `pid args`: {trimmed:?}"))?;
-        lines.push(ProcessProbeLine { pid, args: args.to_string() });
-    }
-    lines.sort();
-    Ok(lines)
+/// Validate one repeating #11396 save-format event with the same law.
+fn validate_repeating_save_event(
+    event: &DriverEvent,
+    index_key: &str,
+    cap: u32,
+    last_index: &mut u32,
+) -> Result<()> {
+    validate_repeating_index(event, index_key, cap, last_index)
 }
 
-/// Probe the current process table through the platform command. `None` means
-/// the platform probe is unavailable — a typed limitation, never a pass.
-pub fn probe_process_table() -> Option<Result<String>> {
-    let output = if cfg!(windows) {
-        Command::new("tasklist").arg("/FO").arg("CSV").arg("/NH").stdin(Stdio::null()).output()
-    } else {
-        Command::new("ps").args(["-eo", "pid=,args="]).stdin(Stdio::null()).output()
-    };
-    match output {
-        Ok(output) if output.status.success() => {
-            Some(Ok(String::from_utf8_lossy(&output.stdout).into_owned()))
-        }
-        Ok(output) => {
-            Some(Err(anyhow::anyhow!("process probe failed with status {}", output.status)))
-        }
-        Err(error) => Some(Err(anyhow::Error::new(error))),
-    }
+fn validate_repeating_index(
+    event: &DriverEvent,
+    index_key: &str,
+    cap: u32,
+    last_index: &mut u32,
+) -> Result<()> {
+    let index = event
+        .details
+        .get(index_key)
+        .and_then(|value| value.parse::<u32>().ok())
+        .with_context(|| format!("repeating event omitted a numeric {index_key}"))?;
+    ensure!(
+        index == *last_index + 1,
+        "repeating event {index_key} {} is not exactly one greater than the last seen {}",
+        index,
+        *last_index
+    );
+    ensure!(index <= cap, "repeating event {index_key} {index} exceeds the journey cap {cap}");
+    *last_index = index;
+    Ok(())
 }
 
-/// Parse a Windows `tasklist /FO CSV /NH` snapshot into the same
-/// `pid args` lines.
-pub fn parse_windows_process_snapshot(text: &str) -> Result<Vec<ProcessProbeLine>> {
-    let mut lines = Vec::new();
-    for line in text.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        let fields: Vec<&str> = trimmed.split("\",\"").collect();
-        if fields.len() < 2 {
-            bail!("windows process snapshot row is not CSV: {trimmed:?}");
-        }
-        let image = fields[0].trim_start_matches('"');
-        let pid: u32 = fields[1]
-            .trim_end_matches('"')
-            .parse()
-            .with_context(|| format!("windows process snapshot pid is not numeric: {trimmed:?}"))?;
-        lines.push(ProcessProbeLine { pid, args: image.to_string() });
-    }
-    lines.sort();
-    Ok(lines)
-}
-
-/// The deterministic comparison: which `after` probe lines matching `needle`
-/// were not present in the `before` probe. A survivor means the run leaked a
-/// process it was responsible for.
-pub fn surviving_processes(
-    before: &[ProcessProbeLine],
-    after: &[ProcessProbeLine],
-    needle: &str,
-) -> Vec<ProcessProbeLine> {
-    let before_matching: BTreeSet<&ProcessProbeLine> =
-        before.iter().filter(|line| line.args.contains(needle)).collect();
-    after
-        .iter()
-        .filter(|line| line.args.contains(needle) && !before_matching.contains(line))
-        .cloned()
-        .collect()
+/// Advance the observed lifecycle rank, rejecting any event that arrives out
+/// of order. Used by every dedicated match arm so no event kind can bypass
+/// the ordering law (#10946 review finding: the dedicated arms must enforce
+/// the same ordering the fallback arm enforces).
+fn update_lifecycle_rank(kind: DriverEventKind, last_lifecycle_rank: &mut u8) -> Result<()> {
+    let rank = lifecycle_rank(kind);
+    ensure!(rank >= *last_lifecycle_rank, "driver lifecycle events arrived out of order");
+    *last_lifecycle_rank = rank;
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
-// Owned-process supervision
+// Owned-process supervision (mechanics owned by `xtask::editor_host`)
 // ---------------------------------------------------------------------------
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-struct ProcessLedger {
-    pid: u32,
-    timed_out: bool,
-    kill_requested: bool,
-    exit_code: Option<i32>,
-    cleanup: CleanupResult,
-    cleanup_detail: String,
-    event_count: usize,
-    driver_complete: bool,
-    process_probe: String,
-    surviving_processes: Vec<ProcessProbeLineLedger>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-struct ProcessProbeLineLedger {
-    pid: u32,
-    args: String,
-}
 
 #[derive(Debug, Clone)]
 pub struct ProcessObservation {
@@ -1003,8 +1324,10 @@ impl ProcessObservation {
 
 /// Execute one owned host process under a parent-owned hard deadline with a
 /// deterministic before/after process-set comparison for the exact candidate
-/// executable. Missing process probes degrade the cleanup judgment to
-/// `not_proven` with a typed detail — never to `pass`.
+/// executable. The mechanics — parent-owned deadline, separated captures,
+/// numeric set comparison, forced-kill classification, orderly-exit law — are
+/// owned by [`xtask::editor_host`]; this binding keeps only the Vim run plan,
+/// needle policy, and evidence retention.
 pub fn run_owned_process(
     command: &mut Command,
     plan: &VimHostRunPlan,
@@ -1026,140 +1349,34 @@ pub fn run_owned_process(
     } else {
         vim_path(&plan.paths.candidate_executable).to_string_lossy().into_owned()
     };
-    let probe_before = probe_process_table();
-    // A before-probe that cannot be parsed is recorded: treating it as an
-    // empty set would fabricate survivors later (every candidate process in
-    // the after-probe would look new). The comparison below refuses to judge
-    // cleanup when the before snapshot is unusable.
-    let before_parse_failed = probe_before.as_ref().is_some_and(|result| match result {
-        Ok(text) => if cfg!(windows) {
-            parse_windows_process_snapshot(text)
-        } else {
-            parse_process_snapshot(text)
-        }
-        .is_err(),
-        Err(_) => true,
-    });
-    let before_lines = match &probe_before {
-        Some(Ok(text)) => {
-            let parsed = if cfg!(windows) {
-                parse_windows_process_snapshot(text)
-            } else {
-                parse_process_snapshot(text)
-            };
-            parsed.unwrap_or_default()
-        }
-        _ => Vec::new(),
-    };
 
-    command.stdout(Stdio::piped()).stderr(Stdio::piped());
-    let mut child = command.spawn().context("spawning the Vim host subject")?;
-    let pid = child.id();
-    let mut stdout = child.stdout.take().context("capturing host stdout")?;
-    let mut stderr = child.stderr.take().context("capturing host stderr")?;
-    let stdout_reader = thread::spawn(move || -> std::io::Result<Vec<u8>> {
-        let mut bytes = Vec::new();
-        stdout.read_to_end(&mut bytes)?;
-        Ok(bytes)
-    });
-    let stderr_reader = thread::spawn(move || -> std::io::Result<Vec<u8>> {
-        let mut bytes = Vec::new();
-        stderr.read_to_end(&mut bytes)?;
-        Ok(bytes)
-    });
+    let probe_before = ProbeCapture::take();
+    let bounded: BoundedRun =
+        xtask::editor_host::bounded_run(command, plan.identity.timeout_ms, "the Vim host subject")?;
+    let probe_after = ProbeCapture::take();
+    let probes_available = matches!(probe_before, ProbeCapture::Captured(_))
+        && matches!(probe_after, ProbeCapture::Captured(_));
+    let judgment = judge_cleanup(
+        &probe_before,
+        &probe_after,
+        &needle,
+        cfg!(windows),
+        bounded.orderly_success(),
+    );
 
-    let deadline = Instant::now() + Duration::from_millis(plan.identity.timeout_ms);
-    let mut timed_out = false;
-    let mut kill_requested = false;
-    let status: ExitStatus = loop {
-        if let Some(status) = child.try_wait().context("polling the Vim host process")? {
-            break status;
-        }
-        if Instant::now() >= deadline {
-            timed_out = true;
-            child.kill().context("killing the timed-out Vim host process")?;
-            kill_requested = true;
-            break child.wait().context("reaping the timed-out Vim host process")?;
-        }
-        thread::sleep(Duration::from_millis(10));
-    };
-
-    let stdout = join_reader(stdout_reader, "host stdout")?;
-    let stderr = join_reader(stderr_reader, "host stderr")?;
-
-    // Deterministic cleanup comparison. A survivor that matches the exact
-    // candidate needle and was absent before the run is an observed leak:
-    // `fail`. An unavailable or unparseable probe leaves the judgment
-    // `not_proven` with the typed detail naming the missing evidence.
-    let probe_after = probe_process_table();
-    let (mut cleanup, mut cleanup_detail, survivors) = if before_parse_failed {
-        (
-            CleanupResult::NotProven,
-            "before-process probe unparseable; cleanup comparison refused".to_string(),
-            Vec::new(),
-        )
-    } else {
-        match (&probe_before, &probe_after) {
-            (Some(Ok(_)), Some(Ok(after_text))) => {
-                let parsed = if cfg!(windows) {
-                    parse_windows_process_snapshot(after_text)
-                } else {
-                    parse_process_snapshot(after_text)
-                };
-                match parsed {
-                    Ok(after_lines) => {
-                        let survivors = surviving_processes(&before_lines, &after_lines, &needle);
-                        if survivors.is_empty() {
-                            (
-                                CleanupResult::Pass,
-                                "process-set comparison clean".to_string(),
-                                survivors,
-                            )
-                        } else {
-                            (
-                                CleanupResult::Fail,
-                                format!(
-                                    "process-set comparison observed {} surviving candidate process(es) \
-                                 after the run",
-                                    survivors.len()
-                                ),
-                                survivors,
-                            )
-                        }
-                    }
-                    Err(error) => (
-                        CleanupResult::NotProven,
-                        format!("after-process probe unparseable: {error}"),
-                        Vec::new(),
-                    ),
-                }
-            }
-            _ => (
-                CleanupResult::NotProven,
-                "process probe unavailable on this platform; cleanup not observed".to_string(),
-                Vec::new(),
-            ),
-        }
-    };
     // Retain both raw snapshots as run evidence even when the comparison
-    // itself could not be made.
-    let _ = fs::write(layout.process_snapshot_before(), render_process_snapshot(&before_lines));
+    // itself could not be made. Retention is deliberately best-effort: a
+    // locked or unwritable snapshot target must not abort the run before a
+    // receipt exists — every run that reaches the process stage emits one,
+    // and a post-launch retention failure stays distinguishable from a run
+    // that never launched.
+    if let Some(before_text) = &judgment.before_snapshot {
+        let _ = fs::write(layout.process_snapshot_before(), before_text);
+    }
     let _ = fs::write(
         layout.process_snapshot_after(),
-        match &probe_after {
-            Some(Ok(text)) => text.clone(),
-            _ => String::new(),
-        },
+        judgment.after_snapshot.clone().unwrap_or_default(),
     );
-    if (timed_out || kill_requested || status.code() != Some(0)) && cleanup == CleanupResult::Pass {
-        // A forced kill or abnormal exit skipped the driver's own shutdown
-        // path; even a clean process-set cannot attest the client's own
-        // orderly LSP shutdown, so the judgment degrades to not-proven.
-        cleanup = CleanupResult::NotProven;
-        cleanup_detail =
-            "host exit skipped the driver shutdown path; orderly client shutdown not observed"
-                .to_string();
-    }
 
     let event_bytes = fs::read(layout.event_file()).unwrap_or_default();
     let events = parse_driver_events(&event_bytes, false).unwrap_or_default();
@@ -1170,7 +1387,7 @@ pub fn run_owned_process(
         &layout.artifact_directory,
         "vim/driver-stdout.log",
         ArtifactKind::DriverOutput,
-        &stdout,
+        &bounded.stdout,
         plan,
         layout,
     )?);
@@ -1178,7 +1395,7 @@ pub fn run_owned_process(
         &layout.artifact_directory,
         "vim/driver-stderr.log",
         ArtifactKind::DriverOutput,
-        &stderr,
+        &bounded.stderr,
         plan,
         layout,
     )?);
@@ -1226,41 +1443,27 @@ pub fn run_owned_process(
         }
     }
 
-    let ledger = ProcessLedger {
-        pid,
-        timed_out,
-        kill_requested,
-        exit_code: status.code(),
-        cleanup,
-        cleanup_detail: cleanup_detail.clone(),
-        event_count: events.len(),
-        driver_complete,
-        process_probe: if probe_before.is_some() && probe_after.is_some() {
-            "available".to_string()
-        } else {
-            "unavailable".to_string()
-        },
-        surviving_processes: survivors
-            .iter()
-            .map(|line| ProcessProbeLineLedger { pid: line.pid, args: line.args.clone() })
-            .collect(),
-    };
-    let ledger_bytes = serde_json::to_vec_pretty(&ledger)?;
-    artifacts.push(write_sanitized_artifact(
-        &layout.artifact_directory,
-        "vim/process-ledger.json",
-        ArtifactKind::ProcessLedger,
-        &ledger_bytes,
-        plan,
-        layout,
-    )?);
+    artifacts.push(
+        HostProcessLedger::record(
+            &bounded,
+            events.len(),
+            driver_complete,
+            probes_available,
+            &judgment,
+        )
+        .artifact(
+            &layout.artifact_directory,
+            "vim/process-ledger.json",
+            &vim_redactions(plan, layout),
+        )?,
+    );
 
     Ok(ProcessObservation {
-        status_code: status.code(),
-        timed_out,
-        kill_requested,
-        cleanup,
-        cleanup_detail,
+        status_code: bounded.status_code,
+        timed_out: bounded.timed_out,
+        kill_requested: bounded.kill_requested,
+        cleanup: judgment.result,
+        cleanup_detail: judgment.detail,
         events,
         driver_complete,
         artifacts,
@@ -1294,24 +1497,24 @@ fn resolve_server_trace(layout: &HermeticVimLayout) -> Option<(PathBuf, String)>
     Some((path, format!("vim/{name}")))
 }
 
-fn render_process_snapshot(lines: &[ProcessProbeLine]) -> String {
-    let mut text = String::new();
-    for line in lines {
-        let _ = writeln!(text, "{} {}", line.pid, line.args);
-    }
-    text
+/// The Vim run plan's capture redaction map. Every absolute path the run plan
+/// accepts must appear here: captures are written as sanitized artifacts that
+/// may be uploaded, and an omitted path leaks the checkout or user directory
+/// it came from.
+fn vim_redactions(plan: &VimHostRunPlan, layout: &HermeticVimLayout) -> Vec<PathRedaction> {
+    vec![
+        PathRedaction { path: layout.root.clone(), token: "<RUN_ROOT>" },
+        PathRedaction { path: plan.paths.artifact_root.clone(), token: "<ARTIFACT_ROOT>" },
+        PathRedaction { path: plan.paths.fixture_root.clone(), token: "<WORKSPACE>" },
+        PathRedaction { path: plan.paths.candidate_executable.clone(), token: "<CANDIDATE>" },
+        PathRedaction { path: plan.paths.vim_executable.clone(), token: "<VIM>" },
+        PathRedaction { path: plan.paths.vim_lsp_checkout.clone(), token: "<VIM_LSP_CHECKOUT>" },
+        PathRedaction { path: plan.paths.driver.clone(), token: "<DRIVER>" },
+        PathRedaction { path: plan.paths.adapter.clone(), token: "<ADAPTER>" },
+    ]
 }
 
-fn join_reader(
-    handle: thread::JoinHandle<std::io::Result<Vec<u8>>>,
-    label: &str,
-) -> Result<Vec<u8>> {
-    handle
-        .join()
-        .map_err(|_| anyhow::anyhow!("{label} reader thread panicked"))?
-        .with_context(|| format!("reading {label}"))
-}
-
+/// Write one sanitized, bounded run artifact through the shared substrate.
 fn write_sanitized_artifact(
     artifact_root: &Path,
     id: &str,
@@ -1320,50 +1523,28 @@ fn write_sanitized_artifact(
     plan: &VimHostRunPlan,
     layout: &HermeticVimLayout,
 ) -> Result<EvidenceArtifact> {
-    validate_safe_identity(id, "artifact id")?;
-    let sanitized = sanitize_text(bytes, plan, layout);
-    let bounded = bound_capture(sanitized.as_bytes());
-    let destination = artifact_root.join(id);
-    if let Some(parent) = destination.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    fs::write(&destination, bounded)
-        .with_context(|| format!("writing sanitized artifact {}", destination.display()))?;
-    Ok(EvidenceArtifact { kind, id: id.to_string(), sha256: file_sha256(&destination)? })
-}
-
-fn sanitize_text(bytes: &[u8], plan: &VimHostRunPlan, layout: &HermeticVimLayout) -> String {
-    let mut text = String::from_utf8_lossy(bytes).into_owned();
-    // Every absolute path the run plan accepts must appear here: captures are
-    // written as sanitized artifacts that may be uploaded, and an omitted
-    // path leaks the checkout or user directory it came from.
-    let mut replacements = vec![
-        (&layout.root, "<RUN_ROOT>"),
-        (&plan.paths.artifact_root, "<ARTIFACT_ROOT>"),
-        (&plan.paths.fixture_root, "<WORKSPACE>"),
-        (&plan.paths.candidate_executable, "<CANDIDATE>"),
-        (&plan.paths.vim_executable, "<VIM>"),
-        (&plan.paths.vim_lsp_checkout, "<VIM_LSP_CHECKOUT>"),
-        (&plan.paths.driver, "<DRIVER>"),
-        (&plan.paths.adapter, "<ADAPTER>"),
-    ];
-    replacements.sort_by_key(|(path, _)| std::cmp::Reverse(path.as_os_str().len()));
-    for (path, token) in replacements {
-        if let Some(value) = path.to_str() {
-            text = text.replace(value, token);
-            text = text.replace(&value.replace('\\', "/"), token);
-        }
-    }
-    text
-}
-
-fn bound_capture(bytes: &[u8]) -> &[u8] {
-    if bytes.len() <= MAX_CAPTURE_BYTES { bytes } else { &bytes[..MAX_CAPTURE_BYTES] }
+    write_artifact(artifact_root, id, kind, bytes, &vim_redactions(plan, layout))
 }
 
 // ---------------------------------------------------------------------------
 // Wire-evidence extraction from the vim-lsp client log
 // ---------------------------------------------------------------------------
+
+/// One mined `textDocument/publishDiagnostics` batch from the client log
+/// (#10946). The batch is the client's own record of what the server pushed:
+/// which document (by file-name token), how many diagnostics, how many at
+/// error severity, and how many carry a parser-family code (`PL0xx`), the
+/// stable discriminator of a perllsp syntax defect. The line index preserves
+/// wire ordering so a post-edit batch can be distinguished from a pre-edit
+/// one by its position relative to the `textDocument/didChange` request.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PublishDiagnosticsBatch {
+    pub line_index: usize,
+    pub uri_file: String,
+    pub diagnostics_count: usize,
+    pub error_severity_count: usize,
+    pub parser_code_count: usize,
+}
 
 /// The minimal LSP wire facts mined from the vim-lsp client log
 /// (`g:lsp_log_file`), the same proven extraction surface the #7810 shell
@@ -1380,6 +1561,12 @@ pub struct WireEvidence {
     /// editor-side evidence that the client observed the server process end,
     /// including when it only arrives during the editor's teardown.
     pub saw_client_exit_log: bool,
+    /// Line index of the first `textDocument/didChange` notification, for
+    /// post-edit currentness ordering (#10946).
+    pub did_change_line: Option<usize>,
+    /// Every parsed `textDocument/publishDiagnostics` batch in wire order
+    /// (#10946).
+    pub publish_diagnostics_batches: Vec<PublishDiagnosticsBatch>,
     /// The whole first `initialize` request envelope, if the log carried one.
     pub initialize_request: Option<serde_json::Value>,
     /// The client capabilities object of the first `initialize` request, if
@@ -1397,7 +1584,7 @@ pub struct WireEvidence {
 pub fn extract_wire_evidence(log: &[u8]) -> WireEvidence {
     let text = String::from_utf8_lossy(log);
     let mut evidence = WireEvidence::default();
-    for line in text.lines() {
+    for (index, line) in text.lines().enumerate() {
         let Some(value) = parse_first_json_value(line) else {
             continue;
         };
@@ -1407,7 +1594,7 @@ pub fn extract_wire_evidence(log: &[u8]) -> WireEvidence {
             evidence.saw_client_exit_log = true;
         }
         let mut first_initialize: Option<serde_json::Value> = None;
-        walk_wire_value(&value, &mut evidence, &mut first_initialize);
+        walk_wire_value(&value, index, &mut evidence, &mut first_initialize);
         if let (Some(request), None) = (&first_initialize, &evidence.initialize_request) {
             evidence.initialize_request = Some(request.clone());
             evidence.client_capabilities =
@@ -1428,8 +1615,10 @@ fn parse_first_json_value(line: &str) -> Option<serde_json::Value> {
     None
 }
 
+#[allow(clippy::too_many_lines)]
 fn walk_wire_value(
     value: &serde_json::Value,
+    line_index: usize,
     evidence: &mut WireEvidence,
     first_initialize: &mut Option<serde_json::Value>,
 ) {
@@ -1446,21 +1635,67 @@ fn walk_wire_value(
                     "initialized" => evidence.saw_initialized = true,
                     "shutdown" => evidence.saw_shutdown = true,
                     "exit" => evidence.saw_exit = true,
-                    "textDocument/publishDiagnostics" => evidence.saw_publish_diagnostics = true,
+                    "textDocument/publishDiagnostics" => {
+                        evidence.saw_publish_diagnostics = true;
+                        if let Some(batch) = mine_publish_diagnostics_batch(map, line_index) {
+                            evidence.publish_diagnostics_batches.push(batch);
+                        }
+                    }
+                    // Set-once latch on the FIRST didChange line: `get_or_insert`
+                    // is the shape #12910 asks for here, and states the
+                    // keep-the-earliest intent the nested `if` only implied.
+                    "textDocument/didChange" => {
+                        evidence.did_change_line.get_or_insert(line_index);
+                    }
                     _ => {}
                 }
             }
             for child in map.values() {
-                walk_wire_value(child, evidence, first_initialize);
+                walk_wire_value(child, line_index, evidence, first_initialize);
             }
         }
         serde_json::Value::Array(items) => {
             for child in items {
-                walk_wire_value(child, evidence, first_initialize);
+                walk_wire_value(child, line_index, evidence, first_initialize);
             }
         }
         _ => {}
     }
+}
+
+/// Mine one publishDiagnostics batch from its notification object: the
+/// document's file-name token, diagnostic count, error-severity count, and
+/// parser-code count. Batches whose params are absent or malformed are
+/// skipped (the boolean `saw_publish_diagnostics` stays the only fact then).
+fn mine_publish_diagnostics_batch(
+    map: &serde_json::Map<String, serde_json::Value>,
+    line_index: usize,
+) -> Option<PublishDiagnosticsBatch> {
+    let params = map.get("params")?;
+    let uri = params.get("uri")?.as_str()?;
+    let uri_file = uri.rsplit('/').next().unwrap_or("").to_string();
+    if uri_file.is_empty() || uri_file.contains('\\') {
+        return None;
+    }
+    let diagnostics = params.get("diagnostics")?.as_array()?;
+    let mut error_severity_count = 0;
+    let mut parser_code_count = 0;
+    for diagnostic in diagnostics {
+        if diagnostic.get("severity").and_then(serde_json::Value::as_i64) == Some(1) {
+            error_severity_count += 1;
+        }
+        let code = diagnostic.get("code").and_then(serde_json::Value::as_str).unwrap_or("");
+        if code.len() == 5 && code.starts_with("PL0") {
+            parser_code_count += 1;
+        }
+    }
+    Some(PublishDiagnosticsBatch {
+        line_index,
+        uri_file,
+        diagnostics_count: diagnostics.len(),
+        error_severity_count,
+        parser_code_count,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -1683,62 +1918,27 @@ pub fn validate_receipt_binding(
 }
 
 // ---------------------------------------------------------------------------
-// Shared helpers (mirroring the Emacs substrate contracts)
+// Shared helpers (one-line delegates to the #10894 authority)
 // ---------------------------------------------------------------------------
 
 pub fn file_sha256(path: &Path) -> Result<String> {
-    let bytes = fs::read(path).with_context(|| format!("reading {}", path.display()))?;
-    bytes_sha256(&bytes)
+    xtask::editor_host::sha256_file(path)
 }
 
 fn verify_file_sha256(path: &Path, expected: &str, label: &str) -> Result<()> {
-    let actual = file_sha256(path)?;
-    ensure!(actual == expected, "{label} hash mismatch");
-    Ok(())
+    xtask::editor_host::verify_sha256_file(path, expected, label)
 }
 
 pub fn bytes_sha256(bytes: &[u8]) -> Result<String> {
-    let mut hasher = Sha256::new();
-    hasher.update(bytes);
-    let mut identity = String::with_capacity("sha256:".len() + 64);
-    identity.push_str("sha256:");
-    for byte in hasher.finalize() {
-        write!(&mut identity, "{byte:02x}")?;
-    }
-    Ok(identity)
+    xtask::editor_host::sha256_bytes(bytes)
 }
 
 fn validate_sha256(value: &str, field: &str) -> Result<()> {
-    let Some(hex) = value.strip_prefix("sha256:") else {
-        bail!("{field} must use sha256:<64 lowercase hex> identity");
-    };
-    ensure!(is_lower_hex(hex, 64), "{field} must use sha256:<64 lowercase hex> identity");
-    Ok(())
-}
-
-fn validate_safe_identity(value: &str, field: &str) -> Result<()> {
-    let value = value.trim();
-    ensure!(!value.is_empty(), "{field} cannot be empty");
-    ensure!(!value.starts_with('/'), "{field} must not expose an absolute path");
-    ensure!(!value.starts_with('~'), "{field} must not expose a home-relative path");
-    ensure!(!value.contains('\\'), "{field} must use normalized separators");
-    ensure!(!value.contains("://"), "{field} must not expose a URI-qualified path");
-    ensure!(
-        !(value.len() >= 3
-            && value.as_bytes()[0].is_ascii_alphabetic()
-            && value.as_bytes()[1] == b':'
-            && value.as_bytes()[2] == b'/'),
-        "{field} must not expose a drive-qualified path"
-    );
-    ensure!(
-        !value.split('/').any(|component| component == ".."),
-        "{field} must not contain parent traversal"
-    );
-    Ok(())
+    xtask::editor_host::validate_sha256_field(value, field)
 }
 
 pub fn is_lower_hex(value: &str, len: usize) -> bool {
-    value.len() == len && value.bytes().all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+    xtask::editor_host::is_lower_hex(value, len)
 }
 
 pub fn is_reason_token(value: &str) -> bool {

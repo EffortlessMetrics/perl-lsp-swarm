@@ -21,6 +21,7 @@ use perl_lsp_rs_core::providers::diagnostics::unreachable_code_disposition::{
     all_pl406_dispositions, pl406_disposition_of,
 };
 use perl_parser::Parser;
+use perl_test_must::must_some_with;
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -106,9 +107,10 @@ fn every_kind_resolves_its_disposition_from_the_enum_token() {
     for fixture in node_kind_fixtures() {
         let resolved = pl406_disposition_of(&fixture.sample.kind);
         let expected_name = fixture.sample.kind.kind_name();
-        let row = resolved.unwrap_or_else(|| {
-            panic!("{expected_name} must resolve its PL406 disposition from the enum token")
-        });
+        let row = must_some_with(
+            resolved,
+            format_args!("{expected_name} must resolve its PL406 disposition from the enum token"),
+        );
         assert_eq!(
             row.kind_name, expected_name,
             "pl406_disposition_of resolved the wrong row for {expected_name}"

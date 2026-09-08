@@ -102,7 +102,7 @@ fn array_and_hash_literals_retain_structural_children() {
     assert_eq!(hash_pairs, Some(1), "hash literal lost its pair: {}", ast.to_sexp());
 
     let sexp = ast.to_sexp();
-    assert!(sexp.contains("(number 1)"), "array element 1 was not retained:\\n{sexp}");
-    assert!(sexp.contains("(number 2)"), "array element 2 was not retained:\\n{sexp}");
+    assert!(sexp.contains("(number (value 1))"), "array element 1 was not retained:\\n{sexp}");
+    assert!(sexp.contains("(number (value 2))"), "array element 2 was not retained:\\n{sexp}");
     assert!(hash_value, "hash value was not retained as an interpolated String node:\\n{sexp}");
 }

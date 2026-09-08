@@ -406,8 +406,8 @@ fn bdd_given_map_and_grep_pipeline_when_parsed_then_higher_order_blocks_are_reta
     let sexp = parse_sexp(code)?;
 
     // Then: map/grep and their block structure should remain visible in AST output.
-    assert!(sexp.contains("(call map"), "Expected map call node in: {sexp}");
-    assert!(sexp.contains("(call grep"), "Expected grep call node in: {sexp}");
+    assert!(sexp.contains("(call (name map)"), "Expected map call node in: {sexp}");
+    assert!(sexp.contains("(call (name grep)"), "Expected grep call node in: {sexp}");
     assert!(sexp.contains("binary_"), "Expected block expression nodes in: {sexp}");
     assert!(!sexp.contains("ERROR"), "Did not expect recovery ERROR nodes for valid code: {sexp}");
 
@@ -456,8 +456,8 @@ fn bdd_given_map_and_grep_pipeline_when_parsed_then_high_order_ops_and_regex_mat
     let sexp = parse_sexp(code)?;
 
     // Then: map/grep and regex matching should remain explicit in AST shape.
-    assert!(sexp.contains("(call map"), "Expected Map node in: {sexp}");
-    assert!(sexp.contains("(call grep"), "Expected Grep node in: {sexp}");
+    assert!(sexp.contains("(call (name map)"), "Expected Map node in: {sexp}");
+    assert!(sexp.contains("(call (name grep)"), "Expected Grep node in: {sexp}");
     assert!(sexp.contains("(match"), "Expected RegexMatch node in: {sexp}");
     assert!(!sexp.contains("ERROR"), "Did not expect recovery ERROR nodes for valid code: {sexp}");
 
@@ -561,7 +561,10 @@ fn bdd_given_sort_with_custom_comparator_when_parsed_then_sort_and_comparison_ar
     let sexp = parse_sexp(code)?;
 
     // Then: sort invocations and comparison operators should appear in the AST.
-    assert!(sexp.contains("sort") || sexp.contains("(call sort"), "Expected sort call in: {sexp}");
+    assert!(
+        sexp.contains("sort") || sexp.contains("(call (name sort)"),
+        "Expected sort call in: {sexp}"
+    );
     assert!(sexp.contains("cmp"), "Expected cmp string comparator in: {sexp}");
     assert!(sexp.contains("<=>"), "Expected spaceship numeric comparator in: {sexp}");
     assert!(!sexp.contains("ERROR"), "Did not expect recovery ERROR nodes for valid code: {sexp}");
@@ -1165,7 +1168,7 @@ fn bdd_given_context_and_scalar_list_operations_when_parsed_then_list_ops_are_re
     assert!(sexp.contains("array"), "Expected array variable in: {sexp}");
     assert!(sexp.contains("hash"), "Expected hash variable in: {sexp}");
     assert!(
-        sexp.contains("(call map") || sexp.contains("(call sort"),
+        sexp.contains("(call (name map)") || sexp.contains("(call (name sort)"),
         "Expected map or sort in: {sexp}"
     );
     assert!(!sexp.contains("ERROR"), "Did not expect recovery ERROR nodes for valid code: {sexp}");

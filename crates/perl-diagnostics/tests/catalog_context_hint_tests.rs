@@ -3,6 +3,7 @@
 //! Issue #2316: the catalog layer must surface the `context_hint` so that
 //! consumers (LSP providers, formatters) can attach it to error messages
 //! without pulling in `perl-diagnostics-codes` directly.
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 use perl_diagnostics::catalog;
 

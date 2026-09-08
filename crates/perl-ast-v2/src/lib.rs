@@ -5,6 +5,7 @@
 //!
 //! This module provides an updated AST that uses Range instead of SourceLocation
 //! to support incremental parsing and better error reporting.
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 use perl_position_tracking::Range;
 

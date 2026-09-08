@@ -217,9 +217,9 @@ fn when_v3_kind_and_grammar_kind_are_both_available_then_they_are_explicit() {
 
 #[test]
 fn when_requesting_grammar_kind_of_variable_with_attributes_then_snake_case_fallback_is_used() {
-    // NodeKind::VariableWithAttributes produces a double-paren sexp of the form
-    // `((variable $ foo) (attributes :lvalue))` -- grammar_kind() must fall back
-    // to snake_case of kind_name() and must NOT return the child kind "variable".
+    // NodeKind::VariableWithAttributes nests `(attributes …)` under the owning
+    // root. grammar_kind() must fall back to snake_case of kind_name() and must
+    // NOT return the child kind "variable".
     let tree = parse("my ($foo :lvalue);");
     let root = tree.root_node();
     // Walk the tree to find the VariableWithAttributes node if present.

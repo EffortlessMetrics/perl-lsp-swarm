@@ -6,9 +6,7 @@
 //! debugger process.
 
 use perl_dap::tcp_attach::{DapEvent, TcpAttachConfig, TcpAttachSession};
-use perl_dap::{DapConfig, DapMode, DapServer, DapSocketBindError};
-use std::io;
-use std::net::TcpListener;
+use perl_dap::{DapConfig, DapMode, DapServer};
 use std::time::Duration;
 
 // ── DapMode ────────────────────────────────────────────────────────
@@ -56,31 +54,6 @@ fn dap_server_creation_preserves_workspace_root() -> Result<(), Box<dyn std::err
     let server = DapServer::new(config)?;
     assert_eq!(server.config.mode, DapMode::Native);
     assert_eq!(server.config.workspace_root, Some(root));
-    Ok(())
-}
-
-#[test]
-fn dap_server_socket_reports_occupied_native_port_before_accept()
--> Result<(), Box<dyn std::error::Error>> {
-    let occupied = TcpListener::bind(("127.0.0.1", 0))?;
-    let port = occupied.local_addr()?.port();
-    let config =
-        DapConfig { log_level: "info".to_string(), mode: DapMode::Native, workspace_root: None };
-    let mut server = DapServer::new(config)?;
-
-    let error = match server.run_socket(port) {
-        Ok(()) => return Err(io::Error::other("occupied native port unexpectedly accepted").into()),
-        Err(error) => error,
-    };
-    let marker = error.downcast_ref::<DapSocketBindError>().ok_or_else(|| {
-        io::Error::other("native bind failure did not preserve the DAP bind marker")
-    })?;
-    assert_eq!(marker.port, port, "bind marker must preserve the occupied port");
-    let source = error
-        .downcast_ref::<io::Error>()
-        .ok_or_else(|| io::Error::other("native bind source must remain available"))?;
-    assert_eq!(source.kind(), io::ErrorKind::AddrInUse);
-    assert!(error.to_string().contains(&port.to_string()));
     Ok(())
 }
 

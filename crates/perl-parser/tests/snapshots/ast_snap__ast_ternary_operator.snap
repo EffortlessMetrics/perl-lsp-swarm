@@ -1,5 +1,5 @@
 ---
-source: crates/perl-parser/tests/ast_snapshot_tests.rs
+source: crates/perl-parser/tests/ast_snap.rs
 expression: "parse_sexp(\"my $x = $cond ? \\\"yes\\\" : \\\"no\\\";\")"
 ---
-(source_file (my_declaration (variable $ x)(ternary (variable $ cond) (string_interpolated "\"yes\"") (string_interpolated "\"no\""))))
+(source_file (statements (my_declaration (declarator my) (variable (variable (sigil $) (name x))) (initializer (ternary (condition (variable (sigil $) (name cond))) (then_expr (string_interpolated (value "\"yes\"") (interpolated true))) (else_expr (string_interpolated (value "\"no\"") (interpolated true))))))))

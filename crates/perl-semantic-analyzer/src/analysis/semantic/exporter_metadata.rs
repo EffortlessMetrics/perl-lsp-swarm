@@ -140,15 +140,14 @@ impl ExportMetadataBuilder {
                     self.visit(block);
                 }
             }
-            NodeKind::Use { module, args, .. } => {
+            NodeKind::Use { module, args, .. }
                 if module == "Exporter"
                     || ((module == "parent" || module == "base")
-                        && args
-                            .iter()
-                            .any(|arg| parse_argument_names(arg).iter().any(|i| i == "Exporter")))
-                {
-                    self.current.uses_exporter = true;
-                }
+                        && args.iter().any(|arg| {
+                            parse_argument_names(arg).iter().any(|i| i == "Exporter")
+                        })) =>
+            {
+                self.current.uses_exporter = true;
             }
             NodeKind::VariableDeclaration { variable, initializer, .. } => {
                 if let NodeKind::Variable { sigil, name } = &variable.kind

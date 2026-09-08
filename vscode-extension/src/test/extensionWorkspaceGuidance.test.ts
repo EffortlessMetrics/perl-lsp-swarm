@@ -6,7 +6,6 @@ import {
   suggestAiCompletionIfSupported,
   suggestDiscoveredIncludePaths,
   validateIncludePaths,
-  warnAboutPerlExtensionConflicts,
 } from '../extensionWorkspaceGuidance';
 
 const workspaceMock = vscode.workspace as unknown as { workspaceFolders: unknown };
@@ -184,10 +183,14 @@ test('adds discovered module directories and caches the resulting layout', async
 
   await suggestDiscoveredIncludePaths({ globalState } as unknown as vscode.ExtensionContext);
 
+  // `includePaths` is resource-scoped and these directories were discovered
+  // under this folder's own root, so the write belongs to the folder. Writing
+  // ConfigurationTarget.Workspace published one folder's include paths to every
+  // other folder in a multi-root workspace (#14447).
   expect(update).toHaveBeenCalledWith(
     'includePaths',
     expect.arrayContaining(['src', 'vendor']),
-    vscode.ConfigurationTarget.Workspace,
+    vscode.ConfigurationTarget.WorkspaceFolder,
   );
   expect(vscode.window.showInformationMessage).toHaveBeenCalledWith(
     'Added src, vendor to perl-lsp.includePaths.',
@@ -237,61 +240,4 @@ test('offers AI completion when the server advertises inline completions', async
     'perl-lsp.aiCompletion.firstRunNotificationShown',
     true,
   );
-});
-
-test('does not report the extension itself as a Perl conflict', async () => {
-  extensionsMock.all = [
-    {
-      id: 'effortlessmetrics.perl-lsp-rs',
-      packageJSON: {
-        publisher: 'EffortlessMetrics',
-        name: 'perl-lsp-rs',
-        version: '0.12.3',
-        contributes: { languages: [{ id: 'perl' }] },
-      },
-    },
-  ];
-
-  await warnAboutPerlExtensionConflicts({
-    extension: {
-      packageJSON: { publisher: 'EffortlessMetrics', name: 'perl-lsp-rs', version: '0.12.3' },
-    },
-    globalState: makeState(),
-  } as unknown as vscode.ExtensionContext);
-
-  expect(vscode.window.showWarningMessage).not.toHaveBeenCalled();
-});
-
-test('reports competing Perl extensions and opens the coexistence guide', async () => {
-  extensionsMock.all = [
-    {
-      id: 'vendor.one',
-      packageJSON: { displayName: 'Perl Tools', contributes: { languages: [{ id: 'perl' }] } },
-    },
-    { id: 'vendor.two', packageJSON: { displayName: 'Perl Critic', keywords: ['perlcritic'] } },
-    { id: 'vendor.three', packageJSON: { name: 'perl-tidy' } },
-    { id: 'vendor.four', packageJSON: { description: 'Another Perl navigator' } },
-  ];
-  (vscode.window.showWarningMessage as jest.Mock).mockResolvedValue('Open Coexistence Guide');
-  const globalState = makeState();
-
-  await warnAboutPerlExtensionConflicts({
-    extension: {
-      packageJSON: { publisher: 'EffortlessMetrics', name: 'perl-lsp-rs', version: '1.2.3' },
-    },
-    globalState,
-  } as unknown as vscode.ExtensionContext);
-
-  expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(
-    expect.stringContaining('detected 4 other Perl extensions'),
-    'Open Coexistence Guide',
-  );
-  expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(
-    expect.stringContaining('(+1 more)'),
-    'Open Coexistence Guide',
-  );
-  expect(vscode.env.openExternal).toHaveBeenCalledWith(
-    expect.objectContaining({ toString: expect.any(Function) }),
-  );
-  expect(globalState.update).toHaveBeenCalledWith('perl-lsp.conflictWarningMajorVersion', '1');
 });

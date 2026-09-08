@@ -20,10 +20,10 @@ fn collect_kinds(src: &str) -> Vec<TokenKind> {
     let mut s = TokenStream::new(src);
     let mut kinds = Vec::new();
     while let Ok(t) = s.next() {
-        if t.kind == TokenKind::Eof {
+        if t.kind() == TokenKind::Eof {
             break;
         }
-        kinds.push(t.kind);
+        kinds.push(t.kind());
     }
     kinds
 }
@@ -32,7 +32,7 @@ fn collect_texts(src: &str) -> Vec<String> {
     let mut s = TokenStream::new(src);
     let mut texts = Vec::new();
     while let Ok(t) = s.next() {
-        if t.kind == TokenKind::Eof {
+        if t.kind() == TokenKind::Eof {
             break;
         }
         texts.push(t.text.to_string());
@@ -322,7 +322,7 @@ fn ext_keyword_text_preserved() -> Result<(), Box<dyn std::error::Error>> {
 fn ext_number_text_preserved() -> Result<(), Box<dyn std::error::Error>> {
     let mut s = TokenStream::new("3.14");
     let t = must(s.next());
-    assert_eq!(t.kind, TokenKind::Number);
+    assert_eq!(t.kind(), TokenKind::Number);
     assert_eq!(t.text.as_ref(), "3.14");
     Ok(())
 }
@@ -331,7 +331,7 @@ fn ext_number_text_preserved() -> Result<(), Box<dyn std::error::Error>> {
 fn ext_hex_number_text_preserved() -> Result<(), Box<dyn std::error::Error>> {
     let mut s = TokenStream::new("0xFF");
     let t = must(s.next());
-    assert_eq!(t.kind, TokenKind::Number);
+    assert_eq!(t.kind(), TokenKind::Number);
     Ok(())
 }
 
@@ -339,7 +339,7 @@ fn ext_hex_number_text_preserved() -> Result<(), Box<dyn std::error::Error>> {
 fn ext_octal_number_text_preserved() -> Result<(), Box<dyn std::error::Error>> {
     let mut s = TokenStream::new("0777");
     let t = must(s.next());
-    assert_eq!(t.kind, TokenKind::Number);
+    assert_eq!(t.kind(), TokenKind::Number);
     Ok(())
 }
 
@@ -347,7 +347,7 @@ fn ext_octal_number_text_preserved() -> Result<(), Box<dyn std::error::Error>> {
 fn ext_identifier_text_preserved() -> Result<(), Box<dyn std::error::Error>> {
     let mut s = TokenStream::new("$some_variable");
     let t = must(s.next());
-    assert_eq!(t.kind, TokenKind::Identifier);
+    assert_eq!(t.kind(), TokenKind::Identifier);
     // Verify text contains the variable name
     assert!(!t.text.is_empty());
     Ok(())
@@ -359,7 +359,7 @@ fn ext_operator_text_preserved() -> Result<(), Box<dyn std::error::Error>> {
     // skip 1
     let _ = must(s.next());
     let op = must(s.next());
-    assert_eq!(op.kind, TokenKind::Spaceship);
+    assert_eq!(op.kind(), TokenKind::Spaceship);
     assert_eq!(op.text.as_ref(), "<=>");
     Ok(())
 }
@@ -373,8 +373,8 @@ fn ext_token_start_end_offsets() -> Result<(), Box<dyn std::error::Error>> {
     let mut s = TokenStream::new("my $x");
     let t = must(s.next());
     // "my" starts at 0, ends at 2
-    assert_eq!(t.start, 0);
-    assert_eq!(t.end, 2);
+    assert_eq!(t.start(), 0);
+    assert_eq!(t.end(), 2);
     Ok(())
 }
 
@@ -382,10 +382,10 @@ fn ext_token_start_end_offsets() -> Result<(), Box<dyn std::error::Error>> {
 fn ext_token_offsets_with_leading_whitespace() -> Result<(), Box<dyn std::error::Error>> {
     let mut s = TokenStream::new("   42");
     let t = must(s.next());
-    assert_eq!(t.kind, TokenKind::Number);
+    assert_eq!(t.kind(), TokenKind::Number);
     // Starts after 3 spaces
-    assert_eq!(t.start, 3);
-    assert_eq!(t.end, 5);
+    assert_eq!(t.start(), 3);
+    assert_eq!(t.end(), 5);
     Ok(())
 }
 
@@ -395,12 +395,12 @@ fn ext_token_offsets_monotonically_increase() -> Result<(), Box<dyn std::error::
     let mut prev_end = 0;
     loop {
         let t = must(s.next());
-        if t.kind == TokenKind::Eof {
+        if t.kind() == TokenKind::Eof {
             break;
         }
-        assert!(t.start >= prev_end, "start {} < prev_end {}", t.start, prev_end);
-        assert!(t.end > t.start, "end {} <= start {}", t.end, t.start);
-        prev_end = t.end;
+        assert!(t.start() >= prev_end, "start {} < prev_end {}", t.start(), prev_end);
+        assert!(t.end() > t.start(), "end {} <= start {}", t.end(), t.start());
+        prev_end = t.end();
     }
     Ok(())
 }
@@ -585,7 +585,6 @@ fn ext_trivia_clone_and_eq() -> Result<(), Box<dyn std::error::Error>> {
     let t3 = Trivia::LineComment("# x".into());
     assert_ne!(t1, t3);
 
-    assert_eq!(Trivia::Newline, Trivia::Newline);
     Ok(())
 }
 
@@ -881,7 +880,7 @@ fn ext_single_character_input() -> Result<(), Box<dyn std::error::Error>> {
     // Various single-char inputs
     let mut s = TokenStream::new(";");
     let t = must(s.next());
-    assert_eq!(t.kind, TokenKind::Semicolon);
+    assert_eq!(t.kind(), TokenKind::Semicolon);
     Ok(())
 }
 

@@ -89,6 +89,25 @@ fn snapshot_security_string_eval() {
     assert_snapshot!("security_string_eval", snapshot);
 }
 
+/// #5035: interpolated SQL reaching a proven-DBI `prepare` sink fires PL607
+/// through the full DiagnosticsProvider dispatch; the placeholder form is the
+/// safe control in the same snapshot.
+#[test]
+fn snapshot_security_sql_injection() {
+    let source = concat!(
+        "package Foo;\n",
+        "use strict;\n",
+        "use warnings;\n",
+        "my $dbh = DBI->connect('dbi:Pg:dbname=x', 'u', 'p');\n",
+        "my $user_id = <STDIN>;\n",
+        "my $sth = $dbh->prepare(\"SELECT * FROM users WHERE id = $user_id\");\n",
+        "my $safe = $dbh->prepare('SELECT * FROM users WHERE id = ?');\n",
+        "1;\n",
+    );
+    let snapshot = normalize(diagnostics_for(source));
+    assert_snapshot!("security_sql_injection", snapshot);
+}
+
 #[test]
 fn snapshot_missing_module_import() {
     let source = concat!(

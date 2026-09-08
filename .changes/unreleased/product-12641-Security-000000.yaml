@@ -1,0 +1,9 @@
+project: product
+component: Editor behavior
+kind: Security
+body: Native perl-dap no longer binds an editor-facing TCP listener. `perl-dap --socket` / `--port` without `--external-peer` fail before bind and name `perl-dap --stdio`. Authenticated debugger-peer TCP is unchanged.
+time: 2026-08-25T23:59:00Z
+custom:
+  PR: 12641
+  Slug: retire-native-editor-socket
+  Breaking: "yes"

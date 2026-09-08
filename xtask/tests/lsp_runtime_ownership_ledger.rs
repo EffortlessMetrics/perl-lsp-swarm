@@ -401,6 +401,9 @@ const DEPENDENCIES: &[DependencyRow] = &[
     dependency!("perl-symbol", MoveToPerlAdapter, "#6957"),
     dependency!("perl-tdd-support", PerlTestOnly, "#7394"),
     dependency!("perl-test-facts", PerlTestOnly, "#6943"),
+    // Dev-only must-assertions brought in by the #12604 clippy boundary work;
+    // Perl-test support, never a runtime extraction candidate.
+    dependency!("perl-test-must", PerlTestOnly, "#12604"),
     dependency!("perl-uri", MoveToPerlAdapter, "#8617"),
     dependency!("perl-workspace", MoveToPerlAdapter, "#6957"),
     dependency!("predicates", RetainGenericTest, "#9298"),

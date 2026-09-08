@@ -3,6 +3,11 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+
+# The toolchain guard (#12593) probes `cargo --version` before delegating;
+# fake cargo stubs answer with the workspace-required version and do not log it.
+FAKE_CARGO_VERSION="$(awk -F'"' '/^rust-version[[:space:]]*=/{print $2; exit}' "${REPO_ROOT}/Cargo.toml")"
+export FAKE_CARGO_VERSION
 GATE_LOCAL_SCRIPT="${REPO_ROOT}/scripts/gate-local.sh"
 
 PASS=0
@@ -53,6 +58,7 @@ write_fake_cargo() {
   mkdir -p "$fake_bin"
   cat > "${fake_bin}/cargo" <<FAKE
 #!/usr/bin/env bash
+if [ "\${1:-}" = "--version" ]; then printf 'cargo %s (stub)\n' "\${FAKE_CARGO_VERSION:-1.95.0}"; exit 0; fi
 rendered=""
 for arg in "\$@"; do
   rendered+="[\${arg}]"

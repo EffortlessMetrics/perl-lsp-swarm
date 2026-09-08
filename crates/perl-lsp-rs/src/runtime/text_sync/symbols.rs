@@ -1,7 +1,6 @@
 use super::{LspServer, Node};
-use crate::runtime::document_symbols_sink::{
-    DocumentSymbolCommitOutcome, DocumentSymbolIdentity, DocumentSymbolsDisposition,
-};
+use crate::runtime::document_symbols_sink::{DocumentSymbolIdentity, DocumentSymbolsDisposition};
+use crate::runtime::parse_effect_contract::ParseEffectCommitOutcomeV1;
 
 impl LspServer {
     /// Extract the exact symbol set for one accepted parse ticket and commit
@@ -13,7 +12,7 @@ impl LspServer {
         identity: &DocumentSymbolIdentity,
         ast: &Node,
         source: &str,
-    ) -> DocumentSymbolCommitOutcome {
+    ) -> ParseEffectCommitOutcomeV1 {
         // Test seam mirroring #11673: lets a falsifier mutate document state
         // between extraction and the sink-boundary mutation.
         #[cfg(test)]
@@ -31,7 +30,7 @@ impl LspServer {
     pub(crate) fn clear_document_symbols_for_identity(
         &self,
         identity: &DocumentSymbolIdentity,
-    ) -> DocumentSymbolCommitOutcome {
+    ) -> ParseEffectCommitOutcomeV1 {
         // Test seam: same interposition point as replacement commits.
         #[cfg(test)]
         if let Some(hook) = self.document_symbols_before_commit_hook.lock().as_ref() {

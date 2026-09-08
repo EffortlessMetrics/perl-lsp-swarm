@@ -1,0 +1,3957 @@
+{
+  "authorities": {
+    "claim_row_authority": "#7430",
+    "contribution_envelope": {
+      "issue": "#12109",
+      "landed_commit": "05312ba934baa37b2d4ec3179f1ae9da8b7b9c59",
+      "schema": "FilePirLexicalContributionV1"
+    },
+    "interim_vocabulary": "#2660",
+    "lexical_anchors": "#12191",
+    "parent_cut_lines": [
+      "#12075",
+      "#5218",
+      "#8230"
+    ],
+    "preparation_contract": "#12358",
+    "protocol": "LSP 3.18"
+  },
+  "cases": [
+    {
+      "adjacent_boundary": "Adjacent: the admitted denominator is exactly includeDeclaration=false.",
+      "binding": null,
+      "case_id": "LX-EXC-001",
+      "coverage": [
+        "include_declaration_true"
+      ],
+      "expected": {
+        "completeness": "not-applicable",
+        "declaration_anchor": null,
+        "fallback_invoked": true,
+        "reference_locations": [],
+        "result_class": "old_route"
+      },
+      "fixture": "read-write-modify",
+      "kind": "excluded",
+      "lifecycle": null,
+      "mutations": [
+        "LX-MUT-26"
+      ],
+      "preparation": null,
+      "rename": null,
+      "request": {
+        "include_declaration": true,
+        "method": "textDocument/references",
+        "subject": {
+          "character": 17,
+          "line": 0
+        }
+      },
+      "summary": "includeDeclaration=true is outside the admitted cohort and stays on the old route.",
+      "work_invariants": [
+        "WI-18"
+      ]
+    },
+    {
+      "adjacent_boundary": "Adjacent: single `my $name` declarations only.",
+      "binding": null,
+      "case_id": "LX-EXC-002",
+      "coverage": [
+        "bare_destructuring_declaration"
+      ],
+      "expected": {
+        "completeness": "not-applicable",
+        "declaration_anchor": null,
+        "fallback_invoked": false,
+        "reference_locations": [],
+        "result_class": "unsupported"
+      },
+      "fixture": "destructuring",
+      "kind": "excluded",
+      "lifecycle": null,
+      "mutations": [
+        "LX-MUT-26"
+      ],
+      "preparation": null,
+      "rename": null,
+      "request": {
+        "include_declaration": false,
+        "method": "textDocument/references",
+        "subject": {
+          "character": 4,
+          "line": 0
+        }
+      },
+      "summary": "Bare/destructuring declarations are excluded from the first cohort.",
+      "work_invariants": []
+    },
+    {
+      "adjacent_boundary": "Adjacent: initialized same-file lexical bindings only.",
+      "binding": null,
+      "case_id": "LX-EXC-003",
+      "coverage": [
+        "package_global"
+      ],
+      "expected": {
+        "completeness": "not-applicable",
+        "declaration_anchor": null,
+        "fallback_invoked": true,
+        "reference_locations": [],
+        "result_class": "old_route"
+      },
+      "fixture": "package-globals",
+      "kind": "excluded",
+      "lifecycle": null,
+      "mutations": [
+        "LX-MUT-26"
+      ],
+      "preparation": null,
+      "rename": null,
+      "request": {
+        "include_declaration": false,
+        "method": "textDocument/references",
+        "subject": {
+          "character": 4,
+          "line": 0
+        }
+      },
+      "summary": "Package/global variables (`our`, fully qualified) stay on the old route.",
+      "work_invariants": [
+        "WI-18"
+      ]
+    },
+    {
+      "adjacent_boundary": "Adjacent: only `my sub` lexical code bindings are admitted.",
+      "binding": null,
+      "case_id": "LX-EXC-004",
+      "coverage": [
+        "sub_method_import_cross_file"
+      ],
+      "expected": {
+        "completeness": "not-applicable",
+        "declaration_anchor": null,
+        "fallback_invoked": true,
+        "reference_locations": [],
+        "result_class": "old_route"
+      },
+      "fixture": "named-sub",
+      "kind": "excluded",
+      "lifecycle": null,
+      "mutations": [
+        "LX-MUT-26"
+      ],
+      "preparation": null,
+      "rename": null,
+      "request": {
+        "include_declaration": false,
+        "method": "textDocument/references",
+        "subject": {
+          "character": 5,
+          "line": 0
+        }
+      },
+      "summary": "Named subs, methods, imports, and cross-file references stay on the old route.",
+      "work_invariants": [
+        "WI-18"
+      ]
+    },
+    {
+      "adjacent_boundary": "Adjacent: dynamic boundaries stay honest, never silently promoted.",
+      "binding": null,
+      "case_id": "LX-EXC-005",
+      "coverage": [
+        "typeglob_symbolic_dynamic"
+      ],
+      "expected": {
+        "completeness": "not-applicable",
+        "declaration_anchor": null,
+        "fallback_invoked": false,
+        "reference_locations": [],
+        "result_class": "unsupported"
+      },
+      "fixture": "typeglob-dynamic",
+      "kind": "excluded",
+      "lifecycle": null,
+      "mutations": [
+        "LX-MUT-26"
+      ],
+      "preparation": null,
+      "rename": null,
+      "request": {
+        "include_declaration": false,
+        "method": "textDocument/references",
+        "subject": {
+          "character": 1,
+          "line": 0
+        }
+      },
+      "summary": "Typeglobs, symbolic references, and dynamic lookups are unsupported.",
+      "work_invariants": []
+    },
+    {
+      "adjacent_boundary": "Adjacent: only completeness=exact may answer.",
+      "binding": null,
+      "case_id": "LX-EXC-006",
+      "coverage": [
+        "partial_recovered_missing_anchor"
+      ],
+      "expected": {
+        "completeness": "not-applicable",
+        "declaration_anchor": null,
+        "fallback_invoked": false,
+        "reference_locations": [],
+        "result_class": "refusal"
+      },
+      "fixture": "for-loop-decl-read",
+      "kind": "excluded",
+      "lifecycle": null,
+      "mutations": [
+        "LX-MUT-08",
+        "LX-MUT-35"
+      ],
+      "preparation": null,
+      "rename": null,
+      "request": {
+        "include_declaration": false,
+        "method": "textDocument/references",
+        "subject": {
+          "character": 8,
+          "line": 0
+        }
+      },
+      "summary": "Partial, recovered, or missing-anchor facts refuse; exact empty from incomplete facts is forbidden.",
+      "work_invariants": []
+    },
+    {
+      "adjacent_boundary": "Adjacent: plain lexical read/write/modify only.",
+      "binding": null,
+      "case_id": "LX-EXC-007",
+      "coverage": [
+        "alias_localize_tied_magical"
+      ],
+      "expected": {
+        "completeness": "not-applicable",
+        "declaration_anchor": null,
+        "fallback_invoked": false,
+        "reference_locations": [],
+        "result_class": "unsupported"
+      },
+      "fixture": "alias-localize-tied",
+      "kind": "excluded",
+      "lifecycle": null,
+      "mutations": [
+        "LX-MUT-26"
+      ],
+      "preparation": null,
+      "rename": null,
+      "request": {
+        "include_declaration": false,
+        "method": "textDocument/references",
+        "subject": {
+          "character": 6,
+          "line": 0
+        }
+      },
+      "summary": "Alias, localize, tied, and magical places are unsupported.",
+      "work_invariants": []
+    },
+    {
+      "adjacent_boundary": "Adjacent: fresh same-source re-resolution is a new request, not reuse.",
+      "binding": null,
+      "case_id": "LX-EXC-008",
+      "coverage": [
+        "stale_held_references_request"
+      ],
+      "expected": {
+        "completeness": "not-applicable",
+        "declaration_anchor": null,
+        "fallback_invoked": false,
+        "reference_locations": [],
+        "result_class": "refusal"
+      },
+      "fixture": "read-write-modify",
+      "kind": "excluded",
+      "lifecycle": null,
+      "mutations": [
+        "LX-MUT-13"
+      ],
+      "preparation": null,
+      "rename": null,
+      "request": {
+        "include_declaration": false,
+        "method": "textDocument/references",
+        "subject": {
+          "character": 17,
+          "line": 0
+        }
+      },
+      "summary": "A stale held references request (generation N replayed at N+1) refuses.",
+      "work_invariants": []
+    },
+    {
+      "adjacent_boundary": "Adjacent: same URI/name/range/bytes under another root is a different subject.",
+      "binding": null,
+      "case_id": "LX-EXC-009",
+      "coverage": [
+        "wrong_root_workspace_configuration"
+      ],
+      "expected": {
+        "completeness": "not-applicable",
+        "declaration_anchor": null,
+        "fallback_invoked": false,
+        "reference_locations": [],
+        "result_class": "refusal"
+      },
+      "fixture": "read-write-modify",
+      "kind": "excluded",
+      "lifecycle": null,
+      "mutations": [
+        "LX-MUT-37"
+      ],
+      "preparation": null,
+      "rename": null,
+      "request": {
+        "include_declaration": false,
+        "method": "textDocument/references",
+        "subject": {
+          "character": 17,
+          "line": 0
+        }
+      },
+      "summary": "Wrong root, workspace, or configuration generation refuses; a prior plan never retargets.",
+      "work_invariants": []
+    },
+    {
+      "adjacent_boundary": "Adjacent: not_ready is typed, never a silent fallback or empty result.",
+      "binding": null,
+      "case_id": "LX-EXC-010",
+      "coverage": [
+        "not_ready_environment"
+      ],
+      "expected": {
+        "completeness": "not-applicable",
+        "declaration_anchor": null,
+        "fallback_invoked": false,
+        "reference_locations": [],
+        "result_class": "not_ready"
+      },
+      "fixture": "read-write-modify",
+      "kind": "excluded",
+      "lifecycle": null,
+      "mutations": [
+        "LX-MUT-09"
+      ],
+      "preparation": null,
+      "rename": null,
+      "request": {
+        "include_declaration": false,
+        "method": "textDocument/references",
+        "subject": {
+          "character": 17,
+          "line": 0
+        }
+      },
+      "summary": "A not-ready environment or provider profile reports not_ready.",
+      "work_invariants": []
+    },
+    {
+      "adjacent_boundary": "Adjacent: instrument failure is distinct from refusal and from exact empty.",
+      "binding": null,
+      "case_id": "LX-EXC-011",
+      "coverage": [
+        "cancellation_deadline_instrument_failure"
+      ],
+      "expected": {
+        "completeness": "not-applicable",
+        "declaration_anchor": null,
+        "fallback_invoked": false,
+        "reference_locations": [],
+        "result_class": "instrument_failure"
+      },
+      "fixture": "read-write-modify",
+      "kind": "excluded",
+      "lifecycle": null,
+      "mutations": [
+        "LX-MUT-27"
+      ],
+      "preparation": null,
+      "rename": null,
+      "request": {
+        "include_declaration": false,
+        "method": "textDocument/references",
+        "subject": {
+          "character": 17,
+          "line": 0
+        }
+      },
+      "summary": "Cancellation, deadline, or instrument failure is a typed failure class.",
+      "work_invariants": []
+    },
+    {
+      "adjacent_boundary": "Adjacent: only a valid, collision-free target earns a plan.",
+      "binding": null,
+      "case_id": "LX-EXC-012",
+      "coverage": [
+        "name_collision_invalid_target"
+      ],
+      "expected": {
+        "completeness": "not-applicable",
+        "declaration_anchor": null,
+        "fallback_invoked": false,
+        "reference_locations": [],
+        "result_class": "refusal"
+      },
+      "fixture": "read-write-modify",
+      "kind": "excluded",
+      "lifecycle": null,
+      "mutations": [
+        "LX-MUT-23"
+      ],
+      "preparation": null,
+      "rename": {
+        "applied_edit_ids": [],
+        "authorization": "current-subject-#10650",
+        "authorized_occurrence_ids": [],
+        "client_application": "not-applicable",
+        "edits": [],
+        "new_name": "a",
+        "plan_edit_ids": [],
+        "plan_result": "refusal",
+        "postcondition_source": "my $x = 1; print $x; $x = 2; $x += 3;",
+        "projected_edit_ids": [],
+        "rename_outcome": "refusal"
+      },
+      "request": {
+        "include_declaration": false,
+        "method": "textDocument/rename",
+        "new_name": "renamed",
+        "subject": {
+          "character": 17,
+          "line": 0
+        }
+      },
+      "summary": "A rename to a colliding or invalid new name refuses before any edit is planned.",
+      "work_invariants": []
+    },
+    {
+      "adjacent_boundary": "Adjacent: exact edits apply only against the exact source they were projected from.",
+      "binding": null,
+      "case_id": "LX-EXC-013",
+      "coverage": [
+        "old_text_mismatch"
+      ],
+      "expected": {
+        "completeness": "not-applicable",
+        "declaration_anchor": null,
+        "fallback_invoked": false,
+        "reference_locations": [],
+        "result_class": "refusal"
+      },
+      "fixture": "read-write-modify",
+      "kind": "excluded",
+      "lifecycle": null,
+      "mutations": [
+        "LX-MUT-23"
+      ],
+      "preparation": null,
+      "rename": {
+        "applied_edit_ids": [],
+        "authorization": "current-subject-#10650",
+        "authorized_occurrence_ids": [],
+        "client_application": "not-applicable",
+        "edits": [],
+        "new_name": "y",
+        "plan_edit_ids": [],
+        "plan_result": "refusal",
+        "postcondition_source": "my $x = 1; print $x; $x = 2; $x += 3;",
+        "projected_edit_ids": [],
+        "rename_outcome": "refusal"
+      },
+      "request": {
+        "include_declaration": false,
+        "method": "textDocument/rename",
+        "new_name": "renamed",
+        "subject": {
+          "character": 17,
+          "line": 0
+        }
+      },
+      "summary": "An edit application whose old text no longer matches refuses instead of corrupting the document.",
+      "work_invariants": []
+    },
+    {
+      "adjacent_boundary": "Adjacent: malformed observations degrade to absence, never to authority.",
+      "binding": {
+        "body": "main",
+        "name": "i",
+        "scope_path": [
+          "for-loop"
+        ],
+        "sigil": "scalar"
+      },
+      "case_id": "LX-EXC-014",
+      "coverage": [
+        "malformed_foreign_observation"
+      ],
+      "expected": {
+        "completeness": "exact",
+        "declaration_anchor": {
+          "byte_end": 9,
+          "byte_start": 7,
+          "character_end": 9,
+          "character_start": 7,
+          "line": 0,
+          "role": "declaration"
+        },
+        "fallback_invoked": false,
+        "reference_locations": [
+          {
+            "byte_end": 29,
+            "byte_start": 27,
+            "character_end": 29,
+            "character_start": 27,
+            "line": 0,
+            "role": "read"
+          }
+        ],
+        "result_class": "exact_nonempty"
+      },
+      "fixture": "for-loop-decl-read",
+      "kind": "excluded",
+      "lifecycle": null,
+      "mutations": [
+        "LX-MUT-36"
+      ],
+      "preparation": {
+        "correlation_outcome": "prior_preparation_malformed_or_foreign",
+        "fresh_current_result": "success",
+        "old_plan_reuse": "forbidden",
+        "prior_observation": "malformed-or-foreign",
+        "scenario": "malformed_foreign"
+      },
+      "rename": {
+        "applied_edit_ids": [
+          "lx-exc-014-1",
+          "lx-exc-014-2"
+        ],
+        "authorization": "current-subject-#10650",
+        "authorized_occurrence_ids": [
+          "lx-exc-014-1",
+          "lx-exc-014-2"
+        ],
+        "client_application": "applied-verified",
+        "edits": [
+          {
+            "byte_end": 9,
+            "byte_start": 7,
+            "id": "lx-exc-014-1"
+          },
+          {
+            "byte_end": 29,
+            "byte_start": 27,
+            "id": "lx-exc-014-2"
+          }
+        ],
+        "new_name": "ix",
+        "plan_edit_ids": [
+          "lx-exc-014-1",
+          "lx-exc-014-2"
+        ],
+        "plan_result": "exact-plan-#12327-#8718",
+        "postcondition_source": "for my $ix (1 .. 3) { print $ix }",
+        "projected_edit_ids": [
+          "lx-exc-014-1",
+          "lx-exc-014-2"
+        ],
+        "rename_outcome": "success"
+      },
+      "request": {
+        "include_declaration": false,
+        "method": "textDocument/rename",
+        "new_name": "renamed",
+        "subject": {
+          "character": 8,
+          "line": 0
+        }
+      },
+      "summary": "A malformed or foreign preparation observation is treated as no prior preparation; it never overrides exact current evidence.",
+      "work_invariants": []
+    },
+    {
+      "adjacent_boundary": "Adjacent: projection refusal keeps plan edit IDs and projected edit IDs identical on success.",
+      "binding": null,
+      "case_id": "LX-EXC-015",
+      "coverage": [
+        "unprojectable_client_edit_refusal"
+      ],
+      "expected": {
+        "completeness": "not-applicable",
+        "declaration_anchor": null,
+        "fallback_invoked": false,
+        "reference_locations": [],
+        "result_class": "refusal"
+      },
+      "fixture": "read-write-modify",
+      "kind": "excluded",
+      "lifecycle": null,
+      "mutations": [
+        "LX-MUT-20"
+      ],
+      "preparation": null,
+      "rename": {
+        "applied_edit_ids": [],
+        "authorization": "current-subject-#10650",
+        "authorized_occurrence_ids": [],
+        "client_application": "not-applicable",
+        "edits": [],
+        "new_name": "y",
+        "plan_edit_ids": [],
+        "plan_result": "exact-plan-#12327-#8718",
+        "postcondition_source": "my $x = 1; print $x; $x = 2; $x += 3;",
+        "projected_edit_ids": [],
+        "rename_outcome": "refusal"
+      },
+      "request": {
+        "include_declaration": false,
+        "method": "textDocument/rename",
+        "new_name": "renamed",
+        "subject": {
+          "character": 17,
+          "line": 0
+        }
+      },
+      "summary": "A plan whose edits cannot be projected to the client's edit representation refuses at projection.",
+      "work_invariants": []
+    },
+    {
+      "adjacent_boundary": "Adjacent: reopen yields a new document instance, never a reused observation.",
+      "binding": {
+        "body": "main",
+        "name": "i",
+        "scope_path": [
+          "for-loop"
+        ],
+        "sigil": "scalar"
+      },
+      "case_id": "LX-LC-001",
+      "coverage": [
+        "lifecycle_full_loop_no_prepare"
+      ],
+      "expected": {
+        "completeness": "exact",
+        "declaration_anchor": {
+          "byte_end": 9,
+          "byte_start": 7,
+          "character_end": 9,
+          "character_start": 7,
+          "line": 0,
+          "role": "declaration"
+        },
+        "fallback_invoked": false,
+        "reference_locations": [
+          {
+            "byte_end": 29,
+            "byte_start": 27,
+            "character_end": 29,
+            "character_start": 27,
+            "line": 0,
+            "role": "read"
+          }
+        ],
+        "result_class": "exact_nonempty"
+      },
+      "fixture": "for-loop-decl-read",
+      "kind": "lifecycle",
+      "lifecycle": {
+        "currentness": "generation N, reopen produces a fresh document instance",
+        "sequence": [
+          "open:N",
+          "references",
+          "rename:without-prepare",
+          "apply",
+          "didChange:reopen",
+          "requery"
+        ]
+      },
+      "mutations": [
+        "LX-MUT-13",
+        "LX-MUT-28"
+      ],
+      "preparation": {
+        "correlation_outcome": "no_prior_preparation",
+        "fresh_current_result": "success",
+        "old_plan_reuse": "forbidden",
+        "prior_observation": "none",
+        "scenario": "no_prior_prepare"
+      },
+      "rename": {
+        "applied_edit_ids": [
+          "lx-lc-001-1",
+          "lx-lc-001-2"
+        ],
+        "authorization": "current-subject-#10650",
+        "authorized_occurrence_ids": [
+          "lx-lc-001-1",
+          "lx-lc-001-2"
+        ],
+        "client_application": "applied-verified",
+        "edits": [
+          {
+            "byte_end": 9,
+            "byte_start": 7,
+            "id": "lx-lc-001-1"
+          },
+          {
+            "byte_end": 29,
+            "byte_start": 27,
+            "id": "lx-lc-001-2"
+          }
+        ],
+        "new_name": "ix",
+        "plan_edit_ids": [
+          "lx-lc-001-1",
+          "lx-lc-001-2"
+        ],
+        "plan_result": "exact-plan-#12327-#8718",
+        "postcondition_source": "for my $ix (1 .. 3) { print $ix }",
+        "projected_edit_ids": [
+          "lx-lc-001-1",
+          "lx-lc-001-2"
+        ],
+        "rename_outcome": "success"
+      },
+      "request": {
+        "include_declaration": true,
+        "method": "textDocument/rename",
+        "new_name": "ix",
+        "subject": {
+          "character": 27,
+          "line": 0
+        }
+      },
+      "summary": "open N -> references -> rename without prepare -> apply -> didChange/reopen -> requery: every stage stays distinct and the post-apply requery is exact.",
+      "work_invariants": [
+        "WI-01",
+        "WI-02",
+        "WI-03",
+        "WI-04",
+        "WI-05",
+        "WI-06",
+        "WI-07",
+        "WI-08",
+        "WI-09",
+        "WI-10",
+        "WI-11",
+        "WI-12",
+        "WI-13",
+        "WI-14",
+        "WI-15",
+        "WI-16",
+        "WI-17"
+      ]
+    },
+    {
+      "adjacent_boundary": "Adjacent: the preparation observation never replaces current re-resolution.",
+      "binding": {
+        "body": "main",
+        "name": "x",
+        "scope_path": [
+          "main"
+        ],
+        "sigil": "scalar"
+      },
+      "case_id": "LX-LC-002",
+      "coverage": [
+        "lifecycle_matching_prepare_loop"
+      ],
+      "expected": {
+        "completeness": "exact",
+        "declaration_anchor": {
+          "byte_end": 5,
+          "byte_start": 3,
+          "character_end": 5,
+          "character_start": 3,
+          "line": 0,
+          "role": "declaration"
+        },
+        "fallback_invoked": false,
+        "reference_locations": [
+          {
+            "byte_end": 19,
+            "byte_start": 17,
+            "character_end": 19,
+            "character_start": 17,
+            "line": 0,
+            "role": "read"
+          },
+          {
+            "byte_end": 23,
+            "byte_start": 21,
+            "character_end": 23,
+            "character_start": 21,
+            "line": 0,
+            "role": "write"
+          },
+          {
+            "byte_end": 31,
+            "byte_start": 29,
+            "character_end": 31,
+            "character_start": 29,
+            "line": 0,
+            "role": "modify"
+          }
+        ],
+        "result_class": "exact_nonempty"
+      },
+      "fixture": "read-write-modify",
+      "kind": "lifecycle",
+      "lifecycle": {
+        "currentness": "single generation N",
+        "sequence": [
+          "open:N",
+          "prepareRename",
+          "rename:unchanged-same-target-family-plan",
+          "apply",
+          "requery"
+        ]
+      },
+      "mutations": [
+        "LX-MUT-19",
+        "LX-MUT-29",
+        "LX-MUT-32"
+      ],
+      "preparation": {
+        "correlation_outcome": "matching_current_preparation",
+        "fresh_current_result": "success",
+        "old_plan_reuse": "forbidden",
+        "prior_observation": "generation-N-matching",
+        "scenario": "matching_prepare"
+      },
+      "rename": {
+        "applied_edit_ids": [
+          "lx-lc-002-1",
+          "lx-lc-002-2",
+          "lx-lc-002-3",
+          "lx-lc-002-4"
+        ],
+        "authorization": "current-subject-#10650",
+        "authorized_occurrence_ids": [
+          "lx-lc-002-1",
+          "lx-lc-002-2",
+          "lx-lc-002-3",
+          "lx-lc-002-4"
+        ],
+        "client_application": "applied-verified",
+        "edits": [
+          {
+            "byte_end": 5,
+            "byte_start": 3,
+            "id": "lx-lc-002-1"
+          },
+          {
+            "byte_end": 19,
+            "byte_start": 17,
+            "id": "lx-lc-002-2"
+          },
+          {
+            "byte_end": 23,
+            "byte_start": 21,
+            "id": "lx-lc-002-3"
+          },
+          {
+            "byte_end": 31,
+            "byte_start": 29,
+            "id": "lx-lc-002-4"
+          }
+        ],
+        "new_name": "y",
+        "plan_edit_ids": [
+          "lx-lc-002-1",
+          "lx-lc-002-2",
+          "lx-lc-002-3",
+          "lx-lc-002-4"
+        ],
+        "plan_result": "exact-plan-#12327-#8718",
+        "postcondition_source": "my $y = 1; print $y; $y = 2; $y += 3;",
+        "projected_edit_ids": [
+          "lx-lc-002-1",
+          "lx-lc-002-2",
+          "lx-lc-002-3",
+          "lx-lc-002-4"
+        ],
+        "rename_outcome": "success"
+      },
+      "request": {
+        "include_declaration": true,
+        "method": "textDocument/rename",
+        "new_name": "y",
+        "subject": {
+          "character": 21,
+          "line": 0
+        }
+      },
+      "summary": "open N -> prepareRename -> unchanged rename -> same current target/family/plan -> apply -> requery.",
+      "work_invariants": [
+        "WI-01",
+        "WI-02",
+        "WI-03",
+        "WI-04",
+        "WI-05",
+        "WI-06",
+        "WI-07",
+        "WI-08",
+        "WI-09",
+        "WI-10",
+        "WI-11",
+        "WI-12",
+        "WI-13",
+        "WI-14",
+        "WI-15",
+        "WI-16",
+        "WI-17"
+      ]
+    },
+    {
+      "adjacent_boundary": "Adjacent: staleness forbids plan reuse but never forces refusal.",
+      "binding": {
+        "body": "main",
+        "name": "x",
+        "scope_path": [
+          "main"
+        ],
+        "sigil": "scalar"
+      },
+      "case_id": "LX-LC-003",
+      "coverage": [
+        "stale_prepare_fresh_success"
+      ],
+      "expected": {
+        "completeness": "exact",
+        "declaration_anchor": {
+          "byte_end": 9,
+          "byte_start": 7,
+          "character_end": 5,
+          "character_start": 3,
+          "line": 1,
+          "role": "declaration"
+        },
+        "fallback_invoked": false,
+        "reference_locations": [
+          {
+            "byte_end": 23,
+            "byte_start": 21,
+            "character_end": 19,
+            "character_start": 17,
+            "line": 1,
+            "role": "read"
+          },
+          {
+            "byte_end": 27,
+            "byte_start": 25,
+            "character_end": 23,
+            "character_start": 21,
+            "line": 1,
+            "role": "write"
+          },
+          {
+            "byte_end": 35,
+            "byte_start": 33,
+            "character_end": 31,
+            "character_start": 29,
+            "line": 1,
+            "role": "modify"
+          }
+        ],
+        "result_class": "exact_nonempty"
+      },
+      "fixture": "edited-still-valid",
+      "kind": "lifecycle",
+      "lifecycle": {
+        "currentness": "generation N preparation, generation N+1 rename",
+        "sequence": [
+          "open:N",
+          "prepareRename",
+          "edit:N+1-target-still-valid",
+          "rename:fresh-N+1",
+          "apply",
+          "requery"
+        ]
+      },
+      "mutations": [
+        "LX-MUT-13",
+        "LX-MUT-33",
+        "LX-MUT-34",
+        "LX-MUT-36"
+      ],
+      "preparation": {
+        "correlation_outcome": "prior_preparation_stale",
+        "fresh_current_result": "success",
+        "old_plan_reuse": "forbidden",
+        "prior_fixture": "read-write-modify",
+        "prior_observation": "generation-N-stale",
+        "scenario": "stale_prepare_fresh_success"
+      },
+      "rename": {
+        "applied_edit_ids": [
+          "lx-lc-003-1",
+          "lx-lc-003-2",
+          "lx-lc-003-3",
+          "lx-lc-003-4"
+        ],
+        "authorization": "current-subject-#10650",
+        "authorized_occurrence_ids": [
+          "lx-lc-003-1",
+          "lx-lc-003-2",
+          "lx-lc-003-3",
+          "lx-lc-003-4"
+        ],
+        "client_application": "applied-verified",
+        "edits": [
+          {
+            "byte_end": 9,
+            "byte_start": 7,
+            "id": "lx-lc-003-1"
+          },
+          {
+            "byte_end": 23,
+            "byte_start": 21,
+            "id": "lx-lc-003-2"
+          },
+          {
+            "byte_end": 27,
+            "byte_start": 25,
+            "id": "lx-lc-003-3"
+          },
+          {
+            "byte_end": 35,
+            "byte_start": 33,
+            "id": "lx-lc-003-4"
+          }
+        ],
+        "new_name": "y",
+        "plan_edit_ids": [
+          "lx-lc-003-1",
+          "lx-lc-003-2",
+          "lx-lc-003-3",
+          "lx-lc-003-4"
+        ],
+        "plan_result": "exact-plan-#12327-#8718",
+        "postcondition_source": "# c\nmy $y = 1; print $y; $y = 2; $y += 3;",
+        "projected_edit_ids": [
+          "lx-lc-003-1",
+          "lx-lc-003-2",
+          "lx-lc-003-3",
+          "lx-lc-003-4"
+        ],
+        "rename_outcome": "success"
+      },
+      "request": {
+        "include_declaration": true,
+        "method": "textDocument/rename",
+        "new_name": "y",
+        "subject": {
+          "character": 18,
+          "line": 1
+        }
+      },
+      "summary": "prepare N, edit to N+1 with the target still valid: the old plan is stale and forbidden, and a fresh exact N+1 rename succeeds.",
+      "work_invariants": [
+        "WI-01",
+        "WI-02",
+        "WI-03",
+        "WI-04",
+        "WI-05",
+        "WI-06",
+        "WI-07",
+        "WI-08",
+        "WI-09",
+        "WI-10",
+        "WI-11",
+        "WI-12",
+        "WI-13",
+        "WI-14",
+        "WI-15",
+        "WI-16",
+        "WI-17"
+      ]
+    },
+    {
+      "adjacent_boundary": "Adjacent: a stale plan never emits a partial edit set.",
+      "binding": null,
+      "case_id": "LX-LC-004",
+      "coverage": [
+        "stale_prepare_current_refusal"
+      ],
+      "expected": {
+        "completeness": "not-applicable",
+        "declaration_anchor": null,
+        "fallback_invoked": false,
+        "reference_locations": [],
+        "result_class": "refusal"
+      },
+      "fixture": "deleted-target",
+      "kind": "lifecycle",
+      "lifecycle": {
+        "currentness": "generation N preparation, generation N+1 refusal",
+        "sequence": [
+          "open:N",
+          "prepareRename",
+          "edit:N+1-target-deleted",
+          "rename:fresh-refusal"
+        ]
+      },
+      "mutations": [
+        "LX-MUT-23",
+        "LX-MUT-33"
+      ],
+      "preparation": {
+        "correlation_outcome": "prior_preparation_stale",
+        "fresh_current_result": "refusal",
+        "old_plan_reuse": "forbidden",
+        "prior_fixture": "read-write-modify",
+        "prior_observation": "generation-N-stale",
+        "scenario": "stale_prepare_current_refusal"
+      },
+      "rename": {
+        "applied_edit_ids": [],
+        "authorization": "current-subject-#10650",
+        "authorized_occurrence_ids": [],
+        "client_application": "not-applicable",
+        "edits": [],
+        "new_name": "y",
+        "plan_edit_ids": [],
+        "plan_result": "refusal",
+        "postcondition_source": "print 1;",
+        "projected_edit_ids": [],
+        "rename_outcome": "refusal"
+      },
+      "request": {
+        "include_declaration": true,
+        "method": "textDocument/rename",
+        "new_name": "y",
+        "subject": {
+          "character": 1,
+          "line": 0
+        }
+      },
+      "summary": "prepare N, edit deleting the target at N+1: the old plan is stale and the fresh current rename refuses; no partial edit is emitted.",
+      "work_invariants": [
+        "WI-12",
+        "WI-13",
+        "WI-14",
+        "WI-15",
+        "WI-17"
+      ]
+    },
+    {
+      "adjacent_boundary": "Adjacent: identical bytes after reopen still form a new document instance.",
+      "binding": {
+        "body": "main",
+        "name": "i",
+        "scope_path": [
+          "for-loop"
+        ],
+        "sigil": "scalar"
+      },
+      "case_id": "LX-LC-005",
+      "coverage": [
+        "close_reopen_observation"
+      ],
+      "expected": {
+        "completeness": "exact",
+        "declaration_anchor": {
+          "byte_end": 9,
+          "byte_start": 7,
+          "character_end": 9,
+          "character_start": 7,
+          "line": 0,
+          "role": "declaration"
+        },
+        "fallback_invoked": false,
+        "reference_locations": [
+          {
+            "byte_end": 29,
+            "byte_start": 27,
+            "character_end": 29,
+            "character_start": 27,
+            "line": 0,
+            "role": "read"
+          }
+        ],
+        "result_class": "exact_nonempty"
+      },
+      "fixture": "for-loop-decl-read",
+      "kind": "lifecycle",
+      "lifecycle": {
+        "currentness": "new document instance after reopen",
+        "sequence": [
+          "open:N",
+          "prepareRename",
+          "close",
+          "reopen:same-URI-same-bytes",
+          "rename:fresh",
+          "apply",
+          "requery"
+        ]
+      },
+      "mutations": [
+        "LX-MUT-14"
+      ],
+      "preparation": {
+        "correlation_outcome": "prior_preparation_different_document_instance",
+        "fresh_current_result": "success",
+        "old_plan_reuse": "forbidden",
+        "prior_observation": "generation-N-stale",
+        "scenario": "close_reopen"
+      },
+      "rename": {
+        "applied_edit_ids": [
+          "lx-lc-005-1",
+          "lx-lc-005-2"
+        ],
+        "authorization": "current-subject-#10650",
+        "authorized_occurrence_ids": [
+          "lx-lc-005-1",
+          "lx-lc-005-2"
+        ],
+        "client_application": "applied-verified",
+        "edits": [
+          {
+            "byte_end": 9,
+            "byte_start": 7,
+            "id": "lx-lc-005-1"
+          },
+          {
+            "byte_end": 29,
+            "byte_start": 27,
+            "id": "lx-lc-005-2"
+          }
+        ],
+        "new_name": "ix",
+        "plan_edit_ids": [
+          "lx-lc-005-1",
+          "lx-lc-005-2"
+        ],
+        "plan_result": "exact-plan-#12327-#8718",
+        "postcondition_source": "for my $ix (1 .. 3) { print $ix }",
+        "projected_edit_ids": [
+          "lx-lc-005-1",
+          "lx-lc-005-2"
+        ],
+        "rename_outcome": "success"
+      },
+      "request": {
+        "include_declaration": true,
+        "method": "textDocument/rename",
+        "new_name": "ix",
+        "subject": {
+          "character": 8,
+          "line": 0
+        }
+      },
+      "summary": "prepare, then close/reopen the same URI and bytes: the old observation is stale and the fresh current outcome is evaluated independently.",
+      "work_invariants": [
+        "WI-01",
+        "WI-02",
+        "WI-03",
+        "WI-04",
+        "WI-05",
+        "WI-06",
+        "WI-07",
+        "WI-08",
+        "WI-09",
+        "WI-10",
+        "WI-11",
+        "WI-12",
+        "WI-13",
+        "WI-14",
+        "WI-15",
+        "WI-16",
+        "WI-17"
+      ]
+    },
+    {
+      "adjacent_boundary": "Adjacent: cache state is performance, never semantic authority.",
+      "binding": {
+        "body": "main",
+        "name": "i",
+        "scope_path": [
+          "for-loop"
+        ],
+        "sigil": "scalar"
+      },
+      "case_id": "LX-LC-006",
+      "coverage": [
+        "preparation_cache_miss_eviction"
+      ],
+      "expected": {
+        "completeness": "exact",
+        "declaration_anchor": {
+          "byte_end": 9,
+          "byte_start": 7,
+          "character_end": 9,
+          "character_start": 7,
+          "line": 0,
+          "role": "declaration"
+        },
+        "fallback_invoked": false,
+        "reference_locations": [
+          {
+            "byte_end": 29,
+            "byte_start": 27,
+            "character_end": 29,
+            "character_start": 27,
+            "line": 0,
+            "role": "read"
+          }
+        ],
+        "result_class": "exact_nonempty"
+      },
+      "fixture": "for-loop-decl-read",
+      "kind": "lifecycle",
+      "lifecycle": {
+        "currentness": "single generation N",
+        "sequence": [
+          "open:N",
+          "prepareRename",
+          "cache:evict",
+          "rename:fresh",
+          "apply",
+          "requery"
+        ]
+      },
+      "mutations": [
+        "LX-MUT-30",
+        "LX-MUT-31"
+      ],
+      "preparation": {
+        "correlation_outcome": "no_prior_preparation",
+        "fresh_current_result": "success",
+        "old_plan_reuse": "forbidden",
+        "prior_observation": "evicted",
+        "scenario": "cache_miss_eviction"
+      },
+      "rename": {
+        "applied_edit_ids": [
+          "lx-lc-006-1",
+          "lx-lc-006-2"
+        ],
+        "authorization": "current-subject-#10650",
+        "authorized_occurrence_ids": [
+          "lx-lc-006-1",
+          "lx-lc-006-2"
+        ],
+        "client_application": "applied-verified",
+        "edits": [
+          {
+            "byte_end": 9,
+            "byte_start": 7,
+            "id": "lx-lc-006-1"
+          },
+          {
+            "byte_end": 29,
+            "byte_start": 27,
+            "id": "lx-lc-006-2"
+          }
+        ],
+        "new_name": "ix",
+        "plan_edit_ids": [
+          "lx-lc-006-1",
+          "lx-lc-006-2"
+        ],
+        "plan_result": "exact-plan-#12327-#8718",
+        "postcondition_source": "for my $ix (1 .. 3) { print $ix }",
+        "projected_edit_ids": [
+          "lx-lc-006-1",
+          "lx-lc-006-2"
+        ],
+        "rename_outcome": "success"
+      },
+      "request": {
+        "include_declaration": true,
+        "method": "textDocument/rename",
+        "new_name": "ix",
+        "subject": {
+          "character": 8,
+          "line": 0
+        }
+      },
+      "summary": "Preparation cache miss/eviction: the current exact rename remains possible; a miss never causes a false refusal.",
+      "work_invariants": [
+        "WI-01",
+        "WI-02",
+        "WI-03",
+        "WI-04",
+        "WI-05",
+        "WI-06",
+        "WI-07",
+        "WI-08",
+        "WI-09",
+        "WI-10",
+        "WI-11",
+        "WI-12",
+        "WI-13",
+        "WI-14",
+        "WI-15",
+        "WI-16",
+        "WI-17"
+      ]
+    },
+    {
+      "adjacent_boundary": "Adjacent: unknown or uninstrumented work is never numeric zero.",
+      "binding": null,
+      "case_id": "LX-LC-007",
+      "coverage": [
+        "cancellation_deadline_instrument_failure"
+      ],
+      "expected": {
+        "completeness": "not-applicable",
+        "declaration_anchor": null,
+        "fallback_invoked": false,
+        "reference_locations": [],
+        "result_class": "instrument_failure"
+      },
+      "fixture": "read-write-modify",
+      "kind": "lifecycle",
+      "lifecycle": {
+        "currentness": "superseded during resolution",
+        "sequence": [
+          "open:N",
+          "rename:superseded-or-cancelled",
+          "typed-failure"
+        ]
+      },
+      "mutations": [
+        "LX-MUT-27"
+      ],
+      "preparation": null,
+      "rename": {
+        "applied_edit_ids": [],
+        "authorization": "current-subject-#10650",
+        "authorized_occurrence_ids": [],
+        "client_application": "not-applicable",
+        "edits": [],
+        "new_name": "y",
+        "plan_edit_ids": [],
+        "plan_result": "instrument-failure",
+        "postcondition_source": "my $x = 1; print $x; $x = 2; $x += 3;",
+        "projected_edit_ids": [],
+        "rename_outcome": "instrument_failure"
+      },
+      "request": {
+        "include_declaration": true,
+        "method": "textDocument/rename",
+        "new_name": "y",
+        "subject": {
+          "character": 17,
+          "line": 0
+        }
+      },
+      "summary": "Rapid supersession, cancellation, deadline, or instrument failure: the row records a typed failure, never a false zero or a numeric success.",
+      "work_invariants": [
+        "WI-13",
+        "WI-14",
+        "WI-15"
+      ]
+    },
+    {
+      "adjacent_boundary": "Adjacent: response returned is not client applied.",
+      "binding": {
+        "body": "main",
+        "name": "x",
+        "scope_path": [
+          "main"
+        ],
+        "sigil": "scalar"
+      },
+      "case_id": "LX-LC-008",
+      "coverage": [
+        "unprojectable_client_edit"
+      ],
+      "expected": {
+        "completeness": "exact",
+        "declaration_anchor": {
+          "byte_end": 5,
+          "byte_start": 3,
+          "character_end": 5,
+          "character_start": 3,
+          "line": 0,
+          "role": "declaration"
+        },
+        "fallback_invoked": false,
+        "reference_locations": [
+          {
+            "byte_end": 19,
+            "byte_start": 17,
+            "character_end": 19,
+            "character_start": 17,
+            "line": 0,
+            "role": "read"
+          },
+          {
+            "byte_end": 23,
+            "byte_start": 21,
+            "character_end": 23,
+            "character_start": 21,
+            "line": 0,
+            "role": "write"
+          },
+          {
+            "byte_end": 31,
+            "byte_start": 29,
+            "character_end": 31,
+            "character_start": 29,
+            "line": 0,
+            "role": "modify"
+          }
+        ],
+        "result_class": "exact_nonempty"
+      },
+      "fixture": "read-write-modify",
+      "kind": "lifecycle",
+      "lifecycle": {
+        "currentness": "single generation N",
+        "sequence": [
+          "open:N",
+          "rename",
+          "project",
+          "client:rejected-or-unrepresentable"
+        ]
+      },
+      "mutations": [
+        "LX-MUT-22"
+      ],
+      "preparation": null,
+      "rename": {
+        "applied_edit_ids": [],
+        "authorization": "current-subject-#10650",
+        "authorized_occurrence_ids": [
+          "lx-lc-008-1",
+          "lx-lc-008-2",
+          "lx-lc-008-3",
+          "lx-lc-008-4"
+        ],
+        "client_application": "rejected",
+        "edits": [
+          {
+            "byte_end": 5,
+            "byte_start": 3,
+            "id": "lx-lc-008-1"
+          },
+          {
+            "byte_end": 19,
+            "byte_start": 17,
+            "id": "lx-lc-008-2"
+          },
+          {
+            "byte_end": 23,
+            "byte_start": 21,
+            "id": "lx-lc-008-3"
+          },
+          {
+            "byte_end": 31,
+            "byte_start": 29,
+            "id": "lx-lc-008-4"
+          }
+        ],
+        "new_name": "y",
+        "plan_edit_ids": [
+          "lx-lc-008-1",
+          "lx-lc-008-2",
+          "lx-lc-008-3",
+          "lx-lc-008-4"
+        ],
+        "plan_result": "exact-plan-#12327-#8718",
+        "postcondition_source": "my $x = 1; print $x; $x = 2; $x += 3;",
+        "projected_edit_ids": [
+          "lx-lc-008-1",
+          "lx-lc-008-2",
+          "lx-lc-008-3",
+          "lx-lc-008-4"
+        ],
+        "rename_outcome": "success"
+      },
+      "request": {
+        "include_declaration": true,
+        "method": "textDocument/rename",
+        "new_name": "y",
+        "subject": {
+          "character": 17,
+          "line": 0
+        }
+      },
+      "summary": "The server plan and projection succeed but the client rejects or cannot represent the edit: applied set is empty and the stages stay distinct.",
+      "work_invariants": [
+        "WI-01",
+        "WI-02",
+        "WI-03",
+        "WI-04",
+        "WI-05",
+        "WI-06",
+        "WI-07",
+        "WI-08",
+        "WI-09",
+        "WI-10",
+        "WI-11",
+        "WI-12",
+        "WI-13",
+        "WI-14",
+        "WI-15",
+        "WI-16",
+        "WI-17"
+      ]
+    },
+    {
+      "adjacent_boundary": "Adjacent: helper-only proof never substitutes for real application proof.",
+      "binding": {
+        "body": "main",
+        "name": "x",
+        "scope_path": [
+          "main"
+        ],
+        "sigil": "scalar"
+      },
+      "case_id": "LX-LC-009",
+      "coverage": [
+        "lifecycle_client_applies_verified"
+      ],
+      "expected": {
+        "completeness": "exact",
+        "declaration_anchor": {
+          "byte_end": 5,
+          "byte_start": 3,
+          "character_end": 5,
+          "character_start": 3,
+          "line": 0,
+          "role": "declaration"
+        },
+        "fallback_invoked": false,
+        "reference_locations": [
+          {
+            "byte_end": 19,
+            "byte_start": 17,
+            "character_end": 19,
+            "character_start": 17,
+            "line": 0,
+            "role": "read"
+          },
+          {
+            "byte_end": 23,
+            "byte_start": 21,
+            "character_end": 23,
+            "character_start": 21,
+            "line": 0,
+            "role": "write"
+          },
+          {
+            "byte_end": 31,
+            "byte_start": 29,
+            "character_end": 31,
+            "character_start": 29,
+            "line": 0,
+            "role": "modify"
+          }
+        ],
+        "result_class": "exact_nonempty"
+      },
+      "fixture": "read-write-modify",
+      "kind": "lifecycle",
+      "lifecycle": {
+        "currentness": "single generation N",
+        "sequence": [
+          "open:N",
+          "rename",
+          "project",
+          "client:apply-exact",
+          "postcondition:verify"
+        ]
+      },
+      "mutations": [
+        "LX-MUT-22",
+        "LX-MUT-28"
+      ],
+      "preparation": {
+        "correlation_outcome": "no_prior_preparation",
+        "fresh_current_result": "success",
+        "old_plan_reuse": "forbidden",
+        "prior_observation": "none",
+        "scenario": "no_prior_prepare"
+      },
+      "rename": {
+        "applied_edit_ids": [
+          "lx-lc-009-1",
+          "lx-lc-009-2",
+          "lx-lc-009-3",
+          "lx-lc-009-4"
+        ],
+        "authorization": "current-subject-#10650",
+        "authorized_occurrence_ids": [
+          "lx-lc-009-1",
+          "lx-lc-009-2",
+          "lx-lc-009-3",
+          "lx-lc-009-4"
+        ],
+        "client_application": "applied-verified",
+        "edits": [
+          {
+            "byte_end": 5,
+            "byte_start": 3,
+            "id": "lx-lc-009-1"
+          },
+          {
+            "byte_end": 19,
+            "byte_start": 17,
+            "id": "lx-lc-009-2"
+          },
+          {
+            "byte_end": 23,
+            "byte_start": 21,
+            "id": "lx-lc-009-3"
+          },
+          {
+            "byte_end": 31,
+            "byte_start": 29,
+            "id": "lx-lc-009-4"
+          }
+        ],
+        "new_name": "y",
+        "plan_edit_ids": [
+          "lx-lc-009-1",
+          "lx-lc-009-2",
+          "lx-lc-009-3",
+          "lx-lc-009-4"
+        ],
+        "plan_result": "exact-plan-#12327-#8718",
+        "postcondition_source": "my $y = 1; print $y; $y = 2; $y += 3;",
+        "projected_edit_ids": [
+          "lx-lc-009-1",
+          "lx-lc-009-2",
+          "lx-lc-009-3",
+          "lx-lc-009-4"
+        ],
+        "rename_outcome": "success"
+      },
+      "request": {
+        "include_declaration": true,
+        "method": "textDocument/rename",
+        "new_name": "y",
+        "subject": {
+          "character": 3,
+          "line": 0
+        }
+      },
+      "summary": "Client applies the exact projected edit set and the post-apply source and requery postcondition verify.",
+      "work_invariants": [
+        "WI-01",
+        "WI-02",
+        "WI-03",
+        "WI-04",
+        "WI-05",
+        "WI-06",
+        "WI-07",
+        "WI-08",
+        "WI-09",
+        "WI-10",
+        "WI-11",
+        "WI-12",
+        "WI-13",
+        "WI-14",
+        "WI-15",
+        "WI-16",
+        "WI-17"
+      ]
+    },
+    {
+      "adjacent_boundary": "Adjacent: rollback never alters semantic output, only routing.",
+      "binding": null,
+      "case_id": "LX-LC-010",
+      "coverage": [
+        "rollback_pre_promotion"
+      ],
+      "expected": {
+        "completeness": "not-applicable",
+        "declaration_anchor": null,
+        "fallback_invoked": true,
+        "reference_locations": [],
+        "result_class": "old_route"
+      },
+      "fixture": "read-write-modify",
+      "kind": "lifecycle",
+      "lifecycle": {
+        "currentness": "route flag only",
+        "sequence": [
+          "promote",
+          "rollback:route-only",
+          "pre-promotion-behavior"
+        ]
+      },
+      "mutations": [
+        "LX-MUT-25"
+      ],
+      "preparation": null,
+      "rename": null,
+      "request": {
+        "include_declaration": false,
+        "method": "textDocument/references",
+        "subject": {
+          "character": 17,
+          "line": 0
+        }
+      },
+      "summary": "Rollback returns to exact pre-promotion behavior: only the route changes, never semantic output.",
+      "work_invariants": [
+        "WI-18"
+      ]
+    },
+    {
+      "adjacent_boundary": "Adjacent: includeDeclaration=true and package globals stay on the old route.",
+      "binding": {
+        "body": "main",
+        "name": "i",
+        "scope_path": [
+          "for-loop"
+        ],
+        "sigil": "scalar"
+      },
+      "case_id": "LX-POS-001",
+      "coverage": [
+        "for_loop_declaration_read"
+      ],
+      "expected": {
+        "completeness": "exact",
+        "declaration_anchor": {
+          "byte_end": 9,
+          "byte_start": 7,
+          "character_end": 9,
+          "character_start": 7,
+          "line": 0,
+          "role": "declaration"
+        },
+        "fallback_invoked": false,
+        "reference_locations": [
+          {
+            "byte_end": 29,
+            "byte_start": 27,
+            "character_end": 29,
+            "character_start": 27,
+            "line": 0,
+            "role": "read"
+          }
+        ],
+        "result_class": "exact_nonempty"
+      },
+      "fixture": "for-loop-decl-read",
+      "kind": "admitted",
+      "lifecycle": null,
+      "mutations": [
+        "LX-MUT-01",
+        "LX-MUT-02",
+        "LX-MUT-07",
+        "LX-MUT-10",
+        "LX-MUT-11",
+        "LX-MUT-15",
+        "LX-MUT-24"
+      ],
+      "preparation": null,
+      "rename": null,
+      "request": {
+        "include_declaration": false,
+        "method": "textDocument/references",
+        "subject": {
+          "character": 8,
+          "line": 0
+        }
+      },
+      "summary": "for-loop lexical `$i`: references from the declaration site return the exact read occurrence.",
+      "work_invariants": [
+        "WI-01",
+        "WI-02",
+        "WI-03",
+        "WI-04",
+        "WI-05",
+        "WI-06",
+        "WI-07",
+        "WI-08",
+        "WI-09",
+        "WI-10"
+      ]
+    },
+    {
+      "adjacent_boundary": "Adjacent: same spelling in another body is a different binding.",
+      "binding": {
+        "body": "main",
+        "name": "i",
+        "scope_path": [
+          "for-loop"
+        ],
+        "sigil": "scalar"
+      },
+      "case_id": "LX-POS-002",
+      "coverage": [
+        "ordinary_exact_nonempty"
+      ],
+      "expected": {
+        "completeness": "exact",
+        "declaration_anchor": {
+          "byte_end": 9,
+          "byte_start": 7,
+          "character_end": 9,
+          "character_start": 7,
+          "line": 0,
+          "role": "declaration"
+        },
+        "fallback_invoked": false,
+        "reference_locations": [
+          {
+            "byte_end": 29,
+            "byte_start": 27,
+            "character_end": 29,
+            "character_start": 27,
+            "line": 0,
+            "role": "read"
+          }
+        ],
+        "result_class": "exact_nonempty"
+      },
+      "fixture": "for-loop-decl-read",
+      "kind": "admitted",
+      "lifecycle": null,
+      "mutations": [
+        "LX-MUT-01",
+        "LX-MUT-07",
+        "LX-MUT-15"
+      ],
+      "preparation": null,
+      "rename": null,
+      "request": {
+        "include_declaration": false,
+        "method": "textDocument/references",
+        "subject": {
+          "character": 27,
+          "line": 0
+        }
+      },
+      "summary": "for-loop lexical `$i`: references from the read site re-resolve the same exact denominator.",
+      "work_invariants": [
+        "WI-01",
+        "WI-02",
+        "WI-03",
+        "WI-04",
+        "WI-05",
+        "WI-06",
+        "WI-07",
+        "WI-08",
+        "WI-09",
+        "WI-10"
+      ]
+    },
+    {
+      "adjacent_boundary": "Adjacent: destructuring declarations are excluded.",
+      "binding": {
+        "body": "main",
+        "name": "x",
+        "scope_path": [
+          "main"
+        ],
+        "sigil": "scalar"
+      },
+      "case_id": "LX-POS-003",
+      "coverage": [
+        "declaration_read_write_modify",
+        "ordinary_exact_nonempty"
+      ],
+      "expected": {
+        "completeness": "exact",
+        "declaration_anchor": {
+          "byte_end": 5,
+          "byte_start": 3,
+          "character_end": 5,
+          "character_start": 3,
+          "line": 0,
+          "role": "declaration"
+        },
+        "fallback_invoked": false,
+        "reference_locations": [
+          {
+            "byte_end": 19,
+            "byte_start": 17,
+            "character_end": 19,
+            "character_start": 17,
+            "line": 0,
+            "role": "read"
+          },
+          {
+            "byte_end": 23,
+            "byte_start": 21,
+            "character_end": 23,
+            "character_start": 21,
+            "line": 0,
+            "role": "write"
+          },
+          {
+            "byte_end": 31,
+            "byte_start": 29,
+            "character_end": 31,
+            "character_start": 29,
+            "line": 0,
+            "role": "modify"
+          }
+        ],
+        "result_class": "exact_nonempty"
+      },
+      "fixture": "read-write-modify",
+      "kind": "admitted",
+      "lifecycle": null,
+      "mutations": [
+        "LX-MUT-01",
+        "LX-MUT-04",
+        "LX-MUT-05"
+      ],
+      "preparation": null,
+      "rename": null,
+      "request": {
+        "include_declaration": false,
+        "method": "textDocument/references",
+        "subject": {
+          "character": 3,
+          "line": 0
+        }
+      },
+      "summary": "Declaration plus later read/write/modify: exact nonempty denominator with all three use roles; first write is never the declaration.",
+      "work_invariants": [
+        "WI-01",
+        "WI-02",
+        "WI-03",
+        "WI-04",
+        "WI-05",
+        "WI-06",
+        "WI-07",
+        "WI-08",
+        "WI-09",
+        "WI-10"
+      ]
+    },
+    {
+      "adjacent_boundary": "Adjacent: partial/missing-anchor facts must refuse, never return exact empty.",
+      "binding": {
+        "body": "main",
+        "name": "y",
+        "scope_path": [
+          "main"
+        ],
+        "sigil": "scalar"
+      },
+      "case_id": "LX-POS-004",
+      "coverage": [
+        "declaration_only_exact_empty"
+      ],
+      "expected": {
+        "completeness": "exact",
+        "declaration_anchor": {
+          "byte_end": 5,
+          "byte_start": 3,
+          "character_end": 5,
+          "character_start": 3,
+          "line": 0,
+          "role": "declaration"
+        },
+        "fallback_invoked": false,
+        "reference_locations": [],
+        "result_class": "exact_empty"
+      },
+      "fixture": "declaration-only",
+      "kind": "admitted",
+      "lifecycle": null,
+      "mutations": [
+        "LX-MUT-08",
+        "LX-MUT-09",
+        "LX-MUT-24"
+      ],
+      "preparation": null,
+      "rename": null,
+      "request": {
+        "include_declaration": false,
+        "method": "textDocument/references",
+        "subject": {
+          "character": 3,
+          "line": 0
+        }
+      },
+      "summary": "Declaration-only `$y`: exact empty from complete facts; fallback is never invoked.",
+      "work_invariants": [
+        "WI-01",
+        "WI-02",
+        "WI-03",
+        "WI-04",
+        "WI-05",
+        "WI-06",
+        "WI-07",
+        "WI-08",
+        "WI-09",
+        "WI-10"
+      ]
+    },
+    {
+      "adjacent_boundary": "Adjacent: the inner shadowing binding is a distinct lexical identity.",
+      "binding": {
+        "body": "main",
+        "name": "s",
+        "scope_path": [
+          "main"
+        ],
+        "sigil": "scalar"
+      },
+      "case_id": "LX-POS-005",
+      "coverage": [
+        "nested_shadowing"
+      ],
+      "expected": {
+        "completeness": "exact",
+        "declaration_anchor": {
+          "byte_end": 5,
+          "byte_start": 3,
+          "character_end": 5,
+          "character_start": 3,
+          "line": 0,
+          "role": "declaration"
+        },
+        "fallback_invoked": false,
+        "reference_locations": [
+          {
+            "byte_end": 44,
+            "byte_start": 42,
+            "character_end": 44,
+            "character_start": 42,
+            "line": 0,
+            "role": "read"
+          }
+        ],
+        "result_class": "exact_nonempty"
+      },
+      "fixture": "nested-shadowing",
+      "kind": "admitted",
+      "lifecycle": null,
+      "mutations": [
+        "LX-MUT-03",
+        "LX-MUT-06"
+      ],
+      "preparation": null,
+      "rename": null,
+      "request": {
+        "include_declaration": false,
+        "method": "textDocument/references",
+        "subject": {
+          "character": 3,
+          "line": 0
+        }
+      },
+      "summary": "Nested shadowing, outer binding: references from the outer `$s` see only the outer read.",
+      "work_invariants": [
+        "WI-01",
+        "WI-02",
+        "WI-03",
+        "WI-04",
+        "WI-05",
+        "WI-06",
+        "WI-07",
+        "WI-08",
+        "WI-09",
+        "WI-10"
+      ]
+    },
+    {
+      "adjacent_boundary": "Adjacent: collapsing inner/outer bindings inflates both denominators.",
+      "binding": {
+        "body": "main",
+        "name": "s",
+        "scope_path": [
+          "main",
+          "block-1"
+        ],
+        "sigil": "scalar"
+      },
+      "case_id": "LX-POS-006",
+      "coverage": [
+        "nested_shadowing"
+      ],
+      "expected": {
+        "completeness": "exact",
+        "declaration_anchor": {
+          "byte_end": 18,
+          "byte_start": 16,
+          "character_end": 18,
+          "character_start": 16,
+          "line": 0,
+          "role": "declaration"
+        },
+        "fallback_invoked": false,
+        "reference_locations": [
+          {
+            "byte_end": 32,
+            "byte_start": 30,
+            "character_end": 32,
+            "character_start": 30,
+            "line": 0,
+            "role": "read"
+          }
+        ],
+        "result_class": "exact_nonempty"
+      },
+      "fixture": "nested-shadowing",
+      "kind": "admitted",
+      "lifecycle": null,
+      "mutations": [
+        "LX-MUT-06"
+      ],
+      "preparation": null,
+      "rename": null,
+      "request": {
+        "include_declaration": false,
+        "method": "textDocument/references",
+        "subject": {
+          "character": 16,
+          "line": 0
+        }
+      },
+      "summary": "Nested shadowing, inner binding: references from the inner `$s` see only the inner read.",
+      "work_invariants": [
+        "WI-01",
+        "WI-02",
+        "WI-03",
+        "WI-04",
+        "WI-05",
+        "WI-06",
+        "WI-07",
+        "WI-08",
+        "WI-09",
+        "WI-10"
+      ]
+    },
+    {
+      "adjacent_boundary": "Adjacent: body `b` carries a distinct binding identity.",
+      "binding": {
+        "body": "sub-a",
+        "name": "v",
+        "scope_path": [
+          "sub-a"
+        ],
+        "sigil": "scalar"
+      },
+      "case_id": "LX-POS-007",
+      "coverage": [
+        "same_spelling_other_body"
+      ],
+      "expected": {
+        "completeness": "exact",
+        "declaration_anchor": {
+          "byte_end": 13,
+          "byte_start": 11,
+          "character_end": 13,
+          "character_start": 11,
+          "line": 0,
+          "role": "declaration"
+        },
+        "fallback_invoked": false,
+        "reference_locations": [
+          {
+            "byte_end": 27,
+            "byte_start": 25,
+            "character_end": 27,
+            "character_start": 25,
+            "line": 0,
+            "role": "read"
+          }
+        ],
+        "result_class": "exact_nonempty"
+      },
+      "fixture": "same-spelling-two-bodies",
+      "kind": "admitted",
+      "lifecycle": null,
+      "mutations": [
+        "LX-MUT-06"
+      ],
+      "preparation": null,
+      "rename": null,
+      "request": {
+        "include_declaration": false,
+        "method": "textDocument/references",
+        "subject": {
+          "character": 11,
+          "line": 0
+        }
+      },
+      "summary": "Same spelling in another body: `$v` in sub `a` resolves only inside body `a`.",
+      "work_invariants": [
+        "WI-01",
+        "WI-02",
+        "WI-03",
+        "WI-04",
+        "WI-05",
+        "WI-06",
+        "WI-07",
+        "WI-08",
+        "WI-09",
+        "WI-10"
+      ]
+    },
+    {
+      "adjacent_boundary": "Adjacent: body `a` carries a distinct binding identity.",
+      "binding": {
+        "body": "sub-b",
+        "name": "v",
+        "scope_path": [
+          "sub-b"
+        ],
+        "sigil": "scalar"
+      },
+      "case_id": "LX-POS-008",
+      "coverage": [
+        "same_spelling_other_body"
+      ],
+      "expected": {
+        "completeness": "exact",
+        "declaration_anchor": {
+          "byte_end": 44,
+          "byte_start": 42,
+          "character_end": 44,
+          "character_start": 42,
+          "line": 0,
+          "role": "declaration"
+        },
+        "fallback_invoked": false,
+        "reference_locations": [
+          {
+            "byte_end": 58,
+            "byte_start": 56,
+            "character_end": 58,
+            "character_start": 56,
+            "line": 0,
+            "role": "read"
+          }
+        ],
+        "result_class": "exact_nonempty"
+      },
+      "fixture": "same-spelling-two-bodies",
+      "kind": "admitted",
+      "lifecycle": null,
+      "mutations": [
+        "LX-MUT-06"
+      ],
+      "preparation": null,
+      "rename": null,
+      "request": {
+        "include_declaration": false,
+        "method": "textDocument/references",
+        "subject": {
+          "character": 42,
+          "line": 0
+        }
+      },
+      "summary": "Same spelling in another body: `$v` in sub `b` resolves only inside body `b`.",
+      "work_invariants": [
+        "WI-01",
+        "WI-02",
+        "WI-03",
+        "WI-04",
+        "WI-05",
+        "WI-06",
+        "WI-07",
+        "WI-08",
+        "WI-09",
+        "WI-10"
+      ]
+    },
+    {
+      "adjacent_boundary": "Adjacent: sigil slots are distinct namespace slots of one name.",
+      "binding": {
+        "body": "main",
+        "name": "s",
+        "scope_path": [
+          "main"
+        ],
+        "sigil": "scalar"
+      },
+      "case_id": "LX-POS-009",
+      "coverage": [
+        "sigil_scalar"
+      ],
+      "expected": {
+        "completeness": "exact",
+        "declaration_anchor": {
+          "byte_end": 5,
+          "byte_start": 3,
+          "character_end": 5,
+          "character_start": 3,
+          "line": 0,
+          "role": "declaration"
+        },
+        "fallback_invoked": false,
+        "reference_locations": [
+          {
+            "byte_end": 59,
+            "byte_start": 57,
+            "character_end": 59,
+            "character_start": 57,
+            "line": 0,
+            "role": "read"
+          }
+        ],
+        "result_class": "exact_nonempty"
+      },
+      "fixture": "all-sigils",
+      "kind": "admitted",
+      "lifecycle": null,
+      "mutations": [
+        "LX-MUT-07"
+      ],
+      "preparation": null,
+      "rename": null,
+      "request": {
+        "include_declaration": false,
+        "method": "textDocument/references",
+        "subject": {
+          "character": 3,
+          "line": 0
+        }
+      },
+      "summary": "Scalar sigil: `$s` denominator is independent of the `@a`/`%h`/`c` bindings.",
+      "work_invariants": [
+        "WI-01",
+        "WI-02",
+        "WI-03",
+        "WI-04",
+        "WI-05",
+        "WI-06",
+        "WI-07",
+        "WI-08",
+        "WI-09",
+        "WI-10"
+      ]
+    },
+    {
+      "adjacent_boundary": "Adjacent: `$a[...]` element access is outside this cohort.",
+      "binding": {
+        "body": "main",
+        "name": "a",
+        "scope_path": [
+          "main"
+        ],
+        "sigil": "array"
+      },
+      "case_id": "LX-POS-010",
+      "coverage": [
+        "sigil_array"
+      ],
+      "expected": {
+        "completeness": "exact",
+        "declaration_anchor": {
+          "byte_end": 16,
+          "byte_start": 14,
+          "character_end": 16,
+          "character_start": 14,
+          "line": 0,
+          "role": "declaration"
+        },
+        "fallback_invoked": false,
+        "reference_locations": [
+          {
+            "byte_end": 69,
+            "byte_start": 67,
+            "character_end": 69,
+            "character_start": 67,
+            "line": 0,
+            "role": "read"
+          }
+        ],
+        "result_class": "exact_nonempty"
+      },
+      "fixture": "all-sigils",
+      "kind": "admitted",
+      "lifecycle": null,
+      "mutations": [
+        "LX-MUT-07"
+      ],
+      "preparation": null,
+      "rename": null,
+      "request": {
+        "include_declaration": false,
+        "method": "textDocument/references",
+        "subject": {
+          "character": 14,
+          "line": 0
+        }
+      },
+      "summary": "Array sigil: `@a` denominator is exact.",
+      "work_invariants": [
+        "WI-01",
+        "WI-02",
+        "WI-03",
+        "WI-04",
+        "WI-05",
+        "WI-06",
+        "WI-07",
+        "WI-08",
+        "WI-09",
+        "WI-10"
+      ]
+    },
+    {
+      "adjacent_boundary": "Adjacent: `$h{...}` element access is outside this cohort.",
+      "binding": {
+        "body": "main",
+        "name": "h",
+        "scope_path": [
+          "main"
+        ],
+        "sigil": "hash"
+      },
+      "case_id": "LX-POS-011",
+      "coverage": [
+        "sigil_hash"
+      ],
+      "expected": {
+        "completeness": "exact",
+        "declaration_anchor": {
+          "byte_end": 29,
+          "byte_start": 27,
+          "character_end": 29,
+          "character_start": 27,
+          "line": 0,
+          "role": "declaration"
+        },
+        "fallback_invoked": false,
+        "reference_locations": [
+          {
+            "byte_end": 79,
+            "byte_start": 77,
+            "character_end": 79,
+            "character_start": 77,
+            "line": 0,
+            "role": "read"
+          }
+        ],
+        "result_class": "exact_nonempty"
+      },
+      "fixture": "all-sigils",
+      "kind": "admitted",
+      "lifecycle": null,
+      "mutations": [
+        "LX-MUT-07"
+      ],
+      "preparation": null,
+      "rename": null,
+      "request": {
+        "include_declaration": false,
+        "method": "textDocument/references",
+        "subject": {
+          "character": 27,
+          "line": 0
+        }
+      },
+      "summary": "Hash sigil: `%h` denominator is exact.",
+      "work_invariants": [
+        "WI-01",
+        "WI-02",
+        "WI-03",
+        "WI-04",
+        "WI-05",
+        "WI-06",
+        "WI-07",
+        "WI-08",
+        "WI-09",
+        "WI-10"
+      ]
+    },
+    {
+      "adjacent_boundary": "Adjacent: named package subs and methods stay excluded.",
+      "binding": {
+        "body": "main",
+        "name": "c",
+        "scope_path": [
+          "main"
+        ],
+        "sigil": "code"
+      },
+      "case_id": "LX-POS-012",
+      "coverage": [
+        "sigil_code"
+      ],
+      "expected": {
+        "completeness": "exact",
+        "declaration_anchor": {
+          "byte_end": 44,
+          "byte_start": 43,
+          "character_end": 44,
+          "character_start": 43,
+          "line": 0,
+          "role": "declaration"
+        },
+        "fallback_invoked": false,
+        "reference_locations": [
+          {
+            "byte_end": 82,
+            "byte_start": 81,
+            "character_end": 82,
+            "character_start": 81,
+            "line": 0,
+            "role": "read"
+          }
+        ],
+        "result_class": "exact_nonempty"
+      },
+      "fixture": "all-sigils",
+      "kind": "admitted",
+      "lifecycle": null,
+      "mutations": [
+        "LX-MUT-07"
+      ],
+      "preparation": null,
+      "rename": null,
+      "request": {
+        "include_declaration": false,
+        "method": "textDocument/references",
+        "subject": {
+          "character": 43,
+          "line": 0
+        }
+      },
+      "summary": "Code sigil: lexical `my sub c` declaration and call resolve exactly.",
+      "work_invariants": [
+        "WI-01",
+        "WI-02",
+        "WI-03",
+        "WI-04",
+        "WI-05",
+        "WI-06",
+        "WI-07",
+        "WI-08",
+        "WI-09",
+        "WI-10"
+      ]
+    },
+    {
+      "adjacent_boundary": "Adjacent: dynamic/alias capture forms stay excluded.",
+      "binding": {
+        "body": "main",
+        "name": "c",
+        "scope_path": [
+          "main"
+        ],
+        "sigil": "scalar"
+      },
+      "case_id": "LX-POS-013",
+      "coverage": [
+        "closure_capture"
+      ],
+      "expected": {
+        "completeness": "exact",
+        "declaration_anchor": {
+          "byte_end": 5,
+          "byte_start": 3,
+          "character_end": 5,
+          "character_start": 3,
+          "line": 0,
+          "role": "declaration"
+        },
+        "fallback_invoked": false,
+        "reference_locations": [
+          {
+            "byte_end": 27,
+            "byte_start": 25,
+            "character_end": 27,
+            "character_start": 25,
+            "line": 0,
+            "role": "modify"
+          }
+        ],
+        "result_class": "exact_nonempty"
+      },
+      "fixture": "closure-capture",
+      "kind": "admitted",
+      "lifecycle": null,
+      "mutations": [
+        "LX-MUT-15"
+      ],
+      "preparation": null,
+      "rename": null,
+      "request": {
+        "include_declaration": false,
+        "method": "textDocument/references",
+        "subject": {
+          "character": 3,
+          "line": 0
+        }
+      },
+      "summary": "Admitted closure capture: `$c` modified inside an anonymous sub belongs to the outer binding.",
+      "work_invariants": [
+        "WI-01",
+        "WI-02",
+        "WI-03",
+        "WI-04",
+        "WI-05",
+        "WI-06",
+        "WI-07",
+        "WI-08",
+        "WI-09",
+        "WI-10"
+      ]
+    },
+    {
+      "adjacent_boundary": "Adjacent: position encodings other than UTF-16 are out of scope.",
+      "binding": {
+        "body": "main",
+        "name": "u",
+        "scope_path": [
+          "main"
+        ],
+        "sigil": "scalar"
+      },
+      "case_id": "LX-POS-014",
+      "coverage": [
+        "unicode_astral_geometry"
+      ],
+      "expected": {
+        "completeness": "exact",
+        "declaration_anchor": {
+          "byte_end": 5,
+          "byte_start": 3,
+          "character_end": 5,
+          "character_start": 3,
+          "line": 0,
+          "role": "declaration"
+        },
+        "fallback_invoked": false,
+        "reference_locations": [
+          {
+            "byte_end": 24,
+            "byte_start": 22,
+            "character_end": 22,
+            "character_start": 20,
+            "line": 0,
+            "role": "read"
+          }
+        ],
+        "result_class": "exact_nonempty"
+      },
+      "fixture": "unicode-astral-geometry",
+      "kind": "admitted",
+      "lifecycle": null,
+      "mutations": [
+        "LX-MUT-03"
+      ],
+      "preparation": null,
+      "rename": null,
+      "request": {
+        "include_declaration": false,
+        "method": "textDocument/references",
+        "subject": {
+          "character": 3,
+          "line": 0
+        }
+      },
+      "summary": "Unicode/astral geometry: byte anchors and UTF-16 wire positions diverge across an astral literal and both are exact.",
+      "work_invariants": [
+        "WI-01",
+        "WI-02",
+        "WI-03",
+        "WI-04",
+        "WI-05",
+        "WI-06",
+        "WI-07",
+        "WI-08",
+        "WI-09",
+        "WI-10"
+      ]
+    },
+    {
+      "adjacent_boundary": "Adjacent: mixed-ending documents follow the same byte discipline.",
+      "binding": {
+        "body": "main",
+        "name": "w",
+        "scope_path": [
+          "main"
+        ],
+        "sigil": "scalar"
+      },
+      "case_id": "LX-POS-015",
+      "coverage": [
+        "crlf_geometry"
+      ],
+      "expected": {
+        "completeness": "exact",
+        "declaration_anchor": {
+          "byte_end": 5,
+          "byte_start": 3,
+          "character_end": 5,
+          "character_start": 3,
+          "line": 0,
+          "role": "declaration"
+        },
+        "fallback_invoked": false,
+        "reference_locations": [
+          {
+            "byte_end": 20,
+            "byte_start": 18,
+            "character_end": 8,
+            "character_start": 6,
+            "line": 1,
+            "role": "read"
+          }
+        ],
+        "result_class": "exact_nonempty"
+      },
+      "fixture": "crlf-geometry",
+      "kind": "admitted",
+      "lifecycle": null,
+      "mutations": [
+        "LX-MUT-03"
+      ],
+      "preparation": null,
+      "rename": null,
+      "request": {
+        "include_declaration": false,
+        "method": "textDocument/references",
+        "subject": {
+          "character": 3,
+          "line": 0
+        }
+      },
+      "summary": "CRLF geometry: anchors stay exact across CRLF line endings.",
+      "work_invariants": [
+        "WI-01",
+        "WI-02",
+        "WI-03",
+        "WI-04",
+        "WI-05",
+        "WI-06",
+        "WI-07",
+        "WI-08",
+        "WI-09",
+        "WI-10"
+      ]
+    },
+    {
+      "adjacent_boundary": "Adjacent: a stale generation must be rejected, not answered.",
+      "binding": {
+        "body": "main",
+        "name": "x",
+        "scope_path": [
+          "main"
+        ],
+        "sigil": "scalar"
+      },
+      "case_id": "LX-POS-016",
+      "coverage": [
+        "edit_requery_identical_generation"
+      ],
+      "expected": {
+        "completeness": "exact",
+        "declaration_anchor": {
+          "byte_end": 5,
+          "byte_start": 3,
+          "character_end": 5,
+          "character_start": 3,
+          "line": 0,
+          "role": "declaration"
+        },
+        "fallback_invoked": false,
+        "reference_locations": [
+          {
+            "byte_end": 19,
+            "byte_start": 17,
+            "character_end": 19,
+            "character_start": 17,
+            "line": 0,
+            "role": "read"
+          },
+          {
+            "byte_end": 23,
+            "byte_start": 21,
+            "character_end": 23,
+            "character_start": 21,
+            "line": 0,
+            "role": "write"
+          },
+          {
+            "byte_end": 31,
+            "byte_start": 29,
+            "character_end": 31,
+            "character_start": 29,
+            "line": 0,
+            "role": "modify"
+          }
+        ],
+        "result_class": "exact_nonempty"
+      },
+      "fixture": "read-write-modify",
+      "generation": {
+        "expected": "same anchors, new contribution generation identity, no duplicate contribution build",
+        "scenario": "edit_requery_then_source_identical_regeneration"
+      },
+      "kind": "admitted",
+      "lifecycle": null,
+      "mutations": [
+        "LX-MUT-10",
+        "LX-MUT-12",
+        "LX-MUT-13"
+      ],
+      "preparation": null,
+      "rename": null,
+      "request": {
+        "include_declaration": false,
+        "method": "textDocument/references",
+        "subject": {
+          "character": 17,
+          "line": 0
+        }
+      },
+      "summary": "Edit/requery and a source-identical later generation produce the same exact anchors with a fresh contribution identity.",
+      "work_invariants": [
+        "WI-01",
+        "WI-02",
+        "WI-03",
+        "WI-04",
+        "WI-05",
+        "WI-06",
+        "WI-07",
+        "WI-08",
+        "WI-09",
+        "WI-10"
+      ]
+    },
+    {
+      "adjacent_boundary": "Adjacent: a prior prepare is never required for rename success.",
+      "binding": {
+        "body": "main",
+        "name": "i",
+        "scope_path": [
+          "for-loop"
+        ],
+        "sigil": "scalar"
+      },
+      "case_id": "LX-RN-001",
+      "coverage": [
+        "rename_no_prior_prepare"
+      ],
+      "expected": {
+        "completeness": "exact",
+        "declaration_anchor": {
+          "byte_end": 9,
+          "byte_start": 7,
+          "character_end": 9,
+          "character_start": 7,
+          "line": 0,
+          "role": "declaration"
+        },
+        "fallback_invoked": false,
+        "reference_locations": [
+          {
+            "byte_end": 29,
+            "byte_start": 27,
+            "character_end": 29,
+            "character_start": 27,
+            "line": 0,
+            "role": "read"
+          }
+        ],
+        "result_class": "exact_nonempty"
+      },
+      "fixture": "for-loop-decl-read",
+      "kind": "admitted",
+      "lifecycle": {
+        "currentness": "single generation N",
+        "sequence": [
+          "open:N",
+          "references",
+          "rename:without-prepare",
+          "apply",
+          "requery"
+        ]
+      },
+      "mutations": [
+        "LX-MUT-16",
+        "LX-MUT-17",
+        "LX-MUT-18",
+        "LX-MUT-20",
+        "LX-MUT-21",
+        "LX-MUT-22",
+        "LX-MUT-30"
+      ],
+      "preparation": {
+        "correlation_outcome": "no_prior_preparation",
+        "fresh_current_result": "success",
+        "old_plan_reuse": "forbidden",
+        "prior_observation": "none",
+        "scenario": "no_prior_prepare"
+      },
+      "rename": {
+        "applied_edit_ids": [
+          "lx-rn-001-1",
+          "lx-rn-001-2"
+        ],
+        "authorization": "current-subject-#10650",
+        "authorized_occurrence_ids": [
+          "lx-rn-001-1",
+          "lx-rn-001-2"
+        ],
+        "client_application": "applied-verified",
+        "edits": [
+          {
+            "byte_end": 9,
+            "byte_start": 7,
+            "id": "lx-rn-001-1"
+          },
+          {
+            "byte_end": 29,
+            "byte_start": 27,
+            "id": "lx-rn-001-2"
+          }
+        ],
+        "new_name": "index",
+        "plan_edit_ids": [
+          "lx-rn-001-1",
+          "lx-rn-001-2"
+        ],
+        "plan_result": "exact-plan-#12327-#8718",
+        "postcondition_source": "for my $index (1 .. 3) { print $index }",
+        "projected_edit_ids": [
+          "lx-rn-001-1",
+          "lx-rn-001-2"
+        ],
+        "rename_outcome": "success"
+      },
+      "request": {
+        "include_declaration": true,
+        "method": "textDocument/rename",
+        "new_name": "index",
+        "subject": {
+          "character": 8,
+          "line": 0
+        }
+      },
+      "summary": "Exact rename of the for-loop `$i` with no prior prepare: current subject alone earns authorization, plan, projection, and application.",
+      "work_invariants": [
+        "WI-01",
+        "WI-02",
+        "WI-03",
+        "WI-04",
+        "WI-05",
+        "WI-06",
+        "WI-07",
+        "WI-08",
+        "WI-09",
+        "WI-10",
+        "WI-11",
+        "WI-12",
+        "WI-13",
+        "WI-14",
+        "WI-15",
+        "WI-16",
+        "WI-17"
+      ]
+    },
+    {
+      "adjacent_boundary": "Adjacent: matching preparation is continuity evidence, not permission.",
+      "binding": {
+        "body": "main",
+        "name": "x",
+        "scope_path": [
+          "main"
+        ],
+        "sigil": "scalar"
+      },
+      "case_id": "LX-RN-002",
+      "coverage": [
+        "rename_matching_prepare"
+      ],
+      "expected": {
+        "completeness": "exact",
+        "declaration_anchor": {
+          "byte_end": 5,
+          "byte_start": 3,
+          "character_end": 5,
+          "character_start": 3,
+          "line": 0,
+          "role": "declaration"
+        },
+        "fallback_invoked": false,
+        "reference_locations": [
+          {
+            "byte_end": 19,
+            "byte_start": 17,
+            "character_end": 19,
+            "character_start": 17,
+            "line": 0,
+            "role": "read"
+          },
+          {
+            "byte_end": 23,
+            "byte_start": 21,
+            "character_end": 23,
+            "character_start": 21,
+            "line": 0,
+            "role": "write"
+          },
+          {
+            "byte_end": 31,
+            "byte_start": 29,
+            "character_end": 31,
+            "character_start": 29,
+            "line": 0,
+            "role": "modify"
+          }
+        ],
+        "result_class": "exact_nonempty"
+      },
+      "fixture": "read-write-modify",
+      "kind": "admitted",
+      "lifecycle": {
+        "currentness": "single generation N",
+        "sequence": [
+          "open:N",
+          "prepareRename",
+          "rename:unchanged",
+          "apply",
+          "requery"
+        ]
+      },
+      "mutations": [
+        "LX-MUT-18",
+        "LX-MUT-19",
+        "LX-MUT-29",
+        "LX-MUT-32",
+        "LX-MUT-35",
+        "LX-MUT-37"
+      ],
+      "preparation": {
+        "correlation_outcome": "matching_current_preparation",
+        "fresh_current_result": "success",
+        "old_plan_reuse": "forbidden",
+        "prior_observation": "generation-N-matching",
+        "scenario": "matching_prepare"
+      },
+      "rename": {
+        "applied_edit_ids": [
+          "lx-rn-002-1",
+          "lx-rn-002-2",
+          "lx-rn-002-3",
+          "lx-rn-002-4"
+        ],
+        "authorization": "current-subject-#10650",
+        "authorized_occurrence_ids": [
+          "lx-rn-002-1",
+          "lx-rn-002-2",
+          "lx-rn-002-3",
+          "lx-rn-002-4"
+        ],
+        "client_application": "applied-verified",
+        "edits": [
+          {
+            "byte_end": 5,
+            "byte_start": 3,
+            "id": "lx-rn-002-1"
+          },
+          {
+            "byte_end": 19,
+            "byte_start": 17,
+            "id": "lx-rn-002-2"
+          },
+          {
+            "byte_end": 23,
+            "byte_start": 21,
+            "id": "lx-rn-002-3"
+          },
+          {
+            "byte_end": 31,
+            "byte_start": 29,
+            "id": "lx-rn-002-4"
+          }
+        ],
+        "new_name": "y",
+        "plan_edit_ids": [
+          "lx-rn-002-1",
+          "lx-rn-002-2",
+          "lx-rn-002-3",
+          "lx-rn-002-4"
+        ],
+        "plan_result": "exact-plan-#12327-#8718",
+        "postcondition_source": "my $y = 1; print $y; $y = 2; $y += 3;",
+        "projected_edit_ids": [
+          "lx-rn-002-1",
+          "lx-rn-002-2",
+          "lx-rn-002-3",
+          "lx-rn-002-4"
+        ],
+        "rename_outcome": "success"
+      },
+      "request": {
+        "include_declaration": true,
+        "method": "textDocument/rename",
+        "new_name": "y",
+        "subject": {
+          "character": 17,
+          "line": 0
+        }
+      },
+      "summary": "Unchanged prepare then rename of `$x`: the fresh current rename resolves the same target, family, and plan; the returned range/placeholder never authorizes anything.",
+      "work_invariants": [
+        "WI-01",
+        "WI-02",
+        "WI-03",
+        "WI-04",
+        "WI-05",
+        "WI-06",
+        "WI-07",
+        "WI-08",
+        "WI-09",
+        "WI-10",
+        "WI-11",
+        "WI-12",
+        "WI-13",
+        "WI-14",
+        "WI-15",
+        "WI-16",
+        "WI-17"
+      ]
+    }
+  ],
+  "claim_boundary": "Proof definition only: no compiler, provider, plan, handler, projection, fallback, client, or accepted-state behavior changes. Expected anchors, locations, occurrences, authorization, plans, wire edits, and applied edits are hand-authored from fixture source geometry and operation semantics; nothing is captured from candidate, compiler, semantic, provider, or legacy output.",
+  "fixtures": [
+    {
+      "id": "for-loop-decl-read",
+      "line_ending": "LF",
+      "source": "for my $i (1 .. 3) { print $i }",
+      "source_sha256": "0f12216a7d877abefc4da5162db9da8b64c92439b82dfe092d3d51e074e5047c"
+    },
+    {
+      "id": "read-write-modify",
+      "line_ending": "LF",
+      "source": "my $x = 1; print $x; $x = 2; $x += 3;",
+      "source_sha256": "1474b71574ee3ab7ea707e97ff3fb6b534e4f4e511e8c634d30edc39063327cc"
+    },
+    {
+      "id": "declaration-only",
+      "line_ending": "LF",
+      "source": "my $y;",
+      "source_sha256": "30a16827f2ae201d7af8e2499640f4d6387a47e715da023448b975781607fe4b"
+    },
+    {
+      "id": "nested-shadowing",
+      "line_ending": "LF",
+      "source": "my $s = 1; { my $s = 2; print $s; } print $s;",
+      "source_sha256": "27495a5a3c4830fcae0ce201d9b8dcb0794eb84d52a1ee783774c8a6729cde1a"
+    },
+    {
+      "id": "same-spelling-two-bodies",
+      "line_ending": "LF",
+      "source": "sub a { my $v = 1; print $v; } sub b { my $v = 2; print $v; }",
+      "source_sha256": "dccd4c914d813d582eded648875d7fe5ff30cf26470a96843fca1bc11cc8b430"
+    },
+    {
+      "id": "all-sigils",
+      "line_ending": "LF",
+      "source": "my $s = 1; my @a = (1); my %h = (); my sub c { 1 } print $s; print @a; print %h; c();",
+      "source_sha256": "7a6d26255b1e8c7cce0fab05d1b9d3eca877ed6e68da6a7fcd6a5e2822dc6977"
+    },
+    {
+      "id": "closure-capture",
+      "line_ending": "LF",
+      "source": "my $c = 0; my $f = sub { $c++ }; $f->();",
+      "source_sha256": "c505136729b1df58ca1987a31ca05ca931aee808e568e324e9b252a88e13ea76"
+    },
+    {
+      "id": "unicode-astral-geometry",
+      "line_ending": "LF",
+      "source": "my $u = \"🚀\"; print $u;",
+      "source_sha256": "081ed89076aca8803982ad458fa322df742711176b7fe1dc3be6aed2e4e338e8"
+    },
+    {
+      "id": "crlf-geometry",
+      "line_ending": "CRLF",
+      "source": "my $w = 1;\r\nprint $w;",
+      "source_sha256": "5e293d04d12c48d6442153b55736c6d6d88dfb266dedd1a527288701d58d651e"
+    },
+    {
+      "id": "package-globals",
+      "line_ending": "LF",
+      "source": "our $G = 1; print $G;",
+      "source_sha256": "a9314546ffea0b9707a253e4ec7b6ebf82324279fad32a2aef7df2b9ad648b0c"
+    },
+    {
+      "id": "typeglob-dynamic",
+      "line_ending": "LF",
+      "source": "*g = \\$x; no strict 'refs'; print ${\"dyn\"};",
+      "source_sha256": "00a8c9a0d6447463f48093ef602d55320333faca347af39682323ec82f8e05b8"
+    },
+    {
+      "id": "destructuring",
+      "line_ending": "LF",
+      "source": "my ($p, $q) = @_; print $p;",
+      "source_sha256": "ec4bb3ab58583893ee2868df371e29c52898abb6b27f8c03861a9be186721916"
+    },
+    {
+      "id": "named-sub",
+      "line_ending": "LF",
+      "source": "sub helper { 1 } print helper();",
+      "source_sha256": "d62504b8affc0da716f58275858e81f95248188628a26fbab0b28d6244bea63a"
+    },
+    {
+      "id": "alias-localize-tied",
+      "line_ending": "LF",
+      "source": "local $x = 1; tie my %t, 'Mod';",
+      "source_sha256": "35c3bfaeadea766d7ea1634d0126cf4ac54a9a6c0e8fe00e2e6924ba588f8965"
+    },
+    {
+      "id": "edited-still-valid",
+      "line_ending": "LF",
+      "source": "# c\nmy $x = 1; print $x; $x = 2; $x += 3;",
+      "source_sha256": "7760ed1cf1f2c2ca295b3996fb7523ed4ba7fa6260eeee446700241c63bdcd3f"
+    },
+    {
+      "id": "deleted-target",
+      "line_ending": "LF",
+      "source": "print 1;",
+      "source_sha256": "8790edfe187b07fa9bc29f08cef49f0002ef85cc2db1ff42a98307f4835a8165"
+    }
+  ],
+  "issue": 12156,
+  "manifest": "compiler-lexical-cutline-cases",
+  "mutations": [
+    {
+      "expected_detection": "Anchor provenance class is not the compiler-owned #12191 anchor; provenance-asserting rows fail.",
+      "fails_rows": [
+        "LX-POS-001",
+        "LX-POS-002",
+        "LX-POS-003"
+      ],
+      "mutation_id": "LX-MUT-01",
+      "summary": "Semantic AST/workspace result relabelled `compiler_pir`.",
+      "wrong_behavior": "A semantic or workspace-derived location set is presented with compiler PIR provenance."
+    },
+    {
+      "expected_detection": "Declaration anchor differs from the independently authored compiler anchor.",
+      "fails_rows": [
+        "LX-POS-001"
+      ],
+      "mutation_id": "LX-MUT-02",
+      "summary": "Legacy range supplies or narrows a compiler declaration anchor.",
+      "wrong_behavior": "A legacy/provider range becomes the declaration anchor or tightens it."
+    },
+    {
+      "expected_detection": "Anchor geometry no longer matches the hand-authored fixture geometry.",
+      "fails_rows": [
+        "LX-POS-005",
+        "LX-POS-014",
+        "LX-POS-015"
+      ],
+      "mutation_id": "LX-MUT-03",
+      "summary": "Forged legacy range changes a compiler anchor or result.",
+      "wrong_behavior": "A forged foreign range shifts any anchor byte/UTF-16 geometry."
+    },
+    {
+      "expected_detection": "The declaration anchor moves off the `my $x` site or the write role disappears.",
+      "fails_rows": [
+        "LX-POS-003"
+      ],
+      "mutation_id": "LX-MUT-04",
+      "summary": "First write treated as the declaration.",
+      "wrong_behavior": "The first write occurrence is relabelled as the binding introduction."
+    },
+    {
+      "expected_detection": "The expected occurrence set loses a Modify member; set mismatch, not a crash.",
+      "fails_rows": [
+        "LX-POS-003"
+      ],
+      "mutation_id": "LX-MUT-05",
+      "summary": "One `Modify` occurrence omitted while completeness stays exact.",
+      "wrong_behavior": "The `+=` occurrence vanishes but the denominator still claims exact completeness."
+    },
+    {
+      "expected_detection": "Each shadowing/body row gains foreign locations or loses its own.",
+      "fails_rows": [
+        "LX-POS-005",
+        "LX-POS-006",
+        "LX-POS-007",
+        "LX-POS-008"
+      ],
+      "mutation_id": "LX-MUT-06",
+      "summary": "Inner/outer same-name bindings collapsed.",
+      "wrong_behavior": "Shadowed or cross-body same-spelling bindings merge into one denominator."
+    },
+    {
+      "expected_detection": "Extra foreign ranges appear in an exact denominator.",
+      "fails_rows": [
+        "LX-POS-001",
+        "LX-POS-002",
+        "LX-POS-009",
+        "LX-POS-010",
+        "LX-POS-011",
+        "LX-POS-012"
+      ],
+      "mutation_id": "LX-MUT-07",
+      "summary": "Compiler and semantic/text locations unioned.",
+      "wrong_behavior": "The result set is the union of compiler and semantic/text locations."
+    },
+    {
+      "expected_detection": "LX-POS-004 inverts (exact empty only from complete facts) and LX-EXC-006 must refuse.",
+      "fails_rows": [
+        "LX-EXC-006",
+        "LX-POS-004"
+      ],
+      "mutation_id": "LX-MUT-08",
+      "summary": "Exact empty returned from incomplete or missing-anchor facts.",
+      "wrong_behavior": "A partial fact base answers exact empty instead of refusing."
+    },
+    {
+      "expected_detection": "fallback_invoked is asserted false on the exact-empty row.",
+      "fails_rows": [
+        "LX-POS-004",
+        "LX-EXC-010"
+      ],
+      "mutation_id": "LX-MUT-09",
+      "summary": "Exact empty incorrectly invokes fallback.",
+      "wrong_behavior": "The exact-empty answer path triggers text/semantic fallback work."
+    },
+    {
+      "expected_detection": "Provider work counters (WI-06) move above zero.",
+      "fails_rows": [
+        "LX-POS-001",
+        "LX-POS-016"
+      ],
+      "mutation_id": "LX-MUT-10",
+      "summary": "Provider-time PIR lowering or anchor repair restored.",
+      "wrong_behavior": "The provider recomputes or repairs anchors instead of consuming the shared contribution."
+    },
+    {
+      "expected_detection": "Request-time reconstruction counters (WI-07) move above zero.",
+      "fails_rows": [
+        "LX-POS-001"
+      ],
+      "mutation_id": "LX-MUT-11",
+      "summary": "Historical request-time PIR helper re-enters production.",
+      "wrong_behavior": "A request-time reconstruction helper is called on the serving path."
+    },
+    {
+      "expected_detection": "Duplicate build counters (WI-04) move above zero on the edit/requery row.",
+      "fails_rows": [
+        "LX-POS-016"
+      ],
+      "mutation_id": "LX-MUT-12",
+      "summary": "Hidden second contribution build represented as a shared hit.",
+      "wrong_behavior": "A second contribution build is disguised as reuse of the shared cell."
+    },
+    {
+      "expected_detection": "Generation-asserting rows fail currentness checks.",
+      "fails_rows": [
+        "LX-POS-016",
+        "LX-LC-001",
+        "LX-LC-003",
+        "LX-EXC-008"
+      ],
+      "mutation_id": "LX-MUT-13",
+      "summary": "Stale generation accepted.",
+      "wrong_behavior": "A request answered from an older generation is served as current."
+    },
+    {
+      "expected_detection": "The close/reopen row must evaluate a fresh document instance.",
+      "fails_rows": [
+        "LX-LC-005"
+      ],
+      "mutation_id": "LX-MUT-14",
+      "summary": "Close/reopen old contribution accepted.",
+      "wrong_behavior": "The pre-close observation or contribution is reused after reopen."
+    },
+    {
+      "expected_detection": "The exact set gains a foreign-provenance member; provenance checks fail.",
+      "fails_rows": [
+        "LX-POS-001",
+        "LX-POS-002",
+        "LX-POS-013"
+      ],
+      "mutation_id": "LX-MUT-15",
+      "summary": "Missing compiler occurrence repaired by semantic/text fallback.",
+      "wrong_behavior": "A dropped compiler occurrence is patched from semantic or text scans."
+    },
+    {
+      "expected_detection": "Plan edit IDs no longer equal authorized occurrence IDs (WI-12).",
+      "fails_rows": [
+        "LX-RN-001"
+      ],
+      "mutation_id": "LX-MUT-16",
+      "summary": "#8718 omits one authorized occurrence/edit.",
+      "wrong_behavior": "The plan drops one authorized occurrence from the edit set."
+    },
+    {
+      "expected_detection": "Plan edit IDs become a superset of authorized occurrence IDs.",
+      "fails_rows": [
+        "LX-RN-001"
+      ],
+      "mutation_id": "LX-MUT-17",
+      "summary": "#8718 adds one text/name/scan-only edit.",
+      "wrong_behavior": "The plan gains an edit without compiler authorization."
+    },
+    {
+      "expected_detection": "Runtime membership reconstruction counters (WI-11/WI-16) move above zero.",
+      "fails_rows": [
+        "LX-RN-001",
+        "LX-RN-002"
+      ],
+      "mutation_id": "LX-MUT-18",
+      "summary": "Runtime rebuilds compiler lexical membership through RenameProvider/AST/source.",
+      "wrong_behavior": "Membership is reconstructed at rename time from AST or source scans."
+    },
+    {
+      "expected_detection": "Family/plan identity on the current subject fails.",
+      "fails_rows": [
+        "LX-RN-002",
+        "LX-LC-002"
+      ],
+      "mutation_id": "LX-MUT-19",
+      "summary": "#11083 accepts the wrong family/plan for a valid range.",
+      "wrong_behavior": "A valid range is paired with a stale or foreign family plan."
+    },
+    {
+      "expected_detection": "Projected edit IDs no longer equal plan edit IDs (WI-17).",
+      "fails_rows": [
+        "LX-RN-001",
+        "LX-EXC-015"
+      ],
+      "mutation_id": "LX-MUT-20",
+      "summary": "#8614 drops one plan edit and returns the rest.",
+      "wrong_behavior": "Projection silently drops one plan edit."
+    },
+    {
+      "expected_detection": "Projected edit IDs become a superset of plan edit IDs.",
+      "fails_rows": [
+        "LX-RN-001"
+      ],
+      "mutation_id": "LX-MUT-21",
+      "summary": "#8614 adds one plausible same-name edit.",
+      "wrong_behavior": "Projection adds an edit that looks right but was never planned."
+    },
+    {
+      "expected_detection": "Set-identity assertions across authorization, plan, projection, and application fail.",
+      "fails_rows": [
+        "LX-RN-001",
+        "LX-LC-008",
+        "LX-LC-009"
+      ],
+      "mutation_id": "LX-MUT-22",
+      "summary": "Authorized occurrence, plan, wire, and applied IDs disagree.",
+      "wrong_behavior": "Any pair of the four ID sets diverges."
+    },
+    {
+      "expected_detection": "Refusal rows must emit zero edits; partial application fails the row.",
+      "fails_rows": [
+        "LX-LC-004",
+        "LX-EXC-012",
+        "LX-EXC-013"
+      ],
+      "mutation_id": "LX-MUT-23",
+      "summary": "Rename emits a partial edit after one stale or conflicting member.",
+      "wrong_behavior": "A conflict mid-set produces a partial application instead of a refusal."
+    },
+    {
+      "expected_detection": "Work-invariant instruments contradict the claimed zeroes.",
+      "fails_rows": [
+        "LX-POS-001",
+        "LX-POS-004"
+      ],
+      "mutation_id": "LX-MUT-24",
+      "summary": "Fallback/semantic/heuristic work runs while counters claim zero.",
+      "wrong_behavior": "Hidden old-route work executes under a zero-claiming counter surface."
+    },
+    {
+      "expected_detection": "The rollback row asserts route-only change.",
+      "fails_rows": [
+        "LX-LC-010"
+      ],
+      "mutation_id": "LX-MUT-25",
+      "summary": "Rollback changes semantic output rather than only the route.",
+      "wrong_behavior": "Rolling back alters what the semantic layer produces."
+    },
+    {
+      "expected_detection": "Exclusion rows must keep their old_route/unsupported classes.",
+      "fails_rows": [
+        "LX-EXC-001",
+        "LX-EXC-002",
+        "LX-EXC-003",
+        "LX-EXC-004",
+        "LX-EXC-005",
+        "LX-EXC-007"
+      ],
+      "mutation_id": "LX-MUT-26",
+      "summary": "An excluded adjacent class is promoted.",
+      "wrong_behavior": "A package global, dynamic, destructuring, or cross-file class enters the cohort."
+    },
+    {
+      "expected_detection": "Pending/uninstrumented invariants must stay pending, never numeric zero.",
+      "fails_rows": [
+        "LX-LC-007",
+        "LX-EXC-011"
+      ],
+      "mutation_id": "LX-MUT-27",
+      "summary": "Uninstrumented work is represented as zero.",
+      "wrong_behavior": "A counter surface reports zero for work nobody measured."
+    },
+    {
+      "expected_detection": "The application row requires a verified post-apply postcondition.",
+      "fails_rows": [
+        "LX-LC-001",
+        "LX-LC-009"
+      ],
+      "mutation_id": "LX-MUT-28",
+      "summary": "Helper-only proof substituted for real stdio/application proof.",
+      "wrong_behavior": "A library-level check stands in for a real wire/application proof."
+    },
+    {
+      "expected_detection": "The wire-shape guard (WI-13) fails; the protocol block forbids the token.",
+      "fails_rows": [
+        "LX-RN-002",
+        "LX-LC-002"
+      ],
+      "mutation_id": "LX-MUT-29",
+      "summary": "Custom preparation/plan token added to standard LSP shapes.",
+      "wrong_behavior": "A continuation field appears on PrepareRenameResult or RenameParams."
+    },
+    {
+      "expected_detection": "No-prepare and cache-miss rows must succeed.",
+      "fails_rows": [
+        "LX-RN-001",
+        "LX-LC-006"
+      ],
+      "mutation_id": "LX-MUT-30",
+      "summary": "Prior prepare or a cache hit made mandatory for rename success.",
+      "wrong_behavior": "Rename refuses when no usable preparation observation exists."
+    },
+    {
+      "expected_detection": "The cache-miss row must succeed with a fresh current subject.",
+      "fails_rows": [
+        "LX-LC-006"
+      ],
+      "mutation_id": "LX-MUT-31",
+      "summary": "Cache miss or eviction causes a false refusal.",
+      "wrong_behavior": "An evicted preparation observation refuses an otherwise exact rename."
+    },
+    {
+      "expected_detection": "Authorization must be current-subject-#10650 on every rename row.",
+      "fails_rows": [
+        "LX-RN-002",
+        "LX-LC-002"
+      ],
+      "mutation_id": "LX-MUT-32",
+      "summary": "Returned preparation range/placeholder authorizes the rename.",
+      "wrong_behavior": "The client-visible prepare result is treated as semantic authority."
+    },
+    {
+      "expected_detection": "Stale-generation rows forbid old plan reuse.",
+      "fails_rows": [
+        "LX-LC-003",
+        "LX-LC-004"
+      ],
+      "mutation_id": "LX-MUT-33",
+      "summary": "Generation-N preparation or plan reused after N+1.",
+      "wrong_behavior": "The old plan is reused across an edit."
+    },
+    {
+      "expected_detection": "The stale-prepare row requires fresh current success.",
+      "fails_rows": [
+        "LX-LC-003"
+      ],
+      "mutation_id": "LX-MUT-34",
+      "summary": "Fresh exact N+1 rename falsely refused solely because preparation N is stale.",
+      "wrong_behavior": "Staleness is treated as grounds for refusal."
+    },
+    {
+      "expected_detection": "Incomplete current evidence must refuse regardless of a matching prepare.",
+      "fails_rows": [
+        "LX-RN-002",
+        "LX-EXC-006"
+      ],
+      "mutation_id": "LX-MUT-35",
+      "summary": "A matching preparation upgrades incomplete current evidence.",
+      "wrong_behavior": "Continuity evidence patches holes in the current fact base."
+    },
+    {
+      "expected_detection": "Malformed/foreign observations degrade to absence.",
+      "fails_rows": [
+        "LX-LC-003",
+        "LX-EXC-014"
+      ],
+      "mutation_id": "LX-MUT-36",
+      "summary": "A stale or malformed preparation overrides independently exact current evidence.",
+      "wrong_behavior": "Observation state outranks current exact re-resolution."
+    },
+    {
+      "expected_detection": "Subject identity (root/configuration/family) must be re-established.",
+      "fails_rows": [
+        "LX-RN-002",
+        "LX-EXC-009"
+      ],
+      "mutation_id": "LX-MUT-37",
+      "summary": "Same URI/name/range/bytes retargets a prior plan to another binding, root, or family.",
+      "wrong_behavior": "Surface-identical request fields reattach an old plan to a new subject."
+    }
+  ],
+  "owner": "perl-lsp compiler program",
+  "protocol_lifecycle": {
+    "client_carried_continuation_token": "forbidden",
+    "correlation_outcomes": [
+      "no_prior_preparation",
+      "matching_current_preparation",
+      "prior_preparation_stale",
+      "prior_preparation_different_target",
+      "prior_preparation_different_family",
+      "prior_preparation_different_document_instance",
+      "prior_preparation_different_configuration",
+      "prior_preparation_malformed_or_foreign",
+      "instrument_failure"
+    ],
+    "prepare_rename_result_shapes": [
+      "range",
+      "range_placeholder",
+      "default_behavior",
+      "null"
+    ],
+    "rename_params_fields": [
+      "textDocument",
+      "position",
+      "newName"
+    ],
+    "stale_prior_observation_rule": "A stale prior observation proves only that the old subject/plan cannot be reused; it never forces refusal when fresh current re-resolution independently earns a valid rename."
+  },
+  "schema_version": "compiler_lexical_cutline_cases.v1",
+  "status": "proof-definition",
+  "test_targets": [
+    {
+      "kind": "manifest",
+      "proof": "xtask/tests/compiler_lexical_cutline.rs",
+      "registration": "this PR",
+      "status": "active",
+      "target": "compiler_lexical_cutline_manifest"
+    },
+    {
+      "kind": "external-stdio",
+      "owner": "#12157",
+      "registration": "#12125-#12129",
+      "status": "named-pending",
+      "target": "compiler_references_stdio"
+    },
+    {
+      "kind": "external-stdio",
+      "owner": "#12157",
+      "registration": "#12125-#12129",
+      "status": "named-pending",
+      "target": "compiler_rename_stdio"
+    },
+    {
+      "kind": "external-stdio",
+      "owner": "#11083",
+      "registration": "#12125-#12129",
+      "status": "named-pending",
+      "target": "rename_preparation_correlation"
+    },
+    {
+      "kind": "mutation",
+      "owner": "#12157",
+      "registration": "#12125-#12129",
+      "status": "named-pending",
+      "target": "compiler_lexical_cutline_mutations"
+    }
+  ],
+  "updated": "2026-08-25",
+  "vocabulary": {
+    "case_kinds": [
+      "admitted",
+      "excluded",
+      "lifecycle"
+    ],
+    "occurrence_roles": [
+      "declaration",
+      "read",
+      "write",
+      "modify"
+    ],
+    "position_encoding": "utf16",
+    "result_classes": [
+      "exact_nonempty",
+      "exact_empty",
+      "refusal",
+      "not_ready",
+      "unsupported",
+      "old_route",
+      "instrument_failure"
+    ],
+    "sigils": [
+      "scalar",
+      "array",
+      "hash",
+      "code"
+    ]
+  },
+  "work_invariants": [
+    {
+      "assertion": "zero",
+      "authority": "#12191",
+      "id": "WI-01",
+      "instrument": "compiler_anchor_provenance_counters",
+      "stage": "anchor-production",
+      "status": "active",
+      "subject": "legacy/provider inputs used for compiler anchors"
+    },
+    {
+      "assertion": "zero",
+      "authority": "#12110",
+      "id": "WI-02",
+      "instrument": "contribution_build_io_counters",
+      "stage": "contribution-build",
+      "status": "active",
+      "subject": "source parse/read/rescan during contribution build"
+    },
+    {
+      "assertion": "zero",
+      "authority": "#12110",
+      "id": "WI-03",
+      "instrument": "contribution_build_provenance_counters",
+      "stage": "contribution-build",
+      "status": "active",
+      "subject": "legacy/reference inputs during contribution build"
+    },
+    {
+      "assertion": "zero",
+      "authority": "#12111",
+      "id": "WI-04",
+      "instrument": "contribution_cell_build_counters",
+      "stage": "contribution-sharing",
+      "status": "active",
+      "subject": "duplicate contribution builds for one accepted generation"
+    },
+    {
+      "assertion": "zero",
+      "authority": "#12151",
+      "id": "WI-05",
+      "instrument": "semantic_cell_build_counters",
+      "stage": "semantic-construction",
+      "status": "active",
+      "subject": "duplicate semantic builds"
+    },
+    {
+      "assertion": "zero",
+      "authority": "#8669",
+      "id": "WI-06",
+      "instrument": "provider_work_counters",
+      "stage": "provider-eligibility",
+      "status": "active",
+      "subject": "provider-time parse/read/scan/semantic/HIR/PIR/verifier/extract/anchor-repair"
+    },
+    {
+      "assertion": "zero",
+      "authority": "#12329",
+      "id": "WI-07",
+      "instrument": "request_time_reconstruction_counters",
+      "stage": "request-time",
+      "status": "active",
+      "subject": "request-time contribution/reconstruction calls"
+    },
+    {
+      "assertion": "false",
+      "authority": "#8692",
+      "id": "WI-08",
+      "instrument": "references_result_provenance_flags",
+      "stage": "references-result",
+      "status": "active",
+      "subject": "compiler/semantic/text location union"
+    },
+    {
+      "assertion": "zero",
+      "authority": "#8692",
+      "id": "WI-09",
+      "instrument": "references_result_provenance_counters",
+      "stage": "references-result",
+      "status": "active",
+      "subject": "promoted semantic source-backed calls"
+    },
+    {
+      "assertion": "zero",
+      "authority": "#8692",
+      "id": "WI-10",
+      "instrument": "references_fallback_counters",
+      "stage": "references-result",
+      "status": "active",
+      "subject": "promoted text fallback docs/bytes/snapshots"
+    },
+    {
+      "assertion": "zero",
+      "authority": "#8718",
+      "id": "WI-11",
+      "instrument": "rename_plan_membership_counters",
+      "stage": "rename-plan",
+      "status": "active",
+      "subject": "AST/source/name/workspace membership construction at plan time"
+    },
+    {
+      "assertion": "identity",
+      "authority": "#8718",
+      "id": "WI-12",
+      "instrument": "rename_plan_id_ledger",
+      "stage": "rename-plan",
+      "status": "active",
+      "subject": "authorized occurrence IDs == plan edit IDs"
+    },
+    {
+      "assertion": "zero",
+      "authority": "#12358",
+      "id": "WI-13",
+      "instrument": "wire_shape_schema_guard",
+      "stage": "preparation-protocol",
+      "status": "active",
+      "subject": "custom protocol continuation fields on standard LSP shapes"
+    },
+    {
+      "assertion": "false",
+      "authority": "#11083",
+      "id": "WI-14",
+      "instrument": "rename_authorization_path_flags",
+      "stage": "rename-authorization",
+      "status": "active",
+      "subject": "prior prepare required for current rename"
+    },
+    {
+      "assertion": "zero",
+      "authority": "#11083",
+      "id": "WI-15",
+      "instrument": "rename_plan_reuse_counters",
+      "stage": "rename-authorization",
+      "status": "active",
+      "subject": "stale plan reuse"
+    },
+    {
+      "assertion": "zero",
+      "authority": "#11083",
+      "id": "WI-16",
+      "instrument": "rename_runtime_membership_counters",
+      "stage": "rename-authorization",
+      "status": "active",
+      "subject": "runtime semantic membership reconstruction"
+    },
+    {
+      "assertion": "identity",
+      "authority": "#8614",
+      "id": "WI-17",
+      "instrument": "projection_id_ledger",
+      "stage": "projection",
+      "status": "active",
+      "subject": "plan edit IDs == projected edit IDs"
+    },
+    {
+      "assertion": "zero",
+      "authority": "#4306",
+      "id": "WI-18",
+      "instrument": "old_route_work_counters",
+      "note": "Final old-work zero remains pending before #4306; pending is not numeric zero and unknown/uninstrumented work is never zero.",
+      "stage": "old-route-retirement",
+      "status": "pending",
+      "subject": "admitted old semantic/text/rename/heuristic work"
+    }
+  ]
+}

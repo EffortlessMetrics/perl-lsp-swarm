@@ -986,14 +986,10 @@ fn test_snippet_completion() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     // Check it has a snippet with placeholders
-    #[allow(clippy::collapsible_if)]
-    if let Some(insert_text) = sub_item.get("insertText") {
-        if let Some(text) = insert_text.as_str() {
-            assert!(
-                text.contains("${") || text == "sub",
-                "Insert text should be a snippet or 'sub'"
-            );
-        }
+    if let Some(insert_text) = sub_item.get("insertText")
+        && let Some(text) = insert_text.as_str()
+    {
+        assert!(text.contains("${") || text == "sub", "Insert text should be a snippet or 'sub'");
     }
 
     // Check if it's a snippet kind (15) or keyword kind (14)
@@ -1259,6 +1255,156 @@ fn test_completion_scope_distance_ranking() -> Result<(), Box<dyn std::error::Er
         inner_sort < outer_sort,
         "$scope_inner (immediate) should sort before $scope_outer (package): \
          '{inner_sort}' vs '{outer_sort}'"
+    );
+
+    Ok(())
+}
+
+/// Real-request regression for #8941: a lexical declared inside an ENDED
+/// sibling block must not appear at ANY rank — not even as a low-priority
+/// Workspace-distance candidate.
+///
+/// Discrimination guard: `$sib_level_top` is a file-level lexical sharing the
+/// same typed prefix and MUST still appear, proving the request path works
+/// and the sibling's absence is admission, not an empty response.
+#[test]
+fn test_completion_sibling_block_admission() -> Result<(), Box<dyn std::error::Error>> {
+    let server = start_lsp_server();
+    initialize_lsp(&server);
+
+    let uri = "file:///test_sibling_admission.pl";
+    let code = concat!(
+        "my $sib_level_top = 1;\n",
+        "{\n",
+        "    my $sib_left = 1;\n",
+        "}\n",
+        "{\n",
+        "    $sib_le\n",
+        "}\n"
+    );
+
+    send_notification(
+        &server,
+        json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "perl",
+                    "version": 1,
+                    "text": code
+                }
+            }
+        }),
+    );
+    drain_until_quiet(&server, Duration::from_millis(100), Duration::from_secs(2));
+
+    // Cursor at end of line 5 ("    $sib_le"), character 11.
+    let target_line = 5;
+    let target_char = code.lines().nth(target_line).map(|l| l.len()).unwrap_or(11);
+
+    let response = send_request(
+        &server,
+        json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/completion",
+            "params": {
+                "textDocument": { "uri": uri },
+                "position": { "line": target_line as i32, "character": target_char as i32 }
+            }
+        }),
+    );
+
+    let items = completion_items(&response);
+    let labels: Vec<&str> = items.iter().filter_map(|item| item["label"].as_str()).collect();
+
+    assert!(
+        labels.iter().any(|l| l.contains("sib_level_top")),
+        "ancestor file lexical sharing the prefix must remain visible (request-path control); got {labels:?}"
+    );
+    assert!(
+        !labels.iter().any(|l| l.contains("sib_left")),
+        "ended sibling-block lexical must not be offered at any rank (#8941); got {labels:?}"
+    );
+
+    Ok(())
+}
+
+/// Real-request regression for #8941: with nested same-name shadowing, the
+/// completion list contains exactly ONE binding and it is the INNER one —
+/// identified through its leading-comment documentation evidence, not merely
+/// by label.
+#[test]
+fn test_completion_shadow_offers_inner_binding_identity() -> Result<(), Box<dyn std::error::Error>>
+{
+    let server = start_lsp_server();
+    initialize_lsp(&server);
+
+    let uri = "file:///test_shadow_identity.pl";
+    let code = concat!(
+        "# outer marker documentation\n",
+        "my $value = 1;\n",
+        "{\n",
+        "    # inner marker documentation\n",
+        "    my $value = 2;\n",
+        "    my $x = $val\n",
+        "}\n"
+    );
+
+    send_notification(
+        &server,
+        json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "perl",
+                    "version": 1,
+                    "text": code
+                }
+            }
+        }),
+    );
+    drain_until_quiet(&server, Duration::from_millis(100), Duration::from_secs(2));
+
+    // Cursor at end of line 5 ("    my $x = $val").
+    let target_line = 5;
+    let target_char = code.lines().nth(target_line).map(|l| l.len()).unwrap_or(16);
+
+    let response = send_request(
+        &server,
+        json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/completion",
+            "params": {
+                "textDocument": { "uri": uri },
+                "position": { "line": target_line as i32, "character": target_char as i32 }
+            }
+        }),
+    );
+
+    let items = completion_items(&response);
+    let value_items: Vec<&serde_json::Value> = items
+        .iter()
+        .filter(|item| item["label"].as_str().map(|s| s == "$value").unwrap_or(false))
+        .collect();
+
+    assert_eq!(
+        value_items.len(),
+        1,
+        "shadowed outer binding must be dropped so exactly one $value remains (#8941); got {} items",
+        value_items.len()
+    );
+
+    let doc = value_items[0]
+        .pointer("/documentation/value")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+    assert!(
+        doc.contains("inner marker documentation"),
+        "surviving $value must be the INNER binding; wire documentation was: {doc:?}"
     );
 
     Ok(())

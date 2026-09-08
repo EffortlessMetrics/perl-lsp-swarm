@@ -1,5 +1,5 @@
 ---
-source: crates/perl-parser/tests/ast_snapshot_tests.rs
+source: crates/perl-parser/tests/ast_snap.rs
 expression: "parse_sexp(\"my $x = 42\")"
 ---
-(source_file (my_declaration (variable $ x)(number 42)))
+(source_file (statements (my_declaration (declarator my) (variable (variable (sigil $) (name x))) (initializer (number (value 42))))))

@@ -38,6 +38,37 @@ fn write_pair(root: &Path, relative: &str) -> Result<PathBuf, Box<dyn Error>> {
 }
 
 #[test]
+fn string_prefix_sibling_absolute_path_is_outside_bound_root() -> Result<(), Box<dyn Error>> {
+    let parent = tempfile::tempdir()?;
+    let root = parent.path().join("corpus");
+    let sibling = parent.path().join("corpus-extra");
+    fs::create_dir(&root)?;
+    fs::create_dir(&sibling)?;
+    write_pair(&root, "inside")?;
+    let outside_sidecar = write_pair(&sibling, "outside")?;
+    assert!(
+        outside_sidecar.to_string_lossy().starts_with(root.to_string_lossy().as_ref()),
+        "fixture must be a string-prefix sibling of the bound root"
+    );
+
+    let context = SidecarValidationContext::bind(&root)?;
+    let error = require_error(
+        context.resolve_pair(&outside_sidecar),
+        "string-prefix sibling must fail closed",
+    )?;
+    let message = error.to_string();
+    assert!(
+        message.contains(outside_sidecar.to_string_lossy().as_ref()),
+        "outside-root error must name the offending path: {message}"
+    );
+    assert!(
+        message.contains(context.root().to_string_lossy().as_ref()),
+        "outside-root error must name the bound root: {message}"
+    );
+    Ok(())
+}
+
+#[test]
 fn contained_regular_pair_is_content_and_topology_bound() -> Result<(), Box<dyn Error>> {
     let root = tempfile::tempdir()?;
     write_pair(root.path(), "nested/case")?;
@@ -47,6 +78,10 @@ fn contained_regular_pair_is_content_and_topology_bound() -> Result<(), Box<dyn 
     assert_eq!(identity.schema_version, "fixture_expectation_pair.v1");
     assert_eq!(identity.sidecar_schema, "fixture_expectation.v1");
     assert_eq!(identity.fixture_path, Path::new("nested/case.pl"));
+    assert_eq!(
+        context.resolve_pair(&context.root().join("nested/case.meta.toml"))?.identity(),
+        &identity
+    );
     assert!(identity.sidecar_digest.starts_with("sha256:"));
     assert!(identity.fixture_digest.starts_with("sha256:"));
     assert_eq!(identity.topology_identity.as_deref(), context.topology_identity());
@@ -63,7 +98,19 @@ fn traversal_absolute_and_late_nonmember_paths_fail_closed() -> Result<(), Box<d
     assert!(context.resolve_pair(Path::new("../outside.meta.toml")).is_err());
     let outside = tempfile::tempdir()?;
     let outside_sidecar = write_pair(outside.path(), "outside")?;
-    assert!(context.resolve_pair(&outside_sidecar).is_err());
+    let error = require_error(
+        context.resolve_pair(&outside_sidecar),
+        "absolute path outside the bound root must fail",
+    )?;
+    let message = error.to_string();
+    assert!(
+        message.contains(outside_sidecar.to_string_lossy().as_ref()),
+        "outside-root error must name the offending path: {message}"
+    );
+    assert!(
+        message.contains(context.root().to_string_lossy().as_ref()),
+        "outside-root error must name the bound root: {message}"
+    );
 
     write_pair(root.path(), "late")?;
     let error = require_error(

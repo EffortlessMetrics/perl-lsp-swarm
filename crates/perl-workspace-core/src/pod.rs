@@ -142,10 +142,6 @@ fn classify_directive(line: &str) -> Option<(PodSectionKind, String)> {
 
 #[cfg(test)]
 mod tests {
-    #![expect(
-        clippy::unwrap_used,
-        reason = "tracked conversion debt: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3021"
-    )]
     use super::*;
     use crate::id::Digest;
 
@@ -155,9 +151,11 @@ mod tests {
     }
 
     #[test]
-    fn extracts_name_description_and_sections() {
+    fn extracts_name_description_and_sections() -> Result<(), &'static str> {
         let src = "package App;\n\n=head1 NAME\n\nApp - does things\n\n=head1 DESCRIPTION\n\nA longer description.\n\n=head2 run\n\nRuns it.\n\n=cut\n\nsub run { 1 }\n1;\n";
-        let f = facts(src).unwrap();
+        let f = facts(src).ok_or("structured POD fixture must produce facts")?;
+        assert_eq!(f.file_id, FileId::new("lib/App.pm", &Digest::of(src)));
+        assert_eq!(f.confidence, Confidence::High);
         assert_eq!(f.name.as_deref(), Some("App - does things"));
         assert!(f.description.is_some());
         assert!(f.documented_methods.contains(&"run".to_string()), "method run documented");
@@ -166,19 +164,74 @@ mod tests {
             "NAME head1 section with range; sections={:?}",
             f.sections
         );
+        Ok(())
     }
 
     #[test]
-    fn ranges_track_real_lines() {
+    fn ranges_preserve_crlf_utf8_bytes_and_source_order() -> Result<(), &'static str> {
+        let src = "package App;\r\n\r\n=head1 NAME\r\n\r\n=head2 caf\u{e9}\r\n\r\n=cut\r\n";
+        let f = facts(src).ok_or("CRLF/UTF-8 POD fixture must produce facts")?;
+
+        assert_eq!(
+            f.sections,
+            vec![
+                PodSection {
+                    kind: PodSectionKind::Head1,
+                    title: "NAME".to_string(),
+                    range: SourceRange {
+                        start_byte: 16,
+                        end_byte: 27,
+                        start_line: 2,
+                        start_column_utf8: 0,
+                        end_line: 2,
+                        end_column_utf8: 11,
+                    },
+                },
+                PodSection {
+                    kind: PodSectionKind::Head2,
+                    title: "caf\u{e9}".to_string(),
+                    range: SourceRange {
+                        start_byte: 31,
+                        end_byte: 43,
+                        start_line: 4,
+                        start_column_utf8: 0,
+                        end_line: 4,
+                        end_column_utf8: 12,
+                    },
+                },
+            ]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn ranges_track_real_lines() -> Result<(), &'static str> {
         let src = "package App;\n=head1 NAME\n=cut\n1;\n";
-        let f = facts(src).unwrap();
-        let name = f.sections.iter().find(|s| s.title == "NAME").unwrap();
+        let f = facts(src).ok_or("range POD fixture must produce facts")?;
+        let name = f
+            .sections
+            .iter()
+            .find(|s| s.title == "NAME")
+            .ok_or("range POD fixture must contain NAME")?;
         assert_eq!(name.range.start_line, 1, "=head1 NAME is on line 1 (0-based)");
+        Ok(())
     }
 
     #[test]
     fn no_pod_yields_none() {
         assert!(facts("package App;\nsub run { 1 }\n1;\n").is_none());
+    }
+
+    #[test]
+    fn malformed_inline_markup_still_returns_a_fact() -> Result<(), &'static str> {
+        // The underlying POD extractor is intentionally tolerant of an
+        // unterminated formatting code at EOF. Preserve that result while
+        // keeping the fact test on its typed Option path.
+        let src = "=head1 NAME\n\nB<unclosed\n";
+        let f = facts(src).ok_or("malformed POD fixture must still produce facts")?;
+        assert_eq!(f.name.as_deref(), Some("unclosed"));
+        assert_eq!(f.sections.first().map(|section| section.kind), Some(PodSectionKind::Head1));
+        Ok(())
     }
 
     #[test]
@@ -190,13 +243,13 @@ mod tests {
     }
 
     #[test]
-    fn cut_lookalike_directive_does_not_close_pod() {
+    fn cut_lookalike_directive_does_not_close_pod() -> Result<(), &'static str> {
         // Regression: `=cutlery` (or any directive merely *prefixed* by "cut")
         // must not be mistaken for the `=cut` terminator via a starts_with
         // prefix match. Perl parses the directive as the first
         // whitespace-delimited token, so only an exact `=cut` line closes POD.
         let src = "package App;\n\n=head1 NAME\n\nApp - does things\n\n=cutlery not a real directive\n\n=head2 run\n\nRuns it.\n\n=cut\n\nsub run { 1 }\n1;\n";
-        let f = facts(src).unwrap();
+        let f = facts(src).ok_or("cut-lookalike POD fixture must produce facts")?;
         assert!(
             f.sections.iter().any(|s| s.kind == PodSectionKind::Head2 && s.title == "run"),
             "the =head2 after the =cutlery lookalike is still inside POD; sections={:?}",
@@ -206,6 +259,23 @@ mod tests {
             f.documented_methods.contains(&"run".to_string()),
             "run is still documented despite the =cutlery lookalike line"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn malformed_and_unknown_commands_are_total_through_production_projection()
+    -> Result<(), &'static str> {
+        let src = "package App;\n\n=head1 DESCRIPTION\n\nBefore.\n\n=\n=unknown value\n=headache\n=☃\n\nAfter.\n\n=cut trailing explanation\n\n=head1 NAME\n\nNot captured.\n";
+        let f = facts(src).ok_or("malformed POD fixture must produce facts")?;
+
+        assert_eq!(f.description.as_deref(), Some("Before."));
+        assert_eq!(
+            f.sections.iter().filter(|section| section.kind == PodSectionKind::Head1).count(),
+            2,
+            "only exact head1 commands should become ranged sections"
+        );
+        assert_eq!(f.name.as_deref(), Some("Not captured."));
+        Ok(())
     }
 
     #[test]

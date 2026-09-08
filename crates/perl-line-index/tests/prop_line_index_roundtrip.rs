@@ -12,6 +12,10 @@
 //! - **Single `\n`**: two lines, with correct byte assignments.
 //! - **Trailing `\n`**: creates an empty final line.
 //! - **No trailing `\n`**: final line's last column is `text_len - last_line_start`.
+//! - **UTF-16 non-final line boundary (#9837)**: `position_to_byte_utf16` never
+//!   resolves a position on a non-final line to a byte at or beyond the next
+//!   line's start, and every returned offset is a UTF-8 character boundary.
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 use perl_line_index::LineIndex;
 use proptest::prelude::*;
@@ -42,6 +46,33 @@ fn text_with_newlines(max_len: usize) -> impl Strategy<Value = String> {
         // Clamp to max_len bytes (fragments may individually be short, so this is
         // only a safety net against edge cases).
         if joined.len() > max_len { joined[..max_len].to_string() } else { joined }
+    })
+}
+
+/// Strategy that also mixes in multibyte characters (2-byte `é`, 4-byte
+/// surrogate-pair emoji) so the UTF-16 conversion path is exercised on
+/// columns that diverge from byte offsets.
+fn text_with_multibyte_newlines(max_len: usize) -> impl Strategy<Value = String> {
+    prop::collection::vec(
+        prop_oneof![
+            "[a-zA-Z0-9 ]{0,8}".prop_map(|s| s),
+            Just("\n".to_string()),
+            Just("\r\n".to_string()),
+            // U+00E9: 2 UTF-8 bytes, 1 UTF-16 code unit.
+            Just("\u{00e9}".to_string()),
+            // U+1F600: 4 UTF-8 bytes, 2 UTF-16 code units.
+            Just("\u{1F600}".to_string()),
+        ],
+        0..=(max_len / 2 + 1),
+    )
+    .prop_map(move |fragments| {
+        let joined = fragments.concat();
+        // Clamp on a UTF-8 character boundary; multibyte fragments may straddle it.
+        if joined.len() > max_len {
+            joined[..joined.floor_char_boundary(max_len)].to_string()
+        } else {
+            joined
+        }
     })
 }
 
@@ -152,6 +183,49 @@ proptest! {
                 a,
                 b
             );
+        }
+    }
+
+    /// #9837: a UTF-16 position on a non-final line never resolves to a byte
+    /// at or beyond the next line's start, and every returned offset is a
+    /// UTF-8 character boundary inside the text.
+    ///
+    /// The pre-fix implementation returned the next line's first byte for the
+    /// column one past a non-final line's end; this property rejects that
+    /// resolution for every generated line/column pair.
+    #[test]
+    fn utf16_never_resolves_past_nonfinal_line_end(text in text_with_multibyte_newlines(256)) {
+        let idx = LineIndex::new(&text);
+        let line_count = text.chars().filter(|&c| c == '\n').count() + 1;
+        // Any column past twice the byte length exceeds every possible UTF-16
+        // line length, so this bound covers all addressable columns.
+        let max_col = text.len().saturating_mul(2).saturating_add(2);
+        for line in 0..line_count {
+            let next_line_start = idx.position_to_byte(line + 1, 0);
+            for col in 0..=max_col {
+                let Some(byte) = idx.position_to_byte_utf16(&text, line, col) else {
+                    continue;
+                };
+                prop_assert!(
+                    text.is_char_boundary(byte) && byte <= text.len(),
+                    "utf16 ({}, {}) -> {} is not a char boundary in {:?}",
+                    line,
+                    col,
+                    byte,
+                    text
+                );
+                if let Some(next_start) = next_line_start {
+                    prop_assert!(
+                        byte < next_start,
+                        "utf16 ({}, {}) -> {} reaches the next line start {} in {:?}",
+                        line,
+                        col,
+                        byte,
+                        next_start,
+                        text
+                    );
+                }
+            }
         }
     }
 

@@ -390,7 +390,7 @@ fn bless_with_comment_documentation() -> TestResult {
 
     // Verify parsing succeeds and generates correct AST structure
     let sexp = ast.to_sexp();
-    assert!(sexp.contains("(call bless"));
+    assert!(sexp.contains("(call (name bless)"));
     assert!(sexp.contains("(hash"));
     assert!(sexp.contains("MyClass"));
 
@@ -416,7 +416,7 @@ fn subroutine_with_bless_return() -> TestResult {
 
     // Verify parsing succeeds
     let sexp = ast.to_sexp();
-    assert!(sexp.contains("(call bless"));
+    assert!(sexp.contains("(call (name bless)"));
 
     // Verify symbol extraction captures subroutine documentation
     let extractor = SymbolExtractor::new_with_source(src);

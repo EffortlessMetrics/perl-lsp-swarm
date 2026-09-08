@@ -19,6 +19,7 @@
 //!
 //! All tests return `Result<()>` and use `perl_tdd_support::must_some`
 //! instead of `.unwrap()` / `.expect()` per the workspace coding standards.
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 use perl_ast::{Node, NodeKind, SourceLocation};
 use perl_symbol::cursor::{

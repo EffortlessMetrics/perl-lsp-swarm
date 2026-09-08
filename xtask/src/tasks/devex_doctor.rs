@@ -2,12 +2,15 @@
 //! Mirrors `scripts/devex-doctor.sh` checks with native Rust execution.
 
 use color_eyre::eyre::{Context, Result, bail};
+use perl_lsp_rs_core::config::{PerlOracleEnv, PerlToolchainProfile, WorkspaceConfig};
 use std::{
     env,
     ffi::OsString,
     fs,
+    io::{Read, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
+    time::{Duration, Instant},
 };
 
 pub fn run() -> Result<()> {
@@ -64,6 +67,10 @@ pub fn run() -> Result<()> {
     println!();
     println!("== Build storage ==");
     check_build_storage(&root);
+
+    println!();
+    println!("== DAP live-session perl (advisory) ==");
+    check_dap_live_session_perl();
 
     println!();
     if Path::new("rust-toolchain.toml").exists() {
@@ -386,6 +393,142 @@ fn pass(message: &str) {
     println!("✅ {message}");
 }
 
+/// #12594 item 6(b) / #12748: live-session DAP suites drive a real
+/// `perl -d` debuggee over stdio pipes, which needs a *pipe-capable*
+/// perl5db. The failure shape that motivated this check: on Windows the
+/// first `perl` on a bash-spawned PATH is often MSYS/cygwin perl, whose
+/// debugger assumes a console and hangs or misbehaves over pipes while a
+/// working Strawberry perl sits later on PATH. Surface which perl the
+/// launch path will see and whether its perl5db actually answers over
+/// pipes. Advisory only: plenty of dev/CI boxes legitimately have no perl
+/// (the suites skip there), so this never blocks doctor.
+fn check_dap_live_session_perl() {
+    // Resolve the interpreter exactly like a no-override DAP launch
+    // (crates/perl-dap/src/debug_adapter/process.rs): the shared toolchain
+    // resolver — explicit perl_path, then perlbrew → plenv → PATH — so the
+    // doctor probes the same perl5db a real session would use, not merely
+    // the first perl on PATH.
+    let Some(perl) = PerlToolchainProfile::resolve(&WorkspaceConfig::default())
+        .map(PerlToolchainProfile::into_perl_binary)
+        .or_else(|| find_command_path("perl"))
+    else {
+        warn(
+            "no perl interpreter resolved (perl_path / perlbrew / plenv / PATH): live-session \
+             DAP suites (real `perl -d` over stdio pipes) cannot run. Install a pipe-capable \
+             perl — system perl with perl5db on Linux/macOS, Strawberry Perl on Windows.",
+        );
+        return;
+    };
+
+    let cwd = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    match PerlOracleEnv::for_version_probe(perl.clone(), cwd)
+        .into_command()
+        .arg("-e")
+        .arg(r#"print "$^V $^O""#)
+        .output()
+    {
+        Ok(out) if out.status.success() => {
+            println!("  perl: {} ({})", perl.display(), String::from_utf8_lossy(&out.stdout));
+        }
+        _ => {
+            println!("  perl: {} (version probe failed)", perl.display());
+        }
+    }
+
+    match probe_perl5db_pipe(&perl) {
+        Perl5dbProbe::Capable => {
+            pass("perl5db is pipe-capable: `perl -de 0` answers `q` over piped stdio and exits")
+        }
+        Perl5dbProbe::Hung => warn(
+            "`perl -de 0` did not exit within 10s over piped stdio — this perl's debugger \
+             is not pipe-capable (MSYS/cygwin perl class). Live-session DAP suites will hang. \
+             Put a native perl first on PATH (Strawberry Perl on Windows) or set `perlPath` \
+             explicitly in the launch configuration.",
+        ),
+        Perl5dbProbe::Failed(detail) => warn(&format!(
+            "perl5db pipe probe failed: {detail}. Live-session DAP suites will fail; \
+             check that perl5db is installed for this interpreter."
+        )),
+    }
+}
+
+#[derive(Debug)]
+enum Perl5dbProbe {
+    Capable,
+    Hung,
+    Failed(String),
+}
+
+/// Spawn `perl -de 0` under the production DAP environment contract
+/// (`PerlOracleEnv::for_version_probe`: deny-all-ambient, PATH re-added),
+/// send `q` over piped stdio, and require a prompt, clean exit. A debugger
+/// that needs a console hangs here; a missing perl5db.pl errors out here.
+/// The 10s watchdog bounds the hang case. `Capable` is returned only after
+/// `q` was actually delivered — any I/O or cleanup failure is `Failed`, so
+/// a process that exits 0 without receiving `q` can never read as capable.
+fn probe_perl5db_pipe(perl: &Path) -> Perl5dbProbe {
+    let cwd = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let mut command = PerlOracleEnv::for_version_probe(perl.to_path_buf(), cwd).into_command();
+    command.arg("-de").arg("0").stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::piped());
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(e) => {
+            return Perl5dbProbe::Failed(format!("cannot spawn `{} -de 0`: {e}", perl.display()));
+        }
+    };
+
+    match child.stdin.take() {
+        Some(mut stdin) => {
+            if let Err(e) = stdin.write_all(b"q\n") {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Perl5dbProbe::Failed(format!("cannot send `q` to the debugger: {e}"));
+            }
+        }
+        None => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Perl5dbProbe::Failed("debugger stdin was not piped".to_string());
+        }
+    } // stdin dropped: debugger sees EOF after `q`
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) if status.success() => return Perl5dbProbe::Capable,
+            Ok(Some(status)) => {
+                let mut stderr = String::new();
+                let read_result = match child.stderr.take() {
+                    Some(mut pipe) => pipe.read_to_string(&mut stderr).map(|_| ()),
+                    None => Ok(()),
+                };
+                let first_line = stderr.lines().next().unwrap_or("").trim().to_string();
+                return Perl5dbProbe::Failed(format!(
+                    "`perl -de 0` exited {status}{}{}",
+                    if first_line.is_empty() { String::new() } else { format!(": {first_line}") },
+                    match read_result {
+                        Ok(()) => String::new(),
+                        Err(e) => format!(" (stderr unreadable: {e})"),
+                    }
+                ));
+            }
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    if let Err(e) = child.kill() {
+                        return Perl5dbProbe::Failed(format!("watchdog kill failed: {e}"));
+                    }
+                    if let Err(e) = child.wait() {
+                        return Perl5dbProbe::Failed(format!("watchdog wait failed: {e}"));
+                    }
+                    return Perl5dbProbe::Hung;
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            Err(e) => return Perl5dbProbe::Failed(format!("wait on `perl -de 0` failed: {e}")),
+        }
+    }
+}
+
 fn warn(message: &str) {
     println!("⚠️  {message}");
 }
@@ -409,6 +552,46 @@ mod tests {
 
     #[cfg(not(unix))]
     fn set_executable(_path: &std::path::Path) {}
+
+    #[cfg(unix)]
+    #[test]
+    fn perl5db_probe_contract_capable_and_failed() -> Result<(), Box<dyn std::error::Error>> {
+        use super::{Perl5dbProbe, probe_perl5db_pipe};
+
+        let dir = std::env::temp_dir().join(format!("perl5db-probe-test-{}", std::process::id()));
+        fs::create_dir_all(&dir)?;
+
+        // Positive control: a "debugger" that reads the piped command and
+        // exits 0 is pipe-capable.
+        let good = dir.join("fake-perl-good");
+        fs::write(&good, "#!/bin/sh\nread _cmd\nexit 0\n")?;
+        set_executable(&good);
+        let verdict = probe_perl5db_pipe(&good);
+        assert!(
+            matches!(verdict, Perl5dbProbe::Capable),
+            "a debugger that reads `q` and exits 0 must be Capable, got {verdict:?}"
+        );
+
+        // A "debugger" that exits nonzero after the command is Failed, with
+        // its first stderr line in the detail.
+        let bad = dir.join("fake-perl-bad");
+        fs::write(
+            &bad,
+            "#!/bin/sh\nread _cmd\necho 'perl5db.pl did not return a true value' >&2\nexit 3\n",
+        )?;
+        set_executable(&bad);
+        let verdict = probe_perl5db_pipe(&bad);
+        match &verdict {
+            Perl5dbProbe::Failed(detail) => assert!(
+                detail.contains("perl5db.pl"),
+                "Failed detail must carry the first stderr line, got: {detail}"
+            ),
+            other => panic!("a nonzero exit must be Failed, got {other:?}"),
+        }
+
+        fs::remove_dir_all(&dir).ok();
+        Ok(())
+    }
 
     #[test]
     fn normalize_hook_text_removes_crlf_and_trailing_blank_lines() {

@@ -30,6 +30,28 @@ The crate exposes:
 - focused helpers for heredocs, regexes, globs, tie interfaces, formats, and loop-control cases;
 - linting, metadata backfill, indexing, and snapshot support.
 
+### Root authority and compatibility discovery
+
+The published crate ships APIs and deliberately included crate assets, not the repository's complete corpus. Load-bearing callers must bind the external repository root explicitly or through `PERL_CORPUS_ROOT`:
+
+```rust,no_run
+use perl_corpus::CorpusPaths;
+use std::path::Path;
+
+let paths = CorpusPaths::resolve_authoritative(Some(Path::new("/absolute/perl-lsp")))?;
+paths.require_repository_layout()?;
+
+let retained_root = paths.root_authority();
+println!("{}", retained_root.path().display());
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+Strict selection is explicit input, then `PERL_CORPUS_ROOT`, then a typed missing-authority error. Invalid explicit input fails immediately rather than falling through. A strict root must be absolute, directory-backed, and free of symbolic-link or Windows reparse-point components. `CorpusRoot` retains an open directory identity across clones; its canonical path is diagnostic context, not the authority itself.
+
+`CorpusPaths::discover()` and `CorpusPaths::from_root()` retain their historical unchecked behavior for compatibility. They return raw mutable paths and do not establish root authority. `CorpusPaths::try_from_root`, `try_discover`, and `resolve_authoritative` return immutable `ResolvedCorpusPaths`; converting that value with `into_paths()` is an explicit downgrade to compatibility paths. `ResolvedCorpusPaths` intentionally has no `Deref` or other implicit conversion into `CorpusPaths`, so a validated resolution cannot silently reach a path-based compatibility API: use `as_paths()` to borrow the compatibility view or `into_paths()` to consume the value.
+
+`require_repository_layout()` verifies only the required `test_corpus/` and `crates/perl-corpus/fuzz/` directory chains. It does not recurse, choose members, infer extensions, or replace `CorpusTopology`. Selected-member containment and opening belong to the later capability traversal seam.
+
 ### Typed source loading
 
 Ordinary Perl sources and sectioned corpus documents use different APIs:
@@ -98,6 +120,8 @@ cargo test -p perl-parser --test parser_accuracy_e2e
 
 # Run perl-corpus unit and integration tests
 cargo test -p perl-corpus
+cargo test -p perl-corpus --test root_path_authority
+cargo test -p perl-corpus --test distribution_contract
 ```
 
 The exact command surface is owned by the binary, `xtask`, and workspace test targets; this README does not maintain an independent shadow of every subcommand.

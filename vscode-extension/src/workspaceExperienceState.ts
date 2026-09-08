@@ -67,8 +67,12 @@ export interface WorkspaceExperienceSnapshot {
 
 /** Optional status-bar telemetry that is additive to the workspace state. */
 export interface WorkspaceExperienceTelemetry {
+  /** Self-reported server identity from the initialize handshake (#12705). */
+  readonly name?: string | undefined;
   readonly version?: string | undefined;
   readonly fileCount?: number | undefined;
+  /** True when the displayed file count is only a known lower bound. */
+  readonly fileCountLowerBound?: boolean | undefined;
   readonly errorCount?: number | undefined;
   readonly indexingMessage?: string | undefined;
   readonly indexingPercentage?: number | undefined;
@@ -109,15 +113,18 @@ function detailTooltip(
 }
 
 /** Count a countable noun without emitting "1 files" in the status bar. */
-function countLabel(count: number, singular: string): string {
-  return `${count} ${singular}${count === 1 ? '' : 's'}`;
+function countLabel(count: number, singular: string, lowerBound = false): string {
+  return `${count}${lowerBound ? '+' : ''} ${singular}${count === 1 && !lowerBound ? '' : 's'}`;
 }
 
 function readyLabel(telemetry: WorkspaceExperienceTelemetry): string {
-  const label = telemetry.version ? `perl-lsp v${telemetry.version}` : 'perl-lsp';
+  // The server's self-reported name wins when present (#12705); the built-in
+  // product identity remains the fallback so existing behavior is unchanged.
+  const product = telemetry.name ?? 'perl-lsp';
+  const label = telemetry.version ? `${product} v${telemetry.version}` : product;
   const parts: string[] = [];
   if (telemetry.fileCount !== undefined) {
-    parts.push(countLabel(telemetry.fileCount, 'file'));
+    parts.push(countLabel(telemetry.fileCount, 'file', telemetry.fileCountLowerBound));
   }
   if ((telemetry.errorCount ?? 0) > 0) {
     parts.push(countLabel(telemetry.errorCount ?? 0, 'error'));
@@ -128,7 +135,11 @@ function readyLabel(telemetry: WorkspaceExperienceTelemetry): string {
 function indexingLabel(telemetry: WorkspaceExperienceTelemetry): string {
   let message = telemetry.indexingMessage ?? 'Indexing…';
   if ((telemetry.fileCount ?? 0) > 0) {
-    message = `Indexing… (${countLabel(telemetry.fileCount ?? 0, 'file')})`;
+    message = `Indexing… (${countLabel(
+      telemetry.fileCount ?? 0,
+      'file',
+      telemetry.fileCountLowerBound,
+    )})`;
   }
   if ((telemetry.indexingPercentage ?? 0) > 0) {
     message += ` ${Math.round(telemetry.indexingPercentage ?? 0)}%`;
@@ -251,10 +262,11 @@ export function presentWorkspaceExperience(
       };
     }
     case 'ready_limited': {
+      const product = telemetry.name ?? 'perl-lsp';
       const version = telemetry.version ? ` v${telemetry.version}` : '';
       return {
         mode: 'running',
-        text: `$(warning) perl-lsp${version}: ready (limited)`,
+        text: `$(warning) ${product}${version}: ready (limited)`,
         tooltip: detailTooltip(
           snapshot,
           'Perl Language Server is ready with bounded workspace coverage',

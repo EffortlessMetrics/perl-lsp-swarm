@@ -1,17 +1,67 @@
 //! Integration tests for issue #4497: Facade-Only Public API Ratchet
+//! (crate set derived from one enforced list since #14607)
 //!
 //! These tests verify the public API surface ratchet infrastructure:
-//! - Baseline files exist for 5 facade crates
-//! - Baselines are non-empty
-//! - just public-api-check and just public-api-update recipes exist
+//! - `.ci/public-api-baselines/ratchet-crates.txt` is the single crate list
+//! - a baseline file exists for every listed crate, and for nothing else
+//! - baselines are non-empty
+//! - just public-api-check and just public-api-update recipes exist and read the list
 //! - CI workflow includes public-api-check job
-//! - semver-check covers all 5 facade crates
+//! - the nightly semver-check job loops over the list
 //! - CONTRIBUTING.md documents the public API workflow
 //!
-//! Tests assert config state, not runtime behavior.
+//! Tests assert config state, not runtime behavior. The original five facades
+//! (`perl-lsp-rs`, `perl-parser`, `perl-uri`, `perl-dap`, `perllsp`) are still
+//! pinned as required members so the list cannot silently shrink below them.
 
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::PathBuf;
+
+#[test]
+fn nightly_reports_require_successful_nonempty_baseline() -> Result<(), Box<dyn std::error::Error>>
+{
+    let workflow = fs::read_to_string(project_root().join(".github/workflows/ci-nightly.yml"))?
+        .replace("\r\n", "\n");
+    for step in ["Generate breaking changes report", "Upload breaking changes report"] {
+        let marker = format!("      - name: {step}\n");
+        let guard = workflow
+            .split(&marker)
+            .nth(1)
+            .and_then(|rest| rest.lines().next())
+            .and_then(|line| line.trim().strip_prefix("if: ${{ "))
+            .and_then(|line| line.strip_suffix(" }}"))
+            .ok_or("missing nightly report guard")?;
+        // Evaluate the restricted conjunction used by these steps; unknown syntax
+        // fails the proof instead of silently acquiring guessed semantics.
+        for cancelled in [false, true] {
+            for outcome in ["success", "failure", "skipped", "cancelled"] {
+                for baseline in ["", "none", "v0.17.0"] {
+                    let mut actual = true;
+                    for term in guard.split(" && ") {
+                        actual &= match term {
+                            "!cancelled()" => !cancelled,
+                            "steps.baseline.outcome == 'success'" => outcome == "success",
+                            "steps.baseline.outputs.baseline != ''" => !baseline.is_empty(),
+                            "steps.baseline.outputs.baseline != 'none'" => baseline != "none",
+                            _ => {
+                                return Err(format!("unsupported report guard term: {term}").into());
+                            }
+                        };
+                    }
+                    let expected = !cancelled
+                        && outcome == "success"
+                        && !baseline.is_empty()
+                        && baseline != "none";
+                    if actual != expected {
+                        return Err(format!("{step}: cancelled={cancelled}, outcome={outcome}, baseline={baseline:?}: selected={actual}").into());
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
 
 fn project_root() -> PathBuf {
     let mut dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -19,13 +69,40 @@ fn project_root() -> PathBuf {
     dir
 }
 
-/// Test A: All 5 baseline files exist in .ci/public-api-baselines/
+/// The five facades #4497 introduced; every one must stay listed.
+const ORIGINAL_FACADES: [&str; 5] =
+    ["perl-lsp-rs", "perl-parser", "perl-uri", "perl-dap", "perllsp"];
+
+/// Read `ratchet-crates.txt` with the rule every reader shares (#14607):
+/// everything after `#` is a comment, whitespace is trimmed, blank lines skipped.
+fn ratchet_crates() -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    let list_path = project_root().join(".ci/public-api-baselines/ratchet-crates.txt");
+    let content = fs::read_to_string(&list_path)
+        .map_err(|e| format!("Failed to read {}: {}", list_path.display(), e))?;
+    let crates: Vec<String> = content
+        .lines()
+        .map(|line| line.split('#').next().unwrap_or("").trim())
+        .filter(|line| !line.is_empty())
+        .map(str::to_string)
+        .collect();
+    assert!(!crates.is_empty(), "{} lists no crates", list_path.display());
+    Ok(crates)
+}
+
+/// Test A: a baseline file exists for every listed crate, and the original
+/// five facades are still listed.
 #[test]
-fn baselines_exist_for_5_facades() -> Result<(), Box<dyn std::error::Error>> {
+fn baselines_exist_for_every_listed_crate() -> Result<(), Box<dyn std::error::Error>> {
     let root = project_root();
     let baselines_dir = root.join(".ci/public-api-baselines");
 
-    let crates = ["perl-lsp-rs", "perl-parser", "perl-uri", "perl-dap", "perllsp"];
+    let crates = ratchet_crates()?;
+    for facade in &ORIGINAL_FACADES {
+        assert!(
+            crates.iter().any(|c| c == facade),
+            "ratchet-crates.txt must still list the original facade crate: {facade}"
+        );
+    }
 
     for crate_name in &crates {
         let baseline_path = baselines_dir.join(format!("{}.txt", crate_name));
@@ -40,13 +117,13 @@ fn baselines_exist_for_5_facades() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Test B: Each baseline file is non-empty
+/// Test B: Each listed crate's baseline file is non-empty
 #[test]
 fn baseline_files_are_non_empty() -> Result<(), Box<dyn std::error::Error>> {
     let root = project_root();
     let baselines_dir = root.join(".ci/public-api-baselines");
 
-    let crates = ["perl-lsp-rs", "perl-parser", "perl-uri", "perl-dap", "perllsp"];
+    let crates = ratchet_crates()?;
 
     for crate_name in &crates {
         let baseline_path = baselines_dir.join(format!("{}.txt", crate_name));
@@ -167,35 +244,39 @@ fn ci_nightly_workflow_has_public_api_check_job() -> Result<(), Box<dyn std::err
     Ok(())
 }
 
-/// Test E: semver-check job covers all 5 facade crates
+/// Test E: the nightly semver-check job loops over the ratchet list (#14607)
+///
+/// Before #14607 the job named five crates in five steps and disagreed with
+/// `public-api-check`. It must now read the same list and must not restate any
+/// crate name, so the two ratchets cannot drift apart again.
 #[test]
-fn semver_check_covers_5_crates() -> Result<(), Box<dyn std::error::Error>> {
+fn semver_check_loops_over_the_ratchet_list() -> Result<(), Box<dyn std::error::Error>> {
     let root = project_root();
     let workflow = fs::read_to_string(root.join(".github/workflows/ci-nightly.yml"))?;
 
-    // Count occurrences of "cargo semver-checks check-release -p" for each crate
-    let crates_to_check =
-        ["perl-parser", "perl-lexer", "perl-parser-core", "perl-lsp-rs", "perllsp"];
+    let job = workflow
+        .split("\n  semver-check:\n")
+        .nth(1)
+        .ok_or("Could not find semver-check job in ci-nightly.yml")?
+        .split("\n  public-api-check:\n")
+        .next()
+        .ok_or("Could not delimit semver-check job")?;
 
-    let mut found_count = 0;
-    for crate_name in &crates_to_check {
-        let pattern = format!("cargo semver-checks check-release -p {}", crate_name);
-        if workflow.contains(&pattern) {
-            found_count += 1;
-        }
-    }
-
-    assert_eq!(
-        found_count,
-        5,
-        "semver-check job must verify 5 crates: {}, {}, {}, {}, {}. Found {} of 5.",
-        crates_to_check[0],
-        crates_to_check[1],
-        crates_to_check[2],
-        crates_to_check[3],
-        crates_to_check[4],
-        found_count
+    assert!(
+        job.contains(".ci/public-api-baselines/ratchet-crates.txt"),
+        "semver-check job must read .ci/public-api-baselines/ratchet-crates.txt"
     );
+    assert!(
+        job.contains("cargo semver-checks check-release -p \"${crate}\""),
+        "semver-check job must run cargo semver-checks once per listed crate"
+    );
+    for crate_name in ratchet_crates()? {
+        let restated = format!("check-release -p {crate_name}");
+        assert!(
+            !job.contains(&restated),
+            "semver-check job must not restate a crate name ({restated}); the list is the authority"
+        );
+    }
 
     Ok(())
 }
@@ -283,115 +364,85 @@ fn public_api_check_script_has_correct_fail_semantics() -> Result<(), Box<dyn st
     Ok(())
 }
 
-/// Test H (edge case): Facade crate list is in sync across justfile, CI, and baseline directory
+/// Test H (edge case): the ratchet list is the single authority (#14607)
 ///
-/// This test verifies that the set of 5 facade crates is consistent in:
-/// - justfile `public-api-check` and `public-api-update` recipes
-/// - CI workflow `.github/workflows/ci-nightly.yml` public-api-check job
-/// - baseline directory `.ci/public-api-baselines/`
+/// This test verifies that the crate set is derived, not restated:
+/// - the justfile `public-api-check` recipe reads the list through
+///   `_api-ratchet-crates` and names no crate itself;
+/// - the baseline directory holds exactly one `<crate>.txt` per listed crate.
 ///
-/// If the crate list drifts (e.g., someone adds a 6th facade but forgets to update justfile),
-/// the check might miss that crate and CI would silently allow API breakage.
+/// If the list and the baselines drift (a listed crate without a baseline, or a
+/// baseline for an unlisted crate), `cargo xtask publish-manifest-check` fails on
+/// every PR; this test keeps that contract visible at the config level too.
 #[test]
-fn facade_crate_list_consistency() -> Result<(), Box<dyn std::error::Error>> {
+fn ratchet_list_is_the_single_authority() -> Result<(), Box<dyn std::error::Error>> {
     let root = project_root();
-    let expected_crates = vec!["perl-lsp-rs", "perl-parser", "perl-uri", "perl-dap", "perllsp"];
+    let listed: BTreeSet<String> = ratchet_crates()?.into_iter().collect();
 
-    // Read justfile and verify all 5 crates appear in public-api recipes
+    // The justfile recipe reads the list and restates no crate name.
     let justfile = fs::read_to_string(root.join("justfile"))?;
     let public_api_section = justfile
-        .split("public-api-check:")
+        .split("\npublic-api-check:")
         .nth(1)
         .ok_or("Could not find public-api-check recipe in justfile")?
-        .split("public-api-update:") // End at next recipe
+        .split("\npublic-api-update:") // End at next recipe
         .next()
         .ok_or("Could not parse public-api-check recipe")?;
 
-    for crate_name in &expected_crates {
+    assert!(
+        public_api_section.contains("just _api-ratchet-crates"),
+        "Justfile public-api-check recipe must read the crate set via `just _api-ratchet-crates`"
+    );
+    for crate_name in &listed {
         assert!(
-            public_api_section.contains(crate_name),
-            "Justfile public-api-check recipe must reference facade crate: {}",
-            crate_name
+            !public_api_section.contains(crate_name.as_str()),
+            "Justfile public-api-check recipe must not restate crate name {crate_name}; \
+             ratchet-crates.txt is the authority"
         );
     }
 
-    // Read CI workflow and verify all 5 crates appear in the job description
-    let workflow = fs::read_to_string(root.join(".github/workflows/ci-nightly.yml"))?;
-    let ci_check_section = workflow
-        .split("public-api-check:")
-        .nth(1)
-        .ok_or("Could not find public-api-check job in CI workflow")?
-        .split('\n')
-        .take_while(|line| !line.starts_with("  ") || line.starts_with("    "))
-        .collect::<Vec<_>>()
-        .join("\n");
-
-    for crate_name in &expected_crates {
-        assert!(
-            ci_check_section.contains(crate_name),
-            "CI workflow public-api-check job must reference facade crate: {}",
-            crate_name
-        );
-    }
-
-    // Verify baseline directory has exactly 5 baseline files
+    // The baseline directory is exactly the listed set.
     let baselines_dir = root.join(".ci/public-api-baselines");
-    let baseline_files: Vec<_> = fs::read_dir(&baselines_dir)?
-        .filter_map(|entry| {
-            entry
-                .ok()
-                .and_then(|e| e.file_name().into_string().ok())
-                .filter(|name| name.ends_with(".txt"))
-        })
+    let baselined: BTreeSet<String> = fs::read_dir(&baselines_dir)?
+        .filter_map(|entry| entry.ok().and_then(|e| e.file_name().into_string().ok()))
+        .filter_map(|name| name.strip_suffix(".txt").map(str::to_string))
+        .filter(|stem| stem != "ratchet-crates")
         .collect();
 
     assert_eq!(
-        baseline_files.len(),
-        5,
-        "Expected 5 baseline files (.txt) in .ci/public-api-baselines/, found {}",
-        baseline_files.len()
+        baselined,
+        listed,
+        "baseline files in {} must be exactly the crates listed in ratchet-crates.txt",
+        baselines_dir.display()
     );
-
-    for crate_name in &expected_crates {
-        let expected_file = format!("{}.txt", crate_name);
-        assert!(
-            baseline_files.contains(&expected_file),
-            "Baseline file missing for facade crate: {}/{}",
-            baselines_dir.display(),
-            expected_file
-        );
-    }
 
     Ok(())
 }
 
-/// Test I (edge case): Non-facade crates do not have baselines
+/// Test I (edge case): unlisted crates do not have baselines
 ///
-/// This test verifies that the public API ratchet only applies to the 5 primary
-/// facades and does not create baseline files for internal support crates like
-/// `perl-tdd-support`, `perl-corpus`, or other internal satellites.
-///
-/// If baselines leak to internal crates, it creates unnecessary maintenance burden
-/// and suggests the scope has drifted from "facade-only".
+/// The ratchet applies only to listed crates. Internal support crates such as
+/// `perl-tdd-support`, `perl-corpus`, or `xtask` must be neither listed nor
+/// baselined; a baseline appearing for one of them means the scope drifted
+/// without the list (and its `publish-manifest-check` admission rule) changing.
 #[test]
-fn non_facade_crates_have_no_baselines() -> Result<(), Box<dyn std::error::Error>> {
+fn unlisted_crates_have_no_baselines() -> Result<(), Box<dyn std::error::Error>> {
     let root = project_root();
     let baselines_dir = root.join(".ci/public-api-baselines");
+    let listed = ratchet_crates()?;
 
-    // List of internal crates that should NOT have baselines
-    let internal_crates = vec![
-        "perl-tdd-support",
-        "perl-corpus",
-        "perl-lexer",
-        "perl-lexer-core",
-        "perl-parser-core",
-    ];
+    // Internal crates that must stay outside the ratchet.
+    let internal_crates = ["perl-tdd-support", "perl-corpus", "perl-lexer-core", "xtask"];
 
     for crate_name in &internal_crates {
+        assert!(
+            !listed.iter().any(|c| c == crate_name),
+            "Internal crate {crate_name} must not be listed in ratchet-crates.txt"
+        );
         let baseline_path = baselines_dir.join(format!("{}.txt", crate_name));
         assert!(
             !baseline_path.exists(),
-            "Internal crate {} should NOT have a baseline file (only 5 facades should)",
+            "Internal crate {} should NOT have a baseline file (only listed crates should)",
             crate_name
         );
     }
@@ -399,18 +450,30 @@ fn non_facade_crates_have_no_baselines() -> Result<(), Box<dyn std::error::Error
     Ok(())
 }
 
-/// Test J (edge case & regression): perllsp baseline has exactly 2 lines (mod + re-export)
+/// Test J (regression): perllsp baseline keeps the thin-facade shape
 ///
-/// `perllsp` is a thin binary wrapper that re-exports from `perl-lsp-rs`.
-/// Its public API surface should be minimal: just the module declaration and
-/// the re-export statement. This test verifies the format is preserved as expected.
+/// `perllsp` is the published Cargo facade that re-exports the `perl-lsp-rs`
+/// implementation. Since #7924 it also carries reviewed facade-owned modules
+/// (`claude_compat` compatibility contracts), and #12030 regenerated the
+/// baseline additively to that accepted surface.
 ///
-/// If perllsp's baseline grows significantly, it may indicate:
-/// - Additional public API was accidentally added to the lib target
-/// - The re-export pattern changed
-/// - The baseline was regenerated incorrectly
+/// This test pins:
+/// - line 1: the crate module declaration;
+/// - line 2: the wholesale `perl_lsp` re-export;
+/// - the accepted facade-owned module set (`ACCEPTED_FACADE_MODULES`): every
+///   `pub mod perllsp::<name>` declaration must be one of them, and every
+///   remaining item's path must start inside one of them.
+///
+/// A lost re-export, a renamed module declaration, an undeclared new module,
+/// or a root-level public item (an accidental lib-target addition) fails here
+/// before CI's cargo-public-api diff runs.
 #[test]
 fn perllsp_baseline_has_expected_reexport_format() -> Result<(), Box<dyn std::error::Error>> {
+    /// Facade-owned modules accepted on top of the wholesale re-export. A new
+    /// intentional module extends this list in the same reviewed change that
+    /// lands it and refreshes the baseline (#12030 recipe).
+    const ACCEPTED_FACADE_MODULES: [&str; 1] = ["claude_compat"];
+
     let root = project_root();
     let perllsp_baseline = root.join(".ci/public-api-baselines/perllsp.txt");
 
@@ -419,27 +482,61 @@ fn perllsp_baseline_has_expected_reexport_format() -> Result<(), Box<dyn std::er
 
     let lines: Vec<&str> = content.lines().filter(|l| !l.trim().is_empty()).collect();
 
-    assert_eq!(
-        lines.len(),
-        2,
-        "perllsp baseline should have exactly 2 lines (mod + re-export), got {}. Content:\n{}",
+    assert!(
+        lines.len() >= 2,
+        "perllsp baseline should have at least 2 lines (mod + re-export), got {}. Content:\n{}",
         lines.len(),
         content
     );
 
-    // Verify first line is the module declaration
+    // First line is the crate module declaration
     assert!(
-        lines[0].starts_with("pub mod perllsp"),
-        "perllsp baseline first line should be module declaration, got: {}",
+        lines[0] == "pub mod perllsp",
+        "perllsp baseline first line should be 'pub mod perllsp', got: {}",
         lines[0]
     );
 
-    // Verify second line is a re-export (uses pub use and contains <<...>>)
+    // Second line is the wholesale implementation re-export
     assert!(
-        lines[1].contains("pub use") && lines[1].contains("<<"),
-        "perllsp baseline second line should be a re-export pattern, got: {}",
+        lines[1] == "pub use perllsp::<<perl_lsp::*>>",
+        "perllsp baseline second line should be 'pub use perllsp::<<perl_lsp::*>>', got: {}",
         lines[1]
     );
+
+    // Every declared facade-owned module must be accepted, and every remaining
+    // item's path must start inside one of them. The item path begins at the
+    // first `perllsp::` occurrence; signature types referenced later in the
+    // line must never satisfy the check. Root-level items beyond the re-export
+    // would mean the lib target grew its own public API again.
+    for line in &lines[1..] {
+        let Some(declared) = line.strip_prefix("pub mod perllsp::") else {
+            continue;
+        };
+        assert!(
+            ACCEPTED_FACADE_MODULES.contains(&declared),
+            "perllsp baseline declares module 'perllsp::{declared}' outside the accepted facade-owned set {ACCEPTED_FACADE_MODULES:?} (extend the set in the same reviewed change): {line}"
+        );
+    }
+
+    for line in &lines[1..] {
+        if *line == "pub use perllsp::<<perl_lsp::*>>" || line.starts_with("pub mod perllsp::") {
+            continue;
+        }
+        assert!(
+            !line.starts_with("pub use "),
+            "perllsp baseline carries a non-wholesale root-level re-export (only 'pub use perllsp::<<perl_lsp::*>>' is accepted): {line}"
+        );
+        let path_start = line.find("perllsp::");
+        assert!(path_start.is_some(), "perllsp baseline item has no perllsp:: path: {line}");
+        // The assert above guarantees `Some`; `unwrap_or` keeps the repo's
+        // `clippy::panic`/`expect_used` denials out of this test.
+        let after_crate = &line[path_start.unwrap_or(0) + "perllsp::".len()..];
+        assert!(
+            ACCEPTED_FACADE_MODULES.iter().any(|module| after_crate.starts_with(module)
+                && after_crate[module.len()..].starts_with("::")),
+            "perllsp baseline item path is not under an accepted facade-owned module {ACCEPTED_FACADE_MODULES:?} (accidental lib-target API?): {line}"
+        );
+    }
 
     Ok(())
 }

@@ -600,6 +600,7 @@ fn mark_total(stats: &mut ContextSectionStats) {
 mod tests {
     use super::*;
     use crate::providers::inline_completion::InlineCompletionProvider;
+    use perl_test_must::{must_some_with, must_with};
 
     fn maxima() -> InlineCompletionContextBudget {
         InlineCompletionContextBudget::compiled_maxima()
@@ -664,7 +665,7 @@ mod tests {
     fn mid_line_position_yields_exact_prefix_and_suffix() {
         let provider = InlineCompletionProvider::new();
         let source = "my $total = + $other; # trailing note\n";
-        let prepared = provider.prepare_context(source, 0, 12).expect("context");
+        let prepared = must_some_with(provider.prepare_context(source, 0, 12), "context");
         assert_eq!(prepared.prefix, "my $total = ");
         assert_eq!(prepared.suffix, "+ $other; # trailing note");
         assert_eq!(prepared.truncation.suffix.reason, ContextTruncationReason::NotTruncated);
@@ -676,7 +677,7 @@ mod tests {
     fn mid_block_position_includes_closing_delimiter_and_following_line() {
         let provider = InlineCompletionProvider::new();
         let source = "sub helper {\n    my $input = \n    return $input;\n}\n1;\n";
-        let prepared = provider.prepare_context(source, 1, 16).expect("context");
+        let prepared = must_some_with(provider.prepare_context(source, 1, 16), "context");
         assert_eq!(prepared.suffix, "");
         assert!(!prepared.following_lines.is_empty(), "following context must be present");
         assert!(
@@ -696,7 +697,7 @@ mod tests {
         let provider = InlineCompletionProvider::new();
 
         // Position after a trailing newline: the current line is empty.
-        let eof = provider.prepare_context("my $x = 1;\n", 1, 0).expect("context");
+        let eof = must_some_with(provider.prepare_context("my $x = 1;\n", 1, 0), "context");
         assert_eq!(eof.suffix, "");
         assert_eq!(eof.prefix, "");
         assert!(eof.following_lines.is_empty());
@@ -704,7 +705,7 @@ mod tests {
 
         // An interior empty line also has an exact empty suffix.
         let empty_line =
-            provider.prepare_context("my $x = 1;\n\nmy $y = 2;\n", 1, 0).expect("context");
+            must_some_with(provider.prepare_context("my $x = 1;\n\nmy $y = 2;\n", 1, 0), "context");
         assert_eq!(empty_line.suffix, "");
         assert_eq!(empty_line.prefix, "");
     }
@@ -716,29 +717,34 @@ mod tests {
         let provider = InlineCompletionProvider::new();
 
         // CRLF: the CR is a line terminator, never part of the suffix.
-        let crlf =
-            provider.prepare_context("my $a = 1;\r\nmy $b = + $c;\r\n", 1, 8).expect("context");
+        let crlf = must_some_with(
+            provider.prepare_context("my $a = 1;\r\nmy $b = + $c;\r\n", 1, 8),
+            "context",
+        );
         assert_eq!(crlf.prefix, "my $b = ");
         assert_eq!(crlf.suffix, "+ $c;");
         // The trailing newline contributes one final empty line.
         assert_eq!(crlf.following_lines, vec!["".to_string()]);
 
         // Bare CR stays inside the line content (exact geometry).
-        let bare_cr = provider.prepare_context("my $r = 1;\rmy $s = 2;\n", 0, 19).expect("context");
+        let bare_cr =
+            must_some_with(provider.prepare_context("my $r = 1;\rmy $s = 2;\n", 0, 19), "context");
         assert_eq!(bare_cr.suffix, "2;");
 
         // Multibyte: UTF-16 columns split inside the emoji only on char
         // boundaries (the emoji counts as 2 UTF-16 units).
         let multibyte_line = "my \u{1F600}x = ♥;";
         let cursor_utf16 = "my ".encode_utf16().count() as u32; // before the emoji
-        let multibyte = provider.prepare_context(multibyte_line, 0, cursor_utf16).expect("context");
+        let multibyte =
+            must_some_with(provider.prepare_context(multibyte_line, 0, cursor_utf16), "context");
         assert_eq!(multibyte.prefix, "my ");
         assert_eq!(multibyte.suffix, "\u{1F600}x = ♥;");
 
         // A column that lands inside the emoji's surrogate pair clamps to the
         // emoji start (canonical policy: no half-surrogate columns).
         let inside_pair = cursor_utf16 + 1;
-        let clamped = provider.prepare_context(multibyte_line, 0, inside_pair).expect("context");
+        let clamped =
+            must_some_with(provider.prepare_context(multibyte_line, 0, inside_pair), "context");
         assert_eq!(clamped.prefix, "my ");
         assert_eq!(clamped.suffix, "\u{1F600}x = ♥;");
     }
@@ -761,10 +767,14 @@ mod tests {
         assert_eq!(newer, PreparedInvocationContext::Stale);
 
         let matching = provider.prepare_invoked_context(source, 0, 4, snapshot, Some(7));
-        let PreparedInvocationContext::Ready(context) = matching else {
-            panic!("matching version must prepare");
-        };
-        let request = context.request.expect("invoked context carries request identity");
+        let context = must_some_with(
+            match matching {
+                PreparedInvocationContext::Ready(context) => Some(context),
+                _ => None,
+            },
+            "matching version must prepare",
+        );
+        let request = must_some_with(context.request, "invoked context carries request identity");
         assert_eq!(request.line, 0);
         assert_eq!(request.character, 4);
         assert_eq!(request.source.document_version, Some(7));
@@ -820,15 +830,21 @@ mod tests {
         // Prefix: exact boundary keeps everything; one over truncates the
         // distant head, keeping the tail nearest the cursor.
         let exact_prefix = "a".repeat(maxima.prefix_bytes);
-        let at_boundary = provider
-            .prepare_context(&format!("{exact_prefix}\n"), 0, maxima.prefix_bytes as u32)
-            .expect("context");
+        let at_boundary = must_some_with(
+            provider.prepare_context(&format!("{exact_prefix}\n"), 0, maxima.prefix_bytes as u32),
+            "context",
+        );
         assert_eq!(at_boundary.prefix.len(), maxima.prefix_bytes);
         assert_eq!(at_boundary.truncation.prefix.reason, ContextTruncationReason::NotTruncated);
 
-        let over = provider
-            .prepare_context(&format!("{exact_prefix}Z\n"), 0, (maxima.prefix_bytes + 1) as u32)
-            .expect("context");
+        let over = must_some_with(
+            provider.prepare_context(
+                &format!("{exact_prefix}Z\n"),
+                0,
+                (maxima.prefix_bytes + 1) as u32,
+            ),
+            "context",
+        );
         assert!(over.prefix.len() <= maxima.prefix_bytes);
         assert_eq!(over.truncation.prefix.reason, ContextTruncationReason::ByteBudget);
         assert_eq!(over.truncation.prefix.original_bytes, maxima.prefix_bytes + 1);
@@ -837,12 +853,14 @@ mod tests {
         // Suffix: exact boundary keeps everything; one over keeps the head.
         let exact_suffix = "b".repeat(maxima.suffix_bytes);
         let suffix_at =
-            provider.prepare_context(&format!("{exact_suffix}\n"), 0, 0).expect("context");
+            must_some_with(provider.prepare_context(&format!("{exact_suffix}\n"), 0, 0), "context");
         assert_eq!(suffix_at.suffix.len(), maxima.suffix_bytes);
         assert_eq!(suffix_at.truncation.suffix.reason, ContextTruncationReason::NotTruncated);
 
-        let suffix_over =
-            provider.prepare_context(&format!("W{exact_suffix}\n"), 0, 0).expect("context");
+        let suffix_over = must_some_with(
+            provider.prepare_context(&format!("W{exact_suffix}\n"), 0, 0),
+            "context",
+        );
         assert_eq!(suffix_over.suffix.len(), maxima.suffix_bytes);
         assert_eq!(suffix_over.truncation.suffix.reason, ContextTruncationReason::ByteBudget);
         assert!(suffix_over.suffix.starts_with('W'), "nearest suffix head survives");
@@ -852,9 +870,10 @@ mod tests {
         let preceding: Vec<String> =
             (0..(maxima.preceding_lines + 1)).map(|i| format!("line {i}")).collect();
         let source = format!("{}\ncursor here\n", preceding.join("\n"));
-        let prepared = provider
-            .prepare_context(&source, (maxima.preceding_lines + 1) as u32, 11)
-            .expect("context");
+        let prepared = must_some_with(
+            provider.prepare_context(&source, (maxima.preceding_lines + 1) as u32, 11),
+            "context",
+        );
         assert_eq!(prepared.preceding_lines.len(), maxima.preceding_lines);
         assert_eq!(prepared.truncation.preceding_lines.reason, ContextTruncationReason::LineBudget);
         assert_eq!(prepared.truncation.preceding_lines.original_lines, maxima.preceding_lines + 1);
@@ -870,7 +889,7 @@ mod tests {
         let following: Vec<String> =
             (0..(maxima.following_lines + 1)).map(|i| format!("after {i}")).collect();
         let source = format!("cursor here\n{}\n", following.join("\n"));
-        let prepared = provider.prepare_context(&source, 0, 11).expect("context");
+        let prepared = must_some_with(provider.prepare_context(&source, 0, 11), "context");
         assert_eq!(prepared.following_lines.len(), maxima.following_lines);
         assert_eq!(prepared.truncation.following_lines.reason, ContextTruncationReason::LineBudget);
         assert_eq!(prepared.truncation.following_lines.original_lines, maxima.following_lines + 2);
@@ -886,9 +905,10 @@ mod tests {
         let uses: Vec<String> =
             (0..(maxima.semantic_fact_count + 1)).map(|i| format!("use Mod{:02};", i)).collect();
         let source = format!("{}\ncursor here\n", uses.join("\n"));
-        let prepared = provider
-            .prepare_context(&source, maxima.semantic_fact_count as u32, 11)
-            .expect("context");
+        let prepared = must_some_with(
+            provider.prepare_context(&source, maxima.semantic_fact_count as u32, 11),
+            "context",
+        );
         assert_eq!(prepared.imports.len(), maxima.semantic_fact_count);
         assert_eq!(prepared.truncation.imports.reason, ContextTruncationReason::FactCountBudget);
         assert_eq!(prepared.truncation.imports.original_lines, maxima.semantic_fact_count + 1);
@@ -899,7 +919,7 @@ mod tests {
         let declarations: Vec<String> =
             (0..16).map(|i| format!("    my $var{i:02} = {i};")).collect();
         let source = format!("sub f {{\n{}\n    \n}}\n", declarations.join("\n"));
-        let prepared = provider.prepare_context(&source, 17, 4).expect("context");
+        let prepared = must_some_with(provider.prepare_context(&source, 17, 4), "context");
         assert_eq!(prepared.variables.len(), 8);
         assert_eq!(prepared.truncation.variables.reason, ContextTruncationReason::NotTruncated);
         assert_eq!(prepared.truncation.variables.original_lines, 8);
@@ -926,9 +946,14 @@ mod tests {
         let current_line = format!("{long_prefix}{long_suffix}");
         let source =
             format!("{}\n{}\n{}\n", preceding.join("\n"), current_line, following.join("\n"));
-        let prepared = provider
-            .prepare_context(&source, maxima.preceding_lines as u32, maxima.prefix_bytes as u32)
-            .expect("context");
+        let prepared = must_some_with(
+            provider.prepare_context(
+                &source,
+                maxima.preceding_lines as u32,
+                maxima.prefix_bytes as u32,
+            ),
+            "context",
+        );
 
         let included_total = prepared.truncation.total.included_bytes;
         assert!(
@@ -962,8 +987,8 @@ mod tests {
             declarations.join("\n")
         );
 
-        let first = provider.prepare_context(&source, 41, 4).expect("context");
-        let second = provider.prepare_context(&source, 41, 4).expect("context");
+        let first = must_some_with(provider.prepare_context(&source, 41, 4), "context");
+        let second = must_some_with(provider.prepare_context(&source, 41, 4), "context");
         assert_eq!(first, second, "repeated preparation must be byte-identical");
 
         assert!(first.following_lines.iter().any(|l| l.contains("}")), "nearest syntax kept");
@@ -977,9 +1002,9 @@ mod tests {
         let provider = InlineCompletionProvider::new();
         let source =
             "use strict;\npackage Demo;\n\nsub helper {\n    my $x = 1;\n    \n}\n\nelsewhere();\n";
-        let prepared = provider.prepare_context(source, 5, 4).expect("context");
+        let prepared = must_some_with(provider.prepare_context(source, 5, 4), "context");
 
-        let serialized = serde_json::to_string(&prepared).expect("serialize");
+        let serialized = must_with(serde_json::to_string(&prepared), "serialize");
         assert!(!serialized.contains("file:///"), "no absolute paths");
         assert!(!serialized.contains("C:\\"), "no windows paths");
         for line in &prepared.preceding_lines {
@@ -989,7 +1014,7 @@ mod tests {
             assert!(source.contains(line.as_str()), "following line must come from the source");
         }
         // Truncation metadata stores counts and reasons only.
-        let truncation = serde_json::to_value(&prepared.truncation).expect("serialize");
+        let truncation = must_with(serde_json::to_value(&prepared.truncation), "serialize");
         let text_like = ["originalText", "includedText", "omitted", "content"];
         for key in text_like {
             assert!(
@@ -1027,7 +1052,7 @@ mod tests {
             "imports": ["strict"]
         }"#;
         let decoded: super::super::PreparedInlineCompletionContext =
-            serde_json::from_str(legacy).expect("legacy decode");
+            must_with(serde_json::from_str(legacy), "legacy decode");
         assert_eq!(decoded.suffix, "");
         assert!(decoded.preceding_lines.is_empty());
         assert!(decoded.following_lines.is_empty());

@@ -417,10 +417,10 @@ impl WorkspaceRename {
         }
 
         // Add the definition location if not already present
-        if let Some(ref def) = definition {
-            if !all_references.iter().any(|r| r.uri == def.uri && r.range == def.range) {
-                all_references.push(def.clone());
-            }
+        if let Some(ref def) = definition
+            && !all_references.iter().any(|r| r.uri == def.uri && r.range == def.range)
+        {
+            all_references.push(def.clone());
         }
 
         // Also try text-based fallback search across all indexed documents
@@ -556,10 +556,10 @@ impl WorkspaceRename {
                 }
             }
 
-            if !file_edits.is_empty() {
-                if let Some(path) = doc_path {
-                    edits_by_file.entry(path).or_default().extend(file_edits);
-                }
+            if !file_edits.is_empty()
+                && let Some(path) = doc_path
+            {
+                edits_by_file.entry(path).or_default().extend(file_edits);
             }
 
             files_processed += 1;

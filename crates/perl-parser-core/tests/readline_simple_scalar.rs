@@ -37,16 +37,28 @@ fn parse_expr_sexp(source: &str) -> String {
 #[test]
 fn test_angle_bracket_simple_scalar_lowercase_is_readline() {
     let sexp = parse_expr_sexp("my $line = <$fh>;");
-    assert!(sexp.contains("(readline $fh)"), "<$fh> should produce (readline $fh) but got: {sexp}");
-    assert!(!sexp.contains("(glob $fh)"), "<$fh> must NOT produce (glob $fh) but got: {sexp}");
+    assert!(
+        sexp.contains("(readline (filehandle $fh))"),
+        "<$fh> should produce (readline (filehandle $fh)) but got: {sexp}"
+    );
+    assert!(
+        !sexp.contains("(glob (pattern $fh))"),
+        "<$fh> must NOT produce (glob (pattern $fh)) but got: {sexp}"
+    );
 }
 
 /// `<$FH>` — uppercase scalar is still a simple scalar, not a bareword filehandle.
 #[test]
 fn test_angle_bracket_simple_scalar_uppercase_is_readline() {
     let sexp = parse_expr_sexp("my $line = <$FH>;");
-    assert!(sexp.contains("(readline $FH)"), "<$FH> should produce (readline $FH) but got: {sexp}");
-    assert!(!sexp.contains("(glob $FH)"), "<$FH> must NOT produce (glob $FH) but got: {sexp}");
+    assert!(
+        sexp.contains("(readline (filehandle $FH))"),
+        "<$FH> should produce (readline (filehandle $FH)) but got: {sexp}"
+    );
+    assert!(
+        !sexp.contains("(glob (pattern $FH))"),
+        "<$FH> must NOT produce (glob (pattern $FH)) but got: {sexp}"
+    );
 }
 
 /// `<$pattern>` — the variable name `pattern` looks like a glob pattern word,
@@ -55,12 +67,12 @@ fn test_angle_bracket_simple_scalar_uppercase_is_readline() {
 fn test_angle_bracket_simple_scalar_pattern_name_is_readline() {
     let sexp = parse_expr_sexp("my $line = <$pattern>;");
     assert!(
-        sexp.contains("(readline $pattern)"),
-        "<$pattern> should produce (readline $pattern) but got: {sexp}"
+        sexp.contains("(readline (filehandle $pattern))"),
+        "<$pattern> should produce (readline (filehandle $pattern)) but got: {sexp}"
     );
     assert!(
-        !sexp.contains("(glob $pattern)"),
-        "<$pattern> must NOT produce (glob $pattern) but got: {sexp}"
+        !sexp.contains("(glob (pattern $pattern))"),
+        "<$pattern> must NOT produce (glob (pattern $pattern)) but got: {sexp}"
     );
 }
 
@@ -73,8 +85,8 @@ fn test_angle_bracket_simple_scalar_pattern_name_is_readline() {
 fn test_angle_bracket_bareword_filehandle_stays_readline() {
     let sexp = parse_expr_sexp("my $x = <STDIN>;");
     assert!(
-        sexp.contains("(readline STDIN)"),
-        "<STDIN> should remain (readline STDIN) but got: {sexp}"
+        sexp.contains("(readline (filehandle STDIN))"),
+        "<STDIN> should remain (readline (filehandle STDIN)) but got: {sexp}"
     );
 }
 
@@ -82,7 +94,10 @@ fn test_angle_bracket_bareword_filehandle_stays_readline() {
 #[test]
 fn test_angle_bracket_glob_pattern_stays_glob() {
     let sexp = parse_expr_sexp(r#"my @f = <*.pm>;"#);
-    assert!(sexp.contains("(glob *.pm)"), "<*.pm> should remain (glob *.pm) but got: {sexp}");
+    assert!(
+        sexp.contains("(glob (pattern *.pm))"),
+        "<*.pm> should remain (glob (pattern *.pm)) but got: {sexp}"
+    );
 }
 
 /// `<$dir/*>` — scalar + path separator + glob metachar → Glob.
@@ -120,8 +135,8 @@ fn test_angle_bracket_empty_stays_diamond() {
 fn test_angle_bracket_qualified_scalar_is_readline() {
     let sexp = parse_expr_sexp("my $line = <$Foo::bar>;");
     assert!(
-        sexp.contains("(readline $Foo::bar)"),
-        "<$Foo::bar> should produce (readline $Foo::bar) but got: {sexp}"
+        sexp.contains("(readline (filehandle $Foo::bar))"),
+        "<$Foo::bar> should produce (readline (filehandle $Foo::bar)) but got: {sexp}"
     );
 }
 

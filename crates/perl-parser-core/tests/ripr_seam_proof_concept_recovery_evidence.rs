@@ -105,7 +105,7 @@ fn clean_source_has_no_recovery_evidence() {
     assert_eq!(output.recovered_count, 0, "clean source must not report recoveries");
     assert_eq!(recovery_nodes, 0, "clean source must not carry recovery nodes");
     assert_eq!(declaration_spans(source, &output.ast, "after"), vec!["my $after = 2"]);
-    assert!(!output.terminated_early, "clean source must not terminate early");
+    assert!(!output.terminated_early(), "clean source must not terminate early");
 }
 
 #[test]
@@ -155,7 +155,7 @@ fn missing_infix_rhs_emits_local_evidence_and_preserves_following_declaration() 
     )?;
 
     assert_eq!(declaration_spans(source, &output.ast, "after"), vec!["my $after = 2"]);
-    assert!(!output.terminated_early, "this local syntax error should remain recoverable");
+    assert!(!output.terminated_early(), "this local syntax error should remain recoverable");
     Ok(())
 }
 
@@ -205,7 +205,7 @@ fn missing_initializer_emits_local_evidence_and_preserves_following_declaration(
     )?;
 
     assert_eq!(declaration_spans(source, &output.ast, "after"), vec!["my $after = 2"]);
-    assert!(!output.terminated_early, "initializer recovery must preserve following code");
+    assert!(!output.terminated_early(), "initializer recovery must preserve following code");
     Ok(())
 }
 

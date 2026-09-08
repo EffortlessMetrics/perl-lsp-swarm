@@ -98,38 +98,36 @@ impl LspServer {
             // so Moo/Moose `has` attributes are handled in their own arm below.
             kind if kind.category() == NodeKindCategory::Declaration => {
                 match &node.kind {
-                    NodeKind::Subroutine { name, body, .. } => {
+                    NodeKind::Subroutine { name: Some(sub_name), body, .. } => {
                         // Add the subroutine as a symbol if it has a name
-                        if let Some(sub_name) = name {
-                            let (start_line, start_char) =
-                                byte_to_line_col(source, node.location.start);
-                            let (end_line, end_char) = byte_to_line_col(source, node.location.end);
+                        let (start_line, start_char) =
+                            byte_to_line_col(source, node.location.start);
+                        let (end_line, end_char) = byte_to_line_col(source, node.location.end);
 
-                            symbols.push(LspWorkspaceSymbol {
-                                name: sub_name.clone(),
-                                kind: 12, // Function
-                                location: WireLocation::new(
-                                    uri.to_string(),
-                                    WireRange::new(
-                                        WirePosition::new(start_line, start_char),
-                                        WirePosition::new(end_line, end_char),
-                                    ),
+                        symbols.push(LspWorkspaceSymbol {
+                            name: sub_name.clone(),
+                            kind: 12, // Function
+                            location: WireLocation::new(
+                                uri.to_string(),
+                                WireRange::new(
+                                    WirePosition::new(start_line, start_char),
+                                    WirePosition::new(end_line, end_char),
                                 ),
-                                container_name: container
-                                    .map(|s| normalize_package_separator(s).into_owned()),
-                                workspace_folder_uri: folder_uri.map(ToOwned::to_owned),
-                            });
+                            ),
+                            container_name: container
+                                .map(|s| normalize_package_separator(s).into_owned()),
+                            workspace_folder_uri: folder_uri.map(ToOwned::to_owned),
+                        });
 
-                            // Recurse into body with this subroutine as container
-                            self.extract_symbols_recursive(
-                                body,
-                                source,
-                                uri,
-                                Some(sub_name.as_str()),
-                                folder_uri,
-                                symbols,
-                            );
-                        }
+                        // Recurse into body with this subroutine as container
+                        self.extract_symbols_recursive(
+                            body,
+                            source,
+                            uri,
+                            Some(sub_name.as_str()),
+                            folder_uri,
+                            symbols,
+                        );
                     }
 
                     NodeKind::Package { name, block, .. } => {
@@ -502,16 +500,12 @@ impl LspServer {
                 }
             }
 
-            NodeKind::Use { module, .. } => {
-                if symbol_kind == "package" && module == symbol_name {
-                    count += 1;
-                }
+            NodeKind::Use { module, .. } if symbol_kind == "package" && module == symbol_name => {
+                count += 1;
             }
 
-            NodeKind::Identifier { name } => {
-                if symbol_kind == "package" && name == symbol_name {
-                    count += 1;
-                }
+            NodeKind::Identifier { name } if symbol_kind == "package" && name == symbol_name => {
+                count += 1;
             }
 
             NodeKind::Block { statements } => {
@@ -575,10 +569,8 @@ impl LspServer {
                 count += self.count_references(rhs, symbol_name, symbol_kind);
             }
 
-            NodeKind::Return { value } => {
-                if let Some(val) = value {
-                    count += self.count_references(val, symbol_name, symbol_kind);
-                }
+            NodeKind::Return { value: Some(val) } => {
+                count += self.count_references(val, symbol_name, symbol_kind);
             }
 
             NodeKind::ArrayLiteral { elements } => {
@@ -598,10 +590,8 @@ impl LspServer {
                 count += self.count_references(body, symbol_name, symbol_kind);
             }
 
-            NodeKind::Package { block, .. } => {
-                if let Some(block) = block {
-                    count += self.count_references(block, symbol_name, symbol_kind);
-                }
+            NodeKind::Package { block: Some(block), .. } => {
+                count += self.count_references(block, symbol_name, symbol_kind);
             }
 
             NodeKind::Try { body, catch_blocks, finally_block } => {

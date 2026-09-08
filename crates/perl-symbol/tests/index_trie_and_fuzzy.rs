@@ -12,6 +12,7 @@
 //! - Consecutive uppercase does NOT split (e.g., "HTML" stays as one token)
 //! - Symbol not in index is not found
 //! - Default trait (== new())
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 use perl_symbol::index::SymbolIndex;
 

@@ -108,6 +108,12 @@ pub fn source_path_from_uri_or_path(input: &str) -> Option<PathBuf> {
 /// # Platform Support
 ///
 /// This function is not available on `wasm32` targets (no filesystem).
+#[expect(
+    clippy::map_err_ignore,
+    reason = "url::Url::from_file_path returns Result<Url, ()> — the error type is the unit type \
+              with no diagnostic payload; abs_path is embedded in the mapped error message so no \
+              context is lost."
+)]
 pub fn fs_path_to_uri<P: AsRef<Path>>(path: P) -> Result<String, String> {
     let path = normalize_filesystem_path(path.as_ref());
 

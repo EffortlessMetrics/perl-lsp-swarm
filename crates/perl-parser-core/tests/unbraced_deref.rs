@@ -37,7 +37,7 @@ fn first_expr_sexp(src: &str) -> String {
 
 #[test]
 fn braced_scalar_deref_is_unary() {
-    // ${$ref} must produce (unary_${} (variable $ ref))
+    // ${$ref} must produce (unary_${} (variable (sigil $) (name ref)))
     let sexp = first_expr_sexp("${$ref};");
     assert!(sexp.contains("unary_${}"), "braced scalar deref should be Unary: got {sexp}");
     assert!(!sexp.contains("variable $ $ref"), "inner var must not include leading $: got {sexp}");
@@ -47,7 +47,7 @@ fn braced_scalar_deref_is_unary() {
 fn braced_simple_scalar_name_is_variable_not_deref() {
     let sexp = first_expr_sexp("${sep};");
     assert!(
-        sexp.contains("(variable $ sep)"),
+        sexp.contains("(variable (sigil $) (name sep))"),
         "simple braced scalar should parse as a variable, got {sexp}"
     );
     assert!(
@@ -62,7 +62,7 @@ fn braced_simple_scalar_name_with_internal_whitespace_both_sides_is_variable_not
     // the no-space form ${sep} — must NOT become a symbolic dereference.
     let sexp = first_expr_sexp("${ sep };");
     assert!(
-        sexp.contains("(variable $ sep)"),
+        sexp.contains("(variable (sigil $) (name sep))"),
         "whitespace-padded braced scalar should parse as a variable, got {sexp}"
     );
     assert!(
@@ -76,7 +76,7 @@ fn braced_simple_scalar_name_with_leading_whitespace_is_variable_not_deref() {
     // ${sep } (whitespace only before the closing brace).
     let sexp = first_expr_sexp("${sep };");
     assert!(
-        sexp.contains("(variable $ sep)"),
+        sexp.contains("(variable (sigil $) (name sep))"),
         "leading-space braced scalar should parse as a variable, got {sexp}"
     );
     assert!(
@@ -90,7 +90,7 @@ fn braced_simple_scalar_name_with_trailing_whitespace_is_variable_not_deref() {
     // ${ sep} (whitespace only after the opening brace).
     let sexp = first_expr_sexp("${ sep};");
     assert!(
-        sexp.contains("(variable $ sep)"),
+        sexp.contains("(variable (sigil $) (name sep))"),
         "trailing-space braced scalar should parse as a variable, got {sexp}"
     );
     assert!(
@@ -101,14 +101,14 @@ fn braced_simple_scalar_name_with_trailing_whitespace_is_variable_not_deref() {
 
 #[test]
 fn braced_array_deref_is_unary() {
-    // @{$ref} must produce (unary_@{} (variable $ ref))
+    // @{$ref} must produce (unary_@{} (variable (sigil $) (name ref)))
     let sexp = first_expr_sexp("@{$ref};");
     assert!(sexp.contains("unary_@{}"), "braced array deref should be Unary: got {sexp}");
 }
 
 #[test]
 fn braced_hash_deref_is_unary() {
-    // %{$ref} must produce (unary_%{} (variable $ ref))
+    // %{$ref} must produce (unary_%{} (variable (sigil $) (name ref)))
     let sexp = first_expr_sexp("%{$ref};");
     assert!(sexp.contains("unary_%{}"), "braced hash deref should be Unary: got {sexp}");
 }
@@ -216,7 +216,7 @@ fn pid_special_var_unchanged() {
 fn plain_scalar_var_unchanged() {
     // A plain $ref must still be Variable{sigil:"$", name:"ref"}
     let sexp = first_expr_sexp("$ref;");
-    assert_eq!(sexp, "(variable $ ref)", "$ref must still be a plain variable");
+    assert_eq!(sexp, "(variable (sigil $) (name ref))", "$ref must still be a plain variable");
 }
 
 #[test]
@@ -224,7 +224,7 @@ fn plain_array_var_unchanged() {
     // A plain @array must still be Variable
     let sexp = first_expr_sexp("@array;");
     assert!(
-        sexp.contains("variable @ array"),
+        sexp.contains("variable (sigil @) (name array)"),
         "@array must still be a plain variable, got: {sexp}"
     );
 }
@@ -264,8 +264,8 @@ fn debug_catfile_unbraced() {
 //   -> 42 / 42
 //
 // Bug: before the fix, `${Foo::bar}` (no internal whitespace) produced
-// `(unary_${} (variable $ Foo::bar))` — a symbolic-dereference wrapper —
-// instead of folding to the bare scalar `(variable $ Foo::bar)`. Root cause
+// `(unary_${} (variable (sigil $) (name Foo::bar)))` — a symbolic-dereference wrapper —
+// instead of folding to the bare scalar `(variable (sigil $) (name Foo::bar))`. Root cause
 // was lexer-level: the braced-variable scan didn't consume `::`-delimited
 // segments, splitting the token stream as `Identifier("${Foo")`,
 // `Operator("::")`, `Identifier("bar")`, `RightBrace`.
@@ -273,11 +273,11 @@ fn debug_catfile_unbraced() {
 
 #[test]
 fn braced_qualified_scalar_no_space_folds_to_variable() {
-    // ${Foo::bar} (no internal whitespace) must fold to (variable $ Foo::bar),
+    // ${Foo::bar} (no internal whitespace) must fold to (variable (sigil $) (name Foo::bar)),
     // not stay a symbolic dereference.
     let sexp = first_expr_sexp("${Foo::bar};");
     assert_eq!(
-        sexp, "(variable $ Foo::bar)",
+        sexp, "(variable (sigil $) (name Foo::bar))",
         "${{Foo::bar}} must fold to a plain qualified scalar variable, got {sexp}"
     );
     assert!(!sexp.contains("unary_${}"), "${{Foo::bar}} must NOT be a symbolic deref, got {sexp}");
@@ -288,7 +288,7 @@ fn braced_qualified_scalar_with_whitespace_folds_to_variable() {
     // ${ Foo::bar } (whitespace on both sides) must fold the same way.
     let sexp = first_expr_sexp("${ Foo::bar };");
     assert_eq!(
-        sexp, "(variable $ Foo::bar)",
+        sexp, "(variable (sigil $) (name Foo::bar))",
         "${{ Foo::bar }} must fold to a plain qualified scalar variable, got {sexp}"
     );
     assert!(
@@ -310,7 +310,7 @@ fn braced_qualified_scalar_three_segments_folds_to_variable() {
     // Multi-level package paths (Foo::Bar::baz) must fold the same way.
     let sexp = first_expr_sexp("${Foo::Bar::baz};");
     assert_eq!(
-        sexp, "(variable $ Foo::Bar::baz)",
+        sexp, "(variable (sigil $) (name Foo::Bar::baz))",
         "${{Foo::Bar::baz}} must fold to a plain qualified scalar variable, got {sexp}"
     );
 }
@@ -357,16 +357,16 @@ fn braced_hash_qualified_deref_still_a_dereference() {
 
 #[test]
 fn braced_qualified_scalar_with_arrow_hash_deref_keeps_variable_operand() {
-    // ${Foo::bar->{baz}} must keep `Foo::bar` as a `(variable $ Foo::bar)`
+    // ${Foo::bar->{baz}} must keep `Foo::bar` as a `(variable (sigil $) (name Foo::bar))`
     // operand of the arrow-hash-deref postfix, not lose it to a bareword
     // `(identifier Foo::bar)`.
     let sexp = first_expr_sexp("${Foo::bar->{baz}};");
     assert!(
-        sexp.contains("(variable $ Foo::bar)"),
+        sexp.contains("(variable (sigil $) (name Foo::bar))"),
         "${{Foo::bar->{{baz}}}} must keep Foo::bar as a variable operand, got {sexp}"
     );
     assert!(
-        !sexp.contains("(identifier Foo::bar)"),
+        !sexp.contains("(identifier (name Foo::bar))"),
         "${{Foo::bar->{{baz}}}} must not fold Foo::bar into a bareword identifier, got {sexp}"
     );
 }
@@ -377,11 +377,11 @@ fn braced_qualified_scalar_with_subscript_keeps_variable_operand() {
     // subscript (no `->`) instead of an arrow.
     let sexp = first_expr_sexp("${Foo::bar[0]};");
     assert!(
-        sexp.contains("(variable $ Foo::bar)"),
+        sexp.contains("(variable (sigil $) (name Foo::bar))"),
         "${{Foo::bar[0]}} must keep Foo::bar as a variable operand, got {sexp}"
     );
     assert!(
-        !sexp.contains("(identifier Foo::bar)"),
+        !sexp.contains("(identifier (name Foo::bar))"),
         "${{Foo::bar[0]}} must not fold Foo::bar into a bareword identifier, got {sexp}"
     );
 }

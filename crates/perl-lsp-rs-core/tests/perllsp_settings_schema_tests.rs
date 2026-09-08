@@ -1,5 +1,6 @@
 use perl_lsp_rs_core::config::{FormatterMode, Perl5LibPrecedence, ServerConfig, WorkspaceConfig};
 use perl_lsp_rs_core::runtime::LspLimits;
+use perl_test_must::must_some_with;
 use serde_json::{Value, json};
 use std::{error::Error, time::Duration};
 
@@ -398,9 +399,10 @@ fn generic_schema_excludes_security_sensitive_lsp_settings() -> Result<(), Box<d
     // #4997: activation and selection fields remain documented for the future
     // trusted adapter but advertise no generic client transport.
     for activation_field in ["enabled", "provider", "model"] {
-        let field = ai
-            .get(activation_field)
-            .unwrap_or_else(|| panic!("aiCompletion.{activation_field} must stay documented"));
+        let field = must_some_with(
+            ai.get(activation_field),
+            format_args!("aiCompletion.{activation_field} must stay documented"),
+        );
         assert_eq!(
             field["x-perllsp-transports"],
             json!([]),

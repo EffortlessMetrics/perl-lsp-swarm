@@ -4,6 +4,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { downloadAndUnzipVSCode, runTests } from '@vscode/test-electron';
 import { resolveVSCodeTestVersion } from '../vscodeHostVersion';
+import { downloadVsCodeHostOrWriteFailureReceipt } from '../vscodeHostResolution';
 import { runWithoutForcedWorkspaceTrust } from '../runVsCodeTests';
 import { workspaceSmokeLaunchArgs, workspaceSmokeTrustMode } from '../workspaceSmokeOptions';
 
@@ -84,38 +85,42 @@ async function main(): Promise<void> {
       fs.writeFileSync(path.join(settingsDir, 'settings.json'), JSON.stringify(settings, null, 2));
     }
 
-    const testOptions = {
-      version: vscodeVersion,
-      extensionDevelopmentPath,
-      extensionTestsPath,
-      extensionTestsEnv: {
-        ...process.env,
-        PERL_LSP_EXTENSION_TEST_SKIP_STARTUP:
-          process.env.PERL_LSP_EXTENSION_TEST_SKIP_STARTUP ?? '1',
-        PERL_LSP_SMOKE_RECEIPTS_DIR: receiptsRoot,
-        PERL_LSP_SMOKE_SOURCE_LABEL: process.env.PERL_LSP_SMOKE_SOURCE_LABEL || 'integration',
-        PERL_LSP_TOOLCHAIN_NODE_VERSION: toolchainNodeVersion,
-        PERL_LSP_TOOLCHAIN_NPM_VERSION: toolchainNpmVersionValue,
-        PERL_LSP_VSCODE_VERSION: vscodeVersion,
-        VSCODE_TEST_GREP: grep ?? '',
-      },
-      launchArgs: [
-        ...workspaceSmokeLaunchArgs(workspacePath),
-        `--user-data-dir=${userDataDir}`,
-        `--extensions-dir=${extensionsDir}`,
-      ],
+    const { executablePath: vscodeExecutablePath } = await downloadVsCodeHostOrWriteFailureReceipt(
+      receiptsRoot,
+      vscodeVersion,
+      downloadAndUnzipVSCode,
+    );
+    const extensionTestsEnv = {
+      ...process.env,
+      PERL_LSP_EXTENSION_TEST_SKIP_STARTUP: process.env.PERL_LSP_EXTENSION_TEST_SKIP_STARTUP ?? '1',
+      PERL_LSP_SMOKE_RECEIPTS_DIR: receiptsRoot,
+      PERL_LSP_SMOKE_SOURCE_LABEL: process.env.PERL_LSP_SMOKE_SOURCE_LABEL || 'integration',
+      PERL_LSP_TOOLCHAIN_NODE_VERSION: toolchainNodeVersion,
+      PERL_LSP_TOOLCHAIN_NPM_VERSION: toolchainNpmVersionValue,
+      PERL_LSP_VSCODE_VERSION: vscodeVersion,
+      VSCODE_TEST_GREP: grep ?? '',
     };
+    const launchArgs = [
+      ...workspaceSmokeLaunchArgs(workspacePath),
+      `--user-data-dir=${userDataDir}`,
+      `--extensions-dir=${extensionsDir}`,
+    ];
     if (workspaceTrustMode === 'untrusted') {
-      const vscodeExecutablePath = await downloadAndUnzipVSCode({ version: vscodeVersion });
       await runWithoutForcedWorkspaceTrust({
         vscodeExecutablePath,
         extensionDevelopmentPath,
         extensionTestsPath,
-        extensionTestsEnv: testOptions.extensionTestsEnv,
-        launchArgs: testOptions.launchArgs,
+        extensionTestsEnv,
+        launchArgs,
       });
     } else {
-      await runTests(testOptions);
+      await runTests({
+        vscodeExecutablePath,
+        extensionDevelopmentPath,
+        extensionTestsPath,
+        extensionTestsEnv,
+        launchArgs,
+      });
     }
   } finally {
     for (const directory of [generatedWorkspacePath, userDataDir, extensionsDir]) {

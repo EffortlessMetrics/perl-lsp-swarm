@@ -136,7 +136,7 @@ fn test_qw_delimiters() {
     let ast = must(result);
     assert_eq!(
         ast.to_sexp(),
-        r#"(source_file (array (string "one") (string "two") (string "three")))"#
+        r#"(source_file (statements (expression_statement (expression (array (elements (string (value one))) (elements (string (value two))) (elements (string (value three))))))))"#
     );
 
     // Test qw with brackets
@@ -144,28 +144,40 @@ fn test_qw_delimiters() {
     let result = parser.parse();
     assert!(result.is_ok());
     let ast = must(result);
-    assert_eq!(ast.to_sexp(), r#"(source_file (array (string "foo") (string "bar")))"#);
+    assert_eq!(
+        ast.to_sexp(),
+        r#"(source_file (statements (expression_statement (expression (array (elements (string (value foo))) (elements (string (value bar))))))))"#
+    );
 
     // Test qw with non-paired delimiters
     let mut parser = Parser::new("qw/alpha beta/");
     let result = parser.parse();
     assert!(result.is_ok());
     let ast = must(result);
-    assert_eq!(ast.to_sexp(), r#"(source_file (array (string "alpha") (string "beta")))"#);
+    assert_eq!(
+        ast.to_sexp(),
+        r#"(source_file (statements (expression_statement (expression (array (elements (string (value alpha))) (elements (string (value beta))))))))"#
+    );
 
     // Test qw with exclamation marks
     let mut parser = Parser::new("qw!hello world!");
     let result = parser.parse();
     assert!(result.is_ok());
     let ast = must(result);
-    assert_eq!(ast.to_sexp(), r#"(source_file (array (string "hello") (string "world")))"#);
+    assert_eq!(
+        ast.to_sexp(),
+        r#"(source_file (statements (expression_statement (expression (array (elements (string (value hello))) (elements (string (value world))))))))"#
+    );
 
     // Test whitespace between quote-like operator and delimiter.
     let mut parser = Parser::new("qw (spaced delimiter)");
     let result = parser.parse();
     assert!(result.is_ok());
     let ast = must(result);
-    assert_eq!(ast.to_sexp(), r#"(source_file (array (string "spaced") (string "delimiter")))"#);
+    assert_eq!(
+        ast.to_sexp(),
+        r#"(source_file (statements (expression_statement (expression (array (elements (string (value spaced))) (elements (string (value delimiter))))))))"#
+    );
 }
 
 #[test]
@@ -186,7 +198,7 @@ fn test_block_vs_hash_context() {
     // Statement context: block with hash inside
     let sexp = ast.to_sexp();
     assert!(
-        sexp.contains("(block (expression_statement (hash"),
+        sexp.contains("(block (statements (expression_statement (expression (hash"),
         "Statement context should have block containing hash, got: {}",
         sexp
     );
@@ -346,7 +358,7 @@ fn test_source_filter_detection() {
     assert!(result.is_ok());
     let ast = must(result);
     let sexp = ast.to_sexp();
-    assert!(sexp.contains("(risk:filter)"), "Should detect filter usage in: {}", sexp);
+    assert!(sexp.contains("(has_filter_risk true)"), "Should detect filter usage in: {}", sexp);
 
     // Safe module
     let code_safe = "use strict;";
@@ -356,7 +368,7 @@ fn test_source_filter_detection() {
     let ast_safe = must(result_safe);
     let sexp_safe = ast_safe.to_sexp();
     assert!(
-        !sexp_safe.contains("(risk:filter)"),
+        !sexp_safe.contains("(has_filter_risk true)"),
         "Should not flag strict as filter in: {}",
         sexp_safe
     );
@@ -377,7 +389,10 @@ fn test_regex_code_execution_annotated() {
         assert!(result.is_ok(), "{name} should parse successfully: {:?}", result.err());
         let ast = must(result);
         let sexp = ast.to_sexp();
-        assert!(sexp.contains("(risk:code)"), "{name} should mark embedded code: {sexp}");
+        assert!(
+            sexp.contains("(has_embedded_code true)"),
+            "{name} should mark embedded code: {sexp}"
+        );
         assert!(
             !sexp.contains("Embedded code execution is not allowed in regex patterns"),
             "{name} should not reject valid Perl embedded-code regex syntax: {sexp}"
@@ -392,7 +407,11 @@ fn test_regex_code_execution_annotated() {
     assert!(result_safe.is_ok());
     let ast_safe = must(result_safe);
     let sexp_safe = ast_safe.to_sexp();
-    assert!(!sexp_safe.contains("(risk:code)"), "Should not flag safe regex in: {}", sexp_safe);
+    assert!(
+        !sexp_safe.contains("(has_embedded_code true)"),
+        "Should not flag safe regex in: {}",
+        sexp_safe
+    );
 }
 
 #[test]
@@ -403,7 +422,7 @@ fn test_regex_code_execution_preserves_nested_quantifier_diagnostic() {
     assert!(result.is_ok(), "embedded-code regex should parse successfully: {:?}", result.err());
     let ast = must(result);
     let sexp = ast.to_sexp();
-    assert!(sexp.contains("(risk:code)"), "Should annotate embedded code: {sexp}");
+    assert!(sexp.contains("(has_embedded_code true)"), "Should annotate embedded code: {sexp}");
 
     let found = parser.errors().iter().any(|error| {
         error.to_string().contains("Nested quantifiers detected")

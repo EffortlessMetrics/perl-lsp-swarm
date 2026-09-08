@@ -1,5 +1,5 @@
 ---
-source: crates/perl-parser/tests/ast_snapshot_tests.rs
+source: crates/perl-parser/tests/ast_snap.rs
 expression: "parse_sexp(\"my $code = sub { my ($x) = @_; return $x * 2; };\")"
 ---
-(source_file (my_declaration (variable $ code)(anonymous_subroutine_expression (block (my_declaration ((variable $ x))(variable @ _)) (return (binary_* (variable $ x) (number 2)))))))
+(source_file (statements (my_declaration (declarator my) (variable (variable (sigil $) (name code))) (initializer (anonymous_subroutine_expression (body (block (statements (my_declaration (declarator my) (variable (variable (sigil $) (name x))) (initializer (variable (sigil @) (name _))))) (statements (return (value (binary_* (op *) (left (variable (sigil $) (name x))) (right (number (value 2))))))))))))))

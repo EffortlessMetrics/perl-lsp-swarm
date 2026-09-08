@@ -62,7 +62,10 @@ fn test_use_builtin_qw_all_common_funcs_clean() -> Result<(), Box<dyn std::error
 #[test]
 fn test_use_builtin_sexp_structure() -> Result<(), Box<dyn std::error::Error>> {
     let sexp = parse_ok("use builtin qw(true false);");
-    assert!(sexp.contains("(use builtin"), "expected use-builtin node in sexp, got: {sexp}");
+    assert!(
+        sexp.contains("(use (module builtin)"),
+        "expected use-builtin node in sexp, got: {sexp}"
+    );
     Ok(())
 }
 
@@ -133,15 +136,16 @@ fn test_builtin_blessed_as_print_arg_clean() -> Result<(), Box<dyn std::error::E
 #[test]
 fn test_builtin_blessed_as_print_arg_sexp() -> Result<(), Box<dyn std::error::Error>> {
     // The sexp renders qualified calls as ambiguous_function_call_expression with a
-    // (function) child — the qualified name text is the node's text value, not shown
-    // verbatim in the sexp.  Assert structural shape rather than name appearance.
+    // (name ...) payload for the qualified identifier.
     let sexp = parse_ok("print builtin::blessed($obj);");
     assert!(
-        sexp.contains("(call print ("),
+        sexp.contains("(call (name print) ("),
         "expected print call wrapping the builtin::blessed call, got: {sexp}"
     );
     assert!(
-        sexp.contains("(ambiguous_function_call_expression (function) (variable $ obj))"),
+        sexp.contains(
+            "(ambiguous_function_call_expression (name builtin::blessed) (args (variable (sigil $) (name obj)))"
+        ),
         "expected ambiguous_function_call_expression inside print for builtin::blessed($obj), got: {sexp}"
     );
     Ok(())
@@ -157,13 +161,13 @@ fn test_builtin_is_bool_in_if_condition_clean() -> Result<(), Box<dyn std::error
 
 #[test]
 fn test_builtin_is_bool_in_if_condition_sexp() -> Result<(), Box<dyn std::error::Error>> {
-    // The sexp renders qualified calls as ambiguous_function_call_expression with a
-    // (function) child — qualified name text is the node's text value, not shown verbatim.
-    // Assert structural shape: if-node with a function-call condition.
+    // Qualified calls render as ambiguous_function_call_expression with a (name ...) payload.
     let sexp = parse_ok("if (builtin::is_bool($x)) { 1 }");
     assert!(sexp.contains("(if "), "expected if-node in sexp, got: {sexp}");
     assert!(
-        sexp.contains("(ambiguous_function_call_expression (function) (variable $ x))"),
+        sexp.contains(
+            "(ambiguous_function_call_expression (name builtin::is_bool) (args (variable (sigil $) (name x)))"
+        ),
         "expected qualified call in if condition for builtin::is_bool($x), got: {sexp}"
     );
     Ok(())

@@ -1,0 +1,190 @@
+{
+  "schema_version": "authority_transfer_programme_fixture.v1",
+  "description": "Static rejection: the same stable node ID is declared twice.",
+  "expected_code": "DUPLICATE_NODE_ID",
+  "graph": {
+    "schema_version": "authority_transfer_programme_graph.v1",
+    "programme_issue": 11696,
+    "rails": [
+      "control_plane"
+    ],
+    "operation_profiles": [
+      "op.programme-controller.v1",
+      "op.static-contract.v1",
+      "op.consumer-cutover.v1",
+      "op.fanin-integration.v1",
+      "op.store-publication.v1",
+      "op.advisory-preflight.v1",
+      "op.live-promotion.v1",
+      "op.retirement.v1",
+      "op.source-adapter.v1",
+      "op.compiler-implementation.v1"
+    ],
+    "evidence_profiles": [
+      "ev.not-applicable.v1",
+      "ev.static-validator.v1",
+      "ev.consumer-denominator.v1",
+      "ev.exact-process-receipt.v1",
+      "ev.live-required-promotion.v1",
+      "ev.predecessor-retired.v1"
+    ],
+    "first_falsifiers": [
+      {
+        "id": "FF02",
+        "statement": "Governance becomes buildable."
+      },
+      {
+        "id": "FF05",
+        "statement": "Consumer denominator row lost."
+      },
+      {
+        "id": "FF07",
+        "statement": "Optional live edge hardened."
+      },
+      {
+        "id": "FF08",
+        "statement": "Unordered exclusive writers."
+      },
+      {
+        "id": "FF09",
+        "statement": "File-only serialization."
+      },
+      {
+        "id": "FF10",
+        "statement": "Retirement without exit."
+      },
+      {
+        "id": "FF12",
+        "statement": "Artifact without owner."
+      }
+    ],
+    "nodes": [
+      {
+        "node_id": "K0",
+        "issue": 900001,
+        "controller": null,
+        "rail": "control_plane",
+        "phase": "fixture",
+        "kind": "controller",
+        "buildable": false,
+        "observation_optional": false,
+        "edges": {
+          "hard": [],
+          "evidence": [],
+          "optional": [],
+          "parallel_after": [],
+          "fan_in": []
+        },
+        "operation_profile": "op.programme-controller.v1",
+        "evidence_profile": "ev.not-applicable.v1",
+        "authority_inputs": [],
+        "authority_outputs": [],
+        "conflicts": {
+          "exclusive": [],
+          "shared": []
+        },
+        "claim_ceiling": "One bounded proposition.",
+        "non_claims": [
+          "None beyond the claim ceiling."
+        ],
+        "first_falsifier": "FF02",
+        "artifacts": [],
+        "predecessor_exit": null,
+        "handoff": null,
+        "terminal_relation": "none"
+      },
+      {
+        "node_id": "L1",
+        "issue": 900002,
+        "controller": "K0",
+        "rail": "control_plane",
+        "phase": "fixture",
+        "kind": "contract",
+        "buildable": true,
+        "observation_optional": false,
+        "edges": {
+          "hard": [],
+          "evidence": [],
+          "optional": [],
+          "parallel_after": [],
+          "fan_in": []
+        },
+        "operation_profile": "op.static-contract.v1",
+        "evidence_profile": "ev.static-validator.v1",
+        "authority_inputs": [],
+        "authority_outputs": [
+          {
+            "key": "m.x",
+            "mode": "exclusive"
+          }
+        ],
+        "conflicts": {
+          "exclusive": [
+            "m.x"
+          ],
+          "shared": []
+        },
+        "claim_ceiling": "One bounded proposition.",
+        "non_claims": [
+          "None beyond the claim ceiling."
+        ],
+        "first_falsifier": "FF02",
+        "artifacts": [
+          {
+            "id": "m.x.art",
+            "owner": "L1"
+          }
+        ],
+        "predecessor_exit": null,
+        "handoff": "K0",
+        "terminal_relation": "close_leaf"
+      },
+      {
+        "node_id": "L1",
+        "issue": 900003,
+        "controller": "K0",
+        "rail": "control_plane",
+        "phase": "fixture",
+        "kind": "compiler",
+        "buildable": true,
+        "observation_optional": false,
+        "edges": {
+          "hard": [],
+          "evidence": [],
+          "optional": [],
+          "parallel_after": [],
+          "fan_in": []
+        },
+        "operation_profile": "op.compiler-implementation.v1",
+        "evidence_profile": "ev.static-validator.v1",
+        "authority_inputs": [],
+        "authority_outputs": [
+          {
+            "key": "m.y",
+            "mode": "exclusive"
+          }
+        ],
+        "conflicts": {
+          "exclusive": [
+            "m.y"
+          ],
+          "shared": []
+        },
+        "claim_ceiling": "One bounded proposition.",
+        "non_claims": [
+          "None beyond the claim ceiling."
+        ],
+        "first_falsifier": "FF02",
+        "artifacts": [
+          {
+            "id": "m.y.art",
+            "owner": "L1"
+          }
+        ],
+        "predecessor_exit": null,
+        "handoff": "K0",
+        "terminal_relation": "close_leaf"
+      }
+    ]
+  }
+}

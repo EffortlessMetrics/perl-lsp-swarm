@@ -12,7 +12,14 @@ pub enum FileRole {
     Lib,
     /// A test file (`.t`, or under `t/` / `xt/`).
     Test,
-    /// An executable script (`.pl`, or under `bin/` / `script/`).
+    /// An executable script (`.pl`, `.psgi`, `.cgi`, or under `bin/` /
+    /// `script/`).
+    ///
+    /// PSGI (`app.psgi`) and CGI (`*.cgi`) applications are scripts in exactly
+    /// the same sense as `.pl`: they run under package `main` unless they
+    /// declare a package inline, and they must not require an explicit package
+    /// declaration to parse. The diagnostics layer groups the same set as
+    /// script-like extensions when checking for a missing package declaration.
     Script,
     /// Distribution metadata (`META.json`, `Makefile.PL`, `cpanfile`, …).
     DistMetadata,
@@ -61,6 +68,8 @@ impl FileRole {
             return Self::Lib;
         }
         if path.ends_with(".pl")
+            || path.ends_with(".psgi")
+            || path.ends_with(".cgi")
             || path.starts_with("bin/")
             || path.starts_with("script/")
             || path.contains("/bin/")
@@ -126,6 +135,17 @@ mod tests {
     fn test_role_wins_over_pm_extension() {
         // A `.pm` under t/ is test-support code, classified as Test.
         assert_eq!(FileRole::from_path("t/lib/Helper.pm"), FileRole::Test);
+    }
+
+    #[test]
+    fn web_script_extensions_route_like_scripts() {
+        // PSGI and CGI applications are scripts: they run under package
+        // `main` unless they declare a package inline, mirroring `.pl` here
+        // and the script-like extension set in the PL200 diagnostic check.
+        assert_eq!(FileRole::from_path("app.psgi"), FileRole::Script);
+        assert_eq!(FileRole::from_path("app/main.psgi"), FileRole::Script);
+        assert_eq!(FileRole::from_path("www/cgi-bin/form.cgi"), FileRole::Script);
+        assert_eq!(FileRole::from_path("form.CGI"), FileRole::Unknown);
     }
 
     #[test]

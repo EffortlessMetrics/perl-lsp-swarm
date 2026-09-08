@@ -47,7 +47,7 @@ my $y = 1;"#,
     );
     let sexp = ast.to_sexp();
     assert!(
-        sexp.contains("(variable $ y)"),
+        sexp.contains("(variable (sigil $) (name y))"),
         "expected parser to continue after slash-delimited qw list, got: {sexp}"
     );
     assert_clean_parse(

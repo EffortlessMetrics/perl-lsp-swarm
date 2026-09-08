@@ -840,46 +840,90 @@ mod module_hover_tests {
         Ok(())
     }
 
-    #[cfg(unix)]
     #[test]
-    fn hover_on_use_statement_honors_absolute_perl5lib_outside_workspace()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let original_perl5lib = std::env::var_os("PERL5LIB");
-
+    fn hover_on_versioned_use_resolves_module_head() -> Result<(), Box<dyn std::error::Error>> {
         let temp = tempfile::tempdir()?;
         let workspace = temp.path().join("workspace");
-        let external_lib = temp.path().join("external").join("lib");
-        let module_dir = external_lib.join("External");
+        let module_dir = workspace.join("lib").join("Foo");
         fs::create_dir_all(&module_dir)?;
-        fs::write(module_dir.join("Tool.pm"), "package External::Tool; 1;")?;
-
-        unsafe {
-            std::env::set_var("PERL5LIB", &external_lib);
-        }
+        fs::write(module_dir.join("Module.pm"), "package Foo::Module; 1;")?;
 
         let workspace_path = workspace.to_str().ok_or("non-UTF-8 workspace path")?;
         let server = TestServerBuilder::new().with_workspace(workspace_path).build();
 
-        let code = "use External::Tool;\nmy $x = 1;\n";
+        let code = "use Foo::Module 1.23;\nmy $x = 1;\n";
         let uri = "file:///test.pl";
         server.open_document(uri, code);
 
         let response = server.get_hover(uri, 0, 5);
-        let content = hover_content(&response).ok_or("expected hover content for use statement")?;
+        let content = hover_content(&response).ok_or("expected hover content for versioned use")?;
 
+        assert!(content.contains("Foo::Module"), "hover should show module head, got: {content}");
         assert!(
-            content.contains("External::Tool"),
-            "hover should show module name, got: {content}"
+            content.contains("Module.pm") && content.contains("Go to module"),
+            "versioned use should resolve the module head, got: {content}"
         );
-        assert!(
-            content.contains("Tool.pm") && content.contains("Go to module"),
-            "hover should show resolved path for PERL5LIB module, got: {content}"
-        );
+        Ok(())
+    }
 
-        match original_perl5lib {
-            Some(value) => unsafe { std::env::set_var("PERL5LIB", value) },
-            None => unsafe { std::env::remove_var("PERL5LIB") },
+    #[cfg(unix)]
+    #[test]
+    fn hover_on_use_statement_honors_absolute_perl5lib_outside_workspace()
+    -> Result<(), Box<dyn std::error::Error>> {
+        const CHILD_MARKER: &str = "PERL_LSP_SEMANTIC_HOVER_PERL5LIB_CHILD";
+        const SELECTOR: &str =
+            "module_hover_tests::hover_on_use_statement_honors_absolute_perl5lib_outside_workspace";
+
+        if std::env::var_os(CHILD_MARKER).is_some() {
+            let external_lib = std::env::var_os("PERL5LIB").ok_or("child PERL5LIB missing")?;
+            let external_lib = std::path::PathBuf::from(external_lib);
+            let module_dir = external_lib.join("External");
+            fs::create_dir_all(&module_dir)?;
+            fs::write(module_dir.join("Tool.pm"), "package External::Tool; 1;")?;
+
+            let temp = tempfile::tempdir()?;
+            let workspace = temp.path().join("workspace");
+            fs::create_dir_all(&workspace)?;
+            let workspace_path = workspace.to_str().ok_or("non-UTF-8 workspace path")?;
+            let server = TestServerBuilder::new().with_workspace(workspace_path).build();
+            let code = "use External::Tool;\nmy $x = 1;\n";
+            let uri = "file:///test.pl";
+            server.open_document(uri, code);
+            let response = server.get_hover(uri, 0, 5);
+            let content =
+                hover_content(&response).ok_or("expected hover content for use statement")?;
+            assert!(
+                content.contains("External::Tool"),
+                "hover should show module name, got: {content}"
+            );
+            assert!(
+                content.contains("Tool.pm") && content.contains("Go to module"),
+                "hover should show resolved path for PERL5LIB module, got: {content}"
+            );
+            println!("PERL_LSP_SEMANTIC_HOVER_PERL5LIB_CHILD_RAN");
+            return Ok(());
         }
+
+        let temp = tempfile::tempdir()?;
+        let external_lib = temp.path().join("external").join("lib");
+        fs::create_dir_all(&external_lib)?;
+        let before = std::env::var_os("PERL5LIB");
+        let mut command = std::process::Command::new(std::env::current_exe()?);
+        command.args(["--exact", SELECTOR, "--nocapture"]);
+        command.env(CHILD_MARKER, "1");
+        command.env("PERL5LIB", &external_lib);
+        let output = command.output()?;
+        assert!(
+            output.status.success(),
+            "child hover failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains("PERL_LSP_SEMANTIC_HOVER_PERL5LIB_CHILD_RAN"),
+            "child selector did not execute the intended test: {stdout}"
+        );
+        assert_eq!(std::env::var_os("PERL5LIB"), before, "parent environment changed");
         Ok(())
     }
 

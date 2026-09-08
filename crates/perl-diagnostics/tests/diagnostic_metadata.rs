@@ -2,6 +2,7 @@
 //!
 //! These tests exercise every known diagnostic variant so newly added codes must
 //! keep parse, URL, hint, and tag metadata internally consistent.
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 use perl_diagnostics::catalog::diagnostic_meta;
 use perl_diagnostics::codes::{DiagnosticCode, DiagnosticTag};

@@ -4,6 +4,7 @@
 //! parser-error baselines, etc.) used by the `just` recipes and CI gates.
 // CLI binary: println!/eprintln! are intentional user-facing output.
 #![allow(clippy::print_stderr, clippy::print_stdout)]
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 use perl_ci_hygiene::version_sync;
 use perl_ci_hygiene::walk_rs_files;
@@ -31,6 +32,7 @@ use crate::cli::{Cli, CliCommand};
 use crate::commands::panic_test::{check_panic_test, check_panic_test_with_registry};
 use crate::commands::print_in_lib::check_print_in_lib;
 use crate::commands::regex_static::check_regex_static;
+use crate::commands::serial_test::{check_serial_test, check_serial_test_with_registry};
 #[cfg(test)]
 use crate::commands::todos::{
     has_unlinked_todo_in_hash_line, has_unlinked_todo_in_perl_line, has_unlinked_todo_in_rust_line,
@@ -97,7 +99,6 @@ fn run() -> Result<i32> {
         CliCommand::CargoPackageWorkspaceDryRun { crates } => {
             cmd_cargo_package_workspace_dry_run(&repo_root, &crates)?
         }
-        CliCommand::TestWithOverride => cmd_test_with_override(&repo_root)?,
         CliCommand::SimpleLspTest => cmd_simple_lsp_test(&repo_root)?,
         CliCommand::CheckVersionSync => cmd_check_version_sync(&repo_root)?,
         CliCommand::BumpVersion { version } => cmd_bump_version(&repo_root, &version)?,
@@ -130,6 +131,18 @@ fn run() -> Result<i32> {
                 check_panic_test_with_registry(&repo_root, &identity_registry)?
             } else {
                 check_panic_test(&repo_root)?
+            }
+        }
+        CliCommand::CheckMustContext { base } => {
+            commands::must_context::check(&repo_root, base.as_deref())?
+        }
+        CliCommand::CheckSerialTest { inventory, identity_registry } => {
+            if inventory {
+                commands::serial_test::write_inventory(&repo_root)?
+            } else if let Some(identity_registry) = identity_registry {
+                check_serial_test_with_registry(&repo_root, &identity_registry)?
+            } else {
+                check_serial_test(&repo_root)?
             }
         }
         CliCommand::CheckPrintInLib => check_print_in_lib(&repo_root)?,
@@ -363,15 +376,29 @@ fn cmd_preflight(_repo_root: &Path) -> Result<i32> {
     Ok(0)
 }
 
+fn cargo_test_args(cargo_args: &[String], rust_test_threads: &str) -> Vec<String> {
+    let mut args = vec!["test".to_owned()];
+    if let Some(separator) = cargo_args.iter().position(|arg| arg == "--") {
+        args.extend_from_slice(&cargo_args[..separator]);
+        args.push("--".to_owned());
+        args.extend_from_slice(&cargo_args[separator + 1..]);
+    } else {
+        args.extend_from_slice(cargo_args);
+        args.push("--".to_owned());
+    }
+    if !args.iter().any(|arg| arg == "--test-threads" || arg.starts_with("--test-threads=")) {
+        args.push(format!("--test-threads={rust_test_threads}"));
+    }
+    args
+}
+
 fn cmd_test_capped(repo_root: &Path, cargo_args: &[String]) -> Result<i32> {
     cmd_preflight(repo_root)?;
 
     let rust_test_threads = env::var("RUST_TEST_THREADS").unwrap_or_else(|_| "2".to_string());
     println!("Running Rust tests with {rust_test_threads} threads...");
 
-    let mut args: Vec<String> =
-        vec!["test".to_string(), "--".to_string(), format!("--test-threads={rust_test_threads}")];
-    args.extend_from_slice(cargo_args);
+    let args = cargo_test_args(cargo_args, &rust_test_threads);
     let refs: Vec<&str> = args.iter().map(String::as_str).collect();
     command_status_strict(
         repo_root,
@@ -384,9 +411,7 @@ fn cmd_test_capped(repo_root: &Path, cargo_args: &[String]) -> Result<i32> {
 
 fn cmd_e2e_gate(repo_root: &Path, cargo_args: &[String]) -> Result<i32> {
     let rust_test_threads = env::var("RUST_TEST_THREADS").unwrap_or_else(|_| "2".to_string());
-    let mut args: Vec<String> =
-        vec!["test".to_string(), "--".to_string(), format!("--test-threads={rust_test_threads}")];
-    args.extend_from_slice(cargo_args);
+    let args = cargo_test_args(cargo_args, &rust_test_threads);
     let refs: Vec<&str> = args.iter().map(String::as_str).collect();
 
     // flock is a Linux/macOS utility and does not exist on Windows.
@@ -425,8 +450,10 @@ fn cmd_e2e_gate(repo_root: &Path, cargo_args: &[String]) -> Result<i32> {
 
         if command_status(repo_root, "flock", &["-n", lock_file, "true"], &[])? == 0 {
             println!("E2E slot ready");
-            let direct_args =
-                std::iter::once(lock_file).chain(refs.iter().copied()).collect::<Vec<_>>();
+            let direct_args = std::iter::once(lock_file)
+                .chain(std::iter::once("cargo"))
+                .chain(refs.iter().copied())
+                .collect::<Vec<_>>();
             command_status_strict(
                 repo_root,
                 "flock",
@@ -437,8 +464,10 @@ fn cmd_e2e_gate(repo_root: &Path, cargo_args: &[String]) -> Result<i32> {
         }
 
         println!("E2E slot busy → waiting...");
-        let blocking_args =
-            std::iter::once(lock_file).chain(refs.iter().copied()).collect::<Vec<_>>();
+        let blocking_args = std::iter::once(lock_file)
+            .chain(std::iter::once("cargo"))
+            .chain(refs.iter().copied())
+            .collect::<Vec<_>>();
         command_status_strict(
             repo_root,
             "flock",
@@ -1275,28 +1304,6 @@ fn cmd_compare_benchmarks(repo_root: &Path, args: &[String]) -> Result<i32> {
     argv.extend_from_slice(args);
     let refs: Vec<&str> = argv.iter().map(String::as_str).collect();
     command_status_strict(repo_root, "python3", &refs, &[])?;
-    Ok(0)
-}
-
-fn cmd_test_with_override(repo_root: &Path) -> Result<i32> {
-    println!("Testing with minimal features catalog...");
-    command_status_strict(
-        repo_root,
-        "cargo",
-        &["test", "-p", "perl-parser", "--test", "lsp_feature_gating_test", "--", "--nocapture"],
-        &[("FEATURES_TOML_OVERRIDE", "crates/perl-parser/tests/data/features_minimal.toml")],
-    )?;
-
-    println!();
-    println!("Testing with disabled features catalog...");
-    command_status_strict(
-        repo_root,
-        "cargo",
-        &["test", "-p", "perl-parser", "--test", "lsp_features_snapshot_test", "--", "--nocapture"],
-        &[("FEATURES_TOML_OVERRIDE", "crates/perl-parser/tests/data/features_disabled_test.toml")],
-    )?;
-
-    println!("✅ Override testing complete!");
     Ok(0)
 }
 
@@ -3068,6 +3075,41 @@ mod tests {
     use super::*;
 
     #[test]
+    fn cargo_wrapper_keeps_cargo_args_before_test_harness_separator() {
+        let cargo_args = ["--package".to_owned(), "perl-lsp-rs-core".to_owned()];
+        assert_eq!(
+            cargo_test_args(&cargo_args, "2"),
+            ["test", "--package", "perl-lsp-rs-core", "--", "--test-threads=2"]
+        );
+    }
+
+    #[test]
+    fn cargo_wrapper_preserves_explicit_harness_separator() {
+        let cargo_args = [
+            "--package".to_owned(),
+            "perl-lsp-rs-core".to_owned(),
+            "--".to_owned(),
+            "filters".to_owned(),
+        ];
+        assert_eq!(
+            cargo_test_args(&cargo_args, "2"),
+            ["test", "--package", "perl-lsp-rs-core", "--", "filters", "--test-threads=2"]
+        );
+    }
+
+    #[test]
+    fn cargo_wrapper_does_not_duplicate_explicit_thread_limit() {
+        let cargo_args = ["--".to_owned(), "--test-threads=1".to_owned()];
+        assert_eq!(cargo_test_args(&cargo_args, "2"), ["test", "--", "--test-threads=1"]);
+    }
+
+    #[test]
+    fn cargo_wrapper_does_not_duplicate_spaced_explicit_thread_limit() {
+        let cargo_args = ["--".to_owned(), "--test-threads".to_owned(), "1".to_owned()];
+        assert_eq!(cargo_test_args(&cargo_args, "2"), ["test", "--", "--test-threads", "1"]);
+    }
+
+    #[test]
     fn linked_marker_requires_parenthesized_issue_number() {
         assert!(linked_marker("(#123)"));
         assert!(linked_marker("   (#42) trailing text"));
@@ -4015,11 +4057,11 @@ mod tests {
     }
 
     #[test]
-    fn adjacent_safety_comment_matches_directly_above() {
-        let safety_re = Regex::new(r"^\s*//\s*SAFETY:").unwrap();
-        let attr_re = Regex::new(r"^\s*#\[").unwrap();
-        let comment_re = Regex::new(r"^\s*//").unwrap();
-        let unsafe_impl_re = Regex::new(r"unsafe[[:space:]]+impl").unwrap();
+    fn adjacent_safety_comment_matches_directly_above() -> Result<()> {
+        let safety_re = Regex::new(r"^\s*//\s*SAFETY:")?;
+        let attr_re = Regex::new(r"^\s*#\[")?;
+        let comment_re = Regex::new(r"^\s*//")?;
+        let unsafe_impl_re = Regex::new(r"unsafe[[:space:]]+impl")?;
         let lines = vec!["// SAFETY: Win32 API".to_string(), "unsafe { api(); }".to_string()];
         assert!(has_adjacent_safety_comment(
             &lines,
@@ -4029,14 +4071,15 @@ mod tests {
             &comment_re,
             &unsafe_impl_re,
         ));
+        Ok(())
     }
 
     #[test]
-    fn adjacent_safety_comment_does_not_cross_intervening_code() {
-        let safety_re = Regex::new(r"^\s*//\s*SAFETY:").unwrap();
-        let attr_re = Regex::new(r"^\s*#\[").unwrap();
-        let comment_re = Regex::new(r"^\s*//").unwrap();
-        let unsafe_impl_re = Regex::new(r"unsafe[[:space:]]+impl").unwrap();
+    fn adjacent_safety_comment_does_not_cross_intervening_code() -> Result<()> {
+        let safety_re = Regex::new(r"^\s*//\s*SAFETY:")?;
+        let attr_re = Regex::new(r"^\s*#\[")?;
+        let comment_re = Regex::new(r"^\s*//")?;
+        let unsafe_impl_re = Regex::new(r"unsafe[[:space:]]+impl")?;
         let lines = vec![
             "// SAFETY: first block".to_string(),
             "unsafe { first(); }".to_string(),
@@ -4051,14 +4094,15 @@ mod tests {
             &comment_re,
             &unsafe_impl_re,
         ));
+        Ok(())
     }
 
     #[test]
-    fn adjacent_safety_comment_covers_back_to_back_unsafe_impls() {
-        let safety_re = Regex::new(r"^\s*//\s*SAFETY:").unwrap();
-        let attr_re = Regex::new(r"^\s*#\[").unwrap();
-        let comment_re = Regex::new(r"^\s*//").unwrap();
-        let unsafe_impl_re = Regex::new(r"unsafe[[:space:]]+impl").unwrap();
+    fn adjacent_safety_comment_covers_back_to_back_unsafe_impls() -> Result<()> {
+        let safety_re = Regex::new(r"^\s*//\s*SAFETY:")?;
+        let attr_re = Regex::new(r"^\s*#\[")?;
+        let comment_re = Regex::new(r"^\s*//")?;
+        let unsafe_impl_re = Regex::new(r"unsafe[[:space:]]+impl")?;
         let lines = vec![
             "// SAFETY: shared Send/Sync justification".to_string(),
             "#[allow(unsafe_code)]".to_string(),
@@ -4074,5 +4118,6 @@ mod tests {
             &comment_re,
             &unsafe_impl_re,
         ));
+        Ok(())
     }
 }

@@ -255,13 +255,11 @@ fn assert_incremental_edit_matches_fresh(
         ExpectedPath::Incremental,
     )?;
 
-    if require_reuse {
-        if incremental.reused_nodes == 0 {
-            return Err(format!(
-                "{expectation_id}: edit should exercise incremental reuse rather than a full fallback"
-            )
-            .into());
-        }
+    if require_reuse && incremental.reused_nodes == 0 {
+        return Err(format!(
+            "{expectation_id}: edit should exercise incremental reuse rather than a full fallback"
+        )
+        .into());
     }
 
     let fresh_ast = Parser::new(&new_source).parse()?;

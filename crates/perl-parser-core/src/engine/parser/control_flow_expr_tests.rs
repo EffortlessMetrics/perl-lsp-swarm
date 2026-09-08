@@ -30,24 +30,24 @@ mod tests {
 
         // Verify structure: the then branch should be a Return node
         let ast = parse_code(input);
-        if let Some(ref node) = ast {
-            if let NodeKind::Program { ref statements } = node.kind {
-                let stmt = &statements[0];
-                // Unwrap ExpressionStatement
-                let expr = match &stmt.kind {
-                    NodeKind::ExpressionStatement { expression } => expression.as_ref(),
-                    other => unreachable!("Expected ExpressionStatement, got {:?}", other),
-                };
-                // Should be a Ternary
-                if let NodeKind::Ternary { then_expr, .. } = &expr.kind {
-                    assert!(
-                        matches!(then_expr.kind, NodeKind::Return { .. }),
-                        "Expected Return in then branch, got {:?}",
-                        then_expr.kind
-                    );
-                } else {
-                    unreachable!("Expected Ternary, got {:?}", expr.kind);
-                }
+        if let Some(ref node) = ast
+            && let NodeKind::Program { ref statements } = node.kind
+        {
+            let stmt = &statements[0];
+            // Unwrap ExpressionStatement
+            let expr = match &stmt.kind {
+                NodeKind::ExpressionStatement { expression } => expression.as_ref(),
+                other => unreachable!("Expected ExpressionStatement, got {:?}", other),
+            };
+            // Should be a Ternary
+            if let NodeKind::Ternary { then_expr, .. } = &expr.kind {
+                assert!(
+                    matches!(then_expr.kind, NodeKind::Return { .. }),
+                    "Expected Return in then branch, got {:?}",
+                    then_expr.kind
+                );
+            } else {
+                unreachable!("Expected Ternary, got {:?}", expr.kind);
             }
         }
     }
@@ -60,22 +60,22 @@ mod tests {
         assert!(ast.is_some(), "Failed to parse: {}", input);
         assert_no_errors(input, ast.as_ref().unwrap_or_else(|| unreachable!()));
 
-        if let Some(ref node) = ast {
-            if let NodeKind::Program { ref statements } = node.kind {
-                let stmt = &statements[0];
-                let expr = match &stmt.kind {
-                    NodeKind::ExpressionStatement { expression } => expression.as_ref(),
-                    other => unreachable!("Expected ExpressionStatement, got {:?}", other),
-                };
-                if let NodeKind::Ternary { else_expr, .. } = &expr.kind {
-                    assert!(
-                        matches!(else_expr.kind, NodeKind::LoopControl { .. }),
-                        "Expected LoopControl in else branch, got {:?}",
-                        else_expr.kind
-                    );
-                } else {
-                    unreachable!("Expected Ternary, got {:?}", expr.kind);
-                }
+        if let Some(ref node) = ast
+            && let NodeKind::Program { ref statements } = node.kind
+        {
+            let stmt = &statements[0];
+            let expr = match &stmt.kind {
+                NodeKind::ExpressionStatement { expression } => expression.as_ref(),
+                other => unreachable!("Expected ExpressionStatement, got {:?}", other),
+            };
+            if let NodeKind::Ternary { else_expr, .. } = &expr.kind {
+                assert!(
+                    matches!(else_expr.kind, NodeKind::LoopControl { .. }),
+                    "Expected LoopControl in else branch, got {:?}",
+                    else_expr.kind
+                );
+            } else {
+                unreachable!("Expected Ternary, got {:?}", expr.kind);
             }
         }
     }
@@ -88,27 +88,27 @@ mod tests {
         assert!(ast.is_some(), "Failed to parse: {}", input);
         assert_no_errors(input, ast.as_ref().unwrap_or_else(|| unreachable!()));
 
-        if let Some(ref node) = ast {
-            if let NodeKind::Program { ref statements } = node.kind {
-                let stmt = &statements[0];
-                let expr = match &stmt.kind {
-                    NodeKind::ExpressionStatement { expression } => expression.as_ref(),
-                    other => unreachable!("Expected ExpressionStatement, got {:?}", other),
-                };
-                if let NodeKind::Ternary { then_expr, else_expr, .. } = &expr.kind {
-                    assert!(
-                        matches!(then_expr.kind, NodeKind::Return { .. }),
-                        "Expected Return in then branch, got {:?}",
-                        then_expr.kind
-                    );
-                    assert!(
-                        matches!(else_expr.kind, NodeKind::LoopControl { .. }),
-                        "Expected LoopControl in else branch, got {:?}",
-                        else_expr.kind
-                    );
-                } else {
-                    unreachable!("Expected Ternary, got {:?}", expr.kind);
-                }
+        if let Some(ref node) = ast
+            && let NodeKind::Program { ref statements } = node.kind
+        {
+            let stmt = &statements[0];
+            let expr = match &stmt.kind {
+                NodeKind::ExpressionStatement { expression } => expression.as_ref(),
+                other => unreachable!("Expected ExpressionStatement, got {:?}", other),
+            };
+            if let NodeKind::Ternary { then_expr, else_expr, .. } = &expr.kind {
+                assert!(
+                    matches!(then_expr.kind, NodeKind::Return { .. }),
+                    "Expected Return in then branch, got {:?}",
+                    then_expr.kind
+                );
+                assert!(
+                    matches!(else_expr.kind, NodeKind::LoopControl { .. }),
+                    "Expected LoopControl in else branch, got {:?}",
+                    else_expr.kind
+                );
+            } else {
+                unreachable!("Expected Ternary, got {:?}", expr.kind);
             }
         }
     }
@@ -150,22 +150,22 @@ mod tests {
         assert!(ast.is_some(), "Failed to parse: {}", input);
         assert_no_errors(input, ast.as_ref().unwrap_or_else(|| unreachable!()));
 
-        if let Some(ref node) = ast {
-            if let NodeKind::Program { ref statements } = node.kind {
-                let stmt = &statements[0];
-                let expr = match &stmt.kind {
-                    NodeKind::ExpressionStatement { expression } => expression.as_ref(),
-                    other => unreachable!("Expected ExpressionStatement, got {:?}", other),
-                };
-                if let NodeKind::Ternary { else_expr, .. } = &expr.kind {
-                    assert!(
-                        matches!(else_expr.kind, NodeKind::LoopControl { .. }),
-                        "Expected LoopControl in else branch, got {:?}",
-                        else_expr.kind
-                    );
-                } else {
-                    unreachable!("Expected Ternary, got {:?}", expr.kind);
-                }
+        if let Some(ref node) = ast
+            && let NodeKind::Program { ref statements } = node.kind
+        {
+            let stmt = &statements[0];
+            let expr = match &stmt.kind {
+                NodeKind::ExpressionStatement { expression } => expression.as_ref(),
+                other => unreachable!("Expected ExpressionStatement, got {:?}", other),
+            };
+            if let NodeKind::Ternary { else_expr, .. } = &expr.kind {
+                assert!(
+                    matches!(else_expr.kind, NodeKind::LoopControl { .. }),
+                    "Expected LoopControl in else branch, got {:?}",
+                    else_expr.kind
+                );
+            } else {
+                unreachable!("Expected Ternary, got {:?}", expr.kind);
             }
         }
     }
@@ -182,23 +182,23 @@ mod tests {
         assert!(ast.is_some(), "Failed to parse: {}", input);
         assert_no_errors(input, ast.as_ref().unwrap_or_else(|| unreachable!()));
 
-        if let Some(ref node) = ast {
-            if let NodeKind::Program { ref statements } = node.kind {
-                let stmt = &statements[0];
-                let expr = match &stmt.kind {
-                    NodeKind::ExpressionStatement { expression } => expression.as_ref(),
-                    other => unreachable!("Expected ExpressionStatement, got {:?}", other),
-                };
-                if let NodeKind::Binary { op, right, .. } = &expr.kind {
-                    assert_eq!(op, "&&");
-                    assert!(
-                        matches!(right.kind, NodeKind::Return { value: None }),
-                        "Expected Return with no value on RHS, got {:?}",
-                        right.kind
-                    );
-                } else {
-                    unreachable!("Expected Binary(&&), got {:?}", expr.kind);
-                }
+        if let Some(ref node) = ast
+            && let NodeKind::Program { ref statements } = node.kind
+        {
+            let stmt = &statements[0];
+            let expr = match &stmt.kind {
+                NodeKind::ExpressionStatement { expression } => expression.as_ref(),
+                other => unreachable!("Expected ExpressionStatement, got {:?}", other),
+            };
+            if let NodeKind::Binary { op, right, .. } = &expr.kind {
+                assert_eq!(op, "&&");
+                assert!(
+                    matches!(right.kind, NodeKind::Return { value: None }),
+                    "Expected Return with no value on RHS, got {:?}",
+                    right.kind
+                );
+            } else {
+                unreachable!("Expected Binary(&&), got {:?}", expr.kind);
             }
         }
     }
@@ -211,23 +211,23 @@ mod tests {
         assert!(ast.is_some(), "Failed to parse: {}", input);
         assert_no_errors(input, ast.as_ref().unwrap_or_else(|| unreachable!()));
 
-        if let Some(ref node) = ast {
-            if let NodeKind::Program { ref statements } = node.kind {
-                let stmt = &statements[0];
-                let expr = match &stmt.kind {
-                    NodeKind::ExpressionStatement { expression } => expression.as_ref(),
-                    other => unreachable!("Expected ExpressionStatement, got {:?}", other),
-                };
-                if let NodeKind::Binary { op, right, .. } = &expr.kind {
-                    assert_eq!(op, "||");
-                    assert!(
-                        matches!(right.kind, NodeKind::LoopControl { .. }),
-                        "Expected LoopControl on RHS, got {:?}",
-                        right.kind
-                    );
-                } else {
-                    unreachable!("Expected Binary(||), got {:?}", expr.kind);
-                }
+        if let Some(ref node) = ast
+            && let NodeKind::Program { ref statements } = node.kind
+        {
+            let stmt = &statements[0];
+            let expr = match &stmt.kind {
+                NodeKind::ExpressionStatement { expression } => expression.as_ref(),
+                other => unreachable!("Expected ExpressionStatement, got {:?}", other),
+            };
+            if let NodeKind::Binary { op, right, .. } = &expr.kind {
+                assert_eq!(op, "||");
+                assert!(
+                    matches!(right.kind, NodeKind::LoopControl { .. }),
+                    "Expected LoopControl on RHS, got {:?}",
+                    right.kind
+                );
+            } else {
+                unreachable!("Expected Binary(||), got {:?}", expr.kind);
             }
         }
     }
@@ -240,23 +240,23 @@ mod tests {
         assert!(ast.is_some(), "Failed to parse: {}", input);
         assert_no_errors(input, ast.as_ref().unwrap_or_else(|| unreachable!()));
 
-        if let Some(ref node) = ast {
-            if let NodeKind::Program { ref statements } = node.kind {
-                let stmt = &statements[0];
-                let expr = match &stmt.kind {
-                    NodeKind::ExpressionStatement { expression } => expression.as_ref(),
-                    other => unreachable!("Expected ExpressionStatement, got {:?}", other),
-                };
-                if let NodeKind::Binary { op, right, .. } = &expr.kind {
-                    assert_eq!(op, "&&");
-                    assert!(
-                        matches!(right.kind, NodeKind::LoopControl { .. }),
-                        "Expected LoopControl on RHS, got {:?}",
-                        right.kind
-                    );
-                } else {
-                    unreachable!("Expected Binary(&&), got {:?}", expr.kind);
-                }
+        if let Some(ref node) = ast
+            && let NodeKind::Program { ref statements } = node.kind
+        {
+            let stmt = &statements[0];
+            let expr = match &stmt.kind {
+                NodeKind::ExpressionStatement { expression } => expression.as_ref(),
+                other => unreachable!("Expected ExpressionStatement, got {:?}", other),
+            };
+            if let NodeKind::Binary { op, right, .. } = &expr.kind {
+                assert_eq!(op, "&&");
+                assert!(
+                    matches!(right.kind, NodeKind::LoopControl { .. }),
+                    "Expected LoopControl on RHS, got {:?}",
+                    right.kind
+                );
+            } else {
+                unreachable!("Expected Binary(&&), got {:?}", expr.kind);
             }
         }
     }
@@ -269,23 +269,23 @@ mod tests {
         assert!(ast.is_some(), "Failed to parse: {}", input);
         assert_no_errors(input, ast.as_ref().unwrap_or_else(|| unreachable!()));
 
-        if let Some(ref node) = ast {
-            if let NodeKind::Program { ref statements } = node.kind {
-                let stmt = &statements[0];
-                let expr = match &stmt.kind {
-                    NodeKind::ExpressionStatement { expression } => expression.as_ref(),
-                    other => unreachable!("Expected ExpressionStatement, got {:?}", other),
-                };
-                if let NodeKind::Binary { op, right, .. } = &expr.kind {
-                    assert_eq!(op, "//");
-                    assert!(
-                        matches!(right.kind, NodeKind::Return { .. }),
-                        "Expected Return on RHS, got {:?}",
-                        right.kind
-                    );
-                } else {
-                    unreachable!("Expected Binary(//), got {:?}", expr.kind);
-                }
+        if let Some(ref node) = ast
+            && let NodeKind::Program { ref statements } = node.kind
+        {
+            let stmt = &statements[0];
+            let expr = match &stmt.kind {
+                NodeKind::ExpressionStatement { expression } => expression.as_ref(),
+                other => unreachable!("Expected ExpressionStatement, got {:?}", other),
+            };
+            if let NodeKind::Binary { op, right, .. } = &expr.kind {
+                assert_eq!(op, "//");
+                assert!(
+                    matches!(right.kind, NodeKind::Return { .. }),
+                    "Expected Return on RHS, got {:?}",
+                    right.kind
+                );
+            } else {
+                unreachable!("Expected Binary(//), got {:?}", expr.kind);
             }
         }
     }
@@ -328,22 +328,22 @@ mod tests {
         assert!(ast.is_some(), "Failed to parse: {}", input);
         assert_no_errors(input, ast.as_ref().unwrap_or_else(|| unreachable!()));
 
-        if let Some(ref node) = ast {
-            if let NodeKind::Program { ref statements } = node.kind {
-                let stmt = &statements[0];
-                let expr = match &stmt.kind {
-                    NodeKind::ExpressionStatement { expression } => expression.as_ref(),
-                    other => unreachable!("Expected ExpressionStatement, got {:?}", other),
-                };
-                if let NodeKind::Ternary { then_expr, .. } = &expr.kind {
-                    assert!(
-                        matches!(then_expr.kind, NodeKind::Return { value: None }),
-                        "Expected bare Return (no value) in then branch, got {:?}",
-                        then_expr.kind
-                    );
-                } else {
-                    unreachable!("Expected Ternary, got {:?}", expr.kind);
-                }
+        if let Some(ref node) = ast
+            && let NodeKind::Program { ref statements } = node.kind
+        {
+            let stmt = &statements[0];
+            let expr = match &stmt.kind {
+                NodeKind::ExpressionStatement { expression } => expression.as_ref(),
+                other => unreachable!("Expected ExpressionStatement, got {:?}", other),
+            };
+            if let NodeKind::Ternary { then_expr, .. } = &expr.kind {
+                assert!(
+                    matches!(then_expr.kind, NodeKind::Return { value: None }),
+                    "Expected bare Return (no value) in then branch, got {:?}",
+                    then_expr.kind
+                );
+            } else {
+                unreachable!("Expected Ternary, got {:?}", expr.kind);
             }
         }
     }
@@ -360,26 +360,23 @@ mod tests {
         assert!(ast.is_some(), "Failed to parse: {}", input);
         assert_no_errors(input, ast.as_ref().unwrap_or_else(|| unreachable!()));
 
-        if let Some(ref node) = ast {
-            if let NodeKind::Program { ref statements } = node.kind {
-                let stmt = &statements[0];
-                let expr = match &stmt.kind {
-                    NodeKind::ExpressionStatement { expression } => expression.as_ref(),
-                    other => unreachable!("Expected ExpressionStatement, got {:?}", other),
-                };
-                if let NodeKind::Ternary { then_expr, .. } = &expr.kind {
-                    if let NodeKind::LoopControl { op, label } = &then_expr.kind {
-                        assert_eq!(op, "next");
-                        assert_eq!(label.as_deref(), Some("OUTER"));
-                    } else {
-                        unreachable!(
-                            "Expected LoopControl in then branch, got {:?}",
-                            then_expr.kind
-                        );
-                    }
+        if let Some(ref node) = ast
+            && let NodeKind::Program { ref statements } = node.kind
+        {
+            let stmt = &statements[0];
+            let expr = match &stmt.kind {
+                NodeKind::ExpressionStatement { expression } => expression.as_ref(),
+                other => unreachable!("Expected ExpressionStatement, got {:?}", other),
+            };
+            if let NodeKind::Ternary { then_expr, .. } = &expr.kind {
+                if let NodeKind::LoopControl { op, label } = &then_expr.kind {
+                    assert_eq!(op, "next");
+                    assert_eq!(label.as_deref(), Some("OUTER"));
                 } else {
-                    unreachable!("Expected Ternary, got {:?}", expr.kind);
+                    unreachable!("Expected LoopControl in then branch, got {:?}", then_expr.kind);
                 }
+            } else {
+                unreachable!("Expected Ternary, got {:?}", expr.kind);
             }
         }
     }
@@ -396,23 +393,23 @@ mod tests {
         assert!(ast.is_some(), "Failed to parse: {}", input);
         assert_no_errors(input, ast.as_ref().unwrap_or_else(|| unreachable!()));
 
-        if let Some(ref node) = ast {
-            if let NodeKind::Program { ref statements } = node.kind {
-                let stmt = &statements[0];
-                let expr = match &stmt.kind {
-                    NodeKind::ExpressionStatement { expression } => expression.as_ref(),
-                    other => unreachable!("Expected ExpressionStatement, got {:?}", other),
-                };
-                if let NodeKind::Binary { op, right, .. } = &expr.kind {
-                    assert_eq!(op, "||");
-                    assert!(
-                        matches!(right.kind, NodeKind::LoopControl { .. }),
-                        "Expected LoopControl on RHS, got {:?}",
-                        right.kind
-                    );
-                } else {
-                    unreachable!("Expected Binary(||), got {:?}", expr.kind);
-                }
+        if let Some(ref node) = ast
+            && let NodeKind::Program { ref statements } = node.kind
+        {
+            let stmt = &statements[0];
+            let expr = match &stmt.kind {
+                NodeKind::ExpressionStatement { expression } => expression.as_ref(),
+                other => unreachable!("Expected ExpressionStatement, got {:?}", other),
+            };
+            if let NodeKind::Binary { op, right, .. } = &expr.kind {
+                assert_eq!(op, "||");
+                assert!(
+                    matches!(right.kind, NodeKind::LoopControl { .. }),
+                    "Expected LoopControl on RHS, got {:?}",
+                    right.kind
+                );
+            } else {
+                unreachable!("Expected Binary(||), got {:?}", expr.kind);
             }
         }
     }

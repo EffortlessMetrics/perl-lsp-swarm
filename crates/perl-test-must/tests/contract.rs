@@ -1,4 +1,5 @@
 //! Public contract tests for `perl-test-must`.
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 use std::fmt;
 use std::panic::{UnwindSafe, catch_unwind};
@@ -67,6 +68,46 @@ fn must_failure_reports_semantic_clauses_once() -> Result<(), String> {
     assert_eq!(occurrences(&message, "unexpected Err<"), 1, "message was: {message}");
     assert_eq!(occurrences(&message, "DiagnosticError"), 1, "message was: {message}");
     assert_eq!(occurrences(&message, "diagnostic-error"), 1, "message was: {message}");
+    Ok(())
+}
+
+#[test]
+fn must_with_failure_reports_context_type_and_value_once() -> Result<(), String> {
+    let message = panic_text(|| {
+        must_with::<(), DiagnosticError>(Err(DiagnosticError), "fixture must parse");
+    })?;
+
+    let expected = format!(
+        "must: fixture must parse: unexpected Err<{}>: diagnostic-error",
+        std::any::type_name::<DiagnosticError>()
+    );
+    assert_eq!(message, expected);
+    Ok(())
+}
+
+#[test]
+fn must_some_failure_reports_type_and_shape() -> Result<(), String> {
+    let message = panic_text(|| {
+        let _ = must_some(Option::<MissingItem>::None);
+    })?;
+
+    let expected = format!("must_some: unexpected None<{}>", std::any::type_name::<MissingItem>());
+    assert_eq!(message, expected);
+    Ok(())
+}
+
+#[test]
+fn must_err_failure_reports_types_and_value() -> Result<(), String> {
+    let message = panic_text(|| {
+        let _ = must_err::<UnexpectedOk, ExpectedError>(Ok(UnexpectedOk));
+    })?;
+
+    let expected = format!(
+        "must_err: expected Err<{}>, got Ok<{}>: unexpected-ok-value",
+        std::any::type_name::<ExpectedError>(),
+        std::any::type_name::<UnexpectedOk>()
+    );
+    assert_eq!(message, expected);
     Ok(())
 }
 

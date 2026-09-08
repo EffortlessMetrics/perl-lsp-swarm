@@ -44,6 +44,53 @@ const CPANM_BATCH_SIZE: usize = 25;
 /// should get before we split it apart.
 const CPANM_SINGLE_DIST_TIMEOUT: Duration = Duration::from_mins(5);
 
+/// Wall-clock budget guard for one install pass (#12823). Scheduled runners
+/// in this repository have been observed being preempted externally at
+/// ~24m29s of job wall-clock; an unlimited cold install therefore never
+/// reaches a save gate that requires one complete pass. A budgeted pass ends
+/// on its own terms below that envelope and lets checkpoint persistence bank
+/// whatever consistent state cpanm has already installed.
+#[derive(Debug, Clone, Copy)]
+struct InstallBudget {
+    deadline: Option<Instant>,
+}
+
+impl InstallBudget {
+    fn from_option(budget: Option<Duration>) -> Self {
+        Self { deadline: budget.map(|budget| Instant::now() + budget) }
+    }
+
+    /// True once no further batch or individual retry may start.
+    fn expired(&self) -> bool {
+        self.deadline.is_some_and(|deadline| Instant::now() >= deadline)
+    }
+
+    /// Timeout for one process invocation: never above the fixed per-phase
+    /// ceiling, and never beyond the remaining overall budget. With no budget
+    /// configured this is exactly the historical fixed ceiling.
+    fn phase_timeout(&self, ceiling: Duration) -> Duration {
+        match self.deadline {
+            Some(deadline) => deadline.saturating_duration_since(Instant::now()).min(ceiling),
+            None => ceiling,
+        }
+    }
+}
+
+/// Machine-readable completion marker consumed by the CI warm lane
+/// (`corpus-warm-full`) to decide whether the corpus ratchet leg may run.
+fn complete_marker(complete: bool) -> String {
+    format!("CPAN_CORPUS_INSTALL_COMPLETE={complete}")
+}
+
+/// Whether this pass reached every distribution and therefore may report
+/// `CPAN_CORPUS_INSTALL_COMPLETE=true`. Conservative on purpose: any explicit
+/// budget stop OR a deadline found expired at plan end forces "incomplete",
+/// because partial state banked under the canonical key would silently narrow
+/// the corpus the ratchet enforces against (#12823).
+fn plan_complete(budget_stopped: bool, budget: &InstallBudget) -> bool {
+    !budget_stopped && !budget.expired()
+}
+
 /// Return the workspace root path, anchored at compile time to the xtask
 /// crate's manifest directory. This makes every relative CPAN corpus path
 /// resolve deterministically against the workspace root regardless of the
@@ -84,6 +131,13 @@ pub struct CpanCorpusConfig {
     /// mode — only modules that are missing or out-of-date get installed.
     /// This turns re-runs into a cheap cache hit instead of a full rebuild.
     pub force_reset: bool,
+    /// Optional wall-clock budget for the whole install pass. When set, the
+    /// batch plan stops cleanly once the budget is exhausted (before starting
+    /// further batches or individual retries), emits the machine-readable
+    /// `CPAN_CORPUS_INSTALL_COMPLETE=false` marker, and exits successfully so
+    /// already-installed state stays consistent for checkpoint persistence.
+    /// When absent, install behaves exactly like the historical unlimited pass.
+    pub time_budget: Option<Duration>,
 }
 
 impl Default for CpanCorpusConfig {
@@ -99,6 +153,7 @@ impl Default for CpanCorpusConfig {
             top_n: 1000,
             verbose: false,
             force_reset: false,
+            time_budget: None,
         }
     }
 }
@@ -269,10 +324,21 @@ pub fn install(config: &CpanCorpusConfig) -> Result<()> {
     let batch_size = CPANM_BATCH_SIZE;
     let mut installed = 0usize;
     let mut failed = 0usize;
+    let budget = InstallBudget::from_option(config.time_budget);
+    let mut budget_stopped = false;
 
     for (batch_idx, chunk) in normalized_distributions.chunks(batch_size).enumerate() {
         let batch_num = batch_idx + 1;
         let total_batches = distributions.len().div_ceil(batch_size);
+
+        if budget.expired() {
+            println!(
+                "Install budget exhausted before batch {batch_num}/{total_batches}; \
+                 stopping with already-installed state kept intact"
+            );
+            budget_stopped = true;
+            break;
+        }
         println!("Batch {batch_num}/{total_batches}: installing {} distributions...", chunk.len());
 
         let mut cmd = cpanm.command();
@@ -292,15 +358,29 @@ pub fn install(config: &CpanCorpusConfig) -> Result<()> {
             cmd.arg(dist);
         }
 
-        let output = run_command_with_timeout(cmd, CPANM_BATCH_TIMEOUT)?;
+        let output = run_command_with_timeout(cmd, budget.phase_timeout(CPANM_BATCH_TIMEOUT))?;
         let stderr = String::from_utf8_lossy(&output.output.stderr);
         if output.timed_out {
+            if budget.expired() {
+                println!(
+                    "Batch {batch_num} reached the remaining install budget; \
+                     stopping with already-installed state kept intact"
+                );
+                budget_stopped = true;
+                break;
+            }
             println!(
                 "cpanm batch {batch_num} timed out after {}s; retrying distributions individually",
                 CPANM_BATCH_TIMEOUT.as_secs()
             );
-            let (batch_installed, batch_failed) =
-                install_distributions_individually(&cpanm, &cpanm_home, &local_lib, chunk, config)?;
+            let (batch_installed, batch_failed) = install_distributions_individually(
+                &cpanm,
+                &cpanm_home,
+                &local_lib,
+                chunk,
+                config,
+                &budget,
+            )?;
             installed += batch_installed;
             failed += batch_failed;
             continue;
@@ -320,6 +400,23 @@ pub fn install(config: &CpanCorpusConfig) -> Result<()> {
     } else {
         println!("\nInstall complete: {installed} installed, {install_items} requested");
     }
+    // Conservative truth guard (review finding on the retry path): if the
+    // budget expired anywhere in this pass — including inside the final
+    // batch's individual retries, where no loop guard runs again — the plan
+    // may not have reached every distribution. Only a pass that provably
+    // stopped on its own terms may claim completion; expiry forces the
+    // incomplete marker so partial state can never be banked under the
+    // canonical key (#12823 CRW-004/008).
+    let complete = plan_complete(budget_stopped, &budget);
+    if !complete {
+        println!(
+            "\nInstall stopped inside its time budget before finishing the distribution list; \
+             remaining distributions stay queued for the next incremental pass"
+        );
+    }
+
+    // Machine-readable completion status for the CI warm lane.
+    println!("{}", complete_marker(complete));
 
     // Write inventory of installed .pm files
     let lib_perl5 = local_lib.join("lib/perl5");
@@ -420,11 +517,21 @@ fn install_distributions_individually(
     local_lib: &Path,
     chunk: &[String],
     config: &CpanCorpusConfig,
+    budget: &InstallBudget,
 ) -> Result<(usize, usize)> {
     let mut installed = 0usize;
     let mut failed = 0usize;
 
     for dist in chunk {
+        if budget.expired() {
+            println!(
+                "Install budget exhausted inside individual retries; {} distribution(s) in \
+                 this batch stay queued for the next incremental pass",
+                chunk.len().saturating_sub(installed).saturating_sub(failed),
+            );
+            break;
+        }
+
         let mut cmd = cpanm.command();
         cmd.env("PERL_CPANM_HOME", cpanm_home);
         cmd.env("PERL_MM_USE_DEFAULT", "1");
@@ -436,7 +543,8 @@ fn install_distributions_individually(
         cmd.arg("--quiet");
         cmd.arg(dist);
 
-        let output = run_command_with_timeout(cmd, CPANM_SINGLE_DIST_TIMEOUT)?;
+        let output =
+            run_command_with_timeout(cmd, budget.phase_timeout(CPANM_SINGLE_DIST_TIMEOUT))?;
         let stderr = String::from_utf8_lossy(&output.output.stderr);
         if output.timed_out {
             failed += 1;
@@ -937,6 +1045,88 @@ mod tests {
         // If you change them, update the comment in the install() function too.
         assert_eq!(CPANM_BATCH_TIMEOUT.as_secs(), 300);
         assert_eq!(CPANM_BATCH_SIZE, 25);
+    }
+
+    #[test]
+    fn unbudgeted_install_matches_legacy_behavior() {
+        // CRW-009: default config carries no deadline, and the phase timeout
+        // with no budget is exactly the historical fixed ceiling.
+        let config = CpanCorpusConfig::default();
+        assert!(config.time_budget.is_none());
+
+        let budget = InstallBudget::from_option(None);
+        assert!(!budget.expired());
+        assert_eq!(budget.phase_timeout(CPANM_BATCH_TIMEOUT), CPANM_BATCH_TIMEOUT);
+        assert_eq!(budget.phase_timeout(CPANM_SINGLE_DIST_TIMEOUT), CPANM_SINGLE_DIST_TIMEOUT);
+    }
+
+    #[test]
+    fn per_batch_timeout_caps_at_fixed_batch_ceiling_and_remaining_budget() {
+        // CRW-008 part 1: a generous budget never extends the fixed ceiling;
+        // a tight budget truncates the phase timeout to the remaining time.
+        let long_deadline = Instant::now() + Duration::from_secs(600);
+        let generous = InstallBudget { deadline: Some(long_deadline) };
+        assert_eq!(generous.phase_timeout(CPANM_BATCH_TIMEOUT), CPANM_BATCH_TIMEOUT);
+
+        let tight = InstallBudget { deadline: Some(Instant::now() + Duration::from_millis(250)) };
+        let timeout = tight.phase_timeout(CPANM_BATCH_TIMEOUT);
+        assert!(timeout <= Duration::from_millis(250), "budget must truncate the phase timeout");
+    }
+
+    #[test]
+    fn expired_budget_attempts_no_further_batches_and_reports_incomplete() {
+        // CRW-008 part 2: with an exhausted budget at most zero further
+        // batches start (guard placed exactly where install() checks it), the
+        // plan stops early, and the marker reports incomplete.
+        let budget = InstallBudget::from_option(Some(Duration::from_millis(5)));
+        thread::sleep(Duration::from_millis(40));
+
+        let distributions: Vec<usize> = (0..50).collect();
+        let mut attempted = 0usize;
+        for _chunk in distributions.chunks(CPANM_BATCH_SIZE) {
+            if budget.expired() {
+                break;
+            }
+            attempted += 1;
+        }
+        assert_eq!(attempted, 0);
+        assert_eq!(complete_marker(false), "CPAN_CORPUS_INSTALL_COMPLETE=false");
+    }
+
+    #[test]
+    fn complete_marker_reflects_batch_plan_outcome() {
+        // CRW-004: markers consumed by the workflow output capture.
+        assert_eq!(complete_marker(true), "CPAN_CORPUS_INSTALL_COMPLETE=true");
+    }
+
+    #[test]
+    fn budget_expiry_at_plan_end_forces_incomplete_marker() {
+        // Regression pin for the review finding on the individual-retry path:
+        // when the final batch's retries consume the remaining budget, no
+        // loop guard runs again — so plan end itself must treat an expired
+        // deadline as incomplete, or a partially-attempted corpus would be
+        // banked under the canonical key and enforced by the ratchet.
+        let expired = InstallBudget { deadline: Some(Instant::now() - Duration::from_secs(1)) };
+        assert!(expired.expired());
+        assert!(!plan_complete(false, &expired), "post-hoc expiry must force incomplete");
+        assert!(!plan_complete(true, &expired), "explicit stop must force incomplete");
+        assert_eq!(
+            complete_marker(plan_complete(false, &expired)),
+            "CPAN_CORPUS_INSTALL_COMPLETE=false"
+        );
+
+        let live = InstallBudget { deadline: Some(Instant::now() + Duration::from_secs(600)) };
+        assert!(plan_complete(false, &live), "a finished pass inside its budget is complete");
+    }
+
+    #[test]
+    fn unbudgeted_pass_completion_never_reads_a_deadline() {
+        // CRW-009 seam: with no budget configured the deadline arm is inert —
+        // legacy byte-for-byte behavior reports a clean pass as complete, and
+        // only an explicit stop flag can make it incomplete.
+        let none = InstallBudget::from_option(None);
+        assert!(plan_complete(false, &none));
+        assert!(!plan_complete(true, &none), "an explicit stop is incomplete regardless of budget");
     }
 
     #[test]

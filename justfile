@@ -17,6 +17,10 @@ devplane-init:
 storage-doctor:
     ./scripts/storage-doctor
 
+# Dry-run report of stale repo-local target/ dirs (default 30d; --days=N, --apply to delete).
+target-gc *args:
+    ./scripts/target-gc.sh {{args}}
+
 agent-preflight: storage-doctor
     @echo "agent preflight ok"
 
@@ -35,6 +39,12 @@ agent-nextest:
 
 agent-pr-fast:
     {{cargo_safe}} xtask gates --tier pr-fast --receipt
+
+# Run any cargo command with shared multi-worktree build caching (devplane
+# target dir, sccache, build flock, disk gate). Documented default for local
+# multi-worktree development — see docs/how-to/MULTI_WORKTREE_BUILD_CACHING.md.
+cached *args:
+    {{cargo_safe}} {{args}}
 
 # M4b (#3763): assert review/audit agents are mechanically read-only
 # (no Edit/Write/NotebookEdit/Agent in their tools: allowlist).
@@ -93,6 +103,11 @@ check-all-targets:
     cargo check --workspace --all-targets --locked
     @echo "Compiling all targets (all features) — deep verification check..."
     cargo check --workspace --all-targets --all-features --locked
+    @echo "Compiling example test modules — cargo check --all-targets checks examples as non-test targets only, so their #[cfg(test)] code bit-rots unseen (#12650)..."
+    cargo test --workspace --examples --locked --no-run
+    @echo "Compiling the wire-free perl-parser profiles — default and --all-features both enable lsp-compat, so a wire type reachable without it bit-rots unseen (#14975)..."
+    cargo check -p perl-parser --no-default-features --locked
+    cargo check -p perl-parser --no-default-features --features incremental --locked
     @echo "All targets compile clean."
 
 # Scan every tracked file for committed git conflict marker lines.
@@ -956,9 +971,11 @@ ci-gate:
     just status-check && \
     just ci-clippy-gate && \
     just ci-unwrap-panic-ratchet && \
+    just ci-serial-test-ratchet && \
     just ci-unsafe-ratchet && \
     just ci-print-in-lib-ratchet && \
     just ci-regex-static-ratchet && \
+    just ci-must-context && \
     just ci-forbid-fatal && \
     just ci-test-lib && \
     just check-all-targets && \
@@ -997,6 +1014,10 @@ ci-release-history:
 # Validate installer Linux libc target selection without downloading artifacts.
 ci-install-target-selection:
     bash scripts/tests/test-install-target-selection.sh
+
+# Validate Termux detection, wrapper ownership, and source-mode selection.
+ci-install-termux-detection:
+    bash scripts/tests/test-installer-termux-detection.sh
 
 # Run gates with JSON output (for CI)
 gates-json tier='merge-gate':
@@ -1088,11 +1109,24 @@ ci-panic-test-ratchet:
     @cargo xtask ci-hygiene check-panic-test
     @echo "✅ Test-code panic! ratchet passed"
 
+# Parallel-unsafe test ratchet: test fns mutating process-global state must be
+# #[serial]-guarded or adjudicated in ci/serial_test_identities.json (#1269)
+ci-serial-test-ratchet:
+    @echo "🧩  Checking parallel-unsafe test serialization ratchet..."
+    @cargo xtask ci-hygiene check-serial-test
+    @echo "✅ Parallel-unsafe test ratchet passed"
+
 # Unsafe syntax ratchet (production source only)
 ci-unsafe-ratchet:
     @echo "🛡️  Checking unsafe syntax ratchet..."
     @cargo xtask ci-hygiene check-unsafe-prod
     @echo "✅ Unsafe syntax ratchet passed"
+
+# Assertion-context guard: a `.expect("…")` must not migrate to a bare must* helper
+ci-must-context:
+    @echo "🧾 Checking must* migrations preserve assertion context..."
+    @cargo xtask ci-hygiene check-must-context
+    @echo "✅ No assertion context dropped by a must* migration"
 
 # Print-macro ratchet: no raw println!/eprintln! in library source (use tracing)
 ci-print-in-lib-ratchet:
@@ -1421,6 +1455,7 @@ ci-policy:
     @python3 scripts/ci/test_validate_cargo_lock_conflict_policy.py
     @python3 scripts/ci/validate_cargo_lock_conflict_policy.py --repo-root .
     @cargo xtask check-from-raw
+    @cargo xtask check-tautology --check
     @cargo xtask check-memory-lifecycle-policy
     just version-check
     just ci-doc-claims
@@ -2235,15 +2270,18 @@ semver-check-package package:
     BASELINE="$(git tag | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)"
     cargo semver-checks check-release -p {{package}} --baseline-rev "$BASELINE"
 
-# Check all published packages
+# Check every API-ratcheted crate (the list in
+# .ci/public-api-baselines/ratchet-crates.txt, not the whole publish
+# allowlist) for SemVer breaking changes.
 semver-check-all:
-    @echo "🔍 Checking all published packages for SemVer breaking changes..."
-    @just _semver-check-install
-    @just semver-check-package perl-parser
-    @just semver-check-package perl-lexer
-    @just semver-check-package perl-parser-core
-    @just semver-check-package perl-lsp-rs
-    @just semver-check-package perllsp
+    #!/usr/bin/env bash
+    set -euo pipefail
+    echo "🔍 Checking API-ratcheted crates for SemVer breaking changes..."
+    just _semver-check-install
+    crates="$(just _api-ratchet-crates)"
+    for crate in $crates; do
+        just semver-check-package "$crate"
+    done
 
 # Generate breaking changes report
 semver-report:
@@ -2287,21 +2325,67 @@ _public-api-install:
         ./scripts/cargo-safe install cargo-public-api --locked --version 0.50.1; \
     fi
 
-# Check public API surface of facade crates against committed baselines
+# Private helper: the crates both API ratchets guard. Single authority:
+# .ci/public-api-baselines/ratchet-crates.txt (#14607); admission is enforced
+# by `cargo xtask publish-manifest-check`.
+#
+# An empty list is an error, not "nothing to check": callers assign the output
+# (`crates="$(just _api-ratchet-crates)"`) so a failure here aborts them under
+# `set -e` instead of iterating zero times and reporting a vacuous pass. A
+# duplicate entry is an error too, so no caller checks a crate twice.
+[private]
+_api-ratchet-crates:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    list=".ci/public-api-baselines/ratchet-crates.txt"
+    crates="$(sed -e 's/#.*$//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' "$list" | grep -v '^$' || true)"
+    if [ -z "$crates" ]; then
+        echo "ERROR: $list lists no crates; both API ratchets would be vacuous" >&2
+        exit 1
+    fi
+    duplicates="$(printf '%s\n' "$crates" | sort | uniq -d)"
+    if [ -n "$duplicates" ]; then
+        echo "ERROR: $list lists a crate twice: $(printf '%s' "$duplicates" | tr '\n' ' ')" >&2
+        exit 1
+    fi
+    printf '%s\n' "$crates"
+
+# Check public API surface of the ratcheted crates against committed baselines
 public-api-check:
     #!/usr/bin/env bash
     set -euo pipefail
     just _public-api-install
-    echo "Checking public API surface for facade crates..."
+    echo "Checking public API surface for ratcheted crates..."
+    # Evidence: record the rustdoc-JSON toolchain the comparison runs under
+    # (CI pins this channel; see the workflow install steps).
+    rustc +nightly --version || echo "WARN: no nightly toolchain visible to cargo-public-api"
     FAILED=0
-    for crate in perl-lsp-rs perl-parser perl-uri perl-dap perllsp; do
+    crates="$(just _api-ratchet-crates)"
+    for crate in $crates; do
         BASELINE=".ci/public-api-baselines/${crate}.txt"
         if [ ! -f "$BASELINE" ]; then
             echo "FAIL Missing baseline: $BASELINE (run: just public-api-update)"
             FAILED=1
             continue
         fi
-        ./scripts/cargo-safe public-api -p "$crate" --simplified 2>/dev/null | grep "^pub " > "/tmp/${crate}-current.txt" || true
+        # Instrument failure must never become a semantic verdict: a failed
+        # or empty generation is INSTRUMENT-FAIL, not an API diff (#12861 —
+        # CI without a nightly toolchain produced empty surfaces that
+        # reported as ~6.6k phantom API removals).
+        if ! ./scripts/cargo-safe public-api -p "$crate" --simplified > "/tmp/${crate}-raw.txt" 2> "/tmp/${crate}-err.txt"; then
+            echo "INSTRUMENT-FAIL ${crate}: cargo public-api failed; stderr:"
+            cat "/tmp/${crate}-err.txt"
+            FAILED=1
+            continue
+        fi
+        # grep exits 1 on no matches; under set -e that would abort before
+        # the named INSTRUMENT-FAIL classification below — tolerate it here.
+        grep "^pub " "/tmp/${crate}-raw.txt" > "/tmp/${crate}-current.txt" || true
+        if [ ! -s "/tmp/${crate}-current.txt" ]; then
+            echo "INSTRUMENT-FAIL ${crate}: generated API surface is empty (nightly toolchain missing?) — an empty surface is never a diff"
+            FAILED=1
+            continue
+        fi
         if ! diff -u "$BASELINE" "/tmp/${crate}-current.txt" > "/tmp/${crate}-diff.txt" 2>&1; then
             echo "FAIL Public API changed in ${crate}:"
             cat "/tmp/${crate}-diff.txt"
@@ -2319,14 +2403,29 @@ public-api-update:
     just _public-api-install
     echo "Regenerating public API baselines..."
     mkdir -p .ci/public-api-baselines
-    for crate in perl-lsp-rs perl-parser perl-uri perl-dap perllsp; do
-        ./scripts/cargo-safe public-api -p "$crate" --simplified 2>/dev/null | grep "^pub " \
-            > ".ci/public-api-baselines/${crate}.txt" || true
+    crates="$(just _api-ratchet-crates)"
+    for crate in $crates; do
+        # Fail closed: never overwrite a baseline with a failed or empty
+        # generation — an empty baseline would make the ratchet vacuous
+        # (#12861).
+        if ! ./scripts/cargo-safe public-api -p "$crate" --simplified > "/tmp/${crate}-raw.txt" 2> "/tmp/${crate}-err.txt"; then
+            echo "INSTRUMENT-FAIL ${crate}: cargo public-api failed; refusing to overwrite the baseline:" >&2
+            cat "/tmp/${crate}-err.txt" >&2
+            exit 1
+        fi
+        # grep exits 1 on no matches; under set -e that would abort before
+        # the named INSTRUMENT-FAIL classification below — tolerate it here.
+        grep "^pub " "/tmp/${crate}-raw.txt" > "/tmp/${crate}-new-baseline.txt" || true
+        if [ ! -s "/tmp/${crate}-new-baseline.txt" ]; then
+            echo "INSTRUMENT-FAIL ${crate}: generated API surface is empty; refusing to overwrite the baseline" >&2
+            exit 1
+        fi
+        mv "/tmp/${crate}-new-baseline.txt" ".ci/public-api-baselines/${crate}.txt"
         echo "Updated ${crate}: $(wc -l < .ci/public-api-baselines/${crate}.txt) lines"
     done
     echo "Commit .ci/public-api-baselines/ with your PR."
 
-# Private helper: run semver checks on core packages
+# Private helper: run semver checks on every API-ratcheted crate
 [private]
 _semver-check-run:
     #!/usr/bin/env bash
@@ -2334,15 +2433,12 @@ _semver-check-run:
     BASELINE="$(git tag | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)"
     EXIT_CODE=0
     echo "Using baseline: $BASELINE"
-    echo
-    echo "Checking perl-parser..."
-    cargo semver-checks check-release -p perl-parser --baseline-rev "$BASELINE" || EXIT_CODE=1
-    echo
-    echo "Checking perl-lexer..."
-    cargo semver-checks check-release -p perl-lexer --baseline-rev "$BASELINE" || EXIT_CODE=1
-    echo
-    echo "Checking perl-parser-core..."
-    cargo semver-checks check-release -p perl-parser-core --baseline-rev "$BASELINE" || EXIT_CODE=1
+    crates="$(just _api-ratchet-crates)"
+    for crate in $crates; do
+        echo
+        echo "Checking ${crate}..."
+        cargo semver-checks check-release -p "$crate" --baseline-rev "$BASELINE" || EXIT_CODE=1
+    done
     exit "$EXIT_CODE"
 
 # Private helper: get baseline tag for comparison
@@ -3078,7 +3174,7 @@ ci-metrics-ratchet:
     cargo run -p xtask -- metrics ratchet-check engineering_health
     cargo run -p xtask -- metrics ratchet-check parser_accuracy
     cargo run -p xtask -- metrics ratchet-check token
-    cargo run -p xtask -- metrics ratchet-check editor_ux
+    cargo run -p xtask -- ux-scorecard --format json --ratchet-check
     @echo "Scorecard ratchet passed"
 
 # Tier C: full suite (nightly, all integration tests)

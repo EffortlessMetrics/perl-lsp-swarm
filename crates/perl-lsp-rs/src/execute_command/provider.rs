@@ -125,6 +125,20 @@ pub(crate) enum TestRunner {
     Perl,
 }
 
+/// A client-requested path resolved for execution (#1755).
+///
+/// `canonical` is the server-side canonicalized absolute path, used for
+/// filesystem operations, subprocess arguments, and workspace containment
+/// checks. `client_display` is the path exactly as the client supplied it
+/// (a `file://` URI argument is decoded to its filesystem-path form) and is
+/// the only path form permitted in client-facing error messages: the
+/// canonical form is the server's own filesystem view and disclosing it
+/// leaks server-side layout the client never sent.
+pub(crate) struct ResolvedCommandPath {
+    pub(crate) canonical: PathBuf,
+    pub(crate) client_display: String,
+}
+
 #[derive(Debug, Deserialize)]
 struct ExplainProviderDecisionRequest {
     provider: ProviderDecisionProvider,
@@ -138,6 +152,34 @@ struct ExplainProviderDecisionRequest {
     request_position: Option<ProviderDecisionRequestPosition>,
 }
 
+/// Maximum accepted length of one client-supplied identifier echo field
+/// (`receipt_id`, `scenario`) in `perl.explainProviderDecision` (#2758).
+///
+/// The bound applies after the generic request has been materialized. It limits
+/// the response/explanation amplification from these fields, not the transport
+/// frame or the initial JSON deserialization allocation.
+const MAX_EXPLANATION_ECHO_LENGTH: usize = 1024;
+
+/// Fail closed on an empty or oversized client-supplied identifier echo field,
+/// naming the offending field in the diagnostic (#2758). The v1 schema treats
+/// these fields as caller-preserved strings, so this validation deliberately
+/// does not impose a narrower lexical vocabulary or rewrite their contents.
+fn validate_explanation_echo(value: &str, field: &str) -> Result<(), String> {
+    if value.is_empty() {
+        return Err(format!(
+            "Invalid explain-provider-decision argument: {field} must not be empty"
+        ));
+    }
+    if value.len() > MAX_EXPLANATION_ECHO_LENGTH {
+        return Err(format!(
+            "Invalid explain-provider-decision argument: {field} too long ({}, max \
+             {MAX_EXPLANATION_ECHO_LENGTH})",
+            value.len()
+        ));
+    }
+    Ok(())
+}
+
 impl Default for ExecuteCommandProvider {
     fn default() -> Self {
         Self::new()
@@ -149,25 +191,27 @@ impl ExecuteCommandProvider {
     /// Build a `Command` for a Perl subprocess using `PerlOracleEnv`.
     ///
     /// The `file_path` is used only to derive a `cwd` (its parent directory).
-    /// Callers must append the actual Perl arguments after this call.
+    /// `client_display` is the client-supplied path form and is the only path
+    /// permitted in the error message (#1755). Callers must append the actual
+    /// Perl arguments after this call.
     #[cfg(not(target_arch = "wasm32"))]
-    fn perl_command_for(&self, file_path: &Path) -> Result<Command, String> {
+    fn perl_command_for(&self, file_path: &Path, client_display: &str) -> Result<Command, String> {
         let cwd = file_path
             .parent()
             .map(Path::to_path_buf)
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
         let Some(config) = self.workspace_config.as_ref() else {
-            return Err(Self::unresolved_execute_command_perl_error(file_path));
+            return Err(Self::unresolved_execute_command_perl_error(client_display));
         };
         let Some(oracle) = PerlOracleEnv::for_execute_command(config, cwd) else {
-            return Err(Self::unresolved_execute_command_perl_error(file_path));
+            return Err(Self::unresolved_execute_command_perl_error(client_display));
         };
         Ok(oracle.into_command())
     }
 
     #[cfg(target_arch = "wasm32")]
-    fn perl_command_for(&self, file_path: &Path) -> Result<Command, String> {
-        Err(Self::unresolved_execute_command_perl_error(file_path))
+    fn perl_command_for(&self, _file_path: &Path, client_display: &str) -> Result<Command, String> {
+        Err(Self::unresolved_execute_command_perl_error(client_display))
     }
 
     /// Message for "this command needs a Perl interpreter and none was usable".
@@ -175,11 +219,10 @@ impl ExecuteCommandProvider {
     /// The remediation is the shared [`PERL_REMEDIATION`] sentence. This message
     /// used to name an interpreter-path setting that no user-facing channel can
     /// write; see that constant's documentation for why (#5376).
-    fn unresolved_execute_command_perl_error(file_path: &Path) -> String {
+    fn unresolved_execute_command_perl_error(client_display: &str) -> String {
         format!(
-            "Cannot run Perl command for '{}': no usable Perl interpreter was found on PATH; \
+            "Cannot run Perl command for '{client_display}': no usable Perl interpreter was found on PATH; \
              refusing ambient fallback. {PERL_REMEDIATION}",
-            file_path.display()
         )
     }
 }
@@ -246,45 +289,45 @@ impl ExecuteCommandProvider {
     pub fn execute_command(&self, command: &str, arguments: Vec<Value>) -> Result<Value, String> {
         match command {
             "perl.runTests" => {
-                let file_path = self.resolve_path_from_args(&arguments)?;
-                self.run_tests(&file_path)
+                let resolved = self.resolve_path_from_args(&arguments)?;
+                self.run_tests(&resolved.canonical)
             }
             "perl.runFile" | "perl.runScript" => {
-                let file_path = self.resolve_path_from_args(&arguments)?;
-                self.run_file(&file_path)
+                let resolved = self.resolve_path_from_args(&arguments)?;
+                self.run_file(&resolved.canonical, &resolved.client_display)
             }
             "perl.runTestSub" => {
-                let file_path = self.resolve_path_from_args(&arguments)?;
+                let resolved = self.resolve_path_from_args(&arguments)?;
                 let sub_name = arguments
                     .get(1)
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| "Missing subroutine name argument".to_string())?;
-                self.run_test_sub(&file_path, sub_name)
+                self.run_test_sub(&resolved.canonical, sub_name, &resolved.client_display)
             }
             "perl.debugTests" | "perl.debugTestFile" | "perl.debugFile" | "perl.debugTest" => {
-                let file_path = self.resolve_path_from_args(&arguments)?;
-                self.debug_tests(&file_path)
+                let resolved = self.resolve_path_from_args(&arguments)?;
+                self.debug_tests(&resolved.canonical)
             }
             "perl.runTest" | "perl.runTestFile" => {
-                let file_path = self.resolve_path_from_args(&arguments)?;
-                self.run_tests(&file_path)
+                let resolved = self.resolve_path_from_args(&arguments)?;
+                self.run_tests(&resolved.canonical)
             }
             "perl.runSubtest" => {
-                let file_path = self.resolve_path_from_args(&arguments)?;
+                let resolved = self.resolve_path_from_args(&arguments)?;
                 let subtest_name = arguments
                     .get(1)
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| "Missing subtest name argument".to_string())?;
-                self.run_subtest(&file_path, subtest_name)
+                self.run_subtest(&resolved.canonical, subtest_name)
             }
             "perl.runCritic" => self.run_critic_secure(&arguments),
             "perl.goToTest" => {
-                let file_path = self.resolve_path_from_args(&arguments)?;
-                Ok(self.go_to_test(&file_path))
+                let resolved = self.resolve_path_from_args(&arguments)?;
+                Ok(self.go_to_test(&resolved.canonical))
             }
             "perl.goToImplementation" => {
-                let file_path = self.resolve_path_from_args(&arguments)?;
-                Ok(self.go_to_implementation(&file_path))
+                let resolved = self.resolve_path_from_args(&arguments)?;
+                Ok(self.go_to_implementation(&resolved.canonical))
             }
             "perl.workspaceTrustReport" => {
                 Err("perl.workspaceTrustReport requires the live LSP runtime state".to_string())
@@ -323,9 +366,11 @@ impl ExecuteCommandProvider {
         let mut explanation = default_provider_decision_explanation(request.provider);
 
         if let Some(receipt_id) = request.receipt_id {
+            validate_explanation_echo(&receipt_id, "receipt_id")?;
             explanation = explanation.with_receipt_id(receipt_id);
         }
         if let Some(scenario) = request.scenario {
+            validate_explanation_echo(&scenario, "scenario")?;
             explanation = explanation.with_scenario(scenario);
         }
         if let Some(request_receipt) = request.request_receipt {
@@ -514,7 +559,17 @@ impl ExecuteCommandProvider {
         })
     }
 
-    pub(crate) fn run_test_sub(&self, file_path: &Path, sub_name: &str) -> Result<Value, String> {
+    /// Run a single Perl subroutine in the given file.
+    ///
+    /// `client_display` is the path form the client sent; it is used only in
+    /// client-facing error messages (#1755). All filesystem and subprocess
+    /// operations use the canonical `file_path`.
+    pub(crate) fn run_test_sub(
+        &self,
+        file_path: &Path,
+        sub_name: &str,
+        client_display: &str,
+    ) -> Result<Value, String> {
         let perl_code = r#"
             my ($file, $sub) = @ARGV;
             do $file;
@@ -527,7 +582,7 @@ impl ExecuteCommandProvider {
         "#;
         let ext_path = normalize_path_for_external_command(file_path);
 
-        let mut perl_cmd = self.perl_command_for(file_path)?;
+        let mut perl_cmd = self.perl_command_for(file_path, client_display)?;
         perl_cmd.arg("-e").arg(perl_code).arg("--").arg(ext_path.as_os_str()).arg(sub_name);
         match crate::util::run_command_with_timeout(perl_cmd, 30) {
             Ok(result) => {
@@ -583,9 +638,14 @@ impl ExecuteCommandProvider {
         Ok(result)
     }
 
-    pub(crate) fn run_file(&self, file_path: &Path) -> Result<Value, String> {
+    /// Run a whole Perl file.
+    ///
+    /// `client_display` is the path form the client sent; it is used only in
+    /// client-facing error messages (#1755). The subprocess runs the canonical
+    /// `file_path`.
+    pub(crate) fn run_file(&self, file_path: &Path, client_display: &str) -> Result<Value, String> {
         let ext_path = normalize_path_for_external_command(file_path);
-        let mut perl_cmd = self.perl_command_for(file_path)?;
+        let mut perl_cmd = self.perl_command_for(file_path, client_display)?;
         perl_cmd.arg("--").arg(ext_path.as_os_str());
         match crate::util::run_command_with_timeout(perl_cmd, 30) {
             Ok(result) => Ok(self.format_command_result(result, None)),
@@ -639,7 +699,7 @@ impl ExecuteCommandProvider {
 
     fn run_critic_secure(&self, arguments: &[Value]) -> Result<Value, String> {
         let canonical_path = match self.resolve_path_from_args(arguments) {
-            Ok(path) => path,
+            Ok(resolved) => resolved.canonical,
             Err(e) => {
                 if e.contains("Missing file path argument") {
                     return Err(e);
@@ -1254,7 +1314,16 @@ impl ExecuteCommandProvider {
         })
     }
 
-    fn resolve_path_from_args(&self, arguments: &[Value]) -> Result<PathBuf, String> {
+    /// Resolve a client-supplied path argument into its two required forms
+    /// (#1755).
+    ///
+    /// Error messages returned to the client name only the client-visible form:
+    /// the canonical form is the server's own filesystem view (resolved
+    /// symlinks, volume layout) and must not be disclosed to the client. The
+    /// canonical form is still returned for filesystem operations, subprocess
+    /// arguments, and containment checks, and is recorded server-side via
+    /// `tracing` when a path is rejected.
+    fn resolve_path_from_args(&self, arguments: &[Value]) -> Result<ResolvedCommandPath, String> {
         let raw_path = arguments
             .first()
             .and_then(|v| v.as_str())
@@ -1275,14 +1344,15 @@ impl ExecuteCommandProvider {
         } else {
             PathBuf::from(raw_path)
         };
-        let normalized_path = path.to_string_lossy();
-        if normalized_path.contains("..") {
+        let client_display = path.to_string_lossy().into_owned();
+        if client_display.contains("..") {
             return Err("Path traversal attempt detected: path contains '..' component".to_string());
         }
 
-        let canonical_path = path
-            .canonicalize()
-            .map_err(|e| format!("Failed to canonicalize path '{}': {}", normalized_path, e))?;
+        let canonical_path = path.canonicalize().map_err(|e| {
+            tracing::debug!(path = %client_display, error = %e, "executeCommand path canonicalization failed");
+            format!("Failed to canonicalize path '{}': {}", client_display, e)
+        })?;
 
         let effective_roots: Vec<PathBuf> = if self.workspace_roots.is_empty() {
             match std::env::current_dir() {
@@ -1306,30 +1376,47 @@ impl ExecuteCommandProvider {
         });
 
         if !allowed {
+            tracing::debug!(
+                canonical = %canonical_path.display(),
+                "executeCommand path rejected: outside workspace boundaries"
+            );
             return Err(format!(
-                "Path traversal detected: {} is outside workspace boundaries",
-                canonical_path.display()
+                "Path traversal detected: {client_display} is outside workspace boundaries"
             ));
         }
 
         if !canonical_path.exists() {
-            return Err(format!("File not found: {}", canonical_path.display()));
+            tracing::debug!(
+                canonical = %canonical_path.display(),
+                "executeCommand path rejected: not found"
+            );
+            return Err(format!("File not found: {client_display}"));
         }
 
         if !canonical_path.is_file() {
-            return Err(format!("Path is not a file: {}", canonical_path.display()));
+            tracing::debug!(
+                canonical = %canonical_path.display(),
+                "executeCommand path rejected: not a regular file"
+            );
+            return Err(format!("Path is not a file: {client_display}"));
         }
 
         std::fs::metadata(&canonical_path).map_err(|e| {
-            format!("Cannot read file metadata '{}': {}", canonical_path.display(), e)
+            tracing::debug!(
+                canonical = %canonical_path.display(),
+                error = %e,
+                "executeCommand path rejected: metadata unreadable"
+            );
+            format!("Cannot read file metadata '{}': {}", client_display, e)
         })?;
 
-        Ok(canonical_path)
+        Ok(ResolvedCommandPath { canonical: canonical_path, client_display })
     }
 
     /// Resolve a debug file path using the same workspace security checks.
     pub fn resolve_debug_file_path(&self, file_path: &str) -> Result<PathBuf, String> {
         self.resolve_path_from_args(&[Value::String(file_path.to_string())])
+            .map(|resolved| resolved.canonical)
     }
 
     #[deprecated(since = "0.8.9", note = "Use resolve_path_from_args for secure path resolution")]

@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# This entrypoint invokes cargo (the branch-deletion admission planner), so it
+# must run the shared toolchain guard first — otherwise a cargo older than the
+# workspace rust-version surfaces as a manifest parse error instead of a typed
+# refusal (#12593).
+. "$(dirname -- "${BASH_SOURCE[0]}")/lib/cargo-toolchain-guard.sh" && cargo_toolchain_guard
+
 # Turnkey release orchestrator for the PR-driven release flow.
 #
 # 1) Trigger Version Bump & Changelog Generation workflow.
@@ -364,7 +370,19 @@ log "Version bump PR: ${PR_URL}"
 
 if [[ "$AUTO_MERGE" == "true" ]]; then
   log "Merging PR #${PR_NUMBER} with squash"
-  gh pr merge "$PR_NUMBER" --squash --delete-branch
+  # Compare-and-swap on the exact reviewed head (PLSP-SPEC-0006): if the PR
+  # advanced between review and here, the merge must fail rather than land a
+  # different subject.
+  PR_HEAD_SHA="$(gh pr view "$PR_NUMBER" --json headRefOid -q .headRefOid)"
+  if [[ -z "$PR_HEAD_SHA" ]]; then
+    die "could not read the head SHA of PR #${PR_NUMBER}; refusing to merge without head CAS"
+  fi
+  # No --delete-branch: an open PR that names ${BUMP_BRANCH} as its base is a
+  # live dependency on it, and deleting the base auto-closes that child (#12885
+  # — PRs #7810/#7819 were lost this way on August 15). Parent merge and
+  # parent-branch deletion are separate decisions, and the cleanup below
+  # re-reads the live graph rather than inheriting this moment's answer.
+  gh pr merge "$PR_NUMBER" --squash --match-head-commit "$PR_HEAD_SHA"
 else
   warn "AUTO_MERGE disabled. Merge PR manually before running this script with --base-branch=$REPO_BRANCH"
 fi
@@ -374,6 +392,33 @@ if [[ "$WAIT_PR_MERGE" == "true" ]]; then
     die "PR #${PR_NUMBER} did not merge within timeout"
   fi
   log "PR #${PR_NUMBER} merged"
+fi
+
+# ── Admitted branch cleanup (#12885) ─────────────────────────────────────────
+# The parent merged; that alone does not make its branch deletable. Re-read the
+# live graph now and delete only on SAFE_TO_DELETE. The planner is read-only and
+# exits 3 when it retains, so the deletion runs only when every subject was
+# actually read and none of them objected.
+if [[ "$AUTO_MERGE" == "true" ]]; then
+  log "Checking branch-deletion admission for ${BUMP_BRANCH}"
+  admission_code=0
+  # `cleanup` collects, evaluates, re-verifies the remote's identity and runs
+  # the leased deletion itself, as argv. Nothing is parsed out of its output
+  # and no shell evaluates a command built from remote data — a branch name
+  # containing shell metacharacters cannot reach a command line from here.
+  cargo run --quiet -p xtask --bin branch-deletion-admission -- \
+    cleanup --pr "$PR_NUMBER" --remote origin || admission_code=$?
+  case "$admission_code" in
+    0)
+      log "${BUMP_BRANCH} deleted under the admitted lease"
+      ;;
+    3)
+      log "Retaining ${BUMP_BRANCH}: deletion was not admitted (see the disposition above)"
+      ;;
+    *)
+      warn "branch-deletion admission could not be evaluated (exit ${admission_code}); retaining ${BUMP_BRANCH}"
+      ;;
+  esac
 fi
 
 git fetch origin "$REPO_BRANCH" --prune

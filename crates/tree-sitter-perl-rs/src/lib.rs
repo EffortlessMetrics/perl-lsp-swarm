@@ -25,8 +25,8 @@
 //! Key properties:
 //! - `Parser::parse()` returns `Option<Tree>` — `None` only on complete parse failure.
 //!   The v3 parser is highly error-tolerant and almost always produces a partial tree.
-//! - `Node::to_sexp()` delegates to `perl_ast::Node::to_sexp()` for tree-sitter-compatible
-//!   S-expression output.
+//! - `Node::to_sexp()` delegates to `perl_ast::Node::to_sexp()` for a native debug
+//!   S-expression. Tree-sitter compatibility CST serialization is issue 8047.
 //! - `Node::kind()` returns the tree-sitter grammar-canonical kind string.
 //! - `Node::start_byte()` / `Node::end_byte()` expose the `SourceLocation` byte offsets.
 //! - `Node::children()` and `Node::child()` mirror tree-sitter traversal conventions.
@@ -144,7 +144,9 @@ impl Parser {
     /// [`parse`][Parser::parse].
     pub fn parse_detailed(&mut self, source: &str) -> ParseOutcome {
         let mut core = CoreParser::new(source);
-        let ParseOutput { ast, diagnostics, terminated_early, .. } = core.parse_with_recovery();
+        let output = core.parse_with_recovery();
+        let terminated_early = output.terminated_early();
+        let ParseOutput { ast, diagnostics, .. } = output;
         let failure = terminated_early
             .then(|| diagnostics.iter().find_map(ParseFailure::from_diagnostic))
             .flatten();
@@ -668,10 +670,11 @@ impl<'tree> Node<'tree> {
         ast_has_error(self.inner)
     }
 
-    /// Returns a tree-sitter-compatible S-expression for this node and its subtree.
+    /// Returns the native debug S-expression for this node and its subtree.
     ///
-    /// Delegates to `perl_ast::Node::to_sexp()`. Example output:
-    /// `(source_file (my_declaration (variable $ x) (number 42)))`.
+    /// Delegates to [`perl_ast::Node::to_sexp`]. This is a non-normative debug
+    /// projection, not a Tree-sitter compatibility CST. Compatibility serialization
+    /// is tracked on issue 8047 (`perl-tree-sitter-compat`).
     pub fn to_sexp(&self) -> String {
         self.inner.to_sexp()
     }
@@ -1273,13 +1276,16 @@ mod tests {
 
     #[test]
     fn test_grammar_kind_double_paren_edge_case() {
-        // Test that grammar_kind() remains independent of the double-paren sexp form.
-        // VariableWithAttributes produces ((variable $ foo) (attributes :lvalue))
+        // Test that grammar_kind() remains independent of native debug sexp payloads.
+        // VariableWithAttributes nests the variable child and an attributes payload.
         let mut p = Parser::new();
         let tree = must_some(p.parse("my ($x : lvalue);"));
         let root = tree.root_node();
         let sexp = root.to_sexp();
-        assert!(sexp.contains("((variable"), "sexp should include the double-paren variable form");
+        assert!(
+            sexp.contains("(variable_with_attributes") && sexp.contains("(attributes"),
+            "sexp should nest attributes under the owning node, got: {sexp}"
+        );
         let declaration =
             must_some(root.children().find(|node| node.grammar_kind() == "my_declaration"));
         let variable = must_some(

@@ -4,6 +4,7 @@
 //! consumer compilation paths, and the validated byte-span contract.
 
 #![allow(dead_code)]
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 use perl_test_must::must;
 

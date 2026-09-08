@@ -1,0 +1,2617 @@
+{
+  "schema_version": "authority_transfer_programme_graph.v1",
+  "programme_issue": 11696,
+  "rails": [
+    "configuration_convergence",
+    "control_plane",
+    "semantic_close"
+  ],
+  "operation_profiles": [
+    "op.advisory-preflight.v1",
+    "op.builder-packet.v1",
+    "op.catalog-authority.v1",
+    "op.closeout-handoff.v1",
+    "op.coordinator-state.v1",
+    "op.consumer-cutover.v1",
+    "op.containment-enforcement.v1",
+    "op.dogfood-cohort.v1",
+    "op.evaluation.v1",
+    "op.evidence-registry.v1",
+    "op.fanin-integration.v1",
+    "op.frontier-compilation.v1",
+    "op.generation-assembly.v1",
+    "op.compiler-implementation.v1",
+    "op.live-overlay.v1",
+    "op.live-promotion.v1",
+    "op.observation-schema.v1",
+    "op.packet-review.v1",
+    "op.probe-projection.v1",
+    "op.programme-controller.v1",
+    "op.reconciliation.v1",
+    "op.retirement.v1",
+    "op.reviewer-packet.v1",
+    "op.schema-definition.v1",
+    "op.source-adapter.v1",
+    "op.static-contract.v1",
+    "op.store-publication.v1"
+  ],
+  "evidence_profiles": [
+    "ev.cohort-review.v1",
+    "ev.consumer-denominator.v1",
+    "ev.containment-fixtures.v1",
+    "ev.current-tree-observation.v1",
+    "ev.exact-head-closeout.v1",
+    "ev.exact-process-receipt.v1",
+    "ev.frontier-receipt.v1",
+    "ev.issue-contract-fixtures.v1",
+    "ev.live-required-promotion.v1",
+    "ev.live-observation-receipt.v1",
+    "ev.not-applicable.v1",
+    "ev.packet-review-receipt.v1",
+    "ev.preflight-matrix.v1",
+    "ev.predecessor-retired.v1",
+    "ev.reconciliation-receipt.v1",
+    "ev.static-validator.v1"
+  ],
+  "first_falsifiers": [
+    {
+      "id": "FF01",
+      "statement": "Zed-style mutable state, PR numbers, or current frontier fields appear inside the stable graph; static validation must fail."
+    },
+    {
+      "id": "FF02",
+      "statement": "A controller, proof, fan-in, or governance node is made buildable and enters a builder frontier; validation must fail."
+    },
+    {
+      "id": "FF03",
+      "statement": "Issue numbers are used as semantic node identity, so decomposing or superseding an issue silently moves graph identity; stable IDs plus explicit references must be used instead."
+    },
+    {
+      "id": "FF04",
+      "statement": "Domain policy owned by a canonical issue is copied into programme-local prose or payloads instead of being referenced; validation must fail."
+    },
+    {
+      "id": "FF05",
+      "statement": "A required accepted-store consumer row is removed while the consumer cutover proposition remains; fan-in validation must fail."
+    },
+    {
+      "id": "FF06",
+      "statement": "A controller is marked satisfied from child count alone without its own integration row; fan-in validation must fail."
+    },
+    {
+      "id": "FF07",
+      "statement": "The optional live observer becomes a hard dependency of offline frontier, packet, or closeout work; validation must fail."
+    },
+    {
+      "id": "FF08",
+      "statement": "Two unordered nodes declare parallel work over the same exclusive conflict key such as config.authority_catalog or close.evaluator; validation must fail."
+    },
+    {
+      "id": "FF09",
+      "statement": "Serialization is inferred from file overlap alone, or same-authority work in disjoint files is declared parallel; semantic conflict keys must govern instead."
+    },
+    {
+      "id": "FF10",
+      "statement": "Retirement is represented without predecessor identity, current consumers, and exit condition; validation must fail."
+    },
+    {
+      "id": "FF11",
+      "statement": "A leaf is permitted to terminate its controller without an explicit contract; relation validation must fail."
+    },
+    {
+      "id": "FF12",
+      "statement": "A required artifact has no canonical owner node; validation must fail."
+    },
+    {
+      "id": "FF13",
+      "statement": "Current proof verdicts or tree movement change stable graph bytes; the graph must remain byte-identical while projections move instead."
+    },
+    {
+      "id": "FF14",
+      "statement": "The parser defaults or ignores an unknown edge, profile, or node field instead of failing closed."
+    },
+    {
+      "id": "FF15",
+      "statement": "Input or map ordering changes normalized output; repeated normalization must be byte-identical."
+    },
+    {
+      "id": "FF16",
+      "statement": "Malformed, truncated, or otherwise unavailable graph input resolves to an empty valid graph instead of an instrument failure."
+    }
+  ],
+  "nodes": [
+    {
+      "node_id": "PGC",
+      "issue": 11696,
+      "controller": null,
+      "rail": "control_plane",
+      "phase": "programme_control",
+      "kind": "controller",
+      "buildable": false,
+      "observation_optional": false,
+      "edges": {
+        "hard": [],
+        "evidence": [],
+        "optional": [],
+        "parallel_after": [],
+        "fan_in": [
+          "AT07",
+          "AT08"
+        ]
+      },
+      "operation_profile": "op.programme-controller.v1",
+      "evidence_profile": "ev.not-applicable.v1",
+      "authority_inputs": [
+        "authority_transfer.closeout",
+        "authority_transfer.dogfood"
+      ],
+      "authority_outputs": [],
+      "conflicts": {
+        "exclusive": [],
+        "shared": []
+      },
+      "claim_ceiling": "Owns programme meaning, claim selection, and cross-rail dependencies for semantic-close and configuration convergence; never appears in a builder frontier.",
+      "non_claims": [
+        "Does not implement any leaf itself.",
+        "Does not derive current readiness; #11698/#11699 own observations and frontiers."
+      ],
+      "first_falsifier": "FF02",
+      "artifacts": [
+        {
+          "id": "at.programme.ruling",
+          "owner": "PGC"
+        }
+      ],
+      "predecessor_exit": null,
+      "handoff": null,
+      "terminal_relation": "none"
+    },
+    {
+      "node_id": "AT01",
+      "issue": 11697,
+      "controller": "PGC",
+      "rail": "control_plane",
+      "phase": "stable_programme_graph",
+      "kind": "contract",
+      "buildable": true,
+      "observation_optional": false,
+      "edges": {
+        "hard": [],
+        "evidence": [],
+        "optional": [],
+        "parallel_after": [],
+        "fan_in": []
+      },
+      "operation_profile": "op.static-contract.v1",
+      "evidence_profile": "ev.static-validator.v1",
+      "authority_inputs": [],
+      "authority_outputs": [
+        {
+          "key": "authority_transfer.manifest",
+          "mode": "exclusive"
+        }
+      ],
+      "conflicts": {
+        "exclusive": [
+          "authority_transfer.manifest"
+        ],
+        "shared": []
+      },
+      "claim_ceiling": "One versioned stable programme graph plus deterministic static validation land as representation only.",
+      "non_claims": [
+        "Projects no current-tree, PR, proof, or readiness state.",
+        "Implements no product or configuration behavior.",
+        "Creates no second generic train ontology."
+      ],
+      "first_falsifier": "FF01",
+      "artifacts": [
+        {
+          "id": "at.programme-graph.manifest",
+          "owner": "AT01"
+        },
+        {
+          "id": "at.programme-graph.validator",
+          "owner": "AT01"
+        },
+        {
+          "id": "at.programme-graph.normalized-projection",
+          "owner": "AT01"
+        }
+      ],
+      "predecessor_exit": null,
+      "handoff": "AT02",
+      "terminal_relation": "close_leaf"
+    },
+    {
+      "node_id": "AT02",
+      "issue": 11698,
+      "controller": "PGC",
+      "rail": "control_plane",
+      "phase": "exact_tree_probes",
+      "kind": "source_adapter",
+      "buildable": true,
+      "observation_optional": false,
+      "edges": {
+        "hard": [
+          "AT01"
+        ],
+        "evidence": [],
+        "optional": [],
+        "parallel_after": [],
+        "fan_in": []
+      },
+      "operation_profile": "op.probe-projection.v1",
+      "evidence_profile": "ev.current-tree-observation.v1",
+      "authority_inputs": [
+        "authority_transfer.manifest"
+      ],
+      "authority_outputs": [
+        {
+          "key": "authority_transfer.probes",
+          "mode": "exclusive"
+        }
+      ],
+      "conflicts": {
+        "exclusive": [
+          "authority_transfer.probes"
+        ],
+        "shared": []
+      },
+      "claim_ceiling": "Projects exact current-tree authority and proof observations keyed to stable node IDs without contacting GitHub or inferring readiness.",
+      "non_claims": [
+        "Repairs no product behavior.",
+        "Redefines no issue semantics."
+      ],
+      "first_falsifier": "FF13",
+      "artifacts": [
+        {
+          "id": "at.probes.projection",
+          "owner": "AT02"
+        }
+      ],
+      "predecessor_exit": null,
+      "handoff": "AT03",
+      "terminal_relation": "close_leaf"
+    },
+    {
+      "node_id": "AT03",
+      "issue": 11699,
+      "controller": "PGC",
+      "rail": "control_plane",
+      "phase": "offline_frontiers",
+      "kind": "evaluator",
+      "buildable": true,
+      "observation_optional": false,
+      "edges": {
+        "hard": [
+          "AT02"
+        ],
+        "evidence": [],
+        "optional": [],
+        "parallel_after": [],
+        "fan_in": []
+      },
+      "operation_profile": "op.frontier-compilation.v1",
+      "evidence_profile": "ev.frontier-receipt.v1",
+      "authority_inputs": [
+        "authority_transfer.probes"
+      ],
+      "authority_outputs": [
+        {
+          "key": "authority_transfer.frontier",
+          "mode": "exclusive"
+        }
+      ],
+      "conflicts": {
+        "exclusive": [
+          "authority_transfer.frontier"
+        ],
+        "shared": []
+      },
+      "claim_ceiling": "Compiles stable graph plus exact-tree observations into deterministic offline builder, reviewer, closeout, and blocked frontiers.",
+      "non_claims": [
+        "Inspects no source ad hoc.",
+        "Allocates no workers, leases, or model routing."
+      ],
+      "first_falsifier": "FF06",
+      "artifacts": [
+        {
+          "id": "at.frontier.receipt",
+          "owner": "AT03"
+        }
+      ],
+      "predecessor_exit": null,
+      "handoff": "AT04",
+      "terminal_relation": "close_leaf"
+    },
+    {
+      "node_id": "AT04",
+      "issue": 11700,
+      "controller": "PGC",
+      "rail": "control_plane",
+      "phase": "builder_packets",
+      "kind": "coordinator",
+      "buildable": true,
+      "observation_optional": false,
+      "edges": {
+        "hard": [
+          "AT03"
+        ],
+        "evidence": [],
+        "optional": [
+          "AT06"
+        ],
+        "parallel_after": [],
+        "fan_in": []
+      },
+      "operation_profile": "op.builder-packet.v1",
+      "evidence_profile": "ev.packet-review-receipt.v1",
+      "authority_inputs": [
+        "authority_transfer.frontier"
+      ],
+      "authority_outputs": [
+        {
+          "key": "authority_transfer.builder_projection",
+          "mode": "exclusive"
+        }
+      ],
+      "conflicts": {
+        "exclusive": [
+          "authority_transfer.builder_projection"
+        ],
+        "shared": []
+      },
+      "claim_ceiling": "Generates bounded exact-tree builder packets keyed to stable nodes without authorizing live GitHub mutation or merge.",
+      "non_claims": [
+        "Executes no packet content itself.",
+        "Never strengthens the optional live overlay into a prerequisite."
+      ],
+      "first_falsifier": "FF07",
+      "artifacts": [
+        {
+          "id": "at.builder-packet.projection",
+          "owner": "AT04"
+        }
+      ],
+      "predecessor_exit": null,
+      "handoff": "AT07",
+      "terminal_relation": "close_leaf"
+    },
+    {
+      "node_id": "AT05",
+      "issue": 11701,
+      "controller": "PGC",
+      "rail": "control_plane",
+      "phase": "reviewer_packets",
+      "kind": "coordinator",
+      "buildable": true,
+      "observation_optional": false,
+      "edges": {
+        "hard": [
+          "AT03"
+        ],
+        "evidence": [],
+        "optional": [
+          "AT06"
+        ],
+        "parallel_after": [],
+        "fan_in": []
+      },
+      "operation_profile": "op.reviewer-packet.v1",
+      "evidence_profile": "ev.packet-review-receipt.v1",
+      "authority_inputs": [
+        "authority_transfer.frontier"
+      ],
+      "authority_outputs": [
+        {
+          "key": "authority_transfer.reviewer_projection",
+          "mode": "exclusive"
+        }
+      ],
+      "conflicts": {
+        "exclusive": [
+          "authority_transfer.reviewer_projection"
+        ],
+        "shared": []
+      },
+      "claim_ceiling": "Generates independent adversarial reviewer packets with differentiated lenses keyed to stable nodes.",
+      "non_claims": [
+        "Returns no approval verdicts.",
+        "Never strengthens the optional live overlay into a prerequisite."
+      ],
+      "first_falsifier": "FF07",
+      "artifacts": [
+        {
+          "id": "at.reviewer-packet.projection",
+          "owner": "AT05"
+        }
+      ],
+      "predecessor_exit": null,
+      "handoff": "AT07",
+      "terminal_relation": "close_leaf"
+    },
+    {
+      "node_id": "AT06",
+      "issue": 11702,
+      "controller": "PGC",
+      "rail": "control_plane",
+      "phase": "live_overlay",
+      "kind": "advisory_integration",
+      "buildable": true,
+      "observation_optional": true,
+      "edges": {
+        "hard": [
+          "AT02"
+        ],
+        "evidence": [],
+        "optional": [],
+        "parallel_after": [],
+        "fan_in": []
+      },
+      "operation_profile": "op.live-overlay.v1",
+      "evidence_profile": "ev.live-observation-receipt.v1",
+      "authority_inputs": [
+        "authority_transfer.probes"
+      ],
+      "authority_outputs": [
+        {
+          "key": "authority_transfer.live_observer",
+          "mode": "exclusive"
+        }
+      ],
+      "conflicts": {
+        "exclusive": [
+          "authority_transfer.live_observer"
+        ],
+        "shared": []
+      },
+      "claim_ceiling": "Overlays canonical live candidate and contract-drift observations read-only; absence may leave duplicate-candidate risk unknown.",
+      "non_claims": [
+        "Never blocks offline frontiers, packets, or closeout.",
+        "Performs no GitHub mutation."
+      ],
+      "first_falsifier": "FF07",
+      "artifacts": [
+        {
+          "id": "at.live-observer.receipt",
+          "owner": "AT06"
+        }
+      ],
+      "predecessor_exit": null,
+      "handoff": "AT07",
+      "terminal_relation": "close_leaf"
+    },
+    {
+      "node_id": "AT07",
+      "issue": 11703,
+      "controller": "PGC",
+      "rail": "control_plane",
+      "phase": "exact_head_closeout",
+      "kind": "exact_process_fanin",
+      "buildable": false,
+      "observation_optional": false,
+      "edges": {
+        "hard": [
+          "AT04",
+          "AT05"
+        ],
+        "evidence": [],
+        "optional": [
+          "AT06"
+        ],
+        "parallel_after": [],
+        "fan_in": [
+          "AT04",
+          "AT05"
+        ]
+      },
+      "operation_profile": "op.closeout-handoff.v1",
+      "evidence_profile": "ev.exact-head-closeout.v1",
+      "authority_inputs": [
+        "authority_transfer.builder_projection",
+        "authority_transfer.reviewer_projection"
+      ],
+      "authority_outputs": [
+        {
+          "key": "authority_transfer.closeout",
+          "mode": "exclusive"
+        }
+      ],
+      "conflicts": {
+        "exclusive": [
+          "authority_transfer.closeout"
+        ],
+        "shared": []
+      },
+      "claim_ceiling": "Fans completed builder and reviewer packets into exact-head leaf closeout and canonical handoffs at one exact head.",
+      "non_claims": [
+        "Accepts no leaf whose controller contract forbids termination.",
+        "Merges nothing and mutates no remote state."
+      ],
+      "first_falsifier": "FF11",
+      "artifacts": [
+        {
+          "id": "at.closeout.handoff",
+          "owner": "AT07"
+        }
+      ],
+      "predecessor_exit": null,
+      "handoff": "AT08",
+      "terminal_relation": "close_leaf"
+    },
+    {
+      "node_id": "AT08",
+      "issue": 11704,
+      "controller": "PGC",
+      "rail": "control_plane",
+      "phase": "dogfood",
+      "kind": "dogfood",
+      "buildable": true,
+      "observation_optional": false,
+      "edges": {
+        "hard": [
+          "AT03",
+          "AT04",
+          "AT05",
+          "AT07"
+        ],
+        "evidence": [],
+        "optional": [
+          "AT06"
+        ],
+        "parallel_after": [],
+        "fan_in": []
+      },
+      "operation_profile": "op.dogfood-cohort.v1",
+      "evidence_profile": "ev.cohort-review.v1",
+      "authority_inputs": [
+        "authority_transfer.closeout",
+        "authority_transfer.frontier"
+      ],
+      "authority_outputs": [
+        {
+          "key": "authority_transfer.dogfood",
+          "mode": "exclusive"
+        }
+      ],
+      "conflicts": {
+        "exclusive": [
+          "authority_transfer.dogfood"
+        ],
+        "shared": []
+      },
+      "claim_ceiling": "Runs lower-cost-agent dogfood cohorts across semantic-close and configuration leaves and corrects the earliest failing control.",
+      "non_claims": [
+        "Proves no product semantics beyond cohort execution.",
+        "Never treats cohort passage as leaf completion."
+      ],
+      "first_falsifier": "FF06",
+      "artifacts": [
+        {
+          "id": "at.dogfood.cohort-receipt",
+          "owner": "AT08"
+        }
+      ],
+      "predecessor_exit": null,
+      "handoff": "PGC",
+      "terminal_relation": "close_leaf"
+    },
+    {
+      "node_id": "SMC",
+      "issue": 10168,
+      "controller": null,
+      "rail": "semantic_close",
+      "phase": "semantic_completion_control",
+      "kind": "controller",
+      "buildable": false,
+      "observation_optional": false,
+      "edges": {
+        "hard": [],
+        "evidence": [],
+        "optional": [],
+        "parallel_after": [],
+        "fan_in": [
+          "LE1",
+          "RE1"
+        ]
+      },
+      "operation_profile": "op.programme-controller.v1",
+      "evidence_profile": "ev.not-applicable.v1",
+      "authority_inputs": [],
+      "authority_outputs": [],
+      "conflicts": {
+        "exclusive": [],
+        "shared": []
+      },
+      "claim_ceiling": "Owns semantic issue-completion meaning: acceptance coverage before an implementation issue can close.",
+      "non_claims": [
+        "Is never closed by a leaf by default.",
+        "Decides no current issue state; evaluation belongs to #10382."
+      ],
+      "first_falsifier": "FF11",
+      "artifacts": [
+        {
+          "id": "close.controller.ruling",
+          "owner": "SMC"
+        }
+      ],
+      "predecessor_exit": null,
+      "handoff": null,
+      "terminal_relation": "none"
+    },
+    {
+      "node_id": "SC1",
+      "issue": 10380,
+      "controller": "SMC",
+      "rail": "semantic_close",
+      "phase": "issue_contract_schema",
+      "kind": "contract",
+      "buildable": true,
+      "observation_optional": false,
+      "edges": {
+        "hard": [],
+        "evidence": [],
+        "optional": [],
+        "parallel_after": [],
+        "fan_in": []
+      },
+      "operation_profile": "op.schema-definition.v1",
+      "evidence_profile": "ev.issue-contract-fixtures.v1",
+      "authority_inputs": [],
+      "authority_outputs": [
+        {
+          "key": "close.contract.schema",
+          "mode": "exclusive"
+        }
+      ],
+      "conflicts": {
+        "exclusive": [
+          "close.contract"
+        ],
+        "shared": []
+      },
+      "claim_ceiling": "Defines issue kinds, denominators, proof levels, and immutable regression fixtures for semantic close.",
+      "non_claims": [
+        "Evaluates no current issue.",
+        "Embeds no configuration domain policy."
+      ],
+      "first_falsifier": "FF04",
+      "artifacts": [
+        {
+          "id": "close.issue-contract.schema",
+          "owner": "SC1"
+        }
+      ],
+      "predecessor_exit": null,
+      "handoff": "SC2",
+      "terminal_relation": "close_leaf"
+    },
+    {
+      "node_id": "SC2",
+      "issue": 10381,
+      "controller": "SMC",
+      "rail": "semantic_close",
+      "phase": "proof_boundary",
+      "kind": "contract",
+      "buildable": true,
+      "observation_optional": false,
+      "edges": {
+        "hard": [
+          "SC1"
+        ],
+        "evidence": [],
+        "optional": [],
+        "parallel_after": [],
+        "fan_in": []
+      },
+      "operation_profile": "op.schema-definition.v1",
+      "evidence_profile": "ev.issue-contract-fixtures.v1",
+      "authority_inputs": [
+        "close.contract.schema"
+      ],
+      "authority_outputs": [
+        {
+          "key": "close.boundary.vocabulary",
+          "mode": "exclusive"
+        }
+      ],
+      "conflicts": {
+        "exclusive": [
+          "close.contract"
+        ],
+        "shared": []
+      },
+      "claim_ceiling": "Separates landing and content-survival evidence from semantic completion vocabulary.",
+      "non_claims": [
+        "Claims no completion from landing evidence."
+      ],
+      "first_falsifier": "FF04",
+      "artifacts": [
+        {
+          "id": "close.boundary.vocabulary",
+          "owner": "SC2"
+        }
+      ],
+      "predecessor_exit": null,
+      "handoff": "CM1",
+      "terminal_relation": "close_leaf"
+    },
+    {
+      "node_id": "CT1",
+      "issue": 10413,
+      "controller": "SMC",
+      "rail": "semantic_close",
+      "phase": "contradictory_close_containment",
+      "kind": "containment",
+      "buildable": false,
+      "observation_optional": false,
+      "edges": {
+        "hard": [
+          "SC1"
+        ],
+        "evidence": [],
+        "optional": [],
+        "parallel_after": [],
+        "fan_in": []
+      },
+      "operation_profile": "op.containment-enforcement.v1",
+      "evidence_profile": "ev.containment-fixtures.v1",
+      "authority_inputs": [
+        "close.contract.schema"
+      ],
+      "authority_outputs": [
+        {
+          "key": "close.containment.guard",
+          "mode": "exclusive"
+        }
+      ],
+      "conflicts": {
+        "exclusive": [
+          "close.containment"
+        ],
+        "shared": []
+      },
+      "claim_ceiling": "Contains high-confidence contradictory terminal closing relations before semantic evaluation; containment level only.",
+      "non_claims": [
+        "Decides no semantic completion.",
+        "Grants no merge authority."
+      ],
+      "first_falsifier": "FF02",
+      "artifacts": [
+        {
+          "id": "close.containment.fixtures",
+          "owner": "CT1"
+        }
+      ],
+      "predecessor_exit": null,
+      "handoff": "SE1",
+      "terminal_relation": "close_leaf"
+    },
+    {
+      "node_id": "CM1",
+      "issue": 10414,
+      "controller": "SMC",
+      "rail": "semantic_close",
+      "phase": "issue_contract_compiler",
+      "kind": "compiler",
+      "buildable": true,
+      "observation_optional": false,
+      "edges": {
+        "hard": [
+          "SC2"
+        ],
+        "evidence": [],
+        "optional": [],
+        "parallel_after": [],
+        "fan_in": []
+      },
+      "operation_profile": "op.compiler-implementation.v1",
+      "evidence_profile": "ev.issue-contract-fixtures.v1",
+      "authority_inputs": [
+        "close.boundary.vocabulary"
+      ],
+      "authority_outputs": [
+        {
+          "key": "close.issue_contract",
+          "mode": "exclusive"
+        }
+      ],
+      "conflicts": {
+        "exclusive": [
+          "close.compiler"
+        ],
+        "shared": []
+      },
+      "claim_ceiling": "Compiles current issue and accepted ruling into issue_contract.v1 representations consumed by evaluation.",
+      "non_claims": [
+        "Scrapes no mutable issue status.",
+        "Produces no readiness verdict."
+      ],
+      "first_falsifier": "FF03",
+      "artifacts": [
+        {
+          "id": "close.issue-contract.compiler",
+          "owner": "CM1"
+        }
+      ],
+      "predecessor_exit": null,
+      "handoff": "SE1",
+      "terminal_relation": "close_leaf"
+    },
+    {
+      "node_id": "EV1",
+      "issue": 10415,
+      "controller": "SMC",
+      "rail": "semantic_close",
+      "phase": "evidence_producer_registry",
+      "kind": "evidence_registry",
+      "buildable": true,
+      "observation_optional": false,
+      "edges": {
+        "hard": [
+          "SC1"
+        ],
+        "evidence": [],
+        "optional": [],
+        "parallel_after": [],
+        "fan_in": []
+      },
+      "operation_profile": "op.evidence-registry.v1",
+      "evidence_profile": "ev.consumer-denominator.v1",
+      "authority_inputs": [
+        "close.contract.schema"
+      ],
+      "authority_outputs": [
+        {
+          "key": "close.evidence_registry",
+          "mode": "exclusive"
+        }
+      ],
+      "conflicts": {
+        "exclusive": [
+          "close.evidence_registry"
+        ],
+        "shared": []
+      },
+      "claim_ceiling": "Admits trusted domain evidence producers and their proof ceilings for semantic closure.",
+      "non_claims": [
+        "Certifies no producer output as completion by registration alone."
+      ],
+      "first_falsifier": "FF12",
+      "artifacts": [
+        {
+          "id": "close.evidence-registry.rows",
+          "owner": "EV1"
+        }
+      ],
+      "predecessor_exit": null,
+      "handoff": "SE1",
+      "terminal_relation": "close_leaf"
+    },
+    {
+      "node_id": "SE1",
+      "issue": 10382,
+      "controller": "SMC",
+      "rail": "semantic_close",
+      "phase": "semantic_evaluation",
+      "kind": "evaluator",
+      "buildable": true,
+      "observation_optional": false,
+      "edges": {
+        "hard": [
+          "CM1",
+          "EV1"
+        ],
+        "evidence": [],
+        "optional": [],
+        "parallel_after": [],
+        "fan_in": []
+      },
+      "operation_profile": "op.evaluation.v1",
+      "evidence_profile": "ev.exact-process-receipt.v1",
+      "authority_inputs": [
+        "close.issue_contract",
+        "close.evidence_registry"
+      ],
+      "authority_outputs": [
+        {
+          "key": "close.evaluator",
+          "mode": "exclusive"
+        }
+      ],
+      "conflicts": {
+        "exclusive": [
+          "close.evaluator"
+        ],
+        "shared": []
+      },
+      "claim_ceiling": "Evaluates semantic issue completion against current contracts and evidence rows.",
+      "non_claims": [
+        "Promotes itself to live enforcement.",
+        "Takes no advisory shortcut."
+      ],
+      "first_falsifier": "FF09",
+      "artifacts": [
+        {
+          "id": "close.evaluator.receipt",
+          "owner": "SE1"
+        }
+      ],
+      "predecessor_exit": null,
+      "handoff": "AD3",
+      "terminal_relation": "close_leaf"
+    },
+    {
+      "node_id": "AD3",
+      "issue": 10383,
+      "controller": "SMC",
+      "rail": "semantic_close",
+      "phase": "advisory_preflight",
+      "kind": "advisory_integration",
+      "buildable": true,
+      "observation_optional": false,
+      "edges": {
+        "hard": [
+          "SE1"
+        ],
+        "evidence": [],
+        "optional": [],
+        "parallel_after": [],
+        "fan_in": []
+      },
+      "operation_profile": "op.advisory-preflight.v1",
+      "evidence_profile": "ev.preflight-matrix.v1",
+      "authority_inputs": [
+        "close.evaluator"
+      ],
+      "authority_outputs": [
+        {
+          "key": "close.preflight",
+          "mode": "exclusive"
+        }
+      ],
+      "conflicts": {
+        "exclusive": [
+          "close.preflight"
+        ],
+        "shared": []
+      },
+      "claim_ceiling": "Adds the advisory automatic-closing-keyword semantic preflight ahead of any required enforcement.",
+      "non_claims": [
+        "Blocks no merge while advisory.",
+        "Reports no current readiness."
+      ],
+      "first_falsifier": "FF07",
+      "artifacts": [
+        {
+          "id": "close.preflight.matrix",
+          "owner": "AD3"
+        }
+      ],
+      "predecessor_exit": null,
+      "handoff": "LE1",
+      "terminal_relation": "close_leaf"
+    },
+    {
+      "node_id": "RE1",
+      "issue": 10384,
+      "controller": "SMC",
+      "rail": "semantic_close",
+      "phase": "current_main_reconciliation",
+      "kind": "contract",
+      "buildable": true,
+      "observation_optional": false,
+      "edges": {
+        "hard": [
+          "SE1"
+        ],
+        "evidence": [],
+        "optional": [],
+        "parallel_after": [],
+        "fan_in": []
+      },
+      "operation_profile": "op.reconciliation.v1",
+      "evidence_profile": "ev.reconciliation-receipt.v1",
+      "authority_inputs": [
+        "close.evaluator"
+      ],
+      "authority_outputs": [
+        {
+          "key": "close.manual_reconciliation",
+          "mode": "exclusive"
+        }
+      ],
+      "conflicts": {
+        "exclusive": [
+          "close.workflow"
+        ],
+        "shared": []
+      },
+      "claim_ceiling": "Reconciles semantic closure on current main and unifies manual closer paths behind evaluation.",
+      "non_claims": [
+        "Closes no issue by hand outside the evaluated path."
+      ],
+      "first_falsifier": "FF11",
+      "artifacts": [
+        {
+          "id": "close.reconciliation.receipt",
+          "owner": "RE1"
+        }
+      ],
+      "predecessor_exit": null,
+      "handoff": "SMC",
+      "terminal_relation": "close_leaf"
+    },
+    {
+      "node_id": "LE1",
+      "issue": 10416,
+      "controller": "SMC",
+      "rail": "semantic_close",
+      "phase": "live_policy_promotion",
+      "kind": "live_enforcement",
+      "buildable": false,
+      "observation_optional": false,
+      "edges": {
+        "hard": [
+          "AD3"
+        ],
+        "evidence": [],
+        "optional": [],
+        "parallel_after": [],
+        "fan_in": []
+      },
+      "operation_profile": "op.live-promotion.v1",
+      "evidence_profile": "ev.live-required-promotion.v1",
+      "authority_inputs": [
+        "close.preflight"
+      ],
+      "authority_outputs": [
+        {
+          "key": "close.live_policy",
+          "mode": "exclusive"
+        }
+      ],
+      "conflicts": {
+        "exclusive": [
+          "close.live_policy"
+        ],
+        "shared": []
+      },
+      "claim_ceiling": "Promotes the measured advisory preflight to required live enforcement through measured activation only.",
+      "non_claims": [
+        "Is never an ordinary builder node.",
+        "Skips no advisory evidence step."
+      ],
+      "first_falsifier": "FF07",
+      "artifacts": [
+        {
+          "id": "close.live-policy.activation",
+          "owner": "LE1"
+        }
+      ],
+      "predecessor_exit": null,
+      "handoff": "SMC",
+      "terminal_relation": "none"
+    },
+    {
+      "node_id": "CFG",
+      "issue": 6738,
+      "controller": null,
+      "rail": "configuration_convergence",
+      "phase": "configuration_control",
+      "kind": "controller",
+      "buildable": false,
+      "observation_optional": false,
+      "edges": {
+        "hard": [],
+        "evidence": [],
+        "optional": [],
+        "parallel_after": [],
+        "fan_in": [
+          "TR1"
+        ]
+      },
+      "operation_profile": "op.programme-controller.v1",
+      "evidence_profile": "ev.not-applicable.v1",
+      "authority_inputs": [
+        "config.transactional_effects"
+      ],
+      "authority_outputs": [],
+      "conflicts": {
+        "exclusive": [],
+        "shared": []
+      },
+      "claim_ceiling": "Owns the integrated LSP configuration route close: transactional precedence and reconfiguration effects over one accepted store.",
+      "non_claims": [
+        "Is never closed by a consumer leaf by default.",
+        "Appears in no builder frontier."
+      ],
+      "first_falsifier": "FF06",
+      "artifacts": [
+        {
+          "id": "config.controller.ruling",
+          "owner": "CFG"
+        }
+      ],
+      "predecessor_exit": null,
+      "handoff": null,
+      "terminal_relation": "none"
+    },
+    {
+      "node_id": "CFA",
+      "issue": 7054,
+      "controller": "CFG",
+      "rail": "configuration_convergence",
+      "phase": "field_authority",
+      "kind": "contract",
+      "buildable": true,
+      "observation_optional": false,
+      "edges": {
+        "hard": [],
+        "evidence": [],
+        "optional": [],
+        "parallel_after": [],
+        "fan_in": []
+      },
+      "operation_profile": "op.schema-definition.v1",
+      "evidence_profile": "ev.issue-contract-fixtures.v1",
+      "authority_inputs": [],
+      "authority_outputs": [
+        {
+          "key": "config.field_authority",
+          "mode": "exclusive"
+        }
+      ],
+      "conflicts": {
+        "exclusive": [
+          "config.public_schema"
+        ],
+        "shared": []
+      },
+      "claim_ceiling": "Defines typed field scope and precedence authority with a complete denominator for LSP configuration.",
+      "non_claims": [
+        "Copies no client-specific precedence tables.",
+        "Owns no runtime generation state."
+      ],
+      "first_falsifier": "FF04",
+      "artifacts": [
+        {
+          "id": "config.field-authority.contract",
+          "owner": "CFA"
+        }
+      ],
+      "predecessor_exit": null,
+      "handoff": "CFB",
+      "terminal_relation": "close_leaf"
+    },
+    {
+      "node_id": "CFB",
+      "issue": 10385,
+      "controller": "CFG",
+      "rail": "configuration_convergence",
+      "phase": "capability_classification",
+      "kind": "contract",
+      "buildable": true,
+      "observation_optional": false,
+      "edges": {
+        "hard": [
+          "CFA"
+        ],
+        "evidence": [],
+        "optional": [],
+        "parallel_after": [],
+        "fan_in": []
+      },
+      "operation_profile": "op.catalog-authority.v1",
+      "evidence_profile": "ev.consumer-denominator.v1",
+      "authority_inputs": [
+        "config.field_authority"
+      ],
+      "authority_outputs": [
+        {
+          "key": "config.capability_roles",
+          "mode": "exclusive"
+        }
+      ],
+      "conflicts": {
+        "exclusive": [
+          "config.authority_catalog"
+        ],
+        "shared": []
+      },
+      "claim_ceiling": "Classifies capability roles, external effects, compositions, and exact parser bindings for every governed field.",
+      "non_claims": [
+        "Binds no runtime behavior by classification alone."
+      ],
+      "first_falsifier": "FF12",
+      "artifacts": [
+        {
+          "id": "config.capability.classification",
+          "owner": "CFB"
+        }
+      ],
+      "predecessor_exit": null,
+      "handoff": "CC1",
+      "terminal_relation": "close_leaf"
+    },
+    {
+      "node_id": "CC1",
+      "issue": 10790,
+      "controller": "CFG",
+      "rail": "configuration_convergence",
+      "phase": "canonical_catalog",
+      "kind": "contract",
+      "buildable": true,
+      "observation_optional": false,
+      "edges": {
+        "hard": [
+          "CFB"
+        ],
+        "evidence": [],
+        "optional": [],
+        "parallel_after": [],
+        "fan_in": []
+      },
+      "operation_profile": "op.catalog-authority.v1",
+      "evidence_profile": "ev.static-validator.v1",
+      "authority_inputs": [
+        "config.capability_roles"
+      ],
+      "authority_outputs": [
+        {
+          "key": "config.authority_catalog",
+          "mode": "exclusive"
+        }
+      ],
+      "conflicts": {
+        "exclusive": [
+          "config.authority_catalog"
+        ],
+        "shared": []
+      },
+      "claim_ceiling": "Makes the declared configuration catalog canonical and rejects semantic rewrites.",
+      "non_claims": [
+        "Tolerates no parallel catalog authority."
+      ],
+      "first_falsifier": "FF08",
+      "artifacts": [
+        {
+          "id": "config.catalog.canonical",
+          "owner": "CC1"
+        }
+      ],
+      "predecessor_exit": null,
+      "handoff": "CC2",
+      "terminal_relation": "close_leaf"
+    },
+    {
+      "node_id": "CC2",
+      "issue": 10796,
+      "controller": "CFG",
+      "rail": "configuration_convergence",
+      "phase": "effect_vocabulary",
+      "kind": "contract",
+      "buildable": true,
+      "observation_optional": false,
+      "edges": {
+        "hard": [
+          "CC1"
+        ],
+        "evidence": [],
+        "optional": [],
+        "parallel_after": [],
+        "fan_in": []
+      },
+      "operation_profile": "op.schema-definition.v1",
+      "evidence_profile": "ev.issue-contract-fixtures.v1",
+      "authority_inputs": [
+        "config.authority_catalog"
+      ],
+      "authority_outputs": [
+        {
+          "key": "config.effect_vocabulary",
+          "mode": "exclusive"
+        }
+      ],
+      "conflicts": {
+        "exclusive": [
+          "config.authority_catalog"
+        ],
+        "shared": []
+      },
+      "claim_ceiling": "Adds capability roles, external effects, and composition contracts to the canonical catalog vocabulary.",
+      "non_claims": [
+        "Introduces no second effect ontology."
+      ],
+      "first_falsifier": "FF04",
+      "artifacts": [
+        {
+          "id": "config.effect-vocabulary.contract",
+          "owner": "CC2"
+        }
+      ],
+      "predecessor_exit": null,
+      "handoff": "CC3",
+      "terminal_relation": "close_leaf"
+    },
+    {
+      "node_id": "CC3",
+      "issue": 10801,
+      "controller": "CFG",
+      "rail": "configuration_convergence",
+      "phase": "high_risk_bindings",
+      "kind": "contract",
+      "buildable": true,
+      "observation_optional": false,
+      "edges": {
+        "hard": [
+          "CC2"
+        ],
+        "evidence": [],
+        "optional": [],
+        "parallel_after": [],
+        "fan_in": []
+      },
+      "operation_profile": "op.catalog-authority.v1",
+      "evidence_profile": "ev.consumer-denominator.v1",
+      "authority_inputs": [
+        "config.effect_vocabulary"
+      ],
+      "authority_outputs": [
+        {
+          "key": "config.high_risk_bindings",
+          "mode": "exclusive"
+        }
+      ],
+      "conflicts": {
+        "exclusive": [
+          "config.authority_catalog"
+        ],
+        "shared": []
+      },
+      "claim_ceiling": "Binds high-risk settings to exact parsers, consumers, and public contracts.",
+      "non_claims": [
+        "Leaves no high-risk binding inferred from path globs alone."
+      ],
+      "first_falsifier": "FF09",
+      "artifacts": [
+        {
+          "id": "config.high-risk.bindings",
+          "owner": "CC3"
+        }
+      ],
+      "predecessor_exit": null,
+      "handoff": "CC4",
+      "terminal_relation": "close_leaf"
+    },
+    {
+      "node_id": "CC4",
+      "issue": 10807,
+      "controller": "CFG",
+      "rail": "configuration_convergence",
+      "phase": "effective_field_denominator",
+      "kind": "contract",
+      "buildable": true,
+      "observation_optional": false,
+      "edges": {
+        "hard": [
+          "CC3"
+        ],
+        "evidence": [],
+        "optional": [],
+        "parallel_after": [],
+        "fan_in": []
+      },
+      "operation_profile": "op.evaluation.v1",
+      "evidence_profile": "ev.consumer-denominator.v1",
+      "authority_inputs": [
+        "config.high_risk_bindings"
+      ],
+      "authority_outputs": [
+        {
+          "key": "config.field_denominator",
+          "mode": "exclusive"
+        }
+      ],
+      "conflicts": {
+        "exclusive": [
+          "config.authority_catalog"
+        ],
+        "shared": []
+      },
+      "claim_ceiling": "Closes the effective-field denominator and rejects authority drift against the canonical catalog.",
+      "non_claims": [
+        "Treats one passing row as no denominator."
+      ],
+      "first_falsifier": "FF05",
+      "artifacts": [
+        {
+          "id": "config.denominator.receipt",
+          "owner": "CC4"
+        }
+      ],
+      "predecessor_exit": null,
+      "handoff": "GN2",
+      "terminal_relation": "close_leaf"
+    },
+    {
+      "node_id": "CO1",
+      "issue": 10419,
+      "controller": "CFG",
+      "rail": "configuration_convergence",
+      "phase": "raw_observation_schema",
+      "kind": "contract",
+      "buildable": true,
+      "observation_optional": false,
+      "edges": {
+        "hard": [
+          "CFA"
+        ],
+        "evidence": [],
+        "optional": [],
+        "parallel_after": [],
+        "fan_in": []
+      },
+      "operation_profile": "op.observation-schema.v1",
+      "evidence_profile": "ev.issue-contract-fixtures.v1",
+      "authority_inputs": [
+        "config.field_authority"
+      ],
+      "authority_outputs": [
+        {
+          "key": "config.raw_observation_schema",
+          "mode": "exclusive"
+        }
+      ],
+      "conflicts": {
+        "exclusive": [
+          "config.observation_contract"
+        ],
+        "shared": []
+      },
+      "claim_ceiling": "Preserves typed source and provenance observations before any generation assembly.",
+      "non_claims": [
+        "Assembles no effective state.",
+        "Reads no live client channels itself."
+      ],
+      "first_falsifier": "FF04",
+      "artifacts": [
+        {
+          "id": "config.raw-observation.schema",
+          "owner": "CO1"
+        }
+      ],
+      "predecessor_exit": null,
+      "handoff": "CO2",
+      "terminal_relation": "close_leaf"
+    },
+    {
+      "node_id": "CO2",
+      "issue": 10813,
+      "controller": "CFG",
+      "rail": "configuration_convergence",
+      "phase": "provenance_observation_contract",
+      "kind": "contract",
+      "buildable": true,
+      "observation_optional": false,
+      "edges": {
+        "hard": [
+          "CO1"
+        ],
+        "evidence": [],
+        "optional": [],
+        "parallel_after": [],
+        "fan_in": []
+      },
+      "operation_profile": "op.observation-schema.v1",
+      "evidence_profile": "ev.issue-contract-fixtures.v1",
+      "authority_inputs": [
+        "config.raw_observation_schema"
+      ],
+      "authority_outputs": [
+        {
+          "key": "config.provenance_observation_contract",
+          "mode": "exclusive"
+        }
+      ],
+      "conflicts": {
+        "exclusive": [
+          "config.observation_contract"
+        ],
+        "shared": []
+      },
+      "claim_ceiling": "Defines source-provenance observation contracts before effective-state assembly.",
+      "non_claims": [
+        "Collapses no provenance into scalar readiness."
+      ],
+      "first_falsifier": "FF04",
+      "artifacts": [
+        {
+          "id": "config.provenance-observation.contract",
+          "owner": "CO2"
+        }
+      ],
+      "predecessor_exit": null,
+      "handoff": "AD1",
+      "terminal_relation": "close_leaf"
+    },
+    {
+      "node_id": "AD1",
+      "issue": 10817,
+      "controller": "CFG",
+      "rail": "configuration_convergence",
+      "phase": "client_channel_adapters",
+      "kind": "source_adapter",
+      "buildable": true,
+      "observation_optional": false,
+      "edges": {
+        "hard": [
+          "CO2"
+        ],
+        "evidence": [],
+        "optional": [],
+        "parallel_after": [],
+        "fan_in": []
+      },
+      "operation_profile": "op.source-adapter.v1",
+      "evidence_profile": "ev.exact-process-receipt.v1",
+      "authority_inputs": [
+        "config.provenance_observation_contract"
+      ],
+      "authority_outputs": [
+        {
+          "key": "config.client_ingress",
+          "mode": "exclusive"
+        }
+      ],
+      "conflicts": {
+        "exclusive": [
+          "config.client_ingress"
+        ],
+        "shared": []
+      },
+      "claim_ceiling": "Adapts client and workspace configuration channels into typed observations.",
+      "non_claims": [
+        "Writes no accepted store directly.",
+        "Serializes nothing with non-client adapters beyond shared observation contracts."
+      ],
+      "first_falsifier": "FF09",
+      "artifacts": [
+        {
+          "id": "config.client-ingress.adapter",
+          "owner": "AD1"
+        }
+      ],
+      "predecessor_exit": null,
+      "handoff": "RT1",
+      "terminal_relation": "close_leaf"
+    },
+    {
+      "node_id": "AD2",
+      "issue": 10822,
+      "controller": "CFG",
+      "rail": "configuration_convergence",
+      "phase": "nonclient_probe_adapters",
+      "kind": "source_adapter",
+      "buildable": true,
+      "observation_optional": false,
+      "edges": {
+        "hard": [
+          "CO2"
+        ],
+        "evidence": [],
+        "optional": [],
+        "parallel_after": [],
+        "fan_in": []
+      },
+      "operation_profile": "op.source-adapter.v1",
+      "evidence_profile": "ev.exact-process-receipt.v1",
+      "authority_inputs": [
+        "config.provenance_observation_contract"
+      ],
+      "authority_outputs": [
+        {
+          "key": "config.nonclient_ingress",
+          "mode": "exclusive"
+        }
+      ],
+      "conflicts": {
+        "exclusive": [
+          "config.nonclient_ingress"
+        ],
+        "shared": []
+      },
+      "claim_ceiling": "Adapts project, defaults, environment, and system probes into typed observations.",
+      "non_claims": [
+        "Writes no accepted store directly."
+      ],
+      "first_falsifier": "FF09",
+      "artifacts": [
+        {
+          "id": "config.nonclient-ingress.adapter",
+          "owner": "AD2"
+        }
+      ],
+      "predecessor_exit": null,
+      "handoff": "RT1",
+      "terminal_relation": "close_leaf"
+    },
+    {
+      "node_id": "RT1",
+      "issue": 10826,
+      "controller": "CFG",
+      "rail": "configuration_convergence",
+      "phase": "direct_writer_retirement",
+      "kind": "retirement",
+      "buildable": true,
+      "observation_optional": false,
+      "edges": {
+        "hard": [
+          "AD1",
+          "AD2"
+        ],
+        "evidence": [],
+        "optional": [],
+        "parallel_after": [],
+        "fan_in": []
+      },
+      "operation_profile": "op.retirement.v1",
+      "evidence_profile": "ev.predecessor-retired.v1",
+      "authority_inputs": [
+        "config.client_ingress",
+        "config.nonclient_ingress"
+      ],
+      "authority_outputs": [
+        {
+          "key": "config.direct_write_retirement",
+          "mode": "exclusive"
+        }
+      ],
+      "conflicts": {
+        "exclusive": [
+          "config.client_ingress",
+          "config.nonclient_ingress"
+        ],
+        "shared": []
+      },
+      "claim_ceiling": "Prohibits direct raw effective-state writes after the observation cutover.",
+      "non_claims": [
+        "Removes no adapter behavior.",
+        "Retires nothing while a predecessor route remains independently reachable."
+      ],
+      "first_falsifier": "FF10",
+      "artifacts": [
+        {
+          "id": "config.direct-write.retirement-evidence",
+          "owner": "RT1"
+        }
+      ],
+      "predecessor_exit": {
+        "predecessor": [
+          "AD1",
+          "AD2"
+        ],
+        "consumers": [
+          "AD1",
+          "AD2"
+        ],
+        "exit_condition": "Both ingress adapters own every raw write path and the direct-writer routes are unreachable on the evaluated tree."
+      },
+      "handoff": "GN1",
+      "terminal_relation": "close_leaf"
+    },
+    {
+      "node_id": "GN1",
+      "issue": 10386,
+      "controller": "CFG",
+      "rail": "configuration_convergence",
+      "phase": "generation_contracts",
+      "kind": "contract",
+      "buildable": true,
+      "observation_optional": false,
+      "edges": {
+        "hard": [],
+        "evidence": [],
+        "optional": [],
+        "parallel_after": [],
+        "fan_in": []
+      },
+      "operation_profile": "op.schema-definition.v1",
+      "evidence_profile": "ev.issue-contract-fixtures.v1",
+      "authority_inputs": [],
+      "authority_outputs": [
+        {
+          "key": "config.generation_contracts",
+          "mode": "exclusive"
+        }
+      ],
+      "conflicts": {
+        "exclusive": [
+          "config.generation_contract"
+        ],
+        "shared": []
+      },
+      "claim_ceiling": "Defines candidate and accepted configuration generation contracts.",
+      "non_claims": [
+        "Publishes no generation itself.",
+        "Encodes no model or provider routing."
+      ],
+      "first_falsifier": "FF04",
+      "artifacts": [
+        {
+          "id": "config.generation.contracts",
+          "owner": "GN1"
+        }
+      ],
+      "predecessor_exit": null,
+      "handoff": "GN2",
+      "terminal_relation": "close_leaf"
+    },
+    {
+      "node_id": "GN2",
+      "issue": 7057,
+      "controller": "CFG",
+      "rail": "configuration_convergence",
+      "phase": "generation_assembly",
+      "kind": "coordinator",
+      "buildable": true,
+      "observation_optional": false,
+      "edges": {
+        "hard": [
+          "CO2",
+          "RT1",
+          "GN1"
+        ],
+        "evidence": [],
+        "optional": [],
+        "parallel_after": [],
+        "fan_in": []
+      },
+      "operation_profile": "op.generation-assembly.v1",
+      "evidence_profile": "ev.exact-process-receipt.v1",
+      "authority_inputs": [
+        "config.direct_write_retirement",
+        "config.generation_contracts",
+        "config.provenance_observation_contract"
+      ],
+      "authority_outputs": [
+        {
+          "key": "config.generations_published",
+          "mode": "exclusive"
+        }
+      ],
+      "conflicts": {
+        "exclusive": [
+          "config.generation_contract"
+        ],
+        "shared": []
+      },
+      "claim_ceiling": "Assembles and publishes global and per-root configuration generations from typed observations under candidate/accepted contracts.",
+      "non_claims": [
+        "Consumes no untyped raw writes.",
+        "Publishes no accepted store directly."
+      ],
+      "first_falsifier": "FF13",
+      "artifacts": [
+        {
+          "id": "config.generations.published",
+          "owner": "GN2"
+        }
+      ],
+      "predecessor_exit": null,
+      "handoff": "CR1",
+      "terminal_relation": "close_leaf"
+    },
+    {
+      "node_id": "CR1",
+      "issue": 10840,
+      "controller": "CFG",
+      "rail": "configuration_convergence",
+      "phase": "coordinator_state_machine",
+      "kind": "coordinator",
+      "buildable": true,
+      "observation_optional": false,
+      "edges": {
+        "hard": [
+          "GN2"
+        ],
+        "evidence": [],
+        "optional": [],
+        "parallel_after": [],
+        "fan_in": []
+      },
+      "operation_profile": "op.coordinator-state.v1",
+      "evidence_profile": "ev.static-validator.v1",
+      "authority_inputs": [
+        "config.generations_published"
+      ],
+      "authority_outputs": [
+        {
+          "key": "config.coordinator_state",
+          "mode": "exclusive"
+        }
+      ],
+      "conflicts": {
+        "exclusive": [
+          "config.coordinator"
+        ],
+        "shared": []
+      },
+      "claim_ceiling": "Implements the deterministic in-memory configuration coordinator state machine.",
+      "non_claims": [
+        "Routes no live inputs yet.",
+        "Owns no accepted store."
+      ],
+      "first_falsifier": "FF15",
+      "artifacts": [
+        {
+          "id": "config.coordinator.state-machine",
+          "owner": "CR1"
+        }
+      ],
+      "predecessor_exit": null,
+      "handoff": "CR2",
+      "terminal_relation": "close_leaf"
+    },
+    {
+      "node_id": "CR2",
+      "issue": 10850,
+      "controller": "CFG",
+      "rail": "configuration_convergence",
+      "phase": "coordinator_live_integration",
+      "kind": "source_adapter",
+      "buildable": true,
+      "observation_optional": false,
+      "edges": {
+        "hard": [
+          "CR1"
+        ],
+        "evidence": [],
+        "optional": [],
+        "parallel_after": [],
+        "fan_in": []
+      },
+      "operation_profile": "op.source-adapter.v1",
+      "evidence_profile": "ev.exact-process-receipt.v1",
+      "authority_inputs": [
+        "config.coordinator_state"
+      ],
+      "authority_outputs": [
+        {
+          "key": "config.coordinator_live_route",
+          "mode": "exclusive"
+        }
+      ],
+      "conflicts": {
+        "exclusive": [
+          "config.coordinator"
+        ],
+        "shared": []
+      },
+      "claim_ceiling": "Routes live configuration inputs and root lifecycle through the coordinator.",
+      "non_claims": [
+        "Bypasses the coordinator state machine on no path."
+      ],
+      "first_falsifier": "FF13",
+      "artifacts": [
+        {
+          "id": "config.coordinator.live-route",
+          "owner": "CR2"
+        }
+      ],
+      "predecessor_exit": null,
+      "handoff": "AS1",
+      "terminal_relation": "close_leaf"
+    },
+    {
+      "node_id": "AS1",
+      "issue": 10857,
+      "controller": "CFG",
+      "rail": "configuration_convergence",
+      "phase": "accepted_store_publication",
+      "kind": "accepted_store",
+      "buildable": true,
+      "observation_optional": false,
+      "edges": {
+        "hard": [
+          "CR2"
+        ],
+        "evidence": [],
+        "optional": [],
+        "parallel_after": [],
+        "fan_in": []
+      },
+      "operation_profile": "op.store-publication.v1",
+      "evidence_profile": "ev.predecessor-retired.v1",
+      "authority_inputs": [
+        "config.coordinator_live_route"
+      ],
+      "authority_outputs": [
+        {
+          "key": "config.accepted_store",
+          "mode": "exclusive"
+        }
+      ],
+      "conflicts": {
+        "exclusive": [
+          "config.accepted_store"
+        ],
+        "shared": []
+      },
+      "claim_ceiling": "Publishes exactly one accepted configuration store as the sole shared-read authority for consumers.",
+      "non_claims": [
+        "Keeps no mutable compatibility state reachable.",
+        "Serves no consumer before publication."
+      ],
+      "first_falsifier": "FF10",
+      "artifacts": [
+        {
+          "id": "config.accepted-store.publication",
+          "owner": "AS1"
+        }
+      ],
+      "predecessor_exit": {
+        "predecessor": [
+          "CR2"
+        ],
+        "consumers": [
+          "CU0",
+          "CU1",
+          "CU2",
+          "CU3",
+          "CU4",
+          "CU5",
+          "CU6",
+          "CU7",
+          "CU8",
+          "CU9"
+        ],
+        "exit_condition": "Every consumer binds to the single accepted store and no mutable compatibility state remains reachable."
+      },
+      "handoff": "FI1",
+      "terminal_relation": "close_leaf"
+    },
+    {
+      "node_id": "CU0",
+      "issue": 7059,
+      "controller": "CFG",
+      "rail": "configuration_convergence",
+      "phase": "consumer_resolver_invalidation",
+      "kind": "consumer_cutover",
+      "buildable": true,
+      "observation_optional": false,
+      "edges": {
+        "hard": [
+          "AS1"
+        ],
+        "evidence": [],
+        "optional": [],
+        "parallel_after": [],
+        "fan_in": []
+      },
+      "operation_profile": "op.consumer-cutover.v1",
+      "evidence_profile": "ev.consumer-denominator.v1",
+      "authority_inputs": [
+        "config.accepted_store"
+      ],
+      "authority_outputs": [
+        {
+          "key": "config.consumer.resolver_invalidation",
+          "mode": "exclusive"
+        }
+      ],
+      "conflicts": {
+        "exclusive": [
+          "config.consumer.resolver"
+        ],
+        "shared": [
+          "config.accepted_store.read"
+        ]
+      },
+      "claim_ceiling": "Invalidates resolver, index, and dependency facts on configuration commit from the accepted store.",
+      "non_claims": [
+        "Reads no mutable compatibility state."
+      ],
+      "first_falsifier": "FF05",
+      "artifacts": [
+        {
+          "id": "config.consumer.resolver.cutover",
+          "owner": "CU0"
+        }
+      ],
+      "predecessor_exit": null,
+      "handoff": "FI1",
+      "terminal_relation": "close_leaf"
+    },
+    {
+      "node_id": "CU1",
+      "issue": 10388,
+      "controller": "CFG",
+      "rail": "configuration_convergence",
+      "phase": "consumer_diagnostics_critic",
+      "kind": "consumer_cutover",
+      "buildable": true,
+      "observation_optional": false,
+      "edges": {
+        "hard": [
+          "AS1"
+        ],
+        "evidence": [],
+        "optional": [],
+        "parallel_after": [],
+        "fan_in": []
+      },
+      "operation_profile": "op.consumer-cutover.v1",
+      "evidence_profile": "ev.consumer-denominator.v1",
+      "authority_inputs": [
+        "config.accepted_store"
+      ],
+      "authority_outputs": [
+        {
+          "key": "config.consumer.diagnostics",
+          "mode": "exclusive"
+        }
+      ],
+      "conflicts": {
+        "exclusive": [
+          "config.consumer.diagnostics"
+        ],
+        "shared": [
+          "config.accepted_store.read"
+        ]
+      },
+      "claim_ceiling": "Binds diagnostics and native critic to accepted configuration generations.",
+      "non_claims": [
+        "Reads no mutable compatibility state."
+      ],
+      "first_falsifier": "FF05",
+      "artifacts": [
+        {
+          "id": "config.consumer.diagnostics.cutover",
+          "owner": "CU1"
+        }
+      ],
+      "predecessor_exit": null,
+      "handoff": "FI1",
+      "terminal_relation": "close_leaf"
+    },
+    {
+      "node_id": "CU2",
+      "issue": 10389,
+      "controller": "CFG",
+      "rail": "configuration_convergence",
+      "phase": "consumer_formatting",
+      "kind": "consumer_cutover",
+      "buildable": true,
+      "observation_optional": false,
+      "edges": {
+        "hard": [
+          "AS1"
+        ],
+        "evidence": [],
+        "optional": [],
+        "parallel_after": [],
+        "fan_in": []
+      },
+      "operation_profile": "op.consumer-cutover.v1",
+      "evidence_profile": "ev.consumer-denominator.v1",
+      "authority_inputs": [
+        "config.accepted_store"
+      ],
+      "authority_outputs": [
+        {
+          "key": "config.consumer.formatting",
+          "mode": "exclusive"
+        }
+      ],
+      "conflicts": {
+        "exclusive": [
+          "config.consumer.formatting"
+        ],
+        "shared": [
+          "config.accepted_store.read"
+        ]
+      },
+      "claim_ceiling": "Binds formatting to accepted configuration generations.",
+      "non_claims": [
+        "Reads no mutable compatibility state."
+      ],
+      "first_falsifier": "FF05",
+      "artifacts": [
+        {
+          "id": "config.consumer.formatting.cutover",
+          "owner": "CU2"
+        }
+      ],
+      "predecessor_exit": null,
+      "handoff": "FI1",
+      "terminal_relation": "close_leaf"
+    },
+    {
+      "node_id": "CU3",
+      "issue": 10863,
+      "controller": "CFG",
+      "rail": "configuration_convergence",
+      "phase": "consumer_refresh_registration_plan",
+      "kind": "contract",
+      "buildable": true,
+      "observation_optional": false,
+      "edges": {
+        "hard": [
+          "AS1"
+        ],
+        "evidence": [],
+        "optional": [],
+        "parallel_after": [],
+        "fan_in": []
+      },
+      "operation_profile": "op.schema-definition.v1",
+      "evidence_profile": "ev.consumer-denominator.v1",
+      "authority_inputs": [
+        "config.accepted_store"
+      ],
+      "authority_outputs": [
+        {
+          "key": "config.consumer.refresh_registration_plan",
+          "mode": "exclusive"
+        }
+      ],
+      "conflicts": {
+        "exclusive": [
+          "config.consumer.refresh_plan"
+        ],
+        "shared": [
+          "config.accepted_store.read"
+        ]
+      },
+      "claim_ceiling": "Derives one post-commit refresh and registration plan from the accepted store denominator.",
+      "non_claims": [
+        "Executes no refresh itself.",
+        "Splits the denominator across plans."
+      ],
+      "first_falsifier": "FF05",
+      "artifacts": [
+        {
+          "id": "config.consumer.refresh-plan.contract",
+          "owner": "CU3"
+        }
+      ],
+      "predecessor_exit": null,
+      "handoff": "FI1",
+      "terminal_relation": "close_leaf"
+    },
+    {
+      "node_id": "CU4",
+      "issue": 10880,
+      "controller": "CFG",
+      "rail": "configuration_convergence",
+      "phase": "consumer_hints_lenses_folding",
+      "kind": "consumer_cutover",
+      "buildable": true,
+      "observation_optional": false,
+      "edges": {
+        "hard": [
+          "AS1"
+        ],
+        "evidence": [],
+        "optional": [],
+        "parallel_after": [],
+        "fan_in": []
+      },
+      "operation_profile": "op.consumer-cutover.v1",
+      "evidence_profile": "ev.consumer-denominator.v1",
+      "authority_inputs": [
+        "config.accepted_store"
+      ],
+      "authority_outputs": [
+        {
+          "key": "config.consumer.hints_lenses_folding",
+          "mode": "exclusive"
+        }
+      ],
+      "conflicts": {
+        "exclusive": [
+          "config.consumer.hints"
+        ],
+        "shared": [
+          "config.accepted_store.read"
+        ]
+      },
+      "claim_ceiling": "Binds hints, lenses, and folding to accepted configuration generations.",
+      "non_claims": [
+        "Reads no mutable compatibility state."
+      ],
+      "first_falsifier": "FF05",
+      "artifacts": [
+        {
+          "id": "config.consumer.hints.cutover",
+          "owner": "CU4"
+        }
+      ],
+      "predecessor_exit": null,
+      "handoff": "FI1",
+      "terminal_relation": "close_leaf"
+    },
+    {
+      "node_id": "CU5",
+      "issue": 10883,
+      "controller": "CFG",
+      "rail": "configuration_convergence",
+      "phase": "consumer_semantic_tokens",
+      "kind": "consumer_cutover",
+      "buildable": true,
+      "observation_optional": false,
+      "edges": {
+        "hard": [
+          "AS1"
+        ],
+        "evidence": [],
+        "optional": [],
+        "parallel_after": [],
+        "fan_in": []
+      },
+      "operation_profile": "op.consumer-cutover.v1",
+      "evidence_profile": "ev.consumer-denominator.v1",
+      "authority_inputs": [
+        "config.accepted_store"
+      ],
+      "authority_outputs": [
+        {
+          "key": "config.consumer.semantic_tokens",
+          "mode": "exclusive"
+        }
+      ],
+      "conflicts": {
+        "exclusive": [
+          "config.consumer.semantic_tokens"
+        ],
+        "shared": [
+          "config.accepted_store.read"
+        ]
+      },
+      "claim_ceiling": "Binds semantic tokens to accepted configuration generations.",
+      "non_claims": [
+        "Reads no mutable compatibility state."
+      ],
+      "first_falsifier": "FF05",
+      "artifacts": [
+        {
+          "id": "config.consumer.semantic-tokens.cutover",
+          "owner": "CU5"
+        }
+      ],
+      "predecessor_exit": null,
+      "handoff": "FI1",
+      "terminal_relation": "close_leaf"
+    },
+    {
+      "node_id": "CU6",
+      "issue": 10889,
+      "controller": "CFG",
+      "rail": "configuration_convergence",
+      "phase": "consumer_inline_completion",
+      "kind": "consumer_cutover",
+      "buildable": true,
+      "observation_optional": false,
+      "edges": {
+        "hard": [
+          "AS1"
+        ],
+        "evidence": [],
+        "optional": [],
+        "parallel_after": [],
+        "fan_in": []
+      },
+      "operation_profile": "op.consumer-cutover.v1",
+      "evidence_profile": "ev.consumer-denominator.v1",
+      "authority_inputs": [
+        "config.accepted_store"
+      ],
+      "authority_outputs": [
+        {
+          "key": "config.consumer.inline_completion",
+          "mode": "exclusive"
+        }
+      ],
+      "conflicts": {
+        "exclusive": [
+          "config.consumer.inline_completion"
+        ],
+        "shared": [
+          "config.accepted_store.read"
+        ]
+      },
+      "claim_ceiling": "Binds inline-completion presentation and request currentness to accepted generations.",
+      "non_claims": [
+        "Reads no mutable compatibility state."
+      ],
+      "first_falsifier": "FF05",
+      "artifacts": [
+        {
+          "id": "config.consumer.inline-completion.cutover",
+          "owner": "CU6"
+        }
+      ],
+      "predecessor_exit": null,
+      "handoff": "FI1",
+      "terminal_relation": "close_leaf"
+    },
+    {
+      "node_id": "CU7",
+      "issue": 10898,
+      "controller": "CFG",
+      "rail": "configuration_convergence",
+      "phase": "consumer_test_runner_policy",
+      "kind": "consumer_cutover",
+      "buildable": true,
+      "observation_optional": false,
+      "edges": {
+        "hard": [
+          "AS1"
+        ],
+        "evidence": [],
+        "optional": [],
+        "parallel_after": [],
+        "fan_in": []
+      },
+      "operation_profile": "op.consumer-cutover.v1",
+      "evidence_profile": "ev.consumer-denominator.v1",
+      "authority_inputs": [
+        "config.accepted_store"
+      ],
+      "authority_outputs": [
+        {
+          "key": "config.consumer.test_runner_policy",
+          "mode": "exclusive"
+        }
+      ],
+      "conflicts": {
+        "exclusive": [
+          "config.consumer.test_runner"
+        ],
+        "shared": [
+          "config.accepted_store.read"
+        ]
+      },
+      "claim_ceiling": "Binds canonical test-runner policy to accepted configuration generations.",
+      "non_claims": [
+        "Reads no mutable compatibility state."
+      ],
+      "first_falsifier": "FF05",
+      "artifacts": [
+        {
+          "id": "config.consumer.test-runner.cutover",
+          "owner": "CU7"
+        }
+      ],
+      "predecessor_exit": null,
+      "handoff": "FI1",
+      "terminal_relation": "close_leaf"
+    },
+    {
+      "node_id": "CU8",
+      "issue": 10909,
+      "controller": "CFG",
+      "rail": "configuration_convergence",
+      "phase": "consumer_ai_backend_lifecycle",
+      "kind": "consumer_cutover",
+      "buildable": true,
+      "observation_optional": false,
+      "edges": {
+        "hard": [
+          "AS1"
+        ],
+        "evidence": [],
+        "optional": [],
+        "parallel_after": [],
+        "fan_in": []
+      },
+      "operation_profile": "op.consumer-cutover.v1",
+      "evidence_profile": "ev.consumer-denominator.v1",
+      "authority_inputs": [
+        "config.accepted_store"
+      ],
+      "authority_outputs": [
+        {
+          "key": "config.consumer.ai_backend_lifecycle",
+          "mode": "exclusive"
+        }
+      ],
+      "conflicts": {
+        "exclusive": [
+          "config.consumer.ai_backend"
+        ],
+        "shared": [
+          "config.accepted_store.read"
+        ]
+      },
+      "claim_ceiling": "Binds AI backend eligibility and lifecycle to accepted configuration generations.",
+      "non_claims": [
+        "Encodes no model or provider routing in the graph.",
+        "Reads no mutable compatibility state."
+      ],
+      "first_falsifier": "FF01",
+      "artifacts": [
+        {
+          "id": "config.consumer.ai-backend.cutover",
+          "owner": "CU8"
+        }
+      ],
+      "predecessor_exit": null,
+      "handoff": "FI1",
+      "terminal_relation": "close_leaf"
+    },
+    {
+      "node_id": "CU9",
+      "issue": 10917,
+      "controller": "CFG",
+      "rail": "configuration_convergence",
+      "phase": "consumer_runtime_limits",
+      "kind": "consumer_cutover",
+      "buildable": true,
+      "observation_optional": false,
+      "edges": {
+        "hard": [
+          "AS1"
+        ],
+        "evidence": [],
+        "optional": [],
+        "parallel_after": [],
+        "fan_in": []
+      },
+      "operation_profile": "op.consumer-cutover.v1",
+      "evidence_profile": "ev.consumer-denominator.v1",
+      "authority_inputs": [
+        "config.accepted_store"
+      ],
+      "authority_outputs": [
+        {
+          "key": "config.consumer.runtime_limits",
+          "mode": "exclusive"
+        }
+      ],
+      "conflicts": {
+        "exclusive": [
+          "config.consumer.runtime_limits"
+        ],
+        "shared": [
+          "config.accepted_store.read"
+        ]
+      },
+      "claim_ceiling": "Binds runtime limits to accepted hard-envelope configuration generations.",
+      "non_claims": [
+        "Reads no mutable compatibility state."
+      ],
+      "first_falsifier": "FF05",
+      "artifacts": [
+        {
+          "id": "config.consumer.runtime-limits.cutover",
+          "owner": "CU9"
+        }
+      ],
+      "predecessor_exit": null,
+      "handoff": "FI1",
+      "terminal_relation": "close_leaf"
+    },
+    {
+      "node_id": "FI1",
+      "issue": 7066,
+      "controller": "CFG",
+      "rail": "configuration_convergence",
+      "phase": "exact_process_fanin",
+      "kind": "exact_process_fanin",
+      "buildable": false,
+      "observation_optional": false,
+      "edges": {
+        "hard": [
+          "AS1"
+        ],
+        "evidence": [],
+        "optional": [],
+        "parallel_after": [],
+        "fan_in": [
+          "CU0",
+          "CU1",
+          "CU2",
+          "CU3",
+          "CU4",
+          "CU5",
+          "CU6",
+          "CU7",
+          "CU8",
+          "CU9"
+        ]
+      },
+      "operation_profile": "op.fanin-integration.v1",
+      "evidence_profile": "ev.exact-process-receipt.v1",
+      "authority_inputs": [
+        "config.accepted_store",
+        "config.consumer.ai_backend_lifecycle",
+        "config.consumer.diagnostics",
+        "config.consumer.formatting",
+        "config.consumer.hints_lenses_folding",
+        "config.consumer.inline_completion",
+        "config.consumer.refresh_registration_plan",
+        "config.consumer.resolver_invalidation",
+        "config.consumer.runtime_limits",
+        "config.consumer.semantic_tokens",
+        "config.consumer.test_runner_policy"
+      ],
+      "authority_outputs": [
+        {
+          "key": "config.exact_process_fanin",
+          "mode": "exclusive"
+        }
+      ],
+      "conflicts": {
+        "exclusive": [
+          "config.exact_process_fanin"
+        ],
+        "shared": []
+      },
+      "claim_ceiling": "Proves transactional multi-root reconfiguration over exact perllsp once the complete accepted-store consumer denominator lands.",
+      "non_claims": [
+        "Manufactures success from child count alone.",
+        "Substitutes no controller integration row with prose."
+      ],
+      "first_falsifier": "FF05",
+      "artifacts": [
+        {
+          "id": "config.fanin.exact-process-receipt",
+          "owner": "FI1"
+        }
+      ],
+      "predecessor_exit": null,
+      "handoff": "TR1",
+      "terminal_relation": "close_leaf"
+    },
+    {
+      "node_id": "TR1",
+      "issue": 6736,
+      "controller": "CFG",
+      "rail": "configuration_convergence",
+      "phase": "transactional_effects",
+      "kind": "evaluator",
+      "buildable": true,
+      "observation_optional": false,
+      "edges": {
+        "hard": [
+          "FI1"
+        ],
+        "evidence": [],
+        "optional": [],
+        "parallel_after": [],
+        "fan_in": []
+      },
+      "operation_profile": "op.evaluation.v1",
+      "evidence_profile": "ev.exact-process-receipt.v1",
+      "authority_inputs": [
+        "config.exact_process_fanin"
+      ],
+      "authority_outputs": [
+        {
+          "key": "config.transactional_effects",
+          "mode": "exclusive"
+        }
+      ],
+      "conflicts": {
+        "exclusive": [],
+        "shared": []
+      },
+      "claim_ceiling": "Makes configuration precedence and reconfiguration effects transactional over the integrated route.",
+      "non_claims": [
+        "Changes no parser semantics outside reconfiguration."
+      ],
+      "first_falsifier": "FF06",
+      "artifacts": [
+        {
+          "id": "config.transactional-effects.receipt",
+          "owner": "TR1"
+        }
+      ],
+      "predecessor_exit": null,
+      "handoff": "CFG",
+      "terminal_relation": "close_leaf"
+    }
+  ]
+}

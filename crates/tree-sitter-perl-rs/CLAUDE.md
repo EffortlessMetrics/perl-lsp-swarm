@@ -44,7 +44,7 @@ impl<'tree> Node<'tree> {
     pub fn grammar_kind(&self) -> String;      // compatibility alias of kind()
     pub fn is_error(&self) -> bool;
     pub fn has_error(&self) -> bool;
-    pub fn to_sexp(&self) -> String;           // delegates to perl_ast::Node::to_sexp()
+    pub fn to_sexp(&self) -> String;           // native debug projection; CST compat is issue 8047
     pub fn child_count(&self) -> usize;
     pub fn child(&self, i: usize) -> Option<Node<'tree>>;
     pub fn children(&self) -> impl Iterator<Item = Node<'tree>>;

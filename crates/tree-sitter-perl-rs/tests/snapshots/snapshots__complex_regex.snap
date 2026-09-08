@@ -1,6 +1,5 @@
 ---
 source: crates/tree-sitter-perl-rs/tests/snapshots.rs
-assertion_line: 74
 expression: sexp
 ---
-(source_file (my_declaration (variable @ matches)(match (variable $ text) (regex "/(\\w+)\\s+=\\s+(\\d+)/" "g"))))
+(source_file (statements (my_declaration (declarator my) (variable (variable (sigil @) (name matches))) (initializer (match (pattern "/(\\w+)\\s+=\\s+(\\d+)/") (modifiers g) (expr (variable (sigil $) (name text))))))))

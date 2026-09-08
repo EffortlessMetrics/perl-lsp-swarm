@@ -6,6 +6,7 @@
 //! Each fact type gets its own `proptest!` block. Strategies are shared
 //! where types compose (e.g. `arb_anchor_id()` is reused by every struct
 //! that contains an `AnchorId`).
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 use perl_semantic_facts::{
     AnchorFact, AnchorId, BoundaryDisposition, BoundaryKind, BoundaryLink, Confidence,

@@ -1,5 +1,6 @@
 //! Checked immutable Emacs client-subject manifest, resolver, and identity
-//! cache (#11744, SUBJ_CORE).
+//! cache (#11744, SUBJ_CORE; external Eglot and lsp-mode subject rows
+//! #11745/#11746).
 //!
 //! This module owns the subject-manifest mechanics the Emacs train's
 //! subject lane consumes: the checked manifest at
@@ -9,7 +10,7 @@
 //! cache is keyed by the complete subject identity — never a version string
 //! alone.
 //!
-//! Two invariants dominate the design:
+//! Three invariants dominate the design:
 //!
 //! - *Manifest identity is intended input, never runtime proof.* The
 //!   resolver output and cache records carry no observation of what a host
@@ -19,12 +20,15 @@
 //!   naming hint; the binding facts are the declared source digest, the
 //!   exact Emacs release tag/commit, the executable digest observed at
 //!   resolution, and the resolved library form.
+//! - *Released and source states are non-interchangeable.* External rows
+//!   (#11745/#11746) bind either an exact released package archive identity
+//!   or one immutable upstream commit/tree — never both, never a floating
+//!   ref, and a source-header version resemblance never turns source into a
+//!   released package.
 //!
-//! Claim boundary (#11744): subject identity machinery only. No journey,
-//! capability-profile, project/root, support, or public-artifact claim is
-//! earned here. External Eglot and lsp-mode subject rows arrive with
-//! #11745/#11746 and extend this manifest without changing resolver
-//! semantics.
+//! Claim boundary (#11744/#11745/#11746): subject identity machinery and
+//! subject rows only. No journey, capability-profile, project/root,
+//! support, or public-artifact claim is earned here.
 
 use anyhow::{Context, Result};
 use flate2::read::GzDecoder;
@@ -94,12 +98,16 @@ impl SubjectClientKind {
     fn is_bundled(self) -> bool {
         matches!(self, Self::BundledEglot)
     }
+
+    fn is_external(self) -> bool {
+        !self.is_bundled()
+    }
 }
 
 /// How a row's client material is acquired. Bundled generations resolve
-/// inside the exact Emacs installation root; external packages require an
-/// explicit exact input (their rows and this resolver extension arrive with
-/// #11745/#11746).
+/// inside the exact Emacs installation root; external packages
+/// (#11745/#11746) materialize from one explicit exact input extracted
+/// from the declared package archive or source tree.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum MaterializationMethod {
@@ -119,6 +127,53 @@ pub struct DigestAudit {
     /// row's version hint: the hint is the audited header, never an
     /// independent claim.
     pub observed_client_version_header: String,
+}
+
+/// Exact released-package identity for an external row in released source
+/// state (#11745/#11746). A released subject is inseparable from the exact
+/// archive bytes it was built from: the same version string over different
+/// package bytes is a different subject.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExternalPackageIdentity {
+    /// Exact archive URL the package bytes come from (https).
+    pub archive_url: String,
+    /// sha256 of the exact archive bytes, validated at resolution before
+    /// anything is loadable.
+    pub archive_sha256: String,
+    /// Exact 40-hex source commit the release was built from, attested by
+    /// the archive's own package metadata (GNU ELPA `archive-contents`
+    /// `:commit` / `<package>-pkg.el` `:commit`), never by a version
+    /// resemblance.
+    pub attested_source_commit: String,
+    /// Declared package dependencies, one `"name version"` each, `emacs`
+    /// included. Metadata bound into the subject identity; the minimum
+    /// Emacs entry is additionally enforced against the row's pinned host
+    /// token at validation.
+    pub package_requires: Vec<String>,
+    /// Minimum compatible Emacs, must equal the `emacs` entry of
+    /// `package_requires`.
+    pub minimum_emacs: String,
+    /// Checksum/signature disposition of the archive identity, e.g.
+    /// `gnu_elpa_archive_sha256_at_audit_time` when the binding digest was
+    /// computed from the official archive at audit time.
+    pub checksum_disposition: String,
+}
+
+/// Exact upstream source-tree identity for an external row in upstream
+/// source state (#11745/#11746). The tree is pinned by one immutable
+/// commit plus its git tree object id; floating refs and mutable aliases
+/// are rejected by the row's ref rules.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SourceTreeIdentity {
+    /// Repository the exact tree lives in (https).
+    pub source_repo_url: String,
+    /// Exact 40-hex commit pin; must equal the row's release tag.
+    pub commit: String,
+    /// Git tree object id of the pinned commit, the independent tree
+    /// identity the commit name alone does not carry.
+    pub tree_sha1: String,
 }
 
 /// One immutable subject row. New client releases and different host
@@ -148,6 +203,14 @@ pub struct SubjectRow {
     /// File names (in deterministic preference order) one exact build can
     /// ship for the client library.
     pub client_library_forms: Vec<String>,
+    /// Exact released-package identity. Required exactly for external rows
+    /// in released source state; forbidden otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_package: Option<ExternalPackageIdentity>,
+    /// Exact upstream source-tree identity. Required exactly for external
+    /// rows in upstream source state; forbidden otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_tree: Option<SourceTreeIdentity>,
     pub digest_audit: DigestAudit,
 }
 
@@ -313,7 +376,240 @@ fn validate_row(row: &SubjectRow) -> Result<(), String> {
             row.digest_audit.observed_client_version_header
         ));
     }
+    if row.client_kind.is_bundled() && (row.external_package.is_some() || row.source_tree.is_some())
+    {
+        return Err(format!(
+            "subject {}: bundled rows bind the Emacs build instead of a package or source-tree \
+             identity",
+            row.subject_id
+        ));
+    }
+    if row.client_kind.is_external() {
+        validate_external_identity(row)?;
+    }
     Ok(())
+}
+
+/// Identity rules for external rows (#11745/#11746): released and
+/// upstream-source states bind different, non-interchangeable identity
+/// blocks, and each block must agree with the row's own audit facts.
+fn validate_external_identity(row: &SubjectRow) -> Result<(), String> {
+    match row.source_state {
+        ClientSourceState::Bundled => Err(format!(
+            "subject {}: external client kinds cannot use bundled source state",
+            row.subject_id
+        )),
+        ClientSourceState::Released => {
+            let Some(package) = &row.external_package else {
+                return Err(format!(
+                    "subject {}: a released external row must declare its exact package/archive \
+                     identity; a version string alone is not a released package",
+                    row.subject_id
+                ));
+            };
+            if row.source_tree.is_some() {
+                return Err(format!(
+                    "subject {}: a released row cannot also declare an upstream source-tree \
+                     identity; released and source states are non-interchangeable",
+                    row.subject_id
+                ));
+            }
+            if !package.archive_url.starts_with("https://")
+                || !is_sha256_digest(&package.archive_sha256)
+            {
+                return Err(format!(
+                    "subject {}: external_package must pin an https archive URL and its sha256",
+                    row.subject_id
+                ));
+            }
+            if !is_commit_pin(&package.attested_source_commit) {
+                return Err(format!(
+                    "subject {}: external_package.attested_source_commit must be a 40-hex \
+                     commit pin",
+                    row.subject_id
+                ));
+            }
+            let invalid = validate_package_requires(row, package);
+            if let Some(reason) = invalid {
+                return Err(reason);
+            }
+            if package.archive_url != row.digest_audit.gnu_tarball_url
+                || package.archive_sha256 != row.digest_audit.gnu_tarball_sha256
+            {
+                return Err(format!(
+                    "subject {}: the declared archive identity disagrees with the audited \
+                     archive source; identity and audit must pin the same bytes",
+                    row.subject_id
+                ));
+            }
+            if package.attested_source_commit != row.emacs_release_tag {
+                return Err(format!(
+                    "subject {}: a released row's release tag must be the archive-attested \
+                     source commit",
+                    row.subject_id
+                ));
+            }
+            if !is_safe_identity_token(&package.checksum_disposition) {
+                return Err(format!(
+                    "subject {}: external_package.checksum_disposition must be a safe identity \
+                     token",
+                    row.subject_id
+                ));
+            }
+            Ok(())
+        }
+        ClientSourceState::UpstreamSource => {
+            let Some(tree) = &row.source_tree else {
+                return Err(format!(
+                    "subject {}: an upstream-source external row must declare its exact \
+                     commit/tree identity",
+                    row.subject_id
+                ));
+            };
+            if row.external_package.is_some() {
+                return Err(format!(
+                    "subject {}: an upstream-source row cannot declare released package \
+                     identity; source-as-release labeling is forbidden",
+                    row.subject_id
+                ));
+            }
+            if !tree.source_repo_url.starts_with("https://") {
+                return Err(format!(
+                    "subject {}: source_tree.source_repo_url must be an https URL",
+                    row.subject_id
+                ));
+            }
+            if !is_commit_pin(&tree.commit) || !is_commit_pin(&tree.tree_sha1) {
+                return Err(format!(
+                    "subject {}: source_tree.commit and tree_sha1 must be 40-hex pins",
+                    row.subject_id
+                ));
+            }
+            if tree.commit != row.emacs_release_tag {
+                return Err(format!(
+                    "subject {}: an upstream-source row's release tag must be its immutable \
+                     commit pin",
+                    row.subject_id
+                ));
+            }
+            if row.digest_audit.gnu_tarball_sha256 != row.client_source_sha256 {
+                return Err(format!(
+                    "subject {}: an upstream-source row's audit source is the exact tree file, \
+                     so the audit digest must equal the declared client digest",
+                    row.subject_id
+                ));
+            }
+            Ok(())
+        }
+    }
+}
+
+/// `package_requires` shape plus the two Emacs-compatibility coherence
+/// rules: the declared minimum equals the `emacs` dependency entry, and the
+/// row's pinned host token satisfies that minimum. A row whose host pin
+/// drifts below its declared compatibility floor is invalid, never silently
+/// compatible.
+fn validate_package_requires(
+    row: &SubjectRow,
+    package: &ExternalPackageIdentity,
+) -> Option<String> {
+    if package.package_requires.is_empty() {
+        return Some(format!(
+            "subject {}: external_package.package_requires must declare the package \
+             dependencies, emacs included",
+            row.subject_id
+        ));
+    }
+    let mut seen_names = std::collections::BTreeSet::new();
+    for entry in &package.package_requires {
+        let mut parts = entry.split_whitespace();
+        let (Some(name), Some(version), None) = (parts.next(), parts.next(), parts.next()) else {
+            return Some(format!(
+                "subject {}: package_requires entry {entry:?} must be exactly \"name version\"",
+                row.subject_id
+            ));
+        };
+        if !is_safe_identity_token(name) || !is_safe_identity_token(version) {
+            return Some(format!(
+                "subject {}: package_requires entry {entry:?} must use safe identity tokens",
+                row.subject_id
+            ));
+        }
+        if !seen_names.insert(name.to_string()) {
+            return Some(format!(
+                "subject {}: package_requires declares {name:?} twice",
+                row.subject_id
+            ));
+        }
+    }
+    let emacs_entry = format!("emacs {}", package.minimum_emacs);
+    if !package.package_requires.contains(&emacs_entry) {
+        return Some(format!(
+            "subject {}: minimum_emacs {} must equal the emacs entry of package_requires",
+            row.subject_id, package.minimum_emacs
+        ));
+    }
+    if !is_version_number(&package.minimum_emacs) {
+        return Some(format!(
+            "subject {}: minimum_emacs {} must be a plain numeric x.y[.z] version",
+            row.subject_id, package.minimum_emacs
+        ));
+    }
+    let Some(pinned) = version_number(&row.emacs_version_token) else {
+        return Some(format!(
+            "subject {}: emacs_version_token {} must be numeric to check against the declared \
+             minimum Emacs",
+            row.subject_id, row.emacs_version_token
+        ));
+    };
+    let Some(minimum) = version_number(&package.minimum_emacs) else {
+        return Some(format!(
+            "subject {}: minimum_emacs {} must be a plain numeric x.y[.z] version",
+            row.subject_id, package.minimum_emacs
+        ));
+    };
+    if version_compare(&pinned, &minimum) == Ordering::Less {
+        return Some(format!(
+            "subject {}: the pinned host token {} is below the declared minimum Emacs {}; the \
+             row is incompatible with its own dependency floor",
+            row.subject_id, row.emacs_version_token, package.minimum_emacs
+        ));
+    }
+    None
+}
+
+/// Numeric `x.y` or `x.y.z` version tuple, the comparable form of Emacs
+/// version tokens.
+fn version_number(token: &str) -> Option<[u32; 3]> {
+    let mut number = [0u32; 3];
+    for (index, part) in token.split('.').enumerate() {
+        let parsed = part.parse().ok()?;
+        *number.get_mut(index)? = parsed;
+    }
+    Some(number)
+}
+
+fn is_version_number(token: &str) -> bool {
+    !token.is_empty() && token.split('.').all(|part| part.parse::<u32>().is_ok())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Ordering {
+    Less,
+    Equal,
+    Greater,
+}
+
+fn version_compare(left: &[u32; 3], right: &[u32; 3]) -> Ordering {
+    for index in 0..3 {
+        if left[index] < right[index] {
+            return Ordering::Less;
+        }
+        if left[index] > right[index] {
+            return Ordering::Greater;
+        }
+    }
+    Ordering::Equal
 }
 
 fn is_floating_ref(tag: &str) -> bool {
@@ -474,8 +770,15 @@ pub struct ResolveRequest<'a> {
     pub emacs_executable: &'a Path,
     /// Explicit exact client file. For bundled subjects it must live inside
     /// the exact Emacs installation; omitting it resolves the bundled
-    /// library inside the installation.
+    /// library inside the installation. External subjects (#11745/#11746)
+    /// materialize from one explicit exact input extracted from the declared
+    /// package archive or source tree; omitting it is a typed unavailable
+    /// disposition.
     pub client_source: Option<&'a Path>,
+    /// Explicit exact package archive file. Required exactly for released
+    /// external subjects; forbidden for bundled and upstream-source
+    /// subjects.
+    pub client_package: Option<&'a Path>,
     /// Bounded immutable cache location. One location serves one complete
     /// identity per subject; a changed identity requires a fresh location.
     pub cache_root: &'a Path,
@@ -501,6 +804,15 @@ pub struct CompleteSubjectIdentity {
     pub emacs_build_sha256: String,
     pub resolved_library_form: String,
     pub resolved_client_sha256: String,
+    /// sha256 over the row's complete declared external identity block —
+    /// the released package identity (archive URL and bytes, attested
+    /// commit, dependencies, minimum Emacs, checksum disposition) or the
+    /// upstream source-tree identity (repo, commit, tree object id). Part
+    /// of the identity so every declared external fact, not just the
+    /// archive bytes, keys the cache: a corrected tree id or dependency
+    /// entry never reuses an old entry. `None` for bundled subjects.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_identity_sha256: Option<String>,
 }
 
 /// One immutable cache entry record. Carries intended input only: there is
@@ -529,6 +841,9 @@ pub struct ResolvedSubject {
     pub emacs_executable: PathBuf,
     /// The exact resolved client file.
     pub client_source: PathBuf,
+    /// The exact package archive file of a released external subject;
+    /// `None` for bundled and upstream-source subjects.
+    pub client_package: Option<PathBuf>,
     /// Digest of the exact Emacs executable, bound at resolution.
     pub emacs_build_sha256: String,
     pub cache_key: String,
@@ -538,7 +853,8 @@ pub struct ResolvedSubject {
 
 impl ResolvedSubject {
     /// The landed runner's host-run inputs for this resolved subject.
-    /// Bundled subjects never carry a package identity.
+    /// Bundled and upstream-source subjects never carry a package identity;
+    /// released external subjects carry their validated archive.
     pub fn host_run_inputs(
         &self,
         candidate_executable: &Path,
@@ -549,7 +865,7 @@ impl ResolvedSubject {
             emacs_executable: self.emacs_executable.clone(),
             candidate_executable: candidate_executable.to_path_buf(),
             client_source: self.client_source.clone(),
-            client_package: None,
+            client_package: self.client_package.clone(),
             out_root: out_root.to_path_buf(),
             timeout_ms,
         }
@@ -590,14 +906,7 @@ pub fn resolve(
         }));
     }
 
-    if row.materialization != MaterializationMethod::InstallationRootResolution {
-        return Err(ResolveFailure::Rejected(SubjectRejection::UnavailableSubject {
-            subject_id: subject_id.to_string(),
-            reason: "explicit-input materialization for external subjects arrives with \
-                     #11745/#11746"
-                .to_string(),
-        }));
-    }
+    let explicit_external = row.materialization == MaterializationMethod::ExplicitInput;
 
     let executable = request.emacs_executable;
     if !executable.is_absolute() || !executable.is_file() {
@@ -625,46 +934,81 @@ pub fn resolve(
         )?;
 
     // Resolve the client file inside the bounded input location.
-    let client_source = match request.client_source {
-        Some(explicit) => {
-            if !explicit.is_absolute() || !explicit.is_file() {
-                return Err(ResolveFailure::Rejected(SubjectRejection::UnavailableSubject {
-                    subject_id: subject_id.to_string(),
-                    reason: format!(
-                        "the explicit client source is not a present absolute file: {}",
-                        explicit.display()
-                    ),
-                }));
-            }
-            let canonical = fs::canonicalize(explicit).map_err(|error| {
-                ResolveFailure::Instrument(format!(
-                    "canonicalizing the explicit client source {}: {error}",
+    let client_source = if explicit_external {
+        // External subjects (#11745/#11746) materialize from one explicit
+        // exact input — the client file extracted from the declared package
+        // archive or source tree — never from a search of the host
+        // installation.
+        let Some(explicit) = request.client_source else {
+            return Err(ResolveFailure::Rejected(SubjectRejection::UnavailableSubject {
+                subject_id: subject_id.to_string(),
+                reason: "an external subject requires one explicit exact client input extracted \
+                         from the declared package archive or source tree; it is never searched \
+                         from the host installation"
+                    .to_string(),
+            }));
+        };
+        if !explicit.is_absolute() || !explicit.is_file() {
+            return Err(ResolveFailure::Rejected(SubjectRejection::UnavailableSubject {
+                subject_id: subject_id.to_string(),
+                reason: format!(
+                    "the explicit client source is not a present absolute file: {}",
                     explicit.display()
-                ))
-            })?;
-            if canonical.strip_prefix(&installation_root).is_err() {
-                return Err(ResolveFailure::Rejected(SubjectRejection::AmbientStateRejected {
-                    subject_id: subject_id.to_string(),
-                    reason: format!(
-                        "the explicit client source {} is outside the exact Emacs \
-                         installation {}; an ambient user package cannot satisfy a bundled \
-                         subject",
-                        canonical.display(),
-                        installation_root.display()
-                    ),
-                }));
-            }
-            canonical
+                ),
+            }));
         }
-        None => crate::emacs_host_run::resolve_bundled_client_source(&canonical_executable)
-            .map_err(|error| classify_installation_resolution_error(subject_id, &error))?,
+        fs::canonicalize(explicit).map_err(|error| {
+            ResolveFailure::Instrument(format!(
+                "canonicalizing the explicit client source {}: {error}",
+                explicit.display()
+            ))
+        })?
+    } else {
+        match request.client_source {
+            Some(explicit) => {
+                if !explicit.is_absolute() || !explicit.is_file() {
+                    return Err(ResolveFailure::Rejected(SubjectRejection::UnavailableSubject {
+                        subject_id: subject_id.to_string(),
+                        reason: format!(
+                            "the explicit client source is not a present absolute file: {}",
+                            explicit.display()
+                        ),
+                    }));
+                }
+                let canonical = fs::canonicalize(explicit).map_err(|error| {
+                    ResolveFailure::Instrument(format!(
+                        "canonicalizing the explicit client source {}: {error}",
+                        explicit.display()
+                    ))
+                })?;
+                if canonical.strip_prefix(&installation_root).is_err() {
+                    return Err(ResolveFailure::Rejected(SubjectRejection::AmbientStateRejected {
+                        subject_id: subject_id.to_string(),
+                        reason: format!(
+                            "the explicit client source {} is outside the exact Emacs \
+                             installation {}; an ambient user package cannot satisfy a bundled \
+                             subject",
+                            canonical.display(),
+                            installation_root.display()
+                        ),
+                    }));
+                }
+                canonical
+            }
+            None => crate::emacs_host_run::resolve_bundled_client_source(&canonical_executable)
+                .map_err(|error| classify_installation_resolution_error(subject_id, &error))?,
+        }
     };
-    if let Some(marker) = ambient_layout_marker(&client_source, &installation_root) {
+    if let Some(marker) = if explicit_external {
+        ambient_layout_marker_anywhere(&client_source)
+    } else {
+        ambient_layout_marker(&client_source, &installation_root)
+    } {
         return Err(ResolveFailure::Rejected(SubjectRejection::AmbientStateRejected {
             subject_id: subject_id.to_string(),
             reason: format!(
                 "the resolved client file {} is reached through the {} package layout; \
-                 ambient package state cannot satisfy a bundled subject",
+                 ambient package state cannot satisfy this subject",
                 client_source.display(),
                 marker
             ),
@@ -687,36 +1031,87 @@ pub fn resolve(
             ),
         }));
     }
-    let resolved_digest = match form.as_str() {
-        "eglot.el" => file_digest(&client_source)?,
-        "eglot.el.gz" => decompressed_digest(&client_source)?,
-        "eglot.elc" => {
-            return Err(ResolveFailure::Rejected(SubjectRejection::UnavailableSubject {
-                subject_id: subject_id.to_string(),
-                reason: "a compiled-only installation cannot validate the declared upstream \
-                         source digest; supply the exact release eglot.el or eglot.el.gz"
-                    .to_string(),
-            }));
-        }
-        other => {
-            return Err(ResolveFailure::Rejected(SubjectRejection::IdentityMismatch {
-                subject_id: subject_id.to_string(),
-                reason: format!("unexpected client library form {other:?}"),
-            }));
-        }
+    let resolved_digest = if form.ends_with(".el") {
+        file_digest(&client_source)?
+    } else if form.ends_with(".el.gz") {
+        decompressed_digest(&client_source)?
+    } else if form.ends_with(".elc") {
+        return Err(ResolveFailure::Rejected(SubjectRejection::UnavailableSubject {
+            subject_id: subject_id.to_string(),
+            reason: "a compiled-only installation cannot validate the declared upstream \
+                     source digest; supply the exact release source file or its .gz form"
+                .to_string(),
+        }));
+    } else {
+        return Err(ResolveFailure::Rejected(SubjectRejection::IdentityMismatch {
+            subject_id: subject_id.to_string(),
+            reason: format!("unexpected client library form {form:?}"),
+        }));
     };
     if resolved_digest != row.client_source_sha256 {
         return Err(ResolveFailure::Rejected(SubjectRejection::IdentityMismatch {
             subject_id: subject_id.to_string(),
             reason: format!(
-                "the resolved bundled client digest {resolved_digest} does not match the \
-                 pinned subject digest {} ({});{}",
+                "the resolved client digest {resolved_digest} does not match the pinned \
+                 subject digest {} ({});{}",
                 row.client_source_sha256,
                 row.emacs_release_tag,
                 generation_hint(manifest, subject_id, &resolved_digest)
             ),
         }));
     }
+
+    // Package/archive identity for external subjects (#11745/#11746):
+    // released subjects bind their exact archive bytes, and upstream-source
+    // subjects explicitly refuse package identity — the two states are never
+    // interchangeable.
+    let external_archive_sha256 = match (&row.external_package, request.client_package) {
+        (Some(package), Some(archive)) => {
+            if !archive.is_absolute() || !archive.is_file() {
+                return Err(ResolveFailure::Rejected(SubjectRejection::UnavailableSubject {
+                    subject_id: subject_id.to_string(),
+                    reason: format!(
+                        "the exact package archive input is not a present absolute file: {}",
+                        archive.display()
+                    ),
+                }));
+            }
+            let archive_digest = file_digest(archive)?;
+            if archive_digest != package.archive_sha256 {
+                return Err(ResolveFailure::Rejected(SubjectRejection::IdentityMismatch {
+                    subject_id: subject_id.to_string(),
+                    reason: format!(
+                        "the provided package archive digest {archive_digest} does not match \
+                         the declared archive digest {}; the same version survives only when \
+                         every declared byte does",
+                        package.archive_sha256
+                    ),
+                }));
+            }
+            Some(archive_digest)
+        }
+        (Some(_), None) => {
+            return Err(ResolveFailure::Rejected(SubjectRejection::UnavailableSubject {
+                subject_id: subject_id.to_string(),
+                reason: "a released subject requires the exact package archive input; a bare \
+                         client file cannot establish package/archive identity"
+                    .to_string(),
+            }));
+        }
+        (None, Some(_)) => {
+            return Err(ResolveFailure::Rejected(SubjectRejection::IdentityMismatch {
+                subject_id: subject_id.to_string(),
+                reason: "this subject declares no package/archive identity, so package input \
+                         cannot satisfy it; released and source states are non-interchangeable"
+                    .to_string(),
+            }));
+        }
+        (None, None) => None,
+    };
+    // The complete declared external identity (every package or tree fact,
+    // not just the validated archive bytes) keys the cache, so a corrected
+    // tree id or dependency entry cannot silently reuse an old entry.
+    let external_identity_sha256 = declared_external_identity_digest(row)?;
 
     let emacs_build_sha256 = file_digest(&canonical_executable)?;
     if let Some(version_line) = request.probed_emacs_version
@@ -745,6 +1140,7 @@ pub fn resolve(
         emacs_build_sha256: emacs_build_sha256.clone(),
         resolved_library_form: form,
         resolved_client_sha256: resolved_digest.clone(),
+        external_identity_sha256: external_identity_sha256.clone(),
     };
     let cache_key = identity_cache_key(&identity)?;
     let cache_entry = request.cache_root.join(&cache_key);
@@ -802,9 +1198,10 @@ pub fn resolve(
         }
         return Ok(ResolvedSubject {
             subject_id: subject_id.to_string(),
-            client: runner_client_subject(row, resolved_digest),
+            client: runner_client_subject(row, resolved_digest, external_archive_sha256.clone()),
             emacs_executable: canonical_executable,
             client_source,
+            client_package: request.client_package.map(Path::to_path_buf),
             emacs_build_sha256,
             cache_key,
             cache_entry,
@@ -835,9 +1232,10 @@ pub fn resolve(
     })?;
     Ok(ResolvedSubject {
         subject_id: subject_id.to_string(),
-        client: runner_client_subject(row, resolved_digest),
+        client: runner_client_subject(row, resolved_digest, external_archive_sha256),
         emacs_executable: canonical_executable,
         client_source,
+        client_package: request.client_package.map(Path::to_path_buf),
         emacs_build_sha256,
         cache_key,
         cache_entry,
@@ -846,10 +1244,13 @@ pub fn resolve(
 }
 
 /// Build the runner-facing client subject for a row whose declared digest
-/// has just been validated.
+/// has just been validated. Released external subjects carry the validated
+/// package archive digest; bundled and upstream-source subjects carry no
+/// package identity (`validate_client_subject` enforces both combinations).
 pub fn runner_client_subject(
     row: &SubjectRow,
     resolved_source_sha256: String,
+    resolved_package_sha256: Option<String>,
 ) -> crate::emacs_host_run::emacs_host_runner::ClientSubject {
     crate::emacs_host_run::emacs_host_runner::ClientSubject {
         client_id: row.subject_id.clone(),
@@ -858,10 +1259,7 @@ pub fn runner_client_subject(
         source_state: row.source_state,
         source_ref: row.emacs_release_tag.clone(),
         source_sha256: resolved_source_sha256,
-        // Bundled subjects explicitly have no independent package/archive
-        // identity; external rows (with package identities) arrive with
-        // #11745/#11746 and extend this constructor's use.
-        package_sha256: None,
+        package_sha256: resolved_package_sha256,
     }
 }
 
@@ -927,12 +1325,59 @@ fn identity_difference(
     if stale.resolved_library_form != current.resolved_library_form {
         return "the cache holds this subject bound to a different library form".to_string();
     }
+    if stale.external_identity_sha256 != current.external_identity_sha256 {
+        return "the cache holds this subject bound to a different declared external identity"
+            .to_string();
+    }
     "the cache holds this subject bound to a different complete identity".to_string()
+}
+
+/// sha256 over the row's complete declared external identity block. The
+/// serialized block carries every external fact (archive URL and bytes,
+/// attested commit, dependencies, minimum Emacs, checksum disposition; or
+/// repo, commit, and tree object id), so any declared change — including a
+/// corrected tree id that leaves the client bytes and commit untouched —
+/// changes this digest and therefore the cache key. Bundled rows have no
+/// external block and bind `None`.
+fn declared_external_identity_digest(row: &SubjectRow) -> Result<Option<String>, ResolveFailure> {
+    let digest = match (&row.external_package, &row.source_tree) {
+        (Some(package), None) => serde_json::to_vec(package),
+        (None, Some(tree)) => serde_json::to_vec(tree),
+        (None, None) => return Ok(None),
+        // Manifest validation refuses the both-blocks combination before
+        // resolution; reaching it here means the caller bypassed
+        // validation, which fails closed rather than picking one.
+        (Some(_), Some(_)) => {
+            return Err(ResolveFailure::Instrument(
+                "a subject row declares both a package and a source-tree identity, which \
+                 manifest validation refuses"
+                    .to_string(),
+            ));
+        }
+    };
+    digest.map(|bytes| Some(prefixed_sha256(&bytes))).map_err(|error| {
+        ResolveFailure::Instrument(format!("serializing the declared external identity: {error}"))
+    })
 }
 
 fn ambient_layout_marker(client_source: &Path, installation_root: &Path) -> Option<String> {
     let relative = client_source.strip_prefix(installation_root).ok()?;
     relative.components().find_map(|component| {
+        let segment = component.as_os_str().to_str()?;
+        AMBIENT_PACKAGE_LAYOUT_MARKERS
+            .iter()
+            .find(|marker| segment.eq_ignore_ascii_case(marker))
+            .map(|marker| marker.to_string())
+    })
+}
+
+/// Ambient-layout check for explicit external inputs (#11745/#11746):
+/// there is no installation root to be contained in, so any package-layout
+/// segment anywhere in the canonical path marks the file as live ambient
+/// package state, which cannot satisfy an exact subject even when its bytes
+/// match the declared digest.
+fn ambient_layout_marker_anywhere(client_source: &Path) -> Option<String> {
+    client_source.components().find_map(|component| {
         let segment = component.as_os_str().to_str()?;
         AMBIENT_PACKAGE_LAYOUT_MARKERS
             .iter()

@@ -15,7 +15,7 @@ fn success_output_has_no_diagnostics() -> Result<(), Box<dyn std::error::Error>>
     );
     let output = ParseOutput::success(ast);
     assert!(output.diagnostics.is_empty());
-    assert!(!output.terminated_early);
+    assert!(!output.terminated_early());
     assert_eq!(output.budget_usage.errors_emitted, 0);
     Ok(())
 }

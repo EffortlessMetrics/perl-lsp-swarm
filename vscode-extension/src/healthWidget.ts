@@ -79,11 +79,13 @@ export class HealthWidget {
   private _providerAction: string | undefined;
   private _providerReasonCode: string | undefined;
   private _fileCount: number | undefined = undefined;
+  private _fileCountLowerBound = false;
   private _errorCount = 0;
   private _indexingMessage: string | undefined = undefined;
   private _indexingPercentage: number | undefined = undefined;
   private _activeTokens = new Set<ProgressToken>();
   private _version: string | undefined = undefined;
+  private _name: string | undefined = undefined;
   private _readinessState: IndexReadinessState = 'ready';
   private _readinessReason: string | undefined = undefined;
   private _enhancedReadinessAvailable = false;
@@ -210,9 +212,10 @@ export class HealthWidget {
     this._providerReasonCode = update.reasonCode;
   }
 
-  /** Update the workspace-wide file count. */
-  setFileCount(count: number): void {
+  /** Update or clear the workspace-wide file count and its completeness. */
+  setFileCount(count: number | undefined, lowerBound = false): void {
     this._fileCount = count;
+    this._fileCountLowerBound = count !== undefined && lowerBound;
     this._render();
   }
 
@@ -222,9 +225,15 @@ export class HealthWidget {
     this._render();
   }
 
-  /** Set the server version string from the initialize handshake. */
-  setVersion(version: string): void {
+  /** Set or clear the server version reported by the current generation. */
+  setVersion(version: string | undefined): void {
     this._version = version;
+    this._render();
+  }
+
+  /** Set or clear the server self-reported name from the current generation. */
+  setName(name: string | undefined): void {
+    this._name = name;
     this._render();
   }
 
@@ -260,6 +269,11 @@ export class HealthWidget {
     return this._fileCount;
   }
 
+  /** Whether the file count is only a known lower bound. */
+  get fileCountLowerBound(): boolean {
+    return this._fileCountLowerBound;
+  }
+
   /** Current error count. */
   get errorCount(): number {
     return this._errorCount;
@@ -268,6 +282,11 @@ export class HealthWidget {
   /** Server version from the initialize handshake (undefined until set). */
   get version(): string | undefined {
     return this._version;
+  }
+
+  /** Server self-reported name from the initialize handshake (undefined until set). */
+  get name(): string | undefined {
+    return this._name;
   }
 
   /** Current canonical index readiness state from the server. */
@@ -328,8 +347,10 @@ export class HealthWidget {
 
   private _render(): void {
     const presentation = presentWorkspaceExperience(this._experience, {
+      name: this._name,
       version: this._version,
       fileCount: this._fileCount,
+      fileCountLowerBound: this._fileCountLowerBound,
       errorCount: this._errorCount,
       indexingMessage: this._indexingMessage,
       indexingPercentage: this._indexingPercentage,

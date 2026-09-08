@@ -1,5 +1,4 @@
 use super::ExecuteCommandProvider;
-use std::path::Path;
 
 /// Run/test/critic commands resolve their interpreter through
 /// `WorkspaceConfig.perl_path`, which no user-facing channel writes. Advising
@@ -7,8 +6,7 @@ use std::path::Path;
 /// remediation must name only actions a user can perform.
 #[test]
 fn execute_command_perl_error_gives_remediation_the_user_can_act_on() {
-    let message =
-        ExecuteCommandProvider::unresolved_execute_command_perl_error(Path::new("script.pl"));
+    let message = ExecuteCommandProvider::unresolved_execute_command_perl_error("script.pl");
 
     assert!(
         !message.contains("perl.path"),

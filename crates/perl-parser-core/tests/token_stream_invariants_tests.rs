@@ -1,3 +1,4 @@
+#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 //! Unit-level invariant tests for `TokenStream`.
 //!
 //! These tests exercise the individual stream guarantees — lookahead consistency,
@@ -5,7 +6,9 @@
 //! rather than integration-level parsing scenarios covered by the other
 //! token_stream_* test files.
 
-use perl_parser_core::token_stream::{Token, TokenKind, TokenStream};
+use perl_parser_core::token_stream::{
+    ContextualFallbackReason, ContextualOpResult, ContextualTokenOp, Token, TokenKind, TokenStream,
+};
 use perl_tdd_support::must;
 
 // ---------------------------------------------------------------------------
@@ -18,16 +21,16 @@ use perl_tdd_support::must;
 fn peek_does_not_advance_stream() -> Result<(), Box<dyn std::error::Error>> {
     let mut stream = TokenStream::new("my $x;");
 
-    let peeked_kind = must(stream.peek()).kind;
+    let peeked_kind = must(stream.peek()).kind();
     // Reading peek_second must not disturb what peek promises.
-    let _second_kind = must(stream.peek_second()).kind;
+    let _second_kind = must(stream.peek_second()).kind();
     // peek again — must still return the same token.
-    let peeked_again_kind = must(stream.peek()).kind;
+    let peeked_again_kind = must(stream.peek()).kind();
     assert_eq!(peeked_kind, peeked_again_kind, "peek must be idempotent");
 
     // next() must return exactly what peek() showed.
     let consumed = must(stream.next());
-    assert_eq!(consumed.kind, peeked_kind, "next() must return the token that peek() promised");
+    assert_eq!(consumed.kind(), peeked_kind, "next() must return the token that peek() promised");
     Ok(())
 }
 
@@ -37,15 +40,15 @@ fn peek_does_not_advance_stream() -> Result<(), Box<dyn std::error::Error>> {
 fn peek_second_then_peek_preserves_ordering() -> Result<(), Box<dyn std::error::Error>> {
     let mut stream = TokenStream::new("my $x;");
 
-    let first_kind = must(stream.peek()).kind;
-    let second_kind = must(stream.peek_second()).kind;
+    let first_kind = must(stream.peek()).kind();
+    let second_kind = must(stream.peek_second()).kind();
 
     // Consume the first token.
     let consumed_first = must(stream.next());
-    assert_eq!(consumed_first.kind, first_kind, "consumed token must match first peek");
+    assert_eq!(consumed_first.kind(), first_kind, "consumed token must match first peek");
 
     // After consuming first, peek() should now show what was peek_second before.
-    let new_first_kind = must(stream.peek()).kind;
+    let new_first_kind = must(stream.peek()).kind();
     assert_eq!(
         new_first_kind, second_kind,
         "after consuming first, peek() must return the former peek_second"
@@ -58,19 +61,19 @@ fn peek_second_then_peek_preserves_ordering() -> Result<(), Box<dyn std::error::
 fn three_token_lookahead_is_consistent() -> Result<(), Box<dyn std::error::Error>> {
     let mut stream = TokenStream::new("my $x = 42;");
 
-    let first = must(stream.peek()).kind;
-    let second = must(stream.peek_second()).kind;
-    let third = must(stream.peek_third()).kind;
+    let first = must(stream.peek()).kind();
+    let second = must(stream.peek_second()).kind();
+    let third = must(stream.peek_third()).kind();
 
     // All three slots must be stable — re-read them.
-    assert_eq!(must(stream.peek()).kind, first, "peek() must be stable after peek_third");
+    assert_eq!(must(stream.peek()).kind(), first, "peek() must be stable after peek_third");
     assert_eq!(
-        must(stream.peek_second()).kind,
+        must(stream.peek_second()).kind(),
         second,
         "peek_second() must be stable after peek_third"
     );
     assert_eq!(
-        must(stream.peek_third()).kind,
+        must(stream.peek_third()).kind(),
         third,
         "peek_third() must be stable after re-reading"
     );
@@ -78,7 +81,7 @@ fn three_token_lookahead_is_consistent() -> Result<(), Box<dyn std::error::Error
     // Consuming first shifts the window.
     must(stream.next());
     assert_eq!(
-        must(stream.peek()).kind,
+        must(stream.peek()).kind(),
         second,
         "after one next(), peek() must equal former peek_second()"
     );
@@ -102,7 +105,7 @@ fn eof_is_sticky_after_exhaustion() -> Result<(), Box<dyn std::error::Error>> {
     // Now we are at EOF. Call next() several more times — must always return Eof.
     for _ in 0..5 {
         let tok = must(stream.next());
-        assert_eq!(tok.kind, TokenKind::Eof, "next() after EOF must return Eof sentinel");
+        assert_eq!(tok.kind(), TokenKind::Eof, "next() after EOF must return Eof sentinel");
     }
     Ok(())
 }
@@ -136,13 +139,15 @@ fn empty_buffered_stream_is_eof_immediately() -> Result<(), Box<dyn std::error::
 #[test]
 fn single_token_buffered_lookahead_beyond_gives_eof_extended()
 -> Result<(), Box<dyn std::error::Error>> {
-    let mut stream = TokenStream::from_vec(vec![Token::new(TokenKind::Number, "42", 0, 2)]);
+    let mut stream = TokenStream::from_vec(vec![
+        Token::new_checked(TokenKind::Number, "42", 0, 2).expect("valid token"),
+    ]);
 
-    let first_kind = must(stream.peek()).kind;
+    let first_kind = must(stream.peek()).kind();
     assert_eq!(first_kind, TokenKind::Number, "first token must be Number");
 
     // peek_second must return Eof for a single-token buffered stream.
-    let second_kind = must(stream.peek_second()).kind;
+    let second_kind = must(stream.peek_second()).kind();
     assert_eq!(
         second_kind,
         TokenKind::Eof,
@@ -150,7 +155,7 @@ fn single_token_buffered_lookahead_beyond_gives_eof_extended()
     );
 
     // peek_third must also return Eof cleanly.
-    let third_kind = must(stream.peek_third()).kind;
+    let third_kind = must(stream.peek_third()).kind();
     assert_eq!(
         third_kind,
         TokenKind::Eof,
@@ -165,7 +170,7 @@ fn single_token_buffered_lookahead_beyond_gives_eof_extended()
 fn single_token_live_stream_is_eof_after_consuming() -> Result<(), Box<dyn std::error::Error>> {
     let mut stream = TokenStream::new("42");
 
-    let first_kind = must(stream.peek()).kind;
+    let first_kind = must(stream.peek()).kind();
     assert_ne!(first_kind, TokenKind::Eof, "first token must not be Eof");
 
     // Consuming the single token must leave the stream at Eof.
@@ -178,42 +183,53 @@ fn single_token_live_stream_is_eof_after_consuming() -> Result<(), Box<dyn std::
 // on_stmt_boundary
 // ---------------------------------------------------------------------------
 
-/// `on_stmt_boundary` clears the peek cache. In buffered mode, the cleared cache
-/// means tokens that were in the lookahead slots are dropped; tokens not yet
-/// fetched into the lookahead buffer are still available. This tests the invariant
-/// that `on_stmt_boundary` in buffered mode leaves the stream readable after the
-/// already-buffered window, and that the stream reaches EOF eventually.
+/// `on_stmt_boundary` on a buffered stream is refused with a typed fallback
+/// requirement (#8128): buffered kinds cannot be re-classified, and clearing
+/// the lookahead cache while leaving classification fixed is not an accepted
+/// contextual operation. The stream state is preserved so the refusal is
+/// observable, and the stream remains fully drainable.
 #[test]
-fn on_stmt_boundary_in_buffered_mode_clears_cache_stream_remains_usable()
+fn on_stmt_boundary_on_buffered_stream_is_typed_fallback_state_preserved()
 -> Result<(), Box<dyn std::error::Error>> {
     // Use a multi-token buffered stream.
     let tokens = vec![
-        Token::new(TokenKind::My, "my", 0, 2),
-        Token::new(TokenKind::Identifier, "x", 3, 4),
-        Token::new(TokenKind::Semicolon, ";", 4, 5),
+        Token::new_checked(TokenKind::My, "my", 0, 2).expect("valid token"),
+        Token::new_checked(TokenKind::Identifier, "x", 3, 4).expect("valid token"),
+        Token::new_checked(TokenKind::Semicolon, ";", 4, 5).expect("valid token"),
     ];
     let mut stream = TokenStream::from_vec(tokens);
 
     // Prime peek — this pops "my" and "x" from the buffer into slots.
-    let first_kind = must(stream.peek()).kind;
+    let first_kind = must(stream.peek()).kind();
     assert_eq!(first_kind, TokenKind::My, "first peek must be My");
-    let second_kind = must(stream.peek_second()).kind;
+    let second_kind = must(stream.peek_second()).kind();
     assert_eq!(second_kind, TokenKind::Identifier, "second peek must be Identifier");
 
-    // Clearing the cache in buffered mode discards what was pre-fetched.
-    stream.on_stmt_boundary();
+    // The contextual request is refused, naming the missing authority.
+    assert_eq!(
+        stream.apply_contextual(ContextualTokenOp::StatementBoundaryReset),
+        ContextualOpResult::FallbackRequired { reason: ContextualFallbackReason::NoBufferedSource },
+        "buffered statement boundary reset must report the typed fallback requirement"
+    );
 
-    // The stream must remain usable — it should eventually reach EOF.
+    // The refusal is observable: the lookahead window is untouched.
+    assert_eq!(must(stream.peek()).kind(), TokenKind::My, "refused op must not clear lookahead");
+    assert_eq!(
+        must(stream.peek_second()).kind(),
+        TokenKind::Identifier,
+        "refused op must not clear second lookahead"
+    );
+
+    // The stream must remain usable — it drains every buffered token to EOF.
     let mut count = 0;
     while !stream.is_eof() {
         must(stream.next());
         count += 1;
         if count > 20 {
-            return Err("on_stmt_boundary left stream in an infinite loop".into());
+            return Err("refused on_stmt_boundary left stream in an infinite loop".into());
         }
     }
-    // After boundary clear, only un-fetched tokens remain (\";\" was not in a peek slot).
-    assert_eq!(count, 1, "only the un-fetched Semicolon should remain after boundary clear");
+    assert_eq!(count, 3, "every buffered token must remain after the refused operation");
     Ok(())
 }
 
@@ -252,9 +268,9 @@ fn invalidate_peek_clears_cache_stream_reaches_eof() -> Result<(), Box<dyn std::
     let mut stream = TokenStream::new("my $x = 1;");
 
     // Prime all three lookahead slots — this pre-fetches "my", "$x", "=".
-    let _ = must(stream.peek()).kind;
-    let _ = must(stream.peek_second()).kind;
-    let _ = must(stream.peek_third()).kind;
+    let _ = must(stream.peek()).kind();
+    let _ = must(stream.peek_second()).kind();
+    let _ = must(stream.peek_third()).kind();
 
     // Invalidate.
     stream.invalidate_peek();
@@ -262,7 +278,7 @@ fn invalidate_peek_clears_cache_stream_reaches_eof() -> Result<(), Box<dyn std::
     // After invalidation, peek() re-fetches from the current lexer position.
     // The peeked window ("my", "$x", "=") is gone; the next token from the
     // lexer is whatever follows them.
-    let kind_after = must(stream.peek()).kind;
+    let kind_after = must(stream.peek()).kind();
     assert_ne!(
         kind_after,
         TokenKind::Eof,
@@ -288,21 +304,21 @@ fn invalidate_peek_clears_cache_stream_reaches_eof() -> Result<(), Box<dyn std::
 fn invalidate_peek_on_buffered_stream_drops_cached_window() -> Result<(), Box<dyn std::error::Error>>
 {
     let tokens = vec![
-        Token::new(TokenKind::My, "my", 0, 2),
-        Token::new(TokenKind::Identifier, "x", 3, 4),
-        Token::new(TokenKind::Semicolon, ";", 4, 5),
+        Token::new_checked(TokenKind::My, "my", 0, 2).expect("valid token"),
+        Token::new_checked(TokenKind::Identifier, "x", 3, 4).expect("valid token"),
+        Token::new_checked(TokenKind::Semicolon, ";", 4, 5).expect("valid token"),
     ];
     let mut stream = TokenStream::from_vec(tokens);
 
     // Prime peek — "my" goes into peeked slot, "x" into peeked_second.
-    let _ = must(stream.peek()).kind;
-    let _ = must(stream.peek_second()).kind;
+    let _ = must(stream.peek()).kind();
+    let _ = must(stream.peek_second()).kind();
 
     // Invalidate drops the cache; ";" is still in the buffer (not yet fetched).
     stream.invalidate_peek();
 
     // Next peek should return ";" (the first un-fetched token).
-    let kind_after = must(stream.peek()).kind;
+    let kind_after = must(stream.peek()).kind();
     assert_eq!(
         kind_after,
         TokenKind::Semicolon,
@@ -325,7 +341,7 @@ fn from_vec_and_live_lex_produce_identical_sequences() -> Result<(), Box<dyn std
     let mut live = TokenStream::new(input);
     let mut live_kinds: Vec<TokenKind> = Vec::new();
     while !live.is_eof() {
-        live_kinds.push(must(live.next()).kind);
+        live_kinds.push(must(live.next()).kind());
     }
 
     // Build the equivalent pre-lexed token list using the conversion helper.
@@ -342,7 +358,7 @@ fn from_vec_and_live_lex_produce_identical_sequences() -> Result<(), Box<dyn std
     let mut buffered = TokenStream::from_vec(parser_tokens);
     let mut buffered_kinds: Vec<TokenKind> = Vec::new();
     while !buffered.is_eof() {
-        buffered_kinds.push(must(buffered.next()).kind);
+        buffered_kinds.push(must(buffered.next()).kind());
     }
 
     assert_eq!(
@@ -360,19 +376,21 @@ fn from_vec_and_live_lex_produce_identical_sequences() -> Result<(), Box<dyn std
 /// the stream must continue producing the same tokens unchanged.
 #[test]
 fn enter_format_mode_is_noop_in_buffered_mode() -> Result<(), Box<dyn std::error::Error>> {
-    let tokens =
-        vec![Token::new(TokenKind::My, "my", 0, 2), Token::new(TokenKind::Identifier, "x", 3, 4)];
+    let tokens = vec![
+        Token::new_checked(TokenKind::My, "my", 0, 2).expect("valid token"),
+        Token::new_checked(TokenKind::Identifier, "x", 3, 4).expect("valid token"),
+    ];
     let mut stream = TokenStream::from_vec(tokens);
 
     // This should be a no-op without panicking.
     stream.enter_format_mode();
 
     let first = must(stream.next());
-    assert_eq!(first.kind, TokenKind::My, "first token must be My after enter_format_mode no-op");
+    assert_eq!(first.kind(), TokenKind::My, "first token must be My after enter_format_mode no-op");
 
     let second = must(stream.next());
     assert_eq!(
-        second.kind,
+        second.kind(),
         TokenKind::Identifier,
         "second token must be Identifier after enter_format_mode no-op"
     );

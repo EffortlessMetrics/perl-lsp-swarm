@@ -87,6 +87,8 @@ fn bundled_row(
             "eglot.elc".to_string(),
             "eglot.el.gz".to_string(),
         ],
+        external_package: None,
+        source_tree: None,
         digest_audit: xtask::emacs_subject_manifest::DigestAudit {
             gnu_tarball_url: "https://ftp.gnu.org/gnu/emacs/fixture.tar.xz".to_string(),
             gnu_tarball_sha256: sha256_of(b"fixture tarball"),
@@ -141,6 +143,7 @@ fn default_request<'a>(emacs_executable: &'a Path, cache_root: &'a Path) -> Reso
     ResolveRequest {
         emacs_executable,
         client_source: None,
+        client_package: None,
         cache_root,
         probed_emacs_version: Some("GNU Emacs 30.1 (fixture)"),
     }
@@ -233,6 +236,7 @@ fn emacs_29_bundled_file_with_emacs_30_subject_is_rejected() {
         &ResolveRequest {
             emacs_executable: &emacs,
             client_source: None,
+            client_package: None,
             cache_root: &root.path().join("cache-29"),
             probed_emacs_version: Some("GNU Emacs 29.4 (fixture)"),
         },
@@ -316,6 +320,7 @@ fn ambient_user_package_cannot_shadow_the_bundled_client() {
     let request = ResolveRequest {
         emacs_executable: &emacs,
         client_source: Some(&elpa_copy),
+        client_package: None,
         cache_root: &root.path().join("cache"),
         probed_emacs_version: Some("GNU Emacs 30.1 (fixture)"),
     };
@@ -529,16 +534,17 @@ fn checked_manifest_pins_the_audited_bundled_subjects() -> Result<()> {
     assert_eq!(row_30.client_version_hint, "1.17.30");
     assert_eq!(row_29.subject_id, row_29.subject_id.to_lowercase());
     ensure!(
-        manifest.subjects.iter().all(|row| row.client_kind == SubjectClientKind::BundledEglot),
-        "the SUBJ_CORE manifest carries exactly the bundled rows; external Eglot and \
-         lsp-mode rows arrive with #11745/#11746"
+        manifest.subjects.iter().any(|row| row.client_kind == SubjectClientKind::BundledEglot),
+        "the manifest must keep carrying the bundled rows; the external Eglot rows are pinned by \
+         their own #11745 contract tests"
     );
     Ok(())
 }
 
-/// The manifest covers exactly the runner registry's bundled rows: no drift
-/// in either direction, and the registry's pinned version tokens equal the
-/// manifest rows' tokens.
+/// The manifest's bundled rows cover exactly the runner registry's
+/// installation-resolution rows: no drift in either direction, and the
+/// registry's pinned version tokens equal the manifest rows' tokens.
+/// External rows (#11745/#11746) are pinned by their own contract tests.
 #[test]
 fn checked_manifest_covers_exactly_the_bundled_registry_rows() -> Result<()> {
     let manifest = SubjectManifest::load(&workspace_root()?)?;
@@ -550,8 +556,12 @@ fn checked_manifest_covers_exactly_the_bundled_registry_rows() -> Result<()> {
         })
         .map(|id| id.to_string())
         .collect();
-    let manifest_bundled: BTreeSet<String> =
-        manifest.subjects.iter().map(|row| row.subject_id.clone()).collect();
+    let manifest_bundled: BTreeSet<String> = manifest
+        .subjects
+        .iter()
+        .filter(|row| row.client_kind == SubjectClientKind::BundledEglot)
+        .map(|row| row.subject_id.clone())
+        .collect();
     ensure!(
         registry_bundled == manifest_bundled,
         "bundled registry rows and manifest rows must cover each other exactly: registry \
@@ -746,6 +756,7 @@ fn probed_version_token_mismatch_is_incompatible() {
     let request = ResolveRequest {
         emacs_executable: &emacs,
         client_source: None,
+        client_package: None,
         cache_root: &root.path().join("cache"),
         probed_emacs_version: Some("GNU Emacs 31.0.50 (development)"),
     };
@@ -797,6 +808,7 @@ fn cache_keys_bind_the_complete_identity_not_the_version_alone() -> Result<()> {
         &ResolveRequest {
             emacs_executable: &emacs_29,
             client_source: None,
+            client_package: None,
             cache_root: &root.path().join("cache-b"),
             probed_emacs_version: Some("GNU Emacs 29.4 (fixture)"),
         },
@@ -898,6 +910,7 @@ fn bundled_subjects_round_trip_through_the_run_plan_boundary() -> Result<()> {
             &ResolveRequest {
                 emacs_executable: &emacs,
                 client_source: None,
+                client_package: None,
                 cache_root: &cache,
                 probed_emacs_version: Some(version_line),
             },

@@ -221,9 +221,12 @@ export async function providerResult(
   }
 }
 
-export function providerPosition(document: vscode.TextDocument): vscode.Position {
-  const offset = document.getText().indexOf('$value');
-  assert.notEqual(offset, -1, 'packaged journey fixture must contain the $value probe');
+export function providerPosition(
+  document: vscode.TextDocument,
+  probe: string = '$value',
+): vscode.Position {
+  const offset = document.getText().indexOf(probe);
+  assert.notEqual(offset, -1, `packaged journey fixture must contain the ${probe} probe`);
   return document.positionAt(offset);
 }
 
@@ -242,6 +245,7 @@ export const RETAINED_SUPPORT_COMMAND_IDS = [
   'perl-lsp.openConfigurationGuide',
   'perl-lsp.checkForUpdate',
   'perl-lsp.reportIssue',
+  'perl-lsp.showCoexistenceStatus',
 ] as const;
 
 /** Activation-registered commands that carry no `contributes.commands` entry. */
@@ -281,6 +285,205 @@ const PROCESS_SCAN_OUTPUT_MAX_BYTES = 4 * 1024 * 1024;
  * example a shell deprecation notice) is not evidence about the process
  * table, and failing on it would make the scan spuriously fragile.
  */
+export interface BundledServerProcessIdentity {
+  pid: number;
+  path: string;
+}
+
+/**
+ * Enumerate running OS server processes launched from `directory` WITH their
+ * process identities (pid + executable path). The crash-recovery journey
+ * (#7848) terminates the exact server process from the harness — never
+ * through the extension's user restart command — so it needs the pid, not
+ * just the path rows `scanProcessesUnderDirectory` returns. Fail-closed on
+ * scanner signals, exactly like the path-only scan.
+ */
+export async function scanServerProcessIdentities(
+  directory: string,
+): Promise<BundledServerProcessIdentity[]> {
+  const resolved = path.resolve(directory);
+  let command: string;
+  let args: string[];
+  if (process.platform === 'win32') {
+    command = 'powershell.exe';
+    args = [
+      '-NoProfile',
+      '-NonInteractive',
+      '-Command',
+      '(Get-Process -Name perllsp,perl-lsp -ErrorAction SilentlyContinue) | ' +
+        'ForEach-Object { if ($_.Path) { "$($_.Id)`t$($_.Path)" } }',
+    ];
+  } else {
+    command = 'ps';
+    args = ['-eo', 'pid=,args='];
+  }
+  const result = await runBoundedProcess(command, args, {
+    shell: false,
+    timeoutMs: PROCESS_SCAN_TIMEOUT_MS,
+    maxOutputBytes: PROCESS_SCAN_OUTPUT_MAX_BYTES,
+    terminationGraceMs: 1_000,
+    terminationWatchdogMs: 5_000,
+    windowsHide: true,
+  });
+  if (result.outcome !== 'completed') {
+    throw new Error(
+      `bundled-server pid scan did not complete (${result.outcome}): ${result.diagnostic ?? ''}`,
+    );
+  }
+  if (result.exitCode !== 0) {
+    throw new Error(
+      `bundled-server pid scan exited ${result.exitCode}: ${(result.stderr || '').slice(0, 300)}`,
+    );
+  }
+  const caseInsensitive = process.platform === 'win32' || process.platform === 'darwin';
+  // Match the directory boundary, not a bare prefix: `/path/to/dir-other`
+  // must not match a scan for `/path/to/dir`.
+  const separator = process.platform === 'win32' ? '\\' : '/';
+  const bounded = resolved.endsWith(separator) ? resolved : resolved + separator;
+  const needle = caseInsensitive ? bounded.toLowerCase() : bounded;
+  // `ps -eo pid=,args=` pads its columns with spaces while the PowerShell
+  // probe emits id/path tab-separated: accept any whitespace separator so
+  // both hosts parse (a tab-only parser silently drops every Linux row).
+  return result.stdout
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+    .map((line) => {
+      const match = /^(\d+)[ \t]+(.+)$/.exec(line);
+      const pidText = match?.[1];
+      const executable = match?.[2]?.trim();
+      if (pidText === undefined || executable === undefined) {
+        return null;
+      }
+      const pid = Number.parseInt(pidText, 10);
+      if (pid <= 0 || executable.length === 0) {
+        return null;
+      }
+      const haystack = caseInsensitive ? executable.toLowerCase() : executable;
+      if (!haystack.startsWith(needle)) {
+        return null;
+      }
+      // The PowerShell probe emits the pure executable path, while POSIX
+      // `ps args` appends the server arguments (`perllsp --stdio`): identity
+      // and digest checks need the real file, so reduce the POSIX row to the
+      // invoked binary — the scanned directory plus the binary name.
+      if (process.platform === 'win32') {
+        return { pid, path: executable };
+      }
+      const remainder = executable.slice(resolved.length);
+      const binaryName = remainder.split(/[ \t]/, 1)[0];
+      return binaryName === undefined || binaryName.length === 0
+        ? { pid, path: executable }
+        : { pid, path: resolved + binaryName };
+    })
+    .filter((entry): entry is BundledServerProcessIdentity => entry !== null);
+}
+
+export interface BoundedTerminationResult {
+  outcome: 'terminated' | 'already_gone' | 'error';
+  detail: string;
+}
+
+/**
+ * Terminate the exact server process FROM THE HARNESS (#7848): an external,
+ * unexpected process death the extension must observe through its own
+ * Running→Stopped crash path. This is deliberately NOT the extension's user
+ * restart command and not the activation API's stop seam — the issue's
+ * negative controls forbid substituting either for the crash.
+ */
+export async function terminateServerProcess(pid: number): Promise<BoundedTerminationResult> {
+  if (!Number.isInteger(pid) || pid <= 0) {
+    return { outcome: 'error', detail: `invalid pid ${JSON.stringify(pid)}` };
+  }
+  if (process.platform === 'win32') {
+    const result = await runBoundedProcess('taskkill', ['/PID', String(pid), '/F'], {
+      shell: false,
+      timeoutMs: 15_000,
+      maxOutputBytes: 64 * 1024,
+      terminationGraceMs: 2_000,
+      terminationWatchdogMs: 10_000,
+      windowsHide: true,
+    });
+    if (result.outcome === 'completed' && result.exitCode === 0) {
+      return { outcome: 'terminated', detail: `taskkill /F pid ${pid}` };
+    }
+    if (
+      result.outcome === 'completed' &&
+      /not found|no such/i.test(result.stdout + result.stderr)
+    ) {
+      return { outcome: 'already_gone', detail: `taskkill reported pid ${pid} already gone` };
+    }
+    return {
+      outcome: 'error',
+      detail: `taskkill pid ${pid} ended ${result.outcome} exit ${String(result.exitCode)}: ${(
+        result.stderr ||
+        result.stdout ||
+        ''
+      ).slice(0, 300)}`,
+    };
+  }
+  try {
+    process.kill(pid, 'SIGKILL');
+    return { outcome: 'terminated', detail: `SIGKILL pid ${pid}` };
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (/ESRCH/i.test(message)) {
+      return { outcome: 'already_gone', detail: `pid ${pid} already gone (ESRCH)` };
+    }
+    return { outcome: 'error', detail: message };
+  }
+}
+
+/**
+ * Whether this host can suspend an external process at all. Only POSIX hosts
+ * expose SIGSTOP through Node; Windows has no equivalent without native
+ * helpers, so the watchdog row honestly degrades to `not_proven` there
+ * instead of fabricating a hang (#7848: typed limitation, never a silent
+ * skip; #7846 owns the deterministic watchdog mechanism proof).
+ */
+export function canSuspendServerProcesses(): boolean {
+  return process.platform !== 'win32';
+}
+
+export interface SuspendResult {
+  outcome: 'suspended' | 'resumed' | 'error';
+  detail: string;
+}
+
+/** Suspend the exact server process (SIGSTOP) so it hangs without exiting. */
+export function suspendServerProcess(pid: number): SuspendResult {
+  // process.kill(0, ...) would signal the whole process group — including the
+  // extension host. Guard every caller, not just the current scan-filtered one.
+  if (!Number.isInteger(pid) || pid <= 0) {
+    return { outcome: 'error', detail: `invalid server pid: ${pid}` };
+  }
+  try {
+    process.kill(pid, 'SIGSTOP');
+    return { outcome: 'suspended', detail: `SIGSTOP pid ${pid}` };
+  } catch (error: unknown) {
+    return {
+      outcome: 'error',
+      detail: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+/** Resume a suspended server process (SIGCONT). */
+export function resumeServerProcess(pid: number): SuspendResult {
+  if (!Number.isInteger(pid) || pid <= 0) {
+    return { outcome: 'error', detail: `invalid server pid: ${pid}` };
+  }
+  try {
+    process.kill(pid, 'SIGCONT');
+    return { outcome: 'resumed', detail: `SIGCONT pid ${pid}` };
+  } catch (error: unknown) {
+    return {
+      outcome: 'error',
+      detail: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
 export async function scanProcessesUnderDirectory(directory: string): Promise<string[]> {
   const resolved = path.resolve(directory);
   let command: string;
@@ -316,7 +519,11 @@ export async function scanProcessesUnderDirectory(directory: string): Promise<st
     );
   }
   const caseInsensitive = process.platform === 'win32' || process.platform === 'darwin';
-  const needle = caseInsensitive ? resolved.toLowerCase() : resolved;
+  // Match the directory boundary, not a bare prefix: `/path/to/dir-other`
+  // must not match a scan for `/path/to/dir`.
+  const separator = process.platform === 'win32' ? '\\' : '/';
+  const bounded = resolved.endsWith(separator) ? resolved : resolved + separator;
+  const needle = caseInsensitive ? bounded.toLowerCase() : bounded;
   return result.stdout
     .split(/\r?\n/)
     .map((line) => line.trim())

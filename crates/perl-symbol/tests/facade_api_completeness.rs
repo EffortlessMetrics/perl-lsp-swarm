@@ -4,6 +4,7 @@
 //!
 //! Pattern established by Wave 1 (#4422 perl-module collapse) and required for
 //! every microcrate-collapse facade.
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 use perl_symbol::{
     MIN_LOOSE_MATCH_QUERY_CHARS, SymbolDecl, SymbolDeclSemanticFacts, SymbolIndex, SymbolKind,

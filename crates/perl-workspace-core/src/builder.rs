@@ -113,11 +113,17 @@ pub fn build_project_model(
         // Distribution-metadata facts: metadata files are not "parsed" as Perl,
         // but when DIST is requested their content is read for name/version/
         // license/prereqs.
-        if role == FileRole::DistMetadata
-            && request.fact_classes.contains(FactClasses::DIST)
-            && let Some(facts) = extract_dist_metadata(&file_id, &relative_path, &content)
-        {
-            model.dist_metadata.push(facts);
+        if role == FileRole::DistMetadata && request.fact_classes.contains(FactClasses::DIST) {
+            if let Some(facts) = extract_dist_metadata(&file_id, &relative_path, &content) {
+                model.dist_metadata.push(facts);
+            }
+            if let Some(facts) = crate::dist_authoring::parse_dist_authoring(
+                file_id.clone(),
+                &relative_path,
+                &content,
+            ) {
+                model.dist_authoring.push(facts);
+            }
         }
 
         // POD facts are read from raw source (independent of code parsing), so a
@@ -137,9 +143,11 @@ pub fn build_project_model(
 }
 
 /// Extract distribution-metadata facts from a metadata file, dispatched by
-/// filename. Only `META.json` and `cpanfile` are read today (PR 7); other
-/// metadata formats (`Makefile.PL`, `Build.PL`, `dist.ini`, `META.yml`) are
-/// indexed as files but not yet content-parsed.
+/// filename. `META.json` and `cpanfile` remain final/advisory metadata.
+/// Authoring files (`Makefile.PL`, `Build.PL`, `dist.ini`) are parsed by
+/// [`crate::dist_authoring`], not as extra [`crate::dist::DistMetadataSource`]
+/// variants. `META.yml` / `META.yaml` stay indexed here; #8458 / PR #14424 owns
+/// that parse substrate.
 fn extract_dist_metadata(
     file_id: &FileId,
     relative_path: &str,
@@ -361,10 +369,15 @@ fn is_indexable(path: &Path) -> bool {
 }
 
 /// True for file extensions the substrate treats as Perl source.
+///
+/// Includes the web-script extensions (`.psgi`, `.cgi`) so PSGI/CGI
+/// applications are indexed and parsed like `.pl` scripts: their package and
+/// symbol facts must be extracted whether packages are declared inline or
+/// implied (`main`).
 fn is_perl_source(path: &Path) -> bool {
     matches!(
         path.extension().and_then(|e| e.to_str()),
-        Some("pm") | Some("pl") | Some("t") | Some("pod") | Some("psgi")
+        Some("pm") | Some("pl") | Some("t") | Some("pod") | Some("psgi") | Some("cgi")
     )
 }
 
@@ -530,6 +543,118 @@ mod tests {
         let cpanfile = model.file_by_path("cpanfile").unwrap();
         assert_eq!(cpanfile.role, FileRole::DistMetadata);
         assert_eq!(cpanfile.parse_status, ParseStatus::NotParsed, "metadata is not parsed");
+    }
+
+    #[test]
+    fn psgi_app_with_inline_package_extracts_package_and_symbols() {
+        // An app.psgi that declares its application package inline: package
+        // detection must route through script parsing, so both the declared
+        // package fact and its contained subroutine surface deterministically.
+        let model = model_for(
+            "psgi-inline-pkg",
+            &[(
+                "app.psgi",
+                "use strict;\npackage Tetra::Web;\nsub handler { [200, [], ['ok']] }\n1;\n",
+            )],
+            FactClasses::FILES | FactClasses::SYMBOLS,
+        );
+        let file = model.file_by_path("app.psgi").unwrap();
+        assert_eq!(file.role, FileRole::Script);
+        assert_eq!(file.parse_status, ParseStatus::Clean);
+
+        let pkg = model.packages.iter().find(|p| p.name == "Tetra::Web").unwrap();
+        assert_eq!(
+            pkg.declaration_range.start_line, 1,
+            "inline package is declared on line 1 (0-based)"
+        );
+
+        let handler = model
+            .symbols
+            .iter()
+            .find(|s| s.kind == SymbolFactKind::Sub && s.name == "handler")
+            .unwrap();
+        assert_eq!(handler.package.as_deref(), Some("Tetra::Web"));
+        assert_eq!(handler.qualified_name, "Tetra::Web::handler");
+    }
+
+    #[test]
+    fn psgi_app_without_package_declaration_lands_in_main() {
+        // A PSGI app with no package statement is still parsed, and its
+        // top-level named subs resolve under implicit `main` like a `.pl`
+        // script; anonymous PSGI responders stay unnamed.
+        let model = model_for(
+            "psgi-implicit-main",
+            &[("app/main.psgi", "my $app = sub { [200] };\nsub render { 'ok' }\n")],
+            FactClasses::FILES | FactClasses::SYMBOLS,
+        );
+        let file = model.file_by_path("app/main.psgi").unwrap();
+        assert_eq!(file.role, FileRole::Script);
+        assert_eq!(file.parse_status, ParseStatus::Clean);
+
+        assert!(model.packages.is_empty(), "no package declarations means no package facts");
+
+        let render = model
+            .symbols
+            .iter()
+            .find(|s| s.kind == SymbolFactKind::Sub && s.name == "render")
+            .unwrap();
+        assert_eq!(render.package.as_deref(), Some("main"));
+        assert_eq!(render.qualified_name, "main::render");
+
+        let sub_count = model.symbols.iter().filter(|s| s.kind == SymbolFactKind::Sub).count();
+        assert_eq!(sub_count, 1, "the anonymous PSGI responder is not a named sub");
+    }
+
+    #[test]
+    fn cgi_script_with_perl_shebang_is_indexed_and_parsed() {
+        // A classic CGI script under cgi-bin/: previously invisible to the
+        // substrate entirely; now it is indexed as Script and parsed with
+        // package detection landing its subs in `main`.
+        let model = model_for(
+            "cgi-shebang-perl",
+            &[(
+                "www/cgi-bin/form.cgi",
+                "#!/usr/bin/perl\nuse strict;\nsub handle_form { 1 }\nprint handle_form();\n",
+            )],
+            FactClasses::FILES | FactClasses::SYMBOLS,
+        );
+        let file = model.file_by_path("www/cgi-bin/form.cgi").unwrap();
+        assert_eq!(file.role, FileRole::Script, "cgi script must be indexed as Script");
+        assert_eq!(file.parse_status, ParseStatus::Clean);
+
+        let handle_form = model
+            .symbols
+            .iter()
+            .find(|s| s.kind == SymbolFactKind::Sub && s.name == "handle_form")
+            .unwrap();
+        assert_eq!(handle_form.package.as_deref(), Some("main"));
+        assert_eq!(handle_form.qualified_name, "main::handle_form");
+    }
+
+    #[test]
+    fn cgi_script_with_env_shebang_is_indexed_and_parsed() {
+        // The `/usr/bin/env perl` shebang form routes identically.
+        let model = model_for(
+            "cgi-shebang-env",
+            &[(
+                "cgi-bin/lookup.cgi",
+                "#!/usr/bin/env perl\nuse warnings;\nsub lookup { 42 }\nprint \"Content-Type: text/plain\\n\\n\";\nprint lookup();\n",
+            )],
+            FactClasses::FILES | FactClasses::SYMBOLS,
+        );
+        let file = model.file_by_path("cgi-bin/lookup.cgi").unwrap();
+        assert_eq!(file.role, FileRole::Script);
+        assert_eq!(file.parse_status, ParseStatus::Clean);
+
+        let lookup = model
+            .symbols
+            .iter()
+            .find(|s| s.kind == SymbolFactKind::Sub && s.name == "lookup")
+            .unwrap();
+        assert_eq!(lookup.package.as_deref(), Some("main"));
+        assert_eq!(lookup.qualified_name, "main::lookup");
+
+        assert!(model.packages.is_empty(), "shebang CGI carries no explicit package facts");
     }
 
     #[cfg(unix)]

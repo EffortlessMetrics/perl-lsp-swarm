@@ -5,6 +5,7 @@
 //!
 //! Tracks `use` and `no` pragmas throughout the codebase to determine
 //! effective pragma state at any point in the code.
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 use perl_ast::ast::Node;
 use std::ops::Range;
@@ -38,6 +39,12 @@ pub(crate) use version::enable_effective_version_semantics;
 /// Pragma state at a given point in the code
 #[derive(Debug, Clone, PartialEq)]
 pub struct PragmaState {
+    /// The effective Perl version declared in the current lexical scope.
+    ///
+    /// This is retained alongside the derived feature set so semantic consumers
+    /// can distinguish an exact version profile from an equivalent explicit
+    /// feature selection.
+    pub perl_version: Option<PerlVersion>,
     /// Whether strict vars is enabled
     pub strict_vars: bool,
     /// Whether strict subs is enabled
@@ -96,6 +103,7 @@ impl Default for PragmaState {
     /// `use feature` or `no feature` declaration".
     fn default() -> Self {
         Self {
+            perl_version: None,
             strict_vars: false,
             strict_subs: false,
             strict_refs: false,
