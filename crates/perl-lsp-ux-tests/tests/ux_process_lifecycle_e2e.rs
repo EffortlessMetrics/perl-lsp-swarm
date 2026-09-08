@@ -261,14 +261,8 @@ impl LifecycleProcess {
     }
 
     fn join_readers(&mut self, timeout: Duration) -> Result<()> {
-        self.wait_for_readers(timeout)?;
+        self.join_reader_threads(timeout)?;
 
-        if let Some(handle) = self.stdout_thread.take() {
-            handle.join().map_err(|_| anyhow!("stdout reader thread panicked"))?;
-        }
-        if let Some(handle) = self.stderr_thread.take() {
-            handle.join().map_err(|_| anyhow!("stderr reader thread panicked"))?;
-        }
         while let Ok(message) = self.messages.try_recv() {
             if let Err(error) = message {
                 bail!("server emitted invalid LSP output: {error}\n{}", self.render_stderr_tail());
@@ -278,14 +272,8 @@ impl LifecycleProcess {
     }
 
     fn join_readers_strict(&mut self, timeout: Duration) -> Result<()> {
-        self.wait_for_readers(timeout)?;
+        self.join_reader_threads(timeout)?;
 
-        if let Some(handle) = self.stdout_thread.take() {
-            handle.join().map_err(|_| anyhow!("stdout reader thread panicked"))?;
-        }
-        if let Some(handle) = self.stderr_thread.take() {
-            handle.join().map_err(|_| anyhow!("stderr reader thread panicked"))?;
-        }
         while let Ok(message) = self.messages.try_recv() {
             match message {
                 Ok(message)
@@ -305,7 +293,7 @@ impl LifecycleProcess {
         Ok(())
     }
 
-    fn wait_for_readers(&self, timeout: Duration) -> Result<()> {
+    fn join_reader_threads(&mut self, timeout: Duration) -> Result<()> {
         let deadline = Instant::now() + timeout;
         loop {
             let stdout_finished =
@@ -322,6 +310,12 @@ impl LifecycleProcess {
                 );
             }
             thread::sleep(Duration::from_millis(10));
+        }
+        if let Some(handle) = self.stdout_thread.take() {
+            handle.join().map_err(|_| anyhow!("stdout reader thread panicked"))?;
+        }
+        if let Some(handle) = self.stderr_thread.take() {
+            handle.join().map_err(|_| anyhow!("stderr reader thread panicked"))?;
         }
         Ok(())
     }
