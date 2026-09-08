@@ -2160,6 +2160,17 @@ async function initializeLanguageClient(context: vscode.ExtensionContext): Promi
         const onboarding = new OnboardingManager(context, outputChannel);
         healthMsg = await onboarding.runStartupDiagnostics(failedServerPath);
       }
+      const isCurrentFailure = (): boolean => {
+        const current = lifecycle.snapshot;
+        return (
+          current.generation === failedGeneration &&
+          current.state === 'failed' &&
+          current.serverPath === failedServerPath
+        );
+      };
+      if (!isCurrentFailure()) {
+        return;
+      }
       // Cache the structured diagnosis so serverNotRunningMessage() can format
       // it; when healthMsg overrides the hint, wrap it as a synthetic diagnosis.
       lastStartupDiagnosis =
@@ -2171,15 +2182,6 @@ async function initializeLanguageClient(context: vscode.ExtensionContext): Promi
             }
           : probeResult;
       const dialogMessage = formatStartupFailureDialog(probeResult, healthMsg);
-      const current = lifecycle.snapshot;
-      if (
-        current.generation !== failedGeneration ||
-        current.state !== 'failed' ||
-        current.serverPath !== failedServerPath
-      ) {
-        return;
-      }
-
       void vscode.window
         .showErrorMessage(
           dialogMessage,
@@ -2192,9 +2194,13 @@ async function initializeLanguageClient(context: vscode.ExtensionContext): Promi
           if (choice === 'View Logs') {
             outputChannel.show();
           } else if (choice === 'Run Health Check') {
-            void vscode.commands.executeCommand('perl-lsp.runHealthCheck');
+            if (isCurrentFailure()) {
+              void vscode.commands.executeCommand('perl-lsp.runHealthCheck');
+            }
           } else if (choice === 'Reinstall') {
-            void reinstallServerBinary(context);
+            if (isCurrentFailure()) {
+              void reinstallServerBinary(context);
+            }
           } else if (choice === 'Check serverPath Setting') {
             void vscode.commands.executeCommand(
               'workbench.action.openSettings',
