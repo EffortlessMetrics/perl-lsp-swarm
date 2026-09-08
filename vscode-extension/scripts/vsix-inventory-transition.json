@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
   "owner_issue": 7854,
-  "reason": "The merged candidate cfd1fd6d8449318c5eae92b3484b26000e577803 carries the activation ownership and health widget changes. The fresh Windows x64 VSIX measured 29 files and 1864456 bytes versus the accepted origin/main baseline of 29 files and 1861072 bytes (+3384): only out/extension.js changed, growing by 3384 bytes; the other 28 archive paths and sizes match. This declaration records the measured packaging transition while reconciling inherited #14476 inventory drift; no validator, threshold, or admission rule changes.",
+  "reason": "The merged candidate carries the activation ownership and health widget changes. The fresh Windows x64 VSIX measured 29 files and 1864341 bytes versus the merge-base baseline of 29 files and 1861072 bytes (+3269): out/extension.js grew by 3384 bytes while package.json decreased by 115 bytes; the other 27 archive paths and sizes match. This declaration records the exact measured packaging transition; no validator, threshold, or admission rule changes.",
   "base_baseline_file_sha256": "6eb7b8787bbea24c30ef1c5185a80b03e404e974eb83ed653cbd8db33b6f5ecc",
-  "candidate_baseline_file_sha256": "5138b566ee401da2d00b8908c72a0687c5d48923c79a82b0e58129d5e03f3972",
+  "candidate_baseline_file_sha256": "eaef617cee329a98c217809c7b330c51c8ea246eb13b983ecc78d83e4487d945",
   "base_inventory_sha256": "44a4ea77a0c71a226b925d62743d30fce3845d4448c5a942124253601214938b",
-  "candidate_inventory_sha256": "aaa49c950992aa238670ba9b4fa36d089ac88135c1fff667639e82beb6c91d0f"
+  "candidate_inventory_sha256": "2b68285babc5d03bd46afa00260919d43ed466415a40fc92e3a4ce79ed579766"
 }
