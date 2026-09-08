@@ -32,6 +32,9 @@ async function waitForCommand(command: string): Promise<void> {
 function nativeGitPath(): string {
   const lookup = process.platform === 'win32' ? 'where.exe' : 'which';
   const result = spawnSync(lookup, ['git'], { encoding: 'utf8', windowsHide: true });
+  if (result.error) {
+    throw result.error;
+  }
   assert.equal(
     result.status,
     0,
