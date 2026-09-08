@@ -148,12 +148,12 @@ fn unsupported_baseline_schema_fails_even_when_identities_match() {
     baseline.schema = "not_test_panic_family_debt.v1".to_string();
     let path = temp.path().join("baseline.json");
     std::fs::write(&path, canonical_json(&baseline).expect("json")).expect("baseline");
-    let result = check_inventory(xtask::no_panic_debt::CheckRequest {
+    let err = check_inventory(xtask::no_panic_debt::CheckRequest {
         root: temp.path(),
         current: &current,
         artifact: None,
         baseline: Some(&path),
-    });
-    let err = result.err().expect("unsupported baseline schema must error");
+    })
+    .expect_err("unsupported baseline schema must error");
     assert!(err.to_string().contains("unsupported schema"), "{err}");
 }
