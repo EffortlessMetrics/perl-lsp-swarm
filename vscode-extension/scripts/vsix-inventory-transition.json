@@ -1,9 +1,9 @@
 {
-  "schema_version": 1,
-  "owner_issue": 7418,
-  "reason": "The candidate adds the Windows Test Explorer prove stdin-list path and process-tree cleanup proof. The exact Windows x64 VSIX inventory remains 29 files and 1866811 bytes; package.json is 59413 bytes and out/extension.js is 1688966 bytes. This declaration records the candidate baseline and package transition for issue #7418. It does not establish installed editor behavior or alter package policy.",
-  "base_baseline_file_sha256": "eaef617cee329a98c217809c7b330c51c8ea246eb13b983ecc78d83e4487d945",
-  "candidate_baseline_file_sha256": "4e148581fe7caff83e13b7d0f617d58c7a957fbc1bb5f1c8b617b9fbd2bd83da",
-  "base_inventory_sha256": "2b68285babc5d03bd46afa00260919d43ed466415a40fc92e3a4ce79ed579766",
-  "candidate_inventory_sha256": "d44214d4914ba1bd8b35d300c9571675e8ae3a7ae526ea017d96c4dc6ff3ea92"
+  "candidate_baseline_file_sha256": "4a6a6fe3aed1a697ee322f792ef2559cba0cc65f431c241abd54ac4eca366eb9",
+  "reason": "PR #14744 integrates main #15163 and preserves the opt-in supervisor workflow. The fresh Windows x64 VSIX has 29 payload files and 1866923 bytes. Relative to main 5bea310bf9330b11fbbc24344c79641d35397735, the only measured inventory delta is package.json +112 bytes (59413 to 59525). Development scripts remain excluded. No inventory validator or threshold is weakened.",
+  "candidate_inventory_sha256": "ecb86cf0aba484eceb5f99c553593538a3cdbe386f3c193c411d279da169eb49",
+  "base_inventory_sha256": "d44214d4914ba1bd8b35d300c9571675e8ae3a7ae526ea017d96c4dc6ff3ea92",
+  "owner_issue": 9848,
+  "base_baseline_file_sha256": "4e148581fe7caff83e13b7d0f617d58c7a957fbc1bb5f1c8b617b9fbd2bd83da",
+  "schema_version": 1
 }
