@@ -25,6 +25,8 @@ export interface SupportCommandDependencies {
   readonly platform: string;
   readonly arch: string;
   readonly editorName?: string | undefined;
+  /** Fixed failure classes only; raw errors and packet values never reach this sink. */
+  readonly supportFailureSink?: Pick<vscode.LogOutputChannel, 'warn'>;
 }
 
 export function sanitizeDiagnosticField(value: string | undefined, fallback: string): string {
@@ -196,6 +198,23 @@ async function getServerVersionSafely(dependencies: SupportCommandDependencies):
   }
 }
 
+type SupportFailureClass =
+  | 'support_packet_render_failed'
+  | 'support_packet_clipboard_failed'
+  | 'support_packet_document_open_failed'
+  | 'support_issue_form_open_failed';
+
+function recordSupportFailure(
+  sink: SupportCommandDependencies['supportFailureSink'],
+  failure: SupportFailureClass,
+): void {
+  try {
+    sink?.warn(`[support-command] ${failure}`);
+  } catch {
+    // Diagnostics must never change the command's bounded recovery behavior.
+  }
+}
+
 /** Render the human packet projection, or `null` when it cannot be built.
  *
  * The raw failure is deliberately dropped because packet-validation messages may
@@ -217,11 +236,14 @@ function renderSupportPacketSafely(
       }),
     );
   } catch {
+    recordSupportFailure(dependencies.supportFailureSink, 'support_packet_render_failed');
     return null;
   }
 }
 
-async function openIssueForm(): Promise<void> {
+async function openIssueForm(
+  supportFailureSink: SupportCommandDependencies['supportFailureSink'],
+): Promise<void> {
   try {
     const opened = await vscode.env.openExternal(vscode.Uri.parse(PUBLIC_BUG_REPORT_URL));
     if (opened) {
@@ -230,6 +252,7 @@ async function openIssueForm(): Promise<void> {
   } catch {
     // Fall through to the same bounded manual-recovery message as a false result.
   }
+  recordSupportFailure(supportFailureSink, 'support_issue_form_open_failed');
   await vscode.window.showWarningMessage(
     `Could not open the issue form. Open it manually: ${PUBLIC_BUG_REPORT_URL}`,
   );
@@ -242,7 +265,10 @@ async function openIssueForm(): Promise<void> {
  * that reject would dead-end the command the same way an unguarded packet render did.
  * Report it bounded and keep the issue form reachable instead.
  */
-async function showSupportPacket(humanPacket: string): Promise<void> {
+async function showSupportPacket(
+  humanPacket: string,
+  supportFailureSink: SupportCommandDependencies['supportFailureSink'],
+): Promise<void> {
   try {
     const document = await vscode.workspace.openTextDocument({
       content: humanPacket,
@@ -250,29 +276,34 @@ async function showSupportPacket(humanPacket: string): Promise<void> {
     });
     await vscode.window.showTextDocument(document, { preview: true });
   } catch {
+    recordSupportFailure(supportFailureSink, 'support_packet_document_open_failed');
     const recovery = await vscode.window.showWarningMessage(
       'Could not open the support packet in an editor tab. You can still open the issue form and describe the problem.',
       'Open Issue Form',
     );
     if (recovery === 'Open Issue Form') {
-      await openIssueForm();
+      await openIssueForm(supportFailureSink);
     }
   }
 }
 
-async function copySupportPacket(humanPacket: string): Promise<void> {
+async function copySupportPacket(
+  humanPacket: string,
+  supportFailureSink: SupportCommandDependencies['supportFailureSink'],
+): Promise<void> {
   try {
     await vscode.env.clipboard.writeText(humanPacket);
   } catch {
+    recordSupportFailure(supportFailureSink, 'support_packet_clipboard_failed');
     const recovery = await vscode.window.showWarningMessage(
       'Could not write the support packet to the clipboard. Show the packet to copy it manually, or open the issue form and describe the problem.',
       'Show Support Packet',
       'Open Issue Form',
     );
     if (recovery === 'Show Support Packet') {
-      await showSupportPacket(humanPacket);
+      await showSupportPacket(humanPacket, supportFailureSink);
     } else if (recovery === 'Open Issue Form') {
-      await openIssueForm();
+      await openIssueForm(supportFailureSink);
     }
     return;
   }
@@ -281,7 +312,7 @@ async function copySupportPacket(humanPacket: string): Promise<void> {
     'Open Issue Form',
   );
   if (selection === 'Open Issue Form') {
-    await openIssueForm();
+    await openIssueForm(supportFailureSink);
   }
 }
 
@@ -301,7 +332,7 @@ export async function reportIssueCommand(dependencies: SupportCommandDependencie
       'Open Issue Form',
     );
     if (fallback === 'Open Issue Form') {
-      await openIssueForm();
+      await openIssueForm(dependencies.supportFailureSink);
     }
     return;
   }
@@ -314,10 +345,10 @@ export async function reportIssueCommand(dependencies: SupportCommandDependencie
   );
 
   if (selection === 'Show Support Packet') {
-    await showSupportPacket(humanPacket);
+    await showSupportPacket(humanPacket, dependencies.supportFailureSink);
   } else if (selection === 'Copy Support Packet') {
-    await copySupportPacket(humanPacket);
+    await copySupportPacket(humanPacket, dependencies.supportFailureSink);
   } else if (selection === 'Open Issue Form') {
-    await openIssueForm();
+    await openIssueForm(dependencies.supportFailureSink);
   }
 }

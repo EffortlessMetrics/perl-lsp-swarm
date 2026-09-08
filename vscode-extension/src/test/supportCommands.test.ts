@@ -17,6 +17,10 @@ function dependencies() {
   };
 }
 
+function failureSink() {
+  return { warn: jest.fn() };
+}
+
 describe('support command implementations', () => {
   beforeEach(() => {
     jest.clearAllMocks();
@@ -164,6 +168,75 @@ describe('support command implementations', () => {
     );
     expect(url).not.toContain('Support%20packet');
     expect(vscode.env.clipboard.writeText).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    ['packet render', 'support_packet_render_failed'],
+    ['clipboard write', 'support_packet_clipboard_failed'],
+    ['packet document', 'support_packet_document_open_failed'],
+    ['issue form', 'support_issue_form_open_failed'],
+  ])('records only the bounded %s failure class', async (_label, expectedFailure) => {
+    const sink = failureSink();
+    const deps = { ...dependencies(), supportFailureSink: sink };
+    const packetModule = require('../supportPacket') as {
+      formatSupportPacketHuman: (packet: unknown) => string;
+    };
+    const packetFormat = jest.spyOn(packetModule, 'formatSupportPacketHuman');
+    if (expectedFailure === 'support_packet_render_failed') {
+      packetFormat.mockImplementation(() => {
+        throw new Error('private packet field');
+      });
+      (vscode.window.showWarningMessage as jest.Mock).mockResolvedValueOnce('Open Issue Form');
+      (vscode.env.openExternal as jest.Mock).mockResolvedValueOnce(true);
+    } else if (expectedFailure === 'support_packet_clipboard_failed') {
+      (vscode.window.showInformationMessage as jest.Mock).mockResolvedValueOnce(
+        'Copy Support Packet',
+      );
+      (vscode.env.clipboard.writeText as jest.Mock).mockRejectedValueOnce(
+        new Error('private clipboard detail'),
+      );
+    } else if (expectedFailure === 'support_packet_document_open_failed') {
+      (vscode.window.showInformationMessage as jest.Mock).mockResolvedValueOnce(
+        'Show Support Packet',
+      );
+      (vscode.workspace.openTextDocument as jest.Mock).mockRejectedValueOnce(
+        new Error('private editor detail'),
+      );
+      (vscode.window.showWarningMessage as jest.Mock).mockResolvedValueOnce(undefined);
+    } else {
+      (vscode.window.showInformationMessage as jest.Mock).mockResolvedValueOnce('Open Issue Form');
+      (vscode.env.openExternal as jest.Mock).mockResolvedValueOnce(false);
+    }
+
+    try {
+      await expect(reportIssueCommand(deps)).resolves.toBeUndefined();
+    } finally {
+      packetFormat.mockRestore();
+    }
+
+    expect(sink.warn).toHaveBeenCalledWith(`[support-command] ${expectedFailure}`);
+    expect(sink.warn).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(sink.warn.mock.calls)).not.toContain('private');
+  });
+
+  test('a failing diagnostic sink cannot break bounded recovery', async () => {
+    const deps = {
+      ...dependencies(),
+      supportFailureSink: {
+        warn: jest.fn(() => {
+          throw new Error('sink unavailable');
+        }),
+      },
+    };
+    (vscode.window.showInformationMessage as jest.Mock).mockResolvedValueOnce(
+      'Copy Support Packet',
+    );
+    (vscode.env.clipboard.writeText as jest.Mock).mockRejectedValueOnce(
+      new Error('private clipboard detail'),
+    );
+
+    await expect(reportIssueCommand(deps)).resolves.toBeUndefined();
+    expect(vscode.window.showWarningMessage).toHaveBeenCalledTimes(1);
   });
 
   test('reports a bounded manual URL when the host declines to open the issue form', async () => {
