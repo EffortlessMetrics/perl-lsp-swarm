@@ -85,6 +85,7 @@ const EXTERNAL_HORIZONS: &[&str] = &["package_externalization", "publication_man
 /// generic writer-conflict law for every other node pair.
 const DECLARED_PARALLEL_PAIRS: &[(&str, &str)] =
     &[("pc_property_suites_11580", "pc_fixture_promotion_11034")];
+const DECLARED_PARALLEL_LAW_ANCHOR: &str = "pc_stable_dag_10980";
 
 /// Object keys banned anywhere in stable bytes: no mutable GitHub, task,
 /// agent, run, writer, or frontier state.
@@ -793,10 +794,18 @@ fn declared_parallel_problems(graph: &Graph<'_>, violations: &mut Vec<Violation>
     for (left, right) in DECLARED_PARALLEL_PAIRS {
         let left_present = graph.node_ids.contains(left);
         let right_present = graph.node_ids.contains(right);
-        // A compact invalid fixture may not model this programme-specific
-        // pair at all. Once either configured endpoint is present, however,
-        // both identities are part of the graph contract.
-        if left_present != right_present {
+        let law_applies =
+            graph.node_ids.contains(DECLARED_PARALLEL_LAW_ANCHOR) || left_present || right_present;
+        if !law_applies {
+            // A compact invalid fixture may not model this programme-specific
+            // pair at all. The canonical #10980 graph is identified by its
+            // stable-DAG node anchor, so removing or renaming both endpoints
+            // still leaves the law active on that manifest.
+            continue;
+        }
+        // Once the law applies, both configured identities are part of the
+        // graph contract.
+        if !left_present || !right_present {
             violations.push(Violation::new(
                 "DECLARED_PARALLEL_ENDPOINT_MISSING",
                 format!(

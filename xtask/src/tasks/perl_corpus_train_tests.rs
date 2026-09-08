@@ -542,6 +542,21 @@ fn falsifier_11b_missing_declared_parallel_endpoint_after_repaired_mutation_fail
         rename_node_and_repair_references(&mut doc, old_id, new_id)?;
         assert_exact_codes(&doc, &["DECLARED_PARALLEL_ENDPOINT_MISSING"])?;
     }
+
+    let mut removed_both = base.clone();
+    for endpoint in ["pc_property_suites_11580", "pc_fixture_promotion_11034"] {
+        remove_node_and_repair_references(&mut removed_both, endpoint)?;
+    }
+    assert_exact_codes(&removed_both, &["DECLARED_PARALLEL_ENDPOINT_MISSING"])?;
+
+    let mut renamed_both = base;
+    for (old_id, new_id) in [
+        ("pc_property_suites_11580", "pc_property_suites_11580_renamed"),
+        ("pc_fixture_promotion_11034", "pc_fixture_promotion_11034_renamed"),
+    ] {
+        rename_node_and_repair_references(&mut renamed_both, old_id, new_id)?;
+    }
+    assert_exact_codes(&renamed_both, &["DECLARED_PARALLEL_ENDPOINT_MISSING"])?;
     Ok(())
 }
 
