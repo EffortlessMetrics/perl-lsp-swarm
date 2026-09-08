@@ -49,6 +49,7 @@ const tracked: TrackedDisposable[] = [];
 const disposedOrder: string[] = [];
 const disposedEntries: TrackedDisposable[] = [];
 let activeDisposableOwner: string | undefined;
+let startedHealthWidgetDataSource: HealthWidgetDataSource | undefined;
 
 const HEALTH_WIDGET_CHILD_LABELS = [
   'health:diagnostics',
@@ -252,6 +253,7 @@ beforeAll(() => {
   jest
     .spyOn(HealthWidgetDataSource.prototype, 'start')
     .mockImplementation(function (this: HealthWidgetDataSource) {
+      startedHealthWidgetDataSource = this;
       const previousOwner = activeDisposableOwner;
       activeDisposableOwner = 'health-widget-data-source';
       try {
@@ -441,8 +443,14 @@ describe('transactional production activation (#7854)', () => {
     const componentOwned = tracked.filter((entry) => entry.owner === 'health-widget-data-source');
     expect(componentOwned.map((entry) => entry.label)).toEqual([...HEALTH_WIDGET_CHILD_LABELS]);
     expect(componentOwned).toHaveLength(HEALTH_WIDGET_CHILD_LABELS.length);
+    expect(startedHealthWidgetDataSource).toBeDefined();
+    expect(hostArray).toContain(startedHealthWidgetDataSource);
+    for (const entry of componentOwned) {
+      expect(hostArray).not.toContain(entry.disposable);
+    }
     const hostOwned = tracked.filter((entry) => entry.owner !== 'health-widget-data-source');
     expect(hostOwned.every((entry) => hostArray.includes(entry.disposable))).toBe(true);
+    expect(hostArray).toHaveLength(hostOwned.length + 2);
 
     expect(vscode.commands.executeCommand).toHaveBeenCalledWith(
       'setContext',
