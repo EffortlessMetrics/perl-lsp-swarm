@@ -59,6 +59,9 @@ void test('a successful packager without a fresh archive cannot validate a stale
       calls.push({ file, options });
     },
     statSync: () => {
+      if (staleFile) {
+        return { isFile: () => true, size: 123 };
+      }
       throw new Error('ENOENT');
     },
   };
