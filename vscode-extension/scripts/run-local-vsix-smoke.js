@@ -176,13 +176,16 @@ function interpretTestExplorerExit(smokeRun, childReceipt) {
     };
   }
   if (smokeRun.result.error || smokeRun.result.status !== 0) {
-    return {
-      status: 'failed',
-      exit_code: smokeRun.result.status ?? null,
-      reason: smokeRun.result.error
-        ? smokeRun.result.error.message
-        : 'test_explorer_journey_failed',
-    };
+    const interpreted = interpretBehavioralSmokeExit({
+      status: smokeRun.result.status,
+      spawnError: smokeRun.result.error,
+      candidateBound: true,
+      platform: process.platform,
+      receiptsRoot: receiptsRoot(),
+    });
+    return interpreted.reason === 'published_extension_smoke_failed'
+      ? { ...interpreted, reason: 'test_explorer_journey_failed' }
+      : interpreted;
   }
   if (!childReceipt.ok) {
     return {
@@ -205,12 +208,14 @@ function runTestExplorerJourneyStage(baseEnv, revision, vsixPath, vsixSha256) {
   const env = testExplorerSmokeEnv(baseEnv, revision, vsixPath, vsixSha256);
   const receiptFile = env.PERL_LSP_TEST_EXPLORER_RECEIPT;
   try {
-    fs.rmSync(receiptFile, { force: true });
+    for (const staleReceipt of [receiptFile, hostResolutionFailurePath()]) {
+      fs.rmSync(staleReceipt, { force: true });
+    }
   } catch (error) {
     return {
       status: 'not_proven',
       exit_code: null,
-      reason: `unable to clear the previous Test Explorer receipt: ${
+      reason: `unable to clear the previous Test Explorer or host-resolution receipt: ${
         error instanceof Error ? error.message : String(error)
       }`,
     };

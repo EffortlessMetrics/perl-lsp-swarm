@@ -60,10 +60,32 @@ void test('builds an exclusive candidate-bound Test Explorer child environment',
   assert.equal(environment.PERL_LSP_HEALTH_CHECK_FAILURE_SMOKE, undefined);
   assert.equal(environment.PERL_LSP_ACTIVATION_FAILURE_SMOKE, undefined);
   assert.equal(environment.PERL_LSP_CRASH_RECOVERY_SMOKE, undefined);
+  assert.equal(environment.PERL_LSP_HEALTH_CHECK_RECOVERY_SMOKE, undefined);
+  assert.equal(environment.PERL_LSP_ACTIVATION_FAILURE_LEG, undefined);
+  assert.equal(environment.PERL_LSP_CRASH_RECOVERY_LEG, undefined);
   assert.equal(environment.PERL_LSP_TEST_EXPLORER_JOURNEY, undefined);
+  assert.match(
+    environment.PERL_LSP_TEST_EXPLORER_RECEIPT,
+    /[/\\]test_explorer_journey_receipt\.json$/,
+  );
+  assert.equal(environment.PERL_LSP_SMOKE_SOURCE_LABEL.endsWith('-test-explorer'), true);
 });
 
 void test('does not turn missing or failed Test Explorer children into a pass', () => {
+  assert.deepEqual(
+    interpretTestExplorerExit({
+      phase: 'compile',
+      result: { status: 2, error: undefined },
+    }),
+    { status: 'failed', exit_code: 2, reason: 'published_smoke_compile_failed' },
+  );
+  assert.deepEqual(
+    interpretTestExplorerExit({
+      phase: 'compile',
+      result: { status: null, error: new Error('compiler unavailable') },
+    }),
+    { status: 'failed', exit_code: null, reason: 'published_smoke_compile_spawn_failed' },
+  );
   assert.deepEqual(
     interpretTestExplorerExit({
       phase: 'child',
@@ -77,6 +99,13 @@ void test('does not turn missing or failed Test Explorer children into a pass', 
       result: { status: null, error: undefined },
     }),
     { status: 'failed', exit_code: null, reason: 'test_explorer_journey_failed' },
+  );
+  assert.deepEqual(
+    interpretTestExplorerExit({
+      phase: 'child',
+      result: { status: null, error: new Error('child unavailable') },
+    }),
+    { status: 'not_proven', exit_code: null, reason: 'child unavailable' },
   );
   assert.deepEqual(
     interpretTestExplorerExit(
@@ -94,6 +123,46 @@ void test('does not turn missing or failed Test Explorer children into a pass', 
       test_zero: 'generated test.t',
     },
   );
+});
+
+void test('classifies unavailable Test Explorer host resolution as not-proven', () => {
+  const receiptsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-test-explorer-host-'));
+  const previousReceiptsDir = process.env.PERL_LSP_SMOKE_RECEIPTS_DIR;
+  process.env.PERL_LSP_SMOKE_RECEIPTS_DIR = receiptsDir;
+  try {
+    fs.writeFileSync(
+      path.join(receiptsDir, 'vscode_host_resolution_failure.json'),
+      JSON.stringify({
+        schema_version: 1,
+        outcome: 'blocked',
+        stage: 'vscode_host_resolution',
+        requested_version: '1.125.0',
+        disposition: 'unavailable',
+      }),
+    );
+    assert.deepEqual(
+      interpretTestExplorerExit(
+        { phase: 'child', result: { status: 1, error: undefined } },
+        { ok: false, violations: ['child did not complete'] },
+      ),
+      {
+        status: 'not_proven',
+        exit_code: 1,
+        reason: 'vscode_host_resolution_unavailable',
+        host_resolution: {
+          schema_version: 1,
+          outcome: 'blocked',
+          stage: 'vscode_host_resolution',
+          requested_version: '1.125.0',
+          disposition: 'unavailable',
+        },
+      },
+    );
+  } finally {
+    if (previousReceiptsDir === undefined) delete process.env.PERL_LSP_SMOKE_RECEIPTS_DIR;
+    else process.env.PERL_LSP_SMOKE_RECEIPTS_DIR = previousReceiptsDir;
+    fs.rmSync(receiptsDir, { recursive: true, force: true });
+  }
 });
 
 void test('requires a fresh candidate-bound Test Explorer completion receipt', () => {
@@ -137,6 +206,28 @@ void test('requires a fresh candidate-bound Test Explorer completion receipt', (
       }).ok,
       false,
     );
+    const invalidBinding = validateTestExplorerReceipt({
+      receiptFile,
+      expectedRevision: valid.source_revision,
+      expectedServerSourceSha: valid.server_source_revision,
+      expectedServerArtifactSha256: valid.server_artifact_sha256,
+      expectedVsixSha256: valid.vsix_sha256,
+      readFile: () =>
+        JSON.stringify({
+          ...valid,
+          binary_resolution_source: 'managed',
+          binary_resolution_status: 'missing',
+          binary_resolution_sha256: 'e'.repeat(64),
+        }),
+      exists: () => true,
+    });
+    assert.equal(invalidBinding.ok, false);
+    assert.ok(!invalidBinding.ok);
+    assert.ok(invalidBinding.violations);
+    const invalidBindingViolations = invalidBinding.violations.join('; ');
+    assert.match(invalidBindingViolations, /bundled server as its source/);
+    assert.match(invalidBindingViolations, /successful server resolution/);
+    assert.match(invalidBindingViolations, /different digest/);
     assert.equal(
       validateTestExplorerReceipt({
         receiptFile,
@@ -335,6 +426,14 @@ void test('keeps aggregate not-proven when the Test Explorer child is not run or
       test_explorer_journey: { status: 'failed', reason: 'child failed' },
     }),
     'failed',
+  );
+  assert.equal(
+    computeOverallStatus({ ...base, test_explorer_journey: { status: 'not_run' } }),
+    'pass',
+  );
+  assert.equal(
+    computeOverallStatus({ ...base, test_explorer_journey: { status: 'pass' } }),
+    'pass',
   );
 });
 
