@@ -6,9 +6,11 @@ import { StringDecoder } from 'string_decoder';
 
 const WINDOWS_TREE_KILL_TIMEOUT_MS = 5_000;
 
-function killWindowsProcessTree(pid: number | undefined): Promise<void> {
+export type TreeKillResult = { ok: true } | { ok: false; diagnostic: string };
+
+function killWindowsProcessTree(pid: number | undefined): Promise<TreeKillResult> {
   if (process.platform !== 'win32' || pid === undefined) {
-    return Promise.resolve();
+    return Promise.resolve({ ok: true });
   }
 
   return new Promise((resolve) => {
@@ -28,18 +30,32 @@ function killWindowsProcessTree(pid: number | undefined): Promise<void> {
       } catch {
         // taskkill may already have exited or been torn down with its parent.
       }
-      resolve();
+      resolve({
+        ok: false,
+        diagnostic: `Windows process-tree cleanup exceeded ${WINDOWS_TREE_KILL_TIMEOUT_MS} ms.`,
+      });
     }, WINDOWS_TREE_KILL_TIMEOUT_MS);
-    const finish = (): void => {
+    const finish = (result: TreeKillResult): void => {
       if (settled) {
         return;
       }
       settled = true;
       clearTimeout(timer);
-      resolve();
+      resolve(result);
     };
-    killer.once('error', finish);
-    killer.once('close', finish);
+    killer.once('error', (error: Error) =>
+      finish({ ok: false, diagnostic: `Windows process-tree cleanup failed: ${error.message}.` }),
+    );
+    killer.once('close', (code: number | null, signal: NodeJS.Signals | null) => {
+      if (code === 0) {
+        finish({ ok: true });
+        return;
+      }
+      finish({
+        ok: false,
+        diagnostic: `Windows process-tree cleanup exited with ${code ?? signal ?? 'unknown'}.`,
+      });
+    });
   });
 }
 
@@ -92,6 +108,8 @@ export interface BoundedProcessOptions extends Omit<SpawnOptions, 'signal' | 'st
    * delivered; production callers leave this unset and use `ChildProcess.kill`.
    */
   killProcess?: (proc: ReturnType<typeof spawn>, signal: NodeJS.Signals) => boolean;
+  /** Test seam for Windows process-tree cleanup; production callers leave this unset. */
+  killProcessTree?: (pid: number | undefined) => Promise<TreeKillResult>;
 }
 
 /**
@@ -114,6 +132,7 @@ export function runBoundedProcess(
       terminationGraceMs,
       terminationWatchdogMs = DEFAULT_TERMINATION_WATCHDOG_MS,
       killProcess,
+      killProcessTree,
       ...spawnOptions
     } = options;
     const proc = spawn(command, [...args], {
@@ -134,10 +153,22 @@ export function runBoundedProcess(
     let closed = false;
     let graceTimer: NodeJS.Timeout | undefined;
     let watchdogTimer: NodeJS.Timeout | undefined;
-    let treeKill: Promise<void> | undefined;
+    let treeKill: Promise<TreeKillResult> | undefined;
+    let treeKillFailureBeforeClose: string | undefined;
     let stdinError: Error | undefined;
     const timeout = setTimeout(() => requestTermination('timed_out'), timeoutMs);
     const needsTreeKill = process.platform === 'win32';
+    const killTree = killProcessTree ?? killWindowsProcessTree;
+
+    const startTreeKill = (): void => {
+      const cleanupPromise = killTree(proc.pid);
+      treeKill = cleanupPromise;
+      void cleanupPromise.then((result) => {
+        if (!result.ok && !closed) {
+          treeKillFailureBeforeClose = result.diagnostic;
+        }
+      });
+    };
 
     const deliverKill = (killSignal: NodeJS.Signals): boolean => {
       if (killProcess) {
@@ -210,16 +241,14 @@ export function runBoundedProcess(
         return;
       }
       termination = reason;
-      if (!needsTreeKill) {
-        deliverKill('SIGTERM');
+      if (needsTreeKill) {
+        startTreeKill();
+        armTerminationWatchdog();
+        return;
       }
+      deliverKill('SIGTERM');
       graceTimer = setTimeout(() => {
         if (closed) {
-          return;
-        }
-        if (needsTreeKill) {
-          treeKill = killWindowsProcessTree(proc.pid);
-          armTerminationWatchdog();
           return;
         }
         deliverKill('SIGKILL');
@@ -239,7 +268,13 @@ export function runBoundedProcess(
         cancelled: 'Process execution was cancelled.',
         input_error: `Failed to provide process input: ${stdinError?.message ?? 'the input stream closed unexpectedly'}.`,
       }[outcome];
-      void (treeKill ?? Promise.resolve()).then(() => finish(outcome, exitCode, signal, detail));
+      void (treeKill ?? Promise.resolve({ ok: true as const })).then((cleanupResult) => {
+        if (!cleanupResult.ok && treeKillFailureBeforeClose !== undefined) {
+          finish('termination_failed', exitCode, signal, cleanupResult.diagnostic);
+          return;
+        }
+        finish(outcome, exitCode, signal, detail);
+      });
     };
 
     const appendDecodedOutput = (target: 'stdout' | 'stderr', text: string): void => {
@@ -323,9 +358,6 @@ export function runBoundedProcess(
       if (termination === undefined) {
         finish('completed', exitCode, signal);
         return;
-      }
-      if (needsTreeKill && treeKill === undefined) {
-        treeKill = killWindowsProcessTree(proc.pid);
       }
       finishAfterTreeKill(exitCode, signal);
     });

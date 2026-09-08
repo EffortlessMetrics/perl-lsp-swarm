@@ -558,6 +558,32 @@ describe('bounded prove process execution', () => {
     expect(result.diagnostic).toContain('cancelled');
   }, 30_000);
 
+  test('reports Windows tree-cleanup failure and does not retry after close', async () => {
+    if (process.platform !== 'win32') {
+      return;
+    }
+
+    const controller = new AbortController();
+    let cleanupCalls = 0;
+    const resultPromise = runBoundedProcess(process.execPath, ['-e', 'setTimeout(() => {}, 50)'], {
+      shell: false,
+      signal: controller.signal,
+      timeoutMs: 5_000,
+      maxOutputBytes: 32,
+      terminationGraceMs: 25,
+      killProcessTree: async () => {
+        cleanupCalls += 1;
+        return { ok: false, diagnostic: 'injected tree cleanup failure' };
+      },
+    });
+    controller.abort();
+
+    const result = await resultPromise;
+    expect(result.outcome).toBe('termination_failed');
+    expect(result.diagnostic).toContain('injected tree cleanup failure');
+    expect(cleanupCalls).toBe(1);
+  }, 30_000);
+
   test('terminates a direct Windows parent and its started child', async () => {
     if (process.platform !== 'win32') {
       return;
