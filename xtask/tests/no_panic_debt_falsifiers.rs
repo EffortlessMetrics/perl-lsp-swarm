@@ -628,6 +628,93 @@ pub mod nested {
 }
 
 #[test]
+fn parent_directory_path_attr_joins_the_cargo_identity() {
+    let temp = tempfile::tempdir().expect("temp");
+    write_policy(temp.path());
+    write_package(
+        temp.path(),
+        "demo",
+        r#"
+pub mod twin;
+
+pub fn prod() -> Option<u8> { Some(1) }
+"#,
+        &[("via_parent.rs", "#[path = \"../src/twin.rs\"]\nmod twin;\n")],
+    );
+    fs::write(
+        temp.path().join("crates/demo/src/twin.rs"),
+        "#[cfg(test)]\nmod tests {\n    #[test]\n    fn unit() { let _ = Some(1).unwrap(); }\n}\n",
+    )
+    .expect("twin");
+
+    let inventory = inventory_at(temp.path());
+    let twin_unwraps: Vec<_> = inventory
+        .rows
+        .iter()
+        .filter(|row| row.site_family == "unwrap" && row.path.contains("twin.rs"))
+        .collect();
+    assert_eq!(
+        twin_unwraps.len(),
+        1,
+        "#[path = \"../src/twin.rs\"] must not mint a second identity: {:?}",
+        twin_unwraps
+    );
+    assert_eq!(twin_unwraps[0].path, "crates/demo/src/twin.rs");
+    assert!(
+        inventory.population.files.iter().any(|file| file.path.ends_with("tests/via_parent.rs")),
+        "integration-test crate root omitted: {:?}",
+        inventory.population.files
+    );
+    assert!(
+        !inventory.instruments.iter().any(|instrument| {
+            instrument.subject.contains("tests/src/twin.rs")
+                || instrument.subject.contains("via_parent/../")
+        }),
+        "#[path] was resolved against the child-module directory: {:?}",
+        inventory.instruments
+    );
+    assert!(
+        !inventory.rows.iter().any(|row| row.path.contains("..")),
+        "row identity retained ..: {:?}",
+        inventory.rows
+    );
+    assert!(
+        !inventory.population.files.iter().any(|file| file.path.contains("..")),
+        "population retained ..: {:?}",
+        inventory.population.files
+    );
+}
+
+#[test]
+fn path_attr_escaping_the_repository_root_is_not_proven() {
+    let temp = tempfile::tempdir().expect("temp");
+    write_policy(temp.path());
+    write_package(
+        temp.path(),
+        "demo",
+        r#"
+#[cfg(test)]
+#[path = "../../../../../../../../../../outside.rs"]
+mod escaped;
+"#,
+        &[],
+    );
+    let inventory = inventory_at(temp.path());
+    assert!(
+        inventory.instruments.iter().any(|instrument| {
+            instrument.kind == "module_path" && instrument.status == InstrumentStatus::NotProven
+        }),
+        "escaping #[path] must be not_proven, not a ../ identity: {:?}",
+        inventory.instruments
+    );
+    assert!(
+        !inventory.rows.iter().any(|row| row.path.contains("..")),
+        "escaping #[path] minted a ../ row: {:?}",
+        inventory.rows
+    );
+}
+
+#[test]
 fn missing_cfg_test_path_module_is_not_proven() {
     let temp = tempfile::tempdir().expect("temp");
     write_policy(temp.path());

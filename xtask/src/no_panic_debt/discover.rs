@@ -63,7 +63,18 @@ pub(crate) fn scan(
         if !scanned_extra.insert(path.clone()) {
             continue;
         }
-        let relative = normalize_path(&path, root);
+        let relative = match super::repo_relative_path(&path, root) {
+            Ok(relative) => relative,
+            Err(detail) => {
+                instruments.push(Instrument {
+                    kind: "module_path".to_string(),
+                    subject: path.to_string_lossy().replace('\\', "/"),
+                    status: InstrumentStatus::NotProven,
+                    detail,
+                });
+                continue;
+            }
+        };
         let already = topology.files.iter().find(|file| file.path == relative);
         if already.is_some_and(|file| is_complete_test_file(file.target_kind, &file.path)) {
             continue;
@@ -127,7 +138,10 @@ pub(crate) fn scan(
     Ok(Discovered { entrypoints, sites, declarations, instruments, covered_paths })
 }
 
-fn enqueue_module(pending: &mut BTreeMap<PathBuf, ModuleWork>, work: ModuleWork) {
+fn enqueue_module(pending: &mut BTreeMap<PathBuf, ModuleWork>, mut work: ModuleWork) {
+    if let Some(normalized) = super::lexically_normalize(&work.path) {
+        work.path = normalized;
+    }
     if let Some(existing) = pending.get_mut(&work.path) {
         existing.treat_as_test |= work.treat_as_test;
         return;
@@ -166,6 +180,7 @@ fn scan_file(
     let lines: Vec<&str> = source.lines().collect();
     let parsed = syn::parse_file(&source).map_err(|err| err.to_string())?;
     let complete = is_complete_test_file(file.target_kind, &file.path);
+    let file_dir = abs.parent().map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("."));
     let module_dir = rustc_child_module_dir(&abs);
     let file_cfg_test = attrs_have_cfg_test(&parsed.attrs);
     let mut visitor = DebtVisitor {
@@ -173,7 +188,9 @@ fn scan_file(
         lines: &lines,
         vocabulary,
         follow_modules,
+        file_dir,
         module_dir,
+        inside_inline: false,
         in_test: treat_as_test || complete || file_cfg_test,
         current_fn: "<file>".to_string(),
         current_feature: file.feature.clone(),
@@ -209,7 +226,12 @@ struct DebtVisitor<'a> {
     lines: &'a [&'a str],
     vocabulary: &'a Vocabulary,
     follow_modules: bool,
+    /// Directory containing the current source file. Non-inline `#[path]` is
+    /// relative to this, matching rustc (`tests/via_parent.rs` +
+    /// `#[path = "../src/twin.rs"]` → `tests/../src/twin.rs`).
+    file_dir: PathBuf,
     module_dir: PathBuf,
+    inside_inline: bool,
     in_test: bool,
     current_fn: String,
     current_feature: Option<String>,
@@ -328,6 +350,7 @@ impl<'ast> Visit<'ast> for DebtVisitor<'_> {
         let previous_feature = self.current_feature.clone();
         let previous_platform = self.current_platform.clone();
         let previous_dir = self.module_dir.clone();
+        let previous_inline = self.inside_inline;
         if cfg_test {
             self.in_test = true;
         }
@@ -335,9 +358,11 @@ impl<'ast> Visit<'ast> for DebtVisitor<'_> {
         self.current_platform = platform;
         self.push_attrs(&node.attrs, "module");
         if node.content.is_some() {
+            self.inside_inline = true;
             self.module_dir = inline_module_dir(&self.module_dir, node);
         } else if self.follow_modules
-            && let Some(path) = outline_module_path(&self.module_dir, node)
+            && let Some(path) =
+                outline_module_path(&self.file_dir, &self.module_dir, self.inside_inline, node)
         {
             self.external_modules.push(ModuleWork {
                 path,
@@ -356,6 +381,7 @@ impl<'ast> Visit<'ast> for DebtVisitor<'_> {
         self.current_feature = previous_feature;
         self.current_platform = previous_platform;
         self.module_dir = previous_dir;
+        self.inside_inline = previous_inline;
     }
 
     fn visit_item_fn(&mut self, node: &'ast ItemFn) {
@@ -774,7 +800,8 @@ fn path_attribute(node: &ItemMod) -> Option<String> {
 
 fn inline_module_dir(parent_dir: &Path, node: &ItemMod) -> PathBuf {
     if let Some(path) = path_attribute(node) {
-        let resolved = parent_dir.join(path);
+        let joined = parent_dir.join(path);
+        let resolved = super::lexically_normalize(&joined).unwrap_or(joined);
         if resolved.is_file() {
             return resolved
                 .parent()
@@ -786,9 +813,18 @@ fn inline_module_dir(parent_dir: &Path, node: &ItemMod) -> PathBuf {
     parent_dir.join(node.ident.to_string())
 }
 
-fn outline_module_path(module_dir: &Path, node: &ItemMod) -> Option<PathBuf> {
+fn outline_module_path(
+    file_dir: &Path,
+    module_dir: &Path,
+    inside_inline: bool,
+    node: &ItemMod,
+) -> Option<PathBuf> {
     if let Some(path) = path_attribute(node) {
-        return Some(module_dir.join(path));
+        // rustc: non-inline #[path] is relative to the source file's directory;
+        // inside an inline module it follows rustc_child_module_dir + inline components.
+        let base = if inside_inline { module_dir } else { file_dir };
+        let joined = base.join(path);
+        return Some(super::lexically_normalize(&joined).unwrap_or(joined));
     }
     let name = node.ident.to_string();
     let sibling = module_dir.join(format!("{name}.rs"));
@@ -835,15 +871,26 @@ mod tests {
             rustc_child_module_dir(Path::new("crates/demo/src/foo/mod.rs")),
             PathBuf::from("crates/demo/src/foo")
         );
+        let node: ItemMod =
+            syn::parse_str("#[path = \"../src/twin.rs\"]\nmod twin;").expect("path attr module");
+        let resolved = outline_module_path(
+            Path::new("/tmp/a/crates/demo/tests"),
+            Path::new("/tmp/a/crates/demo/tests/via_parent"),
+            false,
+            &node,
+        )
+        .expect("outline path");
+        assert_eq!(resolved, PathBuf::from("/tmp/a/crates/demo/src/twin.rs"));
     }
 
     #[test]
     fn enqueue_module_or_treat_as_test_and_keeps_first_identity() {
         let mut pending = BTreeMap::new();
         enqueue_module(&mut pending, module_work("src/foo.rs", false));
-        enqueue_module(&mut pending, module_work("src/foo.rs", true));
+        enqueue_module(&mut pending, module_work("src/bar/../foo.rs", true));
         let work = pending.get(&PathBuf::from("src/foo.rs"));
         assert!(work.is_some_and(|item| item.treat_as_test && item.package == "demo"));
+        assert_eq!(pending.len(), 1);
         let scanned = ScannedFile {
             entrypoints: Vec::new(),
             sites: Vec::new(),

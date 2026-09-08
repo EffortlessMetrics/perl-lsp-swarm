@@ -22,7 +22,7 @@ pub use projection::{canonical_json, render_human, semantic_delta};
 use color_eyre::eyre::{Result, WrapErr, eyre};
 use std::fs;
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 /// Default machine artifact path relative to the repository root.
 pub const DEFAULT_JSON_PATH: &str = "target/policy/test_panic_family_debt.v1.json";
@@ -161,8 +161,47 @@ pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
     Sha256::digest(bytes).iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
+/// Collapse `.` / `..` without touching the filesystem.
+///
+/// Returns `None` when a `..` would escape past the path's own prefix or root.
+pub(crate) fn lexically_normalize(path: &Path) -> Option<PathBuf> {
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => match out.components().next_back() {
+                Some(Component::Normal(_)) => {
+                    out.pop();
+                }
+                _ => return None,
+            },
+            component => out.push(component.as_os_str()),
+        }
+    }
+    Some(out)
+}
+
+/// Repository-relative slash path. `..` components are collapsed so
+/// `#[path = "../src/foo.rs"]` joins the same identity as Cargo's `src/foo.rs`.
+///
+/// Paths that escape `root` after collapse are an error; callers must not mint a
+/// second `../` identity.
+pub(crate) fn repo_relative_path(path: &Path, root: &Path) -> Result<String, String> {
+    let normalized = lexically_normalize(path)
+        .ok_or_else(|| format!("{} escapes its prefix via ..", path.display()))?;
+    let stripped = normalized
+        .strip_prefix(root)
+        .map_err(|_| format!("{} is not under {}", normalized.display(), root.display()))?;
+    if stripped.components().any(|component| matches!(component, Component::ParentDir)) {
+        return Err(format!("{} retains .. after lexical collapse", path.display()));
+    }
+    Ok(stripped.to_string_lossy().replace('\\', "/"))
+}
+
 pub(crate) fn normalize_path(path: &Path, root: &Path) -> String {
-    path.strip_prefix(root).unwrap_or(path).to_string_lossy().replace('\\', "/")
+    repo_relative_path(path, root).unwrap_or_else(|_| {
+        path.strip_prefix(root).unwrap_or(path).to_string_lossy().replace('\\', "/")
+    })
 }
 
 pub(crate) fn read_to_string(path: &Path) -> Result<String> {
@@ -180,6 +219,12 @@ mod tests {
         assert_eq!(DEFAULT_MARKDOWN_PATH, "target/policy/test_panic_family_debt.v1.md");
         assert!(request.registry_path().ends_with("ci/panic_test_identities.json"));
         assert_eq!(normalize_path(Path::new("/tmp/a/b.rs"), Path::new("/tmp/a")), "b.rs");
+        assert_eq!(
+            normalize_path(Path::new("/tmp/a/tests/../src/foo.rs"), Path::new("/tmp/a")),
+            "src/foo.rs"
+        );
+        assert!(repo_relative_path(Path::new("/tmp/outside.rs"), Path::new("/tmp/a")).is_err());
+        assert!(lexically_normalize(Path::new("../outside.rs")).is_none());
         assert_eq!(sha256_hex(b"abc").len(), 64);
     }
 }
