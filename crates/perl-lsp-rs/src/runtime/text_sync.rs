@@ -87,6 +87,27 @@ impl LspServer {
         params: Option<Value>,
         cancellation_token: Option<Arc<AtomicBool>>,
     ) -> Result<(), JsonRpcError> {
+        let metadata_uri = Self::text_document_uri_of(params.as_ref());
+        let result = self.handle_did_open_with_cancellation_inner(params, cancellation_token);
+        if let Some(uri) = metadata_uri.filter(|_| result.is_ok()) {
+            self.refresh_metadata_for_document_uri(&uri);
+        }
+        result
+    }
+
+    /// The `textDocument.uri` of a lifecycle notification, if present.
+    ///
+    /// Read before the params are consumed so the metadata refresh can run
+    /// *after* the change is committed and no document lock is held.
+    fn text_document_uri_of(params: Option<&Value>) -> Option<String> {
+        params?.pointer("/textDocument/uri")?.as_str().map(str::to_string)
+    }
+
+    fn handle_did_open_with_cancellation_inner(
+        &self,
+        params: Option<Value>,
+        cancellation_token: Option<Arc<AtomicBool>>,
+    ) -> Result<(), JsonRpcError> {
         if let Some(params) = params {
             // Sink-owned admission (#8895): this operation turns URIs into
             // paths and stores buffers, so it owns URI policy. The check runs
@@ -589,7 +610,12 @@ impl LspServer {
         params: Option<Value>,
         cancellation_token: Option<Arc<AtomicBool>>,
     ) -> Result<(), JsonRpcError> {
-        self.handle_did_change_with_version_policy(params, cancellation_token, false)
+        let metadata_uri = Self::text_document_uri_of(params.as_ref());
+        let result = self.handle_did_change_with_version_policy(params, cancellation_token, false);
+        if let Some(uri) = metadata_uri.filter(|_| result.is_ok()) {
+            self.refresh_metadata_for_document_uri(&uri);
+        }
+        result
     }
 
     /// Reconcile `didSave.text` through the normal full-document lifecycle.

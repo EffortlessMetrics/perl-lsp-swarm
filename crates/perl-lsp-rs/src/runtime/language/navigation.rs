@@ -2407,7 +2407,10 @@ impl LspServer {
             return None;
         };
         let def_location = workspace_index.semantic_anchor_wire_location(candidate.anchor_id)?;
-        let location: lsp_types::Location = def_location.into();
+        // An unconvertible URI yields no definition rather than a fabricated one:
+        // this exact path claims source-backed exactness, which a substituted
+        // resource cannot support.
+        let location = lsp_types::Location::try_from(def_location).ok()?;
         serde_json::to_value(location).ok()
     }
 
