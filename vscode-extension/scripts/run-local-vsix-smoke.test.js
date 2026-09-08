@@ -164,6 +164,47 @@ void test('does not turn missing or failed Test Explorer children into a pass', 
   }
 });
 
+void test(
+  'classifies Test Explorer exits from the synthesized child identity, not ambient parent identity',
+  { skip: process.platform !== 'win32' },
+  () => {
+    const receiptsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-test-explorer-child-env-'));
+    const names = [
+      'PERL_LSP_CANDIDATE_ID',
+      'PERL_LSP_ARTIFACT_SET_ID',
+      'PERL_LSP_CURRENT_SOURCE_SHA',
+      'PERL_LSP_CANDIDATE_ARTIFACT_MANIFEST',
+      'PERL_LSP_SMOKE_RECEIPTS_DIR',
+    ];
+    const previous = Object.fromEntries(names.map((name) => [name, process.env[name]]));
+    try {
+      process.env.PERL_LSP_CANDIDATE_ID = 'ambient-candidate';
+      process.env.PERL_LSP_ARTIFACT_SET_ID = 'ambient-artifacts';
+      process.env.PERL_LSP_CURRENT_SOURCE_SHA = 'a'.repeat(40);
+      process.env.PERL_LSP_CANDIDATE_ARTIFACT_MANIFEST = '{}';
+      process.env.PERL_LSP_SMOKE_RECEIPTS_DIR = receiptsDir;
+      const result = runTestExplorerJourneyStage(
+        {},
+        'b'.repeat(40),
+        'candidate.vsix',
+        'c'.repeat(64),
+        (_env) => ({ phase: 'child', result: { status: 2 } }),
+      );
+      assert.deepEqual(result, {
+        status: 'not_proven',
+        exit_code: 2,
+        reason: 'candidate_bound_platform_unavailable',
+      });
+    } finally {
+      for (const name of names) {
+        if (previous[name] === undefined) delete process.env[name];
+        else process.env[name] = previous[name];
+      }
+      fs.rmSync(receiptsDir, { recursive: true, force: true });
+    }
+  },
+);
+
 void test('classifies unavailable Test Explorer host resolution as not-proven', () => {
   const receiptsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-test-explorer-host-'));
   const previousReceiptsDir = process.env.PERL_LSP_SMOKE_RECEIPTS_DIR;
@@ -964,7 +1005,7 @@ void test('a typed unsupported-platform child exit stays not_proven without a re
     const result = interpretBehavioralSmokeExit({
       status: 2,
       candidateBound: true,
-      platform: 'win32',
+      platform: 'darwin',
       receiptsRoot: receiptRoot,
       exists: () => false,
     });
@@ -973,6 +1014,31 @@ void test('a typed unsupported-platform child exit stays not_proven without a re
   } finally {
     fs.rmSync(receiptRoot, { recursive: true, force: true });
   }
+});
+
+void test('a partial Windows candidate-bound exit 2 remains not proven', () => {
+  const result = interpretBehavioralSmokeExit({
+    status: 2,
+    candidateBound: true,
+    platform: 'win32',
+    receiptsRoot: fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-windows-candidate-exit-')),
+  });
+  assert.equal(result.status, 'not_proven');
+  assert.equal(result.reason, 'candidate_bound_platform_unavailable');
+});
+
+void test('a complete Windows candidate-bound exit 2 remains a product failure', () => {
+  const result = interpretBehavioralSmokeExit({
+    status: 2,
+    candidateBound: true,
+    completeCandidateIdentity: true,
+    platform: 'win32',
+    receiptsRoot: fs.mkdtempSync(
+      path.join(os.tmpdir(), 'perl-lsp-windows-complete-candidate-exit-'),
+    ),
+  });
+  assert.equal(result.status, 'failed');
+  assert.equal(result.reason, 'published_extension_smoke_failed');
 });
 
 void test('the typed unsupported-platform exit is failure outside its bound platform case', () => {

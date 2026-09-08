@@ -112,29 +112,33 @@ void test('scheduled unbound Marketplace smoke remains allowed', () => {
   );
 });
 
-void test('candidate-bound installed acceptance refuses non-Linux platform binding', () => {
-  assert.throws(
-    () => assertCandidateBoundPlatform('windows', true),
-    /restricted to Linux.*windows bundled-server digest binding/,
-  );
-  assert.doesNotThrow(() => assertCandidateBoundPlatform('windows', false));
+void test('candidate-bound installed acceptance admits Linux and Windows bindings', () => {
+  assert.doesNotThrow(() => assertCandidateBoundPlatform('win32', true, true));
   assert.doesNotThrow(() => assertCandidateBoundPlatform('linux', true));
+  assert.doesNotThrow(() => assertCandidateBoundPlatform('win32', false));
 });
 
-void test('unsupported candidate-bound platform throws the typed boundary error', () => {
+void test('partial Windows candidate identity remains not proven', () => {
   assert.throws(
     () => assertCandidateBoundPlatform('win32', true),
-    /restricted to Linux.*win32 bundled-server digest binding/,
+    /requires candidate ID, artifact-set ID, frozen product SHA, and artifact manifest/,
   );
 });
 
-void test('the published-smoke child reserves exit 2 before host or receipt work', () => {
+void test('unsupported candidate-bound platform still throws the typed boundary error', () => {
+  assert.throws(
+    () => assertCandidateBoundPlatform('darwin', true),
+    /supported only on Linux and Windows.*darwin bundled-server digest binding/,
+  );
+});
+
+void test('the published-smoke child reserves exit 2 before host or receipt work on unsupported platforms', () => {
   const receiptRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'perl lsp-platform-child-'));
-  const preloadPath = path.join(receiptRoot, 'force-windows-platform.cjs');
+  const preloadPath = path.join(receiptRoot, 'force-darwin-platform.cjs');
   try {
     fs.writeFileSync(
       preloadPath,
-      "Object.defineProperty(process, 'platform', { value: 'win32' });\n" +
+      "Object.defineProperty(process, 'platform', { value: 'darwin' });\n" +
         "Object.defineProperty(process, 'arch', { value: 'x64' });\n",
     );
     const result = spawnSync(
@@ -157,20 +161,20 @@ void test('the published-smoke child reserves exit 2 before host or receipt work
       throw new Error(`unsupported-platform child failed to spawn: ${result.error.message}`);
     }
     assert.equal(result.status, 2);
-    assert.match(result.stderr, /restricted to Linux/);
+    assert.match(result.stderr, /supported only on Linux and Windows/);
   } finally {
     fs.rmSync(receiptRoot, { recursive: true, force: true });
   }
 });
 
-void test('the compiled child reserves exit 2 with a file receipt root before filesystem work', () => {
+void test('the compiled child reserves exit 2 with a file receipt root on unsupported platforms', () => {
   const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-platform-unwritable-'));
-  const preloadPath = path.join(fixtureRoot, 'force-windows-platform.cjs');
+  const preloadPath = path.join(fixtureRoot, 'force-darwin-platform.cjs');
   const receiptsRoot = path.join(fixtureRoot, 'receipts-root-file');
   try {
     fs.writeFileSync(
       preloadPath,
-      "Object.defineProperty(process, 'platform', { value: 'win32' });\n",
+      "Object.defineProperty(process, 'platform', { value: 'darwin' });\n",
     );
     fs.writeFileSync(receiptsRoot, 'this path is intentionally a file');
     const result = spawnSync(
@@ -193,7 +197,7 @@ void test('the compiled child reserves exit 2 with a file receipt root before fi
       throw new Error(`unwritable-root child failed to spawn: ${result.error.message}`);
     }
     assert.equal(result.status, 2);
-    assert.match(result.stderr, /restricted to Linux/);
+    assert.match(result.stderr, /supported only on Linux and Windows/);
 
     const { interpretBehavioralSmokeExit } = require('../../../scripts/run-local-vsix-smoke.js');
     const parent = interpretBehavioralSmokeExit({
