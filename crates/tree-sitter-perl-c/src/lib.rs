@@ -180,7 +180,9 @@ pub const INJECTIONS_QUERY: &str = include_str!("../queries/injections.scm");
 
 /// The vendored upstream `queries/highlights.scm` source.
 ///
-/// See [`INJECTIONS_QUERY`] for the embedding/provenance contract.
+/// See [`INJECTIONS_QUERY`] for the embedding/provenance contract. The full
+/// source is retained for snapshot comparison; it is not promised to compile
+/// until the vendored grammar and query snapshots are refreshed together.
 pub const HIGHLIGHTS_QUERY: &str = include_str!("../queries/highlights.scm");
 
 /// Compiles [`INJECTIONS_QUERY`] against the Perl language.
@@ -202,29 +204,6 @@ pub const HIGHLIGHTS_QUERY: &str = include_str!("../queries/highlights.scm");
 /// the compiled grammar (a snapshot consistency fault, not caller input).
 pub fn load_injections_query() -> Result<tree_sitter::Query, tree_sitter::QueryError> {
     load_query(INJECTIONS_QUERY)
-}
-
-/// Compiles [`HIGHLIGHTS_QUERY`] against the Perl language.
-///
-/// # Known snapshot delta
-///
-/// The upstream `highlights.scm` copied at snapshot time references newer
-/// grammar surface (`postfix_deref` literal-token children, `slices`
-/// `hashref:`/`arrayref:` fields) than the frozen `c-src/` parser validates,
-/// so compilation of the *full* file currently returns
-/// [`tree_sitter::QueryError`] (kind `Structure`, first offender
-/// `postfix_deref`). The embedded bytes are never patched silently; callers
-/// needing working highlight rules today can compile extracted fragments
-/// against [`language`] (the approach used by `tests/query_conformance.rs`).
-/// A `c-src/`/queries snapshot refresh that removes the delta turns the
-/// drift tripwire test green and unlocks this loader end-to-end.
-///
-/// # Errors
-///
-/// Returns [`tree_sitter::QueryError`] under the same conditions as
-/// [`load_injections_query`]; see the known snapshot delta above.
-pub fn load_highlights_query() -> Result<tree_sitter::Query, tree_sitter::QueryError> {
-    load_query(HIGHLIGHTS_QUERY)
 }
 
 fn load_query(source: &str) -> Result<tree_sitter::Query, tree_sitter::QueryError> {
@@ -763,7 +742,7 @@ mod tests {
     }
 
     #[test]
-    fn load_highlights_query_fails_closed_on_snapshot_drift()
+    fn highlights_query_snapshot_tripwire_fails_closed_on_snapshot_drift()
     -> Result<(), Box<dyn std::error::Error>> {
         // Tripwire: the upstream highlights.scm copied at snapshot time does
         // not fully validate against the frozen c-src/ parser (first
@@ -771,7 +750,7 @@ mod tests {
         // snapshot refresh resolves the delta, flip this test to the
         // positive-capture form used by the injections loader and record the
         // refreshed fingerprints in UPSTREAM_SNAPSHOT.md.
-        let Err(error) = load_highlights_query() else {
+        let Err(error) = Query::new(&language(), HIGHLIGHTS_QUERY) else {
             return Err(
                 "snapshot drift resolved: flip this tripwire to positive-capture assertions".into(),
             );
@@ -805,6 +784,16 @@ mod tests {
     #[test]
     fn parse_perl_summary_reports_clean_tree_facts() -> Result<(), Box<dyn std::error::Error>> {
         let summary = parse_perl_summary("my $x = 42;\n")?;
+        // Frozen parser shape, including anonymous nodes, is:
+        // source_file, expression_statement, assignment_expression,
+        // variable_declaration, my, scalar, $, varname, =, number, ;.
+        if summary.node_count() != 11 {
+            return Err(format!(
+                "expected 11 nodes in the fixed parse fixture, got {}",
+                summary.node_count()
+            )
+            .into());
+        }
         assert!(!summary.has_error());
         assert!(summary.node_count() > 1, "a source tree has more than its root node");
         assert_eq!(summary.tree().root_node().kind(), "source_file");

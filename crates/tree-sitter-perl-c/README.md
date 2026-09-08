@@ -111,6 +111,10 @@ match try_parse_perl_file("script.pl") {
 | `try_parse_perl_code(code)` | Typed parse API (`ParsePerlError`) for `&str` |
 | `try_parse_perl_file(path)` | Typed parse API (`ParsePerlError`) for file paths |
 | `ParsePerlError` | Distinguishes setup, parse-none, and IO failures |
+| `ParseResult` | Summary of a clean parse with a raw-tree escape hatch |
+| `parse_perl_summary(code)` / `try_parse_perl_summary(code)` | Boxed and typed summary APIs; malformed trees fail closed |
+| `INJECTIONS_QUERY` / `load_injections_query()` | Packaged injection query source and typed loader |
+| `HIGHLIGHTS_QUERY` | Packaged raw highlights snapshot for provenance and drift checks; full compilation awaits a joint grammar/query refresh |
 | `get_scanner_config()` | Returns `"c-scanner"` |
 
 ## Binaries

@@ -24,11 +24,12 @@ Breaking changes will follow semver.
 
 - The vendored `c-src/` is a periodic snapshot; it may lag behind upstream by
   one or two grammar releases. File an issue to request a snapshot update.
-- Query helpers are exposed (`INJECTIONS_QUERY`, `HIGHLIGHTS_QUERY`,
-  `load_injections_query`, `load_highlights_query`). The vendored
-  `highlights.scm` does not yet fully validate against the frozen `c-src/`
-  parser (it targets newer grammar surface); see `UPSTREAM_SNAPSHOT.md` and
-  the loader docs for the pinned delta.
+- The injection query helper is exposed (`INJECTIONS_QUERY`,
+  `load_injections_query`). The vendored `HIGHLIGHTS_QUERY` remains available
+  as a raw snapshot source, but it does not yet fully validate against the
+  frozen `c-src/` parser (it targets newer grammar surface); no compiling
+  highlights loader is promised until a joint snapshot refresh. See
+  `UPSTREAM_SNAPSHOT.md` and the API docs for the pinned delta.
 
 ## Snapshot Governance
 

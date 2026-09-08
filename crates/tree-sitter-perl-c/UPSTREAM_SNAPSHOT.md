@@ -49,10 +49,11 @@ semantics are unaffected; every other byte matches upstream.
   - vendored (normalized) SHA-256: `2414f4fe4ccb0f9fe3a55af265888320c1fdddd8522d48678754a8ee57a08a03`
   — **known snapshot delta:** targets newer grammar surface than the frozen
   `c-src/` parser (`postfix_deref` literal-token children at row 136 and
-  `slices` `hashref:`/`arrayref:` fields), so `load_highlights_query()`
-  returns a typed `tree_sitter::QueryError` (kind `Structure`) until the
-  next joint refresh. Do not patch the `.scm` in place; resolve through a
-  full snapshot refresh.
+  `slices` `hashref:`/`arrayref:` fields), so compiling the full source returns
+  a typed `tree_sitter::QueryError` (kind `Structure`) until the next joint
+  refresh. The raw constant is retained for provenance and drift checking;
+  no highlights loader is exposed while this mismatch remains. Do not patch
+  the `.scm` in place; resolve through a full snapshot refresh.
 
 > **Important:** This snapshot predates explicit provenance tracking in this
 > crate. During the next refresh, record the exact upstream commit SHA used to
@@ -123,9 +124,9 @@ semantics are unaffected; every other byte matches upstream.
    cp queries/highlights.scm /workspace/perl-lsp/crates/tree-sitter-perl-c/queries/
    ```
 
-   After a joint refresh, confirm both `load_injections_query()` and
-   `load_highlights_query()` compile cleanly and flip the drift tripwire test
-   (`load_highlights_query_fails_closed_on_snapshot_drift`) back to the
+   After a joint refresh, confirm both query sources compile cleanly and flip
+   the drift tripwire test
+   (`highlights_query_snapshot_tripwire_fails_closed_on_snapshot_drift`) back to the
    positive-capture assertions described in its comment.
 
 5. **Update this file**
