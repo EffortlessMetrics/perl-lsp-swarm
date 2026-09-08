@@ -1,0 +1,170 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://effortlessmetrics.dev/perl-lsp/schemas/feature_readiness_reviewer_packet.v1.schema.json",
+  "title": "feature_readiness_reviewer_packet.v1",
+  "description": "Feature-readiness train adversarial reviewer packet (FR-C05 #11286), generated from the same stable/current/candidate subject as the builder packet but emphasizing falsification rather than the builder narrative. Adapts the shared adversarial review-packet contract agent_review_packet.v1 (#10881); it is not a second review database.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema": { "const": "feature_readiness_reviewer_packet.v1" },
+    "review_id": { "type": "string", "pattern": "^frrvw_[0-9a-f]{16}$" },
+    "subject": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "node_id": { "type": "string", "minLength": 1 },
+        "issues": { "type": "array", "items": { "type": "integer" }, "minItems": 1 },
+        "role": { "$ref": "#/$defs/role" },
+        "profile": { "type": "string", "minLength": 1 },
+        "claim_ceiling_sentence": { "type": "string", "minLength": 1 }
+      },
+      "required": ["node_id", "issues", "role", "profile", "claim_ceiling_sentence"]
+    },
+    "builder_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "packet_id": { "type": "string", "pattern": "^frbld_[0-9a-f]{16}$" },
+        "digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+      },
+      "required": ["packet_id", "digest"]
+    },
+    "currentness": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "base_head": { "type": "string", "minLength": 1 },
+        "live_state": { "enum": ["unknown", "observed"] },
+        "invalidators": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+        "stale_rule": { "type": "string", "minLength": 1 }
+      },
+      "required": ["base_head", "live_state", "invalidators", "stale_rule"]
+    },
+    "lenses": {
+      "type": "array",
+      "minItems": 3,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "name": { "$ref": "#/$defs/review_lens" },
+          "applicable": { "type": "boolean" },
+          "reason": { "type": "string", "minLength": 1 },
+          "questions": { "type": "array", "items": { "type": "string", "minLength": 1 } }
+        },
+        "required": ["name", "applicable", "reason", "questions"]
+      }
+    },
+    "stage_falsification_examples": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "stage": { "$ref": "#/$defs/example_stage" },
+          "question": { "type": "string", "minLength": 1 }
+        },
+        "required": ["stage", "question"]
+      }
+    },
+    "negative_control_audit": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "subject": { "type": "string", "minLength": 1 },
+          "requirement": { "type": "string", "minLength": 1 }
+        },
+        "required": ["subject", "requirement"]
+      }
+    },
+    "old_path_audit": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "seam": { "type": "string", "minLength": 1 },
+          "terminal_disposition": { "$ref": "#/$defs/terminal_old_path_disposition" }
+        },
+        "required": ["seam", "terminal_disposition"]
+      }
+    },
+    "stop": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "reviewer_must_not": { "type": "array", "items": { "type": "string" }, "minItems": 1 }
+      },
+      "required": ["reviewer_must_not"]
+    }
+  },
+  "required": [
+    "schema",
+    "review_id",
+    "subject",
+    "builder_ref",
+    "currentness",
+    "lenses",
+    "stage_falsification_examples",
+    "negative_control_audit",
+    "old_path_audit",
+    "stop"
+  ],
+  "$defs": {
+    "role": {
+      "enum": [
+        "product_implementation",
+        "proof_only",
+        "installed_client_proof",
+        "research_decision",
+        "governance_support"
+      ]
+    },
+    "review_lens": {
+      "enum": [
+        "coherent_subject_currentness",
+        "semantic_authority",
+        "fallback_refusal_legitimate_empty_truth",
+        "unsafe_edit_complete_set_reauthorization",
+        "old_path_retirement",
+        "lifecycle_cleanup",
+        "isolation_boundaries",
+        "security_trust_boundary",
+        "artifact_completeness",
+        "stage_separation",
+        "public_api_claim_consistency"
+      ]
+    },
+    "example_stage": {
+      "enum": [
+        "parser_semantic_workspace_subject",
+        "instrument_failure_empty_success",
+        "old_path_still_live",
+        "cross_root_framework_client_platform",
+        "held_edit_across_movement",
+        "partial_result_disappearance",
+        "fixture_as_semantic_support",
+        "external_tool_presence_default",
+        "proof_repairs_product",
+        "artifact_stage_crosstalk",
+        "missing_required_artifact"
+      ]
+    },
+    "terminal_old_path_disposition": {
+      "enum": [
+        "none",
+        "removed",
+        "unreachable",
+        "forwarding_through_canonical_owner",
+        "bounded_compatibility",
+        "instrument_or_test_oracle_only",
+        "historical_generated_presentation_only",
+        "unexpected_duplicate_blocker"
+      ]
+    }
+  }
+}

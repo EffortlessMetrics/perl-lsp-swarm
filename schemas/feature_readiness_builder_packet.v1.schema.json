@@ -1,0 +1,473 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://effortlessmetrics.dev/perl-lsp/schemas/feature_readiness_builder_packet.v1.schema.json",
+  "title": "feature_readiness_builder_packet.v1",
+  "description": "Feature-readiness train builder packet (FR-C05 #11286). One deterministic, content-addressed model-neutral work contract for one feature-readiness node at its true role. Adapts the shared bounded builder-packet contract agent_implementation_packet.v1 (#10872); it is not a second generic prompt framework.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema": { "const": "feature_readiness_builder_packet.v1" },
+    "packet_id": { "type": "string", "pattern": "^frbld_[0-9a-f]{16}$" },
+    "repository": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "name": { "const": "EffortlessMetrics/perl-lsp-swarm" }
+      },
+      "required": ["name"]
+    },
+    "work": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "node_id": { "type": "string" },
+        "issues": { "type": "array", "items": { "type": "integer" }, "minItems": 1 },
+        "controller_issue": { "type": "integer" },
+        "domain": { "$ref": "#/$defs/domain" },
+        "role": { "$ref": "#/$defs/role" },
+        "disposition": { "$ref": "#/$defs/node_disposition" },
+        "profile": { "$ref": "#/$defs/profile" },
+        "objective_sentence": { "type": "string", "minLength": 1 },
+        "registry_scope": { "const": "representative_packet_fixtures" },
+        "registry_digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+      },
+      "required": [
+        "node_id",
+        "issues",
+        "domain",
+        "role",
+        "disposition",
+        "profile",
+        "objective_sentence",
+        "registry_scope",
+        "registry_digest"
+      ]
+    },
+    "claim_ceiling": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "establishes": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+        "cannot_establish": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+        "prerequisite_disposition": { "type": "string", "minLength": 1 },
+        "successors": { "type": "array", "items": { "type": "string" } },
+        "remaining_not_proven": { "type": "array", "items": { "type": "string" } },
+        "rollback_meaning": { "type": "string", "minLength": 1 }
+      },
+      "required": [
+        "establishes",
+        "cannot_establish",
+        "prerequisite_disposition",
+        "successors",
+        "remaining_not_proven",
+        "rollback_meaning"
+      ]
+    },
+    "planes": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "stable": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "status": { "const": "embedded_fixture_registry" },
+            "digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+            "full_dag_authority_issue": { "const": 11279 }
+          },
+          "required": ["status", "digest", "full_dag_authority_issue"]
+        },
+        "current_tree": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "status": { "enum": ["unavailable"] },
+            "owner_issue": { "const": 11280 }
+          },
+          "required": ["status", "owner_issue"]
+        },
+        "offline_readiness": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "status": { "enum": ["unavailable"] },
+            "owner_issue": { "const": 11281 }
+          },
+          "required": ["status", "owner_issue"]
+        },
+        "live": { "$ref": "#/$defs/live_plane" }
+      },
+      "required": ["stable", "current_tree", "offline_readiness", "live"]
+    },
+    "authorities": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "ref": { "type": "string", "minLength": 1 },
+          "subject": { "type": "string", "minLength": 1 },
+          "group": { "$ref": "#/$defs/authority_group" },
+          "note": { "type": "string" }
+        },
+        "required": ["ref", "subject", "group"]
+      }
+    },
+    "operations": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "feature": { "type": "string", "minLength": 1 },
+          "provider_or_client": { "type": "string", "minLength": 1 },
+          "source_subject": { "type": "string", "minLength": 1 },
+          "policy": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "semantic": { "type": "string", "minLength": 1 },
+              "currentness": { "type": "string", "minLength": 1 },
+              "fallback": { "type": "string", "minLength": 1 },
+              "refusal": { "type": "string", "minLength": 1 },
+              "legitimate_empty": { "type": "string", "minLength": 1 }
+            },
+            "required": ["semantic", "currentness", "fallback", "refusal", "legitimate_empty"]
+          },
+          "canonical_owner": { "type": "string", "minLength": 1 },
+          "old_path_disposition": { "type": "string", "minLength": 1 },
+          "proof_owner": { "type": "string", "minLength": 1 }
+        },
+        "required": [
+          "feature",
+          "provider_or_client",
+          "source_subject",
+          "policy",
+          "canonical_owner",
+          "old_path_disposition",
+          "proof_owner"
+        ]
+      }
+    },
+    "surfaces": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "allowed": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+        "forbidden": { "type": "array", "items": { "type": "string" }, "minItems": 1 }
+      },
+      "required": ["allowed", "forbidden"]
+    },
+    "artifacts": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "kind": { "type": "string", "minLength": 1 },
+          "owner": { "type": "string", "minLength": 1 },
+          "mode": { "$ref": "#/$defs/artifact_mode" },
+          "current_disposition": { "type": "string", "minLength": 1 },
+          "required_change_or_proof": { "type": "string", "minLength": 1 },
+          "check_command": { "type": "string", "minLength": 1 },
+          "review_lens": { "type": "string", "minLength": 1 },
+          "claim_impact": { "type": "string", "minLength": 1 }
+        },
+        "required": [
+          "id",
+          "kind",
+          "owner",
+          "mode",
+          "current_disposition",
+          "required_change_or_proof",
+          "check_command",
+          "review_lens",
+          "claim_impact"
+        ]
+      }
+    },
+    "durable_spec": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "disposition": { "$ref": "#/$defs/durable_spec_disposition" },
+        "owner": { "type": "string", "minLength": 1 },
+        "note": { "type": "string", "minLength": 1 }
+      },
+      "required": ["disposition", "owner", "note"]
+    },
+    "sequence": {
+      "type": "array",
+      "minItems": 3,
+      "items": { "$ref": "#/$defs/sequence_step" }
+    },
+    "proof": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "first_falsifier": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "description": { "type": "string", "minLength": 1 },
+            "expected_red_reason": { "type": "string", "minLength": 1 },
+            "canonical_owner": { "type": "string", "minLength": 1 }
+          },
+          "required": ["description", "expected_red_reason", "canonical_owner"]
+        },
+        "positive_discriminator": { "type": "string", "minLength": 1 },
+        "controls": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "class": { "$ref": "#/$defs/control_class" },
+              "subject": { "type": "string", "minLength": 1 }
+            },
+            "required": ["class", "subject"]
+          }
+        },
+        "commands": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "id": { "type": "string", "minLength": 1 },
+              "command": { "type": "string", "minLength": 1 },
+              "scope": { "type": "string", "minLength": 1 }
+            },
+            "required": ["id", "command", "scope"]
+          }
+        },
+        "instrument_failure_behavior": { "type": "string", "minLength": 1 }
+      },
+      "required": [
+        "first_falsifier",
+        "positive_discriminator",
+        "controls",
+        "commands",
+        "instrument_failure_behavior"
+      ]
+    },
+    "delivery": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "branch_suggestion": { "type": "string", "minLength": 1 },
+        "pr_title_suggestion": { "type": "string", "minLength": 1 },
+        "base_head": { "type": "string", "minLength": 1 },
+        "issues": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "controller": { "type": "integer" },
+            "dependencies": { "type": "array", "items": { "type": "integer" } },
+            "unblocks": { "type": "array", "items": { "type": "integer" } }
+          },
+          "required": ["controller", "dependencies", "unblocks"]
+        },
+        "changed_surfaces": { "type": "array", "items": { "type": "string" } },
+        "old_path_dispositions": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "seam": { "type": "string", "minLength": 1 },
+              "terminal_disposition": { "$ref": "#/$defs/terminal_old_path_disposition" }
+            },
+            "required": ["seam", "terminal_disposition"]
+          }
+        },
+        "limitations": { "type": "array", "items": { "type": "string" } },
+        "review_map": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+        "stop_before": { "type": "array", "items": { "type": "string" }, "minItems": 1 }
+      },
+      "required": [
+        "branch_suggestion",
+        "pr_title_suggestion",
+        "base_head",
+        "issues",
+        "changed_surfaces",
+        "old_path_dispositions",
+        "limitations",
+        "review_map",
+        "stop_before"
+      ]
+    },
+    "stop": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "conditions": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+        "forbidden_actions": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/forbidden_action" },
+          "minItems": 1
+        },
+        "handoff": { "type": "string", "minLength": 1 }
+      },
+      "required": ["conditions", "forbidden_actions", "handoff"]
+    }
+  },
+  "required": [
+    "schema",
+    "packet_id",
+    "repository",
+    "work",
+    "claim_ceiling",
+    "planes",
+    "authorities",
+    "operations",
+    "surfaces",
+    "artifacts",
+    "durable_spec",
+    "sequence",
+    "proof",
+    "delivery",
+    "stop"
+  ],
+  "$defs": {
+    "role": {
+      "enum": [
+        "product_implementation",
+        "proof_only",
+        "installed_client_proof",
+        "research_decision",
+        "governance_support"
+      ]
+    },
+    "node_disposition": { "enum": ["actionable", "deferred", "blocked_external_manual"] },
+    "profile": {
+      "enum": [
+        "core_semantic",
+        "optional_framework",
+        "installed_client",
+        "proof_only",
+        "governance",
+        "research",
+        "deferred"
+      ]
+    },
+    "domain": {
+      "enum": [
+        "imports",
+        "navigation",
+        "signature_help",
+        "semantic_tokens",
+        "critic",
+        "formatting",
+        "parser_research",
+        "vscode_client",
+        "distribution",
+        "support_registry",
+        "dap"
+      ]
+    },
+    "authority_group": {
+      "enum": [
+        "must_already_be_current",
+        "must_be_consumed_never_reimplemented",
+        "owned_by_this_node",
+        "candidate_may_be_mined",
+        "consumer_fan_in_after_pr",
+        "external_manual_owner",
+        "explicitly_not_owned"
+      ]
+    },
+    "artifact_mode": {
+      "enum": ["create", "update", "consume", "prove_unchanged", "not_applicable"]
+    },
+    "durable_spec_disposition": {
+      "enum": [
+        "EXISTING_NORMATIVE_CONTRACT_SUFFICIENT",
+        "COMPILE_DURABLE_DELTA_INTO_EXISTING_OWNER",
+        "ISSUE_PLAN_SUFFICIENT_FOR_THIS_LEAF",
+        "RETURN_TO_ISSUE_FOR_UNSETTLED_DECISION",
+        "NOT_PROVEN"
+      ]
+    },
+    "sequence_step": {
+      "enum": [
+        "verify_packet_and_writer_state",
+        "read_named_authorities",
+        "materialize_first_falsifier",
+        "implement_proposition",
+        "execute_proof_protocol",
+        "execute_research_protocol",
+        "execute_registry_mapping",
+        "record_disposition_no_execution",
+        "retire_old_paths",
+        "update_required_artifacts",
+        "run_focused_proof",
+        "run_negative_mutations",
+        "inspect_diff_against_surfaces",
+        "produce_review_forward_handoff",
+        "stop_and_transfer_adjacent_findings"
+      ]
+    },
+    "control_class": {
+      "enum": [
+        "wrong_subject",
+        "stale",
+        "false_empty",
+        "unsafe_edit",
+        "duplicate_authority",
+        "near_miss_framework",
+        "near_miss_client",
+        "near_miss_platform",
+        "near_miss_artifact_stage",
+        "mutation",
+        "fixture_as_semantic_support",
+        "unexpected_duplicate_blocker"
+      ]
+    },
+    "terminal_old_path_disposition": {
+      "enum": [
+        "none",
+        "removed",
+        "unreachable",
+        "forwarding_through_canonical_owner",
+        "bounded_compatibility",
+        "instrument_or_test_oracle_only",
+        "historical_generated_presentation_only",
+        "unexpected_duplicate_blocker"
+      ]
+    },
+    "forbidden_action": {
+      "enum": [
+        "model_invocation",
+        "scheduler_or_lease_mutation",
+        "merge_without_current_substantive_review",
+        "release_publication_or_support_state_change",
+        "product_repair_from_non_product_role",
+        "generic_prompt_framework_creation",
+        "spec_planning_tree_creation"
+      ]
+    },
+    "live_plane": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "state": { "enum": ["unknown", "observed"] },
+        "snapshot_digest": { "type": ["string", "null"], "pattern": "^[0-9a-f]{64}$" },
+        "head_sha": { "type": ["string", "null"], "pattern": "^[0-9a-f]{40,64}$" },
+        "candidate_branch": { "type": ["string", "null"] },
+        "writer_active": { "type": ["boolean", "null"] },
+        "required_action": { "$ref": "#/$defs/live_action" },
+        "preflight_required": { "type": "boolean" }
+      },
+      "required": ["state", "snapshot_digest", "head_sha", "candidate_branch", "writer_active", "required_action", "preflight_required"]
+    },
+    "live_action": { "enum": ["none", "resume", "repair", "restack", "review"] }
+  }
+}
