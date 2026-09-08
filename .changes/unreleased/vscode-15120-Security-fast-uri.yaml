@@ -4,6 +4,6 @@ kind: Security
 body: Updated the development-time fast-uri override used through Ajv to the patched 3.1.6 release, removing the four known host-normalization advisories from the extension dependency lock.
 time: 2026-09-08T01:30:00Z
 custom:
-  PR: "15119"
+  PR: "15120"
   Slug: fast-uri-host-normalization-advisories
   Breaking: "no"
