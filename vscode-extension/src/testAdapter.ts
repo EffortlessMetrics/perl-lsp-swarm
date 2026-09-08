@@ -409,10 +409,10 @@ function configuredProveLimits(resource?: vscode.Uri): ProveExecutionLimits {
 /**
  * Resolve the `prove` command for the current platform.
  *
- * On Windows, invoke the matching Perl interpreter directly and use prove's
- * documented stdin-list form. This avoids the `.bat` shim and its Win32
- * filename globbing path while preserving the Perl installation selected by
- * PATH. On other platforms, derive `prove` from the Perl directory when
+ * On Windows, invoke the matching Perl interpreter directly against its
+ * adjacent `prove.bat` with the documented stdin-list form. This preserves
+ * the Perl installation selected by PATH and avoids resolving a different
+ * `prove` from PATH. On other platforms, derive `prove` from the Perl directory when
  * possible.
  *
  * Returns `{ command, args, shell }` for use with `child_process.spawn`.
@@ -445,8 +445,8 @@ export function resolveProveCommand(extraArgs: string[]): {
     // perl not on PATH or execFileSync failed — report an actionable resolution error.
   }
 
-  if (isWindows && perlPath) {
-    return { command: perlPath, args: ['-S', 'prove', ...extraArgs], shell: false };
+  if (isWindows && perlPath && provePath) {
+    return { command: perlPath, args: ['-x', provePath, ...extraArgs], shell: false };
   }
 
   if (provePath) {
@@ -459,7 +459,7 @@ export function resolveProveCommand(extraArgs: string[]): {
       args: [],
       shell: false,
       error:
-        'Perl was not found on PATH; install Perl with prove or configure a supported Perl runtime.',
+        'A matching Perl/prove installation was not found on PATH; install Perl with prove or configure a supported Perl runtime.',
     };
   }
 

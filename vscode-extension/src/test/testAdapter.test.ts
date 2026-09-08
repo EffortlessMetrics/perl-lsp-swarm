@@ -206,7 +206,7 @@ describe('bounded prove process execution', () => {
       expect(run.errored.mock.calls.map((call: unknown[]) => call[0])).toEqual([fileItem, child]);
       expect(run.passed).not.toHaveBeenCalled();
       expect(run.failed).not.toHaveBeenCalled();
-      expect(run.errored.mock.calls[0][1].message).toContain('Perl was not found on PATH');
+      expect(run.errored.mock.calls[0][1].message).toContain('matching Perl/prove installation');
     } finally {
       childProcess.execFileSync = original;
       adapter.dispose();
@@ -231,6 +231,8 @@ describe('bounded prove process execution', () => {
     try {
       const resolved = resolveProveCommand(['-v', '--nocolor', '-']);
       expect(resolved.command.toLowerCase()).not.toMatch(/prove\.bat$/);
+      expect(resolved.args[0]).toBe('-x');
+      expect(resolved.args[1]?.toLowerCase()).toMatch(/prove\.bat$/);
       expect(resolved.args).toContain('-');
       const result = await runBoundedProcess(resolved.command, resolved.args, {
         cwd: root,
@@ -263,7 +265,27 @@ describe('bounded prove process execution', () => {
     try {
       const resolved = resolveProveCommand(['-v', '--nocolor', '-']);
       expect(resolved).toMatchObject({ command: '', args: [], shell: false });
-      expect(resolved.error).toContain('Perl was not found on PATH');
+      expect(resolved.error).toContain('matching Perl/prove installation');
+    } finally {
+      childProcess.execFileSync = original;
+    }
+  });
+
+  test('fails closed when Perl resolves but its adjacent prove shim is missing', () => {
+    if (process.platform !== 'win32') {
+      return;
+    }
+
+    const childProcess = require('child_process') as {
+      execFileSync: (...args: unknown[]) => Buffer | string;
+    };
+    const original = childProcess.execFileSync;
+    childProcess.execFileSync = () => process.execPath;
+    try {
+      const resolved = resolveProveCommand(['-v', '--nocolor', '-']);
+      expect(resolved.command).toBe('');
+      expect(resolved.args).toEqual([]);
+      expect(resolved.error).toContain('matching Perl/prove installation');
     } finally {
       childProcess.execFileSync = original;
     }
@@ -724,12 +746,15 @@ describe('bounded prove process execution', () => {
         terminationGraceMs: 25,
       });
 
-      for (let attempt = 0; attempt < 20; attempt += 1) {
+      const startupDeadline = Date.now() + 5_000;
+      while (Date.now() < startupDeadline) {
         if (fs.existsSync(parentMarker) && fs.existsSync(childMarker)) {
           break;
         }
         await new Promise((resolve) => setTimeout(resolve, 25));
       }
+      expect(fs.existsSync(parentMarker)).toBe(true);
+      expect(fs.existsSync(childMarker)).toBe(true);
       const result = await resultPromise;
       expect(result.outcome).toBe('timed_out');
       expect(fs.readFileSync(parentMarker, 'utf8')).toBe('started');
