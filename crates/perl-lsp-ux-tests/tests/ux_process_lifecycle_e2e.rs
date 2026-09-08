@@ -147,7 +147,7 @@ impl LifecycleProcess {
         }
     }
 
-    fn strict_response(&self, id: u64, timeout: Duration) -> Result<Value> {
+    fn strict_response(&self, id: &Value, timeout: Duration) -> Result<Value> {
         let deadline = Instant::now() + timeout;
         loop {
             let remaining = deadline.saturating_duration_since(Instant::now());
@@ -163,7 +163,7 @@ impl LifecycleProcess {
                 Ok(Ok(message))
                     if message.get("result").is_some() || message.get("error").is_some() =>
                 {
-                    let observed_id = message.get("id").and_then(Value::as_u64);
+                    let observed_id = message.get("id");
                     ensure!(
                         observed_id == Some(id),
                         "unexpected terminal response while waiting for id={id}: {message:#}"
@@ -542,12 +542,13 @@ fn definition_after_readiness(
 ) -> Result<()> {
     for attempt in 0_u64..8 {
         let request_id = first_request_id + attempt;
+        let request_id_value = json!(request_id);
         server.send(&json!({
-            "jsonrpc": "2.0", "id": request_id, "method": "textDocument/definition", "params": {
+            "jsonrpc": "2.0", "id": request_id_value.clone(), "method": "textDocument/definition", "params": {
                 "textDocument": { "uri": client_uri }, "position": { "line": 2, "character": 10 }
             }
         }))?;
-        let response = server.strict_response(request_id, REQUEST_TIMEOUT)?;
+        let response = server.strict_response(&request_id_value, REQUEST_TIMEOUT)?;
         // Retry only missing or superseded facts; a stale successful location must fail.
         let transient = response.pointer("/error/code").and_then(Value::as_i64) == Some(-32800)
             || response.pointer("/result").and_then(Value::as_array).is_some_and(Vec::is_empty);
@@ -628,6 +629,27 @@ fn stdio_navigation_matches_exact_request_and_current_edit() -> Result<()> {
     )?;
     definition_after_readiness(&mut server, &client_uri, &module_uri, 1, 2)?;
 
+    let wrong_string_definition_id = json!("definition-π-wrong");
+    server.send(&json!({
+        "jsonrpc": "2.0", "id": wrong_string_definition_id.clone(), "method": "textDocument/definition", "params": {
+            "textDocument": { "uri": client_uri }, "position": { "line": 2, "character": 10 }
+        }
+    }))?;
+    let wrong_id = json!(123);
+    let mismatch = server.strict_response(&wrong_id, REQUEST_TIMEOUT);
+    ensure!(
+        mismatch.is_err(),
+        "strict response matching must reject a numeric ID for the string-ID response"
+    );
+    let string_definition_id = json!("definition-π");
+    server.send(&json!({
+        "jsonrpc": "2.0", "id": string_definition_id.clone(), "method": "textDocument/definition", "params": {
+            "textDocument": { "uri": client_uri }, "position": { "line": 2, "character": 10 }
+        }
+    }))?;
+    let string_definition = server.strict_response(&string_definition_id, REQUEST_TIMEOUT)?;
+    exact_definition(&string_definition, &module_uri, 1)?;
+
     server.send(&json!({
         "jsonrpc": "2.0", "method": "textDocument/didChange", "params": {
             "textDocument": { "uri": module_uri, "version": 2 },
@@ -643,8 +665,9 @@ fn stdio_navigation_matches_exact_request_and_current_edit() -> Result<()> {
     let expected_current_line = 2;
     definition_after_readiness(&mut server, &client_uri, &module_uri, expected_current_line, 10)?;
 
-    server.send(&json!({ "jsonrpc": "2.0", "id": 100, "method": "shutdown", "params": null }))?;
-    let shutdown = server.strict_response(100, REQUEST_TIMEOUT)?;
+    let shutdown_id = json!(100);
+    server.send(&json!({ "jsonrpc": "2.0", "id": shutdown_id.clone(), "method": "shutdown", "params": null }))?;
+    let shutdown = server.strict_response(&shutdown_id, REQUEST_TIMEOUT)?;
     ensure!(shutdown.get("error").is_none_or(Value::is_null), "shutdown failed: {shutdown:#}");
     server.send(&json!({ "jsonrpc": "2.0", "method": "exit", "params": null }))?;
     let status = server.wait_for_exit(EXIT_TIMEOUT)?;
