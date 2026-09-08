@@ -598,9 +598,9 @@ const WORKSPACE_RUST_VERSION_LABEL: &str = "1.95";
 const WORKSPACE_RUST_VERSION_MAJOR: u64 = 1;
 const WORKSPACE_RUST_VERSION_MINOR: u64 = 95;
 
-/// Channel pinned by rust-toolchain.toml. Rustup shims honor it; distro
-/// shims (apt cargo) ignore it, which is exactly the edition-2024 failure
-/// this arm exists to surface (#12595).
+/// Channel pinned by rust-toolchain.toml. A rustup shim can select it, but
+/// resolved path provenance alone cannot prove that cwd and overrides did
+/// select it. Distro cargo bypasses that selection mechanism (#12595).
 const TOOLCHAIN_CHANNEL_LABEL: &str = "1.95.0";
 
 /// Prerequisite found and healthy for its role.
