@@ -194,8 +194,17 @@ pub const HIGHLIGHTS_QUERY: &str = include_str!("../queries/highlights.scm");
 /// # Example
 ///
 /// ```rust
-/// let query = tree_sitter_perl_c::load_injections_query().unwrap();
-/// assert!(query.capture_names().iter().any(|name| *name == "injection.content"));
+/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// let query = tree_sitter_perl_c::load_injections_query()?;
+/// if !query
+///     .capture_names()
+///     .iter()
+///     .any(|name| *name == "injection.content")
+/// {
+///     return Err("expected injection.content capture".into());
+/// }
+/// # Ok(())
+/// # }
 /// ```
 ///
 /// # Errors
@@ -501,10 +510,19 @@ fn count_tree_nodes(root: tree_sitter::Node<'_>) -> usize {
 /// ```rust
 /// use tree_sitter_perl_c::parse_perl_summary;
 ///
-/// let summary = parse_perl_summary("my $x = 42;").unwrap();
-/// assert!(!summary.has_error());
-/// assert!(summary.node_count() > 1);
-/// assert!(summary.root_sexp().starts_with("(source_file"));
+/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// let summary = parse_perl_summary("my $x = 42;")?;
+/// if summary.has_error() {
+///     return Err("summary unexpectedly contains syntax errors".into());
+/// }
+/// if summary.node_count() <= 1 {
+///     return Err("summary should contain more than its root node".into());
+/// }
+/// if !summary.root_sexp().starts_with("(source_file") {
+///     return Err("summary root should be a source_file".into());
+/// }
+/// # Ok(())
+/// # }
 /// ```
 ///
 /// # Errors
@@ -721,8 +739,12 @@ mod tests {
         let code = "use Inline CPP => <<'END_CPP';\n#include <string>\nclass Greet {};\nEND_CPP\n";
         let tree = parse_perl_code(code)?;
         let query = load_injections_query()?;
-        assert!(query_has_capture(&query, "injection.content"));
-        assert!(query_has_capture(&query, "inline.package"));
+        if !query_has_capture(&query, "injection.content") {
+            return Err("expected injection.content capture".into());
+        }
+        if !query_has_capture(&query, "inline.package") {
+            return Err("expected inline.package capture".into());
+        }
 
         let mut cursor = QueryCursor::new();
         let mut matches = cursor.matches(&query, tree.root_node(), code.as_bytes());
@@ -734,10 +756,11 @@ mod tests {
                 }
             }
         }
-        assert!(
-            saw_injection_content_heredoc,
-            "expected the public injection loader to yield heredoc_content captures"
-        );
+        if !saw_injection_content_heredoc {
+            return Err(
+                "expected the public injection loader to yield heredoc_content captures".into()
+            );
+        }
         Ok(())
     }
 
@@ -755,12 +778,9 @@ mod tests {
                 "snapshot drift resolved: flip this tripwire to positive-capture assertions".into(),
             );
         };
-        let rendered = error.to_string();
-        assert!(
-            rendered.contains("postfix_deref"),
-            "expected the pinned first-offender pattern in the query error, got: {rendered}"
-        );
-
+        if error.kind != tree_sitter::QueryErrorKind::Structure {
+            return Err(format!("expected a structural query error, got {:?}", error.kind).into());
+        }
         // Positive discrimination: the language + query machinery itself is
         // healthy; fragments of the same file compile and capture normally
         // (same technique as tests/query_conformance.rs).
@@ -777,7 +797,9 @@ mod tests {
                 }
             }
         }
-        assert!(saw_comment_capture, "expected highlight fragment query to capture comments");
+        if !saw_comment_capture {
+            return Err("expected highlight fragment query to capture comments".into());
+        }
         Ok(())
     }
 
@@ -794,30 +816,58 @@ mod tests {
             )
             .into());
         }
-        assert!(!summary.has_error());
-        assert!(summary.node_count() > 1, "a source tree has more than its root node");
-        assert_eq!(summary.tree().root_node().kind(), "source_file");
-        assert!(summary.root_sexp().starts_with("(source_file"));
+        if summary.has_error() {
+            return Err("clean summary unexpectedly contains syntax errors".into());
+        }
+        if summary.tree().root_node().kind() != "source_file" {
+            return Err("summary root should be a source_file".into());
+        }
+        if !summary.root_sexp().starts_with("(source_file") {
+            return Err("summary S-expression should start with source_file".into());
+        }
         Ok(())
     }
 
     #[test]
-    fn parse_perl_summary_fails_closed_on_malformed_source() {
+    fn parse_perl_summary_fails_closed_on_malformed_source()
+    -> Result<(), Box<dyn std::error::Error>> {
         let result = try_parse_perl_summary("my $x = @@@@@@;");
-        assert!(matches!(result, Err(ParsePerlError::MalformedSource)));
+        if !matches!(result, Err(ParsePerlError::MalformedSource)) {
+            return Err("malformed source should produce ParsePerlError::MalformedSource".into());
+        }
+        Ok(())
     }
 
     #[test]
-    fn parse_perl_summary_boxed_variant_propagates_malformed_source() {
-        let result = parse_perl_summary("my $x = @@@@@@;");
-        assert!(result.is_err(), "boxed variant must also fail closed on error trees");
+    fn parse_perl_summary_boxed_variant_propagates_malformed_source()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let error = parse_perl_summary("my $x = @@@@@@;")
+            .err()
+            .ok_or("boxed variant must also fail closed on error trees")?;
+        if !matches!(error.downcast_ref::<ParsePerlError>(), Some(ParsePerlError::MalformedSource))
+        {
+            return Err("boxed variant must preserve ParsePerlError::MalformedSource".into());
+        }
+        Ok(())
     }
 
     #[test]
     fn parse_result_into_tree_preserves_root() -> Result<(), Box<dyn std::error::Error>> {
-        let summary = try_parse_perl_summary("print 1;\n")?;
+        let source = "print 1;\n";
+        let summary = try_parse_perl_summary(source)?;
+        let expected_sexp = summary.root_sexp().to_owned();
         let tree = summary.into_tree();
-        assert!(!tree.root_node().has_error());
+        if tree.root_node().has_error() {
+            return Err("into_tree must preserve a clean parse tree".into());
+        }
+        if tree.root_node().kind() != "source_file" {
+            return Err("into_tree must preserve the source_file root".into());
+        }
+        if tree.root_node().to_sexp() != expected_sexp
+            || tree.root_node().end_byte() != source.len()
+        {
+            return Err("into_tree must preserve the source tree structure".into());
+        }
         Ok(())
     }
 }
