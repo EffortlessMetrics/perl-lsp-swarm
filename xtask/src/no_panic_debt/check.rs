@@ -74,6 +74,22 @@ pub fn check_inventory(request: CheckRequest<'_>) -> Result<CheckResult> {
                 break;
             }
         }
+        let baseline_by_id: std::collections::BTreeMap<_, _> =
+            baseline.rows.iter().map(|row| (row.identity_key(), row)).collect();
+        for row in &request.current.rows {
+            if row.status != DebtStatus::Unowned {
+                continue;
+            }
+            if let Some(previous) = baseline_by_id.get(&row.identity_key())
+                && previous.status != DebtStatus::Unowned
+            {
+                findings.push(
+                    "existing baseline identity became unowned; ownership loss is not identity addition"
+                        .to_string(),
+                );
+                break;
+            }
+        }
     }
 
     Ok(CheckResult { ok: findings.is_empty(), findings })
@@ -200,7 +216,8 @@ fn load_inventory(path: &Path) -> Result<Inventory> {
 #[cfg(test)]
 mod tests {
     use super::super::model::{
-        DerivedCounts, Instrument, InstrumentStatus, Inventory, PRODUCER, Population, SCHEMA,
+        DebtRow, DebtStatus, DerivedCounts, Instrument, InstrumentStatus, Inventory, PRODUCER,
+        Population, SCHEMA, TargetKind,
     };
     use super::super::projection::canonical_json;
     use super::{CheckRequest, check_inventory};
@@ -275,6 +292,51 @@ mod tests {
         .err()
         .ok_or_else(|| color_eyre::eyre::eyre!("unsupported schema must error"))?;
         assert!(err.to_string().contains("unsupported schema"), "schema error omitted: {err}");
+        Ok(())
+    }
+
+    fn site_row(status: DebtStatus, owner: &str) -> DebtRow {
+        DebtRow {
+            kind: "site".to_string(),
+            package: "demo".to_string(),
+            target_kind: TargetKind::IntegrationTest,
+            path: "tests/owned.rs".to_string(),
+            entrypoint: "owned".to_string(),
+            site_family: "unwrap".to_string(),
+            source_identity: "unwrap()".to_string(),
+            selector_identity: "invocation:same:occurrence:1".to_string(),
+            declaration_identity: String::new(),
+            declaration_scope: String::new(),
+            registry_relation: "none".to_string(),
+            owner: owner.to_string(),
+            status,
+            proof_requirement: "source-scan".to_string(),
+            limitations: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn owned_identity_becoming_unowned_fails_baseline() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let mut baseline = inventory_with_topology_gap();
+        baseline.rows.push(site_row(DebtStatus::DirectDebt, "#13397"));
+        baseline.counts.rows = 1;
+        let mut current = baseline.clone();
+        current.rows[0] = site_row(DebtStatus::Unowned, "");
+        let path = dir.path().join("baseline.json");
+        fs::write(&path, canonical_json(&baseline)?)?;
+        let result = check_inventory(CheckRequest {
+            root: dir.path(),
+            current: &current,
+            artifact: None,
+            baseline: Some(&path),
+        })?;
+        assert!(!result.ok, "unowned transition passed: {:?}", result.findings);
+        assert!(
+            result.findings.iter().any(|finding| finding.contains("became unowned")),
+            "ownership-loss finding omitted: {:?}",
+            result.findings
+        );
         Ok(())
     }
 }

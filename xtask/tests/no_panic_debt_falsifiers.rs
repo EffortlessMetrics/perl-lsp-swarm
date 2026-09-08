@@ -461,6 +461,79 @@ fn regeneration_does_not_absorb_new_unowned_into_baseline() {
 }
 
 #[test]
+fn owned_site_becoming_unowned_is_not_absorbed_into_baseline() {
+    let temp = tempfile::tempdir().expect("temp");
+    write_policy(temp.path());
+    write_empty_registry(temp.path());
+    write_package(
+        temp.path(),
+        "demo",
+        "pub fn ready() -> Option<u8> { Some(1) }\n",
+        &[(
+            "owned.rs",
+            r##"#[allow(clippy::unwrap_used, reason = "#13397")]
+#[test]
+fn owned() {
+    let _ = Some(1).unwrap();
+}
+"##,
+        )],
+    );
+    let baseline_inv = inventory_at(temp.path());
+    let owned = baseline_inv
+        .rows
+        .iter()
+        .find(|row| row.kind == "site" && row.entrypoint == "owned" && row.site_family == "unwrap")
+        .expect("owned unwrap");
+    assert_eq!(owned.status, DebtStatus::DirectDebt, "owned fixture: {owned:?}");
+    let identity = (
+        owned.kind.clone(),
+        owned.path.clone(),
+        owned.entrypoint.clone(),
+        owned.site_family.clone(),
+        owned.selector_identity.clone(),
+    );
+    let baseline_path = temp.path().join("baseline.json");
+    fs::write(&baseline_path, canonical_json(&baseline_inv).expect("json")).expect("baseline");
+    fs::write(
+        temp.path().join("crates/demo/tests/owned.rs"),
+        "#[test]\nfn owned() {\n    let _ = Some(1).unwrap();\n}\n",
+    )
+    .expect("drop owner");
+    let current = inventory_at(temp.path());
+    let unowned = current
+        .rows
+        .iter()
+        .find(|row| row.kind == "site" && row.entrypoint == "owned" && row.site_family == "unwrap")
+        .expect("unowned unwrap");
+    assert_eq!(unowned.status, DebtStatus::Unowned, "owner removal: {unowned:?}");
+    assert_eq!(
+        (
+            unowned.kind.clone(),
+            unowned.path.clone(),
+            unowned.entrypoint.clone(),
+            unowned.site_family.clone(),
+            unowned.selector_identity.clone(),
+        ),
+        identity,
+        "invocation identity drifted: {unowned:?}"
+    );
+    let result = check_inventory(xtask::no_panic_debt::CheckRequest {
+        root: temp.path(),
+        current: &current,
+        artifact: None,
+        baseline: Some(&baseline_path),
+    })
+    .expect("check");
+    assert!(!result.ok, "owned-to-unowned was absorbed: {:?}", result.findings);
+    assert!(
+        result.findings.iter().any(|finding| finding.contains("became unowned")),
+        "ownership-loss finding omitted: {:?}",
+        result.findings
+    );
+}
+
+#[test]
 fn issue_closure_does_not_convert_current_source_to_converted_absent() {
     let temp = fixture_root();
     fs::write(
