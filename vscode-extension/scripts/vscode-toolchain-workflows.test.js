@@ -69,18 +69,32 @@ void test('managed Windows smoke packages and runs the current Test Explorer VSI
   assert.notEqual(packageIndex, -1);
   assert.notEqual(explorerIndex, -1);
   assert.ok(packageIndex < explorerIndex);
-  assert.ok(source.indexOf("if: runner.os == 'Windows'", packageIndex) > packageIndex);
-  assert.ok(
-    source.indexOf('PERL_LSP_PUBLISHED_EXTENSION_SOURCE: vsix', explorerIndex) > explorerIndex,
+  const nextStepIndex = source.indexOf('\n      - name:', explorerIndex + 1);
+  const packageStep = source.slice(packageIndex, explorerIndex);
+  const explorerStep = source.slice(
+    explorerIndex,
+    nextStepIndex === -1 ? source.length : nextStepIndex,
   );
-  assert.ok(source.indexOf('GITHUB_TOKEN: ${{ github.token }}', explorerIndex) > explorerIndex);
-  assert.ok(source.indexOf("PERL_LSP_TEST_EXPLORER_SMOKE: '1'", explorerIndex) > explorerIndex);
-  assert.ok(source.indexOf('$vsix.Count -ne 1', explorerIndex) > explorerIndex);
+  assert.match(packageStep, /if: runner\.os == 'Windows'/);
+  assert.match(packageStep, /run: npm run package/);
+  assert.match(explorerStep, /if: runner\.os == 'Windows'/);
+  assert.match(explorerStep, /GITHUB_TOKEN: \$\{\{ github\.token \}\}/);
+  assert.match(explorerStep, /PERL_LSP_PUBLISHED_EXTENSION_SOURCE: vsix/);
+  assert.match(explorerStep, /PERL_LSP_TEST_EXPLORER_SMOKE: '1'/);
+  assert.match(explorerStep, /\$vsix\.Count -ne 1/);
+  assert.match(explorerStep, /\$env:PERL_LSP_PUBLISHED_VSIX_PATH = \$vsix\[0\]\.FullName/);
+  assert.match(explorerStep, /npm run test:published/);
+  const vsixSelection = explorerStep.indexOf('$vsix = @(');
+  const vsixAssignment = explorerStep.indexOf('$env:PERL_LSP_PUBLISHED_VSIX_PATH =');
+  const publishedTest = explorerStep.indexOf('npm run test:published');
   assert.ok(
-    source.indexOf('$env:PERL_LSP_PUBLISHED_VSIX_PATH = $vsix[0].FullName', explorerIndex) >
-      explorerIndex,
+    vsixSelection < vsixAssignment,
+    'the published VSIX must be selected before binding its path',
   );
-  assert.ok(source.indexOf('npm run test:published', explorerIndex) > explorerIndex);
+  assert.ok(
+    vsixAssignment < publishedTest,
+    'the selected VSIX path must be bound before the published test',
+  );
 });
 
 void test('managed-binary smoke proves TypeScript authority before compilation on every OS', () => {
