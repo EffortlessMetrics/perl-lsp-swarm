@@ -681,8 +681,11 @@ const FIX_PERL_MISSING_UNIX: &str =
 /// Marker walked up from the working directory to locate the checkout.
 const REPO_ENTRYPOINT_MARKER: &str = ".github/run_all_tests.sh";
 /// Repository files whose execution assumes a POSIX bash (#12595).
-const REPO_BASH_ENTRYPOINTS: [&str; 3] =
-    [".github/run_all_tests.sh", "scripts", "scripts/cargo-safe"];
+const REPO_BASH_ENTRYPOINTS: [(&str, RepoEntrypointKind); 3] = [
+    (".github/run_all_tests.sh", RepoEntrypointKind::File),
+    ("scripts", RepoEntrypointKind::Directory),
+    ("scripts/cargo-safe", RepoEntrypointKind::Directory),
+];
 /// Documented-prerequisite line demanded by #12595.
 const BASH_PREREQUISITE_LINE: &str = "Repository conformance entrypoints (.github/run_all_tests.sh, scripts/*.sh, scripts/cargo-safe) assume a POSIX bash; Git Bash ships with Git for Windows.";
 
@@ -755,6 +758,12 @@ struct PerlIdentityReport {
     other_identities: Vec<&'static str>,
     error: Option<String>,
     fix: Option<String>,
+}
+
+#[derive(Clone, Copy)]
+enum RepoEntrypointKind {
+    File,
+    Directory,
 }
 
 fn build_dev_environment_report() -> DevEnvironmentReport {
@@ -882,12 +891,17 @@ fn build_repo_entrypoints_report() -> RepoEntrypointsReport {
         Some(root) => RepoEntrypointsReport {
             marker: REPO_ENTRYPOINT_MARKER,
             located: true,
-            complete: Some(
-                REPO_BASH_ENTRYPOINTS.iter().all(|relative| root.join(relative).exists()),
-            ),
+            complete: Some(repo_entrypoints_complete(&root)),
             note: format!("repository root: {}", root.display()),
         },
     }
+}
+
+fn repo_entrypoints_complete(root: &Path) -> bool {
+    REPO_BASH_ENTRYPOINTS.iter().all(|(relative, kind)| match kind {
+        RepoEntrypointKind::File => root.join(relative).is_file(),
+        RepoEntrypointKind::Directory => root.join(relative).is_dir(),
+    })
 }
 
 /// Walk up from `start` until the repository entrypoint marker appears, with
@@ -1585,7 +1599,7 @@ fn git_bash_flavor_report_for_path(bash_exe: Option<PathBuf>) -> BashFlavorRepor
             status: STATUS_MISSING,
             bash_path: Some(bash_exe.display().to_string()),
             runs_repo_entrypoints: None,
-            note: "PATH bash.exe resolves to an unrecognized POSIX provider; repository                    .sh entrypoints are not proven to run under it".to_string(),
+            note: "PATH bash.exe resolves to an unrecognized POSIX provider; repository .sh entrypoints are not proven to run under it".to_string(),
             fix: Some(FIX_BASH_INSTALL_GIT_WINDOWS.to_string()),
         },
     }
@@ -3195,6 +3209,33 @@ mod tests {
             locate_repo_root(&marker_free.path().join("missing-root")).is_none(),
             "a checkout without the marker must fail closed"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn repo_entrypoints_require_expected_file_and_directory_kinds() -> TestResult {
+        let valid = tempfile::tempdir()?;
+        std::fs::create_dir_all(valid.path().join(".github"))?;
+        std::fs::write(valid.path().join(REPO_ENTRYPOINT_MARKER), "#!/bin/sh\n")?;
+        std::fs::create_dir_all(valid.path().join("scripts/cargo-safe"))?;
+        assert!(repo_entrypoints_complete(valid.path()));
+
+        let marker_directory = tempfile::tempdir()?;
+        std::fs::create_dir_all(marker_directory.path().join(REPO_ENTRYPOINT_MARKER))?;
+        std::fs::create_dir_all(marker_directory.path().join("scripts/cargo-safe"))?;
+        assert!(!repo_entrypoints_complete(marker_directory.path()));
+
+        let scripts_file = tempfile::tempdir()?;
+        std::fs::create_dir_all(scripts_file.path().join(".github"))?;
+        std::fs::write(scripts_file.path().join(REPO_ENTRYPOINT_MARKER), "#!/bin/sh\n")?;
+        std::fs::write(scripts_file.path().join("scripts"), "not a directory")?;
+        assert!(!repo_entrypoints_complete(scripts_file.path()));
+
+        let missing = tempfile::tempdir()?;
+        std::fs::create_dir_all(missing.path().join(".github"))?;
+        std::fs::write(missing.path().join(REPO_ENTRYPOINT_MARKER), "#!/bin/sh\n")?;
+        std::fs::create_dir_all(missing.path().join("scripts"))?;
+        assert!(!repo_entrypoints_complete(missing.path()));
         Ok(())
     }
 
