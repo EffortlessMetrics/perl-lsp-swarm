@@ -779,6 +779,51 @@ mod tests {
         fs::write(path, body).expect("write config");
     }
 
+    /// Encode a filesystem path as a TOML string value.
+    ///
+    /// Windows `TempDir` paths contain `\` (`D:\a\_temp\...`). Those bytes are
+    /// invalid escapes in a TOML basic string (`\a`, `\_`), which is why the
+    /// absolute-wrapper tests failed on windows-2025 when they interpolated
+    /// `path.display()` into `"..."`. Literal strings do not interpret
+    /// backslashes. Paths that cannot live in a literal (`'` or a newline)
+    /// fall back to an escaped basic string.
+    fn toml_path_value(path: &Path) -> String {
+        let text = path.to_string_lossy();
+        if text.contains('\'') || text.contains('\n') || text.contains('\r') {
+            let mut escaped = String::with_capacity(text.len() + 2);
+            escaped.push('"');
+            for ch in text.chars() {
+                match ch {
+                    '"' => escaped.push_str("\\\""),
+                    '\\' => escaped.push_str("\\\\"),
+                    '\n' => escaped.push_str("\\n"),
+                    '\r' => escaped.push_str("\\r"),
+                    '\t' => escaped.push_str("\\t"),
+                    c => escaped.push(c),
+                }
+            }
+            escaped.push('"');
+            escaped
+        } else {
+            format!("'{text}'")
+        }
+    }
+
+    fn rustc_wrapper_config(wrapper: &Path) -> String {
+        format!("[build]\nrustc-wrapper = {}\n", toml_path_value(wrapper))
+    }
+
+    fn write_rustc_wrapper(path: &Path, wrapper: &Path) {
+        write_config(path, &rustc_wrapper_config(wrapper));
+    }
+
+    /// Host-absolute synthetic home. `cargo_home_dir_on` uses `Path::is_absolute`,
+    /// so POSIX-shaped values such as `/unix/home` are relative on Windows and
+    /// resolve to `Unknown` when `cwd` is `None`.
+    fn host_abs_home(label: &str) -> PathBuf {
+        std::env::temp_dir().join("xtask-cargo-rustc-wrappers").join(label)
+    }
+
     fn isolated_env(cargo_home: &Path) -> EnvSnapshot {
         let mut env = EnvSnapshot::default();
         env.insert(CARGO_HOME_ENV, cargo_home.to_string_lossy());
@@ -1080,10 +1125,7 @@ mod tests {
     fn absolute_wrapper_paths_do_not_enter_the_durable_projection() {
         let (root, home, ws, _) = fixture();
         let abs = ws.join("tools").join("sccache");
-        write_config(
-            &ws.join(".cargo/config.toml"),
-            &format!("[build]\nrustc-wrapper = \"{}\"\n", abs.display()),
-        );
+        write_rustc_wrapper(&ws.join(".cargo/config.toml"), &abs);
         let resolved = resolve_tree(&ws, root.path(), &home);
         let durable = resolved.rustc_wrapper().expect("wrapper");
         assert!(!durable.starts_with('/'), "{durable}");
@@ -1183,15 +1225,9 @@ mod tests {
         let (root, home, ws, _) = fixture();
         let first_path = root.path().join("usr").join("bin").join("sccache");
         let second_path = root.path().join("opt").join("sccache");
-        write_config(
-            &ws.join(".cargo/config.toml"),
-            &format!("[build]\nrustc-wrapper = \"{}\"\n", first_path.display()),
-        );
+        write_rustc_wrapper(&ws.join(".cargo/config.toml"), &first_path);
         let first = resolve_tree(&ws, root.path(), &home);
-        write_config(
-            &ws.join(".cargo/config.toml"),
-            &format!("[build]\nrustc-wrapper = \"{}\"\n", second_path.display()),
-        );
+        write_rustc_wrapper(&ws.join(".cargo/config.toml"), &second_path);
         let second = resolve_tree(&ws, root.path(), &home);
         let first_durable = first.rustc_wrapper().expect("first");
         let second_durable = second.rustc_wrapper().expect("second");
@@ -1278,10 +1314,7 @@ mod tests {
     fn dotted_absolute_in_workspace_path_is_still_workspace_relative() {
         let (root, home, ws, _) = fixture();
         let dotted = ws.join("tools").join(".").join("sccache");
-        write_config(
-            &ws.join(".cargo/config.toml"),
-            &format!("[build]\nrustc-wrapper = \"{}\"\n", dotted.display()),
-        );
+        write_rustc_wrapper(&ws.join(".cargo/config.toml"), &dotted);
         let resolved = resolve_tree(&ws, root.path(), &home);
         assert_eq!(resolved.rustc_wrapper(), Some("tools/sccache"));
         assert!(resolved.is_complete());
@@ -1291,10 +1324,7 @@ mod tests {
     fn parent_segments_that_escape_the_workspace_are_hashed_not_relative() {
         let (root, home, ws, _) = fixture();
         let escaped = ws.join("nested").join("..").join("..").join("outside").join("sccache");
-        write_config(
-            &ws.join(".cargo/config.toml"),
-            &format!("[build]\nrustc-wrapper = \"{}\"\n", escaped.display()),
-        );
+        write_rustc_wrapper(&ws.join(".cargo/config.toml"), &escaped);
         let resolved = resolve_tree(&ws, root.path(), &home);
         let durable = resolved.rustc_wrapper().expect("wrapper");
         assert!(durable.starts_with("sccache@sha256:"), "{durable}");
@@ -1305,32 +1335,87 @@ mod tests {
 
     #[test]
     fn unix_home_discovery_ignores_userprofile() {
+        let windows_home = host_abs_home("windows-home");
+        let unix_home = host_abs_home("unix-home");
         let mut env = EnvSnapshot::default();
-        env.insert(USERPROFILE_ENV, "/windows/home");
+        env.insert(USERPROFILE_ENV, windows_home.to_string_lossy());
         assert!(matches!(cargo_home_dir_on(&env, None, false), CargoHome::Unknown));
 
-        env.insert(HOME_ENV, "/unix/home");
+        env.insert(HOME_ENV, unix_home.to_string_lossy());
         match cargo_home_dir_on(&env, None, false) {
-            CargoHome::Path(path) => assert_eq!(path, PathBuf::from("/unix/home/.cargo")),
-            CargoHome::Unknown => panic!("HOME should win on Unix"),
+            CargoHome::Path(path) => assert_eq!(path, unix_home.join(".cargo")),
+            CargoHome::Unknown => panic!("HOME should win when windows=false"),
         }
     }
 
     #[test]
     fn windows_home_discovery_prefers_userprofile() {
+        let windows_home = host_abs_home("windows-home");
+        let unix_home = host_abs_home("unix-home");
         let mut both = EnvSnapshot::default();
-        both.insert(HOME_ENV, "/unix/home");
-        both.insert(USERPROFILE_ENV, "/windows/home");
+        both.insert(HOME_ENV, unix_home.to_string_lossy());
+        both.insert(USERPROFILE_ENV, windows_home.to_string_lossy());
         match cargo_home_dir_on(&both, None, true) {
-            CargoHome::Path(path) => assert_eq!(path, PathBuf::from("/windows/home/.cargo")),
-            CargoHome::Unknown => panic!("USERPROFILE should win on Windows"),
+            CargoHome::Path(path) => assert_eq!(path, windows_home.join(".cargo")),
+            CargoHome::Unknown => panic!("USERPROFILE should win when windows=true"),
         }
 
         let mut home_only = EnvSnapshot::default();
-        home_only.insert(HOME_ENV, "/unix/home");
+        home_only.insert(HOME_ENV, unix_home.to_string_lossy());
         match cargo_home_dir_on(&home_only, None, true) {
-            CargoHome::Path(path) => assert_eq!(path, PathBuf::from("/unix/home/.cargo")),
+            CargoHome::Path(path) => assert_eq!(path, unix_home.join(".cargo")),
             CargoHome::Unknown => panic!("HOME is the Windows fallback"),
+        }
+    }
+
+    #[test]
+    fn toml_basic_string_rejects_github_actions_windows_tempdir_escapes() {
+        let body = "[build]\nrustc-wrapper = \"D:\\a\\_temp\\sccache\"\n";
+        assert!(
+            matches!(parse_config(body), Err(CARGO_CONFIG_WRAPPER_NOT_RESOLVED)),
+            "backslash escapes in a TOML basic string must be unresolvable"
+        );
+    }
+
+    #[test]
+    fn toml_path_value_round_trips_windows_tempdir_shape() {
+        let path = Path::new(r"D:\a\_temp\sccache");
+        let parsed = parse_config(&rustc_wrapper_config(path))
+            .unwrap_or_else(|err| panic!("literal path must parse: {err}"));
+        assert_eq!(parsed.rustc_wrapper.as_deref(), Some(r"D:\a\_temp\sccache"));
+        assert!(parsed.rustc_workspace_wrapper.is_none());
+        assert!(!parsed.include_present);
+    }
+
+    #[test]
+    fn toml_path_value_escapes_apostrophe_paths_as_basic_strings() {
+        let path = Path::new(r"D:\Users\O'Brien\sccache");
+        let encoded = toml_path_value(path);
+        assert!(encoded.starts_with('"'), "apostrophe cannot live in a literal: {encoded}");
+        assert!(
+            encoded.contains("\\\\"),
+            "backslashes must be escaped in a basic string: {encoded}"
+        );
+        let parsed = parse_config(&format!("[build]\nrustc-wrapper = {encoded}\n"))
+            .unwrap_or_else(|err| panic!("apostrophe path must parse: {err}"));
+        assert_eq!(parsed.rustc_wrapper.as_deref(), Some(r"D:\Users\O'Brien\sccache"));
+    }
+
+    #[test]
+    fn posix_shaped_home_without_cwd_follows_host_absolute_semantics() {
+        let mut env = EnvSnapshot::default();
+        env.insert(HOME_ENV, "/unix/home");
+        let result = cargo_home_dir_on(&env, None, false);
+        if Path::new("/unix/home").is_absolute() {
+            match result {
+                CargoHome::Path(path) => assert_eq!(path, PathBuf::from("/unix/home/.cargo")),
+                CargoHome::Unknown => panic!("POSIX absolute HOME should resolve on this host"),
+            }
+        } else {
+            assert!(
+                matches!(result, CargoHome::Unknown),
+                "POSIX-shaped HOME is host-relative with no cwd"
+            );
         }
     }
 

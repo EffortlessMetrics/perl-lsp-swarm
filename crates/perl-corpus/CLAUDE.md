@@ -26,6 +26,7 @@ cargo test -p perl-corpus
 cargo test -p perl-corpus --features ci-fast
 cargo test -p perl-corpus --test root_path_authority
 cargo test -p perl-corpus --test distribution_contract
+cargo test -p perl-corpus --test gold_repository_contract
 cargo clippy -p perl-corpus --all-targets -- -D warnings -A missing_docs
 cargo package -p perl-corpus --allow-dirty --list
 cargo run -p perl-corpus -- --help
@@ -122,4 +123,38 @@ different contracts.
   exists.
 - Packaging the complete repository corpus, or making a consumer distribution
   self-contained, requires a separate explicit and reviewed contract.
+
+### Gold member byte fidelity
+
+`test_corpus/gold` assertions are `(line, character)` positions, so member bytes are
+part of the contract, not an implementation detail.
+
+- `byte_fidelity::ByteFidelity::classify` reads raw bytes only. It never decodes,
+  normalizes, or replaces; invalid UTF-8 is reported with the offset of the first
+  undecodable byte. Newline classification reuses `loading`'s `NewlineStyle` and its
+  detector rather than restating them: `\r` and `\n` cannot occur inside a multi-byte
+  UTF-8 sequence, so that detector is valid on raw bytes and needs no second
+  implementation for the pre-decode case.
+- `tests/gold_repository_contract.rs` classifies every gold member and requires the
+  default class: LF terminators, a final newline, no BOM, valid UTF-8. That check runs
+  before any decoded (`String`) view, so an undecodable member is named by path and
+  offset instead of surfacing as an anonymous decode error downstream.
+- A member that intentionally carries other bytes needs both halves or it is rejected:
+  an entry in `BYTE_EXACT_DEVIATIONS` declaring its exact expected class, and a literal
+  `-text` line for that path in the repository-root `.gitattributes`. The declaration
+  without the git protection is not enough — the repository default is `* text eol=lf`,
+  so unprotected bytes are git's to rewrite.
+- Protection is resolved by `git check-attr text -- <path>`, not by reading
+  `.gitattributes`. Git owns attribute resolution: rules are last-match-wins across the
+  whole file, patterns use git's glob language, macros such as `binary` expand to
+  `-text`, and per-directory attribute files participate. A reader that collected
+  `-text` lines would call a path protected even after a later rule restored `text`, and
+  so would admit a member git is free to rewrite. An unavailable or unparseable answer
+  is an instrument failure, never a silent pass.
+- An existing `$GIT_DIR/info/attributes` blocks a protection verdict outright. That file
+  is untracked, clone-local, and overrides the committed `.gitattributes`, and no
+  `git check-attr` invocation excludes it — `--source=<tree>`, `GIT_ATTR_NOSYSTEM`, and
+  `core.attributesFile` were each verified not to. Since the contract's subject is
+  repository-wide protection, a verdict derived from state only one clone has would be
+  dishonest. Only a declared deviation reaches this check.
 - The `gen` module is written as `r#gen` in Rust source.

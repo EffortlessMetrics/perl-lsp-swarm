@@ -48,6 +48,26 @@ export interface LifecycleHooks<TClient extends LifecycleClient<TEvent>, TEvent 
   onStopped?(snapshot: LifecycleSnapshot): void | Promise<void>;
   onFailed?(snapshot: LifecycleSnapshot): void | Promise<void>;
   onCallbackError?(error: unknown, phase: LifecycleCallbackPhase): void | Promise<void>;
+  /**
+   * Capture an observation of the client's external resources immediately
+   * before `stop()` is invoked. The value is handed back to
+   * `isClientTerminal` untouched. Needed because vscode-languageclient clears
+   * its own `serverProcess` reference during `stop()`, so anything consulted
+   * afterwards can no longer see the process that must be gone.
+   */
+  captureStopWitness?(client: TClient): unknown;
+  /**
+   * Report whether the client and everything it owned have reached a
+   * terminal state.
+   *
+   * Consulted after every settled `stop()`, including successful stops:
+   * vscode-languageclient can reach `State.Stopped` before its server exits.
+   * Implementations may wait (bounded by `stopTimeoutMs`) for the process
+   * captured by `captureStopWitness` to exit. A stop that never settles is
+   * incomplete regardless of what this reports. Without this hook, only a
+   * successful stop establishes cleanup completion.
+   */
+  isClientTerminal?(client: TClient, witness: unknown): boolean | Promise<boolean>;
 }
 
 export interface LanguageClientLifecycleOptions {
@@ -82,6 +102,8 @@ interface CleanupResult {
 interface BoundedOperationResult {
   readonly completed: boolean;
   readonly error: unknown;
+  /** True when the lifecycle's own bound elapsed before the operation settled. */
+  readonly timedOut: boolean;
 }
 
 const DEFAULT_STOP_TIMEOUT_MS = 5_000;
@@ -395,8 +417,12 @@ export class LanguageClientLifecycle<TClient extends LifecycleClient<TEvent>, TE
       active.listener = undefined;
     }
 
+    const witness = this.captureStopWitness(active.client);
     const stopResult = await this.runBounded('stop', () => active.client.stop());
-    if (!stopResult.completed) {
+    const stopCleanupComplete = this.hooks.isClientTerminal
+      ? await this.stopSettledTerminal(active.client, stopResult, witness)
+      : stopResult.completed;
+    if (!stopCleanupComplete) {
       firstError ??= stopResult.error;
       clientCleanupComplete = false;
     }
@@ -408,6 +434,39 @@ export class LanguageClientLifecycle<TClient extends LifecycleClient<TEvent>, TE
     }
 
     return { error: firstError, clientCleanupComplete };
+  }
+
+  private captureStopWitness(client: TClient): unknown {
+    if (!this.hooks.captureStopWitness) {
+      return undefined;
+    }
+    try {
+      return this.hooks.captureStopWitness(client);
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * A settled stop establishes cleanup only when the external resources are
+   * terminal. Neither successful settlement nor a rejected handshake proves
+   * process exit. A stop that outlived the bound proves nothing; the terminal
+   * check is also bounded, and a check that hangs or throws is not proof.
+   */
+  private async stopSettledTerminal(
+    client: TClient,
+    stopResult: BoundedOperationResult,
+    witness: unknown,
+  ): Promise<boolean> {
+    if (stopResult.timedOut || !this.hooks.isClientTerminal) {
+      return false;
+    }
+    const isClientTerminal = this.hooks.isClientTerminal;
+    let terminal = false;
+    const result = await this.runBounded('terminal check', async () => {
+      terminal = (await isClientTerminal(client, witness)) === true;
+    });
+    return result.completed && terminal;
   }
 
   private recordCleanupResult(cleanup: CleanupResult): void {
@@ -439,10 +498,12 @@ export class LanguageClientLifecycle<TClient extends LifecycleClient<TEvent>, TE
     callback: () => void | Promise<void>,
   ): Promise<BoundedOperationResult> {
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let timedOut = false;
     try {
       const operationPromise = Promise.resolve().then(callback);
       const timeoutPromise = new Promise<never>((_, reject) => {
         timer = setTimeout(() => {
+          timedOut = true;
           reject(
             new LanguageClientLifecycleError(
               `Language client ${operation} timed out after ${this.stopTimeoutMs}ms.`,
@@ -452,9 +513,9 @@ export class LanguageClientLifecycle<TClient extends LifecycleClient<TEvent>, TE
         }, this.stopTimeoutMs);
       });
       await Promise.race([operationPromise, timeoutPromise]);
-      return { completed: true, error: undefined };
+      return { completed: true, error: undefined, timedOut: false };
     } catch (error: unknown) {
-      return { completed: false, error };
+      return { completed: false, error, timedOut };
     } finally {
       if (timer) {
         clearTimeout(timer);

@@ -1,4 +1,8 @@
 import { strict as assert } from 'node:assert';
+import { spawnSync } from 'node:child_process';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import { test } from 'node:test';
 import {
   assertCandidateBoundInstallSource,
@@ -36,4 +40,92 @@ void test('candidate-bound installed acceptance refuses non-Linux platform bindi
   );
   assert.doesNotThrow(() => assertCandidateBoundPlatform('windows', false));
   assert.doesNotThrow(() => assertCandidateBoundPlatform('linux', true));
+});
+
+void test('unsupported candidate-bound platform throws the typed boundary error', () => {
+  assert.throws(
+    () => assertCandidateBoundPlatform('win32', true),
+    /restricted to Linux.*win32 bundled-server digest binding/,
+  );
+});
+
+void test('the published-smoke child reserves exit 2 before host or receipt work', () => {
+  const receiptRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'perl lsp-platform-child-'));
+  const preloadPath = path.join(receiptRoot, 'force-windows-platform.cjs');
+  try {
+    fs.writeFileSync(
+      preloadPath,
+      "Object.defineProperty(process, 'platform', { value: 'win32' });\n" +
+        "Object.defineProperty(process, 'arch', { value: 'x64' });\n",
+    );
+    const result = spawnSync(
+      process.execPath,
+      ['--require', preloadPath, path.join(__dirname, 'runPublishedSmoke.js')],
+      {
+        env: {
+          ...process.env,
+          PERL_LSP_CURRENT_SOURCE_SHA: 'candidate-sha',
+          PERL_LSP_PUBLISHED_EXTENSION_SOURCE: 'vsix',
+          PERL_LSP_PUBLISHED_EXTENSION_VERSION: '0.17.0',
+          PERL_LSP_PUBLISHED_VSIX_PATH: path.join(receiptRoot, 'candidate.vsix'),
+          PERL_LSP_SMOKE_RECEIPTS_DIR: receiptRoot,
+        },
+        encoding: 'utf8',
+        windowsHide: true,
+      },
+    );
+    if (result.error) {
+      throw new Error(`unsupported-platform child failed to spawn: ${result.error.message}`);
+    }
+    assert.equal(result.status, 2);
+    assert.match(result.stderr, /restricted to Linux/);
+  } finally {
+    fs.rmSync(receiptRoot, { recursive: true, force: true });
+  }
+});
+
+void test('the compiled child reserves exit 2 with a file receipt root before filesystem work', () => {
+  const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-platform-unwritable-'));
+  const preloadPath = path.join(fixtureRoot, 'force-windows-platform.cjs');
+  const receiptsRoot = path.join(fixtureRoot, 'receipts-root-file');
+  try {
+    fs.writeFileSync(
+      preloadPath,
+      "Object.defineProperty(process, 'platform', { value: 'win32' });\n",
+    );
+    fs.writeFileSync(receiptsRoot, 'this path is intentionally a file');
+    const result = spawnSync(
+      process.execPath,
+      ['--require', preloadPath, path.join(__dirname, 'runPublishedSmoke.js')],
+      {
+        env: {
+          ...process.env,
+          PERL_LSP_CURRENT_SOURCE_SHA: 'candidate-sha',
+          PERL_LSP_PUBLISHED_EXTENSION_SOURCE: 'vsix',
+          PERL_LSP_PUBLISHED_EXTENSION_VERSION: '0.17.0',
+          PERL_LSP_PUBLISHED_VSIX_PATH: path.join(fixtureRoot, 'candidate.vsix'),
+          PERL_LSP_SMOKE_RECEIPTS_DIR: receiptsRoot,
+        },
+        encoding: 'utf8',
+        windowsHide: true,
+      },
+    );
+    if (result.error) {
+      throw new Error(`unwritable-root child failed to spawn: ${result.error.message}`);
+    }
+    assert.equal(result.status, 2);
+    assert.match(result.stderr, /restricted to Linux/);
+
+    const { interpretBehavioralSmokeExit } = require('../../../scripts/run-local-vsix-smoke.js');
+    const parent = interpretBehavioralSmokeExit({
+      status: result.status,
+      candidateBound: true,
+      platform: 'win32',
+      receiptsRoot,
+    });
+    assert.equal(parent.status, 'not_proven');
+    assert.equal(parent.reason, 'candidate_bound_platform_unavailable');
+  } finally {
+    fs.rmSync(fixtureRoot, { recursive: true, force: true });
+  }
 });

@@ -51,8 +51,9 @@ fn non_rust_inventory_inventory_help_describes_current_tree_check() -> Result<()
     );
     ensure!(
         !help.contains("generated Markdown snapshot")
-            && !help.contains("line-ending normalization"),
-        "inventory --help must not restore tracked-snapshot authority"
+            && !help.contains("line-ending normalization")
+            && !help.contains("--write"),
+        "inventory --help must not restore tracked-snapshot authority or a publication writer"
     );
     Ok(())
 }
@@ -148,8 +149,8 @@ fn non_rust_inventory_check_command_exits_zero() -> Result<()> {
 
 /// Verify that the expected output files are created under `target/`.
 ///
-/// `non-rust inventory` (without `--write`) must not modify any tracked file;
-/// output goes to `target/policy/` only.
+/// `non-rust inventory` must not modify any tracked file; output goes to
+/// `target/policy/` only.
 #[test]
 fn non_rust_inventory_creates_output_files() -> Result<()> {
     let _guard = inventory_output_lock()?;
@@ -168,9 +169,8 @@ fn non_rust_inventory_creates_output_files() -> Result<()> {
         root.join("target/policy/non-rust-inventory.json").exists(),
         "target/policy/non-rust-inventory.json should exist after the command"
     );
-    // docs/policy/NON_RUST_INVENTORY.md must NOT be rewritten by the
-    // non-`--write` path; the published default-branch reference is updated
-    // only by `cargo xtask non-rust inventory --write`.
+    // docs/policy/NON_RUST_INVENTORY.md is a frozen pointer and is never
+    // written by any inventory command (#14688).
     Ok(())
 }
 
@@ -342,7 +342,9 @@ fn non_rust_inventory_check_is_wired_to_policy_shard() -> Result<()> {
         .ok_or_else(|| eyre!("policy shard no longer retains non-Rust inventory evidence"))?;
     assert_eq!(
         evidence_upload.get("if").and_then(Value::as_str),
-        Some("always() && matrix.name == 'policy'")
+        Some(
+            "always() && matrix.name == 'policy' && steps.inventory-evidence.outputs.ready == 'true'"
+        )
     );
     let upload_with = evidence_upload
         .get("with")
@@ -353,12 +355,172 @@ fn non_rust_inventory_check_is_wired_to_policy_shard() -> Result<()> {
         .ok_or_else(|| eyre!("inventory evidence upload has no paths"))?;
     ensure!(
         upload_paths.contains("target/policy/non-rust-inventory.md")
-            && upload_paths.contains("target/policy/non-rust-inventory.json"),
-        "the policy shard must retain both current-tree projections"
+            && upload_paths.contains("target/policy/non-rust-inventory.json")
+            && upload_paths.contains("target/policy/non-rust-inventory-subject.json"),
+        "the policy shard must retain both current-tree projections and their subject receipt"
     );
-    assert_eq!(upload_with.get("if-no-files-found").and_then(Value::as_str), Some("warn"));
+    assert_eq!(upload_with.get("if-no-files-found").and_then(Value::as_str), Some("error"));
     assert_eq!(upload_with.get("retention-days").and_then(Value::as_u64), Some(7));
 
+    Ok(())
+}
+
+/// Execute the actual workflow scripts over a repository whose push ref moved.
+/// The immutable integration event SHA must match checkout, even if a moving
+/// ref advances. An early producer failure must not publish cached files.
+#[test]
+#[cfg(unix)]
+fn inventory_artifact_binds_checkout_and_rejects_cached_evidence() -> Result<()> {
+    let job = merge_gate_shards_job(&project_root()?)?;
+    let steps = job
+        .get("steps")
+        .and_then(Value::as_sequence)
+        .ok_or_else(|| eyre!("missing shard steps"))?;
+    let step = |name: &str| -> Result<&Value> {
+        steps
+            .iter()
+            .find(|step| step.get("name").and_then(Value::as_str) == Some(name))
+            .ok_or_else(|| eyre!("missing step {name}"))
+    };
+    let script = |name: &str| -> Result<&str> {
+        step(name)?.get("run").and_then(Value::as_str).ok_or_else(|| eyre!("missing script {name}"))
+    };
+    let immutable = "${{ github.sha }}";
+    ensure!(
+        steps
+            .first()
+            .and_then(|step| step.get("with"))
+            .and_then(|v| v.get("ref"))
+            .and_then(Value::as_str)
+            == Some(immutable),
+        "checkout must select immutable integration event SHA"
+    );
+    ensure!(
+        step("Bind shard integration source")?
+            .get("env")
+            .and_then(|v| v.get("EXPECTED_SOURCE_SHA"))
+            .and_then(Value::as_str)
+            == Some(immutable),
+        "source guard must require immutable integration event SHA"
+    );
+    ensure!(
+        step("Bind shard integration source")?.get("if").is_none(),
+        "source binding must run for every shard"
+    );
+    let position =
+        |name: &str| steps.iter().position(|s| s.get("name").and_then(Value::as_str) == Some(name));
+    ensure!(
+        position("Bind shard integration source").ok_or_else(|| eyre!("missing source binding"))?
+            < position("Warm xtask").ok_or_else(|| eyre!("missing build step"))?,
+        "source binding must precede builds"
+    );
+    ensure!(position("Cache cargo dependencies") < position("Clear restored inventory evidence"));
+    ensure!(position("Clear restored inventory evidence") < position("Warm xtask"));
+    ensure!(
+        step("Bind produced inventory evidence")?.get("if").and_then(Value::as_str)
+            == Some(
+                "always() && matrix.name == 'policy' && steps.inventory-source.outcome == 'success' && steps.inventory-clean.outcome == 'success'"
+            ),
+        "inventory binding must require source validation and cache clearance"
+    );
+    ensure!(
+        step("Upload non-Rust inventory evidence")?
+            .get("with")
+            .and_then(|v| v.get("name"))
+            .and_then(Value::as_str)
+            == Some("non-rust-inventory-${{ steps.inventory-source.outputs.sha }}"),
+        "inventory artifact name must use verified source output"
+    );
+
+    let temp = tempfile::tempdir()?;
+    let root = temp.path();
+    let git = |args: &[&str]| -> Result<String> {
+        let out = std::process::Command::new("git").args(args).current_dir(root).output()?;
+        ensure!(out.status.success(), "git failed: {}", String::from_utf8_lossy(&out.stderr));
+        Ok(String::from_utf8(out.stdout)?.trim().to_string())
+    };
+    git(&["init", "-q"])?;
+    git(&["config", "user.email", "test@example.com"])?;
+    git(&["config", "user.name", "test"])?;
+    git(&["commit", "--allow-empty", "-qm", "event"])?;
+    let event = git(&["rev-parse", "HEAD"])?;
+    git(&["commit", "--allow-empty", "-qm", "moved ref after integration event"])?;
+    let moved = git(&["rev-parse", "HEAD"])?;
+    ensure!(event != moved);
+    git(&["checkout", "--detach", &event])?;
+    let output = root.join("output");
+    let run = |name: &str, subject: &str| -> Result<std::process::Output> {
+        std::fs::write(&output, "")?;
+        Ok(std::process::Command::new("bash")
+            .args(["-e", "-c", script(name)?])
+            .current_dir(root)
+            .env("GITHUB_OUTPUT", &output)
+            .env("EXPECTED_SOURCE_SHA", subject)
+            .env("SOURCE_SHA", subject)
+            .output()?)
+    };
+    ensure!(run("Bind shard integration source", &event)?.status.success());
+    ensure!(
+        std::fs::read_to_string(&output)? == format!("sha={event}\n"),
+        "source guard must emit the verified integration SHA"
+    );
+    ensure!(
+        !run("Bind shard integration source", &moved)?.status.success(),
+        "a different subject cannot relabel the checked-out integration tree"
+    );
+    let policy = root.join("target/policy");
+    std::fs::create_dir_all(&policy)?;
+    for ext in ["md", "json", "subject.json"] {
+        let name = if ext == "subject.json" {
+            "non-rust-inventory-subject.json".to_string()
+        } else {
+            format!("non-rust-inventory.{ext}")
+        };
+        std::fs::write(policy.join(name), "cached evidence")?;
+    }
+    ensure!(run("Clear restored inventory evidence", &event)?.status.success());
+    ensure!(run("Bind produced inventory evidence", &event)?.status.success());
+    ensure!(std::fs::read_to_string(&output)?.is_empty(), "no producer output must mean no upload");
+    ensure!(!policy.join("non-rust-inventory-subject.json").exists());
+
+    // The inventory producer emits evidence before rejecting new debt. The
+    // binding step must retain that evidence despite the producer's exit code.
+    std::fs::write(policy.join("non-rust-inventory.md"), "# inventory\n")?;
+    ensure!(
+        !run("Bind produced inventory evidence", &event)?.status.success(),
+        "partial output is not a complete artifact"
+    );
+    std::fs::write(policy.join("non-rust-inventory.json"), "[]\n")?;
+    ensure!(run("Bind produced inventory evidence", &event)?.status.success());
+    ensure!(
+        std::fs::read_to_string(&output)? == "ready=true\n",
+        "complete inventory must enable upload"
+    );
+    let receipt: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(policy.join("non-rust-inventory-subject.json"))?)?;
+    ensure!(
+        receipt.get("source_sha").and_then(serde_json::Value::as_str) == Some(event.as_str()),
+        "receipt must bind the checked-out integration SHA"
+    );
+    use sha2::{Digest, Sha256};
+    for ext in ["md", "json"] {
+        let name = format!("non-rust-inventory.{ext}");
+        ensure!(
+            receipt
+                .get("sha256")
+                .and_then(|hashes| hashes.get(&name))
+                .and_then(serde_json::Value::as_str)
+                == Some(
+                    Sha256::digest(std::fs::read(policy.join(&name))?)
+                        .iter()
+                        .map(|byte| format!("{byte:02x}"))
+                        .collect::<String>()
+                        .as_str()
+                ),
+            "inventory hash must match produced file bytes"
+        );
+    }
+    ensure!(!run("Bind produced inventory evidence", &moved)?.status.success());
     Ok(())
 }
 

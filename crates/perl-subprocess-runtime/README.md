@@ -36,7 +36,10 @@ tests; every result it produces is marked `EvidenceClass::Fake` and carries
 control state (a `DeadlineReached` without `deadline_reached`, a
 `CancellationRequested` whose reason does not match, or a `LimitReached`
 without `output_limit_exceeded`) is refused when it is scripted, not replayed
-as a contradictory stream. Real execution is the next node of the shared
+as a contradictory stream. A live `cancel` with a different reason after a
+`CancellationRequested` has already been admitted is refused rather than
+rewriting the already-emitted phase; same-reason cancel after a matching
+event remains legal. Real execution is the next node of the shared
 process train.
 
 Nothing in the domain claims sandboxing, isolation, or hermeticity.

@@ -199,6 +199,15 @@ armed auto-merge—record the exact pending fact and wake event once when useful
 return `PR_IN_FLIGHT`. Do not poll unchanged state or call the wider goal blocked. A
 remote integration wait does not make a still-current substantive review stale.
 
+Arm auto-merge only when substantive review is `REVIEW_CURRENT` and
+`scripts/reviews/threads <pr> --unresolved-only --json` reports `unresolved_count` of
+0: zero unresolved review threads is a precondition of arming auto-merge. The `main`
+ruleset requires review-thread resolution, so bot threads (Devin, Gemini, Codex,
+CodeRabbit, cubic) and outdated threads count exactly like human ones, and an armed PR
+with one open thread sits silently blocked. Disposition and resolve them through
+`address-review-comments` first; an open thread is `MERGE_BLOCKED`, not
+`PR_IN_FLIGHT`.
+
 An armed auto-merge that appears stalled is usually waiting on the slowest required
 context, not broken: `ripr+ New Gap Gate` is the tail of the required union. The
 manual probe merge mechanism, its compare-and-swap SHA guard, and the waiver bar are
