@@ -27,7 +27,6 @@ pub mod check_tautology;
 pub mod check_test_wiring;
 pub mod check_toolchain;
 pub mod check_version_sync;
-pub mod check_workspace_symbol_best_key;
 pub mod ci;
 pub mod ci_audit_workflows;
 pub mod ci_contract;
