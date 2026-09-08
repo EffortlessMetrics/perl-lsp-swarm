@@ -1,10 +1,12 @@
 #!/usr/bin/env node
 
 const path = require('node:path');
+const fs = require('node:fs');
 const { spawnSync } = require('node:child_process');
 
 const extensionRoot = path.resolve(__dirname, '..');
 const vsixName = 'perl-lsp-rs.vsix';
+const vsixPath = path.join(extensionRoot, vsixName);
 const vsceEntry = path.join(extensionRoot, 'node_modules', '@vscode', 'vsce', 'vsce');
 
 function runNode(script, args) {
@@ -23,9 +25,21 @@ function runNode(script, args) {
   return true;
 }
 
-function packageVsix(run = runNode) {
+function packageVsix(run = runNode, fileSystem = fs) {
+  if (fileSystem.existsSync(vsixPath)) {
+    fileSystem.rmSync(vsixPath, { force: true });
+  }
   if (!run(vsceEntry, ['package', '--out', vsixName])) {
     return false;
+  }
+  let artifact;
+  try {
+    artifact = fileSystem.statSync(vsixPath);
+  } catch {
+    throw new Error(`packager exited successfully without producing ${vsixName}`);
+  }
+  if (!artifact.isFile() || artifact.size <= 0) {
+    throw new Error(`packager exited successfully without producing ${vsixName}`);
   }
   return run(path.join(__dirname, 'check-vsix-inventory.js'), ['--vsix', vsixName]);
 }
