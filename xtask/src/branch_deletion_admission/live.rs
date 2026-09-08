@@ -169,11 +169,9 @@ pub fn repository_from_remote_url(url: &str) -> Option<RepositoryId> {
     parse_remote_identity(url).map(|identity| identity.repository)
 }
 
-fn parent_terminality(state: &str, merged: bool) -> ParentTerminality {
-    if merged {
-        return ParentTerminality::Merged;
-    }
+fn parent_terminality(state: &str) -> ParentTerminality {
     match state {
+        "MERGED" => ParentTerminality::Merged,
         "OPEN" => ParentTerminality::Open,
         "CLOSED" => ParentTerminality::ClosedUnmerged,
         _ => ParentTerminality::NotProven,
@@ -251,7 +249,6 @@ fn collect_worktree_ownership(commands: &dyn ReadOnlyCommands, branch: &str) -> 
 struct GhParent {
     number: u64,
     state: String,
-    merged: bool,
     #[serde(rename = "headRefName")]
     head_ref_name: String,
     #[serde(rename = "headRefOid")]
@@ -313,7 +310,7 @@ pub fn collect_request(
             "--repo",
             &repository.render(),
             "--json",
-            "number,state,merged,headRefName,headRefOid,isCrossRepository",
+            "number,state,headRefName,headRefOid,isCrossRepository",
         ],
     )?;
     let parent: GhParent = serde_json::from_str(&parent_json)
@@ -324,7 +321,7 @@ pub fn collect_request(
         number: parent.number,
         head_ref: parent.head_ref_name.clone(),
         reviewed_head_sha: parent.head_ref_oid.clone(),
-        terminality: parent_terminality(&parent.state, parent.merged),
+        terminality: parent_terminality(&parent.state),
         head_in_admitted_repository: !parent.is_cross_repository,
     };
 
