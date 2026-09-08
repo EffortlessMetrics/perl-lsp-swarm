@@ -16,6 +16,13 @@ import { workspaceSmokeLaunchArgs, workspaceSmokeTrustMode } from '../workspaceS
 
 const EXTENSION_ID = 'EffortlessMetrics.perl-lsp-rs';
 
+class CandidateBoundPlatformUnavailableError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'CandidateBoundPlatformUnavailableError';
+  }
+}
+
 type ExtensionSource = 'marketplace' | 'open-vsx' | 'vsix';
 
 function envValue(name: string): string {
@@ -59,7 +66,7 @@ export function assertCandidateBoundInstallSource({
 
 export function assertCandidateBoundPlatform(platform: string, candidateBound: boolean): void {
   if (candidateBound && platform !== 'linux') {
-    throw new Error(
+    throw new CandidateBoundPlatformUnavailableError(
       `Candidate-bound installed acceptance is restricted to Linux; refusing ${platform} bundled-server digest binding.`,
     );
   }
@@ -597,6 +604,6 @@ if (require.main === module) {
   main().catch((error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);
     process.stderr.write(`${message}\n`);
-    process.exit(1);
+    process.exit(error instanceof CandidateBoundPlatformUnavailableError ? 2 : 1);
   });
 }
