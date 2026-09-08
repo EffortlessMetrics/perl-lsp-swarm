@@ -1579,32 +1579,39 @@ impl DebugAdapter {
     ) -> DapMessage {
         // Parse attach arguments
         if let Some(args) = arguments {
-            // #8109: processId attachment is refused before any target
-            // inspection, session mutation, signal, or event emission.
-            // Process existence plus signal control is not a stopped debugger
-            // session. The refusal is input-independent — any `processId`
-            // member (numeric or otherwise) takes this early gate, so a
-            // malformed value cannot slip into the TCP branch — and leaves any
-            // active launch/TCP session untouched: no generation bump, no
-            // state clear, no stored PID, no signal, and no
-            // stopped/entry/continued/thread/process/terminal event. The
-            // target process is never contacted. Re-enable requires a real
-            // debugger transport with a behavior-backed attach journey
-            // (#6684 real-session matrix owns that proof).
-            if args.get("processId").is_some() {
-                return DapMessage::Response {
-                    seq,
-                    request_seq,
-                    success: false,
-                    command: "attach".to_string(),
-                    body: None,
-                    message: Some(
-                        "attach by processId is not supported: no debugger transport or \
-                         behavior-backed attach journey exists (#8109). Use TCP attach with \
-                         host/port instead."
-                            .to_string(),
-                    ),
-                };
+            match Self::parse_process_id(&args) {
+                Ok(Some(_pid)) => {
+                    // #8109: a syntactically valid processId is refused before
+                    // any target inspection, session mutation, signal, or event
+                    // emission. Process existence plus signal control is not a
+                    // stopped debugger session. Re-enable requires a real
+                    // debugger transport with a behavior-backed attach journey
+                    // (#6684 real-session matrix owns that proof).
+                    return DapMessage::Response {
+                        seq,
+                        request_seq,
+                        success: false,
+                        command: "attach".to_string(),
+                        body: None,
+                        message: Some(
+                            "attach by processId is not supported: no debugger transport or \
+                             behavior-backed attach journey exists (#8109). Use TCP attach with \
+                             host/port instead."
+                                .to_string(),
+                        ),
+                    };
+                }
+                Ok(None) => {}
+                Err(message) => {
+                    return DapMessage::Response {
+                        seq,
+                        request_seq,
+                        success: false,
+                        command: "attach".to_string(),
+                        body: None,
+                        message: Some(message),
+                    };
+                }
             }
 
             {
@@ -1782,6 +1789,32 @@ impl DebugAdapter {
                 ),
             }
         }
+    }
+
+    /// Classify the optional native PID subject without inspecting the target.
+    ///
+    /// A missing or explicit `null` value leaves the request on the TCP path.
+    /// Malformed, zero, and out-of-range values are invalid input; only a
+    /// positive in-range integer reaches the capability-first unsupported
+    /// response for native PID attach (#8109).
+    fn parse_process_id(args: &Value) -> Result<Option<u32>, String> {
+        let Some(value) = args.get("processId") else {
+            return Ok(None);
+        };
+        if value.is_null() {
+            return Ok(None);
+        }
+
+        let raw = value.as_u64().ok_or_else(|| {
+            "Invalid processId: expected a positive integer in the range 1-4294967295".to_string()
+        })?;
+        let pid = u32::try_from(raw).map_err(|_| {
+            "Invalid processId: expected a positive integer in the range 1-4294967295".to_string()
+        })?;
+        if pid == 0 {
+            return Err("Invalid processId: value must be greater than zero".to_string());
+        }
+        Ok(Some(pid))
     }
 
     /// Clear active process session, TCP session, and PID-attach mode state.

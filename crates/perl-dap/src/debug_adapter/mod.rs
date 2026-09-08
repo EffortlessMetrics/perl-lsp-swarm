@@ -618,28 +618,36 @@ impl DebugAdapter {
     /// Only for use in tests; not part of the public API contract.
     #[cfg(any(test, feature = "test-helpers"))]
     pub fn seed_running_session_for_test(&self) {
+        let _ = self.seed_running_session_for_test_required();
+    }
+
+    /// Seed a minimal running session and report setup failure to a proof that
+    /// requires the session-preservation subject to execute.
+    #[cfg(any(test, feature = "test-helpers"))]
+    pub fn seed_running_session_for_test_required(&self) -> Result<(), String> {
         use crate::debug_adapter::session::{DebugSession, DebugState, ResumeMode};
         use crate::debug_adapter::variable_cache::VariableCache;
-        if let Ok(child) = std::process::Command::new("perl")
+        let child = std::process::Command::new("perl")
             .arg("-e")
             .arg("1")
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .spawn()
-            && let Ok(mut guard) = self.session.lock()
-        {
-            *guard = Some(DebugSession {
-                process: child,
-                state: DebugState::Running,
-                stack_frames: vec![],
-                stack_frame_arguments: HashMap::new(),
-                variable_cache: VariableCache::default(),
-                thread_id: 1,
-                last_resume_mode: ResumeMode::Continue,
-                stopped_generation: 0,
-            });
-        }
+            .map_err(|error| format!("could not seed perl session: {error}"))?;
+        let mut guard =
+            self.session.lock().map_err(|_| "could not lock session while seeding".to_string())?;
+        *guard = Some(DebugSession {
+            process: child,
+            state: DebugState::Running,
+            stack_frames: vec![],
+            stack_frame_arguments: HashMap::new(),
+            variable_cache: VariableCache::default(),
+            thread_id: 1,
+            last_resume_mode: ResumeMode::Continue,
+            stopped_generation: 0,
+        });
+        Ok(())
     }
 
     /// Seed `attached_pid` with the given PID for testing.
@@ -1360,6 +1368,22 @@ print "result: $final\n";
                 _ => return Err("Expected response".into()),
             }
         };
+        let assert_invalid = |response: DapMessage| -> Result<(), Box<dyn std::error::Error>> {
+            match response {
+                DapMessage::Response { success, command, body, message, .. } => {
+                    assert!(!success, "invalid processId must be refused");
+                    assert_eq!(command, "attach");
+                    assert!(body.is_none(), "invalid processId must not carry an attach body");
+                    let msg = message.ok_or("Expected invalid processId message")?;
+                    assert!(
+                        msg.contains("Invalid processId"),
+                        "msg must identify invalid input: {msg}"
+                    );
+                    Ok(())
+                }
+                _ => return Err("Expected response".into()),
+            }
+        };
 
         let mut adapter = DebugAdapter::new();
 
@@ -1371,28 +1395,55 @@ print "result: $final\n";
         let args = json!({ "processId": std::process::id(), "stopOnEntry": true });
         assert_refused(adapter.handle_request(2, "attach", Some(args)))?;
 
-        // Input independence: a non-numeric processId takes the same early gate
-        // instead of slipping into the TCP branch.
+        // Malformed processId is rejected before the TCP branch.
         let args = json!({ "processId": "not-a-number" });
-        assert_refused(adapter.handle_request(3, "attach", Some(args)))?;
+        assert_invalid(adapter.handle_request(3, "attach", Some(args)))?;
 
         // A refused PID attach must not disturb an existing active session:
-        // no generation bump, no state clear. Skipped when the seed helper
-        // could not spawn a debuggee (no `perl` on PATH).
-        adapter.seed_running_session_for_test();
-        let seeded = {
-            let session = lock_or_recover(&adapter.session, "test.attach_refusal_seed");
-            session.is_some()
+        // no generation bump, no state clear. This proof is not allowed to
+        // silently skip when the Perl session fixture cannot be seeded.
+        adapter.seed_running_session_for_test_required().map_err(std::io::Error::other)?;
+        let before_generation = adapter.current_session_generation();
+        let before_pid = {
+            let session = lock_or_recover(&adapter.session, "test.attach_refusal_before_session");
+            session
+                .as_ref()
+                .map(|session| session.process.id())
+                .ok_or("seeded session was not installed")?
         };
-        if seeded {
-            let args = json!({ "processId": std::process::id() });
-            assert_refused(adapter.handle_request(4, "attach", Some(args)))?;
-            let session = lock_or_recover(&adapter.session, "test.attach_refusal_session");
-            assert!(
-                session.is_some(),
-                "a refused processId attach must leave the active session untouched (#8109)"
-            );
-        }
+        let args = json!({ "processId": std::process::id() });
+        assert_refused(adapter.handle_request(4, "attach", Some(args)))?;
+        let after_valid_generation = adapter.current_session_generation();
+        let after_valid_pid = {
+            let session =
+                lock_or_recover(&adapter.session, "test.attach_refusal_after_valid_session");
+            session
+                .as_ref()
+                .map(|session| session.process.id())
+                .ok_or("valid refusal cleared the active session")?
+        };
+        assert_eq!(
+            after_valid_generation, before_generation,
+            "valid refusal changed session generation"
+        );
+        assert_eq!(after_valid_pid, before_pid, "valid refusal replaced the active process");
+
+        let args = json!({ "processId": "not-a-number" });
+        assert_invalid(adapter.handle_request(5, "attach", Some(args)))?;
+        let after_invalid_generation = adapter.current_session_generation();
+        let after_invalid_pid = {
+            let session =
+                lock_or_recover(&adapter.session, "test.attach_refusal_after_invalid_session");
+            session
+                .as_ref()
+                .map(|session| session.process.id())
+                .ok_or("invalid refusal cleared the active session")?
+        };
+        assert_eq!(
+            after_invalid_generation, before_generation,
+            "invalid refusal changed session generation"
+        );
+        assert_eq!(after_invalid_pid, before_pid, "invalid refusal replaced the active process");
 
         Ok(())
     }

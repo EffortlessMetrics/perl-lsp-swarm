@@ -628,6 +628,56 @@ fn test_session_lifecycle_attach_validation() {
 }
 
 #[test]
+fn test_session_lifecycle_attach_null_process_id_uses_tcp() {
+    // VS Code uses an explicit null processId for TCP-only attach configs.
+    // Null must therefore follow the TCP path, not the unsupported PID path.
+    let (mut adapter, _rx) = create_test_adapter();
+    let response = adapter.handle_request(
+        1,
+        "attach",
+        Some(json!({
+            "processId": null,
+            "host": "127.0.0.1",
+            "port": 1,
+            "timeout": 100
+        })),
+    );
+
+    match response {
+        DapMessage::Response { command, message, .. } => {
+            assert_eq!(command, "attach");
+            let msg = message.unwrap_or_default();
+            assert!(
+                !msg.contains("attach by processId is not supported"),
+                "null processId must use the TCP path: {msg}"
+            );
+        }
+        _ => must(Err::<(), _>("Expected Response message".to_string())),
+    }
+}
+
+#[test]
+fn test_session_lifecycle_attach_malformed_process_id_is_invalid_input() {
+    for process_id in [json!("123"), json!(-1), json!(4_294_967_296_u64)] {
+        let (mut adapter, _rx) = create_test_adapter();
+        let response =
+            adapter.handle_request(1, "attach", Some(json!({ "processId": process_id })));
+
+        match response {
+            DapMessage::Response { success, command, message, .. } => {
+                assert!(!success, "malformed processId must be rejected");
+                assert_eq!(command, "attach");
+                assert!(
+                    must_some(message).contains("Invalid processId"),
+                    "malformed processId must be classified as invalid input"
+                );
+            }
+            _ => must(Err::<(), _>("Expected Response message".to_string())),
+        }
+    }
+}
+
+#[test]
 // AC:5.5
 fn test_session_lifecycle_attach_pid_zero_rejected() {
     // processId: 0 is explicitly invalid — the handler must reject it.
@@ -1548,10 +1598,8 @@ fn test_multiple_sessions_sequential() {
 
 #[test]
 // AC:5.5
-fn test_attach_pid_mode_stop_on_entry_true_emits_stopped_event() {
-    // When stopOnEntry is true and attaching by PID, a stopped event with reason "entry"
-    // must be emitted after the initial "attach" stopped event.
-    // #4638: Use the current process PID so verify_attach_target succeeds.
+fn test_attach_pid_mode_stop_on_entry_true_is_refused_without_event() {
+    // stopOnEntry must not change the unsupported PID disposition or emit an event.
     let (mut adapter, rx) = create_test_adapter();
 
     let args = json!({
@@ -1562,33 +1610,21 @@ fn test_attach_pid_mode_stop_on_entry_true_emits_stopped_event() {
     let response = adapter.handle_request(1, "attach", Some(args));
 
     match response {
-        DapMessage::Response { success, command, .. } => {
-            assert!(success, "PID attach with stopOnEntry should succeed");
+        DapMessage::Response { success, command, message, .. } => {
+            assert!(!success, "PID attach must be unsupported");
             assert_eq!(command, "attach");
+            assert!(must_some(message).contains("not supported"));
         }
         _ => must(Err::<(), _>("Expected Response message")),
     }
 
-    // Must receive at least one stopped event with reason "entry"
-    let mut found_entry_stop = false;
-    for _ in 0..3 {
-        if let Some(DapMessage::Event { event, body, .. }) = wait_for_event(&rx, 100)
-            && event == "stopped"
-            && let Some(ref b) = body
-            && b.get("reason").and_then(|r| r.as_str()) == Some("entry")
-        {
-            found_entry_stop = true;
-            break;
-        }
-    }
-    assert!(found_entry_stop, "stopOnEntry=true must emit a stopped event with reason='entry'");
+    assert!(wait_for_event(&rx, 100).is_none(), "PID refusal must emit no event");
 }
 
 #[test]
 // AC:5.5
 fn test_attach_pid_mode_stop_on_entry_false_no_entry_event() {
-    // When stopOnEntry is false, PID attach should emit reason "attach" but NOT "entry".
-    // #4638: Use the current process PID so verify_attach_target succeeds.
+    // stopOnEntry=false must still be refused without an attach event.
     let (mut adapter, rx) = create_test_adapter();
 
     let args = json!({
@@ -1599,63 +1635,36 @@ fn test_attach_pid_mode_stop_on_entry_false_no_entry_event() {
     let response = adapter.handle_request(1, "attach", Some(args));
 
     match response {
-        DapMessage::Response { success, command, .. } => {
-            assert!(success, "PID attach without stopOnEntry should succeed");
+        DapMessage::Response { success, command, message, .. } => {
+            assert!(!success, "PID attach must be unsupported");
             assert_eq!(command, "attach");
+            assert!(must_some(message).contains("not supported"));
         }
         _ => must(Err::<(), _>("Expected Response message")),
     }
 
-    let mut found_entry_stop = false;
-    let mut found_attach_stop = false;
-    for _ in 0..3 {
-        if let Some(DapMessage::Event { event, body, .. }) = wait_for_event(&rx, 100)
-            && event == "stopped"
-            && let Some(ref b) = body
-        {
-            match b.get("reason").and_then(|r| r.as_str()) {
-                Some("entry") => found_entry_stop = true,
-                Some("attach") => found_attach_stop = true,
-                _ => {}
-            }
-        }
-    }
-    assert!(!found_entry_stop, "stopOnEntry=false must not emit an entry stop event");
-    assert!(
-        found_attach_stop,
-        "PID attach should always emit a stopped event with reason='attach'"
-    );
+    assert!(wait_for_event(&rx, 100).is_none(), "PID refusal must emit no event");
 }
 
 #[test]
 // AC:5.5
 fn test_attach_pid_mode_default_stop_on_entry_is_false() {
-    // When stopOnEntry is omitted it defaults to false — no entry-stop event emitted.
-    // #4638: Use the current process PID so verify_attach_target succeeds.
+    // Omitting stopOnEntry must not change the unsupported PID disposition.
     let (mut adapter, rx) = create_test_adapter();
 
     let args = json!({ "processId": std::process::id() });
     let response = adapter.handle_request(1, "attach", Some(args));
 
     match response {
-        DapMessage::Response { success, command, .. } => {
-            assert!(success, "PID attach with omitted stopOnEntry should succeed");
+        DapMessage::Response { success, command, message, .. } => {
+            assert!(!success, "PID attach must be unsupported");
             assert_eq!(command, "attach");
+            assert!(must_some(message).contains("not supported"));
         }
         _ => must(Err::<(), _>("Expected Response message")),
     }
 
-    let mut found_entry_stop = false;
-    for _ in 0..3 {
-        if let Some(DapMessage::Event { event, body, .. }) = wait_for_event(&rx, 100)
-            && event == "stopped"
-            && let Some(ref b) = body
-            && b.get("reason").and_then(|r| r.as_str()) == Some("entry")
-        {
-            found_entry_stop = true;
-        }
-    }
-    assert!(!found_entry_stop, "Default stopOnEntry must not emit entry-stop event");
+    assert!(wait_for_event(&rx, 100).is_none(), "PID refusal must emit no event");
 }
 
 // ============================================================================
@@ -1688,35 +1697,43 @@ fn test_attach_nonexistent_pid_rejected_4638() {
 }
 
 #[test]
-fn test_attach_current_process_pid_accepted_4638() {
-    // #4638: Attaching to the current process PID should succeed — the process
-    // obviously exists (it's us).
+fn test_attach_current_process_pid_is_unsupported_4638() {
+    // A valid PID is unsupported without inspecting whether the process exists.
     let (mut adapter, _rx) = create_test_adapter();
     let current_pid = std::process::id();
     let args = json!({ "processId": current_pid });
     let response = adapter.handle_request(1, "attach", Some(args));
     match response {
-        DapMessage::Response { success, command, .. } => {
-            assert!(success, "Attach to current process PID should succeed");
+        DapMessage::Response { success, command, message, .. } => {
+            assert!(!success, "valid PID attach must be unsupported");
             assert_eq!(command, "attach");
+            assert!(must_some(message).contains("not supported"));
         }
         _ => must(Err::<(), _>("Expected Response message".to_string())),
     }
 }
 
 #[test]
-fn test_attach_nonexistent_pid_then_valid_pid_succeeds_4638() {
-    // #4638: A rejected attach must not prevent a subsequent valid attach.
+fn test_attach_pid_rejection_is_idempotent_4638() {
+    // Invalid and valid PID subjects must not create or replace a session.
     let (mut adapter, _rx) = create_test_adapter();
     let args = json!({ "processId": 999999 });
-    let _ = adapter.handle_request(1, "attach", Some(args));
+    let first = adapter.handle_request(1, "attach", Some(args));
+    match first {
+        DapMessage::Response { success, message, .. } => {
+            assert!(!success);
+            assert!(must_some(message).contains("not supported"));
+        }
+        _ => must(Err::<(), _>("Expected Response message".to_string())),
+    }
 
     let current_pid = std::process::id();
     let args = json!({ "processId": current_pid });
     let response = adapter.handle_request(2, "attach", Some(args));
     match response {
-        DapMessage::Response { success, .. } => {
-            assert!(success, "Subsequent attach to valid PID should succeed");
+        DapMessage::Response { success, message, .. } => {
+            assert!(!success, "repeated valid PID attach must remain unsupported");
+            assert!(must_some(message).contains("not supported"));
         }
         _ => must(Err::<(), _>("Expected Response message".to_string())),
     }
