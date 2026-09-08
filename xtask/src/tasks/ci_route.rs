@@ -179,6 +179,14 @@ const XTASK_FILE_POLICY_PACK: ProofPack = ProofPack {
     ],
 };
 
+const TAUTOLOGY_CHECK_PACK: ProofPack = ProofPack {
+    id: "tautology-check-focused",
+    commands: &[
+        "cargo test -p xtask --bin xtask --profile agent --locked check_tautology -- --nocapture",
+        "cargo run -p xtask --profile agent --locked -- check-tautology --check",
+    ],
+};
+
 const XTASK_PARSER_TDD_FACADE_GUARD_PACK: ProofPack = ProofPack {
     id: "xtask-parser-tdd-facade-guard",
     commands: &[
@@ -706,6 +714,15 @@ fn route_file(file: &str, route: &mut RouteBuilder) {
         route.add_surface("xtask-file-policy");
         route.add_pack(XTASK_FILE_POLICY_PACK);
         return route.add_coverage_pack("patch-coverage-xtask-file-policy");
+    }
+
+    if file == "xtask/src/tasks/check_tautology.rs"
+        || file.starts_with("xtask/src/tasks/check_tautology/")
+        || file == "policy/tautology-dispositions.toml"
+    {
+        route.add_surface("tautology-check");
+        route.add_pack(TAUTOLOGY_CHECK_PACK);
+        return route.add_coverage_pack("patch-coverage-tautology-check");
     }
 
     if file == "xtask/tests/parser_tdd_facade_consumers.rs" {
@@ -3367,6 +3384,7 @@ mod tests {
                 "patch-coverage-xtask-gates",
                 "patch-coverage-xtask-ci-explain",
                 "patch-coverage-xtask-file-policy",
+                "patch-coverage-tautology-check",
                 "patch-coverage-completion-core",
                 "patch-coverage-ux-scenario",
                 "patch-coverage-ci-policy",
@@ -3438,6 +3456,7 @@ mod tests {
             "patch-coverage-xtask-gates",
             "patch-coverage-xtask-ci-explain",
             "patch-coverage-xtask-file-policy",
+            "patch-coverage-tautology-check",
             "patch-coverage-completion-core",
             "patch-coverage-ux-scenario",
             "patch-coverage-ci-policy",
@@ -3968,6 +3987,30 @@ mod tests {
                 && pack.commands.iter().any(|command| {
                     command
                         == "cargo test -p xtask --bin xtask --profile agent --locked file_policy -- --nocapture"
+                })
+        }));
+        Ok(())
+    }
+
+    #[test]
+    fn ci_route_receipt_maps_tautology_checker_to_focused_pack() -> Result<()> {
+        let receipt = route_receipt(
+            "origin/main",
+            "HEAD",
+            vec!["xtask/src/tasks/check_tautology/mod.rs".to_string()],
+        )?;
+
+        assert_eq!(receipt.changed_surfaces, vec!["tautology-check"]);
+        assert!(proof_pack_ids(&receipt).contains(&"tautology-check-focused"));
+        assert_eq!(receipt.coverage_pack_selector, vec!["patch-coverage-tautology-check"]);
+        assert!(receipt.required_proof_packs.iter().any(|pack| {
+            pack.id == "tautology-check-focused"
+                && pack.commands.iter().any(|command| {
+                    command
+                        == "cargo test -p xtask --bin xtask --profile agent --locked check_tautology -- --nocapture"
+                })
+                && pack.commands.iter().any(|command| {
+                    command == "cargo run -p xtask --profile agent --locked -- check-tautology --check"
                 })
         }));
         Ok(())

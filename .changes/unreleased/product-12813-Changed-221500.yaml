@@ -1,0 +1,9 @@
+project: product
+component: Developer experience
+kind: Changed
+body: "Clarify that `perllsp --check` is a native listed-file parser check, `--check-project` is an 80% parsability report rather than an all-clean gate, and real-Perl compile observation is editor/DAP `perl -c`."
+time: 2026-08-26T22:15:00Z
+custom:
+  PR: "12813"
+  Slug: checking-docs-convergence
+  Breaking: "no"

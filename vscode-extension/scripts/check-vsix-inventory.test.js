@@ -5,9 +5,20 @@ const {
   classifyInventoryViolations,
   compareInventory,
   currentSourceBundleFile,
+  parseArgs,
   platformForPackagedFile,
   summarizeInventory,
 } = require('./check-vsix-inventory');
+
+void test('rejects unknown, missing, and duplicate archive arguments', () => {
+  assert.throws(() => parseArgs(['--wrong']), /Unknown argument/);
+  assert.throws(() => parseArgs(['--vsix']), /requires a value/);
+  assert.throws(() => parseArgs(['--vsix', 'one.vsix', '--vsix', 'two.vsix']), /duplicate --vsix/);
+  assert.throws(
+    () => parseArgs(['--update-baseline', '--update-baseline']),
+    /duplicate --update-baseline/,
+  );
+});
 
 void test('summarizes packaged file sizes', () => {
   assert.deepEqual(

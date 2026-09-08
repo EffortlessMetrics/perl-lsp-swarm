@@ -516,10 +516,10 @@ pub fn send_raw_message(server: &mut LspServer, content: &str) {
 pub fn send_request_no_wait(server: &mut LspServer, req: Value) {
     let body = req.to_string();
     if let Err(e) = write!(server.writer, "Content-Length: {}\r\n\r\n{}", body.len(), body) {
-        must(Err::<(), _>(format!("Failed to write request (no-wait))): {}", e);
+        must(Err::<(), _>(format!("Failed to write request (no-wait)): {}", e)));
     }
     if let Err(e) = server.writer.flush() {
-        must(Err::<(), _>(format!("Failed to flush request (no-wait))): {}", e);
+        must(Err::<(), _>(format!("Failed to flush request (no-wait)): {}", e)));
     }
 }
 

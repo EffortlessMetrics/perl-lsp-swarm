@@ -32,7 +32,7 @@ An issue line identifying the candidate PR as `Historical deletion` or `Historic
 
 ### CP00-007 — proof-level contradiction
 
-A terminal relation is rejected when the issue acceptance requires installed/public/packaged/presentation/release/actual-host proof and the PR's stable boundary explicitly excludes the same proof level.
+A terminal relation is rejected when the issue acceptance requires installed/public/packaged/presentation/release/actual-host proof and the PR's stable boundary explicitly excludes the same proof level. An issue sentence that pairs a proof-level term with an unchanged/must-not-change clause, or that says that level is not required, does not count as requiring that proof level.
 
 ### CP00-008 — ordinary atomic close
 

@@ -18,7 +18,7 @@ fn supported_editor_inline_smoke_cli_writes_route_bundle() -> Result<()> {
     let bundle: Value = serde_json::from_str(&std::fs::read_to_string(&receipt)?)?;
     assert_eq!(
         bundle.get("schema_version").and_then(Value::as_str),
-        Some("supported-editor-inline-smoke.v1")
+        Some("supported-editor-inline-smoke.v2")
     );
     assert_eq!(bundle.get("provider").and_then(Value::as_str), Some("inline_completion"));
     assert_eq!(
@@ -68,9 +68,26 @@ fn supported_editor_inline_smoke_cli_writes_route_bundle() -> Result<()> {
     assert_route_surface(
         routes,
         "lsp4ij_upstream_integration",
-        "xtask/src/tasks/inline_completion_smoke.rs",
+        "crates/perl-lsp-rs/tests/lsp_inline_completion_registration_tests.rs",
+        "fn initialize_static_advertises_inline_completion_when_dynamic_registration_false",
+    )?;
+    assert_route_surface(
+        routes,
+        "lsp4ij_upstream_integration",
+        "crates/perl-lsp-rs/tests/lsp_inline_completion_registration_tests.rs",
         "client/registerCapability",
     )?;
+    assert_plane(routes, "lsp4ij_upstream_integration", "launch_identity", "registered")?;
+    assert_plane(routes, "lsp4ij_upstream_integration", "static_protocol", "registered")?;
+    assert_plane(routes, "lsp4ij_upstream_integration", "dynamic_protocol", "registered")?;
+    assert_plane(routes, "lsp4ij_upstream_integration", "host_support_boundary", "registered")?;
+    let actual_host =
+        assert_plane(routes, "lsp4ij_upstream_integration", "actual_host_evidence", "not_proven")?;
+    assert_eq!(
+        actual_host.get("owner").and_then(Value::as_str),
+        Some("#7719/#7977/#8179"),
+        "actual-host evidence must name its owning evidence programme"
+    );
     assert_route_surface(
         routes,
         "vscode_extension_path",
@@ -167,22 +184,54 @@ fn assert_route_surface(
         Some("registered"),
         "route {route} should be registered"
     );
-    let proof_surfaces = route_entry
-        .get("proof_surfaces")
-        .and_then(Value::as_array)
-        .ok_or_else(|| anyhow!("route {route} proof_surfaces missing"))?;
-    let surface = proof_surfaces
-        .iter()
-        .find(|surface| surface.get("path").and_then(Value::as_str) == Some(path))
-        .ok_or_else(|| anyhow!("route {route} missing proof surface {path}"))?;
-    let markers = surface
-        .get("required_markers")
-        .and_then(Value::as_array)
-        .ok_or_else(|| anyhow!("route {route} surface {path} required_markers missing"))?;
-    assert!(
-        markers.iter().any(|value| value.as_str() == Some(marker)),
-        "route {route} surface {path} missing marker {marker}"
-    );
+    let planes = route_entry
+        .get("proof_planes")
+        .and_then(Value::as_object)
+        .ok_or_else(|| anyhow!("route {route} proof_planes missing"))?;
+    let mut searched_planes = Vec::new();
+    for (plane_name, plane) in planes {
+        let surfaces = plane
+            .get("proof_surfaces")
+            .and_then(Value::as_array)
+            .ok_or_else(|| anyhow!("route {route} plane {plane_name} proof_surfaces missing"))?;
+        if let Some(surface) = surfaces
+            .iter()
+            .find(|surface| surface.get("path").and_then(Value::as_str) == Some(path))
+        {
+            let markers =
+                surface.get("required_markers").and_then(Value::as_array).ok_or_else(|| {
+                    anyhow!(
+                        "route {route} plane {plane_name} surface {path} required_markers missing"
+                    )
+                })?;
+            if markers.iter().any(|value| value.as_str() == Some(marker)) {
+                return Ok(());
+            }
+            searched_planes.push(plane_name.clone());
+        }
+    }
+    Err(anyhow!(
+        "route {route} has no proof surface {path} with marker {marker} (searched planes: {searched_planes:?})"
+    ))
+}
 
-    Ok(())
+fn assert_plane<'a>(
+    routes: &'a Map<String, Value>,
+    route: &str,
+    plane: &str,
+    status: &str,
+) -> Result<&'a Value> {
+    let route_entry = routes.get(route).ok_or_else(|| anyhow!("route {route} missing"))?;
+    let planes = route_entry
+        .get("proof_planes")
+        .and_then(Value::as_object)
+        .ok_or_else(|| anyhow!("route {route} proof_planes missing"))?;
+    let plane_entry =
+        planes.get(plane).ok_or_else(|| anyhow!("route {route} missing plane {plane}"))?;
+    assert_eq!(
+        plane_entry.get("status").and_then(Value::as_str),
+        Some(status),
+        "route {route} plane {plane} should be {status}"
+    );
+    Ok(plane_entry)
 }

@@ -80,7 +80,7 @@ impl<'a> Parser<'a> {
 
     fn parse_unary_inner(&mut self) -> ParseResult<Node> {
         if self.peek_kind() == Some(TokenKind::Slash) {
-            self.tokens.relex_as_term();
+            self.reclassify_head_as_term()?;
         }
 
         if self.is_contextual_await_start() {
