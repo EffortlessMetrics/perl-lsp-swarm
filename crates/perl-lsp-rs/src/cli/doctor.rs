@@ -1039,8 +1039,16 @@ impl CargoProvenance {
 /// direct `.rustup/toolchains` binaries are rustup-installed but bypass the
 /// shim; anything else (apt/distro cargo) ignores the pin.
 fn classify_cargo_provenance(cargo_path: &str) -> CargoProvenance {
-    let normalized = cargo_path.to_lowercase().replace('\\', "/");
-    if normalized.contains(".cargo/bin") {
+    classify_cargo_provenance_with_home(cargo_path, std::env::var("CARGO_HOME").ok().as_deref())
+}
+
+fn classify_cargo_provenance_with_home(
+    cargo_path: &str,
+    cargo_home: Option<&str>,
+) -> CargoProvenance {
+    let normalized = normalize_cargo_path(cargo_path);
+    let parent = normalized.rsplit_once('/').map(|(parent, _)| parent);
+    if parent.is_some_and(|parent| is_rustup_shim_bin(parent, cargo_home)) {
         return CargoProvenance::RustupShim;
     }
     if normalized.contains("/.rustup/toolchains/") {
@@ -1048,21 +1056,24 @@ fn classify_cargo_provenance(cargo_path: &str) -> CargoProvenance {
         // rustup shim and therefore does not select rust-toolchain.toml.
         return CargoProvenance::RustupToolchain;
     }
-    // A rustup proxy under a custom CARGO_HOME (the repository explicitly
-    // supports that layout) lives in "$CARGO_HOME/bin" and still honors
-    // rust-toolchain.toml, so it must not be labeled non_rustup.
-    if let Ok(cargo_home) = std::env::var("CARGO_HOME") {
-        let home_bin = std::path::PathBuf::from(&cargo_home)
-            .join("bin")
-            .display()
-            .to_string()
-            .to_lowercase()
-            .replace('\\', "/");
-        if normalized.starts_with(&home_bin) {
-            return CargoProvenance::RustupShim;
-        }
-    }
     CargoProvenance::NonRustup
+}
+
+fn normalize_cargo_path(path: &str) -> String {
+    path.trim_end_matches(['/', '\\']).to_ascii_lowercase().replace('\\', "/")
+}
+
+fn is_rustup_shim_bin(parent: &str, cargo_home: Option<&str>) -> bool {
+    let default_bin = parent == ".cargo/bin" || parent.ends_with("/.cargo/bin");
+    if default_bin {
+        return true;
+    }
+
+    let Some(cargo_home) = cargo_home else {
+        return false;
+    };
+    let cargo_home = normalize_cargo_path(cargo_home).trim_end_matches('/').to_string();
+    !cargo_home.is_empty() && parent == format!("{cargo_home}/bin")
 }
 
 fn probe_native_cargo() -> CargoToolchainReport {
@@ -1292,11 +1303,19 @@ fn other_named_identities(
 /// Fixed, well-known default install locations probed for additional perl
 /// identities (#12595: common locations only — never a filesystem scan).
 fn common_perl_candidate_paths(windows_host: bool) -> Vec<PathBuf> {
+    common_perl_candidate_paths_with_program_files(
+        windows_host,
+        std::env::var("ProgramFiles").ok().as_deref(),
+    )
+}
+
+fn common_perl_candidate_paths_with_program_files(
+    windows_host: bool,
+    program_files: Option<&str>,
+) -> Vec<PathBuf> {
     if windows_host {
-        let program_files = std::env::var("ProgramFiles")
-            .ok()
-            .filter(|value| !value.trim().is_empty())
-            .unwrap_or_else(|| r"C:\Program Files".to_string());
+        let program_files =
+            program_files.filter(|value| !value.trim().is_empty()).unwrap_or(r"C:\Program Files");
         vec![
             PathBuf::from("C:\\Strawberry\\perl\\bin\\perl.exe"),
             PathBuf::from("C:\\Perl64\\bin\\perl.exe"),
@@ -3062,6 +3081,39 @@ mod tests {
             CargoProvenance::RustupShim
         );
         assert_eq!(
+            classify_cargo_provenance(r"C:/Users/dev/.cargo/bin/cargo.exe"),
+            CargoProvenance::RustupShim
+        );
+        assert_eq!(
+            classify_cargo_provenance(r"C:\Users\dev\.cargo\bin-other\cargo.exe"),
+            CargoProvenance::NonRustup
+        );
+        assert_eq!(
+            classify_cargo_provenance(r"C:\Users\dev\.cargo\bin\nested\cargo.exe"),
+            CargoProvenance::NonRustup
+        );
+        assert_eq!(
+            classify_cargo_provenance_with_home(
+                r"D:\rustup-cache\bin\cargo.exe",
+                Some(r"D:\rustup-cache"),
+            ),
+            CargoProvenance::RustupShim
+        );
+        assert_eq!(
+            classify_cargo_provenance_with_home(
+                r"D:\rustup-cache\bin-other\cargo.exe",
+                Some(r"D:\rustup-cache"),
+            ),
+            CargoProvenance::NonRustup
+        );
+        assert_eq!(
+            classify_cargo_provenance_with_home(
+                r"D:\rustup-cache\bin\nested\cargo.exe",
+                Some(r"D:\rustup-cache"),
+            ),
+            CargoProvenance::NonRustup
+        );
+        assert_eq!(
             classify_cargo_provenance("/home/dev/.rustup/toolchains/1.95.0-x86_64/bin/cargo"),
             CargoProvenance::RustupToolchain
         );
@@ -3313,10 +3365,13 @@ mod tests {
         assert!(
             windows_candidates.iter().any(|path| path.display().to_string().contains("Perl64"))
         );
-        assert!(windows_candidates.iter().any(|path| {
-            path.display().to_string().contains("Program Files")
-                && path.display().to_string().contains("Strawberry")
-        }));
+        let injected_program_files = PathBuf::from(r"X:\Portable Programs");
+        let injected_candidates =
+            common_perl_candidate_paths_with_program_files(true, Some(r"X:\Portable Programs"));
+        assert!(
+            injected_candidates
+                .contains(&injected_program_files.join(r"Strawberry\perl\bin\perl.exe"))
+        );
         assert_eq!(common_perl_candidate_paths(false).len(), 1);
     }
 
