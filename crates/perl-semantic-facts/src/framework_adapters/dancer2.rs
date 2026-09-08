@@ -894,6 +894,35 @@ mod tests {
     }
 
     #[test]
+    fn inactive_exclusions_use_the_reviewed_union_without_importing_keywords() -> Result<(), String>
+    {
+        let evidence =
+            parse_dancer2_import_args(&["!uri_for_route".to_string(), "!before".to_string()]);
+        let detection = AdapterDetectionResult::new(
+            dancer2_descriptor(),
+            SourceGeneration::known("inactive-exclusion-test"),
+            DetectionOutcome::Unsupported { reason: "framework version was not observed".into() },
+        );
+        let facts = dancer2_activation_facts(&detection, Some("App"), &evidence);
+
+        // Without an admitted version, exclusion metadata recognizes the reviewed
+        // union. This does not assert that any union keyword was imported.
+        if !matches!(facts.state, Dancer2ActivationState::NotActivated { .. })
+            || facts.is_exact()
+            || !facts.keywords.is_empty()
+        {
+            return Err(format!("inactive exclusion evidence published keyword facts: {facts:?}"));
+        }
+        if facts.unknown_exclusions != vec!["before".to_string()] {
+            return Err(format!(
+                "expected only the non-keyword hook name to remain unknown: {:?}",
+                facts.unknown_exclusions
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
     fn parses_literal_appname_dsl_and_exclusions() {
         let args: Vec<String> = ["appname", "=>", "'MyApp'", ",", "'!get'", "!", "post"]
             .iter()
