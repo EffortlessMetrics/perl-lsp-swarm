@@ -741,7 +741,15 @@ fn an_implementation_without_its_production_consumer_is_not_landed() -> Result<(
 /// production probe when the declaration and dispatch are absent.
 #[test]
 fn comments_and_literals_cannot_satisfy_dispatch_anchors() -> Result<()> {
-    let tree = FakeTree::from_real()?
+    let real_tree = FakeTree::from_real()?;
+    let (real_outcome, real_unmet) = probe_for("C02", &real_tree)?;
+    if real_outcome != ProbeOutcome::Partial
+        || real_unmet.iter().any(|component| component == "current_tree_probes")
+    {
+        bail!("real C02 dispatch probe is not positive: {real_outcome:?} unmet={real_unmet:?}");
+    }
+
+    let tree = real_tree
         .without_anchor("xtask/src/main.rs", "ModuleTrainCommand::Status")?
         .without_anchor("xtask/src/main.rs", "module_train::run_status")?
         .with_added(
@@ -749,6 +757,10 @@ fn comments_and_literals_cannot_satisfy_dispatch_anchors() -> Result<()> {
             r#"
                 // ModuleTrainCommand::Status
                 const DOCUMENTATION: &str = "module_train::run_status";
+                #[cfg(test)]
+                fn decoy() {
+                    let _ = module_train::run_status;
+                }
             "#,
         );
     let (outcome, unmet) = probe_for("C02", &tree)?;

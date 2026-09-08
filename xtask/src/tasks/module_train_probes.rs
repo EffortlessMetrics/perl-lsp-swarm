@@ -110,6 +110,15 @@ fn semantic_anchor_present(source: &str, anchor: &str) -> bool {
         return type_present(&file, name, TypeKind::Enum);
     }
 
+    if anchor.starts_with("ModuleTrainCommand::")
+        || anchor.starts_with("ModuleTrainLiveCommand::")
+    {
+        return dispatch_variant_present(&file, anchor);
+    }
+    if anchor.starts_with("module_train::") || anchor.starts_with("module_train_live::") {
+        return dispatch_call_present(&file, anchor);
+    }
+
     let segments: Vec<&str> = anchor.split("::").collect();
     let mut visitor = PathVisitor {
         expected: segments,
@@ -117,6 +126,110 @@ fn semantic_anchor_present(source: &str, anchor: &str) -> bool {
     };
     visitor.visit_file(&file);
     visitor.found
+}
+
+fn dispatch_variant_present(file: &syn::File, anchor: &str) -> bool {
+    let mut visitor = DispatchVisitor {
+        expected: anchor.split("::").collect(),
+        mode: DispatchMode::Variant,
+        in_match_arm: false,
+        found: false,
+    };
+    visitor.visit_file(file);
+    visitor.found
+}
+
+fn dispatch_call_present(file: &syn::File, anchor: &str) -> bool {
+    let mut visitor = DispatchVisitor {
+        expected: anchor.split("::").collect(),
+        mode: DispatchMode::Call,
+        in_match_arm: false,
+        found: false,
+    };
+    visitor.visit_file(file);
+    visitor.found
+}
+
+#[derive(Clone, Copy)]
+enum DispatchMode {
+    Variant,
+    Call,
+}
+
+struct DispatchVisitor<'a> {
+    expected: Vec<&'a str>,
+    mode: DispatchMode,
+    in_match_arm: bool,
+    found: bool,
+}
+
+impl<'ast> Visit<'ast> for DispatchVisitor<'_> {
+    fn visit_item_fn(&mut self, node: &'ast syn::ItemFn) {
+        if has_test_cfg(&node.attrs) {
+            return;
+        }
+        syn::visit::visit_item_fn(self, node);
+    }
+
+    fn visit_item_mod(&mut self, node: &'ast syn::ItemMod) {
+        if has_test_cfg(&node.attrs) {
+            return;
+        }
+        syn::visit::visit_item_mod(self, node);
+    }
+
+    fn visit_expr_match(&mut self, node: &'ast syn::ExprMatch) {
+        self.visit_expr(&node.expr);
+        for arm in &node.arms {
+            if matches!(self.mode, DispatchMode::Variant)
+                && pattern_contains_path(&arm.pat, &self.expected)
+            {
+                self.found = true;
+            }
+            let was_in_match_arm = self.in_match_arm;
+            self.in_match_arm = true;
+            self.visit_arm(arm);
+            self.in_match_arm = was_in_match_arm;
+        }
+    }
+
+    fn visit_expr_call(&mut self, node: &'ast syn::ExprCall) {
+        if matches!(self.mode, DispatchMode::Call)
+            && self.in_match_arm
+            && expression_path_matches(&node.func, &self.expected)
+        {
+            self.found = true;
+        }
+        syn::visit::visit_expr_call(self, node);
+    }
+}
+
+fn has_test_cfg(attrs: &[syn::Attribute]) -> bool {
+    attrs.iter().any(|attr| {
+        attr.path().is_ident("cfg")
+            && matches!(&attr.meta, syn::Meta::List(meta) if meta.tokens.to_string().contains("test"))
+    })
+}
+
+fn pattern_contains_path(pattern: &syn::Pat, expected: &[&str]) -> bool {
+    let mut visitor = PathVisitor {
+        expected: expected.to_vec(),
+        found: false,
+    };
+    visitor.visit_pat(pattern);
+    visitor.found
+}
+
+fn expression_path_matches(expression: &syn::Expr, expected: &[&str]) -> bool {
+    let syn::Expr::Path(path) = expression else {
+        return false;
+    };
+    path.segments.len() == expected.len()
+        && path
+            .segments
+            .iter()
+            .zip(expected)
+            .all(|(segment, expected)| segment.ident == *expected)
 }
 
 fn function_present(file: &syn::File, name: &str, public: bool) -> bool {
