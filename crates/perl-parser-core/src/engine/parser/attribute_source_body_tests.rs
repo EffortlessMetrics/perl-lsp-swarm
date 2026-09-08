@@ -60,6 +60,7 @@ fn attribute_source_preservation_keeps_adjacent_and_prototype_forms() -> Result<
         (":Custom(a b) Other(c d);", vec!["Custom(a b)", "Other(c d)"]),
         (":default(1 + 2);", vec!["default(1 + 2)"]),
         (":prototype($);", vec!["prototype($)"]),
+        (":prototype( $ $ );", vec!["prototype( $ $ )"]),
         (":param :reader;", vec!["param", "reader"]),
     ] {
         let mut parser = Parser::new(source);

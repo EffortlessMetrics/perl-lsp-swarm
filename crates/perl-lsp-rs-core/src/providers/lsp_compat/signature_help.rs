@@ -324,7 +324,9 @@ impl SignatureHelpProvider {
                 label.push_str(proto);
 
                 // Sophisticated prototype parsing
-                for (i, ch) in proto.chars().enumerate() {
+                // Attribute bodies retain source trivia. Parameter numbering
+                // must retain the prior trivia-free prototype interpretation.
+                for (i, ch) in proto.chars().filter(|ch| !ch.is_whitespace()).enumerate() {
                     match ch {
                         '$' => params.push(ParameterInfo {
                             label: format!("$arg{}", i + 1),
@@ -486,6 +488,32 @@ mod tests {
     use super::*;
     use perl_parser_core::Parser;
     use perl_tdd_support::{must, must_some};
+
+    #[test]
+    fn prototype_parameter_numbers_ignore_preserved_source_whitespace() -> Result<(), String> {
+        for prototype in ["$$", " $ $ ", "\t$\t$\r\n"] {
+            let source = format!("sub foo :prototype({prototype}) {{}}");
+            let ast = Parser::new(&source).parse().map_err(|error| error.to_string())?;
+            let provider = SignatureHelpProvider::new(&ast);
+            let signatures = provider.get_signatures("foo");
+            let signature = signatures.first().ok_or("missing prototype signature")?;
+            let labels: Vec<_> =
+                signature.parameters.iter().map(|param| param.label.as_str()).collect();
+            if labels != ["$arg1", "$arg2"] {
+                return Err(format!(
+                    "prototype {prototype:?} produced parameter labels {labels:?}"
+                ));
+            }
+            let docs: Vec<_> =
+                signature.parameters.iter().map(|param| param.documentation.as_deref()).collect();
+            if docs != [Some("Scalar parameter 1"), Some("Scalar parameter 2")] {
+                return Err(format!(
+                    "prototype {prototype:?} produced parameter documentation {docs:?}"
+                ));
+            }
+        }
+        Ok(())
+    }
 
     #[test]
     fn test_builtin_signature_help() {
