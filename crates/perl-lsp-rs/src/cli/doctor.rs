@@ -1650,12 +1650,10 @@ fn render_dev_environment_report(report: &DevEnvironmentReport) -> String {
         if let Some(path) = &flavor.bash_path {
             out.push_str(&format!(" | {path}"));
         }
-        if let Some(runs) = flavor.runs_repo_entrypoints {
-            out.push_str(&format!(
-                " | runs repo entrypoints: {}",
-                render_optional_bool(Some(runs))
-            ));
-        }
+        out.push_str(&format!(
+            " | runs repo entrypoints: {}",
+            render_entrypoint_evidence(flavor.runs_repo_entrypoints)
+        ));
         out.push('\n');
         out.push_str(&format!("      {}\n", flavor.note));
         if let Some(fix) = &flavor.fix {
@@ -1711,6 +1709,14 @@ fn render_optional_bool(value: Option<bool>) -> String {
         Some(true) => "yes".to_string(),
         Some(false) => "no".to_string(),
         None => "unknown".to_string(),
+    }
+}
+
+fn render_entrypoint_evidence(value: Option<bool>) -> &'static str {
+    match value {
+        Some(true) => "yes",
+        Some(false) => "no",
+        None => "not_proven",
     }
 }
 
@@ -3266,6 +3272,22 @@ mod tests {
         assert!(rendered.contains(BASH_PREREQUISITE_LINE));
         assert!(rendered.contains("Claim boundary:"));
         assert!(rendered.matches("Fix:").count() >= 4);
+    }
+
+    #[test]
+    fn render_dev_environment_report_labels_unproven_entrypoints_explicitly() {
+        let mut report = synthetic_dev_environment_report();
+        report.bash_flavors = vec![BashFlavorReport {
+            flavor: FLAVOR_GIT_BASH,
+            status: STATUS_PRESENT,
+            bash_path: Some(r"C:\Program Files\Git\bin\bash.exe".to_string()),
+            runs_repo_entrypoints: None,
+            note: "native POSIX bash is available; execution is not proven".to_string(),
+            fix: None,
+        }];
+
+        let rendered = render_dev_environment_report(&report);
+        assert!(rendered.contains("runs repo entrypoints: not_proven"));
     }
 
     #[test]
