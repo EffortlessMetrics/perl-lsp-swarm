@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
   "owner_issue": 15102,
-  "reason": "PR #15146 changes registered Run Health Check behavior and its lifecycle proof. Fresh Windows x64 VSIX packaging at candidate edc9fe108dd6dc4705b261192e44cb879b968635 measured only out/extension.js growing from 1679643 to 1683100 bytes (+3457); all other 28 archive paths and sizes match the merge-base baseline, including changelog.md after moving the release note to the Changie fragment vscode-15146-Fixed-000000.yaml. This declaration records the exact measured archive; no validator, threshold, or admission rule changes.",
+  "reason": "PR #15146 changes registered Run Health Check behavior and its lifecycle proof. Fresh Windows x64 VSIX packaging at candidate c3abe3ea42925ac36ec99c5ca11f18899d930dcf measured only out/extension.js growing from 1679643 to 1683112 bytes (+3469); all other 28 archive paths and sizes match the merge-base baseline, including changelog.md after moving the release note to the Changie fragment vscode-15146-Fixed-000000.yaml. This declaration records the exact measured archive; no validator, threshold, or admission rule changes.",
   "base_baseline_file_sha256": "5c73582a6a7ae22a9f648492731ef3315336bfb17553aee22bfb48c332f89411",
-  "candidate_baseline_file_sha256": "b0c779e1273937b80819114b590accb01b2f17b65079876536c0af4c3f4a22aa",
+  "candidate_baseline_file_sha256": "2e24b2b8738c4453953c04541b9b1530893def9b44cc08edfee8acc046502a83",
   "base_inventory_sha256": "7780c5f86aebdd24b900a76bf412fcc05ad1c1acfd0b16717be6444bd884bcbb",
-  "candidate_inventory_sha256": "a1b52bf67b6287f7e730d72427ede389a821374c63f2410baf37db46b98d2d56"
+  "candidate_inventory_sha256": "7c741c847b72b1368666524387b4847895ddde5f8f79a14f6ead1b008fbb0b09"
 }
