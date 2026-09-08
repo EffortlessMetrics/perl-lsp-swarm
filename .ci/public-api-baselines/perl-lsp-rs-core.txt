@@ -430,12 +430,12 @@ pub perl_lsp_rs_core::config::WorkspaceConfig::resolution_timeout_ms: u64
 pub perl_lsp_rs_core::config::WorkspaceConfig::use_perl5lib: bool
 pub perl_lsp_rs_core::config::WorkspaceConfig::use_system_inc: bool
 pub fn perl_lsp_rs_core::config::WorkspaceConfig::apply_declared_dependency_reads(&mut self, reads: &[(perl_lsp_rs_core::config::DeclaredDependencySource, perl_lsp_rs_core::config::MetadataSourceRead)])
-pub fn perl_lsp_rs_core::config::WorkspaceConfig::preserve_metadata_state_from(&mut self, previous: &perl_lsp_rs_core::config::WorkspaceConfig)
 pub fn perl_lsp_rs_core::config::WorkspaceConfig::effective_include_paths(&self, perl5lib_paths: &[alloc::string::String]) -> alloc::vec::Vec<alloc::string::String>
 pub fn perl_lsp_rs_core::config::WorkspaceConfig::env_perl_lib_paths() -> alloc::vec::Vec<alloc::string::String>
 pub fn perl_lsp_rs_core::config::WorkspaceConfig::get_system_inc(&mut self) -> &[std::path::PathBuf]
 pub fn perl_lsp_rs_core::config::WorkspaceConfig::get_system_inc_probe_outcome(&mut self) -> perl_lsp_rs_core::config::SystemIncProbeOutcome
 pub fn perl_lsp_rs_core::config::WorkspaceConfig::parse_perl5lib(value: &str) -> alloc::vec::Vec<alloc::string::String>
+pub fn perl_lsp_rs_core::config::WorkspaceConfig::preserve_metadata_state_from(&mut self, previous: &Self)
 pub fn perl_lsp_rs_core::config::WorkspaceConfig::refresh_declared_dependencies(&mut self, workspace_root: &std::path::Path)
 pub fn perl_lsp_rs_core::config::WorkspaceConfig::refresh_dependency_include_paths(&mut self, workspace_root: &std::path::Path)
 pub fn perl_lsp_rs_core::config::WorkspaceConfig::refresh_dependency_include_paths_with_declaration(&mut self, workspace_root: &std::path::Path, declaration_present: core::option::Option<bool>)
