@@ -271,25 +271,24 @@ describe('LanguageClientLifecycle client cleanup admission', () => {
     expect(controller.snapshot.state).toBe('failed');
   });
 
-  test.each(['shutdown', 'close'] as const)(
-    'a library %s failure that clears the process handle still blocks replacement',
-    async (failureMode) => {
-      const { controller, clients } = makeProcessBoundController();
-      const first = await controller.start();
-      const child = first!.serverProcess!;
-      first!.stop.mockImplementation(async () => {
-        first!.terminal = true;
-        first!.serverProcess = undefined;
-        throw new Error(`Client ${failureMode} failed`);
-      });
+  test('a library-cleared process handle blocks replacement when cleanup calls resolve', async () => {
+    const { controller, clients } = makeProcessBoundController();
+    const first = await controller.start();
+    const child = first!.serverProcess!;
 
-      await expect(controller.restart()).rejects.toMatchObject({ reason: 'cleanup-incomplete' });
-      expect(clients).toHaveLength(1);
-      expect(first!.serverProcess).toBeUndefined();
-      expect(child.exited).toBe(false);
-      expect(controller.snapshot.state).toBe('failed');
-    },
-  );
+    // vscode-languageclient can move to Stopped and clear serverProcess before
+    // the lifecycle owner begins its restart settlement. The captured child is
+    // still live, so the missing client handle cannot be treated as terminal.
+    first!.terminal = true;
+    first!.serverProcess = undefined;
+
+    await expect(controller.restart()).rejects.toMatchObject({ reason: 'cleanup-incomplete' });
+    expect(clients).toHaveLength(1);
+    expect(first!.stop).toHaveBeenCalledTimes(1);
+    expect(first!.dispose).toHaveBeenCalledTimes(1);
+    expect(child.exited).toBe(false);
+    expect(controller.snapshot.state).toBe('failed');
+  });
 
   test('a Stopped client whose captured server process has exited admits the replacement (#14155)', async () => {
     const { controller, clients } = makeProcessBoundController();
