@@ -15,26 +15,12 @@ import { runWithoutForcedWorkspaceTrust } from '../runVsCodeTests';
 import { workspaceSmokeLaunchArgs, workspaceSmokeTrustMode } from '../workspaceSmokeOptions';
 
 const EXTENSION_ID = 'EffortlessMetrics.perl-lsp-rs';
-export const CANDIDATE_PLATFORM_UNAVAILABLE_RECEIPT_NAME =
-  'vscode_candidate_platform_unavailable.json';
-/** Reserved child exit code when this boundary cannot write its receipt. */
-export const CANDIDATE_PLATFORM_UNAVAILABLE_EXIT_CODE = 2;
 
-class CandidatePlatformUnavailableReceiptError extends Error {
+class CandidateBoundPlatformUnavailableError extends Error {
   constructor(message: string) {
     super(message);
-    this.name = 'CandidatePlatformUnavailableReceiptError';
+    this.name = 'CandidateBoundPlatformUnavailableError';
   }
-}
-
-export interface CandidatePlatformUnavailableReceipt {
-  schema_version: 1;
-  outcome: 'blocked';
-  stage: 'candidate_bound_platform';
-  platform: NodeJS.Platform;
-  arch: string;
-  disposition: 'unavailable';
-  error: string;
 }
 
 type ExtensionSource = 'marketplace' | 'open-vsx' | 'vsix';
@@ -80,40 +66,10 @@ export function assertCandidateBoundInstallSource({
 
 export function assertCandidateBoundPlatform(platform: string, candidateBound: boolean): void {
   if (candidateBound && platform !== 'linux') {
-    throw new Error(
+    throw new CandidateBoundPlatformUnavailableError(
       `Candidate-bound installed acceptance is restricted to Linux; refusing ${platform} bundled-server digest binding.`,
     );
   }
-}
-
-export function buildCandidatePlatformUnavailableReceipt(
-  platform: NodeJS.Platform = process.platform,
-  arch = process.arch,
-  error = `Candidate-bound installed acceptance is restricted to Linux; refusing ${platform} bundled-server digest binding.`,
-): CandidatePlatformUnavailableReceipt {
-  return {
-    schema_version: 1,
-    outcome: 'blocked',
-    stage: 'candidate_bound_platform',
-    platform,
-    arch,
-    disposition: 'unavailable',
-    error,
-  };
-}
-
-export function writeCandidatePlatformUnavailableReceipt(
-  receiptsRoot: string,
-  platform: NodeJS.Platform = process.platform,
-  arch = process.arch,
-): string {
-  fs.mkdirSync(receiptsRoot, { recursive: true });
-  const receiptPath = path.join(receiptsRoot, CANDIDATE_PLATFORM_UNAVAILABLE_RECEIPT_NAME);
-  fs.writeFileSync(
-    receiptPath,
-    `${JSON.stringify(buildCandidatePlatformUnavailableReceipt(platform, arch), null, 2)}\n`,
-  );
-  return receiptPath;
 }
 
 function smokePlatformLabel(): string {
@@ -455,16 +411,6 @@ async function main(): Promise<void> {
   const receiptsRoot =
     process.env.PERL_LSP_SMOKE_RECEIPTS_DIR ||
     path.join(repoRoot, 'target', 'receipts', 'vscode-smoke');
-  if (candidateBound && process.platform !== 'linux') {
-    try {
-      writeCandidatePlatformUnavailableReceipt(receiptsRoot);
-    } catch (error: unknown) {
-      const detail = error instanceof Error ? error.message : String(error);
-      throw new CandidatePlatformUnavailableReceiptError(
-        `Unable to write the candidate-bound platform-unavailable receipt: ${detail}`,
-      );
-    }
-  }
   assertCandidateBoundPlatform(
     process.platform === 'linux' ? 'linux' : process.platform,
     candidateBound,
@@ -590,10 +536,6 @@ if (require.main === module) {
   main().catch((error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);
     process.stderr.write(`${message}\n`);
-    process.exit(
-      error instanceof CandidatePlatformUnavailableReceiptError
-        ? CANDIDATE_PLATFORM_UNAVAILABLE_EXIT_CODE
-        : 1,
-    );
+    process.exit(error instanceof CandidateBoundPlatformUnavailableError ? 2 : 1);
   });
 }

@@ -577,59 +577,6 @@ void test('an unavailable host-resolution receipt is not a product smoke failure
   assert.notEqual(result.host_resolution.requested_version, 'stable');
 });
 
-void test('an unsupported candidate-bound platform is not a product smoke failure', () => {
-  const platformUnavailable = {
-    schema_version: 1,
-    outcome: 'blocked',
-    stage: 'candidate_bound_platform',
-    platform: 'win32',
-    arch: 'x64',
-    disposition: 'unavailable',
-    error: 'candidate-bound installed acceptance is restricted to Linux',
-  };
-  const receiptRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-platform-parent-'));
-  try {
-    fs.writeFileSync(
-      path.join(receiptRoot, 'vscode_candidate_platform_unavailable.json'),
-      JSON.stringify(platformUnavailable),
-    );
-    const result = interpretBehavioralSmokeExit({
-      status: 1,
-      receiptsRoot: receiptRoot,
-    });
-    assert.equal(result.status, 'not_proven');
-    assert.equal(result.reason, 'candidate_bound_platform_unavailable');
-    assert.deepEqual(result.platform_unavailable, platformUnavailable);
-  } finally {
-    fs.rmSync(receiptRoot, { recursive: true, force: true });
-  }
-});
-
-void test('a stale unsupported-platform receipt is cleared before the next child run', () => {
-  const receiptRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-platform-stale-'));
-  const priorRoot = process.env.PERL_LSP_SMOKE_RECEIPTS_DIR;
-  const priorLabel = process.env.PERL_LSP_SMOKE_SOURCE_LABEL;
-  try {
-    process.env.PERL_LSP_SMOKE_RECEIPTS_DIR = receiptRoot;
-    process.env.PERL_LSP_SMOKE_SOURCE_LABEL = 'current-source';
-    fs.writeFileSync(
-      path.join(receiptRoot, 'vscode_candidate_platform_unavailable.json'),
-      '{"stale":true}',
-    );
-    clearSmokeStageReceipts(receiptRoot);
-    assert.equal(
-      fs.existsSync(path.join(receiptRoot, 'vscode_candidate_platform_unavailable.json')),
-      false,
-    );
-  } finally {
-    if (priorRoot === undefined) delete process.env.PERL_LSP_SMOKE_RECEIPTS_DIR;
-    else process.env.PERL_LSP_SMOKE_RECEIPTS_DIR = priorRoot;
-    if (priorLabel === undefined) delete process.env.PERL_LSP_SMOKE_SOURCE_LABEL;
-    else process.env.PERL_LSP_SMOKE_SOURCE_LABEL = priorLabel;
-    fs.rmSync(receiptRoot, { recursive: true, force: true });
-  }
-});
-
 void test('a typed unsupported-platform child exit stays not_proven without a receipt', () => {
   const receiptRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-platform-unwritable-'));
   try {
@@ -641,7 +588,7 @@ void test('a typed unsupported-platform child exit stays not_proven without a re
       exists: () => false,
     });
     assert.equal(result.status, 'not_proven');
-    assert.equal(result.reason, 'candidate_bound_platform_unavailable_receipt_write_failed');
+    assert.equal(result.reason, 'candidate_bound_platform_unavailable');
   } finally {
     fs.rmSync(receiptRoot, { recursive: true, force: true });
   }

@@ -7,9 +7,6 @@ import { test } from 'node:test';
 import {
   assertCandidateBoundInstallSource,
   assertCandidateBoundPlatform,
-  buildCandidatePlatformUnavailableReceipt,
-  CANDIDATE_PLATFORM_UNAVAILABLE_RECEIPT_NAME,
-  writeCandidatePlatformUnavailableReceipt,
 } from './runPublishedSmoke';
 
 void test('candidate-bound Marketplace latest is refused before installation', () => {
@@ -45,20 +42,14 @@ void test('candidate-bound installed acceptance refuses non-Linux platform bindi
   assert.doesNotThrow(() => assertCandidateBoundPlatform('linux', true));
 });
 
-void test('unsupported candidate-bound platform writes a typed unavailable boundary', () => {
-  const receiptRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-platform-unavailable-'));
-  try {
-    const receiptPath = writeCandidatePlatformUnavailableReceipt(receiptRoot, 'win32', 'x64');
-    assert.deepEqual(JSON.parse(fs.readFileSync(receiptPath, 'utf8')), {
-      ...buildCandidatePlatformUnavailableReceipt('win32', 'x64'),
-    });
-    assert.throws(() => assertCandidateBoundPlatform('win32', true), /restricted to Linux/);
-  } finally {
-    fs.rmSync(receiptRoot, { recursive: true, force: true });
-  }
+void test('unsupported candidate-bound platform throws the typed boundary error', () => {
+  assert.throws(
+    () => assertCandidateBoundPlatform('win32', true),
+    /restricted to Linux.*win32 bundled-server digest binding/,
+  );
 });
 
-void test('the published-smoke child emits the unsupported-platform boundary before host work', () => {
+void test('the published-smoke child reserves exit 2 before host or receipt work', () => {
   const receiptRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'perl lsp-platform-child-'));
   const preloadPath = path.join(receiptRoot, 'force-windows-platform.cjs');
   try {
@@ -86,25 +77,14 @@ void test('the published-smoke child emits the unsupported-platform boundary bef
     if (result.error) {
       throw new Error(`unsupported-platform child failed to spawn: ${result.error.message}`);
     }
-    assert.notEqual(result.status, 0);
+    assert.equal(result.status, 2);
     assert.match(result.stderr, /restricted to Linux/);
-    const receiptPath = path.join(receiptRoot, CANDIDATE_PLATFORM_UNAVAILABLE_RECEIPT_NAME);
-    assert.deepEqual(JSON.parse(fs.readFileSync(receiptPath, 'utf8')), {
-      schema_version: 1,
-      outcome: 'blocked',
-      stage: 'candidate_bound_platform',
-      platform: 'win32',
-      arch: 'x64',
-      disposition: 'unavailable',
-      error:
-        'Candidate-bound installed acceptance is restricted to Linux; refusing win32 bundled-server digest binding.',
-    });
   } finally {
     fs.rmSync(receiptRoot, { recursive: true, force: true });
   }
 });
 
-void test('the compiled child reserves exit 2 when the platform boundary receipt is unwritable', () => {
+void test('the compiled child reserves exit 2 with a file receipt root before filesystem work', () => {
   const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-platform-unwritable-'));
   const preloadPath = path.join(fixtureRoot, 'force-windows-platform.cjs');
   const receiptsRoot = path.join(fixtureRoot, 'receipts-root-file');
@@ -134,7 +114,7 @@ void test('the compiled child reserves exit 2 when the platform boundary receipt
       throw new Error(`unwritable-root child failed to spawn: ${result.error.message}`);
     }
     assert.equal(result.status, 2);
-    assert.match(result.stderr, /Unable to write the candidate-bound platform-unavailable receipt/);
+    assert.match(result.stderr, /restricted to Linux/);
 
     const { interpretBehavioralSmokeExit } = require('../../../scripts/run-local-vsix-smoke.js');
     const parent = interpretBehavioralSmokeExit({
@@ -144,7 +124,7 @@ void test('the compiled child reserves exit 2 when the platform boundary receipt
       receiptsRoot,
     });
     assert.equal(parent.status, 'not_proven');
-    assert.equal(parent.reason, 'candidate_bound_platform_unavailable_receipt_write_failed');
+    assert.equal(parent.reason, 'candidate_bound_platform_unavailable');
   } finally {
     fs.rmSync(fixtureRoot, { recursive: true, force: true });
   }

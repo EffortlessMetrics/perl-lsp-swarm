@@ -510,7 +510,6 @@ function clearSmokeStageReceipts(root = receiptsRoot()) {
   for (const receiptFile of [
     path.join(root, smokeSourceLabel(), smokePlatformLabel(), CHILD_RECEIPT_NAME),
     hostResolutionFailurePath(root),
-    candidatePlatformUnavailablePath(root),
   ]) {
     fs.rmSync(receiptFile, { force: true });
   }
@@ -635,17 +634,11 @@ function validateChildSmokeReceipt({
 
 /** Must match `HOST_RESOLUTION_FAILURE_RECEIPT_NAME` in vscodeHostResolution.ts. */
 const HOST_RESOLUTION_FAILURE_RECEIPT = 'vscode_host_resolution_failure.json';
-/** Must match `CANDIDATE_PLATFORM_UNAVAILABLE_RECEIPT_NAME` in runPublishedSmoke.ts. */
-const CANDIDATE_PLATFORM_UNAVAILABLE_RECEIPT = 'vscode_candidate_platform_unavailable.json';
-// Reserved by runPublishedSmoke.ts when this boundary cannot write its receipt.
+// Reserved by runPublishedSmoke.ts for the candidate-bound platform boundary.
 const CANDIDATE_PLATFORM_UNAVAILABLE_EXIT_CODE = 2;
 
 function hostResolutionFailurePath(root = receiptsRoot()) {
   return path.join(root, HOST_RESOLUTION_FAILURE_RECEIPT);
-}
-
-function candidatePlatformUnavailablePath(root = receiptsRoot()) {
-  return path.join(root, CANDIDATE_PLATFORM_UNAVAILABLE_RECEIPT);
 }
 
 /**
@@ -678,35 +671,6 @@ function readHostResolutionFailureReceipt(
   return { kind: 'invalid' };
 }
 
-function readCandidatePlatformUnavailableReceipt(
-  root = receiptsRoot(),
-  {
-    exists = (file) => fs.existsSync(file),
-    readFile = (file) => fs.readFileSync(file, 'utf8'),
-  } = {},
-) {
-  const receiptFile = candidatePlatformUnavailablePath(root);
-  if (!exists(receiptFile)) {
-    return { kind: 'absent' };
-  }
-  try {
-    const receipt = JSON.parse(readFile(receiptFile));
-    if (
-      receipt &&
-      typeof receipt === 'object' &&
-      receipt.schema_version === 1 &&
-      receipt.outcome === 'blocked' &&
-      receipt.stage === 'candidate_bound_platform' &&
-      receipt.disposition === 'unavailable'
-    ) {
-      return { kind: 'present', receipt };
-    }
-  } catch {
-    // Invalid JSON is still an unavailable-boundary instrument result.
-  }
-  return { kind: 'invalid' };
-}
-
 /**
  * A failed VS Code host-version resolution is not a product smoke failure.
  * The structured receipt is the visible boundary; `published_extension_smoke_failed`
@@ -726,7 +690,6 @@ function readCandidatePlatformUnavailableReceipt(
  *   exit_code: number | null,
  *   reason: string,
  *   host_resolution?: Record<string, unknown>,
- *   platform_unavailable?: Record<string, unknown>,
  * }}
  */
 function interpretBehavioralSmokeExit({
@@ -762,22 +725,6 @@ function interpretBehavioralSmokeExit({
       reason: 'vscode_host_resolution_receipt_invalid',
     };
   }
-  const platformFailure = readCandidatePlatformUnavailableReceipt(root, { exists, readFile });
-  if (platformFailure.kind === 'present') {
-    return {
-      status: 'not_proven',
-      exit_code: status ?? null,
-      reason: 'candidate_bound_platform_unavailable',
-      platform_unavailable: platformFailure.receipt,
-    };
-  }
-  if (platformFailure.kind === 'invalid') {
-    return {
-      status: 'not_proven',
-      exit_code: status ?? null,
-      reason: 'candidate_bound_platform_unavailable_receipt_invalid',
-    };
-  }
   if (
     candidateBound &&
     platform !== 'linux' &&
@@ -786,7 +733,7 @@ function interpretBehavioralSmokeExit({
     return {
       status: 'not_proven',
       exit_code: status,
-      reason: 'candidate_bound_platform_unavailable_receipt_write_failed',
+      reason: 'candidate_bound_platform_unavailable',
     };
   }
   if (spawnError) {
