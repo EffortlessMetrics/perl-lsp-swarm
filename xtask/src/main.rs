@@ -3189,9 +3189,9 @@ enum PerlCoreHarnessCommand {
         #[arg(long)]
         perl_tree: PathBuf,
 
-        /// Host Perl used to run upstream t/TEST or t/harness.
-        #[arg(long, default_value = "perl")]
-        host_perl: PathBuf,
+        /// Explicit override for the scheduler interpreter; defaults to the prepared tree's built perl ($TREE/perl).
+        #[arg(long)]
+        host_perl: Option<PathBuf>,
 
         /// Upstream scheduler to query.
         #[arg(long, value_enum, default_value_t = perl_core_harness::HarnessRunner::Test)]
@@ -3352,9 +3352,9 @@ enum PerlCoreHarnessCommand {
         #[arg(long)]
         perl_tree: PathBuf,
 
-        /// Host Perl used to run upstream t/TEST or t/harness.
-        #[arg(long, default_value = "perl")]
-        host_perl: PathBuf,
+        /// Explicit override for the scheduler interpreter; defaults to the prepared tree's built perl ($TREE/perl).
+        #[arg(long)]
+        host_perl: Option<PathBuf>,
 
         /// Upstream scheduler to run.
         #[arg(long, value_enum, default_value_t = perl_core_harness::HarnessRunner::Test)]
@@ -3453,9 +3453,9 @@ enum PerlCoreHarnessCommand {
         #[arg(long)]
         perl_tree: PathBuf,
 
-        /// Host Perl used to run upstream t/TEST or t/harness.
-        #[arg(long, default_value = "perl")]
-        host_perl: PathBuf,
+        /// Explicit override for the scheduler interpreter; defaults to the prepared tree's built perl ($TREE/perl).
+        #[arg(long)]
+        host_perl: Option<PathBuf>,
 
         /// Upstream scheduler to run.
         #[arg(long, value_enum, default_value_t = perl_core_harness::HarnessRunner::Test)]
@@ -7153,7 +7153,7 @@ mod tests {
                 PerlCoreHarnessCommand::Run {
                     mode: perl_core_harness::HarnessMode::Execute,
                     perl_tree: PathBuf::from("unused"),
-                    host_perl: PathBuf::from("perl"),
+                    host_perl: None,
                     runner: perl_core_harness::HarnessRunner::Test,
                     profile: perl_core_harness::HarnessProfile::Base,
                     tests: Vec::new(),
@@ -7186,7 +7186,7 @@ mod tests {
             command: Commands::PerlCoreHarness {
                 command: PerlCoreHarnessCommand::Discover {
                     perl_tree: missing_tree,
-                    host_perl: PathBuf::from("perl"),
+                    host_perl: None,
                     runner: perl_core_harness::HarnessRunner::Test,
                     profile: perl_core_harness::HarnessProfile::Base,
                     output: None,

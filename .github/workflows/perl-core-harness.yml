@@ -56,7 +56,6 @@ jobs:
         run: |
           cargo run -p xtask -- perl-core-harness smoke \
             --perl-tree "target/perl-core/upstream/${{ steps.upstream.outputs.ref }}/perl5" \
-            --host-perl perl \
             --profile base \
             --modes "${{ steps.upstream.outputs.modes }}" \
             --perl-ref "${{ steps.upstream.outputs.ref }}" \
@@ -67,7 +66,6 @@ jobs:
         run: |
           cargo run -p xtask -- perl-core-harness smoke \
             --perl-tree "target/perl-core/upstream/${{ steps.upstream.outputs.ref }}/perl5" \
-            --host-perl perl \
             --profile comp \
             --modes "${{ steps.upstream.outputs.modes }}" \
             --perl-ref "${{ steps.upstream.outputs.ref }}" \
@@ -78,7 +76,6 @@ jobs:
         run: |
           cargo run -p xtask -- perl-core-harness smoke \
             --perl-tree "target/perl-core/upstream/${{ steps.upstream.outputs.ref }}/perl5" \
-            --host-perl perl \
             --profile run \
             --modes "${{ steps.upstream.outputs.modes }}" \
             --perl-ref "${{ steps.upstream.outputs.ref }}" \
@@ -138,7 +135,6 @@ jobs:
         run: |
           cargo run -p xtask -- perl-core-harness smoke \
             --perl-tree "$PERL_TREE" \
-            --host-perl perl \
             --profile core \
             --modes "$PERL_MODES" \
             --perl-ref "$PERL_REF" \

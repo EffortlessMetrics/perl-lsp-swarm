@@ -403,7 +403,9 @@ fn filter_discovered_tests(
 #[derive(Debug, Clone)]
 pub struct DiscoverConfig {
     pub perl_tree: PathBuf,
-    pub host_perl: PathBuf,
+    /// Explicit override for the scheduler interpreter; `None` runs the
+    /// upstream scheduler under the prepared tree's built perl (`$TREE/perl`).
+    pub host_perl: Option<PathBuf>,
     pub runner: HarnessRunner,
     pub profile: HarnessProfile,
     pub output: Option<PathBuf>,
@@ -420,7 +422,9 @@ pub struct PrepareConfig {
 #[derive(Debug, Clone)]
 pub struct RunConfig {
     pub perl_tree: PathBuf,
-    pub host_perl: PathBuf,
+    /// Explicit override for the scheduler interpreter; `None` runs the
+    /// upstream scheduler under the prepared tree's built perl (`$TREE/perl`).
+    pub host_perl: Option<PathBuf>,
     pub runner: HarnessRunner,
     pub mode: HarnessMode,
     pub profile: HarnessProfile,
@@ -504,7 +508,9 @@ pub struct CompatibilityLoadConfig {
 #[derive(Debug, Clone)]
 pub struct SmokeConfig {
     pub perl_tree: PathBuf,
-    pub host_perl: PathBuf,
+    /// Explicit override for the scheduler interpreter; `None` runs the
+    /// upstream scheduler under the prepared tree's built perl (`$TREE/perl`).
+    pub host_perl: Option<PathBuf>,
     pub runner: HarnessRunner,
     pub profile: HarnessProfile,
     pub modes: Vec<HarnessMode>,
@@ -518,10 +524,11 @@ pub fn discover(config: DiscoverConfig) -> Result<()> {
     let perl_tree = canonicalize_existing_dir(&config.perl_tree, "prepared Perl tree")?;
     let t_dir = perl_tree.join("t");
     let script = validate_runner_script(&t_dir, config.runner)?;
+    let scheduler_perl = resolve_scheduler_perl(&perl_tree, config.host_perl.as_deref())?;
     let output_path = config.output.unwrap_or_else(|| default_discovery_path(config.profile));
 
     let output = invoke_dumptests(
-        &config.host_perl,
+        &scheduler_perl,
         &t_dir,
         &script,
         &profile_runner_args(config.profile, &t_dir, config.runner)?,
@@ -537,7 +544,7 @@ pub fn discover(config: DiscoverConfig) -> Result<()> {
         timestamp: Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
         perl_ref: perl_tree_ref(&perl_tree),
         prepared_tree: perl_tree.display().to_string(),
-        host_perl: config.host_perl.display().to_string(),
+        host_perl: scheduler_perl.display().to_string(),
         runner: config.runner,
         profile: config.profile,
         tests,
@@ -3319,12 +3326,19 @@ pub fn run_mode(config: RunConfig) -> Result<()> {
     let t_dir = run_tree.join("t");
     let script = validate_runner_script(&t_dir, config.runner)?;
     install_t_perl_wrapper(&run_tree)?;
+    // The scheduler runs against the disposable run copy; its built perl at
+    // the run-tree root is untouched by `install_t_perl_wrapper` (#15138).
+    let scheduler_perl = resolve_scheduler_perl(&run_tree, config.host_perl.as_deref())?;
+    // The receipt records the interpreter identity deterministically per
+    // prepared tree: the terminal-admission gate compares parse and compile
+    // reports, and the run-copy path carries a per-run nonce.
+    let receipt_host_perl = config.host_perl.clone().unwrap_or_else(|| perl_tree.join("perl"));
     let dumptests_args = if selected_tests.is_empty() {
         profile_runner_args(config.profile, &t_dir, config.runner)?
     } else {
         selected_tests.clone()
     };
-    let dumptests_output = invoke_dumptests(&config.host_perl, &t_dir, &script, &dumptests_args)?;
+    let dumptests_output = invoke_dumptests(&scheduler_perl, &t_dir, &script, &dumptests_args)?;
     let discovered = filter_discovered_tests(
         parse_dumptests_output(&dumptests_output.stdout)?,
         &selected_tests,
@@ -3338,7 +3352,7 @@ pub fn run_mode(config: RunConfig) -> Result<()> {
     }
 
     let output = invoke_harness_run(
-        &config.host_perl,
+        &scheduler_perl,
         &t_dir,
         &script,
         &dumptests_args,
@@ -3364,6 +3378,7 @@ pub fn run_mode(config: RunConfig) -> Result<()> {
         config: &config,
         perl_tree: &perl_tree,
         run_tree: &run_tree,
+        host_perl: &receipt_host_perl,
         observation: &observation,
     });
     let output_path =
@@ -3915,6 +3930,34 @@ fn canonicalize_existing_dir(path: &Path, label: &str) -> Result<PathBuf> {
         bail!("{label} does not exist or is not a directory: {}", path.display());
     }
     path.canonicalize().with_context(|| format!("canonicalizing {label}: {}", path.display()))
+}
+
+/// Resolve the interpreter that runs the upstream scheduler (`t/TEST` or
+/// `t/harness --dumptests`).
+///
+/// Upstream `make test` semantics run the scheduler under the tree's own
+/// built perl, so `$TREE/perl` is the default. An explicit `--host-perl`
+/// override wins but must name an existing file. A prepared tree without a
+/// built perl fails closed with a named error instead of silently falling
+/// back to a version-mismatched system perl (#15138).
+fn resolve_scheduler_perl(perl_tree: &Path, host_perl: Option<&Path>) -> Result<PathBuf> {
+    if let Some(override_perl) = host_perl {
+        if !override_perl.is_file() {
+            bail!(
+                "explicit --host-perl override does not exist or is not a file: {}",
+                override_perl.display()
+            );
+        }
+        return Ok(override_perl.to_path_buf());
+    }
+    let tree_perl = perl_tree.join("perl");
+    if !tree_perl.is_file() {
+        bail!(
+            "prepared Perl tree has no built perl at {}; pass --host-perl to override with a version-matched interpreter",
+            tree_perl.display()
+        );
+    }
+    Ok(tree_perl)
 }
 
 fn validate_runner_script(t_dir: &Path, runner: HarnessRunner) -> Result<PathBuf> {
@@ -5760,6 +5803,8 @@ struct BuildRunReportInput<'a> {
     config: &'a RunConfig,
     perl_tree: &'a Path,
     run_tree: &'a Path,
+    /// Resolved scheduler-interpreter identity recorded in the report.
+    host_perl: &'a Path,
     observation: &'a UpstreamObservationSet,
 }
 
@@ -5849,7 +5894,7 @@ fn build_run_report(input: BuildRunReportInput<'_>) -> RunReport {
         perl_ref: perl_tree_ref(input.perl_tree),
         prepared_tree: input.perl_tree.display().to_string(),
         run_tree: input.run_tree.display().to_string(),
-        host_perl: input.config.host_perl.display().to_string(),
+        host_perl: input.host_perl.display().to_string(),
         runner: input.config.runner,
         mode: input.config.mode,
         profile: input.config.profile,
@@ -6304,7 +6349,7 @@ mod tests {
     fn execute_mode_requires_explicit_selected_tests() -> TestResult {
         let config = RunConfig {
             perl_tree: PathBuf::from("unused"),
-            host_perl: PathBuf::from("perl"),
+            host_perl: None,
             runner: HarnessRunner::Test,
             mode: HarnessMode::Execute,
             profile: HarnessProfile::Base,
@@ -6326,7 +6371,7 @@ mod tests {
     fn execute_mode_rejects_non_allowlisted_test_selection() -> TestResult {
         let config = RunConfig {
             perl_tree: PathBuf::from("unused"),
-            host_perl: PathBuf::from("perl"),
+            host_perl: None,
             runner: HarnessRunner::Test,
             mode: HarnessMode::Execute,
             profile: HarnessProfile::Base,
@@ -6355,7 +6400,7 @@ mod tests {
         let temp = tempfile::tempdir()?;
         let config = RunConfig {
             perl_tree: temp.path().join("perl"),
-            host_perl: PathBuf::from("perl"),
+            host_perl: None,
             runner: HarnessRunner::Test,
             mode: HarnessMode::Parse,
             profile: HarnessProfile::Base,
@@ -6415,6 +6460,7 @@ mod tests {
             config: &config,
             perl_tree: temp.path(),
             run_tree: &run_tree,
+            host_perl: Path::new("perl"),
             observation: &observation,
         });
 
@@ -6442,7 +6488,7 @@ mod tests {
         let temp = tempfile::tempdir()?;
         let config = RunConfig {
             perl_tree: temp.path().join("perl"),
-            host_perl: PathBuf::from("perl"),
+            host_perl: None,
             runner: HarnessRunner::Test,
             mode: HarnessMode::Compile,
             profile: HarnessProfile::Base,
@@ -6485,6 +6531,7 @@ mod tests {
             config: &config,
             perl_tree: temp.path(),
             run_tree: &temp.path().join("run"),
+            host_perl: Path::new("perl"),
             observation: &observation,
         });
 
@@ -6590,7 +6637,7 @@ mod tests {
         let temp = tempfile::tempdir()?;
         let config = RunConfig {
             perl_tree: temp.path().join("perl"),
-            host_perl: PathBuf::from("perl"),
+            host_perl: None,
             runner: HarnessRunner::Test,
             mode: HarnessMode::Parse,
             profile: HarnessProfile::Base,
@@ -6637,6 +6684,7 @@ mod tests {
             config: &config,
             perl_tree: temp.path(),
             run_tree: &temp.path().join("run"),
+            host_perl: Path::new("perl"),
             observation: &observation,
         });
         assert_eq!(report.summary.files_total, 2);
@@ -8573,7 +8621,7 @@ mod tests {
 
         let config = RunConfig {
             perl_tree: temp.path().join("prepared"),
-            host_perl: PathBuf::from("perl"),
+            host_perl: None,
             runner: HarnessRunner::Test,
             mode: HarnessMode::Parse,
             profile: HarnessProfile::Base,
@@ -8602,6 +8650,7 @@ mod tests {
             config: &config,
             perl_tree: temp.path(),
             run_tree: &run_tree,
+            host_perl: Path::new("perl"),
             observation: &observation,
         });
         write_run_report(&run_path, &report)?;
@@ -9604,7 +9653,7 @@ mod tests {
     fn sample_smoke_config(modes: Vec<HarnessMode>) -> SmokeConfig {
         SmokeConfig {
             perl_tree: PathBuf::from("/tmp/perl"),
-            host_perl: PathBuf::from("perl"),
+            host_perl: None,
             runner: HarnessRunner::Test,
             profile: HarnessProfile::Base,
             modes,
@@ -9648,6 +9697,98 @@ mod tests {
         );
     }
 
+    #[test]
+    fn scheduler_perl_defaults_to_the_prepared_tree_built_perl() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let perl_tree = temp.path().join("prepared-perl");
+        fs::create_dir_all(&perl_tree)?;
+        let tree_perl = perl_tree.join("perl");
+        fs::write(&tree_perl, "sentinel built perl\n")?;
+
+        let resolved = resolve_scheduler_perl(&perl_tree, None)?;
+
+        assert_eq!(resolved, tree_perl);
+        Ok(())
+    }
+
+    #[test]
+    fn scheduler_perl_explicit_override_wins() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let perl_tree = temp.path().join("prepared-perl");
+        fs::create_dir_all(&perl_tree)?;
+        fs::write(perl_tree.join("perl"), "sentinel built perl\n")?;
+        let override_perl = temp.path().join("version-matched-perl");
+        fs::write(&override_perl, "sentinel override perl\n")?;
+
+        let resolved = resolve_scheduler_perl(&perl_tree, Some(&override_perl))?;
+
+        assert_eq!(resolved, override_perl);
+        Ok(())
+    }
+
+    #[test]
+    fn scheduler_perl_missing_tree_perl_fails_closed() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let perl_tree = temp.path().join("prepared-perl");
+        fs::create_dir_all(&perl_tree)?;
+
+        let Err(err) = resolve_scheduler_perl(&perl_tree, None) else {
+            bail!("a prepared tree without a built perl must fail closed");
+        };
+
+        let text = err.to_string();
+        assert!(text.contains("prepared Perl tree has no built perl at"), "unexpected: {text}");
+        assert!(text.contains("--host-perl"), "unexpected: {text}");
+        Ok(())
+    }
+
+    #[test]
+    fn scheduler_perl_missing_override_fails_closed() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let perl_tree = temp.path().join("prepared-perl");
+        fs::create_dir_all(&perl_tree)?;
+        fs::write(perl_tree.join("perl"), "sentinel built perl\n")?;
+        let missing_override = temp.path().join("missing-perl");
+
+        let Err(err) = resolve_scheduler_perl(&perl_tree, Some(&missing_override)) else {
+            bail!("a missing --host-perl override must fail closed");
+        };
+
+        assert!(
+            err.to_string().contains("explicit --host-perl override does not exist"),
+            "unexpected: {err}"
+        );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn discover_runs_scheduler_under_the_tree_built_perl_by_default() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let perl_tree = write_fake_perl_tree(temp.path())?;
+        let tree_perl = perl_tree.join("perl");
+        fs::write(&tree_perl, "#!/bin/sh\nexec /bin/sh \"$@\"\n")?;
+        set_executable(&tree_perl)?;
+        let output = temp.path().join("discovery.json");
+
+        discover(DiscoverConfig {
+            perl_tree: perl_tree.clone(),
+            host_perl: None,
+            runner: HarnessRunner::Test,
+            profile: HarnessProfile::Base,
+            output: Some(output.clone()),
+        })?;
+
+        let raw = fs::read_to_string(output)?;
+        let report: DiscoveryReport = serde_json::from_str(&raw)?;
+        assert_eq!(report.host_perl, perl_tree.canonicalize()?.join("perl").display().to_string());
+        assert_eq!(
+            report.tests,
+            vec![DiscoveredTest { path: "base/ok.t".into(), root: "base".into() }]
+        );
+        Ok(())
+    }
+
     #[cfg(unix)]
     #[test]
     fn discover_invokes_dumptests_and_writes_manifest() -> TestResult {
@@ -9657,7 +9798,7 @@ mod tests {
 
         discover(DiscoverConfig {
             perl_tree: perl_tree.clone(),
-            host_perl: PathBuf::from("/bin/sh"),
+            host_perl: Some(PathBuf::from("/bin/sh")),
             runner: HarnessRunner::Test,
             profile: HarnessProfile::Base,
             output: Some(output.clone()),
@@ -9687,7 +9828,7 @@ mod tests {
 
         run_mode(RunConfig {
             perl_tree: perl_tree.clone(),
-            host_perl: PathBuf::from("/bin/sh"),
+            host_perl: Some(PathBuf::from("/bin/sh")),
             runner: HarnessRunner::Test,
             mode: HarnessMode::Parse,
             profile: HarnessProfile::Base,
@@ -9718,7 +9859,7 @@ mod tests {
 
         run_mode(RunConfig {
             perl_tree: perl_tree.clone(),
-            host_perl: PathBuf::from("/bin/sh"),
+            host_perl: Some(PathBuf::from("/bin/sh")),
             runner: HarnessRunner::Test,
             mode: HarnessMode::Parse,
             profile: HarnessProfile::Base,
@@ -9752,7 +9893,7 @@ mod tests {
 
         run_mode(RunConfig {
             perl_tree: perl_tree.clone(),
-            host_perl: PathBuf::from("/bin/sh"),
+            host_perl: Some(PathBuf::from("/bin/sh")),
             runner: HarnessRunner::Test,
             mode: HarnessMode::Parse,
             profile: HarnessProfile::Base,
@@ -9780,7 +9921,7 @@ mod tests {
 
         run_mode(RunConfig {
             perl_tree: perl_tree.clone(),
-            host_perl: PathBuf::from("/bin/sh"),
+            host_perl: Some(PathBuf::from("/bin/sh")),
             runner: HarnessRunner::Test,
             mode: HarnessMode::Compile,
             profile: HarnessProfile::Base,
@@ -9815,7 +9956,7 @@ mod tests {
 
         run_mode(RunConfig {
             perl_tree: perl_tree.clone(),
-            host_perl: PathBuf::from("/bin/sh"),
+            host_perl: Some(PathBuf::from("/bin/sh")),
             runner: HarnessRunner::Test,
             mode: HarnessMode::Execute,
             profile: HarnessProfile::Base,
@@ -10241,7 +10382,7 @@ mod tests {
 
         let error = match run_mode(RunConfig {
             perl_tree,
-            host_perl: PathBuf::from("/bin/sh"),
+            host_perl: Some(PathBuf::from("/bin/sh")),
             runner: HarnessRunner::Test,
             mode: HarnessMode::Execute,
             profile: HarnessProfile::Base,
@@ -10274,7 +10415,7 @@ mod tests {
 
         run_mode(RunConfig {
             perl_tree,
-            host_perl: PathBuf::from("/bin/sh"),
+            host_perl: Some(PathBuf::from("/bin/sh")),
             runner: HarnessRunner::Test,
             mode: HarnessMode::Execute,
             profile: HarnessProfile::Base,
@@ -10300,7 +10441,7 @@ mod tests {
 
         run_mode(RunConfig {
             perl_tree: perl_tree.clone(),
-            host_perl: PathBuf::from("/bin/sh"),
+            host_perl: Some(PathBuf::from("/bin/sh")),
             runner: HarnessRunner::Test,
             mode: HarnessMode::Execute,
             profile: HarnessProfile::Base,
@@ -10353,7 +10494,7 @@ mod tests {
 
         smoke(SmokeConfig {
             perl_tree: perl_tree.clone(),
-            host_perl: PathBuf::from("/bin/sh"),
+            host_perl: Some(PathBuf::from("/bin/sh")),
             runner: HarnessRunner::Test,
             profile: HarnessProfile::Base,
             modes: vec![HarnessMode::Parse, HarnessMode::Compile],
@@ -10389,7 +10530,7 @@ mod tests {
 
         smoke(SmokeConfig {
             perl_tree: perl_tree.clone(),
-            host_perl: PathBuf::from("/bin/sh"),
+            host_perl: Some(PathBuf::from("/bin/sh")),
             runner: HarnessRunner::Test,
             profile: HarnessProfile::Comp,
             modes: vec![HarnessMode::Parse, HarnessMode::Compile],
@@ -10432,7 +10573,7 @@ mod tests {
 
         smoke(SmokeConfig {
             perl_tree: perl_tree.clone(),
-            host_perl: PathBuf::from("/bin/sh"),
+            host_perl: Some(PathBuf::from("/bin/sh")),
             runner: HarnessRunner::Test,
             profile: HarnessProfile::Run,
             modes: vec![HarnessMode::Parse, HarnessMode::Compile],
@@ -10475,7 +10616,7 @@ mod tests {
 
         smoke(SmokeConfig {
             perl_tree,
-            host_perl: PathBuf::from("/bin/sh"),
+            host_perl: Some(PathBuf::from("/bin/sh")),
             runner: HarnessRunner::Test,
             profile: HarnessProfile::Base,
             modes: vec![HarnessMode::Parse],
@@ -10507,7 +10648,7 @@ mod tests {
 
         smoke(SmokeConfig {
             perl_tree,
-            host_perl: PathBuf::from("/bin/sh"),
+            host_perl: Some(PathBuf::from("/bin/sh")),
             runner: HarnessRunner::Test,
             profile: HarnessProfile::Base,
             modes: vec![HarnessMode::Compile],
@@ -10539,7 +10680,7 @@ mod tests {
 
         let Err(err) = smoke(SmokeConfig {
             perl_tree,
-            host_perl: PathBuf::from("/bin/sh"),
+            host_perl: Some(PathBuf::from("/bin/sh")),
             runner: HarnessRunner::Test,
             profile: HarnessProfile::Base,
             modes: vec![HarnessMode::Compile],
@@ -10573,7 +10714,7 @@ mod tests {
 
         let Err(err) = smoke(SmokeConfig {
             perl_tree,
-            host_perl: PathBuf::from("/bin/sh"),
+            host_perl: Some(PathBuf::from("/bin/sh")),
             runner: HarnessRunner::Test,
             profile: HarnessProfile::Base,
             modes: vec![HarnessMode::Compile],
@@ -10603,7 +10744,7 @@ mod tests {
 
         let Err(err) = smoke(SmokeConfig {
             perl_tree: temp.path().join("missing"),
-            host_perl: PathBuf::from("perl"),
+            host_perl: None,
             runner: HarnessRunner::Test,
             profile: HarnessProfile::Base,
             modes: vec![HarnessMode::Parse, HarnessMode::Compile],
@@ -10626,7 +10767,7 @@ mod tests {
 
         let Err(err) = smoke(SmokeConfig {
             perl_tree,
-            host_perl: PathBuf::from("perl"),
+            host_perl: None,
             runner: HarnessRunner::Test,
             profile: HarnessProfile::Base,
             modes: vec![HarnessMode::Parse, HarnessMode::Compile],
@@ -10651,7 +10792,7 @@ mod tests {
 
         let Err(err) = run_mode(RunConfig {
             perl_tree,
-            host_perl: PathBuf::from("/bin/sh"),
+            host_perl: Some(PathBuf::from("/bin/sh")),
             runner: HarnessRunner::Test,
             mode: HarnessMode::Parse,
             profile: HarnessProfile::Base,
@@ -10693,7 +10834,7 @@ exit 7
 
         let Err(err) = run_mode(RunConfig {
             perl_tree,
-            host_perl: PathBuf::from("/bin/sh"),
+            host_perl: Some(PathBuf::from("/bin/sh")),
             runner: HarnessRunner::Test,
             mode: HarnessMode::Parse,
             profile: HarnessProfile::Base,
@@ -10732,7 +10873,7 @@ exit 7
 
         let Err(err) = run_mode(RunConfig {
             perl_tree,
-            host_perl: PathBuf::from("/bin/sh"),
+            host_perl: Some(PathBuf::from("/bin/sh")),
             runner: HarnessRunner::Test,
             mode: HarnessMode::Parse,
             profile: HarnessProfile::Base,
@@ -10783,7 +10924,7 @@ exit 7
 
         let Err(_err) = run_mode(RunConfig {
             perl_tree,
-            host_perl: PathBuf::from("/bin/sh"),
+            host_perl: Some(PathBuf::from("/bin/sh")),
             runner: HarnessRunner::Test,
             mode: HarnessMode::Parse,
             profile: HarnessProfile::Base,
@@ -10813,7 +10954,7 @@ exit 7
 
         run_mode(RunConfig {
             perl_tree,
-            host_perl: PathBuf::from("/bin/sh"),
+            host_perl: Some(PathBuf::from("/bin/sh")),
             runner: HarnessRunner::Test,
             mode: HarnessMode::Parse,
             profile: HarnessProfile::Base,
@@ -10851,7 +10992,7 @@ exit 7
 
         run_mode(RunConfig {
             perl_tree,
-            host_perl: PathBuf::from("/bin/sh"),
+            host_perl: Some(PathBuf::from("/bin/sh")),
             runner: HarnessRunner::Test,
             mode: HarnessMode::Parse,
             profile: HarnessProfile::Base,
@@ -10886,7 +11027,7 @@ exit 7
 
         run_mode(RunConfig {
             perl_tree,
-            host_perl: PathBuf::from("/bin/sh"),
+            host_perl: Some(PathBuf::from("/bin/sh")),
             runner: HarnessRunner::Test,
             mode: HarnessMode::Parse,
             profile: HarnessProfile::Base,
@@ -10915,7 +11056,7 @@ exit 7
 
         let Err(err) = run_mode(RunConfig {
             perl_tree,
-            host_perl: PathBuf::from("/bin/sh"),
+            host_perl: Some(PathBuf::from("/bin/sh")),
             runner: HarnessRunner::Test,
             mode: HarnessMode::Parse,
             profile: HarnessProfile::Base,
@@ -11237,7 +11378,7 @@ esac
 
         let error = match run_mode(RunConfig {
             perl_tree,
-            host_perl: PathBuf::from("/bin/sh"),
+            host_perl: Some(PathBuf::from("/bin/sh")),
             runner: HarnessRunner::Test,
             mode: HarnessMode::Execute,
             profile: HarnessProfile::Base,
