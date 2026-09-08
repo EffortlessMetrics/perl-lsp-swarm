@@ -29,10 +29,11 @@ npm run bundle-lsp
 echo "Packaging extension..."
 npm run package
 
-echo "Build complete! Extension packaged as perl-lsp-rs-*.vsix"
+VSIX_NAME="perl-lsp-rs-$(node -p "require('./package.json').version").vsix"
+echo "Build complete! Extension packaged as ${VSIX_NAME}"
 echo ""
 echo "To install locally:"
-echo "  code --install-extension perl-lsp-rs-*.vsix"
+echo "  code --install-extension ${VSIX_NAME}"
 echo ""
 echo "To publish to marketplace:"
 echo "  npm run publish"

@@ -2356,7 +2356,7 @@ function main() {
         PERL_LSP_SMOKE_RECEIPTS_DIR: receiptsRoot(),
       };
       const packageResult = runNpm(
-        ['exec', '--offline', '--no', '--', '@vscode/vsce', 'package'],
+        ['exec', '--offline', '--no', '--', 'vsce', 'package'],
         packageEnv,
       );
       if (packageResult.error) {
