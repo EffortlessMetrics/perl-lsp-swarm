@@ -5698,7 +5698,7 @@ profile = "recommended"
     /// than making the required process proof silently pass.
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
-    #[ignore = "requires a real Perl interpreter; run explicitly for startup INC process proof"]
+    #[ignore = "requires a real Perl interpreter; run explicitly for startup INC process proof (#13589)"]
     #[serial_test::serial]
     fn peek_system_inc_real_process_outcome_matrix() -> TestResult {
         let perl = resolve_perl_path_with_toolchain()
