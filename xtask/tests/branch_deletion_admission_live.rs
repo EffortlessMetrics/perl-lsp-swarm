@@ -65,7 +65,8 @@ impl ReadOnlyCommands for FakeCommands {
             });
             let mut requested: Vec<_> = fields.unwrap_or_default().split(',').collect();
             requested.sort_unstable();
-            let expected = ["headRefName", "headRefOid", "isCrossRepository", "number", "state"];
+            let expected =
+                ["headRefName", "headRefOid", "isCrossRepository", "merged", "number", "state"];
             if requested != expected {
                 return Err(color_eyre::eyre::eyre!(
                     "unsupported parent JSON field contract: {requested:?}"
@@ -98,7 +99,7 @@ impl ReadOnlyCommands for FakeCommands {
 
 fn merged_parent_json() -> String {
     format!(
-        r#"{{"number":7799,"state":"MERGED","headRefName":"{BRANCH}","headRefOid":"{HEAD_SHA}","isCrossRepository":false}}"#
+        r#"{{"number":7799,"state":"MERGED","merged":true,"headRefName":"{BRANCH}","headRefOid":"{HEAD_SHA}","isCrossRepository":false}}"#
     )
 }
 
@@ -145,10 +146,10 @@ fn the_parent_command_fixture_rejects_unsupported_fields() -> Result<(), Box<dyn
             "view",
             "7799",
             "--json",
-            "number,state,merged,headRefName,headRefOid,isCrossRepository",
+            "number,state,unsupportedField,headRefName,headRefOid,isCrossRepository",
         ],
     );
-    let error = result.err().ok_or("the fixture accepted unsupported merged field")?;
+    let error = result.err().ok_or("the fixture accepted unsupported field")?;
     if !error.to_string().contains("unsupported parent JSON field contract") {
         return Err(format!("fixture failed for the wrong reason: {error}").into());
     }
@@ -158,7 +159,9 @@ fn the_parent_command_fixture_rejects_unsupported_fields() -> Result<(), Box<dyn
 #[test]
 fn an_unknown_parent_state_is_not_proven() -> Result<(), Box<dyn std::error::Error>> {
     for state in ["", "UNKNOWN", "merged", " MERGED "] {
-        let parent = merged_parent_json().replace("\"MERGED\"", &format!("\"{state}\""));
+        let parent = merged_parent_json()
+            .replace("\"MERGED\"", &format!("\"{state}\""))
+            .replace("\"merged\":true", "\"merged\":false");
         let commands = healthy().on("gh pr view 7799", &parent);
         let collected = collect_request(&commands, 7799, "origin")?;
         if collected.request.parent.terminality != ParentTerminality::NotProven {
@@ -498,11 +501,11 @@ fn local_worktree_ownership_blocks_and_fails_closed() -> Result<(), Box<dyn std:
 /// A parent that is not merged retains, whatever else is true.
 #[test]
 fn a_non_terminal_parent_retains() -> Result<(), Box<dyn std::error::Error>> {
-    for state in ["OPEN", "CLOSED"] {
+    for (state, merged) in [("OPEN", "false"), ("CLOSED", "false")] {
         let commands = healthy().on(
             "gh pr view 7799",
             &format!(
-                r#"{{"number":7799,"state":"{state}","headRefName":"{BRANCH}","headRefOid":"{HEAD_SHA}"}}"#
+                r#"{{"number":7799,"state":"{state}","merged":{merged},"headRefName":"{BRANCH}","headRefOid":"{HEAD_SHA}","isCrossRepository":false}}"#
             ),
         );
         let outcome = evaluate(&collect_request(&commands, 7799, "origin")?.request);
@@ -634,7 +637,7 @@ fn the_deletion_path_refuses_every_retaining_outcome() -> Result<(), Box<dyn std
         healthy().on(
             "gh pr view 7799",
             &format!(
-                r#"{{"number":7799,"state":"OPEN","headRefName":"{BRANCH}","headRefOid":"{HEAD_SHA}"}}"#
+                r#"{{"number":7799,"state":"OPEN","merged":false,"headRefName":"{BRANCH}","headRefOid":"{HEAD_SHA}","isCrossRepository":false}}"#
             ),
         ),
     ];
@@ -694,7 +697,7 @@ fn a_branch_name_with_shell_metacharacters_stays_one_argument()
         .on(
             "gh pr view 7799",
             &format!(
-                r#"{{"number":7799,"state":"MERGED","headRefName":"{hostile}","headRefOid":"{HEAD_SHA}"}}"#
+                r#"{{"number":7799,"state":"MERGED","merged":true,"headRefName":"{hostile}","headRefOid":"{HEAD_SHA}","isCrossRepository":false}}"#
             ),
         )
         .on("git ls-remote origin", &format!("{HEAD_SHA}\trefs/heads/{hostile}\n"));
@@ -895,7 +898,7 @@ fn a_cross_repository_parent_retains() -> Result<(), Box<dyn std::error::Error>>
     let fork = healthy().on(
         "gh pr view 7799",
         &format!(
-            r#"{{"number":7799,"state":"MERGED","headRefName":"{BRANCH}","headRefOid":"{HEAD_SHA}","isCrossRepository":true}}"#
+            r#"{{"number":7799,"state":"MERGED","merged":true,"headRefName":"{BRANCH}","headRefOid":"{HEAD_SHA}","isCrossRepository":true}}"#
         ),
     );
     let collected = collect_request(&fork, 7799, "origin")?;
@@ -912,6 +915,46 @@ fn a_cross_repository_parent_retains() -> Result<(), Box<dyn std::error::Error>>
     // test cannot pass because the fixture is broken.
     let same_but_owned = evaluate(&collect_request(&healthy(), 7799, "origin")?.request);
     assert_eq!(same_but_owned.admission, DeletionAdmission::SafeToDelete);
+    Ok(())
+}
+
+/// Repository binding evidence is required before a parent can enter the
+/// admission graph. Missing, null, wrong-type, and duplicate values must all
+/// retain rather than becoming the same-repository default.
+#[test]
+fn missing_or_ambiguous_repository_binding_retains() -> anyhow::Result<()> {
+    for (label, parent) in [
+        (
+            "missing",
+            format!(
+                r#"{{"number":7799,"state":"MERGED","merged":true,"headRefName":"{BRANCH}","headRefOid":"{HEAD_SHA}"}}"#
+            ),
+        ),
+        (
+            "null",
+            format!(
+                r#"{{"number":7799,"state":"MERGED","merged":true,"headRefName":"{BRANCH}","headRefOid":"{HEAD_SHA}","isCrossRepository":null}}"#
+            ),
+        ),
+        (
+            "wrong type",
+            format!(
+                r#"{{"number":7799,"state":"MERGED","merged":true,"headRefName":"{BRANCH}","headRefOid":"{HEAD_SHA}","isCrossRepository":"false"}}"#
+            ),
+        ),
+        (
+            "duplicate",
+            format!(
+                r#"{{"number":7799,"state":"MERGED","merged":true,"headRefName":"{BRANCH}","headRefOid":"{HEAD_SHA}","isCrossRepository":false,"isCrossRepository":true}}"#
+            ),
+        ),
+    ] {
+        let commands = healthy().on("gh pr view 7799", &parent);
+        anyhow::ensure!(
+            collect_request(&commands, 7799, "origin").is_err(),
+            "{label} repository-binding evidence must not be accepted",
+        );
+    }
     Ok(())
 }
 
