@@ -62,7 +62,7 @@ class DependabotCooldownTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             tmp = Path(temp)
             _clone(tmp)
-            _rewrite(tmp, MANAGEMENT_GUIDE, "14-day", "two-week")
+            _rewrite(tmp, MANAGEMENT_GUIDE, "14 days", "two weeks")
             self.assertTrue(any(item.startswith("cooldown-guide-drift:") for item in validate(tmp)))
 
     def test_quick_reference_scalar_drift_fails(self) -> None:
