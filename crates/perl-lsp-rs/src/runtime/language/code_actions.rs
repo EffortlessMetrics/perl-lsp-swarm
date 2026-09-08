@@ -3,6 +3,7 @@
 //! Handles textDocument/codeAction and codeAction/resolve requests.
 //! Provides quick fixes, refactoring actions, and source actions.
 
+use super::super::diagnostics_sink::DiagnosticSubject;
 use super::super::{
     CodeActionsProvider, CodeActionsProviderV2, DiagnosticsProvider, EnhancedCodeActionsProvider,
     GLOBAL_CANCELLATION_REGISTRY, HashMap, InternalCodeActionKind, InternalCodeActionKindV2,
@@ -633,13 +634,15 @@ impl LspServer {
     ) -> Value {
         after_staging();
         match self.commit_if_diagnostic_subject_current(
-            uri,
-            &staged.document_instance,
-            staged.generation,
-            None,
-            None,
-            Some(&staged.accepted_snapshot),
-            Some(staged.topology_generation),
+            DiagnosticSubject {
+                uri,
+                document_instance: &staged.document_instance,
+                generation: staged.generation,
+                workspace_generation: None,
+                accepted_folder_config_generation: None,
+                accepted_critic_snapshot: Some(&staged.accepted_snapshot),
+                accepted_topology_generation: Some(staged.topology_generation),
+            },
             || to_json_array(&with_native),
         ) {
             Ok(response) => response,
@@ -1228,13 +1231,15 @@ impl LspServer {
     ) -> Vec<Value> {
         after_staging();
         match self.commit_if_diagnostic_subject_current(
-            uri,
-            &staged.document_instance,
-            staged.generation,
-            None,
-            None,
-            Some(&staged.accepted_snapshot),
-            Some(staged.topology_generation),
+            DiagnosticSubject {
+                uri,
+                document_instance: &staged.document_instance,
+                generation: staged.generation,
+                workspace_generation: None,
+                accepted_folder_config_generation: None,
+                accepted_critic_snapshot: Some(&staged.accepted_snapshot),
+                accepted_topology_generation: Some(staged.topology_generation),
+            },
             || staged.actions,
         ) {
             Ok(actions) => actions,

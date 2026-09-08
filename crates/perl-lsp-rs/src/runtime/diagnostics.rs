@@ -10,7 +10,8 @@ use super::{
     Arc, DiagnosticsProvider, DocumentState, InternalDiagnosticSeverity, JsonRpcError, LspServer,
     Ordering, Value,
     diagnostics_sink::{
-        PushDiagnosticIdentity, PushDiagnosticsCommitOutcome, PushDiagnosticsDisposition,
+        DiagnosticSubject, PushDiagnosticIdentity, PushDiagnosticsCommitOutcome,
+        PushDiagnosticsDisposition,
     },
     json, source_path_from_uri,
     types::best_workspace_folder_for_doc,
@@ -1372,13 +1373,15 @@ impl LspServer {
             let response = self.document_report_to_json(&report, &doc, uri_str);
             return Ok(Some(
                 self.commit_if_diagnostic_subject_current(
-                    uri_str,
-                    &generation,
-                    gen_at_snapshot,
-                    Some(workspace_gen_at_snapshot),
-                    context.configuration_generation,
-                    Some(&context.accepted_critic_snapshot),
-                    Some(topology_at_context),
+                    DiagnosticSubject {
+                        uri: uri_str,
+                        document_instance: &generation,
+                        generation: gen_at_snapshot,
+                        workspace_generation: Some(workspace_gen_at_snapshot),
+                        accepted_folder_config_generation: context.configuration_generation,
+                        accepted_critic_snapshot: Some(&context.accepted_critic_snapshot),
+                        accepted_topology_generation: Some(topology_at_context),
+                    },
                     || response,
                 )
                 .unwrap_or_else(|_| Self::empty_full_diagnostic_report()),
