@@ -50,6 +50,28 @@ void test('current-source smoke does not reinstall dependencies after setup', ()
   assert.doesNotMatch(source, /\bnpm\s+(?:ci|install)\b/);
 });
 
+void test('current-source Linux smoke enables the candidate-bound Test Explorer leg', () => {
+  const source = readWorkflow('vscode-current-source-linux-smoke.yml');
+  const smokeIndex = source.indexOf('- name: Run exact current-source smoke under Xvfb');
+  assert.notEqual(smokeIndex, -1);
+  const nextStepIndex = source.slice(smokeIndex + 1).search(/\r?\n\s+- name:/);
+  const smokeStep = source.slice(
+    smokeIndex,
+    nextStepIndex === -1 ? source.length : smokeIndex + 1 + nextStepIndex,
+  );
+  assert.match(smokeStep, /PERL_LSP_TEST_EXPLORER_JOURNEY: '1'/);
+  assert.match(smokeStep, /run: xvfb-run -a npm run test:published:local/);
+  assert.match(
+    smokeStep,
+    /^[ \t]*PERL_LSP_FIRST_HOUR_SERVER_PATH:[ \t]*\$\{\{ runner\.temp \}\}\/perl-lsp-current-source-target\/release\/perllsp[ \t]*\r?$/m,
+  );
+  assert.match(
+    smokeStep,
+    /^[ \t]*PERL_LSP_SERVER_SOURCE_SHA:[ \t]*\$\{\{ env\.PERL_LSP_SMOKE_SUBJECT_SHA \}\}[ \t]*\r?$/m,
+  );
+  assert.match(source, /same staged VSIX\/server/);
+});
+
 void test('publisher workflow invokes both CLIs offline through npm exec', () => {
   const source = readWorkflow('publish-extension.yml');
   assert.match(source, /npm exec --offline --no -- @vscode\/vsce publish/);
