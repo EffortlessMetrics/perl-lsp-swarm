@@ -60,6 +60,7 @@ export type BoundedProcessOutcome =
   | 'timed_out'
   | 'output_limit'
   | 'cancelled'
+  | 'input_error'
   | 'termination_failed'
   | 'spawn_error';
 
@@ -227,15 +228,6 @@ export function runBoundedProcess(
     };
 
     const finishAfterTreeKill = (exitCode: number | null, signal: NodeJS.Signals | null): void => {
-      if (stdinError !== undefined && termination === 'cancelled') {
-        finish(
-          'spawn_error',
-          exitCode,
-          signal,
-          `Failed to provide process input: ${stdinError.message}.`,
-        );
-        return;
-      }
       const outcome = termination;
       if (outcome === undefined) {
         finish('completed', exitCode, signal);
@@ -245,6 +237,7 @@ export function runBoundedProcess(
         timed_out: `Process exceeded the ${timeoutMs} ms deadline.`,
         output_limit: `Process output exceeded the ${maxOutputBytes}-byte capture limit.`,
         cancelled: 'Process execution was cancelled.',
+        input_error: `Failed to provide process input: ${stdinError?.message ?? 'the input stream closed unexpectedly'}.`,
       }[outcome];
       void (treeKill ?? Promise.resolve()).then(() => finish(outcome, exitCode, signal, detail));
     };
@@ -319,7 +312,7 @@ export function runBoundedProcess(
       proc.stdin.once('error', (error: Error) => {
         stdinError = error;
         if (termination === undefined && !closed) {
-          requestTermination('cancelled');
+          requestTermination('input_error');
         }
       });
       proc.stdin.end(stdin);
@@ -381,6 +374,7 @@ export function resolveProveCommand(extraArgs: string[]): {
   command: string;
   args: string[];
   shell: boolean;
+  error?: string;
 } {
   const isWindows = process.platform === 'win32';
 
@@ -401,7 +395,7 @@ export function resolveProveCommand(extraArgs: string[]): {
       }
     }
   } catch {
-    // perl not on PATH or execFileSync failed — fall back to bare 'prove'.
+    // perl not on PATH or execFileSync failed — report an actionable resolution error.
   }
 
   if (isWindows && perlPath) {
@@ -412,8 +406,17 @@ export function resolveProveCommand(extraArgs: string[]): {
     return { command: provePath, args: extraArgs, shell: false };
   }
 
-  // Fallback: bare 'prove' with shell on Windows for .bat resolution.
-  return { command: 'prove', args: extraArgs, shell: isWindows };
+  if (isWindows) {
+    return {
+      command: '',
+      args: [],
+      shell: false,
+      error:
+        'Perl was not found on PATH; install Perl with prove or configure a supported Perl runtime.',
+    };
+  }
+
+  return { command: 'prove', args: extraArgs, shell: false };
 }
 
 export interface SubtestInfo {
@@ -608,11 +611,21 @@ export class PerlTestAdapter implements vscode.Disposable {
     const cwd = workspaceFolder?.uri.fsPath ?? path.dirname(filePath);
     const startTime = Date.now();
     const isWindows = process.platform === 'win32';
-    const {
-      command: proveCmd,
-      args: proveArgs,
-      shell: useShell,
-    } = resolveProveCommand(isWindows ? ['-v', '--nocolor', '-'] : ['-v', '--nocolor', filePath]);
+    const resolution = resolveProveCommand(
+      isWindows ? ['-v', '--nocolor', '-'] : ['-v', '--nocolor', filePath],
+    );
+    if (resolution.error !== undefined) {
+      const message = new vscode.TestMessage(resolution.error);
+      if (fileItem.uri) {
+        message.location = new vscode.Location(fileItem.uri, new vscode.Position(0, 0));
+      }
+      run.errored(fileItem, message, Date.now() - startTime);
+      for (const st of subtests) {
+        run.errored(st, new vscode.TestMessage(message.message));
+      }
+      return;
+    }
+    const { command: proveCmd, args: proveArgs, shell: useShell } = resolution;
     const cancellation = new AbortController();
     const killOnCancel = token.onCancellationRequested(() => cancellation.abort());
     if (token.isCancellationRequested) {

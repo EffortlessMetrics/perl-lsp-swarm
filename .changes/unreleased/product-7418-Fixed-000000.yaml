@@ -4,6 +4,7 @@ kind: Fixed
 body: "The Windows Perl Test Explorer path runs through Perl's documented stdin test-list interface, so test files with spaces and shell metacharacters execute without the batch-shim globbing failure."
 time: 2026-09-08T00:00:00Z
 custom:
-  PR: "0000"
+  PR: "7418"
   Slug: prove-stdin-windows
   Breaking: "no"
+

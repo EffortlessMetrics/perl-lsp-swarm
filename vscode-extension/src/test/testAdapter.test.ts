@@ -117,6 +117,27 @@ describe('bounded prove process execution', () => {
     }
   }, 30_000);
 
+  test('fails closed with an actionable error when Windows Perl resolution fails', () => {
+    if (process.platform !== 'win32') {
+      return;
+    }
+
+    const childProcess = require('child_process') as {
+      execFileSync: (...args: unknown[]) => Buffer | string;
+    };
+    const original = childProcess.execFileSync;
+    childProcess.execFileSync = () => {
+      throw new Error('Perl unavailable for test');
+    };
+    try {
+      const resolved = resolveProveCommand(['-v', '--nocolor', '-']);
+      expect(resolved).toMatchObject({ command: '', args: [], shell: false });
+      expect(resolved.error).toContain('Perl was not found on PATH');
+    } finally {
+      childProcess.execFileSync = original;
+    }
+  });
+
   test('returns normal output without truncation', async () => {
     const result = await runBoundedProcess(process.execPath, ['-e', 'process.stdout.write("ok")'], {
       shell: false,
@@ -131,6 +152,23 @@ describe('bounded prove process execution', () => {
       stderr: '',
       exitCode: 0,
     });
+  }, 30_000);
+
+  test('reports a closed stdin stream separately from caller cancellation', async () => {
+    const result = await runBoundedProcess(
+      process.execPath,
+      ['-e', 'process.stdin.on("data", () => process.exit(0))'],
+      {
+        shell: false,
+        stdin: 'x'.repeat(16 * 1024 * 1024),
+        timeoutMs: 5_000,
+        maxOutputBytes: 32,
+        terminationGraceMs: 25,
+      },
+    );
+
+    expect(result.outcome).toBe('input_error');
+    expect(result.diagnostic).toContain('process input');
   }, 30_000);
 
   test('terminates a process that exceeds the wall-clock deadline', async () => {
@@ -425,7 +463,7 @@ describe('bounded prove process execution', () => {
       expect(result.outcome).toBe('timed_out');
       expect(fs.readFileSync(parentMarker, 'utf8')).toBe('started');
       expect(fs.readFileSync(childMarker, 'utf8')).toBe('started');
-      await new Promise((resolve) => setTimeout(resolve, 1_250));
+      await new Promise((resolve) => setTimeout(resolve, 3_500));
       expect(fs.readFileSync(childMarker, 'utf8')).toBe('started');
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
