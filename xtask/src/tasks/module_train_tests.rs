@@ -830,8 +830,17 @@ fn pinned_tree_source_ignores_worktree_edit_after_capture() -> Result<()> {
         bail!("git rev-parse HEAD failed");
     }
     let head = String::from_utf8(head.stdout)?.trim().to_string();
+    let tree_spec = format!("{head}^{{tree}}");
+    let tree = std::process::Command::new("git")
+        .args(["rev-parse", tree_spec.as_str()])
+        .current_dir(repo.path())
+        .output()?;
+    if !tree.status.success() {
+        bail!("git rev-parse HEAD^{{tree}} failed");
+    }
+    let tree = String::from_utf8(tree.stdout)?.trim().to_string();
     std::fs::write(&path, "fn edited() {}\n")?;
-    let source = RepoTreeSource::from_root_at_revision(repo.path().to_path_buf(), head)?;
+    let source = RepoTreeSource::from_root_at_revision(repo.path().to_path_buf(), tree)?;
     let captured = source
         .read_text("probe.rs")?
         .ok_or_else(|| color_eyre::eyre::eyre!("captured probe path must exist"))?;
