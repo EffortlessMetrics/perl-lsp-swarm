@@ -2072,18 +2072,21 @@ async function finalizeStartedLanguageClient(
  * client until the window reloads, so generic start/restart guidance would
  * mislead the user into retrying a permanently blocked lifecycle.
  */
-async function presentCleanupIncompleteBlockedRecovery(): Promise<void> {
+function presentCleanupIncompleteBlockedRecovery(): void {
   healthWidget?.onStateChange(ClientState.Stopped);
-  const choice = await vscode.window.showErrorMessage(
-    'The previous Perl language client did not finish cleaning up, so replacement startup is blocked. Reload the window before trying again.',
-    'Reload Window',
-    'View Logs',
-  );
-  if (choice === 'Reload Window') {
-    void vscode.commands.executeCommand('workbench.action.reloadWindow');
-  } else if (choice === 'View Logs') {
-    outputChannel.show();
-  }
+  void vscode.window
+    .showErrorMessage(
+      'The previous Perl language client did not finish cleaning up, so replacement startup is blocked. Reload the window before trying again.',
+      'Reload Window',
+      'View Logs',
+    )
+    .then((choice) => {
+      if (choice === 'Reload Window') {
+        void vscode.commands.executeCommand('workbench.action.reloadWindow');
+      } else if (choice === 'View Logs') {
+        outputChannel.show();
+      }
+    });
 }
 
 async function initializeLanguageClient(context: vscode.ExtensionContext): Promise<boolean> {
@@ -2117,7 +2120,7 @@ async function initializeLanguageClient(context: vscode.ExtensionContext): Promi
       startError instanceof LanguageClientLifecycleError &&
       startError.reason === 'cleanup-incomplete'
     ) {
-      await presentCleanupIncompleteBlockedRecovery();
+      presentCleanupIncompleteBlockedRecovery();
       return false;
     }
 
@@ -3091,7 +3094,7 @@ async function restartServer(_context: vscode.ExtensionContext): Promise<boolean
       // Incomplete cleanup blocks this lifecycle until the window reloads
       // (#14448): present that remediation instead of a bare restart failure,
       // and report the block so automatic crash recovery stops retrying.
-      await presentCleanupIncompleteBlockedRecovery();
+      presentCleanupIncompleteBlockedRecovery();
       return true;
     }
     vscode.window
