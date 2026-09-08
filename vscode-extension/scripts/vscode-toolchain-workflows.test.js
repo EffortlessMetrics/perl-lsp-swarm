@@ -72,6 +72,26 @@ void test('current-source Linux smoke enables the candidate-bound Test Explorer 
   assert.match(source, /same staged VSIX\/server/);
 });
 
+void test('current-source inventory uses PR merge-base while manual runs keep accepted base', () => {
+  const source = readWorkflow('vscode-current-source-linux-smoke.yml');
+  assert.match(
+    source,
+    /^          PERL_LSP_PACKAGE_BASE_MODE: \$\{\{ github\.event_name == 'pull_request' && 'pull_request' \|\| 'accepted' \}\}$/m,
+  );
+  assert.match(
+    source,
+    /^          PERL_LSP_PACKAGE_PR_BASE_SHA: \$\{\{ github\.event_name == 'pull_request' && github\.event\.pull_request\.base\.sha \|\| '' \}\}$/m,
+  );
+  assert.match(
+    source,
+    /^          PERL_LSP_PACKAGE_BASE_SHA: \$\{\{ github\.event_name == 'workflow_dispatch' && inputs\.accepted_base_sha \|\| '' \}\}$/m,
+  );
+  assert.doesNotMatch(
+    source,
+    /PERL_LSP_PACKAGE_BASE_SHA: \$\{\{ github\.event_name == 'pull_request' && github\.event\.pull_request\.base\.sha/,
+  );
+});
+
 void test('publisher workflow invokes both CLIs offline through npm exec', () => {
   const source = readWorkflow('publish-extension.yml');
   assert.match(source, /npm exec --offline --no -- @vscode\/vsce publish/);
