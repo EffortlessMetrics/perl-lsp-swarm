@@ -63,12 +63,12 @@ function basicPerllspIdentity(serverVersion: string): SupportBinaryIdentity {
   const observed = sanitizeDiagnosticField(serverVersion, 'unavailable');
   if (observed === 'unavailable') {
     return {
-      state: 'known_absent',
+      state: 'not_proven',
       role: 'unknown',
-      version: supportState<SupportAtom>('known_absent'),
+      version: supportState<SupportAtom>('not_proven'),
       target: supportState<SupportAtom>('not_proven'),
       digest: supportState<SupportDigest>('not_proven'),
-      compatibility: 'missing',
+      compatibility: 'not_proven',
     };
   }
 
