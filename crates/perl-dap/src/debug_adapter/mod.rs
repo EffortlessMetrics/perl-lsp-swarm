@@ -1866,7 +1866,9 @@ print "result: $final\n";
         let response = adapter.handle_request(1, "attach", Some(args));
         match response {
             DapMessage::Response { success, .. } => {
-                assert!(!success, "processId attach must be refused (#8109)");
+                if success {
+                    return Err("processId attach must be refused (#8109)".into());
+                }
             }
             _ => return Err("Expected response".into()),
         }

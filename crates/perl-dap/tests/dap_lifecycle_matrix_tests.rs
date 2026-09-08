@@ -675,11 +675,19 @@ fn test_refused_pid_attach_leaves_no_session_to_leak() -> TestResult {
         adapter.handle_request(1, "attach", Some(json!({ "processId": std::process::id() })));
     match &attach_response {
         DapMessage::Response { success, command, body, message, .. } => {
-            assert_eq!(*command, "attach");
-            assert!(!success, "PID attach must be refused (#8109)");
-            assert!(body.is_none(), "refusal must not carry an attach body");
+            if *command != "attach" {
+                return Err(format!("expected attach response command, got {command}").into());
+            }
+            if *success {
+                return Err("PID attach must be refused (#8109)".into());
+            }
+            if body.is_some() {
+                return Err("refusal must not carry an attach body".into());
+            }
             let msg = message.as_deref().ok_or("Expected refusal message")?;
-            assert!(msg.contains("not supported"), "refusal must name the disposition: {msg}");
+            if !msg.contains("not supported") {
+                return Err(format!("refusal must name the disposition: {msg}").into());
+            }
         }
         other => return Err(format!("Expected attach response, got {other:?}").into()),
     }
