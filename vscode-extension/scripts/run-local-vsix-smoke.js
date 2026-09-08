@@ -946,7 +946,7 @@ function composeCheckSummary(receipt) {
   const present = CHECK_STAGE_ORDER.filter((key) => stages[key]);
 
   const annotations = [
-    `::notice title=VS Code current-source smoke::${escapeAnnotationData(headline)}`,
+    `::notice title=VS Code smoke::${escapeAnnotationData(`${receipt.source_label ?? 'unknown'}: ${headline}`)}`,
   ];
   for (const key of present) {
     const stage = stages[key];
@@ -969,9 +969,11 @@ function composeCheckSummary(receipt) {
   );
   const remaining = checkRemainingProof(stages);
   const lines = [
-    `### VS Code current-source smoke — ${receipt.vscode_version ?? 'unknown'}`,
+    `### VS Code smoke — ${receipt.vscode_version ?? 'unknown'}`,
     '',
     headline,
+    '',
+    `Source: ${markdownCell(singleLine(receipt.source_label ?? 'unknown'))}`,
     '',
     `Aggregate: \`${overall}\` · subject \`${receipt.repository_sha ?? 'unknown'}\``,
     '',
@@ -991,6 +993,19 @@ function composeCheckSummary(receipt) {
   return { headline, markdown: `${lines.join('\n')}\n`, annotations };
 }
 
+// Complete UTF-8 bytes before the synchronous CLI exit; failures stay channel-local.
+function writeProjectionLine(fd, line, write = fs.writeSync) {
+  const bytes = Buffer.from(`${line}\n`, 'utf8');
+  let offset = 0;
+  while (offset < bytes.length) {
+    const written = write(fd, bytes, offset, bytes.length - offset);
+    if (!Number.isInteger(written) || written <= 0 || written > bytes.length - offset) {
+      throw new Error('smoke projection output made invalid write progress');
+    }
+    offset += written;
+  }
+}
+
 /**
  * Emit the projection to the live check surface.
  *
@@ -1003,8 +1018,8 @@ function publishCheckSummary(receipt, options = {}) {
   const {
     summaryPath = (process.env.GITHUB_STEP_SUMMARY || '').trim(),
     appendSummary = (target, text) => fs.appendFileSync(target, text),
-    writeAnnotation = (line) => process.stdout.write(`${line}\n`),
-    writeDiagnostic = (line) => process.stderr.write(`${line}\n`),
+    writeAnnotation = (line) => writeProjectionLine(1, line),
+    writeDiagnostic = (line) => writeProjectionLine(2, line),
   } = options;
 
   const summary = composeCheckSummary(receipt);
@@ -1071,8 +1086,9 @@ function concludeRun(
     // reaches for a fresh one. Do not "consistency-fix" this back to a
     // callback.
     try {
-      process.stderr.write(
-        `Unable to publish the smoke stage summary: ${error instanceof Error ? error.message : String(error)}\n`,
+      writeProjectionLine(
+        2,
+        `Unable to publish the smoke stage summary: ${error instanceof Error ? error.message : String(error)}`,
       );
     } catch {
       // A failsafe that can throw is not one. If even stderr is gone there is
@@ -2571,6 +2587,7 @@ module.exports = {
   interpretBehavioralSmokeExit,
   interpretTransitionResult,
   publishCheckSummary,
+  writeProjectionLine,
   readHostResolutionFailureReceipt,
   receiptPath,
   scanBundledServerProcesses,

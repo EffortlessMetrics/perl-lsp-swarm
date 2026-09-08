@@ -16,6 +16,7 @@ const {
   interpretBehavioralSmokeExit,
   interpretTransitionResult,
   publishCheckSummary,
+  writeProjectionLine,
   shouldRunBehavioralSmoke,
   shouldRunCrashRecoveryJourney,
   stageServerForPackage,
@@ -2027,32 +2028,24 @@ void test('a journey that was declined stays out of the headline', () => {
 // The failsafe must itself be safe: if the projection throws and stderr is
 // gone too, the exit code the receipt decided still has to survive (#13816
 // review).
-void test('a throwing projection cannot change the exit code even with stderr closed', () => {
-  const originalWrite = process.stderr.write;
-  // Deliberately replacing the stream method to simulate a closed stderr.
-  process.stderr.write = () => {
-    throw new Error('EPIPE: broken pipe');
-  };
-
-  try {
-    for (const [overall, expected] of [
-      ['pass', 0],
-      ['failed', 1],
-      ['not_proven', 2],
-    ]) {
-      const receipt = checkReceipt({ overall });
-
-      const code = concludeRun(receipt, undefined, () => {
-        throw new Error('projection defect');
-      });
-
-      assert.equal(code, expected);
-      assert.equal(receipt.overall, overall);
+for (const [overall, expected] of [
+  ['pass', 0],
+  ['failed', 1],
+  ['not_proven', 2],
+]) {
+  void test(`throwing projection preserves finalized ${expected} with descriptor 2 closed`, () => {
+    const { spawnSync } = require('node:child_process');
+    const modulePath = require.resolve('./run-local-vsix-smoke');
+    const receipt = checkReceipt({ overall });
+    const script = `const fs=require('node:fs');const m=require(${JSON.stringify(modulePath)});const receipt=${JSON.stringify(receipt)};const before=JSON.stringify(receipt);fs.closeSync(2);const code=m.concludeRun(receipt,undefined,()=>{throw new Error('projection defect')});if(JSON.stringify(receipt)!==before)process.exit(99);process.exit(code);`;
+    const result = spawnSync(process.execPath, ['-e', script], { encoding: 'utf8' });
+    if (result.status !== expected || result.signal || result.error) {
+      throw new Error(
+        `closed stderr changed finalized ${expected}: status=${result.status} signal=${result.signal} error=${result.error}`,
+      );
     }
-  } finally {
-    process.stderr.write = originalWrite;
-  }
-});
+  });
+}
 
 // Reporting a channel failure must not take down the channels that still work
 // (#13816 review).
@@ -2127,3 +2120,94 @@ for (const [key, label] of [
     }
   });
 }
+
+void test('projection descriptor output completes partial writes and rejects zero progress', () => {
+  const chunks = [];
+  writeProjectionLine(1, 'évidence', (_fd, bytes, offset, length) => {
+    const count = Math.min(2, length);
+    chunks.push(bytes.subarray(offset, offset + count));
+    return count;
+  });
+  if (Buffer.concat(chunks).toString() !== 'évidence\n')
+    throw new Error('partial UTF-8 output lost bytes');
+  let refused = false;
+  try {
+    writeProjectionLine(1, 'text', () => 0);
+  } catch {
+    refused = true;
+  }
+  if (!refused) throw new Error('zero-progress writer was accepted');
+});
+
+for (const source of [
+  'hosted-linux-current-source',
+  'local-current-source-sample-2',
+  'rolling-installed-stable',
+]) {
+  void test(`smoke summary names its source ${source}`, () => {
+    const summary = composeCheckSummary(checkReceipt({ source_label: source }));
+    if (
+      !summary.markdown.includes(`Source: ${source}`) ||
+      !summary.annotations.some((line) => line.includes(source))
+    ) {
+      throw new Error('smoke source context disappeared');
+    }
+  });
+}
+
+void test('spawned terminal projection drains pipe output and isolates closed channels', () => {
+  const { spawnSync } = require('node:child_process');
+  const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'smoke-projection-'));
+  try {
+    const summaryPath = path.join(temporary, 'summary.md');
+    const receipt = checkReceipt({
+      source_label: 'rolling-installed-pipe',
+      stages: {
+        behavioral_smoke: { status: 'failed', reason: 'x'.repeat(1024 * 1024) + 'TAIL' },
+      },
+      overall: 'failed',
+    });
+    const input = path.join(temporary, 'receipt.json');
+    fs.writeFileSync(input, JSON.stringify(receipt));
+    const modulePath = require.resolve('./run-local-vsix-smoke');
+    const script = `const fs=require('node:fs');const m=require(${JSON.stringify(modulePath)});const r=JSON.parse(fs.readFileSync(${JSON.stringify(input)},'utf8'));process.exit(m.concludeRun(r));`;
+    const result = spawnSync(process.execPath, ['-e', script], {
+      encoding: 'utf8',
+      maxBuffer: 8 * 1024 * 1024,
+      env: { ...process.env, GITHUB_STEP_SUMMARY: summaryPath },
+    });
+    const expected = composeCheckSummary(receipt).annotations.join('\n') + '\n';
+    if (result.status !== 1 || result.stdout !== expected)
+      throw new Error('terminal pipe output incomplete or exit changed');
+    const closed = spawnSync(
+      process.execPath,
+      ['-e', script.replace('process.exit(', 'fs.closeSync(1);fs.closeSync(2);process.exit(')],
+      {
+        encoding: 'utf8',
+        maxBuffer: 8 * 1024 * 1024,
+        env: { ...process.env, GITHUB_STEP_SUMMARY: summaryPath },
+      },
+    );
+    if (
+      closed.status !== 1 ||
+      fs.readFileSync(summaryPath, 'utf8') !== composeCheckSummary(receipt).markdown.repeat(2)
+    ) {
+      throw new Error(
+        `closed output channels changed exit or suppressed file summary: status=${closed.status} signal=${closed.signal} error=${closed.error} summaryBytes=${fs.statSync(summaryPath).size}`,
+      );
+    }
+  } finally {
+    fs.rmSync(temporary, { recursive: true, force: true });
+  }
+});
+
+void test('smoke source labels cannot forge summary rows or workflow commands', () => {
+  const summary = composeCheckSummary(
+    checkReceipt({ source_label: 'sample|row\n::error::forged%' }),
+  );
+  if (!summary.markdown.includes('Source: sample\\|row ::error::forged%'))
+    throw new Error('source label reshaped markdown');
+  const notice = summary.annotations.find((line) => line.startsWith('::notice'));
+  if (!notice || notice.includes('\n') || !notice.includes('%0A::error::forged%25'))
+    throw new Error('source label forged a workflow command');
+});
