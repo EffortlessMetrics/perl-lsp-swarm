@@ -4,6 +4,8 @@ import * as fs from 'fs';
 import { execFile } from 'child_process';
 import {
   LanguageClient,
+  CloseAction,
+  ErrorAction,
   State as LanguageClientState,
   TransportKind,
   Trace,
@@ -214,6 +216,14 @@ let languageClientLifecycle:
 // Disable vscode-languageclient's independent connection-close restart loop so
 // one server crash cannot create overlapping replacement clients/processes.
 const LANGUAGE_CLIENT_CONNECTION_OPTIONS = Object.freeze({ maxRestartCount: 0 });
+// The extension lifecycle and crash-recovery arbiter own replacement starts.
+// The language client must settle a failed initial connection and report a
+// stopped running connection to those owners instead of starting a second
+// client behind their back.
+const LANGUAGE_CLIENT_ERROR_HANDLER = Object.freeze({
+  error: () => ({ action: ErrorAction.Shutdown, handled: true }),
+  closed: () => ({ action: CloseAction.DoNotRestart, handled: true }),
+});
 /**
  * The single owner of "should perllsp be running?" (#8180). Extension
  * activation composes it; nothing else may start the language client directly.
@@ -2200,6 +2210,7 @@ export function createLanguageClient(serverPath: string): LanguageClient {
 
   const clientOptions: LanguageClientOptions = {
     connectionOptions: LANGUAGE_CLIENT_CONNECTION_OPTIONS,
+    errorHandler: LANGUAGE_CLIENT_ERROR_HANDLER,
     documentSelector: [
       { scheme: 'file', language: 'perl' },
       { scheme: 'untitled', language: 'perl' },

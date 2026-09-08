@@ -10,6 +10,7 @@ export async function run(): Promise<void> {
 
   const currentSourceSmoke = process.env.PERL_LSP_CURRENT_SOURCE_SMOKE === '1';
   const packagedBundleSmoke = process.env.PERL_LSP_PACKAGED_BUNDLE_SMOKE === '1';
+  const healthCheckFailureSmoke = process.env.PERL_LSP_HEALTH_CHECK_FAILURE_SMOKE === '1';
   const activationFailureSmoke = process.env.PERL_LSP_ACTIVATION_FAILURE_SMOKE === '1';
   const activationFailureLeg = process.env.PERL_LSP_ACTIVATION_FAILURE_LEG ?? '';
   if (
@@ -34,9 +35,11 @@ export async function run(): Promise<void> {
       ? [path.resolve(__dirname, '../activationFailureJourney.test.js')]
       : packagedBundleSmoke
         ? [path.resolve(__dirname, '../packagedBundleJourney.test.js')]
-        : currentSourceSmoke
-          ? [path.resolve(__dirname, '../../integration/firstHourReceipt.test.js')]
-          : [path.resolve(__dirname, '../managedBinaryPublishedSmoke.test.js')];
+        : healthCheckFailureSmoke
+          ? [path.resolve(__dirname, '../healthCheckFailureJourney.test.js')]
+          : currentSourceSmoke
+            ? [path.resolve(__dirname, '../../integration/firstHourReceipt.test.js')]
+            : [path.resolve(__dirname, '../managedBinaryPublishedSmoke.test.js')];
   for (const smokeTestPath of smokeTestPaths) {
     mocha.addFile(smokeTestPath);
   }
