@@ -372,7 +372,7 @@ jobs:
               # still upload whatever artifacts were produced.
               if [ "$RIPR_MEASUREMENT" = "true" ]; then
                 mkdir -p target/ripr/pr
-                printf 'runner=cx53\ndocker_memory=28g\nripr_version=%s\nindex_limit=%s\nhead=%s\n' \
+                printf "runner=cx53\\ndocker_memory=28g\\nripr_version=%s\\nindex_limit=%s\\nhead=%s\\n" \
                   "$RIPR_VERSION" "$RIPR_MAX_DIFF_INDEX_FILES" "$(git rev-parse HEAD)" \
                   > target/ripr/pr/ripr-measurement-config.txt
                 /usr/bin/time -v -o target/ripr/pr/ripr-measurement-time.txt \
@@ -497,7 +497,6 @@ jobs:
       preflight_ok: ${{ steps.preflight.outputs.preflight_ok }}
     env:
       RIPR_VERSION: "0.10.0"
-      RIPR_MAX_DIFF_INDEX_FILES: ${{ github.event_name == 'workflow_dispatch' && inputs.ripr_measurement && '1000' || '800' }}
       BASE_REF: ${{ github.base_ref || github.event.merge_group.base_ref || github.event.repository.default_branch }}
       PR_HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || '' }}
       PR_LABELS: ${{ github.event_name == 'pull_request' && join(github.event.pull_request.labels.*.name, ',') || '' }}
@@ -596,7 +595,6 @@ jobs:
             -e BASE_REF="$BASE_REF" \
             -e PR_HEAD_SHA="$PR_HEAD_SHA" \
             -e PR_LABELS="$PR_LABELS" \
-            -e RIPR_MAX_DIFF_INDEX_FILES="$RIPR_MAX_DIFF_INDEX_FILES" \
             -e CARGO_HOME=/cargo-home \
             -e SCCACHE_DIR=/sccache \
             -e SCCACHE_CACHE_SIZE="$SCCACHE_CACHE_SIZE" \
@@ -746,7 +744,6 @@ jobs:
     timeout-minutes: 75
     env:
       RIPR_VERSION: "0.10.0"
-      RIPR_MAX_DIFF_INDEX_FILES: ${{ github.event_name == 'workflow_dispatch' && inputs.ripr_measurement && '1000' || '800' }}
       BASE_REF: ${{ github.base_ref || github.event.merge_group.base_ref || github.event.repository.default_branch }}
       PR_HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || '' }}
       PR_LABELS: ${{ github.event_name == 'pull_request' && join(github.event.pull_request.labels.*.name, ',') || '' }}
@@ -903,6 +900,7 @@ jobs:
     if: >-
       always() &&
       needs.route-ripr.result == 'success' &&
+      inputs.ripr_measurement != true &&
       (
         (needs.route-ripr.outputs.target == 'cx53' && needs.ripr-cx53.result == 'failure' && needs.ripr-cx53.outputs.preflight_ok == 'false') ||
         (needs.route-ripr.outputs.target == 'cx43' && needs.ripr-cx43.result == 'failure' && needs.ripr-cx43.outputs.preflight_ok == 'false')
@@ -911,7 +909,6 @@ jobs:
     timeout-minutes: 75
     env:
       RIPR_VERSION: "0.10.0"
-      RIPR_MAX_DIFF_INDEX_FILES: ${{ github.event_name == 'workflow_dispatch' && inputs.ripr_measurement && '1000' || '800' }}
       BASE_REF: ${{ github.base_ref || github.event.merge_group.base_ref || github.event.repository.default_branch }}
       PR_HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || '' }}
       PR_LABELS: ${{ github.event_name == 'pull_request' && join(github.event.pull_request.labels.*.name, ',') || '' }}
@@ -1070,7 +1067,6 @@ jobs:
     timeout-minutes: 45
     env:
       RIPR_VERSION: "0.10.0"
-      RIPR_MAX_DIFF_INDEX_FILES: ${{ github.event_name == 'workflow_dispatch' && inputs.ripr_measurement && '1000' || '800' }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
