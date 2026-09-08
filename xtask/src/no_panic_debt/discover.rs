@@ -57,9 +57,9 @@ pub(crate) fn scan(
     }
 
     let mut pending = extra_files;
-    let mut scanned_extra = BTreeSet::new();
+    let mut scanned_extra = BTreeMap::new();
     while let Some((path, work)) = pending.pop_first() {
-        if !scanned_extra.insert(path.clone()) {
+        if already_scanned_with_sufficient_context(&scanned_extra, &path, work.treat_as_test) {
             continue;
         }
         let relative = match super::repo_relative_path(&path, root) {
@@ -87,6 +87,7 @@ pub(crate) fn scan(
             required_features: work.required_features.clone(),
             platform: work.platform.clone(),
         });
+        scanned_extra.insert(path.clone(), work.treat_as_test);
         match scan_file(root, &file, vocabulary, true, work.treat_as_test) {
             Ok(mut scanned) => {
                 covered_paths.insert(file.path.clone());
@@ -135,6 +136,19 @@ pub(crate) fn scan(
             && left.form == right.form
     });
     Ok(Discovered { entrypoints, sites, declarations, instruments, covered_paths })
+}
+
+/// A later `treat_as_test=true` edge must rescan a path first seen as production.
+fn already_scanned_with_sufficient_context(
+    scanned: &BTreeMap<PathBuf, bool>,
+    path: &Path,
+    treat_as_test: bool,
+) -> bool {
+    match scanned.get(path) {
+        Some(true) => true,
+        Some(false) => !treat_as_test,
+        None => false,
+    }
 }
 
 fn enqueue_module(pending: &mut BTreeMap<PathBuf, ModuleWork>, mut work: ModuleWork) {
@@ -890,6 +904,24 @@ mod tests {
         let work = pending.get(&PathBuf::from("src/foo.rs"));
         assert!(work.is_some_and(|item| item.treat_as_test && item.package == "demo"));
         assert_eq!(pending.len(), 1);
+        let mut scanned = BTreeMap::new();
+        scanned.insert(PathBuf::from("src/shared.rs"), false);
+        assert!(!already_scanned_with_sufficient_context(
+            &scanned,
+            Path::new("src/shared.rs"),
+            true
+        ));
+        assert!(already_scanned_with_sufficient_context(
+            &scanned,
+            Path::new("src/shared.rs"),
+            false
+        ));
+        scanned.insert(PathBuf::from("src/shared.rs"), true);
+        assert!(already_scanned_with_sufficient_context(
+            &scanned,
+            Path::new("src/shared.rs"),
+            true
+        ));
         let scanned = ScannedFile {
             entrypoints: Vec::new(),
             sites: Vec::new(),

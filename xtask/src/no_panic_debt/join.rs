@@ -146,7 +146,7 @@ pub(crate) fn join(
         let coverage =
             source_coverage(request.root, &key.path, &discovered.covered_paths, &failed_paths);
         let (status, relation, limitations) = match coverage {
-            SourceCoverage::Covered | SourceCoverage::Absent => match record.state {
+            SourceCoverage::Covered => match record.state {
                 RegistryState::Retired => (
                     DebtStatus::ConvertedAbsent,
                     "retired_absent_from_source".to_string(),
@@ -156,6 +156,25 @@ pub(crate) fn join(
                     DebtStatus::StaleRegistry,
                     "active_absent_from_source".to_string(),
                     vec!["joined from ci/panic_test_identities.json".to_string()],
+                ),
+            },
+            SourceCoverage::Absent => match record.state {
+                RegistryState::Retired => (
+                    DebtStatus::InstrumentNotProven,
+                    "retired_file_absent_uncovered".to_string(),
+                    vec![
+                        "joined from ci/panic_test_identities.json".to_string(),
+                        "source identity was never successfully covered; absence is not a conversion"
+                            .to_string(),
+                    ],
+                ),
+                RegistryState::Active => (
+                    DebtStatus::StaleRegistry,
+                    "active_file_absent_uncovered".to_string(),
+                    vec![
+                        "joined from ci/panic_test_identities.json".to_string(),
+                        "registry path does not exist in the current tree".to_string(),
+                    ],
                 ),
             },
             SourceCoverage::Failed => (
@@ -348,6 +367,7 @@ fn derive_counts(
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SourceCoverage {
     Covered,
     Absent,
@@ -507,6 +527,21 @@ mod tests {
             "duplicate identity must be named: {err}"
         );
         Ok(())
+    }
+
+    #[test]
+    fn source_coverage_distinguishes_covered_from_absent() {
+        let covered = ["crates/demo/src/lib.rs".to_string()].into_iter().collect();
+        let failed = std::collections::BTreeSet::new();
+        let root = std::path::Path::new("/tmp/no-panic-debt-absent-root");
+        assert_eq!(
+            source_coverage(root, "crates/demo/src/lib.rs", &covered, &failed),
+            SourceCoverage::Covered
+        );
+        assert_eq!(
+            source_coverage(root, "crates/demo/tests/never_existed.rs", &covered, &failed),
+            SourceCoverage::Absent
+        );
     }
 
     #[test]

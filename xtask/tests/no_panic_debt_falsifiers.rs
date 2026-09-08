@@ -715,6 +715,82 @@ mod escaped;
 }
 
 #[test]
+fn later_test_context_rescans_a_module_first_seen_as_production() {
+    let temp = tempfile::tempdir().expect("temp");
+    write_policy(temp.path());
+    write_package(
+        temp.path(),
+        "demo",
+        r#"
+pub mod aaa;
+"#,
+        &[("zzz.rs", "#[path = \"support/later.rs\"]\nmod later;\n")],
+    );
+    fs::write(temp.path().join("crates/demo/src/aaa.rs"), "#[path = \"shared.rs\"]\nmod shared;\n")
+        .expect("aaa");
+    fs::write(
+        temp.path().join("crates/demo/src/shared.rs"),
+        "pub fn helper() { let _ = Some(1).unwrap(); }\n",
+    )
+    .expect("shared");
+    fs::create_dir_all(temp.path().join("crates/demo/tests/support")).expect("support");
+    fs::write(
+        temp.path().join("crates/demo/tests/support/later.rs"),
+        "#[path = \"../../src/shared.rs\"]\nmod shared;\n",
+    )
+    .expect("later");
+
+    let inventory = inventory_at(temp.path());
+    assert!(
+        inventory
+            .rows
+            .iter()
+            .any(|row| { row.path.ends_with("src/shared.rs") && row.site_family == "unwrap" }),
+        "test-context unwrap on a production-first shared module was omitted: {:?}",
+        inventory.rows
+    );
+}
+
+#[test]
+fn retired_registry_row_for_a_missing_file_is_not_converted_absent() {
+    let temp = fixture_root();
+    write_registry(
+        temp.path(),
+        &serde_json::json!({
+            "schema_version": 1,
+            "sites": [{
+                "path": "crates/demo/tests/never_existed.rs",
+                "enclosing_test_or_function": "gone",
+                "macro_family": "panic!",
+                "normalized_snippet": "panic!(\"known\")",
+                "selector_identity": "invocation:missing:occurrence:1",
+                "accepted_reason": "retired conversion.",
+                "state": "retired"
+            }]
+        })
+        .to_string(),
+    );
+    let inventory = inventory_at(temp.path());
+    let row = inventory.rows.iter().find(|row| row.path.ends_with("tests/never_existed.rs"));
+    assert!(
+        row.is_some_and(|row| {
+            row.status == DebtStatus::InstrumentNotProven
+                && row.registry_relation == "retired_file_absent_uncovered"
+        }),
+        "missing-file retired row became converted_absent: {:?}",
+        inventory.rows
+    );
+    assert!(
+        !inventory.rows.iter().any(|row| {
+            row.path.ends_with("tests/never_existed.rs")
+                && row.status == DebtStatus::ConvertedAbsent
+        }),
+        "missing-file retired row claimed conversion: {:?}",
+        inventory.rows
+    );
+}
+
+#[test]
 fn missing_cfg_test_path_module_is_not_proven() {
     let temp = tempfile::tempdir().expect("temp");
     write_policy(temp.path());
