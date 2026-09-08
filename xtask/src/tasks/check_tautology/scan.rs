@@ -521,4 +521,48 @@ mod tests {
         "#;
         assert_eq!(rules(source), vec![RuleId::PredicateOrNegation], "{:?}", rules(source));
     }
+
+    #[test]
+    fn custom_option_result_ascriptions_are_skipped_std_option_ascription_is_retained() {
+        let source = r#"
+            fn skip_custom_option(value: custom::Option<u8>) {
+                assert!(value.is_some() || value.is_none());
+            }
+            fn skip_custom_result(value: custom::Result<(), ()>) {
+                assert!(value.is_ok() || value.is_err());
+            }
+            fn skip_qualified_custom_ctors() {
+                assert!(custom::Option::Some(1).is_some() || custom::Option::Some(1).is_none());
+                assert!(custom::Result::Ok(()).is_ok() || custom::Result::Ok(()).is_err());
+            }
+            fn retain_std_option(value: std::option::Option<u8>) {
+                assert!(value.is_some() || value.is_none());
+            }
+            fn retain_core_option(value: core::option::Option<u8>) {
+                assert!(value.is_some() || value.is_none());
+            }
+            mod custom {
+                pub struct Option<T>(T);
+                impl<T> Option<T> {
+                    #[allow(non_snake_case)]
+                    pub fn Some(value: T) -> Self { Self(value) }
+                    pub fn is_some(&self) -> bool { false }
+                    pub fn is_none(&self) -> bool { false }
+                }
+                pub struct Result<T, E>(core::marker::PhantomData<(T, E)>);
+                impl<T, E> Result<T, E> {
+                    #[allow(non_snake_case)]
+                    pub fn Ok(_value: T) -> Self { Self(core::marker::PhantomData) }
+                    pub fn is_ok(&self) -> bool { false }
+                    pub fn is_err(&self) -> bool { false }
+                }
+            }
+        "#;
+        assert_eq!(
+            rules(source),
+            vec![RuleId::OptionSomeOrNone, RuleId::OptionSomeOrNone],
+            "{:?}",
+            rules(source)
+        );
+    }
 }

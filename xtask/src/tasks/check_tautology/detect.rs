@@ -1,9 +1,10 @@
 //! Conservative structural tautology detection for assertion expressions.
 //!
 //! False negatives are acceptable. False positives are not. Option/Result
-//! method pairs fire only when the receiver is a constructor or an explicitly
-//! ascribed Option/Result. Identical `assert_eq!` operands are governed only
-//! when PartialEq reflexivity is known from syntax.
+//! method pairs fire only when the receiver is a prelude or std/core
+//! constructor, or an explicitly ascribed prelude/`std`/`core` Option/Result.
+//! Identical `assert_eq!` operands are governed only when PartialEq
+//! reflexivity is known from syntax.
 
 use super::expr::{
     QueryKind, TypeEnv, expr_eq, is_known_reflexive_eq_operand, is_side_effect_free, peel,
@@ -207,6 +208,20 @@ mod tests {
             Some(RuleId::OptionSomeOrNone)
         );
         assert_eq!(rule_of("None.is_some() || None.is_none()"), Some(RuleId::OptionSomeOrNone));
+        assert_eq!(
+            rule_of(
+                "std::option::Option::Some(1).is_some() || std::option::Option::Some(1).is_none()"
+            ),
+            Some(RuleId::OptionSomeOrNone)
+        );
+        assert_eq!(
+            rule_of("custom::Option::Some(1).is_some() || custom::Option::Some(1).is_none()"),
+            None
+        );
+        assert_eq!(
+            rule_of("custom::Option::None.is_some() || custom::Option::None.is_none()"),
+            None
+        );
     }
 
     #[test]
@@ -223,6 +238,14 @@ mod tests {
             Some(RuleId::ResultOkOrErr)
         );
         assert_eq!(rule_of("Ok(()).is_ok() || Ok(()).is_err()"), Some(RuleId::ResultOkOrErr));
+        assert_eq!(
+            rule_of("std::result::Result::Ok(()).is_ok() || std::result::Result::Ok(()).is_err()"),
+            Some(RuleId::ResultOkOrErr)
+        );
+        assert_eq!(
+            rule_of("custom::Result::Ok(()).is_ok() || custom::Result::Ok(()).is_err()"),
+            None
+        );
     }
 
     #[test]

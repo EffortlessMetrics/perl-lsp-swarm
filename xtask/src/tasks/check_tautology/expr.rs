@@ -1,8 +1,9 @@
 //! Conservative expression predicates for tautology detection.
 //!
 //! When purity, Option/Result identity, or PartialEq reflexivity cannot be
-//! proven from syntax (constructors or explicit ascriptions), the checker
-//! skips rather than emitting a finding.
+//! proven from syntax (prelude or std/core constructors and ascriptions), the
+//! checker skips rather than emitting a finding. A terminal identifier such as
+//! `custom::Option` is not a proven std enum.
 
 use std::collections::BTreeMap;
 use syn::{Expr, Lit, Pat, Path, Type, UnOp};
@@ -122,6 +123,8 @@ pub(crate) fn is_side_effect_free(expr: &Expr, env: &TypeEnv) -> bool {
 }
 
 /// Option/Result identity proven from a constructor or an explicit ascription.
+/// Ascriptions and constructor owners must be the prelude `Option`/`Result` or
+/// a `std`/`core` path; `custom::Option` is not admitted.
 pub(crate) fn proven_query_kind(expr: &Expr, env: &TypeEnv) -> Option<QueryKind> {
     let expr = peel(expr);
     if let Some(kind) = constructor_query_kind(expr) {
@@ -202,7 +205,10 @@ pub(crate) fn option_or_result_kind(ty: &Type) -> Option<QueryKind> {
     let Type::Path(path) = ty else {
         return None;
     };
-    path_query_kind(&path.path)
+    if path.qself.is_some() {
+        return None;
+    }
+    std_enum_kind(&path.path)
 }
 
 fn peel_type(ty: &Type) -> &Type {
@@ -223,43 +229,65 @@ fn constructor_query_kind(expr: &Expr) -> Option<QueryKind> {
             let Expr::Path(path) = peel(&*call.func) else {
                 return None;
             };
+            if path.qself.is_some() {
+                return None;
+            }
             ctor_path_kind(&path.path)
         }
-        Expr::Path(path) => none_path_kind(&path.path),
+        Expr::Path(path) if path.qself.is_none() => none_path_kind(&path.path),
         _ => None,
     }
 }
 
-fn path_query_kind(path: &Path) -> Option<QueryKind> {
-    let last = path.segments.last()?;
-    match last.ident.to_string().as_str() {
-        "Option" => Some(QueryKind::Option),
-        "Result" => Some(QueryKind::Result),
-        _ => None,
-    }
-}
-
-fn ctor_path_kind(path: &Path) -> Option<QueryKind> {
-    let last = path.segments.last()?.ident.to_string();
-    match last.as_str() {
-        "Some" if constructor_owner_is(path, "Option") => Some(QueryKind::Option),
-        "Ok" | "Err" if constructor_owner_is(path, "Result") => Some(QueryKind::Result),
-        _ => None,
-    }
+/// Proven std/core Option or Result path. A terminal identifier is not enough:
+/// `custom::Option` and `crate::Result` are not the prelude or std enums.
+/// Bare `Option`/`Result` (no leading `::`) are the prelude names; `::Option` is
+/// crate-root and is refused. Imports that shadow those prelude names are not
+/// resolved here and remain an accepted residual.
+fn std_enum_kind(path: &Path) -> Option<QueryKind> {
+    std_enum_kind_from_idents(path.leading_colon.is_some(), &path_idents(path))
 }
 
 fn none_path_kind(path: &Path) -> Option<QueryKind> {
     let last = path.segments.last()?.ident.to_string();
-    (last == "None" && constructor_owner_is(path, "Option")).then_some(QueryKind::Option)
+    (last == "None").then(|| ctor_path_kind(path)).flatten()
 }
 
-fn constructor_owner_is(path: &Path, owner: &str) -> bool {
-    match path.segments.len() {
-        1 => true,
-        n if n >= 2 => {
-            path.segments.iter().nth(n.saturating_sub(2)).is_some_and(|seg| seg.ident == owner)
+fn ctor_path_kind(path: &Path) -> Option<QueryKind> {
+    let segs = path_idents(path);
+    let last = segs.last()?.as_str();
+    let rooted = path.leading_colon.is_some();
+    match last {
+        "Some" | "None" => {
+            if segs.len() == 1 {
+                return (!rooted).then_some(QueryKind::Option);
+            }
+            std_enum_kind_from_idents(rooted, &segs[..segs.len() - 1])
+                .filter(|kind| *kind == QueryKind::Option)
         }
-        _ => false,
+        "Ok" | "Err" => {
+            if segs.len() == 1 {
+                return (!rooted).then_some(QueryKind::Result);
+            }
+            std_enum_kind_from_idents(rooted, &segs[..segs.len() - 1])
+                .filter(|kind| *kind == QueryKind::Result)
+        }
+        _ => None,
+    }
+}
+
+fn path_idents(path: &Path) -> Vec<String> {
+    path.segments.iter().map(|segment| segment.ident.to_string()).collect()
+}
+
+fn std_enum_kind_from_idents(rooted: bool, segs: &[String]) -> Option<QueryKind> {
+    let names: Vec<&str> = segs.iter().map(String::as_str).collect();
+    match names.as_slice() {
+        ["Option"] if !rooted => Some(QueryKind::Option),
+        ["Result"] if !rooted => Some(QueryKind::Result),
+        ["std", "option", "Option"] | ["core", "option", "Option"] => Some(QueryKind::Option),
+        ["std", "result", "Result"] | ["core", "result", "Result"] => Some(QueryKind::Result),
+        _ => None,
     }
 }
 
@@ -361,6 +389,56 @@ mod tests {
         assert_eq!(option_or_result_kind(&ty("Option<u8>")), Some(QueryKind::Option));
         assert_eq!(option_or_result_kind(&ty("&Result<(), ()>")), Some(QueryKind::Result));
         assert_eq!(option_or_result_kind(&ty("Probe")), None);
+        assert_eq!(option_or_result_kind(&ty("std::option::Option<u8>")), Some(QueryKind::Option));
+        assert_eq!(option_or_result_kind(&ty("core::option::Option<u8>")), Some(QueryKind::Option));
+        assert_eq!(
+            option_or_result_kind(&ty("::std::option::Option<u8>")),
+            Some(QueryKind::Option)
+        );
+        assert_eq!(
+            option_or_result_kind(&ty("std::result::Result<(), ()>")),
+            Some(QueryKind::Result)
+        );
+        assert_eq!(
+            option_or_result_kind(&ty("core::result::Result<(), ()>")),
+            Some(QueryKind::Result)
+        );
+        assert_eq!(option_or_result_kind(&ty("custom::Option<u8>")), None);
+        assert_eq!(option_or_result_kind(&ty("custom::Result<(), ()>")), None);
+        assert_eq!(option_or_result_kind(&ty("crate::Option<u8>")), None);
+        assert_eq!(option_or_result_kind(&ty("super::Option<u8>")), None);
+        assert_eq!(option_or_result_kind(&ty("self::Result<(), ()>")), None);
+        assert_eq!(option_or_result_kind(&ty("::Option<u8>")), None);
+        assert_eq!(option_or_result_kind(&ty("option::Option<u8>")), None);
+        assert_eq!(option_or_result_kind(&ty("std::Option<u8>")), None);
+    }
+
+    #[test]
+    fn constructors_require_prelude_or_std_owners() {
+        let env = TypeEnv::new();
+        assert_eq!(proven_query_kind(&expr("Some(1)"), &env), Some(QueryKind::Option));
+        assert_eq!(proven_query_kind(&expr("None"), &env), Some(QueryKind::Option));
+        assert_eq!(proven_query_kind(&expr("Ok(())"), &env), Some(QueryKind::Result));
+        assert_eq!(proven_query_kind(&expr("Err(())"), &env), Some(QueryKind::Result));
+        assert_eq!(proven_query_kind(&expr("Option::Some(1)"), &env), Some(QueryKind::Option));
+        assert_eq!(
+            proven_query_kind(&expr("std::option::Option::Some(1)"), &env),
+            Some(QueryKind::Option)
+        );
+        assert_eq!(
+            proven_query_kind(&expr("core::option::Option::None"), &env),
+            Some(QueryKind::Option)
+        );
+        assert_eq!(
+            proven_query_kind(&expr("std::result::Result::Ok(())"), &env),
+            Some(QueryKind::Result)
+        );
+        assert_eq!(proven_query_kind(&expr("custom::Option::Some(1)"), &env), None);
+        assert_eq!(proven_query_kind(&expr("custom::Option::None"), &env), None);
+        assert_eq!(proven_query_kind(&expr("custom::Result::Ok(())"), &env), None);
+        assert_eq!(proven_query_kind(&expr("custom::Some(1)"), &env), None);
+        assert_eq!(proven_query_kind(&expr("::Some(1)"), &env), None);
+        assert_eq!(proven_query_kind(&expr("::None"), &env), None);
     }
 
     #[test]
