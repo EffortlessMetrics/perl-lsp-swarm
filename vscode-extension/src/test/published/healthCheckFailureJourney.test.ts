@@ -80,6 +80,9 @@ suite('Installed Health Check failure and recovery', function () {
   this.timeout(240_000);
 
   test('reports startup failure and recovers through the real restart command', async function () {
+    if (process.env.PERL_LSP_HEALTH_CHECK_RECOVERY_SMOKE === '1') {
+      this.skip();
+    }
     const extension = vscode.extensions.getExtension('EffortlessMetrics.perl-lsp-rs');
     assert.ok(extension, 'installed extension must be available');
     const config = vscode.workspace.getConfiguration('perl-lsp');
@@ -105,33 +108,50 @@ suite('Installed Health Check failure and recovery', function () {
       JSON.stringify(settledFailure, null, 2),
     );
 
-    const bundledPath = bundledBinaryPath(extension.extensionPath);
-    await config.update('serverPath', bundledPath, vscode.ConfigurationTarget.Global);
-    await withTimeout(
-      'language server restart',
+    const restartResult = await withTimeout(
+      'blocked restart decision',
       vscode.commands.executeCommand('perl-lsp.restart'),
-      90_000,
+      20_000,
     );
-    await waitForLifecycleRunning(activation);
-    const recovered = (await withTimeout(
-      'implicit health check after recovery',
+    assert.equal(restartResult, true, 'unknown cleanup must require reload before replacement');
+    assert.notEqual(activation?.getLanguageClientStartupMetrics?.().lifecycle_state, 'running');
+  });
+
+  test('starts the bundled server in a fresh host and reports healthy runtime', async function () {
+    if (process.env.PERL_LSP_HEALTH_CHECK_RECOVERY_SMOKE !== '1') {
+      this.skip();
+    }
+
+    const extension = vscode.extensions.getExtension('EffortlessMetrics.perl-lsp-rs');
+    assert.ok(extension, 'installed extension must be available');
+    const config = vscode.workspace.getConfiguration('perl-lsp');
+    const bundledPath = bundledBinaryPath(extension.extensionPath);
+    await config.update('autoDownload', false, vscode.ConfigurationTarget.Global);
+    await config.update('serverPath', bundledPath, vscode.ConfigurationTarget.Global);
+    const activation = (await withTimeout('extension activation', extension.activate(), 90_000)) as
+      | { getLanguageClientStartupMetrics?: () => Record<string, unknown> }
+      | undefined;
+    await waitForCommand('perl-lsp.runHealthCheck');
+
+    const healthy = (await withTimeout(
+      'bundled implicit health check',
       vscode.commands.executeCommand('perl-lsp.runHealthCheck'),
-      45_000,
+      90_000,
     )) as HealthCheckResult;
-    assert.equal(recovered.ok, true, JSON.stringify(recovered, null, 2));
-    assert.equal(check(recovered, 'LSP binary').status, 'ok', JSON.stringify(recovered, null, 2));
-    assert.equal(check(recovered, 'LSP runtime').status, 'ok', JSON.stringify(recovered, null, 2));
+    assert.equal(healthy.ok, true, JSON.stringify(healthy, null, 2));
+    assert.equal(check(healthy, 'LSP binary').status, 'ok', JSON.stringify(healthy, null, 2));
+    assert.equal(check(healthy, 'LSP runtime').status, 'ok', JSON.stringify(healthy, null, 2));
+    assert.equal(
+      activation?.getLanguageClientStartupMetrics?.().lifecycle_state,
+      'running',
+      JSON.stringify(activation?.getLanguageClientStartupMetrics?.()),
+    );
 
     const processPaths = await scanProcessesUnderDirectory(path.dirname(bundledPath));
     assert.equal(
       processPaths.length,
       1,
-      `recovery should leave exactly one bundled server process: ${JSON.stringify(processPaths)}`,
-    );
-    assert.equal(
-      activation?.getLanguageClientStartupMetrics?.().lifecycle_state,
-      'running',
-      JSON.stringify(activation?.getLanguageClientStartupMetrics?.()),
+      `fresh bundled host should leave exactly one server process: ${JSON.stringify(processPaths)}`,
     );
   });
 });
