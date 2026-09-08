@@ -24,6 +24,46 @@ Every governed lint has exactly one current state:
 
 A lint cannot appear in two states. A Cargo lint without a ledger entry fails, as does an active ledger entry missing from Cargo. Due lints cannot remain ordinary planned work indefinitely.
 
+### Split-tool coverage
+
+One invariant sometimes needs a row in both `[workspace.lints.rust]` and `[workspace.lints.clippy]`, because rustc and Clippy each cover part of the surface. The rows share a name but are distinct governed identities, and neither is redundant:
+
+| identity | covers | silent on |
+|---|---|---|
+| `rust::let_underscore_lock` | `std::sync` mutex and read/write guards | all `parking_lot` guards |
+| `clippy::let_underscore_lock` | borrowed `parking_lot` mutex and read/write guards | the standard-library guards Clippy uplifted to rustc, and `parking_lot`'s owned arc guards |
+
+Deleting either row uncovers real lock types rather than removing a duplicate, so both are pinned in the checker's required dispositions and cannot be demoted without an explicit policy change. Their coverage boundary is measured against the selected toolchain — not asserted from the ledger — by the lock-partition tests in `xtask/src/tasks/check_lint_policy/tests/lock_partition.rs`.
+
+Split-tool coverage does not imply *complete* coverage. Both rows match exactly one shape — `let _ = <expr>` whose type is a known borrowed guard — and these discards mean the same thing but are silently accepted by both:
+
+```rust
+let _ = shared.lock_arc();                  // owned guard
+drop(mutex.lock());                         // same discard, different syntax
+let _ = MutexGuard::map(guard, |v| &mut v.0); // mapped guard
+```
+
+#14579 measured each form against the selected toolchain and ruled on where it belongs:
+
+| discard | measured on the selected toolchain | owner |
+|---|---|---|
+| owned `*_arc` guard | reported by `clippy::let_underscore_must_use`; the guard type is `#[must_use]` | that row — tracked in the ledger, activated by #11240 after #11236 |
+| mapped guard | reported by `clippy::let_underscore_must_use` | same row |
+| `drop(m.lock())` | reported by no Clippy lint at any group level | #11236's deliberate-discard contract, which already rejects `drop(lock())` as synchronization and will need a non-Clippy instrument for it |
+
+The owned-guard family is production-reachable — the workspace enables `arc_lock` and `perl-workspace`'s `workspace_index` holds an `ArcMutexGuard` — and it is covered once #11240 lands; nothing lock-specific is missing from that path. `drop(mutex.lock())` is the rewrite a contributor reaches for when the lint blocks them, exactly the dishonest repair the invariant exists to prevent. It is not given a lock-only syntactic check ahead of the contract that owns every `drop(...)` discard, and the tree holds zero such sites today. The lock-partition tests assert all three boundaries in the direction they were measured: the lock rows still miss every form, `let_underscore_must_use` still sees the first two, and the every-group sweep still sees nothing on the third. A toolchain that moves any of them fails the matching test, and the failure means this section and the ruling get revisited rather than that anything regressed.
+
+A row whose lint is already deny-by-default upstream is still stated explicitly. The default is the toolchain's current choice, not this repository's contract, and an upstream level change would otherwise remove the invariant silently.
+
+### What the ledger does and does not enforce
+
+`cargo xtask check-lint-policy` compares the workspace-root `Cargo.toml` against the ledger. That is the whole of its reach, and the required-disposition pins inherit the same boundary: they guarantee a governed row cannot be deleted, downgraded, or demoted **in those two files**. Two things sit outside it and are not caught by any current repository check:
+
+- a crate-level `#![allow(...)]` for a governed lint — the strict Clippy gates run `-D warnings`, which respects an `allow` rather than piercing it (only `--force-warn`, used for measurement sweeps, does that);
+- a member crate replacing `[lints] workspace = true` with its own table that omits a governed row.
+
+This is a property of the mechanism, not of any one lint, and closing it means a separate check over member manifests and source attributes. Read a pin as "the workspace policy cannot silently lose this row," not as "no crate can opt out."
+
 ## Workspace posture
 
 The policy governs the lint levels inherited by production and test targets. Its maintained enforcement surface is the required workspace `--lib` gate, the production `--bins` gate, and the explicitly listed all-targets kernel cohort; that cohort is intentionally non-exhaustive. This document therefore does not claim that every test target is currently checked by the strict Clippy gate. Test failures within the enforced surface should use `Result`, `?`, or repository assertion helpers that preserve the underlying error. The old Clippy test-carveout keys are not accepted policy and cannot return through `clippy.toml`.

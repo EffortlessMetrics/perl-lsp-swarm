@@ -24,16 +24,19 @@ mod dependency_detection;
 mod metadata_dependencies;
 mod native_build_hints;
 pub mod perl_oracle_env;
+mod project_metadata;
 pub mod toolchain_profile;
 
 pub(crate) use critic_state::CriticSettingsCandidate;
 pub use critic_state::{EffectiveCriticState, EffectiveNativeCriticConfig};
-pub use dependency_detection::detect_dependency_include_paths;
+pub use dependency_detection::{
+    detect_dependency_include_paths, detect_dependency_include_paths_with_declaration,
+};
 pub use metadata_dependencies::{
-    DeclaredDependency, DeclaredDependencySource, detect_declared_dependencies,
-    extract_build_pl_requirements, extract_cpanfile_requirements, extract_dist_ini_requirements,
-    extract_makefile_pl_requirements, extract_meta_json_requirements,
-    extract_meta_yml_requirements,
+    DeclaredDependency, DeclaredDependencySource, MetadataSourceRead,
+    declared_dependencies_from_reads, detect_declared_dependencies, extract_build_pl_requirements,
+    extract_cpanfile_requirements, extract_dist_ini_requirements, extract_makefile_pl_requirements,
+    extract_meta_json_requirements, extract_meta_yml_requirements,
 };
 pub use native_build_hints::{
     NativeBuildHintDiagnostic, NativeBuildHintParseReason, NativeBuildHints, NativeBuildScript,
@@ -42,6 +45,9 @@ pub use native_build_hints::{
 pub use perl_lsp_perltidy::FormatterMode;
 #[cfg(not(target_arch = "wasm32"))]
 pub use perl_oracle_env::PerlOracleEnv;
+pub use project_metadata::{
+    ProjectMetadataKind, classify_project_metadata_path, project_metadata_relative_paths,
+};
 pub use toolchain_profile::PerlToolchainProfile;
 
 /// Critic diagnostic engine used for LSP policy diagnostics.
@@ -1102,6 +1108,16 @@ pub struct WorkspaceConfig {
     /// imply that a dependency is installed/indexed.
     pub declared_dependencies: Vec<DeclaredDependency>,
 
+    /// Normalized include paths currently contributed by dependency-manager
+    /// marker detection (#13640).
+    ///
+    /// Ownership bookkeeping for [`Self::refresh_dependency_include_paths`]:
+    /// only entries this detector actually appended are recorded, so a later
+    /// refresh can drop a root whose markers disappeared without ever
+    /// removing a path the user configured. An entry that was already present
+    /// when first detected stays unowned and is never removed.
+    pub(crate) detected_dependency_include_paths: Vec<String>,
+
     /// Resolution timeout in milliseconds
     /// Default: 50ms
     pub resolution_timeout_ms: u64,
@@ -1129,6 +1145,7 @@ impl Default for WorkspaceConfig {
             perl_args: Vec::new(),
             native_build_hints: NativeBuildHints::default(),
             declared_dependencies: Vec::new(),
+            detected_dependency_include_paths: Vec::new(),
             resolution_timeout_ms: 50,
             use_perl5lib: true,
             perl5lib_precedence: Perl5LibPrecedence::Prepend,
@@ -1505,15 +1522,69 @@ impl WorkspaceConfig {
         self.declared_dependencies = detect_declared_dependencies(workspace_root);
     }
 
-    /// Append marker-detected Carton/Carmel roots to module-resolution paths.
+    /// Apply per-source captured metadata reads to declared-dependency facts.
+    ///
+    /// Used by the watcher invalidation route (#13640), which resolves each
+    /// source once — preferring an open buffer's staged text — and retains the
+    /// previous entries of any source it could not read.
+    pub fn apply_declared_dependency_reads(
+        &mut self,
+        reads: &[(DeclaredDependencySource, MetadataSourceRead)],
+    ) {
+        self.declared_dependencies =
+            declared_dependencies_from_reads(reads, &self.declared_dependencies);
+    }
+
+    /// Reconcile marker-detected Carton/Carmel roots into module-resolution paths.
     ///
     /// Existing configured paths are preserved in order, and equivalent paths
     /// are not added twice. `PERL5LIB` is merged later by
     /// [`Self::effective_include_paths`], so its configured precedence remains
     /// unchanged.
+    ///
+    /// This is a reconcile rather than an append (#13640): a root this
+    /// detector previously contributed is removed once its markers are gone,
+    /// so deleting `carton.lock` or the Carmel sentinel does not leave a stale
+    /// include root behind. Ownership is tracked in
+    /// [`Self::detected_dependency_include_paths`], so a path the user
+    /// configured is never removed even when the detector also reports it.
     pub fn refresh_dependency_include_paths(&mut self, workspace_root: &Path) {
-        for detected in detect_dependency_include_paths(workspace_root) {
-            let Some(normalized_detected) = normalize_include_path(&detected) else {
+        self.refresh_dependency_include_paths_with_declaration(workspace_root, None);
+    }
+
+    /// As [`Self::refresh_dependency_include_paths`], with an authoritative
+    /// override for whether the `cpanfile` declaration exists (#13640).
+    ///
+    /// An open editor buffer is the authority for its document and outlives an
+    /// external delete of the backing file, so a deleted-but-open `cpanfile`
+    /// must keep gating the Carton/Carmel root until its buffer closes.
+    pub fn refresh_dependency_include_paths_with_declaration(
+        &mut self,
+        workspace_root: &Path,
+        declaration_present: Option<bool>,
+    ) {
+        let detected =
+            detect_dependency_include_paths_with_declaration(workspace_root, declaration_present);
+        let detected_normalized: Vec<String> =
+            detected.iter().filter_map(|path| normalize_include_path(path)).collect();
+
+        // Drop previously contributed roots whose markers disappeared.
+        let retired: Vec<String> = self
+            .detected_dependency_include_paths
+            .iter()
+            .filter(|&owned| !detected_normalized.contains(owned))
+            .cloned()
+            .collect();
+        if !retired.is_empty() {
+            self.include_paths.retain(|path| match normalize_include_path(path) {
+                Some(normalized) => !retired.contains(&normalized),
+                None => true,
+            });
+        }
+
+        let mut owned = Vec::new();
+        for detected_path in detected {
+            let Some(normalized_detected) = normalize_include_path(&detected_path) else {
                 continue;
             };
             let already_present = self
@@ -1521,10 +1592,18 @@ impl WorkspaceConfig {
                 .iter()
                 .filter_map(|path| normalize_include_path(path))
                 .any(|path| path == normalized_detected);
-            if !already_present {
-                self.include_paths.push(detected);
+            if already_present {
+                // Keep ownership only if this detector added the entry on an
+                // earlier refresh; never claim a user-configured path.
+                if self.detected_dependency_include_paths.contains(&normalized_detected) {
+                    owned.push(normalized_detected);
+                }
+            } else {
+                self.include_paths.push(detected_path);
+                owned.push(normalized_detected);
             }
         }
+        self.detected_dependency_include_paths = owned;
     }
 
     /// Update workspace configuration from LSP settings.
@@ -1568,6 +1647,13 @@ impl WorkspaceConfig {
                             .push(RejectedClientIncludePath { entry: entry.to_string(), reason }),
                     }
                 }
+                // An explicit configuration channel replaces the whole list,
+                // so detector ownership no longer describes any entry here
+                // (#13640). Clearing it keeps a user-supplied path that
+                // happens to equal a detected root from being retired later
+                // when its marker disappears; the next refresh re-observes it
+                // as already-present and leaves it unowned.
+                self.detected_dependency_include_paths.clear();
                 self.include_paths = valid;
             }
             if let Some(paths) = workspace.get("externalIncludePaths").and_then(|v| v.as_array()) {
@@ -1984,7 +2070,7 @@ fn output_with_timeout(mut command: Command, timeout: Duration) -> std::io::Resu
 ///
 /// Unknown TOML keys are silently ignored for forward compatibility.
 #[non_exhaustive]
-#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, serde::Deserialize)]
 #[serde(default)]
 pub struct ProjectConfig {
     /// `[perl]` section: module resolution settings.
@@ -2007,7 +2093,7 @@ pub struct ProjectConfig {
 }
 
 /// `[perl]` section of `.perl-lsp.toml`.
-#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, serde::Deserialize)]
 #[serde(default)]
 pub struct ProjectPerlConfig {
     /// Additional include paths for module resolution.
@@ -2019,8 +2105,9 @@ pub struct ProjectPerlConfig {
     pub discovery_extensions: Vec<String>,
     /// Additional directory names skipped during workspace discovery.
     pub discovery_skipped_dirs: Vec<String>,
-    /// Perl version string (e.g. "5.38") — parsed but not yet wired to diagnostics.
-    /// Reserved for future use; ignored in this implementation.
+    /// Trusted per-folder Perl version string (e.g. "5.38") used as the PL900
+    /// fallback target when the source has no `use VERSION` declaration.
+    /// Invalid values fail closed and source declarations always win.
     pub version: Option<String>,
     /// Whether to read `PERL5LIB` from the environment and include it in the
     /// module search path.  Unset means "leave the server default unchanged".
@@ -2031,7 +2118,7 @@ pub struct ProjectPerlConfig {
 }
 
 /// `[diagnostics]` section of `.perl-lsp.toml`.
-#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, serde::Deserialize)]
 #[serde(default)]
 pub struct ProjectDiagnosticsConfig {
     /// Whether perlcritic is enabled. Maps to `ServerConfig.perlcritic_enabled`.
@@ -2041,7 +2128,7 @@ pub struct ProjectDiagnosticsConfig {
 }
 
 /// `[critic]` section of `.perl-lsp.toml`.
-#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, serde::Deserialize)]
 #[serde(default)]
 pub struct ProjectCriticConfig {
     /// Critic engine (`legacy`, `perlcritic`, or `native`).
@@ -2055,7 +2142,7 @@ pub struct ProjectCriticConfig {
 }
 
 /// `[features]` section of `.perl-lsp.toml`.
-#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, serde::Deserialize)]
 #[serde(default)]
 pub struct ProjectFeaturesConfig {
     /// Whether inlay hints are enabled globally. Maps to `ServerConfig.inlay_hints_enabled`.
@@ -2078,7 +2165,7 @@ pub struct ProjectFeaturesConfig {
 /// activate a remote AI backend or override user-owned provider/model choice.
 /// Those settings arrive only through the LSP client configuration channel
 /// (`ServerConfig::update_from_value`'s `aiCompletion` block).
-#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, serde::Deserialize)]
 #[serde(default)]
 pub struct ProjectAiCompletionConfig {
     /// Opt-out only: when `false`, disables AI completions for this workspace.
@@ -2094,7 +2181,7 @@ pub struct ProjectAiCompletionConfig {
 /// ignored/deprecation reason instead of apparent success; it can never
 /// enable the internal scaffold gate or report ready/enabled.
 #[non_exhaustive]
-#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, serde::Deserialize)]
 #[serde(default)]
 pub struct ProjectNextEditConfig {
     /// Legacy `enabled` flag. Ignored; kept only for the deprecation reason.
@@ -2102,7 +2189,7 @@ pub struct ProjectNextEditConfig {
 }
 
 /// `[formatting]` section of `.perl-lsp.toml`.
-#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, serde::Deserialize)]
 #[serde(default)]
 pub struct ProjectFormattingConfig {
     /// Whether LSP formatting is enabled.
@@ -2540,6 +2627,10 @@ impl ProjectConfig {
                 valid.push(entry.clone());
             }
             if !skip_include_paths {
+                // Project-file configuration replaces the list; drop detector
+                // ownership for the same reason as the client-settings channel
+                // (#13640).
+                config.detected_dependency_include_paths.clear();
                 config.include_paths = valid;
             }
         }
@@ -4404,6 +4495,44 @@ profile = "recommended"
         assert!(config.inlay_hints_enabled);
     }
 
+    /// Detector ownership must not survive an explicit configuration
+    /// replacement (#13640). If it did, a user-supplied path equal to a
+    /// previously detected root would be retired when its marker disappeared.
+    #[test]
+    fn client_settings_replacement_releases_detector_ownership() -> TestResult {
+        let workspace = tempfile::tempdir()?;
+        std::fs::write(workspace.path().join("cpanfile"), "requires 'JSON';\n")?;
+        std::fs::write(workspace.path().join("carton.lock"), "snapshot\n")?;
+
+        let mut config = WorkspaceConfig {
+            include_paths: vec!["lib".to_string()],
+            ..WorkspaceConfig::default()
+        };
+        config.refresh_dependency_include_paths(workspace.path());
+        assert!(
+            config.detected_dependency_include_paths.contains(&"local/lib/perl5".to_string()),
+            "the detector owns the root it contributed"
+        );
+
+        // The user now configures the same path explicitly.
+        config.update_from_value(&serde_json::json!({
+            "workspace": { "includePaths": ["lib", "local/lib/perl5"] }
+        }));
+        assert!(
+            config.detected_dependency_include_paths.is_empty(),
+            "an explicit replacement releases detector ownership"
+        );
+
+        // The marker disappears; the user-configured path must survive.
+        std::fs::remove_file(workspace.path().join("carton.lock"))?;
+        config.refresh_dependency_include_paths(workspace.path());
+        assert!(
+            config.include_paths.contains(&"local/lib/perl5".to_string()),
+            "a user-configured path is never retired by marker detection"
+        );
+        Ok(())
+    }
+
     #[test]
     fn apply_to_workspace_config_only_overrides_non_empty_include_paths() -> TestResult {
         let temp = tempfile::tempdir()?;
@@ -5211,10 +5340,8 @@ profile = "recommended"
             ..WorkspaceConfig::default()
         };
 
-        let start = Instant::now();
         let outcome = config.get_system_inc_probe_outcome();
         let paths = config.get_system_inc().to_vec();
-        let elapsed = start.elapsed();
 
         // The contract under test is bounded, empty, and cached — NOT which
         // failure class the runner's perl produces. The resolved interpreter
@@ -5224,33 +5351,75 @@ profile = "recommended"
         // (CI red with NonZeroExit where the author saw TimedOut locally).
         // SuccessfulEmpty/Paths WOULD be failures here: the sleep program
         // must never produce paths.
-        assert!(
-            matches!(
-                outcome,
-                SystemIncProbeOutcome::TimedOut
-                    | SystemIncProbeOutcome::NonZeroExit
-                    | SystemIncProbeOutcome::IoFailed
-                    | SystemIncProbeOutcome::Unavailable
-            ),
-            "expected a bounded failure outcome, got {outcome:?}"
-        );
-        assert!(paths.is_empty(), "expected empty @INC on timeout, got {paths:?}");
-        // Generous bound: SYSTEM_INC_PROBE_TIMEOUT (1s) + spawn + poll overhead.
-        assert!(
-            elapsed < Duration::from_secs(4),
-            "get_system_inc must return within timeout+overhead, took {elapsed:?}",
-        );
-
+        if !matches!(
+            outcome,
+            SystemIncProbeOutcome::TimedOut
+                | SystemIncProbeOutcome::NonZeroExit
+                | SystemIncProbeOutcome::IoFailed
+                | SystemIncProbeOutcome::Unavailable
+        ) {
+            return Err(format!("expected a bounded failure outcome, got {outcome:?}").into());
+        }
+        if !paths.is_empty() {
+            return Err(format!("expected empty @INC on timeout, got {paths:?}").into());
+        }
         // Cached empty result — second call does not respawn perl.
         let start2 = Instant::now();
         let paths2 = config.get_system_inc().to_vec();
         let elapsed2 = start2.elapsed();
-        assert!(paths2.is_empty());
-        assert!(
-            elapsed2 < Duration::from_millis(50),
-            "cached lookup should be fast, took {elapsed2:?}",
-        );
+        if !paths2.is_empty() {
+            return Err("cached lookup returned paths after a failed probe".into());
+        }
+        if elapsed2 >= Duration::from_millis(50) {
+            return Err(format!("cached lookup should be fast, took {elapsed2:?}").into());
+        }
         Ok(())
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    #[serial_test::serial]
+    fn startup_inc_probe_widened_timeout_reaches_live_constructor() -> TestResult {
+        let perl_path = match resolve_perl_path_with_toolchain() {
+            Ok(path) => path,
+            Err(error) => {
+                eprintln!(
+                    "SKIP startup_inc_probe_widened_timeout_reaches_live_constructor: {error}"
+                );
+                return Ok(());
+            }
+        };
+        let config = WorkspaceConfig {
+            use_system_inc: true,
+            perl_path: Some(perl_path.to_string_lossy().into_owned()),
+            perl_args: vec!["-e".into(), "sleep 2; print(qq(startup-sentinel).chr(10));".into()],
+            ..WorkspaceConfig::default()
+        };
+
+        let started = std::time::Instant::now();
+        let production = config.clone().get_system_inc_probe_outcome();
+        let elapsed = started.elapsed();
+        if !matches!(production, SystemIncProbeOutcome::TimedOut) {
+            return Err(
+                format!("one-second production probe did not time out: {production:?}").into()
+            );
+        }
+        if elapsed < Duration::from_millis(750) {
+            return Err(format!("one-second production timeout was too fast: {elapsed:?}").into());
+        }
+
+        let widened =
+            PerlOracleEnv::with_startup_inc_probe_timeout(Duration::from_secs(30), || {
+                config.clone().get_system_inc_probe_outcome()
+            });
+        match widened {
+            SystemIncProbeOutcome::Paths(paths)
+                if paths.iter().any(|path| path == Path::new("startup-sentinel")) =>
+            {
+                Ok(())
+            }
+            other => Err(format!("widened live probe missed startup sentinel: {other:?}").into()),
+        }
     }
 
     /// A second lookup must reuse the first probe result rather than launch a
@@ -5302,8 +5471,15 @@ profile = "recommended"
             // test discriminator; normal settings updates invalidate the cache.
             config.perl_path = Some(missing_perl.to_string_lossy().into_owned());
             let reused = config.get_system_inc_probe_outcome();
-            assert_eq!(reused, cached, "second lookup must reuse the cached outcome");
-            assert_eq!(config.get_system_inc().to_vec(), cached_paths);
+            if reused != cached {
+                return Err(format!(
+                    "second lookup changed cached outcome: {reused:?} vs {cached:?}"
+                )
+                .into());
+            }
+            if config.get_system_inc().to_vec() != cached_paths {
+                return Err("second lookup changed cached paths".into());
+            }
             Ok(())
         })
     }

@@ -29,7 +29,7 @@ warrant different cadences:
 | Broad acceptance / property / fuzz / BDD matrix | label-gated **or** nightly cron | Real evidence but expensive; only fire when a reviewer explicitly asks (`bdd`, `property-tests`, `fuzz`, `full-ci`) or on the scheduled cron. |
 | Mutation testing | targeted PR (`mutation` label) **or** nightly cron **or** release readiness | High-cost runtime evidence; never default-PR. |
 | `ripr` (static oracle-gap) | every Rust-diff PR | Cheap static substitute that surfaces "this changed line is not exercised by any test that could discriminate behavior." Advisory only. |
-| Coverage | push to `master`, label-gated PR (`coverage`), workflow_dispatch | Codecov upload is push-billed; on-demand for PRs. |
+| Coverage | scheduled nightly run or explicit `workflow_dispatch` with coverage enabled | Advisory Codecov upload; it is not a PR or merge-queue lane. |
 
 The doctrine, from [`ripr.md`](ripr.md):
 
@@ -77,7 +77,6 @@ changes).
 | `property-tests` | broad property sweep in `property-testing.yml` (high case-count). |
 | `fuzz` | quick-fuzz across all parser surfaces in `fuzzing.yml`. |
 | `mutation` | targeted mutation testing in `mutation-testing.yml` (scoped to touched risk-pack). |
-| `coverage` | `coverage.yml` Codecov upload on PR. |
 | `security-audit` | standalone `cargo-deny` in `ci-security.yml` (also fires on push-main + weekly cron). |
 | `full-ci` | "spend authorization": activates every label-gated lane on a single PR. Reviewer signs off on the cost. |
 
@@ -89,7 +88,7 @@ canary lanes.
 - Full property-test sweep (256+ cases per crate).
 - Full fuzz matrix at extended budget.
 - Full mutation sweep across trust surfaces.
-- Coverage on `master` (`coverage.yml`).
+- Coverage via the scheduled `ci-nightly.yml` run or an explicit manual dispatch.
 - `ci-nightly.yml` for any other long-running canary.
 
 The point of nightly: surface regressions that the bounded PR-fast

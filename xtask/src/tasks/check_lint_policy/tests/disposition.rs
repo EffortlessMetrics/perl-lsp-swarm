@@ -3,7 +3,7 @@ use super::{deferred_lint, empty_cargo, ledger_with, lint_entry, planned_lint, t
 use color_eyre::eyre::{Result, bail};
 use toml::Value;
 
-const REQUIRED: [&str; 7] = [
+const REQUIRED: [&str; 9] = [
     "rust::const_item_interior_mutations",
     "rust::function_casts_as_integer",
     "clippy::same_length_and_capacity",
@@ -11,6 +11,8 @@ const REQUIRED: [&str; 7] = [
     "clippy::manual_ilog2",
     "clippy::manual_take",
     "clippy::manual_pop_if",
+    "rust::let_underscore_lock",
+    "clippy::let_underscore_lock",
 ];
 
 fn required_ledger() -> super::super::model::LintLedger {
@@ -23,6 +25,8 @@ fn required_ledger() -> super::super::model::LintLedger {
     ledger.lint.push(lint_entry(REQUIRED[4], "active"));
     ledger.deferred_due.push(deferred_lint(REQUIRED[5], "1.95"));
     ledger.deferred_due.push(deferred_lint(REQUIRED[6], "1.95"));
+    ledger.lint.push(lint_entry(REQUIRED[7], "active"));
+    ledger.lint.push(lint_entry(REQUIRED[8], "active"));
     ledger
 }
 
@@ -211,5 +215,71 @@ fn required_manual_ilog2_level_and_identity_cannot_be_rolled_back() -> Result<()
     };
     assert!(error.to_string().contains("clippy::manual_ilog2"));
     assert!(error.to_string().contains("exactly once"));
+    Ok(())
+}
+
+#[test]
+fn each_lock_guard_row_is_independently_pinned_to_active_deny() -> Result<()> {
+    // The lock-guard invariant spans two tools with non-overlapping coverage,
+    // so the ratchet has to hold each row on its own. A single pin would let a
+    // rollback drop one tool's row while the other row still reads as coverage
+    // — which is exactly the dishonest half-rollback #14444 rules out.
+    for identity in ["rust::let_underscore_lock", "clippy::let_underscore_lock"] {
+        let mut demoted = required_ledger();
+        demoted.lint.retain(|lint| lint.name != identity);
+        demoted.planned.push(planned_lint(identity, "1.99"));
+
+        let Err(error) = validate_required_dispositions(&demoted) else {
+            bail!("demoting {identity} to a planned row should fail closed");
+        };
+        assert!(error.to_string().contains(identity));
+        assert!(error.to_string().contains("must remain an active ledger entry"));
+
+        let mut downgraded = required_ledger();
+        downgraded
+            .lint
+            .iter_mut()
+            .find(|lint| lint.name == identity)
+            .ok_or_else(|| color_eyre::eyre::eyre!("{identity} fixture entry missing"))?
+            .level = "warn".to_owned();
+
+        let Err(error) = validate_required_dispositions(&downgraded) else {
+            bail!("downgrading {identity} to warn should fail closed");
+        };
+        assert!(error.to_string().contains(identity));
+        assert!(error.to_string().contains("must remain at level deny"));
+
+        let mut removed = required_ledger();
+        removed.lint.retain(|lint| lint.name != identity);
+
+        let Err(error) = validate_required_dispositions(&removed) else {
+            bail!("removing the required {identity} disposition should fail closed");
+        };
+        assert!(error.to_string().contains(identity));
+        assert!(error.to_string().contains("exactly once"));
+    }
+    Ok(())
+}
+
+#[test]
+fn dropping_one_lock_guard_row_does_not_hide_behind_its_sibling() -> Result<()> {
+    // Negative control for the pin above: the fixture that keeps both rows must
+    // pass, so the failures asserted there come from the removed row and not
+    // from an unrelated defect in the shared fixture.
+    validate_required_dispositions(&required_ledger())?;
+
+    let mut clippy_only = required_ledger();
+    clippy_only.lint.retain(|lint| lint.name != "rust::let_underscore_lock");
+    let Err(error) = validate_required_dispositions(&clippy_only) else {
+        bail!("keeping only the Clippy row must not satisfy the standard-library coverage pin");
+    };
+    assert!(error.to_string().contains("rust::let_underscore_lock"));
+
+    let mut rust_only = required_ledger();
+    rust_only.lint.retain(|lint| lint.name != "clippy::let_underscore_lock");
+    let Err(error) = validate_required_dispositions(&rust_only) else {
+        bail!("keeping only the rustc row must not satisfy the parking_lot coverage pin");
+    };
+    assert!(error.to_string().contains("clippy::let_underscore_lock"));
     Ok(())
 }

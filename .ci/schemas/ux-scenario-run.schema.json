@@ -86,6 +86,9 @@
         "ai_completion"
       ]
     },
+    "evidence_class": {
+      "$ref": "#/$defs/evidence_class"
+    },
     "ci_tier": {
       "enum": [
         "pr",
@@ -323,6 +326,12 @@
         "baseline_drift",
         "new_test_bug",
         "unknown"
+      ]
+    },
+    "evidence_class": {
+      "enum": [
+        "semantic_proof",
+        "transport_characterization"
       ]
     }
   },

@@ -43,7 +43,7 @@ cargo doc -p perl-incremental-parsing --open   # View documentation
 | `LineIndex` | `incremental/mod.rs` | Byte-to-(line,col) mapping via binary search |
 | `LexCheckpoint` / `ParseCheckpoint` / `ScopeSnapshot` | `incremental/mod.rs` | Checkpoint types for resuming lexing/parsing |
 | `Edit` / `ReparseResult` | `incremental/mod.rs` | LSP change conversion and reparse result |
-| `IncrementalDocument` | `incremental_document.rs` | `Arc<Node>` document with `SubtreeCache`, priority eviction, `ParseMetrics` |
+| `IncrementalDocument` | `incremental_document.rs` | Experimental #7292 generation; fail-closed full fresh parse, current-generation cache, typed invalid edits |
 | `SubtreeCache` / `SymbolPriority` | `incremental_document.rs` | LRU cache with content-hash and range-based lookup; priority-aware eviction |
 | `SimpleIncrementalParser` | `incremental_simple.rs` | Lightweight parser tracking reused vs reparsed node counts |
 | `CheckpointedIncrementalParser` | `incremental_checkpoint.rs` | Lexer-checkpoint parser with `TokenCache` and `IncrementalStats` |
@@ -80,7 +80,7 @@ if let Some(edit) = edit {
 ## Important Notes
 
 - Falls back to full reparse for edits > 64KB, multi-line edits > 10 lines, or multiple simultaneous edits
-- `IncrementalDocument` uses `SymbolPriority` (Critical > High > Medium > Low) for cache eviction -- package/use/sub nodes are evicted last
+- `IncrementalDocument` uses `SymbolPriority` (Critical > High > Medium > Low) for cache eviction after a fail-closed fresh parse -- package/use/sub nodes are evicted last. Cache hits are not parser work avoided.
 - `incremental_handler_v2.rs` is a deprecated stub; actual LSP handler lives in `perl-lsp`
 - Incremental mode in `DocumentParser` is gated by the `PERL_LSP_INCREMENTAL` environment variable
 - All tests are inline (`#[cfg(test)]` modules); no separate `tests/` directory
