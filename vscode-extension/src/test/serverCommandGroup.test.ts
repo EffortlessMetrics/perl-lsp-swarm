@@ -457,6 +457,12 @@ describe('registerServerCommandGroup', () => {
     ]);
     dependencies.currentServerPath.mockReturnValue(null);
     dependencies.resolveServerPath.mockResolvedValue('/managed/perllsp');
+    dependencies.currentRuntimeSnapshot.mockReturnValue({
+      state: 'starting',
+      generation: 5,
+      error: null,
+      serverPath: '/managed/perllsp',
+    });
     registerServerCommandGroup(dependencies);
 
     await vscode.commands.executeCommand('perl-lsp.runHealthCheck');
@@ -464,6 +470,36 @@ describe('registerServerCommandGroup', () => {
     expect(dependencies.resolveServerPath).toHaveBeenCalledTimes(1);
     expect(dependencies.currentServerPath).not.toHaveBeenCalled();
     expect(dependencies.runHealthCheck).toHaveBeenCalledWith('/managed/perllsp');
+  });
+
+  test('probes the replacement path when lifecycle changes before the first snapshot', async () => {
+    const dependencies = makeDependencies([
+      {
+        label: 'LSP binary',
+        ok: true,
+        status: HealthCheckStatus.Ok,
+        detail: 'Binary found: /replacement/perllsp',
+      },
+    ]);
+    dependencies.resolveServerPath.mockResolvedValue('/managed/perllsp');
+    let snapshotCalls = 0;
+    dependencies.currentRuntimeSnapshot.mockImplementation(() => {
+      snapshotCalls += 1;
+      return {
+        state: 'running',
+        generation: 8,
+        error: null,
+        serverPath: '/replacement/perllsp',
+      };
+    });
+    registerServerCommandGroup(dependencies);
+
+    await vscode.commands.executeCommand('perl-lsp.runHealthCheck');
+
+    expect(snapshotCalls).toBeGreaterThanOrEqual(2);
+    expect(dependencies.runHealthCheck).toHaveBeenCalledWith('/replacement/perllsp');
+    expect(dependencies.runHealthCheck).not.toHaveBeenCalledWith('/managed/perllsp');
+    expect(dependencies.runtimeHealthCheck).toHaveBeenCalledWith('/replacement/perllsp');
   });
 
   test('keeps explicit-path diagnostics setup-only', async () => {
