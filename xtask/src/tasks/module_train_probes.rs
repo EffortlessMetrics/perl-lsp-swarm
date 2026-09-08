@@ -227,8 +227,13 @@ fn expression_path_matches(expression: &syn::Expr, expected: &[&str]) -> bool {
     let syn::Expr::Path(path) = expression else {
         return false;
     };
-    path.segments.len() == expected.len()
-        && path.segments.iter().zip(expected).all(|(segment, expected)| segment.ident == *expected)
+    path.path.segments.len() == expected.len()
+        && path
+            .path
+            .segments
+            .iter()
+            .zip(expected)
+            .all(|(segment, expected)| segment.ident == *expected)
 }
 
 fn function_present(file: &syn::File, name: &str, public: bool) -> bool {

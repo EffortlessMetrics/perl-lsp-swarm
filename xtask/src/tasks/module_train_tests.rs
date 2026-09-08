@@ -767,7 +767,7 @@ fn comments_and_literals_cannot_satisfy_dispatch_anchors() -> Result<()> {
                     }
                 }
             "#,
-        );
+        )?;
     let (outcome, unmet) = probe_for("C02", &tree)?;
     if outcome == ProbeOutcome::Pass
         || !unmet.iter().any(|component| component == "current_tree_probes")
