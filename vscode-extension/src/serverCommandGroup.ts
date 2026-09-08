@@ -90,7 +90,7 @@ export function registerServerCommandGroup(
       const initialSnapshot =
         serverPath === undefined ? dependencies.currentRuntimeSnapshot() : null;
       const firstProbePath =
-        serverPath === undefined ? initialSnapshot!.serverPath : resolvedPath;
+        initialSnapshot ? initialSnapshot.serverPath : resolvedPath;
       let results = [...(await dependencies.runHealthCheck(firstProbePath))];
       let runtimeResult: HealthCheckResult | undefined;
       if (serverPath === undefined) {

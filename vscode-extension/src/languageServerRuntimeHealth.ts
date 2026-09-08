@@ -10,7 +10,7 @@ function describeLifecycleError(error: unknown): string {
   if (error instanceof Error && error.message) {
     return error.message;
   }
-  if (error === undefined) {
+  if (error === undefined || error === null) {
     return 'unknown startup error';
   }
   return String(error);

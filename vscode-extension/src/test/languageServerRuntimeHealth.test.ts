@@ -33,6 +33,22 @@ describe('languageServerRuntimeHealth', () => {
     });
   });
 
+  test('reports an unknown startup error when failure has no detail', () => {
+    expect(
+      languageServerRuntimeHealth({
+        state: 'failed',
+        generation: 9,
+        error: null,
+        serverPath: '/perllsp',
+      }),
+    ).toEqual({
+      label: 'LSP runtime',
+      ok: false,
+      status: 'error',
+      detail: 'Language server failed to start: unknown startup error',
+    });
+  });
+
   test('does not claim runtime health before a generation starts', () => {
     expect(
       languageServerRuntimeHealth({
