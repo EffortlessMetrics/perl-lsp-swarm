@@ -188,13 +188,18 @@ impl<'ast> Visit<'ast> for AssertionVisitor<'_> {
     }
 
     fn visit_block(&mut self, node: &'ast syn::Block) {
-        let extra = collect_shadows(
+        let mut extra = collect_shadows(
             node.stmts.iter().filter_map(|stmt| match stmt {
                 Stmt::Item(item) => Some(item),
                 _ => None,
             }),
             Some(&self.crate_root_shadows),
         );
+        for stmt in &node.stmts {
+            if let Stmt::Macro(stmt_mac) = stmt {
+                note_macro_invocation(&stmt_mac.mac, &mut extra);
+            }
+        }
         let applied = !extra.is_empty();
         let previous = if applied {
             let merged = self.current_shadows().merged(&extra);
@@ -338,6 +343,7 @@ fn collect_shadows<'a>(
             Item::Mod(item) => note_ident(&item.ident, &mut shadows),
             Item::Const(item) => note_ctor_ident(&item.ident, &mut shadows),
             Item::Static(item) => note_ctor_ident(&item.ident, &mut shadows),
+            Item::Macro(item) => note_item_macro(item, &mut shadows),
             _ => {}
         }
     }
@@ -518,6 +524,30 @@ fn note_ctor_ident(ident: &Ident, shadows: &mut PreludeShadow) {
     if matches!(name.as_str(), "Some" | "None" | "Ok" | "Err") {
         shadows.untrust_ctor(name);
     }
+}
+
+fn note_item_macro(item: &syn::ItemMacro, shadows: &mut PreludeShadow) {
+    note_macro_invocation(&item.mac, shadows);
+}
+
+/// Item-position macros are not expanded. A definition (`macro_rules!`) does
+/// not introduce names by itself; an invocation may expand to Option/Result,
+/// constructors, or `std`/`core`, so those identities are refused.
+fn note_macro_invocation(mac: &syn::Macro, shadows: &mut PreludeShadow) {
+    if mac.path.is_ident("macro_rules") {
+        return;
+    }
+    if let Some(name) = mac.path.segments.last() {
+        let name = ident_unraw(&name.ident);
+        if ASSERT_MACROS.iter().any(|candidate| name == *candidate)
+            || ASSERT_EQ_MACROS.iter().any(|candidate| name == *candidate)
+        {
+            return;
+        }
+    }
+    shadows.untrust_all_prelude();
+    shadows.untrust_namespace("std");
+    shadows.untrust_namespace("core");
 }
 
 fn untrust_generic_params(generics: &syn::Generics, shadows: &mut PreludeShadow) {
@@ -1170,6 +1200,96 @@ mod tests {
                 RuleId::OptionSomeOrNone,
                 RuleId::OptionSomeOrNone,
             ],
+            "{:?}",
+            rules(source)
+        );
+    }
+
+    #[test]
+    fn item_macro_invocations_are_skipped_child_std_option_is_retained() {
+        let source = r#"
+            macro_rules! custom_option {
+                () => {
+                    struct Option;
+                    impl Option {
+                        fn is_some(&self) -> bool { false }
+                        fn is_none(&self) -> bool { false }
+                    }
+                };
+            }
+            custom_option!();
+            fn skip_macro_option(x: Option) {
+                assert!(x.is_some() || x.is_none());
+            }
+            fn skip_std_in_same_module(value: std::option::Option<u8>) {
+                assert!(value.is_some() || value.is_none());
+            }
+            mod child {
+                fn retain_prelude(value: Option<u8>) {
+                    assert!(value.is_some() || value.is_none());
+                }
+                fn retain_std(value: std::option::Option<u8>) {
+                    assert!(value.is_some() || value.is_none());
+                }
+            }
+        "#;
+        assert_eq!(
+            rules(source),
+            vec![RuleId::OptionSomeOrNone, RuleId::OptionSomeOrNone],
+            "{:?}",
+            rules(source)
+        );
+
+        let defined_only = r#"
+            macro_rules! custom_option {
+                () => {
+                    struct Option;
+                    impl Option {
+                        fn is_some(&self) -> bool { false }
+                        fn is_none(&self) -> bool { false }
+                    }
+                };
+            }
+            fn retain_uninvoked(value: Option<u8>) {
+                assert!(value.is_some() || value.is_none());
+            }
+        "#;
+        assert_eq!(
+            rules(defined_only),
+            vec![RuleId::OptionSomeOrNone],
+            "{:?}",
+            rules(defined_only)
+        );
+    }
+
+    #[test]
+    fn raw_ctor_and_binding_names_are_normalized() {
+        let source = r#"
+            struct Probe;
+            impl Probe {
+                fn is_some(&self) -> bool { false }
+                fn is_none(&self) -> bool { false }
+            }
+            fn skip_raw_some() {
+                #[allow(non_snake_case)]
+                let r#Some = |_: u8| Probe;
+                assert!(r#Some(1).is_some() || r#Some(1).is_none());
+                assert!(Some(1).is_some() || Some(1).is_none());
+            }
+            fn retain_raw_option() {
+                let r#value: Option<u8> = None;
+                assert!(r#value.is_some() || r#value.is_none());
+            }
+            fn retain_std() {
+                assert!(
+                    std::option::Option::Some(1).is_some()
+                        || std::option::Option::Some(1).is_none()
+                );
+            }
+        "#;
+        assert_eq!(
+            rules(source),
+            vec![RuleId::OptionSomeOrNone, RuleId::OptionSomeOrNone],
             "{:?}",
             rules(source)
         );

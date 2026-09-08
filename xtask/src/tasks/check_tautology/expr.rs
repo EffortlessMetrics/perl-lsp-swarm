@@ -155,18 +155,20 @@ impl TypeEnv {
 
     /// Record a binding in the current scope. `None` means the name is bound
     /// but not a proven Option/Result, so it hides an outer ascription.
+    /// Keys are unraw (`r#Some` and `Some` occupy the same slot).
     pub(crate) fn shadow(&mut self, ident: String, kind: Option<QueryKind>) {
         if self.scopes.is_empty() {
             self.scopes.push(BTreeMap::new());
         }
         if let Some(scope) = self.scopes.last_mut() {
-            scope.insert(ident, kind);
+            scope.insert(unraw_ident_name(&ident), kind);
         }
     }
 
     pub(crate) fn kind_of(&self, ident: &str) -> Option<QueryKind> {
+        let ident = unraw_ident_name(ident);
         for scope in self.scopes.iter().rev() {
-            if let Some(kind) = scope.get(ident) {
+            if let Some(kind) = scope.get(&ident) {
                 return *kind;
             }
         }
@@ -176,7 +178,8 @@ impl TypeEnv {
     /// True when `ident` is bound in some lexical scope, including as unknown.
     /// A local `let Some = …` occupies the value namespace and is not prelude `Some`.
     pub(crate) fn is_bound(&self, ident: &str) -> bool {
-        self.scopes.iter().rev().any(|scope| scope.contains_key(ident))
+        let ident = unraw_ident_name(ident);
+        self.scopes.iter().rev().any(|scope| scope.contains_key(&ident))
     }
 }
 
@@ -261,7 +264,7 @@ pub(crate) fn bind_pat_type(env: &mut TypeEnv, pat: &Pat, ty: &Type) {
     match pat {
         Pat::Type(typed) => bind_pat_type(env, &typed.pat, &typed.ty),
         Pat::Ident(ident) => {
-            env.shadow(ident.ident.to_string(), option_or_result_kind_in(ty, env));
+            env.shadow(ident_unraw(&ident.ident), option_or_result_kind_in(ty, env));
             if let Some((_, subpat)) = &ident.subpat {
                 bind_unknown_pat(env, subpat);
             }
@@ -284,7 +287,7 @@ fn bind_unknown_pat(env: &mut TypeEnv, pat: &Pat) {
     match pat {
         Pat::Type(typed) => bind_pat_type(env, &typed.pat, &typed.ty),
         Pat::Ident(ident) => {
-            env.shadow(ident.ident.to_string(), None);
+            env.shadow(ident_unraw(&ident.ident), None);
             if let Some((_, subpat)) = &ident.subpat {
                 bind_unknown_pat(env, subpat);
             }
@@ -389,7 +392,7 @@ fn trusted_std_enum_kind(rooted: bool, segs: &[String], env: &TypeEnv) -> Option
 }
 
 fn none_path_kind(path: &Path, env: &TypeEnv) -> Option<QueryKind> {
-    let last = path.segments.last()?.ident.to_string();
+    let last = ident_unraw(&path.segments.last()?.ident);
     (last == "None").then(|| ctor_path_kind(path, env)).flatten()
 }
 
@@ -433,10 +436,13 @@ fn path_idents(path: &Path) -> Vec<String> {
 
 /// Strip a raw-identifier prefix so `r#std` compares as `std`.
 pub(crate) fn ident_unraw(ident: &syn::Ident) -> String {
-    let name = ident.to_string();
+    unraw_ident_name(&ident.to_string())
+}
+
+fn unraw_ident_name(name: &str) -> String {
     match name.strip_prefix("r#") {
         Some(unraw) => unraw.to_string(),
-        None => name,
+        None => name.to_string(),
     }
 }
 
@@ -521,7 +527,7 @@ fn simple_ident(path: &Path) -> Option<String> {
     if path.segments.len() != 1 || path.leading_colon.is_some() {
         return None;
     }
-    path.segments.first().map(|segment| segment.ident.to_string())
+    path.segments.first().map(|segment| ident_unraw(&segment.ident))
 }
 
 /// Returns true only when PartialEq is known to be reflexive without types.
@@ -751,6 +757,14 @@ mod tests {
             proven_query_kind(&expr("std::option::Option::Some(1)"), &env),
             Some(QueryKind::Option)
         );
+
+        let mut raw = TypeEnv::new();
+        raw.shadow("r#Some".to_string(), None);
+        assert_eq!(proven_query_kind(&expr("Some(1)"), &raw), None);
+        assert_eq!(proven_query_kind(&expr("r#Some(1)"), &raw), None);
+        raw.bind("r#value".to_string(), QueryKind::Option);
+        assert_eq!(proven_query_kind(&expr("value"), &raw), Some(QueryKind::Option));
+        assert_eq!(proven_query_kind(&expr("r#value"), &raw), Some(QueryKind::Option));
     }
 
     #[test]
