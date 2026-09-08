@@ -972,9 +972,10 @@ impl TreeAnalysis {
 /// This is not an allocation-free path, and the sink cannot make it one. The
 /// renderer still allocates internally per node — `grammar_kind_name` returns
 /// an owned `String` even for a static name, `emit_atom` fills a scratch
-/// `String`, and `load_children` builds a `Vec` — so the residue is O(1)
-/// allocations per node. What is gone is the O(subtree) allocation the old
-/// `node.to_sexp()` call made at every visited node. Removing the remainder
+/// `String`, and `load_children` builds a `Vec`. Scratch storage depends on
+/// local payload size and immediate child count. What is gone is the whole-
+/// subtree output buffer `node.to_sexp()` made at every analyzed node. Removing
+/// the remaining allocations
 /// needs an allocation-free payload API on `perl-ast`, which is out of scope
 /// here (#15037).
 struct SexpHashSink<'a> {
@@ -1016,6 +1017,13 @@ struct ContentHashes {
     /// subtree serialization drives it to the sum of all subtree sizes instead.
     #[cfg(test)]
     rendered_nodes: usize,
+}
+
+#[cfg(test)]
+thread_local! {
+    // Observe all production hashing calls on this test thread, including
+    // accidentally repeated passes, without interference from parallel tests.
+    static CONTENT_HASH_RENDERED_NODES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 impl ContentHashes {
@@ -1110,6 +1118,11 @@ impl ContentHashes {
                 work.nodes_visited
             }
         };
+
+        #[cfg(test)]
+        CONTENT_HASH_RENDERED_NODES.with(|count| {
+            count.set(count.get().saturating_add(rendered));
+        });
 
         // A `try` block's catch binders are parent-owned payloads that the
         // renderer nests under each catch child rather than under the `try`
@@ -1684,8 +1697,9 @@ mod hash_fixtures {
     /// A `try` whose second child is a catch handler, versus one whose second
     /// child is the identical block in the `finally` role.
     ///
-    /// Same child count, same order, same child content — only the field role
-    /// differs, which is the case that makes folding the role load-bearing.
+    /// Same child count, order, and content, but different catch/finally shape.
+    /// This does not isolate the field-role hash term: a catch also contributes
+    /// its absent binder (`None`) to the parent payload hash.
     pub(super) fn try_with_second_child_as(role: SecondChildRole) -> Node {
         let handler = || Box::new(block(vec![number("7")]));
         let (catch_blocks, finally_block) = match role {
@@ -1810,17 +1824,16 @@ mod content_hash_tests {
     /// Completeness (different render => different hash) is what keeps the new
     /// hash from proposing candidates the old one would not have.
     #[test]
-    fn content_hash_agrees_with_sexp_equality_across_a_corpus() {
+    fn content_hash_agrees_with_sexp_equality_across_a_corpus() -> anyhow::Result<()> {
         let corpus = corpus_nodes();
-        assert!(corpus.len() > 20, "corpus too small to discriminate");
+        anyhow::ensure!(corpus.len() > 20, "corpus too small to discriminate");
 
         for (i, a) in corpus.iter().enumerate() {
             for (j, b) in corpus.iter().enumerate() {
                 let same_render = a.to_sexp() == b.to_sexp();
                 let same_hash = content_hash(a) == content_hash(b);
-                assert_eq!(
-                    same_render,
-                    same_hash,
+                anyhow::ensure!(
+                    same_render == same_hash,
                     "corpus[{i}] vs corpus[{j}]: to_sexp equality {same_render} but hash equality \
                      {same_hash}\n  a = {}\n  b = {}",
                     a.to_sexp(),
@@ -1828,19 +1841,21 @@ mod content_hash_tests {
                 );
             }
         }
+        Ok(())
     }
 
     #[test]
-    fn identical_subtrees_built_independently_hash_equal() {
-        assert_eq!(
-            content_hash(&program(vec![binary("+", number("1"), number("2"))])),
-            content_hash(&program(vec![binary("+", number("1"), number("2"))])),
+    fn identical_subtrees_built_independently_hash_equal() -> anyhow::Result<()> {
+        anyhow::ensure!(
+            content_hash(&program(vec![binary("+", number("1"), number("2"))]))
+                == content_hash(&program(vec![binary("+", number("1"), number("2"))])),
             "structurally identical trees must hash equal regardless of allocation"
         );
+        Ok(())
     }
 
     #[test]
-    fn source_location_alone_does_not_change_the_hash() {
+    fn source_location_alone_does_not_change_the_hash() -> anyhow::Result<()> {
         let here = Node::new(
             NodeKind::Number { value: "42".to_string() },
             SourceLocation { start: 0, end: 2 },
@@ -1849,62 +1864,62 @@ mod content_hash_tests {
             NodeKind::Number { value: "42".to_string() },
             SourceLocation { start: 900, end: 902 },
         );
-        assert_eq!(here.to_sexp(), moved.to_sexp(), "guard: the renderer omits spans");
-        assert_eq!(
-            content_hash(&here),
-            content_hash(&moved),
+        anyhow::ensure!(here.to_sexp() == moved.to_sexp(), "guard: the renderer omits spans");
+        anyhow::ensure!(
+            content_hash(&here) == content_hash(&moved),
             "content hash must stay position-independent, as position-shifted reuse relies on it"
         );
+        Ok(())
     }
 
     #[test]
-    fn a_leaf_change_deep_in_the_tree_changes_the_root_hash() {
+    fn a_leaf_change_deep_in_the_tree_changes_the_root_hash() -> anyhow::Result<()> {
         // Proves child hashes are actually folded into the parent rather than
         // the parent hashing only its own payload.
         let deep_a = nest(12, number("1"));
         let deep_b = nest(12, number("2"));
-        assert_ne!(
-            content_hash(&deep_a),
-            content_hash(&deep_b),
+        anyhow::ensure!(
+            content_hash(&deep_a) != content_hash(&deep_b),
             "a change 12 levels down must reach the root hash"
         );
+        Ok(())
     }
 
     #[test]
-    fn child_field_roles_are_load_bearing() {
+    fn swapping_then_else_children_changes_the_hash() -> anyhow::Result<()> {
         // Same children, different roles: `if (1) {2} else {3}` must not hash
         // like `if (1) {3} else {2}`.
         let then_first = if_node(number("1"), number("2"), Some(number("3")));
         let else_first = if_node(number("1"), number("3"), Some(number("2")));
-        assert_ne!(
-            content_hash(&then_first),
-            content_hash(&else_first),
+        anyhow::ensure!(
+            content_hash(&then_first) != content_hash(&else_first),
             "swapping then/else arms must change the hash"
         );
+        Ok(())
     }
 
     #[test]
-    fn child_field_roles_are_load_bearing_when_order_and_content_match() {
+    fn catch_and_finally_shapes_with_matching_children_hash_differently() -> anyhow::Result<()> {
         // A `try` with one catch handler and no finally, versus one with no
         // catch and an identical finally block: two children, same order, same
-        // content. Only the field role tells them apart.
+        // content. Both the field role and the catch binder option distinguish
+        // these shapes, so this is not an isolated test of the field-role term.
         let as_catch = try_with_second_child_as(SecondChildRole::Catch);
         let as_finally = try_with_second_child_as(SecondChildRole::Finally);
 
-        assert_ne!(
-            as_catch.to_sexp(),
-            as_finally.to_sexp(),
+        anyhow::ensure!(
+            as_catch.to_sexp() != as_finally.to_sexp(),
             "guard: the renderer distinguishes the catch and finally roles"
         );
-        assert_ne!(
-            content_hash(&as_catch),
-            content_hash(&as_finally),
+        anyhow::ensure!(
+            content_hash(&as_catch) != content_hash(&as_finally),
             "identical children in identical order must not hash alike across field roles"
         );
+        Ok(())
     }
 
     #[test]
-    fn elsif_arms_are_separated_by_fold_order_not_field_names() {
+    fn elsif_arms_are_separated_by_fold_order_not_field_names() -> anyhow::Result<()> {
         // The visit table labels the leading condition and every `elsif`
         // condition with the same `FieldId::CONDITION`, so field names alone
         // cannot tell these apart — only the ordered child fold can.
@@ -1933,32 +1948,31 @@ mod content_hash_tests {
             None,
         );
 
-        assert_ne!(a.to_sexp(), swapped_within_arm.to_sexp(), "guard: renders differ");
-        assert_ne!(
-            content_hash(&a),
-            content_hash(&swapped_within_arm),
+        anyhow::ensure!(a.to_sexp() != swapped_within_arm.to_sexp(), "guard: renders differ");
+        anyhow::ensure!(
+            content_hash(&a) != content_hash(&swapped_within_arm),
             "swapping an elsif condition with its body must change the hash"
         );
-        assert_ne!(
-            content_hash(&two_arms),
-            content_hash(&two_arms_reordered),
+        anyhow::ensure!(
+            content_hash(&two_arms) != content_hash(&two_arms_reordered),
             "reordering two elsif arms must change the hash"
         );
+        Ok(())
     }
 
     #[test]
-    fn child_arity_is_load_bearing() {
+    fn child_arity_is_load_bearing() -> anyhow::Result<()> {
         let one = program(vec![number("1")]);
         let two = program(vec![number("1"), number("1")]);
-        assert_ne!(
-            content_hash(&one),
-            content_hash(&two),
+        anyhow::ensure!(
+            content_hash(&one) != content_hash(&two),
             "a repeated child must not fold into the same hash as a single child"
         );
+        Ok(())
     }
 
     #[test]
-    fn catch_binder_names_are_load_bearing() {
+    fn catch_binder_names_are_load_bearing() -> anyhow::Result<()> {
         // The renderer nests a `try` block's catch binder under the catch child
         // rather than under the `try` node, so a depth-limited render of the
         // `try` node alone does not see it.
@@ -1966,28 +1980,27 @@ mod content_hash_tests {
         let with_other = try_node(Some("$other"));
         let without = try_node(None);
 
-        assert_ne!(
-            with_err.to_sexp(),
-            with_other.to_sexp(),
+        anyhow::ensure!(
+            with_err.to_sexp() != with_other.to_sexp(),
             "guard: the renderer distinguishes catch binders"
         );
-        assert_ne!(
-            content_hash(&with_err),
-            content_hash(&with_other),
+        anyhow::ensure!(
+            content_hash(&with_err) != content_hash(&with_other),
             "catch binder name must reach the hash"
         );
-        assert_ne!(
-            content_hash(&with_err),
-            content_hash(&without),
+        anyhow::ensure!(
+            content_hash(&with_err) != content_hash(&without),
             "a present binder must not hash like an absent one"
         );
+        Ok(())
     }
 
     #[test]
-    fn every_node_is_hashed_exactly_once_per_tree() {
+    fn every_node_is_hashed_exactly_once_per_tree() -> anyhow::Result<()> {
         let tree = nest(40, number("1"));
         let hashes = ContentHashes::compute(&tree);
-        assert_eq!(hashes.len(), total_nodes(&tree), "one hash entry per node");
+        anyhow::ensure!(hashes.len() == total_nodes(&tree), "one hash entry per node");
+        Ok(())
     }
 
     /// The falsifier for the defect itself: no whole-subtree serialization.
@@ -1998,14 +2011,14 @@ mod content_hash_tests {
     /// subtree, so the total becomes the sum of all subtree sizes — quadratic
     /// in the depth of a nested chain.
     #[test]
-    fn payload_rendering_never_walks_a_whole_subtree() {
+    fn payload_rendering_never_walks_a_whole_subtree() -> anyhow::Result<()> {
         for depth in [1usize, 8, 40] {
             let tree = nest(depth, number("1"));
             let nodes = total_nodes(&tree);
             let hashes = ContentHashes::compute(&tree);
 
-            assert_eq!(
-                hashes.rendered_nodes, nodes,
+            anyhow::ensure!(
+                hashes.rendered_nodes == nodes,
                 "depth {depth}: the renderer visited {} nodes for a {nodes}-node tree; payload \
                  rendering must not descend into children",
                 hashes.rendered_nodes
@@ -2014,44 +2027,47 @@ mod content_hash_tests {
             // Guard that the measurement is live: whole-subtree rendering of
             // this same chain would have cost quadratically more.
             let whole_subtree_cost = nodes * (nodes + 1) / 2;
-            assert!(
+            anyhow::ensure!(
                 depth == 0 || hashes.rendered_nodes < whole_subtree_cost || nodes == 1,
                 "depth {depth}: cost is indistinguishable from whole-subtree rendering"
             );
         }
+        Ok(())
     }
 
     /// The depth-independence measurement #9608 asks for, taken as work rather
     /// than wall clock so it is deterministic in CI.
     ///
     /// `nodes_analyzed` still grows with `max_analysis_depth` — that is the
-    /// live control proving the measurement would notice if content hashing
-    /// became depth-dependent again.
+    /// live control proving analysis depth varies. Renderer visits are sampled
+    /// around the real analyzer call, so repeated subtree hashing is visible.
     #[test]
-    fn content_hashing_cost_does_not_grow_with_analysis_depth() {
+    fn content_hashing_cost_does_not_grow_with_analysis_depth() -> anyhow::Result<()> {
         let tree = nest(30, number("1"));
-        let expected_hashed = total_nodes(&tree);
+        let expected_rendered = total_nodes(&tree).saturating_mul(2);
 
         let mut analyzed_by_depth = Vec::new();
         for depth in [1usize, 5, 10, 30] {
             let config = ReuseConfig { max_analysis_depth: depth, ..ReuseConfig::default() };
 
-            // Hashing work for a fixed tree is the node count at every depth.
-            assert_eq!(
-                ContentHashes::compute(&tree).len(),
-                expected_hashed,
-                "content hashing work must not depend on max_analysis_depth"
-            );
-
+            let before = CONTENT_HASH_RENDERED_NODES.with(std::cell::Cell::get);
             let mut analyzer = AdvancedReuseAnalyzer::new();
             analyzer.analyze_reuse_opportunities(&tree, &tree, &EditSet::new(), &config);
+            let after = CONTENT_HASH_RENDERED_NODES.with(std::cell::Cell::get);
+            anyhow::ensure!(
+                after.checked_sub(before) == Some(expected_rendered),
+                "depth {depth}: expected {expected_rendered} renderer visits across old/new trees, observed before={before}, after={after}"
+            );
             analyzed_by_depth.push(analyzer.analysis_stats.nodes_analyzed);
         }
 
-        assert!(
-            analyzed_by_depth.windows(2).any(|w| w[1] > w[0]),
+        anyhow::ensure!(
+            analyzed_by_depth
+                .windows(2)
+                .any(|pair| matches!(pair, [earlier, later] if later > earlier)),
             "control failed: the analysis walk should still deepen with max_analysis_depth, \
              otherwise this test cannot detect depth-dependent hashing ({analyzed_by_depth:?})"
         );
+        Ok(())
     }
 }
