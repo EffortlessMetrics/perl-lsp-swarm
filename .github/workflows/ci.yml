@@ -1054,17 +1054,17 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          # Match the PR merge workflow's gate list to its commands and policy (#14946).
+          ref: ${{ github.sha }}
           # Release-history verification compares every fetched release tag.
           fetch-depth: 0
           fetch-tags: true
 
-      - name: Bind inventory source
+      - name: Bind shard integration source
         id: inventory-source
-        if: matrix.name == 'policy'
         shell: bash
         env:
-          EXPECTED_SOURCE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          EXPECTED_SOURCE_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
           source_sha="$(git rev-parse 'HEAD^{commit}')"
