@@ -12,7 +12,7 @@
 //! Every assertion here fails closed: a `workspace = true` marker on any key
 //! but `[lints]`, a path-only dependency, a dropped `[lints]` marker or a
 //! local lint table appearing beside it, a falsely-external repository URL, an
-//! unpackaged load-bearing asset, or a returning `perl_tdd_support` import is
+//! unpackaged load-bearing asset, or a returning direct use of a swarm helper is
 //! a test failure, not a warning.
 #![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
@@ -465,7 +465,9 @@ fn no_top_level_entry_is_left_unpackaged() -> Result<(), Box<dyn Error>> {
 }
 
 #[test]
-fn no_source_reaches_for_a_swarm_test_helper() -> Result<(), Box<dyn Error>> {
+// This direct-use text scan is an early diagnostic, not Rust name resolution.
+// Qualified paths and renamed imports require the separate manifest/build proof.
+fn no_source_directly_uses_a_swarm_test_helper() -> Result<(), Box<dyn Error>> {
     let root = package_root();
     let mut sources = Vec::new();
     for directory in ["src", "tests", "examples"] {
