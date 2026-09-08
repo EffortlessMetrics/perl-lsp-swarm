@@ -811,7 +811,19 @@ fn the_live_explain_cannot_satisfy_the_offline_static_packet() -> Result<()> {
 fn landing_the_residual_component_lands_c02() -> Result<()> {
     let tree = FakeTree::from_real()?.with_added(
         "xtask/src/main.rs",
-        "ModuleTrainCommand::Explain { node, tree } => module_train::run_explain(&node, &tree),",
+        r#"
+            fn synthetic_module_train_dispatch(command: Commands) {
+                match command {
+                    Commands::ModuleTrain { command } => match command {
+                        ModuleTrainCommand::Explain { node, tree } => {
+                            module_train::run_explain(&node, &tree);
+                        }
+                        _ => {}
+                    },
+                    _ => {}
+                }
+            }
+        "#,
     )?;
     let (outcome, unmet) = probe_for("C02", &tree)?;
     if outcome != ProbeOutcome::Pass || !unmet.is_empty() {
