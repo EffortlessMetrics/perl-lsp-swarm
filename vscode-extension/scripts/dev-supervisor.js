@@ -87,6 +87,9 @@ const STREAM_TAIL_LIMIT = 8 * 1024;
 /** Hard cap on waiting for exit after the forced-kill escalation. */
 const FORCE_KILL_WAIT_MS = 10_000;
 
+/** Hard cap on waiting for the Windows tree-kill helper itself. */
+const TASKKILL_TIMEOUT_MS = 5_000;
+
 /** How the supervisor reports stopping, keyed by cause. */
 const STOP_REASONS = {
   CHILD_FAILURE: 'child-failure',
@@ -230,16 +233,16 @@ function spawnWatcher(spec) {
  *
  * @param {ChildState} child
  * @param {(message: string) => void} report
- * @returns {Promise<void>}
+ * @returns {Promise<TaskkillResult | null>}
  */
 async function requestTermination(child, report) {
   const proc = child.proc;
   if (proc === null || shutdownTargetExited(child)) {
-    return;
+    return null;
   }
   const pid = proc.pid;
   if (typeof pid !== 'number') {
-    return;
+    return null;
   }
   if (process.platform === 'win32') {
     report(
@@ -249,11 +252,11 @@ async function requestTermination(child, report) {
       ),
     );
     child.escalated = true;
-    await runTaskkill(pid);
-    return;
+    return runTaskkill(pid);
   }
   report(childTerminationMessage(child.spec.name, 'SIGTERM sent (process group)'));
   killGroup(pid, 'SIGTERM', report);
+  return null;
 }
 
 /**
@@ -299,24 +302,24 @@ function shutdownTargetExited(child) {
  *
  * @param {ChildState} child
  * @param {(message: string) => void} report
- * @returns {Promise<void>}
+ * @returns {Promise<TaskkillResult | null>}
  */
 async function escalateTermination(child, report) {
   const proc = child.proc;
   if (proc === null || shutdownTargetExited(child)) {
-    return;
+    return null;
   }
   const pid = proc.pid;
   if (typeof pid !== 'number') {
-    return;
+    return null;
   }
   if (process.platform === 'win32') {
     report(childTerminationMessage(child.spec.name, 'taskkill /T /F escalation sent'));
-    await runTaskkill(pid);
-    return;
+    return runTaskkill(pid);
   }
   report(childTerminationMessage(child.spec.name, 'SIGKILL sent (process group, escalation)'));
   killGroup(pid, 'SIGKILL', report);
+  return null;
 }
 
 /**
@@ -344,11 +347,17 @@ function killGroup(pid, signal, report) {
 }
 
 /**
- * Runs `taskkill /T /F` for a pid. A non-zero exit usually means the tree
- * already died — treated as success, since the goal is tree absence.
+ * @typedef {{ok: boolean, detail?: string, deferIfTargetExited?: boolean}} TaskkillResult
+ */
+
+/**
+ * Runs `taskkill /T /F` for a pid with a bounded helper lifetime. A timeout,
+ * spawn error, or non-zero helper exit is retained as failure evidence even if
+ * the watcher later disappears; otherwise shutdown could report green after
+ * the tree-kill instrument failed.
  *
  * @param {number} pid
- * @returns {Promise<void>}
+ * @returns {Promise<TaskkillResult>}
  */
 function runTaskkill(pid) {
   return new Promise((resolve) => {
@@ -356,8 +365,43 @@ function runTaskkill(pid) {
       stdio: 'ignore',
       windowsHide: true,
     });
-    killer.once('error', () => resolve());
-    killer.once('exit', () => resolve());
+    let settled = false;
+    const finish = (result) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timeout);
+      resolve(result);
+    };
+    const timeout = setTimeout(() => {
+      try {
+        killer.kill?.();
+      } catch {
+        // The helper is already bounded; retain the timeout as the evidence.
+      }
+      finish({
+        ok: false,
+        detail: `taskkill helper timed out after ${TASKKILL_TIMEOUT_MS}ms`,
+      });
+    }, TASKKILL_TIMEOUT_MS);
+    killer.once('error', (error) =>
+      finish({
+        ok: false,
+        detail: `taskkill helper failed (${error instanceof Error ? error.message : String(error)})`,
+      }),
+    );
+    killer.once('exit', (code, signal) =>
+      finish(
+        code === 0
+          ? { ok: true }
+          : {
+              ok: false,
+              deferIfTargetExited: true,
+              detail: `taskkill helper exited (code=${code ?? 'none'}, signal=${signal ?? 'none'})`,
+            },
+      ),
+    );
   });
 }
 
@@ -371,6 +415,7 @@ function runTaskkill(pid) {
  * @property {boolean} groupExited POSIX group absence has been observed.
  * @property {string} stdoutTail
  * @property {string} stderrTail
+ * @property {TaskkillResult | null} [taskkillFailure]
  * @property {StringDecoder} stdoutDecoder
  * @property {StringDecoder} stderrDecoder
  * @property {() => void} [exitedNotify]
@@ -416,6 +461,7 @@ function runDevSupervisor(input) {
     groupExited: false,
     stdoutTail: '',
     stderrTail: '',
+    taskkillFailure: null,
     stdoutDecoder: new StringDecoder('utf8'),
     stderrDecoder: new StringDecoder('utf8'),
   }));
@@ -530,6 +576,32 @@ function runDevSupervisor(input) {
   }
 
   /**
+   * Preserve helper failures in both the terminal result and the visible
+   * failure stream. A later watcher exit cannot turn a failed tree-kill
+   * instrument into a green shutdown claim.
+   *
+   * @param {ChildState} child
+   * @param {TaskkillResult | null} outcome
+   * @param {boolean} [force]
+   */
+  function recordTaskkillFailure(child, outcome, force = false) {
+    if (outcome === null) {
+      return;
+    }
+    if (outcome.ok) {
+      child.taskkillFailure = null;
+      return;
+    }
+    if (outcome.deferIfTargetExited && !force) {
+      child.taskkillFailure = outcome;
+      return;
+    }
+    const failure = `watcher "${child.spec.name}" ${outcome.detail ?? 'taskkill helper failed'}`;
+    result.failures.push(failure);
+    emitError(`FAIL: ${failure}`);
+  }
+
+  /**
    * Kills every live watcher, waits a bounded time for exits, escalates the
    * survivors, and settles the supervisor result. Idempotent.
    *
@@ -572,7 +644,8 @@ function runDevSupervisor(input) {
       if (child.exit === undefined) {
         child.phase = 'stopping';
       }
-      await requestTermination(child, emit);
+      const termination = await requestTermination(child, emit);
+      recordTaskkillFailure(child, termination);
       if (child.escalated && !result.escalations.includes(child.spec.name)) {
         // On Windows requestTermination is already the forced tree kill
         // (`taskkill /T /F`): record it as an escalation so the result
@@ -589,12 +662,17 @@ function runDevSupervisor(input) {
           child.escalated = true;
           result.escalations.push(child.spec.name);
         }
-        await escalateTermination(child, emit);
+        const escalation = await escalateTermination(child, emit);
+        recordTaskkillFailure(child, escalation);
       }
     }
     await waitForExits(Date.now() + FORCE_KILL_WAIT_MS);
 
     for (const child of children) {
+      if (!shutdownTargetExited(child)) {
+        recordTaskkillFailure(child, child.taskkillFailure ?? null, true);
+      }
+      child.taskkillFailure = null;
       if (!shutdownTargetExited(child)) {
         result.failures.push(
           `watcher "${child.spec.name}" did not confirm termination during shutdown`,

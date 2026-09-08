@@ -66,7 +66,10 @@ reports readiness only after the governed TypeScript watcher has finished its
 first pass AND Rolldown has completed its first build (spawn is not readiness);
 if either watcher dies — before or after readiness — the supervisor stops the
 sibling and exits non-zero; and stopping the service (Ctrl+C or task kill)
-terminates both watcher trees, leaving no orphan on Windows or POSIX.
+terminates the POSIX watcher process groups and Windows watcher trees while
+their leaders remain live. A Windows descendant that survives its leader is
+reported as a cleanup failure because this supervisor does not retain a
+post-exit tree handle.
 
 `npm run typecheck:authority` (also the first stage of `build`, and blocking
 in the extension PR gate) proves the claim above rather than restating it: that
@@ -118,8 +121,10 @@ Rust LLDB and Jest meanings and are unrelated to extension development.
 The development bundle keeps its source map, so breakpoints in `src/**/*.ts`
 bind on the activation path. To stop the watch launch, stop the
 `perl-lsp: dev watch (supervisor)` task (or terminate the debug session and
-then the task); the supervisor forwards the stop to both watcher trees, so no
-orphan remains.
+then the task); the supervisor forwards the stop to both watcher trees. POSIX
+process-group ownership covers descendants, while Windows `taskkill /T /F`
+owns a tree only while its watcher leader remains live; a surviving
+post-exit descendant is surfaced as a cleanup failure.
 
 To reload after code changes in the one-shot flow: **Ctrl+Shift+P** →
 "Developer: Reload Window" in the host window.
