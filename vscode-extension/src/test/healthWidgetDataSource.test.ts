@@ -256,6 +256,23 @@ describe('HealthWidgetDataSource — bounded file count', () => {
     source.dispose();
   });
 
+  test('renders exactly capped results as an exact count', async () => {
+    const item = makeStatusBarItem();
+    const widget = new HealthWidget(item);
+    widget.onStateChange(ClientState.Running);
+    const workspace = makeWorkspace([2, 0, 0, 0, 0]);
+
+    const source = new HealthWidgetDataSource(widget, makeLanguages([]), workspace, 2);
+    source.start();
+    await source.refreshFileCount();
+
+    expect(workspace.calls[0]?.maxResults).toBe(3);
+    expect(widget.fileCount).toBe(2);
+    expect(widget.fileCountLowerBound).toBe(false);
+    expect(item.text).toContain('2 files');
+    source.dispose();
+  });
+
   test('file creation invalidates the old count and publishes one replacement', async () => {
     const item = makeStatusBarItem();
     const widget = new HealthWidget(item);
@@ -357,6 +374,49 @@ describe('HealthWidgetDataSource — bounded file count', () => {
     }
     await source.refreshFileCount();
     expect(maxActive).toBe(1);
+    source.dispose();
+  });
+
+  test('does not publish a stale scan after invalidation', async () => {
+    const item = makeStatusBarItem();
+    const widget = new HealthWidget(item);
+    widget.onStateChange(ClientState.Running);
+    const pending: Array<(uris: Uri[]) => void> = [];
+    let createListener: (() => void) | undefined;
+    const workspace: WorkspaceTelemetry = {
+      findFiles: () =>
+        new Promise<Uri[]>((resolve) => {
+          pending.push(resolve);
+        }),
+      onDidCreateFiles: (listener) => {
+        createListener = () => listener({ files: [uri('/ws/new.pm')] });
+        return { dispose: () => (createListener = undefined) };
+      },
+    };
+    const source = new HealthWidgetDataSource(widget, makeLanguages([]), workspace);
+
+    source.start();
+    expect(pending).toHaveLength(1);
+
+    createListener?.();
+    expect(widget.fileCount).toBeUndefined();
+
+    pending.shift()?.([uri('/ws/stale.pm')]);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(widget.fileCount).toBeUndefined();
+    expect(pending).toHaveLength(1);
+
+    pending.shift()?.([uri('/ws/current.pm')]);
+    for (let index = 0; index < 4; index += 1) {
+      await Promise.resolve();
+      pending.shift()?.([]);
+    }
+    await source.refreshFileCount();
+
+    expect(widget.fileCount).toBe(1);
+    expect(widget.fileCountLowerBound).toBe(false);
+    expect(item.text).toContain('1 file');
     source.dispose();
   });
 
