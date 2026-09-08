@@ -102,7 +102,7 @@ Branch-protection required checks (two only — everything else is advisory):
 | `Perl LSP Rust Small Result` | Yes |
 | `ripr+ New Gap Gate` | Yes |
 
-RIPR pin: `RIPR_VERSION=0.5.0` (`.github/workflows/ripr.yml`). Local ripr installs may differ — verify from the `ripr+ New Gap Gate` CI receipt, not local output.
+RIPR pin: `RIPR_VERSION=0.10.0` (`.github/workflows/ripr.yml`). Local ripr installs may differ — verify from the `ripr+ New Gap Gate` CI receipt, not local output.
 
 Codecov false-low: patch coverage is advisory and label/manual/nightly only.
 When you do run it, patch coverage counts `--lib` profdata only. Integration
