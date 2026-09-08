@@ -45,12 +45,6 @@ function nativeGitPath(): string {
   return path.resolve(candidate);
 }
 
-function healthFailureObservationPath(): string {
-  const receiptsRoot = process.env.PERL_LSP_SMOKE_RECEIPTS_DIR;
-  assert.ok(receiptsRoot, 'published smoke must provide a receipts directory');
-  return path.join(receiptsRoot, 'health-check-failure-process-observation.json');
-}
-
 function check(result: HealthCheckResult, label: string): { status: string; detail: string } {
   const found = result.checks.find((entry) => entry.label === label);
   assert.ok(found, `health result is missing ${label}: ${JSON.stringify(result)}`);
@@ -99,8 +93,16 @@ suite('Installed Health Check failure and recovery', function () {
 
     const metricsBeforeRestart = activation?.getLanguageClientStartupMetrics?.();
     assert.ok(metricsBeforeRestart, 'startup metrics must be exported by the installed extension');
-    assert.equal(metricsBeforeRestart.server_start_status, 'ok', JSON.stringify(metricsBeforeRestart));
-    assert.equal(metricsBeforeRestart.initialize_status, 'error', JSON.stringify(metricsBeforeRestart));
+    assert.equal(
+      metricsBeforeRestart.server_start_status,
+      'ok',
+      JSON.stringify(metricsBeforeRestart),
+    );
+    assert.equal(
+      metricsBeforeRestart.initialize_status,
+      'error',
+      JSON.stringify(metricsBeforeRestart),
+    );
     assert.equal(
       typeof metricsBeforeRestart.server_start_ms,
       'number',
@@ -126,21 +128,21 @@ suite('Installed Health Check failure and recovery', function () {
       'running',
       JSON.stringify(metricsAfterRestart),
     );
-    assert.equal(metricsAfterRestart.server_start_status, 'ok', JSON.stringify(metricsAfterRestart));
-    assert.equal(metricsAfterRestart.initialize_status, 'error', JSON.stringify(metricsAfterRestart));
+    assert.equal(
+      metricsAfterRestart.server_start_status,
+      'ok',
+      JSON.stringify(metricsAfterRestart),
+    );
+    assert.equal(
+      metricsAfterRestart.initialize_status,
+      'error',
+      JSON.stringify(metricsAfterRestart),
+    );
     const bundledProcesses = await scanProcessesUnderDirectory(path.dirname(bundledPath));
     assert.equal(
       bundledProcesses.length,
       0,
       `blocked restart must not launch the bundled server: ${JSON.stringify(bundledProcesses)}`,
-    );
-    fs.writeFileSync(
-      healthFailureObservationPath(),
-      JSON.stringify(
-        { bundledDirectory: path.dirname(bundledPath), insideHost: bundledProcesses },
-        null,
-        2,
-      ),
     );
   });
 

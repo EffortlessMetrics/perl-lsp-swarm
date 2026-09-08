@@ -401,11 +401,13 @@ describe('deferred language-server startup (#8180)', () => {
     await vscode.commands.executeCommand('perl-lsp.restart');
     await waitForStarts(2);
     expect(deferredProbe).toBeDefined();
-    deferredProbe?.(new Error('old generation probe'), '', 'old generation probe');
+    const oldProbeError = Object.assign(new Error('old generation probe'), { code: 'EACCES' });
+    deferredProbe?.(oldProbeError, '', '');
     await settle();
 
     expect(serverNotRunningMessage()).toContain('Language Server is not running');
     expect(serverNotRunningMessage()).not.toContain('old generation probe');
+    expect(serverNotRunningMessage()).not.toContain('permission denied');
   });
 
   test('a later health check reports recovery while keeping optional warnings separate', async () => {

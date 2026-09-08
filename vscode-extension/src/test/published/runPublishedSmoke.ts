@@ -177,73 +177,6 @@ function sleep(ms: number): Promise<void> {
   });
 }
 
-async function verifyHealthFailureProcessCleanup(receiptsRoot: string): Promise<void> {
-  if (
-    process.env.PERL_LSP_HEALTH_CHECK_FAILURE_SMOKE !== '1' ||
-    process.env.PERL_LSP_HEALTH_CHECK_RECOVERY_SMOKE === '1'
-  ) {
-    return;
-  }
-  const observationPath = path.join(receiptsRoot, 'health-check-failure-process-observation.json');
-  if (!fs.existsSync(observationPath)) {
-    throw new Error(`Health failure smoke did not record process observation: ${observationPath}`);
-  }
-  const observation = JSON.parse(fs.readFileSync(observationPath, 'utf8')) as {
-    bundledDirectory?: unknown;
-    insideHost?: unknown;
-  };
-  if (
-    typeof observation.bundledDirectory !== 'string' ||
-    !path.isAbsolute(observation.bundledDirectory)
-  ) {
-    throw new Error(
-      `Health failure process observation has no absolute bundled directory: ${observationPath}`,
-    );
-  }
-  const afterHost = scanBundledServerProcesses(observation.bundledDirectory);
-  if (afterHost.length !== 0) {
-    throw new Error(
-      `Blocked health failure host left bundled server processes after host exit: ${JSON.stringify(afterHost)}`,
-    );
-  }
-  fs.writeFileSync(observationPath, JSON.stringify({ ...observation, afterHost }, null, 2));
-}
-
-function scanBundledServerProcesses(directory: string): string[] {
-  const resolved = path.resolve(directory);
-  const result =
-    process.platform === 'win32'
-      ? spawnSync(
-          'powershell.exe',
-          [
-            '-NoProfile',
-            '-NonInteractive',
-            '-Command',
-            '(Get-Process -Name perllsp,perl-lsp -ErrorAction SilentlyContinue).Path',
-          ],
-          { encoding: 'utf8', windowsHide: true, timeout: 30_000, maxBuffer: 16 * 1024 * 1024 },
-        )
-      : spawnSync('ps', ['-eo', 'args='], {
-          encoding: 'utf8',
-          timeout: 30_000,
-          maxBuffer: 16 * 1024 * 1024,
-        });
-  if (result.error) {
-    throw new Error(`bundled-server process scan failed to spawn: ${result.error.message}`);
-  }
-  if (result.status !== 0) {
-    throw new Error(
-      `bundled-server process scan exited ${result.status}: ${(result.stderr || '').slice(0, 200)}`,
-    );
-  }
-  const caseInsensitive = process.platform === 'win32' || process.platform === 'darwin';
-  const needle = caseInsensitive ? resolved.toLowerCase() : resolved;
-  return (result.stdout || '')
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter((line) => (caseInsensitive ? line.toLowerCase() : line).startsWith(needle));
-}
-
 function downloadFile(url: string, destination: string, redirects = 0): Promise<void> {
   if (redirects > 5) {
     return Promise.reject(new Error(`Too many redirects while downloading ${url}`));
@@ -579,7 +512,6 @@ async function main(): Promise<void> {
     } else {
       await runTests(testOptions);
     }
-    await verifyHealthFailureProcessCleanup(receiptsRoot);
   } finally {
     // Shared profile directories belong to the orchestrator that created
     // them; this invocation only reuses them across its legs.

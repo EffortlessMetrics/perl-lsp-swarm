@@ -443,11 +443,6 @@ export function _setLastStartupDiagnosisForTest(
 }
 
 /**
- * A detached startup probe may finish after a replacement generation exists.
- * Its diagnosis is only authoritative while the failed generation and path
- * still own the lifecycle failure.
- */
-/**
  * Test helper — reset mid-session crash-recovery state between cases.
  * @internal
  */
