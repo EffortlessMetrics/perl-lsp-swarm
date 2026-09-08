@@ -1501,31 +1501,43 @@ fn outputs_cannot_alias_the_matrix_or_the_reviewed_patch() -> Result<()> {
     let tree = fixture_tree(temp.path(), "clean", &["if.t"])?;
     let patch = write_patch_spec(temp.path(), ORDINARY_ARTIFACT)?;
 
-    let mut aliased_patch =
-        config_for(&tree, &patch, temp.path(), "component_base", default_limits());
-    aliased_patch.output = patch.clone();
-    let Err(error) = observe_invocations(&aliased_patch) else {
-        bail!("an output aliasing the reviewed patch must refuse");
-    };
-    color_eyre::eyre::ensure!(
-        error.to_string().contains("destination") || error.to_string().contains("alias"),
-        "unexpected alias refusal: {error}"
-    );
-    color_eyre::eyre::ensure!(patch.is_file(), "the patch must survive the refusal");
-
-    let mut aliased_matrix =
-        config_for(&tree, &patch, temp.path(), "component_base", default_limits());
-    let matrix_entry = matrix_path().join("01-components-a.json");
-    let matrix_before = fs::read(&matrix_entry)?;
-    aliased_matrix.output = matrix_entry.clone();
-    let Err(error) = observe_invocations(&aliased_matrix) else {
-        bail!("an output aliasing the pinned matrix must refuse");
-    };
-    color_eyre::eyre::ensure!(
-        error.to_string().contains("would overwrite the pinned target matrix"),
-        "unexpected matrix alias refusal: {error}"
-    );
-    require_equal(&fs::read(&matrix_entry)?, &matrix_before, "pinned matrix remains intact")?;
+    let copied_matrix = temp.path().join("matrix");
+    fs::create_dir(&copied_matrix)?;
+    for entry in fs::read_dir(matrix_path())? {
+        let entry = entry?;
+        color_eyre::eyre::ensure!(
+            entry.file_type()?.is_file(),
+            "matrix fixture expects flat files"
+        );
+        fs::copy(entry.path(), copied_matrix.join(entry.file_name()))?;
+    }
+    let matrix_entry = copied_matrix.join("01-components-a.json");
+    for source in [&patch, &matrix_entry] {
+        let before = fs::read(source)?;
+        for destination in 0..3 {
+            let mut config =
+                config_for(&tree, &patch, temp.path(), "component_base", default_limits());
+            config.matrix = copied_matrix.clone();
+            match destination {
+                0 => config.output = source.clone(),
+                1 => config.trace_output = source.clone(),
+                _ => config.work_output = source.clone(),
+            }
+            let Err(error) = observe_invocations_command(&config) else {
+                bail!(
+                    "receipt destination {destination} must refuse an authoritative source alias"
+                );
+            };
+            let message = error.to_string();
+            color_eyre::eyre::ensure!(
+                message.contains("destination")
+                    || message.contains("alias")
+                    || message.contains("would overwrite the pinned target matrix"),
+                "unexpected alias refusal: {error}"
+            );
+            require_equal(&fs::read(source)?, &before, "authoritative source bytes remain intact")?;
+        }
+    }
     Ok(())
 }
 
@@ -1652,6 +1664,10 @@ fn unreadable_trace_channel_retains_io_error_without_fabricated_trace() -> Resul
     color_eyre::eyre::ensure!(
         observation.trace.is_none(),
         "read failure must not fabricate a trace"
+    );
+    color_eyre::eyre::ensure!(
+        !observation.work.payload.cleanup.is_proven(),
+        "the directory fixture must independently establish unproven cleanup"
     );
     require_equal(
         &observation.work.payload.state,
