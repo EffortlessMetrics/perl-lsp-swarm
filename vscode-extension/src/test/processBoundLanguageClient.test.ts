@@ -45,6 +45,12 @@ jest.mock('vscode-languageclient/node', () => ({
       _clientOptions: unknown,
     ) {}
 
+    stopResult: Promise<void> = Promise.resolve();
+
+    stop(_timeout?: number): Promise<void> {
+      return this.stopResult;
+    }
+
     get serverProcess(): ChildProcess | undefined {
       return this._serverProcess;
     }
@@ -169,5 +175,57 @@ describe('process-bound language client', () => {
       'transport creation failed after spawn',
     );
     expect(serverProcessOf(client)).toBe(captured);
+  });
+
+  test('returns the exact stop promise and preserves successful completion', async () => {
+    const client = new TestableProcessBoundLanguageClient(
+      'process-bound-test',
+      'Process-bound test',
+      helperServerOptions(),
+      { documentSelector: [] },
+    );
+    const operation = Promise.resolve();
+    (client as unknown as { stopResult: Promise<void> }).stopResult = operation;
+
+    expect(client.stop(17)).toBe(operation);
+    await expect(operation).resolves.toBeUndefined();
+  });
+
+  test('returns the exact rejected stop promise to the lifecycle caller', async () => {
+    const client = new TestableProcessBoundLanguageClient(
+      'process-bound-test',
+      'Process-bound test',
+      helperServerOptions(),
+      { documentSelector: [] },
+    );
+    const operation = Promise.reject(new Error('cleanup failed'));
+    (client as unknown as { stopResult: Promise<void> }).stopResult = operation;
+
+    expect(client.stop()).toBe(operation);
+    await expect(operation).rejects.toThrow('cleanup failed');
+  });
+
+  test('attaches a fire-and-forget rejection handler without swallowing the returned failure', async () => {
+    const client = new TestableProcessBoundLanguageClient(
+      'process-bound-test',
+      'Process-bound test',
+      helperServerOptions(),
+      { documentSelector: [] },
+    );
+    const operation = Promise.reject(new Error('unhandled cleanup failure'));
+    (client as unknown as { stopResult: Promise<void> }).stopResult = operation;
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown): void => {
+      unhandled.push(reason);
+    };
+    process.on('unhandledRejection', onUnhandled);
+
+    try {
+      void client.stop();
+      await new Promise<void>((resolve) => setImmediate(() => resolve()));
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+    }
   });
 });

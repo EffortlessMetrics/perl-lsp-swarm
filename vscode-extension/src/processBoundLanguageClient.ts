@@ -11,6 +11,12 @@ import { LanguageClient } from 'vscode-languageclient/node';
 export class ProcessBoundLanguageClient extends LanguageClient {
   private retainedServerProcess: ChildProcess | undefined;
 
+  override stop(timeout?: number): Promise<void> {
+    const operation = super.stop(timeout);
+    void operation.catch(() => undefined);
+    return operation;
+  }
+
   protected override async createMessageTransports(encoding: string) {
     try {
       return await super.createMessageTransports(encoding);
