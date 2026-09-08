@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
   "owner_issue": 9773,
-  "reason": "PR #14201 bounds Gherkin step-definition reads by attempted bytes and preserves dirty-buffer freshness. After a normal merge with current main at 5bea310bf9330b11fbbc24344c79641d35397735, the candidate measured a fresh Windows x64 VSIX with 29 payload files and total inventory 1869643 bytes; out/extension.js is 1691798 bytes, 2832 bytes above the exact base baseline, while the other 28 archive paths match. The transition records this measured size-only candidate package under #9773; it does not claim atomic Windows no-follow or broader platform race exclusion.",
+  "reason": "PR #14201 bounds Gherkin step-definition reads by attempted bytes, decodes bounded bytes through the VS Code URI-aware encoding contract, preserves any already-open document buffer, and refuses partial provider navigation. After a normal merge with current main at 5bea310bf9330b11fbbc24344c79641d35397735, the candidate measured a fresh Windows x64 VSIX with 29 payload files and total inventory 1870414 bytes; out/extension.js is 771 bytes above the prior candidate baseline, while the other 28 archive paths match. The transition records this measured size-only candidate package under #9773; it does not claim atomic Windows no-follow or broader platform race exclusion.",
   "base_baseline_file_sha256": "4e148581fe7caff83e13b7d0f617d58c7a957fbc1bb5f1c8b617b9fbd2bd83da",
-  "candidate_baseline_file_sha256": "ff728043e187f33ebe2e63cf3ea7523de7c07e3c98b35ebfea2fd988f50c3bda",
+  "candidate_baseline_file_sha256": "8f52e2df445a305a20a2b42e0a3415bb1fdb72cfde1fc45a96f0b3b6ae16f4df",
   "base_inventory_sha256": "d44214d4914ba1bd8b35d300c9571675e8ae3a7ae526ea017d96c4dc6ff3ea92",
-  "candidate_inventory_sha256": "a9f4a23030fcac6bc4195a6beaaa3c73e635a1e6373e5085ccae1a6d9d5b8a41"
+  "candidate_inventory_sha256": "28ebaa930f6caef9ff9273a3f8647e61672d14307c1883e96d819d05dac90728"
 }

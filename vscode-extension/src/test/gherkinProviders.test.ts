@@ -536,6 +536,9 @@ describe('gherkin outline providers', () => {
 describe('gherkin step-definition workspace envelope', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    (vscode.workspace.decode as jest.Mock).mockImplementation(async (content: Uint8Array) =>
+      Buffer.from(content).toString('utf8'),
+    );
   });
 
   test('skips candidates over the per-file byte cap', async () => {
@@ -575,6 +578,7 @@ describe('gherkin step-definition workspace envelope', () => {
       // scan must stop rather than read the rest. Without the aggregate cap
       // this scan would return all 42 documents.
       expect(scan.documents).toHaveLength(40);
+      expect(scan.refusal).toBe('read_budget_exhausted');
       const acceptedBytes = scan.documents.reduce(
         (total, document) => total + Buffer.byteLength(document.text, 'utf8'),
         0,
@@ -638,9 +642,10 @@ describe('gherkin step-definition workspace envelope', () => {
     const root = makeEnvelopeWorkspace('symlink-mechanism');
     const regular = path.join(root, 'steps.pm');
     fs.writeFileSync(regular, 'Given qr/^ok$/, sub { return; };\n');
-    const lstat = jest
-      .spyOn(fs.promises, 'lstat')
-      .mockResolvedValue({ isSymbolicLink: () => true } as unknown as fs.Stats);
+    const lstat = jest.spyOn(fs.promises, 'lstat').mockResolvedValue({
+      isFile: () => false,
+      isSymbolicLink: () => true,
+    } as unknown as fs.Stats);
 
     try {
       const read = await readBoundedFile(regular, 512 * 1024);
@@ -695,16 +700,16 @@ describe('gherkin step-definition workspace envelope', () => {
     }
   });
 
-  test('prefers an open dirty document buffer over its stale disk contents', async () => {
-    const root = makeEnvelopeWorkspace('dirty-buffer');
+  test('prefers an already-open clean document buffer over its stale disk contents', async () => {
+    const root = makeEnvelopeWorkspace('open-buffer');
     const candidate = path.join(root, 'steps.pm');
     fs.writeFileSync(candidate, 'Given qr/^stale$/, sub { return; };\n');
-    const dirty = {
+    const openDocument = {
       uri: vscode.Uri.file(candidate),
-      isDirty: true,
+      isDirty: false,
       getText: () => 'Given qr/^buffer$/, sub { return; };\n',
     } as unknown as vscode.TextDocument;
-    (vscode.workspace as unknown as { textDocuments: unknown[] }).textDocuments = [dirty];
+    (vscode.workspace as unknown as { textDocuments: unknown[] }).textDocuments = [openDocument];
 
     try {
       const scan = await collectStepDefinitionDocuments(
@@ -724,15 +729,77 @@ describe('gherkin step-definition workspace envelope', () => {
     }
   });
 
+  test('decodes bounded bytes with the configured VS Code encoding', async () => {
+    const root = makeEnvelopeWorkspace('utf16');
+    const candidate = path.join(root, 'steps.pm');
+    const text = 'Given qr/^café$/, sub { return; };\n';
+    fs.writeFileSync(candidate, Buffer.from(`\uFEFF${text}`, 'utf16le'));
+    const decode = jest
+      .spyOn(vscode.workspace, 'decode')
+      .mockImplementation(async (bytes: Uint8Array) =>
+        Buffer.from(bytes)
+          .toString('utf16le')
+          .replace(/^\uFEFF/, ''),
+      );
+
+    try {
+      const uri = vscode.Uri.file(candidate);
+      const scan = await collectStepDefinitionDocuments([uri], cancelled(false));
+
+      expect(decode).toHaveBeenCalledWith(expect.any(Uint8Array), { uri });
+      expect(scan.documents.map((document) => document.text)).toEqual([text]);
+    } finally {
+      decode.mockRestore();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('returns no definition result when the production scan refuses the read budget', async () => {
+    const root = makeEnvelopeWorkspace('provider-refusal');
+    const candidates = Array.from({ length: 42 }, (_unused, index) => {
+      const candidate = path.join(root, `part_${index}.pm`);
+      fs.writeFileSync(candidate, Buffer.alloc(400 * 1024, 0x61));
+      return vscode.Uri.file(candidate);
+    });
+
+    try {
+      registerGherkinProviders();
+      (vscode.workspace.findFiles as jest.Mock)
+        .mockResolvedValueOnce(candidates)
+        .mockResolvedValue([]);
+      const provider = (vscode.languages.registerDefinitionProvider as jest.Mock).mock.calls[0][1];
+
+      const links = await provider.provideDefinition(
+        {
+          getText: () => 'Feature: Login\n  Scenario: Happy path\n    When the user logs in',
+        } as vscode.TextDocument,
+        { line: 2, character: 12 } as vscode.Position,
+        cancelled(false),
+      );
+
+      expect(links).toBeUndefined();
+      expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(
+        'Gherkin step-definition discovery stopped before the workspace was fully scanned; no definition result is available.',
+      );
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test('prefers a buffer that turns dirty while the disk read is pending', async () => {
     const root = makeEnvelopeWorkspace('dirty-race');
     const candidate = path.join(root, 'steps.pm');
     const diskText = 'Given qr/^disk$/, sub { return; };\n';
     fs.writeFileSync(candidate, diskText);
 
-    let releaseDiskRead: (value: { text: string; byteLength: number } | null) => void = () =>
-      undefined;
-    const pendingDiskRead = new Promise<{ text: string; byteLength: number } | null>((resolve) => {
+    let releaseDiskRead: (
+      value: { bytes: Uint8Array; text: string; byteLength: number } | null,
+    ) => void = () => undefined;
+    const pendingDiskRead = new Promise<{
+      bytes: Uint8Array;
+      text: string;
+      byteLength: number;
+    } | null>((resolve) => {
       releaseDiskRead = resolve;
     });
     const diskReadSpy = jest
@@ -744,17 +811,22 @@ describe('gherkin step-definition workspace envelope', () => {
       isDirty: false,
       getText: () => 'Given qr/^buffer$/, sub { return; };\n',
     } as unknown as vscode.TextDocument;
-    (vscode.workspace as unknown as { textDocuments: unknown[] }).textDocuments = [dirty];
+    (vscode.workspace as unknown as { textDocuments: unknown[] }).textDocuments = [];
 
     try {
       const scanPromise = collectStepDefinitionDocuments(
         [vscode.Uri.file(candidate)],
         cancelled(false),
       );
-      // The edit lands while the disk read is pending, so the pre-read dirty
-      // check misses it and only the post-await reconcile can see it.
+      // The edit lands while the disk read is pending, so only the post-await
+      // reconcile can see it.
+      (vscode.workspace as unknown as { textDocuments: unknown[] }).textDocuments = [dirty];
       (dirty as unknown as { isDirty: boolean }).isDirty = true;
-      releaseDiskRead({ text: diskText, byteLength: Buffer.byteLength(diskText, 'utf8') });
+      releaseDiskRead({
+        bytes: Buffer.from(diskText, 'utf8'),
+        text: diskText,
+        byteLength: Buffer.byteLength(diskText, 'utf8'),
+      });
 
       const scan = await scanPromise;
 
@@ -774,9 +846,14 @@ describe('gherkin step-definition workspace envelope', () => {
     const dirtyText = 'Given qr/^buffer$/, sub { return; };\n';
     fs.writeFileSync(candidate, 'Given qr/^disk$/, sub { return; };\n');
 
-    let releaseDiskRead: (value: { text: string; byteLength: number } | null) => void = () =>
-      undefined;
-    const pendingDiskRead = new Promise<{ text: string; byteLength: number } | null>((resolve) => {
+    let releaseDiskRead: (
+      value: { bytes: Uint8Array; text: string; byteLength: number } | null,
+    ) => void = () => undefined;
+    const pendingDiskRead = new Promise<{
+      bytes: Uint8Array;
+      text: string;
+      byteLength: number;
+    } | null>((resolve) => {
       releaseDiskRead = resolve;
     });
     const diskReadSpy = jest
@@ -788,13 +865,14 @@ describe('gherkin step-definition workspace envelope', () => {
       isDirty: false,
       getText: () => dirtyText,
     } as unknown as vscode.TextDocument;
-    (vscode.workspace as unknown as { textDocuments: unknown[] }).textDocuments = [dirty];
+    (vscode.workspace as unknown as { textDocuments: unknown[] }).textDocuments = [];
 
     try {
       const scanPromise = collectStepDefinitionDocuments(
         [vscode.Uri.file(candidate)],
         cancelled(false),
       );
+      (vscode.workspace as unknown as { textDocuments: unknown[] }).textDocuments = [dirty];
       (dirty as unknown as { isDirty: boolean }).isDirty = true;
       releaseDiskRead(null);
 
@@ -803,6 +881,97 @@ describe('gherkin step-definition workspace envelope', () => {
       expect(scan.documents.map((document) => document.text)).toEqual([dirtyText]);
     } finally {
       diskReadSpy.mockRestore();
+      (vscode.workspace as unknown as { textDocuments: unknown[] }).textDocuments = [];
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('rechecks an editor buffer that appears while configured decoding is pending', async () => {
+    const root = makeEnvelopeWorkspace('decode-race');
+    const candidate = path.join(root, 'steps.pm');
+    const diskText = 'Given qr/^disk$/, sub { return; };\n';
+    fs.writeFileSync(candidate, diskText);
+
+    let markDecodeStarted = (): void => undefined;
+    const decodeStarted = new Promise<void>((resolve) => {
+      markDecodeStarted = resolve;
+    });
+    let releaseDecode: (value: string) => void = () => undefined;
+    const pendingDecode = new Promise<string>((resolve) => {
+      releaseDecode = resolve;
+    });
+    const decode = jest.spyOn(vscode.workspace, 'decode').mockImplementation(async () => {
+      markDecodeStarted();
+      return pendingDecode;
+    });
+    const openDocument = {
+      uri: vscode.Uri.file(candidate),
+      isDirty: true,
+      getText: () => 'Given qr/^buffer$/, sub { return; };\n',
+    } as unknown as vscode.TextDocument;
+
+    try {
+      (vscode.workspace as unknown as { textDocuments: unknown[] }).textDocuments = [];
+      const scanPromise = collectStepDefinitionDocuments(
+        [vscode.Uri.file(candidate)],
+        cancelled(false),
+      );
+      await decodeStarted;
+      (vscode.workspace as unknown as { textDocuments: unknown[] }).textDocuments = [openDocument];
+      releaseDecode(diskText);
+
+      const scan = await scanPromise;
+
+      expect(scan.documents.map((document) => document.text)).toEqual([
+        'Given qr/^buffer$/, sub { return; };\n',
+      ]);
+    } finally {
+      decode.mockRestore();
+      (vscode.workspace as unknown as { textDocuments: unknown[] }).textDocuments = [];
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('rechecks an editor buffer when configured decoding fails', async () => {
+    const root = makeEnvelopeWorkspace('decode-error-race');
+    const candidate = path.join(root, 'steps.pm');
+    fs.writeFileSync(candidate, 'Given qr/^disk$/, sub { return; };\n');
+
+    let markDecodeStarted = (): void => undefined;
+    const decodeStarted = new Promise<void>((resolve) => {
+      markDecodeStarted = resolve;
+    });
+    let releaseDecode: () => void = () => undefined;
+    const pendingDecode = new Promise<never>((_resolve, reject) => {
+      releaseDecode = () => reject(new Error('decode failed'));
+    });
+    const decode = jest.spyOn(vscode.workspace, 'decode').mockImplementation(async () => {
+      markDecodeStarted();
+      return pendingDecode;
+    });
+    const openDocument = {
+      uri: vscode.Uri.file(candidate),
+      isDirty: true,
+      getText: () => 'Given qr/^buffer$/, sub { return; };\n',
+    } as unknown as vscode.TextDocument;
+
+    try {
+      (vscode.workspace as unknown as { textDocuments: unknown[] }).textDocuments = [];
+      const scanPromise = collectStepDefinitionDocuments(
+        [vscode.Uri.file(candidate)],
+        cancelled(false),
+      );
+      await decodeStarted;
+      (vscode.workspace as unknown as { textDocuments: unknown[] }).textDocuments = [openDocument];
+      releaseDecode();
+
+      const scan = await scanPromise;
+
+      expect(scan.documents.map((document) => document.text)).toEqual([
+        'Given qr/^buffer$/, sub { return; };\n',
+      ]);
+    } finally {
+      decode.mockRestore();
       (vscode.workspace as unknown as { textDocuments: unknown[] }).textDocuments = [];
       fs.rmSync(root, { recursive: true, force: true });
     }

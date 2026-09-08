@@ -465,8 +465,10 @@ export async function collectWorkspaceStepDefinitionSources(
  * `readFile` allocates whatever is actually there. The size is therefore taken
  * from the already-open descriptor and enforced by the read itself, and the
  * read window contains no path observation that a hostile process could race.
- * Returns `null` for anything that is not a readable regular file within the
- * limit. A pre-open `lstat` avoids opening known directories, FIFOs, devices,
+ * Returns bounded raw bytes plus a UTF-8 compatibility view, or `null` for
+ * anything that is not a readable regular file within the limit. Consumers
+ * that must honor editor encoding should decode the bytes through
+ * `vscode.workspace.decode` with the source URI. A pre-open `lstat` avoids opening known directories, FIFOs, devices,
  * and links; descriptor `stat` and a post-read path check remain the race
  * boundary. `O_NOFOLLOW` and `O_NONBLOCK` are used where the platform defines
  * them. On win32, which has neither flag, this is a stable-entry check rather
@@ -476,7 +478,7 @@ export async function collectWorkspaceStepDefinitionSources(
 export async function readBoundedFile(
   filePath: string,
   limit: number,
-): Promise<{ text: string; byteLength: number } | null> {
+): Promise<{ bytes: Uint8Array; text: string; byteLength: number } | null> {
   try {
     const pathEntry = await fs.promises.lstat(filePath);
     if (!pathEntry.isFile()) {
@@ -522,7 +524,8 @@ export async function readBoundedFile(
       return null;
     }
 
-    return { text: buffer.subarray(0, filled).toString('utf8'), byteLength: filled };
+    const bytes = buffer.subarray(0, filled);
+    return { bytes, text: bytes.toString('utf8'), byteLength: filled };
   } catch {
     return null;
   } finally {

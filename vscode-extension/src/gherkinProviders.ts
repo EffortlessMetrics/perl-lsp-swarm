@@ -105,12 +105,18 @@ export function registerGherkinProviders(): vscode.Disposable[] {
       position: vscode.Position,
       token: vscode.CancellationToken,
     ): Promise<vscode.LocationLink[] | undefined> {
-      const candidates = await loadStepDefinitionDocuments(token);
+      const scan = await loadStepDefinitionDocuments(token);
       if (token.isCancellationRequested) {
         return undefined;
       }
+      if (scan.refusal !== null) {
+        void vscode.window.showWarningMessage(
+          'Gherkin step-definition discovery stopped before the workspace was fully scanned; no definition result is available.',
+        );
+        return undefined;
+      }
 
-      const links = provideGherkinStepDefinitionLinks(document.getText(), position, candidates);
+      const links = provideGherkinStepDefinitionLinks(document.getText(), position, scan.documents);
       if (links === null) {
         void vscode.window.showWarningMessage(
           'Gherkin step matching stopped after reaching its safety budget; no definition result is available.',
@@ -266,12 +272,12 @@ function buildOutline(text: string): OutlineNode[] {
 
 async function loadStepDefinitionDocuments(
   token: vscode.CancellationToken,
-): Promise<StepDefinitionDocument[]> {
+): Promise<StepDefinitionScan> {
   const seen = new Map<string, vscode.Uri>();
 
   for (const pattern of STEP_DEFINITION_FILE_GLOBS) {
     if (token.isCancellationRequested) {
-      return [];
+      return { documents: [], attemptedBytes: 0, refusal: null };
     }
 
     const uris = await vscode.workspace.findFiles(
@@ -286,26 +292,26 @@ async function loadStepDefinitionDocuments(
   }
 
   const scan = await collectStepDefinitionDocuments(Array.from(seen.values()), token);
-  return scan.documents;
+  return scan;
 }
 
 /** Typed refusal causes for the bounded step-definition workspace scan. */
-export type StepDefinitionScanRefusal = 'read_budget_exhausted';
+export type StepDefinitionScanRefusal = 'read_budget_exhausted' | 'retained_budget_exhausted';
 
 /** Outcome of the bounded step-definition workspace scan. */
 export interface StepDefinitionScan {
   documents: StepDefinitionDocument[];
   /** Every attempted read, including candidates the scan went on to reject. */
   attemptedBytes: number;
-  /** Set when the scan stopped rather than let an attempted read cross the budget. */
+  /** Set when the scan stopped before all candidates could be admitted. */
   refusal: StepDefinitionScanRefusal | null;
 }
 
 /**
  * Read candidate step-definition files sequentially under the shared byte
  * envelope: a per-file cap and aggregate caps on attempted and retained
- * bytes. Dirty editor buffers are preferred over stale disk contents, and the
- * post-read check also runs when the disk read failed.
+ * bytes. Open editor documents are preferred over stale disk contents, and the
+ * post-read check also runs when the disk read or configured decode failed.
  */
 export async function collectStepDefinitionDocuments(
   candidates: readonly vscode.Uri[],
@@ -316,20 +322,16 @@ export async function collectStepDefinitionDocuments(
   let attemptedBytes = 0;
   let refusal: StepDefinitionScanRefusal | null = null;
 
-  const dirtyDocumentFor = (candidate: vscode.Uri): vscode.TextDocument | undefined =>
+  const openDocumentFor = (candidate: vscode.Uri): vscode.TextDocument | undefined =>
     vscode.workspace.textDocuments.find(
-      (document) => document.uri.toString() === candidate.toString() && document.isDirty,
+      (document) => document.uri.toString() === candidate.toString(),
     );
 
-  const admitBufferText = (
+  const admitRetainedText = (
     uri: vscode.Uri,
     text: string,
-  ): 'admitted' | 'over-file-cap' | 'over-retained-cap' | 'read-budget-exhausted' => {
+  ): 'admitted' | 'over-file-cap' | 'over-retained-cap' => {
     const bytes = Buffer.byteLength(text, 'utf8');
-    if (attemptedBytes + bytes > MAX_STEP_DEFINITION_TOTAL_READ_BYTES) {
-      return 'read-budget-exhausted';
-    }
-    attemptedBytes += bytes;
     if (bytes > MAX_STEP_DEFINITION_FILE_BYTES) {
       return 'over-file-cap';
     }
@@ -341,16 +343,21 @@ export async function collectStepDefinitionDocuments(
     return 'admitted';
   };
 
-  const admitDirtyBuffer = (uri: vscode.Uri): 'stop' | 'continue' => {
-    const document = dirtyDocumentFor(uri);
+  const admitOpenDocument = (uri: vscode.Uri): 'stop' | 'continue' => {
+    const document = openDocumentFor(uri);
     if (!document) {
       return 'continue';
     }
-    const outcome = admitBufferText(uri, document.getText());
-    if (outcome === 'read-budget-exhausted' || outcome === 'over-retained-cap') {
-      if (outcome === 'read-budget-exhausted') {
-        refusal = 'read_budget_exhausted';
-      }
+    const text = document.getText();
+    const bytes = Buffer.byteLength(text, 'utf8');
+    if (attemptedBytes + bytes > MAX_STEP_DEFINITION_TOTAL_READ_BYTES) {
+      refusal = 'read_budget_exhausted';
+      return 'stop';
+    }
+    attemptedBytes += bytes;
+    const outcome = admitRetainedText(uri, text);
+    if (outcome === 'over-retained-cap') {
+      refusal = 'retained_budget_exhausted';
       return 'stop';
     }
     return 'continue';
@@ -364,11 +371,12 @@ export async function collectStepDefinitionDocuments(
       continue;
     }
     if (acceptedBytes >= MAX_STEP_DEFINITION_TOTAL_BYTES) {
+      refusal = 'retained_budget_exhausted';
       break;
     }
 
-    if (dirtyDocumentFor(uri)) {
-      if (admitDirtyBuffer(uri) === 'stop') {
+    if (openDocumentFor(uri)) {
+      if (admitOpenDocument(uri) === 'stop') {
         break;
       }
       continue;
@@ -385,8 +393,8 @@ export async function collectStepDefinitionDocuments(
     const read = await readBoundedFile(uri.fsPath, MAX_STEP_DEFINITION_FILE_BYTES);
     attemptedBytes += read ? read.byteLength : MAX_STEP_DEFINITION_FILE_BYTES + 1;
 
-    if (dirtyDocumentFor(uri)) {
-      if (admitDirtyBuffer(uri) === 'stop') {
+    if (openDocumentFor(uri)) {
+      if (admitOpenDocument(uri) === 'stop') {
         break;
       }
       continue;
@@ -395,11 +403,29 @@ export async function collectStepDefinitionDocuments(
     if (!read) {
       continue;
     }
-    if (acceptedBytes + read.byteLength > MAX_STEP_DEFINITION_TOTAL_BYTES) {
+    let text: string;
+    try {
+      text = await vscode.workspace.decode(read.bytes, { uri });
+    } catch {
+      const openedAfterDecodeError = openDocumentFor(uri);
+      if (openedAfterDecodeError && admitOpenDocument(uri) === 'stop') {
+        break;
+      }
+      continue;
+    }
+
+    if (openDocumentFor(uri)) {
+      if (admitOpenDocument(uri) === 'stop') {
+        break;
+      }
+      continue;
+    }
+
+    const outcome = admitRetainedText(uri, text);
+    if (outcome === 'over-retained-cap') {
+      refusal = 'retained_budget_exhausted';
       break;
     }
-    acceptedBytes += read.byteLength;
-    documents.push({ uri, text: read.text });
   }
 
   return { documents, attemptedBytes, refusal };

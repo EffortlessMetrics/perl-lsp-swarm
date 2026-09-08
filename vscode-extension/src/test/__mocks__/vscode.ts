@@ -299,6 +299,7 @@ export const workspace = {
   ),
   asRelativePath: jest.fn((uri: { fsPath: string }) => uri.fsPath),
   textDocuments: [],
+  decode: jest.fn(async (content: Uint8Array) => Buffer.from(content).toString('utf8')),
   findFiles: jest.fn(async () => []),
   openTextDocument: jest.fn(async (value: string | { fsPath: string }) => ({
     uri: typeof value === 'string' ? { fsPath: value } : value,

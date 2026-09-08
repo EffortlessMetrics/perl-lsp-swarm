@@ -310,7 +310,7 @@ describe('bounded workspace step-definition scan', () => {
     reader?: (
       filePath: string,
       limit: number,
-    ) => Promise<{ text: string; byteLength: number } | null>,
+    ) => Promise<{ bytes: Uint8Array; text: string; byteLength: number } | null>,
   ): ReturnType<typeof collectWorkspaceStepDefinitionSources> {
     return collectWorkspaceStepDefinitionSources(
       {
@@ -367,6 +367,7 @@ describe('bounded workspace step-definition scan', () => {
     findFiles.mockResolvedValue(Array.from({ length: 500 }, () => ({ fsPath: filePath })));
 
     const result = await scan(async () => ({
+      bytes: Buffer.from('Given qr/^ok$/, sub { return; };\n', 'utf8'),
       text: 'Given qr/^ok$/, sub { return; };\n',
       byteLength: Buffer.byteLength('Given qr/^ok$/, sub { return; };\n', 'utf8'),
     }));
