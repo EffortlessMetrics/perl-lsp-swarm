@@ -3,15 +3,50 @@
 //! When purity, Option/Result identity, or PartialEq reflexivity cannot be
 //! proven from syntax (prelude or std/core constructors and ascriptions), the
 //! checker skips rather than emitting a finding. A terminal identifier such as
-//! `custom::Option` is not a proven std enum.
+//! `custom::Option` is not a proven std enum. Bare prelude names are refused
+//! when the current module declares or imports a shadowing Option/Result or
+//! Some/None/Ok/Err.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use syn::{Expr, Lit, Pat, Path, Type, UnOp};
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Ord, PartialOrd)]
 pub(crate) enum QueryKind {
     Option,
     Result,
+}
+
+/// Module-level names that shadow prelude Option/Result or Some/None/Ok/Err.
+#[derive(Debug, Clone, Default, Eq, PartialEq)]
+pub(crate) struct PreludeShadow {
+    types: BTreeSet<QueryKind>,
+    ctors: BTreeSet<String>,
+}
+
+impl PreludeShadow {
+    pub(crate) fn untrust_type(&mut self, kind: QueryKind) {
+        self.types.insert(kind);
+    }
+
+    pub(crate) fn untrust_ctor(&mut self, name: impl Into<String>) {
+        self.ctors.insert(name.into());
+    }
+
+    pub(crate) fn untrust_all_prelude(&mut self) {
+        self.untrust_type(QueryKind::Option);
+        self.untrust_type(QueryKind::Result);
+        for name in ["Some", "None", "Ok", "Err"] {
+            self.untrust_ctor(name);
+        }
+    }
+
+    fn type_untrusted(&self, kind: QueryKind) -> bool {
+        self.types.contains(&kind)
+    }
+
+    fn ctor_untrusted(&self, name: &str) -> bool {
+        self.ctors.contains(name)
+    }
 }
 
 /// Lexical Option/Result ascriptions. Inner scopes shadow outer names, including
@@ -19,17 +54,30 @@ pub(crate) enum QueryKind {
 #[derive(Debug, Clone)]
 pub(crate) struct TypeEnv {
     scopes: Vec<BTreeMap<String, Option<QueryKind>>>,
+    shadows: PreludeShadow,
 }
 
 impl Default for TypeEnv {
     fn default() -> Self {
-        Self { scopes: vec![BTreeMap::new()] }
+        Self { scopes: vec![BTreeMap::new()], shadows: PreludeShadow::default() }
     }
 }
 
 impl TypeEnv {
     pub(crate) fn new() -> Self {
         Self::default()
+    }
+
+    pub(crate) fn with_shadows(shadows: PreludeShadow) -> Self {
+        Self { scopes: vec![BTreeMap::new()], shadows }
+    }
+
+    pub(crate) fn type_untrusted(&self, kind: QueryKind) -> bool {
+        self.shadows.type_untrusted(kind)
+    }
+
+    pub(crate) fn ctor_untrusted(&self, name: &str) -> bool {
+        self.shadows.ctor_untrusted(name)
     }
 
     pub(crate) fn push_scope(&mut self) {
@@ -127,7 +175,7 @@ pub(crate) fn is_side_effect_free(expr: &Expr, env: &TypeEnv) -> bool {
 /// a `std`/`core` path; `custom::Option` is not admitted.
 pub(crate) fn proven_query_kind(expr: &Expr, env: &TypeEnv) -> Option<QueryKind> {
     let expr = peel(expr);
-    if let Some(kind) = constructor_query_kind(expr) {
+    if let Some(kind) = constructor_query_kind(expr, env) {
         return Some(kind);
     }
     let Expr::Path(path) = expr else {
@@ -140,7 +188,7 @@ pub(crate) fn bind_pat_type(env: &mut TypeEnv, pat: &Pat, ty: &Type) {
     match pat {
         Pat::Type(typed) => bind_pat_type(env, &typed.pat, &typed.ty),
         Pat::Ident(ident) => {
-            env.shadow(ident.ident.to_string(), option_or_result_kind(ty));
+            env.shadow(ident.ident.to_string(), option_or_result_kind_in(ty, env));
             if let Some((_, subpat)) = &ident.subpat {
                 bind_unknown_pat(env, subpat);
             }
@@ -201,6 +249,10 @@ fn bind_unknown_pat(env: &mut TypeEnv, pat: &Pat) {
 }
 
 pub(crate) fn option_or_result_kind(ty: &Type) -> Option<QueryKind> {
+    option_or_result_kind_in(ty, &TypeEnv::new())
+}
+
+pub(crate) fn option_or_result_kind_in(ty: &Type, env: &TypeEnv) -> Option<QueryKind> {
     let ty = peel_type(ty);
     let Type::Path(path) = ty else {
         return None;
@@ -208,7 +260,14 @@ pub(crate) fn option_or_result_kind(ty: &Type) -> Option<QueryKind> {
     if path.qself.is_some() {
         return None;
     }
-    std_enum_kind(&path.path)
+    let kind = std_enum_kind(&path.path)?;
+    if path.path.leading_colon.is_none()
+        && path.path.segments.len() == 1
+        && env.type_untrusted(kind)
+    {
+        return None;
+    }
+    Some(kind)
 }
 
 fn peel_type(ty: &Type) -> &Type {
@@ -220,10 +279,10 @@ fn peel_type(ty: &Type) -> &Type {
     }
 }
 
-fn constructor_query_kind(expr: &Expr) -> Option<QueryKind> {
+fn constructor_query_kind(expr: &Expr, env: &TypeEnv) -> Option<QueryKind> {
     match peel(expr) {
         Expr::Call(call) => {
-            if !call.args.iter().all(|arg| is_side_effect_free(arg, &TypeEnv::new())) {
+            if !call.args.iter().all(|arg| is_side_effect_free(arg, env)) {
                 return None;
             }
             let Expr::Path(path) = peel(&*call.func) else {
@@ -232,55 +291,65 @@ fn constructor_query_kind(expr: &Expr) -> Option<QueryKind> {
             if path.qself.is_some() {
                 return None;
             }
-            ctor_path_kind(&path.path)
+            ctor_path_kind(&path.path, env)
         }
-        Expr::Path(path) if path.qself.is_none() => none_path_kind(&path.path),
+        Expr::Path(path) if path.qself.is_none() => none_path_kind(&path.path, env),
         _ => None,
     }
 }
 
 /// Proven std/core Option or Result path. A terminal identifier is not enough:
 /// `custom::Option` and `crate::Result` are not the prelude or std enums.
-/// Bare `Option`/`Result` (no leading `::`) are the prelude names; `::Option` is
-/// crate-root and is refused. Imports that shadow those prelude names are not
-/// resolved here and remain an accepted residual.
+/// Bare `Option`/`Result` (no leading `::`) are the prelude names unless the
+/// current module shadows them; `::Option` is crate-root and is refused.
 fn std_enum_kind(path: &Path) -> Option<QueryKind> {
     std_enum_kind_from_idents(path.leading_colon.is_some(), &path_idents(path))
 }
 
-fn none_path_kind(path: &Path) -> Option<QueryKind> {
+fn none_path_kind(path: &Path, env: &TypeEnv) -> Option<QueryKind> {
     let last = path.segments.last()?.ident.to_string();
-    (last == "None").then(|| ctor_path_kind(path)).flatten()
+    (last == "None").then(|| ctor_path_kind(path, env)).flatten()
 }
 
-fn ctor_path_kind(path: &Path) -> Option<QueryKind> {
+fn ctor_path_kind(path: &Path, env: &TypeEnv) -> Option<QueryKind> {
     let segs = path_idents(path);
     let last = segs.last()?.as_str();
     let rooted = path.leading_colon.is_some();
     match last {
-        "Some" | "None" => {
-            if segs.len() == 1 {
-                return (!rooted).then_some(QueryKind::Option);
-            }
-            std_enum_kind_from_idents(rooted, &segs[..segs.len() - 1])
-                .filter(|kind| *kind == QueryKind::Option)
-        }
-        "Ok" | "Err" => {
-            if segs.len() == 1 {
-                return (!rooted).then_some(QueryKind::Result);
-            }
-            std_enum_kind_from_idents(rooted, &segs[..segs.len() - 1])
-                .filter(|kind| *kind == QueryKind::Result)
-        }
+        "Some" | "None" => ctor_kind_for_owner(rooted, &segs, last, QueryKind::Option, env),
+        "Ok" | "Err" => ctor_kind_for_owner(rooted, &segs, last, QueryKind::Result, env),
         _ => None,
     }
+}
+
+fn ctor_kind_for_owner(
+    rooted: bool,
+    segs: &[String],
+    last: &str,
+    expected: QueryKind,
+    env: &TypeEnv,
+) -> Option<QueryKind> {
+    if segs.len() == 1 {
+        if rooted || env.ctor_untrusted(last) {
+            return None;
+        }
+        return Some(expected);
+    }
+    let owner = std_enum_kind_from_idents(rooted, &segs[..segs.len() - 1])?;
+    if owner != expected {
+        return None;
+    }
+    if segs.len() == 2 && !rooted && env.type_untrusted(expected) {
+        return None;
+    }
+    Some(expected)
 }
 
 fn path_idents(path: &Path) -> Vec<String> {
     path.segments.iter().map(|segment| segment.ident.to_string()).collect()
 }
 
-fn std_enum_kind_from_idents(rooted: bool, segs: &[String]) -> Option<QueryKind> {
+pub(crate) fn std_enum_kind_from_idents(rooted: bool, segs: &[String]) -> Option<QueryKind> {
     let names: Vec<&str> = segs.iter().map(String::as_str).collect();
     match names.as_slice() {
         ["Option"] if !rooted => Some(QueryKind::Option),
@@ -289,6 +358,41 @@ fn std_enum_kind_from_idents(rooted: bool, segs: &[String]) -> Option<QueryKind>
         ["std", "result", "Result"] | ["core", "result", "Result"] => Some(QueryKind::Result),
         _ => None,
     }
+}
+
+pub(crate) fn imported_path_is_std_enum_or_ctor(rooted: bool, segs: &[String]) -> bool {
+    if std_enum_kind_from_idents(rooted, segs).is_some() {
+        return true;
+    }
+    let Some(last) = segs.last() else {
+        return false;
+    };
+    match last.as_str() {
+        "Some" | "None" => {
+            segs.len() == 1 && !rooted
+                || std_enum_kind_from_idents(rooted, &segs[..segs.len() - 1])
+                    == Some(QueryKind::Option)
+        }
+        "Ok" | "Err" => {
+            segs.len() == 1 && !rooted
+                || std_enum_kind_from_idents(rooted, &segs[..segs.len() - 1])
+                    == Some(QueryKind::Result)
+        }
+        _ => false,
+    }
+}
+
+pub(crate) fn import_prefix_is_std_namespace(prefix: &[String]) -> bool {
+    let names: Vec<&str> = prefix.iter().map(String::as_str).collect();
+    matches!(
+        names.as_slice(),
+        ["std"]
+            | ["core"]
+            | ["std", "option"]
+            | ["core", "option"]
+            | ["std", "result"]
+            | ["core", "result"]
+    )
 }
 
 fn simple_ident(path: &Path) -> Option<String> {
@@ -341,8 +445,8 @@ mod tests {
     #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
     use super::{
-        QueryKind, TypeEnv, is_known_reflexive_eq_operand, is_side_effect_free,
-        option_or_result_kind, proven_query_kind,
+        PreludeShadow, QueryKind, TypeEnv, is_known_reflexive_eq_operand, is_side_effect_free,
+        option_or_result_kind, option_or_result_kind_in, proven_query_kind,
     };
     use syn::{Expr, Type, parse_str};
 
@@ -411,6 +515,25 @@ mod tests {
         assert_eq!(option_or_result_kind(&ty("::Option<u8>")), None);
         assert_eq!(option_or_result_kind(&ty("option::Option<u8>")), None);
         assert_eq!(option_or_result_kind(&ty("std::Option<u8>")), None);
+    }
+
+    #[test]
+    fn local_prelude_shadows_refuse_bare_option_result() {
+        let mut shadows = PreludeShadow::default();
+        shadows.untrust_type(QueryKind::Option);
+        shadows.untrust_ctor("Some");
+        let env = TypeEnv::with_shadows(shadows);
+        assert_eq!(option_or_result_kind_in(&ty("Option<u8>"), &env), None);
+        assert_eq!(
+            option_or_result_kind_in(&ty("std::option::Option<u8>"), &env),
+            Some(QueryKind::Option)
+        );
+        assert_eq!(proven_query_kind(&expr("Some(1)"), &env), None);
+        assert_eq!(
+            proven_query_kind(&expr("std::option::Option::Some(1)"), &env),
+            Some(QueryKind::Option)
+        );
+        assert_eq!(proven_query_kind(&expr("Option::Some(1)"), &env), None);
     }
 
     #[test]

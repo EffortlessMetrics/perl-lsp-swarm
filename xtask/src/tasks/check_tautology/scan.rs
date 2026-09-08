@@ -1,13 +1,16 @@
 //! Walk a parsed Rust file and collect tautological assertion macros.
 
 use super::detect::{Detection, RuleId, classify_assert_condition_in, classify_assert_eq};
-use super::expr::{TypeEnv, bind_binding_pat, bind_pat_type, peel};
+use super::expr::{
+    PreludeShadow, QueryKind, TypeEnv, bind_binding_pat, bind_pat_type,
+    import_prefix_is_std_namespace, imported_path_is_std_enum_or_ctor, peel,
+};
 use syn::parse::{ParseStream, Parser};
 use syn::spanned::Spanned;
 use syn::visit::Visit;
 use syn::{
-    BinOp, Expr, ExprClosure, ExprForLoop, ExprIf, ExprMacro, ExprWhile, File, ImplItemFn, ItemFn,
-    ItemMacro, Local, Macro, StmtMacro, TraitItemFn,
+    BinOp, Expr, ExprClosure, ExprForLoop, ExprIf, ExprMacro, ExprWhile, File, Ident, ImplItemFn,
+    Item, ItemFn, ItemMacro, ItemMod, Local, Macro, StmtMacro, TraitItemFn, UseTree,
 };
 
 const ASSERT_MACROS: &[&str] = &["assert", "debug_assert"];
@@ -33,7 +36,12 @@ pub fn scan_file(path: &str, source: &str) -> Result<Vec<Finding>, String> {
 }
 
 pub fn scan_ast(path: &str, file: &File) -> Vec<Finding> {
-    let mut visitor = AssertionVisitor { path, findings: Vec::new(), env: Vec::new() };
+    let mut visitor = AssertionVisitor {
+        path,
+        findings: Vec::new(),
+        env: Vec::new(),
+        module_shadows: Vec::new(),
+    };
     visitor.visit_file(file);
     visitor.findings.sort();
     visitor.findings
@@ -43,11 +51,16 @@ struct AssertionVisitor<'a> {
     path: &'a str,
     findings: Vec<Finding>,
     env: Vec<TypeEnv>,
+    module_shadows: Vec<PreludeShadow>,
 }
 
 impl AssertionVisitor<'_> {
     fn current_env(&self) -> TypeEnv {
-        self.env.last().cloned().unwrap_or_default()
+        self.env.last().cloned().unwrap_or_else(|| TypeEnv::with_shadows(self.current_shadows()))
+    }
+
+    fn current_shadows(&self) -> PreludeShadow {
+        self.module_shadows.last().cloned().unwrap_or_default()
     }
 
     fn push_scope(&mut self) {
@@ -88,7 +101,7 @@ impl AssertionVisitor<'_> {
     }
 
     fn push_fn_env(&mut self, inputs: &syn::punctuated::Punctuated<syn::FnArg, syn::token::Comma>) {
-        let mut env = TypeEnv::new();
+        let mut env = TypeEnv::with_shadows(self.current_shadows());
         for input in inputs {
             if let syn::FnArg::Typed(typed) = input {
                 bind_pat_type(&mut env, &typed.pat, &typed.ty);
@@ -99,6 +112,20 @@ impl AssertionVisitor<'_> {
 }
 
 impl<'ast> Visit<'ast> for AssertionVisitor<'_> {
+    fn visit_file(&mut self, node: &'ast File) {
+        self.module_shadows.push(collect_shadows(&node.items));
+        syn::visit::visit_file(self, node);
+        self.module_shadows.pop();
+    }
+
+    fn visit_item_mod(&mut self, node: &'ast ItemMod) {
+        if let Some((_, items)) = &node.content {
+            self.module_shadows.push(collect_shadows(items));
+            syn::visit::visit_item_mod(self, node);
+            self.module_shadows.pop();
+        }
+    }
+
     fn visit_item_fn(&mut self, node: &'ast ItemFn) {
         self.push_fn_env(&node.sig.inputs);
         syn::visit::visit_item_fn(self, node);
@@ -236,6 +263,86 @@ impl AssertionVisitor<'_> {
             rule: detection.rule,
             shape: detection.rule.shape(),
         });
+    }
+}
+
+fn collect_shadows(items: &[Item]) -> PreludeShadow {
+    let mut shadows = PreludeShadow::default();
+    for item in items {
+        match item {
+            Item::Struct(item) => note_ident(&item.ident, &mut shadows),
+            Item::Enum(item) => note_ident(&item.ident, &mut shadows),
+            Item::Union(item) => note_ident(&item.ident, &mut shadows),
+            Item::Type(item) => note_ident(&item.ident, &mut shadows),
+            Item::Trait(item) => note_ident(&item.ident, &mut shadows),
+            Item::TraitAlias(item) => note_ident(&item.ident, &mut shadows),
+            Item::Fn(item) => note_ctor_ident(&item.sig.ident, &mut shadows),
+            _ => {}
+        }
+    }
+    for item in items {
+        if let Item::Use(item_use) = item {
+            collect_use(&item_use.tree, item_use.leading_colon.is_some(), &[], &mut shadows);
+        }
+    }
+    shadows
+}
+
+fn note_ident(ident: &Ident, shadows: &mut PreludeShadow) {
+    match ident.to_string().as_str() {
+        "Option" => shadows.untrust_type(QueryKind::Option),
+        "Result" => shadows.untrust_type(QueryKind::Result),
+        "Some" | "None" | "Ok" | "Err" => shadows.untrust_ctor(ident.to_string()),
+        _ => {}
+    }
+}
+
+fn note_ctor_ident(ident: &Ident, shadows: &mut PreludeShadow) {
+    let name = ident.to_string();
+    if matches!(name.as_str(), "Some" | "None" | "Ok" | "Err") {
+        shadows.untrust_ctor(name);
+    }
+}
+
+fn collect_use(tree: &UseTree, rooted: bool, prefix: &[String], shadows: &mut PreludeShadow) {
+    match tree {
+        UseTree::Path(path) => {
+            let mut next = prefix.to_vec();
+            next.push(path.ident.to_string());
+            collect_use(&path.tree, rooted, &next, shadows);
+        }
+        UseTree::Name(name) => {
+            let mut full = prefix.to_vec();
+            full.push(name.ident.to_string());
+            untrust_imported(rooted, &full, &name.ident.to_string(), shadows);
+        }
+        UseTree::Rename(rename) => {
+            let mut full = prefix.to_vec();
+            full.push(rename.ident.to_string());
+            untrust_imported(rooted, &full, &rename.rename.to_string(), shadows);
+        }
+        UseTree::Glob(_) => {
+            if !import_prefix_is_std_namespace(prefix) {
+                shadows.untrust_all_prelude();
+            }
+        }
+        UseTree::Group(group) => {
+            for tree in &group.items {
+                collect_use(tree, rooted, prefix, shadows);
+            }
+        }
+    }
+}
+
+fn untrust_imported(rooted: bool, full: &[String], bound: &str, shadows: &mut PreludeShadow) {
+    if imported_path_is_std_enum_or_ctor(rooted, full) {
+        return;
+    }
+    match bound {
+        "Option" => shadows.untrust_type(QueryKind::Option),
+        "Result" => shadows.untrust_type(QueryKind::Result),
+        "Some" | "None" | "Ok" | "Err" => shadows.untrust_ctor(bound),
+        _ => {}
     }
 }
 
@@ -564,5 +671,80 @@ mod tests {
             "{:?}",
             rules(source)
         );
+    }
+
+    #[test]
+    fn local_option_type_import_and_ctor_shadows_are_skipped_std_option_is_retained() {
+        let source = r#"
+            struct Option;
+            impl Option {
+                fn is_some(&self) -> bool { false }
+                fn is_none(&self) -> bool { false }
+            }
+            fn skip_local_option(x: Option) {
+                assert!(x.is_some() || x.is_none());
+            }
+            fn retain_std_option(value: std::option::Option<u8>) {
+                assert!(value.is_some() || value.is_none());
+            }
+            mod inner {
+                fn retain_prelude_in_child(value: Option<u8>) {
+                    assert!(value.is_some() || value.is_none());
+                }
+            }
+        "#;
+        assert_eq!(
+            rules(source),
+            vec![RuleId::OptionSomeOrNone, RuleId::OptionSomeOrNone],
+            "{:?}",
+            rules(source)
+        );
+
+        let imported = r#"
+            use custom::Option;
+            fn skip_imported(x: Option) {
+                assert!(x.is_some() || x.is_none());
+            }
+            fn retain_std(value: std::option::Option<u8>) {
+                assert!(value.is_some() || value.is_none());
+            }
+            mod custom {
+                pub struct Option;
+            }
+        "#;
+        assert_eq!(rules(imported), vec![RuleId::OptionSomeOrNone], "{:?}", rules(imported));
+
+        let ctor = r#"
+            struct Some(u8);
+            impl Some {
+                fn is_some(&self) -> bool { false }
+                fn is_none(&self) -> bool { false }
+            }
+            fn skip_local_some() {
+                assert!(Some(1).is_some() || Some(1).is_none());
+            }
+            fn retain_std() {
+                assert!(
+                    std::option::Option::Some(1).is_some()
+                        || std::option::Option::Some(1).is_none()
+                );
+            }
+        "#;
+        assert_eq!(rules(ctor), vec![RuleId::OptionSomeOrNone], "{:?}", rules(ctor));
+
+        let local_result = r#"
+            struct Result;
+            impl Result {
+                fn is_ok(&self) -> bool { false }
+                fn is_err(&self) -> bool { false }
+            }
+            fn skip_local_result(x: Result) {
+                assert!(x.is_ok() || x.is_err());
+            }
+            fn retain_std(value: std::result::Result<(), ()>) {
+                assert!(value.is_ok() || value.is_err());
+            }
+        "#;
+        assert_eq!(rules(local_result), vec![RuleId::ResultOkOrErr], "{:?}", rules(local_result));
     }
 }
