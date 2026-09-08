@@ -29,6 +29,13 @@ use perl_spawn::{format_perl_spawn_error, is_valid_perl_interpreter};
 
 const SCOPE_FRAME_ID_MAX: u64 = 99_999;
 
+enum AttachSubject {
+    Tcp,
+    ProcessId(u32),
+    Invalid(String),
+    Ambiguous(String),
+}
+
 /// Return the authoritative frame id for the current suspension.
 ///
 /// The output reader may observe a context line followed by a prompt for the
@@ -1579,8 +1586,8 @@ impl DebugAdapter {
     ) -> DapMessage {
         // Parse attach arguments
         if let Some(args) = arguments {
-            match Self::parse_process_id(&args) {
-                Ok(Some(_pid)) => {
+            match Self::classify_attach_subject(&args) {
+                AttachSubject::ProcessId(_pid) => {
                     // #8109: a syntactically valid processId is refused before
                     // any target inspection, session mutation, signal, or event
                     // emission. Process existence plus signal control is not a
@@ -1601,8 +1608,8 @@ impl DebugAdapter {
                         ),
                     };
                 }
-                Ok(None) => {}
-                Err(message) => {
+                AttachSubject::Tcp => {}
+                AttachSubject::Invalid(message) | AttachSubject::Ambiguous(message) => {
                     return DapMessage::Response {
                         seq,
                         request_seq,
@@ -1791,12 +1798,33 @@ impl DebugAdapter {
         }
     }
 
-    /// Classify the optional native PID subject without inspecting the target.
+    /// Classify the attach subject without inspecting the target.
     ///
     /// A missing or explicit `null` value leaves the request on the TCP path.
     /// Malformed, zero, and out-of-range values are invalid input; only a
     /// positive in-range integer reaches the capability-first unsupported
     /// response for native PID attach (#8109).
+    fn classify_attach_subject(args: &Value) -> AttachSubject {
+        let process_id = match Self::parse_process_id(args) {
+            Ok(process_id) => process_id,
+            Err(message) => return AttachSubject::Invalid(message),
+        };
+        if let Some(pid) = process_id {
+            let has_tcp_subject = ["host", "port"]
+                .iter()
+                .any(|key| args.get(*key).is_some_and(|value| !value.is_null()));
+            if has_tcp_subject {
+                return AttachSubject::Ambiguous(
+                    "Ambiguous attach: processId cannot be combined with explicit host or port \
+                     (#8109)"
+                        .to_string(),
+                );
+            }
+            return AttachSubject::ProcessId(pid);
+        }
+        AttachSubject::Tcp
+    }
+
     fn parse_process_id(args: &Value) -> Result<Option<u32>, String> {
         let Some(value) = args.get("processId") else {
             return Ok(None);

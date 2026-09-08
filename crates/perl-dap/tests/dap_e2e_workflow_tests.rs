@@ -295,9 +295,10 @@ fn test_e2e_step_over_changes_execution() -> TestResult {
 #[test]
 fn test_e2e_attach_workflow_stopped_event() -> TestResult {
     let mut session = DapWorkflowSession::new(workflow_timeout())?;
-    let error = session
-        .attach(std::process::id(), false)
-        .expect_err("native PID attach must be unsupported");
+    let error = match session.attach(std::process::id(), false) {
+        Ok(()) => return Err("native PID attach unexpectedly succeeded".into()),
+        Err(error) => error,
+    };
     assert!(error.contains("not supported"), "unexpected refusal: {error}");
     Ok(())
 }
@@ -309,9 +310,10 @@ fn test_e2e_attach_workflow_stopped_event() -> TestResult {
 #[test]
 fn test_e2e_attach_workflow_stop_on_entry() -> TestResult {
     let mut session = DapWorkflowSession::new(workflow_timeout())?;
-    let error = session
-        .attach(std::process::id(), true)
-        .expect_err("native PID attach must be unsupported");
+    let error = match session.attach(std::process::id(), true) {
+        Ok(()) => return Err("native PID attach unexpectedly succeeded".into()),
+        Err(error) => error,
+    };
     assert!(error.contains("not supported"), "unexpected refusal: {error}");
     Ok(())
 }

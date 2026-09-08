@@ -12,6 +12,7 @@ use perl_dap::debug_adapter::{DapMessage, DebugAdapter};
 use perl_lsp_rs_core::config::PerlOracleEnv;
 use perl_tdd_support::{must, must_some};
 use serde_json::json;
+use std::error::Error;
 use std::io::Write;
 use std::sync::mpsc::{Receiver, sync_channel};
 use std::sync::{Arc, Mutex};
@@ -628,7 +629,7 @@ fn test_session_lifecycle_attach_validation() {
 }
 
 #[test]
-fn test_session_lifecycle_attach_null_process_id_uses_tcp() {
+fn test_session_lifecycle_attach_null_process_id_uses_tcp() -> Result<(), Box<dyn Error>> {
     // VS Code uses an explicit null processId for TCP-only attach configs.
     // Null must therefore follow the TCP path, not the unsupported PID path.
     let (mut adapter, _rx) = create_test_adapter();
@@ -645,19 +646,22 @@ fn test_session_lifecycle_attach_null_process_id_uses_tcp() {
 
     match response {
         DapMessage::Response { command, message, .. } => {
-            assert_eq!(command, "attach");
+            if command != "attach" {
+                return Err("Expected attach response".into());
+            }
             let msg = message.unwrap_or_default();
-            assert!(
-                !msg.contains("attach by processId is not supported"),
-                "null processId must use the TCP path: {msg}"
-            );
+            if msg.contains("attach by processId is not supported") {
+                return Err(format!("null processId used PID path: {msg}").into());
+            }
         }
-        _ => must(Err::<(), _>("Expected Response message".to_string())),
+        _ => return Err("Expected Response message".into()),
     }
+    Ok(())
 }
 
 #[test]
-fn test_session_lifecycle_attach_malformed_process_id_is_invalid_input() {
+fn test_session_lifecycle_attach_malformed_process_id_is_invalid_input()
+-> Result<(), Box<dyn Error>> {
     for process_id in [json!("123"), json!(-1), json!(4_294_967_296_u64)] {
         let (mut adapter, _rx) = create_test_adapter();
         let response =
@@ -665,16 +669,46 @@ fn test_session_lifecycle_attach_malformed_process_id_is_invalid_input() {
 
         match response {
             DapMessage::Response { success, command, message, .. } => {
-                assert!(!success, "malformed processId must be rejected");
-                assert_eq!(command, "attach");
-                assert!(
-                    must_some(message).contains("Invalid processId"),
-                    "malformed processId must be classified as invalid input"
-                );
+                if success || command != "attach" {
+                    return Err("malformed processId was not rejected".into());
+                }
+                let message = message.ok_or("missing malformed processId message")?;
+                if !message.contains("Invalid processId") {
+                    return Err("malformed processId was not classified as invalid input".into());
+                }
             }
-            _ => must(Err::<(), _>("Expected Response message".to_string())),
+            _ => return Err("Expected Response message".into()),
         }
     }
+    Ok(())
+}
+
+#[test]
+fn test_session_lifecycle_attach_mixed_pid_tcp_is_refused_without_events()
+-> Result<(), Box<dyn Error>> {
+    for (process_id, expected) in [
+        (json!(std::process::id()), "Ambiguous attach"),
+        (json!("not-a-number"), "Invalid processId"),
+    ] {
+        let (mut adapter, rx) = create_test_adapter();
+        let response = adapter.handle_request(
+            1,
+            "attach",
+            Some(json!({ "processId": process_id, "host": "127.0.0.1", "port": 13603 })),
+        );
+        match response {
+            DapMessage::Response { success, message, .. } => {
+                if success || !message.is_some_and(|message| message.contains(expected)) {
+                    return Err(format!("unexpected mixed attach response for {expected}").into());
+                }
+            }
+            _ => return Err("Expected Response message".into()),
+        }
+        if let Ok(event) = rx.try_recv() {
+            return Err(format!("mixed attach refusal emitted an event: {event:?}").into());
+        }
+    }
+    Ok(())
 }
 
 #[test]

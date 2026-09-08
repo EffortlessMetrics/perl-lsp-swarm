@@ -226,9 +226,10 @@ fn attach_does_not_resolve_launch_pin_during_initialization() -> Result<(), Box<
     // pin must therefore not prevent initialize/PID-refusal from reaching the real
     // adapter; resolution belongs to the first launch helper that needs it.
     let mut session = DapWorkflowSession::new(workflow_timeout())?;
-    let attach_error = session
-        .attach(std::process::id(), false)
-        .expect_err("native PID attach must be unsupported");
+    let attach_error = match session.attach(std::process::id(), false) {
+        Ok(()) => return Err("native PID attach unexpectedly succeeded".into()),
+        Err(error) => error,
+    };
     if !attach_error.contains("not supported") {
         return Err(format!("unexpected PID attach refusal: {attach_error}").into());
     }

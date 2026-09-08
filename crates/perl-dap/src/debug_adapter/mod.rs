@@ -1357,12 +1357,13 @@ print "result: $final\n";
         let assert_refused = |response: DapMessage| -> Result<(), Box<dyn std::error::Error>> {
             match response {
                 DapMessage::Response { success, command, body, message, .. } => {
-                    assert!(!success, "processId attach must be refused (#8109)");
-                    assert_eq!(command, "attach");
-                    assert!(body.is_none(), "refusal must not carry an attach body");
+                    if success || command != "attach" || body.is_some() {
+                        return Err("processId attach was not refused cleanly".into());
+                    }
                     let msg = message.ok_or("Expected message")?;
-                    assert!(msg.contains("not supported"), "msg must name the refusal: {msg}");
-                    assert!(msg.contains("8109"), "msg must cite the owning issue: {msg}");
+                    if !msg.contains("not supported") || !msg.contains("8109") {
+                        return Err(format!("unexpected refusal message: {msg}").into());
+                    }
                     Ok(())
                 }
                 _ => return Err("Expected response".into()),
@@ -1371,17 +1372,31 @@ print "result: $final\n";
         let assert_invalid = |response: DapMessage| -> Result<(), Box<dyn std::error::Error>> {
             match response {
                 DapMessage::Response { success, command, body, message, .. } => {
-                    assert!(!success, "invalid processId must be refused");
-                    assert_eq!(command, "attach");
-                    assert!(body.is_none(), "invalid processId must not carry an attach body");
+                    if success || command != "attach" || body.is_some() {
+                        return Err("invalid processId was not refused cleanly".into());
+                    }
                     let msg = message.ok_or("Expected invalid processId message")?;
-                    assert!(
-                        msg.contains("Invalid processId"),
-                        "msg must identify invalid input: {msg}"
-                    );
+                    if !msg.contains("Invalid processId") {
+                        return Err(format!("unexpected invalid-input message: {msg}").into());
+                    }
                     Ok(())
                 }
                 _ => return Err("Expected response".into()),
+            }
+        };
+        let assert_ambiguous = |response: DapMessage| -> Result<(), Box<dyn std::error::Error>> {
+            match response {
+                DapMessage::Response { success, command, body, message, .. } => {
+                    if success || command != "attach" || body.is_some() {
+                        return Err("ambiguous attach was not refused cleanly".into());
+                    }
+                    let msg = message.ok_or("Expected ambiguous attach message")?;
+                    if !msg.contains("Ambiguous attach") {
+                        return Err(format!("unexpected ambiguity message: {msg}").into());
+                    }
+                    Ok(())
+                }
+                _ => Err("Expected response".into()),
             }
         };
 
@@ -1422,11 +1437,12 @@ print "result: $final\n";
                 .map(|session| session.process.id())
                 .ok_or("valid refusal cleared the active session")?
         };
-        assert_eq!(
-            after_valid_generation, before_generation,
-            "valid refusal changed session generation"
-        );
-        assert_eq!(after_valid_pid, before_pid, "valid refusal replaced the active process");
+        if after_valid_generation != before_generation {
+            return Err("valid refusal changed session generation".into());
+        }
+        if after_valid_pid != before_pid {
+            return Err("valid refusal replaced the active process".into());
+        }
 
         let args = json!({ "processId": "not-a-number" });
         assert_invalid(adapter.handle_request(5, "attach", Some(args)))?;
@@ -1439,11 +1455,36 @@ print "result: $final\n";
                 .map(|session| session.process.id())
                 .ok_or("invalid refusal cleared the active session")?
         };
-        assert_eq!(
-            after_invalid_generation, before_generation,
-            "invalid refusal changed session generation"
-        );
-        assert_eq!(after_invalid_pid, before_pid, "invalid refusal replaced the active process");
+        if after_invalid_generation != before_generation {
+            return Err("invalid refusal changed session generation".into());
+        }
+        if after_invalid_pid != before_pid {
+            return Err("invalid refusal replaced the active process".into());
+        }
+
+        let args = json!({
+            "processId": std::process::id(),
+            "host": "127.0.0.1",
+            "port": 13603
+        });
+        assert_ambiguous(adapter.handle_request(6, "attach", Some(args)))?;
+        let args = json!({
+            "processId": "not-a-number",
+            "host": "127.0.0.1",
+            "port": 13603
+        });
+        assert_invalid(adapter.handle_request(7, "attach", Some(args)))?;
+        let after_mixed_pid = {
+            let session =
+                lock_or_recover(&adapter.session, "test.attach_refusal_after_mixed_session");
+            session
+                .as_ref()
+                .map(|session| session.process.id())
+                .ok_or("mixed refusal cleared the active session")?
+        };
+        if after_mixed_pid != before_pid {
+            return Err("mixed refusal replaced the active process".into());
+        }
 
         Ok(())
     }
@@ -1479,6 +1520,33 @@ print "result: $final\n";
             Err(std::sync::mpsc::TryRecvError::Empty) => {}
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                 return Err("event channel disconnected during attach refusal".into());
+            }
+        }
+        for (seq, args, expected) in [
+            (
+                2,
+                json!({ "processId": std::process::id(), "host": "127.0.0.1", "port": 13603 }),
+                "Ambiguous attach",
+            ),
+            (
+                3,
+                json!({ "processId": "not-a-number", "host": "127.0.0.1", "port": 13603 }),
+                "Invalid processId",
+            ),
+        ] {
+            let response = adapter.handle_request(seq, "attach", Some(args));
+            match response {
+                DapMessage::Response { success, message, .. } => {
+                    if success || !message.is_some_and(|message| message.contains(expected)) {
+                        return Err(
+                            format!("unexpected mixed attach refusal for {expected}").into()
+                        );
+                    }
+                }
+                _ => return Err("Expected response".into()),
+            }
+            if let Ok(event) = rx.try_recv() {
+                return Err(format!("mixed attach refusal emitted an event: {event:?}").into());
             }
         }
         Ok(())
