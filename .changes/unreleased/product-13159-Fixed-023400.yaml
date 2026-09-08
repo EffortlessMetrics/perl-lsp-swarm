@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: "Unicode letter/digit package names now remain byte-exact through direct `use`/`require` reference extraction, lookup safety, and module-path projection instead of being rejected as ASCII-only."
+time: 2026-08-28T02:34:00Z
+custom:
+  PR: "13159"
+  Slug: unicode-package-tokens
+  Breaking: "no"

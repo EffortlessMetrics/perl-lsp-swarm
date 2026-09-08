@@ -9,12 +9,12 @@ This status tracks parser AST construct coverage for the crate-local HIR baselin
 
 | Status | Count | Meaning |
 | --- | ---: | --- |
-| `lowered` | 37 | Emits one or more HIR items today. |
+| `lowered` | 38 | Emits one or more HIR items today. |
 | `dynamic_boundary` | 3 | Emits an explicit dynamic-boundary HIR item for unsupported static truth. |
 | `intentionally_skipped` | 20 | Traversal, metadata, or recovery placeholder; no standalone HIR item expected. |
-| `not_yet_modeled` | 16 | Parser AST construct exists, but HIR has no shell yet. |
+| `not_yet_modeled` | 15 | Parser AST construct exists, but HIR has no shell yet. |
 
-AST kinds tracked: `76`. HIR construct kinds tracked: `28`.
+AST kinds tracked: `76`. HIR construct kinds tracked: `29`.
 
 ## Inventory
 
@@ -86,7 +86,7 @@ AST kinds tracked: `76`. HIR construct kinds tracked: `28`.
 | `Use` | `lowered` | `UseDecl` | Lowered as use declaration shell and records CompileEnvironment directive facts. |
 | `No` | `intentionally_skipped` | - | `no` directives record CompileEnvironment facts; no standalone HIR item yet. |
 | `PhaseBlock` | `intentionally_skipped` | - | Phase blocks record CompileEnvironment phase facts and contribute a ScopeGraph phase frame. |
-| `DataSection` | `not_yet_modeled` | - | No first-slice HIR shell yet. |
+| `DataSection` | `lowered` | `DataSectionDecl` | Explicitly handled: emits a DataSectionDecl shell with exact marker and payload ranges; payload is an opaque source region and is never lowered as Perl. |
 | `Class` | `lowered` | `ClassDecl` | Lowered as class-declaration shell; class body is traversed. No dedicated scope frame or stash slot yet. |
 | `Format` | `intentionally_skipped` | - | Explicitly handled: records a ScopeGraph format frame and stash slot; no HIR item yet. |
 | `Identifier` | `lowered` | `BarewordExpr` | Lowered as bareword expression shell; records bareword fact. |

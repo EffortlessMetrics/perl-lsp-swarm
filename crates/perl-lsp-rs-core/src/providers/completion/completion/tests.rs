@@ -79,6 +79,70 @@ fn completion_provider(source: &str) -> Result<CompletionProvider, Box<dyn std::
     Ok(CompletionProvider::new_with_index_and_source(&ast, source, Some(index)))
 }
 
+#[test]
+fn production_method_completion_ignores_pod_looking_heredoc_content()
+-> Result<(), Box<dyn std::error::Error>> {
+    let source = "use HTTP::Tiny;\nmy $http = HTTP::Tiny->new;\nmy $text = <<'END';\n=begin comment\n=for comment\n=end comment\nEND\n$http->po";
+    let provider = completion_provider(source)?;
+    let completions = provider.get_completions(source, source.len());
+
+    assert!(
+        completions.iter().any(|item| item.label == "post"),
+        "constructor methods must remain available after POD-looking heredoc content"
+    );
+    Ok(())
+}
+
+#[test]
+fn production_method_completion_accepts_real_cut_and_rejects_pod_or_reassigned_context()
+-> Result<(), Box<dyn std::error::Error>> {
+    let for_source = "use HTTP::Tiny;\n=for comment\ndocumentation\n\n=cut\nmy $http = HTTP::Tiny->new;\n$http->po";
+    let for_provider = completion_provider(for_source)?;
+    assert!(
+        for_provider
+            .get_completions(for_source, for_source.len())
+            .iter()
+            .any(|item| item.label == "post"),
+        "code after =cut must remain reachable after a =for paragraph"
+    );
+
+    let malformed_source =
+        "use HTTP::Tiny;\n=begin\nnot a valid region\nmy $http = HTTP::Tiny->new;\n$http->po";
+    let malformed_provider = completion_provider(malformed_source)?;
+    assert!(
+        !malformed_provider
+            .get_completions(malformed_source, malformed_source.len())
+            .iter()
+            .any(|item| item.label == "post"),
+        "a targetless =begin without =cut must keep the trailing code in POD"
+    );
+
+    let reassigned_source =
+        "use HTTP::Tiny;\nmy $http = HTTP::Tiny->new;\n$http = make_other();\n$http->po";
+    let reassigned_provider = completion_provider(reassigned_source)?;
+    assert!(
+        !reassigned_provider
+            .get_completions(reassigned_source, reassigned_source.len())
+            .iter()
+            .any(|item| item.label == "post"),
+        "constructor inference must stop after a later reassignment"
+    );
+    Ok(())
+}
+
+#[test]
+fn production_method_completion_ignores_indented_pod_directives()
+-> Result<(), Box<dyn std::error::Error>> {
+    let source = "use HTTP::Tiny;\n  =begin comment\n  =for comment\n  =cut\nmy $http = HTTP::Tiny->new;\n$http->po";
+    let provider = completion_provider(source)?;
+
+    assert!(
+        provider.get_completions(source, source.len()).iter().any(|item| item.label == "post"),
+        "indented POD-looking lines must not suppress production completion"
+    );
+    Ok(())
+}
+
 fn completion_provider_with_receiver_fact(
     source: &str,
     receiver_fact: Option<perl_semantic_analyzer::analysis::type_facts::TypeFact>,

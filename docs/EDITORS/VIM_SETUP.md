@@ -79,7 +79,7 @@ after the plugin is loaded.
 function! s:perl_lsp_root_uri(server_info) abort
   let l:root = lsp#utils#find_nearest_parent_file_directory(
         \ expand('%:p'),
-        \ ['.perl-lsp.toml', 'Makefile.PL', 'Build.PL', 'cpanfile', 'dist.ini', '.git/']
+        \ ['.perl-lsp.toml', 'Makefile.PL', 'Build.PL', 'cpanfile', 'dist.ini', '.git/', '.git']
         \ )
 
   if empty(l:root)
@@ -123,9 +123,11 @@ augroup END
 
 The root helper above chooses the nearest parent containing one of the Perl
 project markers and falls back to Vim's current working directory when no
-marker exists. If your project needs different root semantics, change them
-intentionally rather than adding a second competing marker list elsewhere in
-your config.
+marker exists. `vim-lsp` treats a trailing slash as a directory marker, so both
+Git spellings are intentional: `.git/` finds an ordinary repository directory,
+while `.git` finds a linked worktree or submodule whose Git marker is a file.
+If your project needs different root semantics, change them intentionally
+rather than adding a second competing marker list elsewhere in your config.
 
 ### Optional vim-lsp server settings
 

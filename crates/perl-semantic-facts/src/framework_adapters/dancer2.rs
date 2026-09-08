@@ -765,6 +765,11 @@ mod tests {
 
     #[test]
     fn keyword_table_matches_reviewed_v1_1_registration() {
+        // Independent expected tuples from upstream lib/Dancer2/Core/DSL.pm,
+        // v1.1.1 commit 36bdd7aa4e9b97585ad545180a2135fe26278ad1 (82 exports).
+        // v1.0.0 commit ab2a50a478f81b005d0a6f4f1ff2a1f6f9ce1aa5 has the
+        // same 81 tuples after omitting uri_for_route. Scope is is_global;
+        // deprecation is the four DEPRECATED runtime bodies. See #13089.
         let expected: &[(&str, DslKeywordScope, bool)] = &[
             ("any", GLOBAL, false),
             ("app", GLOBAL, false),

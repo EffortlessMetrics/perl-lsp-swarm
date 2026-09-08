@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: Preserve complete embedded-code source ranges in canonical regex facts and dynamic regions while retaining opener-anchored diagnostics.
+time: 2026-08-28T02:02:12Z
+custom:
+  PR: "13073"
+  Slug: perl-regex-embedded-code-geometry
+  Breaking: "no"

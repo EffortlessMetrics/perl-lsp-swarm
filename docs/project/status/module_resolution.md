@@ -1,19 +1,48 @@
 # @INC / Module Resolution Conformance
 
-This page tracks live LSP module-resolution behavior for provider consumers.
-It is distinct from HIR compiler-substrate module-request facts, which are
-tracked in [compiler_facts.md](compiler_facts.md) and [#8242](https://github.com/EffortlessMetrics/perl-lsp/issues/8242).
+This page is current support authority for the **Selected static @INC consumer rail**.
+It tracks live LSP module-resolution behavior for that rail's four provider
+consumers. It is distinct from HIR compiler-substrate module-request facts,
+which are tracked in [compiler_facts.md](compiler_facts.md) and
+[#8242](https://github.com/EffortlessMetrics/perl-lsp/issues/8242).
 
-Consumer-consistency matrix — verified end-to-end through all four LSP consumers
-(PL701 diagnostic, completion, goto-definition, hover) for each `@INC` resolution mode.
+This page does **not** claim complete effective-root authority; it is
+not complete effective-root authority. Historical selected-rail closeouts from
+2026-05-11 remain receipts for the Scenario 14 denominator; they are not current
+proof of the broader module programme.
+
+#8479 / #7460 generated claim identities are not on `main` (those issues remain
+open). The table below is therefore denominator-bound to Scenario 14 plus exact
+issue owners. It is not a generated row count and must not be hand-counted as
+if those identities already existed.
+
+## Current claim boundary
+
+| Level | Current state | Denominator / evidence | Promotion owner |
+|---|---|---|---|
+| Selected static consumer rail | proven | Scenario 14 four consumers (PL701 diagnostic, completion, goto-definition, hover) × the named resolution modes; harness `ux_scenario_14_inc_conformance` | this page; [SUPPORT_TIERS.md](SUPPORT_TIERS.md) module-resolution row |
+| Contextual resolver authority | not_proven | validated request; source mutation facts/effects; accepted environment roots; document ownership; effective root composition; candidate report; selected-source open-revision overlay | M04 [#10568](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/10568)–[#10572](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/10572); M07 [#10573](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/10573)/[#10575](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/10575)/[#10578](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/10578)/[#8170](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/8170) |
+| Provider/product support | not_proven | definition, completion, hover, diagnostics, symbols, refactors, installed VS Code, other clients/platforms — independent owners; not implied by the selected rail | [#1744](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/1744) / [#4243](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/4243) and exact consumer owners |
+| Exact-process | not_proven | `#11624` profiles under #9270 (`module_exact_process_resolution_core`, `module_exact_process_semantic_edit`, `module_exact_process_full_closeout`) | [#9270](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/9270) / [#11624](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/11624) |
+| Dynamic / unsupported | bounded | hooks, arbitrary runtime `@INC` mutation, and project code remain non-executing and may correctly produce bounded/refused outcomes | M04E [#10572](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/10572) |
+
+A lower row cannot make a higher row pass. Issue closure, spec existence, or
+helper/unit tests do not promote public claims. Stronger public claims remain
+#9270 plus provider/installed owners.
+
+When this page says "all consumers", it means those four Scenario 14 consumers,
+not every module-resolution consumer in the repository.
 
 **Test**: `cargo test -p perl-lsp-ux-tests --test ux_scenario_14_inc_conformance -- --nocapture`
 
-## Consumer Consistency Matrix
+## Selected static @INC consumer rail
 
-Each cell indicates whether the consumer agrees on module resolution for the given mode.
-A `+` means the consumer produced the expected answer (resolved or not-resolved consistently).
-A `-` means the consumer diverges or the feature is not yet fully enforced.
+### Consumer consistency matrix (Scenario 14 receipt)
+
+Each cell indicates whether the named Scenario 14 consumer agrees on module
+resolution for the given mode. A `+` means the consumer produced the expected
+answer (resolved or not-resolved consistently). A `-` means the consumer
+diverges or the feature is not yet fully enforced.
 
 **Fixture semantics**: completion uses prefix fixtures (`use Gre<cursor>`);
 PL701, goto-definition, and hover use exact-module fixtures (`use GreetModule;`).
@@ -23,19 +52,31 @@ PL701, goto-definition, and hover use exact-module fixtures (`use GreetModule;`)
 | Workspace `includePaths` | + | + | + | + | Config-driven: `includePaths: ["lib"]` |
 | Absolute `includePaths` | + | + | + | + | Config-driven: absolute path entry |
 | Lexical `use lib` | + | + | + | + | In-source pragma extraction |
-| `no lib` cancellation | + | + | + | + | Position-aware negative; all four consumers enforce #8516 |
+| `no lib` cancellation | + | + | + | + | Position-aware negative; the four Scenario 14 consumers enforce #8516 |
 | FindBin-relative | + | + | + | + | `$FindBin::Bin/lib` pattern |
 | PERL5LIB env | + | + | + | + | `usePerl5lib=true` gates PERL5LIB |
 | interpreter startup `@INC` | + | + | + | + | `useSystemInc=true` gates interpreter startup paths |
 
 **Key**: Consumer cells are `+` (consistent) or `-` (divergent / unimplemented).
-Conformance means all consumers agree — not necessarily that every mode resolves.
+Conformance means the four Scenario 14 consumers (PL701 diagnostic, completion,
+goto-definition, hover) agree on the named mode — not that every `@INC` mode,
+consumer, root family, or provider surface resolves.
 
-## Closeouts — final no-lib workspace-index strictness (2026-05-11)
+Current harness functions for this rail live in
+`crates/perl-lsp-ux-tests/tests/ux_scenario_14_inc_conformance.rs`. Absolute
+`includePaths` and interpreter-startup resolution remain historical selected-rail
+receipts in the matrix above; the current file also proves PERL5LIB/`useSystemInc`
+gating independence and unauthorized `externalIncludePaths` zero-visibility
+([#4998](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/4998)). That
+gating proof is not complete system-`@INC` support.
 
-The eight `@INC` rail closeouts now sit on master. Workspace-symbol candidates are
-filtered through `EffectiveIncContext` at the lookup boundary, so no-`use lib`
-consumers can no longer leak through the workspace-index path:
+## Historical selected-rail closeout — no-lib workspace-index strictness (2026-05-11)
+
+The eight selected-rail closeouts landed on 2026-05-11. They are dated historical
+receipts for this Scenario 14 denominator, not current complete effective-root
+authority. Workspace-symbol candidates are filtered through `EffectiveIncContext`
+at the lookup boundary, so no-`use lib` consumers can no longer leak through the
+workspace-index path:
 
 | # | Closeout | Receipt PR |
 |---|---|---|
@@ -48,9 +89,9 @@ consumers can no longer leak through the workspace-index path:
 | 7 | Position-aware `no lib` cancellation enforced across PL701, pull diagnostics, completion, goto-definition, hover; workspace-index-backed consumers filtered | [#8540](https://github.com/EffortlessMetrics/perl-lsp/pull/8540) (impl of #8516) |
 | 8 | Workspace-symbol lookups filtered through `EffectiveIncContext` at the lookup boundary — final no-lib strictness gap closed | [#8544](https://github.com/EffortlessMetrics/perl-lsp/pull/8544) (impl of #8537) |
 
-The Consumer Consistency Matrix above is the strict-mode receipt: every
-consumer cell is `+` after these closeouts landed. The include-root
-classification table added in [#8553](https://github.com/EffortlessMetrics/perl-lsp/pull/8553)
+The consumer consistency matrix above is the historical selected-rail receipt:
+every named Scenario 14 consumer cell is `+` after these closeouts landed. The
+include-root classification table added in [#8553](https://github.com/EffortlessMetrics/perl-lsp/pull/8553)
 records why `.` remains a wildcard-like root distinct from configured and
 lexical roots.
 
@@ -63,9 +104,11 @@ regression: the prefix-vs-exact fixture rule distinguishes prefix completion
 wildcard roots resolve under the exact-module path. This is intentional and is
 covered by Scenario 14 — it is **not** an open `@INC` rail item.
 
-## Rail Status — @INC integration complete (2026-05-11)
+## Historical selected-rail status (2026-05-11)
 
-The cross-consumer `@INC` rail landed across `#8493 → #8506`:
+The selected static `@INC` consumer rail landed across `#8493 → #8506`. This is
+dated historical selected-rail closure, not current complete effective-root
+authority.
 
 - `PERL5LIB` is gated by `usePerl5lib`; the startup-`@INC` probe also strips `PERL5LIB` from its subprocess environment when `usePerl5lib=false` so the two flags stay independent. (#8493)
 - Interpreter startup `@INC` is gated by `useSystemInc`; the probe is bounded by `SYSTEM_INC_PROBE_TIMEOUT = 1000 ms` and cached. (#8497)
@@ -77,7 +120,8 @@ The cross-consumer `@INC` rail landed across `#8493 → #8506`:
 - Docs and JSON schema document `usePerl5lib`, `perl5libPrecedence`, and the three sources of search paths. (#8494)
 - Scenario 14 conformance harness has a completion column and prefix-vs-exact fixture semantics. (#8495)
 
-Known follow-ups (each tracked as its own issue, not blocking rail closure):
+Known follow-ups from that 2026-05-11 selected-rail closeout (each its own
+issue; none of these promote this page to complete effective-root authority):
 
 - Pull-diagnostics path (`features/diagnostics/pull.rs`) and workspace-index-backed consumers now honor per-use-statement `no lib` cancellation — resolved in the follow-up commit to #8516.
 - Runtime-owned short TTL cache for prefix module scans — split out of #8491 after PR 7a (scan-only) landed in #8498.
@@ -117,11 +161,21 @@ Position-aware negative test: `use lib 'lib'; no lib 'lib'; use GoneModule;`.
 The module file exists on disk but must NOT resolve because `no lib` cancelled
 the earlier `use lib` before the `use GoneModule` line.
 
+Selected-rail proof is that cancellation for a named path at the use-statement
+offset across the four Scenario 14 consumers. It is not complete `lib`
+expansion-family membership or full source-order `use lib`/`no lib` semantics;
+those remain not_proven under M04 [#10569](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/10569)
+and [#10571](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/10571).
+
 ### FindBin-Relative
 
 Pattern: `use FindBin; use lib "$FindBin::Bin/lib";`. `$FindBin::Bin` resolves
 to the directory containing the script being analyzed. The module must be at
 `<script_dir>/lib/Module.pm`.
+
+Selected-rail proof is that `$FindBin::Bin/lib` pattern on the analyzed file.
+It does not prove authoritative invoked-script identity and `Bin`/`RealBin`
+distinction; those remain not_proven under M04C [#10570](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/10570).
 
 ### PERL5LIB env (`usePerl5lib`)
 
@@ -138,6 +192,8 @@ environment when `usePerl5lib=false` to prevent cross-flag leakage.
 
 The two flags are independent: `usePerl5lib` controls PERL5LIB; `useSystemInc`
 controls interpreter startup roots. Setting one does not imply the other.
+Gating independence is part of the selected rail. Complete interpreter-startup
+`@INC` as effective-root authority remains not_proven.
 
 ## Include-Root Classification
 
@@ -147,23 +203,24 @@ sources that affect cancellation, reachability, and filter behavior.
 
 | Kind | Source | Subject to `no lib` cancellation? | Notes |
 |---|---|---|---|
-| `WorkspaceDefaultDot` | `.` from the workspace folder | No | **Wildcard-like** — matches almost any workspace file; do NOT treat as an ordinary library root for reachability filters |
-| `WorkspaceConfiguredRelative` | `includePaths: ["lib", "t/lib"]` config | No | Explicit operator intent; persists for the workspace lifetime |
-| `WorkspaceConfiguredAbsolute` | `includePaths: ["/abs/path"]` config | No | Same as Relative but absolute |
-| `LexicalUseLib` | `use lib '...'` in the source under analysis | **Yes** (position-scoped) | Cancelled by a downstream `no lib '...'` at the cancel-point offset |
-| `LexicalNoLibCancellation` | `no lib '...'` cancellation marker | n/a — the cancel itself | Removes a `LexicalUseLib` entry from the position-scoped active set |
-| `Perl5LibEnv` | `PERL5LIB`, gated by `usePerl5lib` | No | Inherited from the LSP process environment; stripped from subprocess oracles per #8551 |
-| `InterpreterStartup` | `perl -e 'print @INC'`, gated by `useSystemInc` | No | Output of the subprocess seam — see [perl-subprocess-seams.md](../../architecture/perl-subprocess-seams.md) (#8555) |
-| `FindBinDerived` | `use FindBin; use lib "$FindBin::Bin/..."` | Yes (position-scoped) | `$FindBin::Bin` derived per analyzed file |
-| `RuntimeDerived` | Other lexical paths derived at runtime | Yes (position-scoped) | Currently rare; reserved for future use |
+| `WorkspaceRelative` | Relative configured include paths such as `lib`, `t/lib`, or `.` | Yes, when the matching configured path is cancelled at the request position | The `.` entry resolves to the workspace root and is **wildcard-like** for reachability filtering; it is not a separate kind |
+| `FileLocalLexical` | A `use lib '...'` path from the source under analysis after lexical resolution | Yes (position-scoped) | Workspace-contained absolute lexical paths are normalized to workspace-relative paths and use this kind; absolute lexical paths outside the workspace are rejected before effective roots are assembled |
+| `ExternalAbsolute` | An absolute configured include path already admitted by the upstream configuration boundary | Yes when it is a cancelled configured path | Lexical paths are normalized or rejected before effective-root classification; this kind is not the production representation for workspace-contained absolute lexical paths |
+| `Perl5LibEnv` | A `PERL5LIB` entry when `usePerl5lib` is enabled | No | Environment-supplied roots are labeled separately; subprocess environment handling is governed by #8551 |
+| `InterpreterStartup` | An entry returned by the selected interpreter's startup `@INC` probe when `useSystemInc` is enabled | No | Output of the subprocess seam — see [perl-subprocess-seams.md](../../architecture/perl-subprocess-seams.md) (#8555) |
+| `RuntimeDerived` | A future trusted runtime-derived include root | No | Reserved by the enum; the current effective-root builder does not produce it |
 
 **Why this matters**: if `.` (the workspace default) is treated like any
 other configured include root, reachability filters incorrectly conclude
 that nearly every workspace file is reachable, which defeats checks like
 "after `no lib 'lib'`, `lib/GoneModule.pm` should NOT resolve." Filters
-must branch on the kind, not the path.
+must branch on the kind, not the path. Nested multi-root closeout #8496 is
+selected-rail folder matching; explicit unowned document context versus
+first-folder fallback remains not_proven under M07
+[#10575](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/10575)
+and is not complete multi-root effective-root authority.
 
-See `crates/perl-lsp-rs/src/runtime/lifecycle/inc_context.rs` for the
+See `crates/perl-lsp-rs/src/runtime/lifecycle/inc_context/mod.rs` for the
 runtime implementation and `crates/perl-lsp-rs/CLAUDE.md` for the per-crate
 rule.
 
@@ -174,7 +231,8 @@ rule.
   `build_effective_inc_roots()` in `crates/perl-module/src/resolution/uri.rs`;
   it preserves source labels for configured paths, lexical `use lib`, PERL5LIB,
   and interpreter startup paths.
-- The four LSP consumers all call either `resolve_module_to_path_with_doc()` or
+- The four Scenario 14 consumers (PL701 diagnostic, completion, goto-definition,
+  hover) all call either `resolve_module_to_path_with_doc()` or
   `resolve_module_path_with_uri()` from
   `crates/perl-lsp-rs/src/runtime/lifecycle/module_resolution.rs`.
 - Consumer call sites:
@@ -195,12 +253,13 @@ provider behavior.
 
 ## Follow-up Scope
 
-Tracked follow-ups from the @INC rail completion (each its own issue):
+Tracked follow-ups from the 2026-05-11 selected-rail closeout (each its own
+issue; not a claim that the `@INC` rail is complete effective-root authority):
 
 - **Position-aware `no lib` cancellation** — landed in [#8516](https://github.com/EffortlessMetrics/perl-lsp/issues/8516). PL701, pull diagnostics, completion, goto-definition, and hover now reject modules whose path was cancelled by `no lib`; workspace-index-backed consumers are filtered so they cannot bypass active `@INC` state.
 - **Runtime-owned TTL cache for module-completion scans** — see [#8514](https://github.com/EffortlessMetrics/perl-lsp/issues/8514). Builds on the prefix-directed scan in #8498.
 
-Backlog (pre-existing, not part of the @INC rail closure):
+Backlog (pre-existing, not part of the 2026-05-11 selected-rail closeout):
 
 - `inc_nested_use_lib` — `use lib` inside `BEGIN` block
 - `inc_qw_use_lib` — `use lib qw(lib t/lib)` multi-path form

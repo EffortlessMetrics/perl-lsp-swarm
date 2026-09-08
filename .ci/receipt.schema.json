@@ -34,6 +34,9 @@
     },
     "diff_config": {
       "$ref": "#/$defs/diff_config"
+    },
+    "ux_scorecard": {
+      "$ref": "#/$defs/ux_scorecard"
     }
   },
   "$defs": {
@@ -86,6 +89,31 @@
           "enum": ["manual", "pre-push", "pre-commit", "ci-pr", "ci-merge", "ci-nightly", "ci-release"],
           "default": "manual"
         }
+      }
+    },
+    "ux_scorecard": {
+      "type": "object",
+      "description": "Editor UX scorecard metrics embedded by the UX scorecard task",
+      "additionalProperties": false,
+      "required": [
+        "hover_correctness_pct",
+        "completion_top1_pct",
+        "completion_top5_pct",
+        "definition_exact_hit_pct",
+        "symbol_correctness_pct",
+        "diagnostics_correct_pct",
+        "rename_success_pct",
+        "cross_file_success_pct"
+      ],
+      "properties": {
+        "hover_correctness_pct": { "type": ["number", "null"] },
+        "completion_top1_pct": { "type": ["number", "null"] },
+        "completion_top5_pct": { "type": ["number", "null"] },
+        "definition_exact_hit_pct": { "type": ["number", "null"] },
+        "symbol_correctness_pct": { "type": ["number", "null"] },
+        "diagnostics_correct_pct": { "type": ["number", "null"] },
+        "rename_success_pct": { "type": ["number", "null"] },
+        "cross_file_success_pct": { "type": ["number", "null"] }
       }
     },
     "toolchain": {

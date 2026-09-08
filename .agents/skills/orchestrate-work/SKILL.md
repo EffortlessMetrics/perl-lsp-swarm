@@ -1,74 +1,60 @@
 ---
 name: orchestrate-work
-description: Compile Codex's runtime-local campaign, lane, worker, writer, and review graph for the selected route; join evidence and preserve GitHub as durable state.
+description: Compile the smallest useful root-to-programme runtime shape for the selected route; keep claim orchestration in the Codex root, join evidence, and preserve GitHub as durable state.
 ---
 
 # Orchestrate work
 
 Use this internal Codex operation after selecting a public flow or atomic skill. Run the
-selected route, follow its named normal and material backward edges, and use workers or
-lane roots where they improve evidence, context economy, elapsed time, steering,
-recovery, or CI cost.
+selected route, follow its named normal and material backward edges, and decide which
+work stays in the accountable root and which bounded programmes should run elsewhere.
 
-This is not a public stage, durable executor DAG, scheduler, tracked frontier, or source
-of transaction state.
+This is not a public stage, subordinate-orchestrator factory, durable executor DAG,
+scheduler, tracked frontier, or source of transaction state.
 
-## Scope hierarchy
+## Logical authority
 
-### Campaign root
+The main/root Codex thread owns orchestration across both goal and claim scopes:
 
-Owns the durable goal, acceptance predicates, claim selection, cross-lane dependencies,
-contradictions, runtime-local frontier, joined evidence, exceptions, and goal
-reconciliation.
+- goal meaning and acceptance predicates;
+- logical claim frames and claim selection;
+- cross-claim dependencies and contradictions;
+- current route and next/backward transition for each claim;
+- joined evidence and review sufficiency;
+- candidate writer allocation;
+- finding disposition, integration judgment, and reconciliation;
+- remote waits and wake events.
 
-The campaign root normally orchestrates. Leaf implementation, broad archaeology, raw
-logs, repetitive proof, and review exploration should leave this context unless direct
-inspection of one load-bearing seam is itself the campaign judgment.
+A claim/lane is a logical root-held frame. It does not normally create another
+orchestrator.
 
-### Lane root
+Bounded execution contexts are:
 
-Owns one coherent claim. It runs `$deliver-pr`, may invoke `$orchestrate-work` within
-that claim, keeps one candidate writer, joins claim-local evidence, publishes useful
-GitHub updates, and returns a typed lane result.
+- **researcher / explorer / read-only worker** — source mapping, archaeology, external
+  oracle, CI/log classification, bounded inventory;
+- **builder / writer** — one candidate or proof mutation programme, one worktree;
+- **reviewer** — one fixed subject and differentiated review programme;
+- **direct root work** — tiny or tightly coupled judgment where delegation changes no
+  evidence surface.
 
-A lane root may perform tiny tightly coupled claim-local work directly. That does not
-make campaign-root leaf execution the normal path.
-
-### Worker, writer, and reviewer
-
-- read-only workers answer one bounded question or consume one named `$skill`;
-- one writer mutates the selected candidate branch/worktree;
-- reviewers change the source, oracle, method, threat model, environment, or attention
-  surface and return evidence rather than approval.
-
-A leaf worker may not widen into lane ownership unless its brief explicitly grants that
-authority.
+A provider-native nested worker or multi-agent facility may be used when a specific task
+benefits from it, but that is physical execution only. It does not transfer logical
+claim orchestration or create a required recursive hierarchy.
 
 ## Run the specified route
 
 ```text
-campaign outcome
+durable goal
 → `$deliver-goal`
 
-one coherent claim
+one coherent claim frame
 → `$deliver-pr`
 
 bounded transformation
 → named atomic `$skill`
 
 bounded factual uncertainty
-→ one focused question inside the invoking skill
-```
-
-A whole-flow assignment creates a lane root:
-
-```text
-Take issue #123 through `$deliver-pr`.
-You are the accountable lane root for this claim. Use GitHub and repository artifacts
-as durable state, invoke `$orchestrate-work` within the claim, keep one candidate
-writer, follow normal and material backward routes, and return RECONCILED, IN_FLIGHT,
-PARTIAL, SUPERSEDED, BLOCKED, or NOT_PROVEN.
-Do not select unrelated claims or change the parent goal.
+→ focused read-only question inside the invoking skill
 ```
 
 When a child receives a named `$skill`, require it to consume that skill rather than
@@ -78,146 +64,102 @@ replace it with an invented lifecycle.
 
 | Work | Normal Codex shape |
 | --- | --- |
-| Goal meaning, claim selection, contradictions | Campaign root |
-| One substantial claim | Whole-flow `$deliver-pr` lane root |
-| Tiny claim-local edit | Lane root or current writer |
-| High-output/bounded exploration | Focused read-only worker or explorer |
-| Candidate/proof mutation | One writer |
-| Substantive review | Lane-root-directed differentiated review subgraph |
-| Distinct claims | Separate lane roots and worktrees |
-| Unchanged remote wait | No agent; return `IN_FLIGHT` |
+| Goal meaning, claim selection, contradictions | Root |
+| One substantial claim | Root-held claim frame running `$deliver-pr` |
+| Tiny tightly coupled work | Root/current writer |
+| High-output or bounded exploration | Focused read-only worker/explorer |
+| Candidate/proof mutation | One builder/writer programme |
+| Substantive review | One or more differentiated reviewer/evidence programmes |
+| Distinct claims | Distinct root-held frames; separate writers/worktrees where needed |
+| Unchanged remote wait | No live agent; claim frame is `IN_FLIGHT` |
 
-Delegate when evidence gain, campaign/lane-context preservation, parallel elapsed-time
-gain, changed source/oracle/tool/environment, recovery value, or avoided CI cost
-exceeds cold-start, briefing, duplicate research, resource contention, join, and
+Delegate when expected evidence gain, context preservation, parallel elapsed-time gain,
+changed source/oracle/tool/environment, recovery value, or avoided CI cost exceeds
+cold-start, briefing, duplicate research, resource contention, join, and
 correlated-failure costs. Stop adding agents when another result cannot change a
 decision.
 
-## Capacity admission
+## Programme continuity
 
-Size the runtime graph to the host, not to the work available. Saturation destroys
-evidence rather than only delaying it: once builds contend, local timings, flake rates,
-and command timeouts stop being trustworthy, and the root begins dispatching diagnostic
-agents into ambiguity it produced itself.
-
-Consume the current local admission result before dispatching a writer. Do not dispatch
-when writer capacity is exhausted, heavy-build capacity is exhausted, the workspace-wide
-Cargo token is held, or disk/process/worktree state is `NOT_PROVEN`.
-
-Capacity limits are a host profile, not a repository invariant. A workstation, a laptop,
-a remote builder, and a read-only review context have different envelopes. Until #3957
-provides an admission command, apply the profile recorded in local configuration; the
-initial single-workstation profile is one build-heavy writer and one workspace-wide
-build.
-
-Cap what consumes the host, which is builds — not how many agents exist. A read-only
-worker reading GitHub and source holds no worktree, no build, and no locks, so its limit
-is the attention available to steer it. Rationing cheap workers while build-heavy work
-runs unbounded caps the wrong thing.
-
-Concurrent writers are likewise not bounded by a count. Two writers on two claims is safe
-when both claims are specified and disjoint, and unsafe when they are vague, because
-vague claims overlap and overlapping writers produce rework rather than parallelism. The
-precondition for a second writer is a specification, not a slot.
-
-Fleet width changes posture, not doctrine:
-
-- widen poll and probe spacing as lane count rises, and prefer event-driven wakes over
-  polling — at width, shared-API budget is the binding constraint, not attention;
-- usage-window mortality is expected, so every brief and branch must be
-  recoverable-by-stranger: push early, name the resume point in the durable subject,
-  and never let a lane's only copy of its state live in its own context;
-- relaunch priority after a mortality event follows dependency gates, not launch
-  order — the lane whose proof unblocks the most downstream claims revives first.
-
-Count what the host carries, not what was dispatched. These quantities come apart:
+The unit of delegation is a coherent **programme**, not necessarily one atomic skill.
+Keep one context when the same subject/artifact understanding remains load-bearing:
 
 ```text
-logical WIP    active campaign and lane contexts
+researcher: source map → external truth → issue-currency check
+builder: proof → implementation → hardening → simplification → affected repair
+reviewer: claim/proof/candidate lenses over one fixed subject
+```
+
+Atomic skills change attention and method. They do not automatically require a new
+agent. Conversely, do not keep one context when a different source, oracle, threat
+model, tool boundary, or independence property is the reason for delegation.
+
+## Capacity admission
+
+Size execution to the host, not to the amount of work available. Saturation destroys
+evidence: once builds contend, local timings, flake rates, and command timeouts stop
+being trustworthy.
+
+Consume current local admission before dispatching a writer. Do not dispatch new
+build-heavy mutation when writer/build capacity is exhausted, the workspace-wide Cargo
+token is held, or disk/process/worktree state is `NOT_PROVEN`.
+
+Capacity limits are host profiles, not repository invariants. Cap what consumes the
+host—builds, worktrees, locks, disk—not an arbitrary number of cheap read-only agents.
+
+Concurrent writers are not bounded by a global count. Separate specified claims may use
+separate writers/worktrees; one candidate still has exactly one writer.
+
+Keep these quantities distinct:
+
+```text
+logical WIP    root-held claim frames
 mutation WIP   active writers and candidate worktrees
-compute WIP    live build/test process groups and workspace-wide Cargo tokens
+compute WIP    live build/test process groups and shared Cargo tokens
 storage WIP    disk floor, target/cache footprint, safe reclaim state
 ```
 
-A lane that has returned while its process group still drains is `STOPPING`. Its build
-token is not released until the process tree exits and its locks are gone. A claim
-waiting on GitHub may hold no local resource at all.
+A claim waiting on GitHub may hold no local resource and needs no live representative.
 
-- never launch a replacement for the same claim from silence. An independent claim may
-  proceed when the campaign phase permits it, no equivalent candidate owns it, admission
-  returns `ADMIT`, and the waiting lane has released the resources the new lane needs;
-- read-only inspection of GitHub or source requires no worktree; allocate one only for a
-  named mutation claim. Ordinary `git worktree` and an optional `$worktree-manager` slot
-  are both valid routes consuming the same admission result; the helper is a cleanup
-  lease, not the capacity authority;
-- when admission fails, wait; declining to dispatch is a valid orchestration action;
-- a local timing or flake-rate measurement taken under saturation is `NOT_PROVEN` and
-  must be reported as such rather than as a number.
+## A quiet worker is not a result
 
-## A quiet agent is not a result
+Every dispatched programme owes a typed return or leaves its dimension visibly
+`NOT_PROVEN`. Silence does not transfer ownership and does not make a claim available to
+a second writer.
 
-Only a typed return ends a lane. An idle signal, a terminated process, an exhausted
-budget, or prolonged silence says nothing about the claim.
-
-When a lane goes quiet, inspect the artifact rather than the agent — PR state, branch
-head, worktree status, live checks:
+When a worker goes quiet, inspect the durable artifact and local mutation state:
 
 ```text
 typed result returned        → join it
-artifact shows the work done → synthesize the typed result from the artifact, record it
-                               as synthesized, then release the lane
-stated wait still current    → leave it; an unchanged remote wait is IN_FLIGHT
-no artifact and no return    → FAILED_NO_RETURN; claim state is NOT_PROVEN
+artifact proves work landed  → synthesize a bounded return from the artifact
+stated wait still current    → preserve IN_FLIGHT; no polling
+no artifact and no return    → FAILED_NO_RETURN; affected dimension NOT_PROVEN
 ```
 
-`FAILED_NO_RETURN` is not a finding of abandonment. Silence establishes nothing about
-whether the worker is dead, the process group has stopped, the worktree is clean, a
-remote head moved, or uncommitted work exists. Read the task handle, process group,
-branch, worktree, remote head, and durable subject, then choose salvage, wait, stop, or
-explicit reassignment. Reassignment follows those checks and is never the default
-consequence of silence; treating quiet as an unowned claim is what puts two writers on
-one candidate.
+Before reassignment, establish whether the prior writer can resume, whether its process
+has stopped, and whether uncommitted/unpushed work exists. Salvage useful work before
+replacing a writer. Establishing those facts alone does not transfer mutation authority:
+reassign only after the prior writer is provably unable to resume, or after an
+acknowledged handoff has stopped or revoked it, so two writers never mutate the same
+candidate concurrently.
 
-Silence is also not spare capacity and not completion. A lane holding a current wait
-condition is not stalled, and re-tasking it discards work in flight.
+## Root-held claim frames
 
-### Salvage revive
-
-Before recording `NOT_PROVEN` or reassigning a quiet lane's claim, revive salvage-first:
-survey the lane's worktree and remote head for unpushed state — uncommitted edits,
-unpushed commits, a viable but unpublished candidate. What exists is evidence; do not
-discard it to make the ledger tidy.
-
-- push surviving work-in-progress to a named salvage branch and **open a salvage PR**
-  for it immediately — or reuse the lane's existing PR if it has one. The hosted
-  workflows validate pull requests and main, not arbitrary branch pushes, so a
-  branch-only push starts no hosted proof; without the PR, the claim retains
-  `NOT_PROVEN`. With the salvage PR open, remote CI becomes the verification of
-  record rather than a local re-proof the quiet lane can no longer run;
-- order relaunches by dependency-gate priority, not by which lane died first;
-- type the result as synthesized/salvaged, not `FAILED_NO_RETURN`.
-
-Practiced and receipted: mass-kill salvage PRs #12465 (salvaged #12150), #12435
-(salvaged #8921), #12474 (salvaged #8924) — each pushed the quiet lane's WIP and let
-Salvage-PR CI serve as the verification of record.
-
-## Runtime-local frontier
-
-A campaign root may keep this in memory only:
+The root may keep this runtime-local table:
 
 ```text
 claim
 acceptance predicate
-lane context
 durable issue / PR / merge subject
+current candidate / writer
 current judgment
 external wait
 next wake event
 ```
 
 Reconstruct it from GitHub/repository artifacts after replacement. Never commit it,
-write it to a tracked file, post agent liveness, or turn it into a portfolio database.
-Revisit an in-flight lane only when its wake event occurs.
+post agent liveness, or turn it into a portfolio database. Revisit an in-flight claim
+only when its wake event occurs.
 
 ## Assignment contract
 
@@ -227,37 +169,31 @@ Every brief names:
 - accepted authority and established facts;
 - one bounded question or mutation boundary;
 - named provider-native `$skill` when known;
-- campaign-root, lane-root, read-only, writer, or reviewer authority;
+- execution authority: read-only | writer | reviewer;
 - candidate branch/worktree for mutation;
 - realistic falsifiers and negative controls;
 - sufficient return and stable evidence references;
 - uncertainty, `NOT_PROVEN`, stop/backward routes, and non-goals.
 
-Do not ask children to rediscover settled facts or return raw transcripts/private
-reasoning.
+Do not grant a child generic claim-orchestration authority. If an experimental
+whole-flow worker is useful, bound it to the named claim and route while the root retains
+decision/join authority.
 
-Separate the brief's stable part from its observed part. Claim, acceptance, non-goals,
-and authorities are stable. Head SHAs, check results, mergeability, and counts go stale
-faster than a child can act on them, and an instruction resting on stale state is
-unexecutable rather than merely inaccurate.
+**Separate the brief's stable part from its observed part.** The claim, acceptance
+criteria, non-goals, and authorities are stable. Head SHAs, check results, mergeability,
+and counts go stale faster than an executor can act on them.
 
-Do not delete the volatile state — the child needs it to see which premise moved. Carry
-it as an observation basis with an entry condition:
+Carry volatile values as an observation basis, not instructions:
 
 ```text
-Observed as of <sha>: <pr state, head, the then-discovered required-policy set and its
-results>.
+Observed as of <sha>: <PR state, head, then-discovered required-policy set and results>.
 Re-derive live protection, rulesets, contexts, and results before mutating.
-If materially different, return PREMISE_CHANGED, CANDIDATE_MOVED, or SUPERSEDED instead
-of proceeding.
+If materially different, return PREMISE_CHANGED, CANDIDATE_MOVED, or SUPERSEDED rather
+than proceeding against stale state.
 ```
 
-Discover a required-policy set rather than naming a remembered one. Classic branch
-protection and rulesets are independent and additive, so a brief asserting a fixed count
-of required checks states exactly the kind of premise this section exists to prevent.
-
-Express any instruction naming a specific PR, branch, or SHA conditionally, so a child
-that finds the world changed has a defined action instead of a contradiction.
+Discover required policy rather than naming a remembered set. Write any instruction
+that names a specific PR, branch, or SHA as conditional.
 
 ## Graph-delta returns
 
@@ -271,29 +207,11 @@ findings, limitations, current GitHub state, and typed result. Reviewers return
 localized findings with severity, affected dimension, evidence, realistic falsifier,
 uncertainty, and suggested disposition.
 
-The root must join evidence as graph deltas rather than votes. Repeated claims from one
-source are not independent corroboration. Preserve contradictions until direct evidence
-resolves them.
+The root joins graph deltas rather than votes. Repeated claims from one source are not
+independent corroboration. Preserve contradictions until direct evidence resolves them.
 
-Every dispatched agent owes a typed return. Track what was dispatched: a lens that dies
-— exhausted budget, killed process, tooling failure — leaves its dimension `NOT_PROVEN`,
-not examined-and-clean. An unnoticed absent return is indistinguishable from a clean
-one, which is the failure the review method exists to prevent.
-
-Remembering a dead lens does not by itself make merge refusal reliable. Carry the
-dispatch list into the review join as an explicit dimension ledger, so the cumulative
-result rests on enumerated dimensions rather than on whichever reviews returned:
-
-```text
-claim-vs-code     REVIEWED
-proof             REVIEWED
-shutdown safety   NOT_PROVEN   (lens dispatched, no return)
-external oracle   NOT_APPLICABLE
-```
-
-Wiring that ledger into the convergence predicate governing merge is tracked separately
-under #3693. This skill requires only that the dispatch be recorded and the absence be
-visible to the join.
+Track dispatched review dimensions explicitly. A lens that fails to return leaves that
+dimension `NOT_PROVEN`, not examined-and-clean.
 
 ## Useful GitHub publication filter
 
@@ -307,35 +225,11 @@ Keep agent identity, topology, liveness, retries, temporary task state, provisio
 reasoning, raw logs already referenced elsewhere, unchanged polling, and routine skill
 transitions runtime-local.
 
-Use issues for durable research/rulings/plans/dependencies/goal synthesis; PR bodies or
-comments for candidate-wide route/proof/limitation summaries; inline review for
-localized findings; review replies for dispositions; submitted reviews for cumulative
-judgment; and issue closeout for landed effects and residual claims.
-
-## Traceable route
-
-When another context will benefit and the route is not obvious, publish one compact
-issue/PR declaration:
-
-```text
-Route
-- Goal / parent: <issue or durable outcome>
-- Claim: <one acceptance-and-rollback claim>
-- Entry flow: <public flow>
-- Current useful transition: <named skill or external wait>
-- Why: <material missing judgment>
-- Durable subject: <issue / PR / merged commit>
-- Resume when: <wake event, if any>
-```
-
-Update only when the material route changes. It is a resumability aid, not stage,
-lifecycle, or lease authority.
-
 ## PR review orchestration
 
 ```text
-lane root
-├── claim-vs-code: each property the PR body asserts, verified against the diff
+root-held claim frame
+├── claim-vs-code proposition checks
 ├── `$review-tests` for proof discrimination/evidence integrity
 ├── `$review-candidate` for implementation, ownership, reachability, complexity,
 │   compatibility, risk, and rollback
@@ -343,44 +237,41 @@ lane root
 ├── bounded external oracle when language/protocol/platform/release truth matters
 └── focused security/package/migration/persistence/support lens when applicable
 
-join evidence
-→ lane root verifies load-bearing seams and contradictions
+join evidence in root
+→ root verifies load-bearing seams and contradictions
 → one writer repairs accepted findings through `$address-review-comments`
-→ lane root publishes cumulative `$review-pr`
+→ root publishes cumulative `$review-pr`
 → only `REVIEW_CURRENT` enters `$verify-live-ci`
 ```
 
-Do not use a subagent verdict as approval. Different identity without a different
-source, oracle, method, threat model, or attention surface is not meaningful
+Do not use a worker verdict as approval. Different identity without a different source,
+oracle, method, threat model, environment, or attention surface is not meaningful
 independence.
-
-Brief each lens to falsify a named claim rather than assess it. Each returns the angles
-it attempted with outcomes, refuted ones included, so the join can distinguish coverage
-from agreement.
 
 ## Procedure
 
-1. Anchor the durable subject and selected route.
-2. Distinguish campaign, lane, writer, worker, and review scopes.
-3. Compile the smallest useful runtime graph.
+1. Anchor the durable subject, root-held claim frame, and selected route.
+2. Identify unresolved judgments and the one mutation owner.
+3. Compile the smallest useful **flat root-to-programme** execution shape.
 4. Send complete briefs with named skills, falsifiers, returns, and stop conditions.
 5. Steer, retry, replace, or cancel while evidence can change a decision.
-6. Join graph deltas, inspect load-bearing evidence, and publish only useful durable
-   facts at their native GitHub boundary.
-7. Continue through the invoking flow's route or return its typed result.
+6. Join graph deltas in the root, inspect load-bearing evidence, and publish only useful
+   durable facts at their native GitHub boundary.
+7. Continue through the invoking flow's route or update the claim frame with its typed
+   result/wake event.
 
 ## What this establishes
 
-A claim-local, provider-native runtime route with explicit campaign/lane/worker scopes,
-complete child briefs, one candidate writer, bounded parallelism, contradiction-aware
-evidence joins, named backward routes, and a useful GitHub publication boundary. The
-invoking flow can continue from a typed result without importing raw worker context.
+A provider-native root orchestration result with root-held claim frames, bounded
+programme delegation, one candidate writer, contradiction-aware evidence joins, named
+backward routes, and a useful GitHub publication boundary.
 
 ## What this does not establish
 
-A persistent executor graph, scheduler, tracked frontier, lane lease, fixed agent count,
-provider/model mandate, automatic truth from worker agreement, substantive review by
-itself, integration readiness, or merge authorization.
+A subordinate claim orchestrator, persistent executor graph, scheduler, tracked
+frontier, lane lease, fixed agent count, provider/model mandate, automatic truth from
+worker agreement, substantive review by itself, integration readiness, or merge
+authorization.
 
 ## Stop and routes
 
@@ -388,7 +279,7 @@ Stop or return `NOT_PROVEN` for a same-candidate writer collision, unsafe destru
 action, unestablished identity/authority, unresolved material contradiction, or failed
 instrumentation. An unchanged remote wait is `IN_FLIGHT`.
 
-- whole claim → `$deliver-pr`
+- current claim → `$deliver-pr`
 - durable multi-PR goal → `$deliver-goal`
 - proof challenge → `$review-tests` or `$prepare-proof`
 - candidate challenge → `$review-candidate`

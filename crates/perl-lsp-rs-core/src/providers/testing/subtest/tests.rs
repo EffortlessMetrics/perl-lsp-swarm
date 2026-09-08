@@ -377,3 +377,18 @@ fn new_subtest_keeps_compiler_priority_order_with_mixed_siblings() {
     let names: Vec<&str> = package.children.iter().map(|child| child.name.as_str()).collect();
     assert_eq!(names, vec!["middle", "later", "$value"]);
 }
+
+#[test]
+fn ordinary_array_and_hash_follow_callables_in_compiler_priority_order() {
+    let source = "package Collections;
+        my @items = ();
+        my %items_by_name = ();
+        subtest 'middle' => sub { ok(1); };
+        sub later { return 1; }
+";
+    let outline = nested_outline(source);
+    let package = find_named_deep(&outline, "Collections").expect("package missing");
+    let names: Vec<&str> = package.children.iter().map(|child| child.name.as_str()).collect();
+
+    assert_eq!(names, vec!["middle", "later", "@items", "%items_by_name"]);
+}

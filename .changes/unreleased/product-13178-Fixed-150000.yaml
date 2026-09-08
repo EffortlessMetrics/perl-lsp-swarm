@@ -1,0 +1,12 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: >-
+  Complete the reviewed Dancer2 1.x keyword vocabulary, correct request-only
+  keyword scopes, and keep version-specific completion, hover, diagnostics,
+  and canonical handler-context provenance aligned with the observed module.
+time: 2026-09-07T15:00:00Z
+custom:
+  PR: "13178"
+  Slug: dancer2-one-x-keywords
+  Breaking: "no"

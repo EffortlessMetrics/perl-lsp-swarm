@@ -1,0 +1,14 @@
+{
+  "schema": "fixture.v1",
+  "packet_id": "diag",
+  "selector": "fixture.subject",
+  "rail_id": "fixture.diagnostics",
+  "subject": "diagnostics@fixture-tree",
+  "source_result": "pass",
+  "state": "current",
+  "supersedes": null,
+  "digest": "sha256:be3f1b44776624b9c37b661e9711ac1d8f51628b80c33e3b60b6a56fea088c9b",
+  "limitations": [],
+  "nonclaims": [],
+  "detail": {}
+}

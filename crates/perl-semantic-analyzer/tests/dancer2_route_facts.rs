@@ -1,3 +1,5 @@
+#![deny(clippy::map_err_ignore)]
+// Cohort C1 activation (#12598): all production rows exact-excepted; new findings move the crate back to non-C1.
 //! End-to-end canonical Dancer2 route fact proof (#8918).
 //!
 //! Drives the full #8918 chain — AST route extraction

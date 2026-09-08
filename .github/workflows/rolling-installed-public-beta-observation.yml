@@ -1,0 +1,412 @@
+name: Rolling Installed Public Beta Observation
+
+on:
+  workflow_dispatch:
+    inputs:
+      require_ready:
+        description: 'Fail the fan-in job unless every mandatory observed cell is pass.'
+        required: false
+        type: boolean
+        default: false
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/rolling-installed-public-beta-observation.yml'
+      - 'scripts/ci/rolling_installed_observation.py'
+      - 'scripts/ci/test_rolling_installed_observation.py'
+      - 'scripts/ci/check_rolling_installed_workflow.py'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rolling-installed-public-beta-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  contract:
+    name: Validate rolling observation contract
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Run receipt and fan-in falsifiers
+        run: |
+          set -euo pipefail
+          python3 scripts/ci/test_rolling_installed_observation.py
+          python3 scripts/ci/check_rolling_installed_workflow.py
+
+  subject:
+    name: Pin exact protected-main observation subject
+    if: github.event_name == 'workflow_dispatch'
+    needs: contract
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      source_sha: ${{ steps.subject.outputs.source_sha }}
+      source_version: ${{ steps.subject.outputs.source_version }}
+      minimum_vscode: ${{ steps.subject.outputs.minimum_vscode }}
+
+    steps:
+      - name: Checkout dispatch subject
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.sha }}
+
+      - name: Require current default-branch tip and resolve identities
+        id: subject
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          DISPATCH_BRANCH: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [ "$DISPATCH_BRANCH" != "$DEFAULT_BRANCH" ]; then
+            printf '::error::Rolling installed observation must dispatch from %s, got %s\n' "$DEFAULT_BRANCH" "$DISPATCH_BRANCH"
+            exit 1
+          fi
+          git fetch --no-tags origin "$DEFAULT_BRANCH"
+          SOURCE_SHA=$(git rev-parse HEAD)
+          DEFAULT_SHA=$(git rev-parse "origin/$DEFAULT_BRANCH")
+          if [ "$SOURCE_SHA" != "$DEFAULT_SHA" ]; then
+            printf '::error::Dispatch subject %s is not current %s tip %s\n' "$SOURCE_SHA" "$DEFAULT_BRANCH" "$DEFAULT_SHA"
+            exit 1
+          fi
+          if ! [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            printf '::error::Invalid exact source SHA: %s\n' "$SOURCE_SHA"
+            exit 1
+          fi
+
+          SOURCE_VERSION=$(python3 - <<'PY'
+          import pathlib, re
+          text = pathlib.Path('Cargo.toml').read_text(encoding='utf-8')
+          match = re.search(r'(?m)^version\s*=\s*"([^"]+)"', text)
+          if not match:
+              raise SystemExit('workspace version not found')
+          print(match.group(1))
+          PY
+          )
+          MINIMUM_VSCODE=$(python3 - <<'PY'
+          import json, pathlib, re
+          package = json.loads(pathlib.Path('vscode-extension/package.json').read_text(encoding='utf-8'))
+          value = package.get('engines', {}).get('vscode')
+          if not isinstance(value, str):
+              raise SystemExit('VS Code engine range missing')
+          # Fail closed unless the engine range is exactly a caret-pinned
+          # version; a compound or reordered range must never be silently
+          # reduced to its first version substring.
+          match = re.fullmatch(r'\^(\d+\.\d+\.\d+)', value)
+          if not match:
+              raise SystemExit(f'cannot derive minimum VS Code version from {value!r}')
+          print(match.group(1))
+          PY
+          )
+
+          printf 'source_sha=%s\n' "$SOURCE_SHA" >> "$GITHUB_OUTPUT"
+          printf 'source_version=%s\n' "$SOURCE_VERSION" >> "$GITHUB_OUTPUT"
+          printf 'minimum_vscode=%s\n' "$MINIMUM_VSCODE" >> "$GITHUB_OUTPUT"
+
+  installed-row:
+    name: Installed row (${{ matrix.row_id }})
+    if: github.event_name == 'workflow_dispatch'
+    needs: subject
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - row_id: linux-minimum
+            os: ubuntu-24.04
+            platform: linux
+            architecture: x64
+            host_role: minimum_supported
+          - row_id: linux-current
+            os: ubuntu-24.04
+            platform: linux
+            architecture: x64
+            host_role: current_stable
+          - row_id: windows-current
+            os: windows-2022
+            platform: windows
+            architecture: x64
+            host_role: current_stable
+
+    env:
+      ROW_ROOT: target/receipts/rolling-installed/${{ matrix.row_id }}
+      ARCHIVE_PATH: target/receipts/rolling-installed/${{ matrix.row_id }}/artifacts/perl-lsp-product-unit.zip
+
+    steps:
+      - name: Checkout exact observation subject
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ needs.subject.outputs.source_sha }}
+
+      - name: Verify checkout identity
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ needs.subject.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          test -z "$(git status --porcelain)"
+
+      - name: Install Perl
+        uses: shogo82148/actions-setup-perl@53e33bb27be492a926eee378e8a5f7ff6618b061 # v1.43.1
+        with:
+          perl-version: '5.40'
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # stable (master)
+        with:
+          toolchain: stable
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: rolling-installed-${{ matrix.row_id }}
+          cache-on-failure: true
+
+      - name: Setup VS Code toolchain
+        uses: ./.github/actions/setup-vscode-toolchain
+
+      - name: Build release-shaped server and DAP subjects
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --locked --release -p perllsp --bin perllsp -p perl-dap --bin perl-dap
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            printf 'SERVER_PATH=%s/target/release/perllsp.exe\n' "$GITHUB_WORKSPACE" >> "$GITHUB_ENV"
+            printf 'DAP_PATH=%s/target/release/perl-dap.exe\n' "$GITHUB_WORKSPACE" >> "$GITHUB_ENV"
+          else
+            printf 'SERVER_PATH=%s/target/release/perllsp\n' "$GITHUB_WORKSPACE" >> "$GITHUB_ENV"
+            printf 'DAP_PATH=%s/target/release/perl-dap\n' "$GITHUB_WORKSPACE" >> "$GITHUB_ENV"
+          fi
+
+      - name: Package deterministic server/DAP product unit
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ needs.subject.outputs.source_sha }}
+          SOURCE_VERSION: ${{ needs.subject.outputs.source_version }}
+          PLATFORM: ${{ matrix.platform }}
+          ARCHITECTURE: ${{ matrix.architecture }}
+        run: |
+          set -euo pipefail
+          python3 scripts/ci/rolling_installed_observation.py package \
+            --source-sha "$SOURCE_SHA" \
+            --source-version "$SOURCE_VERSION" \
+            --platform "$PLATFORM" \
+            --architecture "$ARCHITECTURE" \
+            --server "$SERVER_PATH" \
+            --dap "$DAP_PATH" \
+            --output "$ARCHIVE_PATH" \
+            --manifest-output "$ROW_ROOT/artifacts/product-unit-manifest.json"
+
+      - name: Configure exact smoke subject and host selector
+        shell: bash
+        env:
+          HOST_ROLE: ${{ matrix.host_role }}
+          MINIMUM_VSCODE: ${{ needs.subject.outputs.minimum_vscode }}
+          SOURCE_SHA: ${{ needs.subject.outputs.source_sha }}
+          ROW_ID: ${{ matrix.row_id }}
+        run: |
+          set -euo pipefail
+          if [ "$HOST_ROLE" = "minimum_supported" ]; then
+            VSCODE_SELECTOR="$MINIMUM_VSCODE"
+          else
+            VSCODE_SELECTOR=stable
+          fi
+          printf 'OBSERVED_VSCODE_VERSION=%s\n' "$VSCODE_SELECTOR" >> "$GITHUB_ENV"
+          printf 'PERL_LSP_FIRST_HOUR_SERVER_PATH=%s\n' "$SERVER_PATH" >> "$GITHUB_ENV"
+          printf 'PERL_LSP_SERVER_SOURCE_SHA=%s\n' "$SOURCE_SHA" >> "$GITHUB_ENV"
+          printf 'PERL_LSP_VSCODE_VERSION=%s\n' "$VSCODE_SELECTOR" >> "$GITHUB_ENV"
+          printf 'PERL_LSP_SMOKE_RECEIPTS_DIR=%s/%s/vscode\n' "$GITHUB_WORKSPACE" "$ROW_ROOT" >> "$GITHUB_ENV"
+          printf 'PERL_LSP_SMOKE_SOURCE_LABEL=rolling-installed-%s\n' "$ROW_ID" >> "$GITHUB_ENV"
+
+      - name: Run exact packaged VSIX journey under Xvfb
+        id: linux_smoke
+        if: runner.os == 'Linux'
+        continue-on-error: true
+        working-directory: vscode-extension
+        run: xvfb-run -a npm run test:published:local
+
+      - name: Run exact packaged VSIX journey on Windows
+        id: windows_smoke
+        if: runner.os == 'Windows'
+        continue-on-error: true
+        working-directory: vscode-extension
+        run: npm run test:published:local
+
+      - name: Record smoke process disposition
+        if: always()
+        shell: bash
+        env:
+          LINUX_OUTCOME: ${{ steps.linux_smoke.outcome }}
+          WINDOWS_OUTCOME: ${{ steps.windows_smoke.outcome }}
+        run: |
+          set -euo pipefail
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            OUTCOME="$LINUX_OUTCOME"
+          else
+            OUTCOME="$WINDOWS_OUTCOME"
+          fi
+          case "$OUTCOME" in
+            success|failure|skipped) ;;
+            *) OUTCOME=failure ;;
+          esac
+          printf 'SMOKE_OUTCOME=%s\n' "$OUTCOME" >> "$GITHUB_ENV"
+
+      - name: Assemble exact row without cross-surface inference
+        if: always()
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ needs.subject.outputs.source_sha }}
+          SOURCE_VERSION: ${{ needs.subject.outputs.source_version }}
+          MINIMUM_VSCODE: ${{ needs.subject.outputs.minimum_vscode }}
+          ROW_ID: ${{ matrix.row_id }}
+          PLATFORM: ${{ matrix.platform }}
+          ARCHITECTURE: ${{ matrix.architecture }}
+          HOST_ROLE: ${{ matrix.host_role }}
+        run: |
+          set -euo pipefail
+          # A failed or skipped setup/build step must still leave an honest
+          # instrument-defect row: default the values those steps export so
+          # set -u cannot abort assembly. Missing binaries, archives, and
+          # receipts degrade their cells to instrument_defect/not_proven in
+          # the row builder, never to pass.
+          SERVER_PATH="${SERVER_PATH:-$RUNNER_TEMP/unobserved/perllsp}"
+          DAP_PATH="${DAP_PATH:-$RUNNER_TEMP/unobserved/perl-dap}"
+          SMOKE_OUTCOME="${SMOKE_OUTCOME:-failure}"
+          if [ -z "${OBSERVED_VSCODE_VERSION:-}" ]; then
+            if [ "$HOST_ROLE" = "minimum_supported" ]; then
+              OBSERVED_VSCODE_VERSION="$MINIMUM_VSCODE"
+            else
+              OBSERVED_VSCODE_VERSION="stable"
+            fi
+          fi
+          python3 scripts/ci/rolling_installed_observation.py row \
+            --source-sha "$SOURCE_SHA" \
+            --source-version "$SOURCE_VERSION" \
+            --row-id "$ROW_ID" \
+            --platform "$PLATFORM" \
+            --architecture "$ARCHITECTURE" \
+            --host-role "$HOST_ROLE" \
+            --vscode-version "$OBSERVED_VSCODE_VERSION" \
+            --server "$SERVER_PATH" \
+            --dap "$DAP_PATH" \
+            --archive "$ARCHIVE_PATH" \
+            --receipts-root "$ROW_ROOT/vscode" \
+            --smoke-outcome "$SMOKE_OUTCOME" \
+            --output "$ROW_ROOT/rolling-installed-row.json"
+          cat "$ROW_ROOT/rolling-installed-row.json"
+
+      - name: Upload row, exact artifacts, and child receipts
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: rolling-installed-row-${{ matrix.row_id }}
+          path: target/receipts/rolling-installed/${{ matrix.row_id }}/**
+          if-no-files-found: error
+          retention-days: 30
+
+  fan-in:
+    name: Assemble rolling observation packet
+    if: always() && github.event_name == 'workflow_dispatch' && needs.subject.result == 'success'
+    needs: [subject, installed-row]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout exact observation subject
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ needs.subject.outputs.source_sha }}
+
+      - name: Download all available platform rows
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        continue-on-error: true
+        with:
+          pattern: rolling-installed-row-*
+          path: target/receipts/rolling-installed/rows
+          # No merge-multiple: each row artifact must land in its own
+          # rolling-installed-row-<id>/ directory. Flattening would collapse
+          # the three identical rolling-installed-row.json roots into one and
+          # silently turn two observed platforms into missing rows.
+
+      - name: Generate exact topology projection
+        env:
+          SOURCE_SHA: ${{ needs.subject.outputs.source_sha }}
+          SOURCE_VERSION: ${{ needs.subject.outputs.source_version }}
+        run: |
+          set -euo pipefail
+          mkdir -p target/receipts/rolling-installed/fan-in
+          python3 scripts/generate_release_topology.py \
+            --release "$SOURCE_VERSION" \
+            --frozen-product-sha "$SOURCE_SHA" \
+            --output target/receipts/rolling-installed/fan-in/release-topology.json
+
+      - name: Assemble fail-closed rolling packet
+        id: packet
+        env:
+          SOURCE_SHA: ${{ needs.subject.outputs.source_sha }}
+          SOURCE_VERSION: ${{ needs.subject.outputs.source_version }}
+          REQUIRE_READY: ${{ inputs.require_ready }}
+        run: |
+          set -euo pipefail
+          EXTRA=()
+          if [ "$REQUIRE_READY" = "true" ]; then
+            EXTRA+=(--require-ready)
+          fi
+          python3 scripts/ci/rolling_installed_observation.py fan-in \
+            --source-sha "$SOURCE_SHA" \
+            --source-version "$SOURCE_VERSION" \
+            --rows-root target/receipts/rolling-installed/rows \
+            --topology target/receipts/rolling-installed/fan-in/release-topology.json \
+            --output target/receipts/rolling-installed/fan-in/rolling_installed_public_beta_fan_in.json \
+            "${EXTRA[@]}"
+
+      - name: Render packet summary
+        if: always()
+        run: |
+          set -euo pipefail
+          PACKET=target/receipts/rolling-installed/fan-in/rolling_installed_public_beta_fan_in.json
+          if [ ! -s "$PACKET" ]; then
+            echo '## Rolling installed observation' >> "$GITHUB_STEP_SUMMARY"
+            echo 'No fan-in packet was produced; the instrument failed before synthesis.' >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          from pathlib import Path
+          packet = json.loads(Path('target/receipts/rolling-installed/fan-in/rolling_installed_public_beta_fan_in.json').read_text(encoding='utf-8'))
+          print('## Rolling installed observation')
+          print()
+          print(f"- Exact main: `{packet['repository_sha']}`")
+          print(f"- Recommendation: `{packet['freeze_recommendation']}`")
+          print(f"- Linux: `{packet['platforms']['linux']}`")
+          print(f"- Windows: `{packet['platforms']['windows']}`")
+          print(f"- Other targets: `{packet['platforms']['other_retained_targets']}`")
+          print(f"- Product blockers: {len(packet['product_blockers'])}")
+          print(f"- Instrument defects: {len(packet['instrument_defects'])}")
+          print(f"- Not-proven cells: {len(packet['not_proven_cells'])}")
+          print()
+          print('This packet is rolling evidence only and cannot freeze the product or close candidate acceptance.')
+          PY
+
+      - name: Upload durable rolling observation packet
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: rolling-installed-public-beta-${{ needs.subject.outputs.source_sha }}
+          path: target/receipts/rolling-installed/fan-in/**
+          if-no-files-found: error
+          retention-days: 90

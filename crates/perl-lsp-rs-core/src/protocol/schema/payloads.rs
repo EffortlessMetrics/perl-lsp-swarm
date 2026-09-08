@@ -1,4 +1,7 @@
-use super::{SchemaError, expect_integer, expect_null, expect_object, expect_string};
+use super::{
+    SchemaError, expect_integer, expect_lsp_integer, expect_null, expect_object, expect_string,
+    expect_unsigned_integer,
+};
 use serde_json::{Map, Value};
 
 pub(super) fn null_params(method: &str, value: &Value) -> Result<(), SchemaError> {
@@ -160,4 +163,150 @@ fn message_type(method: &str, path: &str, value: Option<&Value>) -> Result<i64, 
     } else {
         Err(SchemaError::new(Some(method), path, "MessageType integer 1..=4", number.to_string()))
     }
+}
+
+/// LSP 3.17 `DocumentUri`: a URI string. Any scheme is accepted; only the
+/// string shape and a scheme separator are enforced here because URI grammar
+/// authority belongs to the URI module, not payload validation.
+fn document_uri(method: &str, path: &str, value: Option<&Value>) -> Result<(), SchemaError> {
+    let uri = expect_string(Some(method), path, value)?;
+    if uri.is_empty() || !uri.contains(':') {
+        return Err(SchemaError::new(
+            Some(method),
+            path,
+            "URI string with a scheme separator",
+            format!("string(len={})", uri.len()),
+        ));
+    }
+    Ok(())
+}
+
+/// LSP 3.17 `Position { line: uint, character: uint }`.
+fn position(method: &str, path: &str, value: Option<&Value>) -> Result<(), SchemaError> {
+    let object = expect_object(
+        Some(method),
+        path,
+        value.ok_or_else(|| SchemaError::new(Some(method), path, "object", "missing"))?,
+    )?;
+    expect_unsigned_integer(Some(method), &format!("{path}.line"), object.get("line"))?;
+    expect_unsigned_integer(Some(method), &format!("{path}.character"), object.get("character"))?;
+    Ok(())
+}
+
+/// LSP 3.17 `Range { start: Position, end: Position }`.
+fn range(method: &str, path: &str, value: Option<&Value>) -> Result<(), SchemaError> {
+    let object = expect_object(
+        Some(method),
+        path,
+        value.ok_or_else(|| SchemaError::new(Some(method), path, "object", "missing"))?,
+    )?;
+    position(method, &format!("{path}.start"), object.get("start"))?;
+    position(method, &format!("{path}.end"), object.get("end"))?;
+    Ok(())
+}
+
+/// LSP 3.17 `TextDocumentIdentifier { uri: DocumentUri }`.
+fn text_document_identifier(
+    method: &str,
+    path: &str,
+    value: Option<&Value>,
+) -> Result<(), SchemaError> {
+    let object = expect_object(
+        Some(method),
+        path,
+        value.ok_or_else(|| SchemaError::new(Some(method), path, "object", "missing"))?,
+    )?;
+    document_uri(method, &format!("{path}.uri"), object.get("uri"))
+}
+
+/// LSP 3.17 `VersionedTextDocumentIdentifier` adds required integer `version`
+/// (base type range -2^31..=2^31-1).
+fn versioned_text_document_identifier(
+    method: &str,
+    value: Option<&Value>,
+) -> Result<(), SchemaError> {
+    let identifier = value.ok_or_else(|| {
+        SchemaError::new(Some(method), "$.params.textDocument", "object", "missing")
+    })?;
+    let object = expect_object(Some(method), "$.params.textDocument", identifier)?;
+    document_uri(method, "$.params.textDocument.uri", object.get("uri"))?;
+    expect_lsp_integer(Some(method), "$.params.textDocument.version", object.get("version"))?;
+    Ok(())
+}
+
+/// LSP 3.17 `TextDocumentItem` for `textDocument/didOpen`.
+pub(super) fn did_open_params(method: &str, value: &Value) -> Result<(), SchemaError> {
+    let object = expect_object(Some(method), "$.params", value)?;
+    let item = object.get("textDocument").ok_or_else(|| {
+        SchemaError::new(Some(method), "$.params.textDocument", "object", "missing")
+    })?;
+    let item = expect_object(Some(method), "$.params.textDocument", item)?;
+    document_uri(method, "$.params.textDocument.uri", item.get("uri"))?;
+    expect_string(Some(method), "$.params.textDocument.languageId", item.get("languageId"))?;
+    expect_lsp_integer(Some(method), "$.params.textDocument.version", item.get("version"))?;
+    expect_string(Some(method), "$.params.textDocument.text", item.get("text"))?;
+    Ok(())
+}
+
+/// One LSP 3.17 `TextDocumentContentChangeEvent` union arm: an incremental
+/// edit carries required `range` plus optional deprecated `rangeLength`,
+/// while a whole-document replacement carries only `text`.
+/// `rangeLength` without `range` matches neither union arm; capability
+/// intersection stays a provider concern outside this validator.
+fn content_change_event(method: &str, path: &str, value: &Value) -> Result<(), SchemaError> {
+    let object = expect_object(Some(method), path, value)?;
+    if let Some(event_range) = object.get("range") {
+        range(method, &format!("{path}.range"), Some(event_range))?;
+        if let Some(range_length) = object.get("rangeLength") {
+            expect_unsigned_integer(
+                Some(method),
+                &format!("{path}.rangeLength"),
+                Some(range_length),
+            )?;
+        }
+    } else if let Some(range_length) = object.get("rangeLength") {
+        return Err(SchemaError::at_value(
+            Some(method),
+            format!("{path}.rangeLength"),
+            "absent on the whole-document change event (no range)",
+            range_length,
+        ));
+    }
+    expect_string(Some(method), &format!("{path}.text"), object.get("text")).map(|_| ())
+}
+
+/// LSP 3.17 `DidChangeTextDocumentParams`; `contentChanges` is required and
+/// may be empty.
+pub(super) fn did_change_params(method: &str, value: &Value) -> Result<(), SchemaError> {
+    let object = expect_object(Some(method), "$.params", value)?;
+    versioned_text_document_identifier(method, object.get("textDocument"))?;
+    let changes = match object.get("contentChanges") {
+        Some(Value::Array(changes)) => changes,
+        Some(otherwise) => {
+            return Err(SchemaError::at_value(
+                Some(method),
+                "$.params.contentChanges",
+                "array",
+                otherwise,
+            ));
+        }
+        None => {
+            return Err(SchemaError::new(
+                Some(method),
+                "$.params.contentChanges",
+                "array",
+                "missing",
+            ));
+        }
+    };
+    for (index, change) in changes.iter().enumerate() {
+        content_change_event(method, &format!("$.params.contentChanges[{index}]"), change)?;
+    }
+    Ok(())
+}
+
+/// LSP 3.17 `DidCloseTextDocumentParams`.
+pub(super) fn did_close_params(method: &str, value: &Value) -> Result<(), SchemaError> {
+    let object = expect_object(Some(method), "$.params", value)?;
+    text_document_identifier(method, "$.params.textDocument", object.get("textDocument"))
 }

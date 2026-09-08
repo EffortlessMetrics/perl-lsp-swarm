@@ -1,0 +1,14 @@
+{
+  "schema": "fixture.v1",
+  "packet_id": "compiler-now",
+  "selector": "fixture.subject",
+  "rail_id": "fixture.compiler",
+  "subject": "compiler@fixture-tree",
+  "source_result": "failed",
+  "state": "current",
+  "supersedes": "compiler-old",
+  "digest": "sha256:b362175855e0520888507cef8c929a9cc92521711eec447be5ee2ecc0206dc12",
+  "limitations": [],
+  "nonclaims": [],
+  "detail": {}
+}

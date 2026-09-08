@@ -189,7 +189,7 @@ these blocks merge (via the `ci/merge-gate` commit status check):
 |------|----------------|---------|
 | `clippy_full` | `cargo clippy --workspace --lib` + `--bins --no-deps` | Full lint including unwrap/expect ban |
 | `unit_full` | `cargo test --workspace --lib --locked` | All workspace library tests |
-| `compile_all_targets` | `just check-all-targets` | Catch integration-test and bench bit-rot |
+| `compile_all_targets` | `just check-all-targets` | Catch integration-test, bench, and default-feature example `#[cfg(test)]` bit-rot |
 | `lsp_smoke` | `cargo test -p perl-lsp-rs --test semantic_definition` | Deterministic LSP integration test |
 | `lsp_tier_a` | CLI smoke + capabilities snapshot + protocol tests | LSP capability correctness |
 | `lsp_tier_b` | Definitions, completion, color, code lens, security, behavioral | LSP core behavior |

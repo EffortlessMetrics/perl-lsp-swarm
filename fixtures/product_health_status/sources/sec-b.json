@@ -1,0 +1,14 @@
+{
+  "schema": "fixture.v1",
+  "packet_id": "sec-b",
+  "selector": "fixture.subject",
+  "rail_id": "fixture.security",
+  "subject": "security@fixture-tree",
+  "source_result": "failed",
+  "state": "current",
+  "supersedes": null,
+  "digest": "sha256:4d922a846e66117ae609ae86ff0850516bc8a82f913013e771898daa526bfeed",
+  "limitations": [],
+  "nonclaims": [],
+  "detail": {}
+}

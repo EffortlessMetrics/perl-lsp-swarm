@@ -173,6 +173,23 @@ assert_exact_invocations "empty check invokes the generator once per facade with
 BASELINE_BEFORE="${TMPDIR_BASE}/perl-lsp-rs-before.txt"
 cp "${FIXTURE_ROOT}/.ci/public-api-baselines/perl-lsp-rs.txt" "${BASELINE_BEFORE}"
 
+CHECK_FAILURE_OUTPUT="${TMPDIR_BASE}/check-failure.txt"
+CHECK_FAILURE_LOG="${TMPDIR_BASE}/check-failure.log"
+CHECK_FAILURE_EXPECTED="${TMPDIR_BASE}/check-failure.expected"
+if run_recipe failure public-api-check "${CHECK_FAILURE_OUTPUT}" "${CHECK_FAILURE_LOG}"; then
+  check_failure_code=0
+else
+  check_failure_code=$?
+fi
+assert_exit_nonzero "generator command failure fails public-api-check closed" "${check_failure_code}"
+assert_contains "check classifies generator failure as instrument failure" \
+  "INSTRUMENT-FAIL perl-lsp-rs: cargo public-api failed" "${CHECK_FAILURE_OUTPUT}"
+assert_not_contains "generator failure is not classified as an API diff" \
+  "FAIL Public API changed" "${CHECK_FAILURE_OUTPUT}"
+assert_exact_invocations "failed check invokes every facade once with exact arguments" \
+  "${CHECK_FAILURE_LOG}" "${CHECK_FAILURE_EXPECTED}" failure \
+  perl-lsp-rs perl-parser perl-uri perl-dap perllsp
+
 UPDATE_FAILURE_OUTPUT="${TMPDIR_BASE}/update-failure.txt"
 UPDATE_FAILURE_LOG="${TMPDIR_BASE}/update-failure.log"
 UPDATE_FAILURE_EXPECTED="${TMPDIR_BASE}/update-failure.expected"

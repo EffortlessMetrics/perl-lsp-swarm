@@ -67,7 +67,7 @@ make_fixture_repo() {
     git -C "$FIXTURE_REPO" config user.name "Test"
     # Disable commit signing so fixture commits don't hit the signing server.
     git -C "$FIXTURE_REPO" config commit.gpgsign false
-    git -C "$FIXTURE_REPO" config gpg.format ""
+    git -C "$FIXTURE_REPO" config --unset-all gpg.format 2>/dev/null || true
 
     # Initial commit so HEAD is valid and we have a 'main' branch.
     echo "init" > "$FIXTURE_REPO/README"
@@ -101,9 +101,19 @@ make_gh_stub_nopr() {
 #!/usr/bin/env bash
 # Stub gh: always reports no open PR. `gh pr list ... --jq '.[0].number'`
 # yields empty string on an empty array, which is what real gh does.
+if [[ "$*" == *"--state merged"* ]]; then
+  printf '123\n'
+fi
 exit 0
 STUB
     chmod +x "$stub_dir/gh"
+    cat > "$stub_dir/cargo" <<'STUB'
+#!/usr/bin/env bash
+# Existing swarm-clean fixtures use a fully admitted merged parent. Dedicated
+# retention cases use test-branch-deletion-admission-routing.sh.
+exit 0
+STUB
+    chmod +x "$stub_dir/cargo"
     echo "$stub_dir"
 }
 
@@ -317,7 +327,7 @@ test_unmerged_clean_classified_as_ambiguous() {
     # NOT merged (git branch --merged counts a branch as merged if its tip is
     # reachable from main; a newly-created branch at the same commit IS "merged").
     git -C "$wt_path" config commit.gpgsign false
-    git -C "$wt_path" config gpg.format ""
+    git -C "$wt_path" config --unset-all gpg.format 2>/dev/null || true
     echo "extra work" > "$wt_path/extra.txt"
     git -C "$wt_path" add extra.txt
     git -C "$wt_path" commit -q -m "extra work on branch"
@@ -343,7 +353,7 @@ test_ambiguous_worktree_never_deleted() {
     # Add a commit on the branch so it diverges from main — making it unambiguously
     # NOT merged and NOT dirty (committed work not yet merged = ambiguous).
     git -C "$wt_path" config commit.gpgsign false
-    git -C "$wt_path" config gpg.format ""
+    git -C "$wt_path" config --unset-all gpg.format 2>/dev/null || true
     echo "committed work" > "$wt_path/work.txt"
     git -C "$wt_path" add work.txt
     git -C "$wt_path" commit -q -m "committed work, not yet merged"

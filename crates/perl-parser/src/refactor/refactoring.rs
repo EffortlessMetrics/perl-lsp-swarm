@@ -2523,6 +2523,25 @@ sub complex {
             assert!(err_msg.contains("requires at least one element"));
         }
 
+        #[test]
+        fn test_move_code_renders_qualified_name_error_from_consumer() {
+            use std::io::Write;
+            let mut file: tempfile::NamedTempFile = must(tempfile::NamedTempFile::new());
+            must(write!(file, "# source"));
+
+            let engine = RefactoringEngine::new();
+            let op = RefactoringType::MoveCode {
+                source_file: file.path().to_path_buf(),
+                target_file: PathBuf::from("target.pl"),
+                elements: vec!["Müller::bad-name".to_string()],
+            };
+
+            let error = must_err(engine.validate_operation(&op, &[]));
+            let message = format!("{error:?}");
+            assert!(message.contains("Invalid qualified name 'Müller::bad-name'"));
+            assert!(message.contains("segment 1 is not a valid identifier"));
+        }
+
         // --- SymbolRename validation tests ---
 
         #[test]

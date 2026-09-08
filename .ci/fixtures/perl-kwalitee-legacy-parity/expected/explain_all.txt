@@ -1,0 +1,136 @@
+=== manifest.workspace_member_declared ===
+manifest.workspace_member_declared  [manifest]
+  perl-kwalitee is a declared workspace member
+  mandatory: true
+
+  Why: The evaluator crate must itself be part of the workspace so it builds, tests, and lints under the normal gates rather than drifting as an out-of-tree script.
+
+  Fix: Add "crates/perl-kwalitee" to [workspace].members in the root Cargo.toml.
+=== manifest.publish_policy_clean ===
+manifest.publish_policy_clean  [manifest]
+  publish policy is intentional
+  mandatory: true
+
+  Why: Publishability must be a deliberate choice: either explicitly private (publish = false) or explicitly allowlisted. An ambiguous state risks an accidental publish or a manifest-check failure.
+
+  Fix: Set `publish = false` in crates/perl-kwalitee/Cargo.toml while the schema stabilizes, or add the crate to [workspace.metadata.publish].allow once it is publishable.
+=== license.declared ===
+license.declared  [license]
+  crate declares license metadata
+  mandatory: true
+
+  Why: Every shippable crate needs license metadata; publish-manifest-check enforces this for allowlisted crates, and downstream consumers rely on it.
+
+  Fix: Add `license.workspace = true` (or an explicit SPDX license) to crates/perl-kwalitee/Cargo.toml.
+=== product_surface.native_only ===
+product_surface.native_only  [product_surface]
+  first-mile surfaces stay native-only
+  mandatory: true
+
+  Why: The product ships the native stack. The surfaces users first read must not claim the product *requires* perltidy/perlcritic or a Perl::LanguageServer bridge. Mirrors `cargo xtask check-native-product-surface`.
+
+  Fix: Move any external-tool/legacy-bridge product framing off the first-mile surfaces into docs/reference/ (e.g. DAP_LEGACY_BRIDGE_COMPAT.md).
+=== dap.cli_native_only ===
+dap.cli_native_only  [dap]
+  shipped perl-dap CLI stays native-only
+  mandatory: true
+
+  Why: The legacy `--bridge` proxy to Perl::LanguageServer was removed from the shipped perl-dap CLI (#3277). Reintroducing it as a product flag would put an external-tool path back on the product surface.
+
+  Fix: Remove the `--bridge` flag from the shipped perl-dap CLI; bridge mode is a library-only path, not a product surface.
+=== release.native_binaries_present ===
+release.native_binaries_present  [release]
+  release archives contain the native binaries
+  mandatory: true
+
+  Why: The shipped product is the native stack; a release that omits the native binaries is not shippable.
+
+  Fix: Run `cargo xtask release artifact-check --dist <dir>` and add the missing native binaries to the release archives.
+=== release.no_external_tooling ===
+release.no_external_tooling  [release]
+  release archives bundle no external Perl tooling
+  mandatory: true
+
+  Why: If it is not native, we do not ship it. Bundling external tooling contradicts the native-only product promise. Mirrors the negative contract in `release artifact-check`.
+
+  Fix: Remove perltidy/perlcritic/Perl::LanguageServer/TSPerlDAP payloads from the release archives; external tools are conformance-only.
+=== release.checksums_valid ===
+release.checksums_valid  [release]
+  consolidated checksums are present and valid
+  mandatory: true
+
+  Why: Checksums are the integrity contract for released artifacts; a missing or mismatched digest breaks verifiable distribution.
+
+  Fix: Ensure every archive is listed in the consolidated SHA256SUMS and each digest matches the file on disk.
+=== formatter.native_default ===
+formatter.native_default  [formatter]
+  formatter defaults to the native engine
+  mandatory: true
+
+  Why: Formatting must work out of the box without external perltidy; the native formatter is the default engine.
+
+  Fix: Run `cargo xtask native-tooling readiness` and confirm the formatter native-default criterion is ready.
+=== critic.native_default ===
+critic.native_default  [critic]
+  critic defaults to the native engine
+  mandatory: true
+
+  Why: Linting must work out of the box without external perlcritic; the native critic registry is the default engine.
+
+  Fix: Run `cargo xtask native-tooling readiness` and confirm the critic native-default criterion is ready.
+=== critic.run_critic_registry_parity ===
+critic.run_critic_registry_parity  [critic]
+  perl.runCritic matches editor native diagnostics
+  mandatory: true
+
+  Why: The `perl.runCritic` command and on-type native pull diagnostics must agree; a divergence is a user-visible inconsistency. #3303 landed the NativeCriticRegistry routing plus the parity test (run_critic_native_matches_pull_diagnostics_registry), so this is now a mandatory gate rather than an advisory one.
+
+  Fix: Run `cargo test -p perl-lsp-rs --lib execute_command::tests::run_critic_native_matches_pull_diagnostics_registry` and resolve the parity failure.
+=== quality.no_new_severe_gaps ===
+quality.no_new_severe_gaps  [quality]
+  no new severe coverage/ripr regressions
+  mandatory: true
+
+  Why: The quality gate aggregates patch coverage and ripr proof receipts; a blocking decision means a severe regression is riding along.
+
+  Fix: Run `cargo xtask quality-gate` and resolve any blocking coverage or ripr next-actions before merge.
+=== docs.status_current ===
+docs.status_current  [docs]
+  generated status docs are current
+  mandatory: true
+
+  Why: The status docs are computed truth sources; stale generated docs misreport the project state to users and downstream tooling.
+
+  Fix: Run `cargo xtask update-status --check`; regenerate with `--write` if drift is reported.
+=== formatter.corpus_idempotent ===
+formatter.corpus_idempotent  [formatter]
+  native formatter is idempotent + parse-preserving over the corpus
+  mandatory: false
+
+  Why: A formatter that is not idempotent or alters the AST is not safe to ship as the default; the nightly corpus sweep proves it over a broad body of real Perl.
+
+  Fix: Run `cargo xtask native-format corpus` and fix the files where the native formatter is not idempotent or changes the parse.
+=== critic.no_false_positives ===
+critic.no_false_positives  [critic]
+  native critic raises no findings on the clean fixtures
+  mandatory: false
+
+  Why: A critic that flags known-clean code erodes trust in the native default; the false-positive fixtures must stay clean.
+
+  Fix: Run the native-critic false-positive fixtures and eliminate any findings/parse errors on known-clean code.
+=== formatter.perltidy_compat_no_external_only ===
+formatter.perltidy_compat_no_external_only  [formatter]
+  perltidy compatibility has no external-only gaps
+  mandatory: false
+
+  Why: External-only perltidy options are ones the native formatter cannot honor; tracking them at zero keeps the native path a full replacement.
+
+  Fix: Run `cargo xtask native-format perltidy-compat` and close or re-classify the external-only options.
+=== critic.perlcritic_compat_no_external_only ===
+critic.perlcritic_compat_no_external_only  [critic]
+  perlcritic compatibility has no external-only gaps
+  mandatory: false
+
+  Why: External-only perlcritic rules are ones the native critic cannot cover; tracking them at zero keeps the native path a full replacement.
+
+  Fix: Run `cargo xtask native-tooling perlcritic-compat` and close or re-classify the external-only rules.

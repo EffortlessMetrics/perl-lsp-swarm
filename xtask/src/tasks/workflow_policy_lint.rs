@@ -14,13 +14,12 @@ const ALLOWLIST_BLANKET_CANCEL_IN_PROGRESS: &[&str] = &["docs-deploy.yml", "post
 /// Multi-job workflows whose jobs may inherit workflow-default write authority
 /// without declaring their own `permissions:`. Add an entry only with a
 /// documented reason and a tracking issue.
-const ALLOWLIST_INHERITED_JOB_WRITE: &[&str] = &[
-    // Every job builds or publishes images against GHCR, so `packages: write`
-    // is load-bearing for the build jobs and not merely inherited. Narrowing
-    // `init`/`summary` to `contents: read` needs a release-time verification
-    // pass rather than a static edit. Tracked by #5989 follow-up.
-    "docker-publish.yml",
-];
+///
+/// `docker-publish.yml` was removed from this list by #12888: the digest-split
+/// topology gives every job an explicit grant (`packages: write` exists only on
+/// the checkout-free `publish-ghcr` publication job) and the workflow default
+/// carries no write scope, so the allowlist entry became dead allowance.
+const ALLOWLIST_INHERITED_JOB_WRITE: &[&str] = &[];
 
 /// Workflow files that intentionally have no `policy/ci-lane-whitelist.toml`
 /// entry. Add an entry here only when there's a documented reason — e.g. a
@@ -47,6 +46,11 @@ const ALLOWLIST_WORKFLOW_LANE_MISSING: &[&str] = &[
     "winget-bump.yml",
     // Schedule/utility workflows tracked separately from the lane economics.
     "ci-gate-self-tests.yml",
+    // Manual-only, read-only macOS measurement lane (#5432). It never runs on a
+    // pull request or merge group, so it carries no per-PR cost and has no
+    // place on the lane economics map; its contract is proven by
+    // `xtask/tests/release_artifact_size_shadow_workflow.rs` instead.
+    "release-artifact-size-shadow.yml",
     // Advisory pull_request sentinel (#6238): payload-only head-name
     // classification alongside pr-plan.yml, deliberately outside the CI
     // economics map and outside `ci-lane-whitelist.toml`.
@@ -1210,10 +1214,29 @@ mod tests {
             "validation must be read-only: {:?}",
             scopes("validate")
         );
-        assert_eq!(
-            scopes("create-tag"),
-            vec![("contents".to_string(), "write".to_string())],
-            "only tag creation writes repository contents"
+        // Tag creation must remain inside the validated release transaction:
+        // no orchestration job may declare `contents: write` under any name.
+        // Enumerate offenders instead of probing for a specific job name so a
+        // rename cannot make this assertion vacuous.
+        let mut contents_write_jobs: Vec<String> = Vec::new();
+        for (name, job) in jobs.iter() {
+            let writes_contents = job
+                .as_mapping()
+                .and_then(|job| job.get(Value::String("permissions".to_string())))
+                .and_then(Value::as_mapping)
+                .and_then(|permissions| permissions.get(Value::String("contents".to_string())))
+                .and_then(Value::as_str)
+                .is_some_and(|level| level == "write");
+            if writes_contents {
+                let job_name =
+                    name.as_str().map(str::to_string).unwrap_or_else(|| "<unknown>".to_string());
+                contents_write_jobs.push(job_name);
+            }
+        }
+        assert!(
+            contents_write_jobs.is_empty(),
+            "tag creation must remain inside the validated release transaction; \
+             jobs declaring contents: write: {contents_write_jobs:?}"
         );
         assert_eq!(
             scopes("trigger-release"),

@@ -24,13 +24,13 @@ pub(super) fn validate_all(
     lint_ledger: &LintLedger,
     debt_ledger: &DebtLedger,
     today: NaiveDate,
-) -> Result<()> {
+) -> Result<usize> {
     config::validate_policy_header(lint_ledger)?;
     config::validate_msrv_sources(root, cargo, lint_ledger)?;
     disposition::validate_workspace_lints(cargo, lint_ledger, today)?;
     disposition::validate_required_dispositions(lint_ledger)?;
     config::validate_workspace_members_inherit_lints(root, cargo)?;
-    config::validate_clippy_config(root, lint_ledger)?;
+    let configured_selector_count = config::validate_clippy_config(root, lint_ledger)?;
     debt::validate_debt_ledger(root, lint_ledger, debt_ledger, today)?;
-    Ok(())
+    Ok(configured_selector_count)
 }
