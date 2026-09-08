@@ -953,13 +953,12 @@ fn offline_status_and_next_use_the_shared_captured_tree_source() -> Result<()> {
     if edited == module_train {
         bail!("offline fixture edit did not change the captured source");
     }
-    std::fs::write(&module_train_path, edited)?;
+    std::fs::write(&module_train_path, &edited)?;
     let source = captured_tree_source(repo.path(), &binding)?;
     let mutable_source = RepoTreeSource::from_root(repo.path().to_path_buf(), None)?;
     let status = render_status(&loaded, &binding, &source)?;
     let next = render_next(&loaded, &binding, &source)?;
     let mutable_status = render_status(&loaded, &binding, &mutable_source)?;
-    let mutable_next = render_next(&loaded, &binding, &mutable_source)?;
     let (_, captured_unmet) = probe_for("C02", &source)?;
     let (_, mutable_unmet) = probe_for("C02", &mutable_source)?;
     if captured_unmet == mutable_unmet {
@@ -968,10 +967,23 @@ fn offline_status_and_next_use_the_shared_captured_tree_source() -> Result<()> {
     if status == mutable_status {
         bail!("offline status did not distinguish captured HEAD from edited worktree");
     }
-    if !next.starts_with("module-train next (safe offline parallel frontier)")
-        || !mutable_next.starts_with("module-train next (safe offline parallel frontier)")
-    {
-        bail!("offline next did not render through the shared captured-source seam");
+    if !next.starts_with("module-train next (safe offline parallel frontier)") {
+        bail!("offline next did not render through the captured-source seam");
+    }
+
+    let malformed = format!("{edited}\nfn malformed(\n");
+    std::fs::write(&module_train_path, malformed)?;
+    let captured_after_edit = captured_tree_source(repo.path(), &binding)?;
+    let mutable_after_edit = RepoTreeSource::from_root(repo.path().to_path_buf(), None)?;
+    let captured_next = render_next(&loaded, &binding, &captured_after_edit)?;
+    if !captured_next.starts_with("module-train next (safe offline parallel frontier)") {
+        bail!("captured HEAD next projection did not survive a malformed worktree edit");
+    }
+    let error = render_next(&loaded, &binding, &mutable_after_edit)
+        .err()
+        .ok_or_else(|| color_eyre::eyre::eyre!("mutable malformed source must fail closed"))?;
+    if !error.to_string().contains("failed to inspect probe selector") {
+        bail!("mutable malformed source lost selector context: {error}");
     }
     Ok(())
 }
