@@ -69,21 +69,25 @@ describe('Rolldown bundle configuration', () => {
   });
 
   test('patches the pinned jsonrpc write-failure rejection without an orphaned throw', () => {
-    const sourcePath = require.resolve('vscode-jsonrpc');
+    const packageEntry = require.resolve('vscode-jsonrpc');
+    const packageRoot = path.dirname(path.dirname(path.dirname(packageEntry)));
+    const sourcePath = path.join(packageRoot, 'lib', 'common', 'connection.js');
     const script = `
       import fs from 'node:fs';
       import { patchPinnedJsonRpcConnectionSource } from './rolldown.config.mjs';
-      const sourcePath = ${JSON.stringify(sourcePath.replace(/\\/g, '/').replace(/api\\.js$/, 'common/connection.js'))};
+      const sourcePath = ${JSON.stringify(sourcePath)};
       const source = fs.readFileSync(sourcePath, 'utf8');
       const patched = patchPinnedJsonRpcConnectionSource(source, sourcePath);
       if (!patched) process.exit(21);
-      const catchStart = patched.indexOf('catch (error) {');
-      const catchEnd = patched.indexOf('        });', catchStart);
-      const body = patched.slice(catchStart, catchEnd);
-      if (!body.includes('responsePromise.reject(new messages_1.ResponseError')) process.exit(22);
-      if (!body.includes('logger.error(\`Sending request failed.\`);')) process.exit(23);
-      if (!body.includes('                    return;')) process.exit(24);
-      if (body.includes('                    throw error;')) process.exit(25);
+      const expected = [
+        'responsePromise.reject(new messages_1.ResponseError(messages_1.ErrorCodes.MessageWriteError',
+        'logger.error(\`Sending request failed.\`);',
+        '                    return;',
+      ];
+      const rejectionOffset = patched.indexOf(expected[0]);
+      const rejectionBlock = patched.slice(rejectionOffset, rejectionOffset + 500);
+      if (rejectionOffset < 0 || expected.some((text) => !rejectionBlock.includes(text))) process.exit(22);
+      if (rejectionBlock.includes('                    throw error;')) process.exit(23);
       if (patchPinnedJsonRpcConnectionSource(source, 'other-module/connection.js') !== null) process.exit(26);
       let rejected = false;
       try { patchPinnedJsonRpcConnectionSource(source + '\\n', sourcePath); } catch { rejected = true; }
@@ -99,10 +103,12 @@ describe('Rolldown bundle configuration', () => {
     const script = `
       import Module, { createRequire } from 'node:module';
       import fs from 'node:fs';
+      import path from 'node:path';
       import { patchPinnedJsonRpcConnectionSource } from './rolldown.config.mjs';
       const require = createRequire(import.meta.url);
       const packageEntry = require.resolve('vscode-jsonrpc');
-      const sourcePath = packageEntry.replace(/api\\.js$/, 'connection.js');
+      const packageRoot = packageEntry.slice(0, packageEntry.lastIndexOf('node_modules'));
+      const sourcePath = path.join(packageRoot, 'node_modules', 'vscode-jsonrpc', 'lib', 'common', 'connection.js');
       const source = fs.readFileSync(sourcePath, 'utf8');
       const patched = patchPinnedJsonRpcConnectionSource(source, sourcePath);
       if (!patched) process.exit(31);
@@ -111,7 +117,7 @@ describe('Rolldown bundle configuration', () => {
         if (filename === sourcePath) module._compile(patched, filename);
         else originalLoader(module, filename);
       };
-      const { createMessageConnection } = await import('vscode-jsonrpc/node');
+      const { createMessageConnection, ErrorCodes } = await import('vscode-jsonrpc/node');
       const disposable = () => ({ dispose() {} });
       const reader = {
         onClose: disposable,
@@ -132,7 +138,7 @@ describe('Rolldown bundle configuration', () => {
       failing.listen();
       let failure;
       try { await failing.sendRequest('test/failure', {}); } catch (error) { failure = error; }
-      if (!(failure instanceof Error) || !failure.message.includes('write boom')) process.exit(32);
+      if (!(failure instanceof Error) || failure.code !== ErrorCodes.MessageWriteError || !failure.message.includes('write boom')) process.exit(32);
       await new Promise((resolve) => setTimeout(resolve, 25));
       if (unhandled !== 0) process.exit(33);
       failing.dispose();
