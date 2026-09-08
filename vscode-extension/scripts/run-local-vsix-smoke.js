@@ -625,9 +625,16 @@ function validateChildSmokeReceipt({
 
 /** Must match `HOST_RESOLUTION_FAILURE_RECEIPT_NAME` in vscodeHostResolution.ts. */
 const HOST_RESOLUTION_FAILURE_RECEIPT = 'vscode_host_resolution_failure.json';
+/** Must match `CANDIDATE_PLATFORM_UNAVAILABLE_RECEIPT_NAME` in runPublishedSmoke.ts. */
+const CANDIDATE_PLATFORM_UNAVAILABLE_RECEIPT =
+  'vscode_candidate_platform_unavailable.json';
 
 function hostResolutionFailurePath(root = receiptsRoot()) {
   return path.join(root, HOST_RESOLUTION_FAILURE_RECEIPT);
+}
+
+function candidatePlatformUnavailablePath(root = receiptsRoot()) {
+  return path.join(root, CANDIDATE_PLATFORM_UNAVAILABLE_RECEIPT);
 }
 
 /**
@@ -656,6 +663,35 @@ function readHostResolutionFailureReceipt(
     }
   } catch {
     // Invalid JSON is still a host-resolution boundary: do not relabel as product smoke.
+  }
+  return { kind: 'invalid' };
+}
+
+function readCandidatePlatformUnavailableReceipt(
+  root = receiptsRoot(),
+  {
+    exists = (file) => fs.existsSync(file),
+    readFile = (file) => fs.readFileSync(file, 'utf8'),
+  } = {},
+) {
+  const receiptFile = candidatePlatformUnavailablePath(root);
+  if (!exists(receiptFile)) {
+    return { kind: 'absent' };
+  }
+  try {
+    const receipt = JSON.parse(readFile(receiptFile));
+    if (
+      receipt &&
+      typeof receipt === 'object' &&
+      receipt.schema_version === 1 &&
+      receipt.outcome === 'blocked' &&
+      receipt.stage === 'candidate_bound_platform' &&
+      receipt.disposition === 'unavailable'
+    ) {
+      return { kind: 'present', receipt };
+    }
+  } catch {
+    // Invalid JSON is still an unavailable-boundary instrument result.
   }
   return { kind: 'invalid' };
 }
@@ -708,6 +744,22 @@ function interpretBehavioralSmokeExit({
       status: 'not_proven',
       exit_code: status ?? null,
       reason: 'vscode_host_resolution_receipt_invalid',
+    };
+  }
+  const platformFailure = readCandidatePlatformUnavailableReceipt(root, { exists, readFile });
+  if (platformFailure.kind === 'present') {
+    return {
+      status: 'not_proven',
+      exit_code: status ?? null,
+      reason: 'candidate_bound_platform_unavailable',
+      platform_unavailable: platformFailure.receipt,
+    };
+  }
+  if (platformFailure.kind === 'invalid') {
+    return {
+      status: 'not_proven',
+      exit_code: status ?? null,
+      reason: 'candidate_bound_platform_unavailable_receipt_invalid',
     };
   }
   if (spawnError) {
@@ -2449,6 +2501,7 @@ function main() {
         try {
           fs.rmSync(childReceiptFile, { force: true });
           fs.rmSync(hostResolutionFailurePath(), { force: true });
+          fs.rmSync(candidatePlatformUnavailablePath(), { force: true });
         } catch (error) {
           receipt.stages.behavioral_smoke = {
             status: 'not_proven',

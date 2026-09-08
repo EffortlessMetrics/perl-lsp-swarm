@@ -576,6 +576,27 @@ void test('an unavailable host-resolution receipt is not a product smoke failure
   assert.notEqual(result.host_resolution.requested_version, 'stable');
 });
 
+void test('an unsupported candidate-bound platform is not a product smoke failure', () => {
+  const platformUnavailable = {
+    schema_version: 1,
+    outcome: 'blocked',
+    stage: 'candidate_bound_platform',
+    platform: 'win32',
+    arch: 'x64',
+    disposition: 'unavailable',
+    error: 'candidate-bound installed acceptance is restricted to Linux',
+  };
+  const result = interpretBehavioralSmokeExit({
+    status: 1,
+    receiptsRoot: '/fixture',
+    exists: (file) => file.endsWith('vscode_candidate_platform_unavailable.json'),
+    readFile: () => JSON.stringify(platformUnavailable),
+  });
+  assert.equal(result.status, 'not_proven');
+  assert.equal(result.reason, 'candidate_bound_platform_unavailable');
+  assert.deepEqual(result.platform_unavailable, platformUnavailable);
+});
+
 void test('network, cache, and runner host failures keep the host-resolution boundary', () => {
   for (const disposition of ['network', 'cache', 'runner']) {
     const result = interpretBehavioralSmokeExit({

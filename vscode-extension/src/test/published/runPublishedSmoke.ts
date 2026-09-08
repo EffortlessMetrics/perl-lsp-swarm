@@ -15,6 +15,18 @@ import { runWithoutForcedWorkspaceTrust } from '../runVsCodeTests';
 import { workspaceSmokeLaunchArgs, workspaceSmokeTrustMode } from '../workspaceSmokeOptions';
 
 const EXTENSION_ID = 'EffortlessMetrics.perl-lsp-rs';
+export const CANDIDATE_PLATFORM_UNAVAILABLE_RECEIPT_NAME =
+  'vscode_candidate_platform_unavailable.json';
+
+export interface CandidatePlatformUnavailableReceipt {
+  schema_version: 1;
+  outcome: 'blocked';
+  stage: 'candidate_bound_platform';
+  platform: NodeJS.Platform;
+  arch: string;
+  disposition: 'unavailable';
+  error: string;
+}
 
 type ExtensionSource = 'marketplace' | 'open-vsx' | 'vsix';
 
@@ -63,6 +75,36 @@ export function assertCandidateBoundPlatform(platform: string, candidateBound: b
       `Candidate-bound installed acceptance is restricted to Linux; refusing ${platform} bundled-server digest binding.`,
     );
   }
+}
+
+export function buildCandidatePlatformUnavailableReceipt(
+  platform: NodeJS.Platform = process.platform,
+  arch = process.arch,
+  error = `Candidate-bound installed acceptance is restricted to Linux; refusing ${platform} bundled-server digest binding.`,
+): CandidatePlatformUnavailableReceipt {
+  return {
+    schema_version: 1,
+    outcome: 'blocked',
+    stage: 'candidate_bound_platform',
+    platform,
+    arch,
+    disposition: 'unavailable',
+    error,
+  };
+}
+
+export function writeCandidatePlatformUnavailableReceipt(
+  receiptsRoot: string,
+  platform: NodeJS.Platform = process.platform,
+  arch = process.arch,
+): string {
+  fs.mkdirSync(receiptsRoot, { recursive: true });
+  const receiptPath = path.join(receiptsRoot, CANDIDATE_PLATFORM_UNAVAILABLE_RECEIPT_NAME);
+  fs.writeFileSync(
+    receiptPath,
+    `${JSON.stringify(buildCandidatePlatformUnavailableReceipt(platform, arch), null, 2)}\n`,
+  );
+  return receiptPath;
 }
 
 function smokePlatformLabel(): string {
@@ -400,6 +442,13 @@ async function main(): Promise<void> {
     envValue('PERL_LSP_CURRENT_SOURCE_SHA') ||
     envValue('PERL_LSP_CANDIDATE_ARTIFACT_MANIFEST'),
   );
+  const repoRoot = path.resolve(__dirname, '../../../..');
+  const receiptsRoot =
+    process.env.PERL_LSP_SMOKE_RECEIPTS_DIR ||
+    path.join(repoRoot, 'target', 'receipts', 'vscode-smoke');
+  if (candidateBound && process.platform !== 'linux') {
+    writeCandidatePlatformUnavailableReceipt(receiptsRoot);
+  }
   assertCandidateBoundPlatform(
     process.platform === 'linux' ? 'linux' : process.platform,
     candidateBound,
@@ -446,10 +495,6 @@ async function main(): Promise<void> {
   const downloadDir = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-published-smoke-download-'));
   const harnessExtensionPath = path.resolve(process.cwd(), 'src/test/published/harness');
   const extensionTestsPath = path.resolve(__dirname, './suite');
-  const repoRoot = path.resolve(__dirname, '../../../..');
-  const receiptsRoot =
-    process.env.PERL_LSP_SMOKE_RECEIPTS_DIR ||
-    path.join(repoRoot, 'target', 'receipts', 'vscode-smoke');
   fs.mkdirSync(receiptsRoot, { recursive: true });
 
   if (!configuredWorkspace) {

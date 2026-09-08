@@ -1,8 +1,13 @@
 import { strict as assert } from 'node:assert';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import { test } from 'node:test';
 import {
   assertCandidateBoundInstallSource,
   assertCandidateBoundPlatform,
+  buildCandidatePlatformUnavailableReceipt,
+  writeCandidatePlatformUnavailableReceipt,
 } from './runPublishedSmoke';
 
 void test('candidate-bound Marketplace latest is refused before installation', () => {
@@ -36,4 +41,17 @@ void test('candidate-bound installed acceptance refuses non-Linux platform bindi
   );
   assert.doesNotThrow(() => assertCandidateBoundPlatform('windows', false));
   assert.doesNotThrow(() => assertCandidateBoundPlatform('linux', true));
+});
+
+void test('unsupported candidate-bound platform writes a typed unavailable boundary', () => {
+  const receiptRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-platform-unavailable-'));
+  try {
+    const receiptPath = writeCandidatePlatformUnavailableReceipt(receiptRoot, 'win32', 'x64');
+    assert.deepEqual(JSON.parse(fs.readFileSync(receiptPath, 'utf8')), {
+      ...buildCandidatePlatformUnavailableReceipt('win32', 'x64'),
+    });
+    assert.throws(() => assertCandidateBoundPlatform('win32', true), /restricted to Linux/);
+  } finally {
+    fs.rmSync(receiptRoot, { recursive: true, force: true });
+  }
 });
