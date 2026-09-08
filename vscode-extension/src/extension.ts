@@ -66,6 +66,7 @@ import {
 } from './testCommands';
 import { registerMcpSupport } from './mcpSupport';
 import { registerServerCommandGroup } from './serverCommandGroup';
+import { languageServerRuntimeHealth } from './languageServerRuntimeHealth';
 import {
   showBinaryIdentityStatus,
   type BinaryIdentityCommandHost,
@@ -971,6 +972,30 @@ async function runExtensionActivation(
     runHealthCheck: async (serverPath) => {
       const onboarding = new OnboardingManager(context, outputChannel);
       return onboarding.runSetupHealthCheck(serverPath);
+    },
+    runtimeHealthCheck: (resolvedPath) =>
+      languageServerRuntimeHealth(
+        languageClientLifecycle?.snapshot ?? {
+          state: 'stopped',
+          generation: 0,
+          error: undefined,
+          serverPath: null,
+        },
+        resolvedPath,
+      ),
+    currentRuntimeSnapshot: () =>
+      languageClientLifecycle?.snapshot ?? {
+        state: 'stopped',
+        generation: 0,
+        error: undefined,
+        serverPath: null,
+      },
+    runtimeFailureCheck: (requestedPath) => {
+      const snapshot = languageClientLifecycle?.snapshot;
+      if (snapshot?.state !== 'failed' || snapshot.serverPath !== requestedPath) {
+        return undefined;
+      }
+      return languageServerRuntimeHealth(snapshot, requestedPath);
     },
   });
   activation.ownDisposables('commands', 'mandatory_for_activation', serverCommandDisposables);
