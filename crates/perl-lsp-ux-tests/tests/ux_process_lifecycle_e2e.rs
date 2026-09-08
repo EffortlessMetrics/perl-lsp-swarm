@@ -104,7 +104,7 @@ impl LifecycleProcess {
         stdin.flush().context("failed to flush LSP message")
     }
 
-    fn response(&self, id: u64, timeout: Duration) -> Result<Value> {
+    fn response(&self, id: &Value, timeout: Duration) -> Result<Value> {
         let deadline = Instant::now() + timeout;
         loop {
             let remaining = deadline.saturating_duration_since(Instant::now());
@@ -118,7 +118,7 @@ impl LifecycleProcess {
 
             match self.messages.recv_timeout(remaining.min(Duration::from_millis(250))) {
                 Ok(Ok(message))
-                    if message.get("id").and_then(Value::as_u64) == Some(id)
+                    if message.get("id") == Some(id)
                         && (message.get("result").is_some() || message.get("error").is_some()) =>
                 {
                     ensure!(
@@ -422,7 +422,8 @@ fn stdio_lifecycle_exits_zero_after_shutdown() -> Result<()> {
             "capabilities": {}
         }
     }))?;
-    let initialize = server.response(1, INITIALIZE_TIMEOUT)?;
+    let initialize_id = json!(1);
+    let initialize = server.response(&initialize_id, INITIALIZE_TIMEOUT)?;
     ensure!(
         initialize.get("error").is_none_or(Value::is_null),
         "initialize returned an error: {initialize:#}"
@@ -437,14 +438,15 @@ fn stdio_lifecycle_exits_zero_after_shutdown() -> Result<()> {
         "method": "initialized",
         "params": {}
     }))?;
+    let shutdown_id = json!("00123-π");
     server.send(&json!({
         "jsonrpc": "2.0",
-        "id": 2,
+        "id": shutdown_id.clone(),
         "method": "shutdown",
         "params": null
     }))?;
 
-    let shutdown = server.response(2, REQUEST_TIMEOUT)?;
+    let shutdown = server.response(&shutdown_id, REQUEST_TIMEOUT)?;
     ensure!(
         shutdown.get("error").is_none_or(Value::is_null),
         "shutdown returned an error: {shutdown:#}"
@@ -591,11 +593,12 @@ fn stdio_navigation_matches_exact_request_and_current_edit() -> Result<()> {
     let client_uri = file_uri(&client)?;
     let mut server = LifecycleProcess::spawn(binary_path, workspace.path())?;
 
+    let initialize_id = json!(1);
     server.send(&json!({
-        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "jsonrpc": "2.0", "id": initialize_id.clone(), "method": "initialize",
         "params": { "processId": null, "rootUri": root_uri, "workspaceFolders": null, "capabilities": {} }
     }))?;
-    let initialize = server.response(1, INITIALIZE_TIMEOUT)?;
+    let initialize = server.response(&initialize_id, INITIALIZE_TIMEOUT)?;
     ensure!(
         initialize.get("error").is_none_or(Value::is_null),
         "initialize failed: {initialize:#}"
