@@ -292,10 +292,15 @@ export class LanguageClientLifecycle<TClient extends LifecycleClient<TEvent>, TE
         () => client.start(),
         this.startupTimeoutMs,
       );
+      // A rejected start has settled the client call even though startup did
+      // not complete. A timeout is different: the underlying call may still
+      // be in flight and must remain ineligible for late-process recovery.
+      if (!startResult.timedOut) {
+        active.startupSettled = true;
+      }
       if (!startResult.completed) {
         throw startResult.error;
       }
-      active.startupSettled = true;
       if (this.hooks.isClientRunning && !this.hooks.isClientRunning(client)) {
         throw new LanguageClientLifecycleError(
           'Language client stopped before startup completed.',
