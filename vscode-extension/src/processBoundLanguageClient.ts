@@ -11,6 +11,7 @@ import { LanguageClient } from 'vscode-languageclient/node';
 export class ProcessBoundLanguageClient extends LanguageClient {
   private retainedServerProcess: ChildProcess | undefined;
 
+  // vscode-languageclient may invoke stop without awaiting it; observe that rejection while returning the same promise so the lifecycle still owns cleanup failure handling.
   override stop(timeout?: number): Promise<void> {
     const operation = super.stop(timeout);
     void operation.catch(() => undefined);
