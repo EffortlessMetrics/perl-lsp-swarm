@@ -21,7 +21,11 @@ suite('Installed Test Explorer prove journey', function () {
     const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
     assert.ok(workspaceFolder, 'installed Test Explorer journey requires a workspace folder');
 
-    const fixtureDirectory = path.join(workspaceFolder.uri.fsPath, 'test explorer & [1] {a,b}');
+    const token = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const fixtureDirectory = path.join(
+      workspaceFolder.uri.fsPath,
+      `test explorer & [1] {a,b} ${token}`,
+    );
     const fixture = path.join(fixtureDirectory, 'selected test.t');
     const marker = path.join(fixtureDirectory, 'selected-test-marker.json');
     fs.mkdirSync(fixtureDirectory, { recursive: true });
@@ -36,6 +40,7 @@ suite('Installed Test Explorer prove journey', function () {
         'close $marker or die $!;',
         'print "1..1\\n";',
         'print "ok 1 - installed special path\\n";',
+        `open my $end, ">", $ENV{PERL_LSP_TEST_EXPLORER_MARKER} or die $!; print {$end} "END:${token}\\n$0\\n"; close $end or die $!;`,
         '',
       ].join('\n'),
       'utf8',
@@ -46,15 +51,28 @@ suite('Installed Test Explorer prove journey', function () {
     try {
       const extension = vscode.extensions.getExtension('EffortlessMetrics.perl-lsp-rs');
       assert.ok(extension, 'installed Test Explorer journey requires the extension');
-      await extension.activate();
+      const extensionApi = (await extension.activate()) as {
+        waitForActiveDocumentReady?: (uri: string, timeoutMs?: number) => Promise<void>;
+      };
       const document = await vscode.workspace.openTextDocument(fixture);
       await vscode.window.showTextDocument(document);
-      await vscode.commands.executeCommand('testing.refreshTests');
-      await new Promise((resolve) => setTimeout(resolve, 3_000));
+      assert.ok(
+        extensionApi.waitForActiveDocumentReady,
+        'installed Test Explorer journey requires the readiness awaitable',
+      );
+      await extensionApi.waitForActiveDocumentReady(document.uri.toString(), 60_000);
+      // VS Code exposes no awaitable discovery result for a TestController.
+      // Refresh sequentially within a bounded window before the single run;
+      // this avoids overlapping runs while allowing the installed adapter's
+      // asynchronous file scan to observe the newly-created fixture.
+      for (let attempt = 0; attempt < 6; attempt += 1) {
+        await vscode.commands.executeCommand('testing.refreshTests');
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      }
       await vscode.commands.executeCommand('testing.runAll');
       const raw = await waitForFile(marker, 90_000);
       const [phase, test0] = raw.trim().split(/\r?\n/);
-      assert.equal(phase, 'completed');
+      assert.equal(phase, `END:${token}`);
       assert.equal(path.normalize(test0 ?? ''), path.normalize(fixture));
     } finally {
       if (previousMarker === undefined) delete process.env.PERL_LSP_TEST_EXPLORER_MARKER;

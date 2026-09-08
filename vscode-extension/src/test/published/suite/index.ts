@@ -29,6 +29,16 @@ export async function run(): Promise<void> {
     );
   }
   const testExplorerSmoke = process.env.PERL_LSP_TEST_EXPLORER_SMOKE === '1';
+  const selectedSmokeCount = [
+    currentSourceSmoke,
+    packagedBundleSmoke,
+    activationFailureSmoke,
+    crashRecoverySmoke,
+    testExplorerSmoke,
+  ].filter(Boolean).length;
+  if (selectedSmokeCount > 1) {
+    throw new Error('Published smoke selectors are mutually exclusive.');
+  }
   const smokeTestPaths = crashRecoverySmoke
     ? [path.resolve(__dirname, '../crashRecoveryJourney.test.js')]
     : activationFailureSmoke
