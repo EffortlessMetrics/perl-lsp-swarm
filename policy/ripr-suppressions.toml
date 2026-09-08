@@ -2910,3 +2910,25 @@ created = "2026-09-08"
 review_after = "2026-10-08"
 expires = "2026-12-08"
 removal_criteria = "ripr#1429 traces declaration owners to same-file tests and ripr#1428 stops flagging #[cfg(test)] fixtures in production files as new gaps; then delete this entry and expect the existing tautology suite to clear without it."
+
+# #14945 perl-corpus train declaration seams: current RIPR receipt evidence
+# identifies only constants, the declared-parallel table/literals, and struct
+# field declarations in the new production owner. The 35-test sibling
+# #[path] module exercises those declarations and the parallel falsifiers, but
+# RIPR 0.10.x cannot connect that module to the declaration owners. The
+# path/classification matcher has no line or function selector; a future
+# executable no_static_path seam in this file would therefore also match and
+# must be reviewed rather than silently accepted.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-14945-perl-corpus-train-declaration-seams"
+kind = "declaration_line_no_static_path"
+paths = ["xtask/src/tasks/perl_corpus_train.rs"]
+classification = ["no_static_path"]
+owner = "proof-lane"
+issue = "#14945"
+reason = "The exact hosted RIPR receipt from run 34212428962 (artifact 10052033438, evaluated merge head 5ced00a41111593bc68c2e4348029a9b36627cc6) reports 32 no_static_path findings in this newly added owner: constants, the declared-parallel table/literals, and ProjectedNode/related struct field declarations at lines 40-112, 116-117, 242-246, 581, 583, 587, 1041, and 1042. The candidate's 35-test #[path] sibling module directly exercises the constants and declarations, including falsifier_5_same_authority_nodes_declared_parallel_fail, falsifier_11b_missing_declared_parallel_endpoint_after_repaired_mutation_fails, and canonical_loader_rejects_missing_declared_parallel_endpoints. This is the observed ripr#1429 declaration/sibling-test tracing limitation, not a claim that a future executable seam is covered; the current matcher has no line/function selector, so any future executable no_static_path finding in this file must trigger review and narrowing."
+created = "2026-09-08"
+review_after = "2026-09-15"
+expires = "2026-09-22"
+removal_criteria = "Remove when RIPR traces declaration owners through the sibling #[path] tests or a finer line/function selector or targeted mutation replaces this advisory path. Remove or narrow immediately if a future receipt reports an executable no_static_path seam in this file or any classification other than no_static_path."
