@@ -1009,6 +1009,80 @@ void test('prompt Windows taskkill records every forced shutdown exactly once', 
   }
 });
 
+void test('non-zero Windows taskkill remains red when the watcher exits first', async () => {
+  const { EventEmitter } = require('node:events');
+  const { PassThrough } = require('node:stream');
+  const { runInNewContext } = require('node:vm');
+  const filename = path.join(extensionRoot, 'scripts', 'dev-supervisor.js');
+  const source = fs.readFileSync(filename, 'utf8');
+  /** @type {Map<number, import('node:events').EventEmitter>} */
+  const watchers = new Map();
+  let taskkillCalls = 0;
+  let nextPid = 3000;
+  const fakeSpawn = (command, args) => {
+    const child = new EventEmitter();
+    if (command === 'taskkill') {
+      assert.deepEqual(Array.from(args).slice(2), ['/T', '/F']);
+      const pid = Number(args[1]);
+      const watcher = watchers.get(pid);
+      assert.ok(watcher !== undefined, 'taskkill must target a spawned watcher');
+      taskkillCalls += 1;
+      queueMicrotask(() => {
+        // Falsifier: each helper fails after its target exit is observable.
+        watcher.emit('exit', 0, null);
+        child.emit('exit', 1, null);
+      });
+      return child;
+    }
+    const pid = ++nextPid;
+    const stdout = new PassThrough();
+    Object.assign(child, { pid, stdout, stderr: new PassThrough() });
+    watchers.set(pid, child);
+    queueMicrotask(() => stdout.write('FIXTURE_READY\n'));
+    return child;
+  };
+  const moduleCopy = { exports: {} };
+  runInNewContext(
+    source,
+    {
+      module: moduleCopy,
+      require: (name) => (name === 'node:child_process' ? { spawn: fakeSpawn } : require(name)),
+      __dirname: path.dirname(filename),
+      process: { platform: 'win32', env: {} },
+      setTimeout,
+      clearTimeout,
+      setInterval,
+      clearInterval,
+    },
+    { filename },
+  );
+  const { runDevSupervisor: runIsolated } = /** @type {typeof import('./dev-supervisor')} */ (
+    moduleCopy.exports
+  );
+  const controller = runIsolated({
+    children: ['types', 'bundle'].map((name) => ({
+      name,
+      command: 'fixture-node',
+      args: [],
+      cwd: '.',
+      readyPattern: /FIXTURE_READY/,
+    })),
+    options: {
+      stopWhenReady: true,
+      forwardOutput: false,
+      readinessTimeoutMs: 1000,
+      shutdownGraceMs: 25,
+    },
+  });
+  const result = await controller.waitForExit();
+  assert.equal(result.code, 1);
+  assert.equal(result.reason, 'stop-when-ready');
+  assert.equal(taskkillCalls, 2);
+  assert.equal(result.failures.length, 2);
+  assert.ok(result.failures.every((failure) => /taskkill helper exited \(code=1/.test(failure)));
+  assert.deepEqual(Array.from(result.escalations), ['types', 'bundle']);
+});
+
 void test('a stalled Windows taskkill reaches escalation and stays red', async () => {
   const { EventEmitter } = require('node:events');
   const { PassThrough } = require('node:stream');
