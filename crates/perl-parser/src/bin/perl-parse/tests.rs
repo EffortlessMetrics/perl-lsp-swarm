@@ -286,6 +286,22 @@ fn read_source_bytes_keeps_valid_non_mojibake_text() -> Result<(), Box<dyn std::
     Ok(())
 }
 
+fn check(condition: bool, message: impl Into<String>) -> Result<(), Box<dyn std::error::Error>> {
+    if condition { Ok(()) } else { Err(message.into().into()) }
+}
+
+fn check_equal<L, R>(actual: &L, expected: &R) -> Result<(), Box<dyn std::error::Error>>
+where
+    L: std::fmt::Debug + PartialEq<R> + ?Sized,
+    R: std::fmt::Debug + ?Sized,
+{
+    if actual == expected {
+        Ok(())
+    } else {
+        Err(format!("expected {expected:?}, got {actual:?}").into())
+    }
+}
+
 fn utf8(bytes: &[u8]) -> Result<String, Box<dyn std::error::Error>> {
     Ok(String::from_utf8(bytes.to_vec())?)
 }
@@ -366,28 +382,58 @@ fn temp_perl(contents: &str) -> Result<tempfile::NamedTempFile, Box<dyn std::err
 }
 
 #[test]
-fn help_flag_wins_over_later_version_and_files() {
-    assert!(matches!(parse_args(["--help", "--version", "script.pl"]), Ok(CliRequest::Help)));
-    assert!(matches!(parse_args(["-h", "-V"]), Ok(CliRequest::Help)));
+fn help_flag_wins_over_later_version_and_files() -> Result<(), Box<dyn std::error::Error>> {
+    check(
+        matches!(parse_args(["--help", "--version", "script.pl"]), Ok(CliRequest::Help)),
+        stringify!(matches!(
+            parse_args(["--help", "--version", "script.pl"]),
+            Ok(CliRequest::Help)
+        )),
+    )?;
+    check(
+        matches!(parse_args(["-h", "-V"]), Ok(CliRequest::Help)),
+        stringify!(matches!(parse_args(["-h", "-V"]), Ok(CliRequest::Help))),
+    )?;
+    Ok(())
 }
 
 #[test]
-fn version_flag_wins_over_later_help() {
-    assert!(matches!(parse_args(["--version", "--help"]), Ok(CliRequest::Version)));
-    assert!(matches!(parse_args(["-V", "script.pl", "--help"]), Ok(CliRequest::Version)));
+fn version_flag_wins_over_later_help() -> Result<(), Box<dyn std::error::Error>> {
+    check(
+        matches!(parse_args(["--version", "--help"]), Ok(CliRequest::Version)),
+        stringify!(matches!(parse_args(["--version", "--help"]), Ok(CliRequest::Version))),
+    )?;
+    check(
+        matches!(parse_args(["-V", "script.pl", "--help"]), Ok(CliRequest::Version)),
+        stringify!(matches!(parse_args(["-V", "script.pl", "--help"]), Ok(CliRequest::Version))),
+    )?;
+    Ok(())
 }
 
 #[test]
-fn help_after_a_file_argument_still_exits_as_help() {
-    assert!(matches!(parse_args(["script.pl", "--help"]), Ok(CliRequest::Help)));
+fn help_after_a_file_argument_still_exits_as_help() -> Result<(), Box<dyn std::error::Error>> {
+    check(
+        matches!(parse_args(["script.pl", "--help"]), Ok(CliRequest::Help)),
+        stringify!(matches!(parse_args(["script.pl", "--help"]), Ok(CliRequest::Help))),
+    )?;
+    Ok(())
 }
 
 #[test]
 fn empty_argv_defaults_to_stdin_run() -> Result<(), Box<dyn std::error::Error>> {
     match parse_args(Vec::<&str>::new())? {
         CliRequest::Run(args) => {
-            assert_eq!(args.inputs.len(), 1);
-            assert!(matches!(args.inputs[0], super::cli::Input::Stdin));
+            check_equal(&(args.inputs.len()), &1)?;
+            check(
+                matches!(
+                    args.inputs.first().ok_or("expected one input")?,
+                    super::cli::Input::Stdin
+                ),
+                stringify!(matches!(
+                    args.inputs.first().ok_or("expected one input")?,
+                    super::cli::Input::Stdin
+                )),
+            )?;
         }
         other => return Err(format!("expected Run, got {other:?}").into()),
     }
@@ -398,7 +444,16 @@ fn empty_argv_defaults_to_stdin_run() -> Result<(), Box<dyn std::error::Error>> 
 fn dash_input_is_stdin() -> Result<(), Box<dyn std::error::Error>> {
     match parse_args(["-"])? {
         CliRequest::Run(args) => {
-            assert!(matches!(args.inputs[0], super::cli::Input::Stdin));
+            check(
+                matches!(
+                    args.inputs.first().ok_or("expected one input")?,
+                    super::cli::Input::Stdin
+                ),
+                stringify!(matches!(
+                    args.inputs.first().ok_or("expected one input")?,
+                    super::cli::Input::Stdin
+                )),
+            )?;
         }
         other => return Err(format!("expected Run, got {other:?}").into()),
     }
@@ -410,7 +465,7 @@ fn write_help_matches_println_bytes() -> Result<(), Box<dyn std::error::Error>> 
     let mut stdout = Vec::new();
     write_help(&mut stdout)?;
     let expected = format!("{}\n", help_text());
-    assert_eq!(utf8(&stdout)?, expected);
+    check_equal(&(utf8(&stdout)?), &expected)?;
     Ok(())
 }
 
@@ -418,7 +473,7 @@ fn write_help_matches_println_bytes() -> Result<(), Box<dyn std::error::Error>> 
 fn write_version_matches_println_bytes() -> Result<(), Box<dyn std::error::Error>> {
     let mut stdout = Vec::new();
     write_version(&mut stdout)?;
-    assert_eq!(utf8(&stdout)?, format!("perl-parse v{}\n", env!("CARGO_PKG_VERSION")));
+    check_equal(&(utf8(&stdout)?), &(format!("perl-parse v{}\n", env!("CARGO_PKG_VERSION"))))?;
     Ok(())
 }
 
@@ -426,10 +481,10 @@ fn write_version_matches_println_bytes() -> Result<(), Box<dyn std::error::Error
 fn write_usage_error_matches_eprintln_bytes() -> Result<(), Box<dyn std::error::Error>> {
     let mut stderr = Vec::new();
     write_usage_error(&mut stderr, "Unknown option: --nope")?;
-    assert_eq!(
-        utf8(&stderr)?,
-        "Error: Unknown option: --nope\nTry 'perl-parse --help' for more information.\n"
-    );
+    check_equal(
+        &(utf8(&stderr)?),
+        &("Error: Unknown option: --nope\nTry 'perl-parse --help' for more information.\n"),
+    )?;
     Ok(())
 }
 
@@ -438,15 +493,15 @@ fn execute_help_and_version_write_exact_bytes() -> Result<(), Box<dyn std::error
     let mut stdout = Vec::new();
     let mut stderr = Vec::new();
     let status = execute(["--help"], &mut stdout, &mut stderr)?;
-    assert_eq!(status, ProcessStatus::Success);
-    assert_eq!(utf8(&stdout)?, format!("{}\n", help_text()));
-    assert!(stderr.is_empty());
+    check_equal(&status, &ProcessStatus::Success)?;
+    check_equal(&(utf8(&stdout)?), &(format!("{}\n", help_text())))?;
+    check(stderr.is_empty(), stringify!(stderr.is_empty()))?;
 
     stdout.clear();
     let status = execute(["--version"], &mut stdout, &mut stderr)?;
-    assert_eq!(status, ProcessStatus::Success);
-    assert_eq!(utf8(&stdout)?, format!("perl-parse v{}\n", env!("CARGO_PKG_VERSION")));
-    assert!(stderr.is_empty());
+    check_equal(&status, &ProcessStatus::Success)?;
+    check_equal(&(utf8(&stdout)?), &(format!("perl-parse v{}\n", env!("CARGO_PKG_VERSION"))))?;
+    check(stderr.is_empty(), stringify!(stderr.is_empty()))?;
     Ok(())
 }
 
@@ -456,12 +511,12 @@ fn execute_unknown_option_is_usage_failure_with_exact_bytes()
     let mut stdout = Vec::new();
     let mut stderr = Vec::new();
     let status = execute(["--nope"], &mut stdout, &mut stderr)?;
-    assert_eq!(status, ProcessStatus::Failure);
-    assert!(stdout.is_empty());
-    assert_eq!(
-        utf8(&stderr)?,
-        "Error: Unknown option: --nope\nTry 'perl-parse --help' for more information.\n"
-    );
+    check_equal(&status, &ProcessStatus::Failure)?;
+    check(stdout.is_empty(), stringify!(stdout.is_empty()))?;
+    check_equal(
+        &(utf8(&stderr)?),
+        &("Error: Unknown option: --nope\nTry 'perl-parse --help' for more information.\n"),
+    )?;
     Ok(())
 }
 
@@ -470,11 +525,11 @@ fn execute_missing_format_argument_is_usage_failure() -> Result<(), Box<dyn std:
     let mut stdout = Vec::new();
     let mut stderr = Vec::new();
     let status = execute(["--format"], &mut stdout, &mut stderr)?;
-    assert_eq!(status, ProcessStatus::Failure);
-    assert_eq!(
-        utf8(&stderr)?,
-        "Error: Missing format argument\nTry 'perl-parse --help' for more information.\n"
-    );
+    check_equal(&status, &ProcessStatus::Failure)?;
+    check_equal(
+        &(utf8(&stderr)?),
+        &("Error: Missing format argument\nTry 'perl-parse --help' for more information.\n"),
+    )?;
     Ok(())
 }
 
@@ -485,18 +540,24 @@ fn stats_omit_averages_when_no_files_were_parsed() -> Result<(), Box<dyn std::er
     let mut out = Vec::new();
     stats.write(&mut out)?;
     let text = utf8(&out)?;
-    assert_eq!(
-        text,
-        "\n=== Total Statistics ===\n\
+    check_equal(
+        &text,
+        &("\n=== Total Statistics ===\n\
          Files parsed: 0\n\
          Files failed: 1\n\
          Total size: 0 bytes (0.00 KB)\n\
          Total time: 0ns\n\
-         Total nodes: 0\n"
-    );
-    assert!(!text.contains("Average speed"));
-    assert!(!text.contains("Average nodes per file"));
-    assert!(!text.contains("=== File Details ==="));
+         Total nodes: 0\n"),
+    )?;
+    check(!text.contains("Average speed"), stringify!(!text.contains("Average speed")))?;
+    check(
+        !text.contains("Average nodes per file"),
+        stringify!(!text.contains("Average nodes per file")),
+    )?;
+    check(
+        !text.contains("=== File Details ==="),
+        stringify!(!text.contains("=== File Details ===")),
+    )?;
     Ok(())
 }
 
@@ -509,9 +570,9 @@ fn stats_preserve_integer_averages_and_file_details_for_two_files()
     stats.add_file("b.pl", 1_000_000, time, 5);
     let mut out = Vec::new();
     stats.write(&mut out)?;
-    assert_eq!(
-        utf8(&out)?,
-        "\n=== Total Statistics ===\n\
+    check_equal(
+        &(utf8(&out)?),
+        &("\n=== Total Statistics ===\n\
          Files parsed: 2\n\
          Files failed: 0\n\
          Total size: 2000000 bytes (1953.12 KB)\n\
@@ -521,8 +582,8 @@ fn stats_preserve_integer_averages_and_file_details_for_two_files()
          Average nodes per file: 5\n\
          \n=== File Details ===\n\
          a.pl: 1000000 bytes, 1s, 5 nodes\n\
-         b.pl: 1000000 bytes, 1s, 5 nodes\n"
-    );
+         b.pl: 1000000 bytes, 1s, 5 nodes\n"),
+    )?;
     Ok(())
 }
 
@@ -533,9 +594,15 @@ fn stats_omit_file_details_for_a_single_file() -> Result<(), Box<dyn std::error:
     let mut out = Vec::new();
     stats.write(&mut out)?;
     let text = utf8(&out)?;
-    assert!(text.contains("Average nodes per file: 3\n"));
-    assert!(!text.contains("=== File Details ==="));
-    assert!(!text.contains("only.pl:"));
+    check(
+        text.contains("Average nodes per file: 3\n"),
+        stringify!(text.contains("Average nodes per file: 3\n")),
+    )?;
+    check(
+        !text.contains("=== File Details ==="),
+        stringify!(!text.contains("=== File Details ===")),
+    )?;
+    check(!text.contains("only.pl:"), stringify!(!text.contains("only.pl:")))?;
     Ok(())
 }
 
@@ -548,7 +615,10 @@ fn stats_include_file_details_at_twenty_files_and_omit_at_twenty_one()
     }
     let mut out = Vec::new();
     twenty.write(&mut out)?;
-    assert!(utf8(&out)?.contains("=== File Details ==="));
+    check(
+        utf8(&out)?.contains("=== File Details ==="),
+        stringify!(utf8(&out)?.contains("=== File Details ===")),
+    )?;
 
     let mut twenty_one = TotalStats::new();
     for index in 0..21 {
@@ -556,7 +626,10 @@ fn stats_include_file_details_at_twenty_files_and_omit_at_twenty_one()
     }
     out.clear();
     twenty_one.write(&mut out)?;
-    assert!(!utf8(&out)?.contains("=== File Details ==="));
+    check(
+        !utf8(&out)?.contains("=== File Details ==="),
+        stringify!(!utf8(&out)?.contains("=== File Details ===")),
+    )?;
     Ok(())
 }
 
@@ -568,8 +641,11 @@ fn stats_file_details_mark_failed_inputs() -> Result<(), Box<dyn std::error::Err
     let mut out = Vec::new();
     stats.write(&mut out)?;
     let text = utf8(&out)?;
-    assert!(text.contains("ok.pl: 4 bytes, 1ns, 1 nodes\n"));
-    assert!(text.contains("bad.pl: FAILED\n"));
+    check(
+        text.contains("ok.pl: 4 bytes, 1ns, 1 nodes\n"),
+        stringify!(text.contains("ok.pl: 4 bytes, 1ns, 1 nodes\n")),
+    )?;
+    check(text.contains("bad.pl: FAILED\n"), stringify!(text.contains("bad.pl: FAILED\n")))?;
     Ok(())
 }
 
@@ -578,11 +654,11 @@ fn write_error_unexpected_eof_and_invalid_string_are_exact()
 -> Result<(), Box<dyn std::error::Error>> {
     let mut stderr = Vec::new();
     write_error(&ParseError::UnexpectedEof, "", &mut stderr)?;
-    assert_eq!(utf8(&stderr)?, "Parse error: Unexpected end of input\n");
+    check_equal(&(utf8(&stderr)?), &("Parse error: Unexpected end of input\n"))?;
 
     stderr.clear();
     write_error(&ParseError::InvalidString, "unused", &mut stderr)?;
-    assert_eq!(utf8(&stderr)?, "Parse error: Invalid string literal\n");
+    check_equal(&(utf8(&stderr)?), &("Parse error: Invalid string literal\n"))?;
     Ok(())
 }
 
@@ -599,10 +675,10 @@ fn write_error_unexpected_token_includes_context_bytes() -> Result<(), Box<dyn s
         source,
         &mut stderr,
     )?;
-    assert_eq!(
-        utf8(&stderr)?,
-        "Parse error: Unexpected token at line 2, column 2\n  Expected: expression\n  Found: d\n\n  1 | ab\n  2 | cd\n    |  ^\n"
-    );
+    check_equal(
+        &(utf8(&stderr)?),
+        &("Parse error: Unexpected token at line 2, column 2\n  Expected: expression\n  Found: d\n\n  1 | ab\n  2 | cd\n    |  ^\n"),
+    )?;
     Ok(())
 }
 
@@ -613,13 +689,13 @@ fn execute_legacy_sexp_stdout_matches_render_output() -> Result<(), Box<dyn std:
     let mut stdout = Vec::new();
     let mut stderr = Vec::new();
     let status = execute([path], &mut stdout, &mut stderr)?;
-    assert_eq!(status, ProcessStatus::Success);
-    assert!(stderr.is_empty());
+    check_equal(&status, &ProcessStatus::Success)?;
+    check(stderr.is_empty(), stringify!(stderr.is_empty()))?;
 
     let mut parser = perl_parser::Parser::new("use strict;\nmy $value = 1;\n");
     let ast = parser.parse().map_err(|error| error.to_string())?;
     let expected = format!("{}\n", render_output(&ast, OutputFormat::LegacySexp, false)?);
-    assert_eq!(utf8(&stdout)?, expected);
+    check_equal(&(utf8(&stdout)?), &expected)?;
     Ok(())
 }
 
@@ -631,13 +707,25 @@ fn execute_quiet_suppresses_parse_output_but_still_writes_stats()
     let mut stdout = Vec::new();
     let mut stderr = Vec::new();
     let status = execute(["-q", "-s", path], &mut stdout, &mut stderr)?;
-    assert_eq!(status, ProcessStatus::Success);
-    assert!(stdout.is_empty());
+    check_equal(&status, &ProcessStatus::Success)?;
+    check(stdout.is_empty(), stringify!(stdout.is_empty()))?;
     let stderr_text = utf8(&stderr)?;
-    assert!(stderr_text.starts_with("\n=== Total Statistics ===\n"));
-    assert!(stderr_text.contains("Files parsed: 1\n"));
-    assert!(stderr_text.contains("Files failed: 0\n"));
-    assert!(!stderr_text.contains("=== File Details ==="));
+    check(
+        stderr_text.starts_with("\n=== Total Statistics ===\n"),
+        stringify!(stderr_text.starts_with("\n=== Total Statistics ===\n")),
+    )?;
+    check(
+        stderr_text.contains("Files parsed: 1\n"),
+        stringify!(stderr_text.contains("Files parsed: 1\n")),
+    )?;
+    check(
+        stderr_text.contains("Files failed: 0\n"),
+        stringify!(stderr_text.contains("Files failed: 0\n")),
+    )?;
+    check(
+        !stderr_text.contains("=== File Details ==="),
+        stringify!(!stderr_text.contains("=== File Details ===")),
+    )?;
     Ok(())
 }
 
@@ -658,13 +746,13 @@ fn execute_continue_counts_unreadable_input_and_stays_nonzero()
         &mut stdout,
         &mut stderr,
     )?;
-    assert_eq!(status, ProcessStatus::Failure);
-    assert!(stdout.is_empty());
+    check_equal(&status, &ProcessStatus::Failure)?;
+    check(stdout.is_empty(), stringify!(stdout.is_empty()))?;
     let stderr_text = utf8(&stderr)?;
-    assert!(stderr_text.contains("Files parsed: 2"), "{stderr_text}");
-    assert!(stderr_text.contains("Files failed: 1"), "{stderr_text}");
-    assert!(stderr_text.contains(&format!("{missing_path}: FAILED")), "{stderr_text}");
-    assert!(stderr_text.contains(&format!("Error reading {missing_path}:")), "{stderr_text}");
+    check(stderr_text.contains("Files parsed: 2"), &stderr_text)?;
+    check(stderr_text.contains("Files failed: 1"), &stderr_text)?;
+    check(stderr_text.contains(&format!("{missing_path}: FAILED")), &stderr_text)?;
+    check(stderr_text.contains(&format!("Error reading {missing_path}:")), &stderr_text)?;
     Ok(())
 }
 
@@ -677,18 +765,42 @@ fn execute_write_failure_is_err_even_under_continue() -> Result<(), Box<dyn std:
 
     let mut stdout = ImmediateFail;
     let mut stderr = Vec::new();
-    let result = execute(["--continue", first_path, second_path], &mut stdout, &mut stderr);
-    assert!(result.is_err(), "output failure must reach execute as Err, not a successful status");
+    let result =
+        execute(["--continue", "--stats", first_path, second_path], &mut stdout, &mut stderr);
+    check(result.is_err(), "output failure must reach execute as Err, not a successful status")?;
+
+    let stderr_text = utf8(&stderr)?;
+    check_equal(&stderr_text, &format!("=== Parsing {first_path} ===\n"))?;
+    check(
+        !stderr_text.contains(second_path),
+        "second input must not be visited after output failure",
+    )?;
+    check(
+        !stderr_text.contains("=== Total Statistics ==="),
+        "statistics must not be written after terminal output failure",
+    )?;
     Ok(())
 }
 
 #[test]
 fn help_write_failures_reach_the_boundary() -> Result<(), Box<dyn std::error::Error>> {
     let mut stderr = Vec::new();
-    assert!(write_help(&mut ImmediateFail).is_err());
-    assert!(write_version(&mut ImmediateFail).is_err());
-    assert!(write_usage_error(&mut ImmediateFail, "boom").is_err());
-    assert!(execute(["--help"], &mut ImmediateFail, &mut stderr).is_err());
+    check(
+        write_help(&mut ImmediateFail).is_err(),
+        stringify!(write_help(&mut ImmediateFail).is_err()),
+    )?;
+    check(
+        write_version(&mut ImmediateFail).is_err(),
+        stringify!(write_version(&mut ImmediateFail).is_err()),
+    )?;
+    check(
+        write_usage_error(&mut ImmediateFail, "boom").is_err(),
+        stringify!(write_usage_error(&mut ImmediateFail, "boom").is_err()),
+    )?;
+    check(
+        execute(["--help"], &mut ImmediateFail, &mut stderr).is_err(),
+        stringify!(execute(["--help"], &mut ImmediateFail, &mut stderr).is_err()),
+    )?;
     Ok(())
 }
 
@@ -696,8 +808,14 @@ fn help_write_failures_reach_the_boundary() -> Result<(), Box<dyn std::error::Er
 fn stats_and_error_writes_fail_immediately() -> Result<(), Box<dyn std::error::Error>> {
     let mut stats = TotalStats::new();
     stats.add_file("a.pl", 1, Duration::from_nanos(1), 1);
-    assert!(stats.write(&mut ImmediateFail).is_err());
-    assert!(write_error(&ParseError::InvalidString, "", &mut ImmediateFail).is_err());
+    check(
+        stats.write(&mut ImmediateFail).is_err(),
+        stringify!(stats.write(&mut ImmediateFail).is_err()),
+    )?;
+    check(
+        write_error(&ParseError::InvalidString, "", &mut ImmediateFail).is_err(),
+        stringify!(write_error(&ParseError::InvalidString, "", &mut ImmediateFail).is_err()),
+    )?;
     Ok(())
 }
 
@@ -706,14 +824,17 @@ fn stats_write_fails_after_a_partial_write() -> Result<(), Box<dyn std::error::E
     let mut stats = TotalStats::new();
     stats.add_file("a.pl", 1, Duration::from_nanos(1), 1);
     stats.add_file("b.pl", 1, Duration::from_nanos(1), 1);
-    assert!(stats.write(&mut FailAfter::new(8)).is_err());
+    check(
+        stats.write(&mut FailAfter::new(8)).is_err(),
+        stringify!(stats.write(&mut FailAfter::new(8)).is_err()),
+    )?;
     Ok(())
 }
 
 #[test]
 fn help_write_fails_on_write_zero() -> Result<(), Box<dyn std::error::Error>> {
     let err = write_help(&mut WriteZeroSink).err().ok_or("Ok(0) must become a write error")?;
-    assert_eq!(err.kind(), io::ErrorKind::WriteZero);
+    check_equal(&(err.kind()), &io::ErrorKind::WriteZero)?;
     Ok(())
 }
 
@@ -723,7 +844,7 @@ fn execute_help_fails_on_write_zero() -> Result<(), Box<dyn std::error::Error>> 
     let err = execute(["--help"], &mut WriteZeroSink, &mut stderr)
         .err()
         .ok_or("WriteZero must reach execute")?;
-    assert_eq!(err.kind(), io::ErrorKind::WriteZero);
+    check_equal(&(err.kind()), &io::ErrorKind::WriteZero)?;
     Ok(())
 }
 
@@ -733,8 +854,8 @@ fn discarding_a_write_error_is_detected() -> Result<(), Box<dyn std::error::Erro
     let err = write_help(&mut writer).err().ok_or(
         "a writer that returns Err after accepting bytes must fail; swallowing with .ok() would hide this",
     )?;
-    assert_eq!(err.kind(), io::ErrorKind::BrokenPipe);
-    assert!(!writer.inner.is_empty(), "control: some bytes were accepted before the error");
+    check_equal(&(err.kind()), &io::ErrorKind::BrokenPipe)?;
+    check(!writer.inner.is_empty(), "control: some bytes were accepted before the error")?;
     Ok(())
 }
 
@@ -743,9 +864,9 @@ fn execute_maps_output_error_away_from_success() -> Result<(), Box<dyn std::erro
     let file = temp_perl("use strict;\nmy $value = 1;\n")?;
     let path = file.path().to_str().ok_or("temp path was not UTF-8")?;
     let result = execute([path], &mut ImmediateFail, &mut Vec::new());
-    assert!(
+    check(
         result.is_err(),
-        "discarding the write error with .ok() would yield Ok(Success) and fail this test"
-    );
+        "discarding the write error with .ok() would yield Ok(Success) and fail this test",
+    )?;
     Ok(())
 }
