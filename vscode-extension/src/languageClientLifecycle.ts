@@ -84,6 +84,7 @@ export class LanguageClientLifecycleError extends Error {
     message: string,
     readonly reason: 'server-path-unresolved' | 'cleanup-incomplete' | 'lifecycle',
     options?: ErrorOptions,
+    readonly retryableCleanup = false,
   ) {
     super(message, options);
     this.name = 'LanguageClientLifecycleError';
@@ -570,6 +571,7 @@ export class LanguageClientLifecycle<TClient extends LifecycleClient<TEvent>, TE
       `Language client cleanup is incomplete; replacement startup is blocked${detail}`,
       'cleanup-incomplete',
       cause === undefined ? undefined : { cause },
+      this.blockedProcessCleanup !== undefined,
     );
   }
 

@@ -2073,21 +2073,18 @@ async function finalizeStartedLanguageClient(
  * old process and recover once it is terminal; reload remains the fallback
  * when that observation cannot be established.
  */
-function presentCleanupIncompleteBlockedRecovery(): void {
+function presentCleanupIncompleteBlockedRecovery(retryableCleanup = false): void {
   healthWidget?.onStateChange(ClientState.Stopped);
-  void vscode.window
-    .showErrorMessage(
-      'The previous Perl language client did not finish cleaning up, so replacement startup is blocked until its exact process is observed terminal. Retry Restart Server after it exits, or reload the window if cleanup cannot be observed.',
-      'Reload Window',
-      'View Logs',
-    )
-    .then((choice) => {
-      if (choice === 'Reload Window') {
-        void vscode.commands.executeCommand('workbench.action.reloadWindow');
-      } else if (choice === 'View Logs') {
-        outputChannel.show();
-      }
-    });
+  const message = retryableCleanup
+    ? 'The previous Perl language client did not finish cleaning up. Try Restart Server again after it exits, or reload the window if cleanup cannot be observed.'
+    : 'The previous Perl language client did not finish cleaning up. Reload the window before trying again.';
+  void vscode.window.showErrorMessage(message, 'Reload Window', 'View Logs').then((choice) => {
+    if (choice === 'Reload Window') {
+      void vscode.commands.executeCommand('workbench.action.reloadWindow');
+    } else if (choice === 'View Logs') {
+      outputChannel.show();
+    }
+  });
 }
 
 async function initializeLanguageClient(context: vscode.ExtensionContext): Promise<boolean> {
@@ -2121,7 +2118,7 @@ async function initializeLanguageClient(context: vscode.ExtensionContext): Promi
       startError instanceof LanguageClientLifecycleError &&
       startError.reason === 'cleanup-incomplete'
     ) {
-      presentCleanupIncompleteBlockedRecovery();
+      presentCleanupIncompleteBlockedRecovery(startError.retryableCleanup);
       return false;
     }
 
@@ -3116,7 +3113,7 @@ async function restartServer(_context: vscode.ExtensionContext): Promise<boolean
       // Incomplete cleanup blocks this lifecycle until a later explicit retry
       // proves the exact subject terminal, or until the window is reloaded
       // (#14448). Automatic crash recovery must still stop retrying here.
-      presentCleanupIncompleteBlockedRecovery();
+      presentCleanupIncompleteBlockedRecovery(error.retryableCleanup);
       return true;
     }
     vscode.window
