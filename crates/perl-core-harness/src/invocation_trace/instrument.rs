@@ -103,6 +103,14 @@ pub const LIMITATION_DISPOSABLE_MANIFEST: &str =
 
 static INSTRUMENT_NONCE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
+/// Treat only a missing channel as absent; preserve other read failures.
+fn read_optional_trace(path: &Path) -> std::io::Result<(Vec<u8>, bool)> {
+    match read_bounded_trace(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok((Vec::new(), false)),
+        result => result,
+    }
+}
+
 /// Read at most one byte beyond the retained trace limit.  The extra byte is
 /// enough to distinguish an exact-limit stream from an oversized stream while
 /// keeping the capture allocation itself bounded.
@@ -760,15 +768,17 @@ pub fn observe_invocations(config: &ObserveInvocationsConfig) -> Result<Instrume
 
     // Trace channel: private file inside the disposable copy.
     let trace_path = instrumented_t_dir.join(TRACE_CHANNEL_BASENAME);
-    let (trace_bytes, mut trace_truncated) =
-        read_bounded_trace(&trace_path).unwrap_or_else(|_| (Vec::new(), false));
+    let (trace_bytes, mut trace_truncated, mut trace_construction_error) =
+        match read_optional_trace(&trace_path) {
+            Ok((bytes, truncated)) => (bytes, truncated, None),
+            Err(error) => (Vec::new(), false, Some(format!("reading trace channel: {error}"))),
+        };
 
     let mut retained_trace_bytes = trace_bytes.len() as u64;
     let mut parent_opt = None;
     let mut trace_opt = None;
     let mut parent_construction_error: Option<String> = None;
     let mut contamination = false;
-    let mut trace_construction_error: Option<String> = None;
 
     match build_observed_discovery_receipt(&matrix, &parent_input) {
         Ok(receipt) => {
@@ -783,7 +793,9 @@ pub fn observe_invocations(config: &ObserveInvocationsConfig) -> Result<Instrume
         }
     }
 
-    if let Some(parent_receipt) = parent_opt.as_ref().filter(|_| !contamination) {
+    if let Some(parent_receipt) =
+        parent_opt.as_ref().filter(|_| !contamination && trace_construction_error.is_none())
+    {
         let prescan = prescan_instrument_stream(&trace_bytes);
         let expected_row_count = prescan.declared_row_count.unwrap_or(prescan.row_lines);
         let header = PlanHeaderFrame {
@@ -2007,6 +2019,19 @@ mod contract_tests {
             &("perl_core_harness.upstream_effective_invocation_trace.v1"),
             "instrumentation contract",
         )?;
+        Ok(())
+    }
+    #[test]
+    fn trace_read_errors_remain_distinct_from_absent_or_empty_channels() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let missing = dir.path().join("missing-trace");
+        let absent = super::read_optional_trace(&missing)?;
+        color_eyre::eyre::ensure!(absent == (Vec::new(), false), "missing channel is absent");
+        std::fs::write(&missing, b"")?;
+        let empty = super::read_optional_trace(&missing)?;
+        color_eyre::eyre::ensure!(empty == (Vec::new(), false), "empty channel remains readable");
+        let failure = super::read_optional_trace(dir.path());
+        color_eyre::eyre::ensure!(failure.is_err(), "a directory is not an absent trace channel");
         Ok(())
     }
 }

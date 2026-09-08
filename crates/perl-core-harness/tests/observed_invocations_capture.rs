@@ -1635,3 +1635,28 @@ fn validation_refuses_a_stale_or_tampered_manifest() -> Result<()> {
     color_eyre::eyre::ensure!(before.contains("manifest_before"), "unexpected refusal: {before}");
     Ok(())
 }
+
+#[test]
+fn unreadable_trace_channel_retains_io_error_without_fabricated_trace() -> Result<()> {
+    let observation = observe_with_mode("component_base", "unreadable_trace", &["if.t"])?;
+    color_eyre::eyre::ensure!(observation.parent.is_some(), "valid parent evidence is retained");
+    color_eyre::eyre::ensure!(
+        observation
+            .work
+            .payload
+            .trace_construction_error
+            .as_deref()
+            .is_some_and(|error| error.starts_with("reading trace channel:")),
+        "the original trace I/O failure must be retained in the work receipt"
+    );
+    color_eyre::eyre::ensure!(
+        observation.trace.is_none(),
+        "read failure must not fabricate a trace"
+    );
+    require_equal(
+        &observation.work.payload.state,
+        &InstrumentationState::CleanupFailed,
+        "the directory also fails file cleanup, which retains precedence",
+    )?;
+    Ok(())
+}

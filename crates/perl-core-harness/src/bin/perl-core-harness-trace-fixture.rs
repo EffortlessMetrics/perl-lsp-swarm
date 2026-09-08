@@ -354,6 +354,11 @@ fn run_mode(selectors: &[String]) -> io::Result<i32> {
     };
 
     match mode.as_str() {
+        "unreadable_trace" => {
+            write_rows(&members)?;
+            fs::create_dir(&channel.path)?;
+            Ok(0)
+        }
         "hang" => {
             // A mid-run observation: rows are emitted to both streams and
             // flushed (signalled through the readiness marker) before the
