@@ -2,10 +2,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import {
-  MAX_STEP_DEFINITION_FILE_BYTES,
-  readBoundedFile,
-} from '../gherkinStepDefinitions';
+import { MAX_STEP_DEFINITION_FILE_BYTES, readBoundedFile } from '../gherkinStepDefinitions';
 import * as gherkinStepDefinitions from '../gherkinStepDefinitions';
 import {
   collectStepDefinitionDocuments,
@@ -567,7 +564,7 @@ describe('gherkin step-definition workspace envelope', () => {
   test('refuses an already-open document over the per-file byte cap', async () => {
     const root = makeEnvelopeWorkspace('open-over-file-cap');
     const candidate = path.join(root, 'steps.pm');
-    const text = 'a'.repeat( MAX_STEP_DEFINITION_FILE_BYTES + 1);
+    const text = 'a'.repeat(MAX_STEP_DEFINITION_FILE_BYTES + 1);
     const openDocument = {
       uri: vscode.Uri.file(candidate),
       getText: () => text,
