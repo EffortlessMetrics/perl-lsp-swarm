@@ -842,6 +842,139 @@ describe('gherkin step-definition workspace envelope', () => {
     }
   });
 
+  test('withholds an earlier production match when a later disk file exceeds the cap', async () => {
+    const root = makeEnvelopeWorkspace('provider-disk-overflow');
+    const matchingDefinition = 'When qr/^the user logs in$/, sub { return; };\n';
+    const featureText = 'Feature: Login\n  Scenario: Happy path\n    When the user logs in';
+    const matchingPath = path.join(root, 'matching.pm');
+    const oversizedPath = path.join(root, 'oversized.pm');
+    fs.writeFileSync(matchingPath, matchingDefinition);
+    fs.writeFileSync(oversizedPath, Buffer.alloc(MAX_STEP_DEFINITION_FILE_BYTES + 1, 0x61));
+
+    try {
+      registerGherkinProviders();
+      (vscode.workspace.findFiles as jest.Mock)
+        .mockResolvedValueOnce([vscode.Uri.file(matchingPath), vscode.Uri.file(oversizedPath)])
+        .mockResolvedValue([]);
+      const provider = (vscode.languages.registerDefinitionProvider as jest.Mock).mock.calls[0][1];
+
+      const links = await provider.provideDefinition(
+        { getText: () => featureText } as vscode.TextDocument,
+        { line: 2, character: 12 } as vscode.Position,
+        cancelled(false),
+      );
+
+      expect(links).toBeUndefined();
+      expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(
+        'Gherkin step-definition discovery stopped before the workspace was fully scanned; no definition result is available.',
+      );
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('withholds an earlier production match when a later open buffer exceeds the cap', async () => {
+    const root = makeEnvelopeWorkspace('provider-open-overflow');
+    const matchingDefinition = 'When qr/^the user logs in$/, sub { return; };\n';
+    const featureText = 'Feature: Login\n  Scenario: Happy path\n    When the user logs in';
+    const matchingPath = path.join(root, 'matching.pm');
+    const oversizedPath = path.join(root, 'open-oversized.pm');
+    fs.writeFileSync(matchingPath, matchingDefinition);
+    const openDocument = {
+      uri: vscode.Uri.file(oversizedPath),
+      getText: () => 'a'.repeat(MAX_STEP_DEFINITION_FILE_BYTES + 1),
+    } as unknown as vscode.TextDocument;
+    (vscode.workspace as unknown as { textDocuments: unknown[] }).textDocuments = [openDocument];
+
+    try {
+      registerGherkinProviders();
+      (vscode.workspace.findFiles as jest.Mock)
+        .mockResolvedValueOnce([vscode.Uri.file(matchingPath), vscode.Uri.file(oversizedPath)])
+        .mockResolvedValue([]);
+      const provider = (vscode.languages.registerDefinitionProvider as jest.Mock).mock.calls[0][1];
+
+      const links = await provider.provideDefinition(
+        { getText: () => featureText } as vscode.TextDocument,
+        { line: 2, character: 12 } as vscode.Position,
+        cancelled(false),
+      );
+
+      expect(links).toBeUndefined();
+      expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(
+        'Gherkin step-definition discovery stopped before the workspace was fully scanned; no definition result is available.',
+      );
+    } finally {
+      (vscode.workspace as unknown as { textDocuments: unknown[] }).textDocuments = [];
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('withholds a matching prefix when file enumeration is truncated', async () => {
+    const root = makeEnvelopeWorkspace('provider-enumeration-overflow');
+    const matchingPath = path.join(root, 'matching.pm');
+    const featureText = 'Feature: Login\n  Scenario: Happy path\n    When the user logs in';
+    fs.writeFileSync(matchingPath, 'When qr/^the user logs in$/, sub { return; };\n');
+    const candidates = Array.from({ length: 1001 }, (_unused, index) =>
+      index === 0
+        ? vscode.Uri.file(matchingPath)
+        : vscode.Uri.file(path.join(root, `tail-${index}.pm`)),
+    );
+
+    try {
+      registerGherkinProviders();
+      (vscode.workspace.findFiles as jest.Mock)
+        .mockResolvedValueOnce(candidates)
+        .mockResolvedValue([]);
+      const provider = (vscode.languages.registerDefinitionProvider as jest.Mock).mock.calls[0][1];
+
+      const links = await provider.provideDefinition(
+        { getText: () => featureText } as vscode.TextDocument,
+        { line: 2, character: 12 } as vscode.Position,
+        cancelled(false),
+      );
+
+      expect(links).toBeUndefined();
+      expect(vscode.workspace.findFiles).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.any(String),
+        1001,
+        expect.anything(),
+      );
+      expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(
+        'Gherkin step-definition discovery stopped before the workspace was fully scanned; no definition result is available.',
+      );
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('returns a production link when the matching source is the only candidate', async () => {
+    const root = makeEnvelopeWorkspace('provider-positive-control');
+    const matchingPath = path.join(root, 'matching.pm');
+    const featureText = 'Feature: Login\n  Scenario: Happy path\n    When the user logs in';
+    fs.writeFileSync(matchingPath, 'When qr/^the user logs in$/, sub { return; };\n');
+
+    try {
+      registerGherkinProviders();
+      (vscode.workspace.findFiles as jest.Mock)
+        .mockResolvedValueOnce([vscode.Uri.file(matchingPath)])
+        .mockResolvedValue([]);
+      const provider = (vscode.languages.registerDefinitionProvider as jest.Mock).mock.calls[0][1];
+
+      const links = await provider.provideDefinition(
+        { getText: () => featureText } as vscode.TextDocument,
+        { line: 2, character: 12 } as vscode.Position,
+        cancelled(false),
+      );
+
+      expect(links).toHaveLength(1);
+      expect(links?.[0]?.targetUri.fsPath).toBe(matchingPath);
+      expect(vscode.window.showWarningMessage).not.toHaveBeenCalled();
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test('prefers a buffer that turns dirty while the disk read is pending', async () => {
     const root = makeEnvelopeWorkspace('dirty-race');
     const candidate = path.join(root, 'steps.pm');
