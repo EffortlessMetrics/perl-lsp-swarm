@@ -12,7 +12,7 @@
  * Every case must end with the supervisor's tree stopped: fixture PIDs (and,
  * for the stubborn-grandchild control, the grandchild PID written by the
  * fixture itself) are probed with `process.kill(pid, 0)`. Linux may retain a
- * reaped-by-parent zombie PID, so the process-group cases independently
+ * not-yet-reaped zombie PID, so the process-group cases independently
  * accept only ESRCH/ENOENT or an explicit `/proc` zombie state.
  */
 
