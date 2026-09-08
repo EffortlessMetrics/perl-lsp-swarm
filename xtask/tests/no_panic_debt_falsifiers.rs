@@ -1686,6 +1686,9 @@ pub fn prod() -> u8 { Some(0).unwrap() }
 #[cfg_attr(test, test)]
 fn gated_unit() { let _ = Some(1).unwrap(); }
 
+#[cfg_attr(test, tokio::test)]
+fn gated_tokio() { let _ = Some(1).unwrap(); }
+
 #[cfg_attr(test, allow(clippy::unwrap_used))]
 fn still_prod() -> u8 { Some(2).unwrap() }
 "#,
@@ -1698,12 +1701,26 @@ fn still_prod() -> u8 { Some(2).unwrap() }
         inventory.population.entrypoints
     );
     assert!(
+        inventory.population.entrypoints.iter().any(|entry| entry.name == "gated_tokio"),
+        "#[cfg_attr(test, tokio::test)] was not an entrypoint: {:?}",
+        inventory.population.entrypoints
+    );
+    assert!(
         inventory.rows.iter().any(|row| {
             row.path.ends_with("src/lib.rs")
                 && row.entrypoint == "gated_unit"
                 && row.site_family == "unwrap"
         }),
         "#[cfg_attr(test, test)] unwrap omitted: {:?}",
+        inventory.rows
+    );
+    assert!(
+        inventory.rows.iter().any(|row| {
+            row.path.ends_with("src/lib.rs")
+                && row.entrypoint == "gated_tokio"
+                && row.site_family == "unwrap"
+        }),
+        "#[cfg_attr(test, tokio::test)] unwrap omitted: {:?}",
         inventory.rows
     );
     assert!(

@@ -546,8 +546,9 @@ fn cfg_attr_applies_test_item(meta: &Meta) -> bool {
     }
     groups.drain(..1);
     groups.into_iter().any(|payload| {
-        let collapsed = collapse(&payload.to_string());
-        collapsed == "test" || collapsed.starts_with("test(")
+        syn::parse2::<Meta>(payload).ok().is_some_and(|meta| {
+            meta.path().segments.last().is_some_and(|segment| segment.ident == "test")
+        })
     })
 }
 
