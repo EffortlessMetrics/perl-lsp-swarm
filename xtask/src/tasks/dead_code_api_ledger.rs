@@ -6,8 +6,8 @@
 //! both directions: a ledger row cannot survive the item it describes, and a new
 //! public item cannot land without a disposition.
 //!
-//! The check is offline and read-only. It never runs the analyzer, never
-//! consults GitHub, and never rewrites the ledger or its projection.
+//! Validation is offline and read-only. It never runs the analyzer or consults
+//! GitHub. The optional `--write` mode regenerates only the ledger projection.
 
 use crate::utils::project_root;
 use color_eyre::eyre::{Context, Result, bail};
@@ -361,7 +361,62 @@ fn parse_module_surface(text: &str) -> Result<BTreeSet<SourceItem>> {
     // The module itself is always dispositioned.
     items.insert(SourceItem { id: "dead_code".to_string(), kind: "module".to_string() });
     collect_public_items(&file.items, "", &mut items)?;
+    collect_macro_surface(&file, &mut items);
     Ok(items)
+}
+
+/// Macro exports have crate-root visibility regardless of their lexical scope.
+/// Inspect them independently of the ordinary public-module walk. Unexpanded
+/// item and associated-item invocations cannot supply a complete inventory.
+fn collect_macro_surface(file: &syn::File, items: &mut BTreeSet<SourceItem>) {
+    struct Collector<'a> {
+        items: &'a mut BTreeSet<SourceItem>,
+    }
+    impl Collector<'_> {
+        fn unsupported(&mut self, location: &str) {
+            self.items.insert(SourceItem {
+                id: format!("<uninspected {location} #{}>", self.items.len()),
+                kind: "unsupported_public_form".to_string(),
+            });
+        }
+    }
+    impl<'ast> syn::visit::Visit<'ast> for Collector<'_> {
+        fn visit_item_macro(&mut self, node: &'ast syn::ItemMacro) {
+            if node.mac.path.is_ident("macro_rules") {
+                if node.attrs.iter().any(is_macro_export)
+                    && let Some(ident) = node.ident.as_ref()
+                {
+                    self.items.insert(SourceItem {
+                        id: format!("crate::{ident}"),
+                        kind: "exported_macro".to_string(),
+                    });
+                }
+                // Definition tokens are dormant, not declarations in this file.
+            } else {
+                self.unsupported("item macro expansion");
+            }
+        }
+
+        fn visit_impl_item_macro(&mut self, _: &'ast syn::ImplItemMacro) {
+            self.unsupported("impl macro expansion");
+        }
+
+        fn visit_trait_item_macro(&mut self, _: &'ast syn::TraitItemMacro) {
+            self.unsupported("trait macro expansion");
+        }
+
+        fn visit_foreign_item_macro(&mut self, _: &'ast syn::ForeignItemMacro) {
+            self.unsupported("foreign macro expansion");
+        }
+
+        fn visit_item_mod(&mut self, node: &'ast syn::ItemMod) {
+            if node.content.is_none() {
+                self.unsupported(&format!("out-of-line module {}", node.ident));
+            }
+            syn::visit::visit_item_mod(self, node);
+        }
+    }
+    syn::visit::Visit::visit_file(&mut Collector { items }, file);
 }
 
 /// Record every public item in `source`.
@@ -497,33 +552,9 @@ fn collect_public_items(
                     });
                 }
             }
-            // A `macro_rules!` definition reaches the public surface only with
-            // `#[macro_export]`; without it the macro exports nothing. Anything
-            // else in item position is an *invocation*, and `syn` sees the call
-            // rather than the expansion — it may add public constants, types or
-            // functions that nothing here can enumerate, so it fails closed the
-            // same way an uninterpreted item does.
-            syn::Item::Macro(node) => {
-                let is_definition = node.mac.path.is_ident("macro_rules");
-                let is_exported = node.attrs.iter().any(is_macro_export);
-                match (is_definition, is_exported) {
-                    (true, true) => {
-                        if let Some(ident) = node.ident.as_ref() {
-                            items.insert(SourceItem {
-                                id: format!("{prefix}{ident}"),
-                                kind: "exported_macro".to_string(),
-                            });
-                        }
-                    }
-                    (true, false) => {}
-                    (false, _) => {
-                        items.insert(SourceItem {
-                            id: format!("{prefix}<unexpanded macro item #{}>", items.len()),
-                            kind: "unsupported_public_form".to_string(),
-                        });
-                    }
-                }
-            }
+            // Macro visibility and expansion boundaries are handled by the
+            // independent whole-file traversal, including private scopes.
+            syn::Item::Macro(_) => {}
             syn::Item::Impl(node) if node.trait_.is_none() => {
                 let Some(self_name) = type_ident(&node.self_ty) else {
                     continue;
@@ -1243,7 +1274,10 @@ fn validate_consumers(root: &Path, ledger: &Ledger, violations: &mut Vec<String>
             if path.components().any(|c| c.as_os_str() == "target") {
                 continue;
             }
-            let display = path.strip_prefix(root).unwrap_or(path).to_string_lossy().to_string();
+            // Policy identities and owning-crate prefixes use repository slashes
+            // on every host. Normalize before any classification or exemption.
+            let display =
+                path.strip_prefix(root).unwrap_or(path).to_string_lossy().replace('\\', "/");
             let text = match fs::read_to_string(path) {
                 Ok(text) => text,
                 Err(error) => {
@@ -1262,7 +1296,7 @@ fn validate_consumers(root: &Path, ledger: &Ledger, violations: &mut Vec<String>
                 // Still text-scanned for direct references: declaring a file is
                 // not a way to stop looking at it.
                 if CONSUMER_NEEDLES.iter().any(|needle| contains_word(&text, needle)) {
-                    found.insert(display.replace('\\', "/"));
+                    found.insert(display.clone());
                 }
                 declared_unparseable_seen.insert(display.clone());
                 continue;
@@ -1270,7 +1304,7 @@ fn validate_consumers(root: &Path, ledger: &Ledger, violations: &mut Vec<String>
             let inside_owning_crate = display.starts_with("crates/perl-parser/");
             match references_surface(&text, inside_owning_crate) {
                 Ok(true) => {
-                    found.insert(display.replace('\\', "/"));
+                    found.insert(display.clone());
                 }
                 Ok(false) => {}
                 Err(error) => violations.push(format!(
@@ -1806,6 +1840,32 @@ mod tests {
     fn tracked_ledger_is_valid() -> Result<()> {
         let root = project_root()?;
         validate(&root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn native_scan_paths_preserve_owning_crate_and_unparseable_identities() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let root = directory.path();
+        for path in ["crates/perl-parser/src", "xtask/src", "xtask/tests"] {
+            fs::create_dir_all(root.join(path))?;
+        }
+        let consumer = "crates/perl-parser/src/prelude.rs";
+        let unparseable = "crates/broken_fixture.rs";
+        fs::write(root.join(consumer), "pub use crate::dead_code::DeadCode;")?;
+        fs::write(root.join(unparseable), "this is not a Rust item")?;
+        let mut ledger = read_ledger(&project_root()?, POLICY_PATH)?;
+        ledger.consumer.retain(|item| item.path == consumer);
+        if ledger.consumer.len() != 1 {
+            bail!("test requires the declared owning-crate prelude consumer");
+        }
+        ledger.governance_paths.clear();
+        ledger.unparseable_paths = vec![unparseable.to_string()];
+        let mut violations = Vec::new();
+        validate_consumers(root, &ledger, &mut violations);
+        if !violations.is_empty() {
+            bail!("native paths did not match repository policy identities: {violations:?}");
+        }
         Ok(())
     }
 
@@ -2428,8 +2488,13 @@ mod tests {
             error.contains("elsewhere") && error.contains("out-of-line"),
             "an out-of-line public submodule must be rejected, got: {error:?}"
         );
-        // A private out-of-line module exposes nothing and stays acceptable.
-        assert!(parse_module_surface("mod helper;").is_ok(), "a private submodule is fine");
+        // A private out-of-line module can still contain crate-root macro exports.
+        let private = parse_module_surface("mod helper;")?;
+        if !private.iter().any(|item| {
+            item.kind == "unsupported_public_form" && item.id.contains("out-of-line module helper")
+        }) {
+            bail!("uninspected private module must fail closed: {private:?}");
+        }
         Ok(())
     }
 
@@ -2487,9 +2552,102 @@ mod tests {
 
         let exported = parse_module_surface("#[macro_export]\nmacro_rules! shouted { () => {}; }")?;
         assert!(
-            exported.iter().any(|item| item.id == "shouted" && item.kind == "exported_macro"),
+            exported
+                .iter()
+                .any(|item| item.id == "crate::shouted" && item.kind == "exported_macro"),
             "an exported macro keeps its own row: {exported:?}"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn falsifier_l1_associated_and_hidden_item_macros_fail_closed() -> Result<()> {
+        for (location, text) in [
+            ("impl", "pub struct Held; impl Held { generated!(); }"),
+            ("trait", "pub trait Held { generated!(); }"),
+            ("foreign", "unsafe extern \"C\" { generated!(); }"),
+            ("item", "mod hidden { generated!(); }"),
+            ("impl", "struct Held; impl SomeTrait for Held { generated!(); }"),
+        ] {
+            let source = parse_module_surface(text)?;
+            if !source.iter().any(|item| {
+                item.kind == "unsupported_public_form"
+                    && item.id.contains(&format!("{location} macro expansion"))
+            }) {
+                bail!("{location} expansion escaped the inventory: {source:?}");
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn falsifier_l1_macro_exports_use_crate_root_from_all_visible_syntax() -> Result<()> {
+        for text in [
+            "mod hidden { #[macro_export] macro_rules! exported { () => {}; } }",
+            "pub mod visible { mod hidden { #[macro_export] macro_rules! exported { () => {}; } } }",
+            "fn hidden() { #[macro_export] macro_rules! exported { () => {}; } }",
+        ] {
+            let source = parse_module_surface(text)?;
+            let exports: Vec<_> =
+                source.iter().filter(|item| item.kind == "exported_macro").collect();
+            if exports.len() != 1 || !exports.iter().any(|item| item.id == "crate::exported") {
+                bail!("export must have exactly one crate-root identity: {source:?}");
+            }
+            if source.iter().any(|item| item.id == "hidden") {
+                bail!("ordinary private scope was exposed: {source:?}");
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn falsifier_l1_private_definitions_and_dormant_macro_tokens_are_not_exports() -> Result<()> {
+        let source = parse_module_surface(
+            "mod hidden { pub fn internal() {} macro_rules! private { () => { #[macro_export] macro_rules! dormant { () => {}; } }; } }",
+        )?;
+        if source.len() != 1
+            || !source.iter().any(|item| item.id == "dead_code" && item.kind == "module")
+        {
+            bail!("private declarations or dormant tokens became public items: {source:?}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn falsifier_l1_hidden_macro_additions_reach_ledger_enforcement() -> Result<()> {
+        let root = project_root()?;
+        let ledger = read_ledger(&root, POLICY_PATH)?;
+        let original = read_text(&root, &ledger.module_source)?;
+        let mut baseline = Vec::new();
+        validate_source_coverage(&ledger, &parse_module_surface(&original)?, &mut baseline);
+        if !baseline.is_empty() {
+            bail!("the current source must satisfy L1 before mutation: {baseline:?}");
+        }
+        for (expected, addition) in [
+            ("impl macro expansion", "impl DeadCodeDetector { generated!(); }"),
+            ("trait macro expansion", "pub trait AddedTrait { generated!(); }"),
+            ("foreign macro expansion", "unsafe extern \"C\" { generated!(); }"),
+            ("item macro expansion", "mod hidden_added { generated!(); }"),
+            ("out-of-line module hidden_added", "mod hidden_added;"),
+            (
+                "crate::added_export",
+                "mod hidden_added { #[macro_export] macro_rules! added_export { () => {}; } }",
+            ),
+            (
+                "crate::added_export",
+                "fn hidden_added() { #[macro_export] macro_rules! added_export { () => {}; } }",
+            ),
+        ] {
+            let text = format!("{original}\n{addition}\n");
+            let mut violations = Vec::new();
+            validate_source_coverage(&ledger, &parse_module_surface(&text)?, &mut violations);
+            if !violations
+                .iter()
+                .any(|message| message.starts_with("L1:") && message.contains(expected))
+            {
+                bail!("{expected} did not reach L1 enforcement: {violations:?}");
+            }
+        }
         Ok(())
     }
 

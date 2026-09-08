@@ -815,3 +815,9 @@ id = "serialized-payloads-in-circulation"
 blocks_removal_of = ["DeadCodeType::UnusedImport", "DeadCodeType::UnusedExport"]
 claim = "Whether any stored or transmitted payload carries `UnusedImport` / `UnusedExport`."
 reason = "Both variants derive `Serialize`/`Deserialize`, so a payload could exist outside the tree. Removal conditions for the two variants depend on this and it is not established here."
+
+
+[[not_proven]]
+id = "compiler-expanded-public-surface"
+claim = "The source inventory equals the compiler-expanded public API across every supported feature and target configuration."
+reason = "The source guard parses explicit Rust items and exported macro definitions and refuses unexpanded item/associated/foreign macro boundaries and uninspected out-of-line modules. It does not expand arbitrary expression macros, procedural attributes, or conditional attributes, and a checked-in API baseline alone is not current compiler output. Issue #9777 retains compiler-produced API comparison with independent ledger identities and configuration-specific negative controls before this broader acceptance can be marked complete."
