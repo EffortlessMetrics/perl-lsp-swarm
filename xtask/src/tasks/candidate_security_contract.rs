@@ -13,6 +13,7 @@
 use color_eyre::eyre::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
+use std::io::Read;
 
 /// Schema identity for the contract governed here. Serialized receipts must
 /// carry exactly this string; anything else is a different contract.
@@ -138,6 +139,8 @@ pub struct SecurityFinding {
 #[serde(rename_all = "snake_case")]
 pub enum FindingDisposition {
     NeedsReview,
+    /// Records a completed review disposition only. It neither authorizes
+    /// risk acceptance nor establishes the separately declared audit outcome.
     AcceptedWithDisposition,
     /// Review rejected the finding itself (for example, a false positive).
     /// This is not acceptance of a security risk or an automatic rail pass.
@@ -319,6 +322,9 @@ pub fn validate_contract(contract: &CandidateSecurityContract) -> Result<()> {
                 "rail {:?} claims failed with neither findings nor applicability evidence",
                 rail_name_label(rail.rail)
             ),
+            RailStatus::NotApplicable if rail.rail != RailName::ContainerWhenRequired => {
+                bail!("mandatory rail {:?} cannot be not_applicable", rail_name_label(rail.rail))
+            }
             RailStatus::NotApplicable
                 if rail.rail == RailName::ContainerWhenRequired && contract.container_required =>
             {
@@ -378,7 +384,8 @@ fn rail_status_label(status: RailStatus) -> &'static str {
 /// boundaries. Values are placeholders that name their rule, not audit
 /// results — this constructor exists so the inventory shape is executable and
 /// provable before any scanner runs.
-pub fn baseline_inventory() -> CandidateSecurityContract {
+#[cfg(test)]
+fn baseline_inventory() -> CandidateSecurityContract {
     let mut tools = BTreeSet::new();
     tools.insert(ToolIdentity {
         tool: "cargo_deny".to_string(),
@@ -474,8 +481,14 @@ pub fn baseline_inventory() -> CandidateSecurityContract {
 const MAX_CONTRACT_BYTES: u64 = 1024 * 1024;
 
 fn load_contract(path: &std::path::Path) -> Result<CandidateSecurityContract> {
+    // Windows refuses opening directories before handle metadata is available.
+    if path.is_dir() {
+        bail!("contract path {} is not a file", path.display());
+    }
+    let file = std::fs::File::open(path)
+        .with_context(|| format!("reading contract {}", path.display()))?;
     let metadata =
-        std::fs::metadata(path).with_context(|| format!("reading contract {}", path.display()))?;
+        file.metadata().with_context(|| format!("inspecting contract {}", path.display()))?;
     if !metadata.is_file() {
         bail!("contract path {} is not a file", path.display());
     }
@@ -486,11 +499,20 @@ fn load_contract(path: &std::path::Path) -> Result<CandidateSecurityContract> {
             metadata.len()
         );
     }
-    let text = std::fs::read_to_string(path)
+    let bytes = read_contract_bytes(file)
         .with_context(|| format!("reading contract {}", path.display()))?;
-    let contract: CandidateSecurityContract = serde_json::from_str(&text)
+    let contract: CandidateSecurityContract = serde_json::from_slice(&bytes)
         .with_context(|| format!("parsing contract {}", path.display()))?;
     Ok(contract)
+}
+
+fn read_contract_bytes(reader: impl Read) -> Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    reader.take(MAX_CONTRACT_BYTES + 1).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > MAX_CONTRACT_BYTES {
+        bail!("contract exceeds the closed-contract limit of {MAX_CONTRACT_BYTES} bytes");
+    }
+    Ok(bytes)
 }
 
 pub fn run(path: &std::path::Path) -> Result<()> {
@@ -510,6 +532,69 @@ mod tests {
 
     fn contract() -> CandidateSecurityContract {
         baseline_inventory()
+    }
+
+    #[test]
+    fn mandatory_rails_cannot_claim_not_applicable() -> Result<()> {
+        for name in [
+            RailName::RustDependenciesPolicy,
+            RailName::ExtensionDependencies,
+            RailName::PackagedSubjects,
+        ] {
+            let mut candidate = contract();
+            let rail = candidate
+                .rails
+                .iter_mut()
+                .find(|rail| rail.rail == name)
+                .ok_or_else(|| eyre!("missing mandatory rail"))?;
+            rail.status = RailStatus::NotApplicable;
+            rail.applicability_evidence = Some("explicit but invalid exclusion".to_string());
+            let error = validate_contract(&candidate)
+                .err()
+                .ok_or_else(|| eyre!("mandatory rail exclusion passed"))?;
+            if !error.to_string().contains("mandatory rail") {
+                bail!("mandatory rail exclusion failed for unrelated reason: {error}");
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn bounded_reader_accepts_exact_limit_and_stops_at_one_extra_byte() -> Result<()> {
+        let bytes = read_contract_bytes(std::io::repeat(b' ').take(MAX_CONTRACT_BYTES))?;
+        if bytes.len() as u64 != MAX_CONTRACT_BYTES {
+            bail!("exact-limit input was truncated");
+        }
+        for extra in [1, 4096] {
+            let mut source = std::io::repeat(b' ').take(MAX_CONTRACT_BYTES + extra);
+            let error = read_contract_bytes(&mut source)
+                .err()
+                .ok_or_else(|| eyre!("over-limit reader passed"))?;
+            if !error.to_string().contains("closed-contract limit") || source.limit() != extra - 1 {
+                bail!("reader must reject size and consume exactly limit plus one: {error}");
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn accepted_review_disposition_preserves_separate_audit_outcomes() -> Result<()> {
+        for status in [RailStatus::Pass, RailStatus::Failed, RailStatus::NotProven] {
+            let mut candidate = contract();
+            let rail = candidate.rails.first_mut().ok_or_else(|| eyre!("missing first rail"))?;
+            rail.status = status;
+            rail.findings.push(SecurityFinding {
+                finding_id: "review-record".to_string(),
+                summary: "review disposition does not determine audit outcome".to_string(),
+                disposition: FindingDisposition::AcceptedWithDisposition,
+            });
+            let before = candidate.clone();
+            validate_contract(&candidate)?;
+            if candidate != before {
+                bail!("validation changed the declared audit outcome");
+            }
+        }
+        Ok(())
     }
 
     #[test]
