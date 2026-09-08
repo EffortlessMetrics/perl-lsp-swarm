@@ -56,7 +56,7 @@ impl RepoTreeSource {
         Self::from_root(root, Some(revision))
     }
 
-    fn from_root(root: PathBuf, revision: Option<String>) -> Result<Self> {
+    pub(crate) fn from_root(root: PathBuf, revision: Option<String>) -> Result<Self> {
         Ok(Self { root, revision, cache: RefCell::new(BTreeMap::new()) })
     }
 }

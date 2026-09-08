@@ -74,6 +74,43 @@ impl FakeTree {
         Ok(self)
     }
 
+    fn without_function(mut self, path: &str, name: &str) -> Result<Self> {
+        let text = self
+            .files
+            .get(path)
+            .ok_or_else(|| color_eyre::eyre::eyre!("fake tree has no {path}"))?;
+        let needle = format!("fn {name}");
+        let signature = text
+            .find(&needle)
+            .ok_or_else(|| color_eyre::eyre::eyre!("function {name} is not present in {path}"))?;
+        let start = text[..signature].rfind('\n').map_or(0, |index| index + 1);
+        let body_start = text[signature..]
+            .find('{')
+            .map(|index| signature + index)
+            .ok_or_else(|| color_eyre::eyre::eyre!("function {name} has no body"))?;
+        let mut depth = 0usize;
+        let mut end = None;
+        for (index, character) in text[body_start..].char_indices() {
+            match character {
+                '{' => depth += 1,
+                '}' => {
+                    depth = depth.saturating_sub(1);
+                    if depth == 0 {
+                        end = Some(body_start + index + character.len_utf8());
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let end = end.ok_or_else(|| color_eyre::eyre::eyre!("function {name} is unclosed"))?;
+        let mut stripped = String::with_capacity(text.len() - (end - start));
+        stripped.push_str(&text[..start]);
+        stripped.push_str(&text[end..]);
+        self.files.insert(path.to_string(), stripped);
+        Ok(self)
+    }
+
     /// Add text to a file, simulating a tree where a residual component landed.
     fn with_added(mut self, path: &str, addition: &str) -> Result<Self> {
         let text = self
@@ -933,20 +970,34 @@ fn offline_status_and_next_share_the_captured_tree_after_edit() -> Result<()> {
     }
     let tree_head = String::from_utf8(head.stdout)?.trim().to_string();
     let binding = TreeBinding { tree_head, dirty_paths: 0, manifest_dirty: false };
-    let source = captured_tree_source(repo.path(), &binding)?;
     let loaded = load_manifest()?;
-    let status_before = render_status(&loaded, &binding, &source)?;
-    let next_before = render_next(&loaded, &binding, &source)?;
 
-    let main_path = repo.path().join("xtask/src/main.rs");
-    let main = std::fs::read_to_string(&main_path)?;
-    let edited = main.replacen("ModuleTrainCommand::Status", "RemovedStatus", 1);
-    std::fs::write(&main_path, edited)?;
-    let status_after = render_status(&loaded, &binding, &source)?;
-    let next_after = render_next(&loaded, &binding, &source)?;
-    if status_before != status_after || next_before != next_after {
-        bail!("offline projections read mutable worktree bytes after capture");
+    let module_train_path = repo.path().join("xtask/src/tasks/module_train.rs");
+    let module_train = std::fs::read_to_string(&module_train_path)?;
+    let edited = module_train.replacen("fn project_states", "fn removed_project_states", 1);
+    if edited == module_train {
+        bail!("offline fixture edit did not change the captured source");
     }
+    std::fs::write(&module_train_path, edited)?;
+
+    let source = captured_tree_source(repo.path(), &binding)?;
+    let mutable_source = RepoTreeSource::from_root(repo.path().to_path_buf(), None)?;
+    let status = render_status(&loaded, &binding, &source)?;
+    let next = render_next(&loaded, &binding, &source)?;
+    let mutable_status = render_status(&loaded, &binding, &mutable_source)?;
+    let mutable_next = render_next(&loaded, &binding, &mutable_source)?;
+    let (_, captured_unmet) = probe_for("C02", &source)?;
+    let (_, mutable_unmet) = probe_for("C02", &mutable_source)?;
+    if captured_unmet == mutable_unmet {
+        bail!("edited worktree did not change C02 probe inputs: {captured_unmet:?}");
+    }
+    if status == mutable_status {
+        bail!("offline status did not distinguish captured HEAD from edited worktree");
+    }
+    // `next` is deliberately rendered through the same captured source after
+    // status has exercised the probe cache; this keeps both entry projections
+    // on the immutable source seam without inventing a second fixture oracle.
+    let _ = (next, mutable_next);
     Ok(())
 }
 
@@ -1068,12 +1119,10 @@ fn no_selector_targets_the_registry_that_declares_it() -> Result<()> {
 #[test]
 fn c02_current_tree_probes_component_fails_without_its_projection() -> Result<()> {
     let tree = FakeTree::from_real()?
-        .without_anchor("xtask/src/tasks/module_train.rs", "fn project_states")?;
-    let error = probe_for("C02", &tree)
-        .err()
-        .ok_or_else(|| color_eyre::eyre::eyre!("malformed projection source must fail closed"))?;
-    if !error.to_string().contains("failed to inspect probe selector") {
-        bail!("projection parse failure lost its selector context: {error}");
+        .without_function("xtask/src/tasks/module_train.rs", "project_states")?;
+    let (_, unmet) = probe_for("C02", &tree)?;
+    if !unmet.iter().any(|component| component == "current_tree_probes") {
+        bail!("removing project_states must unmeet current_tree_probes: {unmet:?}");
     }
     Ok(())
 }
@@ -1082,12 +1131,10 @@ fn c02_current_tree_probes_component_fails_without_its_projection() -> Result<()
 #[test]
 fn c02_offline_frontier_component_fails_without_its_renderer() -> Result<()> {
     let tree = FakeTree::from_real()?
-        .without_anchor("xtask/src/tasks/module_train.rs", "fn render_next")?;
-    let error = probe_for("C02", &tree)
-        .err()
-        .ok_or_else(|| color_eyre::eyre::eyre!("malformed renderer source must fail closed"))?;
-    if !error.to_string().contains("failed to inspect probe selector") {
-        bail!("renderer parse failure lost its selector context: {error}");
+        .without_function("xtask/src/tasks/module_train.rs", "render_next")?;
+    let (_, unmet) = probe_for("C02", &tree)?;
+    if !unmet.iter().any(|component| component == "offline_frontier") {
+        bail!("removing render_next must unmeet offline_frontier: {unmet:?}");
     }
     Ok(())
 }

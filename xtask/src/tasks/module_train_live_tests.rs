@@ -209,11 +209,20 @@ fn mismatched_tree_gates_start_but_keeps_candidate_action() -> Result<()> {
             .limitations
             .iter()
             .any(|limitation| limitation == PROBED_FROM_A_DIFFERENT_TREE)
+        || start_leaf.c02_state != "not_proven"
+        || start_leaf.c02_reasons != vec![PROBED_FROM_A_DIFFERENT_TREE.to_string()]
     {
         color_eyre::eyre::bail!(
             "a mismatched ready leaf must not START: action={} limitations={:?}",
             start_leaf.action,
             start_leaf.limitations
+        );
+    }
+    let explain = render_explain(&snapshot, &loaded()?, "M07A")?;
+    let expected_state = format!("c02_state: not_proven reasons={PROBED_FROM_A_DIFFERENT_TREE}");
+    if !explain.contains(&expected_state) || explain.contains("c02_state: ready") {
+        color_eyre::eyre::bail!(
+            "mismatched-tree explain must expose the effective NOT_PROVEN state: {explain}"
         );
     }
     let candidate_snapshot = normalize_text(CORPUS_FIXTURE)?;
