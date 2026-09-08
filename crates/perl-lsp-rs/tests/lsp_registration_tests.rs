@@ -259,8 +259,13 @@ fn normal_mode_registers_file_watchers_when_client_supports_dynamic_watchers() -
         .and_then(Value::as_array)
         .ok_or("file watcher registration must include watchers")?;
 
-    assert!(watchers.iter().any(|watcher| watcher["globPattern"] == json!("**/*.pl")));
-    assert!(watchers.iter().any(|watcher| watcher["globPattern"] == json!("**/*.pm")));
+    // #13308: the registration advertises one catch-all glob; extensionless
+    // shebang scripts have no extension glob, and handler-side classification
+    // keeps non-Perl events inert.
+    assert!(
+        watchers.iter().any(|watcher| watcher["globPattern"] == json!("**/*")),
+        "watcher registration must advertise the catch-all glob: {watchers:?}"
+    );
     Ok(())
 }
 
@@ -278,10 +283,11 @@ fn relative_pattern_clients_receive_relative_file_watchers() -> TestResult {
         .and_then(Value::as_array)
         .ok_or("file watcher registration must include watchers")?;
 
+    // #13308: one catch-all relative pattern replaces the per-extension set.
     assert_eq!(
         watchers.len(),
-        4,
-        "single-root registration should include one watcher per Perl pattern"
+        1,
+        "single-root registration should include the single catch-all watcher"
     );
     for watcher in watchers {
         assert_eq!(watcher.get("kind").and_then(Value::as_u64), Some(7));
@@ -290,23 +296,12 @@ fn relative_pattern_clients_receive_relative_file_watchers() -> TestResult {
             Some("file:///workspace"),
             "relative watcher must be rooted at the initialized workspace: {watcher}"
         );
-        assert!(
-            watcher.pointer("/globPattern/pattern").and_then(Value::as_str).is_some(),
-            "relative watcher must carry a pattern string: {watcher}"
+        assert_eq!(
+            watcher.pointer("/globPattern/pattern").and_then(Value::as_str),
+            Some("**/*"),
+            "relative watcher must carry the catch-all pattern: {watcher}"
         );
     }
-    assert!(
-        watchers.iter().any(|watcher| {
-            watcher.pointer("/globPattern/pattern").and_then(Value::as_str) == Some("**/*.pl")
-        }),
-        "expected .pl watcher in relative-pattern registration: {watchers:?}"
-    );
-    assert!(
-        watchers.iter().any(|watcher| {
-            watcher.pointer("/globPattern/pattern").and_then(Value::as_str) == Some("**/*.pm")
-        }),
-        "expected .pm watcher in relative-pattern registration: {watchers:?}"
-    );
     Ok(())
 }
 
@@ -324,8 +319,10 @@ fn relative_pattern_clients_fall_back_to_string_watchers_without_valid_workspace
         .and_then(Value::as_array)
         .ok_or("file watcher registration must include watchers")?;
 
-    assert!(watchers.iter().any(|watcher| watcher["globPattern"] == json!("**/*.pl")));
-    assert!(watchers.iter().any(|watcher| watcher["globPattern"] == json!("**/*.pm")));
+    assert!(
+        watchers.iter().any(|watcher| watcher["globPattern"] == json!("**/*")),
+        "fallback registration must advertise the catch-all glob: {watchers:?}"
+    );
     for watcher in watchers {
         assert!(
             watcher.get("globPattern").is_some_and(Value::is_string),

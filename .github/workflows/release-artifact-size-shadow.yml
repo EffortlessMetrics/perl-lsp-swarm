@@ -1,0 +1,265 @@
+name: Release Artifact Size Shadow
+
+# Read-only, manual-only same-SHA safe-ICF A/B measurement for issue #5432.
+#
+# This lane produces evidence and nothing else. It never tags, publishes,
+# uploads a release asset, or changes how release.yml links any artifact.
+# Adoption is a separate, later decision made from the receipts this lane
+# retains.
+#
+# Each governed macOS triple is measured on its own native runner: the
+# `release_artifact_size` instrument rejects a measurement whose rustc host is
+# not the measured target, because a cross-built artifact's runtime smoke never
+# ran on the platform being claimed.
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: 'Native macOS target to measure'
+        required: true
+        type: choice
+        options:
+          - aarch64-apple-darwin
+          - x86_64-apple-darwin
+  # There is deliberately no `repeat_confirmed` input. `--repeat-confirmed` is
+  # promotion authority: it lets the instrument treat a borderline 0.5%-1.0%
+  # reduction as confirmed. A dispatcher checkbox is not evidence that a second
+  # measurement happened, and one run cannot testify that it ran twice. This
+  # lane therefore never passes the flag, and a borderline win resolves to
+  # `not_proven` naming the unmet repeat requirement — which is the truth about
+  # a single run. Confirming a borderline win is a separate, deliberate act
+  # performed with two receipts actually in hand.
+
+concurrency:
+  group: release-artifact-size-shadow-${{ github.ref }}-${{ inputs.target }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  # The exact candidate link flags governed by #5432. `measure.rs` requires the
+  # declared candidate flags to equal this string, and requires the baseline to
+  # declare none, so the A/B differs only by these flags.
+  SAFE_ICF_RUSTFLAGS: '-C linker=rust-lld -C linker-flavor=ld64.lld -C link-arg=--icf=safe'
+  DAP_SMOKE_TEST: stdio_transport_framing_initialize_threads_disconnect
+
+jobs:
+  measure:
+    name: Measure ${{ inputs.target }}
+    runs-on: ${{ inputs.target == 'x86_64-apple-darwin' && 'macos-15-intel' || 'macos-14' }}
+    timeout-minutes: 120
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # stable (master)
+        with:
+          toolchain: stable
+          targets: ${{ inputs.target }}
+
+      - name: Resolve measurement subject
+        id: subject
+        shell: bash
+        env:
+          TARGET: ${{ inputs.target }}
+        run: |
+          set -euo pipefail
+          # `measure.rs` treats a non-native host as `not_proven`: fail early
+          # rather than burning two release builds on unusable evidence.
+          HOST="$(rustc -vV | awk '/^host: /{print $2}')"
+          if [ "$HOST" != "$TARGET" ]; then
+            echo "runner host $HOST cannot measure $TARGET natively" >&2
+            exit 1
+          fi
+          # `source_identity_bound` compares the SHA declared for both variants
+          # against the checkout the instrument measures, so a disagreement here
+          # would only surface as `not_proven` after two release builds.
+          HEAD_SHA="$(git rev-parse HEAD)"
+          if [ "$HEAD_SHA" != "$GITHUB_SHA" ]; then
+            echo "checkout $HEAD_SHA is not the dispatched commit $GITHUB_SHA" >&2
+            exit 1
+          fi
+          # Select `perllsp` by name: `cargo metadata` package order is an
+          # unspecified internal detail, and `packages[0]` is `perl-ast` today.
+          # The archive is named for `perllsp`, so its version is the one that
+          # belongs in the package name.
+          VERSION="$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json, sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"] == "perllsp"))')"
+          printf 'host=%s\n' "$HOST" >> "$GITHUB_OUTPUT"
+          printf 'version=%s\n' "$VERSION" >> "$GITHUB_OUTPUT"
+          printf 'source_sha=%s\n' "$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+          # `subject_complete` requires a clean tree, so every staging path this
+          # lane writes stays under the gitignored `target/` directory.
+          mkdir -p target/shadow/baseline target/shadow/candidate target/shadow/receipts
+
+      - name: Prepare identity-bearing build inputs
+        shell: bash
+        env:
+          TARGET: ${{ inputs.target }}
+          VERSION: ${{ steps.subject.outputs.version }}
+          SOURCE_SHA: ${{ steps.subject.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          # `product_identity.rs::embedded_build_input` compiles these values in
+          # through `option_env!`. A build without them is not the release
+          # configuration: the embedded strings are absent, the identity
+          # normalization takes its not-embedded path, and safe ICF is therefore
+          # folding a different program than the one that ships. Deriving them
+          # once and exporting to the job environment gives both variants the
+          # identical release-shaped identity, so the A/B still differs only by
+          # the link flags.
+          #
+          # This reproduces release.yml's identity-bearing build inputs; it
+          # deliberately does not run `scripts/release_build_identity.py
+          # prepare`, which additionally validates release-topology and
+          # product-identity contracts scoped to an actual tagged release. A
+          # measurement lane has no release candidate and must not mint one.
+          #
+          # The digest derivation matches that script's `canonical_tree_digest`:
+          # SHA-256 over the raw `git ls-tree -r -z --full-tree` inventory.
+          TREE_DIGEST="$(git ls-tree -r -z --full-tree "$SOURCE_SHA" | shasum -a 256 | awk '{print $1}')"
+          {
+            printf 'PERL_LSP_BUILD_REVISION=%s\n' "$SOURCE_SHA"
+            printf 'PERL_LSP_SOURCE_TREE_DIGEST=%s\n' "$TREE_DIGEST"
+            printf 'PERL_LSP_TARGET_TRIPLE=%s\n' "$TARGET"
+            printf 'PERL_LSP_BUILD_PROFILE=release\n'
+            printf 'PERL_LSP_ARTIFACT_ROLE=archive\n'
+            printf 'PERL_LSP_CANDIDATE_ID=v%s-shadow\n' "$VERSION"
+          } >> "$GITHUB_ENV"
+
+      - name: Build baseline
+        shell: bash
+        env:
+          TARGET: ${{ inputs.target }}
+          # Declared empty on purpose: the baseline must carry no linker policy.
+          RUSTFLAGS: ''
+        run: |
+          set -euo pipefail
+          cargo build --locked --release --target "$TARGET" -p perllsp --bin perllsp
+          cargo build --locked --release --target "$TARGET" -p perl-dap --bin perl-dap
+
+      - name: Package baseline
+        shell: bash
+        env:
+          TARGET: ${{ inputs.target }}
+          VERSION: ${{ steps.subject.outputs.version }}
+        run: |
+          set -euo pipefail
+          scripts/ci/release_artifact_size_stage.sh baseline "$TARGET" "$VERSION"
+
+      - name: Smoke baseline binaries
+        shell: bash
+        env:
+          VERSION: ${{ steps.subject.outputs.version }}
+          TARGET: ${{ inputs.target }}
+        run: |
+          set -euo pipefail
+          scripts/ci/release_artifact_size_smoke.sh baseline "$TARGET" "$VERSION"
+
+      - name: Discard the baseline build directory
+        shell: bash
+        env:
+          TARGET: ${{ inputs.target }}
+        run: |
+          set -euo pipefail
+          # The candidate must be linked from scratch under the same absolute
+          # target path; a surviving baseline artifact would not be relinked.
+          rm -rf "target/${TARGET}/release"
+
+      - name: Build candidate
+        shell: bash
+        env:
+          TARGET: ${{ inputs.target }}
+          RUSTFLAGS: ${{ env.SAFE_ICF_RUSTFLAGS }}
+        run: |
+          set -euo pipefail
+          cargo build --locked --release --target "$TARGET" -p perllsp --bin perllsp
+          cargo build --locked --release --target "$TARGET" -p perl-dap --bin perl-dap
+
+      - name: Package candidate
+        shell: bash
+        env:
+          TARGET: ${{ inputs.target }}
+          VERSION: ${{ steps.subject.outputs.version }}
+        run: |
+          set -euo pipefail
+          scripts/ci/release_artifact_size_stage.sh candidate "$TARGET" "$VERSION"
+
+      - name: Smoke candidate binaries
+        shell: bash
+        env:
+          VERSION: ${{ steps.subject.outputs.version }}
+          TARGET: ${{ inputs.target }}
+        run: |
+          set -euo pipefail
+          scripts/ci/release_artifact_size_smoke.sh candidate "$TARGET" "$VERSION"
+
+      - name: Compare baseline and candidate artifacts
+        shell: bash
+        env:
+          TARGET: ${{ inputs.target }}
+          VERSION: ${{ steps.subject.outputs.version }}
+          SOURCE_SHA: ${{ steps.subject.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          PKG="perllsp-${VERSION}-${TARGET}"
+          # One always-non-empty argv array. GitHub's macOS runners still ship
+          # Bash 3.2, where expanding a *zero-element* array under `set -u` is a
+          # fatal "unbound variable" — so a separate, conditionally-empty flag
+          # array would abort this step on every ordinary (non-repeat) dispatch,
+          # after both release builds had already been paid for.
+          ARGS=(
+            --target "$TARGET"
+            --baseline-dir "target/shadow/baseline/${PKG}"
+            --candidate-dir "target/shadow/candidate/${PKG}"
+            --baseline-archive "target/shadow/baseline/${PKG}.tar.gz"
+            --candidate-archive "target/shadow/candidate/${PKG}.tar.gz"
+            --baseline-lsp-smoke target/shadow/baseline/lsp-smoke.json
+            --candidate-lsp-smoke target/shadow/candidate/lsp-smoke.json
+            --baseline-dap-smoke target/shadow/baseline/dap-smoke.json
+            --candidate-dap-smoke target/shadow/candidate/dap-smoke.json
+            --baseline-source-sha "$SOURCE_SHA"
+            --candidate-source-sha "$SOURCE_SHA"
+            --baseline-rustflags ''
+            --candidate-rustflags "$SAFE_ICF_RUSTFLAGS"
+            --json "target/shadow/receipts/release-artifact-size-${TARGET}.json"
+            --markdown "target/shadow/receipts/release-artifact-size-${TARGET}.md"
+          )
+          cargo run --locked -p xtask --example release_artifact_size -- "${ARGS[@]}"
+
+      - name: Summarize the measurement
+        if: always()
+        shell: bash
+        env:
+          TARGET: ${{ inputs.target }}
+        run: |
+          set -euo pipefail
+          SUMMARY="target/shadow/receipts/release-artifact-size-${TARGET}.md"
+          if [ -f "$SUMMARY" ]; then
+            cat "$SUMMARY" >> "$GITHUB_STEP_SUMMARY"
+          else
+            printf 'No comparison receipt was produced for `%s`.\n' "$TARGET" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Retain measurement evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-artifact-size-${{ inputs.target }}
+          path: |
+            target/shadow/receipts
+            target/shadow/baseline/lsp-smoke.json
+            target/shadow/baseline/dap-smoke.json
+            target/shadow/candidate/lsp-smoke.json
+            target/shadow/candidate/dap-smoke.json
+          if-no-files-found: warn
+          retention-days: 30

@@ -47,6 +47,15 @@ IDENTITY_ENV_KEYS = (
     "PERL_LSP_ARTIFACT_ROLE",
 )
 CROSS_CONFIG_RELATIVE = Path("scripts") / "release" / "Cross.toml"
+# Cross derives `ghcr.io/cross-rs/<target>:<tag>` when a target declares no
+# image, and that tag is mutable (the crate version for a registry build, the
+# rolling `main` tag for a git build). A mutable tag cannot support an exact
+# release identity, so every cross target must pin one immutable digest.
+CROSS_IMAGE_REGISTRY = "ghcr.io/cross-rs"
+CROSS_IMAGE_PIN = re.compile(
+    r"^(?P<repository>[a-z0-9]+(?:[._/-][a-z0-9]+)*)"
+    r"@sha256:(?P<digest>[0-9a-f]{64})$"
+)
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
 VERSION = re.compile(
@@ -308,8 +317,50 @@ def load_cross_passthrough(path: Path) -> list[str]:
     return list(passthrough)
 
 
-def validate_cross_config(path: Path) -> None:
-    """Prove the closed identity env enrollment is present and exact."""
+def load_cross_image(path: Path, target: str) -> str:
+    """Return the reviewed container image pinned for one cross target."""
+    try:
+        value = tomllib.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
+        raise BuildIdentityError(
+            f"release Cross config is invalid: {path}"
+        ) from error
+    targets = value.get("target")
+    row = targets.get(target) if isinstance(targets, dict) else None
+    if not isinstance(row, dict):
+        raise BuildIdentityError(
+            "release Cross config does not pin a container image for cross "
+            f"target: {target}"
+        )
+    image = row.get("image")
+    if not isinstance(image, str):
+        raise BuildIdentityError(
+            f"release Cross config target.{target}.image must be a string"
+        )
+    return image
+
+
+def validate_cross_image(image: str, target: str) -> str:
+    """Prove one cross target selects an immutable, target-matched image."""
+    match = CROSS_IMAGE_PIN.fullmatch(image)
+    if match is None:
+        raise BuildIdentityError(
+            f"cross target {target} must pin an immutable "
+            "'<repository>@sha256:<64-hex>' image; a mutable tag cannot bind "
+            f"the container toolchain: {image!r}"
+        )
+    expected = f"{CROSS_IMAGE_REGISTRY}/{target}"
+    repository = match.group("repository")
+    if repository != expected:
+        raise BuildIdentityError(
+            f"cross target {target} pins another target's image repository: "
+            f"expected={expected!r}, observed={repository!r}"
+        )
+    return image
+
+
+def validate_cross_config(path: Path, target: str) -> str:
+    """Prove the closed identity env enrollment and image pin are exact."""
     passthrough = load_cross_passthrough(path)
     expected = list(IDENTITY_ENV_KEYS)
     if passthrough != expected:
@@ -326,16 +377,111 @@ def validate_cross_config(path: Path) -> None:
             "release Cross config must enroll exact identity passthrough: "
             + "; ".join(details)
         )
+    return validate_cross_image(load_cross_image(path, target), target)
 
 
-def toolchain_digest(root: Path, runner: str) -> str:
+# The one cross variable this adapter sets itself. `prepare` writes it to
+# GITHUB_ENV so the workflow's own build step and the later `verify` see the
+# reviewed config; both overwrite whatever was ambient, so it stays allowed.
+CROSS_AMBIENT_ALLOWED = frozenset({"CROSS_CONFIG"})
+# Cross also reads a few container controls that carry no CROSS_ prefix.
+CROSS_AMBIENT_EXTRA = ("DOCKER_OPTS", "QEMU_STRACE")
+# Named container-selecting config keys, kept as error-message and regression
+# subjects. Not the enforcement boundary, so this never has to stay exhaustive.
+CROSS_CONTAINER_KEYS = (
+    "IMAGE",
+    "DOCKERFILE",
+    "DOCKERFILE_CONTEXT",
+    "DOCKERFILE_BUILD_ARGS",
+    "PRE_BUILD",
+)
+
+
+def cross_ambient_overrides(
+    target: str, env: Mapping[str, str] | None = None
+) -> list[str]:
+    """Return ambient cross configuration that would apply to this build.
+
+    Cross takes configuration from the environment through two mechanisms,
+    and both can change what actually compiles:
+
+    1. the `Config`/`Environment` layer, spelled `CROSS_TARGET_<TARGET>_<KEY>`
+       and `CROSS_BUILD_<KEY>`, which is resolved BEFORE `Cross.toml` (0.2.5
+       `src/config.rs::string_from_config` returns the env value and never
+       consults the TOML). `IMAGE` replaces the pin; `DOCKERFILE` (with
+       `DOCKERFILE_CONTEXT` / `DOCKERFILE_BUILD_ARGS`) builds a local image
+       instead; `PRE_BUILD` derives a new image `FROM` the pin and runs
+       arbitrary script content in it.
+    2. direct `env::var` reads in the docker layer, which no prefix covers —
+       `CROSS_CONTAINER_OPTS` and `DOCKER_OPTS` append raw options to the
+       container invocation, `CROSS_CONTAINER_ENGINE` picks a different
+       engine, `CROSS_REMOTE*` runs the build on another machine's engine,
+       and `CROSS_CONTAINER_UID`/`GID`/`USER_NAMESPACE` change who it runs as.
+
+    Four bypasses were found by enumerating individual names, so the boundary
+    is derived from cross's whole surface instead: every `CROSS_*` variable is
+    refused unless explicitly allowed, plus the non-prefixed container
+    controls. A variable cross adds later is refused by default rather than
+    silently producing a digest that describes a container the build did not
+    run in.
+
+    An override naming a *different* target cannot affect this build and is
+    left alone, so one matrix job does not fail on a sibling's configuration.
+    """
+    source = os.environ if env is None else env
+    slug = target.upper().replace("-", "_")
+    mine = f"CROSS_TARGET_{slug}_"
+    present: list[str] = []
+    for name in source:
+        # Presence, not truthiness: cross reads an empty value as a selection.
+        if name in CROSS_AMBIENT_EXTRA:
+            present.append(name)
+            continue
+        if not name.startswith("CROSS_") or name in CROSS_AMBIENT_ALLOWED:
+            continue
+        if name.startswith("CROSS_TARGET_") and not name.startswith(mine):
+            continue  # another matrix target's configuration
+        present.append(name)
+    return sorted(present)
+
+
+def reject_cross_ambient_overrides(
+    target: str, env: Mapping[str, str] | None = None
+) -> None:
+    """Fail closed when ambient cross configuration could bypass the pin."""
+    present = cross_ambient_overrides(target, env)
+    if present:
+        raise BuildIdentityError(
+            "ambient cross configuration would apply to this build without "
+            f"changing toolchain_digest, so the container running the "
+            f"compiler for {target} could differ from the reviewed pin: "
+            f"{present}"
+        )
+
+
+def toolchain_digest(
+    root: Path,
+    runner: str,
+    target: str,
+    env: Mapping[str, str] | None = None,
+) -> str:
     rustc = run(["rustc", "--version", "--verbose"], cwd=root).stdout
     runner_version = run([runner, "--version"], cwd=root).stdout
     payload = b"rustc\0" + rustc + b"\0runner\0" + runner_version
     if runner == "cross":
+        reject_cross_ambient_overrides(target, env)
         config = cross_config_path(root)
-        validate_cross_config(config)
-        payload += b"\0cross_config\0" + config.read_bytes()
+        image = validate_cross_config(config, target)
+        # Bind the pinned image structurally, not only through config bytes:
+        # the digest must move when the selected container moves, and must not
+        # depend on unrelated edits elsewhere in the reviewed config being the
+        # only thing that carries it.
+        payload += (
+            b"\0cross_config\0"
+            + config.read_bytes()
+            + b"\0cross_image\0"
+            + image.encode("utf-8")
+        )
     return sha256_bytes(payload)
 
 
@@ -470,7 +616,7 @@ def prepare_identity(args: argparse.Namespace) -> ReleaseBuildIdentity:
         artifact_role=args.artifact_role,
         product_identity_contract_digest=sha256_file(product_path),
         release_topology_digest=sha256_file(topology_path),
-        toolchain_digest=toolchain_digest(root, runner),
+        toolchain_digest=toolchain_digest(root, runner, args.target),
     )
     identity.validate()
     write_atomic(args.output, canonical_json_bytes(identity.as_dict()))
@@ -531,9 +677,15 @@ def build_environment(
             raise BuildIdentityError(
                 "cross builds require workspace root for CROSS_CONFIG"
             )
+        reject_cross_ambient_overrides(identity.target, env)
         config = cross_config_path(root)
-        validate_cross_config(config)
+        validate_cross_config(config, identity.target)
         env["CROSS_CONFIG"] = str(config)
+        # Defence in depth for the subprocesses this adapter spawns. The
+        # workflow's own `$BUILD_CMD build` step does not pass through here,
+        # so `prepare` failing closed above is what protects that one.
+        for name in cross_ambient_overrides(identity.target, env):
+            env.pop(name, None)
     return env
 
 
@@ -555,7 +707,7 @@ def append_github_env(
                     "cross builds require workspace root for CROSS_CONFIG"
                 )
             config = cross_config_path(root)
-            validate_cross_config(config)
+            validate_cross_config(config, identity.target)
             handle.write(f"CROSS_CONFIG={config}\n")
 
 
@@ -788,7 +940,10 @@ def verify_binaries(
     verify_checkout(root, identity)
     if args.runner not in ALLOWED_RUNNERS:
         raise BuildIdentityError(f"unsupported build runner: {args.runner!r}")
-    if toolchain_digest(root, args.runner) != identity.toolchain_digest:
+    if (
+        toolchain_digest(root, args.runner, identity.target)
+        != identity.toolchain_digest
+    ):
         raise BuildIdentityError(
             "toolchain identity changed after build input generation"
         )
@@ -848,7 +1003,10 @@ def build_and_verify(args: argparse.Namespace) -> dict[str, Any]:
     verify_checkout(root, identity)
     if args.runner not in ALLOWED_RUNNERS:
         raise BuildIdentityError(f"unsupported build runner: {args.runner!r}")
-    if toolchain_digest(root, args.runner) != identity.toolchain_digest:
+    if (
+        toolchain_digest(root, args.runner, identity.target)
+        != identity.toolchain_digest
+    ):
         raise BuildIdentityError(
             "toolchain identity changed after build input generation"
         )

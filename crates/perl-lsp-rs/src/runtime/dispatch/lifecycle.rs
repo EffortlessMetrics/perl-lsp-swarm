@@ -118,6 +118,12 @@ impl LspServer {
         // LSP spec: exit with 0 if shutdown was called, 1 otherwise
         let exit_code = if self.shutdown_received.load(Ordering::Acquire) { 0 } else { 1 };
         tracing::info!(exit_code, "LSP server exiting");
+        // `process::exit` skips Rust destructors, including the non-blocking
+        // file writer guard. Drain it explicitly so the final lifecycle log
+        // record is durable before the process terminates.
+        // The logging guard is owned by the core launcher crate, which is
+        // also where the CLI initializes it.
+        perl_lsp_rs_core::runtime::launcher::shutdown_logging();
         std::process::exit(exit_code);
     }
 

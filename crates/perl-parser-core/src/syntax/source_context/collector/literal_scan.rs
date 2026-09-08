@@ -87,10 +87,9 @@ pub(super) fn scan_heredoc_regions(source: &str) -> Vec<SourceRegion> {
 
         if let Some((body_start, label, allow_indented)) = active.take() {
             // Trailing spaces/tabs after the delimiter still close the region.
-            // `PerlLexer` ends the heredoc body on such a line; comparing only
-            // the untrimmed line left the collector scanning to EOF and
-            // reclassifying every following statement as `Heredoc`, because
-            // `Heredoc` outranks `Code` in `region_precedence`.
+            // `PerlLexer` rejects that line (Perl 5.38.2 agrees); the collector
+            // consumes the padding when deciding the *region* closed so
+            // following source is not reclassified as recovery (#14864).
             //
             // The trimmed comparison is an *additional* way to close, never a
             // replacement: a quoted label may itself end in whitespace
@@ -1152,7 +1151,7 @@ mod tests {
     }
 
     /// Names the `trim_end_matches` closer seam directly rather than reaching it
-    /// through `SourceRegionIndex::build`. `PerlLexer` closes a heredoc on a
+    /// through `SourceRegionIndex::build`. The collector closes a heredoc on a
     /// delimiter line padded with spaces or tabs; comparing the untrimmed line
     /// left the body open to EOF, so every following statement was reclassified
     /// as `Heredoc` (which outranks `Code` in `region_precedence`).

@@ -7,8 +7,17 @@
 #![warn(missing_docs)]
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use perl_lsp_rs_core::config::{ProjectConfig, WorkspaceConfig};
+
+/// Source of workspace-folder incarnation ids.
+///
+/// Process-global and monotonic so that every registration is distinguishable
+/// from every other, including one that reuses a URI a previous registration
+/// released. Assigned in [`WorkspaceFolderState::new`], which is the only
+/// constructor, so a new incarnation cannot be created without one.
+static NEXT_FOLDER_INCARNATION: AtomicU64 = AtomicU64::new(0);
 
 /// State for a single workspace folder.
 ///
@@ -17,6 +26,19 @@ use perl_lsp_rs_core::config::{ProjectConfig, WorkspaceConfig};
 /// the foundation for multi-root workspace support.
 #[derive(Debug, Clone)]
 pub struct WorkspaceFolderState {
+    /// Identity of this particular registration of the folder.
+    ///
+    /// A folder removed and re-added under the same URI is a *different*
+    /// incarnation: it is a fresh state whose facts the re-add path has already
+    /// loaded. Any route that reads folder state, releases
+    /// `workspace_folders`, and writes back must carry this id and refuse to
+    /// apply to a different one — URI and path are both reused across a
+    /// remove/re-add and so cannot tell the two apart, and applying anyway
+    /// overwrites the new registration's facts with a snapshot taken before it
+    /// existed (#13640).
+    ///
+    /// Cloning preserves it: a clone stands for the same registration.
+    pub(crate) incarnation: u64,
     /// The URI of the workspace folder (e.g., "file:///path/to/folder")
     pub uri: String,
     /// The filesystem path of the workspace folder (if resolvable)
@@ -25,6 +47,8 @@ pub struct WorkspaceFolderState {
     pub name: Option<String>,
     /// Project configuration loaded from `.perl-lsp.toml` in this folder
     pub project_config: Option<ProjectConfig>,
+    /// Accepted project-configuration generation for this folder.
+    pub project_config_generation: u64,
     /// Effective workspace configuration for this folder
     ///
     /// This will eventually be computed by merging:
@@ -39,10 +63,12 @@ impl WorkspaceFolderState {
     #[must_use]
     pub fn new(uri: String) -> Self {
         Self {
+            incarnation: NEXT_FOLDER_INCARNATION.fetch_add(1, Ordering::Relaxed),
             uri,
             path: None,
             name: None,
             project_config: None,
+            project_config_generation: 0,
             effective_workspace_config: WorkspaceConfig::default(),
         }
     }
@@ -76,10 +102,60 @@ impl WorkspaceFolderState {
     }
 
     /// Refresh metadata-derived facts for this folder's effective workspace config.
+    ///
+    /// # This route reads disk and ignores open buffers
+    ///
+    /// Facts come from the files on disk, so a metadata document the editor
+    /// holds with unsaved changes does *not* speak for itself here. That is
+    /// correct for establishing a folder — nothing is open yet — and it is
+    /// what the configuration-reload paths still use, but it means a
+    /// configuration reload that lands while a metadata buffer is dirty
+    /// replaces staged facts with disk contents until the next event on that
+    /// document restores them (#15088).
+    ///
+    /// Prefer [`Self::refresh_workspace_metadata_from_reads`] anywhere an open
+    /// buffer could be authoritative (#8041). Every route added by #13640 —
+    /// watcher, file operations, and text-document lifecycle — uses that one.
     pub fn refresh_workspace_metadata(&mut self) {
         if let Some(path) = self.path.as_deref() {
             self.effective_workspace_config.refresh_declared_dependencies(path);
             self.effective_workspace_config.refresh_dependency_include_paths(path);
+        }
+    }
+
+    /// Refresh metadata-derived facts from per-source captured reads (#13640).
+    ///
+    /// Declared dependencies come from `reads`, so an open metadata buffer's
+    /// staged text is authoritative and an unreadable source keeps only its own
+    /// previous entries. Dependency-manager include roots are reconciled on
+    /// every call, so an unreadable declaration file cannot stop a deleted
+    /// `carton.lock` from retiring its root. Their install-base markers are
+    /// probed on disk; only the `cpanfile` declaration gate follows the
+    /// captured read, because an open buffer is authoritative for it.
+    pub fn refresh_workspace_metadata_from_reads(
+        &mut self,
+        reads: &[(
+            perl_lsp_rs_core::config::DeclaredDependencySource,
+            perl_lsp_rs_core::config::MetadataSourceRead,
+        )],
+    ) {
+        self.effective_workspace_config.apply_declared_dependency_reads(reads);
+        if let Some(path) = self.path.as_deref() {
+            // The declaration gate follows the captured read, not a fresh disk
+            // probe: an open `cpanfile` buffer is authoritative and outlives an
+            // external delete of the backing file, so the Carton/Carmel root
+            // must not be retired underneath it. `Unreadable` still counts as
+            // present — the file exists, we merely could not parse it.
+            let declaration_present = reads
+                .iter()
+                .find(|(source, _)| {
+                    *source == perl_lsp_rs_core::config::DeclaredDependencySource::Cpanfile
+                })
+                .map(|(_, read)| {
+                    !matches!(read, perl_lsp_rs_core::config::MetadataSourceRead::Absent)
+                });
+            self.effective_workspace_config
+                .refresh_dependency_include_paths_with_declaration(path, declaration_present);
         }
     }
 
@@ -179,22 +255,90 @@ mod tests {
         Ok(())
     }
 
+    /// Invalidation must be reversible (#13640): a root this detector
+    /// contributed is retired once its markers are gone, so deleting the lock
+    /// file does not leave a stale include root behind.
+    #[test]
+    fn refresh_workspace_metadata_retires_a_detected_include_path()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        std::fs::write(temp.path().join("cpanfile"), "requires 'JSON';\n")?;
+        std::fs::write(temp.path().join("carton.lock"), "snapshot\n")?;
+        let mut config = WorkspaceConfig::default();
+        config.include_paths = vec!["lib".to_string(), ".".to_string()];
+        let mut folder = WorkspaceFolderState::new("file:///workspace".to_string())
+            .with_path(temp.path().to_path_buf())
+            .with_effective_workspace_config(config);
+
+        folder.refresh_workspace_metadata();
+        assert_eq!(
+            folder.effective_workspace_config.include_paths,
+            vec!["lib", ".", "local/lib/perl5"],
+            "the detected root is contributed while its marker exists"
+        );
+
+        std::fs::remove_file(temp.path().join("carton.lock"))?;
+        folder.refresh_workspace_metadata();
+
+        assert_eq!(
+            folder.effective_workspace_config.include_paths,
+            vec!["lib", "."],
+            "a detected root must be retired once its marker is gone"
+        );
+        Ok(())
+    }
+
+    /// A path the user configured is never removed, even when the detector
+    /// also reports it and its marker later disappears.
+    #[test]
+    fn refresh_workspace_metadata_never_retires_a_configured_include_path()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        std::fs::write(temp.path().join("cpanfile"), "requires 'JSON';\n")?;
+        std::fs::write(temp.path().join("carton.lock"), "snapshot\n")?;
+        let mut folder = WorkspaceFolderState::new("file:///workspace".to_string())
+            .with_path(temp.path().to_path_buf());
+
+        // The default config already configures `local/lib/perl5`.
+        folder.refresh_workspace_metadata();
+        std::fs::remove_file(temp.path().join("carton.lock"))?;
+        folder.refresh_workspace_metadata();
+
+        assert_eq!(
+            folder.effective_workspace_config.include_paths,
+            vec!["lib", ".", "local/lib/perl5"],
+            "a user-configured include path is never claimed or retired by detection"
+        );
+        Ok(())
+    }
+
+    /// Migrated Carmel detection (#13642 §2/§3): a rolled-out Carmel project
+    /// (discriminated by the `local/.carmel` sentinel) contributes the shared
+    /// install-base root `local/lib/perl5`. The previous `vendor/lib/perl5`
+    /// marker had no basis in Carmel source and is retired.
     #[test]
     fn refresh_workspace_metadata_adds_carmel_include_path()
     -> Result<(), Box<dyn std::error::Error>> {
         let temp = tempfile::tempdir()?;
-        std::fs::write(temp.path().join("cpanfile"), "requires 'JSON';\n")?;
-        std::fs::create_dir_all(temp.path().join("vendor/lib/perl5"))?;
+        let mut config = WorkspaceConfig::default();
+        config.include_paths = vec!["lib".to_string(), ".".to_string()];
         let mut folder = WorkspaceFolderState::new("file:///workspace".to_string())
-            .with_path(temp.path().to_path_buf());
+            .with_path(temp.path().to_path_buf())
+            .with_effective_workspace_config(config);
 
         folder.refresh_workspace_metadata();
 
-        assert!(
-            folder
-                .effective_workspace_config
-                .include_paths
-                .contains(&"vendor/lib/perl5".to_string())
+        assert_eq!(folder.effective_workspace_config.include_paths, vec!["lib", "."]);
+
+        std::fs::write(temp.path().join("cpanfile"), "requires 'JSON';\n")?;
+        std::fs::create_dir_all(temp.path().join("local"))?;
+        std::fs::write(temp.path().join("local/.carmel"), "")?;
+        std::fs::create_dir_all(temp.path().join("local/lib/perl5"))?;
+        folder.refresh_workspace_metadata();
+
+        assert_eq!(
+            folder.effective_workspace_config.include_paths,
+            vec!["lib", ".", "local/lib/perl5"]
         );
         Ok(())
     }

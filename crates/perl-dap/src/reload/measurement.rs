@@ -572,6 +572,7 @@ fn parse_measurement_output(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use perl_test_must::{must_some_with, must_with};
 
     fn measured_record(
         mechanism: ReloadMechanism,
@@ -771,8 +772,10 @@ mod tests {
             FACT instance_data_persists\n\
             FACT removed_sub_remains_callable\n\
             FACT inc_entry_refreshed_by_require\n";
-        let measurement =
-            parse_measurement_output(M::IncDeletionAndRequire, stdout).expect("exact set verifies");
+        let measurement = must_with(
+            parse_measurement_output(M::IncDeletionAndRequire, stdout),
+            "exact set verifies",
+        );
         assert_eq!(measurement.facts.len(), 5);
     }
 
@@ -780,16 +783,17 @@ mod tests {
     fn unwritable_scratch_root_is_an_instrument_error_not_a_skip() {
         // A regular file as the scratch root: create_dir_all must fail.
         let bogus_root = std::env::temp_dir()
-            .join(format!("perl-reload-measure-bogus-root-{}", std::process::id(),));
-        std::fs::write(&bogus_root, b"not a directory").expect("write bogus root");
+            .join(format!("perl-reload-measure-bogus-root-{}", std::process::id()));
+        must_with(std::fs::write(&bogus_root, b"not a directory"), "write bogus root");
         let result = measure_with_scratch_root(
             ReloadMechanism::IncDeletionAndRequire,
             Some(bogus_root.clone()),
         );
         std::fs::remove_file(&bogus_root).ok();
-        let Some(result) = result else {
-            panic!("perl is available; the harness must not report the mechanism unmeasured");
-        };
+        let result = must_some_with(
+            result,
+            "perl is available; the harness must not report the mechanism unmeasured",
+        );
         assert!(
             result.as_ref().is_err_and(|error| error.contains("create scratch")),
             "scratch failure must surface as an instrument error, got {result:?}"
@@ -805,18 +809,17 @@ mod tests {
             (ReloadMechanism::IncDeletionAndRequire, MeasuredStateFact::IncEntryRefreshedByRequire),
             (ReloadMechanism::DoOrRequireHelper, MeasuredStateFact::IncEntryUnchangedByDo),
         ] {
-            let Some(result) = measure_with_scratch_root(mechanism, None) else {
-                panic!("perl is available but the harness declined to run for {mechanism:?}");
-            };
-            let measurement = result.unwrap_or_else(|error| {
-                panic!("live measurement failed for {mechanism:?}: {error}")
-            });
+            let result = must_some_with(
+                measure_with_scratch_root(mechanism, None),
+                format!("perl is available but the harness declined to run for {mechanism:?}"),
+            );
+            let measurement =
+                must_with(result, format!("live measurement failed for {mechanism:?}"));
             assert!(measurement.facts.contains(&inc_fact), "{mechanism:?}");
-            verify_measurement(&measurement).unwrap_or_else(|error| {
-                panic!(
-                    "live measurement disagrees with the frozen record for {mechanism:?}: {error:?}"
-                )
-            });
+            must_with(
+                verify_measurement(&measurement),
+                format!("live measurement disagrees with the frozen record for {mechanism:?}"),
+            );
             assert!(measurement.perl_identity.as_deref().is_some_and(|id| !id.is_empty()));
             // Unmeasured boundaries are typed, never silently absent.
             assert!(measurement.unmeasured.contains(&UnmeasuredBoundary::ActiveFrameContinuation));
@@ -828,11 +831,11 @@ mod tests {
         if !perl_available() {
             return;
         }
-        let Some(result) = measure_with_scratch_root(ReloadMechanism::IncDeletionAndRequire, None)
-        else {
-            panic!("perl is available but the harness declined to run");
-        };
-        let measurement = result.expect("live measurement");
+        let result = must_some_with(
+            measure_with_scratch_root(ReloadMechanism::IncDeletionAndRequire, None),
+            "perl is available but the harness declined to run",
+        );
+        let measurement = must_with(result, "live measurement");
         // Each shared-truth executable counterpart must be present in the
         // observed facts: old symbols stay callable, instance data and
         // captured values keep old code, and new calls take effect.

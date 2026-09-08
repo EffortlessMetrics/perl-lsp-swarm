@@ -29,8 +29,8 @@
 
 [perl]
 
-# Perl version hint for the project (e.g. "5.38", "5.40").
-# Parsed but not yet wired to diagnostics; reserved for future use.
+# Per-folder PL900 fallback target when source has no `use VERSION` declaration.
+# Source declarations win; invalid values fail closed.
 # version = "5.38"
 
 # Additional module include paths, relative to the workspace root.
