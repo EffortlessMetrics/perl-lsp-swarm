@@ -14,6 +14,7 @@ const {
   crashRecoveryLegEnv,
   finalizeSmokeRun,
   interpretBehavioralSmokeExit,
+  runPublishedSmoke,
   interpretTransitionResult,
   publishCheckSummary,
   writeProjectionLine,
@@ -632,6 +633,37 @@ void test('a spawn error takes precedence over the typed platform exit', () => {
   assert.equal(result.status, 'not_proven');
   assert.equal(result.reason, 'spawn failed before exit');
   assert.equal(result.exit_code, null);
+});
+
+void test('a compiler exit 2 is kept separate from the typed child platform exit', () => {
+  const calls = [];
+  const result = runPublishedSmoke({}, (file, args) => {
+    calls.push({ file, args });
+    return { pid: 1, status: 2, signal: null, output: [], stdout: '', stderr: '' };
+  });
+  assert.equal(result.phase, 'compile');
+  assert.equal(result.result.status, 2);
+  assert.equal(calls.length, 1);
+  assert.match(calls[0].args[0], /governed-tsc\.js$/);
+});
+
+void test('a child exit 2 is returned only after compilation succeeds', () => {
+  const calls = [];
+  const result = runPublishedSmoke({}, (file, args) => {
+    calls.push({ file, args });
+    return {
+      pid: 1,
+      status: calls.length === 1 ? 0 : 2,
+      signal: null,
+      output: [],
+      stdout: '',
+      stderr: '',
+    };
+  });
+  assert.equal(result.phase, 'child');
+  assert.equal(result.result.status, 2);
+  assert.equal(calls.length, 2);
+  assert.match(calls[1].args[0], /out[\\/]test[\\/]published[\\/]runPublishedSmoke\.js$/);
 });
 
 void test('network, cache, and runner host failures keep the host-resolution boundary', () => {
