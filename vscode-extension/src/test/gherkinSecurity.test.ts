@@ -381,13 +381,11 @@ describe('bounded workspace step-definition scan', () => {
     );
     const grown = 'Test::BDD::Cucumber::StepFile\n'.padEnd(PER_FILE_LIMIT * 4, 'x');
 
-    // A hostile workspace process grows the file in the window between a
-    // path-based size decision and a path-based read: the size observation
-    // returns the small file, and any later read of the path returns the large
-    // one. An implementation that reads a bounded window from its own
-    // descriptor never opens that window, so nothing here fires and it accepts
-    // the small file. One that decides on `lstat`/`stat` and then re-reads the
-    // path admits the grown file past its own limit.
+    // Controlled spies cover metadata followed by a path-based read. The
+    // candidate's first lstat only checks regular-file admission; later path
+    // observations can update the fixture after the descriptor read. A
+    // path-based readFile sees the updated content, while the bounded
+    // descriptor reader retains the small bytes it already read.
     const realLstat = fs.promises.lstat.bind(fs.promises);
     const realStat = fs.promises.stat.bind(fs.promises);
     const realReadFile = fs.promises.readFile.bind(fs.promises);
