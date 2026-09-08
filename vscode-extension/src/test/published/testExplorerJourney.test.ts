@@ -3,22 +3,10 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
 
-async function waitForFile(filePath: string, timeoutMs: number): Promise<string> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (fs.existsSync(filePath)) {
-      return fs.readFileSync(filePath, 'utf8');
-    }
-    await new Promise((resolve) => setTimeout(resolve, 100));
-  }
-  throw new Error(`Timed out waiting for Test Explorer marker ${filePath}`);
-}
-
 async function waitForRunningStartup(
   getMetrics: () => { lifecycle_state?: unknown },
-  timeoutMs: number,
+  deadline: number,
 ): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
   let state: unknown = undefined;
   while (Date.now() < deadline) {
     state = getMetrics().lifecycle_state;
@@ -31,6 +19,15 @@ async function waitForRunningStartup(
   throw new Error(
     `Timed out waiting for language client startup to reach running (state ${String(state)})`,
   );
+}
+
+function remainingBudget(deadline: number, label: string): number {
+  const remaining = deadline - Date.now();
+  if (remaining <= 0)
+    throw new Error(
+      `Installed Test Explorer journey exceeded its 90-second budget before ${label}`,
+    );
+  return remaining;
 }
 
 suite('Installed Test Explorer prove journey', function () {
@@ -48,26 +45,26 @@ suite('Installed Test Explorer prove journey', function () {
     const fixture = path.join(fixtureDirectory, 'selected test.t');
     const startMarker = path.join(fixtureDirectory, 'selected-test-start.json');
     const marker = path.join(fixtureDirectory, 'selected-test-marker.json');
-    fs.mkdirSync(fixtureDirectory, { recursive: true });
-    fs.writeFileSync(
-      fixture,
-      [
-        'use strict;',
-        'use warnings;',
-        `open my $start, ">>", $ENV{PERL_LSP_TEST_EXPLORER_START_MARKER} or die $!; print {$start} "START:${token}\\n"; close $start or die $!;`,
-        'print "1..1\\n";',
-        'print "ok 1 - installed special path\\n";',
-        `my $tmp = $ENV{PERL_LSP_TEST_EXPLORER_MARKER} . '.tmp'; open my $end, ">", $tmp or die $!; print {$end} "END:${token}\\n$0\\n"; close $end or die $!; rename $tmp, $ENV{PERL_LSP_TEST_EXPLORER_MARKER} or die $!;`,
-        '',
-      ].join('\n'),
-      'utf8',
-    );
-
     const previousMarker = process.env.PERL_LSP_TEST_EXPLORER_MARKER;
     const previousStartMarker = process.env.PERL_LSP_TEST_EXPLORER_START_MARKER;
-    process.env.PERL_LSP_TEST_EXPLORER_MARKER = marker;
-    process.env.PERL_LSP_TEST_EXPLORER_START_MARKER = startMarker;
+    const deadline = Date.now() + 90_000;
     try {
+      fs.mkdirSync(fixtureDirectory, { recursive: true });
+      fs.writeFileSync(
+        fixture,
+        [
+          'use strict;',
+          'use warnings;',
+          `open my $start, ">>", $ENV{PERL_LSP_TEST_EXPLORER_START_MARKER} or die $!; print {$start} "START:${token}\\n"; close $start or die $!;`,
+          'print "1..1\\n";',
+          'print "ok 1 - installed special path\\n";',
+          `my $tmp = $ENV{PERL_LSP_TEST_EXPLORER_MARKER} . '.tmp'; open my $end, ">", $tmp or die $!; print {$end} "END:${token}\\n$0\\n"; close $end or die $!; rename $tmp, $ENV{PERL_LSP_TEST_EXPLORER_MARKER} or die $!;`,
+          '',
+        ].join('\n'),
+        'utf8',
+      );
+      process.env.PERL_LSP_TEST_EXPLORER_MARKER = marker;
+      process.env.PERL_LSP_TEST_EXPLORER_START_MARKER = startMarker;
       const extension = vscode.extensions.getExtension('EffortlessMetrics.perl-lsp-rs');
       assert.ok(extension, 'installed Test Explorer journey requires the extension');
       const extensionApi = (await extension.activate()) as {
@@ -80,14 +77,17 @@ suite('Installed Test Explorer prove journey', function () {
         extensionApi.waitForActiveDocumentReady,
         'installed Test Explorer journey requires the readiness awaitable',
       );
-      await extensionApi.waitForActiveDocumentReady(document.uri.toString(), 60_000);
+      await extensionApi.waitForActiveDocumentReady(
+        document.uri.toString(),
+        remainingBudget(deadline, 'document readiness'),
+      );
       assert.ok(
         extensionApi.getLanguageClientStartupMetrics,
         'installed Test Explorer journey requires startup lifecycle metrics',
       );
-      await waitForRunningStartup(extensionApi.getLanguageClientStartupMetrics, 60_000);
+      await waitForRunningStartup(extensionApi.getLanguageClientStartupMetrics, deadline);
       await vscode.commands.executeCommand('testing.refreshTests');
-      const runDeadline = Date.now() + 10_000;
+      const runDeadline = Math.min(deadline, Date.now() + 10_000);
       let runAttempts = 0;
       let ranFixture = false;
       while (Date.now() < runDeadline) {
@@ -111,7 +111,7 @@ suite('Installed Test Explorer prove journey', function () {
         .split(/\r?\n/)
         .map((line) => line.trimEnd());
       assert.deepEqual(starts, [`START:${token}`]);
-      const raw = await waitForFile(marker, 90_000);
+      const raw = fs.readFileSync(marker, 'utf8');
       const [phase, test0] = raw.trim().split(/\r?\n/);
       assert.equal(phase, `END:${token}`);
       assert.equal(path.normalize(test0 ?? ''), path.normalize(fixture));
