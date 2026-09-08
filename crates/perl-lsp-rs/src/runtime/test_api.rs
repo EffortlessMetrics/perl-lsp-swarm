@@ -903,6 +903,18 @@ impl LspServer {
         );
     }
 
+    /// Hold a workspace-folder notification after membership/index mutation and
+    /// before its matching project configuration is installed.
+    pub fn test_gate_workspace_topology_transition(
+        &self,
+        started: std::sync::mpsc::Sender<()>,
+        release: std::sync::mpsc::Receiver<()>,
+    ) {
+        if let Ok(mut gate) = self.workspace_transition_test_gate.lock() {
+            *gate = Some(super::WorkspaceTopologyTransitionGate { started, release });
+        }
+    }
+
     #[cfg(feature = "workspace")]
     /// Validate a provider response against its readiness receipt trace.
     fn validate_readiness_provider_observation(

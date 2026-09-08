@@ -2132,7 +2132,6 @@ impl LspServer {
                 return Ok(());
             }
 
-            #[cfg(feature = "workspace")]
             let _indexing_transition = self.indexing_transition_lock.lock();
 
             // Membership and the configuration loaded for that membership are
@@ -2171,12 +2170,7 @@ impl LspServer {
                 // concurrent diagnostic commit.  Capture the exact removed
                 // identities, release the topology guard, then retire their
                 // document/index state in a second phase.
-                let mut workspace_folders = self.workspace_folders.lock();
-                self.workspace_topology_stable.store(false, std::sync::atomic::Ordering::SeqCst);
-                workspace_folders.retain(|f| !removed_uris.contains(&f.uri));
-                self.workspace_topology_generation
-                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                drop(workspace_folders);
+                self.apply_workspace_folder_removal(&removed_uris);
 
                 for uri in &change.removed {
                     tracing::debug!(uri, "Removed workspace folder");
@@ -2200,14 +2194,26 @@ impl LspServer {
                 }
             }
 
+            #[cfg(any(test, feature = "expose_lsp_test_api"))]
+            if let Some(gate) =
+                self.workspace_transition_test_gate.lock().ok().and_then(|mut gate| gate.take())
+            {
+                let _ = gate.started.send(());
+                if gate.release.recv_timeout(Duration::from_secs(10)).is_err() {
+                    return Err(crate::protocol::internal_error(
+                        "workspace transition test gate was not released",
+                    ));
+                }
+            }
+
             // Load config only after the index has accepted the same folder
             // membership, so new topology cannot observe the old policy.
             let config_complete = self.load_and_apply_project_config();
             if config_complete {
+                let _workspace_folders = self.workspace_folders.lock();
                 self.workspace_topology_stable.store(true, std::sync::atomic::Ordering::SeqCst);
             }
 
-            #[cfg(feature = "workspace")]
             drop(_indexing_transition);
 
             // Pull-capable clients will receive the refresh request below. A
@@ -2243,9 +2249,9 @@ impl LspServer {
     /// guard returned here has been dropped; keeping that separation prevents
     /// a `workspace_folders -> documents` lock inversion with diagnostic
     /// publication.
-    #[cfg(test)]
     fn apply_workspace_folder_removal(&self, removed_uris: &std::collections::HashSet<String>) {
         let mut workspace_folders = self.workspace_folders.lock();
+        self.workspace_topology_stable.store(false, std::sync::atomic::Ordering::SeqCst);
         workspace_folders.retain(|f| !removed_uris.contains(&f.uri));
         // Advance the topology identity while the membership mutation is
         // still protected.  Any diagnostic or virtual-content reader that
@@ -3752,6 +3758,152 @@ mod tests {
             "event": { "added": [{ "uri": uri, "name": "recovered" }], "removed": [] }
         })))?;
         assert!(server.workspace_topology_stable.load(std::sync::atomic::Ordering::SeqCst));
+        Ok(())
+    }
+
+    #[test]
+    fn workspace_folder_change_blocks_pull_reuse_until_config_is_published() -> anyhow::Result<()> {
+        let old_dir = tempfile::tempdir()?;
+        let new_dir = tempfile::tempdir()?;
+        let old_root = url::Url::from_directory_path(old_dir.path())
+            .map_err(|_| anyhow::anyhow!("invalid old workspace root"))?
+            .to_string();
+        let new_root = url::Url::from_directory_path(new_dir.path())
+            .map_err(|_| anyhow::anyhow!("invalid new workspace root"))?
+            .to_string();
+        let document_path = old_dir.path().join("main.pl");
+        let document_uri = url::Url::from_file_path(&document_path)
+            .map_err(|_| anyhow::anyhow!("invalid document URI"))?
+            .to_string();
+
+        let server = Arc::new(LspServer::new());
+        server.workspace_folders.lock().push(
+            super::WorkspaceFolderState::new(old_root.clone())
+                .with_path(old_dir.path().to_path_buf()),
+        );
+        server.test_handle_did_open(Some(json!({
+            "textDocument": {
+                "uri": document_uri,
+                "languageId": "perl",
+                "version": 1,
+                "text": "my $value = 1;\n"
+            }
+        })))?;
+
+        let initial = server
+            .test_handle_document_diagnostic(Some(json!({
+                "textDocument": { "uri": document_uri }
+            })))?
+            .ok_or_else(|| anyhow::anyhow!("initial pull diagnostic returned no report"))?;
+        anyhow::ensure!(initial["kind"] == "full", "initial pull must be a full report: {initial}");
+        let previous_result_id = initial["resultId"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("initial pull must provide a reusable result id"))?
+            .to_owned();
+
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        server.test_gate_workspace_topology_transition(started_tx, release_rx);
+        let notification_server = Arc::clone(&server);
+        let notification = std::thread::spawn(move || {
+            notification_server.handle_did_change_workspace_folders(Some(json!({
+                "event": {
+                    "added": [{ "uri": new_root, "name": "new" }],
+                    "removed": []
+                }
+            })))
+        });
+        started_rx.recv_timeout(std::time::Duration::from_secs(5))?;
+
+        let during_result = server
+            .test_handle_document_diagnostic(Some(json!({
+                "textDocument": { "uri": document_uri },
+                "previousResultId": previous_result_id
+            })))
+            .map_err(|error| anyhow::anyhow!("transition pull diagnostic failed: {error}"))
+            .and_then(|report| {
+                report
+                    .ok_or_else(|| anyhow::anyhow!("transition pull diagnostic returned no report"))
+            });
+
+        release_tx.send(())?;
+        notification
+            .join()
+            .map_err(|_| anyhow::anyhow!("workspace notification thread panicked"))??;
+        let during = during_result?;
+        anyhow::ensure!(
+            during["kind"] == "full" && during.get("resultId").is_none(),
+            "unstable transition must return an uncached full report: {during}"
+        );
+        anyhow::ensure!(
+            server.workspace_topology_stable.load(std::sync::atomic::Ordering::SeqCst),
+            "successful config publication must restore stable authority"
+        );
+
+        let fresh = server
+            .test_handle_document_diagnostic(Some(json!({
+                "textDocument": { "uri": document_uri }
+            })))?
+            .ok_or_else(|| anyhow::anyhow!("post-transition pull diagnostic returned no report"))?;
+        anyhow::ensure!(
+            fresh["kind"] == "full" && fresh["resultId"].as_str().is_some(),
+            "stable transition must produce a reusable full report: {fresh}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn workspace_folder_notifications_serialize_while_config_is_loading() -> anyhow::Result<()> {
+        let server = Arc::new(LspServer::new());
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        server.test_gate_workspace_topology_transition(started_tx, release_rx);
+
+        let first_server = Arc::clone(&server);
+        let first = std::thread::spawn(move || {
+            first_server.handle_did_change_workspace_folders(Some(json!({
+                "event": {
+                    "added": [{ "uri": "file:///serialized-first", "name": "first" }],
+                    "removed": []
+                }
+            })))
+        });
+        started_rx.recv_timeout(std::time::Duration::from_secs(5))?;
+
+        let (second_attempt_tx, second_attempt_rx) = std::sync::mpsc::channel();
+        let (second_done_tx, second_done_rx) = std::sync::mpsc::channel();
+        let second_server = Arc::clone(&server);
+        let second = std::thread::spawn(move || {
+            let _ = second_attempt_tx.send(());
+            let result = second_server.handle_did_change_workspace_folders(Some(json!({
+                "event": {
+                    "added": [{ "uri": "file:///serialized-second", "name": "second" }],
+                    "removed": []
+                }
+            })));
+            let _ = second_done_tx.send(());
+            result
+        });
+        second_attempt_rx.recv_timeout(std::time::Duration::from_secs(5))?;
+        anyhow::ensure!(
+            second_done_rx.recv_timeout(std::time::Duration::from_millis(100)).is_err(),
+            "a second folder writer completed while the first still held the transition gate"
+        );
+
+        release_tx.send(())?;
+        first.join().map_err(|_| anyhow::anyhow!("first workspace notification panicked"))??;
+        second.join().map_err(|_| anyhow::anyhow!("second workspace notification panicked"))??;
+
+        let folders = server.workspace_folders.lock();
+        anyhow::ensure!(
+            folders.iter().any(|folder| folder.uri == "file:///serialized-first")
+                && folders.iter().any(|folder| folder.uri == "file:///serialized-second"),
+            "serialized writers must preserve both workspace memberships"
+        );
+        anyhow::ensure!(
+            server.workspace_topology_stable.load(std::sync::atomic::Ordering::SeqCst),
+            "the final serialized transition must publish stable authority"
+        );
         Ok(())
     }
 

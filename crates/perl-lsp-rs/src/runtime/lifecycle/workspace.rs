@@ -156,7 +156,20 @@ impl LspServer {
                     config.apply_to_server_config(&mut server_config);
                 }
                 Ok(None) => {}
-                Err(_) => complete = false,
+                Err(error) => {
+                    complete = false;
+                    let user_msg = format!(
+                        "Perl LSP: {error} Fix the error in .perl-lsp.toml and reload the window \
+                         (Ctrl+Shift+P \u{2192} Developer: Reload Window) to apply your settings.",
+                    );
+                    tracing::warn!(message = %user_msg, "Project config warning");
+                    if let Err(notify_error) = self.notify(
+                        "window/showMessage",
+                        serde_json::json!({ "type": 2, "message": user_msg }),
+                    ) {
+                        tracing::warn!(error = %notify_error, "Failed to send showMessage warning");
+                    }
+                }
             }
             return complete;
         }

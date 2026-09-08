@@ -164,6 +164,12 @@ use crate::fallback::text::extract_text_based_symbols;
 
 // Note: ClientCapabilities imported from crate::lsp::state::document
 
+#[cfg(any(test, feature = "expose_lsp_test_api"))]
+pub(crate) struct WorkspaceTopologyTransitionGate {
+    pub(crate) started: std::sync::mpsc::Sender<()>,
+    pub(crate) release: std::sync::mpsc::Receiver<()>,
+}
+
 /// LSP server that handles JSON-RPC communication
 pub struct LspServer {
     /// Document contents indexed by URI
@@ -365,8 +371,11 @@ pub struct LspServer {
     #[cfg(feature = "workspace")]
     indexing_rescan_pending: Arc<AtomicBool>,
     /// Serializes the active/pending indexing handoff at scan completion.
-    #[cfg(feature = "workspace")]
     indexing_transition_lock: Arc<Mutex<()>>,
+    /// One-shot barrier used only by the workspace-transition race proof.
+    #[cfg(any(test, feature = "expose_lsp_test_api"))]
+    pub(crate) workspace_transition_test_gate:
+        Arc<std::sync::Mutex<Option<WorkspaceTopologyTransitionGate>>>,
     /// One-time guard for the `window/showMessage` permission-denied warning.
     ///
     /// Set to `true` after the first permission-denied file is encountered during

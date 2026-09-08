@@ -209,18 +209,25 @@ impl PullDiagnosticsOrchestrator {
             let workspace_folders = std::sync::Arc::clone(&server.workspace_folders);
             let root_path = std::sync::Arc::clone(&server.root_path);
             let topology_generation = std::sync::Arc::clone(&server.workspace_topology_generation);
+            let topology_stable = std::sync::Arc::clone(&server.workspace_topology_stable);
             let accepted_topology_generation =
                 topology_generation.load(std::sync::atomic::Ordering::SeqCst);
             let currentness_uri = uri.to_string();
             PullAcceptedStateCurrentness::new(std::sync::Arc::new(move || {
-                let live_root = {
+                let (live_root, topology_stable) = {
                     let folders = workspace_folders.lock();
-                    best_workspace_folder_for_doc(&folders, &currentness_uri).cloned()
-                }
-                .and_then(|folder| folder.path.or_else(|| source_path_from_uri(&folder.uri)))
-                .or_else(|| root_path.lock().clone())
-                .map(|path| path.to_string_lossy().into_owned());
+                    let live_root = best_workspace_folder_for_doc(&folders, &currentness_uri)
+                        .cloned()
+                        .and_then(|folder| {
+                            folder.path.or_else(|| source_path_from_uri(&folder.uri))
+                        })
+                        .or_else(|| root_path.lock().clone())
+                        .map(|path| path.to_string_lossy().into_owned());
+                    let topology_stable = topology_stable.load(std::sync::atomic::Ordering::SeqCst);
+                    (live_root, topology_stable)
+                };
                 live_root.as_deref() == accepted_snapshot.owning_root()
+                    && topology_stable
                     && topology_generation.load(std::sync::atomic::Ordering::SeqCst)
                         == accepted_topology_generation
                     && accepted_snapshot.is_current(&config.lock())
