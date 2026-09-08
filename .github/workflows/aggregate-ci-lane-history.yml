@@ -377,14 +377,48 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           BRANCH: automation/ci-lane-history
+          PR_NUMBER: ${{ steps.create-pr.outputs.pull-request-number }}
+          CREATED_HEAD_SHA: ${{ steps.create-pr.outputs.pull-request-head-sha }}
         run: |
-          # Keep attempting every workflow so one transient dispatch failure
-          # cannot strand the later checks. The final status remains failing
-          # when any dispatch failed.
+          # ci.yml's workflow_dispatch declares required inputs (since #13019):
+          # the dispatched subject's exact base and head SHAs. Dispatching it
+          # bare fails with HTTP 422 "Required input 'base_sha' not provided"
+          # (#15100), so the generated PR's required checks never populate.
+          # Resolve the created PR's recorded base/head identity after the
+          # create-pull-request step, and refuse to prove a different subject:
+          # if the PR head no longer matches the head this run created, the
+          # branch moved underneath us and the ci.yml dispatch is skipped
+          # rather than attached to the wrong commit.
+          # The other four workflows declare no required dispatch inputs and
+          # stay bare. Keep attempting every workflow so one transient
+          # failure cannot strand the later checks. The final status remains
+          # failing when any lookup or dispatch failed.
           set +e
           failed=0
+          base_sha=""
+          head_sha=""
+          if pr_json=$(gh pr view "$PR_NUMBER" --json baseRefOid,headRefOid); then
+            base_sha=$(printf '%s' "$pr_json" | jq -r '.baseRefOid // empty')
+            head_sha=$(printf '%s' "$pr_json" | jq -r '.headRefOid // empty')
+          fi
+          identity_ok=0
+          if [ -z "$base_sha" ] || [ -z "$head_sha" ]; then
+            echo "::error::Could not resolve base/head identity for generated PR #$PR_NUMBER"
+            failed=1
+          elif [ "$head_sha" != "$CREATED_HEAD_SHA" ]; then
+            echo "::error::Generated PR head moved between creation and dispatch (created=$CREATED_HEAD_SHA current=$head_sha); refusing to prove a different subject"
+            failed=1
+          else
+            identity_ok=1
+          fi
           for workflow in ci.yml em-ci-routed-rust.yml ripr.yml pr-title-check.yml validate-ci-lane-history.yml; do
-            if gh workflow run "$workflow" --ref "$BRANCH"; then
+            if [ "$workflow" = ci.yml ]; then
+              if [ "$identity_ok" = 1 ] && gh workflow run "$workflow" --ref "$BRANCH" \
+                -f "base_sha=$base_sha" \
+                -f "head_sha=$head_sha"; then
+                continue
+              fi
+            elif gh workflow run "$workflow" --ref "$BRANCH"; then
               continue
             fi
             echo "::error::Failed to dispatch $workflow"
