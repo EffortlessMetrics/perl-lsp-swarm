@@ -1194,8 +1194,10 @@ async function runExtensionActivation(
       reportIssueCommand({
         getServerVersion: () =>
           probeServerVersion(() => {
-            const snapshot = languageClientLifecycle?.snapshot;
+            const lifecycle = languageClientLifecycle;
+            const snapshot = lifecycle?.snapshot;
             return {
+              lifecycle: lifecycle ?? null,
               serverPath: snapshot?.serverPath ?? null,
               generation: snapshot?.generation,
             };

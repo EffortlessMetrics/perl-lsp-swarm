@@ -8,6 +8,8 @@ export type VersionExecutor = (
 ) => void;
 
 export interface ServerVersionProbeBinding {
+  /** Identity of the lifecycle owner that captured this probe. */
+  readonly lifecycle: object | null;
   readonly serverPath: string | null;
   readonly generation: number | undefined;
 }
@@ -19,7 +21,7 @@ export function probeServerVersion(
 ): Promise<string> {
   const captured = capture();
   const serverPath = captured.serverPath;
-  if (!serverPath || captured.generation === undefined) {
+  if (!serverPath || captured.lifecycle === null || captured.generation === undefined) {
     return Promise.resolve('unavailable');
   }
 
@@ -27,6 +29,7 @@ export function probeServerVersion(
     execute(serverPath, ['--version'], { timeout: 3000 }, (error, stdout) => {
       const current = capture();
       if (
+        current.lifecycle !== captured.lifecycle ||
         current.serverPath !== captured.serverPath ||
         current.generation !== captured.generation
       ) {
