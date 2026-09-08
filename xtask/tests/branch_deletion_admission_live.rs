@@ -65,8 +65,7 @@ impl ReadOnlyCommands for FakeCommands {
             });
             let mut requested: Vec<_> = fields.unwrap_or_default().split(',').collect();
             requested.sort_unstable();
-            let expected =
-                ["headRefName", "headRefOid", "isCrossRepository", "merged", "number", "state"];
+            let expected = ["headRefName", "headRefOid", "isCrossRepository", "number", "state"];
             if requested != expected {
                 return Err(color_eyre::eyre::eyre!(
                     "unsupported parent JSON field contract: {requested:?}"
@@ -99,7 +98,7 @@ impl ReadOnlyCommands for FakeCommands {
 
 fn merged_parent_json() -> String {
     format!(
-        r#"{{"number":7799,"state":"MERGED","merged":true,"headRefName":"{BRANCH}","headRefOid":"{HEAD_SHA}","isCrossRepository":false}}"#
+        r#"{{"number":7799,"state":"MERGED","headRefName":"{BRANCH}","headRefOid":"{HEAD_SHA}","isCrossRepository":false}}"#
     )
 }
 
@@ -146,7 +145,7 @@ fn the_parent_command_fixture_rejects_unsupported_fields() -> Result<(), Box<dyn
             "view",
             "7799",
             "--json",
-            "number,state,unsupportedField,headRefName,headRefOid,isCrossRepository",
+            "number,state,merged,headRefName,headRefOid,isCrossRepository",
         ],
     );
     let error = result.err().ok_or("the fixture accepted unsupported field")?;
@@ -159,9 +158,7 @@ fn the_parent_command_fixture_rejects_unsupported_fields() -> Result<(), Box<dyn
 #[test]
 fn an_unknown_parent_state_is_not_proven() -> Result<(), Box<dyn std::error::Error>> {
     for state in ["", "UNKNOWN", "merged", " MERGED "] {
-        let parent = merged_parent_json()
-            .replace("\"MERGED\"", &format!("\"{state}\""))
-            .replace("\"merged\":true", "\"merged\":false");
+        let parent = merged_parent_json().replace("\"MERGED\"", &format!("\"{state}\""));
         let commands = healthy().on("gh pr view 7799", &parent);
         let collected = collect_request(&commands, 7799, "origin")?;
         if collected.request.parent.terminality != ParentTerminality::NotProven {
@@ -501,11 +498,11 @@ fn local_worktree_ownership_blocks_and_fails_closed() -> Result<(), Box<dyn std:
 /// A parent that is not merged retains, whatever else is true.
 #[test]
 fn a_non_terminal_parent_retains() -> Result<(), Box<dyn std::error::Error>> {
-    for (state, merged) in [("OPEN", "false"), ("CLOSED", "false")] {
+    for state in ["OPEN", "CLOSED"] {
         let commands = healthy().on(
             "gh pr view 7799",
             &format!(
-                r#"{{"number":7799,"state":"{state}","merged":{merged},"headRefName":"{BRANCH}","headRefOid":"{HEAD_SHA}","isCrossRepository":false}}"#
+                r#"{{"number":7799,"state":"{state}","headRefName":"{BRANCH}","headRefOid":"{HEAD_SHA}","isCrossRepository":false}}"#
             ),
         );
         let outcome = evaluate(&collect_request(&commands, 7799, "origin")?.request);
@@ -637,7 +634,7 @@ fn the_deletion_path_refuses_every_retaining_outcome() -> Result<(), Box<dyn std
         healthy().on(
             "gh pr view 7799",
             &format!(
-                r#"{{"number":7799,"state":"OPEN","merged":false,"headRefName":"{BRANCH}","headRefOid":"{HEAD_SHA}","isCrossRepository":false}}"#
+                r#"{{"number":7799,"state":"OPEN","headRefName":"{BRANCH}","headRefOid":"{HEAD_SHA}","isCrossRepository":false}}"#
             ),
         ),
     ];
@@ -697,7 +694,7 @@ fn a_branch_name_with_shell_metacharacters_stays_one_argument()
         .on(
             "gh pr view 7799",
             &format!(
-                r#"{{"number":7799,"state":"MERGED","merged":true,"headRefName":"{hostile}","headRefOid":"{HEAD_SHA}","isCrossRepository":false}}"#
+                r#"{{"number":7799,"state":"MERGED","headRefName":"{hostile}","headRefOid":"{HEAD_SHA}","isCrossRepository":false}}"#
             ),
         )
         .on("git ls-remote origin", &format!("{HEAD_SHA}\trefs/heads/{hostile}\n"));
@@ -898,7 +895,7 @@ fn a_cross_repository_parent_retains() -> Result<(), Box<dyn std::error::Error>>
     let fork = healthy().on(
         "gh pr view 7799",
         &format!(
-            r#"{{"number":7799,"state":"MERGED","merged":true,"headRefName":"{BRANCH}","headRefOid":"{HEAD_SHA}","isCrossRepository":true}}"#
+            r#"{{"number":7799,"state":"MERGED","headRefName":"{BRANCH}","headRefOid":"{HEAD_SHA}","isCrossRepository":true}}"#
         ),
     );
     let collected = collect_request(&fork, 7799, "origin")?;
@@ -927,25 +924,25 @@ fn missing_or_ambiguous_repository_binding_retains() -> anyhow::Result<()> {
         (
             "missing",
             format!(
-                r#"{{"number":7799,"state":"MERGED","merged":true,"headRefName":"{BRANCH}","headRefOid":"{HEAD_SHA}"}}"#
+                r#"{{"number":7799,"state":"MERGED","headRefName":"{BRANCH}","headRefOid":"{HEAD_SHA}"}}"#
             ),
         ),
         (
             "null",
             format!(
-                r#"{{"number":7799,"state":"MERGED","merged":true,"headRefName":"{BRANCH}","headRefOid":"{HEAD_SHA}","isCrossRepository":null}}"#
+                r#"{{"number":7799,"state":"MERGED","headRefName":"{BRANCH}","headRefOid":"{HEAD_SHA}","isCrossRepository":null}}"#
             ),
         ),
         (
             "wrong type",
             format!(
-                r#"{{"number":7799,"state":"MERGED","merged":true,"headRefName":"{BRANCH}","headRefOid":"{HEAD_SHA}","isCrossRepository":"false"}}"#
+                r#"{{"number":7799,"state":"MERGED","headRefName":"{BRANCH}","headRefOid":"{HEAD_SHA}","isCrossRepository":"false"}}"#
             ),
         ),
         (
             "duplicate",
             format!(
-                r#"{{"number":7799,"state":"MERGED","merged":true,"headRefName":"{BRANCH}","headRefOid":"{HEAD_SHA}","isCrossRepository":false,"isCrossRepository":true}}"#
+                r#"{{"number":7799,"state":"MERGED","headRefName":"{BRANCH}","headRefOid":"{HEAD_SHA}","isCrossRepository":false,"isCrossRepository":true}}"#
             ),
         ),
     ] {
