@@ -7,6 +7,7 @@ import {
   parseSubtestResults,
   parseTapOutput,
   runBoundedProcess,
+  resolveProveCommand,
 } from '../testAdapter';
 
 describe('test adapter TAP parsing', () => {
@@ -81,6 +82,41 @@ describe('test adapter TAP parsing', () => {
 });
 
 describe('bounded prove process execution', () => {
+  test('runs a selected test through the registered resolver when its path contains spaces', async () => {
+    if (process.platform !== 'win32') {
+      return;
+    }
+
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-prove-'));
+    const fixtureDirectory = path.join(root, "space & % ! ^ ( ) ' [1] {a,b}");
+    const fixture = path.join(fixtureDirectory, 'selected.t');
+    fs.mkdirSync(fixtureDirectory, { recursive: true });
+    fs.writeFileSync(
+      fixture,
+      'use strict;\nprint "1..1\\n";\nprint "ok 1 - selected resolver path\\n";\n',
+      'utf8',
+    );
+
+    try {
+      const resolved = resolveProveCommand(['-v', '--nocolor', '-']);
+      expect(resolved.command.toLowerCase()).not.toMatch(/prove\.bat$/);
+      expect(resolved.args).toContain('-');
+      const result = await runBoundedProcess(resolved.command, resolved.args, {
+        cwd: root,
+        shell: resolved.shell,
+        timeoutMs: 5_000,
+        maxOutputBytes: 32_768,
+        terminationGraceMs: 100,
+        stdin: `${fixture}\n`,
+      });
+
+      expect(result).toMatchObject({ outcome: 'completed', exitCode: 0 });
+      expect(result.stdout).toContain('selected resolver path');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+
   test('returns normal output without truncation', async () => {
     const result = await runBoundedProcess(process.execPath, ['-e', 'process.stdout.write("ok")'], {
       shell: false,
@@ -353,33 +389,46 @@ describe('bounded prove process execution', () => {
     expect(result.diagnostic).toContain('cancelled');
   }, 30_000);
 
-  test('terminates the Windows shell child, not only cmd.exe', async () => {
+  test('terminates a direct Windows parent and its started child', async () => {
     if (process.platform !== 'win32') {
       return;
     }
 
-    const marker = path.join(os.tmpdir(), `perl-lsp-test-adapter-${process.pid}.txt`);
-    const script = path.join(os.tmpdir(), `perl-lsp-test-adapter-${process.pid}.js`);
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-process-tree-'));
+    const parentMarker = path.join(root, 'parent-started.txt');
+    const childMarker = path.join(root, 'child-state.txt');
+    const script = path.join(root, 'parent.js');
     fs.writeFileSync(
       script,
-      `setTimeout(() => require('fs').writeFileSync(${JSON.stringify(marker)}, 'survived'), 1000);\n` +
+      `require('fs').writeFileSync(${JSON.stringify(parentMarker)}, 'started');\n` +
+        `require('child_process').spawn(process.execPath, ['-e', ${JSON.stringify(
+          `require('fs').writeFileSync(${JSON.stringify(childMarker)}, 'started'); setTimeout(() => require('fs').writeFileSync(${JSON.stringify(childMarker)}, 'survived'), 3000); setTimeout(() => {}, 5000);`,
+        )}], { windowsHide: true, stdio: 'ignore' });\n` +
         'setTimeout(() => {}, 5000);\n',
       'utf8',
     );
     try {
-      const result = await runBoundedProcess(process.execPath, [script], {
-        shell: true,
-        timeoutMs: 100,
+      const resultPromise = runBoundedProcess(process.execPath, [script], {
+        shell: false,
+        timeoutMs: 1_000,
         maxOutputBytes: 32,
         terminationGraceMs: 25,
       });
 
+      for (let attempt = 0; attempt < 20; attempt += 1) {
+        if (fs.existsSync(parentMarker) && fs.existsSync(childMarker)) {
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      const result = await resultPromise;
       expect(result.outcome).toBe('timed_out');
+      expect(fs.readFileSync(parentMarker, 'utf8')).toBe('started');
+      expect(fs.readFileSync(childMarker, 'utf8')).toBe('started');
       await new Promise((resolve) => setTimeout(resolve, 1_250));
-      expect(fs.existsSync(marker)).toBe(false);
+      expect(fs.readFileSync(childMarker, 'utf8')).toBe('started');
     } finally {
-      fs.rmSync(script, { force: true });
-      fs.rmSync(marker, { force: true });
+      fs.rmSync(root, { recursive: true, force: true });
     }
   }, 30_000);
 });

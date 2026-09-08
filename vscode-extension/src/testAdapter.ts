@@ -75,6 +75,8 @@ export interface BoundedProcessResult {
 
 export interface BoundedProcessOptions extends Omit<SpawnOptions, 'signal' | 'stdio'> {
   signal?: AbortSignal;
+  /** Optional newline-delimited input written to the child before execution. */
+  stdin?: string;
   timeoutMs: number;
   maxOutputBytes: number;
   terminationGraceMs: number;
@@ -105,6 +107,7 @@ export function runBoundedProcess(
   return new Promise((resolve) => {
     const {
       signal,
+      stdin,
       timeoutMs,
       maxOutputBytes,
       terminationGraceMs,
@@ -131,8 +134,9 @@ export function runBoundedProcess(
     let graceTimer: NodeJS.Timeout | undefined;
     let watchdogTimer: NodeJS.Timeout | undefined;
     let treeKill: Promise<void> | undefined;
+    let stdinError: Error | undefined;
     const timeout = setTimeout(() => requestTermination('timed_out'), timeoutMs);
-    const needsTreeKill = process.platform === 'win32' && spawnOptions.shell === true;
+    const needsTreeKill = process.platform === 'win32';
 
     const deliverKill = (killSignal: NodeJS.Signals): boolean => {
       if (killProcess) {
@@ -223,6 +227,15 @@ export function runBoundedProcess(
     };
 
     const finishAfterTreeKill = (exitCode: number | null, signal: NodeJS.Signals | null): void => {
+      if (stdinError !== undefined && termination === 'cancelled') {
+        finish(
+          'spawn_error',
+          exitCode,
+          signal,
+          `Failed to provide process input: ${stdinError.message}.`,
+        );
+        return;
+      }
       const outcome = termination;
       if (outcome === undefined) {
         finish('completed', exitCode, signal);
@@ -302,6 +315,15 @@ export function runBoundedProcess(
         `Failed to run prove: ${error.message}. Is prove installed?`,
       );
     });
+    if (stdin !== undefined && proc.stdin !== null) {
+      proc.stdin.once('error', (error: Error) => {
+        stdinError = error;
+        if (termination === undefined && !closed) {
+          requestTermination('cancelled');
+        }
+      });
+      proc.stdin.end(stdin);
+    }
     proc.on('close', (exitCode, signal) => {
       closed = true;
       flushDecoders();
@@ -347,10 +369,11 @@ function configuredProveLimits(resource?: vscode.Uri): ProveExecutionLimits {
 /**
  * Resolve the `prove` command for the current platform.
  *
- * On Windows, `prove` is a `.bat` script shim — spawning it without
- * `shell: true` fails with ENOENT. On all platforms, attempt to derive
- * `prove` from the directory of the `perl` binary on PATH so that
- * perlbrew/plenv users get the matching `prove`.
+ * On Windows, invoke the matching Perl interpreter directly and use prove's
+ * documented stdin-list form. This avoids the `.bat` shim and its Win32
+ * filename globbing path while preserving the Perl installation selected by
+ * PATH. On other platforms, derive `prove` from the Perl directory when
+ * possible.
  *
  * Returns `{ command, args, shell }` for use with `child_process.spawn`.
  */
@@ -361,21 +384,28 @@ export function resolveProveCommand(extraArgs: string[]): {
 } {
   const isWindows = process.platform === 'win32';
 
-  // Try to find `prove` next to `perl` on PATH.
+  // Try to find `perl` and its matching `prove` on PATH.
+  let perlPath: string | null = null;
   let provePath: string | null = null;
   try {
-    const { execSync } = require('child_process');
-    const perlPath = execSync('perl -e "print $^X"', {
+    const { execFileSync } = require('child_process');
+    perlPath = execFileSync('perl', ['-e', 'print $^X'], {
       encoding: 'utf8',
       timeout: 3000,
     }).trim();
-    const perlDir = path.dirname(perlPath);
-    const candidate = path.join(perlDir, isWindows ? 'prove.bat' : 'prove');
-    if (fs.existsSync(candidate)) {
-      provePath = candidate;
+    if (perlPath) {
+      const perlDir = path.dirname(perlPath);
+      const candidate = path.join(perlDir, isWindows ? 'prove.bat' : 'prove');
+      if (fs.existsSync(candidate)) {
+        provePath = candidate;
+      }
     }
   } catch {
-    // perl not on PATH or execSync failed — fall back to bare 'prove'.
+    // perl not on PATH or execFileSync failed — fall back to bare 'prove'.
+  }
+
+  if (isWindows && perlPath) {
+    return { command: perlPath, args: ['-S', 'prove', ...extraArgs], shell: false };
   }
 
   if (provePath) {
@@ -577,11 +607,12 @@ export class PerlTestAdapter implements vscode.Disposable {
     const workspaceFolder = vscode.workspace.getWorkspaceFolder(fileItem.uri!);
     const cwd = workspaceFolder?.uri.fsPath ?? path.dirname(filePath);
     const startTime = Date.now();
+    const isWindows = process.platform === 'win32';
     const {
       command: proveCmd,
       args: proveArgs,
       shell: useShell,
-    } = resolveProveCommand(['-v', '--nocolor', filePath]);
+    } = resolveProveCommand(isWindows ? ['-v', '--nocolor', '-'] : ['-v', '--nocolor', filePath]);
     const cancellation = new AbortController();
     const killOnCancel = token.onCancellationRequested(() => cancellation.abort());
     if (token.isCancellationRequested) {
@@ -593,6 +624,7 @@ export class PerlTestAdapter implements vscode.Disposable {
       env: { ...process.env, HARNESS_ACTIVE: '1' },
       shell: useShell,
       signal: cancellation.signal,
+      ...(isWindows ? { stdin: `${filePath}\n` } : {}),
       ...configuredProveLimits(fileItem.uri),
     });
     killOnCancel.dispose();
