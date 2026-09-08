@@ -684,7 +684,7 @@ const REPO_ENTRYPOINT_MARKER: &str = ".github/run_all_tests.sh";
 const REPO_BASH_ENTRYPOINTS: [(&str, RepoEntrypointKind); 3] = [
     (".github/run_all_tests.sh", RepoEntrypointKind::File),
     ("scripts", RepoEntrypointKind::Directory),
-    ("scripts/cargo-safe", RepoEntrypointKind::Directory),
+    ("scripts/cargo-safe", RepoEntrypointKind::File),
 ];
 /// Documented-prerequisite line demanded by #12595.
 const BASH_PREREQUISITE_LINE: &str = "Repository conformance entrypoints (.github/run_all_tests.sh, scripts/*.sh, scripts/cargo-safe) assume a POSIX bash; Git Bash ships with Git for Windows.";
@@ -3217,7 +3217,8 @@ mod tests {
         let valid = tempfile::tempdir()?;
         std::fs::create_dir_all(valid.path().join(".github"))?;
         std::fs::write(valid.path().join(REPO_ENTRYPOINT_MARKER), "#!/bin/sh\n")?;
-        std::fs::create_dir_all(valid.path().join("scripts/cargo-safe"))?;
+        std::fs::create_dir_all(valid.path().join("scripts"))?;
+        std::fs::write(valid.path().join("scripts/cargo-safe"), "#!/usr/bin/env bash\n")?;
         assert!(repo_entrypoints_complete(valid.path()));
 
         let marker_directory = tempfile::tempdir()?;
