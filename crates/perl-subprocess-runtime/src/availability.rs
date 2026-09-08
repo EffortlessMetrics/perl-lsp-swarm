@@ -121,7 +121,10 @@ pub(crate) fn command_exists_in(command: &str, path: Option<&OsStr>, cwd: &Path)
     crate::os_runtime::select_path_candidate(&candidate_refs, cwd).is_some()
 }
 
-/// Whether `candidate` is a regular file the current user may execute.
+/// Whether `candidate` is a regular file with at least one executable mode bit on Unix.
+///
+/// This does not establish effective-user, ACL, or mount-policy permission.
+/// The eventual spawn remains authoritative for execution success.
 ///
 /// Mirrors what a `PATH` search means: a readable non-executable file of the
 /// right name is not a usable tool, and reporting it available would move the
