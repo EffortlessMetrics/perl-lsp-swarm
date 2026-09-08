@@ -424,17 +424,24 @@ suite('Real language-client process settlement', function () {
   });
 
   test('cleanup fallback waits when an exact child exits after kill returns false', async function () {
-    const child = spawn(nodeExecutable(), ['-e', 'setTimeout(() => process.exit(0), 150)']);
+    const child = spawn(nodeExecutable(), ['-e', 'setTimeout(() => process.exit(0), 150)'], {
+      windowsHide: true,
+    });
     const originalKill = child.kill;
-    child.kill = (() => false) as typeof child.kill;
+    let falseKillCalls = 0;
+    child.kill = (() => {
+      falseKillCalls += 1;
+      return false;
+    }) as typeof child.kill;
     try {
       await forceKill(child as unknown as ServerProcessLike);
+      assert.equal(falseKillCalls, 1);
       assert.equal(child.exitCode, 0);
       assert.equal(child.signalCode, null);
     } finally {
       child.kill = originalKill;
       if (child.exitCode === null && child.signalCode === null) {
-        originalKill.call(child);
+        await forceKill(child as unknown as ServerProcessLike);
       }
     }
   });
