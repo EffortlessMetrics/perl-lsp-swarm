@@ -411,9 +411,16 @@ describe('bounded workspace step-definition scan', () => {
     const sources = await scan();
     const total = sources.reduce((sum, source) => sum + Buffer.byteLength(source, 'utf8'), 0);
     expect(total).toBeLessThanOrEqual(TOTAL_LIMIT);
-    // The attempted-read envelope may stop one candidate early because the
-    // next bounded read could consume its full per-file cap plus overflow.
-    expect(sources.length).toBeLessThanOrEqual(fits);
+    // Derive the exact admitted count from the fixture's actual bytes and the
+    // conservative next-read charge. This prevents an empty or arbitrarily
+    // short result from satisfying the aggregate-bound assertion.
+    const fixtureBytes = Buffer.byteLength(chunk, 'utf8');
+    const worstCaseNextRead = PER_FILE_LIMIT + 1;
+    const expected = Math.min(
+      fits + 2,
+      Math.floor((TOTAL_LIMIT - worstCaseNextRead) / fixtureBytes) + 1,
+    );
+    expect(sources).toHaveLength(expected);
   });
 
   it('stops attempted reads before the next oversized candidate crosses the envelope', async () => {
@@ -423,7 +430,7 @@ describe('bounded workspace step-definition scan', () => {
     const attempted: string[] = [];
     findFiles.mockResolvedValue(paths);
 
-    const sources = await scan(async (filePath, limit) => {
+    const sources = await scan(async (filePath) => {
       attempted.push(filePath);
       return null;
     });
