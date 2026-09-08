@@ -400,17 +400,20 @@ describe('support command implementations', () => {
     expect(vscode.env.clipboard.writeText).not.toHaveBeenCalled();
   });
 
-  test('resolved unavailable server evidence stays not proven', async () => {
-    const deps = dependencies();
-    deps.getServerVersion.mockResolvedValueOnce('unavailable');
-    (vscode.window.showInformationMessage as jest.Mock).mockResolvedValueOnce(
-      'Copy Support Packet',
-    );
+  test.each(['unavailable', '', '   '])(
+    'resolved unavailable server evidence stays not proven (%j)',
+    async (serverVersion) => {
+      const deps = dependencies();
+      deps.getServerVersion.mockResolvedValueOnce(serverVersion);
+      (vscode.window.showInformationMessage as jest.Mock).mockResolvedValueOnce(
+        'Copy Support Packet',
+      );
 
-    await expect(reportIssueCommand(deps)).resolves.toBeUndefined();
-    const copied = (vscode.env.clipboard.writeText as jest.Mock).mock.calls[0]?.[0] as string;
-    expect(copied).toContain('perllsp: unknown not_proven not_proven');
-  });
+      await expect(reportIssueCommand(deps)).resolves.toBeUndefined();
+      const copied = (vscode.env.clipboard.writeText as jest.Mock).mock.calls[0]?.[0] as string;
+      expect(copied).toContain('perllsp: unknown not_proven not_proven');
+    },
+  );
 
   test('rejected server-version probe degrades without claiming absence or leaking the error', async () => {
     const deps = dependencies();
