@@ -1205,6 +1205,7 @@ async function runExtensionActivation(
         platform: process.platform,
         arch: process.arch,
         editorName: (vscode.env as unknown as { appName?: string }).appName,
+        supportFailureSink: outputChannel,
       }),
   });
   activation.ownDisposables(

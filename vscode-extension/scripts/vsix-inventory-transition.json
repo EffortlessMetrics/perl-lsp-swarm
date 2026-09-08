@@ -2,8 +2,8 @@
   "schema_version": 1,
   "owner_issue": 7862,
   "reason": "The #7862 support-packet evidence repair changes the packaged support command; the exact VSIX archive is measured against the captured current-main baseline.",
-  "base_baseline_file_sha256": "dd6c8cfd9fc3ea81c5d3cc7af96f7ca864ac7b67fc49145f3b38917552cd0b00",
-  "candidate_baseline_file_sha256": "25aa62e0db2db23a93997075b7f9d1decafff69f683a030e1c15dd4a981fd37f",
-  "base_inventory_sha256": "62f091bc7bd41801c24316481e82cc19506fec4f377df4b180b594d43bf663b7",
-  "candidate_inventory_sha256": "5d7dbfd2160f928d2332714ef697fe3bd8332dde0146547dc2784aba9ac47013"
+  "base_baseline_file_sha256": "747afd10e0c6fabdf6a0b987723cdeabb04e16bd5e3ba3420e6b64df971113ba",
+  "candidate_baseline_file_sha256": "cbc7b17b4a3828f98e36052024e0e30aa13934562c7ba9ce5ee1561018cfad8d",
+  "base_inventory_sha256": "dc57839628c437fe1256eea3d804c144245b2304bad90a317688161dbbf2762e",
+  "candidate_inventory_sha256": "4c6ed6924c01d1932568e3730beb12e7a859e4675c1278de0113bbab28aea1e8"
 }
