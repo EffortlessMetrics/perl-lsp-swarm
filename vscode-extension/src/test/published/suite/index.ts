@@ -63,7 +63,7 @@ export async function run(): Promise<void> {
     crashRecoverySmoke,
     testExplorerSmoke,
   ].filter(Boolean).length;
-  if (selectedSmokeCount > 1) {
+  if (testExplorerSmoke && selectedSmokeCount > 1) {
     throw new Error('Published smoke selectors are mutually exclusive.');
   }
   const smokeTestPaths = crashRecoverySmoke
