@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
   "owner_issue": 15153,
-  "reason": "The #14486 retained process witness adapter is stacked on the #15158 health and packaging fixes in the ordinary Windows x64 VSIX. Against the exact main baseline, the measured transition changes out/extension.js from 1686496 to 1688827 bytes (+2331) and readme.md from 25231 to 25629 bytes (+398); package.json remains 59413 bytes and the other 26 archive paths retain their measured sizes. The candidate total is 1867070 bytes versus the main baseline 1864341 bytes (+2729). This declaration records the exact ordinary package transition without changing validator thresholds or admission rules; bundled installed-health evidence remains separate from this ordinary inventory.",
-  "base_baseline_file_sha256": "eaef617cee329a98c217809c7b330c51c8ea246eb13b983ecc78d83e4487d945",
+  "reason": "The #14486 retained process witness adapter is stacked on the published #15158 health and packaging candidate. Against exact parent candidate 8d7e58b8e, the measured transition changes out/extension.js from 1688070 to 1688827 bytes (+757); readme.md, package.json, and the other 27 archive paths retain their measured sizes. The candidate total is 1867070 bytes versus the parent candidate total 1866313 bytes (+757). This declaration records the exact ordinary package transition without changing validator thresholds or admission rules; bundled installed-health evidence remains separate from this ordinary inventory.",
+  "base_baseline_file_sha256": "eb608f9f8d1fe2c86b5feb84d22477c15da72a2ea991964a54731e88544a116a",
   "candidate_baseline_file_sha256": "8f0bfe8bd6203ecbab140f1ab507eabc84329347f1fdb2d1bfa2ba0cdf7ec7cb",
-  "base_inventory_sha256": "2b68285babc5d03bd46afa00260919d43ed466415a40fc92e3a4ce79ed579766",
+  "base_inventory_sha256": "7c58e49152f3a1bb8bb8a852cba6f9fda23658ca70ffcafaf7c5a2e829044f1d",
   "candidate_inventory_sha256": "a00835dd0bfda6509b5a170bbea73f6b2923790d8d93f991d5878738b29658ff"
 }
