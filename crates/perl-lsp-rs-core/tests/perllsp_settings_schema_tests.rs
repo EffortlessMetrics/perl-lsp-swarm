@@ -436,28 +436,35 @@ fn ai_max_inflight_schema_bounds_match_the_runtime_contract() -> Result<(), Box<
     let max_inflight =
         &schema["properties"]["perl"]["properties"]["aiCompletion"]["properties"]["maxInflight"];
 
-    assert_eq!(max_inflight["minimum"], json!(1), "schema must advertise the runtime minimum");
-    assert_eq!(max_inflight["maximum"], json!(64), "schema must advertise the runtime maximum");
+    if max_inflight["minimum"] != json!(1) {
+        return Err(std::io::Error::other("schema minimum must be 1").into());
+    }
+    if max_inflight["maximum"] != json!(64) {
+        return Err(std::io::Error::other("schema maximum must be 64").into());
+    }
 
     // The runtime honours exactly the range the schema publishes: both
     // boundaries are accepted, and the first value past each is not.
     for (value, expected) in [(1_u64, 1_u32), (64, 64)] {
         let mut config = ServerConfig::default();
         config.update_from_value(&json!({ "aiCompletion": { "maxInflight": value } }));
-        assert_eq!(
-            config.ai_completion.max_inflight, expected,
-            "maxInflight={value} is inside the published range and must be accepted",
-        );
+        if config.ai_completion.max_inflight != expected {
+            return Err(std::io::Error::other(format!(
+                "maxInflight={value} is inside the published range and must be accepted"
+            ))
+            .into());
+        }
     }
 
     for rejected in [0_u64, 65] {
         let mut config = ServerConfig::default();
         config.update_from_value(&json!({ "aiCompletion": { "maxInflight": 8 } }));
         config.update_from_value(&json!({ "aiCompletion": { "maxInflight": rejected } }));
-        assert_eq!(
-            config.ai_completion.max_inflight, 8,
-            "maxInflight={rejected} is outside the published range and must keep the previous value",
-        );
+        if config.ai_completion.max_inflight != 8 {
+            return Err(std::io::Error::other(format!(
+                "maxInflight={rejected} is outside the published range and must keep the previous value"
+            )).into());
+        }
     }
 
     Ok(())

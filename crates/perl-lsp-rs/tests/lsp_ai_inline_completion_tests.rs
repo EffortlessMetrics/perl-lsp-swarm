@@ -334,12 +334,19 @@ fn test_ai_saturated_with_fallback_returns_deterministic() -> Result<(), Box<dyn
     let result = inline_completion(&server, uri, 0, 4)?;
     let items = result["items"].as_array().ok_or("items array")?;
 
-    assert!(!items.is_empty(), "expected deterministic fallback when the gate is saturated");
+    if items.is_empty() {
+        return Err(std::io::Error::other(
+            "expected deterministic fallback when the gate is saturated",
+        )
+        .into());
+    }
     let texts: Vec<&str> = items.iter().filter_map(|item| item["insertText"].as_str()).collect();
-    assert!(
-        texts.contains(&"strict;"),
-        "expected deterministic 'strict;' on saturation fallback, got: {texts:?}",
-    );
+    if !texts.contains(&"strict;") {
+        return Err(std::io::Error::other(format!(
+            "expected deterministic 'strict;' on saturation fallback, got: {texts:?}"
+        ))
+        .into());
+    }
     Ok(())
 }
 
@@ -356,7 +363,9 @@ fn test_ai_saturated_without_fallback_returns_empty() -> Result<(), Box<dyn std:
 
     let result = inline_completion(&server, uri, 0, 4)?;
     let items = result["items"].as_array().ok_or("items array")?;
-    assert!(items.is_empty(), "expected empty result, got: {items:?}");
+    if !items.is_empty() {
+        return Err(std::io::Error::other(format!("expected empty result, got: {items:?}")).into());
+    }
     Ok(())
 }
 

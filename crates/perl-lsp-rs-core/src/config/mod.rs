@@ -3905,17 +3905,23 @@ profile = "recommended"
     /// `4294967296` truncated to `0` and then became a gate capacity of **1**,
     /// silently giving the user a *tighter* ceiling than they asked for.
     #[test]
-    fn ai_max_inflight_out_of_range_keeps_the_previous_value() {
+    fn ai_max_inflight_out_of_range_keeps_the_previous_value() -> TestResult {
         let mut config = ServerConfig::default();
 
         // A valid value is accepted, and establishes the "previous valid"
         // state the rejections below must preserve.
         config.update_from_value(&serde_json::json!({ "aiCompletion": { "maxInflight": 8 } }));
-        assert_eq!(config.ai_completion.max_inflight, 8);
+        if config.ai_completion.max_inflight != 8 {
+            return Err(std::io::Error::other("valid maxInflight was not accepted").into());
+        }
 
         // The declared maximum is inclusive.
         config.update_from_value(&serde_json::json!({ "aiCompletion": { "maxInflight": 64 } }));
-        assert_eq!(config.ai_completion.max_inflight, 64, "64 is within 1..=64");
+        if config.ai_completion.max_inflight != 64 {
+            return Err(
+                std::io::Error::other("64 must be accepted as the inclusive maximum").into()
+            );
+        }
 
         for rejected in [
             0_u64,               // below the minimum; previously became capacity 1
@@ -3928,15 +3934,20 @@ profile = "recommended"
             config.update_from_value(
                 &serde_json::json!({ "aiCompletion": { "maxInflight": rejected } }),
             );
-            assert_eq!(
-                config.ai_completion.max_inflight, 64,
-                "maxInflight={rejected} is out of range and must keep the previous valid value"
-            );
+            if config.ai_completion.max_inflight != 64 {
+                return Err(std::io::Error::other(format!(
+                    "maxInflight={rejected} is out of range and must keep the previous valid value"
+                ))
+                .into());
+            }
         }
 
         // Still usable afterwards: rejection does not latch the field.
         config.update_from_value(&serde_json::json!({ "aiCompletion": { "maxInflight": 1 } }));
-        assert_eq!(config.ai_completion.max_inflight, 1);
+        if config.ai_completion.max_inflight != 1 {
+            return Err(std::io::Error::other("a later valid maxInflight must still apply").into());
+        }
+        Ok(())
     }
 
     #[test]

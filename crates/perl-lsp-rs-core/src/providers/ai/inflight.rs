@@ -167,60 +167,99 @@ mod tests {
     use std::sync::{Arc, Barrier};
     use std::time::{Duration, Instant};
 
+    macro_rules! check {
+        ($condition:expr $(,)?) => {
+            if !($condition) {
+                return Err(std::io::Error::other(format!(
+                    "condition failed: {}",
+                    stringify!($condition)
+                ))
+                .into());
+            }
+        };
+        ($condition:expr, $message:expr $(,)?) => {
+            if !($condition) {
+                return Err(std::io::Error::other(format!($message)).into());
+            }
+        };
+    }
+
+    macro_rules! check_eq {
+        ($left:expr, $right:expr $(,)?) => {
+            let left = &$left;
+            let right = &$right;
+            if left != right {
+                return Err(std::io::Error::other(format!(
+                    "equality failed: left={:?}, right={:?}",
+                    left, right
+                ))
+                .into());
+            }
+        };
+        ($left:expr, $right:expr, $message:expr $(,)?) => {
+            let left = &$left;
+            let right = &$right;
+            if left != right {
+                return Err(std::io::Error::other(format!($message)).into());
+            }
+        };
+    }
+
     #[test]
-    fn admits_up_to_capacity_and_then_refuses() {
+    fn admits_up_to_capacity_and_then_refuses() -> Result<(), Box<dyn std::error::Error>> {
         let gate = InflightGate::new(2);
         let first = gate.try_acquire();
         let second = gate.try_acquire();
-        assert!(first.is_some());
-        assert!(second.is_some());
+        check!(first.is_some());
+        check!(second.is_some());
 
-        assert!(
+        check!(
             gate.try_acquire().is_none(),
             "a third concurrent request must not be admitted at capacity 2"
         );
-        assert_eq!(gate.counters().active, 2);
-        assert_eq!(gate.counters().peak_active, 2);
-        assert_eq!(gate.counters().saturated_rejections, 1);
+        check_eq!(gate.counters().active, 2);
+        check_eq!(gate.counters().peak_active, 2);
+        check_eq!(gate.counters().saturated_rejections, 1);
+        Ok(())
     }
 
     #[test]
-    fn dropping_a_permit_frees_the_slot() {
+    fn dropping_a_permit_frees_the_slot() -> Result<(), Box<dyn std::error::Error>> {
         let gate = InflightGate::new(1);
         {
             let _permit = gate.try_acquire();
-            assert!(gate.try_acquire().is_none());
+            check!(gate.try_acquire().is_none());
         }
-        assert_eq!(
-            gate.counters().released,
-            1,
-            "leaving the scope must release exactly one permit"
-        );
-        assert_eq!(gate.counters().active, 0);
-        assert!(
+        check_eq!(gate.counters().released, 1, "leaving the scope must release exactly one permit");
+        check_eq!(gate.counters().active, 0);
+        check!(
             gate.try_acquire().is_some(),
             "the slot must be reusable once the first permit is dropped"
         );
+        Ok(())
     }
 
     #[test]
-    fn refusal_is_immediate_rather_than_a_wait() {
+    fn refusal_is_immediate_rather_than_a_wait() -> Result<(), Box<dyn std::error::Error>> {
         let gate = InflightGate::new(1);
         let _held = gate.try_acquire();
 
         let started = Instant::now();
-        assert!(gate.try_acquire().is_none());
-        assert!(
+        check!(gate.try_acquire().is_none());
+        check!(
             started.elapsed() < Duration::from_millis(50),
             "a saturated gate must refuse now, never park an LSP read worker"
         );
+        Ok(())
     }
 
     #[test]
-    fn capacity_zero_is_raised_to_one_rather_than_disabling_completion() {
+    fn capacity_zero_is_raised_to_one_rather_than_disabling_completion()
+    -> Result<(), Box<dyn std::error::Error>> {
         let gate = InflightGate::new(0);
-        assert_eq!(gate.capacity(), 1);
-        assert!(gate.try_acquire().is_some());
+        check_eq!(gate.capacity(), 1);
+        check!(gate.try_acquire().is_some());
+        Ok(())
     }
 
     /// The invariant the issue actually names: with `maxInflight = 1`, two
@@ -230,7 +269,8 @@ mod tests {
     /// until admitted so every request eventually runs and the observed peak
     /// covers all of them.
     #[test]
-    fn barrier_proves_capacity_one_never_runs_two_requests_at_once() {
+    fn barrier_proves_capacity_one_never_runs_two_requests_at_once()
+    -> Result<(), Box<dyn std::error::Error>> {
         let gate = Arc::new(InflightGate::new(1));
         let start = Arc::new(Barrier::new(4));
         let concurrent = Arc::new(AtomicU32::new(0));
@@ -242,7 +282,7 @@ mod tests {
                 let start = Arc::clone(&start);
                 let concurrent = Arc::clone(&concurrent);
                 let max_seen = Arc::clone(&max_seen);
-                std::thread::spawn(move || {
+                std::thread::spawn(move || -> std::io::Result<()> {
                     start.wait();
                     let deadline = Instant::now() + Duration::from_secs(10);
                     while Instant::now() < deadline {
@@ -255,8 +295,12 @@ mod tests {
                         std::thread::sleep(Duration::from_millis(20));
                         concurrent.fetch_sub(1, Ordering::SeqCst);
                         drop(permit);
-                        return;
+                        return Ok(());
                     }
+                    Err(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "capacity-one holder failed to acquire within the test deadline",
+                    ))
                 })
             })
             .collect();
@@ -264,24 +308,25 @@ mod tests {
         // Propagate worker failures: `let _ = join()` would discard a panicked
         // assertion inside a thread and let the test pass regardless.
         for handle in handles {
-            assert!(handle.join().is_ok(), "a worker thread panicked");
+            handle.join().map_err(|_| std::io::Error::other("a worker thread panicked"))??;
         }
 
-        assert_eq!(
+        check_eq!(
             max_seen.load(Ordering::SeqCst),
             1,
             "capacity 1 must never allow two simultaneously active requests"
         );
         let counters = gate.counters();
-        assert_eq!(counters.active, 0, "every permit must be released");
-        assert_eq!(counters.admitted, 4);
-        assert_eq!(counters.released, 4);
-        assert_eq!(counters.peak_active, 1);
+        check_eq!(counters.active, 0, "every permit must be released");
+        check_eq!(counters.admitted, 4);
+        check_eq!(counters.released, 4);
+        check_eq!(counters.peak_active, 1);
+        Ok(())
     }
 
     /// The N+1 case: capacity N admits N and refuses the (N+1)th.
     #[test]
-    fn barrier_proves_capacity_n_never_exceeds_n() {
+    fn barrier_proves_capacity_n_never_exceeds_n() -> Result<(), Box<dyn std::error::Error>> {
         const N: u32 = 3;
         let gate = Arc::new(InflightGate::new(N));
         let concurrent = Arc::new(AtomicU32::new(0));
@@ -300,11 +345,11 @@ mod tests {
                 let concurrent = Arc::clone(&concurrent);
                 let max_seen = Arc::clone(&max_seen);
                 let contender_done = Arc::clone(&contender_done);
-                std::thread::spawn(move || {
+                std::thread::spawn(move || -> std::io::Result<()> {
                     // Bind the permit: a temporary would drop immediately and
                     // the occupancy below would read zero.
                     let permit = gate.try_acquire();
-                    assert!(permit.is_some(), "holder {index} must be admitted at capacity {N}");
+                    check!(permit.is_some(), "holder {index} must be admitted at capacity {N}");
                     let now = concurrent.fetch_add(1, Ordering::SeqCst) + 1;
                     max_seen.fetch_max(now, Ordering::SeqCst);
 
@@ -318,6 +363,7 @@ mod tests {
 
                     concurrent.fetch_sub(1, Ordering::SeqCst);
                     drop(permit);
+                    Ok(())
                 })
             })
             .collect();
@@ -328,7 +374,7 @@ mod tests {
         while concurrent.load(Ordering::SeqCst) < N && Instant::now() < deadline {
             std::thread::yield_now();
         }
-        assert_eq!(
+        check_eq!(
             concurrent.load(Ordering::SeqCst),
             N,
             "all {N} holders must be inside before the contender tries"
@@ -340,7 +386,7 @@ mod tests {
         // admission assertion inside a holder thread, so a gate that refused a
         // holder could still reach the counter assertions below.
         for handle in holders {
-            assert!(handle.join().is_ok(), "a holder thread panicked");
+            handle.join().map_err(|_| std::io::Error::other("a holder thread panicked"))??;
         }
 
         // The ceiling, in both directions. `max_seen <= N` alone is vacuous:
@@ -349,27 +395,26 @@ mod tests {
         // from both sides — an always-refuse gate fails `admitted`, an
         // always-admit gate fails `saturated_rejections` and `peak_active`.
         let observed = max_seen.load(Ordering::SeqCst);
-        assert_eq!(observed, N, "capacity {N} must be reached and never exceeded, saw {observed}");
-        assert_eq!(refused, 1, "the (N+1)th caller must be refused by a full gate");
+        check_eq!(observed, N, "capacity {N} must be reached and never exceeded, saw {observed}");
+        check_eq!(refused, 1, "the (N+1)th caller must be refused by a full gate");
 
         let counters = gate.counters();
-        assert_eq!(counters.admitted, u64::from(N), "exactly N callers must be admitted");
-        assert_eq!(
-            counters.saturated_rejections, 1,
+        check_eq!(counters.admitted, u64::from(N), "exactly N callers must be admitted");
+        check_eq!(
+            counters.saturated_rejections,
+            1,
             "the gate must record the single saturated refusal"
         );
-        assert_eq!(counters.released, u64::from(N), "every admitted permit must be released");
-        assert_eq!(counters.peak_active, N, "the gate's own peak must equal capacity");
-        assert_eq!(counters.active, 0);
+        check_eq!(counters.released, u64::from(N), "every admitted permit must be released");
+        check_eq!(counters.peak_active, N, "the gate's own peak must equal capacity");
+        check_eq!(counters.active, 0);
+        Ok(())
     }
 
     /// A panicking request must not strand its slot: `Drop` runs during unwind.
     #[test]
-    #[expect(
-        clippy::panic,
-        reason = "issue:8300: deliberate unwind witness proves permit release"
-    )]
-    fn permit_is_released_when_the_holder_panics() {
+    #[expect(clippy::panic, reason = "issue:8300: deliberate unwind witness proves permit release")]
+    fn permit_is_released_when_the_holder_panics() -> Result<(), Box<dyn std::error::Error>> {
         let gate = Arc::new(InflightGate::new(1));
 
         let gate_for_unwind = Arc::clone(&gate);
@@ -378,48 +423,54 @@ mod tests {
             panic!("simulated panic while holding a permit");
         }));
 
-        assert!(unwound.is_err(), "the test must actually observe a panic");
-        assert_eq!(
+        check!(unwound.is_err(), "the test must actually observe a panic");
+        check_eq!(
             gate.counters().active,
             0,
             "a panic while holding a permit must still release the slot"
         );
-        assert!(
+        check_eq!(gate.counters().admitted, 1, "the panic witness must admit a permit");
+        check_eq!(gate.counters().released, 1, "the panic witness must release its permit");
+        check!(
             gate.try_acquire().is_some(),
             "capacity must remain usable after a panicking request"
         );
+        Ok(())
     }
 
     #[test]
-    fn counters_report_peak_and_return_to_zero() {
+    fn counters_report_peak_and_return_to_zero() -> Result<(), Box<dyn std::error::Error>> {
         let gate = InflightGate::new(3);
         {
             let _a = gate.try_acquire();
             let _b = gate.try_acquire();
-            assert_eq!(gate.counters().active, 2);
+            check_eq!(gate.counters().active, 2);
         }
         let counters = gate.counters();
-        assert_eq!(counters.active, 0);
-        assert_eq!(counters.peak_active, 2, "peak must survive the release");
-        assert_eq!(counters.admitted, 2);
-        assert_eq!(counters.released, 2);
+        check_eq!(counters.active, 0);
+        check_eq!(counters.peak_active, 2, "peak must survive the release");
+        check_eq!(counters.admitted, 2);
+        check_eq!(counters.released, 2);
+        Ok(())
     }
 
     /// Separate generations must not share or strand capacity.
     #[test]
-    fn a_new_generation_gate_is_independent_of_the_old_one() {
+    fn a_new_generation_gate_is_independent_of_the_old_one()
+    -> Result<(), Box<dyn std::error::Error>> {
         let old = Arc::new(InflightGate::new(1));
         let held = old.try_acquire();
-        assert!(held.is_some());
+        check!(held.is_some());
 
         // Profile replacement: a new provider builds a new gate.
         let new = InflightGate::new(1);
-        assert!(
+        check!(
             new.try_acquire().is_some(),
             "a permit outstanding on the old generation must not block the new one"
         );
 
         drop(held);
-        assert_eq!(old.counters().active, 0, "the old permit drains into the old gate");
+        check_eq!(old.counters().active, 0, "the old permit drains into the old gate");
+        Ok(())
     }
 }

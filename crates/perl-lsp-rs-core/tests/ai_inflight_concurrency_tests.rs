@@ -18,6 +18,44 @@ use std::sync::{Arc, Barrier};
 use std::thread;
 use std::time::{Duration, Instant};
 
+macro_rules! check {
+    ($condition:expr $(,)?) => {
+        if !($condition) {
+            return Err(std::io::Error::other(format!(
+                "condition failed: {}",
+                stringify!($condition)
+            ))
+            .into());
+        }
+    };
+    ($condition:expr, $message:expr $(,)?) => {
+        if !($condition) {
+            return Err(std::io::Error::other(format!($message)).into());
+        }
+    };
+}
+
+macro_rules! check_eq {
+    ($left:expr, $right:expr $(,)?) => {
+        let left = &$left;
+        let right = &$right;
+        if left != right {
+            return Err(std::io::Error::other(format!(
+                "equality failed: left={:?}, right={:?}",
+                left, right
+            ))
+            .into());
+        }
+    };
+    ($left:expr, $right:expr, $message:expr $(,)?) => {
+        let left = &$left;
+        let right = &$right;
+        if left != right {
+            return Err(std::io::Error::other(format!($message)).into());
+        }
+    };
+}
+
 fn backend_request() -> BackendRequest {
     BackendRequest {
         context: PreparedInlineCompletionContext {
@@ -65,13 +103,13 @@ fn saturated_gate_refuses_before_any_network_dispatch() -> Result<(), Box<dyn st
 
     let outcome = provider.stream(&backend_request(), &mut |_| StreamControl::Continue);
 
-    assert!(
+    check!(
         matches!(outcome, Err(BackendError::Saturated)),
         "a saturated gate must refuse before dispatch, got: {outcome:?}"
     );
 
     drop(held);
-    assert_eq!(provider.inflight_counters().active, 0);
+    check_eq!(provider.inflight_counters().active, 0);
     Ok(())
 }
 
@@ -93,8 +131,8 @@ fn saturation_refuses_immediately_rather_than_parking_the_caller()
     let outcome = provider.stream(&backend_request(), &mut |_| StreamControl::Continue);
     let elapsed = started.elapsed();
 
-    assert!(matches!(outcome, Err(BackendError::Saturated)));
-    assert!(
+    check!(matches!(outcome, Err(BackendError::Saturated)));
+    check!(
         elapsed < Duration::from_millis(100),
         "a saturated request must return now, not occupy a read worker; took {elapsed:?}"
     );
@@ -113,16 +151,16 @@ fn an_admitted_request_releases_after_closed_port_failure() -> Result<(), Box<dy
 
     let outcome = provider.stream(&backend_request(), &mut |_| StreamControl::Continue);
 
-    assert!(
+    check!(
         matches!(outcome, Err(BackendError::Transport(_)) | Err(BackendError::Timeout)),
         "an admitted request must finish with a network terminal error, got: {outcome:?}"
     );
-    assert_eq!(
+    check_eq!(
         provider.inflight_counters().active,
         0,
         "a transport failure must still release the permit"
     );
-    assert_eq!(provider.inflight_counters().released, 1);
+    check_eq!(provider.inflight_counters().released, 1);
     Ok(())
 }
 
@@ -214,21 +252,23 @@ fn max_inflight_one_admits_only_one_concurrent_backend_call()
     }
     server.join().map_err(|_| std::io::Error::other("loopback server panicked"))??;
 
-    assert_eq!(
+    check_eq!(
         saturated.load(Ordering::SeqCst),
         1,
         "exactly one of two concurrent requests must be refused at maxInflight=1"
     );
-    assert_eq!(
+    check_eq!(
         accepted.load(Ordering::SeqCst),
         1,
         "the refused request must never open a connection"
     );
-    assert_eq!(provider.inflight_counters().active, 0, "every permit must be released");
+    check_eq!(provider.inflight_counters().active, 0, "every permit must be released");
     if provider.inflight_counters().released != 1 {
-        return Err(std::io::Error::other("the admitted permit must be released exactly once").into());
+        return Err(
+            std::io::Error::other("the admitted permit must be released exactly once").into()
+        );
     }
-    assert_eq!(provider.inflight_counters().peak_active, 1);
+    check_eq!(provider.inflight_counters().peak_active, 1);
     Ok(())
 }
 
@@ -236,27 +276,29 @@ fn max_inflight_one_admits_only_one_concurrent_backend_call()
 /// requests above `maxInflight`. This is the specific conflation the issue
 /// names: burst is a refill allowance, not a concurrency ceiling.
 #[test]
-fn a_large_rate_limit_burst_cannot_raise_live_concurrency() {
+fn a_large_rate_limit_burst_cannot_raise_live_concurrency() -> Result<(), Box<dyn std::error::Error>>
+{
     let gate = InflightGate::new(2);
     let limiter = RateLimiter::new(1_000.0, 1_000);
 
     // Every caller can take a rate token...
     for _ in 0..8 {
-        assert!(limiter.try_acquire(), "the burst must be large enough to admit all callers");
+        check!(limiter.try_acquire(), "the burst must be large enough to admit all callers");
     }
 
     // ...but only `maxInflight` may be live at once.
     let mut permits = Vec::new();
     for _ in 0..2 {
         let permit = gate.try_acquire();
-        assert!(permit.is_some());
+        check!(permit.is_some());
         permits.push(permit);
     }
-    assert!(
+    check!(
         gate.try_acquire().is_none(),
         "rate-limit burst headroom must not increase the live-request ceiling"
     );
-    assert_eq!(gate.counters().peak_active, 2);
+    check_eq!(gate.counters().peak_active, 2);
+    Ok(())
 }
 
 /// Reconfiguring the profile builds a new provider. Permits outstanding on the
@@ -267,7 +309,7 @@ fn a_reconfigured_provider_does_not_share_or_strand_permits()
     let old = provider("http://127.0.0.1:9/v1/chat/completions", 1);
     let held =
         old.inflight().try_acquire().ok_or("the old generation must admit its first request")?;
-    assert_eq!(old.inflight_counters().active, 1);
+    check_eq!(old.inflight_counters().active, 1);
 
     // Profile replacement. Bind the permit: a temporary would drop inside the
     // assertion and the occupancy check below would read zero.
@@ -278,11 +320,11 @@ fn a_reconfigured_provider_does_not_share_or_strand_permits()
         .ok_or("a permit outstanding on the retired generation must not consume new capacity")?;
 
     drop(held);
-    assert_eq!(
+    check_eq!(
         old.inflight_counters().active,
         0,
         "the old permit must drain into the gate it came from"
     );
-    assert_eq!(new.inflight_counters().active, 1, "the new generation keeps its own occupancy");
+    check_eq!(new.inflight_counters().active, 1, "the new generation keeps its own occupancy");
     Ok(())
 }

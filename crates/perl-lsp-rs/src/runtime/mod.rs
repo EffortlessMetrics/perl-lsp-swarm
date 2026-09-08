@@ -2688,7 +2688,8 @@ model = "gpt-4"
     /// backend is installed behind `Arc<dyn InlineCompletionBackend>` and the
     /// gate cannot be read back through it. Hence a config-level assertion.
     #[test]
-    fn ai_provider_config_carries_the_configured_inflight_ceiling() {
+    fn ai_provider_config_carries_the_configured_inflight_ceiling()
+    -> Result<(), Box<dyn std::error::Error>> {
         let ai_config = AiCompletionConfig {
             endpoint: "https://api.example/v1/chat/completions".to_string(),
             model: "custom-code-model".to_string(),
@@ -2699,28 +2700,34 @@ model = "gpt-4"
 
         let provider_config = LspServer::ai_provider_config(&ai_config, "test-key".to_string());
 
-        assert_eq!(
-            provider_config.max_inflight, 3,
-            "a configured maxInflight must reach the provider, not just the rate limiter"
-        );
+        if provider_config.max_inflight != 3 {
+            return Err(std::io::Error::other(
+                "a configured maxInflight must reach the provider, not just the rate limiter",
+            )
+            .into());
+        }
         // Negative control on the assertion itself: 3 must not be the default,
         // or this test would pass with the assignment removed.
-        assert_ne!(
-            perl_lsp_rs_core::providers::ai::OpenAiConfig::new(
-                ai_config.endpoint.clone(),
-                ai_config.model.clone(),
-                "test-key".to_string(),
-                ai_config.timeout_ms,
+        if perl_lsp_rs_core::providers::ai::OpenAiConfig::new(
+            ai_config.endpoint.clone(),
+            ai_config.model.clone(),
+            "test-key".to_string(),
+            ai_config.timeout_ms,
+        )
+        .max_inflight
+            == 3
+        {
+            return Err(std::io::Error::other(
+                "the constructor default must differ from the configured value",
             )
-            .max_inflight,
-            3,
-            "the constructor default must differ from the configured value"
-        );
+            .into());
+        }
+        Ok(())
     }
 
     /// The translation must not quietly drop the other transport fields either.
     #[test]
-    fn ai_provider_config_carries_the_transport_fields() {
+    fn ai_provider_config_carries_the_transport_fields() -> Result<(), Box<dyn std::error::Error>> {
         let ai_config = AiCompletionConfig {
             endpoint: "http://127.0.0.1:11434/v1/chat/completions".to_string(),
             model: "local-model".to_string(),
@@ -2734,14 +2741,20 @@ model = "gpt-4"
 
         let provider_config = LspServer::ai_provider_config(&ai_config, "local-key".to_string());
 
-        assert_eq!(provider_config.endpoint, ai_config.endpoint);
-        assert_eq!(provider_config.model, ai_config.model);
-        assert_eq!(provider_config.api_key, "local-key");
-        assert_eq!(provider_config.api_key_header, "x-api-key");
-        assert_eq!(provider_config.api_key_prefix, None);
-        assert_eq!(provider_config.timeout_ms, 900);
-        assert!(provider_config.local_model_mode);
-        assert_eq!(provider_config.max_inflight, 2);
+        if provider_config.endpoint != ai_config.endpoint
+            || provider_config.model != ai_config.model
+            || provider_config.api_key != "local-key"
+            || provider_config.api_key_header != "x-api-key"
+            || provider_config.api_key_prefix.is_some()
+            || provider_config.timeout_ms != 900
+            || !provider_config.local_model_mode
+            || provider_config.max_inflight != 2
+        {
+            return Err(
+                std::io::Error::other("provider transport fields were not preserved").into()
+            );
+        }
+        Ok(())
     }
 
     // --- include_paths_for_doc tests ---

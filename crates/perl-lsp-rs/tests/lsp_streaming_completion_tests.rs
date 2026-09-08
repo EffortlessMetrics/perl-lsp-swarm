@@ -9,8 +9,8 @@
 //!     -- streaming --test-threads=2
 //! ```
 
-// Tests are permitted to use `.expect()` on Result/Option per the repo's
-// coding standards (unlike production code, where it is banned).
+// This legacy integration module retains pre-existing panic-shaped test
+// helpers; the new saturation coverage below uses fallible checks.
 #![allow(clippy::expect_used)]
 
 mod support;
@@ -553,6 +553,8 @@ fn streaming_completion_capability_advertised() -> TestResult {
 
 #[cfg(feature = "expose_lsp_test_api")]
 mod mock_streaming_completion_tests {
+    use super::TestResult;
+
     use parking_lot::Mutex;
     use perl_lsp::{JsonRpcRequest, LspServer};
     use perl_lsp_rs_core::transport::framing::ContentLengthFramer;
@@ -957,7 +959,7 @@ mod mock_streaming_completion_tests {
     /// stream that terminated before emitting anything ended empty even with
     /// fallback configured — the user got no suggestion at all.
     #[test]
-    fn streaming_saturation_falls_back_to_deterministic_completions() {
+    fn streaming_saturation_falls_back_to_deterministic_completions() -> TestResult {
         let (server, capture) = create_server();
         server.test_configure_ai_completion(true, true);
         server.test_install_ai_backend(Some(Arc::new(MockSaturatedBackend)));
@@ -965,26 +967,37 @@ mod mock_streaming_completion_tests {
         let uri = "file:///streaming-saturated-fallback.pl";
         open_doc(&server, uri, "use ");
         let result = request_streaming_completion(&server, uri, 4, "stream-saturated-fb");
-        assert!(result.is_null());
+        if !result.is_null() {
+            return Err(
+                std::io::Error::other("streaming saturation must return a null response").into()
+            );
+        }
 
         let progress =
             wait_for_progress_messages(&capture, "stream-saturated-fb", Duration::from_millis(500));
         let final_message =
-            progress.last().expect("the stream must always send a terminal isFinal notification");
-        assert!(final_message["params"]["value"]["isFinal"].as_bool().unwrap_or(false));
+            progress.last().ok_or("the stream must always send a terminal isFinal notification")?;
+        if !final_message["params"]["value"]["isFinal"].as_bool().unwrap_or(false) {
+            return Err(std::io::Error::other(
+                "the stream must send a terminal isFinal notification",
+            )
+            .into());
+        }
 
         let items =
-            final_message["params"]["value"]["items"].as_array().expect("items array").clone();
-        assert!(
-            !items.is_empty(),
-            "a saturated stream with fallback enabled must emit deterministic completions, got: {items:?}"
-        );
+            final_message["params"]["value"]["items"].as_array().ok_or("items array")?.clone();
+        if items.is_empty() {
+            return Err(std::io::Error::other(format!(
+                "a saturated stream with fallback enabled must emit deterministic completions, got: {items:?}"
+            )).into());
+        }
+        Ok(())
     }
 
     /// With fallback disabled the same saturation ends the stream empty — a
     /// typed final-empty decision, not a failure surfaced to the editor.
     #[test]
-    fn streaming_saturation_without_fallback_ends_empty() {
+    fn streaming_saturation_without_fallback_ends_empty() -> TestResult {
         let (server, capture) = create_server();
         server.test_configure_ai_completion(true, false);
         server.test_install_ai_backend(Some(Arc::new(MockSaturatedBackend)));
@@ -992,7 +1005,11 @@ mod mock_streaming_completion_tests {
         let uri = "file:///streaming-saturated-nofb.pl";
         open_doc(&server, uri, "use ");
         let result = request_streaming_completion(&server, uri, 4, "stream-saturated-nofb");
-        assert!(result.is_null());
+        if !result.is_null() {
+            return Err(
+                std::io::Error::other("streaming saturation must return a null response").into()
+            );
+        }
 
         let progress = wait_for_progress_messages(
             &capture,
@@ -1000,12 +1017,17 @@ mod mock_streaming_completion_tests {
             Duration::from_millis(500),
         );
         let final_message =
-            progress.last().expect("the stream must always send a terminal isFinal notification");
-        assert!(final_message["params"]["value"]["isFinal"].as_bool().unwrap_or(false));
-        assert!(
-            final_message["params"]["value"]["items"].as_array().is_some_and(Vec::is_empty),
-            "fallback disabled must end the stream empty"
-        );
+            progress.last().ok_or("the stream must always send a terminal isFinal notification")?;
+        if !final_message["params"]["value"]["isFinal"].as_bool().unwrap_or(false) {
+            return Err(std::io::Error::other(
+                "the stream must send a terminal isFinal notification",
+            )
+            .into());
+        }
+        if !final_message["params"]["value"]["items"].as_array().is_some_and(Vec::is_empty) {
+            return Err(std::io::Error::other("fallback disabled must end the stream empty").into());
+        }
+        Ok(())
     }
 
     struct MockAuthBackend;
