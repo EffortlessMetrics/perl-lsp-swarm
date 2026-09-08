@@ -14,7 +14,10 @@ const {
   crashRecoveryLegEnv,
   finalizeSmokeRun,
   interpretBehavioralSmokeExit,
+  interpretTestExplorerExit,
+  validateTestExplorerReceipt,
   runPublishedSmoke,
+  testExplorerSmokeEnv,
   interpretTransitionResult,
   publishCheckSummary,
   writeProjectionLine,
@@ -26,6 +29,151 @@ const {
   validateCrashRecoveryChildReceipts,
   writeJsonAtomic,
 } = require('./run-local-vsix-smoke');
+
+void test('builds an exclusive candidate-bound Test Explorer child environment', () => {
+  const environment = testExplorerSmokeEnv(
+    {
+      PERL_LSP_CURRENT_SOURCE_SMOKE: '1',
+      PERL_LSP_FIRST_HOUR_ONLY: '1',
+      PERL_LSP_FIRST_HOUR_RECEIPT: '1',
+      PERL_LSP_FIRST_HOUR_SERVER_PATH: 'old-server',
+      PERL_LSP_PACKAGED_BUNDLE_SMOKE: '1',
+      PERL_LSP_HEALTH_CHECK_FAILURE_SMOKE: '1',
+      PERL_LSP_ACTIVATION_FAILURE_SMOKE: '1',
+      PERL_LSP_CRASH_RECOVERY_SMOKE: '1',
+    },
+    'a'.repeat(40),
+    'candidate.vsix',
+    'b'.repeat(64),
+  );
+
+  assert.equal(environment.PERL_LSP_TEST_EXPLORER_SMOKE, '1');
+  assert.equal(environment.PERL_LSP_CURRENT_SOURCE_SHA, 'a'.repeat(40));
+  assert.equal(environment.PERL_LSP_PUBLISHED_VSIX_PATH, 'candidate.vsix');
+  assert.equal(environment.PERL_LSP_VSIX_SHA256, 'b'.repeat(64));
+  assert.equal(environment.PERL_LSP_CURRENT_SOURCE_SMOKE, undefined);
+  assert.equal(environment.PERL_LSP_FIRST_HOUR_ONLY, undefined);
+  assert.equal(environment.PERL_LSP_FIRST_HOUR_RECEIPT, undefined);
+  assert.equal(environment.PERL_LSP_FIRST_HOUR_SERVER_PATH, undefined);
+  assert.equal(environment.PERL_LSP_PACKAGED_BUNDLE_SMOKE, undefined);
+  assert.equal(environment.PERL_LSP_HEALTH_CHECK_FAILURE_SMOKE, undefined);
+  assert.equal(environment.PERL_LSP_ACTIVATION_FAILURE_SMOKE, undefined);
+  assert.equal(environment.PERL_LSP_CRASH_RECOVERY_SMOKE, undefined);
+});
+
+void test('does not turn missing or failed Test Explorer children into a pass', () => {
+  assert.deepEqual(
+    interpretTestExplorerExit({
+      phase: 'child',
+      result: { status: 1, error: undefined },
+    }),
+    { status: 'failed', exit_code: 1, reason: 'test_explorer_journey_failed' },
+  );
+  assert.deepEqual(
+    interpretTestExplorerExit({
+      phase: 'child',
+      result: { status: null, error: undefined },
+    }),
+    { status: 'failed', exit_code: null, reason: 'test_explorer_journey_failed' },
+  );
+  assert.deepEqual(
+    interpretTestExplorerExit({
+      phase: 'child',
+      result: { status: 0, error: undefined },
+    }, { ok: true, receipt: { fixture: 'generated test.t', test_zero: 'generated test.t' } }),
+    {
+      status: 'pass',
+      exit_code: 0,
+      reason: 'test_explorer_child_completed',
+      fixture: 'generated test.t',
+      test_zero: 'generated test.t',
+    },
+  );
+});
+
+void test('requires a fresh candidate-bound Test Explorer completion receipt', () => {
+  const receiptFile = path.join(os.tmpdir(), `perl-lsp-test-explorer-${process.pid}.json`);
+  const valid = {
+    outcome: 'completed',
+    source_revision: 'a'.repeat(40),
+    server_source_revision: 'a'.repeat(40),
+    vsix_sha256: 'b'.repeat(64),
+    fixture: 'fixture.t',
+    test_zero: 'fixture.t',
+  };
+  try {
+    assert.equal(
+      validateTestExplorerReceipt({
+        receiptFile,
+        expectedRevision: valid.source_revision,
+        expectedServerSourceSha: valid.server_source_revision,
+        expectedVsixSha256: valid.vsix_sha256,
+        readFile: () => JSON.stringify(valid),
+        exists: () => true,
+      }).ok,
+      true,
+    );
+    assert.equal(
+      validateTestExplorerReceipt({
+        receiptFile,
+        expectedRevision: 'c'.repeat(40),
+        expectedServerSourceSha: valid.server_source_revision,
+        expectedVsixSha256: valid.vsix_sha256,
+        readFile: () => JSON.stringify(valid),
+        exists: () => true,
+      }).ok,
+      false,
+    );
+    assert.equal(
+      validateTestExplorerReceipt({
+        receiptFile,
+        expectedRevision: valid.source_revision,
+        expectedServerSourceSha: valid.server_source_revision,
+        expectedVsixSha256: valid.vsix_sha256,
+        readFile: () => JSON.stringify(valid),
+        exists: () => false,
+      }).ok,
+      false,
+    );
+    assert.equal(
+      validateTestExplorerReceipt({
+        receiptFile,
+        expectedRevision: valid.source_revision,
+        expectedServerSourceSha: valid.server_source_revision,
+        expectedVsixSha256: 'c'.repeat(64),
+        readFile: () => JSON.stringify(valid),
+        exists: () => true,
+      }).ok,
+      false,
+    );
+    assert.deepEqual(
+      interpretTestExplorerExit(
+        { phase: 'child', result: { status: 0, error: undefined } },
+        { ok: false, violations: ['missing'] },
+      ),
+      {
+        status: 'not_proven',
+        exit_code: 0,
+        reason: 'test_explorer_child_receipt_did_not_bind_this_run',
+        violations: ['missing'],
+      },
+    );
+  } finally {
+    fs.rmSync(receiptFile, { force: true });
+  }
+});
+
+void test('keeps a failed first-hour leg failed even when Test Explorer succeeds', () => {
+  assert.equal(
+    computeOverallStatus({
+      package_creation: { status: 'pass' },
+      package_inventory: { status: 'pass', behavior_safe: true },
+      behavioral_smoke: { status: 'failed' },
+      test_explorer_journey: { status: 'pass' },
+    }),
+    'failed',
+  );
+});
 
 void test('stages and restores the current platform server for packaging', () => {
   const extensionRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-vsix-smoke-'));
@@ -134,6 +282,30 @@ void test('keeps aggregate failure when behavior passes after size-only rejectio
       package_creation: { status: 'pass' },
       package_inventory: { status: 'failed', classification: 'size_only' },
       behavioral_smoke: { status: 'pass' },
+    }),
+    'failed',
+  );
+});
+
+void test('keeps aggregate not-proven when the Test Explorer child is not run or fails', () => {
+  const base = {
+    package_creation: { status: 'pass' },
+    package_inventory: { status: 'pass', behavior_safe: true },
+    behavioral_smoke: { status: 'pass' },
+    activation_failure_journey: { status: 'not_run' },
+    crash_recovery_journey: { status: 'not_run' },
+  };
+  assert.equal(
+    computeOverallStatus({
+      ...base,
+      test_explorer_journey: { status: 'not_proven', reason: 'child outcome missing' },
+    }),
+    'not_proven',
+  );
+  assert.equal(
+    computeOverallStatus({
+      ...base,
+      test_explorer_journey: { status: 'failed', reason: 'child failed' },
     }),
     'failed',
   );
