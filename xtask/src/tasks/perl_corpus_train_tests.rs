@@ -49,10 +49,10 @@ fn node_mut<'a>(doc: &'a mut Value, node_id: &str) -> Result<&'a mut Map<String,
         .ok_or_else(|| eyre!("node {node_id} exists in the base manifest"))
 }
 
-fn first_node_with<'a>(
-    doc: &'a mut Value,
+fn first_node_with(
+    doc: &mut Value,
     predicate: impl Fn(&Map<String, Value>) -> bool,
-) -> Result<&'a mut Map<String, Value>> {
+) -> Result<&mut Map<String, Value>> {
     doc.get_mut("nodes")
         .and_then(Value::as_array_mut)
         .and_then(|nodes| {
