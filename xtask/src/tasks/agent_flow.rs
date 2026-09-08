@@ -136,6 +136,7 @@ struct RouteObservationReport {
 #[derive(Debug, Serialize)]
 struct ScenarioReport {
     fixture_count: usize,
+    trace_fixture_count: usize,
     checked_providers: Vec<String>,
     errors: Vec<String>,
 }
@@ -145,6 +146,7 @@ struct ScenarioOutput {
     schema: &'static str,
     result: &'static str,
     fixture_count: usize,
+    trace_fixture_count: usize,
     checked_providers: Vec<String>,
     errors: Vec<String>,
 }
@@ -202,6 +204,278 @@ struct ScenarioFixture {
     name: &'static str,
     required_skills: &'static [&'static str],
     required_edges: &'static [(&'static str, &'static str)],
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum TraceEvent {
+    RepairApplied { in_claim: bool, reversible: bool },
+    ProofRerun { affected: bool, passed: bool },
+    Disclosed,
+    ApprovalRequested { basis: ApprovalBasis },
+    CandidateWait { wake_event: &'static str, scope: HoldScope },
+    Polled { state_changed: bool },
+    OtherClaimAvailable,
+    AdvancedOtherClaim,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum HoldScope {
+    Candidate,
+    AffectedClaim,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum ApprovalBasis {
+    MaterialDecision,
+    ProtectedTransaction,
+    SelfAuthoredMistake,
+}
+
+#[derive(Debug)]
+struct ContinuationTrace {
+    name: &'static str,
+    incident: &'static str,
+    claim_constraint: ClaimConstraint,
+    events: &'static [TraceEvent],
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum ClaimConstraint {
+    InAdmittedCandidate,
+    PendingCandidateIntegration,
+    NonDerivableDecision,
+    ProtectedExternalAction,
+    ActiveWriterOwnership,
+    HigherPrecedenceAffectedClaim,
+}
+
+const SELF_CORRECTION_TRACES: &[ContinuationTrace] = &[
+    ContinuationTrace {
+        name: "receipt_identity_self_repair",
+        incident: "#15161",
+        claim_constraint: ClaimConstraint::InAdmittedCandidate,
+        events: &[
+            TraceEvent::RepairApplied { in_claim: true, reversible: true },
+            TraceEvent::ProofRerun { affected: true, passed: true },
+            TraceEvent::Disclosed,
+        ],
+    },
+    ContinuationTrace {
+        name: "positive_fixture_self_repair",
+        incident: "PR #13162",
+        claim_constraint: ClaimConstraint::InAdmittedCandidate,
+        events: &[
+            TraceEvent::RepairApplied { in_claim: true, reversible: true },
+            TraceEvent::ProofRerun { affected: true, passed: true },
+            TraceEvent::Disclosed,
+        ],
+    },
+    ContinuationTrace {
+        name: "pending_ci_keeps_goal_moving",
+        incident: "#14129",
+        claim_constraint: ClaimConstraint::PendingCandidateIntegration,
+        events: &[
+            TraceEvent::Polled { state_changed: true },
+            TraceEvent::CandidateWait {
+                wake_event: "required-check-completion",
+                scope: HoldScope::Candidate,
+            },
+            TraceEvent::OtherClaimAvailable,
+            TraceEvent::AdvancedOtherClaim,
+        ],
+    },
+    ContinuationTrace {
+        name: "material_decision_checkpoint",
+        incident: "material product or policy choice",
+        claim_constraint: ClaimConstraint::NonDerivableDecision,
+        events: &[TraceEvent::ApprovalRequested { basis: ApprovalBasis::MaterialDecision }],
+    },
+    ContinuationTrace {
+        name: "protected_transaction_checkpoint",
+        incident: "protected external transaction",
+        claim_constraint: ClaimConstraint::ProtectedExternalAction,
+        events: &[TraceEvent::ApprovalRequested { basis: ApprovalBasis::ProtectedTransaction }],
+    },
+    ContinuationTrace {
+        name: "active_writer_collision",
+        incident: "#13349",
+        claim_constraint: ClaimConstraint::ActiveWriterOwnership,
+        events: &[
+            TraceEvent::CandidateWait {
+                wake_event: "writer-release-or-handoff",
+                scope: HoldScope::AffectedClaim,
+            },
+            TraceEvent::OtherClaimAvailable,
+            TraceEvent::AdvancedOtherClaim,
+        ],
+    },
+    ContinuationTrace {
+        name: "higher_precedence_hold_is_scoped",
+        incident: "higher-precedence prohibition",
+        claim_constraint: ClaimConstraint::HigherPrecedenceAffectedClaim,
+        events: &[
+            TraceEvent::CandidateWait {
+                wake_event: "instruction-conflict-resolution",
+                scope: HoldScope::AffectedClaim,
+            },
+            TraceEvent::OtherClaimAvailable,
+            TraceEvent::AdvancedOtherClaim,
+        ],
+    },
+];
+
+fn validate_continuation_trace(trace: &ContinuationTrace) -> Vec<String> {
+    let mut errors = Vec::new();
+    if trace.events.is_empty() {
+        errors.push(format!("{} ({}) has no observed events", trace.name, trace.incident));
+        return errors;
+    }
+    let mut repaired = false;
+    let mut proof_result = None;
+    let mut disclosed = false;
+    let mut approval = false;
+    let mut candidate_wait = false;
+    let mut advanced = false;
+    let mut other_claim_available = false;
+    for event in trace.events {
+        if advanced {
+            errors.push(format!("{} has events after advancing the other claim", trace.name));
+        }
+        match event {
+            TraceEvent::RepairApplied { in_claim, reversible } => {
+                if repaired || proof_result.is_some() || disclosed {
+                    errors.push(format!("{} repair is out of order", trace.name));
+                }
+                if !in_claim || !reversible {
+                    errors.push(format!("{} repair is outside its reversible claim", trace.name));
+                }
+                repaired = true;
+            }
+            TraceEvent::ProofRerun { affected, passed } => {
+                if !repaired || proof_result.is_some() || disclosed {
+                    errors.push(format!("{} proof rerun is out of order", trace.name));
+                }
+                if !affected {
+                    errors.push(format!("{} lacks affected proof", trace.name));
+                }
+                // A failed rerun still requires honest disclosure; it is not merge proof.
+                proof_result = Some(*passed);
+            }
+            TraceEvent::Disclosed => {
+                if !repaired || proof_result.is_none() || disclosed {
+                    errors.push(format!("{} disclosure is out of order", trace.name));
+                }
+                disclosed = true;
+            }
+            TraceEvent::ApprovalRequested { basis } => {
+                if *basis == ApprovalBasis::SelfAuthoredMistake {
+                    errors.push(format!("{} turns self-authored repair into approval", trace.name));
+                }
+                approval = true;
+            }
+            TraceEvent::CandidateWait { wake_event, scope } => {
+                if candidate_wait {
+                    errors.push(format!("{} repeats its candidate wait", trace.name));
+                }
+                if wake_event.trim().is_empty() {
+                    errors.push(format!("{} has no exact candidate wake event", trace.name));
+                }
+                if *scope == HoldScope::Candidate
+                    && trace.claim_constraint != ClaimConstraint::PendingCandidateIntegration
+                {
+                    errors
+                        .push(format!("{} uses a broad hold for its claim constraint", trace.name));
+                }
+                if *scope == HoldScope::AffectedClaim
+                    && !matches!(
+                        trace.claim_constraint,
+                        ClaimConstraint::ActiveWriterOwnership
+                            | ClaimConstraint::HigherPrecedenceAffectedClaim
+                    )
+                {
+                    errors.push(format!(
+                        "{} uses an affected hold for the wrong claim constraint",
+                        trace.name
+                    ));
+                }
+                candidate_wait = true;
+            }
+            TraceEvent::Polled { state_changed } => {
+                if !state_changed {
+                    errors.push(format!("{} treats unchanged polling as progress", trace.name));
+                }
+            }
+            TraceEvent::OtherClaimAvailable => {
+                other_claim_available = true;
+            }
+            TraceEvent::AdvancedOtherClaim => {
+                if !candidate_wait {
+                    errors.push(format!(
+                        "{} advances before recording its candidate wait",
+                        trace.name
+                    ));
+                }
+                if !other_claim_available {
+                    errors.push(format!(
+                        "{} advanced a claim without observed availability",
+                        trace.name
+                    ));
+                }
+                advanced = true;
+            }
+        }
+    }
+    if repaired && (proof_result.is_none() || !disclosed) {
+        errors.push(format!(
+            "{} repair must be followed by affected proof and disclosure",
+            trace.name
+        ));
+    }
+    if candidate_wait && other_claim_available && !advanced {
+        errors.push(format!("{} candidate wait became a goal stop", trace.name));
+    }
+    match trace.claim_constraint {
+        ClaimConstraint::InAdmittedCandidate => {
+            if !repaired || approval {
+                errors.push(format!("{} must repair without approval", trace.name));
+            }
+        }
+        ClaimConstraint::PendingCandidateIntegration
+        | ClaimConstraint::ActiveWriterOwnership
+        | ClaimConstraint::HigherPrecedenceAffectedClaim => {
+            if !candidate_wait {
+                errors.push(format!("{} must hold the affected claim locally", trace.name));
+            } else if other_claim_available && !advanced {
+                errors.push(format!("{} must advance available disjoint work", trace.name));
+            }
+        }
+        ClaimConstraint::NonDerivableDecision | ClaimConstraint::ProtectedExternalAction => {
+            if !approval {
+                errors.push(format!("{} must retain its approval checkpoint", trace.name));
+            }
+        }
+    }
+    if repaired && !matches!(trace.claim_constraint, ClaimConstraint::InAdmittedCandidate) {
+        errors.push(format!("{} repairs a claim that requires a hold or decision", trace.name));
+    }
+    let expected_approval = match trace.claim_constraint {
+        ClaimConstraint::NonDerivableDecision => Some(ApprovalBasis::MaterialDecision),
+        ClaimConstraint::ProtectedExternalAction => Some(ApprovalBasis::ProtectedTransaction),
+        _ => None,
+    };
+    for event in trace.events {
+        if let TraceEvent::ApprovalRequested { basis } = event
+            && Some(*basis) != expected_approval
+        {
+            errors
+                .push(format!("{} approval basis does not match its claim constraint", trace.name));
+        }
+    }
+    errors
+}
+
+fn check_continuation_traces() -> Vec<String> {
+    SELF_CORRECTION_TRACES.iter().flat_map(validate_continuation_trace).collect()
 }
 
 const SCENARIO_FIXTURES: &[ScenarioFixture] = &[
@@ -359,8 +633,9 @@ pub fn run_scenarios(config: ScenarioConfig) -> Result<()> {
         "human" => {
             println!("{}", output.result);
             println!(
-                "scenarios: {} fixtures across {} providers",
+                "scenarios: {} route fixtures + {} continuation traces across {} providers",
                 output.fixture_count,
+                output.trace_fixture_count,
                 output.checked_providers.len()
             );
             for error in &output.errors {
@@ -384,6 +659,7 @@ fn scenario_output(report: CheckReport) -> ScenarioOutput {
         schema: "agent-flow-scenarios.v1",
         result,
         fixture_count: scenarios.fixture_count,
+        trace_fixture_count: scenarios.trace_fixture_count,
         checked_providers: scenarios.checked_providers,
         errors: scenarios.errors,
     }
@@ -495,10 +771,13 @@ fn check_repository(root: &Path, selected_skill: Option<&str>) -> Result<CheckRe
         errors.extend(skill_parity_violations(&name_sets, &allowlist, selected_skill));
     }
 
-    let scenario_errors = check_scenarios(&provider_skills);
+    let mut scenario_errors = check_scenarios(&provider_skills);
+    scenario_errors.extend(check_continuation_traces());
+    scenario_errors.extend(check_self_correction_guidance(root));
     errors.extend(scenario_errors.iter().cloned());
     let scenarios = ScenarioReport {
         fixture_count: SCENARIO_FIXTURES.len(),
+        trace_fixture_count: SELF_CORRECTION_TRACES.len(),
         checked_providers: provider_skills.keys().cloned().collect(),
         errors: scenario_errors,
     };
@@ -728,6 +1007,62 @@ fn check_scenarios(
         }
     }
     errors
+}
+
+const SELF_CORRECTION_MARKER: &str = "Self-authored correction and disclosure";
+const SELF_CORRECTION_REFERENCE: &str = "correction and disclosure contract";
+const KNOWN_BAD_SELF_CORRECTION_WORDING: &[&str] = &[
+    "tell the user rather than going back and correcting your bug",
+    "tell the user rather than correct the bug and let them decide",
+];
+const SELF_CORRECTION_SKILLS: &[&str] = &[
+    "deliver-goal",
+    "deliver-pr",
+    "orchestrate-work",
+    "build-candidate",
+    "address-review-comments",
+    "finish-pr",
+    "merge-reconcile",
+];
+
+fn check_self_correction_guidance(root: &Path) -> Vec<String> {
+    let mut errors = Vec::new();
+    let mut surfaces = Vec::new();
+    for relative in ["docs/agents/DEVELOPMENT_METHOD.md", "AGENTS.md", "CLAUDE.md"] {
+        surfaces.push((relative.to_string(), root.join(relative)));
+    }
+    for provider in [".agents/skills", ".claude/skills"] {
+        for skill in SELF_CORRECTION_SKILLS {
+            let relative = format!("{provider}/{skill}/SKILL.md");
+            surfaces.push((relative.clone(), root.join(relative)));
+        }
+    }
+    for (label, path) in surfaces {
+        let text = match fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(error) => {
+                errors.push(format!("{label}: cannot read self-correction guidance: {error}"));
+                continue;
+            }
+        };
+        let required = if label == "docs/agents/DEVELOPMENT_METHOD.md" {
+            SELF_CORRECTION_MARKER
+        } else {
+            SELF_CORRECTION_REFERENCE
+        };
+        if !text.contains(required) {
+            errors.push(format!("{label}: missing self-correction guidance marker '{required}'"));
+        }
+        if contains_known_bad_self_correction_wording(&text) {
+            errors.push(format!("{label}: contains known-bad self-correction wording"));
+        }
+    }
+    errors
+}
+
+fn contains_known_bad_self_correction_wording(text: &str) -> bool {
+    let lowered = text.split_whitespace().collect::<Vec<_>>().join(" ").to_ascii_lowercase();
+    KNOWN_BAD_SELF_CORRECTION_WORDING.iter().any(|phrase| lowered.contains(phrase))
 }
 
 fn collect_skills(skill_root: &Path, errors: &mut Vec<String>) -> Result<Vec<Skill>> {
@@ -1128,8 +1463,9 @@ fn print_human(report: &CheckReport) {
         );
     }
     println!(
-        "scenarios: {} fixtures across {} providers",
+        "scenarios: {} route fixtures + {} continuation traces across {} providers",
         report.scenarios.fixture_count,
+        report.scenarios.trace_fixture_count,
         report.scenarios.checked_providers.len()
     );
     for error in &report.errors {
@@ -1755,6 +2091,7 @@ mod tests {
             providers: BTreeMap::new(),
             scenarios: super::ScenarioReport {
                 fixture_count: SCENARIO_FIXTURES.len(),
+                trace_fixture_count: super::SELF_CORRECTION_TRACES.len(),
                 checked_providers: vec!["codex".to_string()],
                 errors: Vec::new(),
             },
@@ -1763,5 +2100,262 @@ mod tests {
         });
         assert_eq!(output.result, "PASS");
         assert!(output.errors.is_empty());
+    }
+
+    #[test]
+    fn continuation_traces_accept_authorized_routes() -> anyhow::Result<()> {
+        anyhow::ensure!(
+            super::check_continuation_traces().is_empty(),
+            "accepted incident traces failed"
+        );
+        Ok(())
+    }
+
+    fn trace_errors(
+        constraint: super::ClaimConstraint,
+        events: &'static [super::TraceEvent],
+    ) -> Vec<String> {
+        super::validate_continuation_trace(&super::ContinuationTrace {
+            name: "control",
+            incident: "self-correction recurrence",
+            claim_constraint: constraint,
+            events,
+        })
+    }
+
+    #[test]
+    fn continuation_rejects_each_incomplete_or_misordered_repair() -> anyhow::Result<()> {
+        use super::{ApprovalBasis as A, ClaimConstraint as C, TraceEvent as E};
+        let cases: &[(&[E], &str)] = &[
+            (&[], "no observed events"),
+            (&[E::ApprovalRequested { basis: A::SelfAuthoredMistake }], "approval"),
+            (&[E::RepairApplied { in_claim: true, reversible: true }, E::Disclosed], "proof"),
+            (
+                &[
+                    E::RepairApplied { in_claim: true, reversible: true },
+                    E::ProofRerun { affected: true, passed: true },
+                ],
+                "disclosure",
+            ),
+            (
+                &[
+                    E::ProofRerun { affected: true, passed: true },
+                    E::RepairApplied { in_claim: true, reversible: true },
+                    E::Disclosed,
+                ],
+                "out of order",
+            ),
+            (
+                &[
+                    E::Disclosed,
+                    E::RepairApplied { in_claim: true, reversible: true },
+                    E::ProofRerun { affected: true, passed: true },
+                ],
+                "out of order",
+            ),
+            (
+                &[
+                    E::RepairApplied { in_claim: false, reversible: true },
+                    E::ProofRerun { affected: true, passed: true },
+                    E::Disclosed,
+                ],
+                "outside",
+            ),
+            (
+                &[
+                    E::RepairApplied { in_claim: true, reversible: false },
+                    E::ProofRerun { affected: true, passed: true },
+                    E::Disclosed,
+                ],
+                "outside",
+            ),
+            (
+                &[
+                    E::RepairApplied { in_claim: true, reversible: true },
+                    E::ProofRerun { affected: false, passed: true },
+                    E::Disclosed,
+                ],
+                "affected proof",
+            ),
+        ];
+        for (events, expected) in cases {
+            let errors = trace_errors(C::InAdmittedCandidate, events);
+            anyhow::ensure!(
+                errors.iter().any(|e| e.contains(expected)),
+                "missing {expected}: {errors:?}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn failed_proof_still_permits_honest_disclosure() -> anyhow::Result<()> {
+        use super::{ClaimConstraint as C, TraceEvent as E};
+        let errors = trace_errors(
+            C::InAdmittedCandidate,
+            &[
+                E::RepairApplied { in_claim: true, reversible: true },
+                E::ProofRerun { affected: true, passed: false },
+                E::Disclosed,
+            ],
+        );
+        anyhow::ensure!(errors.is_empty(), "failed proof disclosure was rejected: {errors:?}");
+        Ok(())
+    }
+
+    #[test]
+    fn protected_claims_reject_even_well_ordered_repairs() -> anyhow::Result<()> {
+        use super::{ClaimConstraint as C, TraceEvent as E};
+        for constraint in [
+            C::ActiveWriterOwnership,
+            C::HigherPrecedenceAffectedClaim,
+            C::ProtectedExternalAction,
+            C::NonDerivableDecision,
+        ] {
+            let errors = trace_errors(
+                constraint,
+                &[
+                    E::RepairApplied { in_claim: true, reversible: true },
+                    E::ProofRerun { affected: true, passed: true },
+                    E::Disclosed,
+                ],
+            );
+            anyhow::ensure!(
+                errors.iter().any(|e| e.contains("requires a hold or decision")),
+                "protected repair accepted: {constraint:?}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn candidate_wait_needs_advancement_only_when_other_work_exists() -> anyhow::Result<()> {
+        use super::{ClaimConstraint as C, HoldScope as H, TraceEvent as E};
+        let errors = trace_errors(
+            C::PendingCandidateIntegration,
+            &[E::CandidateWait { wake_event: "run-34224617469-completed", scope: H::Candidate }],
+        );
+        anyhow::ensure!(errors.is_empty(), "legitimate sole-claim wait rejected: {errors:?}");
+        for (events, expected) in [
+            (
+                &[
+                    E::CandidateWait { wake_event: "run-completed", scope: H::Candidate },
+                    E::OtherClaimAvailable,
+                ][..],
+                "goal stop",
+            ),
+            (&[E::CandidateWait { wake_event: "", scope: H::Candidate }][..], "wake event"),
+            (
+                &[
+                    E::CandidateWait { wake_event: "run-completed", scope: H::Candidate },
+                    E::Polled { state_changed: false },
+                ][..],
+                "unchanged polling",
+            ),
+            (
+                &[
+                    E::CandidateWait { wake_event: "run-completed", scope: H::Candidate },
+                    E::AdvancedOtherClaim,
+                ][..],
+                "without observed availability",
+            ),
+        ] {
+            let errors = trace_errors(C::PendingCandidateIntegration, events);
+            anyhow::ensure!(
+                errors.iter().any(|e| e.contains(expected)),
+                "missing {expected}: {errors:?}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn continuation_cannot_advance_before_wait_or_keep_running_after_advance() -> anyhow::Result<()>
+    {
+        use super::{ClaimConstraint as C, HoldScope as H, TraceEvent as E};
+        for (events, expected) in [
+            (
+                &[
+                    E::OtherClaimAvailable,
+                    E::AdvancedOtherClaim,
+                    E::CandidateWait { wake_event: "run-completed", scope: H::Candidate },
+                ][..],
+                "before recording",
+            ),
+            (
+                &[
+                    E::CandidateWait { wake_event: "run-completed", scope: H::Candidate },
+                    E::OtherClaimAvailable,
+                    E::AdvancedOtherClaim,
+                    E::AdvancedOtherClaim,
+                ][..],
+                "events after",
+            ),
+            (
+                &[
+                    E::CandidateWait { wake_event: "run-completed", scope: H::Candidate },
+                    E::OtherClaimAvailable,
+                    E::AdvancedOtherClaim,
+                    E::Polled { state_changed: true },
+                ][..],
+                "events after",
+            ),
+        ] {
+            let errors = trace_errors(C::PendingCandidateIntegration, events);
+            anyhow::ensure!(
+                errors.iter().any(|e| e.contains(expected)),
+                "missing {expected}: {errors:?}"
+            );
+        }
+        let errors = trace_errors(
+            C::PendingCandidateIntegration,
+            &[
+                E::CandidateWait { wake_event: "run-completed", scope: H::Candidate },
+                E::CandidateWait { wake_event: "run-completed", scope: H::Candidate },
+            ],
+        );
+        anyhow::ensure!(
+            errors.iter().any(|e| e.contains("repeats its candidate wait")),
+            "duplicate wait accepted"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn approval_requires_its_own_exact_basis() -> anyhow::Result<()> {
+        use super::{ApprovalBasis as A, ClaimConstraint as C, TraceEvent as E};
+        let errors = trace_errors(
+            C::ProtectedExternalAction,
+            &[
+                E::ApprovalRequested { basis: A::ProtectedTransaction },
+                E::ApprovalRequested { basis: A::MaterialDecision },
+            ],
+        );
+        anyhow::ensure!(
+            errors.iter().any(|e| e.contains("approval basis")),
+            "one valid approval masked a wrong basis"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn known_bad_wording_survives_case_and_line_wrap_changes() -> anyhow::Result<()> {
+        for text in [
+            "Tell the user rather than going back and correcting your bug.",
+            "tell the user rather than correct the bug and let them decide",
+            "Tell the user rather than going\nback and correcting your bug.",
+        ] {
+            anyhow::ensure!(
+                super::contains_known_bad_self_correction_wording(text),
+                "known regression was missed"
+            );
+        }
+        anyhow::ensure!(
+            !super::contains_known_bad_self_correction_wording(
+                "Correct the reversible defect, rerun proof, and disclose the correction."
+            ),
+            "canonical guidance rejected"
+        );
+        Ok(())
     }
 }
