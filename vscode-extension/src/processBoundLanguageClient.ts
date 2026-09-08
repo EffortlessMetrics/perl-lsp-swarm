@@ -15,7 +15,7 @@ export class ProcessBoundLanguageClient extends LanguageClient {
     try {
       return await super.createMessageTransports(encoding);
     } finally {
-      this.retainedServerProcess = super.serverProcess;
+      this.retainedServerProcess = super.serverProcess ?? this.retainedServerProcess;
     }
   }
 
