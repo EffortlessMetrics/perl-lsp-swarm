@@ -32,7 +32,7 @@ void test('published smoke run rejects the invalid recovery selector before load
   const previousRecovery = process.env.PERL_LSP_HEALTH_CHECK_RECOVERY_SMOKE;
   const originalAddFile = Mocha.prototype.addFile;
   let suiteLoadCalls = 0;
-  Mocha.prototype.addFile = function (...args: Parameters<typeof originalAddFile>) {
+  Mocha.prototype.addFile = function () {
     suiteLoadCalls += 1;
     return this;
   };
