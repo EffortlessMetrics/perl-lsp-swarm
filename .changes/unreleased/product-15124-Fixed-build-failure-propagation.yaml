@@ -4,3 +4,8 @@ kind: Fixed
 body: >-
   The VS Code extension build now stops and reports failure when a toolchain,
   build, bundling, or packaging step fails.
+time: 2026-09-08T06:25:40Z
+custom:
+  PR: TBD
+  Slug: build-failure-propagation
+  Breaking: "no"
