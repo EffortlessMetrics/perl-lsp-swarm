@@ -2147,6 +2147,7 @@ async function initializeLanguageClient(context: vscode.ExtensionContext): Promi
     }
 
     const failedServerPath = lifecycle.serverPath;
+    const failedGeneration = lifecycle.snapshot.generation;
     void (async () => {
       // Probe the binary to get an actionable OS-level diagnosis (#3280).
       // If the probe result is Unknown (binary gave no useful output), fall
@@ -2170,6 +2171,14 @@ async function initializeLanguageClient(context: vscode.ExtensionContext): Promi
             }
           : probeResult;
       const dialogMessage = formatStartupFailureDialog(probeResult, healthMsg);
+      const current = lifecycle.snapshot;
+      if (
+        current.generation !== failedGeneration ||
+        current.state !== 'failed' ||
+        current.serverPath !== failedServerPath
+      ) {
+        return;
+      }
 
       void vscode.window
         .showErrorMessage(
@@ -2183,10 +2192,7 @@ async function initializeLanguageClient(context: vscode.ExtensionContext): Promi
           if (choice === 'View Logs') {
             outputChannel.show();
           } else if (choice === 'Run Health Check') {
-            void vscode.commands.executeCommand(
-              'perl-lsp.runHealthCheck',
-              lifecycle.serverPath ?? undefined,
-            );
+            void vscode.commands.executeCommand('perl-lsp.runHealthCheck');
           } else if (choice === 'Reinstall') {
             void reinstallServerBinary(context);
           } else if (choice === 'Check serverPath Setting') {

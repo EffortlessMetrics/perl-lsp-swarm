@@ -75,6 +75,8 @@ export interface LifecycleHooks<TClient extends LifecycleClient<TEvent>, TEvent 
 export interface LanguageClientLifecycleOptions {
   /** Maximum time allowed for each client stop or dispose operation. */
   stopTimeoutMs?: number;
+  /** Maximum time allowed for a client startup attempt to settle. */
+  startupTimeoutMs?: number;
 }
 
 export class LanguageClientLifecycleError extends Error {
@@ -109,6 +111,7 @@ interface BoundedOperationResult {
 }
 
 const DEFAULT_STOP_TIMEOUT_MS = 5_000;
+const DEFAULT_STARTUP_TIMEOUT_MS = 30_000;
 
 /**
  * Owns the complete lifecycle of one language-client generation.
@@ -123,6 +126,7 @@ const DEFAULT_STOP_TIMEOUT_MS = 5_000;
  */
 export class LanguageClientLifecycle<TClient extends LifecycleClient<TEvent>, TEvent = unknown> {
   private readonly stopTimeoutMs: number;
+  private readonly startupTimeoutMs: number;
   private state: LifecycleState = 'stopped';
   private generation = 0;
   private serverPath: string | null = null;
@@ -139,6 +143,7 @@ export class LanguageClientLifecycle<TClient extends LifecycleClient<TEvent>, TE
     options: LanguageClientLifecycleOptions = {},
   ) {
     this.stopTimeoutMs = options.stopTimeoutMs ?? DEFAULT_STOP_TIMEOUT_MS;
+    this.startupTimeoutMs = options.startupTimeoutMs ?? DEFAULT_STARTUP_TIMEOUT_MS;
   }
 
   get snapshot(): LifecycleSnapshot {
@@ -271,7 +276,11 @@ export class LanguageClientLifecycle<TClient extends LifecycleClient<TEvent>, TE
         this.notifyClientState(active as ActiveClient<TClient, TEvent>, event);
       });
 
-      const startResult = await this.runBounded('start', () => client.start());
+      const startResult = await this.runBounded(
+        'start',
+        () => client.start(),
+        this.startupTimeoutMs,
+      );
       if (!startResult.completed) {
         throw startResult.error;
       }
@@ -507,6 +516,7 @@ export class LanguageClientLifecycle<TClient extends LifecycleClient<TEvent>, TE
   private async runBounded(
     operation: string,
     callback: () => void | Promise<void>,
+    timeoutMs = this.stopTimeoutMs,
   ): Promise<BoundedOperationResult> {
     let timer: ReturnType<typeof setTimeout> | undefined;
     let timedOut = false;
@@ -517,11 +527,11 @@ export class LanguageClientLifecycle<TClient extends LifecycleClient<TEvent>, TE
           timedOut = true;
           reject(
             new LanguageClientLifecycleError(
-              `Language client ${operation} timed out after ${this.stopTimeoutMs}ms.`,
+              `Language client ${operation} timed out after ${timeoutMs}ms.`,
               'lifecycle',
             ),
           );
-        }, this.stopTimeoutMs);
+        }, timeoutMs);
       });
       await Promise.race([operationPromise, timeoutPromise]);
       return { completed: true, error: undefined, timedOut: false };

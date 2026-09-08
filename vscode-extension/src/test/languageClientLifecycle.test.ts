@@ -83,7 +83,7 @@ interface Harness {
 
 function makeHarness(
   resolveServerPath: () => Promise<string | null> = async () => '/server/perllsp',
-  options: { stopTimeoutMs?: number } = {},
+  options: { stopTimeoutMs?: number; startupTimeoutMs?: number } = {},
 ): Harness {
   const clients: FakeClient[] = [];
   const states: LifecycleState[] = [];
@@ -331,7 +331,7 @@ describe('LanguageClientLifecycle', () => {
   test('bounds a client start that never settles and records failed lifecycle state', async () => {
     jest.useFakeTimers();
     try {
-      const harness = makeHarness(undefined, { stopTimeoutMs: 10 });
+      const harness = makeHarness(undefined, { startupTimeoutMs: 10 });
       harness.hooks.createClient = () => {
         const client = new FakeClient();
         client.startGate = new Promise<void>(() => undefined);
