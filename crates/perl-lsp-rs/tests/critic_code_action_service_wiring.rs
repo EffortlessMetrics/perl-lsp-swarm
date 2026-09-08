@@ -79,7 +79,7 @@ fn code_actions_preserve_service_ownership() -> Result<(), Box<dyn Error>> {
 /// transports do (#13304).
 ///
 /// The runtime consequence of a regression is worse than a wrong result:
-/// `native_critic_code_actions` re-acquires the documents guard to revalidate
+/// `stage_native_critic_code_actions` re-acquires the documents guard to revalidate
 /// the accepted generation, so restoring the lock-held call deadlocks the
 /// code-action handler. This gate turns that into a readable failure.
 #[test]
@@ -91,7 +91,7 @@ fn code_actions_release_the_document_guard_before_analysis() -> Result<(), Box<d
             "{CODE_ACTION_SOURCE} must release the runtime document guard before the native              critic run (#9062)"
         ))
     })?;
-    let deferred_call = source.find("self.native_critic_code_actions(").ok_or_else(|| {
+    let deferred_call = source.find("self.stage_native_critic_code_actions(").ok_or_else(|| {
         io::Error::other(format!(
             "{CODE_ACTION_SOURCE} must run native critic analysis through the deferred,              lock-free helper (#9062)"
         ))

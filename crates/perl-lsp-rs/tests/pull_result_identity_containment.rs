@@ -192,8 +192,18 @@ fn workspace_identity_uses_the_evaluation_snapshot() -> TestResult<()> {
 
     require_contains(
         workspace,
-        "let identity_context =\n                    PullDiagnosticsOrchestrator::new().build_context(self, uri_str);",
+        "let mut identity_context =\n                    PullDiagnosticsOrchestrator::new().build_context(self, uri_str);",
         "workspace diagnostics must capture one pull context per document",
+    )?;
+    require_contains(
+        workspace,
+        "identity_context.project_version = project_version.clone();",
+        "workspace identity must retain the evaluated project version",
+    )?;
+    require_contains(
+        workspace,
+        "identity_context.configuration_generation = *config_generation_at_snapshot;",
+        "workspace identity must retain the evaluated configuration generation",
     )?;
     require_contains(
         transaction,
