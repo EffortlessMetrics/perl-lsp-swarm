@@ -60,7 +60,13 @@ void test('unsupported candidate-bound platform writes a typed unavailable bound
 
 void test('the published-smoke child emits the unsupported-platform boundary before host work', () => {
   const receiptRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-platform-child-'));
+  const preloadPath = path.join(receiptRoot, 'force-windows-platform.cjs');
   try {
+    fs.writeFileSync(
+      preloadPath,
+      "Object.defineProperty(process, 'platform', { value: 'win32' });\n" +
+        "Object.defineProperty(process, 'arch', { value: 'x64' });\n",
+    );
     const result = spawnSync(process.execPath, [path.join(__dirname, 'runPublishedSmoke.js')], {
       env: {
         ...process.env,
@@ -69,6 +75,9 @@ void test('the published-smoke child emits the unsupported-platform boundary bef
         PERL_LSP_PUBLISHED_EXTENSION_VERSION: '0.17.0',
         PERL_LSP_PUBLISHED_VSIX_PATH: path.join(receiptRoot, 'candidate.vsix'),
         PERL_LSP_SMOKE_RECEIPTS_DIR: receiptRoot,
+        NODE_OPTIONS: [process.env.NODE_OPTIONS, `--require=${preloadPath}`]
+          .filter(Boolean)
+          .join(' '),
       },
       encoding: 'utf8',
       windowsHide: true,
@@ -77,7 +86,14 @@ void test('the published-smoke child emits the unsupported-platform boundary bef
     assert.match(result.stderr, /restricted to Linux/);
     const receiptPath = path.join(receiptRoot, CANDIDATE_PLATFORM_UNAVAILABLE_RECEIPT_NAME);
     assert.deepEqual(JSON.parse(fs.readFileSync(receiptPath, 'utf8')), {
-      ...buildCandidatePlatformUnavailableReceipt('win32', 'x64'),
+      schema_version: 1,
+      outcome: 'blocked',
+      stage: 'candidate_bound_platform',
+      platform: 'win32',
+      arch: 'x64',
+      disposition: 'unavailable',
+      error:
+        'Candidate-bound installed acceptance is restricted to Linux; refusing win32 bundled-server digest binding.',
     });
   } finally {
     fs.rmSync(receiptRoot, { recursive: true, force: true });
