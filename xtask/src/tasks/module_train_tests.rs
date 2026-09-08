@@ -1237,7 +1237,7 @@ fn git_facts_follow_the_loaded_repository_not_the_process_cwd() -> Result<()> {
     std::fs::create_dir_all(&dir).with_context(|| "failed to create scratch repo dir")?;
     fn scratch_git(dir: &std::path::Path, args: &[&str]) -> Result<()> {
         let output = std::process::Command::new("git")
-            .args(&args)
+            .args(args)
             .current_dir(dir)
             .env("GIT_CONFIG_GLOBAL", std::path::Path::new("NUL"))
             .env("GIT_CONFIG_SYSTEM", std::path::Path::new("NUL"))
