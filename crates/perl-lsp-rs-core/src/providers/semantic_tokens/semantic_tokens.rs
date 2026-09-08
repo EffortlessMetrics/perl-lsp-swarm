@@ -406,10 +406,8 @@ fn push_line_contained_segments(
     traversal: &mut TraversalState<'_, '_>,
 ) -> Result<(), TraversalStop> {
     let Some(span) = text.get(start..end) else {
-        // Not on character boundaries, reversed, or past the end of the source:
-        // there is no representable geometry. Fail closed rather than clamp the
-        // span into a plausible-looking token.
-        return Ok(());
+        // Invalid geometry is a collection failure, not legitimate empty work.
+        return Err(TraversalStop::InvalidGeometry);
     };
 
     let mut segment_start = start;
@@ -432,9 +430,20 @@ fn push_line_contained_segments(
         segment_start = line_end.saturating_add(1);
     }
     traversal.admit_work()?;
-    // The trailing segment ends at the span's own end, not at a separator, so
-    // no carriage return is removed here.
-    push_line_contained_token(segment_start, end, to_pos16, kind, modifiers, out);
+    // A span may end between CR and LF. Terminator membership belongs to the
+    // full source, not only to the selected substring. A standalone CR remains
+    // content under the canonical LF-only coordinate policy.
+    let content_end = match end.checked_sub(1) {
+        Some(previous)
+            if previous >= segment_start
+                && text.as_bytes().get(previous) == Some(&b'\r')
+                && text.as_bytes().get(end) == Some(&b'\n') =>
+        {
+            previous
+        }
+        _ => end,
+    };
+    push_line_contained_token(segment_start, content_end, to_pos16, kind, modifiers, out);
     Ok(())
 }
 
@@ -800,7 +809,7 @@ pub enum SemanticTokensTraversalOutcome {
     },
     /// No AST was available at the core collection boundary.
     NoAst,
-    /// Collection failed before an AST could be supplied to traversal.
+    /// Collection preparation or source geometry validation failed.
     CollectionFailure(SemanticTokensCollectionError),
     /// A bounded collector cannot safely admit an opaque lexer call for this source.
     SourceLimitExceeded {
@@ -871,6 +880,7 @@ impl PartialSemanticTokens {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum TraversalStop {
+    InvalidGeometry,
     Cancelled,
     BudgetExhausted,
     WorkCounterOverflow,
@@ -908,6 +918,9 @@ fn interrupted_outcome(
     work_done: usize,
 ) -> SemanticTokensTraversalOutcome {
     match stop {
+        TraversalStop::InvalidGeometry => SemanticTokensTraversalOutcome::CollectionFailure(
+            SemanticTokensCollectionError::new("invalid semantic-token source geometry"),
+        ),
         TraversalStop::Cancelled => SemanticTokensTraversalOutcome::Cancelled { work_done },
         TraversalStop::BudgetExhausted => SemanticTokensTraversalOutcome::BudgetExhausted {
             partial: PartialSemanticTokens { ast_tokens, lexer_tokens },
@@ -3266,15 +3279,23 @@ print "ok" foreach @ys;
         );
     }
 
+    fn require_geometry(condition: bool, message: std::fmt::Arguments<'_>) -> std::io::Result<()> {
+        if condition { Ok(()) } else { Err(std::io::Error::other(message.to_string())) }
+    }
+
     /// Collect the (line, start, length) geometry a span normalizes into.
     ///
     /// Uses the real `pos16` mapping so UTF-16 counting is exercised rather
     /// than assumed.
-    fn segments_of(source: &str, start: usize, end: usize) -> Vec<(u32, u32, u32)> {
+    fn segments_of(
+        source: &str,
+        start: usize,
+        end: usize,
+    ) -> std::io::Result<Vec<(u32, u32, u32)>> {
         let control = SemanticTokensTraversalControl::unlimited();
         let mut traversal = TraversalState { control: &control, work_done: 0 };
         let mut out = Vec::new();
-        let _ = push_line_contained_segments(
+        push_line_contained_segments(
             source,
             start,
             end,
@@ -3283,43 +3304,66 @@ print "ok" foreach @ys;
             0,
             &mut out,
             &mut traversal,
-        );
-        out.into_iter().map(|(line, start, length, _, _)| (line, start, length)).collect()
+        )
+        .map_err(|stop| std::io::Error::other(format!("geometry refused: {stop:?}")))?;
+        Ok(out.into_iter().map(|(line, start, length, _, _)| (line, start, length)).collect())
     }
 
     #[test]
-    fn multiline_span_becomes_nonempty_line_contained_segments() {
+    fn multiline_span_becomes_nonempty_line_contained_segments()
+    -> Result<(), Box<dyn std::error::Error>> {
         // "abc\ndef\nghi": a span from inside line 0 to inside line 2 must be
         // three separate tokens, not one zero-length token (#1850).
         let source = "abc\ndef\nghi";
-        assert_eq!(segments_of(source, 1, 10), vec![(0, 1, 2), (1, 0, 3), (2, 0, 2)]);
+        require_geometry(
+            (segments_of(source, 1, 10)?) == (vec![(0, 1, 2), (1, 0, 3), (2, 0, 2)]),
+            format_args!("geometry values differ"),
+        )?;
+        Ok(())
     }
 
     #[test]
-    fn single_line_span_keeps_its_previous_exact_length() {
+    fn single_line_span_keeps_its_previous_exact_length() -> Result<(), Box<dyn std::error::Error>>
+    {
         // Control: the overwhelmingly common case must be byte-for-byte what
         // the old `ec.saturating_sub(sc)` produced.
         let source = "my $x = 1;\n";
-        assert_eq!(segments_of(source, 3, 5), vec![(0, 3, 2)]);
+        require_geometry(
+            (segments_of(source, 3, 5)?) == (vec![(0, 3, 2)]),
+            format_args!("geometry values differ"),
+        )?;
+        Ok(())
     }
 
     #[test]
-    fn crlf_segments_exclude_the_carriage_return() {
+    fn crlf_segments_exclude_the_carriage_return() -> Result<(), Box<dyn std::error::Error>> {
         // Without the CR strip a CRLF file over-counts every segment by one,
         // pushing the token past the end of its own line.
         let source = "abc\r\ndef\r\n";
-        assert_eq!(segments_of(source, 0, 10), vec![(0, 0, 3), (1, 0, 3)]);
+        require_geometry(
+            (segments_of(source, 0, 10)?) == (vec![(0, 0, 3), (1, 0, 3)]),
+            format_args!("geometry values differ"),
+        )?;
+        Ok(())
     }
 
     #[test]
-    fn a_bare_carriage_return_is_content_not_a_terminator() {
+    fn a_bare_carriage_return_is_content_not_a_terminator() -> Result<(), Box<dyn std::error::Error>>
+    {
         // `perl-position-tracking`'s LF-only contract: "CRLF is one separator
         // and a bare CR is ordinary source content". Only the CR paired with a
         // '\n' may be dropped, so a span ending in a bare CR keeps its full
         // length.
         let source = "ab\rcd\nef";
-        assert_eq!(segments_of(source, 0, 3), vec![(0, 0, 3)], "trailing bare CR is content");
-        assert_eq!(segments_of(source, 0, 5), vec![(0, 0, 5)], "interior bare CR is content");
+        require_geometry(
+            (segments_of(source, 0, 3)?) == (vec![(0, 0, 3)]),
+            format_args!("trailing bare CR is content"),
+        )?;
+        require_geometry(
+            (segments_of(source, 0, 5)?) == (vec![(0, 0, 5)]),
+            format_args!("interior bare CR is content"),
+        )?;
+        Ok(())
     }
 
     #[test]
@@ -3342,9 +3386,18 @@ print "ok" foreach @ys;
             &mut out,
             &mut traversal,
         );
-        assert_eq!(result, Err(TraversalStop::BudgetExhausted));
-        assert_eq!(traversal.work_done, 3, "each covered line charges exactly one admission");
-        assert!(out.len() <= 3, "no segment may be produced past the budget: {out:?}");
+        require_geometry(
+            (result) == (Err(TraversalStop::BudgetExhausted)),
+            format_args!("geometry values differ"),
+        )?;
+        require_geometry(
+            (traversal.work_done) == (3),
+            format_args!("each covered line charges exactly one admission"),
+        )?;
+        require_geometry(
+            out.len() <= 3,
+            format_args!("no segment may be produced past the budget: {out:?}"),
+        )?;
 
         // Lines that emit nothing are charged too, and deliberately so: metering
         // only emitting lines would let a span of blank lines iterate unmetered.
@@ -3365,8 +3418,14 @@ print "ok" foreach @ys;
             &mut blank_traversal,
         )
         .map_err(|_| "unlimited budget must not stop")?;
-        assert_eq!(blank_out.len(), 2, "only the two nonempty lines emit: {blank_out:?}");
-        assert_eq!(blank_traversal.work_done, 4, "every covered line is metered, emitting or not");
+        require_geometry(
+            (blank_out.len()) == (2),
+            format_args!("only the two nonempty lines emit: {blank_out:?}"),
+        )?;
+        require_geometry(
+            (blank_traversal.work_done) == (4),
+            format_args!("every covered line is metered, emitting or not"),
+        )?;
 
         // The same span stops immediately under cancellation.
         let always_cancelled = || true;
@@ -3383,35 +3442,61 @@ print "ok" foreach @ys;
             &mut cancelled_out,
             &mut cancel_traversal,
         );
-        assert_eq!(cancelled, Err(TraversalStop::Cancelled));
-        assert!(cancelled_out.is_empty(), "cancellation must stop before any segment");
+        require_geometry(
+            (cancelled) == (Err(TraversalStop::Cancelled)),
+            format_args!("geometry values differ"),
+        )?;
+        require_geometry(
+            cancelled_out.is_empty(),
+            format_args!("cancellation must stop before any segment"),
+        )?;
         Ok(())
     }
 
     #[test]
-    fn a_line_touched_only_by_its_terminator_contributes_no_segment() {
+    fn a_line_touched_only_by_its_terminator_contributes_no_segment()
+    -> Result<(), Box<dyn std::error::Error>> {
         // The blank interior line must not produce an empty token.
         let source = "ab\n\ncd";
-        assert_eq!(segments_of(source, 0, 6), vec![(0, 0, 2), (2, 0, 2)]);
+        require_geometry(
+            (segments_of(source, 0, 6)?) == (vec![(0, 0, 2), (2, 0, 2)]),
+            format_args!("geometry values differ"),
+        )?;
+        Ok(())
     }
 
     #[test]
-    fn segments_are_counted_in_utf16_units_not_bytes() {
+    fn segments_are_counted_in_utf16_units_not_bytes() -> Result<(), Box<dyn std::error::Error>> {
         // U+1D11E is 4 UTF-8 bytes but 2 UTF-16 code units. A byte count would
         // report 5 for the first line instead of 3.
         let source = "\u{1D11E}x\ny";
-        assert_eq!(segments_of(source, 0, 7), vec![(0, 0, 3), (1, 0, 1)]);
+        require_geometry(
+            (segments_of(source, 0, 7)?) == (vec![(0, 0, 3), (1, 0, 1)]),
+            format_args!("geometry values differ"),
+        )?;
+        Ok(())
     }
 
     #[test]
-    fn spans_without_representable_geometry_emit_nothing() {
+    fn spans_without_representable_geometry_are_refused() -> Result<(), Box<dyn std::error::Error>>
+    {
         let source = "abc\ndef";
         // Reversed, past the end, and off a character boundary must all fail
         // closed rather than clamp into a plausible-looking token.
-        assert!(segments_of(source, 5, 2).is_empty(), "reversed span must emit nothing");
-        assert!(segments_of(source, 2, 99).is_empty(), "out-of-bounds span must emit nothing");
+        require_geometry(
+            segments_of(source, 5, 2).is_err(),
+            format_args!("reversed span must emit nothing"),
+        )?;
+        require_geometry(
+            segments_of(source, 2, 99).is_err(),
+            format_args!("out-of-bounds span must emit nothing"),
+        )?;
         let multibyte = "\u{1D11E}";
-        assert!(segments_of(multibyte, 1, 3).is_empty(), "split char boundary must emit nothing");
+        require_geometry(
+            segments_of(multibyte, 1, 3).is_err(),
+            format_args!("split char boundary must emit nothing"),
+        )?;
+        Ok(())
     }
 
     /// Decode the provider's delta stream into absolute (line, start, length).
@@ -3453,16 +3538,24 @@ print "ok" foreach @ys;
         for source in sources {
             let painted = painted_geometry(source)?;
             let lines: Vec<&str> = source.split('\n').collect();
-            assert!(!painted.is_empty(), "no tokens emitted for source: {source:?}");
+            require_geometry(
+                !painted.is_empty(),
+                format_args!("no tokens emitted for source: {source:?}"),
+            )?;
             for (line, start, length) in painted {
-                assert!(length > 0, "zero-length token at {line}:{start} in {source:?}");
+                require_geometry(
+                    length > 0,
+                    format_args!("zero-length token at {line}:{start} in {source:?}"),
+                )?;
                 let line_text =
                     lines.get(line as usize).ok_or("token points past the last source line")?;
                 let line_units: u32 = line_text.chars().map(|c| c.len_utf16() as u32).sum::<u32>();
-                assert!(
+                require_geometry(
                     start.saturating_add(length) <= line_units,
-                    "token {line}:{start}+{length} escapes its line ({line_units} units) in {source:?}",
-                );
+                    format_args!(
+                        "token {line}:{start}+{length} escapes its line ({line_units} units) in {source:?}"
+                    ),
+                )?;
             }
         }
         Ok(())
@@ -3475,14 +3568,14 @@ print "ok" foreach @ys;
         // contribute nothing at all. It must now paint both lines.
         let source = "my $s = \"alpha\nbeta\";\n";
         let painted = painted_geometry(source)?;
-        assert!(
+        require_geometry(
             painted.iter().any(|(line, _, _)| *line == 0),
-            "string must still paint its opening line: {painted:?}"
-        );
-        assert!(
+            format_args!("string must still paint its opening line: {painted:?}"),
+        )?;
+        require_geometry(
             painted.iter().any(|(line, _, _)| *line == 1),
-            "string must paint its continuation line: {painted:?}"
-        );
+            format_args!("string must paint its continuation line: {painted:?}"),
+        )?;
         Ok(())
     }
 
@@ -3516,14 +3609,14 @@ print "ok" foreach @ys;
             out
         };
 
-        assert!(
+        require_geometry(
             !painted.iter().any(|(line, _, _, token_type)| *line > 0 && *token_type == anchor_kind),
-            "a class anchor must not paint its body lines as class: {painted:?}"
-        );
-        assert!(
+            format_args!("a class anchor must not paint its body lines as class: {painted:?}"),
+        )?;
+        require_geometry(
             painted.iter().any(|(line, _, _, _)| *line == 1),
-            "tokens inside the body must survive: {painted:?}"
-        );
+            format_args!("tokens inside the body must survive: {painted:?}"),
+        )?;
         Ok(())
     }
 
@@ -3554,10 +3647,12 @@ print "ok" foreach @ys;
                 variables.push((line, character, length));
             }
         }
-        assert!(
+        require_geometry(
             variables.iter().any(|(line, _, _)| *line == 2),
-            "the interpolated $table on the continuation line must survive: {variables:?}"
-        );
+            format_args!(
+                "the interpolated $table on the continuation line must survive: {variables:?}"
+            ),
+        )?;
         Ok(())
     }
 
@@ -3588,9 +3683,67 @@ print "ok" foreach @ys;
                 keywords.push((line, character, length));
             }
         }
-        assert!(
+        require_geometry(
             keywords.len() >= 2,
-            "injected SQL keywords must survive body painting, got {keywords:?}"
+            format_args!("injected SQL keywords must survive body painting, got {keywords:?}"),
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn invalid_geometry_is_a_typed_failure_not_empty_success() -> anyhow::Result<()> {
+        for (source, start, end) in [("abc\ndef", 5, 2), ("abc\ndef", 2, 99), ("é", 1, 2)] {
+            let control = SemanticTokensTraversalControl::unlimited();
+            let mut traversal = TraversalState { control: &control, work_done: 0 };
+            let mut out = Vec::new();
+            let result = push_line_contained_segments(
+                source,
+                start,
+                end,
+                &|offset| pos16(source, offset),
+                7,
+                0,
+                &mut out,
+                &mut traversal,
+            );
+            let stop = result.err().ok_or_else(|| anyhow::anyhow!("invalid geometry succeeded"))?;
+            anyhow::ensure!(stop == TraversalStop::InvalidGeometry, "wrong refusal: {stop:?}");
+            let outcome = interrupted_outcome(stop, Vec::new(), out, traversal.work_done);
+            anyhow::ensure!(
+                matches!(outcome, SemanticTokensTraversalOutcome::CollectionFailure(_)),
+                "invalid geometry must not become Complete: {outcome:?}"
+            );
+        }
+        let control = SemanticTokensTraversalControl::unlimited();
+        let mut traversal = TraversalState { control: &control, work_done: 0 };
+        let mut out = Vec::new();
+        let result = push_line_contained_segments(
+            "abc",
+            1,
+            1,
+            &|offset| pos16("abc", offset),
+            7,
+            0,
+            &mut out,
+            &mut traversal,
+        );
+        anyhow::ensure!(result.is_ok() && out.is_empty(), "valid empty span must succeed");
+        Ok(())
+    }
+
+    #[test]
+    fn partial_crlf_endpoint_excludes_only_paired_carriage_return() -> anyhow::Result<()> {
+        anyhow::ensure!(
+            segments_of("ab\r\ncd", 0, 3)? == vec![(0, 0, 2)],
+            "partial CRLF endpoint must exclude the paired CR"
+        );
+        anyhow::ensure!(
+            segments_of("ab\r", 0, 3)? == vec![(0, 0, 3)],
+            "standalone CR remains content"
+        );
+        anyhow::ensure!(
+            segments_of("ab\r\ncd", 2, 3)?.is_empty(),
+            "terminator-only intersection must not emit a token"
         );
         Ok(())
     }
