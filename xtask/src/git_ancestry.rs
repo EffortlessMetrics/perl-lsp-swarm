@@ -385,6 +385,50 @@ pub fn classify_ancestry(repository: &Path, base: &str, head: &str) -> AncestryR
     }
 }
 
+/// Typed `is-ancestor` query over the classifier's completeness guards.
+///
+/// This is the sound replacement for interpreting a bare
+/// `git merge-base --is-ancestor` exit code: a shallow checkout holding a
+/// commit object that is present but disconnected by the shallow boundary
+/// reports exit 1 where a complete clone reports exit 0 (#14557), so exit 1
+/// alone is never rendered as [`AncestryDisposition::Diverged`] or
+/// [`AncestryDisposition::Unrelated`] here. The guards are
+/// [`classify_ancestry`]'s own — shallow and partial checkouts stay
+/// `not_proven_*`, unresolvable revisions stay `not_proven_missing_object` —
+/// so there is exactly one classifier, not two. No fetch, deepen, or other
+/// repository mutation is performed.
+///
+/// Interpretation contract for callers:
+/// - [`AncestryDisposition::Ancestor`] — `base` is an ancestor of `head`.
+/// - [`AncestryDisposition::Diverged`] or [`AncestryDisposition::Unrelated`] —
+///   a complete-enough local graph proves `base` is not an ancestor of `head`.
+/// - anything else — the relation is not proven; fail closed and never render
+///   it as either verdict. See [`is_ancestor_verdict`].
+#[must_use]
+pub fn is_ancestor(repository: &Path, base: &str, head: &str) -> AncestryReceipt {
+    classify_ancestry(repository, base, head)
+}
+
+/// Project one ancestry receipt onto the `Option<bool>` shape of the legacy
+/// `--is-ancestor` callers: `Some(true)` for proved ancestry, `Some(false)`
+/// for proved non-ancestry in a complete-enough graph, and `None` whenever the
+/// local evidence cannot decide (shallow, partial, missing object, invalid
+/// input, or instrument failure). `None` must fail closed at the call site —
+/// advisory gates degrade to "not confirmed", hard gates error — and must
+/// never be read as either ancestry verdict.
+#[must_use]
+pub fn is_ancestor_verdict(receipt: &AncestryReceipt) -> Option<bool> {
+    match receipt.disposition {
+        AncestryDisposition::Ancestor => Some(true),
+        AncestryDisposition::Diverged | AncestryDisposition::Unrelated => Some(false),
+        AncestryDisposition::NotProvenShallow
+        | AncestryDisposition::NotProvenPartialClone
+        | AncestryDisposition::NotProvenMissingObject
+        | AncestryDisposition::InvalidInput
+        | AncestryDisposition::InstrumentFailure => None,
+    }
+}
+
 fn invalid_revision(value: &str, role: &str) -> Option<String> {
     let value = value.trim();
     if value.is_empty() {
@@ -572,6 +616,81 @@ mod tests {
         assert_eq!(receipt.is_shallow_repository, Some(true));
         assert!(receipt.reason.contains("not proof of unrelated history"));
         assert_eq!(receipt.disposition.exit_code(), 3);
+        Ok(())
+    }
+
+    #[test]
+    fn disconnected_graft_is_not_proven_not_ancestor() -> Result<()> {
+        // #14557: a shallow checkout holding a commit object that is present
+        // but disconnected by the shallow boundary must not yield a "not an
+        // ancestor" verdict. The fixture mirrors the issue reproduction:
+        // origin holds four linear commits, and the shallow clone fetches the
+        // oldest object without the graph that connects it to HEAD.
+        let origin = initialized_repository()?;
+        for (path, contents, message) in [
+            ("second.txt", "second\n", "second"),
+            ("third.txt", "third\n", "third"),
+            ("fourth.txt", "fourth\n", "fourth"),
+        ] {
+            commit_file(&origin, path, contents, message)?;
+        }
+        git(&origin, &["config", "uploadpack.allowAnySHA1InWant", "true"])?;
+        let old = git(&origin, &["rev-parse", "HEAD~3"])?;
+
+        let parent = tempfile::tempdir()?;
+        let clone = parent.path().join("shallow");
+        let origin_url = format!("file:///{}", origin.path().to_string_lossy().replace('\\', "/"));
+        git_at(
+            parent.path(),
+            &[
+                "-c",
+                "protocol.file.allow=always",
+                "clone",
+                "--depth",
+                "1",
+                &origin_url,
+                &clone.to_string_lossy(),
+            ],
+        )?;
+        git_at(
+            &clone,
+            &["-c", "protocol.file.allow=always", "fetch", "--depth", "1", "origin", &old],
+        )?;
+
+        // Preconditions proving the fixture is the issue's trap rather than a
+        // degenerate setup: the object is present, the checkout is shallow,
+        // and bare `merge-base --is-ancestor` answers exit 1 here ...
+        assert!(object_exists(&clone, &old)?, "the fetched object must be present");
+        assert_eq!(
+            git_at(&clone, &["rev-parse", "--is-shallow-repository"])?,
+            "true",
+            "the clone must stay shallow after the object fetch"
+        );
+        assert_eq!(
+            git_status_at(&clone, &["merge-base", "--is-ancestor", &old, "HEAD"])?,
+            Some(1),
+            "bare --is-ancestor must report the trap exit code in the grafted clone"
+        );
+        // ... while the complete origin answers exit 0 for the same pair.
+        assert_eq!(
+            git_status_at(origin.path(), &["merge-base", "--is-ancestor", &old, "HEAD"])?,
+            Some(0),
+            "the complete clone must confirm the ancestry the graft hides"
+        );
+
+        // The typed query refuses the false verdict and keeps the genuine one.
+        let grafted = is_ancestor(&clone, &old, "HEAD");
+        assert_eq!(grafted.disposition, AncestryDisposition::NotProvenShallow);
+        assert_eq!(is_ancestor_verdict(&grafted), None);
+
+        let complete = is_ancestor(origin.path(), &old, "HEAD");
+        assert_eq!(complete.disposition, AncestryDisposition::Ancestor);
+        assert_eq!(is_ancestor_verdict(&complete), Some(true));
+
+        // Genuine non-ancestry in the complete graph still decides.
+        let reversed = is_ancestor(origin.path(), "HEAD", &old);
+        assert_eq!(reversed.disposition, AncestryDisposition::Diverged);
+        assert_eq!(is_ancestor_verdict(&reversed), Some(false));
         Ok(())
     }
 
@@ -783,5 +902,16 @@ mod tests {
         String::from_utf8(output.stdout)
             .context("git command returned non-UTF-8 output")
             .map(|value| value.trim().to_string())
+    }
+
+    fn git_status_at(repository: &Path, arguments: &[&str]) -> Result<Option<i32>> {
+        let output = Command::new("git").args(arguments).current_dir(repository).output()?;
+        Ok(output.status.code())
+    }
+
+    fn object_exists(repository: &Path, sha: &str) -> Result<bool> {
+        let output =
+            Command::new("git").args(["cat-file", "-e", sha]).current_dir(repository).output()?;
+        Ok(output.status.success())
     }
 }

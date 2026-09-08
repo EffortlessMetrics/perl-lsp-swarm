@@ -3,10 +3,11 @@
 //! Issue #10304 added the shared read-only ancestry authority
 //! (`xtask::git_ancestry`) because a failed or empty `git merge-base` is not
 //! proof of unrelated history in a shallow, partial, or object-incomplete
-//! checkout, and migrated the RIPR committed-diff seam onto it.
+//! checkout, and migrated the RIPR committed-diff seam onto it. Issue #14557
+//! then migrated every `--is-ancestor` exit-code consumer onto the same
+//! authority, so no row below may map a bare exit 1 to a history verdict.
 //!
-//! The remaining consumers are recorded here rather than migrated in the same
-//! candidate. This inventory is the "checked migration inventory" #10304 asks
+//! This inventory is the "checked migration inventory" #10304 asks
 //! for: it fails when a new direct consumer appears without a disposition, and
 //! when a recorded consumer stops invoking `merge-base` and the row goes stale.
 //! It does not duplicate the classifier.
@@ -23,21 +24,11 @@ enum Disposition {
     /// Uses a successful merge base only to compute a range or boundary, and
     /// propagates failure as an error instead of a history verdict.
     RangeOnly,
-    /// Calls `merge-base --is-ancestor` and maps exit 1 to an affirmative
-    /// "not an ancestor" conclusion without a shallow/partial guard. A shallow
-    /// checkout holding a present-but-disconnected commit reports exit 1 where a
-    /// complete clone reports exit 0, so these conclusions can be false.
-    IsAncestorPendingMigration,
-    /// Test code, a read-only command allowlist, or a comment; no ancestry
-    /// decision is made here.
-    TestOrAllowlistOnly,
 }
 
 struct ConsumerRow {
     path: &'static str,
     disposition: Disposition,
-    /// Issue that owns the remaining migration, when one is still open.
-    successor: Option<&'static str>,
 }
 
 /// Every file under `xtask/src` that may invoke `git merge-base` directly.
@@ -46,71 +37,12 @@ struct ConsumerRow {
 /// onto `xtask::git_ancestry`, so it no longer invokes `merge-base` at all. If it
 /// reappears here, the migration has regressed.
 const INVENTORY: &[ConsumerRow] = &[
-    ConsumerRow {
-        path: "src/git_ancestry.rs",
-        disposition: Disposition::Authority,
-        successor: None,
-    },
-    ConsumerRow {
-        path: "src/bin/action-pin-provenance.rs",
-        disposition: Disposition::IsAncestorPendingMigration,
-        successor: Some("#14557"),
-    },
-    ConsumerRow {
-        path: "src/tasks/changelog.rs",
-        disposition: Disposition::IsAncestorPendingMigration,
-        successor: Some("#14557"),
-    },
-    ConsumerRow {
-        path: "src/tasks/ci_contract.rs",
-        disposition: Disposition::RangeOnly,
-        successor: None,
-    },
-    ConsumerRow {
-        path: "src/tasks/ci_subject.rs",
-        disposition: Disposition::RangeOnly,
-        successor: None,
-    },
-    ConsumerRow {
-        path: "src/tasks/file_policy.rs",
-        disposition: Disposition::IsAncestorPendingMigration,
-        successor: Some("#14557"),
-    },
-    ConsumerRow {
-        path: "src/tasks/merge_integration.rs",
-        disposition: Disposition::RangeOnly,
-        successor: None,
-    },
-    ConsumerRow {
-        path: "src/tasks/merge_ready.rs",
-        disposition: Disposition::RangeOnly,
-        successor: None,
-    },
-    ConsumerRow {
-        path: "src/tasks/module_train_live.rs",
-        disposition: Disposition::IsAncestorPendingMigration,
-        successor: Some("#14557"),
-    },
-    ConsumerRow {
-        path: "src/tasks/module_train_live_tests.rs",
-        disposition: Disposition::TestOrAllowlistOnly,
-        successor: None,
-    },
-    ConsumerRow {
-        path: "src/tasks/pr_close_proof.rs",
-        disposition: Disposition::IsAncestorPendingMigration,
-        successor: Some("#14557"),
-    },
-    ConsumerRow {
-        path: "src/tasks/sync_divergence.rs",
-        disposition: Disposition::IsAncestorPendingMigration,
-        successor: Some("#14557"),
-    },
-    ConsumerRow {
-        path: "src/tasks/workflows.rs",
-        disposition: Disposition::IsAncestorPendingMigration,
-        successor: Some("#14557"),
-    },
+    ConsumerRow { path: "src/git_ancestry.rs", disposition: Disposition::Authority },
+    ConsumerRow { path: "src/bin/action-pin-provenance.rs", disposition: Disposition::RangeOnly },
+    ConsumerRow { path: "src/tasks/ci_contract.rs", disposition: Disposition::RangeOnly },
+    ConsumerRow { path: "src/tasks/ci_subject.rs", disposition: Disposition::RangeOnly },
+    ConsumerRow { path: "src/tasks/merge_integration.rs", disposition: Disposition::RangeOnly },
+    ConsumerRow { path: "src/tasks/merge_ready.rs", disposition: Disposition::RangeOnly },
 ];
 
 fn xtask_root() -> PathBuf {
@@ -214,8 +146,9 @@ fn ripr_evidence_does_not_reacquire_a_private_merge_base_interpretation() -> std
 
 /// Membership alone would let a behavioral edit make a label wrong without
 /// failing anything: a `RangeOnly` file could quietly acquire an
-/// `--is-ancestor` decision and keep its reassuring row. Bind the two
-/// dispositions that carry a risk claim to the observable evidence for it.
+/// `--is-ancestor` decision and keep its reassuring row. Bind the disposition
+/// that carries a risk claim to the observable evidence for it (#14557: no
+/// direct `--is-ancestor` verdict may remain anywhere).
 #[test]
 fn dispositions_match_observed_is_ancestor_use() -> std::io::Result<()> {
     for row in INVENTORY {
@@ -223,38 +156,14 @@ fn dispositions_match_observed_is_ancestor_use() -> std::io::Result<()> {
         let uses_is_ancestor = source.contains("\"--is-ancestor\"");
 
         match row.disposition {
-            Disposition::IsAncestorPendingMigration => assert!(
-                uses_is_ancestor,
-                "{} is recorded as pending `--is-ancestor` migration but no longer calls it; \
-                 re-classify or remove the row (#10304)",
-                row.path
-            ),
             Disposition::RangeOnly => assert!(
                 !uses_is_ancestor,
-                "{} is recorded as range-only but now calls `merge-base --is-ancestor`, which \
-                 maps exit 1 to a history verdict; re-classify it as pending migration (#10304)",
+                "{} is recorded as range-only but now calls `merge-base --is-ancestor`; route it through xtask::git_ancestry instead (#14557)",
                 row.path
             ),
-            // The authority owns the interpretation, and allowlist/test rows
-            // make no ancestry decision either way.
-            Disposition::Authority | Disposition::TestOrAllowlistOnly => {}
+            // The authority owns the interpretation.
+            Disposition::Authority => {}
         }
     }
     Ok(())
-}
-
-/// Every consumer still pending migration must carry an explicit successor, so
-/// the residual risk stays attributable instead of dissolving into the inventory.
-#[test]
-fn pending_migrations_name_a_successor() {
-    for row in INVENTORY {
-        if row.disposition == Disposition::IsAncestorPendingMigration {
-            assert!(
-                row.successor.is_some(),
-                "{} maps `--is-ancestor` exit 1 to a history conclusion and must name a successor \
-                 (#10304)",
-                row.path
-            );
-        }
-    }
 }
