@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "owner_issue": 15124,
-  "reason": "PR #15126 registers the build-script proof in the serialized receipt command while retaining the landed packaging wrapper. The fresh Windows x64 VSIX from the combined candidate tree measured total inventory at 1864341 bytes; package.json is 59413 bytes, 115 bytes below the captured main baseline 59528, while out/extension.js is 3384 bytes larger and the other 27 archive paths match. A same-environment rebuild of captured main 3e96f31f9e458bbf7030668e5c9d96866f4ccb74 produced the same 1686496-byte out/extension.js, so that bundle delta is baseline-generation drift rather than a candidate source delta. This declaration records the exact measured archive; no validator, threshold, or admission rule changes.",
-  "base_baseline_file_sha256": "6eb7b8787bbea24c30ef1c5185a80b03e404e974eb83ed653cbd8db33b6f5ecc",
-  "candidate_baseline_file_sha256": "eaef617cee329a98c217809c7b330c51c8ea246eb13b983ecc78d83e4487d945",
-  "base_inventory_sha256": "44a4ea77a0c71a226b925d62743d30fce3845d4448c5a942124253601214938b",
-  "candidate_inventory_sha256": "2b68285babc5d03bd46afa00260919d43ed466415a40fc92e3a4ce79ed579766"
+  "owner_issue": 7418,
+  "reason": "The candidate adds the Windows Test Explorer prove stdin-list path and grows only the generated out/extension.js bundle by 1294 bytes. The exact Windows x64 VSIX inventory remains 29 files and 1865635 bytes; this declaration records the candidate baseline and package transition for issue #7418. It does not establish installed editor behavior or alter package policy.",
+  "base_baseline_file_sha256": "eaef617cee329a98c217809c7b330c51c8ea246eb13b983ecc78d83e4487d945",
+  "candidate_baseline_file_sha256": "8ca1c905b9ee5d6fee3ee9e1376095f792f8bb5df42f008c6a9417b7daee4122",
+  "base_inventory_sha256": "2b68285babc5d03bd46afa00260919d43ed466415a40fc92e3a4ce79ed579766",
+  "candidate_inventory_sha256": "6c9817d0c6b6ef82604c39db9df7a960badacb32ce56e1eed9e03ac29eb41ec8"
 }

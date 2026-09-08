@@ -1,11 +1,13 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import * as vscode from 'vscode';
 import type { ChildProcess } from 'child_process';
 import {
   describeFileFailure,
   parseSubtestResults,
   parseTapOutput,
+  PerlTestAdapter,
   runBoundedProcess,
   resolveProveCommand,
 } from '../testAdapter';
@@ -82,6 +84,119 @@ describe('test adapter TAP parsing', () => {
 });
 
 describe('bounded prove process execution', () => {
+  test('runs the registered Test Explorer profile with the selected file on stdin', async () => {
+    if (process.platform !== 'win32') {
+      return;
+    }
+
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-profile-'));
+    const fixture = path.join(root, 'selected space & [1] {a,b}.t');
+    const marker = path.join(root, 'selected-marker.txt');
+    const uri = vscode.Uri.file(fixture);
+    fs.writeFileSync(
+      fixture,
+      [
+        'use strict;',
+        'open my $marker, ">", $ENV{PERL_LSP_SELECTED_MARKER} or die $!;',
+        'print {$marker} "$0\\n";',
+        'close $marker or die $!;',
+        'print "1..1\\n";',
+        'print "ok 1 - selected profile\\n";',
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+
+    const adapter = new PerlTestAdapter();
+    const controller = (vscode.tests.createTestController as jest.Mock).mock.results.at(-1)
+      ?.value as {
+      createRunProfile: jest.Mock;
+      createTestRun: jest.Mock;
+    };
+    const profile = controller.createRunProfile.mock.calls[0]?.[2] as (
+      request: unknown,
+      token: unknown,
+    ) => Promise<void>;
+    const child = { id: `${uri}::selected`, label: 'selected', uri };
+    const fileItem = {
+      id: uri.toString(),
+      label: path.basename(fixture),
+      uri,
+      children: {
+        size: 1,
+        forEach: (callback: (item: typeof child) => void) => callback(child),
+      },
+    };
+    const previousMarker = process.env.PERL_LSP_SELECTED_MARKER;
+    process.env.PERL_LSP_SELECTED_MARKER = marker;
+    try {
+      await profile(
+        { include: [fileItem] },
+        { isCancellationRequested: false, onCancellationRequested: () => ({ dispose: jest.fn() }) },
+      );
+      const run = controller.createTestRun.mock.results[0]?.value;
+      expect(fs.readFileSync(marker, 'utf8').trim()).toBe(path.normalize(fixture));
+      expect(run.passed).toHaveBeenCalledWith(fileItem, expect.any(Number));
+      expect(run.errored).not.toHaveBeenCalled();
+    } finally {
+      if (previousMarker === undefined) delete process.env.PERL_LSP_SELECTED_MARKER;
+      else process.env.PERL_LSP_SELECTED_MARKER = previousMarker;
+      adapter.dispose();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  test('marks the selected file and subtest errored when the registered profile cannot resolve Perl', async () => {
+    if (process.platform !== 'win32') {
+      return;
+    }
+
+    const childProcess = require('child_process') as {
+      execFileSync: (...args: unknown[]) => Buffer | string;
+    };
+    const original = childProcess.execFileSync;
+    childProcess.execFileSync = () => {
+      throw new Error('Perl unavailable for registered profile');
+    };
+    const fixture = path.join(os.tmpdir(), 'perl-lsp-missing-perl.t');
+    const uri = vscode.Uri.file(fixture);
+    const adapter = new PerlTestAdapter();
+    const controller = (vscode.tests.createTestController as jest.Mock).mock.results.at(-1)
+      ?.value as {
+      createRunProfile: jest.Mock;
+      createTestRun: jest.Mock;
+    };
+    const profile = controller.createRunProfile.mock.calls[0]?.[2] as (
+      request: unknown,
+      token: unknown,
+    ) => Promise<void>;
+    const child = { id: `${uri}::missing`, label: 'missing', uri };
+    const fileItem = {
+      id: uri.toString(),
+      label: path.basename(fixture),
+      uri,
+      children: {
+        size: 1,
+        forEach: (callback: (item: typeof child) => void) => callback(child),
+      },
+    };
+    try {
+      await profile(
+        { include: [fileItem] },
+        { isCancellationRequested: false, onCancellationRequested: () => ({ dispose: jest.fn() }) },
+      );
+      const run = controller.createTestRun.mock.results[0]?.value;
+      expect(run.errored).toHaveBeenCalledTimes(2);
+      expect(run.errored.mock.calls.map((call: unknown[]) => call[0])).toEqual([fileItem, child]);
+      expect(run.passed).not.toHaveBeenCalled();
+      expect(run.failed).not.toHaveBeenCalled();
+      expect(run.errored.mock.calls[0][1].message).toContain('Perl was not found on PATH');
+    } finally {
+      childProcess.execFileSync = original;
+      adapter.dispose();
+    }
+  });
+
   test('runs a selected test through the registered resolver when its path contains spaces', async () => {
     if (process.platform !== 'win32') {
       return;
