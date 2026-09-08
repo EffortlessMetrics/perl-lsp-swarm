@@ -221,10 +221,19 @@ describe('bounded prove process execution', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-prove-'));
     const fixtureDirectory = path.join(root, "space & % ! ^ ( ) ' [1] {a,b}");
     const fixture = path.join(fixtureDirectory, 'selected.t');
+    const conflictingPathDirectory = path.join(root, 'conflicting-path');
+    const conflictingPathMarker = path.join(root, 'path-prove-was-run.txt');
+    const conflictingPathProve = path.join(conflictingPathDirectory, 'prove.bat');
     fs.mkdirSync(fixtureDirectory, { recursive: true });
+    fs.mkdirSync(conflictingPathDirectory, { recursive: true });
     fs.writeFileSync(
       fixture,
       'use strict;\nprint "1..1\\n";\nprint "ok 1 - selected resolver path\\n";\n',
+      'utf8',
+    );
+    fs.writeFileSync(
+      conflictingPathProve,
+      `@echo off\r\necho path prove was selected > "${conflictingPathMarker}"\r\nexit /b 99\r\n`,
       'utf8',
     );
 
@@ -241,10 +250,15 @@ describe('bounded prove process execution', () => {
         maxOutputBytes: 32_768,
         terminationGraceMs: 100,
         stdin: `${fixture}\n`,
+        env: {
+          ...process.env,
+          PATH: `${conflictingPathDirectory};${process.env.PATH ?? ''}`,
+        },
       });
 
       expect(result).toMatchObject({ outcome: 'completed', exitCode: 0 });
       expect(result.stdout).toContain('selected resolver path');
+      expect(fs.existsSync(conflictingPathMarker)).toBe(false);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
@@ -733,15 +747,18 @@ describe('bounded prove process execution', () => {
       script,
       `require('fs').writeFileSync(${JSON.stringify(parentMarker)}, 'started');\n` +
         `require('child_process').spawn(process.execPath, ['-e', ${JSON.stringify(
-          `require('fs').writeFileSync(${JSON.stringify(childMarker)}, 'started'); setTimeout(() => require('fs').writeFileSync(${JSON.stringify(childMarker)}, 'survived'), 3000); setTimeout(() => {}, 5000);`,
+          `require('fs').writeFileSync(${JSON.stringify(childMarker)}, 'started'); setTimeout(() => require('fs').writeFileSync(${JSON.stringify(childMarker)}, 'survived'), 3000); setTimeout(() => {}, 15000);`,
         )}], { detached: true, windowsHide: true, stdio: 'ignore' });\n` +
-        'setTimeout(() => {}, 5000);\n',
+        'setTimeout(() => {}, 15000);\n',
       'utf8',
     );
+    const controller = new AbortController();
+    let resultPromise: Promise<Awaited<ReturnType<typeof runBoundedProcess>>> | undefined;
     try {
-      const resultPromise = runBoundedProcess(process.execPath, [script], {
+      resultPromise = runBoundedProcess(process.execPath, [script], {
         shell: false,
-        timeoutMs: 1_000,
+        signal: controller.signal,
+        timeoutMs: 10_000,
         maxOutputBytes: 32,
         terminationGraceMs: 25,
       });
@@ -755,13 +772,18 @@ describe('bounded prove process execution', () => {
       }
       expect(fs.existsSync(parentMarker)).toBe(true);
       expect(fs.existsSync(childMarker)).toBe(true);
+      controller.abort();
       const result = await resultPromise;
-      expect(result.outcome).toBe('timed_out');
+      expect(result.outcome).toBe('cancelled');
       expect(fs.readFileSync(parentMarker, 'utf8')).toBe('started');
       expect(fs.readFileSync(childMarker, 'utf8')).toBe('started');
       await new Promise((resolve) => setTimeout(resolve, 3_500));
       expect(fs.readFileSync(childMarker, 'utf8')).toBe('started');
     } finally {
+      controller.abort();
+      if (resultPromise !== undefined) {
+        await resultPromise;
+      }
       fs.rmSync(root, { recursive: true, force: true });
     }
   }, 30_000);
