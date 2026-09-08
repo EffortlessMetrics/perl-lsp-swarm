@@ -42,6 +42,7 @@ pub mod ci_scope;
 pub mod ci_subject;
 pub mod clean;
 pub mod clippy_cost_measure;
+pub mod code_action_generation_ledger;
 pub mod command_evidence;
 #[path = "commit_checks_facade.rs"]
 pub mod commit_checks;
