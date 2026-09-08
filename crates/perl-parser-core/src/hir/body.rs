@@ -493,16 +493,33 @@ pub enum DeclStorageClass {
     Local,
     /// `state` — persistent lexical.
     State,
+    /// An AST declaration-shaped node whose keyword is not a declaration.
+    ///
+    /// The parser can represent a legacy subroutine call such as
+    /// `field $x = 1` with the same shape as a variable declaration. Keeping
+    /// that distinction explicit prevents body PIR from inventing a lexical
+    /// binding for the call.
+    ///
+    /// This is the catch-all arm: *every* unrecognized declarator lands here,
+    /// not only `field`. Declining to invent a binding is right for all of
+    /// them, but PIR labels the boundary `LegacyFieldCall`, which is accurate
+    /// only because `field` is the sole such keyword the parser produces
+    /// today. A second one would need that label generalized — the receipt
+    /// would be misleading, though the lowering would stay correct.
+    Unknown,
 }
 
 impl DeclStorageClass {
-    fn from_str(s: &str) -> Self {
+    /// Classify a declarator keyword. `pub(crate)` so flat PIR lowering can
+    /// ask the same question body lowering does, rather than keeping a second
+    /// list of which keywords are real declarators.
+    pub(crate) fn from_str(s: &str) -> Self {
         match s {
             "my" => DeclStorageClass::My,
             "our" => DeclStorageClass::Our,
             "local" => DeclStorageClass::Local,
             "state" => DeclStorageClass::State,
-            _ => DeclStorageClass::My,
+            _ => DeclStorageClass::Unknown,
         }
     }
 }

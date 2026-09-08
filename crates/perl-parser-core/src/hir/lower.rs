@@ -465,6 +465,27 @@ impl Lowerer {
                     self.visit(arg, confidence);
                 }
             }
+            NodeKind::Identifier { name } if is_synthesized_operand(node, name) => {
+                // A parser-synthesized operand, not source text. Unbound `s///`,
+                // `tr///` and `y///` materialize their implicit `$_` topic as a
+                // zero-width `Identifier { name: "$_" }` (#14641).
+                //
+                // Adopting it would assert a maximum-strength claim — `ExactAst`
+                // provenance at `High` confidence — about a name unrepresentable
+                // in Perl source, over a range covering no text. Emit neither the
+                // `BarewordExpr` item nor the `BarewordFact`, so no downstream
+                // consumer can mistake the fabrication for a bareword. Modeling
+                // the implicit topic as a first-class operand is #6666's claim,
+                // not this arm's.
+                //
+                // The empty range is the proven discriminator. The sigil alone
+                // is not enough: `new $class` is a *written* dynamic indirect
+                // constructor whose receiver the parser records as a real,
+                // nonzero-width `Identifier { name: "$class" }`. Dropping that
+                // would discard a source-backed fact. Whether such a receiver
+                // should be a bareword at all is a separate defect (#15031); this
+                // arm deliberately leaves that behavior exactly as it was.
+            }
             NodeKind::Identifier { name } => {
                 let item_id = self.push_item(
                     node,
@@ -915,8 +936,17 @@ impl Lowerer {
                     self.package_context.clone(),
                     Some(self.current_scope()),
                 );
-                self.record_declaration_bindings(declarator, &variables, item_id);
-                self.record_variable_stash_effects(declarator, &variables, initializer, item_id);
+                // A legacy `field` call declares nothing. Body lowering owns
+                // the argument's resolved read/write effects instead.
+                if declarator != "field" {
+                    self.record_declaration_bindings(declarator, &variables, item_id);
+                    self.record_variable_stash_effects(
+                        declarator,
+                        &variables,
+                        initializer,
+                        item_id,
+                    );
+                }
                 if let Some(initializer) = initializer {
                     self.visit(initializer, confidence);
                 }
@@ -2533,12 +2563,52 @@ fn is_export_symbol_name(value: &str) -> bool {
     let Some(first) = value.chars().next() else {
         return false;
     };
-    let body = if matches!(first, '$' | '@' | '%' | '&' | '*') {
-        &value[first.len_utf8()..]
-    } else {
-        value
-    };
+    let body = if PERL_SIGILS.contains(&first) { &value[first.len_utf8()..] } else { value };
     is_bareword_like(body)
+}
+
+/// Sigils that introduce a non-bareword Perl symbol form.
+///
+/// A bareword is by definition an unquoted name carrying no sigil, so each of
+/// these characters marks a name as something other than a bareword.
+const PERL_SIGILS: [char; 5] = ['$', '@', '%', '&', '*'];
+
+/// Whether `value` begins with a Perl sigil, and therefore cannot be a bareword.
+fn is_sigil_prefixed(value: &str) -> bool {
+    value.chars().next().is_some_and(|first| PERL_SIGILS.contains(&first))
+}
+
+/// Whether an `Identifier` node was fabricated by the parser rather than scanned
+/// from source, and so must not be recorded as a bareword (#14641).
+///
+/// Two conditions, of unequal strength:
+///
+/// - **the range is empty**, so the node covers no source text at all;
+/// - **the name carries a sigil**, so it could not be a bareword even if it had.
+///
+/// The empty range is the load-bearing half. The sigil alone is *not* sufficient
+/// and an earlier revision that relied on it was wrong: `new $class` is a legal
+/// dynamic indirect constructor whose receiver arrives here as a real
+/// `Identifier { name: "$class" }` spanning the characters the author typed.
+/// Discarding that would drop a source-backed fact. (Whether such a receiver
+/// should be classified as a *bareword* at all is a separate defect, #15031;
+/// this predicate deliberately leaves that behavior unchanged.)
+///
+/// The sigil test is defence in depth rather than a proven discriminator. A finite
+/// probe over malformed and recovery-path inputs found no zero-width
+/// `Identifier` with a non-sigil name; every zero-width identifier in that
+/// corpus was the `"$_"` topic. Keeping the sigil test
+/// means that if recovery ever does synthesize a zero-width placeholder named
+/// like an ordinary bareword, it is still recorded rather than silently dropped
+/// by this arm. `hir_synthesized_topic_not_a_bareword.rs` states that limit
+/// rather than implying the condition is falsifiable today.
+///
+/// Together they identify the synthesized shape: a name that cannot be a
+/// bareword, over a span containing nothing. The implicit `$_` topic of an
+/// unbound `s///`, `tr///` or `y///` is the only such node the parser builds
+/// today, at three sites (`expressions/quotes.rs`, `expressions/primary.rs`).
+fn is_synthesized_operand(node: &Node, name: &str) -> bool {
+    node.location.start == node.location.end && is_sigil_prefixed(name)
 }
 
 fn is_bareword_like(value: &str) -> bool {
@@ -3384,6 +3454,24 @@ impl<'a> BodyBuilder2<'a> {
         VariableKind::Package
     }
 
+    /// Whether `expr_id` is already an assignment whose target is the same
+    /// variable a declaration-shaped node names.
+    ///
+    /// Distinguishes `field $x += 1` — where the lowered initializer is the
+    /// complete operation over `$x` — from `field $x = ($y += 1)`, where the
+    /// inner assignment targets a different variable and the outer write to
+    /// `$x` is real.
+    fn assign_targets_same_variable(&self, expr_id: HirExprId, sigil: &str, name: &str) -> bool {
+        let Some(HirExpr::Assign { lhs, .. }) = self.exprs.get(expr_id.0) else {
+            return false;
+        };
+        let wanted = sigil_from_str(sigil);
+        matches!(
+            self.exprs.get(lhs.0),
+            Some(HirExpr::Variable(var)) if var.name == name && var.sigil == wanted
+        )
+    }
+
     fn lower_statement(&mut self, node: &Node) -> HirStmtId {
         let range = node.location;
 
@@ -3480,6 +3568,9 @@ impl<'a> BodyBuilder2<'a> {
     ) -> HirStmtId {
         let sigil = sigil_from_str(sigil_str);
         let storage = storage_class_for_decl(declarator);
+        // Unknown storage represents a legacy call. Its argument uses the
+        // visible binding rather than creating a new declaration.
+        let is_legacy_call = storage == DeclStorageClass::Unknown;
 
         let init_expr_id = match (initializer, &variable.kind) {
             // `local $x = EXPR` / `local $x .= EXPR`: the parser stores the
@@ -3490,10 +3581,11 @@ impl<'a> BodyBuilder2<'a> {
             (None, _) => None,
             (Some(init_node), _) => Some({
                 // Allocate the write-place for the declared variable.
-                // Always Lexical regardless of declarator — the place IS the
-                // declaration site, not a resolved binding.
+                // Real declarations own their place; legacy calls resolve
+                // their argument through the existing scope authority.
                 let place_kind = match declarator {
                     "our" => VariableKind::Package,
+                    "field" => self.resolve_variable_kind(sigil_str, &var_name),
                     _ => VariableKind::Lexical,
                 };
                 let place_expr = HirExpr::Variable(HirVariable {
@@ -3505,15 +3597,38 @@ impl<'a> BodyBuilder2<'a> {
                 let place_id = self.alloc_expr(place_expr, variable.location);
 
                 let rhs_id = self.lower_expr(init_node);
-                let assign_range = crate::SourceLocation {
-                    start: variable.location.start,
-                    end: init_node.location.end,
-                };
-                let assign_expr =
-                    HirExpr::Assign { lhs: place_id, rhs: rhs_id, mode: AssignMode::Simple };
-                self.alloc_expr(assign_expr, assign_range)
+                // A parser-folded compound argument already owns its write.
+                // Nested same-target assignments start later and need both
+                // writes, so matching the variable name alone is insufficient.
+                if is_legacy_call
+                    && init_node.location.start == variable.location.start
+                    && self.assign_targets_same_variable(rhs_id, sigil_str, &var_name)
+                {
+                    rhs_id
+                } else {
+                    let assign_range = crate::SourceLocation {
+                        start: variable.location.start,
+                        end: init_node.location.end,
+                    };
+                    let assign_expr =
+                        HirExpr::Assign { lhs: place_id, rhs: rhs_id, mode: AssignMode::Simple };
+                    self.alloc_expr(assign_expr, assign_range)
+                }
             }),
         };
+
+        let init_expr_id = init_expr_id.or_else(|| {
+            if !is_legacy_call {
+                return None;
+            }
+            let argument = HirExpr::Variable(HirVariable {
+                sigil: sigil_from_str(sigil_str),
+                name: var_name.clone(),
+                kind: self.resolve_variable_kind(sigil_str, &var_name),
+                access: AccessMode::Read,
+            });
+            Some(self.alloc_expr(argument, binding_node.location))
+        });
 
         self.alloc_stmt(
             HirStmt::Let {
@@ -4427,7 +4542,7 @@ fn storage_class_for_decl(declarator: &str) -> DeclStorageClass {
         "our" => DeclStorageClass::Our,
         "local" => DeclStorageClass::Local,
         "state" => DeclStorageClass::State,
-        _ => DeclStorageClass::My,
+        _ => DeclStorageClass::Unknown,
     }
 }
 

@@ -48,11 +48,10 @@ invariant as currently held, and remaining adversarial-input proof stays with
 
 Current source and policy files establish the active panic-family lint bans, the
 removal of the shared test unwrap carveout, and the governed path toward exact
-counted no-new-debt enforcement. The Rust 1.95 rollout map,
-[`docs/ci/perl-lsp-rust-1.95-rollout.md`](ci/perl-lsp-rust-1.95-rollout.md), is a superseded
-record kept only as history; it is replaced by
-[`docs/CLIPPY_POLICY.md`](CLIPPY_POLICY.md). Historical rollout records are not
-permissions.
+counted no-new-debt enforcement. The Rust 1.95 rollout map at
+[`docs/ci/perl-lsp-rust-1.95-rollout.md`](ci/perl-lsp-rust-1.95-rollout.md) is superseded
+by [`docs/CLIPPY_POLICY.md`](CLIPPY_POLICY.md) and retained only as a record.
+Historical rollout records are not permissions.
 
 Current guardrails include:
 
