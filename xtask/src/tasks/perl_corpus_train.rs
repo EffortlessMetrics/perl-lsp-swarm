@@ -85,7 +85,6 @@ const EXTERNAL_HORIZONS: &[&str] = &["package_externalization", "publication_man
 /// generic writer-conflict law for every other node pair.
 const DECLARED_PARALLEL_PAIRS: &[(&str, &str)] =
     &[("pc_property_suites_11580", "pc_fixture_promotion_11034")];
-const DECLARED_PARALLEL_LAW_ANCHOR: &str = "pc_stable_dag_10980";
 
 /// Object keys banned anywhere in stable bytes: no mutable GitHub, task,
 /// agent, run, writer, or frontier state.
@@ -789,18 +788,19 @@ fn reachability<'a>(graph: &Graph<'a>) -> BTreeMap<&'a str, BTreeSet<&'a str>> {
 /// Reject a hard path between programme-owned successors declared parallel.
 /// Evidence edges intentionally do not count as ordering: they may remain
 /// observed while the successor is still not proven.
-fn declared_parallel_problems(graph: &Graph<'_>, violations: &mut Vec<Violation>) {
+fn declared_parallel_problems(
+    graph: &Graph<'_>,
+    violations: &mut Vec<Violation>,
+    require_endpoints: bool,
+) {
     let closure = reachability(graph);
     for (left, right) in DECLARED_PARALLEL_PAIRS {
         let left_present = graph.node_ids.contains(left);
         let right_present = graph.node_ids.contains(right);
-        let law_applies =
-            graph.node_ids.contains(DECLARED_PARALLEL_LAW_ANCHOR) || left_present || right_present;
+        let law_applies = require_endpoints || left_present || right_present;
         if !law_applies {
             // A compact invalid fixture may not model this programme-specific
-            // pair at all. The canonical #10980 graph is identified by its
-            // stable-DAG node anchor, so removing or renaming both endpoints
-            // still leaves the law active on that manifest.
+            // pair at all; canonical validation requires both identities.
             continue;
         }
         // Once the law applies, both configured identities are part of the
@@ -950,7 +950,10 @@ fn conflict_problems(doc: &Value, graph: &Graph<'_>, violations: &mut Vec<Violat
 }
 
 /// Every named shift-left diagnostic over one parsed document.
-pub fn validate_document(doc: &Value) -> Vec<Violation> {
+fn validate_document_inner(
+    doc: &Value,
+    require_declared_parallel_endpoints: bool,
+) -> Vec<Violation> {
     let mut violations = Vec::new();
     walk_stable_bytes(doc, "$", &mut violations);
     if doc.get("schema").and_then(Value::as_str) != Some(SCHEMA_NAME) {
@@ -967,9 +970,21 @@ pub fn validate_document(doc: &Value) -> Vec<Violation> {
             format!("hard/evidence dependency cycle: {}", cycle.join(" -> ")),
         ));
     }
-    declared_parallel_problems(&graph, &mut violations);
+    declared_parallel_problems(&graph, &mut violations, require_declared_parallel_endpoints);
     conflict_problems(doc, &graph, &mut violations);
     violations
+}
+
+/// Validate a document's generic semantic laws without requiring this
+/// programme-specific pair to be present.
+pub fn validate_document(doc: &Value) -> Vec<Violation> {
+    validate_document_inner(doc, false)
+}
+
+/// Validate the canonical #10980 manifest contract, including every configured
+/// declared-parallel endpoint.
+pub fn validate_canonical_document(doc: &Value) -> Vec<Violation> {
+    validate_document_inner(doc, true)
 }
 
 // ---------------------------------------------------------------------------
@@ -1012,7 +1027,7 @@ fn schema_failures(root: &Path, manifest: &Value) -> Result<Vec<String>> {
 pub fn load_validated_manifest(root: &Path) -> Result<Value> {
     let manifest = load_json(&root.join(MANIFEST_PATH))?;
     let mut failures = schema_failures(root, &manifest)?;
-    for violation in validate_document(&manifest) {
+    for violation in validate_canonical_document(&manifest) {
         failures.push(format!("{}: {}", violation.code, violation.detail));
     }
     if !failures.is_empty() {
@@ -1551,7 +1566,7 @@ pub fn run_check() -> Result<()> {
     for failure in schema_failures(&root, &manifest)? {
         failures.push(format!("{MANIFEST_PATH}: {failure}"));
     }
-    for violation in validate_document(&manifest) {
+    for violation in validate_canonical_document(&manifest) {
         failures.push(format!("{MANIFEST_PATH}: {}: {}", violation.code, violation.detail));
     }
 
@@ -1563,7 +1578,7 @@ pub fn run_check() -> Result<()> {
             "{SHUFFLED_PATH}: canonical form or digest differs from {MANIFEST_PATH} under reordering"
         ));
     }
-    let shuffled_violations = validate_document(&shuffled);
+    let shuffled_violations = validate_canonical_document(&shuffled);
     if !shuffled_violations.is_empty() {
         failures.push(format!(
             "{SHUFFLED_PATH}: shuffled control violated the manifest contract: {:?}",

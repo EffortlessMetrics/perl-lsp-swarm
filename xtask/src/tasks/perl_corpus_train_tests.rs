@@ -6,8 +6,9 @@
 //! generated projections must pass and stay byte-deterministic.
 
 use super::{
-    INVALID_DIR, MANIFEST_PATH, SHUFFLED_PATH, canonical_form, invalid_fixture_names,
-    render_explain_static, render_projections, title_fingerprint, validate_document,
+    INVALID_DIR, MANIFEST_PATH, SCHEMA_PATH, SHUFFLED_PATH, canonical_form,
+    invalid_fixture_names, load_validated_manifest, render_explain_static, render_projections,
+    title_fingerprint, validate_canonical_document, validate_document,
 };
 use color_eyre::eyre::{Result, bail, eyre};
 use serde_json::{Map, Value};
@@ -27,6 +28,10 @@ fn load(rel: &str) -> Result<Value> {
 
 fn codes(doc: &Value) -> Vec<String> {
     validate_document(doc).iter().map(|violation| violation.code.clone()).collect()
+}
+
+fn canonical_codes(doc: &Value) -> Vec<String> {
+    validate_canonical_document(doc).iter().map(|violation| violation.code.clone()).collect()
 }
 
 fn assert_code(doc: &Value, expected: &str) -> Result<()> {
@@ -80,7 +85,7 @@ fn string_list(items: &[&str]) -> Value {
 #[test]
 fn canonical_manifest_is_clean() -> Result<()> {
     let doc = load(MANIFEST_PATH)?;
-    let violations = validate_document(&doc);
+    let violations = validate_canonical_document(&doc);
     if !violations.is_empty() {
         bail!(
             "the landed perl-corpus train manifest must validate: {:?}",
@@ -97,8 +102,8 @@ fn shuffled_control_canonizes_identically_validates_and_projects_identically() -
     if canonical_form(&base) != canonical_form(&shuffled) {
         bail!("canonical form must be invariant under reordering");
     }
-    if !validate_document(&shuffled).is_empty() {
-        bail!("the shuffled control must validate: {:?}", codes(&shuffled));
+    if !validate_canonical_document(&shuffled).is_empty() {
+        bail!("the shuffled control must validate: {:?}", canonical_codes(&shuffled));
     }
     if render_projections(&base)? != render_projections(&shuffled)? {
         bail!("projections must be byte-identical under reordering");
@@ -442,6 +447,15 @@ fn assert_exact_codes(doc: &Value, expected: &[&str]) -> Result<()> {
     Ok(())
 }
 
+fn assert_exact_canonical_codes(doc: &Value, expected: &[&str]) -> Result<()> {
+    let actual = canonical_codes(doc).into_iter().collect::<std::collections::BTreeSet<_>>();
+    let expected = expected.iter().map(|code| (*code).to_string()).collect();
+    if actual != expected {
+        bail!("expected exactly {expected:?}, got {actual:?}");
+    }
+    Ok(())
+}
+
 fn add_dependency(doc: &mut Value, source: &str, target: &str, class: &str) -> Result<()> {
     let node = node_mut(doc, source)?;
     node.get_mut("dependencies")
@@ -526,12 +540,12 @@ fn rename_node_and_repair_references(doc: &mut Value, old_id: &str, new_id: &str
 fn falsifier_11b_missing_declared_parallel_endpoint_after_repaired_mutation_fails() -> Result<()> {
     let base = load(MANIFEST_PATH)?;
     // The canonical pair is present and has no ordering path.
-    assert_exact_codes(&base, &[])?;
+    assert_exact_canonical_codes(&base, &[])?;
 
     for endpoint in ["pc_property_suites_11580", "pc_fixture_promotion_11034"] {
         let mut doc = base.clone();
         remove_node_and_repair_references(&mut doc, endpoint)?;
-        assert_exact_codes(&doc, &["DECLARED_PARALLEL_ENDPOINT_MISSING"])?;
+        assert_exact_canonical_codes(&doc, &["DECLARED_PARALLEL_ENDPOINT_MISSING"])?;
     }
 
     for (old_id, new_id) in [
@@ -540,14 +554,14 @@ fn falsifier_11b_missing_declared_parallel_endpoint_after_repaired_mutation_fail
     ] {
         let mut doc = base.clone();
         rename_node_and_repair_references(&mut doc, old_id, new_id)?;
-        assert_exact_codes(&doc, &["DECLARED_PARALLEL_ENDPOINT_MISSING"])?;
+        assert_exact_canonical_codes(&doc, &["DECLARED_PARALLEL_ENDPOINT_MISSING"])?;
     }
 
     let mut removed_both = base.clone();
     for endpoint in ["pc_property_suites_11580", "pc_fixture_promotion_11034"] {
         remove_node_and_repair_references(&mut removed_both, endpoint)?;
     }
-    assert_exact_codes(&removed_both, &["DECLARED_PARALLEL_ENDPOINT_MISSING"])?;
+    assert_exact_canonical_codes(&removed_both, &["DECLARED_PARALLEL_ENDPOINT_MISSING"])?;
 
     let mut renamed_both = base;
     for (old_id, new_id) in [
@@ -556,7 +570,42 @@ fn falsifier_11b_missing_declared_parallel_endpoint_after_repaired_mutation_fail
     ] {
         rename_node_and_repair_references(&mut renamed_both, old_id, new_id)?;
     }
-    assert_exact_codes(&renamed_both, &["DECLARED_PARALLEL_ENDPOINT_MISSING"])?;
+    assert_exact_canonical_codes(&renamed_both, &["DECLARED_PARALLEL_ENDPOINT_MISSING"])?;
+    Ok(())
+}
+
+#[test]
+fn canonical_loader_rejects_missing_declared_parallel_endpoints() -> Result<()> {
+    let source_root = repo_root()?;
+    for mutation in ["remove", "rename"] {
+        let root = tempfile::tempdir()?;
+        let manifest_path = root.path().join(MANIFEST_PATH);
+        let schema_path = root.path().join(SCHEMA_PATH);
+        std::fs::create_dir_all(
+            manifest_path.parent().ok_or_else(|| eyre!("manifest parent directory"))?,
+        )?;
+        std::fs::create_dir_all(schema_path.parent().ok_or_else(|| eyre!("schema parent directory"))?)?;
+        let mut doc = load(MANIFEST_PATH)?;
+        if mutation == "remove" {
+            for endpoint in ["pc_property_suites_11580", "pc_fixture_promotion_11034"] {
+                remove_node_and_repair_references(&mut doc, endpoint)?;
+            }
+        } else {
+            for (old_id, new_id) in [
+                ("pc_property_suites_11580", "pc_property_suites_11580_renamed"),
+                ("pc_fixture_promotion_11034", "pc_fixture_promotion_11034_renamed"),
+            ] {
+                rename_node_and_repair_references(&mut doc, old_id, new_id)?;
+            }
+        }
+        std::fs::write(&manifest_path, serde_json::to_vec(&doc)?)?;
+        std::fs::copy(source_root.join(SCHEMA_PATH), &schema_path)?;
+        let result = load_validated_manifest(root.path());
+        let error = result.err().ok_or_else(|| eyre!("{mutation} mutation unexpectedly loaded"))?;
+        if !error.to_string().contains("DECLARED_PARALLEL_ENDPOINT_MISSING") {
+            bail!("{mutation} mutation failed for the wrong reason: {error}");
+        }
+    }
     Ok(())
 }
 
