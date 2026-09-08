@@ -1154,8 +1154,7 @@ void test('POSIX group inspection rejects malformed or unreadable member metadat
   const unreadableFs = {
     readdirSync: () => ['100'],
     readFileSync: () => {
-      const error = new Error('permission denied');
-      error.code = 'EACCES';
+      const error = Object.assign(new Error('permission denied'), { code: 'EACCES' });
       throw error;
     },
   };
@@ -1170,7 +1169,11 @@ void test('POSIX group inspection rejects membership churn between observations'
   ]);
   const procFs = {
     readdirSync: () => (directoryRead++ === 0 ? ['100'] : ['100', '101']),
-    readFileSync: (file) => statByPid.get(path.basename(path.dirname(file))),
+    readFileSync: (file) => {
+      const stat = statByPid.get(path.basename(path.dirname(file)));
+      if (stat === undefined) throw new Error('missing fixture stat');
+      return stat;
+    },
   };
   assert.equal(inspectPosixProcessGroup(100, '/mock', procFs), null);
 });
