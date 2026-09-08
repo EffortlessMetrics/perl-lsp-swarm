@@ -4852,16 +4852,17 @@ enum SmokeCommand {
 
 #[derive(Subcommand)]
 enum AgentFlowCommand {
-    /// Check provider-local skill metadata and route references.
+    /// Check provider-local skill metadata, routes, and shared operating contracts.
     Check {
-        /// Restrict the check to one skill name in each provider tree.
+        /// Restrict skill-local route and guidance checks to one skill;
+        /// shared metadata, contracts, and scenario checks remain global.
         #[arg(long)]
         skill: Option<String>,
         /// Output format: human or json.
         #[arg(long, default_value = "human")]
         format: String,
     },
-    /// Check the deterministic route-scenario fixtures only.
+    /// Check deterministic shared route, continuation, and guidance controls.
     Scenarios {
         /// Output format: human or json.
         #[arg(long, default_value = "human")]

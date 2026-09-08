@@ -773,7 +773,7 @@ fn check_repository(root: &Path, selected_skill: Option<&str>) -> Result<CheckRe
 
     let mut scenario_errors = check_scenarios(&provider_skills);
     scenario_errors.extend(check_continuation_traces());
-    scenario_errors.extend(check_self_correction_guidance(root));
+    scenario_errors.extend(check_self_correction_guidance(root, selected_skill));
     errors.extend(scenario_errors.iter().cloned());
     let scenarios = ScenarioReport {
         fixture_count: SCENARIO_FIXTURES.len(),
@@ -1009,6 +1009,7 @@ fn check_scenarios(
     errors
 }
 
+const SELF_CORRECTION_DOCUMENT: &str = "docs/agents/DEVELOPMENT_METHOD.md";
 const SELF_CORRECTION_MARKER: &str = "Self-authored correction and disclosure";
 const SELF_CORRECTION_REFERENCE: &str = "correction and disclosure contract";
 const CANONICAL_SELF_CORRECTION_CLAUSES: &[(&str, &str)] = &[
@@ -1051,14 +1052,30 @@ const SELF_CORRECTION_SKILLS: &[&str] = &[
     "merge-reconcile",
 ];
 
-fn check_self_correction_guidance(root: &Path) -> Vec<String> {
+#[derive(Deserialize)]
+struct AuthorityStatusDocument {
+    current_method: String,
+    documents: Vec<AuthorityStatusEntry>,
+}
+
+#[derive(Deserialize)]
+struct AuthorityStatusEntry {
+    path: String,
+    status: String,
+}
+
+fn check_self_correction_guidance(root: &Path, selected_skill: Option<&str>) -> Vec<String> {
     let mut errors = Vec::new();
+    errors.extend(authority_binding_errors(root));
     let mut surfaces = Vec::new();
-    for relative in ["docs/agents/DEVELOPMENT_METHOD.md", "AGENTS.md", "CLAUDE.md"] {
+    for relative in [SELF_CORRECTION_DOCUMENT, "AGENTS.md", "CLAUDE.md"] {
         surfaces.push((relative.to_string(), root.join(relative)));
     }
     for provider in [".agents/skills", ".claude/skills"] {
         for skill in SELF_CORRECTION_SKILLS {
+            if selected_skill.is_some_and(|selected| selected != *skill) {
+                continue;
+            }
             let relative = format!("{provider}/{skill}/SKILL.md");
             surfaces.push((relative.clone(), root.join(relative)));
         }
@@ -1071,7 +1088,7 @@ fn check_self_correction_guidance(root: &Path) -> Vec<String> {
                 continue;
             }
         };
-        let required = if label == "docs/agents/DEVELOPMENT_METHOD.md" {
+        let required = if label == SELF_CORRECTION_DOCUMENT {
             SELF_CORRECTION_MARKER
         } else {
             SELF_CORRECTION_REFERENCE
@@ -1079,7 +1096,7 @@ fn check_self_correction_guidance(root: &Path) -> Vec<String> {
         if !text.contains(required) {
             errors.push(format!("{label}: missing self-correction guidance marker '{required}'"));
         }
-        if label == "docs/agents/DEVELOPMENT_METHOD.md" {
+        if label == SELF_CORRECTION_DOCUMENT {
             errors.extend(
                 canonical_self_correction_errors(&text)
                     .into_iter()
@@ -1093,6 +1110,45 @@ fn check_self_correction_guidance(root: &Path) -> Vec<String> {
                 errors.push(format!("{label}: cannot check self-correction wording: {error}"))
             }
         }
+    }
+    errors
+}
+
+fn authority_binding_errors(root: &Path) -> Vec<String> {
+    let relative = "docs/agents/authority_status.toml";
+    let path = root.join(relative);
+    let text = match fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) => {
+            return vec![format!("{relative}: authority binding cannot read registry: {error}")];
+        }
+    };
+    authority_binding_errors_from_text(&text)
+        .into_iter()
+        .map(|error| format!("{relative}: {error}"))
+        .collect()
+}
+
+// Provider references still name this fixed guide. A changed authority must fail
+// until the guide, references, and checker are deliberately migrated together.
+fn authority_binding_errors_from_text(text: &str) -> Vec<String> {
+    let registry = match toml::from_str::<AuthorityStatusDocument>(text) {
+        Ok(registry) => registry,
+        Err(error) => return vec![format!("authority binding registry is malformed: {error}")],
+    };
+    let expected = SELF_CORRECTION_DOCUMENT;
+    let mut errors = Vec::new();
+    if registry.current_method != expected {
+        errors.push(format!("authority binding current_method must be '{expected}'"));
+    }
+    let matches =
+        registry.documents.iter().filter(|entry| entry.path == expected).collect::<Vec<_>>();
+    if matches.len() != 1 {
+        errors.push(format!(
+            "authority binding requires exactly one current '{expected}' document row"
+        ));
+    } else if matches.first().is_none_or(|entry| entry.status != "current") {
+        errors.push(format!("authority binding document '{expected}' must have status 'current'"));
     }
     errors
 }
@@ -2562,6 +2618,109 @@ mod tests {
                 "malformed canonical section did not trigger {expected}"
             );
         }
+        Ok(())
+    }
+
+    #[test]
+    fn authority_binding_requires_one_current_canonical_method() -> anyhow::Result<()> {
+        let valid = "current_method = \"docs/agents/DEVELOPMENT_METHOD.md\"\n\n[[documents]]\npath = \"docs/agents/DEVELOPMENT_METHOD.md\"\nstatus = \"current\"\n";
+        anyhow::ensure!(
+            super::authority_binding_errors_from_text(valid).is_empty(),
+            "valid authority binding rejected"
+        );
+        for (text, expected) in [
+            (valid.replacen("DEVELOPMENT_METHOD.md", "OLD_METHOD.md", 1), "current_method"),
+            (valid.replace("status = \"current\"", "status = \"historical\""), "status 'current'"),
+            (valid.replace("current_method =", "current_method = ["), "malformed"),
+            (
+                format!(
+                    "current_method = \"{}\"\ndocuments = []\n",
+                    super::SELF_CORRECTION_DOCUMENT
+                ),
+                "exactly one current",
+            ),
+            (String::new(), "malformed"),
+            (
+                format!(
+                    "{valid}\n[[documents]]\npath = \"docs/agents/DEVELOPMENT_METHOD.md\"\nstatus = \"current\"\n"
+                ),
+                "exactly one current",
+            ),
+        ] {
+            anyhow::ensure!(
+                super::authority_binding_errors_from_text(&text)
+                    .iter()
+                    .any(|error| error.contains(expected)),
+                "authority negative did not trigger {expected}: {text}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn focused_guidance_checks_keep_local_and_shared_boundaries() -> anyhow::Result<()> {
+        let fixture = tempfile::tempdir()?;
+        let root = fixture.path();
+        std::fs::create_dir_all(root.join("docs/agents"))?;
+        let canonical = include_str!("../../../docs/agents/DEVELOPMENT_METHOD.md");
+        let registry = include_str!("../../../docs/agents/authority_status.toml");
+        std::fs::write(root.join(super::SELF_CORRECTION_DOCUMENT), canonical)?;
+        std::fs::write(root.join("docs/agents/authority_status.toml"), registry)?;
+        for front_door in ["AGENTS.md", "CLAUDE.md"] {
+            std::fs::write(root.join(front_door), super::SELF_CORRECTION_REFERENCE)?;
+        }
+        for provider in [".agents/skills", ".claude/skills"] {
+            for skill in super::SELF_CORRECTION_SKILLS {
+                let directory = root.join(provider).join(skill);
+                std::fs::create_dir_all(&directory)?;
+                std::fs::write(directory.join("SKILL.md"), super::SELF_CORRECTION_REFERENCE)?;
+            }
+        }
+        anyhow::ensure!(
+            super::check_self_correction_guidance(root, None).is_empty(),
+            "valid fixture rejected"
+        );
+        let unrelated = ".agents/skills/build-candidate/SKILL.md";
+        std::fs::write(
+            root.join(unrelated),
+            format!(
+                "{}\n\ntell the user rather than going back and correcting your bug",
+                super::SELF_CORRECTION_REFERENCE
+            ),
+        )?;
+        anyhow::ensure!(
+            super::check_self_correction_guidance(root, Some("deliver-pr")).is_empty(),
+            "unrelated skill contaminated the focused guidance check"
+        );
+        for selected in [None, Some("build-candidate")] {
+            anyhow::ensure!(
+                super::check_self_correction_guidance(root, selected)
+                    .iter()
+                    .any(|error| error.contains(unrelated)),
+                "selected/full check missed its bad guidance"
+            );
+        }
+        std::fs::write(
+            root.join(super::SELF_CORRECTION_DOCUMENT),
+            "## Self-authored correction and disclosure\nApproval is always required.\n",
+        )?;
+        anyhow::ensure!(
+            super::check_self_correction_guidance(root, Some("deliver-pr"))
+                .iter()
+                .any(|error| error.contains("missing correction clause")),
+            "focused check bypassed shared canonical obligations"
+        );
+        std::fs::write(root.join(super::SELF_CORRECTION_DOCUMENT), canonical)?;
+        std::fs::write(
+            root.join("docs/agents/authority_status.toml"),
+            registry.replacen("current_method =", "previous_method =", 1),
+        )?;
+        anyhow::ensure!(
+            super::check_self_correction_guidance(root, Some("deliver-pr"))
+                .iter()
+                .any(|error| error.contains("authority binding")),
+            "focused check bypassed shared authority binding"
+        );
         Ok(())
     }
 }
