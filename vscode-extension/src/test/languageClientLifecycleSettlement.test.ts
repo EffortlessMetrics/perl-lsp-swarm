@@ -451,14 +451,18 @@ describe('LanguageClientLifecycle client cleanup admission', () => {
     client.serverProcess = child;
     const captured: unknown[] = [];
     const clients: FakeClient[] = [];
+    let startAttempts = 0;
     const controller = new LanguageClientLifecycle<FakeClient>({
       resolveServerPath: async () => '/server/perllsp',
       createClient: () => {
-        clients.push(client);
-        return client;
+        const next = clients.length === 0 ? client : new FakeClient();
+        clients.push(next);
+        return next;
       },
       onStarted: async () => {
-        throw startupError;
+        if (startAttempts++ === 0) {
+          throw startupError;
+        }
       },
       captureStopWitness: (startedClient) => {
         const witness = serverProcessOf(startedClient);
@@ -477,5 +481,37 @@ describe('LanguageClientLifecycle client cleanup admission', () => {
     expect(child.exited).toBe(false);
     expect(clients).toHaveLength(1);
     await expect(controller.start()).rejects.toMatchObject({ reason: 'cleanup-incomplete' });
+
+    child.exit();
+    const replacement = await controller.restart();
+    expect(replacement).toBe(clients[1]);
+    expect(clients).toHaveLength(2);
+  });
+
+  test('startup cleanup does not recover a process subject when client disposal failed', async () => {
+    const startupError = new Error('simulated startup failure');
+    const child = new FakeServerProcess();
+    const client = new FakeClient();
+    client.serverProcess = child;
+    client.dispose.mockRejectedValue(new Error('simulated dispose failure'));
+    const clients: FakeClient[] = [];
+    const controller = new LanguageClientLifecycle<FakeClient>({
+      resolveServerPath: async () => '/server/perllsp',
+      createClient: () => {
+        clients.push(client);
+        return client;
+      },
+      onStarted: async () => {
+        throw startupError;
+      },
+      captureStopWitness: (startedClient) => serverProcessOf(startedClient),
+      isClientTerminal: (_startedClient, witness) =>
+        awaitServerProcessExit(witness as ServerProcessLike | undefined, 10, () => true),
+    });
+
+    await expect(controller.start()).rejects.toMatchObject({ reason: 'cleanup-incomplete' });
+    child.exit();
+    await expect(controller.restart()).rejects.toMatchObject({ reason: 'cleanup-incomplete' });
+    expect(clients).toHaveLength(1);
   });
 });

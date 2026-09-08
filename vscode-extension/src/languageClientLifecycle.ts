@@ -103,6 +103,11 @@ interface CleanupResult {
   readonly clientCleanupComplete: boolean;
 }
 
+interface BlockedProcessCleanup<TClient> {
+  readonly client: TClient;
+  readonly witness: unknown;
+}
+
 interface BoundedOperationResult {
   readonly completed: boolean;
   readonly error: unknown;
@@ -136,6 +141,7 @@ export class LanguageClientLifecycle<TClient extends LifecycleClient<TEvent>, TE
   private restartPromise: Promise<TClient | undefined> | undefined;
   private stopPromise: Promise<void> | undefined;
   private replacementBlockedError: unknown | undefined;
+  private blockedProcessCleanup: BlockedProcessCleanup<TClient> | undefined;
   private readonly cleanupPromises = new WeakMap<TClient, Promise<CleanupResult>>();
 
   constructor(
@@ -336,9 +342,11 @@ export class LanguageClientLifecycle<TClient extends LifecycleClient<TEvent>, TE
 
     const cleanup = active
       ? await this.shutdown(active)
-      : this.replacementBlockedError !== undefined
-        ? { error: this.replacementBlockedError, clientCleanupComplete: false }
-        : { error: undefined, clientCleanupComplete: true };
+      : this.blockedProcessCleanup
+        ? await this.retryBlockedProcessCleanup()
+        : this.replacementBlockedError !== undefined
+          ? { error: this.replacementBlockedError, clientCleanupComplete: false }
+          : { error: undefined, clientCleanupComplete: true };
     if (!cleanup.clientCleanupComplete) {
       this.recordCleanupResult(cleanup);
       this.error = this.replacementBlockedFailure(cleanup.error);
@@ -426,13 +434,13 @@ export class LanguageClientLifecycle<TClient extends LifecycleClient<TEvent>, TE
     }
 
     let firstError: unknown = undefined;
-    let clientCleanupComplete = true;
+    let clientCallsComplete = true;
     if (active.listener) {
       try {
         active.listener.dispose();
       } catch (error: unknown) {
         firstError = error;
-        clientCleanupComplete = false;
+        clientCallsComplete = false;
       }
       active.listener = undefined;
     }
@@ -444,16 +452,57 @@ export class LanguageClientLifecycle<TClient extends LifecycleClient<TEvent>, TE
       : stopResult.completed;
     if (!stopCleanupComplete) {
       firstError ??= stopResult.error;
-      clientCleanupComplete = false;
+      if (!stopResult.completed) {
+        clientCallsComplete = false;
+      }
     }
 
     const disposeResult = await this.runBounded('dispose', () => active.client.dispose());
     if (!disposeResult.completed) {
       firstError ??= disposeResult.error;
-      clientCleanupComplete = false;
+      clientCallsComplete = false;
     }
 
-    return { error: firstError, clientCleanupComplete };
+    if (
+      clientCallsComplete &&
+      this.hooks.isClientTerminal &&
+      !stopCleanupComplete &&
+      witness !== undefined
+    ) {
+      // The stop/dispose episode is complete; only the exact captured process
+      // remains pending. A later explicit stop/restart may re-observe this
+      // subject without retrying client calls that may still be in flight.
+      this.blockedProcessCleanup = { client: active.client, witness };
+    }
+
+    return {
+      error: firstError,
+      clientCleanupComplete: clientCallsComplete && stopCleanupComplete,
+    };
+  }
+
+  private async retryBlockedProcessCleanup(): Promise<CleanupResult> {
+    const blocked = this.blockedProcessCleanup;
+    if (!blocked || !this.hooks.isClientTerminal) {
+      return {
+        error: this.replacementBlockedError,
+        clientCleanupComplete: false,
+      };
+    }
+
+    let terminal = false;
+    const result = await this.runBounded('terminal check', async () => {
+      terminal = (await this.hooks.isClientTerminal!(blocked.client, blocked.witness)) === true;
+    });
+    if (!result.completed || !terminal) {
+      return {
+        error: result.error,
+        clientCleanupComplete: false,
+      };
+    }
+
+    this.blockedProcessCleanup = undefined;
+    return { error: undefined, clientCleanupComplete: true };
   }
 
   private captureStopWitness(client: TClient): unknown {
