@@ -4,6 +4,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { test } from 'node:test';
+import Mocha from 'mocha';
 import {
   assertCandidateBoundInstallSource,
   assertCandidateBoundPlatform,
@@ -29,6 +30,12 @@ void test('published smoke rejects a recovery leg without its failure selector',
 void test('published smoke run rejects the invalid recovery selector before loading a suite', async () => {
   const previousFailure = process.env.PERL_LSP_HEALTH_CHECK_FAILURE_SMOKE;
   const previousRecovery = process.env.PERL_LSP_HEALTH_CHECK_RECOVERY_SMOKE;
+  const originalAddFile = Mocha.prototype.addFile;
+  let suiteLoadCalls = 0;
+  Mocha.prototype.addFile = function () {
+    suiteLoadCalls += 1;
+    return this;
+  };
   try {
     delete process.env.PERL_LSP_HEALTH_CHECK_FAILURE_SMOKE;
     process.env.PERL_LSP_HEALTH_CHECK_RECOVERY_SMOKE = '1';
@@ -36,7 +43,9 @@ void test('published smoke run rejects the invalid recovery selector before load
       runPublishedSuite(),
       /PERL_LSP_HEALTH_CHECK_RECOVERY_SMOKE requires PERL_LSP_HEALTH_CHECK_FAILURE_SMOKE=1/,
     );
+    assert.equal(suiteLoadCalls, 0);
   } finally {
+    Mocha.prototype.addFile = originalAddFile;
     if (previousFailure === undefined) {
       delete process.env.PERL_LSP_HEALTH_CHECK_FAILURE_SMOKE;
     } else {

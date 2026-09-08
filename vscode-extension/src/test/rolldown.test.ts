@@ -57,6 +57,7 @@ describe('Rolldown bundle configuration', () => {
       const body = patched.slice(start, end);
       if ((body.match(/return this\\._onStart;/g) || []).length !== 1) process.exit(14);
       if ((body.match(/return promise;/g) || []).length !== 1) process.exit(15);
+      if (body.indexOf('return this._onStart;') > body.indexOf('return promise;')) process.exit(16);
       if (patchPinnedLanguageClientSource(source, 'other-module/client.js') !== null) process.exit(12);
       let rejected = false;
       try { patchPinnedLanguageClientSource(source + '\\n', sourcePath); } catch { rejected = true; }
