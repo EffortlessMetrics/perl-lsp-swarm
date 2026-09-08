@@ -2876,19 +2876,20 @@ pub fn run_refresh(output: &Path, from_fixture: Option<&Path>) -> Result<()> {
     let loaded = load_manifest()?;
     let root = project_root()?;
     let binding = tree_binding("HEAD")?;
+    let tree_spec = format!("{}^{{tree}}", binding.tree_head);
     let tree_oid = std::process::Command::new("git")
-        .args(["rev-parse", "HEAD^{tree}"])
+        .args(["rev-parse", tree_spec.as_str()])
         .current_dir(&root)
         .output()
         .with_context(|| format!("failed to resolve HEAD tree in {}", root.display()))?;
     if !tree_oid.status.success() {
         bail!(
-            "git rev-parse HEAD^{{tree}} failed: {}",
+            "git rev-parse captured HEAD^{{tree}} failed: {}",
             String::from_utf8_lossy(&tree_oid.stderr).trim()
         );
     }
     let tree_oid = String::from_utf8(tree_oid.stdout)
-        .with_context(|| "git rev-parse HEAD^{tree} produced non-UTF-8 output")?
+        .with_context(|| "git rev-parse captured HEAD^{tree} produced non-UTF-8 output")?
         .trim()
         .to_string();
     let source = RepoTreeSource::from_root_at_revision(root, tree_oid)?;
