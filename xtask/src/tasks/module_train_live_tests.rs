@@ -151,6 +151,9 @@ fn a_dirty_probe_fails_closed_even_when_heads_agree() -> Result<()> {
     {
         color_eyre::eyre::bail!("dirty probe must fail closed even when HEADs agree");
     }
+    if node(&snapshot, "M07A")?.action != "NOT_PROVEN" {
+        color_eyre::eyre::bail!("dirty probe must gate tree-dependent START actions");
+    }
     Ok(())
 }
 
@@ -189,12 +192,17 @@ fn an_unknown_probed_head_fails_closed() -> Result<()> {
             .all(|node| node.limitations.iter().any(|l| l == PROBED_FROM_A_DIFFERENT_TREE)),
         "an unknown probed head must not read as agreement"
     );
+    if node(&snapshot, "M07A")?.action != "NOT_PROVEN" {
+        color_eyre::eyre::bail!("an unknown probed head must gate tree-dependent START actions");
+    }
     Ok(())
 }
 
 #[test]
 fn mismatched_tree_gates_start_but_keeps_candidate_action() -> Result<()> {
-    let snapshot = normalize_text(CORPUS_FIXTURE)?;
+    let mut mismatched_raw = raw_from_text(CLEAN_SURFACE_FIXTURE)?;
+    mismatched_raw.git_local.head = Some("f".repeat(40));
+    let snapshot = normalize_raw(&mismatched_raw)?;
     let start_leaf = node(&snapshot, "M07A")?;
     if start_leaf.action != "NOT_PROVEN"
         || !start_leaf
@@ -208,7 +216,8 @@ fn mismatched_tree_gates_start_but_keeps_candidate_action() -> Result<()> {
             start_leaf.limitations
         );
     }
-    let candidate = node(&snapshot, "M01")?;
+    let candidate_snapshot = normalize_text(CORPUS_FIXTURE)?;
+    let candidate = node(&candidate_snapshot, "M01")?;
     if candidate.action != "REVIEW" {
         color_eyre::eyre::bail!(
             "a candidate-only review action should remain actionable: {}",
@@ -725,7 +734,7 @@ fn snapshot_validation_detects_tampering() -> Result<()> {
         .iter()
         .position(|node| node.node_id == "M07A")
         .ok_or_else(|| color_eyre::eyre::eyre!("M07A present"))?;
-    drift.semantic.nodes[index].action = "MERGE_READY_RECOMMENDATION".to_string();
+    drift.semantic.nodes[index].action = "START".to_string();
     let semantic_value = serde_json::to_value(&drift.semantic)?;
     drift.semantic_digest = canonical_digest(&semantic_value)?;
     let bytes = serde_json::to_vec(&drift)?;
