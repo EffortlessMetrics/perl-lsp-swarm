@@ -1225,7 +1225,7 @@ fn render_json(doc: &Value, digest: &str) -> Result<String> {
 }
 
 fn escape_markdown_table_cell(value: &str) -> String {
-    value.replace('\\', "\\\\").replace('|', "\\|").replace("\r\n", " ").replace('\r', " ").replace('\n', " ")
+    value.replace('\\', "\\\\").replace('|', "\\|").replace(['\r', '\n'], " ")
 }
 
 /// Reviewer projection: per-phase tables, writer classes, lineages.
