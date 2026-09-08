@@ -96,6 +96,7 @@ type TestResult = Result<(), Box<dyn std::error::Error>>;
 const E2E_FIXTURES: &[&str] = &[
     "package_basic",
     "imports_exports",
+    "imports_exports_producer",
     "qualified_refs",
     "same_bare_subs",
     "role_method",
@@ -304,7 +305,7 @@ fn recovery_fixtures_report_their_expected_error_boundary() -> TestResult {
                 expectation.id
             );
             let missing_region_lines: Vec<_> =
-                expected_region.clone().filter(|line| !error_lines.contains(&line)).collect();
+                expected_region.clone().filter(|line| !error_lines.contains(line)).collect();
             assert!(
                 missing_region_lines.is_empty(),
                 "recovery fixture '{}' missing error evidence on declared region lines {:?}: observed {:?} ({})",
