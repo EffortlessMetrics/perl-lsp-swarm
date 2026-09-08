@@ -1,6 +1,4 @@
-import * as vscode from 'vscode';
 import { probeServerVersion, type ServerVersionProbeBinding } from '../serverVersionProbe';
-import { registerSupportCommandGroup } from '../supportCommandGroup';
 
 type VersionCallback = (error: Error | null, stdout: string) => void;
 
@@ -14,11 +12,7 @@ function deferredExecutor() {
   return { execute, callback: () => callback };
 }
 
-describe('registered Report Issue server-version probe', () => {
-  beforeEach(() => {
-    jest.clearAllMocks();
-  });
-
+describe('server-version probe freshness helper', () => {
   test.each([
     ['the lifecycle path changes', { serverPath: '/new/perllsp', generation: 4 }],
     [
@@ -30,14 +24,9 @@ describe('registered Report Issue server-version probe', () => {
     let binding: ServerVersionProbeBinding = { serverPath: '/old/perllsp', generation: 4 };
     const deferred = deferredExecutor();
     let observed: string | undefined;
-    const disposables = registerSupportCommandGroup({
-      reportIssue: async () => {
-        observed = await probeServerVersion(() => binding, deferred.execute);
-      },
+    const command = probeServerVersion(() => binding, deferred.execute).then((result) => {
+      observed = result;
     });
-
-    const command = vscode.commands.executeCommand('perl-lsp.reportIssue');
-    await Promise.resolve();
     expect(deferred.execute).toHaveBeenCalledWith(
       '/old/perllsp',
       ['--version'],
@@ -50,26 +39,19 @@ describe('registered Report Issue server-version probe', () => {
     await command;
 
     expect(observed).toBe('unavailable');
-    disposables.forEach((disposable) => disposable.dispose());
   });
 
   test('keeps a successful result for the captured lifecycle identity', async () => {
     const binding = { serverPath: '/current/perllsp', generation: 7 };
     const deferred = deferredExecutor();
     let observed: string | undefined;
-    const disposables = registerSupportCommandGroup({
-      reportIssue: async () => {
-        observed = await probeServerVersion(() => binding, deferred.execute);
-      },
+    const command = probeServerVersion(() => binding, deferred.execute).then((result) => {
+      observed = result;
     });
-
-    const command = vscode.commands.executeCommand('perl-lsp.reportIssue');
-    await Promise.resolve();
     deferred.callback()?.(null, 'perllsp 0.17.0\nperllsp extra\n');
     await command;
 
     expect(observed).toBe('perllsp 0.17.0');
-    disposables.forEach((disposable) => disposable.dispose());
   });
 
   test.each([
