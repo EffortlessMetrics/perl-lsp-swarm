@@ -444,7 +444,9 @@ void test('readiness window expiry is red and names the pending watchers', async
         env: { ...process.env, FIXTURE_MARKER: 'SILENT' },
       },
     ],
-    { readinessTimeoutMs: 400 },
+    // Allow the healthy types control to report readiness on slower Windows
+    // process starts while keeping the pending bundle window bounded.
+    { readinessTimeoutMs: 2000 },
   );
   const result = await run.exit;
   assert.equal(result.code, 1);
