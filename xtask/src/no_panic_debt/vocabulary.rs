@@ -222,3 +222,53 @@ pub(crate) fn macro_family(name: &str) -> Option<&'static str> {
         _ => None,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn method_and_macro_families_cover_every_match_arm() {
+        assert_eq!(method_family("unwrap"), Some("unwrap"));
+        assert_eq!(method_family("unwrap_err"), Some("unwrap_err"));
+        assert_eq!(method_family("expect"), Some("expect"));
+        assert_eq!(method_family("expect_err"), Some("expect_err"));
+        assert_eq!(method_family("ok_or"), None);
+        assert_eq!(macro_family("panic"), Some("panic!"));
+        assert_eq!(macro_family("todo"), Some("todo!"));
+        assert_eq!(macro_family("unimplemented"), Some("unimplemented!"));
+        assert_eq!(macro_family("dbg"), Some("dbg!"));
+        assert_eq!(macro_family("unreachable"), Some("unreachable!"));
+        assert_eq!(macro_family("assert"), None);
+        assert_eq!(source_forms("clippy::unwrap_used"), UNWRAP_FORMS);
+        assert_eq!(source_forms("clippy::expect_used"), EXPECT_FORMS);
+        assert_eq!(source_forms("clippy::panic"), PANIC_FORMS);
+        assert_eq!(source_forms("clippy::todo"), TODO_FORMS);
+        assert_eq!(source_forms("clippy::unimplemented"), UNIMPLEMENTED_FORMS);
+        assert_eq!(source_forms("clippy::dbg_macro"), DBG_FORMS);
+        assert_eq!(source_forms("clippy::unreachable"), UNREACHABLE_FORMS);
+        assert!(source_forms("clippy::indexing_slicing").is_empty());
+    }
+
+    #[test]
+    fn missing_ledger_and_catalog_are_not_proven() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let vocabulary = load(dir.path(), None, None)?;
+        assert!(
+            vocabulary.instruments.iter().any(|instrument| {
+                instrument.kind == "lint_vocabulary"
+                    && instrument.status == InstrumentStatus::NotProven
+            }),
+            "missing ledger must be not_proven: {:?}",
+            vocabulary.instruments
+        );
+        let (digests, instruments) = digest_paths(dir.path(), None, None);
+        assert!(
+            digests.is_empty()
+                || instruments
+                    .iter()
+                    .any(|instrument| { instrument.status == InstrumentStatus::NotProven })
+        );
+        Ok(())
+    }
+}

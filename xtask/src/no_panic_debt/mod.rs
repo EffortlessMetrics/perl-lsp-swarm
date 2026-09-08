@@ -168,3 +168,18 @@ pub(crate) fn normalize_path(path: &Path, root: &Path) -> String {
 pub(crate) fn read_to_string(path: &Path) -> Result<String> {
     fs::read_to_string(path).map_err(|err| eyre!("reading {}: {err}", path.display()))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_artifact_paths_and_inventory_request_are_named() {
+        let request = InventoryRequest { root: Path::new("."), ..InventoryRequest::default() };
+        assert_eq!(DEFAULT_JSON_PATH, "target/policy/test_panic_family_debt.v1.json");
+        assert_eq!(DEFAULT_MARKDOWN_PATH, "target/policy/test_panic_family_debt.v1.md");
+        assert!(request.registry_path().ends_with("ci/panic_test_identities.json"));
+        assert_eq!(normalize_path(Path::new("/tmp/a/b.rs"), Path::new("/tmp/a")), "b.rs");
+        assert_eq!(sha256_hex(b"abc").len(), 64);
+    }
+}

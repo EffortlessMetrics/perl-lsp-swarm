@@ -48,6 +48,19 @@ fn run_cargo_metadata_with(manifest_path: Option<&Path>, no_deps: bool) -> Resul
     Ok(output.stdout)
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn run_cargo_metadata_at_reads_an_explicit_manifest() -> Result<()> {
+        let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
+        let raw = run_cargo_metadata_at(&manifest, true)?;
+        assert!(raw.starts_with(b"{"), "cargo metadata must return JSON");
+        Ok(())
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Publish allowlist helpers (shared by publish_closure, count_ratchet,
 // and publish_manifest_check)

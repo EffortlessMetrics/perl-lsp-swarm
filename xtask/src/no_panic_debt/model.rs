@@ -303,3 +303,185 @@ pub(crate) enum RegistryState {
     Active,
     Retired,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeSet;
+    use std::path::Path;
+
+    #[test]
+    fn public_projection_types_round_trip_identity_and_status_names() {
+        let request = InventoryRequest {
+            root: Path::new("."),
+            registry_path: None,
+            lint_ledger_path: None,
+            lint_catalog_dir: None,
+            clippy_observation: None,
+            owner_state: None,
+            repository_commit: Some("test".to_string()),
+        };
+        assert!(request.repository_commit.as_deref() == Some("test"));
+        let observation = ClippyObservation {
+            targets: vec![ClippyTargetObservation {
+                package: "demo".to_string(),
+                target: "lib".to_string(),
+                status: ClippyTargetStatus::Ok,
+            }],
+        };
+        assert_eq!(observation.targets[0].status, ClippyTargetStatus::Ok);
+        let _ = ClippyTargetStatus::Aborted;
+        let _ = ClippyTargetStatus::Missing;
+        let owners = OwnerState { closed_or_missing: ["#13397".to_string()].into_iter().collect() };
+        assert!(owners.closed_or_missing.contains("#13397"));
+        assert_eq!(TargetKind::UnitTest.as_str(), "unit_test");
+        assert_eq!(TargetKind::IntegrationTest.as_str(), "integration_test");
+        assert_eq!(TargetKind::Example.as_str(), "example");
+        assert_eq!(TargetKind::Bench.as_str(), "bench");
+        assert_eq!(TargetKind::Build.as_str(), "build");
+        assert_eq!(TargetKind::Unknown.as_str(), "unknown");
+        assert_eq!(DebtStatus::DirectDebt.as_str(), "direct_debt");
+        assert_eq!(DebtStatus::IntentionalExactException.as_str(), "intentional_exact_exception");
+        assert_eq!(DebtStatus::SelectedForConversion.as_str(), "selected_for_conversion");
+        assert_eq!(DebtStatus::ConvertedAbsent.as_str(), "converted_absent");
+        assert_eq!(DebtStatus::StaleRegistry.as_str(), "stale_registry");
+        assert_eq!(DebtStatus::StaleSourceDeclaration.as_str(), "stale_source_declaration");
+        assert_eq!(DebtStatus::StaleOwner.as_str(), "stale_owner");
+        assert_eq!(DebtStatus::Unowned.as_str(), "unowned");
+        assert_eq!(DebtStatus::InstrumentNotProven.as_str(), "instrument_not_proven");
+        assert!(DebtStatus::ConvertedAbsent.is_green());
+        assert!(!DebtStatus::DirectDebt.is_green());
+        let _ = InstrumentStatus::Ok;
+        let instrument = Instrument {
+            kind: "panic_registry".to_string(),
+            subject: "ci/panic_test_identities.json".to_string(),
+            status: InstrumentStatus::NotProven,
+            detail: "missing".to_string(),
+        };
+        let digest = SourceDigest {
+            path: "policy/clippy-lints.toml".to_string(),
+            sha256: "abc".to_string(),
+        };
+        let package = PackageRecord {
+            name: "demo".to_string(),
+            manifest: "crates/demo/Cargo.toml".to_string(),
+            features: vec!["need-me".to_string()],
+        };
+        let file = FileRecord {
+            package: "demo".to_string(),
+            target_kind: TargetKind::IntegrationTest,
+            path: "crates/demo/tests/known.rs".to_string(),
+            target_name: "known".to_string(),
+            feature: None,
+            required_features: Vec::new(),
+            platform: None,
+        };
+        let entry = Entrypoint {
+            package: "demo".to_string(),
+            target_kind: TargetKind::IntegrationTest,
+            path: "crates/demo/tests/known.rs".to_string(),
+            name: "known_panic".to_string(),
+            feature: None,
+            platform: None,
+        };
+        let population =
+            Population { packages: vec![package], files: vec![file], entrypoints: vec![entry] };
+        let row = DebtRow {
+            kind: "site".to_string(),
+            package: "demo".to_string(),
+            target_kind: TargetKind::IntegrationTest,
+            path: "crates/demo/tests/known.rs".to_string(),
+            entrypoint: "known_panic".to_string(),
+            site_family: "panic!".to_string(),
+            source_identity: "panic!(\"known\")".to_string(),
+            selector_identity: "invocation:abc:occurrence:1".to_string(),
+            declaration_identity: String::new(),
+            declaration_scope: String::new(),
+            registry_relation: "none".to_string(),
+            owner: "#13397".to_string(),
+            status: DebtStatus::DirectDebt,
+            proof_requirement: "source-scan".to_string(),
+            limitations: Vec::new(),
+        };
+        let counts = DerivedCounts {
+            files: 1,
+            entrypoints: 1,
+            rows: 1,
+            unowned: 0,
+            stale_registry: 0,
+            instrument_not_proven: 1,
+            observation_complete: false,
+            by_family: vec![("panic!".to_string(), 1)],
+            by_status: vec![("direct_debt".to_string(), 1)],
+        };
+        let inventory = Inventory {
+            schema: SCHEMA.to_string(),
+            producer: PRODUCER.to_string(),
+            repository_commit: "test".to_string(),
+            digests: vec![digest],
+            instruments: vec![instrument],
+            population,
+            rows: vec![row],
+            counts,
+            limitations: vec!["macro_test".to_string()],
+        };
+        assert!(inventory.rows[0].identity_key().contains("panic!"));
+        let vocabulary = Vocabulary {
+            lints: BTreeSet::from(["clippy::unwrap_used".to_string()]),
+            method_families: BTreeSet::from(["unwrap"]),
+            macro_families: BTreeSet::from(["panic!"]),
+            instruments: Vec::new(),
+        };
+        let topology =
+            Topology { packages: Vec::new(), files: Vec::new(), instruments: Vec::new() };
+        let discovered = Discovered {
+            entrypoints: Vec::new(),
+            sites: vec![RawSite {
+                package: "demo".to_string(),
+                target_kind: TargetKind::IntegrationTest,
+                path: "crates/demo/tests/known.rs".to_string(),
+                entrypoint: "known_panic".to_string(),
+                family: "panic!".to_string(),
+                snippet: "panic!(\"known\")".to_string(),
+                line: 4,
+                column: 8,
+                feature: None,
+                platform: None,
+                covering_declaration: None,
+                covering_scope: None,
+                covering_owner: None,
+            }],
+            declarations: vec![RawDeclaration {
+                package: "demo".to_string(),
+                target_kind: TargetKind::IntegrationTest,
+                path: "crates/demo/tests/known.rs".to_string(),
+                entrypoint: "known_panic".to_string(),
+                lint: "clippy::unwrap_used".to_string(),
+                form: "allow".to_string(),
+                scope: "fn".to_string(),
+                owner: String::new(),
+                snippet: "allow(clippy::unwrap_used)".to_string(),
+                line: 1,
+            }],
+            instruments: Vec::new(),
+            covered_paths: BTreeSet::new(),
+        };
+        let key = RegistryKey {
+            path: "crates/demo/tests/known.rs".to_string(),
+            enclosing_test_or_function: "known_panic".to_string(),
+            macro_family: "panic!".to_string(),
+            normalized_snippet: "panic!(\"known\")".to_string(),
+            selector_identity: "invocation:abc:occurrence:1".to_string(),
+        };
+        let record = RegistryRecord {
+            key: key.clone(),
+            accepted_reason: "owner".to_string(),
+            state: RegistryState::Active,
+        };
+        assert_eq!(record.state, RegistryState::Active);
+        assert_eq!(vocabulary.lints.len(), 1);
+        assert!(topology.files.is_empty());
+        assert_eq!(discovered.sites.len(), 1);
+        let _ = request.root;
+    }
+}

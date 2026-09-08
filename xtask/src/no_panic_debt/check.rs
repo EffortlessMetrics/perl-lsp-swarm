@@ -189,3 +189,65 @@ fn load_inventory(path: &Path) -> Result<Inventory> {
     let raw = read_to_string(path)?;
     serde_json::from_str(&raw).map_err(|err| eyre!("parsing {}: {err}", path.display()))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::super::model::{
+        DerivedCounts, Instrument, InstrumentStatus, Inventory, PRODUCER, Population, SCHEMA,
+    };
+    use super::super::projection::canonical_json;
+    use super::{CheckRequest, check_inventory};
+    use color_eyre::eyre::Result;
+    use std::fs;
+
+    fn inventory_with_topology_gap() -> Inventory {
+        Inventory {
+            schema: SCHEMA.to_string(),
+            producer: PRODUCER.to_string(),
+            repository_commit: "test".to_string(),
+            digests: Vec::new(),
+            instruments: vec![Instrument {
+                kind: "test_topology".to_string(),
+                subject: "Cargo.toml".to_string(),
+                status: InstrumentStatus::NotProven,
+                detail: "workspace or package Cargo.toml missing".to_string(),
+            }],
+            population: Population::default(),
+            rows: Vec::new(),
+            counts: DerivedCounts {
+                files: 0,
+                entrypoints: 0,
+                rows: 0,
+                unowned: 0,
+                stale_registry: 0,
+                instrument_not_proven: 1,
+                observation_complete: false,
+                by_family: Vec::new(),
+                by_status: Vec::new(),
+            },
+            limitations: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn check_request_literal_fails_closed_on_unproven_topology() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let current = inventory_with_topology_gap();
+        let artifact = dir.path().join("artifact.json");
+        fs::write(&artifact, canonical_json(&current)?)?;
+        let request = CheckRequest {
+            root: dir.path(),
+            current: &current,
+            artifact: Some(&artifact),
+            baseline: None,
+        };
+        let result = check_inventory(request)?;
+        assert!(!result.ok, "unproven topology must not pass: {:?}", result.findings);
+        assert!(
+            result.findings.iter().any(|finding| finding.contains("test topology is not_proven")),
+            "topology finding omitted: {:?}",
+            result.findings
+        );
+        Ok(())
+    }
+}

@@ -362,4 +362,30 @@ required-features = ["need-me"]
             topology.files
         );
     }
+
+    #[test]
+    fn cargo_metadata_target_literals_preserve_required_features() {
+        let target = CargoTarget {
+            name: "gated".to_string(),
+            kind: vec!["test".to_string()],
+            src_path: "tests/gated.rs".to_string(),
+            test: true,
+            required_features: vec!["need-me".to_string()],
+        };
+        let package = CargoPackage {
+            name: "alpha".to_string(),
+            id: "alpha 0.0.0".to_string(),
+            manifest_path: "crates/alpha/Cargo.toml".to_string(),
+            features: BTreeMap::from([("need-me".to_string(), Vec::new())]),
+            targets: vec![target],
+        };
+        let metadata = CargoMetadata {
+            packages: vec![package],
+            workspace_members: vec!["alpha 0.0.0".to_string()],
+        };
+        let admitted: Vec<_> = admitted_targets(&metadata.packages[0]).collect();
+        assert_eq!(admitted.len(), 1);
+        assert_eq!(admitted[0].required_features, ["need-me"]);
+        assert_eq!(workspace_packages(&metadata).count(), 1);
+    }
 }

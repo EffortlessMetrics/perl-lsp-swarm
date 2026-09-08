@@ -802,3 +802,116 @@ fn outline_module_path(module_dir: &Path, node: &ItemMod) -> Option<PathBuf> {
 fn test_generating_macro(name: &str) -> bool {
     matches!(name, "proptest")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::super::model::TargetKind;
+    use super::*;
+
+    fn module_work(path: &str, treat_as_test: bool) -> ModuleWork {
+        ModuleWork {
+            path: PathBuf::from(path),
+            treat_as_test,
+            package: "demo".to_string(),
+            target_kind: TargetKind::UnitTest,
+            target_name: "demo".to_string(),
+            feature: None,
+            required_features: Vec::new(),
+            platform: None,
+        }
+    }
+
+    #[test]
+    fn rustc_child_module_dir_follows_lib_and_outline_files() {
+        assert_eq!(
+            rustc_child_module_dir(Path::new("crates/demo/src/lib.rs")),
+            PathBuf::from("crates/demo/src")
+        );
+        assert_eq!(
+            rustc_child_module_dir(Path::new("crates/demo/src/foo.rs")),
+            PathBuf::from("crates/demo/src/foo")
+        );
+        assert_eq!(
+            rustc_child_module_dir(Path::new("crates/demo/src/foo/mod.rs")),
+            PathBuf::from("crates/demo/src/foo")
+        );
+    }
+
+    #[test]
+    fn enqueue_module_or_treat_as_test_and_keeps_first_identity() {
+        let mut pending = BTreeMap::new();
+        enqueue_module(&mut pending, module_work("src/foo.rs", false));
+        enqueue_module(&mut pending, module_work("src/foo.rs", true));
+        let work = pending.get(&PathBuf::from("src/foo.rs"));
+        assert!(work.is_some_and(|item| item.treat_as_test && item.package == "demo"));
+        let scanned = ScannedFile {
+            entrypoints: Vec::new(),
+            sites: Vec::new(),
+            declarations: Vec::new(),
+            instruments: Vec::new(),
+            external_modules: vec![module_work("src/bar.rs", true)],
+        };
+        assert_eq!(scanned.external_modules.len(), 1);
+        let covering = Covering {
+            identity: "allow:clippy::unwrap_used".to_string(),
+            scope: "fn".to_string(),
+            owner: "#13397".to_string(),
+            lints: ["clippy::unwrap_used".to_string()].into_iter().collect(),
+        };
+        assert_eq!(covering.owner, "#13397");
+        assert!(test_generating_macro("proptest"));
+        assert!(!test_generating_macro("test"));
+        assert_eq!(family_lint("unwrap"), "clippy::unwrap_used");
+        assert_eq!(family_lint("expect"), "clippy::expect_used");
+        assert_eq!(family_lint("panic!"), "clippy::panic");
+        assert_eq!(family_lint("todo!"), "clippy::todo");
+        assert_eq!(family_lint("unimplemented!"), "clippy::unimplemented");
+        assert_eq!(family_lint("dbg!"), "clippy::dbg_macro");
+        assert_eq!(family_lint("unreachable!"), "clippy::unreachable");
+        assert!(family_lint("unknown").is_empty());
+    }
+
+    #[test]
+    fn cfg_attr_test_item_is_an_entrypoint_and_allow_is_not() -> color_eyre::eyre::Result<()> {
+        let test_item = syn::parse_file("#[cfg_attr(test, test)]\nfn t() {}")
+            .map_err(|err| color_eyre::eyre::eyre!("parse test item: {err}"))?;
+        let allow_item =
+            syn::parse_file("#[cfg_attr(test, allow(clippy::unwrap_used))]\nfn t() {}")
+                .map_err(|err| color_eyre::eyre::eyre!("parse allow item: {err}"))?;
+        let tokio_item = syn::parse_file("#[cfg_attr(test, tokio::test)]\nfn t() {}")
+            .map_err(|err| color_eyre::eyre::eyre!("parse tokio item: {err}"))?;
+        let any_cfg = syn::parse_file("#[cfg(any(test, feature = \"x\"))]\nfn t() {}")
+            .map_err(|err| color_eyre::eyre::eyre!("parse any cfg: {err}"))?;
+        let all_cfg = syn::parse_file("#[cfg(all(test, feature = \"x\"))]\nfn t() {}")
+            .map_err(|err| color_eyre::eyre::eyre!("parse all cfg: {err}"))?;
+        let test_attr = match test_item.items.as_slice() {
+            [syn::Item::Fn(func)] => func.attrs.first(),
+            _ => None,
+        }
+        .ok_or_else(|| color_eyre::eyre::eyre!("missing test attr"))?;
+        let allow_attr = match allow_item.items.as_slice() {
+            [syn::Item::Fn(func)] => func.attrs.first(),
+            _ => None,
+        }
+        .ok_or_else(|| color_eyre::eyre::eyre!("missing allow attr"))?;
+        let tokio_attr = match tokio_item.items.as_slice() {
+            [syn::Item::Fn(func)] => func.attrs.first(),
+            _ => None,
+        }
+        .ok_or_else(|| color_eyre::eyre::eyre!("missing tokio attr"))?;
+        assert!(is_test_attribute(test_attr));
+        assert!(!is_test_attribute(allow_attr));
+        assert!(is_test_attribute(tokio_attr));
+        let any_fn = match any_cfg.items.as_slice() {
+            [syn::Item::Fn(func)] => func,
+            _ => return Err(color_eyre::eyre::eyre!("missing any-cfg fn")),
+        };
+        let all_fn = match all_cfg.items.as_slice() {
+            [syn::Item::Fn(func)] => func,
+            _ => return Err(color_eyre::eyre::eyre!("missing all-cfg fn")),
+        };
+        assert!(!attrs_have_cfg_test(&any_fn.attrs));
+        assert!(attrs_have_cfg_test(&all_fn.attrs));
+        Ok(())
+    }
+}

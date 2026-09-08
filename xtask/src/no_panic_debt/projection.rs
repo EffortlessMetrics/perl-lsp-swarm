@@ -85,3 +85,65 @@ pub struct Delta {
 fn identities(inventory: &Inventory) -> BTreeSet<String> {
     inventory.rows.iter().map(|row| row.identity_key()).collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::super::model::{
+        DebtRow, DebtStatus, DerivedCounts, Inventory, PRODUCER, Population, SCHEMA, TargetKind,
+    };
+    use super::*;
+
+    fn empty_inventory() -> Inventory {
+        Inventory {
+            schema: SCHEMA.to_string(),
+            producer: PRODUCER.to_string(),
+            repository_commit: "base".to_string(),
+            digests: Vec::new(),
+            instruments: Vec::new(),
+            population: Population::default(),
+            rows: Vec::new(),
+            counts: DerivedCounts {
+                files: 0,
+                entrypoints: 0,
+                rows: 0,
+                unowned: 0,
+                stale_registry: 0,
+                instrument_not_proven: 0,
+                observation_complete: true,
+                by_family: Vec::new(),
+                by_status: Vec::new(),
+            },
+            limitations: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn semantic_delta_is_identity_not_count() {
+        let mut current = empty_inventory();
+        current.rows.push(DebtRow {
+            kind: "site".to_string(),
+            package: "demo".to_string(),
+            target_kind: TargetKind::IntegrationTest,
+            path: "tests/new.rs".to_string(),
+            entrypoint: "added".to_string(),
+            site_family: "unwrap".to_string(),
+            source_identity: "unwrap()".to_string(),
+            selector_identity: "invocation:1".to_string(),
+            declaration_identity: String::new(),
+            declaration_scope: String::new(),
+            registry_relation: "none".to_string(),
+            owner: String::new(),
+            status: DebtStatus::Unowned,
+            proof_requirement: "source-scan".to_string(),
+            limitations: Vec::new(),
+        });
+        let delta = semantic_delta(&empty_inventory(), &current);
+        assert_eq!(
+            delta,
+            Delta { added: vec![current.rows[0].identity_key()], removed: Vec::new() }
+        );
+        let human = render_human(&current);
+        assert!(human.contains("test_panic_family_debt.v1"));
+        assert!(canonical_json(&current).is_ok());
+    }
+}

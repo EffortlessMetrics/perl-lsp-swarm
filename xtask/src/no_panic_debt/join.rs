@@ -451,3 +451,116 @@ fn git_head(root: &Path) -> String {
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| "not_proven".to_string())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    fn site_json(reason: &str, state: &str) -> Value {
+        serde_json::json!({
+            "path": "tests/known.rs",
+            "enclosing_test_or_function": "known_panic",
+            "macro_family": "panic!",
+            "normalized_snippet": "panic!(\"known\")",
+            "selector_identity": "invocation:abc:occurrence:1",
+            "accepted_reason": reason,
+            "state": state
+        })
+    }
+
+    #[test]
+    fn unique_registry_identity_is_inserted() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("registry.json");
+        fs::write(
+            &path,
+            serde_json::json!({
+                "schema_version": 1,
+                "sites": [site_json("owner", "active")]
+            })
+            .to_string(),
+        )?;
+        let records = load_registry(&path)?;
+        assert_eq!(records.len(), 1);
+        let record = records.values().next().ok_or_else(|| eyre!("expected one record"))?;
+        assert_eq!(record.accepted_reason, "owner");
+        assert_eq!(record.state, RegistryState::Active);
+        Ok(())
+    }
+
+    #[test]
+    fn duplicate_registry_identities_fail_closed() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("registry.json");
+        fs::write(
+            &path,
+            serde_json::json!({
+                "schema_version": 1,
+                "sites": [site_json("first", "active"), site_json("second", "retired")]
+            })
+            .to_string(),
+        )?;
+        let err = load_registry(&path).err().ok_or_else(|| eyre!("duplicate must fail"))?;
+        assert!(
+            err.to_string().contains("duplicates identity"),
+            "duplicate identity must be named: {err}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn classify_site_uses_registry_owner_and_direct_debt_arms() {
+        let key = RegistryKey {
+            path: "tests/known.rs".to_string(),
+            enclosing_test_or_function: "known_panic".to_string(),
+            macro_family: "panic!".to_string(),
+            normalized_snippet: "panic!(\"known\")".to_string(),
+            selector_identity: "invocation:abc:occurrence:1".to_string(),
+        };
+        let active = RegistryRecord {
+            key: key.clone(),
+            accepted_reason: "owner".to_string(),
+            state: RegistryState::Active,
+        };
+        let retired = RegistryRecord { state: RegistryState::Retired, ..active.clone() };
+        assert_eq!(
+            classify_site(Some(&active), None, "owner"),
+            DebtStatus::IntentionalExactException
+        );
+        assert_eq!(classify_site(Some(&retired), None, "owner"), DebtStatus::StaleRegistry);
+        assert_eq!(classify_site(None, None, ""), DebtStatus::Unowned);
+        assert_eq!(classify_site(None, None, "#13397"), DebtStatus::DirectDebt);
+        let owners = super::super::model::OwnerState {
+            closed_or_missing: ["#13397".to_string()].into_iter().collect(),
+        };
+        assert_eq!(classify_site(None, Some(&owners), "#13397"), DebtStatus::StaleOwner);
+        assert_eq!(classify_declaration("", None), DebtStatus::Unowned);
+        assert_eq!(classify_declaration("#13397", None), DebtStatus::DirectDebt);
+        assert_eq!(classify_declaration("#13397", Some(&owners)), DebtStatus::StaleOwner);
+        let counts = derive_counts(
+            &Population::default(),
+            &[DebtRow {
+                kind: "site".to_string(),
+                package: "demo".to_string(),
+                target_kind: super::super::model::TargetKind::IntegrationTest,
+                path: "tests/known.rs".to_string(),
+                entrypoint: "known_panic".to_string(),
+                site_family: "panic!".to_string(),
+                source_identity: "panic!(\"known\")".to_string(),
+                selector_identity: "invocation:abc:occurrence:1".to_string(),
+                declaration_identity: String::new(),
+                declaration_scope: String::new(),
+                registry_relation: "none".to_string(),
+                owner: "#13397".to_string(),
+                status: DebtStatus::DirectDebt,
+                proof_requirement: "source-scan".to_string(),
+                limitations: Vec::new(),
+            }],
+            &[],
+        );
+        assert_eq!(counts.rows, 1);
+        assert_eq!(counts.files, 0);
+        assert!(counts.observation_complete);
+    }
+}
