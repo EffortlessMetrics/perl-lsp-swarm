@@ -1,15 +1,18 @@
 //! Hostile-configuration negative controls for the hermetic Git fixture
 //! contract (#13697).
 //!
-//! Each control plants one ambient-breaking Git configuration on the invoking
-//! machine's inheritance path and then exercises both harness generations over
+//! Each control plants one Git configuration in a fixture-owned inheritance
+//! path and then exercises both harness generations over
 //! identical fixture content, identity, and pinned timestamps:
 //!
-//! - the legacy path (raw `git` inheriting ambient configuration) must fail or
-//!   drift — it is the falsifier for the corresponding pin, so removing a
-//!   required pin re-opens the drift this file asserts against;
+//! - the legacy path (raw `git` inheriting only the planted configuration) must fail or
+//!   drift — it establishes that the planted input can affect a fixture;
 //! - the [`HermeticGit`] path must succeed and reproduce the raw-bytes object
 //!   identity deterministically.
+//! Local pins and environment isolation intentionally overlap. These controls
+//! prove their combined contract, not that each redundant pin is individually
+//! necessary. Bypassing environment application is the class-level falsifier:
+//! hooks/filters can then alter the protected content despite the local pins.
 //!
 //! Issue control mapping:
 //! 1. global `commit.gpgsign=true` -> [`hostile_global_signing_cannot_change_fixture_commits`]
@@ -26,20 +29,53 @@ use anyhow::{Context, Result, bail, ensure};
 use assert_cmd::Command as AssertCommand;
 use std::fs;
 use std::path::Path;
+#[cfg(windows)]
+use std::path::PathBuf;
 use std::process::Command as StdCommand;
 
 mod git_test_support;
 
-use git_test_support::{FIXTURE_TIMESTAMP, HermeticGit, config_path_value};
+use git_test_support::{FIXTURE_TIMESTAMP, HermeticGit, config_path_value, git_cmd_with_ambient};
 
-/// Runs a git command the way pre-#13697 fixtures did: ambient environment
-/// inherited, only the fixture-global configuration swapped for `global`.
-fn legacy_git(repo: &Path, args: &[&str], global: &Path) -> Result<String> {
+/// Retain the planted global configuration, while isolating unrelated host
+/// inputs. Unlike HermeticGit this does not override its signing, hooks,
+/// filters, attributes, or object-format settings.
+fn legacy_command(
+    repo: &Path,
+    args: &[&str],
+    global: &Path,
+) -> Result<(StdCommand, tempfile::TempDir)> {
+    let scope = tempfile::tempdir()?;
+    let empty_system = scope.path().join("system-config");
+    fs::write(&empty_system, "")?;
     let mut cmd = StdCommand::new("git");
     cmd.args(args).current_dir(repo);
+    for (key, _) in std::env::vars_os() {
+        if key.to_string_lossy().to_ascii_uppercase().starts_with("GIT_") {
+            cmd.env_remove(key);
+        }
+    }
+    for key in ["EDITOR", "VISUAL"] {
+        cmd.env_remove(key);
+    }
     cmd.env("GIT_CONFIG_GLOBAL", global)
+        .env("GIT_CONFIG_SYSTEM", &empty_system)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_ATTR_NOSYSTEM", "1")
+        .env("HOME", scope.path())
+        .env("XDG_CONFIG_HOME", scope.path())
+        .env("PROGRAMDATA", scope.path())
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("LC_ALL", "C")
+        .env("LANG", "C")
+        .env("TZ", "UTC")
         .env("GIT_AUTHOR_DATE", FIXTURE_TIMESTAMP)
         .env("GIT_COMMITTER_DATE", FIXTURE_TIMESTAMP);
+    Ok((cmd, scope))
+}
+
+fn legacy_git(repo: &Path, args: &[&str], global: &Path) -> Result<String> {
+    let (mut cmd, _scope) = legacy_command(repo, args, global)?;
     let output = cmd.output().with_context(|| format!("git {} failed to start", args.join(" ")))?;
     if !output.status.success() {
         bail!(
@@ -53,7 +89,7 @@ fn legacy_git(repo: &Path, args: &[&str], global: &Path) -> Result<String> {
 }
 
 /// Initializes a legacy (non-hermetic) repository that pins identity locally
-/// the way pre-#13697 fixtures did, but inherits everything else.
+/// the way pre-#13697 fixtures did, but inherits only the planted configuration.
 fn legacy_init(repo: &Path, global: &Path) -> Result<()> {
     fs::create_dir_all(repo)?;
     legacy_git(repo, &["init", "--initial-branch=main"], global)?;
@@ -93,14 +129,204 @@ fn hostile_global(dir: &Path, name: &str, body: &str) -> Result<std::path::PathB
 
 /// The canonical fixture commit through the hermetic harness. Returns the
 /// head commit and the raw-bytes blob identity of `tracked.txt`.
-fn hermetic_commit(hermetic: &HermeticGit, repo: &Path, content: &str) -> Result<(String, String)> {
-    hermetic.init_repo(repo)?;
+fn hermetic_commit(
+    hermetic: &HermeticGit,
+    repo: &Path,
+    content: &str,
+    hostile_global: &Path,
+) -> Result<(String, String)> {
+    let protected_git = |args: &[&str]| -> Result<()> {
+        // Start with the same isolated legacy environment and planted global
+        // input. The contract under test must replace it before execution.
+        let (mut command, _scope) = legacy_command(repo, args, hostile_global)?;
+        hermetic.apply_env(&mut command);
+        let output = command.output()?;
+        ensure!(
+            output.status.success(),
+            "protected git {} failed in {}: {}",
+            args.join(" "),
+            repo.display(),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        Ok(())
+    };
+    fs::create_dir_all(repo)?;
+    protected_git(&["init", "--initial-branch=main", "--object-format=sha1"])?;
+    hermetic.pin_repo_config(repo)?;
     let pinned = raw_blob_id(hermetic, repo, content)?;
     fs::write(repo.join("tracked.txt"), content)?;
-    hermetic.git(repo, &["add", "tracked.txt"])?;
-    hermetic.git(repo, &["commit", "-m", "hostile control subject"])?;
+    protected_git(&["add", "tracked.txt"])?;
+    protected_git(&["commit", "-m", "hostile control subject"])?;
     let head = hermetic.git(repo, &["rev-parse", "HEAD"])?;
     Ok((head, pinned))
+}
+
+#[test]
+fn free_git_command_blocks_home_and_xdg_attributes() -> Result<()> {
+    for use_xdg in [false, true] {
+        let tmp = tempfile::tempdir()?;
+        let home = tmp.path().join("home");
+        let xdg = tmp.path().join("xdg");
+        let attributes_dir = if use_xdg { xdg.join("git") } else { home.join(".config/git") };
+        fs::create_dir_all(&attributes_dir)?;
+        fs::write(attributes_dir.join("attributes"), "tracked.txt text\n")?;
+        let repo = tmp.path().join("repo");
+        let hermetic = HermeticGit::at(&tmp.path().join("pins"))?;
+        hermetic.init_repo(&repo)?;
+        let content = "one\r\ntwo\r\n";
+        let raw = raw_blob_id(&hermetic, &repo, content)?;
+        fs::write(repo.join("tracked.txt"), content)?;
+        let global = hostile_global(tmp.path(), "empty-global", "")?;
+
+        // First prove that this search path really supplies an attribute and
+        // changes staged bytes when the attributes pin is absent.
+        let (mut legacy, _scope) = legacy_command(&repo, &["add", "tracked.txt"], &global)?;
+        legacy.env("HOME", &home);
+        if use_xdg {
+            legacy.env("XDG_CONFIG_HOME", &xdg);
+        } else {
+            legacy.env_remove("XDG_CONFIG_HOME");
+        }
+        let output = legacy.output()?;
+        ensure!(output.status.success(), "legacy staging failed: {:?}", output);
+        let legacy_blob = hermetic.git(&repo, &["rev-parse", ":tracked.txt"])?;
+        ensure!(legacy_blob != raw, "planted user attributes did not change staged bytes");
+
+        let ambient = if use_xdg {
+            vec![("HOME", home.as_path()), ("XDG_CONFIG_HOME", xdg.as_path())]
+        } else {
+            // An empty value selects Git's HOME fallback without touching the
+            // parent process environment or depending on its XDG setting.
+            vec![("HOME", home.as_path()), ("XDG_CONFIG_HOME", Path::new(""))]
+        };
+        let attributes = git_cmd_with_ambient(
+            &["check-attr", "text", "--", "tracked.txt"],
+            Some(&repo),
+            &ambient,
+        )?;
+        ensure!(
+            String::from_utf8(attributes.stdout)?.trim() == "tracked.txt: text: unspecified",
+            "free command inherited the user attributes"
+        );
+        hermetic.git(&repo, &["update-index", "--force-remove", "tracked.txt"])?;
+        git_cmd_with_ambient(&["add", "tracked.txt"], Some(&repo), &ambient)?;
+        ensure!(
+            hermetic.git(&repo, &["rev-parse", ":tracked.txt"])? == raw,
+            "free command changed the raw staged content"
+        );
+    }
+    Ok(())
+}
+
+/// The Windows Git executable derives the system attributes path from its
+/// runtime prefix. Relocating only the executable lets this control plant a
+/// system attributes file under a temporary prefix without changing the
+/// machine-wide `etc/gitattributes`.
+#[cfg(windows)]
+#[test]
+fn relocated_git_system_attributes_are_scrubbed() -> Result<()> {
+    let tmp = tempfile::tempdir()?;
+    let exec_path = StdCommand::new("git").arg("--exec-path").output()?;
+    ensure!(exec_path.status.success(), "installed Git --exec-path probe failed");
+    let installed_exec = String::from_utf8(exec_path.stdout)?.trim().replace('/', "\\");
+    let installed_exec = Path::new(&installed_exec);
+    let installed_git = installed_exec.join("git.exe");
+    ensure!(installed_git.is_file(), "installed Git executable is missing");
+
+    let relocated_exec = tmp.path().join("mingw64/libexec/git-core");
+    fs::create_dir_all(&relocated_exec)?;
+    fs::copy(&installed_git, relocated_exec.join("git.exe"))?;
+    let system_attributes = tmp.path().join("etc/gitattributes");
+    fs::create_dir_all(system_attributes.parent().context("system attributes parent")?)?;
+    fs::write(&system_attributes, "tracked.txt text\n")?;
+
+    let repo = tmp.path().join("repo");
+    let hermetic = HermeticGit::at(&tmp.path().join("pins"))?;
+    hermetic.init_repo(&repo)?;
+    let content = "one\r\ntwo\r\n";
+    let raw = raw_blob_id(&hermetic, &repo, content)?;
+    fs::write(repo.join("tracked.txt"), content)?;
+
+    let original_mingw_bin =
+        installed_exec.parent().and_then(Path::parent).context("installed Git prefix")?.join("bin");
+    let child_path = format!(
+        "{};{};{}",
+        relocated_exec.display(),
+        original_mingw_bin.display(),
+        std::env::var_os("SystemRoot")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(r"C:\Windows"))
+            .join("System32")
+            .display(),
+    );
+    let empty_config = tmp.path().join("empty-config");
+    fs::write(&empty_config, "")?;
+
+    let command = |args: &[&str]| {
+        let mut command = StdCommand::new(relocated_exec.join("git.exe"));
+        command.args(args).current_dir(&repo);
+        for (key, _) in std::env::vars_os() {
+            if key.to_string_lossy().to_ascii_uppercase().starts_with("GIT_") {
+                command.env_remove(key);
+            }
+        }
+        for key in ["EDITOR", "VISUAL"] {
+            command.env_remove(key);
+        }
+        command
+            .env("PATH", &child_path)
+            .env("HOME", tmp.path())
+            .env("XDG_CONFIG_HOME", tmp.path())
+            .env("GIT_CONFIG_GLOBAL", &empty_config)
+            .env("GIT_CONFIG_SYSTEM", &empty_config)
+            .env("GIT_CONFIG_NOSYSTEM", "0")
+            .env("GIT_ATTR_NOSYSTEM", "0")
+            .env("GIT_CONFIG_COUNT", "1")
+            .env("GIT_CONFIG_KEY_0", "commit.gpgsign")
+            .env("GIT_CONFIG_VALUE_0", "true")
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .env("TZ", "UTC")
+            .env("LC_ALL", "C")
+            .env("LANG", "C");
+        command
+    };
+
+    let mut control = command(&["check-attr", "text", "--", "tracked.txt"]);
+    let control_attr = control.output()?;
+    ensure!(
+        control_attr.status.success()
+            && String::from_utf8(control_attr.stdout)?.trim() == "tracked.txt: text: set",
+        "relocated Git must observe the hostile system attribute: {}",
+        String::from_utf8_lossy(&control_attr.stderr)
+    );
+    let control_add = command(&["add", "tracked.txt"]).output()?;
+    ensure!(
+        control_add.status.success(),
+        "relocated Git control add failed: {}",
+        String::from_utf8_lossy(&control_add.stderr)
+    );
+    ensure!(hermetic.git(&repo, &["rev-parse", ":tracked.txt"])? != raw);
+
+    hermetic.git(&repo, &["update-index", "--force-remove", "tracked.txt"])?;
+    let mut protected = command(&["check-attr", "text", "--", "tracked.txt"]);
+    hermetic.apply_env(&mut protected);
+    let protected_attr = protected.output()?;
+    ensure!(
+        protected_attr.status.success()
+            && String::from_utf8(protected_attr.stdout)?.trim() == "tracked.txt: text: unspecified",
+        "HermeticGit must scrub the relocated system attribute: {}",
+        String::from_utf8_lossy(&protected_attr.stderr)
+    );
+    let mut protected_add = command(&["add", "tracked.txt"]);
+    hermetic.apply_env(&mut protected_add);
+    let protected_add_output = protected_add.output()?;
+    ensure!(
+        protected_add_output.status.success(),
+        "relocated Git protected add failed: {}",
+        String::from_utf8_lossy(&protected_add_output.stderr)
+    );
+    ensure!(hermetic.git(&repo, &["rev-parse", ":tracked.txt"])? == raw);
+    Ok(())
 }
 
 #[test]
@@ -110,7 +336,7 @@ fn hostile_global_signing_cannot_change_fixture_commits() -> Result<()> {
     let hermetic = HermeticGit::at(&tmp.path().join("pins"))?;
 
     let hermetic_repo = tmp.path().join("hermetic-repo");
-    let (head, _) = hermetic_commit(&hermetic, &hermetic_repo, "content\n")?;
+    let (head, _) = hermetic_commit(&hermetic, &hermetic_repo, "content\n", &global)?;
     let commit_object = hermetic.git(&hermetic_repo, &["cat-file", "commit", "HEAD"])?;
     assert!(
         !commit_object.contains("gpgsig"),
@@ -156,7 +382,7 @@ fn hostile_global_object_format_cannot_change_sha1_fixture_identities() -> Resul
     let hermetic = HermeticGit::at(&tmp.path().join("pins"))?;
 
     let hermetic_repo = tmp.path().join("hermetic-repo");
-    let (head, _) = hermetic_commit(&hermetic, &hermetic_repo, "content\n")?;
+    let (head, _) = hermetic_commit(&hermetic, &hermetic_repo, "content\n", &global)?;
     assert_eq!(
         head.len(),
         40,
@@ -333,6 +559,38 @@ fn ambient_config_search_paths_and_redirects_are_blocked() -> Result<()> {
 }
 
 #[test]
+fn alternate_global_destination_is_blocked() -> Result<()> {
+    let tmp = tempfile::tempdir()?;
+    let repo = tmp.path().join("repo");
+    let poison = tmp.path().join("alternate-global");
+    fs::write(&poison, "[fixture]\n\talternateGlobal = leaked\n")?;
+    let hermetic = HermeticGit::at(&tmp.path().join("pins"))?;
+    hermetic.init_repo(&repo)?;
+
+    let (mut control, _scope) =
+        legacy_command(&repo, &["config", "--get", "fixture.alternateGlobal"], &poison)?;
+    let control_output = control.output()?;
+    ensure!(
+        control_output.status.success()
+            && String::from_utf8(control_output.stdout)?.trim() == "leaked",
+        "control must read the poisoned alternate global destination: {}",
+        String::from_utf8_lossy(&control_output.stderr)
+    );
+
+    let (mut protected, _scope) =
+        legacy_command(&repo, &["config", "--get", "fixture.alternateGlobal"], &poison)?;
+    hermetic.apply_env(&mut protected);
+    let protected_output = protected.output()?;
+    ensure!(
+        protected_output.status.code() == Some(1) && protected_output.stdout.is_empty(),
+        "HermeticGit must block the alternate global destination: stdout={} stderr={}",
+        String::from_utf8_lossy(&protected_output.stdout),
+        String::from_utf8_lossy(&protected_output.stderr)
+    );
+    Ok(())
+}
+
+#[test]
 fn hostile_global_hooks_path_cannot_mutate_staged_content() -> Result<()> {
     let tmp = tempfile::tempdir()?;
     let hooks = tmp.path().join("hostile-hooks");
@@ -344,7 +602,7 @@ fn hostile_global_hooks_path_cannot_mutate_staged_content() -> Result<()> {
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(&hook, fs::Permissions::from_mode(0o755))?;
     }
-    let _global = hostile_global(
+    let global = hostile_global(
         tmp.path(),
         "hostile-global",
         &format!("[core]\n\thooksPath = {}\n", config_path_value(&hooks)),
@@ -352,7 +610,7 @@ fn hostile_global_hooks_path_cannot_mutate_staged_content() -> Result<()> {
     let hermetic = HermeticGit::at(&tmp.path().join("pins"))?;
 
     let hermetic_repo = tmp.path().join("hermetic-repo");
-    let (_head, pinned) = hermetic_commit(&hermetic, &hermetic_repo, "content\n")?;
+    let (_head, pinned) = hermetic_commit(&hermetic, &hermetic_repo, "content\n", &global)?;
     ensure!(
         committed_blob_id(&hermetic, &hermetic_repo)? == pinned,
         "hostile global hooks path must not mutate the hermetic fixture's staged content"
@@ -364,17 +622,17 @@ fn hostile_global_hooks_path_cannot_mutate_staged_content() -> Result<()> {
     #[cfg(unix)]
     {
         let legacy_repo = tmp.path().join("legacy-repo");
-        legacy_init(&legacy_repo, &_global)?;
+        legacy_init(&legacy_repo, &global)?;
         fs::write(legacy_repo.join("tracked.txt"), "content\n")?;
-        legacy_git(&legacy_repo, &["add", "tracked.txt"], &_global)?;
-        legacy_git(&legacy_repo, &["commit", "-m", "hostile control subject"], &_global)?;
-        let legacy_blob = legacy_git(&legacy_repo, &["rev-parse", "HEAD:tracked.txt"], &_global)?;
+        legacy_git(&legacy_repo, &["add", "tracked.txt"], &global)?;
+        legacy_git(&legacy_repo, &["commit", "-m", "hostile control subject"], &global)?;
+        let legacy_blob = legacy_git(&legacy_repo, &["rev-parse", "HEAD:tracked.txt"], &global)?;
         assert_ne!(
             legacy_blob, pinned,
             "legacy harness must show the hook-driven content drift the hermetic pin blocks"
         );
         ensure!(
-            legacy_git(&legacy_repo, &["rev-parse", "HEAD"], &_global)? != _head,
+            legacy_git(&legacy_repo, &["rev-parse", "HEAD"], &global)? != _head,
             "hook drift must not reproduce the pinned hermetic identity"
         );
     }
@@ -386,7 +644,7 @@ fn hostile_global_content_filters_cannot_change_the_pinned_tree() -> Result<()> 
     let tmp = tempfile::tempdir()?;
     let attributes = tmp.path().join("hostile-attributes");
     fs::write(&attributes, "*.txt\tfilter=hostile\n")?;
-    let _global = hostile_global(
+    let global = hostile_global(
         tmp.path(),
         "hostile-global",
         &format!(
@@ -397,7 +655,7 @@ fn hostile_global_content_filters_cannot_change_the_pinned_tree() -> Result<()> 
     let hermetic = HermeticGit::at(&tmp.path().join("pins"))?;
 
     let hermetic_repo = tmp.path().join("hermetic-repo");
-    let (_, pinned) = hermetic_commit(&hermetic, &hermetic_repo, "content\n")?;
+    let (_, pinned) = hermetic_commit(&hermetic, &hermetic_repo, "content\n", &global)?;
     ensure!(
         committed_blob_id(&hermetic, &hermetic_repo)? == pinned,
         "hostile global clean filter must not change the hermetic fixture's pinned blob"
@@ -409,11 +667,11 @@ fn hostile_global_content_filters_cannot_change_the_pinned_tree() -> Result<()> 
     #[cfg(unix)]
     {
         let legacy_repo = tmp.path().join("legacy-repo");
-        legacy_init(&legacy_repo, &_global)?;
+        legacy_init(&legacy_repo, &global)?;
         fs::write(legacy_repo.join("tracked.txt"), "content\n")?;
-        legacy_git(&legacy_repo, &["add", "tracked.txt"], &_global)?;
-        legacy_git(&legacy_repo, &["commit", "-m", "hostile control subject"], &_global)?;
-        let legacy_blob = legacy_git(&legacy_repo, &["rev-parse", "HEAD:tracked.txt"], &_global)?;
+        legacy_git(&legacy_repo, &["add", "tracked.txt"], &global)?;
+        legacy_git(&legacy_repo, &["commit", "-m", "hostile control subject"], &global)?;
+        let legacy_blob = legacy_git(&legacy_repo, &["rev-parse", "HEAD:tracked.txt"], &global)?;
         assert_ne!(
             legacy_blob, pinned,
             "legacy harness must show the clean-filter drift the hermetic pin blocks"
@@ -430,7 +688,7 @@ fn hostile_line_ending_configuration_cannot_change_the_pinned_tree() -> Result<(
     let content = "line\r\n";
 
     let hermetic_repo = tmp.path().join("hermetic-repo");
-    let (_, pinned) = hermetic_commit(&hermetic, &hermetic_repo, content)?;
+    let (_, pinned) = hermetic_commit(&hermetic, &hermetic_repo, content, &global)?;
     ensure!(
         committed_blob_id(&hermetic, &hermetic_repo)? == pinned,
         "hostile global line-ending configuration must not change the hermetic fixture's \
@@ -456,9 +714,26 @@ fn hostile_command_scoped_config_injection_is_scrubbed() -> Result<()> {
     let hermetic = HermeticGit::at(&tmp.path().join("pins"))?;
 
     let hermetic_repo = tmp.path().join("hermetic-repo");
-    let (head, _) = hermetic_commit(&hermetic, &hermetic_repo, "content\n")?;
+    hermetic.init_repo(&hermetic_repo)?;
+    fs::write(hermetic_repo.join("tracked.txt"), "content\n")?;
+    hermetic.git(&hermetic_repo, &["add", "tracked.txt"])?;
+    let mut protected = StdCommand::new("git");
+    protected
+        .args(["commit", "-m", "hostile control subject"])
+        .current_dir(&hermetic_repo)
+        .env("GIT_CONFIG_COUNT", "1")
+        .env("GIT_CONFIG_KEY_0", "commit.gpgsign")
+        .env("GIT_CONFIG_VALUE_0", "true");
+    hermetic.apply_env(&mut protected);
+    let protected_output = protected.output()?;
+    ensure!(
+        protected_output.status.success(),
+        "hermetic commit inherited signing injection: {}",
+        String::from_utf8_lossy(&protected_output.stderr)
+    );
+    let head = hermetic.git(&hermetic_repo, &["rev-parse", "HEAD"])?;
     let commit_object = hermetic.git(&hermetic_repo, &["cat-file", "commit", "HEAD"])?;
-    assert!(
+    ensure!(
         !commit_object.contains("gpgsig"),
         "hermetic harness must scrub command-scoped commit.gpgsign injection"
     );
@@ -469,20 +744,16 @@ fn hostile_command_scoped_config_injection_is_scrubbed() -> Result<()> {
     legacy_init(&legacy_repo, &global)?;
     fs::write(legacy_repo.join("tracked.txt"), "content\n")?;
     legacy_git(&legacy_repo, &["add", "tracked.txt"], &global)?;
-    let mut injected = StdCommand::new("git");
+    let (mut injected, _scope) =
+        legacy_command(&legacy_repo, &["commit", "-m", "hostile control subject"], &global)?;
     injected
-        .args(["commit", "-m", "hostile control subject"])
-        .current_dir(&legacy_repo)
-        .env("GIT_CONFIG_GLOBAL", &global)
-        .env("GIT_AUTHOR_DATE", FIXTURE_TIMESTAMP)
-        .env("GIT_COMMITTER_DATE", FIXTURE_TIMESTAMP)
         .env("GIT_CONFIG_COUNT", "1")
         .env("GIT_CONFIG_KEY_0", "commit.gpgsign")
         .env("GIT_CONFIG_VALUE_0", "true");
     let output = injected.output()?;
     if output.status.success() {
         let object = legacy_git(&legacy_repo, &["cat-file", "commit", "HEAD"], &global)?;
-        assert!(
+        ensure!(
             object.contains("gpgsig"),
             "legacy harness must not silently produce the unsigned commit under \
              command-scoped signing injection"

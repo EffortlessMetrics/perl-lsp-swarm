@@ -9,7 +9,7 @@
 // calls keep fixture setup and JSON assertions readable.
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
-use anyhow::Result;
+use anyhow::{Result, ensure};
 use assert_cmd::Command;
 use serde_json::Value;
 use std::{
@@ -135,16 +135,23 @@ fn git_reading_child_scrubs_repo_and_index_redirects() -> Result<()> {
     let (_tmp, root) = setup_test_repo(&allowlist, &[("README.md", "# hi")])?;
     let hostile_git_dir = root.join("hostile-git-dir");
     let hostile_index = root.join("hostile-index");
-    let output = run_check_with_ambient(
-        &root,
-        &["--mode", "advisory"],
-        &[("GIT_DIR", hostile_git_dir.as_path()), ("GIT_INDEX_FILE", hostile_index.as_path())],
-    )?;
-    assert!(
-        output.status.success(),
-        "xtask Git reads must ignore ambient repository/index redirects; stderr={}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    for ambient in
+        [("GIT_DIR", hostile_git_dir.as_path()), ("GIT_INDEX_FILE", hostile_index.as_path())]
+    {
+        let output = run_check_with_ambient(&root, &["--mode", "advisory"], &[ambient])?;
+        ensure!(
+            output.status.success(),
+            "{} redirect caused failure: {}",
+            ambient.0,
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stdout = String::from_utf8(output.stdout)?;
+        ensure!(
+            stdout.contains("total tracked: 2") && stdout.contains("README.md"),
+            "{} redirect hid the fixture inventory: {stdout}",
+            ambient.0
+        );
+    }
     Ok(())
 }
 

@@ -24,7 +24,9 @@
 //! - failures are typed and carry argv, cwd, stderr, and stdout instead of
 //!   silently falling back to the caller's Git environment.
 //!
-//! Fixture classification (issue #13697 inventory):
+//! Fixture classification for the consumers inspected in this slice:
+//! This is not a complete repository-wide identity-fixture inventory; other
+//! identity-pinning fixtures remain an open acceptance item under #13697.
 //!
 //! - identity-pinning, migrated to [`HermeticGit`]: `xtask/tests/ci_subject.rs`
 //!   and `xtask/tests/git_ancestry_cli.rs`;
@@ -236,6 +238,11 @@ impl HermeticGit {
         fs::create_dir_all(repo)
             .with_context(|| format!("failed to create fixture repository {}", repo.display()))?;
         self.git(repo, &["init", "--initial-branch=main", "--object-format=sha1"])?;
+        self.pin_repo_config(repo)
+    }
+
+    /// Apply the same local pins after a control explicitly exercises `git init`.
+    pub fn pin_repo_config(&self, repo: &Path) -> Result<()> {
         for (key, value) in [
             ("user.name", "Fixture User"),
             ("user.email", "fixture@example.invalid"),
@@ -269,20 +276,39 @@ pub fn init_git_repo(dir: &Path) -> Result<()> {
 /// Run a hermetic git command in `cwd`. Returns an error carrying argv, cwd,
 /// and stderr if the command fails.
 pub fn git_cmd(args: &[&str], cwd: Option<&Path>) -> Result<()> {
+    git_cmd_with_ambient(args, cwd, &[]).map(|_| ())
+}
+
+/// Exercise the free-command seam with controlled child-only ambient inputs.
+/// Returns output so controls can verify real staged content, not just success.
+pub fn git_cmd_with_ambient(
+    args: &[&str],
+    cwd: Option<&Path>,
+    ambient: &[(&str, &Path)],
+) -> Result<Output> {
     let config_scope = tempfile::tempdir().context("failed to create Git config scope")?;
     let empty_config = config_scope.path().join("empty-config");
-    fs::write(&empty_config, "").context("failed to create empty Git config")?;
+    let empty_attributes = config_scope.path().join("empty-attributes");
+    fs::write(&empty_attributes, "").context("failed to create empty Git attributes")?;
+    fs::write(
+        &empty_config,
+        format!("[core]\n\tattributesFile = {}\n", config_path_value(&empty_attributes)),
+    )
+    .context("failed to create pinned Git config")?;
     let mut cmd = StdCommand::new("git");
     cmd.args(args);
     if let Some(dir) = cwd {
         cmd.current_dir(dir);
+    }
+    for (key, value) in ambient {
+        cmd.env(key, value);
     }
     apply_hermetic_config(&mut cmd, &empty_config, &empty_config);
     let output = cmd.output().with_context(|| format!("git {} failed to start", args.join(" ")))?;
     if !output.status.success() {
         bail!("{}", fail_typed(args, cwd, &output));
     }
-    Ok(())
+    Ok(output)
 }
 
 /// Stage and commit a set of files in `repo`.
