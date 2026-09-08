@@ -52,13 +52,23 @@ export function serverProcessOf(client: unknown): ServerProcessLike | undefined 
 }
 
 function isServerProcessLike(value: unknown): value is ServerProcessLike {
+  const candidate = value as {
+    pid?: unknown;
+    exitCode?: unknown;
+    signalCode?: unknown;
+    once?: unknown;
+    removeListener?: unknown;
+  } | null;
   return (
-    value !== null &&
+    candidate !== null &&
     typeof value === 'object' &&
-    'exitCode' in value &&
-    'signalCode' in value &&
-    typeof (value as { once?: unknown }).once === 'function' &&
-    typeof (value as { removeListener?: unknown }).removeListener === 'function'
+    Number.isInteger(candidate.pid) &&
+    (candidate.pid as number) > 0 &&
+    (candidate.exitCode === null ||
+      (typeof candidate.exitCode === 'number' && Number.isInteger(candidate.exitCode))) &&
+    (candidate.signalCode === null || typeof candidate.signalCode === 'string') &&
+    typeof candidate.once === 'function' &&
+    typeof candidate.removeListener === 'function'
   );
 }
 
@@ -71,8 +81,9 @@ export function hasExited(
     return true;
   }
   if (child.pid === undefined) {
-    // Never spawned: nothing is alive to overlap a replacement.
-    return true;
+    // A missing pid is an unavailable process witness, not proof that no
+    // process exists. Replacement admission must fail closed.
+    return false;
   }
   return !probe(child.pid);
 }
@@ -88,7 +99,8 @@ export function awaitServerProcessExit(
   probe: ProcessAliveProbe = defaultProbe,
 ): Promise<boolean> {
   if (child === undefined) {
-    return Promise.resolve(true);
+    // A missing handle is an unavailable process witness, not proof of exit.
+    return Promise.resolve(false);
   }
   if (hasExited(child, probe)) {
     return Promise.resolve(true);

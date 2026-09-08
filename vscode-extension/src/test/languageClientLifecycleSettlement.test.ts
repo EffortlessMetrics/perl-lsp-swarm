@@ -5,6 +5,7 @@ import {
   type LifecycleClient,
   type LifecycleDisposable,
 } from '../languageClientLifecycle';
+import { awaitServerProcessExit, type ServerProcessLike } from '../serverProcessTermination';
 
 class DeferredVoid {
   readonly promise: Promise<undefined>;
@@ -175,6 +176,22 @@ describe('LanguageClientLifecycle client cleanup admission', () => {
 
     await expect(controller.restart()).rejects.toMatchObject({ reason: 'cleanup-incomplete' });
     expect(clients).toHaveLength(1);
+    expect(controller.snapshot.state).toBe('failed');
+  });
+
+  test('an unavailable process witness blocks replacement after client cleanup resolves', async () => {
+    const { controller, clients } = makeController(
+      10,
+      (_client, witness) =>
+        awaitServerProcessExit(witness as ServerProcessLike | undefined, 10, () => true),
+      () => undefined,
+    );
+    await controller.start();
+
+    await expect(controller.restart()).rejects.toMatchObject({ reason: 'cleanup-incomplete' });
+    expect(clients).toHaveLength(1);
+    expect(clients[0]!.stop).toHaveBeenCalledTimes(1);
+    expect(clients[0]!.dispose).toHaveBeenCalledTimes(1);
     expect(controller.snapshot.state).toBe('failed');
   });
 
