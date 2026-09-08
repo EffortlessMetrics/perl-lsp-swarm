@@ -194,7 +194,13 @@ impl LifecycleProcess {
         }
     }
 
-    fn notification_for_uri(&self, method: &str, uri: &str, timeout: Duration) -> Result<Value> {
+    fn notification_for_uri_version(
+        &self,
+        method: &str,
+        uri: &str,
+        version: i64,
+        timeout: Duration,
+    ) -> Result<Value> {
         let deadline = Instant::now() + timeout;
         loop {
             let remaining = deadline.saturating_duration_since(Instant::now());
@@ -208,7 +214,9 @@ impl LifecycleProcess {
             match self.messages.recv_timeout(remaining.min(Duration::from_millis(250))) {
                 Ok(Ok(message))
                     if message.get("method").and_then(Value::as_str) == Some(method)
-                        && message.pointer("/params/uri").and_then(Value::as_str) == Some(uri) =>
+                        && message.pointer("/params/uri").and_then(Value::as_str) == Some(uri)
+                        && message.pointer("/params/version").and_then(Value::as_i64)
+                            == Some(version) =>
                 {
                     return Ok(message);
                 }
@@ -595,7 +603,12 @@ fn stdio_navigation_matches_exact_request_and_current_edit() -> Result<()> {
             "contentChanges": [{ "text": NAVIGATION_MODULE_V2 }]
         }
     }))?;
-    server.notification_for_uri("textDocument/publishDiagnostics", &module_uri, REQUEST_TIMEOUT)?;
+    server.notification_for_uri_version(
+        "textDocument/publishDiagnostics",
+        &module_uri,
+        2,
+        REQUEST_TIMEOUT,
+    )?;
     let expected_current_line = 2;
     let mut current = None;
     for attempt in 0_u64..8 {
