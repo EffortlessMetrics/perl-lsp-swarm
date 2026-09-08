@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "owner_issue": 14155,
-  "reason": "Accept the combined landed #14857 lifecycle and #14621 per-file configuration package, plus the #14919 Marketplace README refresh. Measured with Node 26.5.0 and npm 11.18.0 from an actual VSIX at main 42007301a43ad5287aa00df8e26683f9795655b9. The 29 payload paths are unchanged: out/extension.js grows by 1130 bytes to 1679645; readme.md grows by 8 bytes to 25230; total payload is 1857611 bytes. Installed behavior remains a separate proof surface.",
-  "base_baseline_file_sha256": "a0ff6132d090487820a562be18de96e17a9e0b6f1c22c5304386519490aac8c5",
-  "candidate_baseline_file_sha256": "71482686ee9c9e65c120c19a814034fd537dc61e826306b406d5b137cb1b2a5b",
-  "base_inventory_sha256": "58b0b7699290c02ba693c03393cc5fc7771c687386499ebd1d426ac3850b1b02",
-  "candidate_inventory_sha256": "0b5940446ee784e69435a7bf1f2f44f7ea49e17832178a82a559012a25c22584"
+  "owner_issue": 15095,
+  "reason": "PR #14849 updates Rolldown 1.2.6 to 1.2.7. After resolving the inventory conflict with main at bbc820e86c398e46a466b766313028abf3b777d6, the normal VSIX package command measured out/extension.js at 1679643 bytes, down two bytes from 1679645. All other 28 packaged paths and sizes match main. The normal prepublish doctor, typechecks and bundle completed with Node 26.5.0 and npm 11.18.0. This is a measured development package inventory, not installed behavior or a release receipt; fresh hosted installed-smoke validation remains required. No validator, threshold or package admission rule changes.",
+  "base_baseline_file_sha256": "71482686ee9c9e65c120c19a814034fd537dc61e826306b406d5b137cb1b2a5b",
+  "candidate_baseline_file_sha256": "043e9c99fbe2ad917624b248a50ec498c808480445e219f2589178c2c0dd694e",
+  "base_inventory_sha256": "0b5940446ee784e69435a7bf1f2f44f7ea49e17832178a82a559012a25c22584",
+  "candidate_inventory_sha256": "689fa5b8485cd88e79dc906275a51883b3d574dccff965435faffe678beb5ec7"
 }
