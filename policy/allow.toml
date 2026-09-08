@@ -4386,3 +4386,29 @@ glob = "docs/**/*.csv"
 # pre-existing count we are ratcheting down.
 # ===========================================================================
 
+
+
+[[allow]]
+id = "allow-14622-inflight-unwind"
+kind = "panic"
+family = "panic_macro"
+path = "crates/perl-lsp-rs-core/src/providers/ai/inflight.rs"
+owner = "core/maintainers"
+classification = "reviewed_exception"
+reason = "The deliberate unwind witness proves RAII permit release so a panicking holder cannot strand the maxInflight slot; retained only for #8300 containment proof."
+evidence = ["issue:8300", "test:ai_inflight_concurrency_tests"]
+created = "2026-09-08"
+review_after = "2026-12-01"
+
+[allow.selector]
+ast_kind = "macro_call"
+container = "tests::permit_is_released_when_the_holder_panics"
+macro_name = "panic"
+target_fingerprint = "panic"
+normalized_snippet_hash = "fnv1a64:9ed4b2689ec154b0"
+line_hint = 374
+
+[allow.last_seen]
+line = 374
+column = 13
+

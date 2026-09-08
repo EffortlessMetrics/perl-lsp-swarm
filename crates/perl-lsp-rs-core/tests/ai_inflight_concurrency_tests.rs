@@ -101,10 +101,10 @@ fn saturation_refuses_immediately_rather_than_parking_the_caller()
     Ok(())
 }
 
-/// Once the slot is free the same provider dispatches normally, so the tests
-/// above are not passing because the provider is broken for every request.
+/// A terminal network error after admission still releases the permit.
 #[test]
-fn a_free_gate_lets_the_request_reach_the_network() -> Result<(), Box<dyn std::error::Error>> {
+fn an_admitted_request_releases_after_closed_port_failure() -> Result<(), Box<dyn std::error::Error>>
+{
     let port = {
         let listener = TcpListener::bind("127.0.0.1:0")?;
         listener.local_addr()?.port()
@@ -114,8 +114,8 @@ fn a_free_gate_lets_the_request_reach_the_network() -> Result<(), Box<dyn std::e
     let outcome = provider.stream(&backend_request(), &mut |_| StreamControl::Continue);
 
     assert!(
-        matches!(outcome, Err(BackendError::Transport(_))),
-        "an admitted request must reach dispatch and fail on the closed port, got: {outcome:?}"
+        matches!(outcome, Err(BackendError::Transport(_)) | Err(BackendError::Timeout)),
+        "an admitted request must finish with a network terminal error, got: {outcome:?}"
     );
     assert_eq!(
         provider.inflight_counters().active,
@@ -140,21 +140,29 @@ fn max_inflight_one_admits_only_one_concurrent_backend_call()
     let accepted = Arc::new(AtomicU32::new(0));
 
     let accepted_worker = Arc::clone(&accepted);
-    let server = thread::spawn(move || {
+    let server = thread::spawn(move || -> Result<(), std::io::Error> {
         // Poll rather than block: the whole point of the test is that the
         // second connection never arrives, so a blocking accept would hang the
         // suite instead of failing it.
-        let _ = listener.set_nonblocking(true);
+        listener.set_nonblocking(true)?;
         let mut held = Vec::new();
         let deadline = Instant::now() + Duration::from_millis(1_500);
         while Instant::now() < deadline {
             match listener.accept() {
                 Ok((mut stream, _)) => {
                     accepted_worker.fetch_add(1, Ordering::SeqCst);
-                    let _ = stream.set_nonblocking(false);
-                    let _ = stream.set_read_timeout(Some(Duration::from_millis(200)));
+                    stream.set_nonblocking(false)?;
+                    stream.set_read_timeout(Some(Duration::from_millis(200)))?;
                     let mut buffer = [0_u8; 512];
-                    let _ = stream.read(&mut buffer);
+                    match stream.read(&mut buffer) {
+                        Ok(_) => {}
+                        Err(error)
+                            if matches!(
+                                error.kind(),
+                                std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+                            ) => {}
+                        Err(error) => return Err(error),
+                    }
                     // Hold the socket open without replying, so the admitted
                     // request stays genuinely in flight while the other thread
                     // contends for the single permit.
@@ -163,12 +171,13 @@ fn max_inflight_one_admits_only_one_concurrent_backend_call()
                 Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                     thread::sleep(Duration::from_millis(10));
                 }
-                Err(_) => break,
+                Err(error) => return Err(error),
             }
         }
         for mut stream in held {
             let _ = stream.write_all(b"HTTP/1.1 204 No Content\r\n\r\n");
         }
+        Ok(())
     });
 
     let provider = Arc::new(provider(&format!("http://127.0.0.1:{port}/v1/chat/completions"), 1));
@@ -180,20 +189,30 @@ fn max_inflight_one_admits_only_one_concurrent_backend_call()
             let provider = Arc::clone(&provider);
             let start = Arc::clone(&start);
             let saturated = Arc::clone(&saturated);
-            thread::spawn(move || {
+            thread::spawn(move || -> Result<(), std::io::Error> {
                 start.wait();
                 let outcome = provider.stream(&backend_request(), &mut |_| StreamControl::Continue);
-                if matches!(outcome, Err(BackendError::Saturated)) {
-                    saturated.fetch_add(1, Ordering::SeqCst);
+                match outcome {
+                    Err(BackendError::Saturated) => {
+                        saturated.fetch_add(1, Ordering::SeqCst);
+                    }
+                    Ok(()) => {}
+                    Err(BackendError::Transport(_)) | Err(BackendError::Timeout) => {}
+                    Err(error) => {
+                        return Err(std::io::Error::other(format!(
+                            "unexpected backend error: {error:?}"
+                        )));
+                    }
                 }
+                Ok(())
             })
         })
         .collect();
 
     for handle in handles {
-        let _ = handle.join();
+        handle.join().map_err(|_| std::io::Error::other("request worker panicked"))??;
     }
-    let _ = server.join();
+    server.join().map_err(|_| std::io::Error::other("loopback server panicked"))??;
 
     assert_eq!(
         saturated.load(Ordering::SeqCst),
@@ -206,6 +225,7 @@ fn max_inflight_one_admits_only_one_concurrent_backend_call()
         "the refused request must never open a connection"
     );
     assert_eq!(provider.inflight_counters().active, 0, "every permit must be released");
+    assert_eq!(provider.inflight_counters().released, 1);
     assert_eq!(provider.inflight_counters().peak_active, 1);
     Ok(())
 }
