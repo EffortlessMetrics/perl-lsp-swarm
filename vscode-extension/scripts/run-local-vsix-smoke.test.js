@@ -647,6 +647,22 @@ void test('a typed unsupported-platform child exit stays not_proven without a re
   }
 });
 
+void test('the typed unsupported-platform exit is failure outside its bound platform case', () => {
+  for (const input of [
+    { candidateBound: false, platform: 'win32' },
+    { candidateBound: true, platform: 'linux' },
+  ]) {
+    const result = interpretBehavioralSmokeExit({
+      status: 2,
+      ...input,
+      receiptsRoot: '/fixture',
+      exists: () => false,
+    });
+    assert.equal(result.status, 'failed');
+    assert.equal(result.reason, 'published_extension_smoke_failed');
+  }
+});
+
 void test('a spawn error is explicitly classified as not_proven', () => {
   const result = interpretBehavioralSmokeExit({
     status: null,

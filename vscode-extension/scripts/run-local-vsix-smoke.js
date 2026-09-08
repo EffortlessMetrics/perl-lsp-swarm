@@ -2355,12 +2355,6 @@ function finalizeSmokeRun(
 }
 
 function main() {
-  const candidateBound = Boolean(
-    process.env.PERL_LSP_CANDIDATE_ID ||
-    process.env.PERL_LSP_ARTIFACT_SET_ID ||
-    process.env.PERL_LSP_CURRENT_SOURCE_SHA ||
-    process.env.PERL_LSP_CANDIDATE_ARTIFACT_MANIFEST,
-  );
   let revision = 'unknown';
   try {
     revision = gitRevision();
@@ -2550,7 +2544,7 @@ function main() {
           receipt.stages.behavioral_smoke = interpretBehavioralSmokeExit({
             status: smokeResult.status,
             spawnError: smokeResult.error,
-            candidateBound,
+            candidateBound: Boolean(smokeEnv.PERL_LSP_CURRENT_SOURCE_SHA),
             platform: process.platform,
             receiptsRoot: receiptsRoot(),
           });

@@ -83,6 +83,9 @@ void test('the published-smoke child emits the unsupported-platform boundary bef
         windowsHide: true,
       },
     );
+    if (result.error) {
+      throw new Error(`unsupported-platform child failed to spawn: ${result.error.message}`);
+    }
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /restricted to Linux/);
     const receiptPath = path.join(receiptRoot, CANDIDATE_PLATFORM_UNAVAILABLE_RECEIPT_NAME);
@@ -127,8 +130,21 @@ void test('the compiled child reserves exit 2 when the platform boundary receipt
         windowsHide: true,
       },
     );
+    if (result.error) {
+      throw new Error(`unwritable-root child failed to spawn: ${result.error.message}`);
+    }
     assert.equal(result.status, 2);
     assert.match(result.stderr, /Unable to write the candidate-bound platform-unavailable receipt/);
+
+    const { interpretBehavioralSmokeExit } = require('../../../scripts/run-local-vsix-smoke.js');
+    const parent = interpretBehavioralSmokeExit({
+      status: result.status,
+      candidateBound: true,
+      platform: 'win32',
+      receiptsRoot,
+    });
+    assert.equal(parent.status, 'not_proven');
+    assert.equal(parent.reason, 'candidate_bound_platform_unavailable_receipt_write_failed');
   } finally {
     fs.rmSync(fixtureRoot, { recursive: true, force: true });
   }
