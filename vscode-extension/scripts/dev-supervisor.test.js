@@ -1115,6 +1115,13 @@ void test('late terminal output failure changes the settled result to red', asyn
   assert.match(result.failures.join(' | '), /EPIPE/);
 });
 
+function procStat(pid, state, processGroup = 100, startTime = 1) {
+  const fields = [state, '1', String(processGroup), '100'];
+  while (fields.length < 19) fields.push('0');
+  fields.push(String(startTime));
+  return `${pid} (fixture) ${fields.join(' ')}`;
+}
+
 void test('POSIX group inspection distinguishes mixed and zombie-only members', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-dev-supervisor-proc-'));
   tempDirs.push(dir);
@@ -1124,10 +1131,10 @@ void test('POSIX group inspection distinguishes mixed and zombie-only members', 
   ])) {
     const member = path.join(dir, pid);
     fs.mkdirSync(member);
-    fs.writeFileSync(path.join(member, 'stat'), `${pid} (fixture) ${state} 1 100 100`);
+    fs.writeFileSync(path.join(member, 'stat'), procStat(pid, state));
   }
   assert.equal(inspectPosixProcessGroup(100, dir), true);
-  fs.writeFileSync(path.join(dir, '100', 'stat'), '100 (fixture) Z 1 100 100');
+  fs.writeFileSync(path.join(dir, '100', 'stat'), procStat('100', 'Z'));
   assert.equal(inspectPosixProcessGroup(100, dir), false);
 });
 
@@ -1135,6 +1142,55 @@ void test('POSIX group inspection stays unknown when /proc is unavailable', () =
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-dev-supervisor-proc-missing-'));
   tempDirs.push(dir);
   assert.equal(inspectPosixProcessGroup(100, path.join(dir, 'missing')), null);
+});
+
+void test('POSIX group inspection rejects malformed or unreadable member metadata', () => {
+  const malformedFs = {
+    readdirSync: () => ['100'],
+    readFileSync: () => '100 (fixture) Z 1 100',
+  };
+  assert.equal(inspectPosixProcessGroup(100, '/mock', malformedFs), null);
+
+  const unreadableFs = {
+    readdirSync: () => ['100'],
+    readFileSync: () => {
+      const error = new Error('permission denied');
+      error.code = 'EACCES';
+      throw error;
+    },
+  };
+  assert.equal(inspectPosixProcessGroup(100, '/mock', unreadableFs), null);
+});
+
+void test('POSIX group inspection rejects membership churn between observations', () => {
+  let directoryRead = 0;
+  const statByPid = new Map([
+    ['100', procStat('100', 'Z')],
+    ['101', procStat('101', 'S')],
+  ]);
+  const procFs = {
+    readdirSync: () => (directoryRead++ === 0 ? ['100'] : ['100', '101']),
+    readFileSync: (file) => statByPid.get(path.basename(path.dirname(file))),
+  };
+  assert.equal(inspectPosixProcessGroup(100, '/mock', procFs), null);
+});
+
+void test('POSIX group inspection rejects a reused PID with a changed starttime', () => {
+  let statRead = 0;
+  const procFs = {
+    readdirSync: () => ['100'],
+    readFileSync: () => procStat('100', 'Z', 100, ++statRead),
+  };
+  assert.equal(inspectPosixProcessGroup(100, '/mock', procFs), null);
+});
+
+void test('POSIX group inspection uses the latest stable member state', () => {
+  let statRead = 0;
+  const procFs = {
+    readdirSync: () => ['100'],
+    readFileSync: () => procStat('100', statRead++ === 0 ? 'Z' : 'S'),
+  };
+  assert.equal(inspectPosixProcessGroup(100, '/mock', procFs), true);
 });
 
 /* ---------------------------------------------------------------------- */

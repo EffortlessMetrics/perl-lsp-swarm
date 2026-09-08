@@ -311,47 +311,74 @@ function shutdownTargetExited(child) {
  *
  * @param {number} pid
  * @param {string} [procRoot]
+ * @param {{readdirSync: (root: string) => string[], readFileSync: (file: string, encoding: 'utf8') => string}} [procFs]
  * @returns {boolean | null} true if a live member exists, false if every
  *   observed member is a zombie, null if the view is unavailable/ambiguous
  */
-function inspectPosixProcessGroup(pid, procRoot = '/proc') {
-  /** @type {string[]} */
-  let entries;
-  try {
-    entries = fs.readdirSync(procRoot);
-  } catch {
-    return null;
-  }
-  let foundMember = false;
-  for (const entry of entries) {
-    if (!/^\d+$/.test(entry)) {
-      continue;
-    }
-    let stat;
+function inspectPosixProcessGroup(pid, procRoot = '/proc', procFs = fs) {
+  const readSnapshot = () => {
+    /** @type {string[]} */
+    let entries;
     try {
-      stat = fs.readFileSync(path.join(procRoot, entry, 'stat'), 'utf8');
-    } catch (error) {
-      if (/** @type {NodeJS.ErrnoException} */ (error).code === 'ENOENT') {
+      entries = procFs.readdirSync(procRoot);
+    } catch {
+      return null;
+    }
+    /** @type {Map<string, {state: string, startTime: string}>} */
+    const members = new Map();
+    for (const entry of entries) {
+      if (!/^\d+$/.test(entry)) {
         continue;
       }
+      let stat;
+      try {
+        stat = procFs.readFileSync(path.join(procRoot, entry, 'stat'), 'utf8');
+      } catch (error) {
+        if (/** @type {NodeJS.ErrnoException} */ (error).code === 'ENOENT') {
+          continue;
+        }
+        return null;
+      }
+      const closeParen = stat.lastIndexOf(')');
+      if (closeParen < 0) {
+        return null;
+      }
+      const fields = stat.slice(closeParen + 1).trim().split(/\s+/);
+      const state = fields[0];
+      const processGroup = fields[2];
+      const startTime = fields[19];
+      if (!state || processGroup !== String(pid) || !/^\d+$/.test(startTime ?? '')) {
+        if (processGroup === String(pid)) {
+          return null;
+        }
+        continue;
+      }
+      members.set(entry, { state, startTime });
+    }
+    return members;
+  };
+
+  // A single /proc directory read can miss a child forked after readdir but
+  // before stat. Compare two complete membership snapshots, including Linux
+  // starttime: a changed PID membership or reused PID cannot be mistaken for
+  // the same process, and any churn remains unknown/fail-closed.
+  const first = readSnapshot();
+  const second = readSnapshot();
+  if (first === null || second === null || first.size === 0 || first.size !== second.size) {
+    return null;
+  }
+  for (const [entry, member] of first) {
+    const current = second.get(entry);
+    if (current === undefined || current.startTime !== member.startTime) {
       return null;
     }
-    const closeParen = stat.lastIndexOf(')');
-    if (closeParen < 0) {
-      return null;
-    }
-    const fields = stat.slice(closeParen + 1).trim().split(/\s+/);
-    const state = fields[0];
-    const processGroup = fields[2];
-    if (processGroup !== String(pid)) {
-      continue;
-    }
-    foundMember = true;
-    if (state !== 'Z') {
+  }
+  for (const member of second.values()) {
+    if (member.state !== 'Z') {
       return true;
     }
   }
-  return foundMember ? false : null;
+  return false;
 }
 
 /**
