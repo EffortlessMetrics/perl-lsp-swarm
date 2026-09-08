@@ -817,7 +817,7 @@ fn pinned_tree_source_ignores_worktree_edit_after_capture() -> Result<()> {
         vec!["commit", "-qm", "capture"],
     ] {
         let output =
-            std::process::Command::new("git").args(args).current_dir(repo.path()).output()?;
+            std::process::Command::new("git").args(&args).current_dir(repo.path()).output()?;
         if !output.status.success() {
             bail!("git {:?} failed: {}", args, String::from_utf8_lossy(&output.stderr));
         }
