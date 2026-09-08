@@ -104,15 +104,13 @@ impl WorkspaceFolderState {
     /// Replace settings while retaining metadata facts until the next
     /// buffer-aware refresh.
     ///
-    /// Configuration reloads rebuild effective settings, but declared
-    /// dependencies belong to the metadata read authority. Keeping the last
-    /// facts here means an unreadable source remains visible as stale while
-    /// new settings are accepted (#15088). Detected include-root ownership is
-    /// intentionally reset with the replacement config; the subsequent marker
-    /// reconciliation establishes it again.
+    /// Configuration reloads rebuild effective settings, but metadata facts
+    /// and detector-owned include roots belong to the metadata read authority.
+    /// Keeping both across the unlocked refresh gap prevents concurrent
+    /// consumers from observing incomplete state while new settings are
+    /// accepted (#15088).
     pub(crate) fn replace_effective_workspace_config(&mut self, mut config: WorkspaceConfig) {
-        config.declared_dependencies =
-            self.effective_workspace_config.declared_dependencies.clone();
+        config.preserve_metadata_state_from(&self.effective_workspace_config);
         self.effective_workspace_config = config;
     }
 
@@ -322,6 +320,48 @@ mod tests {
             vec!["lib", ".", "local/lib/perl5"],
             "a user-configured include path is never claimed or retired by detection"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn config_replacement_retains_detector_root_until_refresh()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        std::fs::write(temp.path().join("cpanfile"), "requires 'JSON';\n")?;
+        let carton_lock = temp.path().join("carton.lock");
+        std::fs::write(&carton_lock, "snapshot\n")?;
+        let mut initial = WorkspaceConfig::default();
+        initial.include_paths = vec!["lib".to_string()];
+        let mut folder = WorkspaceFolderState::new("file:///workspace".to_string())
+            .with_path(temp.path().to_path_buf())
+            .with_effective_workspace_config(initial);
+
+        folder.refresh_workspace_metadata();
+        let mut replacement = WorkspaceConfig::default();
+        replacement.include_paths = vec!["lib".to_string()];
+        folder.replace_effective_workspace_config(replacement);
+        if !folder.effective_workspace_config.include_paths.contains(&"local/lib/perl5".to_string())
+        {
+            return Err("detector root disappeared before the refresh commit".into());
+        }
+
+        std::fs::remove_file(&carton_lock)?;
+        folder.refresh_workspace_metadata();
+        if folder.effective_workspace_config.include_paths.contains(&"local/lib/perl5".to_string())
+        {
+            return Err("missing marker did not retire the detector root".into());
+        }
+
+        std::fs::write(&carton_lock, "snapshot\n")?;
+        let mut explicit = WorkspaceConfig::default();
+        explicit.include_paths = vec!["lib".to_string(), "local/lib/perl5".to_string()];
+        folder.replace_effective_workspace_config(explicit);
+        std::fs::remove_file(carton_lock)?;
+        folder.refresh_workspace_metadata();
+        if !folder.effective_workspace_config.include_paths.contains(&"local/lib/perl5".to_string())
+        {
+            return Err("explicit user root was removed during marker reconciliation".into());
+        }
         Ok(())
     }
 

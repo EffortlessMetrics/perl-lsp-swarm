@@ -430,6 +430,7 @@ pub perl_lsp_rs_core::config::WorkspaceConfig::resolution_timeout_ms: u64
 pub perl_lsp_rs_core::config::WorkspaceConfig::use_perl5lib: bool
 pub perl_lsp_rs_core::config::WorkspaceConfig::use_system_inc: bool
 pub fn perl_lsp_rs_core::config::WorkspaceConfig::apply_declared_dependency_reads(&mut self, reads: &[(perl_lsp_rs_core::config::DeclaredDependencySource, perl_lsp_rs_core::config::MetadataSourceRead)])
+pub fn perl_lsp_rs_core::config::WorkspaceConfig::preserve_metadata_state_from(&mut self, previous: &perl_lsp_rs_core::config::WorkspaceConfig)
 pub fn perl_lsp_rs_core::config::WorkspaceConfig::effective_include_paths(&self, perl5lib_paths: &[alloc::string::String]) -> alloc::vec::Vec<alloc::string::String>
 pub fn perl_lsp_rs_core::config::WorkspaceConfig::env_perl_lib_paths() -> alloc::vec::Vec<alloc::string::String>
 pub fn perl_lsp_rs_core::config::WorkspaceConfig::get_system_inc(&mut self) -> &[std::path::PathBuf]
