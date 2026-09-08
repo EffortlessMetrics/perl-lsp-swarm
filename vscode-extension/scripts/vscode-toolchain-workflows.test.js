@@ -73,9 +73,11 @@ void test('managed Windows smoke packages and runs the current Test Explorer VSI
   assert.ok(
     source.indexOf('PERL_LSP_PUBLISHED_EXTENSION_SOURCE: vsix', explorerIndex) > explorerIndex,
   );
+  assert.ok(source.indexOf('GITHUB_TOKEN: ${{ github.token }}', explorerIndex) > explorerIndex);
   assert.ok(source.indexOf("PERL_LSP_TEST_EXPLORER_SMOKE: '1'", explorerIndex) > explorerIndex);
+  assert.ok(source.indexOf('$vsix.Count -ne 1', explorerIndex) > explorerIndex);
   assert.ok(
-    source.indexOf('$env:PERL_LSP_PUBLISHED_VSIX_PATH = $vsix.FullName', explorerIndex) >
+    source.indexOf('$env:PERL_LSP_PUBLISHED_VSIX_PATH = $vsix[0].FullName', explorerIndex) >
       explorerIndex,
   );
   assert.ok(source.indexOf('npm run test:published', explorerIndex) > explorerIndex);

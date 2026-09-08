@@ -73,13 +73,16 @@ jobs:
       - name: Run current extension Test Explorer smoke (Windows)
         if: runner.os == 'Windows'
         env:
+          GITHUB_TOKEN: ${{ github.token }}
           PERL_LSP_PUBLISHED_EXTENSION_SOURCE: vsix
           PERL_LSP_TEST_EXPLORER_SMOKE: '1'
         shell: pwsh
         run: |
-          $vsix = Get-ChildItem -LiteralPath . -Filter '*.vsix' | Select-Object -First 1
-          if (-not $vsix) { throw 'npm run package did not produce a VSIX archive' }
-          $env:PERL_LSP_PUBLISHED_VSIX_PATH = $vsix.FullName
+          $vsix = @(Get-ChildItem -LiteralPath . -Filter '*.vsix' -File)
+          if ($vsix.Count -ne 1) {
+            throw "npm run package must produce exactly one VSIX archive; found $($vsix.Count)"
+          }
+          $env:PERL_LSP_PUBLISHED_VSIX_PATH = $vsix[0].FullName
           npm run test:published
 
       - name: Upload smoke artifacts
