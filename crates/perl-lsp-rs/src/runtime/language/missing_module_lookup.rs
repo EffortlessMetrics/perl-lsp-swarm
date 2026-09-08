@@ -478,7 +478,7 @@ fn interpreter_startup_inc_payload(
         "remediation_code": startup_inc_remediation(snapshot),
         "owner": {
             "scope": owner_scope,
-            "folder_uri": folder_uri,
+            "folder_hash": folder_uri.map(|uri| format!("{:x}", md5::compute(uri))),
         },
         "currentness": {
             "basis": "stored_configuration_epoch",
@@ -945,14 +945,44 @@ mod tests {
     /// path, command line, or environment value (falsifier 10).
     #[test]
     fn projection_is_redacted_to_codes_and_counts() -> TestResult {
+        let owner = "file:///home/someone/project/";
         let payload = interpreter_startup_inc_payload(
             &snapshot(SystemIncProbeOutcomeKind::Paths, 1),
-            Some("file:///home/someone/project/"),
+            Some(owner),
         );
         assert_eq!(payload.pointer("/system_root_count"), Some(&json!(3)));
         assert_eq!(str_at(&payload, "/owner/scope")?, "workspace_folder");
         for key in ["paths", "system_paths", "perl_path", "command", "stderr", "env"] {
             assert!(payload.get(key).is_none(), "projection must not carry {key}");
+        }
+        let serialized = serde_json::to_string(&payload)?;
+        for private_value in [owner, "/home/someone", "someone", "folder_uri"] {
+            if serialized.contains(private_value) {
+                return Err(format!("projection exposes nested owner data: {private_value}").into());
+            }
+        }
+        let identity = str_at(&payload, "/owner/folder_hash")?;
+        let repeated = interpreter_startup_inc_payload(
+            &snapshot(SystemIncProbeOutcomeKind::Paths, 1),
+            Some(owner),
+        );
+        let other = interpreter_startup_inc_payload(
+            &snapshot(SystemIncProbeOutcomeKind::Paths, 1),
+            Some("file:///home/someone/other-project/"),
+        );
+        if identity.len() != 32
+            || !identity.bytes().all(|byte| byte.is_ascii_hexdigit())
+            || identity != str_at(&repeated, "/owner/folder_hash")?
+            || identity == str_at(&other, "/owner/folder_hash")?
+        {
+            return Err("owner hash must be stable, redacted, and distinguish folders".into());
+        }
+        let global =
+            interpreter_startup_inc_payload(&snapshot(SystemIncProbeOutcomeKind::Paths, 1), None);
+        if global.pointer("/owner/folder_hash") != Some(&Value::Null)
+            || str_at(&global, "/owner/scope")? != "global"
+        {
+            return Err("global ownership must remain explicit without a folder hash".into());
         }
         Ok(())
     }
@@ -1000,7 +1030,11 @@ mod tests {
             assert_eq!(str_at(startup, "/lookup_impact")?, "not_observed");
             assert_eq!(startup.pointer("/attempts_consumed"), Some(&json!(0)));
             assert_eq!(str_at(startup, "/owner/scope")?, "workspace_folder");
-            assert_eq!(str_at(startup, "/owner/folder_uri")?, workspace_uri.as_str());
+            assert_eq!(
+                str_at(startup, "/owner/folder_hash")?,
+                format!("{:x}", md5::compute(&workspace_uri))
+            );
+            assert_eq!(str_at(&payload, "/workspace/folder_uri")?, workspace_uri.as_str());
             assert_eq!(str_at(&payload, "/module_resolution/result/status")?, "not_found");
             assert_eq!(
                 payload.pointer("/module_resolution/result/search_complete"),
@@ -1086,7 +1120,7 @@ mod tests {
         let startup_b = payload_b
             .pointer("/module_resolution/interpreter_startup_inc")
             .ok_or("missing interpreter_startup_inc for B")?;
-        assert_eq!(str_at(startup_b, "/owner/folder_uri")?, uri_b.as_str());
+        assert_eq!(str_at(startup_b, "/owner/folder_hash")?, format!("{:x}", md5::compute(&uri_b)));
         assert_eq!(str_at(startup_b, "/outcome_code")?, "disabled");
         assert_eq!(str_at(startup_b, "/lookup_impact")?, "disabled");
         assert_eq!(startup_b.pointer("/attempts_consumed"), Some(&json!(0)));
@@ -1100,7 +1134,7 @@ mod tests {
         let startup_a = payload_a
             .pointer("/module_resolution/interpreter_startup_inc")
             .ok_or("missing interpreter_startup_inc for A")?;
-        assert_eq!(str_at(startup_a, "/owner/folder_uri")?, uri_a.as_str());
+        assert_eq!(str_at(startup_a, "/owner/folder_hash")?, format!("{:x}", md5::compute(&uri_a)));
         assert_eq!(str_at(startup_a, "/outcome_code")?, "io_failed");
 
         // Invalidate folder A's configuration: the settled outcome must not

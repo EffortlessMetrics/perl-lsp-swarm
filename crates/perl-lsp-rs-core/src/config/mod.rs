@@ -5565,6 +5565,116 @@ profile = "recommended"
         })
     }
 
+    /// Real-process counterpart to the injected outcome-law tests (#13589).
+    /// Explicit invocation requires Perl; unavailable instruments fail rather
+    /// than making the required process proof silently pass.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    #[ignore = "requires a real Perl interpreter; run explicitly for startup INC process proof"]
+    #[serial_test::serial]
+    fn peek_system_inc_real_process_outcome_matrix() -> TestResult {
+        let perl = resolve_perl_path_with_toolchain()
+            .map_err(|error| format!("startup INC process proof requires Perl: {error}"))?;
+        let temp = tempfile::tempdir()?;
+        let rows = [
+            ("timeout", "sleep 10;", SystemIncProbeOutcome::TimedOut, 2u32),
+            ("failed", "exit 7;", SystemIncProbeOutcome::NonZeroExit, 1),
+            ("empty", "exit 0;", SystemIncProbeOutcome::SuccessfulEmpty, 1),
+            (
+                "paths",
+                "print(q(startup-matrix-root)); exit 0;",
+                SystemIncProbeOutcome::Paths(vec![PathBuf::from("startup-matrix-root")]),
+                1,
+            ),
+        ];
+        for (name, behavior, expected, attempts) in rows {
+            let script = temp.path().join(format!("{name}.pl"));
+            let marker = temp.path().join(format!("{name}.pl.calls"));
+            std::fs::write(
+                &script,
+                format!(
+                    "use strict; use warnings;\n\
+                     open(my $calls, '>>', __FILE__ . '.calls') or exit 90;\n\
+                     print {{$calls}} 'x'; close($calls) or exit 91;\n{behavior}\n"
+                ),
+            )?;
+            let run = || -> TestResult {
+                let mut config = WorkspaceConfig {
+                    use_system_inc: true,
+                    use_perl5lib: false,
+                    perl_path: Some(perl.to_string_lossy().into_owned()),
+                    // A script operand makes the probe's appended -e arguments
+                    // script arguments, so this real process controls stdout
+                    // without depending on the host's installed module roots.
+                    perl_args: vec![script.to_string_lossy().into_owned()],
+                    ..WorkspaceConfig::default()
+                };
+                for _ in 0..3 {
+                    let (paths, state) = config.peek_system_inc();
+                    if !paths.is_empty()
+                        || state.outcome != SystemIncProbeOutcomeKind::NotObserved
+                        || state.attempts_consumed != 0
+                        || marker.exists()
+                    {
+                        return Err(format!("{name}: an initial peek acquired Perl state").into());
+                    }
+                }
+                for attempt in 1..=attempts {
+                    let actual = config.get_system_inc_probe_outcome();
+                    if actual != expected {
+                        return Err(format!(
+                            "{name}/{attempt}: real process returned {actual:?}, expected {expected:?}"
+                        )
+                        .into());
+                    }
+                    let expected_paths = match &expected {
+                        SystemIncProbeOutcome::Paths(paths) => paths.clone(),
+                        _ => Vec::new(),
+                    };
+                    let transient = name == "timeout" && attempt == 1;
+                    let impact = if transient {
+                        SystemIncLookupImpact::OmittedTransient
+                    } else if name == "empty" || name == "paths" {
+                        SystemIncLookupImpact::Participated
+                    } else {
+                        SystemIncLookupImpact::OmittedTerminal
+                    };
+                    for _ in 0..3 {
+                        let (paths, state) = config.peek_system_inc();
+                        if paths != expected_paths
+                            || state.attempts_consumed != attempt
+                            || state.retry_eligible() != transient
+                            || state.terminal() == transient
+                            || state.lookup_impact() != impact
+                            || std::fs::read(&marker)?.len() != attempt as usize
+                        {
+                            return Err(format!(
+                                "{name}/{attempt}: peek changed process count or misreported {state:?}"
+                            )
+                            .into());
+                        }
+                    }
+                }
+                // Settled outcomes, including the second timeout, never spawn
+                // again even when a real lookup acquires the cached state.
+                if config.get_system_inc_probe_outcome() != expected
+                    || std::fs::read(&marker)?.len() != attempts as usize
+                {
+                    return Err(
+                        format!("{name}: settled acquisition launched another process").into()
+                    );
+                }
+                Ok(())
+            };
+            if name == "timeout" {
+                run()?; // The unchanged one-second production deadline, twice.
+            } else {
+                PerlOracleEnv::with_startup_inc_probe_timeout(Duration::from_secs(30), run)?;
+            }
+        }
+        Ok(())
+    }
+
     /// A single cold-start `TimedOut` must not permanently suppress a later
     /// successful probe within the same session and the same settings (#12945).
     /// The injected sequence proves same-config recovery: the first lookup
