@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "owner_issue": 7862,
-  "reason": "PR #13815 changes support-command packaging output after the current-main inventory; the exact VSIX archive is measured against the captured current-main baseline.",
-  "base_baseline_file_sha256": "adf52f10212dd1c3fbfcaf9df521a5c4b9f620cb02c2db7fb151e8323d3facdd",
-  "candidate_baseline_file_sha256": "dd6c8cfd9fc3ea81c5d3cc7af96f7ca864ac7b67fc49145f3b38917552cd0b00",
-  "base_inventory_sha256": "5ad13c627179e158278a1c36b9b9856e51b8f9ecca7df088caf3f566c0d5b46a",
-  "candidate_inventory_sha256": "62f091bc7bd41801c24316481e82cc19506fec4f377df4b180b594d43bf663b7"
+  "owner_issue": 14170,
+  "reason": "PR #14170 adds bounded support-command failure observability while preserving redaction and recovery; the exact VSIX archive is measured against the current-main baseline.",
+  "base_baseline_file_sha256": "dd6c8cfd9fc3ea81c5d3cc7af96f7ca864ac7b67fc49145f3b38917552cd0b00",
+  "candidate_baseline_file_sha256": "747afd10e0c6fabdf6a0b987723cdeabb04e16bd5e3ba3420e6b64df971113ba",
+  "base_inventory_sha256": "62f091bc7bd41801c24316481e82cc19506fec4f377df4b180b594d43bf663b7",
+  "candidate_inventory_sha256": "dc57839628c437fe1256eea3d804c144245b2304bad90a317688161dbbf2762e"
 }
