@@ -87,7 +87,7 @@ fn assert_dispatch_loop_behavior(
         &stub_gh,
         "#!/usr/bin/env bash\n\
          printf '%s\\n' \"$*\" >> \"$GH_LOG\"\n\
-         if [ \"${FAIL_WORKFLOW:-}\" = \"$3\" ]; then exit 1; fi\n",
+         if [ -n \"${FAIL_WORKFLOW:-}\" ] && [ \"$FAIL_WORKFLOW\" = \"${3:-}\" ]; then exit 1; fi\n",
     )?;
     use std::os::unix::fs::PermissionsExt;
     let mut permissions = fs::metadata(&stub_gh)?.permissions();

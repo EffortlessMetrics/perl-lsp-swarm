@@ -388,7 +388,10 @@ jobs:
           # create-pull-request step, and refuse to prove a different subject:
           # if the PR head no longer matches the head this run created, the
           # branch moved underneath us and the ci.yml dispatch is skipped
-          # rather than attached to the wrong commit.
+          # rather than attached to the wrong commit. workflow_dispatch cannot
+          # name an immutable subject, so the branch is re-resolved immediately
+          # before the ci.yml dispatch and once more after the loop; a move in
+          # either window fails the run instead of silently splitting subjects.
           # The other four workflows declare no required dispatch inputs and
           # stay bare. Keep attempting every workflow so one transient
           # failure cannot strand the later checks. The final status remains
@@ -397,12 +400,15 @@ jobs:
           failed=0
           base_sha=""
           head_sha=""
-          if pr_json=$(gh pr view "$PR_NUMBER" --json baseRefOid,headRefOid); then
+          resolve_identity() {
+            local pr_json
+            pr_json=$(gh pr view "$PR_NUMBER" --json baseRefOid,headRefOid) || return 1
             base_sha=$(printf '%s' "$pr_json" | jq -r '.baseRefOid // empty')
             head_sha=$(printf '%s' "$pr_json" | jq -r '.headRefOid // empty')
-          fi
+            [ -n "$base_sha" ] && [ -n "$head_sha" ]
+          }
           identity_ok=0
-          if [ -z "$base_sha" ] || [ -z "$head_sha" ]; then
+          if ! resolve_identity; then
             echo "::error::Could not resolve base/head identity for generated PR #$PR_NUMBER"
             failed=1
           elif [ "$head_sha" != "$CREATED_HEAD_SHA" ]; then
@@ -413,9 +419,12 @@ jobs:
           fi
           for workflow in ci.yml em-ci-routed-rust.yml ripr.yml pr-title-check.yml validate-ci-lane-history.yml; do
             if [ "$workflow" = ci.yml ]; then
-              if [ "$identity_ok" = 1 ] && gh workflow run "$workflow" --ref "$BRANCH" \
-                -f "base_sha=$base_sha" \
-                -f "head_sha=$head_sha"; then
+              if [ "$identity_ok" = 1 ] \
+                && resolve_identity \
+                && [ "$head_sha" = "$CREATED_HEAD_SHA" ] \
+                && gh workflow run "$workflow" --ref "$BRANCH" \
+                  -f "base_sha=$base_sha" \
+                  -f "head_sha=$head_sha"; then
                 continue
               fi
             elif gh workflow run "$workflow" --ref "$BRANCH"; then
@@ -424,4 +433,10 @@ jobs:
             echo "::error::Failed to dispatch $workflow"
             failed=1
           done
+          if [ "$identity_ok" = 1 ]; then
+            if ! resolve_identity || [ "$head_sha" != "$CREATED_HEAD_SHA" ]; then
+              echo "::error::Generated PR head moved during the dispatch loop; raised checks may name different subjects"
+              failed=1
+            fi
+          fi
           exit "$failed"

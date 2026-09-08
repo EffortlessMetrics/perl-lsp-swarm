@@ -237,19 +237,29 @@ mod simulation {
         fs::create_dir(&stub_dir)?;
         let stub_gh = stub_dir.join("gh");
         // `gh pr view` answers from PR_JSON (or fails when FAIL_PR_VIEW=1);
-        // every `gh workflow run` is logged with its full argument vector so
-        // the ci.yml subject inputs are observable (#15100).
+        // when PR_JSON_AFTER_CALL is set, calls at or after that ordinal
+        // answer PR_JSON_AFTER instead, simulating a branch that moves
+        // mid-step. Every `gh workflow run` is logged with its full argument
+        // vector so the ci.yml subject inputs are observable (#15100).
         fs::write(
             &stub_gh,
             "#!/usr/bin/env bash\n\
              if [ \"$1\" = pr ]; then\n\
              if [ \"${FAIL_PR_VIEW:-}\" = 1 ]; then exit 1; fi\n\
+             counter=\"$GH_LOG.prviewcount\"\n\
+             count=$(cat \"$counter\" 2>/dev/null || echo 0)\n\
+             count=$((count + 1))\n\
+             printf '%s' \"$count\" > \"$counter\"\n\
+             if [ -n \"${PR_JSON_AFTER_CALL:-}\" ] && [ \"$count\" -ge \"$PR_JSON_AFTER_CALL\" ]; then\n\
+             printf '%s\\n' \"$PR_JSON_AFTER\"\n\
+             else\n\
              printf '%s\\n' \"$PR_JSON\"\n\
+             fi\n\
              exit 0\n\
              fi\n\
              if [ \"$1\" = workflow ]; then\n\
              printf '%s\\n' \"$*\" >> \"$GH_LOG\"\n\
-             if [ \"${FAIL_WORKFLOW:-}\" = \"$3\" ]; then exit 1; fi\n\
+             if [ -n \"${FAIL_WORKFLOW:-}\" ] && [ \"$FAIL_WORKFLOW\" = \"${3:-}\" ]; then exit 1; fi\n\
              exit 0\n\
              fi\n\
              exit 2\n",
@@ -301,6 +311,47 @@ mod simulation {
             if let Some(fail_workflow) = fail_workflow {
                 command.env("FAIL_WORKFLOW", fail_workflow);
             }
+            let output = command.output()?;
+            let calls = match fs::read_to_string(&self.log_path) {
+                Ok(content) => content.lines().map(str::to_owned).collect(),
+                Err(_) => Vec::new(),
+            };
+            Ok((output, calls))
+        }
+
+        /// Simulate a branch whose head starts as `pr_json` and moves to
+        /// `pr_json_after` at the `after_call`-th identity lookup (#15100
+        /// TOCTOU guard).
+        fn run_moving(
+            &self,
+            pr_json: &str,
+            after_call: u32,
+            pr_json_after: &str,
+        ) -> Result<(Output, Vec<String>), Box<dyn std::error::Error>> {
+            if self.log_path.exists() {
+                fs::remove_file(&self.log_path)?;
+            }
+            let counter = self.log_path.with_extension("log.prviewcount");
+            if counter.exists() {
+                fs::remove_file(&counter)?;
+            }
+            let stub_dir = self.log_path.parent().ok_or("log path must have a parent")?.join("bin");
+            let existing_path = std::env::var_os("PATH").unwrap_or_default();
+            let path = std::env::join_paths(
+                std::iter::once(stub_dir).chain(std::env::split_paths(&existing_path)),
+            )?;
+            let mut command = Command::new("/bin/bash");
+            command
+                .arg("-c")
+                .arg(&self.run)
+                .env("PATH", path)
+                .env("BRANCH", DISPATCH_BRANCH)
+                .env("PR_NUMBER", "14668")
+                .env("CREATED_HEAD_SHA", HEAD_SHA)
+                .env("GH_LOG", &self.log_path)
+                .env("PR_JSON", pr_json)
+                .env("PR_JSON_AFTER_CALL", after_call.to_string())
+                .env("PR_JSON_AFTER", pr_json_after);
             let output = command.output()?;
             let calls = match fs::read_to_string(&self.log_path) {
                 Ok(content) => content.lines().map(str::to_owned).collect(),
@@ -404,6 +455,55 @@ mod simulation {
         let (output, calls) = stub.run(&pr_json(BASE_SHA, HEAD_SHA), false, Some(&first))?;
         assert!(!output.status.success(), "a failed dispatch must fail the step");
         assert_eq!(calls, expected_calls(&order), "every workflow must still be attempted");
+        Ok(())
+    }
+
+    /// A head that moves after the initial lookup but before the ci.yml
+    /// dispatch must be caught by the per-dispatch re-resolution: ci.yml is
+    /// skipped and the step fails rather than proving the moved subject
+    /// (#15100 TOCTOU guard). Lookup order in the step is: initial resolve
+    /// (1), ci.yml pre-dispatch re-resolve (2), post-loop re-resolve (3).
+    #[test]
+    fn test_head_moving_before_ci_dispatch_is_caught() -> Result<(), Box<dyn std::error::Error>> {
+        let step = dispatch_step()?;
+        let order = dispatch_order(&step.run)?;
+        let stub = stubbed_step()?;
+        let moved = "fedcba9876543210fedcba9876543210fedcba98";
+        let (output, calls) =
+            stub.run_moving(&pr_json(BASE_SHA, HEAD_SHA), 2, &pr_json(BASE_SHA, moved))?;
+        assert!(!output.status.success(), "a head moving mid-step must fail the step");
+        assert!(
+            !calls.iter().any(|call| call.contains("ci.yml")),
+            "ci.yml must not be dispatched once the subject moved: {calls:?}"
+        );
+        let bare: Vec<String> = order
+            .iter()
+            .filter(|workflow| *workflow != "ci.yml")
+            .map(|workflow| format!("workflow run {workflow} --ref {DISPATCH_BRANCH}"))
+            .collect();
+        assert_eq!(calls, bare, "the other workflows must still be attempted");
+        Ok(())
+    }
+
+    /// A head that moves after the ci.yml dispatch is caught by the
+    /// post-loop re-resolution: the dispatch already landed on the
+    /// then-verified subject, but the step must fail loudly because later
+    /// checks may name different subjects (#15100 TOCTOU guard).
+    #[test]
+    fn test_head_moving_after_ci_dispatch_fails_the_step() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let step = dispatch_step()?;
+        let order = dispatch_order(&step.run)?;
+        let stub = stubbed_step()?;
+        let moved = "fedcba9876543210fedcba9876543210fedcba98";
+        let (output, calls) =
+            stub.run_moving(&pr_json(BASE_SHA, HEAD_SHA), 3, &pr_json(BASE_SHA, moved))?;
+        assert!(!output.status.success(), "a post-dispatch head move must fail the step");
+        assert_eq!(
+            calls,
+            expected_calls(&order),
+            "the ci.yml dispatch already landed on the verified subject"
+        );
         Ok(())
     }
 }
