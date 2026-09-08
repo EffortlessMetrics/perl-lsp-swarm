@@ -777,6 +777,7 @@ impl DebugAdapter {
         let sender = self.event_sender.clone();
         let recent_output = self.recent_output.clone();
         let breakpoints = self.breakpoints.clone();
+        let workspace_root = self.workspace_root.clone();
         let exception_break_on_die = self.exception_break_on_die.clone();
         let exception_break_on_warn = self.exception_break_on_warn.clone();
         let last_exception_message = self.last_exception_message.clone();
@@ -1157,6 +1158,11 @@ impl DebugAdapter {
                             let mut stop_reason = "step".to_string();
                             let mut logpoint_messages: Vec<String> = Vec::new();
 
+                            // Snapshot source authority before acquiring the session lock.
+                            let observed_workspace_root =
+                                lock_or_recover(&workspace_root, "debug_adapter.workspace_root")
+                                    .clone();
+
                             let thread_id = {
                                 let Ok(mut guard) = session.lock() else {
                                     tracing::warn!(
@@ -1205,9 +1211,11 @@ impl DebugAdapter {
                                         ) && !current_file.is_empty()
                                             && current_line > 0
                                         {
-                                            breakpoints.register_breakpoint_hit(
+                                            DebugAdapter::register_observed_breakpoint_hit(
+                                                &breakpoints,
                                                 &current_file,
                                                 i64::from(current_line),
+                                                observed_workspace_root.as_deref(),
                                             )
                                         } else {
                                             BreakpointHitOutcome::default()

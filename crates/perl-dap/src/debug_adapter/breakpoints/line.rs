@@ -512,6 +512,79 @@ mod source_boundary_tests {
         Ok(())
     }
 
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn admitted_debugger_alias_correlates_but_outside_alias_does_not() -> Result<(), Box<dyn Error>>
+    {
+        let root = tempfile::tempdir()?;
+        let outside = tempfile::tempdir()?;
+        let source = root.path().join("canonical_target.pl");
+        let alias = root.path().join("debugger_alias.pl");
+        fs::write(&source, "print 'fixture';\n")?;
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&source, &alias)?;
+        #[cfg(windows)]
+        std::os::windows::fs::symlink_file(&source, &alias)?;
+        let mut adapter = bounded_adapter(root.path())?;
+        let body =
+            successful_body(request(&mut adapter, source_text(&alias)?, json!([{ "line": 1 }])))?;
+        require_equal(
+            single_breakpoint(&body)?.get("verified").and_then(Value::as_bool),
+            Some(true),
+            "admitted symlink must produce a verified breakpoint",
+        )?;
+
+        // Raw suffix matching cannot correlate different basenames. The output
+        // reader uses this same boundary decision before registering a runtime hit.
+        require(
+            !adapter.breakpoints.register_breakpoint_hit(source_text(&alias)?, 1).matched,
+            "control must distinguish raw alias spelling from its canonical target",
+        )?;
+        let authority = root.path().canonicalize()?;
+        let outcome = DebugAdapter::register_observed_breakpoint_hit(
+            &adapter.breakpoints,
+            source_text(&alias)?,
+            1,
+            Some(&authority),
+        );
+        require(
+            outcome.matched && outcome.should_stop,
+            "validated debugger alias must produce the breakpoint stop outcome",
+        )?;
+
+        // A symlink that resolves outside the workspace must not participate in
+        // hit correlation, even though it has an in-workspace spelling.
+        let outside_target = outside.path().join("other_target.pl");
+        let escaping_alias = root.path().join("escaping_alias.pl");
+        fs::write(&outside_target, "print 'outside';\n")?;
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&outside_target, &escaping_alias)?;
+        #[cfg(windows)]
+        std::os::windows::fs::symlink_file(&outside_target, &escaping_alias)?;
+        // Simulate records retained from an earlier unbounded session. The
+        // refusal must come from current admission, not from an empty store.
+        let outside_args = serde_json::from_value(json!({
+            "source": { "path": source_text(&outside_target)? },
+            "breakpoints": [{ "line": 1 }],
+        }))?;
+        adapter.breakpoints.set_breakpoints(&outside_args);
+        require(
+            adapter.breakpoints.register_breakpoint_hit(source_text(&outside_target)?, 1).matched,
+            "outside control must have a matching stored breakpoint before admission",
+        )?;
+        let outside_outcome = DebugAdapter::register_observed_breakpoint_hit(
+            &adapter.breakpoints,
+            source_text(&escaping_alias)?,
+            1,
+            Some(&authority),
+        );
+        require(
+            !outside_outcome.matched && !outside_outcome.should_stop,
+            "observed escaping alias must not claim a breakpoint stop",
+        )?;
+        Ok(())
+    }
+
     #[cfg(unix)]
     #[test]
     fn symlink_to_outside_source_is_refused() -> Result<(), Box<dyn Error>> {
