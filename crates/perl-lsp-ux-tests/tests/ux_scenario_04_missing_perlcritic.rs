@@ -18,6 +18,35 @@ use perl_lsp_ux_tests::{
 };
 use std::time::Duration;
 
+const WORKFLOW_ID: &str = "missing_perlcritic_graceful_degradation";
+
+#[test]
+fn scenario_04_workflow_id_matches_matrix() -> anyhow::Result<()> {
+    let matrix: serde_json::Value =
+        serde_json::from_str(include_str!("../fixtures/editor_ux_fixture_matrix.json"))?;
+    let workflows = matrix
+        .get("workflows")
+        .and_then(serde_json::Value::as_array)
+        .context("fixture matrix workflows missing")?;
+    let entry = workflows
+        .iter()
+        .find(|entry| {
+            entry.get("scenario_file").and_then(serde_json::Value::as_str)
+                == Some("ux_scenario_04_missing_perlcritic.rs")
+        })
+        .context("scenario 04 missing from fixture matrix")?;
+    anyhow::ensure!(
+        entry.get("id").and_then(serde_json::Value::as_str) == Some(WORKFLOW_ID),
+        "scenario 04 receipt identity differs from fixture matrix"
+    );
+    anyhow::ensure!(
+        entry.pointer("/instrumentation/run_receipt").and_then(serde_json::Value::as_bool)
+            == Some(true),
+        "scenario 04 receipt instrumentation must be enabled"
+    );
+    Ok(())
+}
+
 fn config_without_perlcritic() -> ScenarioConfig {
     // Exclude only perlcritic from PATH, leaving perl and other tools available.
     // This accurately simulates "user has perl but not perlcritic installed".
@@ -34,7 +63,7 @@ fn config_without_perlcritic() -> ScenarioConfig {
 #[test]
 fn scenario_04_diagnostics_without_perlcritic_no_crash() {
     run_ux_scenario_with_evidence_class(
-        "missing_perlcritic",
+        WORKFLOW_ID,
         "ux_scenario_04_missing_perlcritic.rs",
         "scenario_04_diagnostics_without_perlcritic_no_crash",
         UxCiTier::Pr,
@@ -61,7 +90,7 @@ fn scenario_04_diagnostics_without_perlcritic_no_crash() {
 #[test]
 fn scenario_04_server_responsive_without_perlcritic() {
     run_ux_scenario_with_evidence_class(
-        "missing_perlcritic",
+        WORKFLOW_ID,
         "ux_scenario_04_missing_perlcritic.rs",
         "scenario_04_server_responsive_without_perlcritic",
         UxCiTier::Pr,
