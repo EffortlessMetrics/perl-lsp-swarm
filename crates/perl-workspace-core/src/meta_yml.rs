@@ -931,11 +931,14 @@ fn split_key(
             ':' if depth == 0 => {
                 let after = &text[i + 1..];
                 if after.is_empty() || after.starts_with(' ') || after.starts_with('\t') {
-                    let key = unquote(text[..i].trim(), line, in_flow)?;
-                    // Merge keys are refused at the shared key seam so block
-                    // mappings, flow mappings, and sequence items all reject
-                    // them instead of publishing a fake `<<` entry.
-                    if key == "<<" {
+                    let raw_key = text[..i].trim();
+                    let key = unquote(raw_key, line, in_flow)?;
+                    // Only the plain scalar `<<` is a merge key; a quoted
+                    // `"<<"` is an ordinary string key. Refuse at the shared
+                    // key seam so block mappings, flow mappings, and sequence
+                    // items all reject merge keys instead of publishing a
+                    // fake `<<` entry.
+                    if raw_key == "<<" {
                         return Err(MetaYmlFinding::new(
                             MetaYmlFindingKind::AnchorAliasOrTag,
                             Some(line),
@@ -1754,6 +1757,15 @@ build_requires:
         // The `<<` token as a *value* is an ordinary plain scalar.
         let facts = must_some(parse_meta_yml(fid(), "name: <<\n").facts);
         assert_eq!(facts.name.as_deref(), Some("<<"));
+
+        // A quoted `"<<"` key is an ordinary string key, not a merge key.
+        for input in ["\"<<\": 1\nname: X\n", "requires: { '<<': 1 }\n"] {
+            assert_eq!(
+                parse_meta_yml(fid(), input).state,
+                MetaYmlParseState::Parsed,
+                "{input}: quoted merge-key token must parse"
+            );
+        }
     }
 
     #[test]
