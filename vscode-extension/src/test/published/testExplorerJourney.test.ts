@@ -35,12 +35,9 @@ suite('Installed Test Explorer prove journey', function () {
         'use strict;',
         'use warnings;',
         'select undef, undef, undef, 0.2;',
-        'open my $marker, ">", $ENV{PERL_LSP_TEST_EXPLORER_MARKER} or die $!;',
-        'print {$marker} "completed\\n$0\\n";',
-        'close $marker or die $!;',
         'print "1..1\\n";',
         'print "ok 1 - installed special path\\n";',
-        `open my $end, ">", $ENV{PERL_LSP_TEST_EXPLORER_MARKER} or die $!; print {$end} "END:${token}\\n$0\\n"; close $end or die $!;`,
+        `my $tmp = $ENV{PERL_LSP_TEST_EXPLORER_MARKER} . '.tmp'; open my $end, ">", $tmp or die $!; print {$end} "END:${token}\\n$0\\n"; close $end or die $!; rename $tmp, $ENV{PERL_LSP_TEST_EXPLORER_MARKER} or die $!;`,
         '',
       ].join('\n'),
       'utf8',
@@ -61,14 +58,7 @@ suite('Installed Test Explorer prove journey', function () {
         'installed Test Explorer journey requires the readiness awaitable',
       );
       await extensionApi.waitForActiveDocumentReady(document.uri.toString(), 60_000);
-      // VS Code exposes no awaitable discovery result for a TestController.
-      // Refresh sequentially within a bounded window before the single run;
-      // this avoids overlapping runs while allowing the installed adapter's
-      // asynchronous file scan to observe the newly-created fixture.
-      for (let attempt = 0; attempt < 6; attempt += 1) {
-        await vscode.commands.executeCommand('testing.refreshTests');
-        await new Promise((resolve) => setTimeout(resolve, 500));
-      }
+      await vscode.commands.executeCommand('testing.refreshTests');
       await vscode.commands.executeCommand('testing.runAll');
       const raw = await waitForFile(marker, 90_000);
       const [phase, test0] = raw.trim().split(/\r?\n/);
