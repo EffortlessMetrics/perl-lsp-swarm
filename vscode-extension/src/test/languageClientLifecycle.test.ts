@@ -577,6 +577,9 @@ describe('LanguageClientLifecycle', () => {
 
     expect(client).toBe(harness.clients[0]);
     expect(harness.controller.snapshot.state).toBe('failed');
-    expect(harness.controller.snapshot.error).toBe(listenerError);
+    expect(harness.controller.snapshot.error).toMatchObject({
+      reason: 'cleanup-incomplete',
+      cause: listenerError,
+    });
   });
 });
