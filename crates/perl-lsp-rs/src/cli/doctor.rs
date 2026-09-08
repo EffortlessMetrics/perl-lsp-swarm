@@ -672,6 +672,7 @@ const RUSTUP_INSTALL_ONE_LINER: &str =
 
 const FIX_BASH_INSTALL_GIT_WINDOWS: &str =
     "fix: install Git for Windows so a POSIX bash is available: winget install --id Git.Git -e";
+const FIX_BASH_INSTALL_UNIX: &str = "fix: install bash with your distribution's package manager so repository .sh entrypoints can run";
 
 const FIX_PERL_IDENTITY_DIVERGENCE: &str = "fix: reorder PATH so your intended perl resolves first ('where perl' lists resolution order on Windows, 'which -a perl' elsewhere), or pin [perl] perl_path in .perl-lsp.toml";
 const FIX_PERL_MISSING_WINDOWS: &str =
@@ -690,8 +691,6 @@ const REPO_BASH_ENTRYPOINTS: [(&str, RepoEntrypointKind); 3] = [
 ];
 /// Documented-prerequisite line demanded by #12595.
 const BASH_PREREQUISITE_LINE: &str = "Repository conformance entrypoints (.github/run_all_tests.sh, scripts/*.sh, scripts/cargo-safe) assume a POSIX bash; Git Bash ships with Git for Windows.";
-
-const MAX_REPO_ROOT_WALK_DEPTH: usize = 12;
 
 /// One parsed `major.minor.patch` toolchain version triple.
 type VersionTriple = (u64, u64, u64);
@@ -906,19 +905,12 @@ fn repo_entrypoints_complete(root: &Path) -> bool {
     })
 }
 
-/// Walk up from `start` until the repository entrypoint marker appears, with
-/// a bounded depth so doctor cannot wander through unbounded parents.
+/// Walk up from `start` until the repository entrypoint marker appears.
 fn locate_repo_root(start: &Path) -> Option<PathBuf> {
-    let mut current = start.to_path_buf();
-    for _ in 0..=MAX_REPO_ROOT_WALK_DEPTH {
-        if current.join(REPO_ENTRYPOINT_MARKER).is_file() {
-            return Some(current);
-        }
-        if !current.pop() {
-            return None;
-        }
-    }
-    None
+    start
+        .ancestors()
+        .find(|current| current.join(REPO_ENTRYPOINT_MARKER).is_file())
+        .map(Path::to_path_buf)
 }
 
 // ── Symlink privilege probe (#12567) ────────────────────────────────────────
@@ -1014,9 +1006,11 @@ fn parse_version_word(word: &str) -> Option<VersionTriple> {
 }
 
 /// How a reachable cargo was installed, decided purely from its resolved
-/// path: rustup shims live under `.cargo/bin` and honor rust-toolchain.toml;
-/// direct `.rustup/toolchains` binaries are rustup-installed but bypass the
-/// shim; anything else (apt/distro cargo) ignores the pin.
+/// path: rustup shims live under `.cargo/bin`; direct `.rustup/toolchains`
+/// binaries are rustup-installed but bypass the shim; anything else (apt/distro
+/// cargo) ignores the pin. Path provenance does not observe the active
+/// toolchain selection, so a shim cannot prove that it honored the workspace
+/// file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CargoProvenance {
     RustupShim,
@@ -1034,10 +1028,7 @@ impl CargoProvenance {
     }
 }
 
-/// How a reachable cargo was installed, decided purely from its resolved
-/// path: rustup shims live under `.cargo/bin` and honor rust-toolchain.toml;
-/// direct `.rustup/toolchains` binaries are rustup-installed but bypass the
-/// shim; anything else (apt/distro cargo) ignores the pin.
+/// How a reachable cargo was installed, decided purely from its resolved path.
 fn classify_cargo_provenance(cargo_path: &str) -> CargoProvenance {
     classify_cargo_provenance_with_home(cargo_path, std::env::var("CARGO_HOME").ok().as_deref())
 }
@@ -1547,8 +1538,14 @@ fn finish_reachable_cargo_report(
         version: version_line,
         provenance: provenance.map_or(PROVENANCE_UNKNOWN, CargoProvenance::code),
         meets_workspace_pin,
-        honors_toolchain_file: provenance
-            .map(|provenance| provenance == CargoProvenance::RustupShim),
+        // Path provenance distinguishes direct/non-rustup cargo from a rustup
+        // shim, but it cannot observe cwd or rustup overrides. A shim therefore
+        // remains unknown until the active selection is probed.
+        honors_toolchain_file: match provenance {
+            Some(CargoProvenance::RustupShim) => None,
+            Some(CargoProvenance::RustupToolchain | CargoProvenance::NonRustup) => Some(false),
+            None => None,
+        },
         error,
         fix,
     }
@@ -1582,10 +1579,14 @@ fn unreachable_cargo_report(flavor: &'static str, detail: &str) -> CargoToolchai
 // ── Bash flavors and repository entrypoints ────────────────────────────────
 
 fn native_shell_bash_report() -> BashFlavorReport {
-    native_shell_bash_report_for_platform(cfg!(windows))
+    let bash_executable = if cfg!(windows) { None } else { resolve_tool_on_path("bash") };
+    native_shell_bash_report_for_platform(cfg!(windows), bash_executable)
 }
 
-fn native_shell_bash_report_for_platform(windows_host: bool) -> BashFlavorReport {
+fn native_shell_bash_report_for_platform(
+    windows_host: bool,
+    bash_executable: Option<PathBuf>,
+) -> BashFlavorReport {
     if windows_host {
         BashFlavorReport {
             flavor: FLAVOR_NATIVE_SHELL,
@@ -1595,14 +1596,24 @@ fn native_shell_bash_report_for_platform(windows_host: bool) -> BashFlavorReport
             note: "native Windows shell is available; repository .sh entrypoint execution is not proven; use Git Bash or WSL".to_string(),
             fix: None,
         }
-    } else {
+    } else if let Some(bash_executable) = bash_executable {
         BashFlavorReport {
             flavor: FLAVOR_NATIVE_SHELL,
             status: STATUS_PRESENT,
+            bash_path: Some(bash_executable.display().to_string()),
+            runs_repo_entrypoints: None,
+            note: "native POSIX bash is available; repository .sh entrypoint execution is not proven by this probe".to_string(),
+            fix: None,
+        }
+    } else {
+        BashFlavorReport {
+            flavor: FLAVOR_NATIVE_SHELL,
+            status: STATUS_MISSING,
             bash_path: None,
             runs_repo_entrypoints: None,
-            note: "POSIX shell is available; repository .sh entrypoint execution is not proven by this probe".to_string(),
-            fix: None,
+            note: "bash was not found on PATH; native repository .sh entrypoint execution is not proven"
+                .to_string(),
+            fix: Some(FIX_BASH_INSTALL_UNIX.to_string()),
         }
     }
 }
@@ -3140,6 +3151,20 @@ mod tests {
     }
 
     #[test]
+    fn rustup_shim_does_not_claim_workspace_selection_from_path_alone() -> TestResult {
+        let report = finish_reachable_cargo_report(
+            FLAVOR_NATIVE_SHELL,
+            Some(PathBuf::from(r"C:\Users\dev\.cargo\bin\cargo.exe")),
+            "cargo 1.95.0 (8f3d0b0ac 2026-01-30)",
+        );
+
+        if report.honors_toolchain_file.is_some() {
+            return Err("a rustup shim path cannot prove active workspace selection".into());
+        }
+        Ok(())
+    }
+
+    #[test]
     fn classify_windows_bash_path_separates_wsl_shim_from_git_bash() {
         assert_eq!(
             classify_windows_bash_path(r"C:\Windows\System32\bash.exe"),
@@ -3167,21 +3192,51 @@ mod tests {
     }
 
     #[test]
-    fn native_posix_shell_keeps_entrypoint_execution_unproven() {
-        let report = native_shell_bash_report_for_platform(false);
+    fn native_posix_shell_reports_resolved_bash_without_execution_proof() -> TestResult {
+        let report =
+            native_shell_bash_report_for_platform(false, Some(PathBuf::from("/usr/bin/bash")));
 
-        assert_eq!(report.status, STATUS_PRESENT);
-        assert_eq!(report.runs_repo_entrypoints, None);
-        assert!(report.note.contains("execution is not proven"));
+        if report.status != STATUS_PRESENT
+            || report.bash_path.as_deref() != Some("/usr/bin/bash")
+            || report.runs_repo_entrypoints.is_some()
+            || !report.note.contains("execution is not proven")
+        {
+            return Err(format!("unexpected resolved Bash report: {:?}", report.status).into());
+        }
+        if report.fix.is_some() {
+            return Err("resolved Bash must not carry an installation fix".into());
+        }
+        Ok(())
     }
 
     #[test]
-    fn native_windows_shell_keeps_entrypoint_execution_unproven() {
-        let report = native_shell_bash_report_for_platform(true);
+    fn native_posix_shell_reports_missing_bash_honestly() -> TestResult {
+        let report = native_shell_bash_report_for_platform(false, None);
 
-        assert_eq!(report.status, STATUS_PRESENT);
-        assert_eq!(report.runs_repo_entrypoints, None);
-        assert!(report.note.contains("execution is not proven"));
+        if report.status != STATUS_MISSING
+            || report.bash_path.is_some()
+            || report.runs_repo_entrypoints.is_some()
+            || !report.note.contains("bash was not found")
+        {
+            return Err("missing native Bash must not be reported as present".into());
+        }
+        if report.fix.as_deref() != Some(FIX_BASH_INSTALL_UNIX) {
+            return Err("missing native Bash should carry the Unix installation fix".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn native_windows_shell_keeps_entrypoint_execution_unproven() -> TestResult {
+        let report = native_shell_bash_report_for_platform(true, None);
+
+        if report.status != STATUS_PRESENT
+            || report.runs_repo_entrypoints.is_some()
+            || !report.note.contains("execution is not proven")
+        {
+            return Err("native Windows shell semantics changed".into());
+        }
+        Ok(())
     }
 
     #[test]
@@ -3328,6 +3383,35 @@ mod tests {
     }
 
     #[test]
+    fn locate_repo_root_walks_beyond_legacy_depth_and_rejects_deep_marker_free_tree() -> TestResult
+    {
+        let temp = tempfile::tempdir()?;
+        let mut nested = temp.path().to_path_buf();
+        for index in 0..13 {
+            nested.push(format!("level-{index}"));
+        }
+        std::fs::create_dir_all(&nested)?;
+        std::fs::create_dir_all(temp.path().join(".github"))?;
+        std::fs::write(temp.path().join(REPO_ENTRYPOINT_MARKER), "#!/bin/sh\n")?;
+
+        let root = locate_repo_root(&nested).ok_or("deep marker should be found")?;
+        if root != temp.path() {
+            return Err(format!("deep marker resolved to {}", root.display()).into());
+        }
+
+        let marker_free = tempfile::tempdir()?;
+        let mut deep_marker_free = marker_free.path().to_path_buf();
+        for index in 0..13 {
+            deep_marker_free.push(format!("level-{index}"));
+        }
+        std::fs::create_dir_all(&deep_marker_free)?;
+        if locate_repo_root(&deep_marker_free).is_some() {
+            return Err("marker-free deep tree must fail closed".into());
+        }
+        Ok(())
+    }
+
+    #[test]
     fn repo_entrypoints_require_expected_file_and_directory_kinds() -> TestResult {
         let valid = tempfile::tempdir()?;
         std::fs::create_dir_all(valid.path().join(".github"))?;
@@ -3434,7 +3518,7 @@ mod tests {
                     version: Some("cargo 1.95.0 (8f3d0b0ac 2026-01-30)".to_string()),
                     provenance: PROVENANCE_RUSTUP_SHIM,
                     meets_workspace_pin: Some(true),
-                    honors_toolchain_file: Some(true),
+                    honors_toolchain_file: None,
                     error: None,
                     fix: None,
                 },
