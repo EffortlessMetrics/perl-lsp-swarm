@@ -117,6 +117,45 @@ fn a_fully_read_unencumbered_subject_is_admitted() -> Result<(), Box<dyn std::er
     Ok(())
 }
 
+#[test]
+fn missing_parent_fork_evidence_is_an_error() -> Result<(), Box<dyn std::error::Error>> {
+    let parent = merged_parent_json().replace(",\"isCrossRepository\":false", "");
+    let commands = healthy().on("gh pr view 7799", &parent);
+    if collect_request(&commands, 7799, "origin").is_ok() {
+        return Err("missing parent fork evidence was accepted".into());
+    }
+    Ok(())
+}
+
+#[test]
+fn malformed_parent_fork_evidence_is_an_error() -> Result<(), Box<dyn std::error::Error>> {
+    for value in ["null", "\"false\"", "0", "[]", "{}"] {
+        let parent = merged_parent_json()
+            .replace("\"isCrossRepository\":false", &format!("\"isCrossRepository\":{value}"));
+        let commands = healthy().on("gh pr view 7799", &parent);
+        if collect_request(&commands, 7799, "origin").is_ok() {
+            return Err(format!("non-boolean parent fork evidence was accepted: {value}").into());
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn duplicate_parent_fork_evidence_is_an_error() -> Result<(), Box<dyn std::error::Error>> {
+    for fields in [
+        r#""isCrossRepository":false,"isCrossRepository":true"#,
+        r#""isCrossRepository":true,"isCrossRepository":false"#,
+        r#""isCrossRepository":false,"isCrossRepository":false"#,
+    ] {
+        let parent = merged_parent_json().replace("\"isCrossRepository\":false", fields);
+        let commands = healthy().on("gh pr view 7799", &parent);
+        if collect_request(&commands, 7799, "origin").is_ok() {
+            return Err(format!("duplicate parent fork evidence was accepted: {fields}").into());
+        }
+    }
+    Ok(())
+}
+
 /// Repository identity is derived from the remote, not supplied by the
 /// caller, so a live plan cannot be aimed at a repository the child check
 /// never covered.
@@ -419,7 +458,7 @@ fn a_non_terminal_parent_retains() -> Result<(), Box<dyn std::error::Error>> {
         let commands = healthy().on(
             "gh pr view 7799",
             &format!(
-                r#"{{"number":7799,"state":"{state}","merged":{merged},"headRefName":"{BRANCH}","headRefOid":"{HEAD_SHA}"}}"#
+                r#"{{"number":7799,"state":"{state}","merged":{merged},"headRefName":"{BRANCH}","headRefOid":"{HEAD_SHA}","isCrossRepository":false}}"#
             ),
         );
         let outcome = evaluate(&collect_request(&commands, 7799, "origin")?.request);
@@ -551,7 +590,7 @@ fn the_deletion_path_refuses_every_retaining_outcome() -> Result<(), Box<dyn std
         healthy().on(
             "gh pr view 7799",
             &format!(
-                r#"{{"number":7799,"state":"OPEN","merged":false,"headRefName":"{BRANCH}","headRefOid":"{HEAD_SHA}"}}"#
+                r#"{{"number":7799,"state":"OPEN","merged":false,"headRefName":"{BRANCH}","headRefOid":"{HEAD_SHA}","isCrossRepository":false}}"#
             ),
         ),
     ];
@@ -611,7 +650,7 @@ fn a_branch_name_with_shell_metacharacters_stays_one_argument()
         .on(
             "gh pr view 7799",
             &format!(
-                r#"{{"number":7799,"state":"MERGED","merged":true,"headRefName":"{hostile}","headRefOid":"{HEAD_SHA}"}}"#
+                r#"{{"number":7799,"state":"MERGED","merged":true,"headRefName":"{hostile}","headRefOid":"{HEAD_SHA}","isCrossRepository":false}}"#
             ),
         )
         .on("git ls-remote origin", &format!("{HEAD_SHA}\trefs/heads/{hostile}\n"));
