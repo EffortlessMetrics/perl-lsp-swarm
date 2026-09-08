@@ -553,34 +553,25 @@ describe('bounded prove process execution', () => {
   }, 30_000);
 
   test('surfaces termination_failed when forced kill never yields close', async () => {
-    const live: ChildProcess[] = [];
+    const child = fakeChildProcess();
     try {
-      const result = await runBoundedProcess(
-        process.execPath,
-        ['-e', 'setTimeout(() => {}, 5000)'],
-        {
-          shell: false,
-          timeoutMs: 50,
-          maxOutputBytes: 32,
-          terminationGraceMs: 25,
-          terminationWatchdogMs: 150,
-          killProcess: (proc) => {
-            live.push(proc);
-            return false;
-          },
-        },
-      );
+      const result = await runBoundedProcess(process.execPath, [], {
+        shell: false,
+        timeoutMs: 50,
+        maxOutputBytes: 32,
+        terminationGraceMs: 25,
+        terminationWatchdogMs: 150,
+        spawnProcess: (() => child) as never,
+        killProcess: () => false,
+        ...(process.platform === 'win32'
+          ? { killProcessTree: async () => ({ ok: true as const }) }
+          : {}),
+      });
 
       expect(result.outcome).toBe('termination_failed');
       expect(result.diagnostic).toContain('forced termination');
     } finally {
-      for (const proc of live) {
-        try {
-          proc.kill('SIGKILL');
-        } catch {
-          // Best-effort cleanup for the intentionally unkillable seam.
-        }
-      }
+      child.removeAllListeners();
     }
   }, 30_000);
 
