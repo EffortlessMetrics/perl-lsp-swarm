@@ -8,15 +8,8 @@ fn contains_truncated_chain(diagnostics: &[ParseError]) -> bool {
     })
 }
 
-fn find_hash_slice(node: &Node) -> Option<&Node> {
-    if matches!(node.kind, NodeKind::HashSlice { .. }) {
-        return Some(node);
-    }
-    node.children().into_iter().find_map(find_hash_slice)
-}
-
 #[test]
-fn every_truncated_postfix_dereference_sigil_records_recovery() {
+fn every_truncated_postfix_dereference_sigil_records_recovery() -> Result<(), String> {
     let mut missing = Vec::new();
     for suffix in ["$", "@", "%", "&", "*", "$#"] {
         let source = format!("my $value = $ref->{suffix}");
@@ -27,7 +20,10 @@ fn every_truncated_postfix_dereference_sigil_records_recovery() {
             missing.push((source, output.diagnostics, output.ast.to_sexp()));
         }
     }
-    assert!(missing.is_empty(), "truncated postfix cases without recovery: {missing:?}");
+    if !missing.is_empty() {
+        return Err(format!("truncated postfix cases without recovery: {missing:?}"));
+    }
+    Ok(())
 }
 
 #[test]
@@ -116,28 +112,110 @@ fn first_error(node: &Node) -> Option<&Node> {
 }
 
 #[test]
-fn recovered_hash_slice_contains_its_selector_and_preserves_following_statement()
+fn recovered_slices_contain_their_selectors_and_preserve_following_declaration()
 -> Result<(), String> {
-    let source = "my @values = @$ref{'alpha';\nmy $next = 1;\n";
-    let mut parser = Parser::new(source);
-    let output = parser.parse_with_recovery();
-
-    let slice = find_hash_slice(&output.ast).ok_or("recovered hash slice not found")?;
-    let NodeKind::HashSlice { target, keys } = &slice.kind else {
-        return Err("find_hash_slice returned a non-slice node".to_string());
-    };
-    assert!(slice.location.start <= target.location.start);
-    assert!(
-        slice.location.end >= keys.location.end,
-        "slice span {:?} must contain selector span {:?}",
-        slice.location,
-        keys.location
-    );
-
-    assert!(
-        matches!(&output.ast.kind, NodeKind::Program { statements } if statements.len() >= 2),
-        "recovery must preserve the following statement: {}",
-        output.ast.to_sexp()
-    );
+    for (expression, expected_operator, selector_text) in [
+        ("@$ref{'alpha'", "hash_slice", "'alpha'"),
+        ("$ref->@[0", "->@[]", "0"),
+        ("$ref->@{'alpha'", "hash_slice", "'alpha'"),
+        ("$ref->%{'alpha'", "->%{}", "'alpha'"),
+    ] {
+        let source = format!("my @values = {expression};\nmy $next = 1;\n");
+        let mut parser = Parser::new(&source);
+        let output = parser.parse_with_recovery();
+        if output.diagnostics.is_empty() {
+            return Err(format!("{source}: missing delimiter must produce a diagnostic"));
+        }
+        let NodeKind::Program { statements } = &output.ast.kind else {
+            return Err(format!("{source}: expected Program, got {}", output.ast.to_sexp()));
+        };
+        let first =
+            statements.first().ok_or_else(|| format!("{source}: missing first statement"))?;
+        let NodeKind::VariableDeclaration { initializer: Some(slice), .. } = &first.kind else {
+            return Err(format!("{source}: recovered declaration missing: {}", first.to_sexp()));
+        };
+        let (target, selector) = match &slice.kind {
+            NodeKind::HashSlice { target, keys } if expected_operator == "hash_slice" => {
+                (target, keys)
+            }
+            NodeKind::Binary { op, left, right }
+                if expected_operator != "hash_slice" && op == expected_operator =>
+            {
+                (left, right)
+            }
+            _ => return Err(format!("{source}: wrong recovered selector: {}", slice.to_sexp())),
+        };
+        let receiver = if expression.starts_with('@') {
+            let NodeKind::Unary { op, operand } = &target.kind else {
+                return Err(format!("{source}: missing array dereference receiver"));
+            };
+            if op != "@{}" {
+                return Err(format!("{source}: wrong receiver operator {op}"));
+            }
+            operand
+        } else {
+            target
+        };
+        if !matches!(&receiver.kind, NodeKind::Variable { sigil, name } if sigil == "$" && name == "ref")
+        {
+            return Err(format!("{source}: wrong receiver: {}", receiver.to_sexp()));
+        }
+        let selector_matches = match &selector.kind {
+            NodeKind::Number { value } => selector_text == "0" && value == "0",
+            NodeKind::String { value, interpolated } => {
+                selector_text == "'alpha'" && value == "'alpha'" && !interpolated
+            }
+            _ => false,
+        };
+        if !selector_matches {
+            return Err(format!("{source}: wrong selector value: {}", selector.to_sexp()));
+        }
+        let selector_start = source.find(selector_text).ok_or("fixture selector missing")?;
+        if selector.location.start != selector_start
+            || selector.location.end != selector_start + selector_text.len()
+        {
+            return Err(format!(
+                "{source}: selector has wrong source span: {:?}",
+                selector.location
+            ));
+        }
+        for child in [target, selector] {
+            if slice.location.start > child.location.start
+                || slice.location.end < child.location.end
+            {
+                return Err(format!(
+                    "{source}: slice span {:?} must contain child span {:?}",
+                    slice.location, child.location
+                ));
+            }
+        }
+        let next =
+            statements.get(1).ok_or_else(|| format!("{source}: following statement lost"))?;
+        let NodeKind::VariableDeclaration {
+            declarator, variable, initializer: Some(value), ..
+        } = &next.kind
+        else {
+            return Err(format!("{source}: following declaration lost: {}", next.to_sexp()));
+        };
+        if declarator != "my"
+            || !matches!(&variable.kind, NodeKind::Variable { sigil, name } if sigil == "$" && name == "next")
+            || !matches!(&value.kind, NodeKind::Number { value } if value == "1")
+        {
+            return Err(format!("{source}: following declaration changed: {}", next.to_sexp()));
+        }
+        let next_start = source.find("my $next").ok_or("fixture declaration missing")?;
+        let value_start = source.find("1;").ok_or("fixture initializer missing")?;
+        if statements.len() != 2
+            || next.location.start != next_start
+            || variable.location.start != next_start + "my ".len()
+            || value.location.start != value_start
+            || value.location.end != value_start + 1
+        {
+            return Err(format!(
+                "{source}: following declaration structure or spans changed: {}",
+                output.ast.to_sexp()
+            ));
+        }
+    }
     Ok(())
 }
