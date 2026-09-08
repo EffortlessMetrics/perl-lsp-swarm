@@ -295,7 +295,63 @@ function shutdownTargetExited(child) {
     }
     // Permission or instrumentation failures are not evidence of absence.
   }
+  const groupHasLiveProcess = inspectPosixProcessGroup(pid);
+  if (groupHasLiveProcess === false) {
+    child.groupExited = true;
+    return true;
+  }
   return false;
+}
+
+/**
+ * Inspect a Linux `/proc` view of one process group. A successful
+ * `kill(-pid, 0)` also sees zombie members, so an all-zombie group must be
+ * treated as stopped while a mixed group remains live. Missing or unreadable
+ * process metadata is deliberately unknown and keeps the fail-closed result.
+ *
+ * @param {number} pid
+ * @param {string} [procRoot]
+ * @returns {boolean | null} true if a live member exists, false if every
+ *   observed member is a zombie, null if the view is unavailable/ambiguous
+ */
+function inspectPosixProcessGroup(pid, procRoot = '/proc') {
+  /** @type {string[]} */
+  let entries;
+  try {
+    entries = fs.readdirSync(procRoot);
+  } catch {
+    return null;
+  }
+  let foundMember = false;
+  for (const entry of entries) {
+    if (!/^\d+$/.test(entry)) {
+      continue;
+    }
+    let stat;
+    try {
+      stat = fs.readFileSync(path.join(procRoot, entry, 'stat'), 'utf8');
+    } catch (error) {
+      if (/** @type {NodeJS.ErrnoException} */ (error).code === 'ENOENT') {
+        continue;
+      }
+      return null;
+    }
+    const closeParen = stat.lastIndexOf(')');
+    if (closeParen < 0) {
+      return null;
+    }
+    const fields = stat.slice(closeParen + 1).trim().split(/\s+/);
+    const state = fields[0];
+    const processGroup = fields[2];
+    if (processGroup !== String(pid)) {
+      continue;
+    }
+    foundMember = true;
+    if (state !== 'Z') {
+      return true;
+    }
+  }
+  return foundMember ? false : null;
 }
 
 /**
@@ -431,6 +487,7 @@ function runTaskkill(pid) {
  *   children: WatchChildSpec[],
  *   reporter?: {info: (message: string) => void, error: (message: string) => void},
  *   outputStreams?: {stdout?: NodeJS.WritableStream, stderr?: NodeJS.WritableStream},
+ *   flushOutput?: () => Promise<void>,
  *   options?: Partial<SupervisorOptions>,
  * }} input
  * @returns {{
@@ -507,6 +564,15 @@ function runDevSupervisor(input) {
       reportError(`FAIL: ${detail}`);
     } catch {
       // The failure path cannot rely on either reporting stream remaining open.
+    }
+    if (shutdownStarted) {
+      // The terminal result is not settled yet: preserve a late final-write
+      // failure in the result that will be copied below.
+      if (result.code === 0) {
+        result.code = 1;
+      }
+      result.reason = `${STOP_REASONS.OUTPUT_FAILURE}:${stream}`;
+      return;
     }
     void shutdown(`${STOP_REASONS.OUTPUT_FAILURE}:${stream}`, 1);
   }
@@ -682,6 +748,13 @@ function runDevSupervisor(input) {
       result.code = 1;
     }
     emit(exitedMessage(result.code, reason));
+    if (input.flushOutput !== undefined) {
+      try {
+        await input.flushOutput();
+      } catch (error) {
+        onOutputFailure('reporter', error);
+      }
+    }
     settle({ ...result });
   }
 
@@ -1069,6 +1142,35 @@ function flushCliOutput() {
 }
 
 /**
+ * Returns a small signal bridge that can queue a signal while the controller
+ * is being constructed. The handlers therefore exist before any watcher
+ * spawn, while repeated signals still reach the controller's escalation path.
+ *
+ * @returns {{handle: (signal: NodeJS.Signals) => void, attach: (controller: {stop: (signal: NodeJS.Signals) => void}) => void}}
+ */
+function createSignalBridge() {
+  /** @type {{stop: (signal: NodeJS.Signals) => void} | null} */
+  let controller = null;
+  /** @type {NodeJS.Signals[]} */
+  const pending = [];
+  return {
+    handle(signal) {
+      if (controller === null) {
+        pending.push(signal);
+        return;
+      }
+      controller.stop(signal);
+    },
+    attach(nextController) {
+      controller = nextController;
+      for (const signal of pending.splice(0)) {
+        controller.stop(signal);
+      }
+    },
+  };
+}
+
+/**
  * Publish a terminal result, give stdout/stderr a bounded drain window, then
  * exit explicitly so inherited descendant pipe handles cannot keep the CLI
  * alive after cleanup has been reported honestly.
@@ -1082,6 +1184,12 @@ function exitAfterCliOutput(code) {
 
 function main() {
   const reporter = createReporter(REPORT_SCOPE);
+  const signalBridge = createSignalBridge();
+  for (const signal of /** @type {NodeJS.Signals[]} */ (['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGBREAK'])) {
+    process.on(signal, () => {
+      signalBridge.handle(signal);
+    });
+  }
   /** @type {{children: WatchChildSpec[], options: Partial<SupervisorOptions>}} */
   let config;
   try {
@@ -1094,16 +1202,10 @@ function main() {
   const controller = runDevSupervisor({
     children: config.children,
     reporter,
+    flushOutput: flushCliOutput,
     options: config.options,
   });
-  // Handlers stay installed for the whole shutdown: a repeated interrupt
-  // must escalate inside the owned path, never restore Node's default
-  // termination while watcher trees are still alive.
-  for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGBREAK']) {
-    process.on(signal, () => {
-      void controller.stop(signal);
-    });
-  }
+  signalBridge.attach(controller);
   controller
     .waitForExit()
     .then((result) => {
@@ -1136,7 +1238,9 @@ module.exports = {
   childFailedMessage,
   stoppingMessage,
   exitedMessage,
+  inspectPosixProcessGroup,
   runDevSupervisor,
+  createSignalBridge,
   createDefaultWatchChildren,
   parseSupervisorConfig,
   loadConfigOverride,

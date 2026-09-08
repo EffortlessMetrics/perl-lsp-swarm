@@ -30,6 +30,8 @@ const {
   BUNDLE_READY_PATTERN,
   readyMessage,
   runDevSupervisor,
+  createSignalBridge,
+  inspectPosixProcessGroup,
   createDefaultWatchChildren,
   parseSupervisorConfig,
 } = require('./dev-supervisor');
@@ -80,7 +82,12 @@ if (process.env.FIXTURE_PIDS_FILE) {
   fs.writeFileSync(temp, JSON.stringify([process.pid]));
   fs.renameSync(temp, process.env.FIXTURE_PIDS_FILE);
 }
-console.log(process.env.FIXTURE_MARKER ?? 'FIXTURE_READY');
+const announce = () => console.log(process.env.FIXTURE_MARKER ?? 'FIXTURE_READY');
+if (process.env.FIXTURE_STARTUP_DELAY_MS) {
+  setTimeout(announce, Number(process.env.FIXTURE_STARTUP_DELAY_MS));
+} else {
+  announce();
+}
 process.on('SIGTERM', () => { if (process.env.FIXTURE_IGNORE_TERM !== '1') process.exit(0); });
 process.on('SIGINT', () => { if (process.env.FIXTURE_IGNORE_INT !== '1') process.exit(0); });
 setInterval(() => {}, 1000);
@@ -686,7 +693,7 @@ void test('an unknown child field in the proof-harness config is red by name', a
 });
 
 void test(
-  'the CLI forwards SIGTERM into the owned shutdown path and exits 143 (POSIX)',
+  'the CLI owns SIGTERM delivered before watcher readiness and exits 143 (POSIX)',
   { skip: IS_WINDOWS },
   async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-dev-supervisor-sig-'));
@@ -714,7 +721,12 @@ void test(
         process.execPath,
         [path.join(extensionRoot, 'scripts', 'dev-supervisor.js')],
         {
-          env: { ...process.env, [CONFIG_ENV]: configFile, FIXTURE_PIDS_FILE: pidsFile },
+          env: {
+            ...process.env,
+            [CONFIG_ENV]: configFile,
+            FIXTURE_PIDS_FILE: pidsFile,
+            FIXTURE_STARTUP_DELAY_MS: '250',
+          },
           stdio: ['ignore', 'ignore', 'ignore'],
           windowsHide: true,
         },
@@ -736,6 +748,17 @@ void test(
     assertAllGone(pids);
   },
 );
+
+void test('signals queued before controller attachment are forwarded after startup', () => {
+  const signals = [];
+  const bridge = createSignalBridge();
+  bridge.handle('SIGTERM');
+  bridge.handle('SIGINT');
+  bridge.attach({ stop: (signal) => signals.push(signal) });
+  assert.deepEqual(signals, ['SIGTERM', 'SIGINT']);
+  bridge.handle('SIGHUP');
+  assert.deepEqual(signals, ['SIGTERM', 'SIGINT', 'SIGHUP']);
+});
 
 /* ---------------------------------------------------------------------- */
 /* Canonical surface cross-checks                                          */
@@ -1045,6 +1068,74 @@ for (const failureMode of ['throw', 'emit']) {
     },
   );
 }
+
+void test('late terminal output failure changes the settled result to red', async () => {
+  class LateFailingOutput extends EventEmitter {
+    /**
+     * @param {string} chunk
+     * @param {(() => void) | undefined} [callback]
+     */
+    write(chunk, callback) {
+      if (chunk.includes('exited')) {
+        queueMicrotask(() =>
+          this.emit('error', Object.assign(new Error('late closed output'), { code: 'EPIPE' })),
+        );
+      }
+      if (typeof callback === 'function') {
+        queueMicrotask(callback);
+      }
+      return true;
+    }
+  }
+
+  const stdout = new LateFailingOutput();
+  const reporter = {
+    info: (message) => stdout.write(`${message}\n`),
+    error: (message) => stdout.write(`${message}\n`),
+  };
+  const controller = runDevSupervisor({
+    children: ['types', 'bundle'].map((name) => ({
+      name,
+      command: process.execPath,
+      args: ['-e', "console.log('READY'); setInterval(() => {}, 1000)"],
+      cwd: extensionRoot,
+      readyPattern: /READY/,
+    })),
+    reporter,
+    flushOutput: () => new Promise((resolve) => setImmediate(resolve)),
+    outputStreams: {
+      stdout: /** @type {NodeJS.WritableStream} */ (/** @type {unknown} */ (stdout)),
+      stderr: new PassThrough(),
+    },
+    options: { readinessTimeoutMs: 1000, stopWhenReady: true, forwardOutput: true },
+  });
+  const result = await controller.waitForExit();
+  assert.equal(result.code, 1);
+  assert.equal(result.reason, 'output-failure:stdout');
+  assert.match(result.failures.join(' | '), /EPIPE/);
+});
+
+void test('POSIX group inspection distinguishes mixed and zombie-only members', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-dev-supervisor-proc-'));
+  tempDirs.push(dir);
+  for (const [pid, state] of /** @type {[string, string][]} */ ([
+    ['100', 'S'],
+    ['101', 'Z'],
+  ])) {
+    const member = path.join(dir, pid);
+    fs.mkdirSync(member);
+    fs.writeFileSync(path.join(member, 'stat'), `${pid} (fixture) ${state} 1 100 100`);
+  }
+  assert.equal(inspectPosixProcessGroup(100, dir), true);
+  fs.writeFileSync(path.join(dir, '100', 'stat'), '100 (fixture) Z 1 100 100');
+  assert.equal(inspectPosixProcessGroup(100, dir), false);
+});
+
+void test('POSIX group inspection stays unknown when /proc is unavailable', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-dev-supervisor-proc-missing-'));
+  tempDirs.push(dir);
+  assert.equal(inspectPosixProcessGroup(100, path.join(dir, 'missing')), null);
+});
 
 /* ---------------------------------------------------------------------- */
 /* Windows forced-shutdown ordering                                       */
