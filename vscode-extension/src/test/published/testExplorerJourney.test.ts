@@ -2,6 +2,7 @@ import * as assert from 'assert';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
+import { bundledBinaryPath, pathsEquivalent, sha256 } from './journeySupport';
 
 async function waitForRunningStartup(
   getMetrics: () => { lifecycle_state?: unknown },
@@ -69,7 +70,12 @@ suite('Installed Test Explorer runAll journey', function () {
       assert.ok(extension, 'installed Test Explorer journey requires the extension');
       const extensionApi = (await extension.activate()) as {
         waitForActiveDocumentReady?: (uri: string, timeoutMs?: number) => Promise<void>;
-        getLanguageClientStartupMetrics?: () => { lifecycle_state?: unknown };
+        getLanguageClientStartupMetrics?: () => {
+          lifecycle_state?: unknown;
+          binary_resolution_source?: unknown;
+          binary_resolution_status?: unknown;
+          binary_resolution_path?: unknown;
+        };
       };
       const document = await vscode.workspace.openTextDocument(fixture);
       await vscode.window.showTextDocument(document);
@@ -86,6 +92,24 @@ suite('Installed Test Explorer runAll journey', function () {
       // running generation before waiting for document/index readiness so the
       // test does not turn a normal first-demand restart into a false failure.
       await waitForRunningStartup(extensionApi.getLanguageClientStartupMetrics, deadline);
+      const receiptPath = process.env.PERL_LSP_TEST_EXPLORER_RECEIPT;
+      let startup:
+        | ReturnType<NonNullable<typeof extensionApi.getLanguageClientStartupMetrics>>
+        | undefined;
+      let bundledServerSha256: string | undefined;
+      if (receiptPath) {
+        startup = extensionApi.getLanguageClientStartupMetrics();
+        const bundledServerPath = bundledBinaryPath(extension.extensionPath);
+        bundledServerSha256 = sha256(bundledServerPath);
+        assert.equal(startup.binary_resolution_source, 'bundled');
+        assert.equal(startup.binary_resolution_status, 'ok');
+        assert.ok(pathsEquivalent(startup.binary_resolution_path, bundledServerPath));
+        assert.equal(
+          bundledServerSha256,
+          process.env.PERL_LSP_SERVER_ARTIFACT_SHA256,
+          'installed bundled server must match the staged server artifact',
+        );
+      }
       await extensionApi.waitForActiveDocumentReady(
         document.uri.toString(),
         remainingBudget(deadline, 'document readiness'),
@@ -122,6 +146,33 @@ suite('Installed Test Explorer runAll journey', function () {
       const [phase, test0] = raw.trim().split(/\r?\n/);
       assert.equal(phase, `END:${token}`);
       assert.equal(path.normalize(test0 ?? ''), path.normalize(fixture));
+      if (receiptPath) {
+        const receiptTemp = `${receiptPath}.tmp-${process.pid}-${token}`;
+        fs.mkdirSync(path.dirname(receiptPath), { recursive: true });
+        fs.writeFileSync(
+          receiptTemp,
+          JSON.stringify(
+            {
+              schema_version: 'test_explorer_journey.v1',
+              outcome: 'completed',
+              source_revision: process.env.PERL_LSP_CURRENT_SOURCE_SHA ?? null,
+              server_source_revision: process.env.PERL_LSP_SERVER_SOURCE_SHA ?? null,
+              server_artifact_sha256: process.env.PERL_LSP_SERVER_ARTIFACT_SHA256 ?? null,
+              binary_resolution_source: startup?.binary_resolution_source ?? null,
+              binary_resolution_status: startup?.binary_resolution_status ?? null,
+              binary_resolution_path: startup?.binary_resolution_path ?? null,
+              binary_resolution_sha256: bundledServerSha256 ?? null,
+              vsix_sha256: process.env.PERL_LSP_VSIX_SHA256 ?? null,
+              fixture,
+              test_zero: test0,
+            },
+            null,
+            2,
+          ),
+          'utf8',
+        );
+        fs.renameSync(receiptTemp, receiptPath);
+      }
     } finally {
       if (previousMarker === undefined) delete process.env.PERL_LSP_TEST_EXPLORER_MARKER;
       else process.env.PERL_LSP_TEST_EXPLORER_MARKER = previousMarker;

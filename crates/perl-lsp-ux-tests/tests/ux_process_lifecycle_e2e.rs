@@ -104,7 +104,7 @@ impl LifecycleProcess {
         stdin.flush().context("failed to flush LSP message")
     }
 
-    fn response(&self, id: u64, timeout: Duration) -> Result<Value> {
+    fn response(&self, id: &Value, timeout: Duration) -> Result<Value> {
         let deadline = Instant::now() + timeout;
         loop {
             let remaining = deadline.saturating_duration_since(Instant::now());
@@ -118,7 +118,7 @@ impl LifecycleProcess {
 
             match self.messages.recv_timeout(remaining.min(Duration::from_millis(250))) {
                 Ok(Ok(message))
-                    if message.get("id").and_then(Value::as_u64) == Some(id)
+                    if message.get("id") == Some(id)
                         && (message.get("result").is_some() || message.get("error").is_some()) =>
                 {
                     ensure!(
@@ -147,7 +147,7 @@ impl LifecycleProcess {
         }
     }
 
-    fn strict_response(&self, id: u64, timeout: Duration) -> Result<Value> {
+    fn strict_response(&self, id: &Value, timeout: Duration) -> Result<Value> {
         let deadline = Instant::now() + timeout;
         loop {
             let remaining = deadline.saturating_duration_since(Instant::now());
@@ -163,7 +163,7 @@ impl LifecycleProcess {
                 Ok(Ok(message))
                     if message.get("result").is_some() || message.get("error").is_some() =>
                 {
-                    let observed_id = message.get("id").and_then(Value::as_u64);
+                    let observed_id = message.get("id");
                     ensure!(
                         observed_id == Some(id),
                         "unexpected terminal response while waiting for id={id}: {message:#}"
@@ -422,7 +422,8 @@ fn stdio_lifecycle_exits_zero_after_shutdown() -> Result<()> {
             "capabilities": {}
         }
     }))?;
-    let initialize = server.response(1, INITIALIZE_TIMEOUT)?;
+    let initialize_id = json!(1);
+    let initialize = server.response(&initialize_id, INITIALIZE_TIMEOUT)?;
     ensure!(
         initialize.get("error").is_none_or(Value::is_null),
         "initialize returned an error: {initialize:#}"
@@ -437,14 +438,15 @@ fn stdio_lifecycle_exits_zero_after_shutdown() -> Result<()> {
         "method": "initialized",
         "params": {}
     }))?;
+    let shutdown_id = json!("00123-π");
     server.send(&json!({
         "jsonrpc": "2.0",
-        "id": 2,
+        "id": shutdown_id.clone(),
         "method": "shutdown",
         "params": null
     }))?;
 
-    let shutdown = server.response(2, REQUEST_TIMEOUT)?;
+    let shutdown = server.response(&shutdown_id, REQUEST_TIMEOUT)?;
     ensure!(
         shutdown.get("error").is_none_or(Value::is_null),
         "shutdown returned an error: {shutdown:#}"
@@ -540,12 +542,13 @@ fn definition_after_readiness(
 ) -> Result<()> {
     for attempt in 0_u64..8 {
         let request_id = first_request_id + attempt;
+        let request_id_value = json!(request_id);
         server.send(&json!({
-            "jsonrpc": "2.0", "id": request_id, "method": "textDocument/definition", "params": {
+            "jsonrpc": "2.0", "id": request_id_value.clone(), "method": "textDocument/definition", "params": {
                 "textDocument": { "uri": client_uri }, "position": { "line": 2, "character": 10 }
             }
         }))?;
-        let response = server.strict_response(request_id, REQUEST_TIMEOUT)?;
+        let response = server.strict_response(&request_id_value, REQUEST_TIMEOUT)?;
         // Retry only missing or superseded facts; a stale successful location must fail.
         let transient = response.pointer("/error/code").and_then(Value::as_i64) == Some(-32800)
             || response.pointer("/result").and_then(Value::as_array).is_some_and(Vec::is_empty);
@@ -591,11 +594,12 @@ fn stdio_navigation_matches_exact_request_and_current_edit() -> Result<()> {
     let client_uri = file_uri(&client)?;
     let mut server = LifecycleProcess::spawn(binary_path, workspace.path())?;
 
+    let initialize_id = json!(1);
     server.send(&json!({
-        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "jsonrpc": "2.0", "id": initialize_id.clone(), "method": "initialize",
         "params": { "processId": null, "rootUri": root_uri, "workspaceFolders": null, "capabilities": {} }
     }))?;
-    let initialize = server.response(1, INITIALIZE_TIMEOUT)?;
+    let initialize = server.response(&initialize_id, INITIALIZE_TIMEOUT)?;
     ensure!(
         initialize.get("error").is_none_or(Value::is_null),
         "initialize failed: {initialize:#}"
@@ -625,6 +629,33 @@ fn stdio_navigation_matches_exact_request_and_current_edit() -> Result<()> {
     )?;
     definition_after_readiness(&mut server, &client_uri, &module_uri, 1, 2)?;
 
+    let numeric_definition_id = json!(123);
+    server.send(&json!({
+        "jsonrpc": "2.0", "id": numeric_definition_id.clone(), "method": "textDocument/definition", "params": {
+            "textDocument": { "uri": client_uri }, "position": { "line": 2, "character": 10 }
+        }
+    }))?;
+    let wrong_id = json!("123");
+    let mismatch_text = server
+        .strict_response(&wrong_id, REQUEST_TIMEOUT)
+        .err()
+        .context("strict response matching unexpectedly accepted a numeric ID as a string")?
+        .to_string();
+    ensure!(
+        mismatch_text.contains("unexpected terminal response")
+            && mismatch_text.contains("\"123\"")
+            && mismatch_text.contains("\"id\": 123"),
+        "numeric/string ID mismatch error lost expected or observed identity: {mismatch_text}"
+    );
+    let string_definition_id = json!("definition-π");
+    server.send(&json!({
+        "jsonrpc": "2.0", "id": string_definition_id.clone(), "method": "textDocument/definition", "params": {
+            "textDocument": { "uri": client_uri }, "position": { "line": 2, "character": 10 }
+        }
+    }))?;
+    let string_definition = server.strict_response(&string_definition_id, REQUEST_TIMEOUT)?;
+    exact_definition(&string_definition, &module_uri, 1)?;
+
     server.send(&json!({
         "jsonrpc": "2.0", "method": "textDocument/didChange", "params": {
             "textDocument": { "uri": module_uri, "version": 2 },
@@ -640,8 +671,9 @@ fn stdio_navigation_matches_exact_request_and_current_edit() -> Result<()> {
     let expected_current_line = 2;
     definition_after_readiness(&mut server, &client_uri, &module_uri, expected_current_line, 10)?;
 
-    server.send(&json!({ "jsonrpc": "2.0", "id": 100, "method": "shutdown", "params": null }))?;
-    let shutdown = server.strict_response(100, REQUEST_TIMEOUT)?;
+    let shutdown_id = json!(100);
+    server.send(&json!({ "jsonrpc": "2.0", "id": shutdown_id.clone(), "method": "shutdown", "params": null }))?;
+    let shutdown = server.strict_response(&shutdown_id, REQUEST_TIMEOUT)?;
     ensure!(shutdown.get("error").is_none_or(Value::is_null), "shutdown failed: {shutdown:#}");
     server.send(&json!({ "jsonrpc": "2.0", "method": "exit", "params": null }))?;
     let status = server.wait_for_exit(EXIT_TIMEOUT)?;
