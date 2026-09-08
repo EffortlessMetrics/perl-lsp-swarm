@@ -2355,7 +2355,10 @@ function main() {
         PERL_LSP_CURRENT_SOURCE_SMOKE: '1',
         PERL_LSP_SMOKE_RECEIPTS_DIR: receiptsRoot(),
       };
-      const packageResult = runNpm(['run', 'package'], packageEnv);
+      const packageResult = runNpm(
+        ['exec', '--offline', '--no', '--', 'vsce', 'package'],
+        packageEnv,
+      );
       if (packageResult.error) {
         receipt.stages.package_creation = {
           status: 'not_proven',
