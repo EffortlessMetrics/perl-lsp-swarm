@@ -389,7 +389,7 @@ fn empty_argv_defaults_to_stdin_run() -> Result<(), Box<dyn std::error::Error>> 
             assert_eq!(args.inputs.len(), 1);
             assert!(matches!(args.inputs[0], super::cli::Input::Stdin));
         }
-        other => panic!("expected Run, got {other:?}"),
+        other => return Err(format!("expected Run, got {other:?}").into()),
     }
     Ok(())
 }
@@ -400,7 +400,7 @@ fn dash_input_is_stdin() -> Result<(), Box<dyn std::error::Error>> {
         CliRequest::Run(args) => {
             assert!(matches!(args.inputs[0], super::cli::Input::Stdin));
         }
-        other => panic!("expected Run, got {other:?}"),
+        other => return Err(format!("expected Run, got {other:?}").into()),
     }
     Ok(())
 }
@@ -711,27 +711,31 @@ fn stats_write_fails_after_a_partial_write() -> Result<(), Box<dyn std::error::E
 }
 
 #[test]
-fn help_write_fails_on_write_zero() {
-    let err = write_help(&mut WriteZeroSink).expect_err("Ok(0) must become a write error");
+fn help_write_fails_on_write_zero() -> Result<(), Box<dyn std::error::Error>> {
+    let err = write_help(&mut WriteZeroSink).err().ok_or("Ok(0) must become a write error")?;
     assert_eq!(err.kind(), io::ErrorKind::WriteZero);
+    Ok(())
 }
 
 #[test]
-fn execute_help_fails_on_write_zero() {
+fn execute_help_fails_on_write_zero() -> Result<(), Box<dyn std::error::Error>> {
     let mut stderr = Vec::new();
     let err = execute(["--help"], &mut WriteZeroSink, &mut stderr)
-        .expect_err("WriteZero must reach execute");
+        .err()
+        .ok_or("WriteZero must reach execute")?;
     assert_eq!(err.kind(), io::ErrorKind::WriteZero);
+    Ok(())
 }
 
 #[test]
-fn discarding_a_write_error_is_detected() {
+fn discarding_a_write_error_is_detected() -> Result<(), Box<dyn std::error::Error>> {
     let mut writer = DiscardingWriter { inner: Vec::new() };
-    let err = write_help(&mut writer).expect_err(
+    let err = write_help(&mut writer).err().ok_or(
         "a writer that returns Err after accepting bytes must fail; swallowing with .ok() would hide this",
-    );
+    )?;
     assert_eq!(err.kind(), io::ErrorKind::BrokenPipe);
     assert!(!writer.inner.is_empty(), "control: some bytes were accepted before the error");
+    Ok(())
 }
 
 #[test]
