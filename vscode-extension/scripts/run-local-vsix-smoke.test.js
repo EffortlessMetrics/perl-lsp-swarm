@@ -1487,6 +1487,7 @@ function checkReceipt(overrides = {}) {
     platform: 'linux',
     architecture: 'x64',
     vscode_version: 'stable',
+    observed_vscode_version: null,
     source_label: 'hosted-linux-current-source',
     server: { source_sha: 'abc123', path: '/tmp/perllsp', sha256: 'deadbeef' },
     vsix: { path: '/tmp/perl-lsp-rs-0.17.0.vsix', sha256: 'cafebabe' },
