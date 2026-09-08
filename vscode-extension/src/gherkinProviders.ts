@@ -396,17 +396,18 @@ export async function collectStepDefinitionDocuments(
 
     const read = await readBoundedFile(uri.fsPath, MAX_STEP_DEFINITION_FILE_BYTES);
     attemptedBytes += read ? read.byteLength : MAX_STEP_DEFINITION_FILE_BYTES + 1;
-    if (!read) {
-      continue;
-    }
 
     // An edit can land while the read is pending, which turns the just-read
-    // disk text stale. Reconcile after the await: a buffer that is dirty now
-    // wins under the same envelope.
+    // disk text stale. Reconcile after the await even when the disk read
+    // failed: a buffer that is dirty now still wins under the same envelope.
     if (dirtyDocumentFor(uri)) {
       if (admitDirtyBuffer(uri) === 'stop') {
         break;
       }
+      continue;
+    }
+
+    if (!read) {
       continue;
     }
 

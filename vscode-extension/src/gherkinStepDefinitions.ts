@@ -365,6 +365,7 @@ async function createStepDefinitionFromFeature(args: CreateStepDefinitionArgs): 
 // the code-action provider.
 export async function collectWorkspaceStepDefinitionSources(
   workspaceFolder: vscode.WorkspaceFolder,
+  reader: typeof readBoundedFile = readBoundedFile,
 ): Promise<string[]> {
   const files = await vscode.workspace.findFiles(
     DEFAULT_STEP_DEFINITION_GLOB,
@@ -381,13 +382,26 @@ export async function collectWorkspaceStepDefinitionSources(
   // extension host open on arbitrarily large step-definition candidates.
   const sources: string[] = [];
   let acceptedBytes = 0;
+  let attemptedBytes = 0;
 
   for (const uri of candidateFiles) {
     if (acceptedBytes >= MAX_STEP_DEFINITION_TOTAL_BYTES) {
       break;
     }
 
-    const read = await readBoundedFile(uri.fsPath, MAX_STEP_DEFINITION_FILE_BYTES);
+    // A rejected candidate may consume the per-file limit plus one overflow
+    // byte before readBoundedFile can classify it. Refuse before the next
+    // attempt so this compatibility collector shares the same read envelope
+    // as the provider scan.
+    if (
+      attemptedBytes + MAX_STEP_DEFINITION_FILE_BYTES + 1 >
+      MAX_STEP_DEFINITION_TOTAL_READ_BYTES
+    ) {
+      break;
+    }
+
+    const read = await reader(uri.fsPath, MAX_STEP_DEFINITION_FILE_BYTES);
+    attemptedBytes += read ? read.byteLength : MAX_STEP_DEFINITION_FILE_BYTES + 1;
     if (!read) {
       continue;
     }

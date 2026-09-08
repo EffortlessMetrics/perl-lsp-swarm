@@ -631,6 +631,46 @@ describe('gherkin step-definition workspace envelope', () => {
     }
   });
 
+  test('rechecks a buffer that turns dirty after a failed disk read', async () => {
+    const root = makeEnvelopeWorkspace('dirty-null-race');
+    const candidate = path.join(root, 'steps.pm');
+    const dirtyText = 'Given qr/^buffer$/, sub { return; };\n';
+    fs.writeFileSync(candidate, 'Given qr/^disk$/, sub { return; };\n');
+
+    let releaseDiskRead: (value: { text: string; byteLength: number } | null) => void = () =>
+      undefined;
+    const pendingDiskRead = new Promise<{ text: string; byteLength: number } | null>((resolve) => {
+      releaseDiskRead = resolve;
+    });
+    const diskReadSpy = jest
+      .spyOn(gherkinStepDefinitions, 'readBoundedFile')
+      .mockImplementation(async () => pendingDiskRead);
+
+    const dirty = {
+      uri: vscode.Uri.file(candidate),
+      isDirty: false,
+      getText: () => dirtyText,
+    } as unknown as vscode.TextDocument;
+    (vscode.workspace as unknown as { textDocuments: unknown[] }).textDocuments = [dirty];
+
+    try {
+      const scanPromise = collectStepDefinitionDocuments(
+        [vscode.Uri.file(candidate)],
+        cancelled(false),
+      );
+      (dirty as unknown as { isDirty: boolean }).isDirty = true;
+      releaseDiskRead(null);
+
+      const scan = await scanPromise;
+
+      expect(scan.documents.map((document) => document.text)).toEqual([dirtyText]);
+    } finally {
+      diskReadSpy.mockRestore();
+      (vscode.workspace as unknown as { textDocuments: unknown[] }).textDocuments = [];
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test('skips candidates whose URI scheme is not a local file', async () => {
     const root = makeEnvelopeWorkspace('scheme');
     const regular = path.join(root, 'steps.pm');

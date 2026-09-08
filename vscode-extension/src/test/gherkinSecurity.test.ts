@@ -22,6 +22,8 @@ import {
   buildGeneratedStepStub,
   classifyStepDefinitionStatus,
   collectWorkspaceStepDefinitionSources,
+  MAX_STEP_DEFINITION_FILE_BYTES,
+  MAX_STEP_DEFINITION_TOTAL_READ_BYTES,
   writeGeneratedStepDefinitionFile,
 } from '../gherkinStepDefinitions';
 
@@ -288,10 +290,18 @@ describe('bounded workspace step-definition scan', () => {
     return filePath;
   }
 
-  function scan(): Promise<string[]> {
-    return collectWorkspaceStepDefinitionSources({
-      uri: { fsPath: workspaceRoot },
-    } as never);
+  function scan(
+    reader?: (
+      filePath: string,
+      limit: number,
+    ) => Promise<{ text: string; byteLength: number } | null>,
+  ): Promise<string[]> {
+    return collectWorkspaceStepDefinitionSources(
+      {
+        uri: { fsPath: workspaceRoot },
+      } as never,
+      reader,
+    );
   }
 
   it('accepts an ordinary step-definition file', async () => {
@@ -401,7 +411,27 @@ describe('bounded workspace step-definition scan', () => {
     const sources = await scan();
     const total = sources.reduce((sum, source) => sum + Buffer.byteLength(source, 'utf8'), 0);
     expect(total).toBeLessThanOrEqual(TOTAL_LIMIT);
-    expect(sources).toHaveLength(fits);
+    // The attempted-read envelope may stop one candidate early because the
+    // next bounded read could consume its full per-file cap plus overflow.
+    expect(sources.length).toBeLessThanOrEqual(fits);
+  });
+
+  it('stops attempted reads before the next oversized candidate crosses the envelope', async () => {
+    const paths = Array.from({ length: 40 }, (_unused, index) => ({
+      fsPath: path.join(workspaceRoot, `oversized_${index}.pm`),
+    }));
+    const attempted: string[] = [];
+    findFiles.mockResolvedValue(paths);
+
+    const sources = await scan(async (filePath, limit) => {
+      attempted.push(filePath);
+      return null;
+    });
+
+    expect(sources).toEqual([]);
+    expect(attempted).toHaveLength(
+      Math.floor(MAX_STEP_DEFINITION_TOTAL_READ_BYTES / (MAX_STEP_DEFINITION_FILE_BYTES + 1)),
+    );
   });
 
   it('does not read through a symlinked candidate', async () => {
