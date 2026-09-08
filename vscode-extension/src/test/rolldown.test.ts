@@ -68,6 +68,105 @@ describe('Rolldown bundle configuration', () => {
     });
   });
 
+  test('patches the pinned jsonrpc write-failure rejection without an orphaned throw', () => {
+    const sourcePath = require.resolve('vscode-jsonrpc');
+    const script = `
+      import fs from 'node:fs';
+      import { patchPinnedJsonRpcConnectionSource } from './rolldown.config.mjs';
+      const sourcePath = ${JSON.stringify(sourcePath.replace(/\\/g, '/').replace(/api\\.js$/, 'common/connection.js'))};
+      const source = fs.readFileSync(sourcePath, 'utf8');
+      const patched = patchPinnedJsonRpcConnectionSource(source, sourcePath);
+      if (!patched) process.exit(21);
+      const catchStart = patched.indexOf('catch (error) {');
+      const catchEnd = patched.indexOf('        });', catchStart);
+      const body = patched.slice(catchStart, catchEnd);
+      if (!body.includes('responsePromise.reject(new messages_1.ResponseError')) process.exit(22);
+      if (!body.includes('logger.error(\`Sending request failed.\`);')) process.exit(23);
+      if (!body.includes('                    return;')) process.exit(24);
+      if (body.includes('                    throw error;')) process.exit(25);
+      if (patchPinnedJsonRpcConnectionSource(source, 'other-module/connection.js') !== null) process.exit(26);
+      let rejected = false;
+      try { patchPinnedJsonRpcConnectionSource(source + '\\n', sourcePath); } catch { rejected = true; }
+      if (!rejected) process.exit(27);
+    `;
+    execFileSync(process.execPath, ['--input-type=module', '-e', script], {
+      cwd: EXT_ROOT,
+      stdio: 'pipe',
+    });
+  });
+
+  test('the transformed jsonrpc connection rejects failed writes without an unhandled rejection', () => {
+    const script = `
+      import Module, { createRequire } from 'node:module';
+      import fs from 'node:fs';
+      import { patchPinnedJsonRpcConnectionSource } from './rolldown.config.mjs';
+      const require = createRequire(import.meta.url);
+      const packageEntry = require.resolve('vscode-jsonrpc');
+      const sourcePath = packageEntry.replace(/api\\.js$/, 'connection.js');
+      const source = fs.readFileSync(sourcePath, 'utf8');
+      const patched = patchPinnedJsonRpcConnectionSource(source, sourcePath);
+      if (!patched) process.exit(31);
+      const originalLoader = Module._extensions['.js'];
+      Module._extensions['.js'] = (module, filename) => {
+        if (filename === sourcePath) module._compile(patched, filename);
+        else originalLoader(module, filename);
+      };
+      const { createMessageConnection } = await import('vscode-jsonrpc/node');
+      const disposable = () => ({ dispose() {} });
+      const reader = {
+        onClose: disposable,
+        onError: disposable,
+        listen() { return disposable(); },
+      };
+      let unhandled = 0;
+      const onUnhandled = () => { unhandled += 1; };
+      process.on('unhandledRejection', onUnhandled);
+      const failingWriter = {
+        onClose: disposable,
+        onError: disposable,
+        write() { return Promise.reject(new Error('write boom')); },
+        end() {},
+        dispose() {},
+      };
+      const failing = createMessageConnection(reader, failingWriter);
+      failing.listen();
+      let failure;
+      try { await failing.sendRequest('test/failure', {}); } catch (error) { failure = error; }
+      if (!(failure instanceof Error) || !failure.message.includes('write boom')) process.exit(32);
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      if (unhandled !== 0) process.exit(33);
+      failing.dispose();
+
+      let response;
+      const successReader = {
+        onClose: disposable,
+        onError: disposable,
+        listen(callback) {
+          setTimeout(() => callback({ jsonrpc: '2.0', id: 0, result: 'ok' }), 0);
+          return disposable();
+        },
+      };
+      const successWriter = {
+        onClose: disposable,
+        onError: disposable,
+        write() { return Promise.resolve(); },
+        end() {},
+        dispose() {},
+      };
+      const successful = createMessageConnection(successReader, successWriter);
+      successful.listen();
+      response = await successful.sendRequest('test/success', {});
+      if (response !== 'ok') process.exit(34);
+      successful.dispose();
+      process.off('unhandledRejection', onUnhandled);
+      Module._extensions['.js'] = originalLoader;
+    `;
+    execFileSync(process.execPath, ['--input-type=module', '-e', script], {
+      cwd: EXT_ROOT,
+      stdio: 'pipe',
+    });
+  });
+
   test('rolldown.config.mjs targets the exact main/debugger entry path (out/extension.js)', () => {
     const configPath = path.join(EXT_ROOT, 'rolldown.config.mjs');
     const source = fs.readFileSync(configPath, 'utf8');
