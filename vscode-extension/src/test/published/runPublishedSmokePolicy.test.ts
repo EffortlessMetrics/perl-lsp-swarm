@@ -100,3 +100,36 @@ void test('the published-smoke child emits the unsupported-platform boundary bef
     fs.rmSync(receiptRoot, { recursive: true, force: true });
   }
 });
+
+void test('the compiled child reserves exit 2 when the platform boundary receipt is unwritable', () => {
+  const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-platform-unwritable-'));
+  const preloadPath = path.join(fixtureRoot, 'force-windows-platform.cjs');
+  const receiptsRoot = path.join(fixtureRoot, 'receipts-root-file');
+  try {
+    fs.writeFileSync(
+      preloadPath,
+      "Object.defineProperty(process, 'platform', { value: 'win32' });\n",
+    );
+    fs.writeFileSync(receiptsRoot, 'this path is intentionally a file');
+    const result = spawnSync(
+      process.execPath,
+      ['--require', preloadPath, path.join(__dirname, 'runPublishedSmoke.js')],
+      {
+        env: {
+          ...process.env,
+          PERL_LSP_CURRENT_SOURCE_SHA: 'candidate-sha',
+          PERL_LSP_PUBLISHED_EXTENSION_SOURCE: 'vsix',
+          PERL_LSP_PUBLISHED_EXTENSION_VERSION: '0.17.0',
+          PERL_LSP_PUBLISHED_VSIX_PATH: path.join(fixtureRoot, 'candidate.vsix'),
+          PERL_LSP_SMOKE_RECEIPTS_DIR: receiptsRoot,
+        },
+        encoding: 'utf8',
+        windowsHide: true,
+      },
+    );
+    assert.equal(result.status, 2);
+    assert.match(result.stderr, /Unable to write the candidate-bound platform-unavailable receipt/);
+  } finally {
+    fs.rmSync(fixtureRoot, { recursive: true, force: true });
+  }
+});

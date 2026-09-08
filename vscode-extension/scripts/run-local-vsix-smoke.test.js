@@ -630,6 +630,34 @@ void test('a stale unsupported-platform receipt is cleared before the next child
   }
 });
 
+void test('a typed unsupported-platform child exit stays not_proven without a receipt', () => {
+  const receiptRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-platform-unwritable-'));
+  try {
+    const result = interpretBehavioralSmokeExit({
+      status: 2,
+      candidateBound: true,
+      platform: 'win32',
+      receiptsRoot: receiptRoot,
+      exists: () => false,
+    });
+    assert.equal(result.status, 'not_proven');
+    assert.equal(result.reason, 'candidate_bound_platform_unavailable_receipt_write_failed');
+  } finally {
+    fs.rmSync(receiptRoot, { recursive: true, force: true });
+  }
+});
+
+void test('a spawn error is explicitly classified as not_proven', () => {
+  const result = interpretBehavioralSmokeExit({
+    status: null,
+    spawnError: new Error('spawn failed'),
+    receiptsRoot: '/fixture',
+    exists: () => false,
+  });
+  assert.equal(result.status, 'not_proven');
+  assert.equal(result.reason, 'spawn failed');
+});
+
 void test('network, cache, and runner host failures keep the host-resolution boundary', () => {
   for (const disposition of ['network', 'cache', 'runner']) {
     const result = interpretBehavioralSmokeExit({

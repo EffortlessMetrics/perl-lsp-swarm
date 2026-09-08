@@ -637,6 +637,8 @@ function validateChildSmokeReceipt({
 const HOST_RESOLUTION_FAILURE_RECEIPT = 'vscode_host_resolution_failure.json';
 /** Must match `CANDIDATE_PLATFORM_UNAVAILABLE_RECEIPT_NAME` in runPublishedSmoke.ts. */
 const CANDIDATE_PLATFORM_UNAVAILABLE_RECEIPT = 'vscode_candidate_platform_unavailable.json';
+// Reserved by runPublishedSmoke.ts when this boundary cannot write its receipt.
+const CANDIDATE_PLATFORM_UNAVAILABLE_EXIT_CODE = 2;
 
 function hostResolutionFailurePath(root = receiptsRoot()) {
   return path.join(root, HOST_RESOLUTION_FAILURE_RECEIPT);
@@ -713,6 +715,8 @@ function readCandidatePlatformUnavailableReceipt(
  * @param {{
  *   status?: number | null,
  *   spawnError?: Error | undefined,
+ *   candidateBound?: boolean,
+ *   platform?: string,
  *   receiptsRoot?: string,
  *   exists?: ((file: string) => boolean) | undefined,
  *   readFile?: ((file: string) => string) | undefined,
@@ -728,6 +732,8 @@ function readCandidatePlatformUnavailableReceipt(
 function interpretBehavioralSmokeExit({
   status = null,
   spawnError,
+  candidateBound = false,
+  platform = process.platform,
   receiptsRoot: root = receiptsRoot(),
   exists,
   readFile,
@@ -770,6 +776,17 @@ function interpretBehavioralSmokeExit({
       status: 'not_proven',
       exit_code: status ?? null,
       reason: 'candidate_bound_platform_unavailable_receipt_invalid',
+    };
+  }
+  if (
+    candidateBound &&
+    platform !== 'linux' &&
+    status === CANDIDATE_PLATFORM_UNAVAILABLE_EXIT_CODE
+  ) {
+    return {
+      status: 'not_proven',
+      exit_code: status,
+      reason: 'candidate_bound_platform_unavailable_receipt_write_failed',
     };
   }
   if (spawnError) {
@@ -2338,6 +2355,12 @@ function finalizeSmokeRun(
 }
 
 function main() {
+  const candidateBound = Boolean(
+    process.env.PERL_LSP_CANDIDATE_ID ||
+    process.env.PERL_LSP_ARTIFACT_SET_ID ||
+    process.env.PERL_LSP_CURRENT_SOURCE_SHA ||
+    process.env.PERL_LSP_CANDIDATE_ARTIFACT_MANIFEST,
+  );
   let revision = 'unknown';
   try {
     revision = gitRevision();
@@ -2527,6 +2550,8 @@ function main() {
           receipt.stages.behavioral_smoke = interpretBehavioralSmokeExit({
             status: smokeResult.status,
             spawnError: smokeResult.error,
+            candidateBound,
+            platform: process.platform,
             receiptsRoot: receiptsRoot(),
           });
         } else if (smokeResult.status === 0) {

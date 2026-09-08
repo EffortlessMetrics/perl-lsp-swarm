@@ -17,6 +17,15 @@ import { workspaceSmokeLaunchArgs, workspaceSmokeTrustMode } from '../workspaceS
 const EXTENSION_ID = 'EffortlessMetrics.perl-lsp-rs';
 export const CANDIDATE_PLATFORM_UNAVAILABLE_RECEIPT_NAME =
   'vscode_candidate_platform_unavailable.json';
+/** Reserved child exit code when this boundary cannot write its receipt. */
+export const CANDIDATE_PLATFORM_UNAVAILABLE_EXIT_CODE = 2;
+
+class CandidatePlatformUnavailableReceiptError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'CandidatePlatformUnavailableReceiptError';
+  }
+}
 
 export interface CandidatePlatformUnavailableReceipt {
   schema_version: 1;
@@ -447,7 +456,14 @@ async function main(): Promise<void> {
     process.env.PERL_LSP_SMOKE_RECEIPTS_DIR ||
     path.join(repoRoot, 'target', 'receipts', 'vscode-smoke');
   if (candidateBound && process.platform !== 'linux') {
-    writeCandidatePlatformUnavailableReceipt(receiptsRoot);
+    try {
+      writeCandidatePlatformUnavailableReceipt(receiptsRoot);
+    } catch (error: unknown) {
+      const detail = error instanceof Error ? error.message : String(error);
+      throw new CandidatePlatformUnavailableReceiptError(
+        `Unable to write the candidate-bound platform-unavailable receipt: ${detail}`,
+      );
+    }
   }
   assertCandidateBoundPlatform(
     process.platform === 'linux' ? 'linux' : process.platform,
@@ -574,6 +590,10 @@ if (require.main === module) {
   main().catch((error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);
     process.stderr.write(`${message}\n`);
-    process.exit(1);
+    process.exit(
+      error instanceof CandidatePlatformUnavailableReceiptError
+        ? CANDIDATE_PLATFORM_UNAVAILABLE_EXIT_CODE
+        : 1,
+    );
   });
 }
