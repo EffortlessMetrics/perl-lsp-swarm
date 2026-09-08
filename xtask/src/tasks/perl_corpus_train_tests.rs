@@ -7,8 +7,8 @@
 
 use super::{
     INVALID_DIR, MANIFEST_PATH, SCHEMA_PATH, SHUFFLED_PATH, canonical_form, invalid_fixture_names,
-    load_validated_manifest, render_explain_static, render_projections, title_fingerprint,
-    validate_canonical_document, validate_document,
+    load_validated_manifest, render_explain_static, render_projections, schema_failures,
+    title_fingerprint, validate_canonical_document, validate_document,
 };
 use color_eyre::eyre::{Result, bail, eyre};
 use serde_json::{Map, Value};
@@ -787,6 +787,10 @@ fn markdown_escapes_schema_valid_legacy_exit_owner_cells() -> Result<()> {
         .and_then(Value::as_object_mut)
         .ok_or_else(|| eyre!("legacy-exit test node has an object"))?
         .insert("owner".to_string(), Value::String("owner|with\r\nline".to_string()));
+    let schema_errors = schema_failures(&repo_root()?, &doc)?;
+    if !schema_errors.is_empty() {
+        bail!("the special-character owner must remain schema-valid: {schema_errors:?}");
+    }
 
     let markdown = render_projections(&doc)?
         .into_iter()
@@ -800,7 +804,7 @@ fn markdown_escapes_schema_valid_legacy_exit_owner_cells() -> Result<()> {
     if !row.contains("owner\\|with line") {
         bail!("legacy-exit owner must escape table pipes and line breaks: {row}");
     }
-    if row.split(" | ").count() != 10 {
+    if row.split(" | ").count() != 9 {
         bail!("legacy-exit row must retain nine Markdown cells: {row}");
     }
     if markdown.lines().any(|line| line == "line |") {
