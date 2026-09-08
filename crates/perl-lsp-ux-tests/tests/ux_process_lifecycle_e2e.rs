@@ -537,6 +537,33 @@ fn exact_definition(response: &Value, expected_uri: &str, expected_line: u64) ->
     Ok(())
 }
 
+fn definition_after_readiness(
+    server: &mut LifecycleProcess,
+    client_uri: &str,
+    module_uri: &str,
+    expected_line: u64,
+    first_request_id: u64,
+) -> Result<()> {
+    for attempt in 0_u64..8 {
+        let request_id = first_request_id + attempt;
+        server.send(&json!({
+            "jsonrpc": "2.0", "id": request_id, "method": "textDocument/definition", "params": {
+                "textDocument": { "uri": client_uri }, "position": { "line": 2, "character": 10 }
+            }
+        }))?;
+        let response = server.strict_response(request_id, REQUEST_TIMEOUT)?;
+        let transient = response.pointer("/error/code").and_then(Value::as_i64) == Some(-32800)
+            || response.pointer("/result").and_then(Value::as_array).is_some_and(Vec::is_empty);
+        if transient {
+            thread::sleep(Duration::from_millis(100));
+            continue;
+        }
+        exact_definition(&response, module_uri, expected_line)?;
+        return Ok(());
+    }
+    bail!("definition never produced the expected current result for {client_uri} -> {module_uri}")
+}
+
 #[test]
 fn stdio_navigation_matches_exact_request_and_current_edit() -> Result<()> {
     ensure!(
@@ -584,18 +611,24 @@ fn stdio_navigation_matches_exact_request_and_current_edit() -> Result<()> {
             "textDocument": { "uri": module_uri, "languageId": "perl", "version": 1, "text": NAVIGATION_MODULE_V1 }
         }
     }))?;
+    server.notification_for_uri_version(
+        "textDocument/publishDiagnostics",
+        &module_uri,
+        1,
+        REQUEST_TIMEOUT,
+    )?;
     server.send(&json!({
         "jsonrpc": "2.0", "method": "textDocument/didOpen", "params": {
             "textDocument": { "uri": client_uri, "languageId": "perl", "version": 1, "text": NAVIGATION_CLIENT_V1 }
         }
     }))?;
-    server.send(&json!({
-        "jsonrpc": "2.0", "id": 2, "method": "textDocument/definition", "params": {
-            "textDocument": { "uri": client_uri }, "position": { "line": 2, "character": 10 }
-        }
-    }))?;
-    let initial = server.strict_response(2, REQUEST_TIMEOUT)?;
-    exact_definition(&initial, &module_uri, 1)?;
+    server.notification_for_uri_version(
+        "textDocument/publishDiagnostics",
+        &client_uri,
+        1,
+        REQUEST_TIMEOUT,
+    )?;
+    definition_after_readiness(&mut server, &client_uri, &module_uri, 1, 2)?;
 
     server.send(&json!({
         "jsonrpc": "2.0", "method": "textDocument/didChange", "params": {
@@ -610,27 +643,7 @@ fn stdio_navigation_matches_exact_request_and_current_edit() -> Result<()> {
         REQUEST_TIMEOUT,
     )?;
     let expected_current_line = 2;
-    let mut current = None;
-    for attempt in 0_u64..8 {
-        let request_id = 3 + attempt;
-        server.send(&json!({
-            "jsonrpc": "2.0", "id": request_id, "method": "textDocument/definition", "params": {
-                "textDocument": { "uri": client_uri }, "position": { "line": 2, "character": 10 }
-            }
-        }))?;
-        let response = server.strict_response(request_id, REQUEST_TIMEOUT)?;
-        if response.pointer("/error/code").and_then(Value::as_i64) == Some(-32800)
-            || response.pointer("/result").is_some_and(Value::is_array)
-                && response["result"].as_array().is_some_and(Vec::is_empty)
-        {
-            thread::sleep(Duration::from_millis(100));
-            continue;
-        }
-        exact_definition(&response, &module_uri, expected_current_line)?;
-        current = Some(response);
-        break;
-    }
-    ensure!(current.is_some(), "edited navigation never produced the expected current result");
+    definition_after_readiness(&mut server, &client_uri, &module_uri, expected_current_line, 10)?;
 
     server.send(&json!({ "jsonrpc": "2.0", "id": 100, "method": "shutdown", "params": null }))?;
     let shutdown = server.strict_response(100, REQUEST_TIMEOUT)?;
