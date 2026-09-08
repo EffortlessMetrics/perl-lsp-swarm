@@ -86,9 +86,9 @@ fn declared_class(line: &str) -> Option<&'static str> {
     let rest = line.split_once(MARKER)?.1.trim();
     CLASSES.iter().copied().find(|class| {
         rest.strip_prefix(class)
-            // A class must be followed by a separator, so `product-retry-ish`
+            // A class must end or be followed by whitespace, so `product-retry-ish`
             // cannot masquerade as `product-retry`.
-            .is_some_and(|tail| tail.is_empty() || tail.starts_with(|c: char| !c.is_alphanumeric()))
+            .is_some_and(|tail| tail.is_empty() || tail.starts_with(char::is_whitespace))
     })
 }
 
@@ -264,6 +264,13 @@ mod guard_controls {
             declared_class("// ux-timing: product-retrying-forever").is_none(),
             "a longer word starting with a valid class must not be accepted"
         );
+        for suffix in ["-ish", "_unknown", ".unknown"] {
+            let marker = format!("// ux-timing: product-retry{suffix}");
+            anyhow::ensure!(declared_class(&marker).is_none(), "unknown class accepted: {marker}");
+            let source = format!("{marker}\nstd::thread::sleep(POLL);\n");
+            let found = unowned_sleeps("src/x.rs", &source, false);
+            anyhow::ensure!(found.len() == 1, "unknown class must not waive a sleep: {found:?}");
+        }
         Ok(())
     }
 
