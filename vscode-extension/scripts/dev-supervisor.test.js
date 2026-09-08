@@ -86,13 +86,13 @@ if (process.env.FIXTURE_PIDS_FILE) {
   fs.renameSync(temp, process.env.FIXTURE_PIDS_FILE);
 }
 const announce = () => console.log(process.env.FIXTURE_MARKER ?? 'FIXTURE_READY');
+process.on('SIGTERM', () => { if (process.env.FIXTURE_IGNORE_TERM !== '1') process.exit(0); });
+process.on('SIGINT', () => { if (process.env.FIXTURE_IGNORE_INT !== '1') process.exit(0); });
 if (process.env.FIXTURE_STARTUP_DELAY_MS) {
   setTimeout(announce, Number(process.env.FIXTURE_STARTUP_DELAY_MS));
 } else {
   announce();
 }
-process.on('SIGTERM', () => { if (process.env.FIXTURE_IGNORE_TERM !== '1') process.exit(0); });
-process.on('SIGINT', () => { if (process.env.FIXTURE_IGNORE_INT !== '1') process.exit(0); });
 setInterval(() => {}, 1000);
 `;
 
@@ -134,9 +134,9 @@ const grandchild = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 120000)'
 const pidTemp = process.env.FIXTURE_PIDS_FILE + '.' + process.pid + '.tmp';
 fs.writeFileSync(pidTemp, JSON.stringify({ child: process.pid, grandchild: grandchild.pid }));
 fs.renameSync(pidTemp, process.env.FIXTURE_PIDS_FILE);
-console.log('FIXTURE_READY');
 if (process.platform !== 'win32') { process.on('SIGTERM', () => {}); }
 process.on('SIGINT', () => {});
+console.log('FIXTURE_READY');
 setInterval(() => {}, 1000);
 `;
 

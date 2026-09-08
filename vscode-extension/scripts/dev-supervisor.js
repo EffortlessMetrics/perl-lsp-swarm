@@ -1176,7 +1176,7 @@ function flushCliOutput(
     );
     const drained = (error) => {
       // Node writable callbacks use `null` for a successful drain.
-      if (error != null) {
+      if (error !== null && error !== undefined) {
         finish(error);
         return;
       }
