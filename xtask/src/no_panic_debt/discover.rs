@@ -2,7 +2,6 @@ use super::model::{
     Discovered, Entrypoint, FileRecord, Instrument, InstrumentStatus, RawDeclaration, RawSite,
     TargetKind, Topology, Vocabulary,
 };
-use super::normalize_path;
 use super::topology::is_complete_test_file;
 use super::vocabulary::{macro_family, method_family};
 use proc_macro2::LineColumn;
