@@ -55,7 +55,7 @@ fn remote_wait_releases_root_attention_across_current_authorities() -> Result<()
     let root = root()?;
     for path in SURFACES {
         let text = read(&root, path)?;
-        validate_surface(path, &text).map_err(|error| format!("{error}"))?;
+        validate_surface(path, &text).map_err(std::io::Error::other)?;
     }
     Ok(())
 }
