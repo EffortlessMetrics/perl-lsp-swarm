@@ -63,11 +63,11 @@ void test('current-source Linux smoke enables the candidate-bound Test Explorer 
   assert.match(smokeStep, /run: xvfb-run -a npm run test:published:local/);
   assert.match(
     smokeStep,
-    /PERL_LSP_FIRST_HOUR_SERVER_PATH:\s*\$\{\{ runner\.temp \}\}\/perl-lsp-current-source-target\/release\/perllsp/,
+    /^[ \t]*PERL_LSP_FIRST_HOUR_SERVER_PATH:[ \t]*\$\{\{ runner\.temp \}\}\/perl-lsp-current-source-target\/release\/perllsp[ \t]*\r?$/m,
   );
   assert.match(
     smokeStep,
-    /PERL_LSP_SERVER_SOURCE_SHA:\s*\$\{\{ env\.PERL_LSP_SMOKE_SUBJECT_SHA \}\}/,
+    /^[ \t]*PERL_LSP_SERVER_SOURCE_SHA:[ \t]*\$\{\{ env\.PERL_LSP_SMOKE_SUBJECT_SHA \}\}[ \t]*\r?$/m,
   );
   assert.match(source, /same staged VSIX\/server/);
 });
