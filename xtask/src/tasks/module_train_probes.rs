@@ -12,6 +12,7 @@
 
 use color_eyre::eyre::{Context, Result};
 use std::path::PathBuf;
+use syn::visit::Visit;
 
 use super::{ProbeOutcome, TrainNode};
 
@@ -66,7 +67,7 @@ impl TreeSource for RepoTreeSource {
     }
 }
 
-/// One file that must carry every listed anchor for its component to be met.
+/// One file that must carry every listed syntax anchor for its component to be met.
 struct ComponentSelector {
     path: &'static str,
     anchors: &'static [&'static str],
@@ -83,6 +84,130 @@ struct NodeProbeContract {
     node_id: &'static str,
     issue: u64,
     components: &'static [ComponentProbe],
+}
+
+/// Match the finite Rust syntax forms used by the module-train registry.
+///
+/// Parsing before matching keeps comments and string literals from satisfying
+/// a production implementation probe. This intentionally handles only the
+/// declaration and dispatch forms registered below; it is not a general Rust
+/// source index.
+fn semantic_anchor_present(source: &str, anchor: &str) -> bool {
+    let Ok(file) = syn::parse_file(source) else {
+        return false;
+    };
+
+    if let Some(name) = anchor.strip_prefix("pub fn ") {
+        return function_present(&file, name, true);
+    }
+    if let Some(name) = anchor.strip_prefix("fn ") {
+        return function_present(&file, name, false);
+    }
+    if let Some(name) = anchor.strip_prefix("pub struct ") {
+        return type_present(&file, name, TypeKind::Struct);
+    }
+    if let Some(name) = anchor.strip_prefix("pub enum ") {
+        return type_present(&file, name, TypeKind::Enum);
+    }
+
+    let segments: Vec<&str> = anchor.split("::").collect();
+    let mut visitor = PathVisitor {
+        expected: segments,
+        found: false,
+    };
+    visitor.visit_file(&file);
+    visitor.found
+}
+
+fn function_present(file: &syn::File, name: &str, public: bool) -> bool {
+    let mut visitor = FunctionVisitor {
+        name,
+        public,
+        found: false,
+    };
+    visitor.visit_file(file);
+    visitor.found
+}
+
+#[derive(Clone, Copy)]
+enum TypeKind {
+    Struct,
+    Enum,
+}
+
+fn type_present(file: &syn::File, name: &str, kind: TypeKind) -> bool {
+    let mut visitor = TypeVisitor {
+        name,
+        kind,
+        found: false,
+    };
+    visitor.visit_file(file);
+    visitor.found
+}
+
+struct FunctionVisitor<'a> {
+    name: &'a str,
+    public: bool,
+    found: bool,
+}
+
+impl<'ast> Visit<'ast> for FunctionVisitor<'_> {
+    fn visit_item_fn(&mut self, node: &'ast syn::ItemFn) {
+        if node.sig.ident == self.name
+            && (!self.public || matches!(&node.vis, syn::Visibility::Public(_)))
+        {
+            self.found = true;
+        }
+        syn::visit::visit_item_fn(self, node);
+    }
+}
+
+struct TypeVisitor<'a> {
+    name: &'a str,
+    kind: TypeKind,
+    found: bool,
+}
+
+impl<'ast> Visit<'ast> for TypeVisitor<'_> {
+    fn visit_item_struct(&mut self, node: &'ast syn::ItemStruct) {
+        if matches!(self.kind, TypeKind::Struct)
+            && node.ident == self.name
+            && matches!(&node.vis, syn::Visibility::Public(_))
+        {
+            self.found = true;
+        }
+        syn::visit::visit_item_struct(self, node);
+    }
+
+    fn visit_item_enum(&mut self, node: &'ast syn::ItemEnum) {
+        if matches!(self.kind, TypeKind::Enum)
+            && node.ident == self.name
+            && matches!(&node.vis, syn::Visibility::Public(_))
+        {
+            self.found = true;
+        }
+        syn::visit::visit_item_enum(self, node);
+    }
+}
+
+struct PathVisitor<'a> {
+    expected: Vec<&'a str>,
+    found: bool,
+}
+
+impl<'ast> Visit<'ast> for PathVisitor<'_> {
+    fn visit_path(&mut self, node: &'ast syn::Path) {
+        if node.segments.len() == self.expected.len()
+            && node
+                .segments
+                .iter()
+                .zip(&self.expected)
+                .all(|(segment, expected)| segment.ident == *expected)
+        {
+            self.found = true;
+        }
+        syn::visit::visit_path(self, node);
+    }
 }
 
 /// Nodes carrying a semantic current-tree probe.
@@ -217,7 +342,11 @@ pub(super) fn node_probe(
                 satisfied = false;
                 break;
             };
-            if !selector.anchors.iter().all(|anchor| text.contains(anchor)) {
+            if !selector
+                .anchors
+                .iter()
+                .all(|anchor| semantic_anchor_present(&text, anchor))
+            {
                 satisfied = false;
                 break;
             }

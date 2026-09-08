@@ -737,6 +737,29 @@ fn an_implementation_without_its_production_consumer_is_not_landed() -> Result<(
     Ok(())
 }
 
+/// A comment or string literal that repeats a selector must not satisfy the
+/// production probe when the declaration and dispatch are absent.
+#[test]
+fn comments_and_literals_cannot_satisfy_dispatch_anchors() -> Result<()> {
+    let tree = FakeTree::from_real()?
+        .without_anchor("xtask/src/main.rs", "ModuleTrainCommand::Status")?
+        .without_anchor("xtask/src/main.rs", "module_train::run_status")?
+        .with_added(
+            "xtask/src/main.rs",
+            r#"
+                // ModuleTrainCommand::Status
+                const DOCUMENTATION: &str = "module_train::run_status";
+            "#,
+        );
+    let (outcome, unmet) = probe_for("C02", &tree)?;
+    if outcome == ProbeOutcome::Pass
+        || !unmet.iter().any(|component| component == "current_tree_probes")
+    {
+        bail!("comment-only dispatch anchors satisfied C02: {outcome:?} unmet={unmet:?}");
+    }
+    Ok(())
+}
+
 /// The mirror control: an implementation module removed while the CLI still
 /// references it is equally not landed.
 #[test]
