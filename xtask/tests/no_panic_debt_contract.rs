@@ -153,12 +153,7 @@ fn unsupported_baseline_schema_fails_even_when_identities_match() {
         current: &current,
         artifact: None,
         baseline: Some(&path),
-    })
-    .expect("check");
-    assert!(!result.ok, "unsupported baseline schema passed: {:?}", result.findings);
-    assert!(
-        result.findings.iter().any(|finding| finding.contains("unsupported schema")),
-        "{:?}",
-        result.findings
-    );
+    });
+    let err = result.err().expect("unsupported baseline schema must error");
+    assert!(err.to_string().contains("unsupported schema"), "{err}");
 }

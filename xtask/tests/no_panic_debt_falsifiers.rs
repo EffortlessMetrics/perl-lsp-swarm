@@ -844,6 +844,15 @@ mod tests {
         "cfg_attr(feature, allow) covered a test unwrap: {:?}",
         feature_row
     );
+    assert!(
+        inventory.instruments.iter().any(|instrument| {
+            instrument.kind == "cfg_attr_cover"
+                && instrument.status == InstrumentStatus::NotProven
+                && instrument.subject.ends_with("src/lib.rs")
+        }),
+        "feature-conditional cfg_attr covering was not not_proven: {:?}",
+        inventory.instruments
+    );
 }
 
 #[test]

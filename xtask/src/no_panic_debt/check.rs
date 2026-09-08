@@ -41,38 +41,37 @@ pub fn check_inventory(request: CheckRequest<'_>) -> Result<CheckResult> {
     if let Some(path) = request.baseline {
         let baseline = load_inventory(path)?;
         if baseline.schema != super::model::SCHEMA {
-            findings.push(format!(
+            return Err(eyre!(
                 "baseline {} has unsupported schema {}",
                 path.display(),
                 baseline.schema
             ));
-        } else {
-            let delta = semantic_delta(&baseline, request.current);
-            if !delta.added.is_empty() {
-                findings.push(format!(
-                    "baseline {} is missing {} current identit(y/ies); count equality is not identity",
-                    path.display(),
-                    delta.added.len()
-                ));
-            }
-            if baseline.counts.rows == request.current.counts.rows && !delta.added.is_empty() {
+        }
+        let delta = semantic_delta(&baseline, request.current);
+        if !delta.added.is_empty() {
+            findings.push(format!(
+                "baseline {} is missing {} current identit(y/ies); count equality is not identity",
+                path.display(),
+                delta.added.len()
+            ));
+        }
+        if baseline.counts.rows == request.current.counts.rows && !delta.added.is_empty() {
+            findings.push(
+                "row counts match but identities differ (moved or substituted site)".to_string(),
+            );
+        }
+        for added in &delta.added {
+            let unowned = request
+                .current
+                .rows
+                .iter()
+                .any(|row| row.identity_key() == *added && row.status == DebtStatus::Unowned);
+            if unowned {
                 findings.push(
-                    "row counts match but identities differ (moved or substituted site)"
+                    "ordinary regeneration cannot absorb a new unowned site into an accepted baseline"
                         .to_string(),
                 );
-            }
-            for added in &delta.added {
-                let unowned =
-                    request.current.rows.iter().any(|row| {
-                        row.identity_key() == *added && row.status == DebtStatus::Unowned
-                    });
-                if unowned {
-                    findings.push(
-                        "ordinary regeneration cannot absorb a new unowned site into an accepted baseline"
-                            .to_string(),
-                    );
-                    break;
-                }
+                break;
             }
         }
     }
@@ -260,24 +259,22 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_baseline_schema_is_a_finding() -> Result<()> {
+    fn unsupported_baseline_schema_errors() -> Result<()> {
         let dir = tempfile::tempdir()?;
         let current = inventory_with_topology_gap();
         let mut baseline = current.clone();
         baseline.schema = "not_test_panic_family_debt.v1".to_string();
         let path = dir.path().join("baseline.json");
         fs::write(&path, canonical_json(&baseline)?)?;
-        let result = check_inventory(CheckRequest {
+        let err = check_inventory(CheckRequest {
             root: dir.path(),
             current: &current,
             artifact: None,
             baseline: Some(&path),
-        })?;
-        assert!(
-            result.findings.iter().any(|finding| finding.contains("unsupported schema")),
-            "schema mismatch omitted: {:?}",
-            result.findings
-        );
+        })
+        .err()
+        .ok_or_else(|| color_eyre::eyre::eyre!("unsupported schema must error"))?;
+        assert!(err.to_string().contains("unsupported schema"), "schema error omitted: {err}");
         Ok(())
     }
 }

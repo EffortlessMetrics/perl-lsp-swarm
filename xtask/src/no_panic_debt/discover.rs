@@ -281,23 +281,20 @@ impl DebtVisitor<'_> {
         if ident != "allow" && ident != "expect" && ident != "cfg_attr" {
             return None;
         }
-        let Meta::List(list) = &attr.meta else {
+        let Meta::List(_) = &attr.meta else {
             return None;
         };
-        let collapsed = collapse(&list.tokens.to_string());
-        let cfg_test = ident == "cfg_attr" && cfg_attr_predicate_requires_test(&attr.meta);
-        if ident == "cfg_attr" && !cfg_test {
-            return None;
-        }
+        let mentioned = lint_names_from_attr(&ident, &attr.meta);
         let mut lints = BTreeSet::new();
         for lint in &self.vocabulary.lints {
-            if collapsed_mentions_lint(&collapsed, lint) {
+            if mentioned.iter().any(|name| name == lint) {
                 lints.insert(lint.clone());
             }
         }
         if lints.is_empty() {
             return None;
         }
+        let collapsed = collapse(&attr.meta.to_token_string());
         let owner = extract_owner(&collapsed);
         let snippet = collapse(&attr.meta.to_token_string());
         let line = attr.span().start().line;
@@ -319,6 +316,28 @@ impl DebtVisitor<'_> {
             snippet,
             line,
         });
+        let covers = if ident == "cfg_attr" {
+            match cfg_attr_cover_kind(&attr.meta) {
+                CfgAttrCover::Effective => true,
+                CfgAttrCover::Inactive => false,
+                CfgAttrCover::NotProven => {
+                    self.instruments.push(Instrument {
+                        kind: "cfg_attr_cover".to_string(),
+                        subject: self.file.path.clone(),
+                        status: InstrumentStatus::NotProven,
+                        detail: format!(
+                            "cfg_attr predicate {collapsed} cannot be established as covering for a test invocation"
+                        ),
+                    });
+                    false
+                }
+            }
+        } else {
+            true
+        };
+        if !covers {
+            return None;
+        }
         Some(Covering { identity, scope: scope.to_string(), owner, lints })
     }
 
@@ -607,6 +626,100 @@ fn cfg_attr_predicate_requires_test(meta: &Meta) -> bool {
         .is_some_and(cfg_predicate_requires_test)
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CfgAttrCover {
+    Effective,
+    Inactive,
+    NotProven,
+}
+
+fn cfg_attr_cover_kind(meta: &Meta) -> CfgAttrCover {
+    let Meta::List(list) = meta else {
+        return CfgAttrCover::NotProven;
+    };
+    split_top_level_commas(list.tokens.clone())
+        .into_iter()
+        .next()
+        .map(cfg_predicate_cover_kind)
+        .unwrap_or(CfgAttrCover::NotProven)
+}
+
+fn cfg_predicate_cover_kind(tokens: proc_macro2::TokenStream) -> CfgAttrCover {
+    let collapsed = collapse(&tokens.to_string());
+    if collapsed == "test" {
+        return CfgAttrCover::Effective;
+    }
+    let Ok(meta) = syn::parse2::<Meta>(tokens) else {
+        return if collapsed == "test" { CfgAttrCover::Effective } else { CfgAttrCover::NotProven };
+    };
+    match meta {
+        Meta::Path(path) if path.is_ident("test") => CfgAttrCover::Effective,
+        Meta::List(list) if list.path.is_ident("not") => {
+            match cfg_predicate_cover_kind(list.tokens) {
+                CfgAttrCover::Effective => CfgAttrCover::Inactive,
+                _ => CfgAttrCover::NotProven,
+            }
+        }
+        Meta::List(list) if list.path.is_ident("all") => {
+            let kinds: Vec<CfgAttrCover> = split_top_level_commas(list.tokens)
+                .into_iter()
+                .map(cfg_predicate_cover_kind)
+                .collect();
+            if kinds.iter().any(|kind| *kind == CfgAttrCover::Inactive) {
+                CfgAttrCover::Inactive
+            } else if !kinds.is_empty() && kinds.iter().all(|kind| *kind == CfgAttrCover::Effective)
+            {
+                CfgAttrCover::Effective
+            } else {
+                CfgAttrCover::NotProven
+            }
+        }
+        Meta::List(list) if list.path.is_ident("any") => CfgAttrCover::NotProven,
+        _ => CfgAttrCover::NotProven,
+    }
+}
+
+fn lint_names_from_attr(ident: &str, meta: &Meta) -> Vec<String> {
+    match ident {
+        "allow" | "expect" => lint_names_from_list_tokens(meta),
+        "cfg_attr" => {
+            let Meta::List(list) = meta else {
+                return Vec::new();
+            };
+            split_top_level_commas(list.tokens.clone())
+                .into_iter()
+                .skip(1)
+                .filter_map(|group| syn::parse2::<Meta>(group).ok())
+                .flat_map(|inner| lint_names_from_list_tokens(&inner))
+                .collect()
+        }
+        _ => Vec::new(),
+    }
+}
+
+fn lint_names_from_list_tokens(meta: &Meta) -> Vec<String> {
+    let Meta::List(list) = meta else {
+        return Vec::new();
+    };
+    let mut names = Vec::new();
+    for group in split_top_level_commas(list.tokens.clone()) {
+        let Ok(item) = syn::parse2::<Meta>(group) else {
+            continue;
+        };
+        match item {
+            Meta::NameValue(nv) if nv.path.is_ident("reason") => {}
+            Meta::Path(path) => names.push(meta_path_string(&path)),
+            Meta::List(list) => names.push(meta_path_string(&list.path)),
+            Meta::NameValue(nv) => names.push(meta_path_string(&nv.path)),
+        }
+    }
+    names
+}
+
+fn meta_path_string(path: &syn::Path) -> String {
+    path.segments.iter().map(|segment| segment.ident.to_string()).collect::<Vec<_>>().join("::")
+}
+
 fn cfg_predicate_requires_test(tokens: proc_macro2::TokenStream) -> bool {
     let collapsed = collapse(&tokens.to_string());
     if collapsed == "test" {
@@ -734,33 +847,6 @@ fn extract_owner(collapsed: &str) -> String {
 
 fn collapse(text: &str) -> String {
     text.chars().filter(|ch| !ch.is_whitespace()).collect()
-}
-
-fn collapsed_mentions_lint(collapsed: &str, lint: &str) -> bool {
-    let needle = collapse(lint);
-    if needle.is_empty() {
-        return false;
-    }
-    let bytes = collapsed.as_bytes();
-    let mut search_from = 0;
-    while let Some(rel) = collapsed.get(search_from..).and_then(|rest| rest.find(&needle)) {
-        let idx = search_from + rel;
-        let before_ok = idx == 0 || !is_ident_continue(bytes[idx - 1]);
-        let after = idx + needle.len();
-        let after_ok = after == bytes.len() || !is_ident_continue(bytes[after]);
-        if before_ok && after_ok {
-            return true;
-        }
-        search_from = idx.saturating_add(1);
-        if search_from >= collapsed.len() {
-            break;
-        }
-    }
-    false
-}
-
-fn is_ident_continue(byte: u8) -> bool {
-    byte.is_ascii_alphanumeric() || byte == b'_'
 }
 
 fn family_lint(family: &str) -> &'static str {
@@ -1026,12 +1112,44 @@ mod tests {
         .ok_or_else(|| color_eyre::eyre::eyre!("missing not-test cfg_attr"))?;
         assert!(!cfg_attr_predicate_requires_test(&not_attr.meta));
         assert!(cfg_attr_predicate_requires_test(&allow_attr.meta));
-        assert!(collapsed_mentions_lint("allow(clippy::panic)", "clippy::panic"));
-        assert!(!collapsed_mentions_lint("allow(clippy::panic_in_result_fn)", "clippy::panic"));
-        assert!(collapsed_mentions_lint(
-            "allow(clippy::panic,clippy::unwrap_used)",
-            "clippy::panic"
-        ));
+        assert_eq!(cfg_attr_cover_kind(&not_attr.meta), CfgAttrCover::Inactive);
+        assert_eq!(cfg_attr_cover_kind(&allow_attr.meta), CfgAttrCover::Effective);
+        let feature_item = syn::parse_file(
+            "#[cfg_attr(feature = \"need-me\", allow(clippy::unwrap_used))]\nfn t() {}",
+        )
+        .map_err(|err| color_eyre::eyre::eyre!("parse feature cfg_attr: {err}"))?;
+        let feature_attr = match feature_item.items.as_slice() {
+            [syn::Item::Fn(func)] => func.attrs.first(),
+            _ => None,
+        }
+        .ok_or_else(|| color_eyre::eyre::eyre!("missing feature cfg_attr"))?;
+        assert_eq!(cfg_attr_cover_kind(&feature_attr.meta), CfgAttrCover::NotProven);
+        let prefix = syn::parse_file("#[allow(clippy::panic_in_result_fn)]\nfn t() {}")
+            .map_err(|err| color_eyre::eyre::eyre!("parse prefix allow: {err}"))?;
+        let prefix_attr = match prefix.items.as_slice() {
+            [syn::Item::Fn(func)] => func.attrs.first(),
+            _ => None,
+        }
+        .ok_or_else(|| color_eyre::eyre::eyre!("missing prefix allow"))?;
+        let panic_item = syn::parse_file("#[allow(clippy::panic)]\nfn t() {}")
+            .map_err(|err| color_eyre::eyre::eyre!("parse panic allow: {err}"))?;
+        let panic_attr = match panic_item.items.as_slice() {
+            [syn::Item::Fn(func)] => func.attrs.first(),
+            _ => None,
+        }
+        .ok_or_else(|| color_eyre::eyre::eyre!("missing panic allow"))?;
+        assert_eq!(
+            lint_names_from_attr("allow", &prefix_attr.meta),
+            vec!["clippy::panic_in_result_fn".to_string()]
+        );
+        assert_eq!(
+            lint_names_from_attr("allow", &panic_attr.meta),
+            vec!["clippy::panic".to_string()]
+        );
+        assert_eq!(
+            lint_names_from_attr("cfg_attr", &allow_attr.meta),
+            vec!["clippy::unwrap_used".to_string()]
+        );
         Ok(())
     }
 }
