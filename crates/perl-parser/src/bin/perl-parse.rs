@@ -6,24 +6,119 @@ use std::time::{Duration, Instant};
 use perl_parser::{Node, ParseError, Parser};
 use serde::Serialize;
 
-#[derive(Debug)]
-pub(crate) struct Args {
-    pub(crate) inputs: Vec<Input>,
-    pub(crate) output_format: OutputFormat,
-    pub(crate) show_stats: bool,
-    pub(crate) pretty: bool,
-    pub(crate) quiet: bool,
-    pub(crate) continue_on_error: bool,
+const LEGACY_SUMMARY_SCHEMA: &str = "perl.parse_summary.legacy.v1";
+const LEGACY_SUMMARY_SUBJECT: &str = "native_ast_root_summary";
+const LEGACY_SUMMARY_LIMITATIONS: &[&str] = &[
+    "root_summary_only",
+    "not_native_parse_artifact",
+    "legacy_native_ast_sexp_is_not_canonical_tree_sitter_output",
+    "parser_terminal_source_identity_and_decode_history_are_not_recorded",
+];
+
+#[derive(Default)]
+struct TotalStats {
+    files_parsed: usize,
+    files_failed: usize,
+    total_bytes: usize,
+    total_time: Duration,
+    total_nodes: usize,
+    file_details: Vec<FileStats>,
+}
+
+struct FileStats {
+    name: String,
+    bytes: usize,
+    time: Duration,
+    nodes: usize,
+    error: bool,
+}
+
+impl TotalStats {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    fn add_file(&mut self, name: &str, bytes: usize, time: Duration, nodes: usize) {
+        self.files_parsed += 1;
+        self.total_bytes += bytes;
+        self.total_time += time;
+        self.total_nodes += nodes;
+        self.file_details.push(FileStats {
+            name: name.to_string(),
+            bytes,
+            time,
+            nodes,
+            error: false,
+        });
+    }
+
+    fn add_error(&mut self, name: &str) {
+        self.files_failed += 1;
+        self.file_details.push(FileStats {
+            name: name.to_string(),
+            bytes: 0,
+            time: Duration::ZERO,
+            nodes: 0,
+            error: true,
+        });
+    }
+
+    fn write(&self, out: &mut impl Write) -> io::Result<()> {
+        writeln!(out, "\n=== Total Statistics ===")?;
+        writeln!(out, "Files parsed: {}", self.files_parsed)?;
+        writeln!(out, "Files failed: {}", self.files_failed)?;
+        writeln!(
+            out,
+            "Total size: {} bytes ({:.2} KB)",
+            self.total_bytes,
+            self.total_bytes as f64 / 1024.0
+        )?;
+        writeln!(out, "Total time: {:?}", self.total_time)?;
+        writeln!(out, "Total nodes: {}", self.total_nodes)?;
+
+        if let Some(avg_nodes) = self.total_nodes.checked_div(self.files_parsed) {
+            let avg_speed = self.total_bytes as f64 / self.total_time.as_secs_f64() / 1_000_000.0;
+            writeln!(out, "Average speed: {avg_speed:.2} MB/s")?;
+            writeln!(out, "Average nodes per file: {avg_nodes}")?;
+        }
+
+        if self.file_details.len() > 1 && self.file_details.len() <= 20 {
+            writeln!(out, "\n=== File Details ===")?;
+            for stat in &self.file_details {
+                if stat.error {
+                    writeln!(out, "{}: FAILED", stat.name)?;
+                } else {
+                    writeln!(
+                        out,
+                        "{}: {} bytes, {:?}, {} nodes",
+                        stat.name, stat.bytes, stat.time, stat.nodes
+                    )?;
+                }
+            }
+        }
+
+        Ok(())
+    }
 }
 
 #[derive(Debug)]
-pub(crate) enum Input {
+struct Args {
+    inputs: Vec<Input>,
+    output_format: OutputFormat,
+    show_stats: bool,
+    pretty: bool,
+    quiet: bool,
+    continue_on_error: bool,
+}
+
+#[derive(Debug)]
+enum Input {
     File(PathBuf),
     Stdin,
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) enum OutputFormat {
+enum OutputFormat {
     LegacySexp,
     LegacyJson,
     UnstableDebug,
@@ -34,20 +129,20 @@ pub(crate) enum OutputFormat {
 /// Help and version are distinct from a runnable request so they can exit as
 /// soon as those flags are seen, matching historical argument-order behavior.
 #[derive(Debug)]
-pub(crate) enum CliRequest {
+enum CliRequest {
     Help,
     Version,
     Run(Args),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ProcessStatus {
+enum ProcessStatus {
     Success,
     Failure,
 }
 
 impl ProcessStatus {
-    pub(crate) fn code(self) -> i32 {
+    fn code(self) -> i32 {
         match self {
             Self::Success => 0,
             Self::Failure => 1,
@@ -55,12 +150,29 @@ impl ProcessStatus {
     }
 }
 
+#[derive(Debug, Serialize, PartialEq, Eq)]
+struct ByteRange {
+    start: usize,
+    end: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct LegacyParseSummary {
+    schema: &'static str,
+    subject: &'static str,
+    native_root_kind: &'static str,
+    root_byte_range: ByteRange,
+    node_count: usize,
+    legacy_native_ast_sexp: String,
+    limitations: &'static [&'static str],
+}
+
 /// Parse argv after the program name.
 ///
 /// `--help`/`-h` and `--version`/`-V` return immediately when first seen, so
 /// later flags are not interpreted. That matches the historical process-exit
 /// argument-order behavior.
-pub(crate) fn parse_args<I, S>(args: I) -> Result<CliRequest, String>
+fn parse_args<I, S>(args: I) -> Result<CliRequest, String>
 where
     I: IntoIterator<Item = S>,
     S: AsRef<str>,
@@ -114,7 +226,7 @@ where
     }))
 }
 
-pub(crate) fn help_text() -> &'static str {
+fn help_text() -> &'static str {
     r#"perl-parse - Parse Perl code and render a selected parser projection
 
 USAGE:
@@ -155,241 +267,31 @@ EXAMPLES:
 "#
 }
 
-pub(crate) fn write_help(stdout: &mut impl Write) -> io::Result<()> {
+fn write_help(stdout: &mut impl Write) -> io::Result<()> {
     writeln!(stdout, "{}", help_text())
 }
 
-pub(crate) fn write_version(stdout: &mut impl Write) -> io::Result<()> {
+fn write_version(stdout: &mut impl Write) -> io::Result<()> {
     writeln!(stdout, "perl-parse v{}", env!("CARGO_PKG_VERSION"))
 }
 
-pub(crate) fn write_usage_error(stderr: &mut impl Write, error: &str) -> io::Result<()> {
+fn write_usage_error(stderr: &mut impl Write, error: &str) -> io::Result<()> {
     writeln!(stderr, "Error: {error}")?;
     writeln!(stderr, "Try 'perl-parse --help' for more information.")
 }
 
-#[derive(Default)]
-pub(crate) struct TotalStats {
-    files_parsed: usize,
-    files_failed: usize,
-    total_bytes: usize,
-    total_time: Duration,
-    total_nodes: usize,
-    file_details: Vec<FileStats>,
-}
-
-struct FileStats {
-    name: String,
-    bytes: usize,
-    time: Duration,
-    nodes: usize,
-    error: bool,
-}
-
-impl TotalStats {
-    pub(crate) fn new() -> Self {
-        Self::default()
+fn main() {
+    let status = match execute(std::env::args().skip(1), &mut io::stdout(), &mut io::stderr()) {
+        Ok(status) => status,
+        Err(_) => {
+            // A failed stdout/stderr sink must not receive another write. Map
+            // the I/O error to a terminal nonzero status at the process boundary.
+            ProcessStatus::Failure
+        }
+    };
+    if status != ProcessStatus::Success {
+        std::process::exit(status.code());
     }
-
-    pub(crate) fn add_file(&mut self, name: &str, bytes: usize, time: Duration, nodes: usize) {
-        self.files_parsed += 1;
-        self.total_bytes += bytes;
-        self.total_time += time;
-        self.total_nodes += nodes;
-        self.file_details.push(FileStats {
-            name: name.to_string(),
-            bytes,
-            time,
-            nodes,
-            error: false,
-        });
-    }
-
-    pub(crate) fn add_error(&mut self, name: &str) {
-        self.files_failed += 1;
-        self.file_details.push(FileStats {
-            name: name.to_string(),
-            bytes: 0,
-            time: Duration::ZERO,
-            nodes: 0,
-            error: true,
-        });
-    }
-
-    pub(crate) fn write(&self, out: &mut impl Write) -> io::Result<()> {
-        writeln!(out, "\n=== Total Statistics ===")?;
-        writeln!(out, "Files parsed: {}", self.files_parsed)?;
-        writeln!(out, "Files failed: {}", self.files_failed)?;
-        writeln!(
-            out,
-            "Total size: {} bytes ({:.2} KB)",
-            self.total_bytes,
-            self.total_bytes as f64 / 1024.0
-        )?;
-        writeln!(out, "Total time: {:?}", self.total_time)?;
-        writeln!(out, "Total nodes: {}", self.total_nodes)?;
-
-        if let Some(avg_nodes) = self.total_nodes.checked_div(self.files_parsed) {
-            let avg_speed = self.total_bytes as f64 / self.total_time.as_secs_f64() / 1_000_000.0;
-            writeln!(out, "Average speed: {avg_speed:.2} MB/s")?;
-            writeln!(out, "Average nodes per file: {avg_nodes}")?;
-        }
-
-        if self.file_details.len() > 1 && self.file_details.len() <= 20 {
-            writeln!(out, "\n=== File Details ===")?;
-            for stat in &self.file_details {
-                if stat.error {
-                    writeln!(out, "{}: FAILED", stat.name)?;
-                } else {
-                    writeln!(
-                        out,
-                        "{}: {} bytes, {:?}, {} nodes",
-                        stat.name, stat.bytes, stat.time, stat.nodes
-                    )?;
-                }
-            }
-        }
-
-        Ok(())
-    }
-}
-
-pub(crate) fn write_error(
-    error: &ParseError,
-    source: &str,
-    stderr: &mut impl Write,
-) -> io::Result<()> {
-    match error {
-        ParseError::UnexpectedToken { expected, found, location } => {
-            let (line, col) = position_to_line_col(source, *location);
-            writeln!(stderr, "Parse error: Unexpected token at line {line}, column {col}")?;
-            writeln!(stderr, "  Expected: {expected}")?;
-            writeln!(stderr, "  Found: {found}")?;
-            write_error_context(source, *location, stderr)?;
-        }
-        ParseError::UnexpectedEof => {
-            writeln!(stderr, "Parse error: Unexpected end of input")?;
-            if !source.is_empty() {
-                write_error_context(source, source.len() - 1, stderr)?;
-            }
-        }
-        ParseError::SyntaxError { message, location } => {
-            let (line, col) = position_to_line_col(source, *location);
-            writeln!(stderr, "Parse error: {message} at line {line}, column {col}")?;
-            write_error_context(source, *location, stderr)?;
-        }
-        ParseError::Advisory { message, location } => {
-            let (line, col) = position_to_line_col(source, *location);
-            writeln!(stderr, "Parse advisory: {message} at line {line}, column {col}")?;
-            write_error_context(source, *location, stderr)?;
-        }
-        ParseError::InvalidNumber { literal } => {
-            writeln!(stderr, "Parse error: Invalid number literal: {literal}")?;
-        }
-        ParseError::InvalidString => {
-            writeln!(stderr, "Parse error: Invalid string literal")?;
-        }
-        ParseError::UnclosedDelimiter { delimiter } => {
-            writeln!(stderr, "Parse error: Unclosed delimiter: {delimiter}")?;
-        }
-        ParseError::InvalidRegex { message } => {
-            writeln!(stderr, "Parse error: Invalid regex: {message}")?;
-        }
-        ParseError::LexerError { message } => {
-            writeln!(stderr, "Parse error: Lexer error: {message}")?;
-        }
-        ParseError::RecursionLimit => {
-            writeln!(stderr, "Parse error: Maximum recursion depth exceeded")?;
-        }
-        ParseError::NestingTooDeep { depth, max_depth } => {
-            writeln!(stderr, "Parse error: Nesting too deep ({depth} > {max_depth})")?;
-        }
-        ParseError::Cancelled => {
-            writeln!(stderr, "Parse error: Parsing cancelled")?;
-        }
-        ParseError::Recovered { site, kind, location } => {
-            let (line, col) = position_to_line_col(source, *location);
-            writeln!(stderr, "Parse recovery: {kind:?} at {site:?} (line {line}, column {col})")?;
-            write_error_context(source, *location, stderr)?;
-        }
-        // Forward-compatible fallback for future variants (#2898)
-        _ => {
-            writeln!(stderr, "Parse error: {error}")?;
-        }
-    }
-    Ok(())
-}
-
-pub(crate) fn position_to_line_col(source: &str, position: usize) -> (usize, usize) {
-    let mut line = 1;
-    let mut col = 1;
-
-    for (byte_index, ch) in source.char_indices() {
-        if byte_index + ch.len_utf8() > position {
-            break;
-        }
-        if ch == '\n' {
-            line += 1;
-            col = 1;
-        } else {
-            col += 1;
-        }
-    }
-
-    (line, col)
-}
-
-pub(crate) fn write_error_context(
-    source: &str,
-    position: usize,
-    stderr: &mut impl Write,
-) -> io::Result<()> {
-    let lines: Vec<&str> = source.lines().collect();
-    let (line_num, col_num) = position_to_line_col(source, position);
-
-    if line_num > 0 && line_num <= lines.len() {
-        writeln!(stderr)?;
-
-        if line_num > 1 {
-            writeln!(stderr, "  {} | {}", line_num - 1, lines[line_num - 2])?;
-        }
-
-        writeln!(stderr, "  {} | {}", line_num, lines[line_num - 1])?;
-
-        write!(stderr, "  {} | ", " ".repeat(line_num.to_string().len()))?;
-        writeln!(stderr, "{}^", " ".repeat(col_num - 1))?;
-
-        if line_num < lines.len() {
-            writeln!(stderr, "  {} | {}", line_num + 1, lines[line_num])?;
-        }
-    }
-    Ok(())
-}
-
-const LEGACY_SUMMARY_SCHEMA: &str = "perl.parse_summary.legacy.v1";
-const LEGACY_SUMMARY_SUBJECT: &str = "native_ast_root_summary";
-const LEGACY_SUMMARY_LIMITATIONS: &[&str] = &[
-    "root_summary_only",
-    "not_native_parse_artifact",
-    "legacy_native_ast_sexp_is_not_canonical_tree_sitter_output",
-    "parser_terminal_source_identity_and_decode_history_are_not_recorded",
-];
-
-#[derive(Debug, Serialize, PartialEq, Eq)]
-struct ByteRange {
-    start: usize,
-    end: usize,
-}
-
-#[derive(Debug, Serialize)]
-struct LegacyParseSummary {
-    schema: &'static str,
-    subject: &'static str,
-    native_root_kind: &'static str,
-    root_byte_range: ByteRange,
-    node_count: usize,
-    legacy_native_ast_sexp: String,
-    limitations: &'static [&'static str],
 }
 
 /// Run the private CLI against injected writers.
@@ -399,7 +301,7 @@ struct LegacyParseSummary {
 /// serialization errors) return `Ok(ProcessStatus::Failure)` after the
 /// diagnostic has been written. Output-failure status is nonzero; preserving a
 /// panic's incidental exit code is not required.
-pub(crate) fn execute(
+fn execute(
     argv: impl IntoIterator<Item = impl AsRef<str>>,
     stdout: &mut impl Write,
     stderr: &mut impl Write,
@@ -497,20 +399,6 @@ fn run(args: Args, stdout: &mut impl Write, stderr: &mut impl Write) -> io::Resu
     }
 
     if had_error { Ok(ProcessStatus::Failure) } else { Ok(ProcessStatus::Success) }
-}
-
-fn main() {
-    let status = match execute(std::env::args().skip(1), &mut io::stdout(), &mut io::stderr()) {
-        Ok(status) => status,
-        Err(_) => {
-            // A failed stdout/stderr sink must not receive another write. Map
-            // the I/O error to a terminal nonzero status at the process boundary.
-            ProcessStatus::Failure
-        }
-    };
-    if status != ProcessStatus::Success {
-        std::process::exit(status.code());
-    }
 }
 
 fn render_output(
@@ -658,6 +546,110 @@ fn decode_byte_as_windows_1252(byte: u8) -> char {
         0x9F => '\u{0178}', // Ÿ
         _ => char::from(byte),
     }
+}
+
+fn write_error(error: &ParseError, source: &str, stderr: &mut impl Write) -> io::Result<()> {
+    match error {
+        ParseError::UnexpectedToken { expected, found, location } => {
+            let (line, col) = position_to_line_col(source, *location);
+            writeln!(stderr, "Parse error: Unexpected token at line {line}, column {col}")?;
+            writeln!(stderr, "  Expected: {expected}")?;
+            writeln!(stderr, "  Found: {found}")?;
+            write_error_context(source, *location, stderr)?;
+        }
+        ParseError::UnexpectedEof => {
+            writeln!(stderr, "Parse error: Unexpected end of input")?;
+            if !source.is_empty() {
+                write_error_context(source, source.len() - 1, stderr)?;
+            }
+        }
+        ParseError::SyntaxError { message, location } => {
+            let (line, col) = position_to_line_col(source, *location);
+            writeln!(stderr, "Parse error: {message} at line {line}, column {col}")?;
+            write_error_context(source, *location, stderr)?;
+        }
+        ParseError::Advisory { message, location } => {
+            let (line, col) = position_to_line_col(source, *location);
+            writeln!(stderr, "Parse advisory: {message} at line {line}, column {col}")?;
+            write_error_context(source, *location, stderr)?;
+        }
+        ParseError::InvalidNumber { literal } => {
+            writeln!(stderr, "Parse error: Invalid number literal: {literal}")?;
+        }
+        ParseError::InvalidString => {
+            writeln!(stderr, "Parse error: Invalid string literal")?;
+        }
+        ParseError::UnclosedDelimiter { delimiter } => {
+            writeln!(stderr, "Parse error: Unclosed delimiter: {delimiter}")?;
+        }
+        ParseError::InvalidRegex { message } => {
+            writeln!(stderr, "Parse error: Invalid regex: {message}")?;
+        }
+        ParseError::LexerError { message } => {
+            writeln!(stderr, "Parse error: Lexer error: {message}")?;
+        }
+        ParseError::RecursionLimit => {
+            writeln!(stderr, "Parse error: Maximum recursion depth exceeded")?;
+        }
+        ParseError::NestingTooDeep { depth, max_depth } => {
+            writeln!(stderr, "Parse error: Nesting too deep ({depth} > {max_depth})")?;
+        }
+        ParseError::Cancelled => {
+            writeln!(stderr, "Parse error: Parsing cancelled")?;
+        }
+        ParseError::Recovered { site, kind, location } => {
+            let (line, col) = position_to_line_col(source, *location);
+            writeln!(stderr, "Parse recovery: {kind:?} at {site:?} (line {line}, column {col})")?;
+            write_error_context(source, *location, stderr)?;
+        }
+        // Forward-compatible fallback for future variants (#2898)
+        _ => {
+            writeln!(stderr, "Parse error: {error}")?;
+        }
+    }
+    Ok(())
+}
+
+fn position_to_line_col(source: &str, position: usize) -> (usize, usize) {
+    let mut line = 1;
+    let mut col = 1;
+
+    for (byte_index, ch) in source.char_indices() {
+        if byte_index + ch.len_utf8() > position {
+            break;
+        }
+        if ch == '\n' {
+            line += 1;
+            col = 1;
+        } else {
+            col += 1;
+        }
+    }
+
+    (line, col)
+}
+
+fn write_error_context(source: &str, position: usize, stderr: &mut impl Write) -> io::Result<()> {
+    let lines: Vec<&str> = source.lines().collect();
+    let (line_num, col_num) = position_to_line_col(source, position);
+
+    if line_num > 0 && line_num <= lines.len() {
+        writeln!(stderr)?;
+
+        if line_num > 1 {
+            writeln!(stderr, "  {} | {}", line_num - 1, lines[line_num - 2])?;
+        }
+
+        writeln!(stderr, "  {} | {}", line_num, lines[line_num - 1])?;
+
+        write!(stderr, "  {} | ", " ".repeat(line_num.to_string().len()))?;
+        writeln!(stderr, "{}^", " ".repeat(col_num - 1))?;
+
+        if line_num < lines.len() {
+            writeln!(stderr, "  {} | {}", line_num + 1, lines[line_num])?;
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
