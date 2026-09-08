@@ -34,8 +34,11 @@
 //! `receipt_projection()`, and reaching for the raw type instead is a
 //! compile error rather than a silent leak.
 //!
-//! `Debug` is still derived, because it is load-bearing for tests and
-//! assertions; keep debuggee payload out of logs by logging receipts.
+//! `Debug` remains available because it is load-bearing for tests and
+//! assertions, but payload-bearing leaves provide explicit redacting
+//! implementations; composed values can therefore retain derived `Debug`
+//! without exposing debuggee data. Keep debuggee payload out of logs by
+//! logging receipts.
 //!
 //! # Identity
 //!
