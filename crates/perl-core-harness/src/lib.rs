@@ -6154,6 +6154,46 @@ mod tests {
     }
 
     #[test]
+    fn compile_baseline_v2_rejects_missing_or_blank_identity_inputs() -> TestResult {
+        let discovery = sample_discovery_report();
+        let series = build_series_manifest(&discovery, &sample_series_config(), "now".into())?;
+        for (label, value) in [
+            ("compiler subject", None),
+            ("invocation", None),
+            ("capability", None),
+            ("environment", None),
+            ("compiler subject", Some(" \t")),
+            ("invocation", Some(" \t")),
+            ("capability", Some(" \t")),
+            ("environment", Some(" \t")),
+        ] {
+            let mut config = sample_baseline_v2_config();
+            let value = value.map(str::to_owned);
+            match label {
+                "compiler subject" => config.compiler_subject_identity = value,
+                "invocation" => config.invocation_identity = value,
+                "capability" => config.capability_identity = value,
+                "environment" => config.environment_identity = value,
+                _ => bail!("unexpected identity label: {label}"),
+            }
+
+            let Err(error) =
+                baseline_v2_from_report(&sample_compile_report(), &series, &config, None, &[])
+            else {
+                bail!("{label} identity input must fail closed");
+            };
+            let expected = format!("baseline v2 requires a non-empty {label} identity");
+            let observed = error.to_string();
+            if observed != expected {
+                bail!(
+                    "unexpected {label} identity error: expected {expected:?}, observed {observed:?}"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
     fn compile_baseline_v2_requires_report_shape_validation() -> TestResult {
         let discovery = sample_discovery_report();
         let series = build_series_manifest(&discovery, &sample_series_config(), "now".into())?;
