@@ -175,21 +175,35 @@ async function releaseClient(
   client: ProcessBoundLanguageClient,
   control: string,
   observedExit: (client: ProcessBoundLanguageClient) => Promise<void>,
+  timeoutMs = 5_000,
 ): Promise<void> {
   const witness = serverProcessOf(client);
   assert.ok(witness, 'real client must expose its captured server process');
   if (witness.exitCode !== null || witness.signalCode !== null) return;
   const exit = observedExit(client);
-  fs.writeFileSync(`${control}.exit`, 'exit', 'utf8');
+  try {
+    fs.writeFileSync(`${control}.exit`, 'exit', 'utf8');
+  } catch (error: unknown) {
+    await forceKill(witness, exit, error);
+    return;
+  }
   const settled = await Promise.race([
     exit.then(() => true),
-    new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 5_000)),
+    new Promise<boolean>((resolve) => setTimeout(() => resolve(false), timeoutMs)),
   ]);
   if (settled || witness.exitCode !== null || witness.signalCode !== null) return;
 
+  await forceKill(witness, exit);
+}
+
+async function forceKill(
+  witness: ServerProcessLike,
+  observedExit: Promise<void>,
+  cause?: unknown,
+): Promise<void> {
   const kill = (witness as ServerProcessLike & { kill?: () => boolean }).kill;
   if (typeof kill !== 'function') {
-    throw new Error('owned child must expose an exact-handle kill fallback');
+    throw new Error('owned child must expose an exact-handle kill fallback', { cause });
   }
   const forcedExit = new Promise<void>((resolve, reject) => {
     const timer = setTimeout(() => {
@@ -202,7 +216,17 @@ async function releaseClient(
     };
     witness.once('exit', onExit);
   });
-  assert.equal(kill(), true, 'exact-handle child termination request failed');
+  let requested: boolean;
+  try {
+    requested = kill.call(witness);
+  } catch (error: unknown) {
+    await Promise.race([observedExit, new Promise<void>((resolve) => setTimeout(resolve, 100))]);
+    throw new Error('exact-handle child termination request threw', { cause: error });
+  }
+  if (!requested) {
+    await Promise.race([observedExit, new Promise<void>((resolve) => setTimeout(resolve, 100))]);
+    throw new Error('exact-handle child termination request failed', { cause });
+  }
   await forcedExit;
 }
 
@@ -240,7 +264,18 @@ suite('Real language-client process settlement', function () {
       const { lifecycle, created } = createdLifecycle;
       observedExit = createdLifecycle.observedExit;
       clients = createdLifecycle.clients;
-      await assert.rejects(lifecycle.start(), /replacement startup is blocked/);
+      let startError: unknown;
+      try {
+        await lifecycle.start();
+        throw new Error('initialize rejection unexpectedly succeeded');
+      } catch (error: unknown) {
+        startError = error;
+      }
+      assert.match(String(startError), /replacement startup is blocked/);
+      assert.match(
+        String((startError as { cause?: unknown }).cause ?? startError),
+        /intentional initialize rejection/,
+      );
       await waitForFile(`${control}.rejected`);
       assert.equal(created(), 1);
       await assert.rejects(lifecycle.restart(), /replacement startup is blocked/);
@@ -269,7 +304,15 @@ suite('Real language-client process settlement', function () {
       const { lifecycle, created } = createdLifecycle;
       observedExit = createdLifecycle.observedExit;
       clients = createdLifecycle.clients;
-      await assert.rejects(lifecycle.start(), /replacement startup is blocked/);
+      let startError: unknown;
+      try {
+        await lifecycle.start();
+        throw new Error('timed-out startup unexpectedly succeeded');
+      } catch (error: unknown) {
+        startError = error;
+      }
+      assert.match(String(startError), /replacement startup is blocked/);
+      assert.match(String((startError as { cause?: unknown }).cause ?? startError), /timed out/);
       await waitForFile(`${control}.received`);
       const timedOutWitness = serverProcessOf(clients[0]);
       assert.ok(timedOutWitness);
@@ -331,6 +374,35 @@ suite('Real language-client process settlement', function () {
       assert.equal(lifecycle.snapshot.state, 'running');
       await lifecycle.stop();
       assert.equal(lifecycle.snapshot.state, 'stopped');
+    } finally {
+      fs.rmSync(`${control}.hold`, { force: true });
+      await cleanupClients(clients, control, observedExit);
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  test('cleanup fallback kills the exact child when the fixture ignores release', async function () {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-settlement-fallback-'));
+    const control = path.join(directory, 'control');
+    let clients: ProcessBoundLanguageClient[] = [];
+    let observedExit = async (_client: ProcessBoundLanguageClient): Promise<void> => {
+      throw new Error('child-exit observer was not initialized');
+    };
+    try {
+      const fixture = writeFixture(directory);
+      fs.writeFileSync(`${control}.allow`, 'allow', 'utf8');
+      fs.writeFileSync(`${control}.hold`, 'hold', 'utf8');
+      const createdLifecycle = createLifecycle(fixture, control);
+      observedExit = createdLifecycle.observedExit;
+      clients = createdLifecycle.clients;
+      const client = await createdLifecycle.lifecycle.start();
+      assert.ok(client);
+      await waitForFile(`${control}.initialized`);
+      await createdLifecycle.lifecycle.stop();
+      await releaseClient(client, control, observedExit, 100);
+      const witness = serverProcessOf(client);
+      assert.ok(witness);
+      assert.ok(witness.exitCode !== null || witness.signalCode !== null);
     } finally {
       fs.rmSync(`${control}.hold`, { force: true });
       await cleanupClients(clients, control, observedExit);
