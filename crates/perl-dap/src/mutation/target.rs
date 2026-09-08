@@ -213,7 +213,7 @@ impl MutationMember {
 /// Produced by the inspection/value-graph path (#9048, #9050). It may
 /// accompany a location, and it is what proves "these two locations currently
 /// hold the same referent", but on its own it addresses nothing writable.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct InspectedValueIdentity {
     /// Value-graph node identity of the observation.
     pub value_node: String,
@@ -223,12 +223,22 @@ pub struct InspectedValueIdentity {
     pub value_authority_generation: u64,
 }
 
+impl fmt::Debug for InspectedValueIdentity {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("InspectedValueIdentity")
+            .field("value_node", &"<redacted>")
+            .field("referent", &self.referent.as_ref().map(|_| "<redacted>"))
+            .field("value_authority_generation", &self.value_authority_generation)
+            .finish()
+    }
+}
+
 /// Exact current writable storage location.
 ///
 /// Sealed: the only producer is [`MutationTargetCandidate::bind`], so every
 /// provenance value is generation-bound and kind/member-coherent by
 /// construction.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct MutationLocationProvenance {
     session_generation: u64,
     suspension_generation: u64,
@@ -239,6 +249,22 @@ pub struct MutationLocationProvenance {
     member: MutationMember,
     referent_identity: Option<String>,
     profile_version: u32,
+}
+
+impl fmt::Debug for MutationLocationProvenance {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("MutationLocationProvenance")
+            .field("session_generation", &self.session_generation)
+            .field("suspension_generation", &self.suspension_generation)
+            .field("value_authority_generation", &self.value_authority_generation)
+            .field("frame_identity", &"<redacted>")
+            .field("binding_identity", &"<redacted>")
+            .field("kind", &self.kind)
+            .field("member", &self.member)
+            .field("referent_identity", &self.referent_identity.as_ref().map(|_| "<redacted>"))
+            .field("profile_version", &self.profile_version)
+            .finish()
+    }
 }
 
 impl MutationLocationProvenance {
@@ -432,7 +458,7 @@ pub enum MutationTargetBindingError {
 ///
 /// Deliberately constructible while incomplete so binding failures are
 /// observable and testable rather than unrepresentable.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Clone, PartialEq, Eq, Default)]
 pub struct MutationTargetCandidate {
     /// Session generation the claim was observed under.
     pub session_generation: Option<u64>,
@@ -454,6 +480,23 @@ pub struct MutationTargetCandidate {
     pub writability: WritabilityDisposition,
     /// Backend/mode cell the target will be operated under.
     pub backend_mode: String,
+}
+
+impl fmt::Debug for MutationTargetCandidate {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("MutationTargetCandidate")
+            .field("session_generation", &self.session_generation)
+            .field("suspension_generation", &self.suspension_generation)
+            .field("value_authority_generation", &self.value_authority_generation)
+            .field("frame_identity", &"<redacted>")
+            .field("binding_identity", &"<redacted>")
+            .field("kind", &self.kind)
+            .field("member", &self.member)
+            .field("inspected_value", &self.inspected_value)
+            .field("writability", &self.writability)
+            .field("backend_mode", &self.backend_mode)
+            .finish()
+    }
 }
 
 impl MutationTargetCandidate {

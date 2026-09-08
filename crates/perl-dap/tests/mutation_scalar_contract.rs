@@ -965,24 +965,55 @@ fn debug_formatting_does_not_leak_payload() -> TestResult {
         return Err("Debug leaked an exact integer".to_string());
     }
 
-    // Composition: a containing type's derived Debug must inherit redaction.
-    let mut candidate = lexical_candidate("frame#1", "pad:%creds@4");
+    // Composition: containing types must redact storage and graph identities,
+    // not only assigned values and hash-key payloads.
+    let mut candidate = lexical_candidate("frame-identity-secret", "binding-identity-secret");
     candidate.kind = Some(MutationLocationKind::CurrentFrameHashEntry);
     candidate.member =
         Some(MutationMember::HashKey(PerlHashKey::byte_string(secret_key.as_bytes().to_vec())));
     candidate.inspected_value = Some(InspectedValueIdentity {
-        value_node: "node".to_string(),
-        referent: Some("HASH(0x1)".to_string()),
+        value_node: "value-node-secret".to_string(),
+        referent: Some("referent-identity-secret".to_string()),
         value_authority_generation: 11,
     });
+    let candidate_debug = format!("{candidate:?}");
+    for secret in [
+        "frame-identity-secret",
+        "binding-identity-secret",
+        "value-node-secret",
+        "referent-identity-secret",
+    ] {
+        if candidate_debug.contains(secret) {
+            return Err(format!("candidate Debug leaked identity: {candidate_debug}"));
+        }
+    }
+    let inspected_debug =
+        format!("{:?}", candidate.inspected_value.as_ref().ok_or("missing observation")?);
+    if inspected_debug.contains("value-node-secret")
+        || inspected_debug.contains("referent-identity-secret")
+    {
+        return Err(format!("inspected-value Debug leaked identity: {inspected_debug}"));
+    }
+    let target = bind(&candidate)?;
+    let target_debug = format!("{target:?}");
+    for secret in ["frame-identity-secret", "binding-identity-secret", "referent-identity-secret"] {
+        if target_debug.contains(secret) {
+            return Err(format!("target Debug leaked identity: {target_debug}"));
+        }
+    }
     let op = operation(
         MutationOrigin::SetVariable,
-        bind(&candidate)?,
+        target,
         MutationValue::UnicodeString(secret_value.to_string()),
     );
     let rendered_op = format!("{op:?}");
     if rendered_op.contains(secret_value) || rendered_op.contains(secret_key) {
         return Err(format!("Debug leaked through the operation: {rendered_op}"));
+    }
+    for secret in ["frame-identity-secret", "binding-identity-secret", "referent-identity-secret"] {
+        if rendered_op.contains(secret) {
+            return Err(format!("Debug leaked identity through the operation: {rendered_op}"));
+        }
     }
 
     // And through an outcome carrying an observed read-back.
