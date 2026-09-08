@@ -19,6 +19,34 @@ The Dependabot configuration is located at `.github/dependabot.yml` and manages 
 2. **GitHub Actions** (workflow dependencies)
 3. **npm** (VS Code extension dependencies)
 
+## Release-age boundary
+
+Normal Dependabot version updates wait 14 days after publication in all three
+ecosystems (`cooldown.default-days: 14`). Dependabot security updates bypass that
+updater cooldown; review security fixes promptly.
+
+Extension resolution has a separate project setting in `vscode-extension/.npmrc`:
+`min-release-age=14`. Use the pinned npm 11.18.0 from `package.json`; this value is
+in **days**, not seconds. The setting filters newly resolved versions, including
+transitive dependencies. A successful locked install alone does not prove that
+new-version admission was exercised. Higher-priority npm configuration can override
+the project setting.
+
+If this resolver window blocks a required younger security fix, record a reviewed,
+package-scoped temporary `min-release-age-exclude[]` exception with owner, reason,
+and removal condition. Dependabot's security bypass does not bypass npm's separate
+resolver gate. Do not disable the window globally to make an update pass.
+
+Cargo-native release-age filtering is deferred until Cargo 1.100 is admitted by
+the existing toolchain policy; this change does not raise MSRV or change toolchains.
+
+Sources: [npm v11 configuration](https://docs.npmjs.com/cli/v11/commands/npm-install/#min-release-age),
+[implementation plan #15107](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/15107).
+Run `python scripts/ci/test_validate_dependabot_contract.py` and
+`python scripts/ci/validate_dependabot_contract.py --repo-root .` to check the
+Dependabot scalars and existing guidance contract. This validator does not execute
+npm resolution or prove GitHub's hosted cooldown behavior.
+
 ## Update Strategy
 
 ### Cargo Dependencies

@@ -293,3 +293,5 @@ labels:
 gh repo set-default
 gh api --method PUT repos/:owner/:repo/subscription -f subscribed=true -f ignored=false
 ```
+
+Dependency version updates use a 14-day admission window. See the [release-age boundary](DEPENDENCY_MANAGEMENT.md#release-age-boundary) for updater versus npm resolver behavior and security exceptions.
