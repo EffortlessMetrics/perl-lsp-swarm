@@ -154,7 +154,10 @@ describe('process-bound language client', () => {
     await expect(client.createTransportsForTest()).rejects.toThrow(
       'transport creation failed after spawn',
     );
-    expect(serverProcessOf(client)).toBe(client.serverProcess);
+    const captured = client.serverProcess;
+    expect(captured).toBeDefined();
+    (client as unknown as { _serverProcess: ChildProcess | undefined })._serverProcess = undefined;
+    expect(serverProcessOf(client)).toBe(captured);
   });
 
   test('preserves the prior witness when a later transport attempt has no child', async () => {
