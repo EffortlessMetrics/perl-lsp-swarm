@@ -4442,6 +4442,56 @@ paths = ["archive/["]
     }
 
     #[test]
+    fn tautology_declaration_suppression_matches_no_static_path_only() -> Result<()> {
+        let rules =
+            read_ripr_suppression_rules(&repo_root()?, Path::new("policy/ripr-suppressions.toml"))?;
+        let paths = [
+            "xtask/src/tasks/check_tautology/expr.rs",
+            "xtask/src/tasks/check_tautology/scan.rs",
+            "xtask/src/tasks/check_tautology/mod.rs",
+        ];
+
+        for path in paths {
+            assert!(
+                suppression_matches_finding(
+                    &rules,
+                    &json!({"classification": "no_static_path", "probe": {"file": path}})
+                ),
+                "no_static_path on {path} must match the #14058 declaration suppression"
+            );
+            assert!(
+                suppression_matches_finding(
+                    &rules,
+                    &json!({"grip_class": "no_static_path", "seam": {"file": path}})
+                ),
+                "ripr 0.9.x grip_class no_static_path on {path} must match"
+            );
+            assert!(
+                !suppression_matches_finding(
+                    &rules,
+                    &json!({"classification": "reachable_unrevealed", "probe": {"file": path}})
+                ),
+                "reachable_unrevealed on {path} must remain visible"
+            );
+            assert!(
+                !suppression_matches_finding(
+                    &rules,
+                    &json!({"classification": "weakly_exposed", "probe": {"file": path}})
+                ),
+                "weakly_exposed on {path} must remain visible"
+            );
+        }
+        assert!(!suppression_matches_finding(
+            &rules,
+            &json!({
+                "classification": "no_static_path",
+                "probe": {"file": "xtask/src/tasks/check_tautology/detect.rs"}
+            })
+        ));
+        Ok(())
+    }
+
+    #[test]
     fn mutation_label_routes_targeted() {
         let decision = routing_decision(&["mutation".to_string()], false);
         assert!(decision.requires_targeted_mutation);
