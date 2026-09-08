@@ -1,7 +1,19 @@
 import * as path from 'path';
 import Mocha from 'mocha';
 
+export function assertSmokeSelector(environment: NodeJS.ProcessEnv = process.env): void {
+  if (
+    environment.PERL_LSP_HEALTH_CHECK_RECOVERY_SMOKE === '1' &&
+    environment.PERL_LSP_HEALTH_CHECK_FAILURE_SMOKE !== '1'
+  ) {
+    throw new Error(
+      'PERL_LSP_HEALTH_CHECK_RECOVERY_SMOKE requires PERL_LSP_HEALTH_CHECK_FAILURE_SMOKE=1',
+    );
+  }
+}
+
 export async function run(): Promise<void> {
+  assertSmokeSelector();
   const mocha = new Mocha({
     ui: 'tdd',
     color: true,
@@ -10,7 +22,21 @@ export async function run(): Promise<void> {
 
   const currentSourceSmoke = process.env.PERL_LSP_CURRENT_SOURCE_SMOKE === '1';
   const packagedBundleSmoke = process.env.PERL_LSP_PACKAGED_BUNDLE_SMOKE === '1';
+  const healthCheckFailureSmoke = process.env.PERL_LSP_HEALTH_CHECK_FAILURE_SMOKE === '1';
   const activationFailureSmoke = process.env.PERL_LSP_ACTIVATION_FAILURE_SMOKE === '1';
+  const conflictingHealthMode = [
+    ['PERL_LSP_ACTIVATION_FAILURE_SMOKE', activationFailureSmoke],
+    ['PERL_LSP_CRASH_RECOVERY_SMOKE', process.env.PERL_LSP_CRASH_RECOVERY_SMOKE === '1'],
+    ['PERL_LSP_PACKAGED_BUNDLE_SMOKE', packagedBundleSmoke],
+    ['PERL_LSP_CURRENT_SOURCE_SMOKE', currentSourceSmoke],
+  ]
+    .filter(([, enabled]) => enabled)
+    .map(([name]) => name);
+  if (healthCheckFailureSmoke && conflictingHealthMode.length > 0) {
+    throw new Error(
+      `PERL_LSP_HEALTH_CHECK_FAILURE_SMOKE cannot be combined with ${conflictingHealthMode.join(', ')}`,
+    );
+  }
   const activationFailureLeg = process.env.PERL_LSP_ACTIVATION_FAILURE_LEG ?? '';
   if (
     activationFailureSmoke &&
@@ -34,9 +60,11 @@ export async function run(): Promise<void> {
       ? [path.resolve(__dirname, '../activationFailureJourney.test.js')]
       : packagedBundleSmoke
         ? [path.resolve(__dirname, '../packagedBundleJourney.test.js')]
-        : currentSourceSmoke
-          ? [path.resolve(__dirname, '../../integration/firstHourReceipt.test.js')]
-          : [path.resolve(__dirname, '../managedBinaryPublishedSmoke.test.js')];
+        : healthCheckFailureSmoke
+          ? [path.resolve(__dirname, '../healthCheckFailureJourney.test.js')]
+          : currentSourceSmoke
+            ? [path.resolve(__dirname, '../../integration/firstHourReceipt.test.js')]
+            : [path.resolve(__dirname, '../managedBinaryPublishedSmoke.test.js')];
   for (const smokeTestPath of smokeTestPaths) {
     mocha.addFile(smokeTestPath);
   }

@@ -4,10 +4,60 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { test } from 'node:test';
+import Mocha from 'mocha';
 import {
   assertCandidateBoundInstallSource,
   assertCandidateBoundPlatform,
 } from './runPublishedSmoke';
+import { assertSmokeSelector, run as runPublishedSuite } from './suite';
+
+void test('published smoke rejects a recovery leg without its failure selector', () => {
+  assert.throws(
+    () =>
+      assertSmokeSelector({
+        PERL_LSP_HEALTH_CHECK_RECOVERY_SMOKE: '1',
+      }),
+    /PERL_LSP_HEALTH_CHECK_RECOVERY_SMOKE requires PERL_LSP_HEALTH_CHECK_FAILURE_SMOKE=1/,
+  );
+  assert.doesNotThrow(() =>
+    assertSmokeSelector({
+      PERL_LSP_HEALTH_CHECK_FAILURE_SMOKE: '1',
+      PERL_LSP_HEALTH_CHECK_RECOVERY_SMOKE: '1',
+    }),
+  );
+});
+
+void test('published smoke run rejects the invalid recovery selector before loading a suite', async () => {
+  const previousFailure = process.env.PERL_LSP_HEALTH_CHECK_FAILURE_SMOKE;
+  const previousRecovery = process.env.PERL_LSP_HEALTH_CHECK_RECOVERY_SMOKE;
+  const originalAddFile = Mocha.prototype.addFile;
+  let suiteLoadCalls = 0;
+  Mocha.prototype.addFile = function () {
+    suiteLoadCalls += 1;
+    return this;
+  };
+  try {
+    delete process.env.PERL_LSP_HEALTH_CHECK_FAILURE_SMOKE;
+    process.env.PERL_LSP_HEALTH_CHECK_RECOVERY_SMOKE = '1';
+    await assert.rejects(
+      runPublishedSuite(),
+      /PERL_LSP_HEALTH_CHECK_RECOVERY_SMOKE requires PERL_LSP_HEALTH_CHECK_FAILURE_SMOKE=1/,
+    );
+    assert.equal(suiteLoadCalls, 0);
+  } finally {
+    Mocha.prototype.addFile = originalAddFile;
+    if (previousFailure === undefined) {
+      delete process.env.PERL_LSP_HEALTH_CHECK_FAILURE_SMOKE;
+    } else {
+      process.env.PERL_LSP_HEALTH_CHECK_FAILURE_SMOKE = previousFailure;
+    }
+    if (previousRecovery === undefined) {
+      delete process.env.PERL_LSP_HEALTH_CHECK_RECOVERY_SMOKE;
+    } else {
+      process.env.PERL_LSP_HEALTH_CHECK_RECOVERY_SMOKE = previousRecovery;
+    }
+  }
+});
 
 void test('candidate-bound Marketplace latest is refused before installation', () => {
   assert.throws(
