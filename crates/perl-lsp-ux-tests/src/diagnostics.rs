@@ -120,7 +120,7 @@ mod tests {
     }
 
     #[test]
-    fn latest_for_uri_prefers_most_recent_payload() {
+    fn latest_for_uri_prefers_most_recent_payload() -> anyhow::Result<()> {
         let events = vec![
             LspEvent::Diagnostics {
                 uri: "file:///a.pl".to_string(),
@@ -140,22 +140,30 @@ mod tests {
         ];
 
         let latest = DiagnosticsTracker::latest_for_uri(&events, "file:///a.pl");
-        assert_eq!(latest, Some(vec![json!({"message": "new"})]));
+        anyhow::ensure!(
+            latest == Some(vec![json!({"message": "new"})]),
+            "expected only the newer diagnostic payload, got {latest:?}"
+        );
+        Ok(())
     }
 
     #[test]
-    fn latest_for_uri_returns_none_when_no_match() {
+    fn latest_for_uri_returns_none_when_no_match() -> anyhow::Result<()> {
         let events = vec![LspEvent::Diagnostics {
             uri: "file:///b.pl".to_string(),
             version: Some(1),
             diagnostics: vec![json!({"message": "other"})],
         }];
         let latest = DiagnosticsTracker::latest_for_uri(&events, "file:///a.pl");
-        assert!(latest.is_none());
+        anyhow::ensure!(
+            latest.is_none(),
+            "no matching new diagnostic payload expected, got {latest:?}"
+        );
+        Ok(())
     }
 
     #[test]
-    fn count_for_uri_counts_only_matching_diagnostics() {
+    fn count_for_uri_counts_only_matching_diagnostics() -> anyhow::Result<()> {
         let events = vec![
             LspEvent::Diagnostics {
                 uri: "file:///a.pl".to_string(),
@@ -174,11 +182,15 @@ mod tests {
             },
         ];
 
-        assert_eq!(DiagnosticsTracker::count_for_uri(&events, "file:///a.pl"), 2);
+        anyhow::ensure!(
+            DiagnosticsTracker::count_for_uri(&events, "file:///a.pl") == 2,
+            "expected two diagnostics for a.pl; events: {events:?}"
+        );
+        Ok(())
     }
 
     #[test]
-    fn latest_for_uri_after_count_returns_newer_payload() {
+    fn latest_for_uri_after_count_returns_newer_payload() -> anyhow::Result<()> {
         let events = vec![
             LspEvent::Diagnostics {
                 uri: "file:///a.pl".to_string(),
@@ -194,11 +206,15 @@ mod tests {
 
         let latest = DiagnosticsTracker::latest_for_uri_after_count(&events, "file:///a.pl", 1);
 
-        assert_eq!(latest, Some(vec![json!({"message": "new"})]));
+        anyhow::ensure!(
+            latest == Some(vec![json!({"message": "new"})]),
+            "expected only the newer diagnostic payload, got {latest:?}"
+        );
+        Ok(())
     }
 
     #[test]
-    fn latest_for_uri_after_count_returns_none_without_newer_payload() {
+    fn latest_for_uri_after_count_returns_none_without_newer_payload() -> anyhow::Result<()> {
         let events = vec![LspEvent::Diagnostics {
             uri: "file:///a.pl".to_string(),
             version: Some(1),
@@ -207,13 +223,17 @@ mod tests {
 
         let latest = DiagnosticsTracker::latest_for_uri_after_count(&events, "file:///a.pl", 1);
 
-        assert!(latest.is_none());
+        anyhow::ensure!(
+            latest.is_none(),
+            "no matching new diagnostic payload expected, got {latest:?}"
+        );
+        Ok(())
     }
 
     /// An already-buffered matching payload returns without ever consulting
     /// the deadline — there is no poll interval to round up to.
     #[test]
-    fn wait_for_uri_matching_returns_on_immediate_match() {
+    fn wait_for_uri_matching_returns_on_immediate_match() -> anyhow::Result<()> {
         let inbox = Inbox::new();
         inbox.push_event(publish("file:///a.pl", vec![]));
 
@@ -223,17 +243,18 @@ mod tests {
                 diags.is_empty()
             });
 
-        assert_eq!(result, Some(vec![]), "expected immediate match on empty diagnostics");
-        assert!(
+        anyhow::ensure!(result == Some(vec![]), "expected immediate match on empty diagnostics");
+        anyhow::ensure!(
             started.elapsed() < Duration::from_secs(1),
             "a buffered match must not depend on the deadline, took {:?}",
             started.elapsed()
         );
+        Ok(())
     }
 
     /// A live stream that never satisfies the predicate reports the bound.
     #[test]
-    fn wait_for_uri_matching_returns_none_on_timeout() {
+    fn wait_for_uri_matching_returns_none_on_timeout() -> anyhow::Result<()> {
         let inbox = Inbox::new();
         inbox.push_event(publish("file:///a.pl", vec![json!({"message": "err"})]));
 
@@ -244,7 +265,11 @@ mod tests {
             |diags| diags.is_empty(),
         );
 
-        assert!(result.is_none(), "expected None when predicate never matches within timeout");
+        anyhow::ensure!(
+            result.is_none(),
+            "expected None when predicate never matches within timeout"
+        );
+        Ok(())
     }
 
     /// The wait wakes on the *publication that clears the file*, not on a timer.
@@ -253,7 +278,7 @@ mod tests {
     /// waiter is already blocked, so a wait that depended on a poll interval
     /// would be measurably slower than one driven by the event itself.
     #[test]
-    fn wait_for_uri_matching_returns_when_diagnostics_clear_later() {
+    fn wait_for_uri_matching_returns_when_diagnostics_clear_later() -> anyhow::Result<()> {
         let inbox = Inbox::new();
         inbox.push_event(publish("file:///a.pl", vec![json!({"message": "err"})]));
 
@@ -268,12 +293,13 @@ mod tests {
             });
         let _ = clearing.join();
 
-        assert_eq!(result, Some(vec![]), "expected empty payload when diagnostics clear");
+        anyhow::ensure!(result == Some(vec![]), "expected empty payload when diagnostics clear");
+        Ok(())
     }
 
     /// Traffic for another file wakes the waiter but cannot satisfy it.
     #[test]
-    fn wait_for_uri_matching_ignores_other_uris() {
+    fn wait_for_uri_matching_ignores_other_uris() -> anyhow::Result<()> {
         let inbox = Inbox::new();
         inbox.push_event(publish("file:///b.pl", vec![]));
 
@@ -284,12 +310,13 @@ mod tests {
             |diags| diags.is_empty(),
         );
 
-        assert!(result.is_none(), "should not match events for a different URI");
+        anyhow::ensure!(result.is_none(), "should not match events for a different URI");
+        Ok(())
     }
 
     /// A newer publication for the file must supersede the already-seen ones.
     #[test]
-    fn wait_for_uri_after_count_wakes_on_the_newer_publication() {
+    fn wait_for_uri_after_count_wakes_on_the_newer_publication() -> anyhow::Result<()> {
         let inbox = Inbox::new();
         inbox.push_event(publish("file:///a.pl", vec![json!({"message": "old"})]));
 
@@ -302,6 +329,10 @@ mod tests {
             DiagnosticsTracker::wait_for_uri_after_count(&inbox, "file:///a.pl", 1, GENEROUS);
         let _ = later.join();
 
-        assert_eq!(result, Some(vec![json!({"message": "new"})]));
+        anyhow::ensure!(
+            result == Some(vec![json!({"message": "new"})]),
+            "expected only the newer diagnostic payload, got {result:?}"
+        );
+        Ok(())
     }
 }

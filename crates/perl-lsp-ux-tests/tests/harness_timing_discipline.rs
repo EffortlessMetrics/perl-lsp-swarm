@@ -135,7 +135,7 @@ fn crate_root() -> PathBuf {
 }
 
 #[test]
-fn the_shared_harness_has_no_unowned_synchronization_sleep() {
+fn the_shared_harness_has_no_unowned_synchronization_sleep() -> anyhow::Result<()> {
     let root = crate_root();
     let sleep_free: BTreeSet<&str> = SLEEP_FREE.iter().copied().collect();
     let mut violations = Vec::new();
@@ -156,7 +156,7 @@ fn the_shared_harness_has_no_unowned_synchronization_sleep() {
         }
     }
 
-    assert!(
+    anyhow::ensure!(
         unreadable.is_empty(),
         "governed files could not be read; update GOVERNED in this guard \
          deliberately rather than letting coverage lapse:\n  {}",
@@ -164,7 +164,7 @@ fn the_shared_harness_has_no_unowned_synchronization_sleep() {
     );
 
     violations.sort();
-    assert!(
+    anyhow::ensure!(
         violations.is_empty(),
         "unowned synchronization sleeps in the shared UX harness:\n{}",
         violations
@@ -173,6 +173,7 @@ fn the_shared_harness_has_no_unowned_synchronization_sleep() {
             .collect::<Vec<_>>()
             .join("\n")
     );
+    Ok(())
 }
 
 /// The guard is only worth having if it actually rejects the shapes it claims
@@ -186,38 +187,57 @@ mod guard_controls {
     }
 
     #[test]
-    fn a_bare_sleep_is_rejected() {
+    fn a_bare_sleep_is_rejected() -> anyhow::Result<()> {
         let source = "fn wait() {\n    std::thread::sleep(POLL);\n}\n";
         let found = unowned_sleeps("src/x.rs", source, false);
-        assert_eq!(found.len(), 1, "a bare sleep must be reported: {found:?}");
-        assert_eq!(found[0].line, 2);
+        anyhow::ensure!(found.len() == 1, "a bare sleep must be reported: {found:?}");
+        anyhow::ensure!(
+            found.first().ok_or_else(|| anyhow::anyhow!("missing violation"))?.line == 2,
+            "expected the bare sleep on line 2, got {found:?}"
+        );
+        Ok(())
     }
 
     #[test]
-    fn a_declared_stimulus_is_accepted() {
+    fn a_declared_stimulus_is_accepted() -> anyhow::Result<()> {
         let source = "// ux-timing: deliberate-stimulus — non-zero elapsed time\n\
                       std::thread::sleep(FIVE_MS);\n";
-        assert!(unowned_sleeps("src/x.rs", source, false).is_empty());
+        anyhow::ensure!(
+            unowned_sleeps("src/x.rs", source, false).is_empty(),
+            "declared stimulus must be accepted: {source:?}"
+        );
+        Ok(())
     }
 
     #[test]
-    fn a_declared_product_retry_is_accepted() {
+    fn a_declared_product_retry_is_accepted() -> anyhow::Result<()> {
         let source = "// ux-timing: product-retry — no push notification exists\n\
                       std::thread::sleep(pause);\n";
-        assert!(unowned_sleeps("src/x.rs", source, false).is_empty());
+        anyhow::ensure!(
+            unowned_sleeps("src/x.rs", source, false).is_empty(),
+            "declared product retry must be accepted: {source:?}"
+        );
+        Ok(())
     }
 
     #[test]
-    fn an_unknown_class_is_rejected() {
+    fn an_unknown_class_is_rejected() -> anyhow::Result<()> {
         let source = "// ux-timing: because-it-flakes\nstd::thread::sleep(POLL);\n";
         let found = unowned_sleeps("src/x.rs", source, false);
-        assert_eq!(found.len(), 1, "an invented class must not pass: {found:?}");
-        assert!(reasons(&found)[0].contains("no known class"));
+        anyhow::ensure!(found.len() == 1, "an invented class must not pass: {found:?}");
+        anyhow::ensure!(
+            reasons(&found)
+                .first()
+                .ok_or_else(|| anyhow::anyhow!("missing violation reason"))?
+                .contains("no known class"),
+            "unknown class must have a no-known-class reason: {found:?}"
+        );
+        Ok(())
     }
 
     /// A marker must not be reusable from far above by an unrelated sleep.
     #[test]
-    fn a_distant_marker_does_not_cover_a_later_sleep() {
+    fn a_distant_marker_does_not_cover_a_later_sleep() -> anyhow::Result<()> {
         let source = "// ux-timing: product-retry — legitimate\n\
                       std::thread::sleep(pause);\n\
                       let a = 1;\n\
@@ -226,46 +246,67 @@ mod guard_controls {
                       let d = 4;\n\
                       std::thread::sleep(POLL);\n";
         let found = unowned_sleeps("src/x.rs", source, false);
-        assert_eq!(found.len(), 1, "only the uncovered sleep is a violation: {found:?}");
-        assert_eq!(found[0].line, 7);
+        anyhow::ensure!(found.len() == 1, "only the uncovered sleep is a violation: {found:?}");
+        anyhow::ensure!(
+            found.first().ok_or_else(|| anyhow::anyhow!("missing violation"))?.line == 7,
+            "expected uncovered sleep on line 7, got {found:?}"
+        );
+        Ok(())
     }
 
     #[test]
-    fn a_class_prefix_cannot_masquerade_as_the_class() {
-        assert!(declared_class("// ux-timing: product-retry — ok").is_some());
-        assert!(
+    fn a_class_prefix_cannot_masquerade_as_the_class() -> anyhow::Result<()> {
+        anyhow::ensure!(
+            declared_class("// ux-timing: product-retry — ok").is_some(),
+            "exact product-retry class must be recognized"
+        );
+        anyhow::ensure!(
             declared_class("// ux-timing: product-retrying-forever").is_none(),
             "a longer word starting with a valid class must not be accepted"
         );
+        Ok(())
     }
 
     /// A marked sleep is still forbidden inside the wait substrate itself.
     #[test]
-    fn the_substrate_rejects_even_a_declared_sleep() {
+    fn the_substrate_rejects_even_a_declared_sleep() -> anyhow::Result<()> {
         let source = "// ux-timing: product-retry — nice try\nstd::thread::sleep(POLL);\n";
         let found = unowned_sleeps("src/observation.rs", source, true);
-        assert_eq!(found.len(), 1, "the substrate must be sleep-free: {found:?}");
-        assert!(reasons(&found)[0].contains("never sleep"));
+        anyhow::ensure!(found.len() == 1, "the substrate must be sleep-free: {found:?}");
+        anyhow::ensure!(
+            reasons(&found)
+                .first()
+                .ok_or_else(|| anyhow::anyhow!("missing violation reason"))?
+                .contains("never sleep"),
+            "substrate violation must explain never-sleep rule: {found:?}"
+        );
+        Ok(())
     }
 
     /// A sleep mentioned only in prose or a doc comment is not a call.
     #[test]
-    fn an_aliased_sleep_import_is_rejected() {
+    fn an_aliased_sleep_import_is_rejected() -> anyhow::Result<()> {
         let source = "use std::thread::sleep as pause;\nlet x = 1;\n";
         let found = unowned_sleeps("src/x.rs", source, false);
-        assert_eq!(found.len(), 1, "aliasing must not smuggle a sleep in: {found:?}");
+        anyhow::ensure!(found.len() == 1, "aliasing must not smuggle a sleep in: {found:?}");
+        Ok(())
     }
 
     #[test]
-    fn spacing_around_the_path_separator_cannot_hide_a_sleep() {
+    fn spacing_around_the_path_separator_cannot_hide_a_sleep() -> anyhow::Result<()> {
         let source = "std::thread :: sleep(POLL);\n";
         let found = unowned_sleeps("src/x.rs", source, false);
-        assert_eq!(found.len(), 1, "spaced paths must still be caught: {found:?}");
+        anyhow::ensure!(found.len() == 1, "spaced paths must still be caught: {found:?}");
+        Ok(())
     }
 
     #[test]
-    fn a_sleep_named_in_a_comment_is_not_a_violation() {
+    fn a_sleep_named_in_a_comment_is_not_a_violation() -> anyhow::Result<()> {
         let source = "// we no longer thread::sleep( here\nlet x = 1;\n";
-        assert!(unowned_sleeps("src/x.rs", source, false).is_empty());
+        anyhow::ensure!(
+            unowned_sleeps("src/x.rs", source, false).is_empty(),
+            "comment-only sleep mention must be accepted: {source:?}"
+        );
+        Ok(())
     }
 }

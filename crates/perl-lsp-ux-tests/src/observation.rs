@@ -524,32 +524,33 @@ mod tests {
             snapshot
                 .responses()
                 .iter()
-                .find(|(_, value)| value["id"] == wanted)
+                .find(|(_, value)| value.get("id") == Some(&wanted))
                 .map(|(observation, _)| *observation)
         }
     }
 
     #[test]
-    fn response_already_buffered_returns_without_touching_the_deadline() {
+    fn response_already_buffered_returns_without_touching_the_deadline() -> anyhow::Result<()> {
         let inbox = Inbox::new();
         inbox.push_response(response(json!(7)));
 
         let started = Instant::now();
         let matched = inbox.wait_for(GENEROUS, select_response_id(7));
 
-        assert!(matched.is_ok(), "buffered response must match immediately");
-        assert!(
+        anyhow::ensure!(matched.is_ok(), "buffered response must match immediately");
+        anyhow::ensure!(
             started.elapsed() < Duration::from_secs(1),
             "a buffered response must not depend on the deadline, took {:?}",
             started.elapsed()
         );
+        Ok(())
     }
 
     /// The lost-wakeup falsifier: the observation is published *while the
     /// predicate is running outside the lock*, i.e. in the exact window a
     /// register-then-check design would miss.
     #[test]
-    fn observation_published_during_predicate_evaluation_is_not_missed() {
+    fn observation_published_during_predicate_evaluation_is_not_missed() -> anyhow::Result<()> {
         let inbox = Inbox::new();
         let publisher = inbox.clone();
         let evaluations = AtomicUsize::new(0);
@@ -567,16 +568,20 @@ mod tests {
             select_response_id(1)(snapshot)
         });
 
-        assert!(matched.is_ok(), "observation arriving inside the predicate window must be seen");
-        assert!(
+        anyhow::ensure!(
+            matched.is_ok(),
+            "observation arriving inside the predicate window must be seen"
+        );
+        anyhow::ensure!(
             started.elapsed() < Duration::from_secs(1),
             "a lost wakeup would have burned the whole deadline, took {:?}",
             started.elapsed()
         );
+        Ok(())
     }
 
     #[test]
-    fn unrelated_traffic_cannot_satisfy_or_consume_a_wait() {
+    fn unrelated_traffic_cannot_satisfy_or_consume_a_wait() -> anyhow::Result<()> {
         let inbox = Inbox::new();
         let publisher = inbox.clone();
         let noise = thread::spawn(move || {
@@ -591,31 +596,36 @@ mod tests {
         let _ = noise.join();
 
         let Ok(observation) = matched else {
-            unreachable!("the awaited response was published");
+            anyhow::bail!("the awaited response was published");
         };
         let taken = inbox.take_response(observation);
-        assert_eq!(taken.map(|value| value["id"].clone()), Some(json!(42)));
+        anyhow::ensure!(
+            taken.as_ref().and_then(|value| value.get("id")) == Some(&json!(42)),
+            "awaited response must retain numeric id 42, got {taken:?}"
+        );
 
         // The unrelated responses were woken past, not consumed.
         let remaining = inbox.snapshot().responses().len();
-        assert_eq!(remaining, 25, "unrelated responses must survive another waiter's match");
+        anyhow::ensure!(remaining == 25, "unrelated responses must survive another waiter's match");
+        Ok(())
     }
 
     #[test]
-    fn numeric_and_string_ids_are_distinct_subjects() {
+    fn numeric_and_string_ids_are_distinct_subjects() -> anyhow::Result<()> {
         let inbox = Inbox::new();
         inbox.push_response(response(json!("1")));
 
         let matched = inbox.wait_for(Duration::from_millis(150), select_response_id(1));
 
-        assert!(
+        anyhow::ensure!(
             matches!(matched, Err(WaitEnd::Deadline { .. })),
             "string id \"1\" must not complete a wait for numeric id 1, got {matched:?}"
         );
+        Ok(())
     }
 
     #[test]
-    fn transport_failure_wakes_a_held_waiter_before_its_deadline() {
+    fn transport_failure_wakes_a_held_waiter_before_its_deadline() -> anyhow::Result<()> {
         let inbox = Inbox::new();
         let closer = inbox.clone();
         thread::spawn(move || {
@@ -628,58 +638,65 @@ mod tests {
         let matched = inbox.wait_for(GENEROUS, select_response_id(1));
 
         let Err(WaitEnd::Ended(StreamEnd::TransportFailure { detail })) = matched else {
-            unreachable!("expected a typed transport failure, got {matched:?}");
+            anyhow::bail!("expected a typed transport failure, got {matched:?}");
         };
-        assert!(detail.contains("Content-Length"), "failure must carry exact evidence: {detail}");
-        assert!(
+        anyhow::ensure!(
+            detail.contains("Content-Length"),
+            "failure must carry exact evidence: {detail}"
+        );
+        anyhow::ensure!(
             started.elapsed() < Duration::from_secs(1),
             "transport failure must not be reported only after the timeout, took {:?}",
             started.elapsed()
         );
+        Ok(())
     }
 
     #[test]
-    fn orderly_shutdown_is_not_reported_as_transport_corruption() {
+    fn orderly_shutdown_is_not_reported_as_transport_corruption() -> anyhow::Result<()> {
         let inbox = Inbox::new();
         let closer = inbox.clone();
         thread::spawn(move || closer.close(StreamEnd::ServerClosed));
 
         let matched = inbox.wait_for(GENEROUS, select_response_id(1));
 
-        assert!(
+        anyhow::ensure!(
             matches!(matched, Err(WaitEnd::Ended(StreamEnd::ServerClosed))),
             "expected an orderly stream end, got {matched:?}"
         );
+        Ok(())
     }
 
     /// A response published immediately before the close must still be
     /// observed: shutdown must not race ahead of the last message.
     #[test]
-    fn a_response_published_before_the_close_still_matches() {
+    fn a_response_published_before_the_close_still_matches() -> anyhow::Result<()> {
         let inbox = Inbox::new();
         inbox.push_response(response(json!(5)));
         inbox.close(StreamEnd::ServerClosed);
 
         let matched = inbox.wait_for(GENEROUS, select_response_id(5));
 
-        assert!(matched.is_ok(), "the last response before shutdown must not be lost");
+        anyhow::ensure!(matched.is_ok(), "the last response before shutdown must not be lost");
+        Ok(())
     }
 
     #[test]
-    fn deadline_is_reported_only_while_the_stream_is_live() {
+    fn deadline_is_reported_only_while_the_stream_is_live() -> anyhow::Result<()> {
         let inbox = Inbox::new();
         let started = Instant::now();
 
         let matched = inbox.wait_for(Duration::from_millis(120), select_response_id(1));
 
-        assert!(
+        anyhow::ensure!(
             matches!(matched, Err(WaitEnd::Deadline { .. })),
             "a live but silent stream must report the deadline, got {matched:?}"
         );
-        assert!(
+        anyhow::ensure!(
             started.elapsed() >= Duration::from_millis(100),
             "the deadline is an outer bound and must actually be honoured"
         );
+        Ok(())
     }
 
     /// Traffic that never stops must not outrun the bound.
@@ -689,7 +706,7 @@ mod tests {
     /// observation on each evaluation never blocks. Without a deadline check
     /// on that path this spins forever and the "bounded" wait is unbounded.
     #[test]
-    fn continuous_unrelated_traffic_cannot_outrun_the_deadline() {
+    fn continuous_unrelated_traffic_cannot_outrun_the_deadline() -> anyhow::Result<()> {
         let inbox = Inbox::new();
         let publisher = inbox.clone();
 
@@ -701,15 +718,16 @@ mod tests {
             None::<()>
         });
 
-        assert!(
+        anyhow::ensure!(
             matches!(matched, Err(WaitEnd::Deadline { .. })),
             "a never-matching wait under constant traffic must report its bound, got {matched:?}"
         );
-        assert!(
+        anyhow::ensure!(
             started.elapsed() < Duration::from_secs(5),
             "the wait must honour its 150ms bound; took {:?}",
             started.elapsed()
         );
+        Ok(())
     }
 
     /// The deadline boundary must not discard a match the predicate itself
@@ -722,7 +740,7 @@ mod tests {
     /// precedence. Zero timeout makes this deterministic: no sleeping, no
     /// racing, the boundary is hit on the very first iteration.
     #[test]
-    fn a_match_published_inside_the_predicate_window_wins_at_the_deadline() {
+    fn a_match_published_inside_the_predicate_window_wins_at_the_deadline() -> anyhow::Result<()> {
         let inbox = Inbox::new();
         let publisher = inbox.clone();
         let mut evaluations = 0_u32;
@@ -738,31 +756,36 @@ mod tests {
             select_response_id(11)(snapshot)
         });
 
-        assert!(
+        anyhow::ensure!(
             matched.is_ok(),
             "a match buffered during the predicate window must win over the \
              terminal outcome at the deadline, got {matched:?}"
         );
-        assert_eq!(evaluations, 2, "exactly one extra evaluation is expected at the boundary");
+        anyhow::ensure!(
+            evaluations == 2,
+            "exactly one extra evaluation is expected at the boundary"
+        );
+        Ok(())
     }
 
     /// The boundary recheck must not become an escape hatch: with nothing new
     /// buffered, an expired bound still reports terminally.
     #[test]
-    fn an_expired_bound_with_no_new_observation_still_reports_terminally() {
+    fn an_expired_bound_with_no_new_observation_still_reports_terminally() -> anyhow::Result<()> {
         let inbox = Inbox::new();
 
         let matched = inbox.wait_for(Duration::ZERO, select_response_id(12));
 
-        assert!(
+        anyhow::ensure!(
             matches!(matched, Err(WaitEnd::Deadline { .. })),
             "an expired bound over an unchanged inbox must report the deadline, got {matched:?}"
         );
+        Ok(())
     }
 
     /// A stream end still outranks the deadline on the bounded path above.
     #[test]
-    fn a_stream_end_outranks_the_deadline_even_under_traffic() {
+    fn a_stream_end_outranks_the_deadline_even_under_traffic() -> anyhow::Result<()> {
         let inbox = Inbox::new();
         let publisher = inbox.clone();
         publisher.close(StreamEnd::ServerClosed);
@@ -772,92 +795,120 @@ mod tests {
             None::<()>
         });
 
-        assert!(
+        anyhow::ensure!(
             matches!(matched, Err(WaitEnd::Ended(StreamEnd::ServerClosed))),
             "the stream end must still win over the deadline, got {matched:?}"
         );
+        Ok(())
     }
 
     /// Consuming a response is a mutation too, and must advance the sequence
     /// for the same reason.
     #[test]
-    fn taking_a_response_advances_the_sequence() {
+    fn taking_a_response_advances_the_sequence() -> anyhow::Result<()> {
         let inbox = Inbox::new();
         let observation = inbox.push_response(response(json!(4)));
         let before = inbox.snapshot().seq();
 
-        assert!(inbox.take_response(observation).is_some());
+        anyhow::ensure!(
+            inbox.take_response(observation).is_some(),
+            "published response must be available for its first take"
+        );
 
-        assert_ne!(inbox.snapshot().seq(), before, "a consumed response must advance the sequence");
+        anyhow::ensure!(
+            inbox.snapshot().seq() != before,
+            "a consumed response must advance the sequence"
+        );
+        Ok(())
     }
 
     /// A failed take changes nothing, so it must not advance the sequence
     /// either — a spurious bump would wake every waiter for no reason.
     #[test]
-    fn a_take_that_removes_nothing_leaves_the_sequence_alone() {
+    fn a_take_that_removes_nothing_leaves_the_sequence_alone() -> anyhow::Result<()> {
         let inbox = Inbox::new();
         let observation = inbox.push_response(response(json!(4)));
-        assert!(inbox.take_response(observation).is_some());
+        anyhow::ensure!(
+            inbox.take_response(observation).is_some(),
+            "published response must be available for its first take"
+        );
         let before = inbox.snapshot().seq();
 
-        assert!(inbox.take_response(observation).is_none());
+        anyhow::ensure!(
+            inbox.take_response(observation).is_none(),
+            "a consumed response must remain absent"
+        );
 
-        assert_eq!(inbox.snapshot().seq(), before, "a no-op take must not advance the sequence");
+        anyhow::ensure!(
+            inbox.snapshot().seq() == before,
+            "a no-op take must not advance the sequence"
+        );
+        Ok(())
     }
 
     /// Draining is a mutation, so it must advance the sequence and wake
     /// waiters like any other change to a waiter's input.
     #[test]
-    fn draining_events_advances_the_sequence() {
+    fn draining_events_advances_the_sequence() -> anyhow::Result<()> {
         let inbox = Inbox::new();
         inbox.push_event(json!({"method": "window/logMessage"}));
         let before = inbox.snapshot().seq();
 
         let drained = inbox.drain_events();
 
-        assert_eq!(drained.len(), 1);
-        assert_ne!(inbox.snapshot().seq(), before, "a drain must advance the sequence");
+        anyhow::ensure!(drained.len() == 1, "expected one drained event, got {drained:?}");
+        anyhow::ensure!(inbox.snapshot().seq() != before, "a drain must advance the sequence");
+        Ok(())
     }
 
     #[test]
-    fn the_first_recorded_stream_end_wins() {
+    fn the_first_recorded_stream_end_wins() -> anyhow::Result<()> {
         let inbox = Inbox::new();
         inbox.close(StreamEnd::TransportFailure { detail: "truncated body".to_string() });
         inbox.close(StreamEnd::ServerClosed);
 
-        assert!(
+        anyhow::ensure!(
             matches!(inbox.stream_end(), Some(StreamEnd::TransportFailure { .. })),
             "a later orderly close must not relabel an already classified failure"
         );
+        Ok(())
     }
 
     #[test]
-    fn a_consumed_response_is_not_handed_to_a_second_waiter() {
+    fn a_consumed_response_is_not_handed_to_a_second_waiter() -> anyhow::Result<()> {
         let inbox = Inbox::new();
         let observation = inbox.push_response(response(json!(3)));
 
-        assert!(inbox.take_response(observation).is_some(), "first take must win");
-        assert!(inbox.take_response(observation).is_none(), "second take must not resurrect it");
+        anyhow::ensure!(inbox.take_response(observation).is_some(), "first take must win");
+        anyhow::ensure!(
+            inbox.take_response(observation).is_none(),
+            "second take must not resurrect it"
+        );
+        Ok(())
     }
 
     #[test]
-    fn events_are_never_consumed_by_a_response_wait() {
+    fn events_are_never_consumed_by_a_response_wait() -> anyhow::Result<()> {
         let inbox = Inbox::new();
         inbox.push_event(json!({"method": "window/showMessage"}));
         inbox.push_response(response(json!(8)));
 
         let Ok(observation) = inbox.wait_for(GENEROUS, select_response_id(8)) else {
-            unreachable!("the response was published");
+            anyhow::bail!("the response was published");
         };
         let _ = inbox.take_response(observation);
 
-        assert_eq!(inbox.snapshot().events().len(), 1, "events must survive a response wait");
+        anyhow::ensure!(
+            inbox.snapshot().events().len() == 1,
+            "events must survive a response wait"
+        );
+        Ok(())
     }
 
     /// The predicate must not run while the inbox lock is held, or a predicate
     /// that touches the inbox would deadlock instead of returning.
     #[test]
-    fn predicates_run_without_holding_the_inbox_lock() {
+    fn predicates_run_without_holding_the_inbox_lock() -> anyhow::Result<()> {
         let inbox = Inbox::new();
         inbox.push_response(response(json!(2)));
         let probe = inbox.clone();
@@ -868,6 +919,7 @@ mod tests {
             select_response_id(2)(snapshot)
         });
 
-        assert!(matched.is_ok(), "a predicate that reads the inbox must not deadlock");
+        anyhow::ensure!(matched.is_ok(), "a predicate that reads the inbox must not deadlock");
+        Ok(())
     }
 }

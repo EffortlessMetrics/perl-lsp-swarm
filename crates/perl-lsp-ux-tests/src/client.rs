@@ -796,71 +796,83 @@ mod framing_tests {
     /// without recording any stream end — which would leave every waiter
     /// unable to tell a dead reader from a silent server.
     #[test]
-    fn an_absurd_content_length_is_a_transport_failure_not_an_allocation() {
+    fn an_absurd_content_length_is_a_transport_failure_not_an_allocation() -> anyhow::Result<()> {
         let outcome = read("Content-Length: 18446744073709551615\r\n\r\n{}");
 
         let FrameRead::Failed(detail) = outcome else {
-            unreachable!("an undeliverable body length must fail the frame, got {outcome:?}");
+            anyhow::bail!("an undeliverable body length must fail the frame, got {outcome:?}");
         };
-        assert!(
+        anyhow::ensure!(
             detail.contains("body bytes"),
             "the failure must name the truncated body: {detail}"
         );
+        Ok(())
     }
 
     /// The same guarantee for a large-but-plausible length: the frame is
     /// truncated, so it is a transport failure, not an orderly close.
     #[test]
-    fn a_body_shorter_than_its_declared_length_is_a_transport_failure() {
+    fn a_body_shorter_than_its_declared_length_is_a_transport_failure() -> anyhow::Result<()> {
         let outcome = read("Content-Length: 4096\r\n\r\n{\"a\":1}");
 
-        assert!(
+        anyhow::ensure!(
             matches!(outcome, FrameRead::Failed(_)),
             "a short body must not be reported as an orderly close, got {outcome:?}"
         );
+        Ok(())
     }
 
     #[test]
-    fn a_well_formed_frame_still_parses() {
+    fn a_well_formed_frame_still_parses() -> anyhow::Result<()> {
         let body = r#"{"jsonrpc":"2.0","id":1,"result":{}}"#;
         let outcome = read(&format!("Content-Length: {}\r\n\r\n{body}", body.len()));
 
         let FrameRead::Message(value) = outcome else {
-            unreachable!("a well-formed frame must parse, got {outcome:?}");
+            anyhow::bail!("a well-formed frame must parse, got {outcome:?}");
         };
-        assert_eq!(value["id"], 1);
+        anyhow::ensure!(
+            value.get("id") == Some(&serde_json::json!(1)),
+            "well-formed frame must retain numeric id 1, got {value:?}"
+        );
+        Ok(())
     }
 
     #[test]
-    fn a_clean_end_of_stream_is_not_a_failure() {
-        assert!(matches!(read(""), FrameRead::EndOfStream));
+    fn a_clean_end_of_stream_is_not_a_failure() -> anyhow::Result<()> {
+        anyhow::ensure!(
+            matches!(read(""), FrameRead::EndOfStream),
+            "empty input must be an orderly end of stream"
+        );
+        Ok(())
     }
 
     /// If the reader stops without naming a reason, waiters must still get a
     /// typed stream end rather than silence that only expires as a deadline.
     #[test]
-    fn an_unreported_reader_exit_still_closes_the_inbox() {
+    fn an_unreported_reader_exit_still_closes_the_inbox() -> anyhow::Result<()> {
         let inbox = Inbox::new();
         drop(ReaderExit::new(inbox.clone()));
 
-        assert!(
+        anyhow::ensure!(
             matches!(inbox.stream_end(), Some(StreamEnd::TransportFailure { .. })),
             "an unexplained reader exit must still record a stream end"
         );
+        Ok(())
     }
 
     /// The reader's own reason outranks the fallback.
     #[test]
-    fn a_reported_reason_wins_over_the_fallback() {
+    fn a_reported_reason_wins_over_the_fallback() -> anyhow::Result<()> {
         let inbox = Inbox::new();
         let mut exit = ReaderExit::new(inbox.clone());
         exit.record(StreamEnd::ServerClosed);
         drop(exit);
 
-        assert!(
+        anyhow::ensure!(
             matches!(inbox.stream_end(), Some(StreamEnd::ServerClosed)),
             "the honest reason must survive the drop fallback"
         );
+        Ok(())
     }
 }
 
@@ -881,24 +893,20 @@ mod shutdown_tests {
     /// the spawn failed, which made these controls *pass* on a platform where
     /// they had proved nothing — the precise dishonesty this crate's harness
     /// exists to remove.
-    fn spawn_shell(script: &str) -> Child {
-        match Command::new("/bin/sh")
+    fn spawn_shell(script: &str) -> anyhow::Result<Child> {
+        use anyhow::Context;
+        Command::new("/bin/sh")
             .args(["-c", script])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()
-        {
-            Ok(child) => child,
-            Err(error) => panic!("/bin/sh must be spawnable on a unix host: {error}"),
-        }
+            .context("/bin/sh must be spawnable on a unix host")
     }
 
-    fn exit_status_of(script: &str) -> ExitStatus {
-        match spawn_shell(script).wait() {
-            Ok(status) => status,
-            Err(error) => panic!("the fixture shell must be reapable: {error}"),
-        }
+    fn exit_status_of(script: &str) -> anyhow::Result<ExitStatus> {
+        use anyhow::Context;
+        spawn_shell(script)?.wait().context("the fixture shell must be reapable")
     }
 
     /// A crashed server must not be described as an orderly shutdown.
@@ -907,45 +915,51 @@ mod shutdown_tests {
     /// on its own it reads as a clean exit even when the process died. The
     /// reported reason folds in the real exit status.
     #[test]
-    fn a_nonzero_exit_is_not_described_as_an_orderly_shutdown() {
-        let status = exit_status_of("exit 3");
-        assert!(!status.success(), "fixture must exit nonzero");
+    fn a_nonzero_exit_is_not_described_as_an_orderly_shutdown() -> anyhow::Result<()> {
+        let status = exit_status_of("exit 3")?;
+        anyhow::ensure!(!status.success(), "fixture must exit nonzero");
 
         let described =
             super::describe_end_with_exit(&WaitEnd::Ended(StreamEnd::ServerClosed), Some(status));
 
-        assert!(
+        anyhow::ensure!(
             described.contains("server failure"),
             "a nonzero exit must be reported as a failure: {described}"
         );
-        assert!(
+        anyhow::ensure!(
             !described.contains("orderly shutdown)"),
             "it must not read as an orderly shutdown: {described}"
         );
+        Ok(())
     }
 
     #[test]
-    fn a_successful_exit_is_still_described_as_an_orderly_close() {
-        let status = exit_status_of("exit 0");
+    fn a_successful_exit_is_still_described_as_an_orderly_close() -> anyhow::Result<()> {
+        let status = exit_status_of("exit 0")?;
 
         let described =
             super::describe_end_with_exit(&WaitEnd::Ended(StreamEnd::ServerClosed), Some(status));
 
-        assert!(
+        anyhow::ensure!(
             described.contains("exited successfully"),
             "a clean exit must stay orderly: {described}"
         );
+        Ok(())
     }
 
     /// A transport failure already names itself; the exit status must not
     /// overwrite that more specific reason.
     #[test]
-    fn a_transport_failure_keeps_its_own_reason() {
+    fn a_transport_failure_keeps_its_own_reason() -> anyhow::Result<()> {
         let described = super::describe_end_with_exit(
             &WaitEnd::Ended(StreamEnd::TransportFailure { detail: "bad header".to_string() }),
             None,
         );
-        assert!(described.contains("bad header"), "the framing detail must survive: {described}");
+        anyhow::ensure!(
+            described.contains("bad header"),
+            "the framing detail must survive: {described}"
+        );
+        Ok(())
     }
 
     /// Regression control for the hazard that end-of-stream is not process
@@ -997,17 +1011,18 @@ mod shutdown_tests {
     /// The ordinary path: a child that already exited is collected without
     /// being killed.
     #[test]
-    fn an_already_exited_child_is_reaped_without_forcing() {
-        let mut child = spawn_shell("exit 0");
+    fn an_already_exited_child_is_reaped_without_forcing() -> anyhow::Result<()> {
+        let mut child = spawn_shell("exit 0")?;
         // Let it finish on its own terms before deciding.
         let _ = child.wait();
 
         let started = Instant::now();
         reap_or_kill(&mut child);
 
-        assert!(
+        anyhow::ensure!(
             started.elapsed() < Duration::from_secs(5),
             "reaping an exited child must be immediate"
         );
+        Ok(())
     }
 }
