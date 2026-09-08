@@ -257,7 +257,7 @@ fn clean_capture_emits_binding_trace_receipts() -> Result<()> {
         require_equal(
             &(row.subject.parent_receipt_digest),
             &(parent.payload_digest),
-            &format!("every row binds the exact parent receipt"),
+            "every row binds the exact parent receipt",
         )?;
         color_eyre::eyre::ensure!(
             parent.payload.rows.iter().any(|member| member.is_accepted()
@@ -289,8 +289,8 @@ fn clean_capture_emits_binding_trace_receipts() -> Result<()> {
         "capture contract",
     )?;
     color_eyre::eyre::ensure!(
-        &(work.payload.ordinary_artifact.content_sha256)
-            != &(work.payload.instrumented_artifact.content_sha256),
+        work.payload.ordinary_artifact.content_sha256
+            != work.payload.instrumented_artifact.content_sha256,
         "ordinary and instrumented identities stay distinct and load-bearing"
     );
     require_equal(
@@ -581,16 +581,16 @@ fn repeated_equivalent_runs_produce_byte_identical_normalized_receipts() -> Resu
         require_equal(
             &(normalize_receipt(&a, &secrets)),
             &(normalize_receipt(&b, &secrets)),
-            &format!("normalized receipts must be byte-identical across equivalent runs"),
+            "normalized receipts must be byte-identical across equivalent runs",
         )?;
     }
     // Raw digests differ: the capture identities are per-run.
     color_eyre::eyre::ensure!(
-        &(first.work.payload.process_nonce) != &(second.work.payload.process_nonce),
+        first.work.payload.process_nonce != second.work.payload.process_nonce,
         "expected distinct capture values"
     );
     color_eyre::eyre::ensure!(
-        &(first.work.payload.trace_session_id) != &(second.work.payload.trace_session_id),
+        first.work.payload.trace_session_id != second.work.payload.trace_session_id,
         "expected distinct capture values"
     );
     Ok(())
@@ -790,18 +790,18 @@ fn duplicate_row_retains_first_contributor_never_last_writer() -> Result<()> {
     let rows = &trace.payload.rows;
     require_equal(&(rows.len()), &(3), "capture contract")?;
     color_eyre::eyre::ensure!(
-        required_item(&rows, 0)?.disposition.is_accepted(),
+        required_item(rows, 0)?.disposition.is_accepted(),
         "capture contract failed: {}",
         stringify!(required_item(&rows, 0)?.disposition.is_accepted())
     );
-    match &required_item(&rows, 2)?.disposition {
+    match &required_item(rows, 2)?.disposition {
         TraceRowDisposition::DuplicateRowId { row_id } => {
-            require_equal(&(row_id), &(&required_item(&rows, 0)?.row_id), "capture contract")?;
+            require_equal(&(row_id), &(&required_item(rows, 0)?.row_id), "capture contract")?;
         }
         other => bail!("expected duplicate disposition, got {other:?}"),
     }
     require_equal(
-        &(required_item(&rows, 2)?.state),
+        &(required_item(rows, 2)?.state),
         &(InvocationObservationState::NotProven),
         "capture contract",
     )?;
@@ -809,7 +809,7 @@ fn duplicate_row_retains_first_contributor_never_last_writer() -> Result<()> {
     // nothing.
     color_eyre::eyre::ensure!(
         matches!(
-            required_item(&rows, 0)?.projection,
+            required_item(rows, 0)?.projection,
             perl_core_harness::invocation_trace::ProjectionRecord::Projected { .. }
         ),
         "capture contract failed: {}",
@@ -820,7 +820,7 @@ fn duplicate_row_retains_first_contributor_never_last_writer() -> Result<()> {
     );
     color_eyre::eyre::ensure!(
         !matches!(
-            required_item(&rows, 2)?.projection,
+            required_item(rows, 2)?.projection,
             perl_core_harness::invocation_trace::ProjectionRecord::Projected { .. }
         ),
         "capture contract failed: {}",
@@ -864,7 +864,7 @@ fn foreign_session_and_out_of_order_rows_are_typed_not_repaired() -> Result<()> 
         ordered.trace.as_ref().ok_or_else(|| color_eyre::eyre::eyre!("trace receipt retained"))?;
     match &required_item(&trace.payload.rows, 1)?.disposition {
         TraceRowDisposition::OutOfOrderSequence { expected, actual } => {
-            require_equal(&((*expected, *actual)), &((1, 5)), "capture contract")?;
+            require_equal(&(*expected, *actual), &(1, 5), "capture contract")?;
         }
         other => bail!("expected out-of-order disposition, got {other:?}"),
     }
@@ -1010,7 +1010,7 @@ fn stdout_contamination_refuses_trace_construction() -> Result<()> {
     // is fabricated against a voided transport contract.
     let parent = load_parent(&config.output)?;
     color_eyre::eyre::ensure!(
-        &(parent.payload.state) != &(DiscoveryObservationState::ObservedComplete),
+        parent.payload.state != DiscoveryObservationState::ObservedComplete,
         "expected distinct capture values"
     );
     color_eyre::eyre::ensure!(
@@ -1278,12 +1278,12 @@ fn ordinary_tree_is_never_modified_and_stays_ordinary() -> Result<()> {
         "capture contract",
     )?;
     color_eyre::eyre::ensure!(
-        &(ordinary.payload.invocation.runner_artifact.content_sha256)
-            != &(work.payload.instrumented_artifact.content_sha256),
+        ordinary.payload.invocation.runner_artifact.content_sha256
+            != work.payload.instrumented_artifact.content_sha256,
         "the instrumented artifact must never stand in for the ordinary one"
     );
     color_eyre::eyre::ensure!(
-        &(ordinary.payload.terminal.process_nonce) != &(work.payload.process_nonce),
+        ordinary.payload.terminal.process_nonce != work.payload.process_nonce,
         "expected distinct capture values"
     );
     Ok(())
@@ -1312,7 +1312,7 @@ fn the_fixture_refuses_an_unpatched_artifact_digest() -> Result<()> {
     require_equal(
         &(output.status.code()),
         &(Some(66)),
-        &format!("the fixture must refuse a foreign artifact"),
+        "the fixture must refuse a foreign artifact",
     )?;
     color_eyre::eyre::ensure!(
         String::from_utf8_lossy(&output.stderr).contains("measures"),
@@ -1567,7 +1567,7 @@ fn validation_hashes_the_specification_bytes_the_capture_read() -> Result<()> {
     let spec = spec_from(&fs::read_to_string(&compact_path)?)?;
     let pretty_bytes = serde_json::to_vec_pretty(&spec)?;
     color_eyre::eyre::ensure!(
-        &(pretty_bytes) != &(serde_json::to_vec(&spec)?),
+        pretty_bytes != serde_json::to_vec(&spec)?,
         "expected distinct capture values"
     );
     let pretty_path = temp.path().join("patch-spec-pretty.json");

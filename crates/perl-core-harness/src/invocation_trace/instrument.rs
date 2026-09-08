@@ -1480,7 +1480,7 @@ mod contract_tests {
         else {
             super::bail!("drifted ordinary artifact must refuse the patch");
         };
-        color_eyre::eyre::ensure!(&(expected) != &(measured), "expected distinct values");
+        color_eyre::eyre::ensure!(expected != measured, "expected distinct values");
         color_eyre::eyre::ensure!(
             spec.expected_ordinary_sha256 == expected,
             "the refusal carries the pinned subject"
