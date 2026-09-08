@@ -77,15 +77,19 @@ suite('Installed Test Explorer runAll journey', function () {
         extensionApi.waitForActiveDocumentReady,
         'installed Test Explorer journey requires the readiness awaitable',
       );
-      await extensionApi.waitForActiveDocumentReady(
-        document.uri.toString(),
-        remainingBudget(deadline, 'document readiness'),
-      );
       assert.ok(
         extensionApi.getLanguageClientStartupMetrics,
         'installed Test Explorer journey requires startup lifecycle metrics',
       );
+      // Readiness waiters belong to a specific client generation and are
+      // rejected when startup demand replaces that generation. Establish the
+      // running generation before waiting for document/index readiness so the
+      // test does not turn a normal first-demand restart into a false failure.
       await waitForRunningStartup(extensionApi.getLanguageClientStartupMetrics, deadline);
+      await extensionApi.waitForActiveDocumentReady(
+        document.uri.toString(),
+        remainingBudget(deadline, 'document readiness'),
+      );
       await vscode.commands.executeCommand('testing.refreshTests');
       const runDeadline = Math.min(deadline, Date.now() + 10_000);
       let runAttempts = 0;
