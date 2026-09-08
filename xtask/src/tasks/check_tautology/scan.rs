@@ -319,22 +319,33 @@ fn collect_namespace_shadows(items: &[Item], shadows: &mut PreludeShadow) {
                     untrust_namespace_rename(&ext.ident, rename, shadows);
                 }
             }
-            Item::Use(item_use) => collect_use_namespace_aliases(&item_use.tree, shadows),
+            Item::Use(item_use) => collect_use_namespace_aliases(&item_use.tree, &[], shadows),
             _ => {}
         }
     }
 }
 
-fn collect_use_namespace_aliases(tree: &UseTree, shadows: &mut PreludeShadow) {
+fn collect_use_namespace_aliases(tree: &UseTree, prefix: &[String], shadows: &mut PreludeShadow) {
     match tree {
         UseTree::Rename(rename) => untrust_namespace_rename(&rename.ident, &rename.rename, shadows),
-        UseTree::Path(path) => collect_use_namespace_aliases(&path.tree, shadows),
+        UseTree::Path(path) => {
+            let mut next = prefix.to_vec();
+            next.push(path.ident.to_string());
+            collect_use_namespace_aliases(&path.tree, &next, shadows);
+        }
         UseTree::Group(group) => {
             for item in &group.items {
-                collect_use_namespace_aliases(item, shadows);
+                collect_use_namespace_aliases(item, prefix, shadows);
             }
         }
-        UseTree::Name(_) | UseTree::Glob(_) => {}
+        UseTree::Name(name) => {
+            // `use foo::std` binds a local `std` that is not the extern crate.
+            // Bare `use std;` keeps the real crate.
+            if !prefix.is_empty() {
+                untrust_namespace_ident(&name.ident, shadows);
+            }
+        }
+        UseTree::Glob(_) => {}
     }
 }
 
@@ -901,6 +912,33 @@ mod tests {
             vec![RuleId::OptionSomeOrNone],
             "{:?}",
             rules(extern_alias)
+        );
+
+        let imported_std = r#"
+            mod custom {
+                pub mod std {
+                    pub mod option {
+                        pub struct Option;
+                        impl Option {
+                            pub fn is_some(&self) -> bool { false }
+                            pub fn is_none(&self) -> bool { false }
+                        }
+                    }
+                }
+            }
+            use custom::std;
+            fn skip_imported_std(x: std::option::Option) {
+                assert!(x.is_some() || x.is_none());
+            }
+            fn retain_prelude(x: Option<u8>) {
+                assert!(x.is_some() || x.is_none());
+            }
+        "#;
+        assert_eq!(
+            rules(imported_std),
+            vec![RuleId::OptionSomeOrNone],
+            "{:?}",
+            rules(imported_std)
         );
 
         let real_std = r#"
