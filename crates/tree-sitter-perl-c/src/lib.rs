@@ -529,6 +529,7 @@ fn count_tree_nodes(root: tree_sitter::Node<'_>) -> usize {
 ///
 /// Returns a boxed [`ParsePerlError`] when the parser cannot be initialised,
 /// tree-sitter returns no tree, or the source is malformed.
+/// Prefer [`try_parse_perl_summary`] when you need typed error discrimination.
 pub fn parse_perl_summary(code: &str) -> Result<ParseResult, Box<dyn std::error::Error>> {
     try_parse_perl_summary(code).map_err(Into::into)
 }
@@ -855,7 +856,7 @@ mod tests {
     fn parse_result_into_tree_preserves_root() -> Result<(), Box<dyn std::error::Error>> {
         let source = "print 1;\n";
         let summary = try_parse_perl_summary(source)?;
-        let expected_sexp = summary.root_sexp().to_owned();
+        let expected_sexp = summary.root_sexp();
         let tree = summary.into_tree();
         if tree.root_node().has_error() {
             return Err("into_tree must preserve a clean parse tree".into());
