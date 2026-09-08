@@ -172,8 +172,10 @@ impl HirFile {
 
     /// Project framework-adapter facts using the default registry.
     ///
-    /// This is a compiler-substrate proof surface only. It does not change LSP
-    /// provider behavior.
+    /// This remains a compiler-substrate proof surface only:
+    /// `FrameworkAdapterRegistry::project_file` has no production caller, so
+    /// this method does not change LSP provider behavior. Distinct from
+    /// [`StashGraph`], whose export sets are consumed by the workspace indexer.
     #[must_use]
     pub fn framework_facts(&self) -> FrameworkFactGraph {
         FrameworkAdapterRegistry::default().project_file(self)
@@ -1013,10 +1015,12 @@ pub struct BindingReference {
     pub resolved_binding: Option<HirBindingId>,
 }
 
-/// HIR-local package stash graph for compiler-substrate proof.
+/// HIR package stash graph owned by parser-core.
 ///
-/// This graph is intentionally parser-core-local. It records package/stash
-/// facts with provenance and confidence, but no LSP provider consumes it yet.
+/// Records package/stash facts with provenance and confidence. This is not a
+/// receipt-only substrate: workspace indexing consumes [`Self::export_sets`]
+/// into `ImportExportIndex` on every indexed file, and those facts reach live
+/// completion, hover, go-to-definition, and scope-diagnostic suppression.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 #[non_exhaustive]
 pub struct StashGraph {
@@ -1033,8 +1037,9 @@ pub struct StashGraph {
 impl StashGraph {
     /// Project static HIR/stash export declarations into canonical export facts.
     ///
-    /// This is a compiler-substrate projection only. It does not execute Perl,
-    /// inspect the filesystem, or change workspace/LSP provider behavior.
+    /// This projection does not execute Perl or inspect the filesystem.
+    /// Workspace indexing consumes the result into `ImportExportIndex`, so
+    /// these facts do reach live LSP provider behavior.
     #[must_use]
     pub fn export_sets(&self) -> Vec<ExportSet> {
         let mut builders = BTreeMap::<String, ExportSetBuilder>::new();

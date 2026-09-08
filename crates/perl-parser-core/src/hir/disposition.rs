@@ -264,7 +264,7 @@ pub fn disposition_for(ast_kind: &str) -> Option<LoweringDisposition> {
             false,
             true,
             true,
-            "Lowered as bareword expression shell; records bareword fact."
+            "Lowered as bareword expression shell; records bareword fact. A sigil-prefixed name cannot be a bareword, so the parser-synthesized implicit topic emits neither item nor fact."
         ),
         "IndirectCall" => {
             disp!(true, false, true, false, true, "Lowered as indirect-object call shell.")

@@ -65,7 +65,9 @@ use perl_lexer::LexerMode;
 use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
-use std::time::Instant;
+
+mod class_grammar;
+use class_grammar::{ClassGrammarContext, ClassGrammarForm};
 
 mod operation;
 use operation::ParserOperationContext;
@@ -129,8 +131,10 @@ pub struct Parser<'a> {
     last_end_position: usize,
     /// Context flag for disambiguating for-loop initialization syntax
     in_for_loop_init: bool,
-    /// Depth of nested class bodies for context-sensitive class-body constructs
-    in_class_body: usize,
+    /// Scope-aware class grammar context governing context-sensitive
+    /// class-member admission (currently `ADJUST` blocks). Grammar admission
+    /// only — never semantic class ownership. See [`class_grammar`].
+    class_grammar: ClassGrammarContext,
     /// Statement boundary tracking for indirect object syntax detection
     at_stmt_start: bool,
     /// FIFO queue of pending heredoc declarations awaiting content collection
@@ -146,8 +150,6 @@ pub struct Parser<'a> {
     /// Delimiter from an unrecognised heredoc introducer whose body leaked into
     /// the ordinary token stream.  Only the matching bareword may be exempted.
     heredoc_recovery_tag: Option<String>,
-    /// Start time of parsing for timeout enforcement (specifically heredocs)
-    heredoc_start_time: Option<Instant>,
     /// Collection of parse errors encountered during parsing (for error recovery)
     errors: Vec<ParseError>,
     /// Live production operation context. Fresh counters, terminal state, and
@@ -224,7 +226,7 @@ impl<'a> Parser<'a> {
             block_depth: 0,
             last_end_position: 0,
             in_for_loop_init: false,
-            in_class_body: 0,
+            class_grammar: ClassGrammarContext::default(),
             at_stmt_start: true,
             pending_heredocs: VecDeque::new(),
             custom_attribute_handlers: HashSet::new(),
@@ -232,7 +234,6 @@ impl<'a> Parser<'a> {
             src_bytes: source.as_bytes(),
             byte_cursor: 0,
             heredoc_recovery_tag: None,
-            heredoc_start_time: None,
             errors: Vec::new(),
             operation: ParserOperationContext::new(config, cancellation),
             #[cfg(test)]
