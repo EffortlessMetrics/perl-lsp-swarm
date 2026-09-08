@@ -116,14 +116,23 @@ def field(source: list[str], name: str, indent: int) -> str | None:
     return " ".join(continuation)
 
 
-def cache_steps(source: list[str]) -> list[list[str]]:
+def workflow_steps(source: list[str]) -> list[list[str]]:
     starts = [i for i, line in enumerate(source) if line.startswith("      - ")]
-    result = []
-    for pos, start in enumerate(starts):
-        step = source[start:starts[pos + 1] if pos + 1 < len(starts) else len(source)]
-        if any(line.strip().startswith(f"uses: {ACTION}") for line in step):
-            result.append(step)
-    return result
+    return [source[start:starts[pos + 1] if pos + 1 < len(starts) else len(source)]
+            for pos, start in enumerate(starts)]
+
+
+def action_reference(step: list[str]) -> str:
+    for line in step:
+        declaration = line.strip().removeprefix("- ")
+        if declaration.startswith("uses:"):
+            return declaration.partition(":")[2].split(" #", 1)[0].strip().strip("\"'")
+    return ""
+
+
+def cache_steps(source: list[str]) -> list[list[str]]:
+    return [step for step in workflow_steps(source)
+            if action_reference(step).lower().startswith("swatinem/rust-cache@")]
 
 
 def validate_static_contract(source: list[str]) -> None:
@@ -137,6 +146,8 @@ def validate_static_contract(source: list[str]) -> None:
     if "ripr-fallback-" in text or text.count("seed-cache:") != 1:
         raise AssertionError("legacy key or duplicate seed survived")
     for step in cache_steps(source):
+        if action_reference(step) != ACTION:
+            raise AssertionError("cache action pin is not approved")
         if "shared-key: ripr-${{ env.RIPR_VERSION }}" not in "\n".join(step):
             raise AssertionError("cache consumers do not share the stable key")
         if "cache-workspace-crates: true" not in "\n".join(step):
@@ -145,11 +156,16 @@ def validate_static_contract(source: list[str]) -> None:
     if any("save-if: ${{ false }}" not in "\n".join(cache_steps(job)[0]) for job in jobs.values()):
         raise AssertionError("analysis cache writer became reachable")
     seed = block(source, "seed-cache", 2)
-    if field(seed, "if", 4) is None:
-        raise AssertionError("seed condition is malformed")
+    if field(seed, "if", 4) != SAVE_GUARD:
+        raise AssertionError("seed condition is unsafe")
     seed_cache = cache_steps(seed)
     if len(seed_cache) != 1 or f"save-if: ${{{{ {SAVE_GUARD} }}}}" not in "\n".join(seed_cache[0]):
         raise AssertionError("seed writer guard is unsafe")
+    commands = [field(step, "run", 8) for step in workflow_steps(seed)]
+    for command in ('cargo install ripr --version "$RIPR_VERSION" --locked',
+                    'cargo build -p xtask --locked'):
+        if command not in commands:
+            raise AssertionError(f"seed useful work is missing: {command}")
 
 
 class RiprCacheAuthorityTests(unittest.TestCase):
@@ -247,6 +263,33 @@ class RiprCacheAuthorityTests(unittest.TestCase):
         }
         for name, mutated in mutations.items():
             with self.subTest(mutation=name):
+                with self.assertRaises(AssertionError):
+                    validate_static_contract(mutated.splitlines())
+
+    def test_cache_discovery_and_seed_work_mutations(self) -> None:
+        text = "\n".join(self.source)
+        seed_text = "\n".join(block(self.source, "seed-cache", 2))
+        other_pin = "Swatinem/rust-cache@" + "a" * 40
+        mutations = {
+            "unapproved replacement pin": text.replace(ACTION, other_pin, 1),
+            "additional cache with implicit save": text.replace(
+                "      - name: Install ripr\n",
+                f"      - uses: {other_pin}\n\n      - name: Install ripr\n", 1
+            ),
+            "seed job ref guard removed": text.replace(
+                seed_text,
+                re.sub(r"(?m)^    if: >-\n(?:      .*\n)+", "    if: true\n", seed_text, count=1),
+                1,
+            ),
+        }
+        for command in ('cargo install ripr --version "$RIPR_VERSION" --locked',
+                        'cargo build -p xtask --locked'):
+            mutations[f"seed omits {command}"] = text.replace(
+                seed_text, seed_text.replace(f"run: {command}", "run: true", 1), 1
+            )
+        for name, mutated in mutations.items():
+            with self.subTest(mutation=name):
+                self.assertNotEqual(text, mutated, "mutation must alter the real workflow")
                 with self.assertRaises(AssertionError):
                     validate_static_contract(mutated.splitlines())
 
