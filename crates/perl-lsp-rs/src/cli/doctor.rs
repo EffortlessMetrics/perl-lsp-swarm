@@ -764,24 +764,54 @@ fn build_dev_environment_report() -> DevEnvironmentReport {
 /// Dependency seam for tests: `temp_base` receives the temporary symlink.
 fn build_dev_environment_report_in(temp_base: &Path) -> DevEnvironmentReport {
     let windows_host = cfg!(windows);
+    let native_cargo = probe_native_cargo();
+    let git_bash_executable = if windows_host { resolve_git_bash_executable() } else { None };
+    let (git_bash_cargo, git_bash) =
+        build_git_bash_reports(windows_host, git_bash_executable, probe_git_bash_cargo_for_path);
+    let wsl_bash = if windows_host {
+        wsl_bash_flavor_report()
+    } else {
+        not_applicable_bash_flavor_report(FLAVOR_WSL)
+    };
     DevEnvironmentReport {
         schema: DEV_ENVIRONMENT_SCHEMA,
         host_platform: if windows_host { HOST_PLATFORM_WINDOWS } else { HOST_PLATFORM_UNIX },
         workspace_rust_version: WORKSPACE_RUST_VERSION_LABEL,
         toolchain_channel_pin: TOOLCHAIN_CHANNEL_LABEL,
         symlink_privilege: probe_symlink_privilege_in(temp_base),
-        cargo_toolchains: build_cargo_toolchain_reports(windows_host),
-        bash_flavors: build_bash_flavor_reports(),
+        cargo_toolchains: build_cargo_toolchain_reports(windows_host, native_cargo, git_bash_cargo),
+        bash_flavors: build_bash_flavor_reports(windows_host, git_bash, wsl_bash),
         repo_entrypoints: build_repo_entrypoints_report(),
         documented_prerequisite: BASH_PREREQUISITE_LINE,
         perl_identity: probe_perl_identity(windows_host),
     }
 }
 
-fn build_cargo_toolchain_reports(windows_host: bool) -> Vec<CargoToolchainReport> {
-    let mut reports = vec![probe_native_cargo()];
+fn build_git_bash_reports(
+    windows_host: bool,
+    git_bash_executable: Option<PathBuf>,
+    probe_cargo: impl FnOnce(Option<PathBuf>) -> CargoToolchainReport,
+) -> (CargoToolchainReport, BashFlavorReport) {
     if windows_host {
-        reports.push(probe_git_bash_cargo());
+        let git_bash_cargo = probe_cargo(git_bash_executable.clone());
+        let git_bash = git_bash_flavor_report_for_path(git_bash_executable);
+        (git_bash_cargo, git_bash)
+    } else {
+        (
+            not_applicable_cargo_report(FLAVOR_GIT_BASH),
+            not_applicable_bash_flavor_report(FLAVOR_GIT_BASH),
+        )
+    }
+}
+
+fn build_cargo_toolchain_reports(
+    windows_host: bool,
+    native_cargo: CargoToolchainReport,
+    git_bash_cargo: CargoToolchainReport,
+) -> Vec<CargoToolchainReport> {
+    let mut reports = vec![native_cargo];
+    if windows_host {
+        reports.push(git_bash_cargo);
         reports.push(probe_wsl_cargo());
     } else {
         // The flavor table keeps its shape on every host so JSON consumers
@@ -807,11 +837,15 @@ fn not_applicable_cargo_report(flavor: &'static str) -> CargoToolchainReport {
     }
 }
 
-fn build_bash_flavor_reports() -> Vec<BashFlavorReport> {
+fn build_bash_flavor_reports(
+    windows_host: bool,
+    git_bash: BashFlavorReport,
+    wsl_bash: BashFlavorReport,
+) -> Vec<BashFlavorReport> {
     let mut reports = vec![native_shell_bash_report()];
-    if cfg!(windows) {
-        reports.push(git_bash_flavor_report());
-        reports.push(wsl_bash_flavor_report());
+    if windows_host {
+        reports.push(git_bash);
+        reports.push(wsl_bash);
     } else {
         // Flavor-table parity with Windows hosts (see
         // `build_cargo_toolchain_reports`): Git Bash and WSL are not
@@ -1047,8 +1081,7 @@ fn resolve_git_bash_executable_with(
     resolve_on_path("bash").or_else(fallback)
 }
 
-fn probe_git_bash_cargo() -> CargoToolchainReport {
-    let bash_exe = resolve_git_bash_executable();
+fn probe_git_bash_cargo_for_path(bash_exe: Option<PathBuf>) -> CargoToolchainReport {
     let Some(bash_exe) = bash_exe else {
         return unreachable_cargo_report(
             FLAVOR_GIT_BASH,
@@ -1508,10 +1541,6 @@ fn native_shell_bash_report_for_platform(windows_host: bool) -> BashFlavorReport
             fix: None,
         }
     }
-}
-
-fn git_bash_flavor_report() -> BashFlavorReport {
-    git_bash_flavor_report_for_path(resolve_git_bash_executable())
 }
 
 fn git_bash_flavor_report_for_path(bash_exe: Option<PathBuf>) -> BashFlavorReport {
@@ -3040,28 +3069,28 @@ mod tests {
     }
 
     #[test]
-    fn git_bash_fallback_only_resolution_keeps_capability_and_cargo_rows_aligned() -> TestResult {
+    fn git_bash_fallback_only_report_feeds_capability_and_cargo_rows() -> TestResult {
         let fallback = PathBuf::from(r"C:\Program Files\Git\bin\bash.exe");
-        let cargo_resolution =
+        let resolved_fallback =
             resolve_git_bash_executable_with(|_| None, || Some(fallback.clone()))
                 .ok_or("fallback Git Bash path")?;
-        let capability_resolution =
-            resolve_git_bash_executable_with(|_| None, || Some(fallback.clone()))
-                .ok_or("fallback Git Bash path")?;
+        let mut probed_path = None;
+        let (cargo, bash) = build_git_bash_reports(true, Some(resolved_fallback.clone()), |path| {
+            probed_path = path.clone();
+            finish_reachable_cargo_report(
+                FLAVOR_GIT_BASH,
+                Some(PathBuf::from(r"C:\Users\dev\.cargo\bin\cargo.exe")),
+                "cargo 1.95.0 (8f3d0b0ac 2026-01-30)",
+            )
+        });
 
-        assert_eq!(cargo_resolution, capability_resolution);
-        let bash = git_bash_flavor_report_for_path(Some(capability_resolution));
-        assert_eq!(bash.status, STATUS_PRESENT);
-        assert_eq!(bash.runs_repo_entrypoints, None);
-        assert!(bash.note.contains("execution is not proven"));
-
-        let cargo = finish_reachable_cargo_report(
-            FLAVOR_GIT_BASH,
-            Some(PathBuf::from(r"C:\Users\dev\.cargo\bin\cargo.exe")),
-            "cargo 1.95.0 (8f3d0b0ac 2026-01-30)",
-        );
+        assert_eq!(probed_path, Some(resolved_fallback));
         assert_eq!(cargo.status, STATUS_PRESENT);
         assert_eq!(cargo.meets_workspace_pin, Some(true));
+        assert_eq!(bash.status, STATUS_PRESENT);
+        assert_eq!(bash.runs_repo_entrypoints, None);
+        assert_eq!(bash.bash_path.as_deref(), Some(r"C:\Program Files\Git\bin\bash.exe"));
+        assert!(bash.note.contains("execution is not proven"));
         Ok(())
     }
 
