@@ -443,4 +443,39 @@ describe('LanguageClientLifecycle client cleanup admission', () => {
       'replacement startup is blocked',
     );
   });
+
+  test('startup cleanup retains the exact live process witness before admitting no replacement', async () => {
+    const startupError = new Error('simulated startup failure');
+    const child = new FakeServerProcess();
+    const client = new FakeClient();
+    client.serverProcess = child;
+    const captured: unknown[] = [];
+    const clients: FakeClient[] = [];
+    const controller = new LanguageClientLifecycle<FakeClient>({
+      resolveServerPath: async () => '/server/perllsp',
+      createClient: () => {
+        clients.push(client);
+        return client;
+      },
+      onStarted: async () => {
+        throw startupError;
+      },
+      captureStopWitness: (startedClient) => {
+        const witness = serverProcessOf(startedClient);
+        captured.push(witness);
+        return witness;
+      },
+      isClientTerminal: (_startedClient, witness) =>
+        awaitServerProcessExit(witness as ServerProcessLike | undefined, 10, () => true),
+    });
+
+    const rejection = await controller.start().catch((error: unknown) => error);
+
+    expect(rejection).toMatchObject({ reason: 'cleanup-incomplete' });
+    expect((rejection as Error).cause).toBe(startupError);
+    expect(captured).toEqual([child]);
+    expect(child.exited).toBe(false);
+    expect(clients).toHaveLength(1);
+    await expect(controller.start()).rejects.toMatchObject({ reason: 'cleanup-incomplete' });
+  });
 });
