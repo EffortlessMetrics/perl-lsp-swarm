@@ -502,7 +502,10 @@ function runInventoryTransition(env, expectedRevision, vsixPath) {
   const scriptPath = path.join(__dirname, 'check-vsix-inventory-transition.js');
   const args = [scriptPath, '--vsix', vsixPath];
   const explicitBase = (env.PERL_LSP_PACKAGE_BASE_SHA || '').trim();
-  if (explicitBase) {
+  const pullRequestBase = (env.PERL_LSP_PACKAGE_PR_BASE_SHA || '').trim();
+  if ((env.PERL_LSP_PACKAGE_BASE_MODE || '').trim() === 'pull_request') {
+    args.push('--merge-base-with', pullRequestBase);
+  } else if (explicitBase) {
     args.push('--base', explicitBase);
   }
   const result = spawnSync(process.execPath, args, {

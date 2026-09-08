@@ -50,6 +50,26 @@ void test('current-source smoke does not reinstall dependencies after setup', ()
   assert.doesNotMatch(source, /\bnpm\s+(?:ci|install)\b/);
 });
 
+void test('current-source inventory uses PR merge-base while manual runs keep accepted base', () => {
+  const source = readWorkflow('vscode-current-source-linux-smoke.yml');
+  assert.match(
+    source,
+    /PERL_LSP_PACKAGE_BASE_MODE: \$\{\{ github\.event_name == 'pull_request' && 'pull_request' \|\| 'accepted' \}\}/,
+  );
+  assert.match(
+    source,
+    /PERL_LSP_PACKAGE_PR_BASE_SHA: \$\{\{ github\.event_name == 'pull_request' && github\.event\.pull_request\.base\.sha \|\| '' \}\}/,
+  );
+  assert.match(
+    source,
+    /PERL_LSP_PACKAGE_BASE_SHA: \$\{\{ github\.event_name == 'workflow_dispatch' && inputs\.accepted_base_sha \|\| '' \}\}/,
+  );
+  assert.doesNotMatch(
+    source,
+    /PERL_LSP_PACKAGE_BASE_SHA: \$\{\{ github\.event_name == 'pull_request' && github\.event\.pull_request\.base\.sha/,
+  );
+});
+
 void test('publisher workflow invokes both CLIs offline through npm exec', () => {
   const source = readWorkflow('publish-extension.yml');
   assert.match(source, /npm exec --offline --no -- @vscode\/vsce publish/);

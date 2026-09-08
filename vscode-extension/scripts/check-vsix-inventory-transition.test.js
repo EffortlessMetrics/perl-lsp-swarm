@@ -12,9 +12,12 @@ const {
   ensureDistinctBase,
   evaluateTransition,
   notProvenReceipt,
+  parseArgs,
   parseDeclarationDocument,
   parseInventoryDocument,
   projectInventory,
+  resolveBaseRevision,
+  resolvePullRequestMergeBase,
   semanticInventorySha256,
 } = require('./check-vsix-inventory-transition');
 
@@ -31,6 +34,12 @@ function inventory(files, extra = {}) {
 function document(files) {
   const value = inventory(files);
   return parseInventoryDocument(`${JSON.stringify(value, null, 2)}\n`, 'fixture baseline');
+}
+
+function git(cwd, args) {
+  const result = spawnSync('git', args, { cwd, encoding: 'utf8', windowsHide: true });
+  assert.equal(result.status, 0, `git ${args.join(' ')} failed: ${result.stderr || result.stdout}`);
+  return result.stdout.trim();
 }
 
 function declaration(baseDocument, candidateDocument) {
@@ -334,6 +343,105 @@ void test('rejects a requested base that resolves to the candidate', () => {
   assert.throws(
     () => ensureDistinctBase('a'.repeat(40), 'a'.repeat(40), 'manual base'),
     /candidate itself/,
+  );
+});
+
+void test('resolves pull request bases through the exact event base merge-base', () => {
+  const candidate = 'c'.repeat(40);
+  const eventBase = 'e'.repeat(40);
+  const mergeBase = 'm'.repeat(40);
+  const calls = [];
+  const resolved = resolvePullRequestMergeBase(candidate, eventBase, {
+    resolveRevision: (revision) => {
+      calls.push(['resolve', revision]);
+      return eventBase;
+    },
+    runGitOptional: (args) => {
+      calls.push(['git', args]);
+      return mergeBase;
+    },
+  });
+
+  assert.equal(resolved, mergeBase);
+  assert.deepEqual(calls, [
+    ['resolve', eventBase],
+    ['git', ['merge-base', candidate, eventBase]],
+  ]);
+});
+
+void test('uses a temporary git fork and rejects an unrelated event base', () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-merge-base-'));
+  try {
+    git(directory, ['init', '-q', '-b', 'main']);
+    git(directory, ['config', 'user.email', 'test@example.invalid']);
+    git(directory, ['config', 'user.name', 'Inventory test']);
+    fs.writeFileSync(path.join(directory, 'package.txt'), 'base\n');
+    git(directory, ['add', 'package.txt']);
+    git(directory, ['commit', '-q', '-m', 'base']);
+    const mergeBase = git(directory, ['rev-parse', 'HEAD']);
+
+    git(directory, ['checkout', '-q', '-b', 'candidate']);
+    fs.writeFileSync(path.join(directory, 'package.txt'), 'candidate package\n');
+    git(directory, ['commit', '-qam', 'candidate package']);
+    const candidate = git(directory, ['rev-parse', 'HEAD']);
+
+    git(directory, ['checkout', '-q', 'main']);
+    fs.writeFileSync(path.join(directory, 'main.txt'), 'event base\n');
+    git(directory, ['add', 'main.txt']);
+    git(directory, ['commit', '-q', '-m', 'event base']);
+    const eventBase = git(directory, ['rev-parse', 'HEAD']);
+    const resolve = (revision) => git(directory, ['rev-parse', `${revision}^{commit}`]);
+    const runGitOptional = (args) => {
+      const result = spawnSync('git', args, {
+        cwd: directory,
+        encoding: 'utf8',
+        windowsHide: true,
+      });
+      return result.status === 0 ? result.stdout.trim() : null;
+    };
+
+    assert.equal(
+      resolvePullRequestMergeBase(candidate, eventBase, {
+        resolveRevision: resolve,
+        runGitOptional,
+      }),
+      mergeBase,
+    );
+
+    git(directory, ['checkout', '-q', '--orphan', 'unrelated']);
+    fs.writeFileSync(path.join(directory, 'unrelated.txt'), 'unrelated\n');
+    git(directory, ['add', 'unrelated.txt']);
+    git(directory, ['commit', '-q', '-m', 'unrelated']);
+    const unrelated = git(directory, ['rev-parse', 'HEAD']);
+    assert.throws(
+      () =>
+        resolvePullRequestMergeBase(candidate, unrelated, {
+          resolveRevision: resolve,
+          runGitOptional,
+        }),
+      /pull request merge base/,
+    );
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+void test('rejects missing or malformed pull request base bindings', () => {
+  assert.throws(() => parseArgs(['--merge-base-with']), /--merge-base-with requires a value/);
+  assert.throws(
+    () =>
+      resolvePullRequestMergeBase('c'.repeat(40), 'not-a-sha', {
+        resolveRevision: () => 'e'.repeat(40),
+        runGitOptional: () => 'm'.repeat(40),
+      }),
+    /pull request base revision must be a full lowercase commit SHA/,
+  );
+});
+
+void test('manual accepted bases remain distinct from pull request mode', () => {
+  assert.throws(
+    () => resolveBaseRevision('c'.repeat(40), 'a'.repeat(40), 'b'.repeat(40)),
+    /both an accepted base revision and a pull request base revision/,
   );
 });
 
