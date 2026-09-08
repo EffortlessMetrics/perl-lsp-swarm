@@ -4588,6 +4588,13 @@ review_after = "2026-11-13"
         )?;
         seed_frozen_pointer(temp.path())?;
         write_readme_allowlist(temp.path(), "policy/non-rust-allowlist.toml")?;
+        // This is inherited inventory, so baseline discovery must find real
+        // history even when CI requires the frozen-pointer and new-path checks.
+        configure_git_identity(temp.path())?;
+        run_git(temp.path(), &["config", "commit.gpgsign", "false"])?;
+        run_git(temp.path(), &["add", "."])?;
+        commit_quiet(temp.path(), "inherited inventory")?;
+        run_git(temp.path(), &["commit", "--allow-empty", "-qm", "candidate"])?;
         non_rust_inventory_check(temp.path())?;
         Ok(())
     }
