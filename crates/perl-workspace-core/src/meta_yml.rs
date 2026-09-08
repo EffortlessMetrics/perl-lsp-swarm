@@ -23,7 +23,7 @@
 //!
 //! Indented scalar-only lines are outside the block mapping/sequence subset;
 //! they refuse rather than being consumed as document markers. The root
-//! document is a block mapping or block sequence; a root flow collection
+//! document is a block mapping; a root flow collection or root sequence
 //! refuses. Unquoted plain scalars follow YAML 1.2.2 section 7.3.3
 //! admission: reserved leading indicators and separated colons refuse, and
 //! inside flow collections the collection delimiters also refuse; quoting
