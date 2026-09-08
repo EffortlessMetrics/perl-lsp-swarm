@@ -335,37 +335,88 @@ fn collect_shadows<'a>(
     shadows
 }
 
+#[derive(Clone, Copy)]
+enum AliasPass {
+    /// Untrust bound `std`/`core` when the imported path is not the extern crate.
+    NonRealSource,
+    /// Untrust a syntactic `std`/`core` retarget when that source name is already
+    /// untrusted (`mod std; use std as core`).
+    RealSourceIfShadowed,
+}
+
 fn collect_namespace_shadows(items: &[&Item], shadows: &mut PreludeShadow) {
     for item in items {
         match item {
             Item::Mod(item_mod) => untrust_namespace_ident(&item_mod.ident, shadows),
             Item::ExternCrate(ext) => {
                 if let Some((_, rename)) = &ext.rename {
-                    untrust_namespace_alias(&[], &ext.ident, rename, shadows);
+                    untrust_namespace_alias(
+                        &[],
+                        &ext.ident,
+                        rename,
+                        shadows,
+                        AliasPass::NonRealSource,
+                    );
                 }
             }
-            Item::Use(item_use) => collect_use_namespace_aliases(&item_use.tree, &[], shadows),
+            Item::Use(item_use) => {
+                collect_use_namespace_aliases(
+                    &item_use.tree,
+                    &[],
+                    shadows,
+                    AliasPass::NonRealSource,
+                );
+            }
+            _ => {}
+        }
+    }
+    for item in items {
+        match item {
+            Item::ExternCrate(ext) => {
+                if let Some((_, rename)) = &ext.rename {
+                    untrust_namespace_alias(
+                        &[],
+                        &ext.ident,
+                        rename,
+                        shadows,
+                        AliasPass::RealSourceIfShadowed,
+                    );
+                }
+            }
+            Item::Use(item_use) => {
+                collect_use_namespace_aliases(
+                    &item_use.tree,
+                    &[],
+                    shadows,
+                    AliasPass::RealSourceIfShadowed,
+                );
+            }
             _ => {}
         }
     }
 }
 
-fn collect_use_namespace_aliases(tree: &UseTree, prefix: &[String], shadows: &mut PreludeShadow) {
+fn collect_use_namespace_aliases(
+    tree: &UseTree,
+    prefix: &[String],
+    shadows: &mut PreludeShadow,
+    pass: AliasPass,
+) {
     match tree {
         UseTree::Rename(rename) => {
-            untrust_namespace_alias(prefix, &rename.ident, &rename.rename, shadows);
+            untrust_namespace_alias(prefix, &rename.ident, &rename.rename, shadows, pass);
         }
         UseTree::Path(path) => {
             let mut next = prefix.to_vec();
             next.push(ident_unraw(&path.ident));
-            collect_use_namespace_aliases(&path.tree, &next, shadows);
+            collect_use_namespace_aliases(&path.tree, &next, shadows, pass);
         }
         UseTree::Group(group) => {
             for item in &group.items {
-                collect_use_namespace_aliases(item, prefix, shadows);
+                collect_use_namespace_aliases(item, prefix, shadows, pass);
             }
         }
-        UseTree::Name(name) => {
+        UseTree::Name(name) if matches!(pass, AliasPass::NonRealSource) => {
             if name.ident == "self" {
                 // `use custom::std::{self}` binds `std`; `use std::{self}` is the real crate.
                 if prefix.len() >= 2 {
@@ -377,7 +428,7 @@ fn collect_use_namespace_aliases(tree: &UseTree, prefix: &[String], shadows: &mu
                 untrust_namespace_ident(&name.ident, shadows);
             }
         }
-        UseTree::Glob(_) => {}
+        UseTree::Name(_) | UseTree::Glob(_) => {}
     }
 }
 
@@ -388,23 +439,40 @@ fn untrust_namespace_ident(ident: &Ident, shadows: &mut PreludeShadow) {
     }
 }
 
-/// `use std as std` / `use core as core` stay trusted. `use custom::std as std`
-/// and `use foo as std` untrust the bound namespace.
+/// `use std as core` stays trusted when `std` is the extern crate. `use custom as std`,
+/// `use custom::std as std`, and `use std as core` after a local `mod std` untrust the bound name.
 fn untrust_namespace_alias(
     prefix: &[String],
     ident: &Ident,
     rename: &Ident,
     shadows: &mut PreludeShadow,
+    pass: AliasPass,
 ) {
     let bound = ident_unraw(rename);
     if !matches!(bound.as_str(), "std" | "core") {
         return;
     }
     let source = ident_unraw(ident);
-    if imported_path_is_real_std_or_core_crate(prefix, &source) {
-        return;
+    let real = imported_path_is_real_std_or_core_crate(prefix, &source);
+    match pass {
+        AliasPass::NonRealSource => {
+            if !real {
+                shadows.untrust_namespace(&bound);
+            }
+        }
+        AliasPass::RealSourceIfShadowed => {
+            if real {
+                let source_ns = if source == "self" {
+                    prefix.first().map(String::as_str).unwrap_or("")
+                } else {
+                    source.as_str()
+                };
+                if shadows.namespace_untrusted(source_ns) {
+                    shadows.untrust_namespace(&bound);
+                }
+            }
+        }
     }
-    shadows.untrust_namespace(&bound);
 }
 
 fn imported_path_is_real_std_or_core_crate(prefix: &[String], ident: &str) -> bool {
@@ -1123,6 +1191,90 @@ mod tests {
             vec![RuleId::OptionSomeOrNone],
             "{:?}",
             rules(same_name_core)
+        );
+
+        let std_as_core_after_mod = r#"
+            mod std {
+                pub mod option {
+                    pub struct Option;
+                    impl Option {
+                        pub fn is_some(&self) -> bool { false }
+                        pub fn is_none(&self) -> bool { false }
+                    }
+                }
+            }
+            use std as core;
+            fn skip_std_as_core(x: core::option::Option) {
+                assert!(x.is_some() || x.is_none());
+            }
+            fn retain_prelude(x: Option<u8>) {
+                assert!(x.is_some() || x.is_none());
+            }
+        "#;
+        assert_eq!(
+            rules(std_as_core_after_mod),
+            vec![RuleId::OptionSomeOrNone],
+            "{:?}",
+            rules(std_as_core_after_mod)
+        );
+
+        let grouped_std_as_core = r#"
+            mod std {
+                pub mod option {
+                    pub struct Option;
+                    impl Option {
+                        pub fn is_some(&self) -> bool { false }
+                        pub fn is_none(&self) -> bool { false }
+                    }
+                }
+            }
+            use std::{self as core};
+            fn skip_grouped_std_as_core(x: core::option::Option) {
+                assert!(x.is_some() || x.is_none());
+            }
+            fn retain_prelude(x: Option<u8>) {
+                assert!(x.is_some() || x.is_none());
+            }
+        "#;
+        assert_eq!(
+            rules(grouped_std_as_core),
+            vec![RuleId::OptionSomeOrNone],
+            "{:?}",
+            rules(grouped_std_as_core)
+        );
+
+        let chained = r#"
+            mod custom {
+                pub mod option {
+                    pub struct Option;
+                    impl Option {
+                        pub fn is_some(&self) -> bool { false }
+                        pub fn is_none(&self) -> bool { false }
+                    }
+                }
+            }
+            use custom as std;
+            use std as core;
+            fn skip_chained(x: core::option::Option) {
+                assert!(x.is_some() || x.is_none());
+            }
+            fn retain_prelude(x: Option<u8>) {
+                assert!(x.is_some() || x.is_none());
+            }
+        "#;
+        assert_eq!(rules(chained), vec![RuleId::OptionSomeOrNone], "{:?}", rules(chained));
+
+        let real_std_as_core = r#"
+            use std as core;
+            fn retain_real_core_alias(x: core::option::Option<u8>) {
+                assert!(x.is_some() || x.is_none());
+            }
+        "#;
+        assert_eq!(
+            rules(real_std_as_core),
+            vec![RuleId::OptionSomeOrNone],
+            "{:?}",
+            rules(real_std_as_core)
         );
 
         let real_std = r#"
