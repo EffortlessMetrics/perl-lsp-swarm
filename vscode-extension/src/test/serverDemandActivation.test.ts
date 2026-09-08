@@ -395,6 +395,14 @@ describe('deferred language-server startup (#8180)', () => {
     await vscode.commands.executeCommand('perl-lsp.restart');
     await waitForStarts(2);
     expect(mockLanguageClientStart).toHaveBeenCalledTimes(2);
+    const health = (await vscode.commands.executeCommand('perl-lsp.runHealthCheck')) as {
+      checks: Array<{ label: string; status: string; detail: string }>;
+    };
+    expect(health.checks.find((check) => check.label === 'LSP runtime')).toEqual({
+      label: 'LSP runtime',
+      status: 'ok',
+      detail: 'Language server is running.',
+    });
   });
 
   test('registered health check rejects an existing binary after activation startup fails', async () => {
