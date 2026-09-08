@@ -1225,7 +1225,23 @@ fn render_json(doc: &Value, digest: &str) -> Result<String> {
 }
 
 fn escape_markdown_table_cell(value: &str) -> String {
-    value.replace('\\', "\\\\").replace('|', "\\|").replace(['\r', '\n'], " ")
+    let mut escaped = String::with_capacity(value.len());
+    let mut chars = value.chars().peekable();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '\\' => escaped.push_str("\\\\"),
+            '|' => escaped.push_str("\\|"),
+            '\r' => {
+                if chars.peek() == Some(&'\n') {
+                    chars.next();
+                }
+                escaped.push(' ');
+            }
+            '\n' => escaped.push(' '),
+            other => escaped.push(other),
+        }
+    }
+    escaped
 }
 
 /// Reviewer projection: per-phase tables, writer classes, lineages.
