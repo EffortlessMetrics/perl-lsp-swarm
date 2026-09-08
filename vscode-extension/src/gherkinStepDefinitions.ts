@@ -434,13 +434,12 @@ export async function collectWorkspaceStepDefinitionSources(
  * from the already-open descriptor and enforced by the read itself, and the
  * read window contains no path observation that a hostile process could race.
  * Returns `null` for anything that is not a readable regular file within the
- * limit. Symlinks are rejected on every platform: `O_NOFOLLOW` where the
- * platform defines it, and additionally an `lstat` of the path entry after the
- * bounded read — win32 defines no `O_NOFOLLOW` and `fstat` of a descriptor
- * opened through a link reports the resolved target, so the link is verified
- * on the path entry instead. A verified-out candidate is never admitted; on
- * win32 its resolved content is consumed once, bounded, and charged to the
- * read budget.
+ * limit. Final-component symlinks are rejected at open with `O_NOFOLLOW`
+ * where available. The additional post-read `lstat` rejects a path entry that
+ * is still a symlink. On win32, which has no `O_NOFOLLOW`, this is a check of
+ * a stable path entry, not atomic exclusion during concurrent replacement.
+ * Resolved content may be consumed before rejection, bounded and charged to
+ * the read budget. Parent-directory symlink exclusion is not established.
  *
  * Exported for the provider workspace scan (#9773) and its containment proof:
  * both step-definition readers must enforce the same per-file, regular-file,
@@ -451,8 +450,7 @@ export async function readBoundedFile(
   limit: number,
 ): Promise<{ text: string; byteLength: number } | null> {
   // win32 defines no O_NOFOLLOW; there the path-entry check below is what
-  // rejects symlinks, so the absent constant must contribute 0 to the flags
-  // instead of poisoning them.
+  // rejects stable symlink entries; the absent constant contributes 0 to flags.
   const flags = fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0);
   let handle: fs.promises.FileHandle;
   try {
