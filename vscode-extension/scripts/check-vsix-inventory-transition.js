@@ -3,6 +3,7 @@
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
+const zlib = require('zlib');
 const { spawnSync } = require('child_process');
 const AdmZip = require('adm-zip');
 const {
@@ -228,6 +229,30 @@ function collectArchiveInventory(vsixPath) {
     if (entry.isDirectory) {
       continue;
     }
+    const declaredSize = entry.header.size;
+    assertNonNegativeSafeInteger(
+      declaredSize,
+      `VSIX archive entry ${JSON.stringify(rawName)} size`,
+    );
+    let payload;
+    try {
+      payload = entry.getData();
+    } catch (error) {
+      throw new Error(
+        `unable to read VSIX archive entry ${JSON.stringify(rawName)}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+    if (payload.length !== declaredSize) {
+      throw new Error(
+        `VSIX archive entry ${JSON.stringify(rawName)} payload size ${payload.length} does not match header size ${declaredSize}`,
+      );
+    }
+    const payloadCrc = zlib.crc32(payload) >>> 0;
+    if (payloadCrc !== entry.header.crc >>> 0) {
+      throw new Error(
+        `VSIX archive entry ${JSON.stringify(rawName)} CRC mismatch: payload ${payloadCrc} versus header ${entry.header.crc >>> 0}`,
+      );
+    }
     if (!rawName.startsWith(VSIX_PAYLOAD_PREFIX)) {
       // `[Content_Types].xml` and `extension.vsixmanifest` are vsce packaging
       // metadata; they are outside the inventory baseline's claim but are
@@ -237,9 +262,7 @@ function collectArchiveInventory(vsixPath) {
     }
     const file = rawName.slice(VSIX_PAYLOAD_PREFIX.length);
     assertCanonicalPackagePath(file);
-    const bytes = entry.header.size;
-    assertNonNegativeSafeInteger(bytes, `VSIX archive entry ${JSON.stringify(rawName)} size`);
-    entries.push({ file, bytes });
+    entries.push({ file, bytes: declaredSize });
   }
 
   if (entries.length === 0) {

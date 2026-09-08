@@ -2,11 +2,6 @@
 use perl_parser_pest::error::{ParseErrorKind, ScannerError, UnicodeError};
 use perl_parser_pest::pratt_parser::Associativity;
 use perl_parser_pest::{ParseError, PrattParser};
-#[path = "support/assert.rs"]
-mod assert;
-
-use assert::must_err;
-
 fn invalid_token_message(error: ParseError) -> Result<String, Box<dyn std::error::Error>> {
     match error {
         ParseError::InvalidToken(message) => Ok(message),
@@ -75,13 +70,17 @@ fn parse_error_from_conversions_keep_source_context() -> Result<(), Box<dyn std:
     assert_eq!(unicode, "Invalid Unicode code point: 1114112");
 
     let invalid_utf8_bytes = vec![u8::MAX];
-    let utf8_error = must_err(std::str::from_utf8(&invalid_utf8_bytes));
+    let utf8_error = std::str::from_utf8(&invalid_utf8_bytes)
+        .err()
+        .ok_or("expected invalid UTF-8 input to fail")?;
     let ParseError::InvalidUtf8(message) = ParseError::from(utf8_error) else {
         return Err("expected InvalidUtf8 from Utf8Error".into());
     };
     assert!(message.contains("invalid utf-8 sequence"));
 
-    let from_utf8_error = must_err(String::from_utf8(invalid_utf8_bytes));
+    let from_utf8_error = String::from_utf8(invalid_utf8_bytes)
+        .err()
+        .ok_or("expected invalid UTF-8 bytes to fail conversion")?;
     let ParseError::InvalidUtf8(message) = ParseError::from(from_utf8_error) else {
         return Err("expected InvalidUtf8 from FromUtf8Error".into());
     };

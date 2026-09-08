@@ -104,9 +104,9 @@ the extraction PR is a separate decision.
 and that no path dependency, falsely-external `repository`/`homepage`, or unpackaged
 load-bearing asset has appeared.
 
-Assertion-boundary helpers are package-local in `tests/support/assert.rs`; the unit
-tests inside `src/pure_rust_parser.rs` carry their own copy so that file stays
-byte-identical to its archived twin while `ci-v2-bundle-sync` remains active machinery.
+Tests use fallible `Result` propagation for parser setup and expected-error branches;
+the unit tests inside `src/pure_rust_parser.rs` remain byte-identical to their archived
+twin while `ci-v2-bundle-sync` remains active machinery.
 `examples/parse_basic.rs` is the compiled public example, because `[lib] doctest = false`
 leaves the README snippet unchecked.
 

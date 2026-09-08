@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "owner_issue": 8282,
-  "reason": "Routes VS Code inline completion through one provider owner (#8282). The candidate adds src/inlineCompletionRouting.ts and extends streamingCompletion.ts, growing the bundled out/extension.js from 1591832 to 1605380 bytes. The measured 29-file package remains size-only: no file additions, removals, or permission loosening.",
-  "base_baseline_file_sha256": "d6f01dad2c5a8b18a75dab8bdd0c55a50d168f042b7a3aaa7ed57af7af5d63d2",
-  "candidate_baseline_file_sha256": "c334509714d671bc93c27387a153089cc133eae98f5d516bcac2f4a77ae898fd",
-  "base_inventory_sha256": "af077116d6be5400315a98d2e0f1aa05197c930ac7521fea3f6b72a319d56975",
-  "candidate_inventory_sha256": "b6001a5b7432633f4b24a36899243f507adc4492ff35a6877f6d5b2eb63e1874"
+  "owner_issue": 7418,
+  "reason": "The candidate adds the Windows Test Explorer prove stdin-list path and process-tree cleanup proof. The exact Windows x64 VSIX inventory remains 29 files and 1866811 bytes; package.json is 59413 bytes and out/extension.js is 1688966 bytes. This declaration records the candidate baseline and package transition for issue #7418. It does not establish installed editor behavior or alter package policy.",
+  "base_baseline_file_sha256": "eaef617cee329a98c217809c7b330c51c8ea246eb13b983ecc78d83e4487d945",
+  "candidate_baseline_file_sha256": "4e148581fe7caff83e13b7d0f617d58c7a957fbc1bb5f1c8b617b9fbd2bd83da",
+  "base_inventory_sha256": "2b68285babc5d03bd46afa00260919d43ed466415a40fc92e3a4ce79ed579766",
+  "candidate_inventory_sha256": "d44214d4914ba1bd8b35d300c9571675e8ae3a7ae526ea017d96c4dc6ff3ea92"
 }

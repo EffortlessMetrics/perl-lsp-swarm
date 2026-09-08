@@ -57,7 +57,6 @@ const REQUIRED_PACKAGED_ASSETS: &[&str] = &[
     "tests/fixtures/manifest.toml",
     "tests/fixture_manifest.rs",
     "tests/support/mod.rs",
-    "tests/support/assert.rs",
     "tests/standalone_package.rs",
 ];
 

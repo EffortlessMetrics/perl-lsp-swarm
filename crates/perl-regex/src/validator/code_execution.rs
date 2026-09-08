@@ -1,3 +1,4 @@
+use super::analysis::RegexRange;
 use crate::syntax::event::{RegexEmbeddedCodeKind, RegexEventKind, RegexEventStream};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -8,7 +9,8 @@ pub(crate) enum EmbeddedCodeKind {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct EmbeddedCodeFinding {
-    pub(crate) offset: usize,
+    pub(crate) construct_range: RegexRange,
+    pub(crate) opener_range: RegexRange,
     pub(crate) kind: EmbeddedCodeKind,
 }
 
@@ -22,7 +24,7 @@ pub(crate) fn find_code_executions(stream: &RegexEventStream) -> Vec<EmbeddedCod
                     RegexEmbeddedCodeKind::Immediate => EmbeddedCodeKind::Immediate,
                     RegexEmbeddedCodeKind::Deferred => EmbeddedCodeKind::Deferred,
                 };
-                Some(EmbeddedCodeFinding { offset: opener_range.start, kind })
+                Some(EmbeddedCodeFinding { construct_range: event.range, opener_range, kind })
             }
             _ => None,
         })

@@ -13,59 +13,60 @@
 #![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 use perl_parser_pest::PureRustPerlParser;
-#[path = "support/assert.rs"]
-mod assert;
 
-use assert::{must, must_err};
-
-fn parse_to_sexp(source: &str) -> String {
+fn parse_to_sexp(source: &str) -> Result<String, String> {
     let mut parser = PureRustPerlParser::new();
-    let ast = must(parser.parse(source));
-    parser.to_sexp(&ast)
+    let ast = parser.parse(source).map_err(|error| format!("{error:?}"))?;
+    Ok(parser.to_sexp(&ast))
 }
 
 #[test]
-fn when_given_basic_heredoc_then_parser_emits_heredoc_node() {
-    let sexp = parse_to_sexp("my $x = <<EOF;\nhello\nEOF\n");
+fn when_given_basic_heredoc_then_parser_emits_heredoc_node() -> Result<(), String> {
+    let sexp = parse_to_sexp("my $x = <<EOF;\nhello\nEOF\n")?;
     assert!(
         sexp.contains("(heredoc EOF"),
         "expected a heredoc node with the EOF marker; got: {sexp}"
     );
+    Ok(())
 }
 
 #[test]
-fn when_given_indented_heredoc_then_parser_preserves_tilde_marker() {
+fn when_given_indented_heredoc_then_parser_preserves_tilde_marker() -> Result<(), String> {
     // `<<~EOF` is the indented heredoc form; the parser records the `~` flag.
-    let sexp = parse_to_sexp("my $x = <<~EOF;\n    hello\n    EOF\n");
+    let sexp = parse_to_sexp("my $x = <<~EOF;\n    hello\n    EOF\n")?;
     assert!(
         sexp.contains("(heredoc EOF ~"),
         "expected the indented `~` flag to be preserved; got: {sexp}"
     );
+    Ok(())
 }
 
 #[test]
-fn when_given_single_quoted_heredoc_then_parser_preserves_quote_marker() {
+fn when_given_single_quoted_heredoc_then_parser_preserves_quote_marker() -> Result<(), String> {
     // `<<'EOF'` is the non-interpolating form; the parser records the `'` flag.
-    let sexp = parse_to_sexp("my $x = <<'EOF';\nno $interp\nEOF\n");
+    let sexp = parse_to_sexp("my $x = <<'EOF';\nno $interp\nEOF\n")?;
     assert!(
         sexp.contains("(heredoc EOF '"),
         "expected the single-quote flag to be preserved; got: {sexp}"
     );
+    Ok(())
 }
 
 #[test]
-fn when_given_empty_heredoc_then_parser_succeeds_with_heredoc_node() {
-    let sexp = parse_to_sexp("my $x = <<EOF;\nEOF\n");
+fn when_given_empty_heredoc_then_parser_succeeds_with_heredoc_node() -> Result<(), String> {
+    let sexp = parse_to_sexp("my $x = <<EOF;\nEOF\n")?;
     assert!(
         sexp.contains("(heredoc EOF"),
         "empty heredoc should still yield a heredoc node; got: {sexp}"
     );
+    Ok(())
 }
 
 #[test]
-fn when_heredoc_marker_appears_inside_qq_string_then_it_is_string_content_not_a_heredoc() {
+fn when_heredoc_marker_appears_inside_qq_string_then_it_is_string_content_not_a_heredoc()
+-> Result<(), String> {
     // A `<<EOF` token inside `qq{...}` is ordinary string content, not a heredoc.
-    let sexp = parse_to_sexp("my $x = qq{<<EOF};\n");
+    let sexp = parse_to_sexp("my $x = qq{<<EOF};\n")?;
     assert!(
         !sexp.contains("(heredoc"),
         "a marker inside qq{{}} must not be parsed as a heredoc; got: {sexp}"
@@ -74,11 +75,13 @@ fn when_heredoc_marker_appears_inside_qq_string_then_it_is_string_content_not_a_
         sexp.contains("string_literal") && sexp.contains("qq{<<EOF"),
         "expected the qq string to be preserved as a string literal; got: {sexp}"
     );
+    Ok(())
 }
 
 #[test]
-fn when_heredoc_marker_appears_inside_q_string_then_it_is_string_content_not_a_heredoc() {
-    let sexp = parse_to_sexp("my $x = q{text <<EOF more};\n");
+fn when_heredoc_marker_appears_inside_q_string_then_it_is_string_content_not_a_heredoc()
+-> Result<(), String> {
+    let sexp = parse_to_sexp("my $x = q{text <<EOF more};\n")?;
     assert!(
         !sexp.contains("(heredoc"),
         "a marker inside q{{}} must not be parsed as a heredoc; got: {sexp}"
@@ -87,23 +90,30 @@ fn when_heredoc_marker_appears_inside_q_string_then_it_is_string_content_not_a_h
         sexp.contains("string_literal"),
         "expected the q string to be preserved as a string literal; got: {sexp}"
     );
+    Ok(())
 }
 
 #[test]
-fn when_given_lone_heredoc_operator_then_parser_returns_error_without_panicking() {
+fn when_given_lone_heredoc_operator_then_parser_returns_error_without_panicking()
+-> Result<(), String> {
     // `<<` with no marker is malformed; the parser must report an error
     // (Result::Err) rather than panic.
     let mut parser = PureRustPerlParser::new();
-    let _err = must_err(parser.parse("<<"));
+    if parser.parse("<<").is_ok() {
+        return Err("expected malformed heredoc to return an error".to_string());
+    }
+    Ok(())
 }
 
 #[test]
-fn when_given_heredoc_operator_with_empty_marker_then_parser_recovers_without_panicking() {
+fn when_given_heredoc_operator_with_empty_marker_then_parser_recovers_without_panicking()
+-> Result<(), String> {
     // `<<;` (operator immediately terminated) must parse without panicking and
     // without producing a heredoc node — exercising the recovery path.
-    let sexp = parse_to_sexp("my $x = <<;\n");
+    let sexp = parse_to_sexp("my $x = <<;\n")?;
     assert!(
         !sexp.contains("(heredoc"),
         "malformed `<<;` should not yield a heredoc node; got: {sexp}"
     );
+    Ok(())
 }

@@ -19,7 +19,7 @@ See [`crates/perl-lsp-rs/src/runtime/text_sync.rs`](../../crates/perl-lsp-rs/src
 The `perl-incremental-parsing` crate exists and contains substantial incremental parsing infrastructure:
 
 - **`IncrementalState`** — Rope-backed document state with lexer checkpoints and token cache reuse
-- **`IncrementalDocument`** — `Arc<Node>`-based document with subtree cache and priority-aware eviction
+- **`IncrementalDocument`** — experimental #7292 generation; retained edits fail closed to a full fresh parse and rebuild the current-generation cache (#13378). Not a production incremental engine.
 - **`IncrementalParserV2`** — Production-grade parser with AST subtree reuse metrics
 - **`DocumentParser`** — Enum wrapper (`Full` | `Incremental`) gated on `PERL_LSP_INCREMENTAL` env var
 
