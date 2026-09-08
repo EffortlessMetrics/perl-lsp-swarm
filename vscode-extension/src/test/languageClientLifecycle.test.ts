@@ -367,6 +367,57 @@ describe('LanguageClientLifecycle', () => {
     expect(harness.controller.snapshot.state).toBe('failed');
   });
 
+  test('allows healthy startup beyond the stop budget within the startup budget', async () => {
+    jest.useFakeTimers();
+    try {
+      const startup = new Deferred<void>();
+      const harness = makeHarness(undefined, { stopTimeoutMs: 10, startupTimeoutMs: 30 });
+      harness.hooks.createClient = () => {
+        const client = new FakeClient();
+        client.startGate = startup.promise;
+        harness.clients.push(client);
+        return client;
+      };
+
+      const start = harness.controller.start();
+      await flush();
+      await jest.advanceTimersByTimeAsync(20);
+      startup.resolve(undefined);
+
+      await expect(start).resolves.toBe(harness.clients[0]);
+      expect(harness.controller.snapshot.state).toBe('running');
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  test('late startup completion cannot publish running after its deadline', async () => {
+    jest.useFakeTimers();
+    try {
+      const startup = new Deferred<void>();
+      const harness = makeHarness(undefined, { stopTimeoutMs: 10, startupTimeoutMs: 20 });
+      harness.hooks.createClient = () => {
+        const client = new FakeClient();
+        client.startGate = startup.promise;
+        harness.clients.push(client);
+        return client;
+      };
+
+      const start = harness.controller.start();
+      await flush();
+      await jest.advanceTimersByTimeAsync(20);
+      await expect(start).rejects.toMatchObject({ reason: 'lifecycle' });
+      expect(harness.controller.snapshot.state).toBe('failed');
+
+      startup.resolve(undefined);
+      await flush();
+      expect(harness.controller.snapshot.state).toBe('failed');
+      expect(harness.states).not.toContain('running');
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   test('bounds a hung stop and still disposes the client', async () => {
     jest.useFakeTimers();
     try {
