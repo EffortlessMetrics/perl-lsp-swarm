@@ -2072,7 +2072,6 @@ dependencies = [
 name = "perl-parser-pest"
 version = "0.17.0"
 dependencies = [
- "perl-tdd-support",
  "pest",
  "pest_derive",
  "regex",

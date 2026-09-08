@@ -2790,23 +2790,23 @@ impl Default for PureRustPerlParser {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use perl_tdd_support::must;
 
     #[test]
-    fn test_basic_parsing() {
+    fn test_basic_parsing() -> Result<(), String> {
         let mut parser = PureRustPerlParser::new();
         let source = "$var";
-        let ast = must(parser.parse(source));
+        let ast = parser.parse(source).map_err(|error| format!("{error:?}"))?;
         let sexp = parser.to_sexp(&ast);
 
         assert!(sexp.contains("(scalar_variable $var)"), "expected scalar variable; got: {sexp}");
+        Ok(())
     }
 
     #[test]
-    fn test_variable_parsing() {
+    fn test_variable_parsing() -> Result<(), String> {
         let mut parser = PureRustPerlParser::new();
         let source = "$scalar @array %hash";
-        let ast = must(parser.parse(source));
+        let ast = parser.parse(source).map_err(|error| format!("{error:?}"))?;
         let sexp = parser.to_sexp(&ast);
 
         assert!(sexp.contains("$scalar"), "expected scalar variable; got: {sexp}");
@@ -2815,52 +2815,57 @@ mod tests {
             sexp.contains("(%)") && sexp.contains("(identifier hash)"),
             "expected hash token shape; got: {sexp}"
         );
+        Ok(())
     }
 
     #[test]
-    fn test_assignment_parsing() {
+    fn test_assignment_parsing() -> Result<(), String> {
         let mut parser = PureRustPerlParser::new();
         let source = "my $var = 42;";
-        let ast = must(parser.parse(source));
+        let ast = parser.parse(source).map_err(|error| format!("{error:?}"))?;
         let sexp = parser.to_sexp(&ast);
 
         assert!(sexp.contains("(variable_declaration"), "expected declaration; got: {sexp}");
         assert!(sexp.contains("(number 42)"), "expected numeric initializer; got: {sexp}");
+        Ok(())
     }
 
     #[test]
-    fn test_function_declaration() {
+    fn test_function_declaration() -> Result<(), String> {
         let mut parser = PureRustPerlParser::new();
         let source = "sub hello { print 'Hello'; }";
-        let ast = must(parser.parse(source));
+        let ast = parser.parse(source).map_err(|error| format!("{error:?}"))?;
         let sexp = parser.to_sexp(&ast);
 
         assert!(
             sexp.contains("(subroutine (identifier hello)"),
             "expected subroutine declaration; got: {sexp}"
         );
+        Ok(())
     }
 
     #[test]
-    fn test_if_statement() {
+    fn test_if_statement() -> Result<(), String> {
         let mut parser = PureRustPerlParser::new();
         let source = "if ($x > 0) { print 'positive'; }";
-        let ast = must(parser.parse(source));
+        let ast = parser.parse(source).map_err(|error| format!("{error:?}"))?;
         let sexp = parser.to_sexp(&ast);
 
         assert!(sexp.contains("(if_statement"), "expected if statement; got: {sexp}");
+        Ok(())
     }
 
     #[test]
-    fn test_regression_percent_string_in_if_assignment() {
+    fn test_regression_percent_string_in_if_assignment() -> Result<(), String> {
         let mut parser = PureRustPerlParser::new();
         let source = r#"if ($a > 0) { $a = "%"; }"#;
         let result = parser.parse(source);
         assert!(result.is_ok(), "Failed to parse regression input: {source}");
+        Ok(())
     }
 
     #[test]
-    fn test_regression_q_string_heredoc_marker_no_content_does_not_panic() {
+    fn test_regression_q_string_heredoc_marker_no_content_does_not_panic() -> Result<(), String> {
         // #3917: a literal "{__HEREDOC__" .. "__HEREDOC__}" span with no
         // room for content in between (start_idx + HEREDOC_PLACEHOLDER_OPEN.len()
         // > end_idx) used to panic on an inverted slice range instead of
@@ -2869,14 +2874,16 @@ mod tests {
         let source = "q{__HEREDOC__}";
         let result = parser.parse(source);
         assert!(result.is_ok(), "Failed to parse regression input: {source}");
+        Ok(())
     }
 
     #[test]
-    fn test_regression_qq_string_heredoc_marker_no_content_does_not_panic() {
+    fn test_regression_qq_string_heredoc_marker_no_content_does_not_panic() -> Result<(), String> {
         let mut parser = PureRustPerlParser::new();
         let source = "qq{__HEREDOC__}";
         let result = parser.parse(source);
         assert!(result.is_ok(), "Failed to parse regression input: {source}");
+        Ok(())
     }
 
     /// Depth-first search for the first `AstNode::String` value in a parse tree,
@@ -2894,7 +2901,8 @@ mod tests {
     }
 
     #[test]
-    fn test_regression_q_string_heredoc_marker_adjacent_boundary_extracts_empty_content() {
+    fn test_regression_q_string_heredoc_marker_adjacent_boundary_extracts_empty_content()
+    -> Result<(), String> {
         // #3917 follow-up: exercise the start_idx + HEREDOC_PLACEHOLDER_OPEN.len()
         // == end_idx boundary, where the opening "{__HEREDOC__" marker is
         // immediately followed by a fresh "__HEREDOC__}" match with nothing
@@ -2904,37 +2912,40 @@ mod tests {
         // literal text "q{__HEREDOC____HEREDOC__}".
         let mut parser = PureRustPerlParser::new();
         let source = "q{__HEREDOC____HEREDOC__}";
-        let ast = must(parser.parse(source));
+        let ast = parser.parse(source).map_err(|error| format!("{error:?}"))?;
         assert_eq!(
             find_first_string(&ast),
             Some(""),
             "expected the heredoc markers to extract to an empty string, not a raw-content fallback; got AST: {ast:?}"
         );
+        Ok(())
     }
 
     #[test]
-    fn test_array_assignment() {
+    fn test_array_assignment() -> Result<(), String> {
         let mut parser = PureRustPerlParser::new();
         let source = "@array = (1, 2, 3);";
-        let ast = must(parser.parse(source));
+        let ast = parser.parse(source).map_err(|error| format!("{error:?}"))?;
         let sexp = parser.to_sexp(&ast);
 
         assert!(
             sexp.contains("(assignment (array_variable @array)"),
             "expected array assignment; got: {sexp}"
         );
+        Ok(())
     }
 
     #[test]
-    fn test_hash_assignment() {
+    fn test_hash_assignment() -> Result<(), String> {
         let mut parser = PureRustPerlParser::new();
         let source = "%hash = (a => 1, b => 2);";
-        let ast = must(parser.parse(source));
+        let ast = parser.parse(source).map_err(|error| format!("{error:?}"))?;
         let sexp = parser.to_sexp(&ast);
 
         assert!(
             sexp.contains("(assignment (hash_variable %hash)"),
             "expected hash assignment; got: {sexp}"
         );
+        Ok(())
     }
 }

@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "owner_issue": 15153,
-  "reason": "The exact pinned vscode-jsonrpc 9.0.2 write-failure orphan rejection is corrected in the resolved bundle source, guarded by its source hash, on top of the existing language-client startup correction. Against current main, the measured combined transition changes out/extension.js from 1688966 to 1691400 bytes (+2434) and README.md from 25231 to 25629 bytes (+398); the other archive paths are unchanged. Bundled installed-health evidence remains separate from ordinary inventory.",
-  "base_baseline_file_sha256": "4e148581fe7caff83e13b7d0f617d58c7a957fbc1bb5f1c8b617b9fbd2bd83da",
-  "candidate_baseline_file_sha256": "03b0339c3c4bfcfd8f9dc9aa74e8d0f578231ea4beddfefba20a303050bf5035",
-  "base_inventory_sha256": "d44214d4914ba1bd8b35d300c9571675e8ae3a7ae526ea017d96c4dc6ff3ea92",
-  "candidate_inventory_sha256": "25bb3d522c7662251cbea5f1f42b8fa5ccbaeb7ce32bd918d7b1e45812b5dfd9"
+  "owner_issue": 14486,
+  "reason": "The VS Code lifecycle marks rejected startup calls as settled while keeping timed-out calls pending, so an explicitly observed late process exit can recover safely without weakening fail-closed cleanup.",
+  "base_baseline_file_sha256": "2e4b6ef935e824d6a3113b8001e00be0ecff3fb0fac90f74488fcaecc19e93be",
+  "candidate_baseline_file_sha256": "c7edce8e3d804b1970f9f1f92321aec3c16b09748d3f710bb2e06f3eeab9fcb6",
+  "base_inventory_sha256": "3c28638f05a67ce7cd20465a9ce753d8aeca0a21056ea1963ad2e41db1c8657d",
+  "candidate_inventory_sha256": "ce452d00118cc9ab81982eb787201487589db1c1ab1bd922b89ad0c4ce613ccc"
 }
