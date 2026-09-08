@@ -28,9 +28,35 @@ jest.mock('vscode-languageclient/node', () => ({
   State: { Stopped: 1, Running: 2, Starting: 3 },
   LanguageClient: jest.fn().mockImplementation(() => {
     let state = 1;
+    const serverProcess = {
+      pid: 4242,
+      exitCode: null as number | null,
+      signalCode: null as string | null,
+      exitListeners: [] as Array<(code: number, signal: string | null) => void>,
+      once(_event: 'exit', listener: (code: number, signal: string | null) => void) {
+        this.exitListeners.push(listener);
+        return this;
+      },
+      removeListener(_event: 'exit', listener: (code: number, signal: string | null) => void) {
+        const index = this.exitListeners.indexOf(listener);
+        if (index >= 0) {
+          this.exitListeners.splice(index, 1);
+        }
+        return this;
+      },
+      exit() {
+        this.exitCode = 0;
+        for (const listener of [...this.exitListeners]) {
+          listener(0, null);
+        }
+      },
+    };
     return {
       get state() {
         return state;
+      },
+      get serverProcess() {
+        return serverProcess;
       },
       initializeResult: { capabilities: {} },
       onDidChangeState: mockLanguageClientOnDidChangeState,
@@ -45,6 +71,7 @@ jest.mock('vscode-languageclient/node', () => ({
       async stop() {
         try {
           await mockLanguageClientStop();
+          serverProcess.exit();
         } finally {
           // Match the client's terminal state even when its handshake rejects.
           state = 1;
