@@ -114,6 +114,9 @@ function validateTestExplorerReceipt({
     };
   }
   const violations = [];
+  if (receipt?.schema_version !== 'test_explorer_journey.v1') {
+    violations.push('Test Explorer child receipt has an unexpected schema');
+  }
   if (receipt?.outcome !== 'completed') violations.push('Test Explorer child did not complete');
   if (receipt?.source_revision !== expectedRevision) {
     violations.push('Test Explorer child source revision is not this candidate');

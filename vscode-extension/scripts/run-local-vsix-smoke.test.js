@@ -94,6 +94,7 @@ void test('does not turn missing or failed Test Explorer children into a pass', 
 void test('requires a fresh candidate-bound Test Explorer completion receipt', () => {
   const receiptFile = path.join(os.tmpdir(), `perl-lsp-test-explorer-${process.pid}.json`);
   const valid = {
+    schema_version: 'test_explorer_journey.v1',
     outcome: 'completed',
     source_revision: 'a'.repeat(40),
     server_source_revision: 'a'.repeat(40),
