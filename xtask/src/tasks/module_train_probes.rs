@@ -1,10 +1,10 @@
 //! Semantic current-tree implementation probes for the module train (#11626).
 //!
-//! This registry lives in its own module on purpose. A selector matches plain
-//! text in a tree file, so if the anchor string literals sat in the same file a
-//! selector targets, that selector could be satisfied by *its own declaration*
-//! rather than by real code — a vacuous probe that would survive deleting the
-//! implementation it claims to verify.
+//! This registry lives in its own module on purpose. Selectors are parsed
+//! syntax anchors in a tree file, so if the anchor string literals sat in the
+//! same file a selector targets, that selector could be satisfied by *its own
+//! declaration* rather than by real code — a vacuous probe that would survive
+//! deleting the implementation it claims to verify.
 //!
 //! Keeping `PROBED_NODES` here, and never targeting this file from a selector,
 //! makes that impossible by construction. The guard test
@@ -164,7 +164,7 @@ struct DispatchVisitor<'a> {
 
 impl<'ast> Visit<'ast> for DispatchVisitor<'_> {
     fn visit_item_fn(&mut self, node: &'ast syn::ItemFn) {
-        if has_test_cfg(&node.attrs) {
+        if has_test_cfg(&node.attrs) || node.sig.ident != "run_cli" {
             return;
         }
         syn::visit::visit_item_fn(self, node);
