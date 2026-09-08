@@ -9,7 +9,7 @@ use anyhow::{Context, Result, anyhow, bail, ensure};
 use perl_lsp_ux_tests::{binary_available, resolve_binary};
 use serde_json::{Value, json};
 use std::collections::VecDeque;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, ExitStatus, Stdio};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
@@ -356,5 +356,147 @@ fn stdio_lifecycle_exits_zero_after_shutdown() -> Result<()> {
         "server exited unsuccessfully after shutdown -> exit: {status}\n{stderr_tail}"
     );
 
+    Ok(())
+}
+
+const NAVIGATION_MODULE_V1: &str = "package Target;\nsub old_target { 1 }\n1;\n";
+const NAVIGATION_MODULE_V2: &str = "package Target;\n\nsub old_target { 1 }\n1;\n";
+const NAVIGATION_CLIENT_V1: &str = "use lib 'lib';\nuse Target;\nTarget::old_target();\n";
+
+fn file_uri(path: &Path) -> Result<String> {
+    Url::from_file_path(path)
+        .map(|uri| uri.to_string())
+        .map_err(|()| anyhow!("failed to convert {} to a file URI", path.display()))
+}
+
+fn exact_definition(response: &Value, expected_uri: &str, expected_line: u64) -> Result<()> {
+    ensure!(response.get("error").is_none_or(Value::is_null), "definition failed: {response:#}");
+    let result = response
+        .get("result")
+        .and_then(Value::as_array)
+        .context("definition response result was not an array")?;
+    ensure!(result.len() == 1, "expected one definition, got {result:#?}");
+    let location = result.first().context("definition result was empty")?;
+    let uri = location
+        .pointer("/uri")
+        .and_then(Value::as_str)
+        .context("definition result omitted uri")?;
+    let line = location
+        .pointer("/range/start/line")
+        .and_then(Value::as_u64)
+        .context("definition result omitted range start line")?;
+    let start_character = location
+        .pointer("/range/start/character")
+        .and_then(Value::as_u64)
+        .context("definition result omitted range start character")?;
+    let end_character = location
+        .pointer("/range/end/character")
+        .and_then(Value::as_u64)
+        .context("definition result omitted range end character")?;
+    let end_line = location
+        .pointer("/range/end/line")
+        .and_then(Value::as_u64)
+        .context("definition result omitted range end line")?;
+    ensure!(uri == expected_uri, "definition URI drifted: expected {expected_uri}, got {uri}");
+    ensure!(line == expected_line, "definition line drifted: expected {expected_line}, got {line}");
+    ensure!(
+        end_line == expected_line,
+        "definition end line drifted: expected {expected_line}, got {end_line}"
+    );
+    ensure!(
+        start_character == 0,
+        "definition start column drifted: expected 0, got {start_character} ({location:#})"
+    );
+    ensure!(
+        end_character == 20,
+        "definition end column drifted: expected 20, got {end_character} ({location:#})"
+    );
+    Ok(())
+}
+
+#[test]
+fn stdio_navigation_matches_exact_request_and_current_edit() -> Result<()> {
+    ensure!(
+        binary_available(),
+        "perllsp binary is not available; build it before running exact-process proof"
+    );
+    let binary = resolve_binary().context("UX binary became unavailable after preflight")?;
+    let workspace = TempDir::new().context("failed to create navigation workspace")?;
+    let lib = workspace.path().join("lib");
+    std::fs::create_dir_all(&lib).context("failed to create navigation lib directory")?;
+    let module = lib.join("Target.pm");
+    let client = workspace.path().join("main.pl");
+    std::fs::write(&module, NAVIGATION_MODULE_V1).context("failed to write module fixture")?;
+    std::fs::write(&client, NAVIGATION_CLIENT_V1).context("failed to write client fixture")?;
+    let root_uri = file_uri(workspace.path())?;
+    let module_uri = file_uri(&module)?;
+    let client_uri = file_uri(&client)?;
+    let mut server = LifecycleProcess::spawn(&binary, workspace.path())?;
+
+    server.send(&json!({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": { "processId": null, "rootUri": root_uri, "workspaceFolders": null, "capabilities": {} }
+    }))?;
+    let initialize = server.response(1, INITIALIZE_TIMEOUT)?;
+    ensure!(
+        initialize.get("error").is_none_or(Value::is_null),
+        "initialize failed: {initialize:#}"
+    );
+    server.send(&json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }))?;
+    server.send(&json!({
+        "jsonrpc": "2.0", "method": "textDocument/didOpen", "params": {
+            "textDocument": { "uri": module_uri, "languageId": "perl", "version": 1, "text": NAVIGATION_MODULE_V1 }
+        }
+    }))?;
+    server.send(&json!({
+        "jsonrpc": "2.0", "method": "textDocument/didOpen", "params": {
+            "textDocument": { "uri": client_uri, "languageId": "perl", "version": 1, "text": NAVIGATION_CLIENT_V1 }
+        }
+    }))?;
+    server.send(&json!({
+        "jsonrpc": "2.0", "id": 2, "method": "textDocument/definition", "params": {
+            "textDocument": { "uri": client_uri }, "position": { "line": 2, "character": 10 }
+        }
+    }))?;
+    let initial = server.response(2, REQUEST_TIMEOUT)?;
+    exact_definition(&initial, &module_uri, 1)?;
+
+    server.send(&json!({
+        "jsonrpc": "2.0", "method": "textDocument/didChange", "params": {
+            "textDocument": { "uri": module_uri, "version": 2 },
+            "contentChanges": [{ "text": NAVIGATION_MODULE_V2 }]
+        }
+    }))?;
+    let expected_current_line = 2;
+    let mut current = None;
+    for attempt in 0_u64..8 {
+        let request_id = 3 + attempt;
+        server.send(&json!({
+            "jsonrpc": "2.0", "id": request_id, "method": "textDocument/definition", "params": {
+                "textDocument": { "uri": client_uri }, "position": { "line": 2, "character": 10 }
+            }
+        }))?;
+        let response = server.response(request_id, REQUEST_TIMEOUT)?;
+        if response.pointer("/error/code").and_then(Value::as_i64) == Some(-32800)
+            || response.pointer("/result").is_some_and(Value::is_array)
+                && response["result"].as_array().is_some_and(Vec::is_empty)
+        {
+            thread::sleep(Duration::from_millis(100));
+            continue;
+        }
+        exact_definition(&response, &module_uri, expected_current_line)?;
+        current = Some(response);
+        break;
+    }
+    ensure!(current.is_some(), "edited navigation never produced the expected current result");
+
+    server.send(&json!({ "jsonrpc": "2.0", "id": 100, "method": "shutdown", "params": null }))?;
+    let shutdown = server.response(100, REQUEST_TIMEOUT)?;
+    ensure!(shutdown.get("error").is_none_or(Value::is_null), "shutdown failed: {shutdown:#}");
+    server.send(&json!({ "jsonrpc": "2.0", "method": "exit", "params": null }))?;
+    let status = server.wait_for_exit(EXIT_TIMEOUT)?;
+    server.close_stdin();
+    server.join_readers(READER_TIMEOUT)?;
+    ensure!(status.success(), "navigation server exited unsuccessfully: {status}");
     Ok(())
 }
