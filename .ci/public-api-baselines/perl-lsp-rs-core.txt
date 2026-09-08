@@ -59,7 +59,9 @@ pub perl_lsp_rs_core::config::DeclaredDependencySource::DistIni
 pub perl_lsp_rs_core::config::DeclaredDependencySource::MakefilePl
 pub perl_lsp_rs_core::config::DeclaredDependencySource::MetaJson
 pub perl_lsp_rs_core::config::DeclaredDependencySource::MetaYml
+pub const perl_lsp_rs_core::config::DeclaredDependencySource::ALL: [Self; 6]
 pub fn perl_lsp_rs_core::config::DeclaredDependencySource::display_name(self) -> &'static str
+pub fn perl_lsp_rs_core::config::DeclaredDependencySource::file_name(self) -> &'static str
 pub fn perl_lsp_rs_core::config::DeclaredDependencySource::clone(&self) -> perl_lsp_rs_core::config::DeclaredDependencySource
 pub fn perl_lsp_rs_core::config::DeclaredDependencySource::eq(&self, other: &perl_lsp_rs_core::config::DeclaredDependencySource) -> bool
 pub fn perl_lsp_rs_core::config::DeclaredDependencySource::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -81,6 +83,13 @@ pub fn perl_lsp_rs_core::config::ExternalIncludePathAuthority::clone(&self) -> p
 pub fn perl_lsp_rs_core::config::ExternalIncludePathAuthority::eq(&self, other: &perl_lsp_rs_core::config::ExternalIncludePathAuthority) -> bool
 pub fn perl_lsp_rs_core::config::ExternalIncludePathAuthority::default() -> Self
 pub fn perl_lsp_rs_core::config::ExternalIncludePathAuthority::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_lsp_rs_core::config::MetadataSourceRead
+pub perl_lsp_rs_core::config::MetadataSourceRead::Absent
+pub perl_lsp_rs_core::config::MetadataSourceRead::Text(alloc::string::String)
+pub perl_lsp_rs_core::config::MetadataSourceRead::Unreadable
+pub fn perl_lsp_rs_core::config::MetadataSourceRead::clone(&self) -> perl_lsp_rs_core::config::MetadataSourceRead
+pub fn perl_lsp_rs_core::config::MetadataSourceRead::eq(&self, other: &perl_lsp_rs_core::config::MetadataSourceRead) -> bool
+pub fn perl_lsp_rs_core::config::MetadataSourceRead::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub enum perl_lsp_rs_core::config::NativeBuildHintParseReason
 pub perl_lsp_rs_core::config::NativeBuildHintParseReason::MalformedArrayLiteral
 pub perl_lsp_rs_core::config::NativeBuildHintParseReason::UnsupportedValueForm
@@ -104,6 +113,13 @@ pub fn perl_lsp_rs_core::config::Perl5LibPrecedence::default() -> perl_lsp_rs_co
 pub fn perl_lsp_rs_core::config::Perl5LibPrecedence::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_lsp_rs_core::config::Perl5LibPrecedence::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 pub fn perl_lsp_rs_core::config::Perl5LibPrecedence::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub enum perl_lsp_rs_core::config::ProjectMetadataKind
+pub perl_lsp_rs_core::config::ProjectMetadataKind::Both
+pub perl_lsp_rs_core::config::ProjectMetadataKind::DeclaredDependencies
+pub perl_lsp_rs_core::config::ProjectMetadataKind::EnvironmentRoots
+pub fn perl_lsp_rs_core::config::ProjectMetadataKind::clone(&self) -> perl_lsp_rs_core::config::ProjectMetadataKind
+pub fn perl_lsp_rs_core::config::ProjectMetadataKind::eq(&self, other: &perl_lsp_rs_core::config::ProjectMetadataKind) -> bool
+pub fn perl_lsp_rs_core::config::ProjectMetadataKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub enum perl_lsp_rs_core::config::RejectedClientIncludePathReason
 pub perl_lsp_rs_core::config::RejectedClientIncludePathReason::Absolute
 pub perl_lsp_rs_core::config::RejectedClientIncludePathReason::EscapesWorkspace(alloc::string::String)
@@ -413,6 +429,7 @@ pub perl_lsp_rs_core::config::WorkspaceConfig::perl_path: core::option::Option<a
 pub perl_lsp_rs_core::config::WorkspaceConfig::resolution_timeout_ms: u64
 pub perl_lsp_rs_core::config::WorkspaceConfig::use_perl5lib: bool
 pub perl_lsp_rs_core::config::WorkspaceConfig::use_system_inc: bool
+pub fn perl_lsp_rs_core::config::WorkspaceConfig::apply_declared_dependency_reads(&mut self, reads: &[(perl_lsp_rs_core::config::DeclaredDependencySource, perl_lsp_rs_core::config::MetadataSourceRead)])
 pub fn perl_lsp_rs_core::config::WorkspaceConfig::effective_include_paths(&self, perl5lib_paths: &[alloc::string::String]) -> alloc::vec::Vec<alloc::string::String>
 pub fn perl_lsp_rs_core::config::WorkspaceConfig::env_perl_lib_paths() -> alloc::vec::Vec<alloc::string::String>
 pub fn perl_lsp_rs_core::config::WorkspaceConfig::get_system_inc(&mut self) -> &[std::path::PathBuf]
@@ -420,6 +437,7 @@ pub fn perl_lsp_rs_core::config::WorkspaceConfig::get_system_inc_probe_outcome(&
 pub fn perl_lsp_rs_core::config::WorkspaceConfig::parse_perl5lib(value: &str) -> alloc::vec::Vec<alloc::string::String>
 pub fn perl_lsp_rs_core::config::WorkspaceConfig::refresh_declared_dependencies(&mut self, workspace_root: &std::path::Path)
 pub fn perl_lsp_rs_core::config::WorkspaceConfig::refresh_dependency_include_paths(&mut self, workspace_root: &std::path::Path)
+pub fn perl_lsp_rs_core::config::WorkspaceConfig::refresh_dependency_include_paths_with_declaration(&mut self, workspace_root: &std::path::Path, declaration_present: core::option::Option<bool>)
 pub fn perl_lsp_rs_core::config::WorkspaceConfig::refresh_native_build_hints(&mut self, workspace_root: &std::path::Path)
 pub fn perl_lsp_rs_core::config::WorkspaceConfig::update_from_value(&mut self, settings: &serde_json::value::Value) -> alloc::vec::Vec<perl_lsp_rs_core::config::RejectedClientIncludePath>
 pub fn perl_lsp_rs_core::config::WorkspaceConfig::update_from_value_with_context(&mut self, settings: &serde_json::value::Value, context: perl_lsp_rs_core::config::WorkspaceConfigUpdateContext<'_>) -> alloc::vec::Vec<perl_lsp_rs_core::config::RejectedClientIncludePath>
@@ -432,8 +450,11 @@ pub perl_lsp_rs_core::config::WorkspaceConfigUpdateContext::workspace_root: core
 pub fn perl_lsp_rs_core::config::WorkspaceConfigUpdateContext<'a>::clone(&self) -> perl_lsp_rs_core::config::WorkspaceConfigUpdateContext<'a>
 pub fn perl_lsp_rs_core::config::WorkspaceConfigUpdateContext<'a>::default() -> perl_lsp_rs_core::config::WorkspaceConfigUpdateContext<'a>
 pub fn perl_lsp_rs_core::config::WorkspaceConfigUpdateContext<'a>::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_lsp_rs_core::config::classify_project_metadata_path(workspace_root: &std::path::Path, path: &std::path::Path) -> core::option::Option<perl_lsp_rs_core::config::ProjectMetadataKind>
+pub fn perl_lsp_rs_core::config::declared_dependencies_from_reads(reads: &[(perl_lsp_rs_core::config::DeclaredDependencySource, perl_lsp_rs_core::config::MetadataSourceRead)], previous: &[perl_lsp_rs_core::config::DeclaredDependency]) -> alloc::vec::Vec<perl_lsp_rs_core::config::DeclaredDependency>
 pub fn perl_lsp_rs_core::config::detect_declared_dependencies(workspace_root: &std::path::Path) -> alloc::vec::Vec<perl_lsp_rs_core::config::DeclaredDependency>
 pub fn perl_lsp_rs_core::config::detect_dependency_include_paths(workspace_root: &std::path::Path) -> alloc::vec::Vec<alloc::string::String>
+pub fn perl_lsp_rs_core::config::detect_dependency_include_paths_with_declaration(workspace_root: &std::path::Path, declaration_present: core::option::Option<bool>) -> alloc::vec::Vec<alloc::string::String>
 pub fn perl_lsp_rs_core::config::detect_native_build_hints(workspace_root: &std::path::Path) -> perl_lsp_rs_core::config::NativeBuildHints
 pub fn perl_lsp_rs_core::config::discover_perltidy_profile(workspace_root: &std::path::Path) -> core::option::Option<alloc::string::String>
 pub fn perl_lsp_rs_core::config::extract_build_pl_requirements(source: &str) -> alloc::vec::Vec<perl_lsp_rs_core::config::DeclaredDependency>
@@ -445,6 +466,7 @@ pub fn perl_lsp_rs_core::config::extract_meta_yml_requirements(source: &str) -> 
 pub fn perl_lsp_rs_core::config::load_project_config(workspace_root: &std::path::Path) -> core::result::Result<core::option::Option<perl_lsp_rs_core::config::ProjectConfig>, alloc::string::String>
 pub fn perl_lsp_rs_core::config::merge_project_configs_for_server(folders: &[(&str, &perl_lsp_rs_core::config::ProjectConfig)]) -> (perl_lsp_rs_core::config::ProjectConfig, alloc::vec::Vec<perl_lsp_rs_core::config::MultiRootConfigConflict>)
 pub fn perl_lsp_rs_core::config::normalize_formatter_mode_value(value: &str) -> alloc::string::String
+pub fn perl_lsp_rs_core::config::project_metadata_relative_paths() -> impl core::iter::traits::iterator::Iterator<Item = &'static str>
 pub fn perl_lsp_rs_core::config::recompute_ai_completion_effective(ai: &mut perl_lsp_rs_core::config::AiCompletionConfig)
 pub mod perl_lsp_rs_core::critic_parser
 pub struct perl_lsp_rs_core::critic_parser::ParsedCriticLine
