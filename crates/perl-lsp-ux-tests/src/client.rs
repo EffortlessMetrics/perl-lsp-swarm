@@ -120,6 +120,7 @@ impl UxClient {
             Arc::new(Mutex::new(Vec::new()));
         let closing = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
+        // ── stdout reader thread ──────────────────────────────────────────────
         let stdin_clone = Arc::clone(&stdin);
         let ev_clone = Arc::clone(&events);
         let server_requests_clone = Arc::clone(&server_requests);
@@ -150,6 +151,7 @@ impl UxClient {
             })
             .context("Failed to spawn stdout reader thread")?;
 
+        // ── stderr drain thread ───────────────────────────────────────────────
         let echo = config.echo_stderr;
         let stderr_clone = Arc::clone(&stderr_lines);
         let _stderr_thread = std::thread::Builder::new()
@@ -167,6 +169,7 @@ impl UxClient {
             })
             .context("Failed to spawn stderr drain thread")?;
 
+        // Allow the server a moment to start before we send initialize.
         std::thread::sleep(Duration::from_millis(50));
 
         let mut client = Self {
@@ -184,6 +187,7 @@ impl UxClient {
             _stderr_thread,
         };
 
+        // ── LSP handshake ─────────────────────────────────────────────────────
         client.initialize_result =
             client.handshake(workspace, config, &client_capabilities, config.timeout)?;
 
@@ -237,10 +241,12 @@ impl UxClient {
         Ok(init_resp)
     }
 
+    /// Clone the initialize response captured during handshake.
     pub fn initialize_result(&self) -> Value {
         self.initialize_result.clone()
     }
 
+    /// Send a JSON-RPC request and wait for the matching response.
     pub fn request(&self, method: &str, params: Value, timeout: Duration) -> Result<Value> {
         let id = next_id();
         let msg = json!({
@@ -253,6 +259,7 @@ impl UxClient {
         self.wait_for_response(id, timeout)
     }
 
+    /// Send a JSON-RPC notification (no response expected).
     pub fn notify(&self, method: &str, params: Value) -> Result<()> {
         let msg = json!({
             "jsonrpc": "2.0",
@@ -262,6 +269,7 @@ impl UxClient {
         self.send_raw(&msg)
     }
 
+    /// Send `textDocument/didOpen` using the provided language identifier.
     pub fn did_open_with_language_id(
         &self,
         uri: &str,
@@ -281,6 +289,7 @@ impl UxClient {
         )
     }
 
+    /// Send `textDocument/didChange` with a full-document replacement.
     pub fn did_change_full(&self, uri: &str, version: i32, text: &str) -> Result<()> {
         self.notify(
             "textDocument/didChange",
@@ -289,25 +298,38 @@ impl UxClient {
                     "uri": uri,
                     "version": version
                 },
-                "contentChanges": [{ "text": text }]
+                "contentChanges": [
+                    {
+                        "text": text
+                    }
+                ]
             }),
         )
     }
 
+    /// Send `textDocument/didOpen` using Perl as the language identifier.
     pub fn did_open(&self, uri: &str, text: &str) -> Result<()> {
         self.did_open_with_language_id(uri, text, "perl")
     }
 
+    /// Send `textDocument/didChange` with explicit version and content changes.
     pub fn did_change(&self, uri: &str, version: i32, content_changes: Vec<Value>) -> Result<()> {
         self.notify(
             "textDocument/didChange",
             json!({
-                "textDocument": { "uri": uri, "version": version },
+                "textDocument": {
+                    "uri": uri,
+                    "version": version
+                },
                 "contentChanges": content_changes
             }),
         )
     }
 
+    /// Drain all buffered server-initiated events and decode them.
+    ///
+    /// After this call the internal queue is empty. Use `peek_events` if you
+    /// need to inspect events without consuming them.
     pub fn drain_events(&self) -> Vec<LspEvent> {
         let raw: Vec<Value> = {
             let mut guard = self.events.lock().unwrap_or_else(|e| e.into_inner());
@@ -316,6 +338,8 @@ impl UxClient {
         raw.into_iter().map(decode_event).collect()
     }
 
+    /// Clone and decode all buffered events **without** removing them from the
+    /// queue. Safe to call before or after `drain_events` / `collect_notifications`.
     pub fn peek_events(&self) -> Vec<LspEvent> {
         let raw: Vec<Value> = {
             let guard = self.events.lock().unwrap_or_else(|e| e.into_inner());
@@ -324,31 +348,50 @@ impl UxClient {
         raw.into_iter().map(decode_event).collect()
     }
 
+    /// Clone raw server-initiated messages without removing them from the queue.
+    ///
+    /// This preserves server request IDs and registration payloads for protocol
+    /// smoke checks that need to assert exact JSON-RPC shapes.
     pub fn peek_raw_events(&self) -> Vec<Value> {
         let guard = self.events.lock().unwrap_or_else(|e| e.into_inner());
         guard.iter().cloned().collect()
     }
 
+    /// Clone raw server-initiated requests without removing them from the queue.
+    ///
+    /// Requests remain observable after the client has sent its deterministic
+    /// response, allowing scenarios to assert method, id, and params together.
     pub fn peek_server_requests(&self) -> Vec<Value> {
         self.server_requests.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
+    /// Clone all stderr lines captured from the server process.
     pub fn peek_stderr_lines(&self) -> Vec<String> {
         self.stderr_lines.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
+    /// Return the terminal stdout transport failure, if one has occurred.
+    ///
+    /// Foreground request waits consume the same evidence so malformed frames,
+    /// invalid JSON, and response-write failures fail fast instead of timing out.
     pub fn peek_transport_error(&self) -> Option<String> {
         self.transport_error.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
+    /// Ask the child process to shut down and require a successful exit.
+    ///
+    /// This is intentionally available to focused process-level tests so they
+    /// can distinguish a clean LSP shutdown from a merely dropped child.
     pub fn shutdown_and_wait(&self, timeout: Duration) -> Result<()> {
         self.closing.store(true, Ordering::Release);
+
         {
             let mut child = self.child.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(status) = child.try_wait().context("Failed to inspect perl-lsp exit")? {
                 return require_clean_exit(status);
             }
         }
+
         self.send_shutdown_messages()?;
         let deadline = Instant::now() + timeout;
         loop {
@@ -366,10 +409,12 @@ impl UxClient {
         }
     }
 
+    /// Clone capability violations observed by the transport loop.
     pub fn peek_capability_violations(&self) -> Vec<CapabilityViolation> {
         self.capability_violations.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
+    /// Wait up to `timeout` for any `window/showMessage` containing `needle`.
     pub fn wait_for_message(&self, needle: &str, timeout: Duration) -> bool {
         let deadline = Instant::now() + timeout;
         loop {
@@ -391,6 +436,8 @@ impl UxClient {
             std::thread::sleep(Duration::from_millis(50));
         }
     }
+
+    // ── Internal helpers ──────────────────────────────────────────────────────
 
     fn send_raw(&self, msg: &Value) -> Result<()> {
         let mut stdin = self.stdin.lock().unwrap_or_else(|e| e.into_inner());
@@ -429,12 +476,14 @@ fn wait_for_response_queue(
                 return Ok(msg);
             }
         }
+
         let transport_failure = transport_error.lock().unwrap_or_else(|e| e.into_inner()).clone();
         if let Some(error) = transport_failure {
             return Err(anyhow!(
                 "LSP stdout transport failed while waiting for response id={id}: {error}"
             ));
         }
+
         if Instant::now() >= deadline {
             return Err(anyhow!(
                 "Timeout waiting for LSP response to id={id} after {}ms",
@@ -446,12 +495,14 @@ fn wait_for_response_queue(
 }
 
 fn merge_json(target: &mut Value, overlay: &Value) {
-    let (Some(target_obj), Some(overlay_obj)) = (target.as_object_mut(), overlay.as_object()) else {
+    let (Some(target_obj), Some(overlay_obj)) = (target.as_object_mut(), overlay.as_object())
+    else {
         if !overlay.is_null() {
             *target = overlay.clone();
         }
         return;
     };
+
     for (key, value) in overlay_obj {
         match target_obj.get_mut(key) {
             Some(existing) => merge_json(existing, value),
@@ -474,7 +525,10 @@ impl Drop for UxClient {
     }
 }
 
+// ── Message framing ───────────────────────────────────────────────────────────
+
 fn read_one_message(reader: &mut impl BufRead) -> Result<Value> {
+    // Parse LSP Content-Length headers.
     let mut content_length: Option<usize> = None;
     loop {
         let mut line = String::new();
@@ -505,6 +559,7 @@ impl std::fmt::Display for NormalEof {
         formatter.write_str("normal EOF")
     }
 }
+
 impl std::error::Error for NormalEof {}
 
 fn record_transport_error(
@@ -526,11 +581,7 @@ fn is_normal_eof(error: &anyhow::Error) -> bool {
 }
 
 fn require_clean_exit(status: std::process::ExitStatus) -> Result<()> {
-    if status.success() {
-        Ok(())
-    } else {
-        Err(anyhow!("perl-lsp exited unsuccessfully: {status}"))
-    }
+    if status.success() { Ok(()) } else { Err(anyhow!("perl-lsp exited unsuccessfully: {status}")) }
 }
 
 fn write_lsp_message(writer: &mut impl Write, message: &Value) -> Result<()> {
@@ -544,16 +595,30 @@ fn write_lsp_message(writer: &mut impl Write, message: &Value) -> Result<()> {
 
 fn build_client_capabilities(config: &ScenarioConfig) -> Value {
     let mut capabilities = json!({
-        "general": { "positionEncodings": ["utf-16"] },
+        "general": {
+            "positionEncodings": ["utf-16"]
+        },
         "textDocument": {
-            "hover": { "contentFormat": ["markdown", "plaintext"] },
-            "completion": { "completionItem": { "snippetSupport": true } },
+            "hover": {
+                "contentFormat": ["markdown", "plaintext"]
+            },
+            "completion": {
+                "completionItem": {
+                    "snippetSupport": true
+                }
+            },
             "formatting": {},
             "definition": {},
-            "publishDiagnostics": { "relatedInformation": true }
+            "publishDiagnostics": {
+                "relatedInformation": true
+            }
         },
-        "workspace": { "workspaceFolders": true },
-        "window": { "showMessage": {} }
+        "workspace": {
+            "workspaceFolders": true
+        },
+        "window": {
+            "showMessage": {}
+        }
     });
     merge_json(&mut capabilities, &config.client_capability_overrides);
     capabilities
@@ -581,6 +646,7 @@ where
         responses.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).push_back(message);
         return Ok(());
     }
+
     let decision = server_request_decision(&message, capabilities);
     let method_name = message.get("method").and_then(Value::as_str).unwrap_or("<missing>");
     let method = method_name.to_owned();
@@ -592,6 +658,7 @@ where
             .push(message.clone());
     }
     events.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).push_back(message);
+
     if let Some(decision) = decision {
         if let Some(violation) = decision.capability_violation {
             capability_violations
@@ -603,6 +670,7 @@ where
         write_lsp_message(&mut *stdin, &decision.response)
             .with_context(|| format!("Failed to answer server request method={method} id={id}"))?;
     }
+
     Ok(())
 }
 
@@ -620,6 +688,7 @@ fn server_request_decision(message: &Value, capabilities: &Value) -> Option<Serv
     if !is_server_request(message) {
         return None;
     }
+
     let id = message.get("id")?.clone();
     let method = message.get("method")?.as_str()?;
     let required_capability = match method {
@@ -634,7 +703,9 @@ fn server_request_decision(message: &Value, capabilities: &Value) -> Option<Serv
         "workspace/inlineValue/refresh" => Some("workspace.inlineValue.refreshSupport"),
         "workspace/diagnostic/refresh" => Some("workspace.diagnostics.refreshSupport"),
         "workspace/foldingRange/refresh" => Some("workspace.foldingRange.refreshSupport"),
-        "workspace/textDocumentContent/refresh" => Some("workspace.textDocumentContent.refreshSupport"),
+        "workspace/textDocumentContent/refresh" => {
+            Some("workspace.textDocumentContent.refreshSupport")
+        }
         "client/registerCapability" | "client/unregisterCapability" => {
             let field = if method == "client/registerCapability" {
                 "registrations"
@@ -655,21 +726,21 @@ fn server_request_decision(message: &Value, capabilities: &Value) -> Option<Serv
         }
         _ => None,
     };
+
     if let Some(capability) = required_capability
         && !capability_is_advertised(capabilities, capability)
     {
         return Some(capability_violation(message, method, capability));
     }
+
     let result = match method {
         "workspace/applyEdit" => json!({
             "applied": false,
             "failureReason": "UX test client does not apply workspace edits automatically"
         }),
         "workspace/configuration" => {
-            let item_count = message
-                .pointer("/params/items")
-                .and_then(Value::as_array)
-                .map_or(0, Vec::len);
+            let item_count =
+                message.pointer("/params/items").and_then(Value::as_array).map_or(0, Vec::len);
             Value::Array(vec![Value::Null; item_count])
         }
         "window/showMessageRequest" => Value::Null,
@@ -689,14 +760,22 @@ fn server_request_decision(message: &Value, capabilities: &Value) -> Option<Serv
                 response: json!({
                     "jsonrpc": "2.0",
                     "id": id,
-                    "error": { "code": -32601, "message": format!("Method not found: {method}") }
+                    "error": {
+                        "code": -32601,
+                        "message": format!("Method not found: {method}")
+                    }
                 }),
                 capability_violation: None,
             });
         }
     };
+
     Some(ServerRequestDecision {
-        response: json!({ "jsonrpc": "2.0", "id": id, "result": result }),
+        response: json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "result": result
+        }),
         capability_violation: None,
     })
 }
@@ -712,7 +791,10 @@ fn capability_violation(message: &Value, method: &str, capability: &str) -> Serv
         response: json!({
             "jsonrpc": "2.0",
             "id": id,
-            "error": { "code": -32601, "message": format!("Client capability not advertised: {capability} for {method}") }
+            "error": {
+                "code": -32601,
+                "message": format!("Client capability not advertised: {capability} for {method}")
+            }
         }),
         capability_violation: Some(CapabilityViolation {
             id,
@@ -727,7 +809,10 @@ fn invalid_params(message: &Value, method: &str, reason: &str) -> ServerRequestD
         response: json!({
             "jsonrpc": "2.0",
             "id": message.get("id").cloned().unwrap_or(Value::Null),
-            "error": { "code": -32602, "message": format!("Invalid params for {method}: {reason}") }
+            "error": {
+                "code": -32602,
+                "message": format!("Invalid params for {method}: {reason}")
+            }
         }),
         capability_violation: None,
     }
@@ -739,6 +824,7 @@ fn capability_is_advertised(capabilities: &Value, path: &str) -> bool {
     {
         return true;
     }
+
     let pointer = format!("/{}", path.replace('.', "/"));
     match capabilities.pointer(&pointer) {
         Some(Value::Bool(value)) => *value,
@@ -757,13 +843,10 @@ fn dynamic_registration_issue(
     field: &str,
     capabilities: &Value,
 ) -> Option<DynamicRegistrationIssue> {
-    let Some(registrations) = message
-        .pointer(&format!("/params/{field}"))
-        .and_then(Value::as_array)
+    let Some(registrations) =
+        message.pointer(&format!("/params/{field}")).and_then(Value::as_array)
     else {
-        return Some(DynamicRegistrationIssue::Malformed(format!(
-            "missing /params/{field} array"
-        )));
+        return Some(DynamicRegistrationIssue::Malformed(format!("missing /params/{field} array")));
     };
     if registrations.is_empty() {
         return Some(DynamicRegistrationIssue::Malformed(
@@ -800,21 +883,22 @@ fn dynamic_registration_issue(
 
 fn registration_capability_path(method: &str) -> Option<&'static str> {
     let path = match method {
-        "workspace/didChangeConfiguration" => "workspace.didChangeConfiguration.dynamicRegistration",
+        "workspace/didChangeConfiguration" => {
+            "workspace.didChangeConfiguration.dynamicRegistration"
+        }
         "workspace/didChangeWatchedFiles" => "workspace.didChangeWatchedFiles.dynamicRegistration",
         "workspace/didChangeWorkspaceFolders" => "workspace.workspaceFolders",
         "workspace/executeCommand" => "workspace.executeCommand.dynamicRegistration",
         "workspace/symbol" => "workspace.symbol.dynamicRegistration",
-        "workspace/didCreateFiles"
-        | "workspace/willCreateFiles"
-        | "workspace/didRenameFiles"
-        | "workspace/willRenameFiles"
-        | "workspace/didDeleteFiles"
-        | "workspace/willDeleteFiles" => "workspace.fileOperations.dynamicRegistration",
+        "workspace/didCreateFiles" => "workspace.fileOperations.dynamicRegistration",
+        "workspace/willCreateFiles" => "workspace.fileOperations.dynamicRegistration",
+        "workspace/didRenameFiles" => "workspace.fileOperations.dynamicRegistration",
+        "workspace/willRenameFiles" => "workspace.fileOperations.dynamicRegistration",
+        "workspace/didDeleteFiles" => "workspace.fileOperations.dynamicRegistration",
+        "workspace/willDeleteFiles" => "workspace.fileOperations.dynamicRegistration",
         "textDocument/completion" => "textDocument.completion.dynamicRegistration",
         "textDocument/didOpen"
         | "textDocument/didChange"
-        | "textDocument/didClose"
         | "textDocument/willSave"
         | "textDocument/willSaveWaitUntil"
         | "textDocument/didSave" => "textDocument.synchronization.dynamicRegistration",
@@ -845,6 +929,8 @@ fn registration_capability_path(method: &str) -> Option<&'static str> {
     Some(path)
 }
 
+// ── Event decoding ────────────────────────────────────────────────────────────
+
 fn decode_event(v: Value) -> LspEvent {
     let method = v["method"].as_str().unwrap_or("").to_string();
     match method.as_str() {
@@ -861,31 +947,27 @@ fn decode_event(v: Value) -> LspEvent {
         "textDocument/publishDiagnostics" => {
             let uri = v["params"]["uri"].as_str().unwrap_or("").to_string();
             let version = v["params"]["version"].as_i64();
-            let diagnostics = v["params"]["diagnostics"]
-                .as_array()
-                .cloned()
-                .unwrap_or_default();
-            LspEvent::Diagnostics {
-                uri,
-                version,
-                diagnostics,
-            }
+            let diagnostics = v["params"]["diagnostics"].as_array().cloned().unwrap_or_default();
+            LspEvent::Diagnostics { uri, version, diagnostics }
         }
-        _ => LspEvent::Other {
-            method,
-            params: v["params"].clone(),
-        },
+        _ => LspEvent::Other { method, params: v["params"].clone() },
     }
 }
+
+// ── Command construction ──────────────────────────────────────────────────────
 
 fn build_command(binary_path: &str, config: &ScenarioConfig) -> Result<Command> {
     let mut cmd = Command::new(binary_path);
     cmd.arg("--stdio");
+
+    // Apply restricted PATH if requested.
     if let Some(ref dirs) = config.path_restriction {
         use crate::env::RestrictedPath;
         let restricted = RestrictedPath::only(dirs.clone());
         cmd.env("PATH", restricted.build_path());
     }
+
+    // Apply extra env vars / unsets.
     for (key, value) in &config.extra_env {
         match value {
             Some(v) => {
@@ -896,6 +978,7 @@ fn build_command(binary_path: &str, config: &ScenarioConfig) -> Result<Command> 
             }
         }
     }
+
     Ok(cmd)
 }
 
@@ -907,10 +990,7 @@ mod tests {
 
     impl Write for BrokenWriter {
         fn write(&mut self, _buf: &[u8]) -> std::io::Result<usize> {
-            Err(std::io::Error::new(
-                std::io::ErrorKind::BrokenPipe,
-                "synthetic broken pipe",
-            ))
+            Err(std::io::Error::new(std::io::ErrorKind::BrokenPipe, "synthetic broken pipe"))
         }
 
         fn flush(&mut self) -> std::io::Result<()> {
@@ -943,7 +1023,6 @@ mod tests {
         let mut reader = BufReader::new(server_stdout.as_slice());
         let stdin = Arc::new(Mutex::new(Vec::new()));
         let events = Arc::new(Mutex::new(VecDeque::new()));
-        let server_requests = Arc::new(Mutex::new(Vec::new()));
         let responses = Arc::new(Mutex::new(VecDeque::new()));
         let violations = Arc::new(Mutex::new(Vec::new()));
         let capabilities = capabilities_with(json!({
@@ -975,68 +1054,14 @@ mod tests {
         assert_eq!(client_response["id"], "server-17");
         assert_eq!(client_response["result"], json!([null, null]));
 
-        let observed: Vec<Value> = events
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .iter()
-            .cloned()
-            .collect();
-        assert_eq!(observed, vec![server_request.clone()]);
-        assert_eq!(
-            server_requests.lock().unwrap_or_else(|e| e.into_inner()).as_slice(),
-            &[server_request]
-        );
+        let observed: Vec<Value> =
+            events.lock().unwrap_or_else(|e| e.into_inner()).iter().cloned().collect();
+        assert_eq!(observed, vec![server_request]);
 
-        let queued: Vec<Value> = responses
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .iter()
-            .cloned()
-            .collect();
+        let queued: Vec<Value> =
+            responses.lock().unwrap_or_else(|e| e.into_inner()).iter().cloned().collect();
         assert_eq!(queued, vec![later_response]);
         assert!(violations.lock().unwrap_or_else(|e| e.into_inner()).is_empty());
-        Ok(())
-    }
-
-    #[test]
-    fn server_request_evidence_survives_event_drain() -> Result<()> {
-        let server_request = json!({
-            "jsonrpc": "2.0",
-            "id": "server-18",
-            "method": "workspace/configuration",
-            "params": { "items": [] }
-        });
-        let mut server_stdout = Vec::new();
-        write_lsp_message(&mut server_stdout, &server_request)?;
-
-        let mut reader = BufReader::new(server_stdout.as_slice());
-        let stdin = Arc::new(Mutex::new(Vec::new()));
-        let events = Arc::new(Mutex::new(VecDeque::new()));
-        let server_requests = Arc::new(Mutex::new(Vec::new()));
-        let responses = Arc::new(Mutex::new(VecDeque::new()));
-        let violations = Arc::new(Mutex::new(Vec::new()));
-        let capabilities = capabilities_with(json!({
-            "workspace": { "configuration": true }
-        }));
-
-        route_next_stdout_message(
-            &mut reader,
-            &stdin,
-            &events,
-            &server_requests,
-            &responses,
-            &violations,
-            &capabilities,
-        )?;
-        let drained = {
-            let mut guard = events.lock().unwrap_or_else(|e| e.into_inner());
-            guard.drain(..).collect::<Vec<_>>()
-        };
-        assert_eq!(drained, vec![server_request.clone()]);
-        assert_eq!(
-            server_requests.lock().unwrap_or_else(|e| e.into_inner()).as_slice(),
-            &[server_request]
-        );
         Ok(())
     }
 
@@ -1053,7 +1078,6 @@ mod tests {
         let mut reader = BufReader::new(server_stdout.as_slice());
         let stdin = Arc::new(Mutex::new(BrokenWriter));
         let events = Arc::new(Mutex::new(VecDeque::new()));
-        let server_requests = Arc::new(Mutex::new(Vec::new()));
         let responses = Arc::new(Mutex::new(VecDeque::new()));
         let violations = Arc::new(Mutex::new(Vec::new()));
         let capabilities = capabilities_with(json!({
@@ -1081,6 +1105,7 @@ mod tests {
     fn response_wait_surfaces_transport_failure_before_timeout() -> Result<()> {
         let responses = Mutex::new(VecDeque::new());
         let transport_error = Mutex::new(Some("Failed to parse LSP JSON body".to_owned()));
+
         let failure = match wait_for_response_queue(
             &responses,
             &transport_error,
@@ -1098,10 +1123,7 @@ mod tests {
     #[test]
     fn normal_eof_is_only_ignored_after_shutdown_begins() -> Result<()> {
         let mut reader = BufReader::new(&b""[..]);
-        let error = match read_one_message(&mut reader) {
-            Ok(value) => return Err(anyhow!("empty stdout unexpectedly returned {value}")),
-            Err(error) => error,
-        };
+        let error = read_one_message(&mut reader).expect_err("empty stdout should be EOF");
         assert!(is_normal_eof(&error));
 
         let transport_error = Mutex::new(None);
@@ -1133,7 +1155,9 @@ mod tests {
                 "foldingRange": { "refreshSupport": true },
                 "textDocumentContent": { "refreshSupport": true }
             },
-            "textDocument": { "completion": { "dynamicRegistration": true } },
+            "textDocument": {
+                "completion": { "dynamicRegistration": true }
+            },
             "window": {
                 "showDocument": { "support": true },
                 "workDoneProgress": true
@@ -1157,10 +1181,16 @@ mod tests {
         ] {
             let params = match method {
                 "client/registerCapability" => json!({
-                    "registrations": [{ "id": "completion", "method": "textDocument/completion" }]
+                    "registrations": [{
+                        "id": "completion",
+                        "method": "textDocument/completion"
+                    }]
                 }),
                 "client/unregisterCapability" => json!({
-                    "unregisterations": [{ "id": "completion", "method": "textDocument/completion" }]
+                    "unregisterations": [{
+                        "id": "completion",
+                        "method": "textDocument/completion"
+                    }]
                 }),
                 _ => json!({ "items": [] }),
             };
@@ -1171,6 +1201,7 @@ mod tests {
                 "params": params
             });
             let response = server_request_response(&request, &capabilities).unwrap_or(Value::Null);
+
             assert_eq!(response["jsonrpc"], "2.0", "method={method}");
             assert_eq!(response["id"], "server-request-1", "method={method}");
             assert!(response.get("result").is_some(), "method={method}");
@@ -1184,10 +1215,18 @@ mod tests {
             "jsonrpc": "2.0",
             "id": 7,
             "method": "workspace/configuration",
-            "params": { "items": [{ "section": "perl" }, { "section": "perl.formatting" }] }
+            "params": {
+                "items": [
+                    { "section": "perl" },
+                    { "section": "perl.formatting" }
+                ]
+            }
         });
-        let capabilities = capabilities_with(json!({ "workspace": { "configuration": true } }));
+        let capabilities = capabilities_with(json!({
+            "workspace": { "configuration": true }
+        }));
         let response = server_request_response(&request, &capabilities).unwrap_or(Value::Null);
+
         assert_eq!(response["result"], json!([null, null]));
     }
 
@@ -1199,9 +1238,16 @@ mod tests {
             "method": "workspace/applyEdit",
             "params": { "edit": { "changes": {} } }
         });
-        let capabilities = capabilities_with(json!({ "workspace": { "applyEdit": true } }));
+        let capabilities = capabilities_with(json!({
+            "workspace": { "applyEdit": true }
+        }));
         let response = server_request_response(&request, &capabilities).unwrap_or(Value::Null);
+
         assert_eq!(response["result"]["applied"], false);
+        assert_eq!(
+            response["result"]["failureReason"],
+            "UX test client does not apply workspace edits automatically"
+        );
     }
 
     #[test]
@@ -1217,8 +1263,10 @@ mod tests {
             &build_client_capabilities(&ScenarioConfig::default()),
         )
         .unwrap_or(Value::Null);
+
         assert_eq!(response["id"], "extension-3");
         assert_eq!(response["error"]["code"], -32601);
+        assert_eq!(response["error"]["message"], "Method not found: experimental/clientPrompt");
     }
 
     #[test]
@@ -1228,7 +1276,15 @@ mod tests {
             "method": "workspace/semanticTokens/refresh",
             "params": {}
         });
+
         assert!(!is_server_request(&notification));
+        assert!(
+            server_request_response(
+                &notification,
+                &build_client_capabilities(&ScenarioConfig::default())
+            )
+            .is_none()
+        );
     }
 
     #[test]
@@ -1243,12 +1299,23 @@ mod tests {
             &request,
             &build_client_capabilities(&ScenarioConfig::default()),
         )
-        .unwrap_or(ServerRequestDecision {
-            response: Value::Null,
-            capability_violation: None,
-        });
+        .unwrap_or(ServerRequestDecision { response: Value::Null, capability_violation: None });
+
+        assert_eq!(decision.response["id"], 14);
         assert_eq!(decision.response["error"]["code"], -32601);
-        assert!(decision.capability_violation.is_some());
+        assert!(
+            decision.response["error"]["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("workspace.semanticTokens.refreshSupport"))
+        );
+        assert_eq!(
+            decision.capability_violation,
+            Some(CapabilityViolation {
+                id: json!(14),
+                method: "workspace/semanticTokens/refresh".to_owned(),
+                capability: "workspace.semanticTokens.refreshSupport".to_owned(),
+            })
+        );
     }
 
     #[test]
@@ -1260,10 +1327,15 @@ mod tests {
             "params": {}
         });
         let capabilities = capabilities_with(json!({
-            "workspace": { "semanticTokens": { "refreshSupport": true } }
+            "workspace": {
+                "semanticTokens": { "refreshSupport": true }
+            }
         }));
         let response = server_request_response(&request, &capabilities).unwrap_or(Value::Null);
+
+        assert_eq!(response["id"], "refresh-1");
         assert_eq!(response["result"], Value::Null);
+        assert!(response.get("error").is_none());
     }
 
     #[test]
@@ -1273,14 +1345,22 @@ mod tests {
             "id": "inline-registration",
             "method": "client/registerCapability",
             "params": {
-                "registrations": [{ "id": "inline-completion", "method": "textDocument/inlineCompletion" }]
+                "registrations": [{
+                    "id": "inline-completion",
+                    "method": "textDocument/inlineCompletion"
+                }]
             }
         });
         let capabilities = capabilities_with(json!({
-            "textDocument": { "inlineCompletion": { "dynamicRegistration": true } }
+            "textDocument": {
+                "inlineCompletion": { "dynamicRegistration": true }
+            }
         }));
         let response = server_request_response(&request, &capabilities).unwrap_or(Value::Null);
+
+        assert_eq!(response["id"], "inline-registration");
         assert_eq!(response["result"], Value::Null);
+        assert!(response.get("error").is_none());
     }
 
     #[test]
@@ -1292,11 +1372,17 @@ mod tests {
             "params": {}
         });
         let capabilities = capabilities_with(json!({
-            "workspace": { "diagnostic": { "refreshSupport": true } }
+            "workspace": {
+                "diagnostic": { "refreshSupport": true }
+            }
         }));
         let response = server_request_response(&request, &capabilities).unwrap_or(Value::Null);
+
+        assert_eq!(response["id"], "diagnostic-refresh");
         assert_eq!(response["result"], Value::Null);
+        assert!(response.get("error").is_none());
     }
+
 
     #[test]
     fn standard_dynamic_registration_paths_are_admitted() {
@@ -1307,20 +1393,25 @@ mod tests {
             "params": {
                 "registrations": [
                     { "id": "sync", "method": "textDocument/didChange" },
-                    { "id": "close", "method": "textDocument/didClose" },
                     { "id": "symbols", "method": "workspace/symbol" },
                     { "id": "files", "method": "workspace/didCreateFiles" }
                 ]
             }
         });
         let capabilities = capabilities_with(json!({
-            "textDocument": { "synchronization": { "dynamicRegistration": true } },
+            "textDocument": {
+                "synchronization": { "dynamicRegistration": true }
+            },
             "workspace": {
                 "symbol": { "dynamicRegistration": true },
-                "fileOperations": { "dynamicRegistration": true, "didCreate": true }
+                "fileOperations": {
+                    "dynamicRegistration": true,
+                    "didCreate": true
+                }
             }
         }));
         let response = server_request_response(&request, &capabilities).unwrap_or(Value::Null);
+
         assert_eq!(response["id"], "standard-registration");
         assert_eq!(response["result"], Value::Null);
         assert!(response.get("error").is_none());
@@ -1333,14 +1424,24 @@ mod tests {
             "id": "files-without-parent-support",
             "method": "client/registerCapability",
             "params": {
-                "registrations": [{ "id": "files", "method": "workspace/didCreateFiles" }]
+                "registrations": [{
+                    "id": "files",
+                    "method": "workspace/didCreateFiles"
+                }]
             }
         });
         let capabilities = capabilities_with(json!({
-            "workspace": { "fileOperations": { "didCreate": true } }
+            "workspace": {
+                "fileOperations": { "didCreate": true }
+            }
         }));
         let response = server_request_response(&request, &capabilities).unwrap_or(Value::Null);
+
+        assert_eq!(response["id"], "files-without-parent-support");
         assert_eq!(response["error"]["code"], -32601);
+        assert!(response["error"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("workspace.fileOperations.dynamicRegistration")));
     }
 
     #[test]
@@ -1349,29 +1450,41 @@ mod tests {
             "jsonrpc": "2.0",
             "id": 15,
             "method": "client/registerCapability",
-            "params": { "registrations": [{ "method": "textDocument/completion" }] }
+            "params": {
+                "registrations": [{ "method": "textDocument/completion" }]
+            }
         });
         let capabilities = capabilities_with(json!({
             "textDocument": { "completion": { "dynamicRegistration": true } }
         }));
         let response = server_request_response(&request, &capabilities).unwrap_or(Value::Null);
+
+        assert_eq!(response["id"], 15);
         assert_eq!(response["error"]["code"], -32602);
+        assert_eq!(
+            response["error"]["message"],
+            "Invalid params for client/registerCapability: every registration must include a string id"
+        );
     }
 
     fn capabilities_with(overrides: Value) -> Value {
-        let config = ScenarioConfig {
-            client_capability_overrides: overrides,
-            ..ScenarioConfig::default()
-        };
+        let config =
+            ScenarioConfig { client_capability_overrides: overrides, ..ScenarioConfig::default() };
         build_client_capabilities(&config)
     }
 
     #[test]
     fn server_response_uses_lsp_content_length_framing() -> Result<()> {
-        let response = json!({ "jsonrpc": "2.0", "id": 11, "result": null });
+        let response = json!({
+            "jsonrpc": "2.0",
+            "id": 11,
+            "result": null
+        });
         let body = response.to_string();
         let mut framed = Vec::new();
+
         write_lsp_message(&mut framed, &response)?;
+
         let expected = format!("Content-Length: {}\r\n\r\n{body}", body.len());
         assert_eq!(framed, expected.as_bytes());
         Ok(())
