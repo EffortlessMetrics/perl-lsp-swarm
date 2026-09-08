@@ -10,6 +10,19 @@ const mockLanguageClientSetTrace = jest.fn(async () => undefined);
 const mockLanguageClientOnDidChangeState = jest.fn(() => ({ dispose: jest.fn() }));
 const mockLanguageClientOnNotification = jest.fn(() => ({ dispose: jest.fn() }));
 const mockLanguageClientSendNotification = jest.fn(async () => undefined);
+const mockExecFile = jest.fn((...args: unknown[]) => {
+  const callback = args[args.length - 1] as (
+    error: Error | null,
+    stdout: string,
+    stderr: string,
+  ) => void;
+  callback(null, '', '');
+});
+
+jest.mock('child_process', () => ({
+  ...jest.requireActual('child_process'),
+  execFile: (...args: unknown[]) => mockExecFile(...args),
+}));
 
 jest.mock('vscode-languageclient/node', () => ({
   State: { Stopped: 1, Running: 2, Starting: 3 },
@@ -44,7 +57,7 @@ jest.mock('vscode-languageclient/node', () => ({
   TransportKind: { stdio: 0 },
 }));
 
-import { activate, deactivate } from '../extension';
+import { activate, deactivate, serverNotRunningMessage } from '../extension';
 import { fakeDocument, setOpenDocuments, type FakeDocument } from './serverDemandDocuments';
 
 function makeContext(extensionPath: string): vscode.ExtensionContext {
@@ -369,6 +382,30 @@ describe('deferred language-server startup (#8180)', () => {
     ]);
     expect(result.ok).toBe(false);
     expect(result.checks.find((check) => check.label === 'LSP runtime')?.status).toBe('error');
+  });
+
+  test('a late startup probe cannot overwrite a recovered generation', async () => {
+    let deferredProbe: ((error: Error | null, stdout: string, stderr: string) => void) | undefined;
+    mockExecFile.mockImplementationOnce((...args: unknown[]) => {
+      deferredProbe = args[args.length - 1] as typeof deferredProbe;
+    });
+    mockLanguageClientStart
+      .mockImplementationOnce(async () => {
+        throw new Error('deferred diagnosis startup refusal');
+      })
+      .mockImplementationOnce(async () => undefined);
+
+    setOpenDocuments([fakeDocument('perl')]);
+    await activate(makeContext(makeExtensionRoot()));
+    await waitForStarts(1);
+    await vscode.commands.executeCommand('perl-lsp.restart');
+    await waitForStarts(2);
+    expect(deferredProbe).toBeDefined();
+    deferredProbe?.(new Error('old generation probe'), '', 'old generation probe');
+    await settle();
+
+    expect(serverNotRunningMessage()).toContain('Language Server is not running');
+    expect(serverNotRunningMessage()).not.toContain('old generation probe');
   });
 
   test('a later health check reports recovery while keeping optional warnings separate', async () => {

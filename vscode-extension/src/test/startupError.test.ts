@@ -32,33 +32,7 @@ import {
   StartupErrorKind,
   selectBestDiagnosis,
 } from '../startupDiagnosis';
-import {
-  isCurrentStartupFailure,
-  serverNotRunningMessage,
-  _setLastStartupDiagnosisForTest,
-} from '../extension';
-
-describe('detached startup diagnosis generation guard', () => {
-  test('rejects a late probe from an older generation after recovery', () => {
-    expect(
-      isCurrentStartupFailure(
-        { generation: 4, state: 'running', serverPath: '/new/perllsp' },
-        3,
-        '/old/perllsp',
-      ),
-    ).toBe(false);
-  });
-
-  test('accepts the failed generation and exact path', () => {
-    expect(
-      isCurrentStartupFailure(
-        { generation: 3, state: 'failed', serverPath: '/old/perllsp' },
-        3,
-        '/old/perllsp',
-      ),
-    ).toBe(true);
-  });
-});
+import { serverNotRunningMessage, _setLastStartupDiagnosisForTest } from '../extension';
 
 // ---------------------------------------------------------------------------
 // classifyStartupError — pure classification of stderr/stdout text
