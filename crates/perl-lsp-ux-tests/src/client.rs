@@ -874,65 +874,83 @@ fn dynamic_registration_issue(
                 "every registration must include a string method".to_owned(),
             ));
         };
-        let Some(capability) = registration_capability_path(method) else {
+        let Some(capabilities_required) = registration_capability_paths(method) else {
             return Some(DynamicRegistrationIssue::Malformed(format!(
                 "unsupported dynamic registration method {method}"
             )));
         };
-        if !capability_is_advertised(capabilities, capability) {
-            return Some(DynamicRegistrationIssue::Capability(capability.to_owned()));
+        for capability in capabilities_required {
+            if !capability_is_advertised(capabilities, capability) {
+                return Some(DynamicRegistrationIssue::Capability((*capability).to_owned()));
+            }
         }
     }
     None
 }
 
-fn registration_capability_path(method: &str) -> Option<&'static str> {
-    let path = match method {
+fn registration_capability_paths(method: &str) -> Option<&'static [&'static str]> {
+    let paths: &[&str] = match method {
         "workspace/didChangeConfiguration" => {
-            "workspace.didChangeConfiguration.dynamicRegistration"
+            &["workspace.didChangeConfiguration.dynamicRegistration"]
         }
-        "workspace/didChangeWatchedFiles" => "workspace.didChangeWatchedFiles.dynamicRegistration",
-        "workspace/didChangeWorkspaceFolders" => "workspace.workspaceFolders",
-        "workspace/executeCommand" => "workspace.executeCommand.dynamicRegistration",
-        "workspace/symbol" => "workspace.symbol.dynamicRegistration",
-        "workspace/didCreateFiles" => "workspace.fileOperations.dynamicRegistration",
-        "workspace/willCreateFiles" => "workspace.fileOperations.dynamicRegistration",
-        "workspace/didRenameFiles" => "workspace.fileOperations.dynamicRegistration",
-        "workspace/willRenameFiles" => "workspace.fileOperations.dynamicRegistration",
-        "workspace/didDeleteFiles" => "workspace.fileOperations.dynamicRegistration",
-        "workspace/willDeleteFiles" => "workspace.fileOperations.dynamicRegistration",
-        "textDocument/completion" => "textDocument.completion.dynamicRegistration",
+        "workspace/didChangeWatchedFiles" => {
+            &["workspace.didChangeWatchedFiles.dynamicRegistration"]
+        }
+        "workspace/didChangeWorkspaceFolders" => &["workspace.workspaceFolders"],
+        "workspace/executeCommand" => &["workspace.executeCommand.dynamicRegistration"],
+        "workspace/symbol" => &["workspace.symbol.dynamicRegistration"],
+        "workspace/didCreateFiles" => {
+            &["workspace.fileOperations.dynamicRegistration", "workspace.fileOperations.didCreate"]
+        }
+        "workspace/willCreateFiles" => {
+            &["workspace.fileOperations.dynamicRegistration", "workspace.fileOperations.willCreate"]
+        }
+        "workspace/didRenameFiles" => {
+            &["workspace.fileOperations.dynamicRegistration", "workspace.fileOperations.didRename"]
+        }
+        "workspace/willRenameFiles" => {
+            &["workspace.fileOperations.dynamicRegistration", "workspace.fileOperations.willRename"]
+        }
+        "workspace/didDeleteFiles" => {
+            &["workspace.fileOperations.dynamicRegistration", "workspace.fileOperations.didDelete"]
+        }
+        "workspace/willDeleteFiles" => {
+            &["workspace.fileOperations.dynamicRegistration", "workspace.fileOperations.willDelete"]
+        }
+        "textDocument/completion" => &["textDocument.completion.dynamicRegistration"],
         "textDocument/didOpen"
         | "textDocument/didClose"
         | "textDocument/didChange"
         | "textDocument/willSave"
         | "textDocument/willSaveWaitUntil"
-        | "textDocument/didSave" => "textDocument.synchronization.dynamicRegistration",
-        "textDocument/inlineCompletion" => "textDocument.inlineCompletion.dynamicRegistration",
-        "textDocument/hover" => "textDocument.hover.dynamicRegistration",
-        "textDocument/definition" => "textDocument.definition.dynamicRegistration",
-        "textDocument/declaration" => "textDocument.declaration.dynamicRegistration",
-        "textDocument/typeDefinition" => "textDocument.typeDefinition.dynamicRegistration",
-        "textDocument/implementation" => "textDocument.implementation.dynamicRegistration",
-        "textDocument/references" => "textDocument.references.dynamicRegistration",
-        "textDocument/documentHighlight" => "textDocument.documentHighlight.dynamicRegistration",
-        "textDocument/documentSymbol" => "textDocument.documentSymbol.dynamicRegistration",
-        "textDocument/codeAction" => "textDocument.codeAction.dynamicRegistration",
-        "textDocument/codeLens" => "textDocument.codeLens.dynamicRegistration",
-        "textDocument/documentLink" => "textDocument.documentLink.dynamicRegistration",
-        "textDocument/documentColor" => "textDocument.colorProvider.dynamicRegistration",
-        "textDocument/formatting" => "textDocument.formatting.dynamicRegistration",
-        "textDocument/rangeFormatting" => "textDocument.rangeFormatting.dynamicRegistration",
-        "textDocument/onTypeFormatting" => "textDocument.onTypeFormatting.dynamicRegistration",
-        "textDocument/rename" => "textDocument.rename.dynamicRegistration",
-        "textDocument/publishDiagnostics" => "textDocument.publishDiagnostics.dynamicRegistration",
-        "textDocument/signatureHelp" => "textDocument.signatureHelp.dynamicRegistration",
-        "textDocument/semanticTokens" => "textDocument.semanticTokens.dynamicRegistration",
-        "textDocument/inlayHint" => "textDocument.inlayHint.dynamicRegistration",
-        "textDocument/inlineValue" => "textDocument.inlineValue.dynamicRegistration",
+        | "textDocument/didSave" => &["textDocument.synchronization.dynamicRegistration"],
+        "textDocument/inlineCompletion" => &["textDocument.inlineCompletion.dynamicRegistration"],
+        "textDocument/hover" => &["textDocument.hover.dynamicRegistration"],
+        "textDocument/definition" => &["textDocument.definition.dynamicRegistration"],
+        "textDocument/declaration" => &["textDocument.declaration.dynamicRegistration"],
+        "textDocument/typeDefinition" => &["textDocument.typeDefinition.dynamicRegistration"],
+        "textDocument/implementation" => &["textDocument.implementation.dynamicRegistration"],
+        "textDocument/references" => &["textDocument.references.dynamicRegistration"],
+        "textDocument/documentHighlight" => &["textDocument.documentHighlight.dynamicRegistration"],
+        "textDocument/documentSymbol" => &["textDocument.documentSymbol.dynamicRegistration"],
+        "textDocument/codeAction" => &["textDocument.codeAction.dynamicRegistration"],
+        "textDocument/codeLens" => &["textDocument.codeLens.dynamicRegistration"],
+        "textDocument/documentLink" => &["textDocument.documentLink.dynamicRegistration"],
+        "textDocument/documentColor" => &["textDocument.colorProvider.dynamicRegistration"],
+        "textDocument/formatting" => &["textDocument.formatting.dynamicRegistration"],
+        "textDocument/rangeFormatting" => &["textDocument.rangeFormatting.dynamicRegistration"],
+        "textDocument/onTypeFormatting" => &["textDocument.onTypeFormatting.dynamicRegistration"],
+        "textDocument/rename" => &["textDocument.rename.dynamicRegistration"],
+        "textDocument/publishDiagnostics" => {
+            &["textDocument.publishDiagnostics.dynamicRegistration"]
+        }
+        "textDocument/signatureHelp" => &["textDocument.signatureHelp.dynamicRegistration"],
+        "textDocument/semanticTokens" => &["textDocument.semanticTokens.dynamicRegistration"],
+        "textDocument/inlayHint" => &["textDocument.inlayHint.dynamicRegistration"],
+        "textDocument/inlineValue" => &["textDocument.inlineValue.dynamicRegistration"],
         _ => return None,
     };
-    Some(path)
+    Some(paths)
 }
 
 // ── Event decoding ────────────────────────────────────────────────────────────
@@ -1431,7 +1449,8 @@ mod tests {
                 "registrations": [
                     { "id": "sync", "method": "textDocument/didChange" },
                     { "id": "symbols", "method": "workspace/symbol" },
-                    { "id": "files", "method": "workspace/didCreateFiles" }
+                    { "id": "files", "method": "workspace/didCreateFiles",
+                      "registerOptions": { "filters": [{ "pattern": { "glob": "**/*.pl" } }] } }
                 ]
             }
         });
@@ -1455,30 +1474,59 @@ mod tests {
     }
 
     #[test]
-    fn file_operation_registration_requires_parent_dynamic_support() {
-        let request = json!({
-            "jsonrpc": "2.0",
-            "id": "files-without-parent-support",
-            "method": "client/registerCapability",
-            "params": {
-                "registrations": [{
-                    "id": "files",
-                    "method": "workspace/didCreateFiles"
-                }]
+    fn file_operation_registration_requires_both_capabilities() -> Result<()> {
+        for operation in
+            ["didCreate", "willCreate", "didRename", "willRename", "didDelete", "willDelete"]
+        {
+            for (dynamic, supported, expected_missing) in [
+                (Some(true), Some(true), None),
+                (Some(true), None, Some(operation)),
+                (Some(true), Some(false), Some(operation)),
+                (None, Some(true), Some("dynamicRegistration")),
+                (Some(false), Some(true), Some("dynamicRegistration")),
+            ] {
+                let mut file_operations = serde_json::Map::new();
+                if let Some(value) = dynamic {
+                    file_operations.insert("dynamicRegistration".to_owned(), json!(value));
+                }
+                if let Some(value) = supported {
+                    file_operations.insert(operation.to_owned(), json!(value));
+                }
+                let request = json!({
+                    "jsonrpc": "2.0",
+                    "id": "file-operation",
+                    "method": "client/registerCapability",
+                    "params": { "registrations": [{
+                        "id": "files", "method": format!("workspace/{operation}Files"),
+                        "registerOptions": { "filters": [{ "pattern": { "glob": "**/*.pl" } }] }
+                    }] }
+                });
+                let capabilities = capabilities_with(json!({
+                    "workspace": { "fileOperations": file_operations }
+                }));
+                let response = server_request_response(&request, &capabilities)
+                    .ok_or_else(|| anyhow!("missing registration response for {operation}"))?;
+                if response.get("id") != Some(&json!("file-operation")) {
+                    return Err(anyhow!("registration response lost its request identity"));
+                }
+                if let Some(missing) = expected_missing {
+                    let path = format!("workspace.fileOperations.{missing}");
+                    if response.pointer("/error/code") != Some(&json!(-32601))
+                        || !response
+                            .pointer("/error/message")
+                            .and_then(Value::as_str)
+                            .is_some_and(|message| message.contains(&path))
+                    {
+                        return Err(anyhow!("{operation} must reject missing {path}: {response}"));
+                    }
+                } else if response.get("result") != Some(&Value::Null)
+                    || response.get("error").is_some()
+                {
+                    return Err(anyhow!("{operation} must admit both capabilities: {response}"));
+                }
             }
-        });
-        let capabilities = capabilities_with(json!({
-            "workspace": {
-                "fileOperations": { "didCreate": true }
-            }
-        }));
-        let response = server_request_response(&request, &capabilities).unwrap_or(Value::Null);
-
-        assert_eq!(response["id"], "files-without-parent-support");
-        assert_eq!(response["error"]["code"], -32601);
-        assert!(response["error"]["message"].as_str().is_some_and(|message| {
-            message.contains("workspace.fileOperations.dynamicRegistration")
-        }));
+        }
+        Ok(())
     }
 
     #[test]
