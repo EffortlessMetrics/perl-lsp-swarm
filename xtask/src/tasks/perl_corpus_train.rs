@@ -1224,6 +1224,10 @@ fn render_json(doc: &Value, digest: &str) -> Result<String> {
     Ok(text)
 }
 
+fn escape_markdown_table_cell(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('|', "\\|").replace("\r\n", " ").replace('\r', " ").replace('\n', " ")
+}
+
 /// Reviewer projection: per-phase tables, writer classes, lineages.
 fn render_markdown(doc: &Value, digest: &str) -> String {
     let mut out = String::new();
@@ -1264,7 +1268,8 @@ fn render_markdown(doc: &Value, digest: &str) -> String {
                 .get("legacy_exit")
                 .and_then(|exit| exit.get("owner"))
                 .and_then(Value::as_str)
-                .unwrap_or("—");
+                .map(escape_markdown_table_cell)
+                .unwrap_or_else(|| "—".to_string());
             let _ = writeln!(
                 out,
                 "| `{}` | {} | {}{} | {} | {} | {} | {} | {} | {} |",

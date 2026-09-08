@@ -769,6 +769,47 @@ fn gate_command_run_check_is_green_on_the_landed_tree() -> Result<()> {
 }
 
 #[test]
+fn markdown_escapes_schema_valid_legacy_exit_owner_cells() -> Result<()> {
+    let mut doc = load(MANIFEST_PATH)?;
+    let node = first_node_with(&mut doc, |node| {
+        node.get("legacy_exit")
+            .and_then(Value::as_object)
+            .and_then(|exit| exit.get("owner"))
+            .and_then(Value::as_str)
+            .is_some()
+    })?;
+    let node_id = node
+        .get("node_id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| eyre!("legacy-exit test node has a node_id"))?
+        .to_string();
+    node.get_mut("legacy_exit")
+        .and_then(Value::as_object_mut)
+        .ok_or_else(|| eyre!("legacy-exit test node has an object"))?
+        .insert("owner".to_string(), Value::String("owner|with\r\nline".to_string()));
+
+    let markdown = render_projections(&doc)?
+        .into_iter()
+        .find_map(|(name, text)| (name == "train.graph.md").then_some(text))
+        .ok_or_else(|| eyre!("train.graph.md projection is present"))?;
+    let row_prefix = format!("| `{node_id}` |");
+    let row = markdown
+        .lines()
+        .find(|line| line.starts_with(&row_prefix))
+        .ok_or_else(|| eyre!("legacy-exit node row is present"))?;
+    if !row.contains("owner\\|with line") {
+        bail!("legacy-exit owner must escape table pipes and line breaks: {row}");
+    }
+    if row.split(" | ").count() != 10 {
+        bail!("legacy-exit row must retain nine Markdown cells: {row}");
+    }
+    if markdown.lines().any(|line| line == "line |") {
+        bail!("legacy-exit owner line break must not create a second Markdown row");
+    }
+    Ok(())
+}
+
+#[test]
 fn uppercase_commit_hash_is_still_a_mutable_coordinate() -> Result<()> {
     let mut doc = load(MANIFEST_PATH)?;
     let node = node_mut(&mut doc, "pc_asset_path_10555")?;
