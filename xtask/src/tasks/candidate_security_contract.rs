@@ -6,27 +6,17 @@
 //! validation. It executes no scanner, runs no candidate audit, accepts no
 //! risk, and changes no `ship_candidate` policy — those belong to the exact
 //! security execution this contract is a prerequisite for.
+//! Validation checks structural consistency and nonblank declarations only.
+//! Typed subject identity formats and canonical rail bindings remain #14431;
+//! successful validation is not evidence of an exact candidate or a passed audit.
 
-use clap::Parser;
 use color_eyre::eyre::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
-use std::path::PathBuf;
 
 /// Schema identity for the contract governed here. Serialized receipts must
 /// carry exactly this string; anything else is a different contract.
 pub const CONTRACT_SCHEMA: &str = "release_candidate_security.v1";
-
-#[derive(Debug, Parser)]
-#[command(
-    name = "candidate-security-contract",
-    about = "Validate a release_candidate_security.v1 contract document"
-)]
-struct Cli {
-    /// Path to the contract JSON document.
-    #[arg(long)]
-    contract: PathBuf,
-}
 
 /// The closed candidate-security contract. Every field is required and unknown
 /// fields are rejected, so an under-specified or over-specified document fails
@@ -134,6 +124,7 @@ pub struct SecurityRail {
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct SecurityFinding {
+    /// Exact finding identity, unique within its containing rail.
     pub finding_id: String,
     pub summary: String,
     pub disposition: FindingDisposition,
@@ -148,6 +139,8 @@ pub struct SecurityFinding {
 pub enum FindingDisposition {
     NeedsReview,
     AcceptedWithDisposition,
+    /// Review rejected the finding itself (for example, a false positive).
+    /// This is not acceptance of a security risk or an automatic rail pass.
     Rejected,
     Remediated,
 }
@@ -282,6 +275,7 @@ pub fn validate_contract(contract: &CandidateSecurityContract) -> Result<()> {
         // A finding with a blank id or summary is structurally
         // unidentifiable: no stable identifier to cross-reference and nothing
         // a downstream reader can act on, whatever its disposition claims.
+        let mut finding_ids = BTreeSet::new();
         for finding in &rail.findings {
             if finding.finding_id.trim().is_empty() || finding.summary.trim().is_empty() {
                 bail!(
@@ -289,6 +283,20 @@ pub fn validate_contract(contract: &CandidateSecurityContract) -> Result<()> {
                     rail_name_label(rail.rail)
                 );
             }
+            if !finding_ids.insert(finding.finding_id.as_str()) {
+                bail!(
+                    "rail {:?} carries duplicate finding id {:?}",
+                    rail_name_label(rail.rail),
+                    finding.finding_id
+                );
+            }
+        }
+
+        if rail.rail == RailName::ContainerWhenRequired
+            && !contract.container_required
+            && rail.status != RailStatus::NotApplicable
+        {
+            bail!("container rail must be not_applicable when the topology requires no container");
         }
 
         let evidence = rail.applicability_evidence.as_deref().map(str::trim).unwrap_or("");
@@ -334,27 +342,11 @@ pub fn validate_contract(contract: &CandidateSecurityContract) -> Result<()> {
                              dispositions are review metadata, not risk acceptance",
                             rail_name_label(rail.rail)
                         ),
-                        FindingDisposition::Rejected => bail!(
-                            "rail {:?} passes while carrying a rejected finding; \
-                             a rejected finding contradicts the pass claim",
-                            rail_name_label(rail.rail)
-                        ),
                         FindingDisposition::AcceptedWithDisposition
+                        | FindingDisposition::Rejected
                         | FindingDisposition::Remediated => {}
                     }
                 }
-            }
-            RailStatus::Failed
-                if rail
-                    .findings
-                    .iter()
-                    .any(|finding| finding.disposition == FindingDisposition::Remediated) =>
-            {
-                bail!(
-                    "rail {:?} claims failed while carrying a remediated finding; \
-                     a remediated finding belongs on a rail that no longer fails",
-                    rail_name_label(rail.rail)
-                );
             }
             _ => {}
         }
@@ -501,11 +493,13 @@ fn load_contract(path: &std::path::Path) -> Result<CandidateSecurityContract> {
     Ok(contract)
 }
 
-pub fn run_cli() -> Result<()> {
-    let cli = Cli::parse();
-    let contract = load_contract(&cli.contract)?;
+pub fn run(path: &std::path::Path) -> Result<()> {
+    let contract = load_contract(path)?;
     validate_contract(&contract)?;
-    println!("candidate security contract {} is closed and valid", cli.contract.display());
+    println!(
+        "candidate security contract {} is structurally valid; exact identity binding and audit results are not verified",
+        path.display()
+    );
     Ok(())
 }
 
@@ -520,10 +514,19 @@ mod tests {
 
     #[test]
     fn baseline_inventory_is_valid_and_deterministic() -> Result<()> {
-        validate_contract(&contract())?;
-        let left = serde_json::to_string(&contract())?;
-        let right = serde_json::to_string(&contract())?;
-        assert_eq!(left, right, "identical inputs must serialize identically");
+        let first = contract();
+        let mut independently_assembled: CandidateSecurityContract =
+            serde_json::from_value(serde_json::to_value(&first)?)?;
+        independently_assembled.tools = first.tools.iter().rev().cloned().collect();
+        validate_contract(&first)?;
+        validate_contract(&independently_assembled)?;
+        let left = serde_json::to_string(&first)?;
+        let right = serde_json::to_string(&independently_assembled)?;
+        if left != right {
+            bail!(
+                "equivalent contracts assembled in different tool order must serialize identically"
+            );
+        }
         Ok(())
     }
 
@@ -824,36 +827,116 @@ mod tests {
     }
 
     #[test]
-    fn rejects_pass_rail_carrying_rejected_finding() -> Result<()> {
+    fn rejected_finding_does_not_override_explicit_rail_status() -> Result<()> {
         let mut candidate = contract();
-        candidate.rails[0].status = RailStatus::Pass;
-        candidate.rails[0].findings.push(SecurityFinding {
+        let rail = candidate.rails.first_mut().ok_or_else(|| eyre!("missing first rail"))?;
+        rail.status = RailStatus::Pass;
+        rail.findings.push(SecurityFinding {
             finding_id: "F-2".to_string(),
             summary: "human rejected this finding".to_string(),
             disposition: FindingDisposition::Rejected,
         });
-        let error = match validate_contract(&candidate) {
-            Ok(()) => return Err(eyre!("pass rail with rejected finding unexpectedly passed")),
-            Err(error) => error,
-        };
-        assert!(error.to_string().contains("rejected finding"));
+        validate_contract(&candidate)?;
+        let rail = candidate.rails.first_mut().ok_or_else(|| eyre!("missing first rail"))?;
+        rail.status = RailStatus::NotProven;
+        validate_contract(&candidate)?;
+        if candidate.rails.first().map(|rail| rail.status) != Some(RailStatus::NotProven) {
+            bail!("a finding disposition must not promote the rail outcome");
+        }
         Ok(())
     }
 
     #[test]
-    fn rejects_failed_rail_carrying_remediated_finding() -> Result<()> {
+    fn partial_remediation_preserves_failed_rail() -> Result<()> {
         let mut candidate = contract();
-        candidate.rails[0].status = RailStatus::Failed;
-        candidate.rails[0].findings.push(SecurityFinding {
+        let rail = candidate.rails.first_mut().ok_or_else(|| eyre!("missing first rail"))?;
+        rail.status = RailStatus::Failed;
+        rail.findings.push(SecurityFinding {
             finding_id: "F-3".to_string(),
             summary: "already fixed".to_string(),
             disposition: FindingDisposition::Remediated,
         });
-        let error = match validate_contract(&candidate) {
-            Ok(()) => return Err(eyre!("failed rail with remediated finding unexpectedly passed")),
-            Err(error) => error,
+        rail.findings.push(SecurityFinding {
+            finding_id: "F-4".to_string(),
+            summary: "remaining failure".to_string(),
+            disposition: FindingDisposition::NeedsReview,
+        });
+        validate_contract(&candidate)?;
+        if candidate.rails.first().map(|rail| rail.status) != Some(RailStatus::Failed) {
+            bail!("remediating one finding must not promote the aggregate rail outcome");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn absent_container_requires_evidenced_not_applicable_status() -> Result<()> {
+        for status in [RailStatus::Pass, RailStatus::Failed, RailStatus::NotProven] {
+            let mut candidate = contract();
+            candidate.container_required = false;
+            candidate.subjects.container_digest = None;
+            let rail = candidate.rails.get_mut(3).ok_or_else(|| eyre!("missing container rail"))?;
+            rail.status = status;
+            let error = validate_contract(&candidate)
+                .err()
+                .ok_or_else(|| eyre!("absent container unexpectedly accepted {status:?}"))?;
+            if !error.to_string().contains("must be not_applicable") {
+                bail!("container status failed for an unrelated reason: {error}");
+            }
+        }
+        let mut candidate = contract();
+        candidate.container_required = false;
+        candidate.subjects.container_digest = None;
+        let rail = candidate.rails.get_mut(3).ok_or_else(|| eyre!("missing container rail"))?;
+        rail.status = RailStatus::NotApplicable;
+        rail.applicability_evidence = Some("topology excludes container subject".to_string());
+        validate_contract(&candidate)?;
+        candidate
+            .rails
+            .get_mut(3)
+            .ok_or_else(|| eyre!("missing container rail"))?
+            .applicability_evidence = None;
+        let error = validate_contract(&candidate)
+            .err()
+            .ok_or_else(|| eyre!("absent container without applicability evidence passed"))?;
+        if !error.to_string().contains("without applicability evidence") {
+            bail!("missing evidence failed for an unrelated reason: {error}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn finding_identity_is_unique_within_each_rail() -> Result<()> {
+        let finding = SecurityFinding {
+            finding_id: "F-1".to_string(),
+            summary: "named observation".to_string(),
+            disposition: FindingDisposition::NeedsReview,
         };
-        assert!(error.to_string().contains("remediated finding"));
+        let mut candidate = contract();
+        candidate
+            .rails
+            .first_mut()
+            .ok_or_else(|| eyre!("missing first rail"))?
+            .findings
+            .push(finding.clone());
+        candidate
+            .rails
+            .get_mut(1)
+            .ok_or_else(|| eyre!("missing second rail"))?
+            .findings
+            .push(finding.clone());
+        validate_contract(&candidate)?;
+        candidate
+            .rails
+            .first_mut()
+            .ok_or_else(|| eyre!("missing first rail"))?
+            .findings
+            .push(finding);
+        let error = validate_contract(&candidate)
+            .err()
+            .ok_or_else(|| eyre!("duplicate finding identity unexpectedly passed"))?;
+        if !error.to_string().contains("duplicate finding id") {
+            bail!("duplicate finding failed for an unrelated reason: {error}");
+        }
         Ok(())
     }
 
