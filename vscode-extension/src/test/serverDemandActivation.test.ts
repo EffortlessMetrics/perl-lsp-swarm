@@ -348,6 +348,29 @@ describe('deferred language-server startup (#8180)', () => {
     );
   });
 
+  test('registered health check settles while startup failure dialog remains open', async () => {
+    mockLanguageClientStart.mockImplementationOnce(async () => {
+      throw new Error('dialog-blocked startup refusal');
+    });
+    jest
+      .mocked(vscode.window.showErrorMessage)
+      .mockImplementationOnce(() => new Promise<undefined>(() => undefined));
+
+    await activate(makeContext(makeExtensionRoot()));
+
+    const result = await Promise.race([
+      vscode.commands.executeCommand('perl-lsp.runHealthCheck') as Promise<{
+        ok: boolean;
+        checks: Array<{ label: string; status: string }>;
+      }>,
+      new Promise<never>((_, reject) => {
+        setTimeout(() => reject(new Error('health check remained blocked by startup dialog')), 500);
+      }),
+    ]);
+    expect(result.ok).toBe(false);
+    expect(result.checks.find((check) => check.label === 'LSP runtime')?.status).toBe('error');
+  });
+
   test('a later health check reports recovery while keeping optional warnings separate', async () => {
     mockLanguageClientStart
       .mockImplementationOnce(async () => {
