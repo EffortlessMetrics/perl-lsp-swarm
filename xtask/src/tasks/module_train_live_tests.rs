@@ -148,6 +148,24 @@ fn a_dirty_probe_fails_closed_even_when_heads_agree() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn a_dirty_manifest_fails_closed_even_without_dirty_path_rows() -> Result<()> {
+    let mut raw = raw_from_text(CORPUS_FIXTURE)?;
+    raw.git_local.head = Some(current_head()?);
+    raw.git_local.manifest_dirty = true;
+    let (source, head) = probe()?;
+    let snapshot = normalize(&raw, &loaded()?, &TreeProbe { source: &source, head, dirty: false })?;
+    if !snapshot
+        .semantic
+        .nodes
+        .iter()
+        .all(|node| node.limitations.iter().any(|l| l == PROBED_FROM_A_DIFFERENT_TREE))
+    {
+        color_eyre::eyre::bail!("manifest-dirty observation must fail closed");
+    }
+    Ok(())
+}
+
 /// An unestablishable probed head fails closed rather than silently claiming
 /// the observation and the tree agree.
 #[test]

@@ -2007,6 +2007,7 @@ pub fn normalize(
     // than presenting one revision's actions beside another's states.
     let probed_a_different_tree = probe.dirty
         || !raw.git_local.dirty_paths.is_empty()
+        || raw.git_local.manifest_dirty
         || match (probe.head.as_deref(), raw.git_local.head.as_deref()) {
             (Some(probed), Some(observed)) => probed != observed,
             _ => true,
