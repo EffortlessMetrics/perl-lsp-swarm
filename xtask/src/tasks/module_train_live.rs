@@ -2190,11 +2190,16 @@ pub fn normalize(
             .collect();
         let misbound_refs = misbound_by_node.get(&fact.node_id).cloned().unwrap_or_default();
 
+        let (classification_c02_state, classification_c02_reasons) = if probed_a_different_tree {
+            ("not_proven".to_string(), vec![PROBED_FROM_A_DIFFERENT_TREE.to_string()])
+        } else {
+            (status.state.as_str().to_string(), status.reasons.clone())
+        };
         let node_facts = NodeFacts {
             role: fact.role.clone(),
             buildable: fact.buildable,
-            c02_state: status.state.as_str().to_string(),
-            c02_reasons: status.reasons.clone(),
+            c02_state: classification_c02_state,
+            c02_reasons: classification_c02_reasons,
             open_bound: open_bound.iter().map(|pr| candidate_view(pr)).collect(),
             merged_bound: merged_bound.iter().map(|pr| candidate_view(pr)).collect(),
             closed_bound: closed_bound.iter().map(|pr| candidate_view(pr)).collect(),
@@ -2502,11 +2507,21 @@ pub fn validate_snapshot(snapshot: &LiveSnapshot, loaded: &LoadedManifest) -> Re
             );
         }
         let bound = bound_by_node.get(&node.node_id).cloned().unwrap_or_default();
+        let probed_a_different_tree =
+            node.limitations.iter().any(|limitation| limitation == PROBED_FROM_A_DIFFERENT_TREE);
         let facts = NodeFacts {
             role: fact.role.clone(),
             buildable: fact.buildable,
-            c02_state: node.c02_state.clone(),
-            c02_reasons: node.c02_reasons.clone(),
+            c02_state: if probed_a_different_tree {
+                "not_proven".to_string()
+            } else {
+                node.c02_state.clone()
+            },
+            c02_reasons: if probed_a_different_tree {
+                vec![PROBED_FROM_A_DIFFERENT_TREE.to_string()]
+            } else {
+                node.c02_reasons.clone()
+            },
             // Misbound refs already surfaced on the stored node's flags; the
             // re-derivation reads them back from the snapshot's own record.
             misbound_refs: snapshot

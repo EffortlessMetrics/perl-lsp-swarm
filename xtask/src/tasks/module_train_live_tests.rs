@@ -52,6 +52,12 @@ fn normalize_text(text: &str) -> Result<LiveSnapshot> {
     normalize_raw(&raw_from_text(text)?)
 }
 
+fn normalize_clean_surface() -> Result<LiveSnapshot> {
+    let mut raw = raw_from_text(CLEAN_SURFACE_FIXTURE)?;
+    raw.git_local.head = Some(current_head()?);
+    normalize_raw(&raw)
+}
+
 fn node<'a>(snapshot: &'a LiveSnapshot, node_id: &str) -> Result<&'a NodeLive> {
     snapshot
         .semantic
@@ -183,6 +189,32 @@ fn an_unknown_probed_head_fails_closed() -> Result<()> {
             .all(|node| node.limitations.iter().any(|l| l == PROBED_FROM_A_DIFFERENT_TREE)),
         "an unknown probed head must not read as agreement"
     );
+    Ok(())
+}
+
+#[test]
+fn mismatched_tree_gates_start_but_keeps_candidate_action() -> Result<()> {
+    let snapshot = normalize_text(CORPUS_FIXTURE)?;
+    let start_leaf = node(&snapshot, "M07A")?;
+    if start_leaf.action != "NOT_PROVEN"
+        || !start_leaf
+            .limitations
+            .iter()
+            .any(|limitation| limitation == PROBED_FROM_A_DIFFERENT_TREE)
+    {
+        color_eyre::eyre::bail!(
+            "a mismatched ready leaf must not START: action={} limitations={:?}",
+            start_leaf.action,
+            start_leaf.limitations
+        );
+    }
+    let candidate = node(&snapshot, "M01")?;
+    if candidate.action != "REVIEW" {
+        color_eyre::eyre::bail!(
+            "a candidate-only review action should remain actionable: {}",
+            candidate.action
+        );
+    }
     Ok(())
 }
 
@@ -556,16 +588,16 @@ fn main_movement_alone_changes_no_action() -> Result<()> {
 fn corpus_classifies_every_expected_action() -> Result<()> {
     let snapshot = normalize_text(CORPUS_FIXTURE)?;
     let expect = [
-        ("C01", "WAIT", "landed_current_tree_no_writer_action"),
+        ("C01", "NOT_PROVEN", "c02_state_not_actionable:not_proven"),
         ("C02", "WAIT", "landed_current_tree_no_writer_action"),
         // C03's implementation is on the tree and its semantic probe (#11626)
         // now sees it, so it is landed rather than statically blocked on C02.
-        ("C03", "WAIT", "landed_current_tree_no_writer_action"),
+        ("C03", "NOT_PROVEN", "c02_state_not_actionable:not_proven"),
         ("CTRL", "STOP", "controller_selected_as_implementation"),
         ("E00A", "REPAIR", "review_changes_requested"),
         ("E00C", "RECONCILE", "multiple_bound_candidates_need_bounded_ownership_decision"),
         ("M01", "REVIEW", "review_pending"),
-        ("M07A", "RECONCILE", "unique_work_surface:local_branch:wip/10573-context-contract"),
+        ("M07A", "NOT_PROVEN", "c02_state_not_actionable:not_proven"),
         ("M07B", "RECONCILE", "closed_candidate_unique_work_needs_salvage_decision"),
         ("M07C", "RECONCILE", "binding_agreement_failed_needs_bounded_ownership_decision"),
         ("L09A", "WAIT", "merge_commit_not_ancestor_of_observed_head"),
@@ -596,7 +628,11 @@ fn corpus_classifies_every_expected_action() -> Result<()> {
     // action follows its #11626 current-tree probe, never its issue state.
     let m01 = node(&snapshot, "M01")?;
     assert_eq!(m01.action, "REVIEW");
-    assert_eq!(node(&snapshot, "C03")?.action, "WAIT", "C03 follows its current-tree probe");
+    assert_eq!(
+        node(&snapshot, "C03")?.action,
+        "NOT_PROVEN",
+        "C03 cannot use a mismatched current-tree probe"
+    );
     // Surfaces are diagnostics that never outvote the candidate: M01 keeps its
     // remote surface while its action stays REVIEW.
     assert!(m01.surfaces.iter().any(|surface| surface.kind == "remote_branch"));
@@ -619,7 +655,7 @@ fn corpus_classifies_every_expected_action() -> Result<()> {
 
 #[test]
 fn clean_surface_fixture_start_and_unbound_surface_reconcile() -> Result<()> {
-    let snapshot = normalize_text(CLEAN_SURFACE_FIXTURE)?;
+    let snapshot = normalize_clean_surface()?;
     // A pushed, clean, name-associated branch is an ownership decision, not a
     // silent START (the branch may be this node's unique work).
     let m01 = node(&snapshot, "M01")?;
@@ -754,6 +790,7 @@ fn instrument_failures_are_not_proven_never_absence() -> Result<()> {
 #[test]
 fn git_remote_failure_degrades_only_remote_facts() -> Result<()> {
     let mut raw = raw_from_text(CLEAN_SURFACE_FIXTURE)?;
+    raw.git_local.head = Some(current_head()?);
     let record = serde_json::from_value::<InstrumentRecord>(serde_json::json!({
         "source": "test", "state": "failed", "detail": "forced by test"
     }))?;
@@ -781,6 +818,7 @@ fn gone_upstream_counts_as_unpushed_unique_work() -> Result<()> {
     // branch is unique work and must gate START exactly like any other
     // unpushed surface (falsifier 9 family).
     let mut raw = raw_from_text(CLEAN_SURFACE_FIXTURE)?;
+    raw.git_local.head = Some(current_head()?);
     raw.git_local.branches[0].upstream = Some("origin/tooling/8497-requests".to_string());
     raw.git_local.branches[0].ahead = Some(0);
     raw.git_local.branches[0].behind = None;
@@ -1009,7 +1047,7 @@ fn written_snapshot_round_trips_through_check_next_explain() -> Result<()> {
     assert!(next.contains("M07A"));
     assert!(next.contains("at most one action per writer/conflict surface"));
     // START remains reachable on a clean frontier (clean-surface fixture).
-    let clean = normalize_text(CLEAN_SURFACE_FIXTURE)?;
+    let clean = normalize_clean_surface()?;
     let clean_next = render_next(&clean);
     assert!(
         clean_next.contains("START (2)"),
@@ -1018,7 +1056,7 @@ fn written_snapshot_round_trips_through_check_next_explain() -> Result<()> {
 
     let explain = render_explain(&reloaded, &loaded()?, "C03")?;
     assert!(explain.contains("module-train live explain C03"));
-    assert!(explain.contains("action: WAIT"));
+    assert!(explain.contains("action: NOT_PROVEN"));
     assert!(explain.contains("closeout route"));
     assert!(render_explain(&reloaded, &loaded()?, "NOPE").is_err());
     Ok(())
