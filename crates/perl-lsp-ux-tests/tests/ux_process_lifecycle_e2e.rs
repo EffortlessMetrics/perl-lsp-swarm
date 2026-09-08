@@ -147,6 +147,88 @@ impl LifecycleProcess {
         }
     }
 
+    fn strict_response(&self, id: u64, timeout: Duration) -> Result<Value> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                bail!(
+                    "timed out after {}ms waiting for strict response id={id}\n{}",
+                    timeout.as_millis(),
+                    self.render_stderr_tail()
+                );
+            }
+
+            match self.messages.recv_timeout(remaining.min(Duration::from_millis(250))) {
+                Ok(Ok(message))
+                    if message.get("result").is_some() || message.get("error").is_some() =>
+                {
+                    let observed_id = message.get("id").and_then(Value::as_u64);
+                    ensure!(
+                        observed_id == Some(id),
+                        "unexpected terminal response while waiting for id={id}: {message:#}"
+                    );
+                    ensure!(
+                        message.get("jsonrpc").and_then(Value::as_str) == Some("2.0"),
+                        "response id={id} did not carry the JSON-RPC 2.0 envelope: \
+                         {message:#}\n{}",
+                        self.render_stderr_tail()
+                    );
+                    return Ok(message);
+                }
+                Ok(Ok(_)) => {}
+                Ok(Err(error)) => {
+                    bail!(
+                        "server stdout reader failed before strict response id={id}: {error}\n{}",
+                        self.render_stderr_tail()
+                    );
+                }
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => {
+                    bail!(
+                        "server stdout reader disconnected before strict response id={id}\n{}",
+                        self.render_stderr_tail()
+                    );
+                }
+            }
+        }
+    }
+
+    fn notification_for_uri(&self, method: &str, uri: &str, timeout: Duration) -> Result<Value> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                bail!(
+                    "timed out after {}ms waiting for {method} for {uri}\n{}",
+                    timeout.as_millis(),
+                    self.render_stderr_tail()
+                );
+            }
+            match self.messages.recv_timeout(remaining.min(Duration::from_millis(250))) {
+                Ok(Ok(message))
+                    if message.get("method").and_then(Value::as_str) == Some(method)
+                        && message.pointer("/params/uri").and_then(Value::as_str) == Some(uri) =>
+                {
+                    return Ok(message);
+                }
+                Ok(Ok(message))
+                    if message.get("result").is_some() || message.get("error").is_some() =>
+                {
+                    bail!("unexpected terminal response while waiting for {method}: {message:#}");
+                }
+                Ok(Ok(_)) => {}
+                Ok(Err(error)) => {
+                    bail!("server stdout reader failed waiting for {method}: {error}")
+                }
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => {
+                    bail!("server stdout reader disconnected waiting for {method}");
+                }
+            }
+        }
+    }
+
     fn close_stdin(&mut self) {
         let _ = self.stdin.take();
     }
@@ -171,6 +253,51 @@ impl LifecycleProcess {
     }
 
     fn join_readers(&mut self, timeout: Duration) -> Result<()> {
+        self.wait_for_readers(timeout)?;
+
+        if let Some(handle) = self.stdout_thread.take() {
+            handle.join().map_err(|_| anyhow!("stdout reader thread panicked"))?;
+        }
+        if let Some(handle) = self.stderr_thread.take() {
+            handle.join().map_err(|_| anyhow!("stderr reader thread panicked"))?;
+        }
+        while let Ok(message) = self.messages.try_recv() {
+            if let Err(error) = message {
+                bail!("server emitted invalid LSP output: {error}\n{}", self.render_stderr_tail());
+            }
+        }
+        Ok(())
+    }
+
+    fn join_readers_strict(&mut self, timeout: Duration) -> Result<()> {
+        self.wait_for_readers(timeout)?;
+
+        if let Some(handle) = self.stdout_thread.take() {
+            handle.join().map_err(|_| anyhow!("stdout reader thread panicked"))?;
+        }
+        if let Some(handle) = self.stderr_thread.take() {
+            handle.join().map_err(|_| anyhow!("stderr reader thread panicked"))?;
+        }
+        while let Ok(message) = self.messages.try_recv() {
+            match message {
+                Ok(message)
+                    if message.get("result").is_some() || message.get("error").is_some() =>
+                {
+                    bail!("unexpected terminal response after expected responses: {message:#}");
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    bail!(
+                        "server emitted invalid LSP output: {error}\n{}",
+                        self.render_stderr_tail()
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn wait_for_readers(&self, timeout: Duration) -> Result<()> {
         let deadline = Instant::now() + timeout;
         loop {
             let stdout_finished =
@@ -187,18 +314,6 @@ impl LifecycleProcess {
                 );
             }
             thread::sleep(Duration::from_millis(10));
-        }
-
-        if let Some(handle) = self.stdout_thread.take() {
-            handle.join().map_err(|_| anyhow!("stdout reader thread panicked"))?;
-        }
-        if let Some(handle) = self.stderr_thread.take() {
-            handle.join().map_err(|_| anyhow!("stderr reader thread panicked"))?;
-        }
-        while let Ok(message) = self.messages.try_recv() {
-            if let Err(error) = message {
-                bail!("server emitted invalid LSP output: {error}\n{}", self.render_stderr_tail());
-            }
         }
         Ok(())
     }
@@ -420,7 +535,20 @@ fn stdio_navigation_matches_exact_request_and_current_edit() -> Result<()> {
         binary_available(),
         "perllsp binary is not available; build it before running exact-process proof"
     );
-    let binary = resolve_binary().context("UX binary became unavailable after preflight")?;
+    let configured_binary = std::env::var("PERL_LSP_BIN").context(
+        "exact-process navigation proof requires PERL_LSP_BIN to name the candidate binary",
+    )?;
+    ensure!(
+        !configured_binary.trim().is_empty(),
+        "PERL_LSP_BIN must not be empty for exact-process navigation proof"
+    );
+    let binary = canonical_executable(&configured_binary)?;
+    ensure!(
+        binary.is_file(),
+        "PERL_LSP_BIN does not identify a regular executable: {}",
+        binary.display()
+    );
+    let binary_path = binary.to_str().context("candidate binary path was not valid UTF-8")?;
     let workspace = TempDir::new().context("failed to create navigation workspace")?;
     let lib = workspace.path().join("lib");
     std::fs::create_dir_all(&lib).context("failed to create navigation lib directory")?;
@@ -431,7 +559,7 @@ fn stdio_navigation_matches_exact_request_and_current_edit() -> Result<()> {
     let root_uri = file_uri(workspace.path())?;
     let module_uri = file_uri(&module)?;
     let client_uri = file_uri(&client)?;
-    let mut server = LifecycleProcess::spawn(&binary, workspace.path())?;
+    let mut server = LifecycleProcess::spawn(binary_path, workspace.path())?;
 
     server.send(&json!({
         "jsonrpc": "2.0", "id": 1, "method": "initialize",
@@ -458,7 +586,7 @@ fn stdio_navigation_matches_exact_request_and_current_edit() -> Result<()> {
             "textDocument": { "uri": client_uri }, "position": { "line": 2, "character": 10 }
         }
     }))?;
-    let initial = server.response(2, REQUEST_TIMEOUT)?;
+    let initial = server.strict_response(2, REQUEST_TIMEOUT)?;
     exact_definition(&initial, &module_uri, 1)?;
 
     server.send(&json!({
@@ -467,6 +595,7 @@ fn stdio_navigation_matches_exact_request_and_current_edit() -> Result<()> {
             "contentChanges": [{ "text": NAVIGATION_MODULE_V2 }]
         }
     }))?;
+    server.notification_for_uri("textDocument/publishDiagnostics", &module_uri, REQUEST_TIMEOUT)?;
     let expected_current_line = 2;
     let mut current = None;
     for attempt in 0_u64..8 {
@@ -476,7 +605,7 @@ fn stdio_navigation_matches_exact_request_and_current_edit() -> Result<()> {
                 "textDocument": { "uri": client_uri }, "position": { "line": 2, "character": 10 }
             }
         }))?;
-        let response = server.response(request_id, REQUEST_TIMEOUT)?;
+        let response = server.strict_response(request_id, REQUEST_TIMEOUT)?;
         if response.pointer("/error/code").and_then(Value::as_i64) == Some(-32800)
             || response.pointer("/result").is_some_and(Value::is_array)
                 && response["result"].as_array().is_some_and(Vec::is_empty)
@@ -491,12 +620,12 @@ fn stdio_navigation_matches_exact_request_and_current_edit() -> Result<()> {
     ensure!(current.is_some(), "edited navigation never produced the expected current result");
 
     server.send(&json!({ "jsonrpc": "2.0", "id": 100, "method": "shutdown", "params": null }))?;
-    let shutdown = server.response(100, REQUEST_TIMEOUT)?;
+    let shutdown = server.strict_response(100, REQUEST_TIMEOUT)?;
     ensure!(shutdown.get("error").is_none_or(Value::is_null), "shutdown failed: {shutdown:#}");
     server.send(&json!({ "jsonrpc": "2.0", "method": "exit", "params": null }))?;
     let status = server.wait_for_exit(EXIT_TIMEOUT)?;
     server.close_stdin();
-    server.join_readers(READER_TIMEOUT)?;
+    server.join_readers_strict(READER_TIMEOUT)?;
     ensure!(status.success(), "navigation server exited unsuccessfully: {status}");
     Ok(())
 }
