@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
   "owner_issue": 7418,
-  "reason": "The candidate adds the Windows Test Explorer prove stdin-list path and grows only the generated out/extension.js bundle by 1294 bytes. The exact Windows x64 VSIX inventory remains 29 files and 1865635 bytes; this declaration records the candidate baseline and package transition for issue #7418. It does not establish installed editor behavior or alter package policy.",
+  "reason": "The candidate adds the Windows Test Explorer prove stdin-list path and process-tree cleanup proof. The exact Windows x64 VSIX inventory remains 29 files and 1866811 bytes; package.json is 59413 bytes and out/extension.js is 1688966 bytes. This declaration records the candidate baseline and package transition for issue #7418. It does not establish installed editor behavior or alter package policy.",
   "base_baseline_file_sha256": "eaef617cee329a98c217809c7b330c51c8ea246eb13b983ecc78d83e4487d945",
-  "candidate_baseline_file_sha256": "8ca1c905b9ee5d6fee3ee9e1376095f792f8bb5df42f008c6a9417b7daee4122",
+  "candidate_baseline_file_sha256": "4e148581fe7caff83e13b7d0f617d58c7a957fbc1bb5f1c8b617b9fbd2bd83da",
   "base_inventory_sha256": "2b68285babc5d03bd46afa00260919d43ed466415a40fc92e3a4ce79ed579766",
-  "candidate_inventory_sha256": "6c9817d0c6b6ef82604c39db9df7a960badacb32ce56e1eed9e03ac29eb41ec8"
+  "candidate_inventory_sha256": "d44214d4914ba1bd8b35d300c9571675e8ae3a7ae526ea017d96c4dc6ff3ea92"
 }
