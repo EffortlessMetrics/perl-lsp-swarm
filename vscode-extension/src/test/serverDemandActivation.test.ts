@@ -299,6 +299,44 @@ describe('deferred language-server startup (#8180)', () => {
     expect(mockLanguageClientStart).toHaveBeenCalledTimes(1);
   });
 
+  test('registered Report Issue discards a version probe from a replaced generation', async () => {
+    setOpenDocuments([fakeDocument('perl')]);
+    await activate(makeContext(makeExtensionRoot()));
+    await waitForStarts(1);
+
+    let versionCallback:
+      | ((error: Error | null, stdout: string, stderr: string) => void)
+      | undefined;
+    mockExecFile.mockImplementationOnce((...args: unknown[]) => {
+      versionCallback = args[args.length - 1] as (
+        error: Error | null,
+        stdout: string,
+        stderr: string,
+      ) => void;
+    });
+    const showInformationMessage = vscode.window.showInformationMessage as jest.Mock;
+    const originalShowInformationMessage = showInformationMessage.getMockImplementation();
+    showInformationMessage.mockResolvedValue('Copy Support Packet');
+
+    try {
+      const report = vscode.commands.executeCommand('perl-lsp.reportIssue');
+      await waitUntil(() => versionCallback !== undefined);
+
+      await vscode.commands.executeCommand('perl-lsp.restart');
+      versionCallback?.(null, 'perllsp 0.16.99\n', '');
+      await report;
+
+      expect(vscode.env.clipboard.writeText).toHaveBeenCalledWith(
+        expect.stringContaining('perllsp: unknown not_proven not_proven'),
+      );
+      expect(vscode.env.clipboard.writeText).not.toHaveBeenCalledWith(
+        expect.stringContaining('perllsp 0.16.99'),
+      );
+    } finally {
+      showInformationMessage.mockImplementation(originalShowInformationMessage);
+    }
+  });
+
   test('a Perl document in a virtual scheme does not start the server', async () => {
     await activate(makeContext(makeExtensionRoot()));
     await settle();
