@@ -546,6 +546,7 @@ fn definition_after_readiness(
             }
         }))?;
         let response = server.strict_response(request_id, REQUEST_TIMEOUT)?;
+        // Retry only missing or superseded facts; a stale successful location must fail.
         let transient = response.pointer("/error/code").and_then(Value::as_i64) == Some(-32800)
             || response.pointer("/result").and_then(Value::as_array).is_some_and(Vec::is_empty);
         if transient {
