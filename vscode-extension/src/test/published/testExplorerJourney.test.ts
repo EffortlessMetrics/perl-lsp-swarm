@@ -103,7 +103,7 @@ suite('Installed Test Explorer prove journey', function () {
         ranFixture,
         `testing.runAll did not execute the selected fixture after ${runAttempts} attempts`,
       );
-      console.log(`[installed-test-explorer] runAll attempts: ${runAttempts}`);
+      process.stdout.write(`[installed-test-explorer] runAll attempts: ${runAttempts}\n`);
       assert.ok(
         fs.existsSync(marker),
         'testing.runAll returned before the fixture final marker was written',
