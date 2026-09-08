@@ -70,7 +70,9 @@ class FakeClient implements LifecycleClient {
    */
   serverProcess: FakeServerProcess | undefined = new FakeServerProcess();
   start = jest.fn(async () => undefined);
-  stop = jest.fn(async () => undefined);
+  stop = jest.fn(async () => {
+    this.serverProcess = undefined;
+  });
   dispose = jest.fn(async () => undefined);
 
   onDidChangeState(_listener: (event: unknown) => void): LifecycleDisposable {
@@ -101,6 +103,37 @@ function makeController(
     { stopTimeoutMs },
   );
   return { controller, clients };
+}
+
+function makeStartupProcessController(
+  terminalCheck: (child: FakeServerProcess) => boolean | Promise<boolean> = (child) =>
+    awaitServerProcessExit(child, 10, () => !child.exited),
+): {
+  controller: LanguageClientLifecycle<FakeClient>;
+  child: FakeServerProcess;
+  clients: FakeClient[];
+} {
+  const child = new FakeServerProcess();
+  const first = new FakeClient();
+  first.serverProcess = child;
+  const clients: FakeClient[] = [];
+  let startAttempts = 0;
+  const controller = new LanguageClientLifecycle<FakeClient>({
+    resolveServerPath: async () => '/server/perllsp',
+    createClient: () => {
+      const client = clients.length === 0 ? first : new FakeClient();
+      clients.push(client);
+      return client;
+    },
+    onStarted: async () => {
+      if (startAttempts++ === 0) {
+        throw new Error('simulated startup failure');
+      }
+    },
+    captureStopWitness: (client) => serverProcessOf(client),
+    isClientTerminal: (_client, witness) => terminalCheck(witness as FakeServerProcess),
+  });
+  return { controller, child, clients };
 }
 
 describe('LanguageClientLifecycle client cleanup admission', () => {
@@ -149,6 +182,22 @@ describe('LanguageClientLifecycle client cleanup admission', () => {
     } finally {
       jest.useRealTimers();
     }
+  });
+
+  test('an external stop intent cancels a pending restart before replacement startup', async () => {
+    const { controller, clients } = makeController();
+    const first = await controller.start();
+    const pendingStop = new DeferredVoid();
+    first!.stop.mockReturnValue(pendingStop.promise);
+
+    const restart = controller.restart();
+    const externalStop = controller.stop();
+    pendingStop.resolve();
+
+    await expect(restart).resolves.toBeUndefined();
+    await expect(externalStop).resolves.toBeUndefined();
+    expect(clients).toHaveLength(1);
+    expect(controller.snapshot.state).toBe('stopped');
   });
 
   test('listener cleanup failure blocks a replacement even when stop and dispose resolve', async () => {
@@ -269,6 +318,24 @@ describe('LanguageClientLifecycle client cleanup admission', () => {
     expect(first!.serverProcess).toBeUndefined();
     expect(clients).toHaveLength(1);
     expect(controller.snapshot.state).toBe('failed');
+  });
+
+  test('a settled stop rejection admits replacement after the captured process exits', async () => {
+    const { controller, clients } = makeProcessBoundController();
+    const first = await controller.start();
+    const child = first!.serverProcess!;
+    rejectStopLikeLanguageClient(first!);
+
+    await expect(controller.restart()).rejects.toMatchObject({ reason: 'cleanup-incomplete' });
+    expect(clients).toHaveLength(1);
+
+    child.exit();
+    const replacement = await controller.restart();
+
+    expect(replacement).toBe(clients[1]);
+    expect(clients).toHaveLength(2);
+    expect(first!.stop).toHaveBeenCalledTimes(1);
+    expect(first!.dispose).toHaveBeenCalledTimes(1);
   });
 
   test('a library-cleared process handle blocks replacement when cleanup calls resolve', async () => {
@@ -442,5 +509,193 @@ describe('LanguageClientLifecycle client cleanup admission', () => {
     expect((controller.snapshot.error as Error).message).toContain(
       'replacement startup is blocked',
     );
+  });
+
+  test('startup cleanup retains the exact live process witness before admitting no replacement', async () => {
+    const startupError = new Error('simulated startup failure');
+    const child = new FakeServerProcess();
+    const client = new FakeClient();
+    client.serverProcess = child;
+    const captured: unknown[] = [];
+    const clients: FakeClient[] = [];
+    let startAttempts = 0;
+    const controller = new LanguageClientLifecycle<FakeClient>({
+      resolveServerPath: async () => '/server/perllsp',
+      createClient: () => {
+        const next = clients.length === 0 ? client : new FakeClient();
+        clients.push(next);
+        return next;
+      },
+      onStarted: async () => {
+        if (startAttempts++ === 0) {
+          throw startupError;
+        }
+      },
+      captureStopWitness: (startedClient) => {
+        const witness = serverProcessOf(startedClient);
+        captured.push(witness);
+        return witness;
+      },
+      isClientTerminal: (_startedClient, witness) =>
+        awaitServerProcessExit(witness as ServerProcessLike | undefined, 10, () => true),
+    });
+
+    const rejection = await controller.start().catch((error: unknown) => error);
+
+    expect(rejection).toMatchObject({ reason: 'cleanup-incomplete' });
+    expect((rejection as Error).cause).toBe(startupError);
+    expect(captured).toEqual([child]);
+    expect(child.exited).toBe(false);
+    expect(clients).toHaveLength(1);
+    await expect(controller.start()).rejects.toMatchObject({ reason: 'cleanup-incomplete' });
+    await expect(controller.restart()).rejects.toMatchObject({ reason: 'cleanup-incomplete' });
+
+    child.exit();
+    const firstRestart = controller.restart();
+    const secondRestart = controller.restart();
+    expect(secondRestart).toBe(firstRestart);
+    const replacement = await firstRestart;
+    expect(replacement).toBe(clients[1]);
+    expect(clients).toHaveLength(2);
+  });
+
+  test('a rejected startup with completed cleanup recovers after the captured child exits', async () => {
+    const startupError = new Error('simulated start rejection');
+    const child = new FakeServerProcess();
+    const client = new FakeClient();
+    client.serverProcess = child;
+    client.start.mockRejectedValueOnce(startupError);
+    const clients: FakeClient[] = [];
+    const controller = new LanguageClientLifecycle<FakeClient>({
+      resolveServerPath: async () => '/server/perllsp',
+      createClient: () => {
+        const next = clients.length === 0 ? client : new FakeClient();
+        clients.push(next);
+        return next;
+      },
+      captureStopWitness: (startedClient) => serverProcessOf(startedClient),
+      isClientTerminal: (_startedClient, witness) =>
+        awaitServerProcessExit(witness as ServerProcessLike | undefined, 10, () => true),
+    });
+
+    const rejection = await controller.start().catch((error: unknown) => error);
+    expect(rejection).toMatchObject({ reason: 'cleanup-incomplete' });
+    expect((rejection as Error).cause).toBe(startupError);
+    expect(child.exited).toBe(false);
+    expect(clients).toHaveLength(1);
+
+    await expect(controller.restart()).rejects.toMatchObject({ reason: 'cleanup-incomplete' });
+    expect(clients).toHaveLength(1);
+
+    child.exit();
+    const replacement = await controller.restart();
+    expect(replacement).toBe(clients[1]);
+    expect(clients).toHaveLength(2);
+  });
+
+  test('startup cleanup does not recover a process subject when client disposal failed', async () => {
+    const startupError = new Error('simulated startup failure');
+    const child = new FakeServerProcess();
+    const client = new FakeClient();
+    client.serverProcess = child;
+    client.dispose.mockRejectedValue(new Error('simulated dispose failure'));
+    const clients: FakeClient[] = [];
+    const controller = new LanguageClientLifecycle<FakeClient>({
+      resolveServerPath: async () => '/server/perllsp',
+      createClient: () => {
+        clients.push(client);
+        return client;
+      },
+      onStarted: async () => {
+        throw startupError;
+      },
+      captureStopWitness: (startedClient) => serverProcessOf(startedClient),
+      isClientTerminal: (_startedClient, witness) =>
+        awaitServerProcessExit(witness as ServerProcessLike | undefined, 10, () => true),
+    });
+
+    await expect(controller.start()).rejects.toMatchObject({ reason: 'cleanup-incomplete' });
+    child.exit();
+    await expect(controller.restart()).rejects.toMatchObject({ reason: 'cleanup-incomplete' });
+    expect(clients).toHaveLength(1);
+  });
+
+  test('explicit stop settles a late terminal child without creating a replacement', async () => {
+    const { controller, child, clients } = makeStartupProcessController();
+
+    await expect(controller.start()).rejects.toMatchObject({ reason: 'cleanup-incomplete' });
+    child.exit();
+    await controller.stop();
+
+    expect(controller.snapshot.state).toBe('stopped');
+    expect(clients).toHaveLength(1);
+  });
+
+  test('a throwing terminal recheck remains fail-closed after the child exits', async () => {
+    let checks = 0;
+    const { controller, child, clients } = makeStartupProcessController(async (_process) => {
+      checks += 1;
+      if (checks === 1) return false;
+      throw new Error('process observation unavailable');
+    });
+
+    await expect(controller.start()).rejects.toMatchObject({ reason: 'cleanup-incomplete' });
+    child.exit();
+    await expect(controller.restart()).rejects.toMatchObject({ reason: 'cleanup-incomplete' });
+    expect(clients).toHaveLength(1);
+  });
+
+  test('a hanging terminal recheck remains bounded and blocked after the child exits', async () => {
+    let checks = 0;
+    const { controller, child, clients } = makeStartupProcessController(() => {
+      checks += 1;
+      return checks === 1 ? false : new Promise<boolean>(() => undefined);
+    });
+
+    await expect(controller.start()).rejects.toMatchObject({ reason: 'cleanup-incomplete' });
+    child.exit();
+    const restart = controller.restart();
+    await expect(restart).rejects.toMatchObject({ reason: 'cleanup-incomplete' });
+    expect(clients).toHaveLength(1);
+  }, 10_000);
+
+  test('a timed-out startup never becomes retry-eligible from a later child exit', async () => {
+    jest.useFakeTimers();
+    try {
+      const child = new FakeServerProcess();
+      const client = new FakeClient();
+      client.serverProcess = child;
+      const pendingStart = new DeferredVoid();
+      client.start.mockReturnValue(pendingStart.promise);
+      const clients: FakeClient[] = [];
+      const controller = new LanguageClientLifecycle<FakeClient>(
+        {
+          resolveServerPath: async () => '/server/perllsp',
+          createClient: () => {
+            clients.push(client);
+            return client;
+          },
+          captureStopWitness: (startedClient) => serverProcessOf(startedClient),
+          isClientTerminal: (_startedClient, witness) =>
+            awaitServerProcessExit(
+              witness as ServerProcessLike | undefined,
+              10,
+              () => !child.exited,
+            ),
+        },
+        { startupTimeoutMs: 10, stopTimeoutMs: 10 },
+      );
+
+      const start = controller.start();
+      await jest.advanceTimersByTimeAsync(10);
+      await jest.advanceTimersByTimeAsync(10);
+      await expect(start).rejects.toMatchObject({ reason: 'cleanup-incomplete' });
+      child.exit();
+      await expect(controller.restart()).rejects.toMatchObject({ reason: 'cleanup-incomplete' });
+      expect(clients).toHaveLength(1);
+      pendingStart.resolve();
+    } finally {
+      jest.useRealTimers();
+    }
   });
 });

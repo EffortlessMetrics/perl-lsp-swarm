@@ -186,6 +186,31 @@ function makeCleanupBlockingLifecycle(): ExtensionLanguageClientLifecycle<
   return new ExtensionLanguageClientLifecycle(hooks);
 }
 
+function makeLateProcessCleanupLifecycle(): {
+  lifecycle: ExtensionLanguageClientLifecycle<FakeLifecycleClient, FakeLifecycleEvent>;
+  subject: { terminal: boolean };
+  createdClients: () => number;
+} {
+  let created = 0;
+  const firstSubject = { terminal: false };
+  let subject = firstSubject;
+  const hooks: LifecycleHooks<FakeLifecycleClient, FakeLifecycleEvent> = {
+    resolveServerPath: async () => '/server/perllsp',
+    createClient: () => {
+      created += 1;
+      subject = created === 1 ? firstSubject : { terminal: false };
+      return new FakeLifecycleClient(Promise.resolve(), created);
+    },
+    captureStopWitness: () => subject,
+    isClientTerminal: (_client, witness) => (witness as { terminal: boolean }).terminal,
+  };
+  return {
+    lifecycle: new ExtensionLanguageClientLifecycle(hooks),
+    subject: firstSubject,
+    createdClients: () => created,
+  };
+}
+
 function makeFinalizationFailingLifecycle(finalizationDelayMs: number): {
   lifecycle: ExtensionLanguageClientLifecycle<FakeLifecycleClient, FakeLifecycleEvent>;
   trace: string[];
@@ -659,6 +684,7 @@ describe('mid-session silent server crash recovery (#4625)', () => {
         /did not finish cleaning up/i.test(String(call[0])) && call.includes('Reload Window'),
     );
     expect(reloadToasts).toHaveLength(1);
+    expect(String(reloadToasts[0]?.[0])).not.toContain('Try Restart Server again');
   });
 
   test('explicit restart blocked by incomplete cleanup offers window reload instead of a generic failure (#14448)', async () => {
@@ -676,9 +702,28 @@ describe('mid-session silent server crash recovery (#4625)', () => {
         /did not finish cleaning up/i.test(String(call[0])) && call.includes('Reload Window'),
     );
     expect(reloadToasts).toHaveLength(1);
+    expect(String(reloadToasts[0]?.[0])).not.toContain('Try Restart Server again');
     const genericFailures = showErrorMessage.mock.calls.filter((call) =>
       /^Failed to restart Perl Language Server/i.test(String(call[0])),
     );
     expect(genericFailures).toHaveLength(0);
+  });
+
+  test('restart handler retries a retained late process subject after it becomes terminal', async () => {
+    const { lifecycle, subject, createdClients } = makeLateProcessCleanupLifecycle();
+    _setLanguageClientLifecycleForTest(injectedLifecycle(lifecycle));
+    await lifecycle.start();
+
+    const blocked = await _restartServerForTest(makeContext());
+
+    expect(blocked).toBe(true);
+    expect(createdClients()).toBe(1);
+    expect(String(showErrorMessage.mock.calls[0]?.[0])).toContain('Try Restart Server again');
+
+    subject.terminal = true;
+    const recovered = await _restartServerForTest(makeContext());
+
+    expect(recovered).toBe(false);
+    expect(createdClients()).toBe(2);
   });
 });
