@@ -257,7 +257,7 @@ struct GhParent {
     #[serde(rename = "headRefOid")]
     head_ref_oid: String,
     /// True when the head branch lives in a fork rather than this repository.
-    #[serde(rename = "isCrossRepository", default)]
+    #[serde(rename = "isCrossRepository")]
     is_cross_repository: bool,
 }
 

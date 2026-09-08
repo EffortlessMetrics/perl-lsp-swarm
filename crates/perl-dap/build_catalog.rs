@@ -3,7 +3,10 @@ use std::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-const DEFAULT_DAP_FEATURES: &[&str] = &["dap.breakpoints.basic", "dap.core", "dap.inline_values"];
+// `dap.inline_values` is deliberately absent (#9089): the custom inlineValues
+// extension is fail-closed, so the fallback must not re-advertise it when the
+// catalog is unreadable.
+const DEFAULT_DAP_FEATURES: &[&str] = &["dap.breakpoints.basic", "dap.core"];
 
 #[derive(Debug, Deserialize)]
 struct FeatureCatalog {

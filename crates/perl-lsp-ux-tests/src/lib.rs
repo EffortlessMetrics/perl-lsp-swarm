@@ -66,12 +66,15 @@ pub use project_fixture::{
 };
 pub use recorder::{
     AssertionBasis, AssertionCounts, OperationTiming, RunIdentity, UxCheckFailure, UxRunRecorder,
-    UxScenarioRunReceipt, UxScenarioSkip, run_ux_scenario,
+    UxScenarioRunReceipt, UxScenarioSkip, run_ux_scenario, run_ux_scenario_with_evidence_class,
 };
-pub use scorecard::{EditorUxScorecard, ScenarioScore, aggregate_editor_ux_scorecard};
+pub use scorecard::{
+    EditorUxScorecard, ScenarioScore, aggregate_editor_ux_scorecard,
+    ensure_score_evidence_consistent,
+};
 pub use taxonomy::{
-    MetricState, UxCiTier, UxComponent, UxFailureClass, UxRoute, UxScenarioResult,
-    route_for_failure_class,
+    MetricState, UxCiTier, UxComponent, UxEvidenceClass, UxFailureClass, UxRoute, UxScenarioResult,
+    ensure_evidence_supports_projection, route_for_failure_class,
 };
 pub use workspace::FakeWorkspace;
 

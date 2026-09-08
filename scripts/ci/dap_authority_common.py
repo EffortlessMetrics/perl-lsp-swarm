@@ -30,14 +30,55 @@ PEER_DISPATCH_PATHS = (
     Path("crates/perl-dap/src/backend/peer_bridge.rs"),
     Path("crates/perl-dap/src/backend/peer_launch.rs"),
 )
+# The pinned compatibility-fallback bodies (#9527, fail-closed split #9069,
+# setExpression floor #9568): setExpression — a catalog route unavailable in
+# the peer frontends — is refused first with the deterministic
+# SET_EXPRESSION_UNSUPPORTED_MESSAGE from the single #9568 authority (a
+# generic "unavailable" refusal would not pin the advertised capability and
+# the admission gate to one source); any other catalog route that exists but
+# is unavailable in the peer frontend must fail closed (success: false, no
+# body) — a lenient ack would report success for work no backend performed —
+# while a genuinely unknown command keeps the mirror-MVP acknowledgement so a
+# client is never wedged. Changing the shape of this arm is a deliberate
+# contract edit that updates these constants.
 EXPECTED_PEER_FALLBACKS = {
     PEER_DISPATCH_PATHS[0]: (
+        "if matches!( DapRequestRoute::from_command(command), "
+        "Some(DapRequestRoute::SetExpression) ) { "
+        "if crate::backend::capabilities::refuse_set_expression( "
+        "self.advertised_set_expression(), ) { "
+        "out.push(self.response( request_seq, command, false, None, "
+        "Some( crate::backend::capabilities::SET_EXPRESSION_UNSUPPORTED_MESSAGE "
+        ".to_string(), ), )); } else { "
+        "out.push( self.response( request_seq, command, false, None, "
+        'Some( "setExpression: external-peer delegation is not implemented" '
+        ".to_string(), ), ), ); } } "
+        "else if DapRequestRoute::from_command(command).is_some() { "
+        'tracing::warn!(command, "peer bridge: request is unavailable in this frontend"); '
+        "out.push(self.response( request_seq, command, false, None, "
+        'Some("request is unavailable in the external peer frontend".to_string()), )); '
+        "} else { "
         'tracing::warn!(command, "peer bridge: unhandled DAP request"); '
-        "out.push(self.response(request_seq, command, true, None, None));"
+        "out.push(self.response(request_seq, command, true, None, None)); }"
     ),
     PEER_DISPATCH_PATHS[1]: (
+        "if matches!( DapRequestRoute::from_command(command), "
+        "Some(DapRequestRoute::SetExpression) ) { "
+        "if crate::backend::capabilities::refuse_set_expression( "
+        "crate::backend::capabilities::MIRROR_ADVERTISES_SET_EXPRESSION, ) { "
+        "out.push(self.response( request_seq, command, false, None, "
+        "Some( crate::backend::capabilities::SET_EXPRESSION_UNSUPPORTED_MESSAGE "
+        ".to_string(), ), )); } else { "
+        "out.push( self.response( request_seq, command, false, None, "
+        'Some( "setExpression: mirror-mode delegation is not implemented" '
+        ".to_string(), ), ), ); } } "
+        "else if DapRequestRoute::from_command(command).is_some() { "
+        'tracing::warn!( command, "mirror bridge: request is unavailable in this frontend" ); '
+        "out.push(self.response( request_seq, command, false, None, "
+        'Some("request is unavailable in the mirror peer frontend".to_string()), )); '
+        "} else { "
         'tracing::warn!(command, "mirror bridge: unhandled DAP request"); '
-        "out.push(self.response(request_seq, command, true, None, None));"
+        "out.push(self.response(request_seq, command, true, None, None)); }"
     ),
 }
 FORBIDDEN_DOC_PHRASES = (
@@ -82,7 +123,12 @@ DISPATCH_FN_RE = re.compile(r"\bfn\s+dispatch_request\b")
 PRODUCTION_DISPATCH_FN_RE = re.compile(
     r"\bfn\s+(?:dispatch|dispatch_request|handle_request)\s*\(",
 )
-PEER_DISPATCH_FN_RE = re.compile(r"\bpub\s+fn\s+dispatch\s*\(")
+# The public `dispatch` wrapper is the capability-admission seam.  The
+# table-owned route body is kept in the private `dispatch_unchecked` method so
+# callers cannot bypass admission while this authority still pins the exact
+# request-table shape.
+PEER_DISPATCH_FN_RE = re.compile(r"\b(?:pub\s+)?fn\s+dispatch(?:_unchecked)?\s*\(")
+PEER_FLOOR_FN_RE = re.compile(r"\b(?:pub\s+)?fn\s+dispatch_with_capability_floor\s*\(")
 PEER_ROUTE_MATCH_RE = re.compile(
     r"\bmatch\s+DapRequestRoute::from_command\s*\(\s*command\s*\)\s*"
     r"\.filter\s*\(\s*DapRequestRoute::available_in_peer_frontends\s*\)"
@@ -653,6 +699,57 @@ def parse_peer_dispatch_routes(source: str, owner: Path) -> set[str]:
     """Return the catalog variants explicitly handled by one peer frontend."""
     text, masked = scan_rust_source(source)
     functions = list(PEER_DISPATCH_FN_RE.finditer(masked))
+    route_functions = [function for function in functions if "dispatch_unchecked" in function.group(0)]
+    if route_functions:
+        public_functions = [
+            function
+            for function in functions
+            if "dispatch_unchecked" not in function.group(0)
+        ]
+        if len(public_functions) != 1:
+            raise AuthorityError(
+                f"found {len(public_functions)} public dispatch wrappers in {owner}; expected one"
+            )
+        wrapper = public_functions[0]
+        wrapper_open = masked.index("{", masked.index(")", wrapper.end() - 1))
+        wrapper_close = _balanced(masked, wrapper_open)
+        wrapper_body = _normalise_tokens(masked[wrapper_open + 1 : wrapper_close])
+        admission_tokens = (
+            "self.dispatch_with_capability_floor(",
+            "self.secondary_floor_response(",
+        )
+        if not any(token in wrapper_body for token in admission_tokens):
+            raise AuthorityError(
+                f"{owner} public dispatch does not delegate through the capability floor"
+            )
+        if "self.dispatch_with_capability_floor(" in wrapper_body:
+            floor_functions = list(PEER_FLOOR_FN_RE.finditer(masked))
+            if len(floor_functions) != 1:
+                raise AuthorityError(
+                    f"found {len(floor_functions)} capability-floor dispatch functions in {owner}; expected one"
+                )
+            floor = floor_functions[0]
+            floor_open = masked.index("{", masked.index(")", floor.end() - 1))
+            floor_close = _balanced(masked, floor_open)
+            floor_body = masked[floor_open + 1 : floor_close]
+            if "self.secondary_floor_response(" not in floor_body:
+                raise AuthorityError(
+                    f"{owner} capability-floor dispatch does not apply the capability floor"
+                )
+        elif "self.secondary_floor_response(" in wrapper_body:
+            # A wrapper may delegate to the floor response directly, but a
+            # call-and-discard would pass delegation while letting floored
+            # requests fall through to the route match. The result must be
+            # bound and returned.
+            if (
+                "= self.secondary_floor_response(" not in wrapper_body
+                or "return" not in wrapper_body
+            ):
+                raise AuthorityError(
+                    f"{owner} public dispatch calls the capability floor without "
+                    "binding and returning its response"
+                )
+        functions = route_functions
     if len(functions) != 1:
         raise AuthorityError(
             f"found {len(functions)} production dispatch functions in {owner}; expected one"
