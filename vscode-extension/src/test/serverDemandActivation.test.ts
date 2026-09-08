@@ -29,7 +29,9 @@ jest.mock('vscode-languageclient/node', () => ({
   LanguageClient: jest.fn().mockImplementation(() => {
     let state = 1;
     const serverProcess = {
-      pid: 4242,
+      // Use the live Jest process so the production liveness probe cannot
+      // mistake a synthetic PID for an exited child on rejected cleanup.
+      pid: process.pid,
       exitCode: null as number | null,
       signalCode: null as string | null,
       exitListeners: [] as Array<(code: number, signal: string | null) => void>,
