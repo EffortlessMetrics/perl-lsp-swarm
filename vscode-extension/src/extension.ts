@@ -3,7 +3,6 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { execFile } from 'child_process';
 import {
-  LanguageClient,
   CloseAction,
   ErrorAction,
   State as LanguageClientState,
@@ -11,6 +10,7 @@ import {
   Trace,
 } from 'vscode-languageclient/node';
 import type {
+  LanguageClient,
   LanguageClientOptions,
   ServerOptions,
   StateChangeEvent,
