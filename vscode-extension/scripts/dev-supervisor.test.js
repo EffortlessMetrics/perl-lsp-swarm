@@ -9,9 +9,11 @@
  * `PERL_LSP_DEV_SUPERVISOR_REAL_SMOKE=1` because it drives the real
  * `watch:types` + `watch:bundle` pair for a bounded readiness window.
  *
- * Every case must end with the supervisor's tree dead: fixture PIDs (and,
+ * Every case must end with the supervisor's tree stopped: fixture PIDs (and,
  * for the stubborn-grandchild control, the grandchild PID written by the
- * fixture itself) are probed with `process.kill(pid, 0)` and must all throw.
+ * fixture itself) are probed with `process.kill(pid, 0)`. Linux may retain a
+ * reaped-by-parent zombie PID, so the process-group cases independently
+ * accept only ESRCH/ENOENT or an explicit `/proc` zombie state.
  */
 
 const assert = require('node:assert/strict');
@@ -274,6 +276,37 @@ function assertAllGone(pids) {
     }
     assert.equal(alive, false, `pid ${pid} is still alive — the tree was not cleaned up`);
   }
+}
+
+/**
+ * Prove that a POSIX fixture PID is no longer executing at the assertion
+ * boundary. A zombie is stopped even though `kill(pid, 0)` still succeeds.
+ * This intentionally does not call the production process-group inspector.
+ *
+ * @param {number} pid
+ */
+function assertStoppedOrZombie(pid) {
+  assert.equal(typeof pid, 'number', `expected a recorded pid, got ${String(pid)}`);
+  try {
+    process.kill(pid, 0);
+  } catch (error) {
+    const code =
+      error && typeof error === 'object' && 'code' in error ? error.code : undefined;
+    assert.ok(code === 'ESRCH' || code === 'ENOENT', `unexpected PID probe failure: ${String(code)}`);
+    return;
+  }
+  let stat;
+  try {
+    stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
+  } catch (error) {
+    const code =
+      error && typeof error === 'object' && 'code' in error ? error.code : undefined;
+    assert.equal(code, 'ENOENT', `PID remained probeable but /proc read failed: ${String(code)}`);
+    return;
+  }
+  const closeParen = stat.lastIndexOf(')');
+  const state = closeParen >= 0 ? stat.slice(closeParen + 2, closeParen + 3) : undefined;
+  assert.equal(state, 'Z', `PID ${pid} is still executing at the return boundary`);
 }
 
 /** @returns {Array<number | null | undefined>} */
@@ -936,7 +969,7 @@ void test(
         shutdownGraceMs: 5000,
       }),
     );
-    const exitCode = await new Promise((resolve) => {
+    const exitCode = await new Promise((resolve, reject) => {
       const child = spawn(
         process.execPath,
         [path.join(extensionRoot, 'scripts', 'dev-supervisor.js')],
@@ -947,6 +980,8 @@ void test(
         },
       );
       let signalsSent = 0;
+      /** @type {ReturnType<typeof setTimeout> | undefined} */
+      let secondSignalTimer;
       const poll = setInterval(() => {
         if (!fs.existsSync(pidsFile)) {
           return;
@@ -957,14 +992,23 @@ void test(
         // Second interrupt while the graceful shutdown is still in flight:
         // it must escalate inside the owned path, never kill the supervisor
         // with watchers still alive.
-        setTimeout(() => {
+        secondSignalTimer = setTimeout(() => {
           if (signalsSent === 1) {
-            process.kill(child.pid ?? 0, 'SIGINT');
+            try {
+              process.kill(child.pid ?? 0, 'SIGINT');
+            } catch (error) {
+              const code =
+                error && typeof error === 'object' && 'code' in error ? error.code : undefined;
+              if (code !== 'ESRCH' && code !== 'ENOENT') {
+                reject(error);
+              }
+            }
           }
         }, 100);
       }, 50);
       child.once('exit', (code) => {
         clearInterval(poll);
+        if (secondSignalTimer !== undefined) clearTimeout(secondSignalTimer);
         resolve(/** @type {number | null} */ (code));
       });
     });
@@ -1562,7 +1606,7 @@ setInterval(() => {}, 1000);
 
 for (const mode of ['stubborn', 'delayed']) {
   void test(
-    `normal shutdown retains the ${mode} descendant after its leader exits (POSIX)`,
+    `normal shutdown does not claim an executing ${mode} descendant was cleaned after its leader exits (POSIX)`,
     { skip: IS_WINDOWS, timeout: 15000 },
     async (t) => {
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-dev-supervisor-group-'));
@@ -1612,12 +1656,10 @@ for (const mode of ['stubborn', 'delayed']) {
       assert.equal(result.code, 0);
       assert.deepEqual(result.failures, []);
       const pids = JSON.parse(fs.readFileSync(pidsFile, 'utf8'));
-      // Unlike a cleanup poll, this pins absence at the return boundary.
-      assert.throws(
-        () => process.kill(pids.grandchild, 0),
-        { code: 'ESRCH' },
-        'returning a stopped result must not leave a live descendant',
-      );
+      // Unlike a cleanup poll, this pins the stopped-or-zombie boundary at
+      // return. Linux can retain a non-executing zombie until its parent
+      // reaps it, so kill(0) alone is not a sufficient absence oracle.
+      assertStoppedOrZombie(pids.grandchild);
       assert.deepEqual(result.escalations, mode === 'stubborn' ? ['types'] : []);
       const events = fs.readFileSync(eventsFile, 'utf8');
       assert.match(events, /term/);
