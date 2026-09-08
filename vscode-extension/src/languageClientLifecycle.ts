@@ -269,7 +269,10 @@ export class LanguageClientLifecycle<TClient extends LifecycleClient<TEvent>, TE
         this.notifyClientState(active as ActiveClient<TClient, TEvent>, event);
       });
 
-      await client.start();
+      const startResult = await this.runBounded('start', () => client.start());
+      if (!startResult.completed) {
+        throw startResult.error;
+      }
       if (!this.isCurrentActive(active)) {
         this.recordCleanupResult(await this.shutdown(active));
         return undefined;

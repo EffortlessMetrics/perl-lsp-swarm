@@ -328,6 +328,33 @@ describe('LanguageClientLifecycle', () => {
     expect(harness.controller.snapshot.state).toBe('running');
   });
 
+  test('bounds a client start that never settles and records failed lifecycle state', async () => {
+    jest.useFakeTimers();
+    try {
+      const harness = makeHarness(undefined, { stopTimeoutMs: 10 });
+      harness.hooks.createClient = () => {
+        const client = new FakeClient();
+        client.startGate = new Promise<void>(() => undefined);
+        harness.clients.push(client);
+        return client;
+      };
+      const start = harness.controller.start();
+      await flush();
+
+      await jest.advanceTimersByTimeAsync(10);
+
+      await expect(start).rejects.toMatchObject({
+        name: 'LanguageClientLifecycleError',
+        reason: 'lifecycle',
+      });
+      expect(harness.clients).toHaveLength(1);
+      expect(harness.clients[0]!.isDisposed()).toBe(true);
+      expect(harness.controller.snapshot.state).toBe('failed');
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   test('bounds a hung stop and still disposes the client', async () => {
     jest.useFakeTimers();
     try {
