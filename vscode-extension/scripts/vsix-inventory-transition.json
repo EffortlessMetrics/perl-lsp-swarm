@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "owner_issue": 15102,
-  "reason": "PR #15146 changes registered Run Health Check behavior and its lifecycle proof. On the combined candidate 2cfa6226ee5ca72259ecf3a543320d958261642c, the fresh Windows x64 VSIX measured total inventory growth from 1857603 to 1861072 bytes (+3469): out/extension.js grew by 3469 bytes and package.json by 7 bytes; all other 27 archive paths match the merge-base baseline. This declaration records the exact measured archive after the #15123 packaging integration; no validator, threshold, or admission rule changes.",
+  "reason": "PR #15146 changes registered Run Health Check behavior and its lifecycle proof. On the combined candidate 24ba3996d961c693f40881f54c2c988b527e7c68, the fresh Windows x64 VSIX measured total inventory growth from 1857603 to 1861072 bytes (+3469): out/extension.js grew by 3469 bytes and package.json by 7 bytes; all other 27 archive paths match the merge-base baseline. This declaration records the exact measured archive after the #15123 packaging integration; no validator, threshold, or admission rule changes.",
   "base_baseline_file_sha256": "4edd01ebb5a7ca17295226af8c866a172d1d424c9aa7cd342c7dd9e15d799db8",
   "candidate_baseline_file_sha256": "6eb7b8787bbea24c30ef1c5185a80b03e404e974eb83ed653cbd8db33b6f5ecc",
   "base_inventory_sha256": "5f414273d8913857ebb2aef8a14fbf4c1613fb0ce71a95a94a82b846349ad4ff",
