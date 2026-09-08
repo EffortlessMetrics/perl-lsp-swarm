@@ -231,6 +231,8 @@ impl LspServer {
             doc_text,
             doc_offset,
             SystemIncAccess::Acquire,
+            #[cfg(test)]
+            None,
         )
     }
 
@@ -254,6 +256,8 @@ impl LspServer {
             doc_text,
             doc_offset,
             SystemIncAccess::PeekOnly,
+            #[cfg(test)]
+            None,
         )
     }
 
@@ -263,26 +267,52 @@ impl LspServer {
         doc_text: Option<&str>,
         doc_offset: Option<usize>,
         system_inc_access: SystemIncAccess,
+        #[cfg(test)] after_capture: Option<&dyn Fn()>,
     ) -> Option<EffectiveIncContext> {
         #[cfg(test)]
         INC_CONTEXT_BUILDS.with(|builds| builds.set(builds.get() + 1));
 
-        let (root, folder_uri, config) = {
-            let folders = self.workspace_folders.lock();
-            let best_folder =
-                doc_uri.and_then(|uri| super::super::best_workspace_folder_for_doc(&folders, uri));
-            if let Some(folder) = best_folder {
+        // Capture owned values while the selected stored owner is locked. A
+        // WorkspaceConfig clone alone is insufficient: its probe epoch is shared
+        // and can be reset by a subsequent configuration notification.
+        let (root, folder_uri, config, system_paths, system_inc_state) = {
+            let mut folders = self.workspace_folders.lock();
+            let best_folder_uri = doc_uri
+                .and_then(|uri| super::super::best_workspace_folder_for_doc(&folders, uri))
+                .map(|folder| folder.uri.clone());
+            if let Some(folder) =
+                folders.iter_mut().find(|folder| Some(&folder.uri) == best_folder_uri.as_ref())
+            {
                 let root = super::super::workspace_folder_path(folder)
                     .or_else(|| self.root_path.lock().clone())?;
-                (root, Some(folder.uri.clone()), folder.effective_workspace_config.clone())
+                let (paths, state) = Self::system_inc_for_context(
+                    &mut folder.effective_workspace_config,
+                    system_inc_access,
+                );
+                (
+                    root,
+                    Some(folder.uri.clone()),
+                    folder.effective_workspace_config.clone(),
+                    paths,
+                    state,
+                )
             } else {
                 let fallback_root = folders
                     .first()
                     .and_then(super::super::workspace_folder_path)
                     .or_else(|| self.root_path.lock().clone())?;
-                (fallback_root, None, self.workspace_config.lock().clone())
+                let mut config = self.workspace_config.lock();
+                let (paths, state) = Self::system_inc_for_context(&mut config, system_inc_access);
+                (fallback_root, None, config.clone(), paths, state)
             }
         };
+
+        // Tests interleave a real owner mutation here, outside both owner locks,
+        // while continuing through the same production assembly below.
+        #[cfg(test)]
+        if let Some(after_capture) = after_capture {
+            after_capture();
+        }
 
         let perl5lib_paths = std::env::var("PERL5LIB")
             .map(|value| perl_lsp_rs_core::config::WorkspaceConfig::parse_perl5lib(&value))
@@ -304,8 +334,6 @@ impl LspServer {
             raw_include_paths,
         );
 
-        let (system_paths, system_inc_state) =
-            self.system_inc_for_context(folder_uri.as_deref(), system_inc_access);
         let effective_roots = build_effective_inc_roots(
             &include_paths,
             &perl5lib_paths,
@@ -326,9 +354,8 @@ impl LspServer {
         })
     }
 
-    /// Startup-`@INC` roots plus the typed probe state, both read from the
-    /// SAME stored folder/global config so the snapshot cannot describe a
-    /// different subject than the roots (#13589).
+    /// Read the startup roots and snapshot from the already-locked stored owner.
+    /// Never reselect the owner after capturing the other context settings.
     ///
     /// The pair comes from one `peek_system_inc` call, i.e. one epoch lock
     /// acquisition, so a clone advancing the shared epoch on another thread
@@ -338,26 +365,13 @@ impl LspServer {
     /// `get_system_inc` and `peek_system_inc` each early-return for a disabled
     /// config, so the disabled case needs no separate branch.
     fn system_inc_for_context(
-        &self,
-        folder_uri: Option<&str>,
+        config: &mut perl_lsp_rs_core::config::WorkspaceConfig,
         access: SystemIncAccess,
     ) -> (Vec<PathBuf>, SystemIncProbeSnapshot) {
-        let read = |config: &mut perl_lsp_rs_core::config::WorkspaceConfig| {
-            if access == SystemIncAccess::Acquire {
-                let _ = config.get_system_inc();
-            }
-            config.peek_system_inc()
-        };
-
-        if let Some(folder_uri) = folder_uri {
-            let mut folders = self.workspace_folders.lock();
-            if let Some(folder) = folders.iter_mut().find(|folder| folder.uri == folder_uri) {
-                return read(&mut folder.effective_workspace_config);
-            }
+        if access == SystemIncAccess::Acquire {
+            let _ = config.get_system_inc();
         }
-
-        let mut global = self.workspace_config.lock();
-        read(&mut global)
+        config.peek_system_inc()
     }
 }
 
@@ -368,6 +382,147 @@ mod tests {
     use perl_module::IncRootKind;
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    fn require_same_captured_context(
+        actual: &EffectiveIncContext,
+        expected: &EffectiveIncContext,
+    ) -> TestResult {
+        if actual.root != expected.root
+            || actual.folder_uri != expected.folder_uri
+            || actual.doc_uri != expected.doc_uri
+            || actual.effective_roots != expected.effective_roots
+            || actual.use_system_inc != expected.use_system_inc
+            || actual.use_perl5lib != expected.use_perl5lib
+            || actual.resolution_timeout_ms != expected.resolution_timeout_ms
+            || actual.system_inc_state != expected.system_inc_state
+        {
+            return Err(format!(
+                "mixed owner generation: actual={actual:?}, expected={expected:?}"
+            )
+            .into());
+        }
+        Ok(())
+    }
+
+    /// Interleave real stored-owner mutations after capture and outside locks.
+    /// Both resolver acquisition and explanation peeking must finish with the
+    /// captured tuple, while the next request observes the replacement owner.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn context_capture_survives_owner_reconfiguration() -> TestResult {
+        use perl_lsp_rs_core::config::{SystemIncProbeOutcomeKind, WorkspaceConfig};
+
+        let temp = tempfile::tempdir()?;
+        let before_root = temp.path().join("before");
+        let after_root = temp.path().join("after");
+        std::fs::create_dir_all(&before_root)?;
+        std::fs::create_dir_all(&after_root)?;
+        let folder_uri = file_uri(&before_root)?;
+        let doc_uri = file_uri(&before_root.join("run.pl"))?;
+
+        for access in [SystemIncAccess::Acquire, SystemIncAccess::PeekOnly] {
+            for initially_enabled in [false, true] {
+                // 0: mutate the selected folder; 1: remove it and replace the
+                // global fallback; 2: mutate an already-global owner.
+                for mutation in 0..3 {
+                    let mut before = WorkspaceConfig::default();
+                    before.use_system_inc = initially_enabled;
+                    before.use_perl5lib = initially_enabled;
+                    before.resolution_timeout_ms = 123;
+                    before.include_paths = vec!["before-lib".into()];
+                    before.perl_path = Some(temp.path().join("missing-perl").display().to_string());
+                    if initially_enabled {
+                        let _ = before.get_system_inc();
+                        if before.peek_system_inc_probe().outcome
+                            != SystemIncProbeOutcomeKind::IoFailed
+                        {
+                            return Err("fixture must have a settled spawn failure".into());
+                        }
+                    }
+                    let mut after = WorkspaceConfig::default();
+                    after.use_system_inc = !initially_enabled;
+                    after.use_perl5lib = !initially_enabled;
+                    after.resolution_timeout_ms = 321;
+                    after.include_paths = vec!["after-lib".into()];
+                    after.perl_path = before.perl_path.clone();
+
+                    let server = LspServer::new();
+                    *server.root_path.lock() = Some(before_root.clone());
+                    if mutation == 2 {
+                        *server.workspace_config.lock() = before;
+                    } else {
+                        *server.workspace_folders.lock() = vec![
+                            WorkspaceFolderState::new(folder_uri.clone())
+                                .with_path(before_root.clone())
+                                .with_effective_workspace_config(before),
+                        ];
+                    }
+                    let expected_before = server
+                        .effective_inc_context_for_doc_without_probe(Some(&doc_uri), None, None)
+                        .ok_or("missing pre-mutation context")?;
+
+                    let mutate_config = |config: &mut WorkspaceConfig| {
+                        // This resets the shared epoch, not merely the scalar
+                        // settings on a replacement WorkspaceConfig value.
+                        config.update_from_value(&serde_json::json!({"workspace": {
+                            "useSystemInc": after.use_system_inc,
+                            "usePerl5lib": after.use_perl5lib
+                        }}));
+                        config.include_paths = after.include_paths.clone();
+                        config.resolution_timeout_ms = after.resolution_timeout_ms;
+                    };
+                    let after_capture = || {
+                        if mutation == 0 {
+                            for folder in server.workspace_folders.lock().iter_mut() {
+                                mutate_config(&mut folder.effective_workspace_config);
+                            }
+                        } else {
+                            if mutation == 1 {
+                                server.workspace_folders.lock().clear();
+                                *server.workspace_config.lock() = after.clone();
+                            } else {
+                                mutate_config(&mut server.workspace_config.lock());
+                            }
+                            *server.root_path.lock() = Some(after_root.clone());
+                        }
+                    };
+                    let captured = server
+                        .effective_inc_context_for_doc_with(
+                            Some(&doc_uri),
+                            None,
+                            None,
+                            access,
+                            Some(&after_capture),
+                        )
+                        .ok_or("missing captured context")?;
+                    require_same_captured_context(&captured, &expected_before)?;
+
+                    let expected_server = LspServer::new();
+                    *expected_server.root_path.lock() = Some(after_root.clone());
+                    if mutation == 0 {
+                        *expected_server.workspace_folders.lock() = vec![
+                            WorkspaceFolderState::new(folder_uri.clone())
+                                .with_path(before_root.clone())
+                                .with_effective_workspace_config(after),
+                        ];
+                    } else {
+                        *expected_server.workspace_config.lock() = after;
+                    }
+                    let expected_after = expected_server
+                        .effective_inc_context_for_doc_without_probe(Some(&doc_uri), None, None)
+                        .ok_or("missing replacement context")?;
+                    let next = server
+                        .effective_inc_context_for_doc_without_probe(Some(&doc_uri), None, None)
+                        .ok_or("missing next context")?;
+                    require_same_captured_context(&next, &expected_after)?;
+                    if next.system_inc_state.attempts_consumed != 0 {
+                        return Err("in-flight request probed the replacement owner".into());
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
 
     fn file_uri(path: &std::path::Path) -> Result<String, String> {
         url::Url::from_file_path(path)
