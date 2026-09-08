@@ -396,12 +396,36 @@ impl<'ast> Visit<'ast> for DebtVisitor<'_> {
 
     fn visit_item_impl(&mut self, node: &'ast syn::ItemImpl) {
         let previous_test = self.in_test;
+        let previous_feature = self.current_feature.clone();
+        let previous_platform = self.current_platform.clone();
         if attrs_have_cfg_test(&node.attrs) {
             self.in_test = true;
+        }
+        if let Some(feature) = first_feature(&node.attrs) {
+            self.current_feature = Some(feature);
+        }
+        if let Some(platform) = first_platform(&node.attrs) {
+            self.current_platform = Some(platform);
         }
         self.push_attrs(&node.attrs, "item");
         syn::visit::visit_item_impl(self, node);
         self.pop_attrs();
+        self.in_test = previous_test;
+        self.current_feature = previous_feature;
+        self.current_platform = previous_platform;
+    }
+
+    fn visit_impl_item_fn(&mut self, node: &'ast syn::ImplItemFn) {
+        let previous_fn = self.current_fn.clone();
+        let previous_test = self.in_test;
+        self.current_fn = node.sig.ident.to_string();
+        if node.attrs.iter().any(is_test_attribute) || attrs_have_cfg_test(&node.attrs) {
+            self.in_test = true;
+        }
+        self.push_attrs(&node.attrs, "item");
+        syn::visit::visit_impl_item_fn(self, node);
+        self.pop_attrs();
+        self.current_fn = previous_fn;
         self.in_test = previous_test;
     }
 

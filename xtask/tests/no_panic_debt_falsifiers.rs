@@ -1452,17 +1452,17 @@ fn cfg_all_test_is_required_test_and_cfg_any_is_not() {
         r#"
 #[cfg(all(test, feature = "need-me"))]
 mod gated {
-    fn helper() { let _ = Some(1).unwrap(); }
+    fn gated_helper() { let _ = Some(1).unwrap(); }
 }
 
 #[cfg(all(not(unix), test))]
 mod not_unix {
-    fn helper() { let _ = Some(1).unwrap(); }
+    fn not_unix_helper() { let _ = Some(1).unwrap(); }
 }
 
 #[cfg(any(test, feature = "prod"))]
 mod maybe {
-    fn helper() { let _ = Some(1).unwrap(); }
+    fn maybe_helper() { let _ = Some(1).unwrap(); }
 }
 
 #[cfg(all(test, feature = "need-me"))]
@@ -1472,7 +1472,7 @@ struct Parser;
 
 #[cfg(all(test, feature = "need-me"))]
 impl Parser {
-    fn helper() { let _ = Some(1).unwrap(); }
+    fn impl_helper() { let _ = Some(1).unwrap(); }
 }
 "#,
         &[("known.rs", "#[test]\nfn known() {}\n")],
@@ -1486,7 +1486,7 @@ impl Parser {
     assert!(
         inventory.rows.iter().any(|row| {
             row.path.ends_with("src/lib.rs")
-                && row.entrypoint == "helper"
+                && row.entrypoint == "gated_helper"
                 && row.site_family == "unwrap"
                 && row.limitations.iter().any(|limit| limit.starts_with("feature-gated"))
         }),
@@ -1496,10 +1496,21 @@ impl Parser {
     assert!(
         inventory.rows.iter().any(|row| {
             row.path.ends_with("src/lib.rs")
+                && row.entrypoint == "not_unix_helper"
                 && row.site_family == "unwrap"
                 && row.limitations.iter().any(|limit| limit.starts_with("platform-gated"))
         }),
         "#[cfg(all(not(unix), test))] unwrap omitted: {:?}",
+        inventory.rows
+    );
+    assert!(
+        inventory.rows.iter().any(|row| {
+            row.path.ends_with("src/lib.rs")
+                && row.entrypoint == "impl_helper"
+                && row.site_family == "unwrap"
+                && row.limitations.iter().any(|limit| limit.starts_with("feature-gated"))
+        }),
+        "#[cfg(all(test, feature))] impl unwrap omitted: {:?}",
         inventory.rows
     );
     assert!(
@@ -1509,18 +1520,9 @@ impl Parser {
         "outline #[cfg(all(test, feature))] unwrap omitted: {:?}",
         inventory.rows
     );
-    let lib_helpers = inventory
-        .rows
-        .iter()
-        .filter(|row| {
-            row.path.ends_with("src/lib.rs")
-                && row.site_family == "unwrap"
-                && row.entrypoint == "helper"
-        })
-        .count();
-    assert_eq!(
-        lib_helpers, 3,
-        "expected inline all(test), all(not(unix), test), and impl helpers; not cfg(any): {:?}",
+    assert!(
+        !inventory.rows.iter().any(|row| row.entrypoint == "maybe_helper"),
+        "#[cfg(any(test, feature))] helper became required-test debt: {:?}",
         inventory.rows
     );
 }
