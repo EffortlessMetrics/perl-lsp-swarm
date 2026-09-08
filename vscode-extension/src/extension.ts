@@ -25,6 +25,7 @@ import {
 } from './managedCandidateRuntime';
 import { runLanguageServerHealthCheck } from './languageServerHealth';
 import { OnboardingManager } from './onboarding';
+import { ProcessBoundLanguageClient } from './processBoundLanguageClient';
 import {
   openDemoProjectCommand,
   suggestAiCompletionIfSupported,
@@ -2572,7 +2573,7 @@ export function createLanguageClient(serverPath: string): LanguageClient {
     },
   };
 
-  const lc = new LanguageClient(
+  const lc = new ProcessBoundLanguageClient(
     'perl-language-server',
     'Perl Language Server',
     serverOptions,
