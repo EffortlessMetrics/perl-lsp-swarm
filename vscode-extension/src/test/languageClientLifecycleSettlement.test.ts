@@ -376,5 +376,9 @@ describe('LanguageClientLifecycle client cleanup admission', () => {
     await expect(controller.start()).rejects.toMatchObject({ reason: 'cleanup-incomplete' });
     await expect(controller.restart()).rejects.toMatchObject({ reason: 'cleanup-incomplete' });
     expect(clients).toHaveLength(1);
+    expect(controller.snapshot.error).toMatchObject({ reason: 'cleanup-incomplete' });
+    expect((controller.snapshot.error as Error).message).toContain(
+      'replacement startup is blocked',
+    );
   });
 });

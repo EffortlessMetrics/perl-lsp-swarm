@@ -341,7 +341,7 @@ export class LanguageClientLifecycle<TClient extends LifecycleClient<TEvent>, TE
         : { error: undefined, clientCleanupComplete: true };
     if (!cleanup.clientCleanupComplete) {
       this.recordCleanupResult(cleanup);
-      this.error = cleanup.error ?? this.replacementBlockedFailure();
+      this.error = this.replacementBlockedFailure(cleanup.error);
       this.transition('failed', stopGeneration);
       this.notifyCallback('failed', this.hooks.onFailed, this.snapshot);
     } else {
