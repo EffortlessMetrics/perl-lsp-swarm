@@ -734,10 +734,12 @@ fn execute_continue_counts_unreadable_input_and_stays_nonzero()
 -> Result<(), Box<dyn std::error::Error>> {
     let before = temp_perl("use strict;\nmy $value = 1;\n")?;
     let after = temp_perl("use strict;\nmy $value = 2;\n")?;
+    let scratch = tempfile::tempdir()?;
+    let missing = scratch.path().join("missing-perl-parse-input.pl");
     let before_path = before.path().to_str().ok_or("temp path was not UTF-8")?;
     let after_path = after.path().to_str().ok_or("temp path was not UTF-8")?;
-    let missing = before.path().with_file_name("missing-perl-parse-input.pl");
     let missing_path = missing.to_str().ok_or("missing path was not UTF-8")?;
+    check(!missing.exists(), stringify!(!missing.exists()))?;
 
     let mut stdout = Vec::new();
     let mut stderr = Vec::new();
