@@ -9,8 +9,14 @@ const WINDOWS_TREE_KILL_TIMEOUT_MS = 5_000;
 export type TreeKillResult = { ok: true } | { ok: false; diagnostic: string };
 
 function killWindowsProcessTree(pid: number | undefined): Promise<TreeKillResult> {
-  if (process.platform !== 'win32' || pid === undefined) {
+  if (process.platform !== 'win32') {
     return Promise.resolve({ ok: true });
+  }
+  if (pid === undefined) {
+    return Promise.resolve({
+      ok: false,
+      diagnostic: 'Windows process-tree cleanup could not start because the parent had no PID.',
+    });
   }
 
   return new Promise((resolve) => {
@@ -154,20 +160,23 @@ export function runBoundedProcess(
     let graceTimer: NodeJS.Timeout | undefined;
     let watchdogTimer: NodeJS.Timeout | undefined;
     let treeKill: Promise<TreeKillResult> | undefined;
-    let treeKillFailureBeforeClose: string | undefined;
+    let parentExited = false;
     let stdinError: Error | undefined;
     const timeout = setTimeout(() => requestTermination('timed_out'), timeoutMs);
     const needsTreeKill = process.platform === 'win32';
     const killTree = killProcessTree ?? killWindowsProcessTree;
 
     const startTreeKill = (): void => {
+      if (parentExited || proc.exitCode !== null || proc.signalCode !== null) {
+        treeKill = Promise.resolve({
+          ok: false,
+          diagnostic:
+            'Windows process-tree cleanup could not start because the parent had already exited.',
+        });
+        return;
+      }
       const cleanupPromise = killTree(proc.pid);
       treeKill = cleanupPromise;
-      void cleanupPromise.then((result) => {
-        if (!result.ok && !closed) {
-          treeKillFailureBeforeClose = result.diagnostic;
-        }
-      });
     };
 
     const deliverKill = (killSignal: NodeJS.Signals): boolean => {
@@ -269,7 +278,7 @@ export function runBoundedProcess(
         input_error: `Failed to provide process input: ${stdinError?.message ?? 'the input stream closed unexpectedly'}.`,
       }[outcome];
       void (treeKill ?? Promise.resolve({ ok: true as const })).then((cleanupResult) => {
-        if (!cleanupResult.ok && treeKillFailureBeforeClose !== undefined) {
+        if (!cleanupResult.ok) {
           finish('termination_failed', exitCode, signal, cleanupResult.diagnostic);
           return;
         }
@@ -342,6 +351,9 @@ export function runBoundedProcess(
         null,
         `Failed to run prove: ${error.message}. Is prove installed?`,
       );
+    });
+    proc.on('exit', () => {
+      parentExited = true;
     });
     if (stdin !== undefined && proc.stdin !== null) {
       proc.stdin.once('error', (error: Error) => {

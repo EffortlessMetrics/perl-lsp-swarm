@@ -279,6 +279,20 @@ describe('bounded prove process execution', () => {
         timeoutMs: 5_000,
         maxOutputBytes: 32,
         terminationGraceMs: 25,
+        ...(process.platform === 'win32'
+          ? {
+              killProcessTree: async (pid: number | undefined) => {
+                if (pid !== undefined) {
+                  try {
+                    process.kill(pid);
+                  } catch {
+                    // The child may have exited before the injected cleanup ran.
+                  }
+                }
+                return { ok: true as const };
+              },
+            }
+          : {}),
       },
     );
 
@@ -317,7 +331,7 @@ describe('bounded prove process execution', () => {
   test('terminates a process that exceeds the combined output ceiling', async () => {
     const result = await runBoundedProcess(
       process.execPath,
-      ['-e', 'process.stdout.write("x".repeat(4096))'],
+      ['-e', 'process.stdout.write("x".repeat(4096)); setTimeout(() => {}, 5000)'],
       {
         shell: false,
         timeoutMs: 5_000,
@@ -335,13 +349,30 @@ describe('bounded prove process execution', () => {
   test('enforces the combined stdout/stderr byte ceiling across both streams', async () => {
     const result = await runBoundedProcess(
       process.execPath,
-      ['-e', 'process.stdout.write("a".repeat(80)); process.stderr.write("b".repeat(80));'],
+      [
+        '-e',
+        'setInterval(() => { process.stdout.write("a".repeat(80)); process.stderr.write("b".repeat(80)); }, 1)',
+      ],
       {
         shell: false,
         timeoutMs: 5_000,
         maxOutputBytes: 100,
         terminationGraceMs: 25,
         terminationWatchdogMs: 1_000,
+        ...(process.platform === 'win32'
+          ? {
+              killProcessTree: async (pid: number | undefined) => {
+                if (pid !== undefined) {
+                  try {
+                    process.kill(pid);
+                  } catch {
+                    // The child may have exited before the injected cleanup ran.
+                  }
+                }
+                return { ok: true as const };
+              },
+            }
+          : {}),
       },
     );
 
@@ -404,7 +435,7 @@ describe('bounded prove process execution', () => {
   test('does not emit a replacement character when the byte ceiling cuts UTF-8', async () => {
     const result = await runBoundedProcess(
       process.execPath,
-      ['-e', 'process.stdout.write(Buffer.from([0xc3, 0xa9]))'],
+      ['-e', 'process.stdout.write(Buffer.from([0xc3, 0xa9])); setTimeout(() => {}, 5000)'],
       {
         shell: false,
         timeoutMs: 5_000,
@@ -430,6 +461,7 @@ describe('bounded prove process execution', () => {
           'process.stderr.write(Buffer.from([0xc3]))',
           'process.stdout.write("x")',
           'setTimeout(() => process.stderr.write(Buffer.from([0xa9])), 10)',
+          'setTimeout(() => {}, 5000)',
         ].join(';'),
       ],
       {
@@ -573,6 +605,7 @@ describe('bounded prove process execution', () => {
       terminationGraceMs: 25,
       killProcessTree: async () => {
         cleanupCalls += 1;
+        await new Promise((resolve) => setTimeout(resolve, 200));
         return { ok: false, diagnostic: 'injected tree cleanup failure' };
       },
     });
