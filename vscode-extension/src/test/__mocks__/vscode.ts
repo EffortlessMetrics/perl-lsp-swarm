@@ -24,6 +24,13 @@ export class Position {
   ) {}
 }
 
+export class Location {
+  constructor(
+    public readonly uri: unknown,
+    public readonly range: unknown,
+  ) {}
+}
+
 /**
  * Records the insertions staged on it.
  *
