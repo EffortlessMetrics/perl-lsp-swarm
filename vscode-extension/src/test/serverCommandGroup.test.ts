@@ -1,6 +1,8 @@
 import * as vscode from 'vscode';
 import { registerServerCommandGroup, type ServerCommandContext } from '../serverCommandGroup';
 import { HealthCheckStatus, type HealthCheckResult } from '../onboarding';
+import { LanguageClientLifecycle, type LifecycleClient } from '../languageClientLifecycle';
+import { languageServerRuntimeHealth } from '../languageServerRuntimeHealth';
 
 const outputChannel = {
   appendLine: jest.fn(),
@@ -13,6 +15,7 @@ function makeDependencies(results: HealthCheckResult[] = []): ServerCommandConte
   reinstallServerBinary: jest.Mock;
   restartServer: jest.Mock;
   runHealthCheck: jest.Mock;
+  runtimeHealthCheck: jest.Mock;
   showBinaryIdentity: jest.Mock;
 } {
   return {
@@ -27,6 +30,12 @@ function makeDependencies(results: HealthCheckResult[] = []): ServerCommandConte
     })),
     restartServer: jest.fn(async () => undefined),
     runHealthCheck: jest.fn(async () => results),
+    runtimeHealthCheck: jest.fn(() => ({
+      label: 'LSP runtime',
+      ok: false,
+      status: HealthCheckStatus.Error,
+      detail: 'Language server failed to start (generation 4): simulated startup failure',
+    })),
     showBinaryIdentity: jest.fn(async () => ({ state: 'ready_exact' })),
   };
 }
@@ -36,6 +45,62 @@ beforeEach(() => {
 });
 
 describe('registerServerCommandGroup', () => {
+  test('registered health check reports a failed real lifecycle generation', async () => {
+    const startupFailure = new Error('simulated client.start failure');
+    const client: LifecycleClient = {
+      start: jest.fn(async () => {
+        throw startupFailure;
+      }),
+      stop: jest.fn(async () => undefined),
+      dispose: jest.fn(async () => undefined),
+      onDidChangeState: jest.fn(() => ({ dispose: jest.fn() })),
+    };
+    const lifecycle = new LanguageClientLifecycle<LifecycleClient>({
+      resolveServerPath: async () => '/failed-start/perllsp',
+      createClient: () => client,
+    });
+    const dependencies = makeDependencies([
+      {
+        label: 'LSP binary',
+        ok: true,
+        status: HealthCheckStatus.Ok,
+        detail: 'Binary found: /failed-start/perllsp',
+      },
+    ]);
+    dependencies.resolveServerPath.mockImplementation(async () => {
+      await lifecycle.start().catch(() => undefined);
+      return lifecycle.snapshot.serverPath;
+    });
+    dependencies.runtimeHealthCheck.mockImplementation(() =>
+      languageServerRuntimeHealth(lifecycle.snapshot),
+    );
+    registerServerCommandGroup(dependencies);
+
+    const result = await vscode.commands.executeCommand('perl-lsp.runHealthCheck');
+
+    expect(result).toEqual({
+      ok: false,
+      checks: [
+        {
+          label: 'LSP binary',
+          status: 'ok',
+          detail: 'Binary found: /failed-start/perllsp',
+        },
+        {
+          label: 'LSP runtime',
+          status: 'error',
+          detail: 'Language server failed to start (generation 1): simulated client.start failure',
+        },
+      ],
+    });
+    expect(client.start).toHaveBeenCalledTimes(1);
+    expect(lifecycle.snapshot.state).toBe('failed');
+    expect(vscode.window.showErrorMessage).toHaveBeenCalledWith(
+      'Health check failed: LSP runtime',
+      'Show Output',
+    );
+  });
+
   test('registers server commands and delegates without owning lifecycle state', async () => {
     const dependencies = makeDependencies();
     const disposables = registerServerCommandGroup(dependencies);
@@ -91,12 +156,18 @@ describe('registerServerCommandGroup', () => {
     expect(dependencies.currentServerPath).not.toHaveBeenCalled();
     expect(dependencies.runHealthCheck).toHaveBeenCalledWith('/configured/perllsp');
     expect(result).toEqual({
-      ok: true,
+      ok: false,
       checks: [
         { label: 'Perl interpreter', status: 'ok', detail: 'Perl 5.40' },
         { label: 'LSP binary', status: 'warning', detail: 'using a configured fallback' },
+        {
+          label: 'LSP runtime',
+          status: 'error',
+          detail: 'Language server failed to start (generation 4): simulated startup failure',
+        },
       ],
     });
+    expect(dependencies.runtimeHealthCheck).toHaveBeenCalledTimes(1);
     expect(outputChannel.appendLine).toHaveBeenCalledWith('[health-check] Results:');
   });
 
@@ -116,6 +187,7 @@ describe('registerServerCommandGroup', () => {
     expect(dependencies.resolveServerPath).not.toHaveBeenCalled();
     expect(dependencies.currentServerPath).not.toHaveBeenCalled();
     expect(dependencies.runHealthCheck).toHaveBeenCalledWith(null);
+    expect(dependencies.runtimeHealthCheck).not.toHaveBeenCalled();
     expect(result).toEqual({
       ok: false,
       checks: [{ label: 'LSP binary', status: 'error', detail: 'missing' }],
@@ -144,5 +216,34 @@ describe('registerServerCommandGroup', () => {
     expect(dependencies.resolveServerPath).toHaveBeenCalledTimes(1);
     expect(dependencies.currentServerPath).not.toHaveBeenCalled();
     expect(dependencies.runHealthCheck).toHaveBeenCalledWith('/managed/perllsp');
+  });
+
+  test('keeps explicit-path diagnostics setup-only', async () => {
+    const dependencies = makeDependencies([
+      {
+        label: 'LSP binary',
+        ok: true,
+        status: HealthCheckStatus.Ok,
+        detail: 'Binary found: /failed-start/perllsp',
+      },
+    ]);
+    registerServerCommandGroup(dependencies);
+
+    const result = await vscode.commands.executeCommand(
+      'perl-lsp.runHealthCheck',
+      '/failed-start/perllsp',
+    );
+
+    expect(result).toEqual({
+      ok: true,
+      checks: [
+        {
+          label: 'LSP binary',
+          status: 'ok',
+          detail: 'Binary found: /failed-start/perllsp',
+        },
+      ],
+    });
+    expect(dependencies.runtimeHealthCheck).not.toHaveBeenCalled();
   });
 });

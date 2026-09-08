@@ -23,6 +23,8 @@ export interface ServerCommandContext {
   readonly reinstallServerBinary: () => Promise<ReinstallCommandResult>;
   readonly restartServer: () => Promise<void>;
   readonly runHealthCheck: (serverPath: string | null) => Promise<HealthCheckResult[]>;
+  /** Runtime proof supplied by the lifecycle owner after implicit startup. */
+  readonly runtimeHealthCheck?: () => HealthCheckResult;
   /** Optional until the negotiated identity protocol is available in composition. */
   readonly showBinaryIdentity?: () => Promise<unknown>;
 }
@@ -80,7 +82,12 @@ export function registerServerCommandGroup(
     async (serverPath?: string | null) => {
       const resolvedPath =
         serverPath !== undefined ? serverPath : await dependencies.resolveServerPath();
-      const results = await dependencies.runHealthCheck(resolvedPath);
+      const results = [...(await dependencies.runHealthCheck(resolvedPath))];
+      const runtimeResult =
+        serverPath === undefined ? dependencies.runtimeHealthCheck?.() : undefined;
+      if (runtimeResult) {
+        results.push(runtimeResult);
+      }
       const commandResult = toHealthCheckCommandResult(results);
 
       const errors = results.filter((result) => !result.ok && result.status === 'error');
