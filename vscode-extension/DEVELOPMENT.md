@@ -124,7 +124,10 @@ bind on the activation path. To stop the watch launch, stop the
 then the task); the supervisor forwards the stop to both watcher trees. POSIX
 process-group ownership covers descendants, while Windows `taskkill /T /F`
 owns a tree only while its watcher leader remains live; a surviving
-post-exit descendant is surfaced as a cleanup failure.
+post-exit descendant is surfaced as a cleanup failure. A non-zero `taskkill`
+result, including the normal Windows code-128 race after a leader exits, is
+reported as cleanup not proven; only a successful helper can support a green
+stop.
 
 To reload after code changes in the one-shot flow: **Ctrl+Shift+P** →
 "Developer: Reload Window" in the host window.

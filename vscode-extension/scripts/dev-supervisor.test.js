@@ -261,6 +261,28 @@ function resultPids(result) {
   return result.children.map((child) => child.pid);
 }
 
+/**
+ * The Windows tree helper owns the cleanup claim. A code-128 race after a
+ * watcher exit may leave the leader gone while descendants are unknown, so a
+ * normal stop may honestly return cleanup-not-proven (code 1 for a requested
+ * stop). POSIX group proof and successful Windows helpers remain green.
+ *
+ * @param {import('./dev-supervisor').SupervisorResult} result
+ * @param {number} expectedCode
+ */
+function assertStopCleanupResult(result, expectedCode) {
+  if (result.failures.length === 0) {
+    assert.equal(result.code, expectedCode);
+    return;
+  }
+  assert.equal(IS_WINDOWS, true, `unexpected cleanup failure: ${result.failures.join(' | ')}`);
+  assert.equal(result.code, expectedCode === 0 ? 1 : expectedCode);
+  assert.ok(
+    result.failures.every((failure) => failure.includes('taskkill helper')),
+    `unexpected Windows cleanup evidence: ${result.failures.join(' | ')}`,
+  );
+}
+
 /* ---------------------------------------------------------------------- */
 /* Lifecycle cases                                                         */
 /* ---------------------------------------------------------------------- */
@@ -273,9 +295,8 @@ void test('both watchers reach readiness, then a SIGINT stop exits with the gove
   ]);
   await waitForReady(run);
   const result = await run.controller.stop('SIGINT');
-  assert.equal(result.code, 130, 'SIGINT must exit 128+2');
+  assertStopCleanupResult(result, 130);
   assert.match(result.reason, /signal:SIGINT/);
-  assert.deepEqual(result.failures, []);
   assert.ok(
     run.infos.includes('ready (2/2 watchers healthy)'),
     `expected the combined ready line, got: ${run.infos.join(' | ')}`,
@@ -453,7 +474,7 @@ void test('paths containing spaces and non-ASCII characters keep argv intact', a
   ]);
   await waitForReady(run);
   const result = await run.controller.stop();
-  assert.equal(result.code, 0);
+  assertStopCleanupResult(result, 0);
   const argv = JSON.parse(fs.readFileSync(argvFile, 'utf8'));
   assert.equal(argv[1], fixturePath, 'the fixture path with spaces must arrive as ONE argv entry');
   assert.equal(argv[2], 'an argument with spaces');
@@ -505,7 +526,7 @@ function runCli(config) {
   });
 }
 
-void test('the CLI proof harness reaches readiness and performs the owned stop (exit 0)', async () => {
+void test('the CLI proof harness reaches readiness and reports owned-stop cleanup honestly', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-dev-supervisor-run-'));
   tempDirs.push(dir);
   const pidsFile = path.join(dir, 'pids.json');
@@ -513,7 +534,7 @@ void test('the CLI proof harness reaches readiness and performs the owned stop (
   const fixtureB = path.join(dir, 'b.cjs');
   fs.writeFileSync(fixtureA, READY_AND_STAY);
   fs.writeFileSync(fixtureB, READY_AND_STAY);
-  const { code, stdout } = await runCli({
+  const { code, stdout, stderr } = await runCli({
     children: [
       {
         name: 'one',
@@ -534,7 +555,13 @@ void test('the CLI proof harness reaches readiness and performs the owned stop (
     shutdownGraceMs: 250,
     stopWhenReady: true,
   });
-  assert.equal(code, 0, `expected a green stop, stderr/stdout: ${stdout}`);
+  if (code === 0) {
+    assert.equal(stderr, '', `unexpected stderr for a green stop: ${stderr}`);
+  } else {
+    assert.equal(IS_WINDOWS, true, `unexpected stop failure, stderr/stdout: ${stderr}\n${stdout}`);
+    assert.equal(code, 1);
+    assert.match(stderr, /taskkill helper exited \(code=128/);
+  }
   assert.match(stdout, new RegExp(`\\[${REPORT_SCOPE}\\] starting watcher "one"`));
   assert.match(
     stdout,
@@ -1081,6 +1108,83 @@ void test('non-zero Windows taskkill remains red when the watcher exits first', 
   assert.equal(result.failures.length, 2);
   assert.ok(result.failures.every((failure) => /taskkill helper exited \(code=1/.test(failure)));
   assert.deepEqual(Array.from(result.escalations), ['types', 'bundle']);
+});
+
+void test('code-128 Windows taskkill does not prove a surviving descendant is gone', async () => {
+  const { EventEmitter } = require('node:events');
+  const { PassThrough } = require('node:stream');
+  const { runInNewContext } = require('node:vm');
+  const filename = path.join(extensionRoot, 'scripts', 'dev-supervisor.js');
+  const source = fs.readFileSync(filename, 'utf8');
+  const descendant = { alive: true };
+  /** @type {EventEmitter | null} */
+  let watcher = null;
+  let nextPid = 4000;
+  const fakeSpawn = (command, args) => {
+    const child = new EventEmitter();
+    if (command === 'taskkill') {
+      assert.deepEqual(Array.from(args).slice(2), ['/T', '/F']);
+      assert.ok(watcher !== null, 'taskkill must target the spawned watcher');
+      const target = watcher;
+      queueMicrotask(() => {
+        // Falsifier: the leader exits, taskkill reports code 128, and the
+        // descendant remains alive because no post-exit tree handle exists.
+        target.emit('exit', 0, null);
+        child.emit('exit', 128, null);
+      });
+      return child;
+    }
+    const pid = ++nextPid;
+    watcher = child;
+    const stdout = new PassThrough();
+    Object.assign(child, { pid, stdout, stderr: new PassThrough() });
+    queueMicrotask(() => stdout.write('FIXTURE_READY\n'));
+    return watcher;
+  };
+  const moduleCopy = { exports: {} };
+  runInNewContext(
+    source,
+    {
+      module: moduleCopy,
+      require: (name) => (name === 'node:child_process' ? { spawn: fakeSpawn } : require(name)),
+      __dirname: path.dirname(filename),
+      process: { platform: 'win32', env: {} },
+      setTimeout,
+      clearTimeout,
+      setInterval,
+    },
+    { filename },
+  );
+  const { runDevSupervisor: runIsolated } = /** @type {typeof import('./dev-supervisor')} */ (
+    moduleCopy.exports
+  );
+  const controller = runIsolated({
+    children: [
+      {
+        name: 'types',
+        command: 'fixture-node',
+        args: [],
+        cwd: '.',
+        readyPattern: /FIXTURE_READY/,
+      },
+    ],
+    options: {
+      stopWhenReady: true,
+      forwardOutput: false,
+      readinessTimeoutMs: 1000,
+      shutdownGraceMs: 25,
+    },
+  });
+  const result = await controller.waitForExit();
+  assert.equal(descendant.alive, true, 'the mock descendant must remain live');
+  assert.equal(result.code, 1);
+  assert.equal(result.reason, 'stop-when-ready');
+  assert.deepEqual(Array.from(result.escalations), ['types']);
+  assert.equal(result.failures.length, 1);
+  assert.equal(
+    result.failures[0],
+    'watcher "types" taskkill helper exited (code=128, signal=none)',
+  );
 });
 
 void test('a stalled Windows taskkill reaches escalation and stays red', async () => {

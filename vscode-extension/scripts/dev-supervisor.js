@@ -347,15 +347,14 @@ function killGroup(pid, signal, report) {
 }
 
 /**
- * @typedef {{ok: boolean, detail?: string, ignoreIfTargetExited?: boolean}} TaskkillResult
+ * @typedef {{ok: boolean, detail?: string}} TaskkillResult
  */
 
 /**
- * Runs `taskkill /T /F` for a pid with a bounded helper lifetime. A timeout or
- * spawn error is failure evidence. Windows reports code 128 when the target
- * has already disappeared; that result is benign only when the watcher exit
- * is already observable at the helper boundary. Other non-zero exits remain
- * failure evidence even if the watcher later disappears.
+ * Runs `taskkill /T /F` for a pid with a bounded helper lifetime. A timeout,
+ * spawn error, or non-zero helper exit remains failure evidence even if the
+ * watcher later disappears; a leader exit cannot prove that its descendants
+ * were removed.
  *
  * @param {number} pid
  * @returns {Promise<TaskkillResult>}
@@ -398,7 +397,6 @@ function runTaskkill(pid) {
           ? { ok: true }
           : {
               ok: false,
-              ...(code === 128 ? { ignoreIfTargetExited: true } : {}),
               detail: `taskkill helper exited (code=${code ?? 'none'}, signal=${signal ?? 'none'})`,
             },
       ),
@@ -577,8 +575,8 @@ function runDevSupervisor(input) {
   /**
    * Preserve helper failures in both the terminal result and the visible
    * failure stream. A later watcher exit cannot turn a failed tree-kill
-   * instrument into a green shutdown claim. Code 128 is the one Windows
-   * target-gone result that is benign when the watcher exit is already known.
+   * instrument into a green shutdown claim, including when the helper's
+   * non-zero result races a watcher exit.
    *
    * @param {ChildState} child
    * @param {TaskkillResult | null} outcome
@@ -588,9 +586,6 @@ function runDevSupervisor(input) {
       return;
     }
     if (outcome.ok) {
-      return;
-    }
-    if (outcome.ignoreIfTargetExited && shutdownTargetExited(child)) {
       return;
     }
     const failure = `watcher "${child.spec.name}" ${outcome.detail ?? 'taskkill helper failed'}`;
