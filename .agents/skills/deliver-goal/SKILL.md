@@ -110,6 +110,23 @@ cross-PR contracts, shared blockers/wake events, merged effects, residual claims
 completion judgment. Keep runtime topology, task lists, liveness, retries, raw logs,
 and unchanged status local to the root.
 
+## Remote-wait attention release
+
+A remote wait releases root attention. An exact wake event records the material
+condition that would justify reconstructing the claim later; it is not an instruction
+to keep the current root session alive until that condition changes.
+
+Do not create a timer, cron, scheduled reminder, recurring wake, or polling loop merely
+to revisit the same remote condition. In a multi-claim goal, retain the waiting frame as
+`IN_FLIGHT` or `MERGE_BLOCKED`, release unnecessary live contexts, and immediately
+select another phase-eligible actionable claim. A waiting candidate consumes no live
+attention merely because the root still stewards it.
+
+If every remaining required claim genuinely shares one external condition, return
+`EXTERNAL_BLOCKER` and let the bounded engineering session end. Scheduled monitoring is
+a different user goal; do not smuggle it in as the continuation mechanism for ordinary
+engineering work.
+
 ## Bounded related-PR review orchestration
 
 When directly linked PRs have interacting contracts, authority, or merge order, each PR
@@ -146,6 +163,7 @@ reconstruct goal and claim frames
 → run `$deliver-pr` in the root against that frame
 → when the claim reaches a GitHub-owned wait, record its wake event once
 → retain the logical frame as IN_FLIGHT; no live agent required
+→ release root attention from the waiting claim; schedule no polling wake
 → advance another independent claim
 → reconcile merged or deliberately closed claims
 → sweep safe worktree residue
