@@ -71,18 +71,8 @@ async function waitForLifecycleRunning(
 async function waitForFailedHealth(): Promise<HealthCheckResult> {
   return withTimeout(
     'rejecting language server health result',
-    (async () => {
-      for (;;) {
-        const result = (await vscode.commands.executeCommand(
-          'perl-lsp.runHealthCheck',
-        )) as HealthCheckResult;
-        if (!result.ok) {
-          return result;
-        }
-        await delay(100);
-      }
-    })(),
-    45_000,
+    vscode.commands.executeCommand('perl-lsp.runHealthCheck') as Promise<HealthCheckResult>,
+    90_000,
   );
 }
 

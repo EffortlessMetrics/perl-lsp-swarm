@@ -355,6 +355,18 @@ describe('LanguageClientLifecycle', () => {
     }
   });
 
+  test('rejects a client that has already stopped when startup settles', async () => {
+    const harness = makeHarness();
+    harness.hooks.isClientRunning = () => false;
+
+    await expect(harness.controller.start()).rejects.toMatchObject({
+      name: 'LanguageClientLifecycleError',
+      reason: 'lifecycle',
+    });
+    expect(harness.clients[0]!.isDisposed()).toBe(true);
+    expect(harness.controller.snapshot.state).toBe('failed');
+  });
+
   test('bounds a hung stop and still disposes the client', async () => {
     jest.useFakeTimers();
     try {

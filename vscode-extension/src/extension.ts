@@ -1981,6 +1981,7 @@ function createLanguageClientLifecycle(
         witness as ServerProcessLike | undefined,
         SERVER_PROCESS_EXIT_GRACE_MS,
       )),
+    isClientRunning: (client) => client.state === LanguageClientState.Running,
   });
 }
 

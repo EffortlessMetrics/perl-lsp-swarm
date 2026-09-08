@@ -68,6 +68,8 @@ export interface LifecycleHooks<TClient extends LifecycleClient<TEvent>, TEvent 
    * successful stop establishes cleanup completion.
    */
   isClientTerminal?(client: TClient, witness: unknown): boolean | Promise<boolean>;
+  /** Report whether the client is still running after startup settles. */
+  isClientRunning?(client: TClient): boolean;
 }
 
 export interface LanguageClientLifecycleOptions {
@@ -272,6 +274,12 @@ export class LanguageClientLifecycle<TClient extends LifecycleClient<TEvent>, TE
       const startResult = await this.runBounded('start', () => client.start());
       if (!startResult.completed) {
         throw startResult.error;
+      }
+      if (this.hooks.isClientRunning && !this.hooks.isClientRunning(client)) {
+        throw new LanguageClientLifecycleError(
+          'Language client stopped before startup completed.',
+          'lifecycle',
+        );
       }
       if (!this.isCurrentActive(active)) {
         this.recordCleanupResult(await this.shutdown(active));
