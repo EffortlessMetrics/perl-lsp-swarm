@@ -965,6 +965,13 @@ fn debug_formatting_does_not_leak_payload() -> TestResult {
         return Err("Debug leaked an exact integer".to_string());
     }
 
+    let decimal = ExactDecimal::admitted("9876543210.123456789")
+        .ok_or("expected the distinctive decimal to be admitted")?;
+    let rendered_decimal = format!("{:?}", MutationValue::ExactDecimal(decimal));
+    if rendered_decimal.contains("9876543210.123456789") {
+        return Err(format!("Debug leaked an exact decimal: {rendered_decimal}"));
+    }
+
     // Composition: containing types must redact storage and graph identities,
     // not only assigned values and hash-key payloads.
     let mut candidate = lexical_candidate("frame-identity-secret", "binding-identity-secret");
