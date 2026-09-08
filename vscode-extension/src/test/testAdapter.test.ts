@@ -1,13 +1,32 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import * as vscode from 'vscode';
 import type { ChildProcess } from 'child_process';
+import { EventEmitter } from 'events';
+import { PassThrough } from 'stream';
 import {
   describeFileFailure,
   parseSubtestResults,
   parseTapOutput,
+  PerlTestAdapter,
   runBoundedProcess,
+  resolveProveCommand,
 } from '../testAdapter';
+
+function fakeChildProcess(): ChildProcess {
+  const child = new EventEmitter() as ChildProcess;
+  Object.assign(child, {
+    pid: 7418,
+    exitCode: null,
+    signalCode: null,
+    stdin: new PassThrough(),
+    stdout: new PassThrough(),
+    stderr: new PassThrough(),
+    kill: jest.fn(() => true),
+  });
+  return child;
+}
 
 describe('test adapter TAP parsing', () => {
   test('summarizes top-level TAP without counting indented subtests', () => {
@@ -81,6 +100,211 @@ describe('test adapter TAP parsing', () => {
 });
 
 describe('bounded prove process execution', () => {
+  test('runs the registered Test Explorer profile with the selected file on stdin', async () => {
+    if (process.platform !== 'win32') {
+      return;
+    }
+
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-profile-'));
+    const fixture = path.join(root, 'selected space & [1] {a,b}.t');
+    const marker = path.join(root, 'selected-marker.txt');
+    const uri = vscode.Uri.file(fixture);
+    fs.writeFileSync(
+      fixture,
+      [
+        'use strict;',
+        'open my $marker, ">", $ENV{PERL_LSP_SELECTED_MARKER} or die $!;',
+        'print {$marker} "$0\\n";',
+        'close $marker or die $!;',
+        'print "1..1\\n";',
+        'print "ok 1 - selected profile\\n";',
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+
+    const adapter = new PerlTestAdapter();
+    const controller = (vscode.tests.createTestController as jest.Mock).mock.results.at(-1)
+      ?.value as {
+      createRunProfile: jest.Mock;
+      createTestRun: jest.Mock;
+    };
+    const profile = controller.createRunProfile.mock.calls[0]?.[2] as (
+      request: unknown,
+      token: unknown,
+    ) => Promise<void>;
+    const child = { id: `${uri}::selected`, label: 'selected', uri };
+    const fileItem = {
+      id: uri.toString(),
+      label: path.basename(fixture),
+      uri,
+      children: {
+        size: 1,
+        forEach: (callback: (item: typeof child) => void) => callback(child),
+      },
+    };
+    const previousMarker = process.env.PERL_LSP_SELECTED_MARKER;
+    process.env.PERL_LSP_SELECTED_MARKER = marker;
+    try {
+      await profile(
+        { include: [fileItem] },
+        { isCancellationRequested: false, onCancellationRequested: () => ({ dispose: jest.fn() }) },
+      );
+      const run = controller.createTestRun.mock.results[0]?.value;
+      expect(fs.readFileSync(marker, 'utf8').trim()).toBe(path.normalize(fixture));
+      expect(run.passed).toHaveBeenCalledWith(fileItem, expect.any(Number));
+      expect(run.errored).not.toHaveBeenCalled();
+    } finally {
+      if (previousMarker === undefined) delete process.env.PERL_LSP_SELECTED_MARKER;
+      else process.env.PERL_LSP_SELECTED_MARKER = previousMarker;
+      adapter.dispose();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  test('marks the selected file and subtest errored when the registered profile cannot resolve Perl', async () => {
+    if (process.platform !== 'win32') {
+      return;
+    }
+
+    const childProcess = require('child_process') as {
+      execFileSync: (...args: unknown[]) => Buffer | string;
+    };
+    const original = childProcess.execFileSync;
+    childProcess.execFileSync = () => {
+      throw new Error('Perl unavailable for registered profile');
+    };
+    const fixture = path.join(os.tmpdir(), 'perl-lsp-missing-perl.t');
+    const uri = vscode.Uri.file(fixture);
+    const adapter = new PerlTestAdapter();
+    const controller = (vscode.tests.createTestController as jest.Mock).mock.results.at(-1)
+      ?.value as {
+      createRunProfile: jest.Mock;
+      createTestRun: jest.Mock;
+    };
+    const profile = controller.createRunProfile.mock.calls[0]?.[2] as (
+      request: unknown,
+      token: unknown,
+    ) => Promise<void>;
+    const child = { id: `${uri}::missing`, label: 'missing', uri };
+    const fileItem = {
+      id: uri.toString(),
+      label: path.basename(fixture),
+      uri,
+      children: {
+        size: 1,
+        forEach: (callback: (item: typeof child) => void) => callback(child),
+      },
+    };
+    try {
+      await profile(
+        { include: [fileItem] },
+        { isCancellationRequested: false, onCancellationRequested: () => ({ dispose: jest.fn() }) },
+      );
+      const run = controller.createTestRun.mock.results[0]?.value;
+      expect(run.errored).toHaveBeenCalledTimes(2);
+      expect(run.errored.mock.calls.map((call: unknown[]) => call[0])).toEqual([fileItem, child]);
+      expect(run.passed).not.toHaveBeenCalled();
+      expect(run.failed).not.toHaveBeenCalled();
+      expect(run.errored.mock.calls[0][1].message).toContain('matching Perl/prove installation');
+    } finally {
+      childProcess.execFileSync = original;
+      adapter.dispose();
+    }
+  });
+
+  test('runs a selected test through the registered resolver when its path contains spaces', async () => {
+    if (process.platform !== 'win32') {
+      return;
+    }
+
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-prove-'));
+    const fixtureDirectory = path.join(root, "space & % ! ^ ( ) ' [1] {a,b}");
+    const fixture = path.join(fixtureDirectory, 'selected.t');
+    const conflictingPathDirectory = path.join(root, 'conflicting-path');
+    const conflictingPathMarker = path.join(root, 'path-prove-was-run.txt');
+    const conflictingPathProve = path.join(conflictingPathDirectory, 'prove.bat');
+    fs.mkdirSync(fixtureDirectory, { recursive: true });
+    fs.mkdirSync(conflictingPathDirectory, { recursive: true });
+    fs.writeFileSync(
+      fixture,
+      'use strict;\nprint "1..1\\n";\nprint "ok 1 - selected resolver path\\n";\n',
+      'utf8',
+    );
+    fs.writeFileSync(
+      conflictingPathProve,
+      `@echo off\r\necho path prove was selected > "${conflictingPathMarker}"\r\nexit /b 99\r\n`,
+      'utf8',
+    );
+
+    try {
+      const resolved = resolveProveCommand(['-v', '--nocolor', '-']);
+      expect(resolved.command.toLowerCase()).not.toMatch(/prove\.bat$/);
+      expect(resolved.args[0]).toBe('-x');
+      expect(resolved.args[1]?.toLowerCase()).toMatch(/prove\.bat$/);
+      expect(resolved.args).toContain('-');
+      const result = await runBoundedProcess(resolved.command, resolved.args, {
+        cwd: root,
+        shell: resolved.shell,
+        timeoutMs: 5_000,
+        maxOutputBytes: 32_768,
+        terminationGraceMs: 100,
+        stdin: `${fixture}\n`,
+        env: {
+          ...process.env,
+          PATH: `${conflictingPathDirectory};${process.env.PATH ?? ''}`,
+        },
+      });
+
+      expect(result).toMatchObject({ outcome: 'completed', exitCode: 0 });
+      expect(result.stdout).toContain('selected resolver path');
+      expect(fs.existsSync(conflictingPathMarker)).toBe(false);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  test('fails closed with an actionable error when Windows Perl resolution fails', () => {
+    if (process.platform !== 'win32') {
+      return;
+    }
+
+    const childProcess = require('child_process') as {
+      execFileSync: (...args: unknown[]) => Buffer | string;
+    };
+    const original = childProcess.execFileSync;
+    childProcess.execFileSync = () => {
+      throw new Error('Perl unavailable for test');
+    };
+    try {
+      const resolved = resolveProveCommand(['-v', '--nocolor', '-']);
+      expect(resolved).toMatchObject({ command: '', args: [], shell: false });
+      expect(resolved.error).toContain('matching Perl/prove installation');
+    } finally {
+      childProcess.execFileSync = original;
+    }
+  });
+
+  test('fails closed when Perl resolves but its adjacent prove shim is missing', () => {
+    if (process.platform !== 'win32') {
+      return;
+    }
+
+    const childProcess = require('child_process') as {
+      execFileSync: (...args: unknown[]) => Buffer | string;
+    };
+    const original = childProcess.execFileSync;
+    childProcess.execFileSync = () => process.execPath;
+    try {
+      const resolved = resolveProveCommand(['-v', '--nocolor', '-']);
+      expect(resolved.command).toBe('');
+      expect(resolved.args).toEqual([]);
+      expect(resolved.error).toContain('matching Perl/prove installation');
+    } finally {
+      childProcess.execFileSync = original;
+    }
+  });
+
   test('returns normal output without truncation', async () => {
     const result = await runBoundedProcess(process.execPath, ['-e', 'process.stdout.write("ok")'], {
       shell: false,
@@ -95,6 +319,53 @@ describe('bounded prove process execution', () => {
       stderr: '',
       exitCode: 0,
     });
+  }, 30_000);
+
+  test('reports a closed stdin stream separately from caller cancellation', async () => {
+    const result = await runBoundedProcess(
+      process.execPath,
+      ['-e', 'process.stdin.on("data", () => process.exit(0))'],
+      {
+        shell: false,
+        stdin: 'x'.repeat(16 * 1024 * 1024),
+        timeoutMs: 5_000,
+        maxOutputBytes: 32,
+        terminationGraceMs: 25,
+        ...(process.platform === 'win32'
+          ? {
+              killProcessTree: async (pid: number | undefined) => {
+                if (pid !== undefined) {
+                  try {
+                    process.kill(pid);
+                  } catch {
+                    // The child may have exited before the injected cleanup ran.
+                  }
+                }
+                return { ok: true as const };
+              },
+            }
+          : {}),
+      },
+    );
+
+    expect(result.outcome).toBe('input_error');
+    expect(result.diagnostic).toContain('process input');
+  }, 30_000);
+
+  test('keeps caller cancellation when stdin closes during termination', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const result = await runBoundedProcess(process.execPath, ['-e', 'setTimeout(() => {}, 5000)'], {
+      shell: false,
+      signal: controller.signal,
+      stdin: 'x'.repeat(16 * 1024 * 1024),
+      timeoutMs: 5_000,
+      maxOutputBytes: 32,
+      terminationGraceMs: 25,
+    });
+
+    expect(result.outcome).toBe('cancelled');
+    expect(result.diagnostic).toContain('cancelled');
   }, 30_000);
 
   test('terminates a process that exceeds the wall-clock deadline', async () => {
@@ -112,7 +383,7 @@ describe('bounded prove process execution', () => {
   test('terminates a process that exceeds the combined output ceiling', async () => {
     const result = await runBoundedProcess(
       process.execPath,
-      ['-e', 'process.stdout.write("x".repeat(4096))'],
+      ['-e', 'process.stdout.write("x".repeat(4096)); setTimeout(() => {}, 5000)'],
       {
         shell: false,
         timeoutMs: 5_000,
@@ -130,13 +401,30 @@ describe('bounded prove process execution', () => {
   test('enforces the combined stdout/stderr byte ceiling across both streams', async () => {
     const result = await runBoundedProcess(
       process.execPath,
-      ['-e', 'process.stdout.write("a".repeat(80)); process.stderr.write("b".repeat(80));'],
+      [
+        '-e',
+        'setInterval(() => { process.stdout.write("a".repeat(80)); process.stderr.write("b".repeat(80)); }, 1)',
+      ],
       {
         shell: false,
         timeoutMs: 5_000,
         maxOutputBytes: 100,
         terminationGraceMs: 25,
         terminationWatchdogMs: 1_000,
+        ...(process.platform === 'win32'
+          ? {
+              killProcessTree: async (pid: number | undefined) => {
+                if (pid !== undefined) {
+                  try {
+                    process.kill(pid);
+                  } catch {
+                    // The child may have exited before the injected cleanup ran.
+                  }
+                }
+                return { ok: true as const };
+              },
+            }
+          : {}),
       },
     );
 
@@ -199,7 +487,7 @@ describe('bounded prove process execution', () => {
   test('does not emit a replacement character when the byte ceiling cuts UTF-8', async () => {
     const result = await runBoundedProcess(
       process.execPath,
-      ['-e', 'process.stdout.write(Buffer.from([0xc3, 0xa9]))'],
+      ['-e', 'process.stdout.write(Buffer.from([0xc3, 0xa9])); setTimeout(() => {}, 5000)'],
       {
         shell: false,
         timeoutMs: 5_000,
@@ -225,6 +513,7 @@ describe('bounded prove process execution', () => {
           'process.stderr.write(Buffer.from([0xc3]))',
           'process.stdout.write("x")',
           'setTimeout(() => process.stderr.write(Buffer.from([0xa9])), 10)',
+          'setTimeout(() => {}, 5000)',
         ].join(';'),
       ],
       {
@@ -264,34 +553,25 @@ describe('bounded prove process execution', () => {
   }, 30_000);
 
   test('surfaces termination_failed when forced kill never yields close', async () => {
-    const live: ChildProcess[] = [];
+    const child = fakeChildProcess();
     try {
-      const result = await runBoundedProcess(
-        process.execPath,
-        ['-e', 'setTimeout(() => {}, 5000)'],
-        {
-          shell: false,
-          timeoutMs: 50,
-          maxOutputBytes: 32,
-          terminationGraceMs: 25,
-          terminationWatchdogMs: 150,
-          killProcess: (proc) => {
-            live.push(proc);
-            return false;
-          },
-        },
-      );
+      const result = await runBoundedProcess(process.execPath, [], {
+        shell: false,
+        timeoutMs: 50,
+        maxOutputBytes: 32,
+        terminationGraceMs: 25,
+        terminationWatchdogMs: 150,
+        spawnProcess: (() => child) as never,
+        killProcess: () => false,
+        ...(process.platform === 'win32'
+          ? { killProcessTree: async () => ({ ok: true as const }) }
+          : {}),
+      });
 
       expect(result.outcome).toBe('termination_failed');
       expect(result.diagnostic).toContain('forced termination');
     } finally {
-      for (const proc of live) {
-        try {
-          proc.kill('SIGKILL');
-        } catch {
-          // Best-effort cleanup for the intentionally unkillable seam.
-        }
-      }
+      child.removeAllListeners();
     }
   }, 30_000);
 
@@ -353,33 +633,149 @@ describe('bounded prove process execution', () => {
     expect(result.diagnostic).toContain('cancelled');
   }, 30_000);
 
-  test('terminates the Windows shell child, not only cmd.exe', async () => {
+  test('reports Windows tree-cleanup failure and does not retry after close', async () => {
     if (process.platform !== 'win32') {
       return;
     }
 
-    const marker = path.join(os.tmpdir(), `perl-lsp-test-adapter-${process.pid}.txt`);
-    const script = path.join(os.tmpdir(), `perl-lsp-test-adapter-${process.pid}.js`);
+    const controller = new AbortController();
+    let cleanupCalls = 0;
+    const resultPromise = runBoundedProcess(process.execPath, ['-e', 'setTimeout(() => {}, 50)'], {
+      shell: false,
+      signal: controller.signal,
+      timeoutMs: 5_000,
+      maxOutputBytes: 32,
+      terminationGraceMs: 25,
+      killProcessTree: async () => {
+        cleanupCalls += 1;
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        return { ok: false, diagnostic: 'injected tree cleanup failure' };
+      },
+    });
+    controller.abort();
+
+    const result = await resultPromise;
+    expect(result.outcome).toBe('termination_failed');
+    expect(result.diagnostic).toContain('injected tree cleanup failure');
+    expect(cleanupCalls).toBe(1);
+  }, 30_000);
+
+  test('does not start tree cleanup after exit but before close', async () => {
+    if (process.platform !== 'win32') {
+      return;
+    }
+
+    const child = fakeChildProcess();
+    let cleanupCalls = 0;
+    const controller = new AbortController();
+    try {
+      const resultPromise = runBoundedProcess(process.execPath, [], {
+        shell: false,
+        signal: controller.signal,
+        timeoutMs: 5_000,
+        maxOutputBytes: 32,
+        terminationGraceMs: 25,
+        spawnProcess: (() => child) as never,
+        killProcessTree: async () => {
+          cleanupCalls += 1;
+          return { ok: true as const };
+        },
+      });
+      child.emit('exit', 0, null);
+      controller.abort();
+      expect(cleanupCalls).toBe(0);
+      child.emit('close', 0, null);
+      const result = await resultPromise;
+      expect(result.outcome).toBe('termination_failed');
+      expect(result.diagnostic).toContain('already exited');
+    } finally {
+      child.removeAllListeners();
+    }
+  });
+
+  test('preserves cleanup failure when close precedes cleanup completion', async () => {
+    if (process.platform !== 'win32') {
+      return;
+    }
+
+    const child = fakeChildProcess();
+    let resolveCleanup: ((result: { ok: false; diagnostic: string }) => void) | undefined;
+    const controller = new AbortController();
+    try {
+      const resultPromise = runBoundedProcess(process.execPath, [], {
+        shell: false,
+        signal: controller.signal,
+        timeoutMs: 5_000,
+        maxOutputBytes: 32,
+        terminationGraceMs: 25,
+        spawnProcess: (() => child) as never,
+        killProcessTree: async () =>
+          new Promise((resolve) => {
+            resolveCleanup = resolve;
+          }),
+      });
+      controller.abort();
+      child.emit('close', 0, null);
+      resolveCleanup?.({ ok: false, diagnostic: 'injected cleanup failure after close' });
+      const result = await resultPromise;
+      expect(result.outcome).toBe('termination_failed');
+      expect(result.diagnostic).toContain('after close');
+    } finally {
+      child.removeAllListeners();
+    }
+  });
+
+  test('terminates a direct Windows parent and its started child', async () => {
+    if (process.platform !== 'win32') {
+      return;
+    }
+
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-process-tree-'));
+    const parentMarker = path.join(root, 'parent-started.txt');
+    const childMarker = path.join(root, 'child-state.txt');
+    const script = path.join(root, 'parent.js');
     fs.writeFileSync(
       script,
-      `setTimeout(() => require('fs').writeFileSync(${JSON.stringify(marker)}, 'survived'), 1000);\n` +
-        'setTimeout(() => {}, 5000);\n',
+      `require('fs').writeFileSync(${JSON.stringify(parentMarker)}, 'started');\n` +
+        `require('child_process').spawn(process.execPath, ['-e', ${JSON.stringify(
+          `require('fs').writeFileSync(${JSON.stringify(childMarker)}, 'started'); setTimeout(() => require('fs').writeFileSync(${JSON.stringify(childMarker)}, 'survived'), 3000); setTimeout(() => {}, 15000);`,
+        )}], { detached: true, windowsHide: true, stdio: 'ignore' });\n` +
+        'setTimeout(() => {}, 15000);\n',
       'utf8',
     );
+    const controller = new AbortController();
+    let resultPromise: Promise<Awaited<ReturnType<typeof runBoundedProcess>>> | undefined;
     try {
-      const result = await runBoundedProcess(process.execPath, [script], {
-        shell: true,
-        timeoutMs: 100,
+      resultPromise = runBoundedProcess(process.execPath, [script], {
+        shell: false,
+        signal: controller.signal,
+        timeoutMs: 10_000,
         maxOutputBytes: 32,
         terminationGraceMs: 25,
       });
 
-      expect(result.outcome).toBe('timed_out');
-      await new Promise((resolve) => setTimeout(resolve, 1_250));
-      expect(fs.existsSync(marker)).toBe(false);
+      const startupDeadline = Date.now() + 5_000;
+      while (Date.now() < startupDeadline) {
+        if (fs.existsSync(parentMarker) && fs.existsSync(childMarker)) {
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      expect(fs.existsSync(parentMarker)).toBe(true);
+      expect(fs.existsSync(childMarker)).toBe(true);
+      controller.abort();
+      const result = await resultPromise;
+      expect(result.outcome).toBe('cancelled');
+      expect(fs.readFileSync(parentMarker, 'utf8')).toBe('started');
+      expect(fs.readFileSync(childMarker, 'utf8')).toBe('started');
+      await new Promise((resolve) => setTimeout(resolve, 3_500));
+      expect(fs.readFileSync(childMarker, 'utf8')).toBe('started');
     } finally {
-      fs.rmSync(script, { force: true });
-      fs.rmSync(marker, { force: true });
+      controller.abort();
+      if (resultPromise !== undefined) {
+        await resultPromise;
+      }
+      fs.rmSync(root, { recursive: true, force: true });
     }
   }, 30_000);
 });
