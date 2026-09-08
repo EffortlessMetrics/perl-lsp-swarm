@@ -6,6 +6,6 @@ body: >-
   build, bundling, or packaging step fails.
 time: 2026-09-08T06:25:40Z
 custom:
-  PR: TBD
+  PR: "15126"
   Slug: build-failure-propagation
   Breaking: "no"
