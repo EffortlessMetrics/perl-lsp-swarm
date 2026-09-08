@@ -1,3 +1,5 @@
+#![deny(clippy::map_err_ignore)]
+
 //! Public-boundary contract tests for canonical TAP result facts.
 
 use perl_test_facts::{TapAssertionOutcome, TapAssertionStatus, parse_tap};

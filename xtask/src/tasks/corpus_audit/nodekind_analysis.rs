@@ -19,10 +19,8 @@ pub struct NodeKindStats {
     /// NodeKinds that were never seen
     pub never_seen: Vec<String>,
     /// Never-seen NodeKinds that are intentionally excluded from strict coverage.
-    #[serde(default)]
     pub allowlisted_never_seen: Vec<AllowlistedNodeKind>,
     /// Never-seen NodeKinds that still need fixture/generator coverage.
-    #[serde(default)]
     pub actionable_never_seen: Vec<String>,
     /// NodeKinds with low coverage (<5 occurrences)
     pub at_risk: Vec<AtRiskNodeKind>,
@@ -187,6 +185,120 @@ fn recovery_kind_allowlist() -> HashMap<&'static str, &'static str> {
     allowlist
 }
 
+/// Validate that the omission classification is trustworthy evidence.
+///
+/// A report may only be treated as zero-actionable when:
+/// - `never_seen` is exactly the duplicate-free disjoint union of
+///   `actionable_never_seen` and `allowlisted_never_seen` names,
+/// - every omission name is a canonical `NodeKind` name from
+///   `NodeKind::ALL_KIND_NAMES`, and
+/// - every allowlisted omission is a recovery kind, and
+/// - every allowlisted entry carries a non-empty rationale.
+///
+/// Each violation yields one human-readable failure message; an empty result
+/// means the omission partition can be trusted.
+pub fn omission_partition_failures(stats: &NodeKindStats) -> Vec<String> {
+    let mut failures = Vec::new();
+
+    let canonical: HashSet<&str> =
+        perl_parser::ast::NodeKind::ALL_KIND_NAMES.iter().copied().collect();
+    let recovery_allowlist = recovery_kind_allowlist();
+
+    // Classification bucket contents, with multiplicity for duplicate detection.
+    let mut classified_counts: HashMap<&str, usize> = HashMap::new();
+    let mut allowlisted: HashSet<&str> = HashSet::new();
+    for entry in &stats.allowlisted_never_seen {
+        *classified_counts.entry(entry.name.as_str()).or_insert(0) += 1;
+        allowlisted.insert(entry.name.as_str());
+        if entry.rationale.trim().is_empty() {
+            failures.push(format!(
+                "Allowlisted never-seen NodeKind '{}' has an empty rationale",
+                entry.name
+            ));
+        }
+        if !recovery_allowlist.contains_key(entry.name.as_str()) {
+            failures.push(format!(
+                "Allowlisted never-seen NodeKind '{}' is not a recovery kind",
+                entry.name
+            ));
+        }
+    }
+    let mut actionable: HashSet<&str> = HashSet::new();
+    for name in &stats.actionable_never_seen {
+        *classified_counts.entry(name.as_str()).or_insert(0) += 1;
+        actionable.insert(name.as_str());
+        if recovery_allowlist.contains_key(name.as_str()) {
+            failures.push(format!("Actionable never-seen NodeKind '{}' is a recovery kind", name));
+        }
+    }
+
+    // The two classification buckets must be disjoint.
+    let overlap: Vec<&&str> = allowlisted.intersection(&actionable).collect();
+    if !overlap.is_empty() {
+        let mut names: Vec<&str> = overlap.into_iter().copied().collect();
+        names.sort_unstable();
+        failures.push(format!(
+            "Omission classification overlap: {} appear in both the actionable and allowlisted buckets",
+            names.iter().map(|name| format!("'{name}'")).collect::<Vec<_>>().join(", ")
+        ));
+    }
+
+    // No duplicates within the combined classification.
+    let mut duplicated: Vec<&str> =
+        classified_counts.iter().filter(|(_, count)| **count > 1).map(|(name, _)| *name).collect();
+    duplicated.sort_unstable();
+    if !duplicated.is_empty() {
+        failures.push(format!(
+            "Duplicate NodeKind omission entries: {}",
+            duplicated.iter().map(|name| format!("'{name}'")).collect::<Vec<_>>().join(", ")
+        ));
+    }
+
+    // Partition completeness: never_seen must be exactly the union of the two
+    // classification buckets (member for member, no drops, no extras).
+    let mut never_seen_counts: HashMap<&str, usize> = HashMap::new();
+    for name in &stats.never_seen {
+        *never_seen_counts.entry(name.as_str()).or_insert(0) += 1;
+    }
+    let mut dropped: Vec<&str> = never_seen_counts
+        .iter()
+        .filter(|(name, count)| classified_counts.get(*name).copied().unwrap_or(0) < **count)
+        .map(|(name, _)| *name)
+        .collect();
+    let mut extra: Vec<&str> = classified_counts
+        .iter()
+        .filter(|(name, count)| never_seen_counts.get(*name).copied().unwrap_or(0) < **count)
+        .map(|(name, _)| *name)
+        .collect();
+    if !dropped.is_empty() || !extra.is_empty() {
+        dropped.sort_unstable();
+        extra.sort_unstable();
+        failures.push(format!(
+            "Omission partition mismatch: never_seen must equal actionable + allowlisted; dropped from classification: [{}]; classified but not never-seen: [{}]",
+            dropped.iter().map(|name| format!("'{name}'")).collect::<Vec<_>>().join(", "),
+            extra.iter().map(|name| format!("'{name}'")).collect::<Vec<_>>().join(", ")
+        ));
+    }
+
+    // Canonicality: every omission name must exist in the parser's kind list.
+    let mut non_canonical: Vec<&str> = never_seen_counts
+        .keys()
+        .copied()
+        .chain(classified_counts.keys().copied())
+        .filter(|name| !canonical.contains(name))
+        .collect();
+    non_canonical.sort_unstable();
+    non_canonical.dedup();
+    if !non_canonical.is_empty() {
+        failures.push(format!(
+            "Non-canonical NodeKind omission names (absent from NodeKind::ALL_KIND_NAMES): {}",
+            non_canonical.iter().map(|name| format!("'{name}'")).collect::<Vec<_>>().join(", ")
+        ));
+    }
+
+    failures
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -215,6 +327,142 @@ mod tests {
         let nodekinds = extract_nodekinds_from_content(&path);
         assert!(!nodekinds.is_empty(), "should extract at least one NodeKind");
         Ok(())
+    }
+
+    #[test]
+    fn test_nodekind_stats_requires_explicit_omission_classification() {
+        let missing_actionable = r#"{
+            "total_count": 76,
+            "covered_count": 71,
+            "coverage_percentage": 93.4,
+            "never_seen": ["KeyValueSlice"],
+            "allowlisted_never_seen": [],
+            "at_risk": [],
+            "frequency": {}
+        }"#;
+        assert!(
+            serde_json::from_str::<NodeKindStats>(missing_actionable).is_err(),
+            "a report without actionable_never_seen must not deserialize as zero actionable gaps"
+        );
+
+        let missing_allowlisted = r#"{
+            "total_count": 76,
+            "covered_count": 71,
+            "coverage_percentage": 93.4,
+            "never_seen": ["MissingBlock"],
+            "actionable_never_seen": [],
+            "at_risk": [],
+            "frequency": {}
+        }"#;
+        assert!(
+            serde_json::from_str::<NodeKindStats>(missing_allowlisted).is_err(),
+            "a report without allowlisted_never_seen must not deserialize as a complete omission partition"
+        );
+    }
+
+    /// Deserialize a presence-valid NodeKindStats JSON fixture.
+    fn omission_fixture(json: &str) -> NodeKindStats {
+        serde_json::from_str(json).expect("fixture must deserialize (presence is not the question)")
+    }
+
+    #[test]
+    fn test_partition_validator_rejects_presence_valid_inconsistent_reports() {
+        let base = r#""total_count": 76, "covered_count": 73, "coverage_percentage": 96.1,
+            "at_risk": [], "frequency": {}"#;
+
+        // Overlap: 'AmperCall' in both classification buckets.
+        let overlap = omission_fixture(&format!(
+            r#"{{ {base}, "never_seen": ["AmperCall"],
+                "allowlisted_never_seen": [{{"name": "AmperCall", "rationale": "x"}}],
+                "actionable_never_seen": ["AmperCall"] }}"#
+        ));
+        let failures = omission_partition_failures(&overlap);
+        assert!(
+            failures.iter().any(|s| s.contains("Omission classification overlap")),
+            "overlap must be rejected: {failures:?}"
+        );
+
+        // Dropped member: never_seen has two entries, only one is classified.
+        let dropped = omission_fixture(&format!(
+            r#"{{ {base}, "never_seen": ["AmperCall", "VString"],
+                "allowlisted_never_seen": [], "actionable_never_seen": ["AmperCall"] }}"#
+        ));
+        let failures = omission_partition_failures(&dropped);
+        assert!(
+            failures.iter().any(|s| s.contains("Omission partition mismatch")),
+            "dropped member must be rejected: {failures:?}"
+        );
+
+        // Non-canonical name: typo absent from NodeKind::ALL_KIND_NAMES.
+        let non_canonical = omission_fixture(&format!(
+            r#"{{ {base}, "never_seen": ["AmperCal!"],
+                "allowlisted_never_seen": [], "actionable_never_seen": ["AmperCal!"] }}"#
+        ));
+        let failures = omission_partition_failures(&non_canonical);
+        assert!(
+            failures.iter().any(|s| s.contains("Non-canonical NodeKind omission names")),
+            "non-canonical name must be rejected: {failures:?}"
+        );
+
+        // Duplicate within a bucket.
+        let duplicate = omission_fixture(&format!(
+            r#"{{ {base}, "never_seen": ["AmperCall", "AmperCall"],
+                "allowlisted_never_seen": [], "actionable_never_seen": ["AmperCall", "AmperCall"] }}"#
+        ));
+        let failures = omission_partition_failures(&duplicate);
+        assert!(
+            failures.iter().any(|s| s.contains("Duplicate NodeKind omission entries")),
+            "duplicate must be rejected: {failures:?}"
+        );
+
+        // Empty rationale on an allowlisted entry.
+        let empty_rationale = omission_fixture(&format!(
+            r#"{{ {base}, "never_seen": ["MissingBlock"],
+                "allowlisted_never_seen": [{{"name": "MissingBlock", "rationale": "  "}}],
+                "actionable_never_seen": [] }}"#
+        ));
+        let failures = omission_partition_failures(&empty_rationale);
+        assert!(
+            failures.iter().any(|s| s.contains("empty rationale")),
+            "empty rationale must be rejected: {failures:?}"
+        );
+
+        // A canonical but non-recovery kind cannot be placed in the recovery-only
+        // bucket merely by supplying a rationale.
+        let non_recovery_allowlist = omission_fixture(&format!(
+            r#"{{ {base}, "never_seen": ["AmperCall"],
+                "allowlisted_never_seen": [{{"name": "AmperCall", "rationale": "incorrect recovery"}}],
+                "actionable_never_seen": [] }}"#
+        ));
+        let failures = omission_partition_failures(&non_recovery_allowlist);
+        assert!(
+            failures.iter().any(|s| s.contains("is not a recovery kind")),
+            "non-recovery allowlist entry must be rejected: {failures:?}"
+        );
+
+        // A recovery kind cannot be made actionable by moving it to the
+        // ordinary-omission bucket.
+        let actionable_recovery = omission_fixture(&format!(
+            r#"{{ {base}, "never_seen": ["Error"],
+                "allowlisted_never_seen": [], "actionable_never_seen": ["Error"] }}"#
+        ));
+        let failures = omission_partition_failures(&actionable_recovery);
+        assert!(
+            failures.iter().any(|s| s.contains("is a recovery kind")),
+            "actionable recovery entry must be rejected: {failures:?}"
+        );
+
+        // Valid recovery-only control: never_seen is exactly the allowlisted
+        // union, actionable is empty, rationales present → no failures.
+        let valid = omission_fixture(&format!(
+            r#"{{ {base}, "never_seen": ["Error", "MissingBlock"],
+                "allowlisted_never_seen": [
+                    {{"name": "Error", "rationale": "recovery kind"}},
+                    {{"name": "MissingBlock", "rationale": "recovery kind"}}],
+                "actionable_never_seen": [] }}"#
+        ));
+        let failures = omission_partition_failures(&valid);
+        assert!(failures.is_empty(), "recovery-only control must validate: {failures:?}");
     }
 
     #[test]
@@ -272,7 +520,7 @@ mod tests {
         );
         // No overlap between the two sub-lists.
         let allowlisted_set: HashSet<&str> = allowlisted.iter().map(|s| s.as_str()).collect();
-        let actionable_set: HashSet<&str> = actionable.iter().map(|s| s.as_str()).collect();
+        let actionable_set: HashSet<&str> = actionable.iter().map(String::as_str).collect();
         let overlap: Vec<&&str> = allowlisted_set.intersection(&actionable_set).collect();
         assert!(
             overlap.is_empty(),
@@ -304,7 +552,7 @@ mod tests {
         let allowlisted_names: HashSet<&str> =
             stats.allowlisted_never_seen.iter().map(|entry| entry.name.as_str()).collect();
         let actionable_names: HashSet<&str> =
-            stats.actionable_never_seen.iter().map(std::string::String::as_str).collect();
+            stats.actionable_never_seen.iter().map(String::as_str).collect();
 
         for &kind in perl_parser::ast::NodeKind::RECOVERY_KIND_NAMES {
             assert!(allowlisted_names.contains(kind), "recovery kind '{kind}' must be allowlisted");

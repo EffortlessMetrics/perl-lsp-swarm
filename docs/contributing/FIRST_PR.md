@@ -2,185 +2,212 @@
 
 Five minutes to read. Then clone and go.
 
-## 1. Clone
+## Repository context
+
+Ordinary development happens in
+[`EffortlessMetrics/perl-lsp-swarm`](https://github.com/EffortlessMetrics/perl-lsp-swarm)
+on `main`. Clone this repository, open development issues here, and target pull requests
+here.
+
+[`EffortlessMetrics/perl-lsp`](https://github.com/EffortlessMetrics/perl-lsp) on
+`master` owns public release lineage and published artifacts. A merge to
+`perl-lsp-swarm/main` is development state; it does not establish that a change is in a
+release, package registry, editor marketplace, or other public channel.
+
+The repository roles are defined by local product, sync, and release authorities and derived
+by the landed contributor-topology projection. Its bare command intentionally leaves live
+stage and channel status `NOT_PROVEN`; a captured `--observation` is required to project
+observed status. Public installation and release links may therefore point to `perl-lsp`
+intentionally; source-work instructions should point here.
+
+## 1. Clone and branch
 
 ```bash
-git clone https://github.com/EffortlessMetrics/perl-lsp.git
-cd perl-lsp
+git clone https://github.com/EffortlessMetrics/perl-lsp-swarm.git
+cd perl-lsp-swarm
+git switch -c fix/short-description
 ```
 
-No Git submodules to initialize. A normal clone is enough; `--recurse-submodules` is optional
-and has no effect for this repo.
+No Git submodules need initialization. A normal clone is enough. The checked-in
+`tree-sitter-perl/` directory is legacy source, not a submodule, and is outside the
+default Rust build.
 
-You can verify this at any time:
+## 2. Set up the development environment
 
-```bash
-git submodule status
-```
-
-Expected output is empty.
-
-The `tree-sitter-perl/` directory is checked-in legacy C code (not a submodule) and is excluded
-from the default Rust build, so you can ignore it unless you are working on parser migration tasks.
-
-## 2. Set up the dev environment
-
-**With Nix (recommended — fully reproducible):**
+With Nix, use the reproducible environment:
 
 ```bash
 nix develop
-```
-
-**Without Nix — install Rust and `just`, then you are ready:**
-
-```bash
-# Install Rust if you don't have it
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-
-# Install just (task runner)
-cargo install just
-
-# Verify tools are present
+just devex
 just doctor
 ```
 
-Rust toolchain is pinned in `rust-toolchain.toml` (MSRV 1.95, channel `1.95.0`). `rustup` picks it up automatically.
+Without Nix, install the pinned Rust toolchain through
+[rustup](https://rustup.rs/), install `just`, and run the same checks:
 
-**Windows users:** format with `cargo xtask fmt` (or `cargo fmt -p <package>`) instead of `cargo fmt --all`. Bare `cargo fmt --all` passes every workspace file as a command-line argument — across this workspace that sums to roughly six times the 32,767-character `CreateProcessW` command-line limit, so the invocation fails with "The filename or extension is too long. (os error 206)". This is a command-line-length limit, not a path-length limit: enabling `LongPathsEnabled` does not affect it, and worktree depth is irrelevant. The xtask formatter runs rustfmt per package, which is the normative formatting entry point on Windows (CI runs `--all` on Linux, where the limit does not apply). Note the per-package margin is not unbounded: the largest package (xtask, ~640 files) passes roughly 29k characters of arguments on a short-rooted checkout, so a checkout root deep enough to add a few thousand characters can still hit the cap for that package — keep the clone path short; a chunked-invocation fix in the formatter is tracked separately.
+```bash
+# Install rustup first if the toolchain manager is not present
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+# The installer does not modify the shell that ran it
+source "$HOME/.cargo/env"
 
-**Windows users (optional):** symlink-creating tests skip with a visible `SKIPPED:` reason when the session lacks `SeCreateSymbolicLinkPrivilege` (os error 1314). Enabling Developer Mode (Settings → System → For developers) grants the privilege and opts the machine out of every skip, so those tests run in full. This is opt-in, not a requirement.
+rustup show
+cargo install just
+just devex
+just doctor
+```
 
-Install the pre-push hook so the fast gate runs before every push:
+The repository pins Rust channel `1.95.0` and currently requires MSRV 1.95.
+
+On Windows, prefer `cargo xtask fmt` or package-scoped `cargo fmt`; bare
+`cargo fmt --all` can exceed the `CreateProcessW` command-line limit in this workspace.
+Symlink-rejection tests print a visible skip when the session lacks
+`SeCreateSymbolicLinkPrivilege`; enabling Developer Mode opts the machine into those
+tests but is not required for ordinary contribution work.
+
+Install the pre-push hook when you want the fast gate before every push:
 
 ```bash
 bash scripts/install-githooks.sh
 ```
 
-## 3. Find a good first issue
+## 3. Choose one issue and one claim
+
+Start from an existing issue when one owns the work. Keep one pull request centered on:
+
+- one problem or improvement;
+- one semantic owner;
+- one observable acceptance condition;
+- proof that can distinguish the intended change from a realistic wrong result;
+- explicit non-goals and a bounded rollback.
+
+Browse the development backlog explicitly in this repository:
 
 ```bash
-gh issue list --label "good-first-issue" --state open
+# A bounded view of the open backlog
+gh issue list --repo EffortlessMetrics/perl-lsp-swarm --state open --limit 10
+
+# Beginner-friendly slices; either list can legitimately be empty
+gh issue list --repo EffortlessMetrics/perl-lsp-swarm --state open --label "good first issue"
+gh issue list --repo EffortlessMetrics/perl-lsp-swarm --state open --label size/S
 ```
 
-Good candidates are labeled `size/S` or `size/M`, have a clear acceptance criteria section, and
-do not require swarm or architectural context. The issue body will tell you which file to edit.
+The live label names are `good first issue` and `size/XS` through `size/XL`; the filtered
+lists are a convenience, not a queue guarantee. When both come back empty, read the bounded
+unfiltered list and pick one with a clear, reviewable acceptance section. Do not
+select release-operation or swarm-orchestration work for a first contribution merely
+because the file change looks small.
 
-If you are not sure which issue to pick, read a few. The ones with "Files Affected" or "Root
-Cause" sections are the easiest to get started on.
+## 4. Read the local owner guidance
 
-## 4. Build and run the test for your crate
+Before editing a crate, read its nearest `AGENTS.md` or `CLAUDE.md`, then inspect the
+owning tests and public seams. The root [`AGENTS.md`](../../AGENTS.md) and
+[`CLAUDE.md`](../../CLAUDE.md) are route maps; package-local guidance owns local
+constraints.
 
-Run ONLY the tests for the crate you are changing, not the full workspace — the workspace has
-many workspace members (see [CURRENT_STATUS.md](../project/CURRENT_STATUS.md) for live metrics) and full-workspace runs take minutes. The fast cycle is:
+For agentic coding environments, also read the
+[agent contributing guide](../how-to/AGENT_CONTRIBUTING.md).
+
+## 5. Reproduce or define the behavior
+
+For a defect, start with the smallest observable reproduction. For new behavior, add the
+smallest test or fixture that separates the intended result from a plausible wrong one.
+Use an external oracle when the claim depends on Perl semantics, LSP or DAP protocol
+behavior, or a third-party contract.
+
+Then implement the smallest coherent change. Production code must not introduce
+`unwrap`, `expect`, `panic!`, `todo!`, `unimplemented!`, `abort`, or `dbg!` outside a
+documented narrow exception.
+
+## 6. Run focused proof first
+
+Test the owning package or seam before escalating to broader gates:
 
 ```bash
-# Build to confirm it compiles
-cargo build -p <crate-name>
-
-# Run just that crate's tests
-cargo test -p <crate-name>
-
-# Run one specific test (faster iteration)
-cargo test -p <crate-name> -- test_name_here --exact
+cargo fmt -p <package> -- --check
+cargo clippy -p <package> --all-targets --locked -- -D warnings
+cargo test -p <package> --all-targets --locked
 ```
 
-For example, if you are fixing `perl-module`:
-
-```bash
-cargo test -p perl-module
-```
-
-For LSP crates, use threading flags to avoid flaky results:
-
-```bash
-RUST_TEST_THREADS=2 cargo test -p perl-lsp-rs -- --test-threads=2
-```
-
-## 5. Make your change
-
-Edit, add your test first (TDD is preferred), then implement:
-
-1. Write a test that fails for the right reason.
-2. Make the minimal change to pass it.
-3. Run the crate test again to confirm green.
-
-**Banned in production code** (CI will catch these):
-
-| Banned | Use instead |
-|--------|-------------|
-| `unwrap()`, `expect()` | `?`, `.ok_or_else()`, pattern matching |
-| `panic!()`, `todo!()`, `unimplemented!()` | Return `Result` or `Option` |
-| `dbg!()` | `tracing::debug!` |
-
-In tests: use `Result<()>` return type or `perl_tdd_support::must` / `must_some` helpers instead
-of `unwrap()`.
-
-## 6. Verify locally
+Then run the repository gate selected by the change:
 
 ```bash
 just pr-fast
+# or, in the reproducible environment
+nix develop -c just ci-gate
 ```
 
-This runs `cargo fmt`, `cargo clippy`, and the crate tests in about 1-2 minutes. Fix anything it
-reports. If all green, you are ready to push.
+Do not run the full workspace after every edit. Escalate when dependency reach, risk,
+public surface, or the merge gate requires it.
 
-## 7. Open a PR
+Before committing, inspect exactly what will be published:
 
 ```bash
-git checkout -b fix/my-description
+git status --short --branch
+git diff --check
+git diff
+```
+
+Stage intended paths explicitly. Do not use `git stash` in a multi-worktree repository;
+stash state is shared across worktrees.
+
+## 7. Commit, push, and open the pull request
+
+```bash
 git add <files>
-git commit -m "fix(scope): what you changed (#NNNN)"
-git push -u origin fix/my-description
-gh pr create
+git commit -m "fix(scope): describe the change (#NNNN)"
+git push -u origin HEAD
+gh pr create --repo EffortlessMetrics/perl-lsp-swarm
 ```
 
-**PR title convention** (enforced by CI — get it right or the `validate-title` check fails):
+Contributors without write access to `perl-lsp-swarm` cannot push a branch to it. Fork
+first and push to the fork; the pull request still targets this repository:
 
-```
-type(scope): imperative summary (#NNNN)
-```
-
-The `(#NNNN)` at the end is the issue number. Required. Examples:
-
-```
-fix(perl-module): normalize path separators in use_lib tests (#4154)
-docs(perl-lsp-semantic-tokens): correct token counts in CLAUDE.md (#4159)
-test(perl-parser): add regression test for postfix deref chain (#4167)
+```bash
+gh repo fork EffortlessMetrics/perl-lsp-swarm --remote --remote-name fork
+git push -u fork HEAD
+gh pr create --repo EffortlessMetrics/perl-lsp-swarm
 ```
 
-Types: `feat`, `fix`, `docs`, `test`, `refactor`, `chore`.
+Use a conventional title with the controlling issue number:
 
-## 8. What reviewers look for
+```text
+fix(perl-module): normalize path separators (#4154)
+docs(contributing): correct the current workflow (#9552)
+test(perl-parser): add a postfix-deref regression (#4167)
+```
 
-PRs go through two review passes:
+The pull-request body should state the claim, controlling issue, changed seam, proof run,
+proof not run, risk and rollback, non-goals, and any `NOT_PROVEN` boundary.
 
-1. **Standards review** — fmt, clippy compliance, no banned constructs, test coverage, scope
-2. **Deep review** — logic correctness, edge cases (feature PRs)
+## 8. Review and integration
 
-The review bot will add labels (`in-review`, `needs-deep-review`, `reviewed-deep`, `merge-ready`)
-as your PR progresses. You do not need to do anything except respond to comments.
+Review is semantic and cumulative, not a fixed two-pass conveyor. Reviewers challenge the
+claim, proof discrimination, production reachability, semantic ownership, risk, and
+rollback in proportion to the change.
 
-If the reviewer pushes a fix directly to your branch, that is normal. Check and approve it.
+Labels can help navigation, but they are not proof or merge permission. Current submitted
+reviews, unresolved findings, required checks, mergeability, rulesets, and applicable
+release policy govern integration. A green check or bot label by itself does not make a
+pull request ready to merge.
+
+When a finding changes the candidate materially, repair the affected seam and rerun the
+proof that can falsify it. Formatting or unrelated generated movement does not require
+restarting every prior judgment merely because the commit SHA changed.
 
 ## Reference
 
-| Need | Command |
-|------|---------|
+| Need | Command or document |
+| --- | --- |
 | New checkout health | `just doctor` |
-| Tool/env check | `just devex` |
-| Before push | `just ready` |
-| Fast PR loop | `just pr-fast` |
-| Agent-safe compile/test | `just agent-check` / `just agent-test` |
-| Parser-accuracy metrics | `just ci-metrics-ratchet-check parser_accuracy` |
-| Status docs | `just status-update` then `just status-check` |
-| Release/version prep | `just version-check` then `just release-check` |
-| DevEx docs drift | `cargo xtask check-devex-docs` |
-| Build LSP server | `cargo build -p perl-lsp-rs --release` |
-| Run all library tests | `cargo test --workspace --lib` |
-| Format | `cargo xtask fmt` |
-| Lint | `cargo clippy --workspace` |
-| Full merge gate | `just ci-gate` |
-| All commands | [docs/reference/COMMANDS_REFERENCE.md](../reference/COMMANDS_REFERENCE.md) |
-| Coding standards | [CLAUDE.md — Coding Standards](../../CLAUDE.md#coding-standards) |
+| Tool and environment check | `just devex` |
+| Fast pull-request loop | `just pr-fast` |
+| Full local merge gate | `just ci-gate` |
+| Agent-safe compile/test/lint | `just agent-check`, `just agent-test`, `just agent-clippy` |
+| Parser or generated status | `just status-update`, then `just status-check` |
+| Public API documentation | `just ci-docs-check`, then `just docs-verify` |
+| Contributor-topology projection | `cargo run --locked -p xtask --bin contributor-topology` |
+| All commands | [Commands reference](../reference/COMMANDS_REFERENCE.md) |
 | Full contributor guide | [CONTRIBUTING.md](../../CONTRIBUTING.md) |
 | Debug the LSP server | [DEBUGGING_LSP_SERVER.md](DEBUGGING_LSP_SERVER.md) |
+| Repository and product identity | [Product identity](../reference/product-identity.md) |

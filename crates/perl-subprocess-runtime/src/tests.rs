@@ -520,15 +520,21 @@ fn test_resolve_cmd_exe_returns_absolute_path_never_bare() {
 /// bare name that is NOT on PATH while a same-named batch file is planted in the
 /// current working directory.  The old fail-open caller would have executed the
 /// planted file via `cmd.exe /C "pwned.bat"` (CWD-resolved); the fixed chain
-/// must fail closed and leave the marker absent.  Serialized because it mutates
-/// the process-global CWD.
+/// must fail closed and leave the marker absent.  The hostile CWD is supplied
+/// only to a child process, leaving the parent test process unchanged.
 #[cfg(windows)]
 #[test]
 fn test_run_command_does_not_execute_planted_cwd_binary() {
+    const CHILD: &str = "PERL_SUBPROCESS_CWD_RCE_CHILD";
+    if std::env::var_os(CHILD).is_some() {
+        let runtime = OsSubprocessRuntime::new();
+        let result = runtime.run_command("pwned.bat", &[], None);
+        assert!(result.is_err(), "child must fail closed: {result:?}");
+        println!("PERL_SUBPROCESS_CWD_RCE_CHILD_RAN");
+        return;
+    }
+
     use std::io::Write as _;
-    use std::sync::Mutex;
-    static CWD_LOCK: Mutex<()> = Mutex::new(());
-    let _guard = CWD_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
 
     let unique = format!("rce_chain_{}", std::process::id());
     let workspace = std::env::temp_dir().join(unique);
@@ -544,22 +550,28 @@ fn test_run_command_does_not_execute_planted_cwd_binary() {
         writeln!(f, "echo pwned> \"{}\"", marker.display()).expect("write bat line");
     }
 
-    let original_cwd = std::env::current_dir().expect("capture original cwd");
-    std::env::set_current_dir(&workspace).expect("enter temp workspace");
-
-    let runtime = OsSubprocessRuntime::new();
-    let result = runtime.run_command("pwned.bat", &[], None);
-
-    // Restore CWD before asserting so a failure cannot leave the suite in the
-    // temp directory.
-    std::env::set_current_dir(&original_cwd).expect("restore original cwd");
+    let output =
+        std::process::Command::new(std::env::current_exe().expect("resolve test executable"))
+            .arg("tests::test_run_command_does_not_execute_planted_cwd_binary")
+            .arg("--exact")
+            .arg("--nocapture")
+            .env(CHILD, "1")
+            .current_dir(&workspace)
+            .output()
+            .expect("run isolated CWD child");
 
     let marker_exists = marker.exists();
     let _ = std::fs::remove_dir_all(&workspace);
 
+    assert!(output.status.success(), "isolated CWD child failed: {output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        result.is_err(),
-        "a not-on-PATH bare name must fail closed at the chain entry; got: {result:?}"
+        stdout.contains("PERL_SUBPROCESS_CWD_RCE_CHILD_RAN"),
+        "exact child selector must execute the intended test: {output:?}"
+    );
+    assert!(
+        stdout.contains("1 passed"),
+        "child harness must report one executed test, not an empty selection: {output:?}"
     );
     assert!(
         !marker_exists,

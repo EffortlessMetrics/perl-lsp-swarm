@@ -178,10 +178,15 @@ impl<'a> Parser<'a> {
 
             // Don't consume semicolon here - let parse_statement handle it uniformly
 
-            let end = initializer.as_ref().map_or_else(
-                || self.previous_position(),
-                |node| node.location.end.max(self.previous_position()),
-            );
+            // `previous_position()` only advances through `consume_token`, and
+            // the `local` target above is parsed through `parse_assignment`,
+            // which pulls the operator and RHS straight from the token stream.
+            // Anchor the end on the parsed nodes so `local $x = EXPR` spans the
+            // whole assignment instead of stopping at `$x`.
+            let end = initializer
+                .as_ref()
+                .map_or(variable.location.end, |node| node.location.end)
+                .max(self.previous_position());
             let node = Node::new(
                 NodeKind::VariableDeclaration {
                     declarator,
@@ -329,7 +334,12 @@ impl<'a> Parser<'a> {
             None
         };
 
-        let end = self.previous_position();
+        // See `parse_variable_declaration`: the localized lvalue and RHS are
+        // parsed from the raw token stream, so anchor the end on the nodes.
+        let end = initializer
+            .as_ref()
+            .map_or(variable.location.end, |node| node.location.end)
+            .max(self.previous_position());
         let node = Node::new(
             NodeKind::VariableDeclaration {
                 declarator,

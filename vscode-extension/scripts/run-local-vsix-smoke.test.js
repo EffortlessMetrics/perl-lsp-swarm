@@ -435,6 +435,9 @@ function childReceipt(overrides = {}, environmentOverrides = {}) {
       server_source_revision: CHILD_SUBJECT.expectedServerSourceSha,
       vsix_sha256: CHILD_SUBJECT.expectedVsixSha256,
       requested_vscode_version: CHILD_SUBJECT.expectedVscodeVersion,
+      // The launched runtime identity the extension host actually observed;
+      // the requested selector alone never proves the host.
+      vscode_version: '1.130.2',
       extension_id: 'EffortlessMetrics.perl-lsp-rs',
       ...environmentOverrides,
     },
@@ -490,6 +493,39 @@ void test('a child receipt from another matrix leg is rejected', () => {
   const result = validateChild(childReceipt({}, { requested_vscode_version: '1.125.0' }));
   assert.equal(result.ok, false);
   assert.match(result.violations.join('; '), /VS Code version .* is not this matrix leg/);
+});
+
+void test('a child receipt without the launched runtime version is rejected', () => {
+  const result = validateChild(childReceipt({}, { vscode_version: undefined }));
+  assert.equal(result.ok, false);
+  assert.match(result.violations.join('; '), /launched VS Code runtime version/);
+});
+
+void test('a concrete leg rejects a different launched runtime version', () => {
+  const concrete = {
+    ...CHILD_SUBJECT,
+    expectedVscodeVersion: '1.125.0',
+    receiptFile: '/fixture/first_hour_vscode_receipt.json',
+    exists: () => true,
+  };
+  const mismatched = validateChildSmokeReceipt({
+    ...concrete,
+    readFile: () =>
+      JSON.stringify(
+        childReceipt({}, { requested_vscode_version: '1.125.0', vscode_version: '1.126.0' }),
+      ),
+  });
+  assert.equal(mismatched.ok, false);
+  assert.match(mismatched.violations.join('; '), /launched VS Code .* requested the concrete/);
+
+  const matched = validateChildSmokeReceipt({
+    ...concrete,
+    readFile: () =>
+      JSON.stringify(
+        childReceipt({}, { requested_vscode_version: '1.125.0', vscode_version: '1.125.0' }),
+      ),
+  });
+  assert.equal(matched.ok, true);
 });
 
 void test('a non-terminal or failing child receipt is rejected', () => {
@@ -1071,14 +1107,15 @@ void test('a fully passing crash-recovery journey composes a pass verdict with b
   assert.equal(joined.negative_controls.failed_process_not_resurrected, true);
 });
 
-void test('an honestly not_proven watchdog row degrades only the overall verdict', () => {
+void test('an unexplained not_proven watchdog row degrades the overall verdict', () => {
+  // A capability-absence reason is typed pending (#15019); an unexplained
+  // not_proven remains an instrument gap and degrades the journey.
   const transient = passingTransientChild({
     observations: {
       ...passingTransientChild().observations,
       watchdog: {
         status: 'not_proven',
-        reason:
-          'host platform cannot safely suspend the installed server process; deterministic watchdog mechanism proof is owned by #7846',
+        reason: 'suspend failed: unexpected instrument error',
       },
     },
   });
@@ -1089,6 +1126,28 @@ void test('an honestly not_proven watchdog row degrades only the overall verdict
   assert.equal(joined.circuit_breaker.explicit_retry, 'pass');
   assert.equal(joined.cleanup, 'pass');
   assert.equal(joined.verdict, 'not_proven');
+});
+
+void test('an unexercised watchdog leg is typed pending and verdict-neutral', () => {
+  // #15019: on hosts whose transient leg emits no watchdog observation at
+  // all (capability absent), the row is a deliberate `pending` - visible in
+  // the receipt, but it must not degrade the journey to not_proven.
+  const transient = passingTransientChild({
+    observations: {
+      ...passingTransientChild().observations,
+      watchdog: {
+        status: 'pending',
+        reason:
+          'host platform cannot safely suspend the installed server process; deterministic watchdog mechanism proof is owned by #7846',
+      },
+    },
+  });
+  const joined = composeCrashRecoveryReceipt(crashComposeBase({ transient }));
+  assert.equal(joined.watchdog, 'pending');
+  assert.equal(joined.transient_crash.replay, 'pass');
+  assert.equal(joined.circuit_breaker.explicit_retry, 'pass');
+  assert.equal(joined.cleanup, 'pass');
+  assert.equal(joined.verdict, 'pass');
 });
 
 void test('a breaker that never exhausts fails the circuit-breaker rows', () => {
