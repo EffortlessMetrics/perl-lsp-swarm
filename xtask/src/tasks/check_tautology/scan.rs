@@ -447,10 +447,10 @@ fn collect_use_namespace_aliases(
         UseTree::Name(name) if matches!(pass, AliasPass::NonRealSource) => {
             if name.ident == "self" {
                 // `use custom::std::{self}` binds `std`; `use std::{self}` is the real crate.
-                if prefix.len() >= 2 {
-                    if let Some(last) = prefix.last() {
-                        shadows.untrust_namespace(last);
-                    }
+                if prefix.len() >= 2
+                    && let Some(last) = prefix.last()
+                {
+                    shadows.untrust_namespace(last);
                 }
             } else if !prefix.is_empty() {
                 untrust_namespace_ident(&name.ident, shadows);

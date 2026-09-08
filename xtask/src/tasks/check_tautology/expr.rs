@@ -361,7 +361,7 @@ fn constructor_query_kind(expr: &Expr, env: &TypeEnv) -> Option<QueryKind> {
             if !call.args.iter().all(|arg| is_side_effect_free(arg, env)) {
                 return None;
             }
-            let Expr::Path(path) = peel(&*call.func) else {
+            let Expr::Path(path) = peel(&call.func) else {
                 return None;
             };
             if path.qself.is_some() {
