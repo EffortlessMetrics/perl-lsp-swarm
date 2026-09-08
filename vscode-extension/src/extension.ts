@@ -2126,19 +2126,20 @@ async function initializeLanguageClient(context: vscode.ExtensionContext): Promi
       const notFoundMessage = configuredServerPathMissing
         ? `Perl Language Server not found: your perl-lsp.serverPath points to "${configuredServerPathMissing}", which does not exist. Fix the path or clear the setting to auto-download.`
         : 'Perl Language Server (perllsp) not found.';
-      const choice = await vscode.window.showErrorMessage(
-        notFoundMessage,
-        'Install (cargo install perllsp)',
-        'Open Settings',
-      );
-
-      if (choice === 'Install (cargo install perllsp)') {
-        void vscode.window.showInformationMessage(
-          'Run in your terminal: cargo install perllsp\nThen reload VS Code.',
-        );
-      } else if (choice === 'Open Settings') {
-        void vscode.commands.executeCommand('workbench.action.openSettings', 'perl-lsp.serverPath');
-      }
+      void vscode.window
+        .showErrorMessage(notFoundMessage, 'Install (cargo install perllsp)', 'Open Settings')
+        .then((choice) => {
+          if (choice === 'Install (cargo install perllsp)') {
+            void vscode.window.showInformationMessage(
+              'Run in your terminal: cargo install perllsp\nThen reload VS Code.',
+            );
+          } else if (choice === 'Open Settings') {
+            void vscode.commands.executeCommand(
+              'workbench.action.openSettings',
+              'perl-lsp.serverPath',
+            );
+          }
+        });
       return false;
     }
 
@@ -2161,26 +2162,31 @@ async function initializeLanguageClient(context: vscode.ExtensionContext): Promi
         : probeResult;
     const dialogMessage = formatStartupFailureDialog(probeResult, healthMsg);
 
-    const choice = await vscode.window.showErrorMessage(
-      dialogMessage,
-      'View Logs',
-      'Run Health Check',
-      'Reinstall',
-      'Check serverPath Setting',
-    );
-    if (choice === 'View Logs') {
-      outputChannel.show();
-    } else if (choice === 'Run Health Check') {
-      if (lifecycle.serverPath) {
-        await vscode.commands.executeCommand('perl-lsp.runHealthCheck', lifecycle.serverPath);
-      } else {
-        await vscode.commands.executeCommand('perl-lsp.runHealthCheck');
-      }
-    } else if (choice === 'Reinstall') {
-      await reinstallServerBinary(context);
-    } else if (choice === 'Check serverPath Setting') {
-      void vscode.commands.executeCommand('workbench.action.openSettings', 'perl-lsp.serverPath');
-    }
+    void vscode.window
+      .showErrorMessage(
+        dialogMessage,
+        'View Logs',
+        'Run Health Check',
+        'Reinstall',
+        'Check serverPath Setting',
+      )
+      .then((choice) => {
+        if (choice === 'View Logs') {
+          outputChannel.show();
+        } else if (choice === 'Run Health Check') {
+          void vscode.commands.executeCommand(
+            'perl-lsp.runHealthCheck',
+            lifecycle.serverPath ?? undefined,
+          );
+        } else if (choice === 'Reinstall') {
+          void reinstallServerBinary(context);
+        } else if (choice === 'Check serverPath Setting') {
+          void vscode.commands.executeCommand(
+            'workbench.action.openSettings',
+            'perl-lsp.serverPath',
+          );
+        }
+      });
     return false;
   }
 }
