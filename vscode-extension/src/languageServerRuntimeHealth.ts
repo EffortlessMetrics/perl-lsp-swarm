@@ -1,6 +1,11 @@
 import { HealthCheckStatus, type HealthCheckResult } from './onboarding';
 import type { LifecycleSnapshot } from './languageClientLifecycle';
 
+export type LanguageServerRuntimeSnapshot = Pick<
+  LifecycleSnapshot,
+  'state' | 'generation' | 'error' | 'serverPath'
+>;
+
 function describeLifecycleError(error: unknown): string {
   if (error instanceof Error && error.message) {
     return error.message;
@@ -19,7 +24,7 @@ function describeLifecycleError(error: unknown): string {
  * failed start must never turn that failure into a passing check.
  */
 export function languageServerRuntimeHealth(
-  snapshot: Pick<LifecycleSnapshot, 'state' | 'generation' | 'error' | 'serverPath'>,
+  snapshot: LanguageServerRuntimeSnapshot,
   expectedPath?: string | null,
 ): HealthCheckResult {
   const label = 'LSP runtime';

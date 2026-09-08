@@ -348,6 +348,41 @@ describe('deferred language-server startup (#8180)', () => {
     );
   });
 
+  test('a later health check reports recovery while keeping optional warnings separate', async () => {
+    mockLanguageClientStart
+      .mockImplementationOnce(async () => {
+        throw new Error('first health-check startup refused');
+      })
+      .mockImplementationOnce(async () => undefined);
+
+    await activate(makeContext(makeExtensionRoot()));
+
+    const first = (await vscode.commands.executeCommand('perl-lsp.runHealthCheck')) as {
+      ok: boolean;
+      checks: Array<{ label: string; status: string; detail: string }>;
+    };
+    const second = (await vscode.commands.executeCommand('perl-lsp.runHealthCheck')) as {
+      ok: boolean;
+      checks: Array<{ label: string; status: string; detail: string }>;
+    };
+
+    expect(first.ok).toBe(false);
+    expect(first.checks.find((check) => check.label === 'LSP runtime')).toMatchObject({
+      status: 'error',
+    });
+    expect(second.ok).toBe(true);
+    expect(second.checks.find((check) => check.label === 'LSP runtime')).toEqual({
+      label: 'LSP runtime',
+      status: 'ok',
+      detail: 'Language server is running.',
+    });
+    expect(
+      second.checks
+        .filter((check) => check.status === 'warning')
+        .every((check) => check.label !== 'LSP runtime'),
+    ).toBe(true);
+  });
+
   test('a failed restart does not suppress fresh demand', async () => {
     // First start succeeds, so demand reaches `running`.
     mockLanguageClientStart.mockImplementationOnce(async () => undefined);

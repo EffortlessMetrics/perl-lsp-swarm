@@ -983,6 +983,13 @@ async function runExtensionActivation(
         },
         resolvedPath,
       ),
+    currentRuntimeSnapshot: () =>
+      languageClientLifecycle?.snapshot ?? {
+        state: 'stopped',
+        generation: 0,
+        error: undefined,
+        serverPath: null,
+      },
     runtimeFailureCheck: (requestedPath) => {
       const snapshot = languageClientLifecycle?.snapshot;
       if (snapshot?.state !== 'failed' || snapshot.serverPath !== requestedPath) {
