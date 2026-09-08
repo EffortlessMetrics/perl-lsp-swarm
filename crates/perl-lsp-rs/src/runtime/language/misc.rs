@@ -12,8 +12,7 @@
 
 use super::super::{
     CodeLensProvider, INVALID_PARAMS, INVALID_REQUEST, JsonRpcError, LspServer, METHOD_NOT_FOUND,
-    Node, NodeKind, TestKind, TestRunner, Value, get_shebang_lens, json, position_to_offset,
-    resolve_code_lens,
+    TestKind, TestRunner, Value, get_shebang_lens, json, position_to_offset, resolve_code_lens,
 };
 use crate::protocol::{invalid_params, req_position, req_uri};
 #[cfg(feature = "workspace")]
@@ -152,6 +151,7 @@ impl<'a> InlayHintEnvelopeIssuer<'a> {
 }
 
 mod debug_launch;
+mod inlay_hint_declaration;
 mod inline_values;
 mod live_provider_trace;
 #[cfg(not(target_arch = "wasm32"))]
@@ -937,6 +937,8 @@ impl LspServer {
     /// preceded by any `textDocument/inlayHint` request — resolved to a real
     /// source range, and a hint issued before an edit was silently reprojected
     /// against different source.
+    /// The verified call-site position selects the last same-package definition,
+    /// or the package named by an authenticated qualified callable.
     ///
     /// Returns `None`, leaving the label part without a `location`, when:
     ///
@@ -1010,13 +1012,13 @@ impl LspServer {
 
         let ast = parsed.ast()?;
         let function_name = subject.function_name.as_str();
-        let short_name = function_name.rsplit("::").next().unwrap_or(function_name);
+        let call_site_offset = self.pos16_to_offset(doc, subject.line, subject.character);
 
-        let sub_node = Self::find_subroutine_node(ast, function_name).or_else(|| {
-            (short_name != function_name)
-                .then(|| Self::find_subroutine_node(ast, short_name))
-                .flatten()
-        })?;
+        let sub_node = inlay_hint_declaration::effective_subroutine_declaration(
+            ast,
+            function_name,
+            call_site_offset,
+        )?;
         let (start_line, start_char) = self.offset_to_pos16(doc, sub_node.location.start);
         let (end_line, end_char) = self.offset_to_pos16(doc, sub_node.location.end);
 
@@ -1027,22 +1029,6 @@ impl LspServer {
                 "end":   { "line": end_line,   "character": end_char   }
             }
         }))
-    }
-
-    /// Walk the AST to find a top-level subroutine node with the given name.
-    fn find_subroutine_node<'a>(node: &'a Node, name: &str) -> Option<&'a Node> {
-        if matches!(&node.kind, NodeKind::Subroutine { name: Some(sub_name), .. } if sub_name == name)
-        {
-            return Some(node);
-        }
-
-        let mut found = None;
-        node.for_each_child(|child| {
-            if found.is_none() {
-                found = Self::find_subroutine_node(child, name);
-            }
-        });
-        found
     }
 
     /// Handle textDocument/selectionRange request
