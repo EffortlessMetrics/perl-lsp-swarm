@@ -9,7 +9,9 @@
 //! makes that impossible by construction. The guard test
 //! `no_selector_targets_the_registry_that_declares_it` pins the rule.
 
-use color_eyre::eyre::{Context, Result};
+use color_eyre::eyre::{Context, Result, bail};
+use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use syn::visit::Visit;
 
@@ -40,29 +42,36 @@ pub trait TreeSource {
 /// loaded from, never the ambient process working directory.
 pub struct RepoTreeSource {
     root: PathBuf,
+    cache: RefCell<BTreeMap<String, Option<String>>>,
 }
 
 impl RepoTreeSource {
     pub fn from_project_root() -> Result<Self> {
-        Ok(Self { root: crate::utils::project_root()? })
+        Ok(Self { root: crate::utils::project_root()?, cache: RefCell::new(BTreeMap::new()) })
     }
 }
 
 impl TreeSource for RepoTreeSource {
     fn read_text(&self, relative: &str) -> Result<Option<String>> {
+        if let Some(cached) = self.cache.borrow().get(relative) {
+            return Ok(cached.clone());
+        }
         let path = self.root.join(relative);
-        match std::fs::read(&path) {
+        let text = match std::fs::read(&path) {
             Ok(bytes) => {
                 let text = String::from_utf8(bytes).with_context(|| {
                     format!("probe selector target {relative} is not valid UTF-8")
                 })?;
-                Ok(Some(text))
+                Some(text)
             }
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
             Err(err) => {
-                Err(err).with_context(|| format!("failed to read probe selector target {relative}"))
+                return Err(err)
+                    .with_context(|| format!("failed to read probe selector target {relative}"));
             }
-        }
+        };
+        self.cache.borrow_mut().insert(relative.to_string(), text.clone());
+        Ok(text)
     }
 }
 
@@ -440,6 +449,12 @@ pub(super) fn node_probe(
     else {
         return Ok((ProbeOutcome::Unprobed, Vec::new()));
     };
+    if contract.components.is_empty() {
+        bail!(
+            "probe contract for {} declares no components; an empty positive surface cannot establish presence",
+            contract.node_id
+        );
+    }
 
     let mut met = 0usize;
     let mut unmet: Vec<String> = Vec::new();

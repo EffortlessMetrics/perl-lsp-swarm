@@ -1986,6 +1986,9 @@ pub struct TreeProbe<'a> {
     /// HEAD of the probed tree, when it can be established. `None` is treated
     /// as "cannot be shown to match the observation" and fails closed.
     pub head: Option<String>,
+    /// Dirty working-tree contents cannot establish exact equality with a
+    /// commit-only observation, so joins fail closed while this is true.
+    pub dirty: bool,
 }
 
 /// Normalize a raw observation into the immutable deterministic snapshot.
@@ -2002,10 +2005,12 @@ pub fn normalize(
     // describes a different revision — a stored fixture's synthetic head, most
     // obviously — the join is still emitted, but every node says so rather
     // than presenting one revision's actions beside another's states.
-    let probed_a_different_tree = match (probe.head.as_deref(), raw.git_local.head.as_deref()) {
-        (Some(probed), Some(observed)) => probed != observed,
-        _ => true,
-    };
+    let probed_a_different_tree = probe.dirty
+        || !raw.git_local.dirty_paths.is_empty()
+        || match (probe.head.as_deref(), raw.git_local.head.as_deref()) {
+            (Some(probed), Some(observed)) => probed != observed,
+            _ => true,
+        };
     let static_facts = loaded.node_static_facts();
     let static_by_issue: BTreeMap<u64, NodeStaticFact> =
         static_facts.iter().map(|fact| (fact.issue, fact.clone())).collect();
@@ -2869,7 +2874,12 @@ pub fn run_refresh(output: &Path, from_fixture: Option<&Path>) -> Result<()> {
     };
     let loaded = load_manifest()?;
     let source = RepoTreeSource::from_project_root()?;
-    let probe = TreeProbe { source: &source, head: Some(tree_binding("HEAD")?.tree_head) };
+    let binding = tree_binding("HEAD")?;
+    let probe = TreeProbe {
+        source: &source,
+        head: Some(binding.tree_head),
+        dirty: binding.dirty_paths != 0,
+    };
     let snapshot = normalize(&raw, &loaded, &probe)?;
     if let Some(parent) = output.parent().filter(|parent| !parent.as_os_str().is_empty()) {
         std::fs::create_dir_all(parent).with_context(|| {

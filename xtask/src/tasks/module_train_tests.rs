@@ -80,6 +80,11 @@ impl FakeTree {
             .files
             .get(path)
             .ok_or_else(|| color_eyre::eyre::eyre!("fake tree has no {path}"))?;
+        if text.contains(addition) {
+            bail!(
+                "addition is already present in {path}; the fixture cannot prove that landing it changes anything"
+            );
+        }
         let extended = format!("{text}\n{addition}\n");
         self.files.insert(path.to_string(), extended);
         Ok(self)
@@ -783,8 +788,18 @@ fn comments_and_literals_cannot_satisfy_dispatch_anchors() -> Result<()> {
 fn a_consumer_without_its_implementation_is_not_landed() -> Result<()> {
     let tree = FakeTree::from_real()?.without_file("xtask/src/tasks/module_train_live.rs");
     let (outcome, unmet) = probe_for("C03", &tree)?;
-    if outcome != ProbeOutcome::NotPresent || unmet.len() != 2 {
+    let expected = ["action_classification", "live_snapshot_normalization"];
+    if outcome != ProbeOutcome::NotPresent || unmet != expected {
         bail!("C03 without its module must be wholly absent: {outcome:?} unmet={unmet:?}");
+    }
+    Ok(())
+}
+
+#[test]
+fn adding_existing_fixture_content_is_rejected() -> Result<()> {
+    let tree = FakeTree::from_real()?;
+    if tree.with_added("xtask/src/main.rs", "ModuleTrainCommand::Status").is_ok() {
+        bail!("fixture additions already present in the seed tree must be rejected");
     }
     Ok(())
 }
@@ -879,11 +894,16 @@ fn a_partial_node_does_not_satisfy_a_hard_dependent() -> Result<()> {
 }
 
 /// Anti-vacuity, structural: no selector may target the module that declares
-/// `PROBED_NODES`. If it did, the anchor string literals would live in the very
-/// file being searched, so a component could be satisfied by its own
-/// declaration and would keep passing after its implementation was deleted.
+/// `PROBED_NODES`. If it did, the registry could become a self-targeting
+/// source instead of an independent selector declaration.
 #[test]
 fn no_selector_targets_the_registry_that_declares_it() -> Result<()> {
+    if real_tree()?.read_text(probes::REGISTRY_RELATIVE_PATH)?.is_none() {
+        bail!(
+            "recorded registry path {} does not exist; the anti-vacuity guard would compare against nothing",
+            probes::REGISTRY_RELATIVE_PATH
+        );
+    }
     for path in probes::selector_paths() {
         if path == probes::REGISTRY_RELATIVE_PATH {
             bail!(

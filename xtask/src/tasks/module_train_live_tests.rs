@@ -45,7 +45,7 @@ fn current_head() -> Result<String> {
 
 fn normalize_raw(raw: &RawObservation) -> Result<LiveSnapshot> {
     let (source, head) = probe()?;
-    normalize(raw, &loaded()?, &TreeProbe { source: &source, head })
+    normalize(raw, &loaded()?, &TreeProbe { source: &source, head, dirty: false })
 }
 
 fn normalize_text(text: &str) -> Result<LiveSnapshot> {
@@ -129,6 +129,25 @@ fn a_coherent_observation_carries_no_probed_tree_limitation() -> Result<()> {
     Ok(())
 }
 
+/// A matching HEAD is insufficient when the probe reads a mutable working
+/// tree: dirty content cannot be shown equivalent to the commit-only record.
+#[test]
+fn a_dirty_probe_fails_closed_even_when_heads_agree() -> Result<()> {
+    let mut raw = raw_from_text(CORPUS_FIXTURE)?;
+    raw.git_local.head = Some(current_head()?);
+    let (source, head) = probe()?;
+    let snapshot = normalize(&raw, &loaded()?, &TreeProbe { source: &source, head, dirty: true })?;
+    if !snapshot
+        .semantic
+        .nodes
+        .iter()
+        .all(|node| node.limitations.iter().any(|l| l == PROBED_FROM_A_DIFFERENT_TREE))
+    {
+        color_eyre::eyre::bail!("dirty probe must fail closed even when HEADs agree");
+    }
+    Ok(())
+}
+
 /// An unestablishable probed head fails closed rather than silently claiming
 /// the observation and the tree agree.
 #[test]
@@ -136,7 +155,8 @@ fn an_unknown_probed_head_fails_closed() -> Result<()> {
     let mut raw = raw_from_text(CORPUS_FIXTURE)?;
     raw.git_local.head = Some(current_head()?);
     let (source, _) = probe()?;
-    let snapshot = normalize(&raw, &loaded()?, &TreeProbe { source: &source, head: None })?;
+    let snapshot =
+        normalize(&raw, &loaded()?, &TreeProbe { source: &source, head: None, dirty: false })?;
     assert!(
         snapshot
             .semantic
@@ -558,7 +578,7 @@ fn corpus_classifies_every_expected_action() -> Result<()> {
     // action follows its #11626 current-tree probe, never its issue state.
     let m01 = node(&snapshot, "M01")?;
     assert_eq!(m01.action, "REVIEW");
-    assert!(node(&snapshot, "C03")?.action == "WAIT");
+    assert_eq!(node(&snapshot, "C03")?.action, "WAIT", "C03 follows its current-tree probe");
     // Surfaces are diagnostics that never outvote the candidate: M01 keeps its
     // remote surface while its action stays REVIEW.
     assert!(m01.surfaces.iter().any(|surface| surface.kind == "remote_branch"));
