@@ -70,7 +70,9 @@ class FakeClient implements LifecycleClient {
    */
   serverProcess: FakeServerProcess | undefined = new FakeServerProcess();
   start = jest.fn(async () => undefined);
-  stop = jest.fn(async () => undefined);
+  stop = jest.fn(async () => {
+    this.serverProcess = undefined;
+  });
   dispose = jest.fn(async () => undefined);
 
   onDidChangeState(_listener: (event: unknown) => void): LifecycleDisposable {
@@ -316,6 +318,24 @@ describe('LanguageClientLifecycle client cleanup admission', () => {
     expect(first!.serverProcess).toBeUndefined();
     expect(clients).toHaveLength(1);
     expect(controller.snapshot.state).toBe('failed');
+  });
+
+  test('a settled stop rejection admits replacement after the captured process exits', async () => {
+    const { controller, clients } = makeProcessBoundController();
+    const first = await controller.start();
+    const child = first!.serverProcess!;
+    rejectStopLikeLanguageClient(first!);
+
+    await expect(controller.restart()).rejects.toMatchObject({ reason: 'cleanup-incomplete' });
+    expect(clients).toHaveLength(1);
+
+    child.exit();
+    const replacement = await controller.restart();
+
+    expect(replacement).toBe(clients[1]);
+    expect(clients).toHaveLength(2);
+    expect(first!.stop).toHaveBeenCalledTimes(1);
+    expect(first!.dispose).toHaveBeenCalledTimes(1);
   });
 
   test('a library-cleared process handle blocks replacement when cleanup calls resolve', async () => {

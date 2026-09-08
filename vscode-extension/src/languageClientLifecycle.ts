@@ -462,7 +462,10 @@ export class LanguageClientLifecycle<TClient extends LifecycleClient<TEvent>, TE
       : stopResult.completed;
     if (!stopCleanupComplete) {
       firstError ??= stopResult.error;
-      if (!stopResult.completed) {
+      // A settled stop rejection is no longer an in-flight client call. Keep
+      // the captured witness eligible for a later terminality recheck, while
+      // a timeout remains non-retryable because the call may still be active.
+      if (stopResult.timedOut) {
         clientCallsComplete = false;
       }
     }
