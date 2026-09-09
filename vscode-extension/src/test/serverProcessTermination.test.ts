@@ -57,6 +57,50 @@ describe('server process termination observation (#14155)', () => {
     expect(serverProcessOf({ serverProcess: child })).toBe(child);
     expect(serverProcessOf({ serverProcess: undefined })).toBeUndefined();
     expect(serverProcessOf({ serverProcess: { pid: 1 } })).toBeUndefined();
+    expect(
+      serverProcessOf({
+        serverProcess: {
+          pid: undefined,
+          exitCode: null,
+          signalCode: null,
+          once: jest.fn(),
+          removeListener: jest.fn(),
+        },
+      }),
+    ).toBeUndefined();
+    expect(
+      serverProcessOf({
+        serverProcess: {
+          pid: 0,
+          exitCode: null,
+          signalCode: null,
+          once: jest.fn(),
+          removeListener: jest.fn(),
+        },
+      }),
+    ).toBeUndefined();
+    expect(
+      serverProcessOf({
+        serverProcess: {
+          pid: 1,
+          exitCode: undefined,
+          signalCode: null,
+          once: jest.fn(),
+          removeListener: jest.fn(),
+        },
+      }),
+    ).toBeUndefined();
+    expect(
+      serverProcessOf({
+        serverProcess: {
+          pid: 1,
+          exitCode: null,
+          signalCode: '',
+          once: jest.fn(),
+          removeListener: jest.fn(),
+        },
+      }),
+    ).toBeUndefined();
     expect(serverProcessOf({})).toBeUndefined();
     expect(serverProcessOf(undefined)).toBeUndefined();
   });
@@ -74,11 +118,11 @@ describe('server process termination observation (#14155)', () => {
 
     const neverSpawned = new FakeChild();
     neverSpawned.pid = undefined;
-    expect(hasExited(neverSpawned, alive)).toBe(true);
+    expect(hasExited(neverSpawned, alive)).toBe(false);
   });
 
   test('an absent handle or an already-exited child resolves immediately', async () => {
-    await expect(awaitServerProcessExit(undefined, 10)).resolves.toBe(true);
+    await expect(awaitServerProcessExit(undefined, 10)).resolves.toBe(false);
     const child = new FakeChild();
     child.exit(0);
     await expect(awaitServerProcessExit(child, 10, alive)).resolves.toBe(true);

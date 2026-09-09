@@ -77,6 +77,9 @@ jobs:
       - name: Check deterministic route scenarios
         run: cargo xtask agent-flow scenarios --format json
 
+      - name: Check agent-flow validator regression controls
+        run: cargo test -p xtask --bin xtask tasks::agent_flow --locked
+
       - name: Check merge review/integration backstop
         run: cargo test -p xtask --test agent_merge_review_backstop --locked
 

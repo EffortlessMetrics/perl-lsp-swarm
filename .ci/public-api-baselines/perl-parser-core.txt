@@ -1223,6 +1223,8 @@ pub perl_parser_core::hir::DynamicBoundaryKind::DynamicStashMutation
 pub perl_parser_core::hir::DynamicBoundaryKind::EmbeddedRegexCode
 pub perl_parser_core::hir::DynamicBoundaryKind::EvalExpression
 pub perl_parser_core::hir::DynamicBoundaryKind::SymbolicReferenceDeref
+pub perl_parser_core::hir::DynamicBoundaryKind::TiedPlaceBinding
+pub perl_parser_core::hir::DynamicBoundaryKind::TiedPlaceRelease
 pub fn perl_parser_core::hir::DynamicBoundaryKind::clone(&self) -> perl_parser_core::hir::DynamicBoundaryKind
 pub fn perl_parser_core::hir::DynamicBoundaryKind::eq(&self, other: &perl_parser_core::hir::DynamicBoundaryKind) -> bool
 pub fn perl_parser_core::hir::DynamicBoundaryKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result

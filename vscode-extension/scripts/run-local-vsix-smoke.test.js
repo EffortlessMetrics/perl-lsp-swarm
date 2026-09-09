@@ -14,6 +14,12 @@ const {
   crashRecoveryLegEnv,
   finalizeSmokeRun,
   interpretBehavioralSmokeExit,
+  inventoryTransitionArgs,
+  interpretTestExplorerExit,
+  validateTestExplorerReceipt,
+  runPublishedSmoke,
+  runTestExplorerJourneyStage,
+  testExplorerSmokeEnv,
   interpretTransitionResult,
   publishCheckSummary,
   writeProjectionLine,
@@ -25,6 +31,408 @@ const {
   validateCrashRecoveryChildReceipts,
   writeJsonAtomic,
 } = require('./run-local-vsix-smoke');
+
+void test('inventory transition forwarding keeps PR and manual base modes explicit', () => {
+  const vsix = 'candidate.vsix';
+  assert.deepEqual(
+    inventoryTransitionArgs(
+      { PERL_LSP_PACKAGE_BASE_MODE: 'pull_request', PERL_LSP_PACKAGE_PR_BASE_SHA: 'b'.repeat(40) },
+      vsix,
+    ),
+    [
+      path.join(__dirname, 'check-vsix-inventory-transition.js'),
+      '--vsix',
+      vsix,
+      '--merge-base-with',
+      'b'.repeat(40),
+    ],
+  );
+  assert.deepEqual(
+    inventoryTransitionArgs({ PERL_LSP_PACKAGE_BASE_MODE: 'pull_request' }, vsix).slice(-2),
+    ['--merge-base-with', ''],
+  );
+  assert.deepEqual(
+    inventoryTransitionArgs(
+      { PERL_LSP_PACKAGE_BASE_MODE: 'accepted', PERL_LSP_PACKAGE_BASE_SHA: 'a'.repeat(40) },
+      vsix,
+    ).slice(-2),
+    ['--base', 'a'.repeat(40)],
+  );
+});
+
+void test('builds an exclusive candidate-bound Test Explorer child environment', () => {
+  const environment = testExplorerSmokeEnv(
+    {
+      PERL_LSP_CURRENT_SOURCE_SMOKE: '1',
+      PERL_LSP_FIRST_HOUR_ONLY: '1',
+      PERL_LSP_FIRST_HOUR_RECEIPT: '1',
+      PERL_LSP_FIRST_HOUR_SERVER_PATH: 'old-server',
+      PERL_LSP_PACKAGED_BUNDLE_SMOKE: '1',
+      PERL_LSP_HEALTH_CHECK_FAILURE_SMOKE: '1',
+      PERL_LSP_ACTIVATION_FAILURE_SMOKE: '1',
+      PERL_LSP_CRASH_RECOVERY_SMOKE: '1',
+      PERL_LSP_TEST_EXPLORER_JOURNEY: '1',
+    },
+    'a'.repeat(40),
+    'candidate.vsix',
+    'b'.repeat(64),
+  );
+
+  assert.equal(environment.PERL_LSP_TEST_EXPLORER_SMOKE, '1');
+  assert.equal(environment.PERL_LSP_CURRENT_SOURCE_SHA, 'a'.repeat(40));
+  assert.equal(environment.PERL_LSP_PUBLISHED_VSIX_PATH, 'candidate.vsix');
+  assert.equal(environment.PERL_LSP_VSIX_SHA256, 'b'.repeat(64));
+  assert.equal(environment.PERL_LSP_CURRENT_SOURCE_SMOKE, undefined);
+  assert.equal(environment.PERL_LSP_FIRST_HOUR_ONLY, undefined);
+  assert.equal(environment.PERL_LSP_FIRST_HOUR_RECEIPT, undefined);
+  assert.equal(environment.PERL_LSP_FIRST_HOUR_SERVER_PATH, undefined);
+  assert.equal(environment.PERL_LSP_PACKAGED_BUNDLE_SMOKE, undefined);
+  assert.equal(environment.PERL_LSP_HEALTH_CHECK_FAILURE_SMOKE, undefined);
+  assert.equal(environment.PERL_LSP_ACTIVATION_FAILURE_SMOKE, undefined);
+  assert.equal(environment.PERL_LSP_CRASH_RECOVERY_SMOKE, undefined);
+  assert.equal(environment.PERL_LSP_HEALTH_CHECK_RECOVERY_SMOKE, undefined);
+  assert.equal(environment.PERL_LSP_ACTIVATION_FAILURE_LEG, undefined);
+  assert.equal(environment.PERL_LSP_CRASH_RECOVERY_LEG, undefined);
+  assert.equal(environment.PERL_LSP_TEST_EXPLORER_JOURNEY, undefined);
+  assert.match(
+    environment.PERL_LSP_TEST_EXPLORER_RECEIPT,
+    /[/\\]test_explorer_journey_receipt\.json$/,
+  );
+  assert.equal(environment.PERL_LSP_SMOKE_SOURCE_LABEL.endsWith('-test-explorer'), true);
+});
+
+void test('does not turn missing or failed Test Explorer children into a pass', () => {
+  const receiptsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-test-explorer-exit-'));
+  const previousReceiptsDir = process.env.PERL_LSP_SMOKE_RECEIPTS_DIR;
+  process.env.PERL_LSP_SMOKE_RECEIPTS_DIR = receiptsDir;
+  try {
+    assert.deepEqual(
+      interpretTestExplorerExit({
+        phase: 'compile',
+        result: { status: 2, error: undefined },
+      }),
+      { status: 'failed', exit_code: 2, reason: 'published_smoke_compile_failed' },
+    );
+    assert.deepEqual(
+      interpretTestExplorerExit({
+        phase: 'compile',
+        result: { status: null, error: new Error('compiler unavailable') },
+      }),
+      { status: 'failed', exit_code: null, reason: 'published_smoke_compile_spawn_failed' },
+    );
+    assert.deepEqual(
+      interpretTestExplorerExit({
+        phase: 'child',
+        result: { status: 1, error: undefined },
+      }),
+      { status: 'failed', exit_code: 1, reason: 'test_explorer_journey_failed' },
+    );
+    assert.deepEqual(
+      interpretTestExplorerExit({
+        phase: 'child',
+        result: { status: null, error: undefined },
+      }),
+      { status: 'failed', exit_code: null, reason: 'test_explorer_journey_failed' },
+    );
+    assert.deepEqual(
+      interpretTestExplorerExit({
+        phase: 'child',
+        result: { status: null, error: new Error('child unavailable') },
+      }),
+      { status: 'not_proven', exit_code: null, reason: 'child unavailable' },
+    );
+    assert.deepEqual(
+      interpretTestExplorerExit(
+        {
+          phase: 'child',
+          result: { status: 0, error: undefined },
+        },
+        { ok: true, receipt: { fixture: 'generated test.t', test_zero: 'generated test.t' } },
+      ),
+      {
+        status: 'pass',
+        exit_code: 0,
+        reason: 'test_explorer_child_completed',
+        fixture: 'generated test.t',
+        test_zero: 'generated test.t',
+      },
+    );
+  } finally {
+    if (previousReceiptsDir === undefined) delete process.env.PERL_LSP_SMOKE_RECEIPTS_DIR;
+    else process.env.PERL_LSP_SMOKE_RECEIPTS_DIR = previousReceiptsDir;
+    fs.rmSync(receiptsDir, { recursive: true, force: true });
+  }
+});
+
+void test(
+  'classifies Test Explorer exits from the synthesized child identity, not ambient parent identity',
+  { skip: process.platform !== 'win32' },
+  () => {
+    const receiptsDir = path.join(os.tmpdir(), 'perl-lsp-test-explorer-child-env-does-not-exist');
+    const names = [
+      'PERL_LSP_CANDIDATE_ID',
+      'PERL_LSP_ARTIFACT_SET_ID',
+      'PERL_LSP_CURRENT_SOURCE_SHA',
+      'PERL_LSP_CANDIDATE_ARTIFACT_MANIFEST',
+      'PERL_LSP_SMOKE_RECEIPTS_DIR',
+    ];
+    const previous = Object.fromEntries(names.map((name) => [name, process.env[name]]));
+    try {
+      process.env.PERL_LSP_CANDIDATE_ID = 'ambient-candidate';
+      process.env.PERL_LSP_ARTIFACT_SET_ID = 'ambient-artifacts';
+      process.env.PERL_LSP_CURRENT_SOURCE_SHA = 'a'.repeat(40);
+      process.env.PERL_LSP_CANDIDATE_ARTIFACT_MANIFEST = '{}';
+      process.env.PERL_LSP_SMOKE_RECEIPTS_DIR = receiptsDir;
+      const result = runTestExplorerJourneyStage(
+        {},
+        'b'.repeat(40),
+        'candidate.vsix',
+        'c'.repeat(64),
+        (_env) => ({ phase: 'child', result: { status: 2 } }),
+      );
+      assert.deepEqual(result, {
+        status: 'not_proven',
+        exit_code: 2,
+        reason: 'candidate_bound_platform_unavailable',
+      });
+
+      for (const name of names.slice(0, 4)) delete process.env[name];
+      const completeChild = runTestExplorerJourneyStage(
+        {
+          PERL_LSP_CANDIDATE_ID: 'child-candidate',
+          PERL_LSP_ARTIFACT_SET_ID: 'child-artifacts',
+          PERL_LSP_CANDIDATE_ARTIFACT_MANIFEST: '{}',
+        },
+        'b'.repeat(40),
+        'candidate.vsix',
+        'c'.repeat(64),
+        (_env) => ({ phase: 'child', result: { status: 2 } }),
+      );
+      assert.deepEqual(completeChild, {
+        status: 'failed',
+        exit_code: 2,
+        reason: 'test_explorer_journey_failed',
+      });
+    } finally {
+      for (const name of names) {
+        if (previous[name] === undefined) delete process.env[name];
+        else process.env[name] = previous[name];
+      }
+    }
+  },
+);
+
+void test('classifies unavailable Test Explorer host resolution as not-proven', () => {
+  const receiptsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-test-explorer-host-'));
+  const previousReceiptsDir = process.env.PERL_LSP_SMOKE_RECEIPTS_DIR;
+  process.env.PERL_LSP_SMOKE_RECEIPTS_DIR = receiptsDir;
+  try {
+    fs.writeFileSync(
+      path.join(receiptsDir, 'vscode_host_resolution_failure.json'),
+      JSON.stringify({
+        schema_version: 1,
+        outcome: 'blocked',
+        stage: 'vscode_host_resolution',
+        requested_version: '1.125.0',
+        disposition: 'unavailable',
+      }),
+    );
+    assert.deepEqual(
+      interpretTestExplorerExit(
+        { phase: 'child', result: { status: 1, error: undefined } },
+        { ok: false, violations: ['child did not complete'] },
+      ),
+      {
+        status: 'not_proven',
+        exit_code: 1,
+        reason: 'vscode_host_resolution_unavailable',
+        host_resolution: {
+          schema_version: 1,
+          outcome: 'blocked',
+          stage: 'vscode_host_resolution',
+          requested_version: '1.125.0',
+          disposition: 'unavailable',
+        },
+      },
+    );
+  } finally {
+    if (previousReceiptsDir === undefined) delete process.env.PERL_LSP_SMOKE_RECEIPTS_DIR;
+    else process.env.PERL_LSP_SMOKE_RECEIPTS_DIR = previousReceiptsDir;
+    fs.rmSync(receiptsDir, { recursive: true, force: true });
+  }
+});
+
+void test('clears stale Test Explorer and host-resolution receipts before launch', () => {
+  const receiptsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-test-explorer-clear-'));
+  const previousReceiptsDir = process.env.PERL_LSP_SMOKE_RECEIPTS_DIR;
+  process.env.PERL_LSP_SMOKE_RECEIPTS_DIR = receiptsDir;
+  const revision = 'a'.repeat(40);
+  const vsixSha256 = 'b'.repeat(64);
+  const environment = testExplorerSmokeEnv({}, revision, 'candidate.vsix', vsixSha256);
+  const hostReceipt = path.join(receiptsDir, 'vscode_host_resolution_failure.json');
+  assert.ok(environment.PERL_LSP_TEST_EXPLORER_RECEIPT);
+  const explorerReceipt = environment.PERL_LSP_TEST_EXPLORER_RECEIPT;
+  fs.mkdirSync(path.dirname(explorerReceipt), { recursive: true });
+  fs.writeFileSync(explorerReceipt, 'stale explorer receipt');
+  fs.writeFileSync(hostReceipt, 'stale host receipt');
+  let launched = false;
+  try {
+    const result = runTestExplorerJourneyStage({}, revision, 'candidate.vsix', vsixSha256, () => {
+      launched = true;
+      assert.equal(fs.existsSync(explorerReceipt), false);
+      assert.equal(fs.existsSync(hostReceipt), false);
+      return {
+        phase: 'child',
+        result: {
+          pid: 1,
+          output: [],
+          stdout: '',
+          stderr: '',
+          signal: null,
+          status: 1,
+        },
+      };
+    });
+    assert.equal(launched, true);
+    assert.deepEqual(result, {
+      status: 'failed',
+      exit_code: 1,
+      reason: 'test_explorer_journey_failed',
+    });
+  } finally {
+    if (previousReceiptsDir === undefined) delete process.env.PERL_LSP_SMOKE_RECEIPTS_DIR;
+    else process.env.PERL_LSP_SMOKE_RECEIPTS_DIR = previousReceiptsDir;
+    fs.rmSync(receiptsDir, { recursive: true, force: true });
+  }
+});
+
+void test('requires a fresh candidate-bound Test Explorer completion receipt', () => {
+  const receiptFile = path.join(os.tmpdir(), `perl-lsp-test-explorer-${process.pid}.json`);
+  const valid = {
+    schema_version: 'test_explorer_journey.v1',
+    outcome: 'completed',
+    source_revision: 'a'.repeat(40),
+    server_source_revision: 'a'.repeat(40),
+    server_artifact_sha256: 'd'.repeat(64),
+    binary_resolution_source: 'bundled',
+    binary_resolution_status: 'ok',
+    binary_resolution_path: 'bin/linux-x64/perllsp',
+    binary_resolution_sha256: 'd'.repeat(64),
+    vsix_sha256: 'b'.repeat(64),
+    fixture: 'fixture.t',
+    test_zero: 'fixture.t',
+  };
+  try {
+    assert.equal(
+      validateTestExplorerReceipt({
+        receiptFile,
+        expectedRevision: valid.source_revision,
+        expectedServerSourceSha: valid.server_source_revision,
+        expectedServerArtifactSha256: valid.server_artifact_sha256,
+        expectedVsixSha256: valid.vsix_sha256,
+        readFile: () => JSON.stringify(valid),
+        exists: () => true,
+      }).ok,
+      true,
+    );
+    assert.equal(
+      validateTestExplorerReceipt({
+        receiptFile,
+        expectedRevision: 'c'.repeat(40),
+        expectedServerSourceSha: valid.server_source_revision,
+        expectedServerArtifactSha256: valid.server_artifact_sha256,
+        expectedVsixSha256: valid.vsix_sha256,
+        readFile: () => JSON.stringify(valid),
+        exists: () => true,
+      }).ok,
+      false,
+    );
+    const invalidBinding = validateTestExplorerReceipt({
+      receiptFile,
+      expectedRevision: valid.source_revision,
+      expectedServerSourceSha: valid.server_source_revision,
+      expectedServerArtifactSha256: valid.server_artifact_sha256,
+      expectedVsixSha256: valid.vsix_sha256,
+      readFile: () =>
+        JSON.stringify({
+          ...valid,
+          binary_resolution_source: 'managed',
+          binary_resolution_status: 'missing',
+          binary_resolution_sha256: 'e'.repeat(64),
+        }),
+      exists: () => true,
+    });
+    assert.equal(invalidBinding.ok, false);
+    assert.ok(!invalidBinding.ok);
+    assert.ok(invalidBinding.violations);
+    const invalidBindingViolations = invalidBinding.violations.join('; ');
+    assert.match(invalidBindingViolations, /bundled server as its source/);
+    assert.match(invalidBindingViolations, /successful server resolution/);
+    assert.match(invalidBindingViolations, /different digest/);
+    assert.equal(
+      validateTestExplorerReceipt({
+        receiptFile,
+        expectedRevision: valid.source_revision,
+        expectedServerSourceSha: valid.server_source_revision,
+        expectedServerArtifactSha256: valid.server_artifact_sha256,
+        expectedVsixSha256: valid.vsix_sha256,
+        readFile: () => JSON.stringify({ ...valid, test_zero: 'other-fixture.t' }),
+        exists: () => true,
+      }).ok,
+      false,
+    );
+    assert.equal(
+      validateTestExplorerReceipt({
+        receiptFile,
+        expectedRevision: valid.source_revision,
+        expectedServerSourceSha: valid.server_source_revision,
+        expectedServerArtifactSha256: valid.server_artifact_sha256,
+        expectedVsixSha256: valid.vsix_sha256,
+        readFile: () => JSON.stringify(valid),
+        exists: () => false,
+      }).ok,
+      false,
+    );
+    assert.equal(
+      validateTestExplorerReceipt({
+        receiptFile,
+        expectedRevision: valid.source_revision,
+        expectedServerSourceSha: valid.server_source_revision,
+        expectedServerArtifactSha256: valid.server_artifact_sha256,
+        expectedVsixSha256: 'c'.repeat(64),
+        readFile: () => JSON.stringify(valid),
+        exists: () => true,
+      }).ok,
+      false,
+    );
+    assert.deepEqual(
+      interpretTestExplorerExit(
+        { phase: 'child', result: { status: 0, error: undefined } },
+        { ok: false, violations: ['missing'] },
+      ),
+      {
+        status: 'not_proven',
+        exit_code: 0,
+        reason: 'test_explorer_child_receipt_did_not_bind_this_run',
+        violations: ['missing'],
+      },
+    );
+  } finally {
+    fs.rmSync(receiptFile, { force: true });
+  }
+});
+
+void test('keeps a failed first-hour leg failed even when Test Explorer succeeds', () => {
+  assert.equal(
+    computeOverallStatus({
+      package_creation: { status: 'pass' },
+      package_inventory: { status: 'pass', behavior_safe: true },
+      behavioral_smoke: { status: 'failed' },
+      test_explorer_journey: { status: 'pass' },
+    }),
+    'failed',
+  );
+});
 
 void test('stages and restores the current platform server for packaging', () => {
   const extensionRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-vsix-smoke-'));
@@ -135,6 +543,38 @@ void test('keeps aggregate failure when behavior passes after size-only rejectio
       behavioral_smoke: { status: 'pass' },
     }),
     'failed',
+  );
+});
+
+void test('keeps aggregate not-proven when the Test Explorer child is not run or fails', () => {
+  const base = {
+    package_creation: { status: 'pass' },
+    package_inventory: { status: 'pass', behavior_safe: true },
+    behavioral_smoke: { status: 'pass' },
+    activation_failure_journey: { status: 'not_run' },
+    crash_recovery_journey: { status: 'not_run' },
+  };
+  assert.equal(
+    computeOverallStatus({
+      ...base,
+      test_explorer_journey: { status: 'not_proven', reason: 'child outcome missing' },
+    }),
+    'not_proven',
+  );
+  assert.equal(
+    computeOverallStatus({
+      ...base,
+      test_explorer_journey: { status: 'failed', reason: 'child failed' },
+    }),
+    'failed',
+  );
+  assert.equal(
+    computeOverallStatus({ ...base, test_explorer_journey: { status: 'not_run' } }),
+    'pass',
+  );
+  assert.equal(
+    computeOverallStatus({ ...base, test_explorer_journey: { status: 'pass' } }),
+    'pass',
   );
 });
 
@@ -574,6 +1014,118 @@ void test('an unavailable host-resolution receipt is not a product smoke failure
   assert.equal(result.host_resolution.requested_version, '1.125.0');
   assert.equal(result.host_resolution.requested_version, hostFailure.requested_version);
   assert.notEqual(result.host_resolution.requested_version, 'stable');
+});
+
+void test('a typed unsupported-platform child exit stays not_proven without a receipt', () => {
+  const receiptRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-platform-unwritable-'));
+  try {
+    const result = interpretBehavioralSmokeExit({
+      status: 2,
+      candidateBound: true,
+      platform: 'darwin',
+      receiptsRoot: receiptRoot,
+      exists: () => false,
+    });
+    assert.equal(result.status, 'not_proven');
+    assert.equal(result.reason, 'candidate_bound_platform_unavailable');
+  } finally {
+    fs.rmSync(receiptRoot, { recursive: true, force: true });
+  }
+});
+
+void test('a partial Windows candidate-bound exit 2 remains not proven', () => {
+  const result = interpretBehavioralSmokeExit({
+    status: 2,
+    candidateBound: true,
+    platform: 'win32',
+    receiptsRoot: path.join(os.tmpdir(), 'perl-lsp-windows-candidate-exit-does-not-exist'),
+  });
+  assert.equal(result.status, 'not_proven');
+  assert.equal(result.reason, 'candidate_bound_platform_unavailable');
+});
+
+void test('a complete Windows candidate-bound exit 2 remains a product failure', () => {
+  const result = interpretBehavioralSmokeExit({
+    status: 2,
+    candidateBound: true,
+    completeCandidateIdentity: true,
+    platform: 'win32',
+    receiptsRoot: path.join(os.tmpdir(), 'perl-lsp-windows-complete-candidate-exit-does-not-exist'),
+  });
+  assert.equal(result.status, 'failed');
+  assert.equal(result.reason, 'published_extension_smoke_failed');
+});
+
+void test('the typed unsupported-platform exit is failure outside its bound platform case', () => {
+  for (const input of [
+    { candidateBound: false, platform: 'win32' },
+    { candidateBound: true, platform: 'linux' },
+  ]) {
+    const result = interpretBehavioralSmokeExit({
+      status: 2,
+      ...input,
+      receiptsRoot: '/fixture',
+      exists: () => false,
+    });
+    assert.equal(result.status, 'failed');
+    assert.equal(result.reason, 'published_extension_smoke_failed');
+  }
+});
+
+void test('a spawn error is explicitly classified as not_proven', () => {
+  const result = interpretBehavioralSmokeExit({
+    status: null,
+    spawnError: new Error('spawn failed'),
+    receiptsRoot: '/fixture',
+    exists: () => false,
+  });
+  assert.equal(result.status, 'not_proven');
+  assert.equal(result.reason, 'spawn failed');
+});
+
+void test('a spawn error takes precedence over the typed platform exit', () => {
+  const result = interpretBehavioralSmokeExit({
+    status: 2,
+    spawnError: new Error('spawn failed before exit'),
+    candidateBound: true,
+    platform: 'win32',
+    receiptsRoot: '/fixture',
+    exists: () => false,
+  });
+  assert.equal(result.status, 'not_proven');
+  assert.equal(result.reason, 'spawn failed before exit');
+  assert.equal(result.exit_code, null);
+});
+
+void test('a compiler exit 2 is kept separate from the typed child platform exit', () => {
+  const calls = [];
+  const result = runPublishedSmoke({}, (file, args) => {
+    calls.push({ file, args });
+    return { pid: 1, status: 2, signal: null, output: [], stdout: '', stderr: '' };
+  });
+  assert.equal(result.phase, 'compile');
+  assert.equal(result.result.status, 2);
+  assert.equal(calls.length, 1);
+  assert.match(calls[0].args[0], /governed-tsc\.js$/);
+});
+
+void test('a child exit 2 is returned only after compilation succeeds', () => {
+  const calls = [];
+  const result = runPublishedSmoke({}, (file, args) => {
+    calls.push({ file, args });
+    return {
+      pid: 1,
+      status: calls.length === 1 ? 0 : 2,
+      signal: null,
+      output: [],
+      stdout: '',
+      stderr: '',
+    };
+  });
+  assert.equal(result.phase, 'child');
+  assert.equal(result.result.status, 2);
+  assert.equal(calls.length, 2);
+  assert.match(calls[1].args[0], /out[\\/]test[\\/]published[\\/]runPublishedSmoke\.js$/);
 });
 
 void test('network, cache, and runner host failures keep the host-resolution boundary', () => {

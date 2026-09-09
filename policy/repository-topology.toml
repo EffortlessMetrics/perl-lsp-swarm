@@ -312,6 +312,17 @@ current_integration_mode = "workspace_path"
 metadata_authority = "workspace_inherited"
 
 [[packages]]
+name = "perl-evidence-envelope"
+path = "crates/perl-evidence-envelope"
+current_owner = "swarm-product"
+placement = "pending"
+migration_owner = "#15152"
+placement_question = "Repository placement of the evidence-envelope infrastructure is not yet ruled on; #15152 owns the decision for the crate #15057 introduced as internal evidence plumbing with no external consumers."
+publish_disposition = "private_workspace_member"
+current_integration_mode = "workspace_path"
+metadata_authority = "workspace_inherited"
+
+[[packages]]
 name = "perl-incremental-parsing"
 path = "crates/perl-incremental-parsing"
 current_owner = "swarm-product"
@@ -452,7 +463,7 @@ future_owner = "perl-parser-pest"
 migration_owner = "#7372"
 publish_disposition = "published"
 current_integration_mode = "workspace_path"
-metadata_authority = "workspace_inherited"
+metadata_authority = "package_explicit"
 
 [[packages]]
 name = "perl-pod"
