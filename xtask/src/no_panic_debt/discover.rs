@@ -1209,7 +1209,6 @@ fn test_generating_macro(name: &str) -> bool {
 mod tests {
     use super::super::model::{RawSite, TargetKind};
     use super::*;
-    use std::collections::BTreeSet;
 
     fn module_work(path: &str, treat_as_test: bool) -> ModuleWork {
         ModuleWork {
