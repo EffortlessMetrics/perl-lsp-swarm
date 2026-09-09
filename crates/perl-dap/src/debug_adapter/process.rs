@@ -2736,6 +2736,169 @@ mod tests {
         Ok(())
     }
 
+    /// A pending entry stop must wait for a real positive source location. A
+    /// zero line or a prompt without any source context must neither publish a
+    /// stopped event nor fabricate an `<unknown>:1` stack frame.
+    #[cfg(unix)]
+    #[test]
+    fn output_reader_rejects_zero_line_and_missing_context_for_entry() -> Result<(), String> {
+        use super::{DapMessage, DebugSession, ResumeMode, VariableCache, lock_or_recover};
+        use std::io::Write;
+        use std::path::PathBuf;
+        use std::process::{Command, Stdio};
+        use std::sync::atomic::Ordering;
+        use std::sync::mpsc::{RecvTimeoutError, sync_channel};
+        use std::time::Duration;
+
+        let cases = [
+            (
+                "zero-line source context",
+                "main::(/tmp/dap-entry-frame-zero.pl:0):\nDB<1>\nENTRY_ZERO_DONE\n",
+            ),
+            ("missing source context", "DB<1>\nENTRY_UNKNOWN_DONE\n"),
+        ];
+
+        for (label, output) in cases {
+            let (sender, receiver) = sync_channel(32);
+            let mut adapter = DebugAdapter::new();
+            adapter.set_event_sender(sender);
+            adapter.initialized.store(true, Ordering::Release);
+
+            let script = format!("printf '%s' '{}' >&2; IFS= read -r _", output);
+            let child = Command::new("sh")
+                .args(["-c", &script])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .map_err(|error| format!("{label}: failed to spawn reader fixture: {error}"))?;
+
+            *lock_or_recover(&adapter.session, "test.session") = Some(DebugSession {
+                process: child,
+                state: DebugState::Running,
+                stack_frames: Vec::new(),
+                stack_frame_arguments: HashMap::new(),
+                variable_cache: VariableCache::default(),
+                thread_id: 1,
+                last_resume_mode: ResumeMode::Unknown,
+                entry_stop_pending: true,
+                stopped_generation: 0,
+            });
+            adapter.start_output_reader(PathBuf::from("/tmp"));
+
+            let case_result = (|| -> Result<(), String> {
+                let marker = output
+                    .lines()
+                    .last()
+                    .ok_or_else(|| format!("{label}: fixture marker is missing"))?;
+                let mut saw_marker = false;
+                while !saw_marker {
+                    match receiver.recv_timeout(Duration::from_secs(3)) {
+                        Ok(DapMessage::Event { event, body, .. }) if event == "stopped" => {
+                            return Err(format!(
+                                "{label}: unexpected stopped event before valid source context: {body:?}"
+                            ));
+                        }
+                        Ok(DapMessage::Event { event, body, .. }) if event == "output" => {
+                            if body
+                                .as_ref()
+                                .and_then(|value| value.get("output"))
+                                .and_then(|value| value.as_str())
+                                .is_some_and(|text| text.contains(marker))
+                            {
+                                saw_marker = true;
+                            }
+                        }
+                        Ok(_) => {}
+                        Err(RecvTimeoutError::Timeout) => {
+                            return Err(format!(
+                                "{label}: reader did not reach its completion marker"
+                            ));
+                        }
+                        Err(RecvTimeoutError::Disconnected) => {
+                            return Err(format!("{label}: reader event channel disconnected"));
+                        }
+                    }
+                }
+
+                let guard = adapter
+                    .session
+                    .lock()
+                    .map_err(|_| format!("{label}: session lock poisoned"))?;
+                let session = guard
+                    .as_ref()
+                    .ok_or_else(|| format!("{label}: session cleared before fixture inspection"))?;
+                if !matches!(session.state, DebugState::Running) {
+                    return Err(format!(
+                        "{label}: invalid source context changed session state to {:?}",
+                        session.state
+                    ));
+                }
+                if !session.stack_frames.is_empty() {
+                    return Err(format!(
+                        "{label}: invalid source context fabricated stack frames: {:?}",
+                        session.stack_frames
+                    ));
+                }
+                Ok(())
+            })();
+
+            let release_result = (|| -> Result<(), String> {
+                let mut guard = adapter
+                    .session
+                    .lock()
+                    .map_err(|_| format!("{label}: session lock poisoned before release"))?;
+                let session = guard
+                    .as_mut()
+                    .ok_or_else(|| format!("{label}: session cleared before fixture release"))?;
+                let stdin = session
+                    .process
+                    .stdin
+                    .as_mut()
+                    .ok_or_else(|| format!("{label}: fixture stdin unavailable"))?;
+                stdin
+                    .write_all(b"\n")
+                    .map_err(|error| format!("{label}: fixture release failed: {error}"))?;
+                stdin
+                    .flush()
+                    .map_err(|error| format!("{label}: fixture release flush failed: {error}"))?;
+                Ok(())
+            })();
+
+            let mut saw_terminated = false;
+            let mut termination_error = None;
+            while !saw_terminated {
+                match receiver.recv_timeout(Duration::from_secs(3)) {
+                    Ok(DapMessage::Event { event, .. }) if event == "stopped" => {
+                        termination_error = Some(format!(
+                            "{label}: unexpected stopped event after invalid source context"
+                        ));
+                        break;
+                    }
+                    Ok(DapMessage::Event { event, .. }) if event == "terminated" => {
+                        saw_terminated = true;
+                    }
+                    Ok(_) => {}
+                    Err(RecvTimeoutError::Timeout) => {
+                        termination_error = Some(format!("{label}: reader did not terminate"));
+                        break;
+                    }
+                    Err(RecvTimeoutError::Disconnected) => {
+                        termination_error =
+                            Some(format!("{label}: reader disconnected before termination"));
+                        break;
+                    }
+                }
+            }
+            if let Some(error) =
+                case_result.err().or_else(|| release_result.err()).or(termination_error)
+            {
+                return Err(error);
+            }
+        }
+        Ok(())
+    }
+
     #[test]
     fn generation_frame_id_fails_closed_at_scope_reference_ceiling() -> Result<(), String> {
         let adapter = DebugAdapter::new();
