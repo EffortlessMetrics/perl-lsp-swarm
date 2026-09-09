@@ -1006,6 +1006,18 @@ pass();
     /// PERL5OPT are absent from its environment.
     ///
     /// Skipped automatically when Perl is not on PATH.
+    /// The hermetic-command tests re-exec themselves as a child process; the
+    /// child prints this marker so the parent can assert the child ran. This is
+    /// the only sanctioned stdout write in the module, so the workspace
+    /// `clippy::print_stdout` denial stays in force for every other test.
+    #[expect(
+        clippy::print_stdout,
+        reason = "hermetic re-exec child marker asserted by the parent test"
+    )]
+    fn emit_child_marker(marker: &str) {
+        println!("{marker}");
+    }
+
     #[test]
     fn hermetic_perl_command_strips_perl5lib() -> Result<(), Box<dyn std::error::Error>> {
         const MARKER: &str = "TDD_HERMETIC_PERL5LIB_CHILD";
@@ -1039,7 +1051,7 @@ pass();
         }
         let perl = which_perl();
         let Some(perl) = perl else { return Ok(()) };
-        println!("{CHILD_OUTPUT}");
+        emit_child_marker(CHILD_OUTPUT);
 
         let runner = TestRunner::new("".to_string(), "".to_string());
 
@@ -1097,7 +1109,7 @@ pass();
         }
         let perl = which_perl();
         let Some(perl) = perl else { return Ok(()) };
-        println!("{CHILD_OUTPUT}");
+        emit_child_marker(CHILD_OUTPUT);
 
         let runner = TestRunner::new("".to_string(), "".to_string());
 

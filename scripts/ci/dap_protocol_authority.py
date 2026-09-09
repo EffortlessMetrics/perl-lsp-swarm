@@ -66,6 +66,7 @@ def _parser() -> argparse.ArgumentParser:
 
     verify = subparsers.add_parser("verify-receipt")
     verify.add_argument("--root", default=".")
+    verify.add_argument("--manifest", default=".ci/dap/protocol-authority.json")
     verify.add_argument("--receipt", required=True)
     return parser
 
@@ -73,14 +74,18 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     root = Path(args.root).resolve()
-    # `verify-receipt` compares a receipt against the tree; it takes no manifest.
-    manifest_path = Path(getattr(args, "manifest", ".ci/dap/protocol-authority.json"))
-    if not manifest_path.is_absolute():
-        manifest_path = root / manifest_path
 
     try:
         if args.command == "verify-receipt":
-            binding = verify_inventory_binding(root, read_json(Path(args.receipt)))
+            manifest_path = Path(args.manifest)
+            if not manifest_path.is_absolute():
+                manifest_path = root / manifest_path
+            receipt_path = Path(args.receipt)
+            if not receipt_path.is_absolute():
+                receipt_path = root / receipt_path
+            binding = verify_inventory_binding(
+                root, read_json(receipt_path), manifest_path=manifest_path
+            )
             print(f"DAP authority extractor: {binding['extractor_digest']}")
             print(
                 f"DAP production source graph: {binding['source_graph_digest']} "
@@ -89,6 +94,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(f"DAP authority receipt is current for: {root}")
             return 0
 
+        manifest_path = Path(args.manifest)
+        if not manifest_path.is_absolute():
+            manifest_path = root / manifest_path
         require_sha256 = args.command == "check"
         manifest = validate_manifest(read_json(manifest_path), require_sha256=require_sha256)
         validate_docs(root, manifest)

@@ -1,4 +1,5 @@
 const assert = require('node:assert/strict');
+const crypto = require('node:crypto');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -6,21 +7,706 @@ const { test } = require('node:test');
 const {
   activationFailureLegEnv,
   bundleTargetForPlatform,
+  candidateManifestConstructionRequested,
+  constructCandidateArtifactManifest,
   composeActivationRecoveryReceipt,
+  composeCheckSummary,
   composeCrashRecoveryReceipt,
   computeOverallStatus,
+  concludeRun,
   crashRecoveryLegEnv,
   finalizeSmokeRun,
   interpretBehavioralSmokeExit,
+  inventoryTransitionArgs,
+  interpretTestExplorerExit,
+  validateTestExplorerReceipt,
+  runPublishedSmoke,
+  runTestExplorerJourneyStage,
+  testExplorerSmokeEnv,
   interpretTransitionResult,
+  publishCheckSummary,
+  writeProjectionLine,
   shouldRunBehavioralSmoke,
   shouldRunCrashRecoveryJourney,
   stageServerForPackage,
   validateActivationRecoveryChildReceipts,
   validateChildSmokeReceipt,
+  validateVerifiedCandidateReceipt,
+  observedVscodeVersion,
   validateCrashRecoveryChildReceipts,
   writeJsonAtomic,
 } = require('./run-local-vsix-smoke');
+
+void test('preserves source-bound and ordinary child VS Code runtime identity', () => {
+  assert.equal(
+    observedVscodeVersion({ ok: true, source_receipt: { vscode_version: '1.125.0' } }, true),
+    '1.125.0',
+  );
+  assert.equal(
+    observedVscodeVersion(
+      { ok: true, receipt: { environment: { vscode_version: '1.124.2' } } },
+      false,
+    ),
+    '1.124.2',
+  );
+});
+
+void test('verified packaged child receipt binds candidate and both observed artifacts', () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-verified-child-'));
+  const receiptFile = path.join(directory, 'verified_child_receipt.json');
+  const sourceReceiptFile = path.join(directory, 'packaged_bundle_journey_receipt.json');
+  fs.writeFileSync(
+    sourceReceiptFile,
+    JSON.stringify({
+      repository_sha: 'a'.repeat(40),
+      artifact_hashes: {
+        vsix_sha256: 'b'.repeat(64),
+        bundled_server_sha256: 'c'.repeat(64),
+      },
+      vscode_version: '1.125.0',
+      outcome: 'not_proven',
+      product_blockers: [],
+      server_identity: {
+        path: 'C:/extension/bin/win32-x64/perllsp.exe',
+        source: 'packaged_vsix_bundle',
+        startup_source: 'bundled',
+      },
+      startup: {
+        lifecycle_state: 'running',
+        binary_resolution_status: 'ok',
+        server_start_status: 'ok',
+        initialize_status: 'ok',
+      },
+      requests: {
+        immediate: Object.fromEntries(
+          ['completion', 'hover', 'definition', 'references', 'symbols'].map((key) => [
+            key,
+            { status: 'ok' },
+          ]),
+        ),
+        after_edit: { status: 'ok', immediate_requery: { status: 'ok' } },
+      },
+      shutdown: 'stopped',
+    }),
+  );
+  fs.writeFileSync(
+    receiptFile,
+    JSON.stringify({
+      schema_version: 'verified_child_receipt.v1',
+      receipt_schema_version: 'installed_acceptance.v1',
+      candidate_id: 'candidate-1',
+      frozen_product_sha: 'a'.repeat(40),
+      artifact_set_id: 'set-1',
+      status: 'not_proven',
+      source_receipt_sha256: crypto
+        .createHash('sha256')
+        .update(fs.readFileSync(sourceReceiptFile))
+        .digest('hex'),
+      artifact_hashes: {
+        vsix_sha256: 'b'.repeat(64),
+        bundled_server_sha256: 'c'.repeat(64),
+      },
+    }),
+  );
+  const result = validateVerifiedCandidateReceipt({
+    receiptFile,
+    env: {
+      PERL_LSP_CANDIDATE_ID: 'candidate-1',
+      PERL_LSP_CURRENT_SOURCE_SHA: 'a'.repeat(40),
+      PERL_LSP_ARTIFACT_SET_ID: 'set-1',
+    },
+    expectedVsixSha256: 'b'.repeat(64),
+    expectedBundledServerSha256: 'c'.repeat(64),
+    sourceReceiptFile,
+    expectedPlatform: 'windows',
+  });
+  assert.equal(result.ok, true);
+  assert.equal(String(result.source_receipt?.vscode_version), '1.125.0');
+  fs.rmSync(directory, { recursive: true, force: true });
+});
+
+void test('verified packaged child receipt rejects stale source, identity, and artifact bindings', () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-verified-child-negative-'));
+  const receiptFile = path.join(directory, 'verified_child_receipt.json');
+  const sourceReceiptFile = path.join(directory, 'packaged_bundle_journey_receipt.json');
+  fs.writeFileSync(
+    sourceReceiptFile,
+    JSON.stringify({
+      repository_sha: 'a'.repeat(40),
+      artifact_hashes: {
+        vsix_sha256: 'b'.repeat(64),
+        bundled_server_sha256: 'c'.repeat(64),
+      },
+      vscode_version: '1.125.0',
+      outcome: 'not_proven',
+      product_blockers: [],
+      server_identity: {
+        path: 'C:/extension/bin/win32-x64/perllsp.exe',
+        source: 'packaged_vsix_bundle',
+        startup_source: 'bundled',
+      },
+      startup: {
+        lifecycle_state: 'running',
+        binary_resolution_status: 'ok',
+        server_start_status: 'ok',
+        initialize_status: 'ok',
+      },
+      requests: {
+        immediate: Object.fromEntries(
+          ['completion', 'hover', 'definition', 'references', 'symbols'].map((key) => [
+            key,
+            { status: 'ok' },
+          ]),
+        ),
+        after_edit: { status: 'ok', immediate_requery: { status: 'ok' } },
+      },
+      shutdown: 'stopped',
+    }),
+  );
+  const sourceDigest = crypto
+    .createHash('sha256')
+    .update(fs.readFileSync(sourceReceiptFile))
+    .digest('hex');
+  const base = {
+    schema_version: 'verified_child_receipt.v1',
+    receipt_schema_version: 'installed_acceptance.v1',
+    candidate_id: 'candidate-1',
+    frozen_product_sha: 'a'.repeat(40),
+    artifact_set_id: 'set-1',
+    status: 'not_proven',
+    source_receipt_sha256: sourceDigest,
+    artifact_hashes: {
+      vsix_sha256: 'b'.repeat(64),
+      bundled_server_sha256: 'c'.repeat(64),
+    },
+  };
+  const validate = (override) => {
+    fs.writeFileSync(receiptFile, JSON.stringify({ ...base, ...override }));
+    return validateVerifiedCandidateReceipt({
+      receiptFile,
+      sourceReceiptFile,
+      env: {
+        PERL_LSP_CANDIDATE_ID: 'candidate-1',
+        PERL_LSP_CURRENT_SOURCE_SHA: 'a'.repeat(40),
+        PERL_LSP_ARTIFACT_SET_ID: 'set-1',
+      },
+      expectedVsixSha256: 'b'.repeat(64),
+      expectedBundledServerSha256: 'c'.repeat(64),
+      expectedPlatform: 'windows',
+    });
+  };
+  assert.equal(validate({ source_receipt_sha256: 'd'.repeat(64) }).ok, false);
+  assert.equal(validate({ candidate_id: 'candidate-other' }).ok, false);
+  assert.equal(
+    validate({ artifact_hashes: { ...base.artifact_hashes, vsix_sha256: 'd'.repeat(64) } }).ok,
+    false,
+  );
+  const validSource = JSON.parse(fs.readFileSync(sourceReceiptFile, 'utf8'));
+  const sourceMutation = (mutate) => {
+    const source = structuredClone(validSource);
+    mutate(source);
+    fs.writeFileSync(sourceReceiptFile, JSON.stringify(source));
+    const digest = crypto
+      .createHash('sha256')
+      .update(fs.readFileSync(sourceReceiptFile))
+      .digest('hex');
+    return validate({ source_receipt_sha256: digest });
+  };
+  assert.equal(sourceMutation((source) => (source.repository_sha = 'd'.repeat(40))).ok, false);
+  assert.equal(sourceMutation((source) => delete source.repository_sha).ok, false);
+  assert.equal(
+    sourceMutation((source) => (source.artifact_hashes.vsix_sha256 = 'd'.repeat(64))).ok,
+    false,
+  );
+  assert.equal(sourceMutation((source) => delete source.artifact_hashes.vsix_sha256).ok, false);
+  assert.equal(
+    sourceMutation((source) => (source.artifact_hashes.bundled_server_sha256 = 'd'.repeat(64))).ok,
+    false,
+  );
+  assert.equal(
+    sourceMutation((source) => delete source.artifact_hashes.bundled_server_sha256).ok,
+    false,
+  );
+  assert.equal(sourceMutation((source) => delete source.artifact_hashes).ok, false);
+  assert.equal(sourceMutation(() => {}).ok, true);
+  assert.equal(validate({ status: undefined }).ok, false);
+  assert.equal(validate({ status: 'unexpected' }).ok, false);
+  assert.equal(validate({ status: [] }).ok, false);
+  const failedSource = JSON.parse(fs.readFileSync(sourceReceiptFile, 'utf8'));
+  failedSource.outcome = 'failed';
+  failedSource.product_blockers = [{ label: 'provider', result: { status: 'error' } }];
+  fs.writeFileSync(sourceReceiptFile, JSON.stringify(failedSource));
+  const failedSourceDigest = crypto
+    .createHash('sha256')
+    .update(fs.readFileSync(sourceReceiptFile))
+    .digest('hex');
+  assert.equal(validate({ source_receipt_sha256: failedSourceDigest }).ok, false);
+  failedSource.outcome = 'not_proven';
+  failedSource.product_blockers = [];
+  failedSource.requests.immediate = {};
+  fs.writeFileSync(sourceReceiptFile, JSON.stringify(failedSource));
+  const emptyProviderDigest = crypto
+    .createHash('sha256')
+    .update(fs.readFileSync(sourceReceiptFile))
+    .digest('hex');
+  assert.equal(validate({ source_receipt_sha256: emptyProviderDigest }).ok, false);
+  fs.rmSync(directory, { recursive: true, force: true });
+});
+
+void test('candidate construction binds hashes and rejects partial or supplied identity', () => {
+  const env = {
+    PERL_LSP_CONSTRUCT_CANDIDATE_MANIFEST: '1',
+    PERL_LSP_CANDIDATE_ID: 'candidate-1',
+    PERL_LSP_ARTIFACT_SET_ID: 'set-1',
+    PERL_LSP_CURRENT_SOURCE_SHA: 'a'.repeat(40),
+  };
+  assert.equal(candidateManifestConstructionRequested(env), true);
+  assert.deepEqual(
+    JSON.parse(
+      String(
+        constructCandidateArtifactManifest(
+          env,
+          'a'.repeat(40),
+          'windows',
+          'b'.repeat(64),
+          'c'.repeat(64),
+        ),
+      ),
+    ),
+    {
+      candidate_id: 'candidate-1',
+      frozen_product_sha: 'a'.repeat(40),
+      artifact_set_id: 'set-1',
+      platform: 'windows',
+      vsix_sha256: 'b'.repeat(64),
+      bundled_server_sha256: 'c'.repeat(64),
+    },
+  );
+  assert.throws(
+    () =>
+      constructCandidateArtifactManifest(
+        { ...env, PERL_LSP_ARTIFACT_SET_ID: undefined },
+        'a'.repeat(40),
+        'windows',
+        'b'.repeat(64),
+        'c'.repeat(64),
+      ),
+    /missing artifactSetId/,
+  );
+  assert.throws(
+    () =>
+      constructCandidateArtifactManifest(
+        { ...env, PERL_LSP_CANDIDATE_ARTIFACT_MANIFEST: '{}' },
+        'a'.repeat(40),
+        'windows',
+        'b'.repeat(64),
+        'c'.repeat(64),
+      ),
+    /cannot be combined/,
+  );
+});
+
+void test('inventory transition forwarding keeps PR and manual base modes explicit', () => {
+  const vsix = 'candidate.vsix';
+  assert.deepEqual(
+    inventoryTransitionArgs(
+      { PERL_LSP_PACKAGE_BASE_MODE: 'pull_request', PERL_LSP_PACKAGE_PR_BASE_SHA: 'b'.repeat(40) },
+      vsix,
+    ),
+    [
+      path.join(__dirname, 'check-vsix-inventory-transition.js'),
+      '--vsix',
+      vsix,
+      '--merge-base-with',
+      'b'.repeat(40),
+    ],
+  );
+  assert.deepEqual(
+    inventoryTransitionArgs({ PERL_LSP_PACKAGE_BASE_MODE: 'pull_request' }, vsix).slice(-2),
+    ['--merge-base-with', ''],
+  );
+  assert.deepEqual(
+    inventoryTransitionArgs(
+      { PERL_LSP_PACKAGE_BASE_MODE: 'accepted', PERL_LSP_PACKAGE_BASE_SHA: 'a'.repeat(40) },
+      vsix,
+    ).slice(-2),
+    ['--base', 'a'.repeat(40)],
+  );
+});
+
+void test('builds an exclusive candidate-bound Test Explorer child environment', () => {
+  const environment = testExplorerSmokeEnv(
+    {
+      PERL_LSP_CURRENT_SOURCE_SMOKE: '1',
+      PERL_LSP_FIRST_HOUR_ONLY: '1',
+      PERL_LSP_FIRST_HOUR_RECEIPT: '1',
+      PERL_LSP_FIRST_HOUR_SERVER_PATH: 'old-server',
+      PERL_LSP_PACKAGED_BUNDLE_SMOKE: '1',
+      PERL_LSP_HEALTH_CHECK_FAILURE_SMOKE: '1',
+      PERL_LSP_ACTIVATION_FAILURE_SMOKE: '1',
+      PERL_LSP_CRASH_RECOVERY_SMOKE: '1',
+      PERL_LSP_TEST_EXPLORER_JOURNEY: '1',
+    },
+    'a'.repeat(40),
+    'candidate.vsix',
+    'b'.repeat(64),
+  );
+
+  assert.equal(environment.PERL_LSP_TEST_EXPLORER_SMOKE, '1');
+  assert.equal(environment.PERL_LSP_CURRENT_SOURCE_SHA, 'a'.repeat(40));
+  assert.equal(environment.PERL_LSP_PUBLISHED_VSIX_PATH, 'candidate.vsix');
+  assert.equal(environment.PERL_LSP_VSIX_SHA256, 'b'.repeat(64));
+  assert.equal(environment.PERL_LSP_CURRENT_SOURCE_SMOKE, undefined);
+  assert.equal(environment.PERL_LSP_FIRST_HOUR_ONLY, undefined);
+  assert.equal(environment.PERL_LSP_FIRST_HOUR_RECEIPT, undefined);
+  assert.equal(environment.PERL_LSP_FIRST_HOUR_SERVER_PATH, undefined);
+  assert.equal(environment.PERL_LSP_PACKAGED_BUNDLE_SMOKE, undefined);
+  assert.equal(environment.PERL_LSP_HEALTH_CHECK_FAILURE_SMOKE, undefined);
+  assert.equal(environment.PERL_LSP_ACTIVATION_FAILURE_SMOKE, undefined);
+  assert.equal(environment.PERL_LSP_CRASH_RECOVERY_SMOKE, undefined);
+  assert.equal(environment.PERL_LSP_HEALTH_CHECK_RECOVERY_SMOKE, undefined);
+  assert.equal(environment.PERL_LSP_ACTIVATION_FAILURE_LEG, undefined);
+  assert.equal(environment.PERL_LSP_CRASH_RECOVERY_LEG, undefined);
+  assert.equal(environment.PERL_LSP_TEST_EXPLORER_JOURNEY, undefined);
+  assert.match(
+    environment.PERL_LSP_TEST_EXPLORER_RECEIPT,
+    /[/\\]test_explorer_journey_receipt\.json$/,
+  );
+  assert.equal(environment.PERL_LSP_SMOKE_SOURCE_LABEL.endsWith('-test-explorer'), true);
+});
+
+void test('does not turn missing or failed Test Explorer children into a pass', () => {
+  const receiptsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-test-explorer-exit-'));
+  const previousReceiptsDir = process.env.PERL_LSP_SMOKE_RECEIPTS_DIR;
+  process.env.PERL_LSP_SMOKE_RECEIPTS_DIR = receiptsDir;
+  try {
+    assert.deepEqual(
+      interpretTestExplorerExit({
+        phase: 'compile',
+        result: { status: 2, error: undefined },
+      }),
+      { status: 'failed', exit_code: 2, reason: 'published_smoke_compile_failed' },
+    );
+    assert.deepEqual(
+      interpretTestExplorerExit({
+        phase: 'compile',
+        result: { status: null, error: new Error('compiler unavailable') },
+      }),
+      { status: 'failed', exit_code: null, reason: 'published_smoke_compile_spawn_failed' },
+    );
+    assert.deepEqual(
+      interpretTestExplorerExit({
+        phase: 'child',
+        result: { status: 1, error: undefined },
+      }),
+      { status: 'failed', exit_code: 1, reason: 'test_explorer_journey_failed' },
+    );
+    assert.deepEqual(
+      interpretTestExplorerExit({
+        phase: 'child',
+        result: { status: null, error: undefined },
+      }),
+      { status: 'failed', exit_code: null, reason: 'test_explorer_journey_failed' },
+    );
+    assert.deepEqual(
+      interpretTestExplorerExit({
+        phase: 'child',
+        result: { status: null, error: new Error('child unavailable') },
+      }),
+      { status: 'not_proven', exit_code: null, reason: 'child unavailable' },
+    );
+    assert.deepEqual(
+      interpretTestExplorerExit(
+        {
+          phase: 'child',
+          result: { status: 0, error: undefined },
+        },
+        { ok: true, receipt: { fixture: 'generated test.t', test_zero: 'generated test.t' } },
+      ),
+      {
+        status: 'pass',
+        exit_code: 0,
+        reason: 'test_explorer_child_completed',
+        fixture: 'generated test.t',
+        test_zero: 'generated test.t',
+      },
+    );
+  } finally {
+    if (previousReceiptsDir === undefined) delete process.env.PERL_LSP_SMOKE_RECEIPTS_DIR;
+    else process.env.PERL_LSP_SMOKE_RECEIPTS_DIR = previousReceiptsDir;
+    fs.rmSync(receiptsDir, { recursive: true, force: true });
+  }
+});
+
+void test(
+  'classifies Test Explorer exits from the synthesized child identity, not ambient parent identity',
+  { skip: process.platform !== 'win32' },
+  () => {
+    const receiptsDir = path.join(os.tmpdir(), 'perl-lsp-test-explorer-child-env-does-not-exist');
+    const names = [
+      'PERL_LSP_CANDIDATE_ID',
+      'PERL_LSP_ARTIFACT_SET_ID',
+      'PERL_LSP_CURRENT_SOURCE_SHA',
+      'PERL_LSP_CANDIDATE_ARTIFACT_MANIFEST',
+      'PERL_LSP_SMOKE_RECEIPTS_DIR',
+    ];
+    const previous = Object.fromEntries(names.map((name) => [name, process.env[name]]));
+    try {
+      process.env.PERL_LSP_CANDIDATE_ID = 'ambient-candidate';
+      process.env.PERL_LSP_ARTIFACT_SET_ID = 'ambient-artifacts';
+      process.env.PERL_LSP_CURRENT_SOURCE_SHA = 'a'.repeat(40);
+      process.env.PERL_LSP_CANDIDATE_ARTIFACT_MANIFEST = '{}';
+      process.env.PERL_LSP_SMOKE_RECEIPTS_DIR = receiptsDir;
+      const result = runTestExplorerJourneyStage(
+        {},
+        'b'.repeat(40),
+        'candidate.vsix',
+        'c'.repeat(64),
+        (_env) => ({ phase: 'child', result: { status: 2 } }),
+      );
+      assert.deepEqual(result, {
+        status: 'not_proven',
+        exit_code: 2,
+        reason: 'candidate_bound_platform_unavailable',
+      });
+
+      for (const name of names.slice(0, 4)) delete process.env[name];
+      const completeChild = runTestExplorerJourneyStage(
+        {
+          PERL_LSP_CANDIDATE_ID: 'child-candidate',
+          PERL_LSP_ARTIFACT_SET_ID: 'child-artifacts',
+          PERL_LSP_CANDIDATE_ARTIFACT_MANIFEST: '{}',
+        },
+        'b'.repeat(40),
+        'candidate.vsix',
+        'c'.repeat(64),
+        (_env) => ({ phase: 'child', result: { status: 2 } }),
+      );
+      assert.deepEqual(completeChild, {
+        status: 'failed',
+        exit_code: 2,
+        reason: 'test_explorer_journey_failed',
+      });
+    } finally {
+      for (const name of names) {
+        if (previous[name] === undefined) delete process.env[name];
+        else process.env[name] = previous[name];
+      }
+    }
+  },
+);
+
+void test('classifies unavailable Test Explorer host resolution as not-proven', () => {
+  const receiptsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-test-explorer-host-'));
+  const previousReceiptsDir = process.env.PERL_LSP_SMOKE_RECEIPTS_DIR;
+  process.env.PERL_LSP_SMOKE_RECEIPTS_DIR = receiptsDir;
+  try {
+    fs.writeFileSync(
+      path.join(receiptsDir, 'vscode_host_resolution_failure.json'),
+      JSON.stringify({
+        schema_version: 1,
+        outcome: 'blocked',
+        stage: 'vscode_host_resolution',
+        requested_version: '1.125.0',
+        disposition: 'unavailable',
+      }),
+    );
+    assert.deepEqual(
+      interpretTestExplorerExit(
+        { phase: 'child', result: { status: 1, error: undefined } },
+        { ok: false, violations: ['child did not complete'] },
+      ),
+      {
+        status: 'not_proven',
+        exit_code: 1,
+        reason: 'vscode_host_resolution_unavailable',
+        host_resolution: {
+          schema_version: 1,
+          outcome: 'blocked',
+          stage: 'vscode_host_resolution',
+          requested_version: '1.125.0',
+          disposition: 'unavailable',
+        },
+      },
+    );
+  } finally {
+    if (previousReceiptsDir === undefined) delete process.env.PERL_LSP_SMOKE_RECEIPTS_DIR;
+    else process.env.PERL_LSP_SMOKE_RECEIPTS_DIR = previousReceiptsDir;
+    fs.rmSync(receiptsDir, { recursive: true, force: true });
+  }
+});
+
+void test('clears stale Test Explorer and host-resolution receipts before launch', () => {
+  const receiptsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-test-explorer-clear-'));
+  const previousReceiptsDir = process.env.PERL_LSP_SMOKE_RECEIPTS_DIR;
+  process.env.PERL_LSP_SMOKE_RECEIPTS_DIR = receiptsDir;
+  const revision = 'a'.repeat(40);
+  const vsixSha256 = 'b'.repeat(64);
+  const environment = testExplorerSmokeEnv({}, revision, 'candidate.vsix', vsixSha256);
+  const hostReceipt = path.join(receiptsDir, 'vscode_host_resolution_failure.json');
+  assert.ok(environment.PERL_LSP_TEST_EXPLORER_RECEIPT);
+  const explorerReceipt = environment.PERL_LSP_TEST_EXPLORER_RECEIPT;
+  fs.mkdirSync(path.dirname(explorerReceipt), { recursive: true });
+  fs.writeFileSync(explorerReceipt, 'stale explorer receipt');
+  fs.writeFileSync(hostReceipt, 'stale host receipt');
+  let launched = false;
+  try {
+    const result = runTestExplorerJourneyStage({}, revision, 'candidate.vsix', vsixSha256, () => {
+      launched = true;
+      assert.equal(fs.existsSync(explorerReceipt), false);
+      assert.equal(fs.existsSync(hostReceipt), false);
+      return {
+        phase: 'child',
+        result: {
+          pid: 1,
+          output: [],
+          stdout: '',
+          stderr: '',
+          signal: null,
+          status: 1,
+        },
+      };
+    });
+    assert.equal(launched, true);
+    assert.deepEqual(result, {
+      status: 'failed',
+      exit_code: 1,
+      reason: 'test_explorer_journey_failed',
+    });
+  } finally {
+    if (previousReceiptsDir === undefined) delete process.env.PERL_LSP_SMOKE_RECEIPTS_DIR;
+    else process.env.PERL_LSP_SMOKE_RECEIPTS_DIR = previousReceiptsDir;
+    fs.rmSync(receiptsDir, { recursive: true, force: true });
+  }
+});
+
+void test('requires a fresh candidate-bound Test Explorer completion receipt', () => {
+  const receiptFile = path.join(os.tmpdir(), `perl-lsp-test-explorer-${process.pid}.json`);
+  const valid = {
+    schema_version: 'test_explorer_journey.v1',
+    outcome: 'completed',
+    source_revision: 'a'.repeat(40),
+    server_source_revision: 'a'.repeat(40),
+    server_artifact_sha256: 'd'.repeat(64),
+    binary_resolution_source: 'bundled',
+    binary_resolution_status: 'ok',
+    binary_resolution_path: 'bin/linux-x64/perllsp',
+    binary_resolution_sha256: 'd'.repeat(64),
+    vsix_sha256: 'b'.repeat(64),
+    fixture: 'fixture.t',
+    test_zero: 'fixture.t',
+  };
+  try {
+    assert.equal(
+      validateTestExplorerReceipt({
+        receiptFile,
+        expectedRevision: valid.source_revision,
+        expectedServerSourceSha: valid.server_source_revision,
+        expectedServerArtifactSha256: valid.server_artifact_sha256,
+        expectedVsixSha256: valid.vsix_sha256,
+        readFile: () => JSON.stringify(valid),
+        exists: () => true,
+      }).ok,
+      true,
+    );
+    assert.equal(
+      validateTestExplorerReceipt({
+        receiptFile,
+        expectedRevision: 'c'.repeat(40),
+        expectedServerSourceSha: valid.server_source_revision,
+        expectedServerArtifactSha256: valid.server_artifact_sha256,
+        expectedVsixSha256: valid.vsix_sha256,
+        readFile: () => JSON.stringify(valid),
+        exists: () => true,
+      }).ok,
+      false,
+    );
+    const invalidBinding = validateTestExplorerReceipt({
+      receiptFile,
+      expectedRevision: valid.source_revision,
+      expectedServerSourceSha: valid.server_source_revision,
+      expectedServerArtifactSha256: valid.server_artifact_sha256,
+      expectedVsixSha256: valid.vsix_sha256,
+      readFile: () =>
+        JSON.stringify({
+          ...valid,
+          binary_resolution_source: 'managed',
+          binary_resolution_status: 'missing',
+          binary_resolution_sha256: 'e'.repeat(64),
+        }),
+      exists: () => true,
+    });
+    assert.equal(invalidBinding.ok, false);
+    assert.ok(!invalidBinding.ok);
+    assert.ok(invalidBinding.violations);
+    const invalidBindingViolations = invalidBinding.violations.join('; ');
+    assert.match(invalidBindingViolations, /bundled server as its source/);
+    assert.match(invalidBindingViolations, /successful server resolution/);
+    assert.match(invalidBindingViolations, /different digest/);
+    assert.equal(
+      validateTestExplorerReceipt({
+        receiptFile,
+        expectedRevision: valid.source_revision,
+        expectedServerSourceSha: valid.server_source_revision,
+        expectedServerArtifactSha256: valid.server_artifact_sha256,
+        expectedVsixSha256: valid.vsix_sha256,
+        readFile: () => JSON.stringify({ ...valid, test_zero: 'other-fixture.t' }),
+        exists: () => true,
+      }).ok,
+      false,
+    );
+    assert.equal(
+      validateTestExplorerReceipt({
+        receiptFile,
+        expectedRevision: valid.source_revision,
+        expectedServerSourceSha: valid.server_source_revision,
+        expectedServerArtifactSha256: valid.server_artifact_sha256,
+        expectedVsixSha256: valid.vsix_sha256,
+        readFile: () => JSON.stringify(valid),
+        exists: () => false,
+      }).ok,
+      false,
+    );
+    assert.equal(
+      validateTestExplorerReceipt({
+        receiptFile,
+        expectedRevision: valid.source_revision,
+        expectedServerSourceSha: valid.server_source_revision,
+        expectedServerArtifactSha256: valid.server_artifact_sha256,
+        expectedVsixSha256: 'c'.repeat(64),
+        readFile: () => JSON.stringify(valid),
+        exists: () => true,
+      }).ok,
+      false,
+    );
+    assert.deepEqual(
+      interpretTestExplorerExit(
+        { phase: 'child', result: { status: 0, error: undefined } },
+        { ok: false, violations: ['missing'] },
+      ),
+      {
+        status: 'not_proven',
+        exit_code: 0,
+        reason: 'test_explorer_child_receipt_did_not_bind_this_run',
+        violations: ['missing'],
+      },
+    );
+  } finally {
+    fs.rmSync(receiptFile, { force: true });
+  }
+});
+
+void test('keeps a failed first-hour leg failed even when Test Explorer succeeds', () => {
+  assert.equal(
+    computeOverallStatus({
+      package_creation: { status: 'pass' },
+      package_inventory: { status: 'pass', behavior_safe: true },
+      behavioral_smoke: { status: 'failed' },
+      test_explorer_journey: { status: 'pass' },
+    }),
+    'failed',
+  );
+});
 
 void test('stages and restores the current platform server for packaging', () => {
   const extensionRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-vsix-smoke-'));
@@ -131,6 +817,38 @@ void test('keeps aggregate failure when behavior passes after size-only rejectio
       behavioral_smoke: { status: 'pass' },
     }),
     'failed',
+  );
+});
+
+void test('keeps aggregate not-proven when the Test Explorer child is not run or fails', () => {
+  const base = {
+    package_creation: { status: 'pass' },
+    package_inventory: { status: 'pass', behavior_safe: true },
+    behavioral_smoke: { status: 'pass' },
+    activation_failure_journey: { status: 'not_run' },
+    crash_recovery_journey: { status: 'not_run' },
+  };
+  assert.equal(
+    computeOverallStatus({
+      ...base,
+      test_explorer_journey: { status: 'not_proven', reason: 'child outcome missing' },
+    }),
+    'not_proven',
+  );
+  assert.equal(
+    computeOverallStatus({
+      ...base,
+      test_explorer_journey: { status: 'failed', reason: 'child failed' },
+    }),
+    'failed',
+  );
+  assert.equal(
+    computeOverallStatus({ ...base, test_explorer_journey: { status: 'not_run' } }),
+    'pass',
+  );
+  assert.equal(
+    computeOverallStatus({ ...base, test_explorer_journey: { status: 'pass' } }),
+    'pass',
   );
 });
 
@@ -432,6 +1150,9 @@ function childReceipt(overrides = {}, environmentOverrides = {}) {
       server_source_revision: CHILD_SUBJECT.expectedServerSourceSha,
       vsix_sha256: CHILD_SUBJECT.expectedVsixSha256,
       requested_vscode_version: CHILD_SUBJECT.expectedVscodeVersion,
+      // The launched runtime identity the extension host actually observed;
+      // the requested selector alone never proves the host.
+      vscode_version: '1.130.2',
       extension_id: 'EffortlessMetrics.perl-lsp-rs',
       ...environmentOverrides,
     },
@@ -489,6 +1210,39 @@ void test('a child receipt from another matrix leg is rejected', () => {
   assert.match(result.violations.join('; '), /VS Code version .* is not this matrix leg/);
 });
 
+void test('a child receipt without the launched runtime version is rejected', () => {
+  const result = validateChild(childReceipt({}, { vscode_version: undefined }));
+  assert.equal(result.ok, false);
+  assert.match(result.violations.join('; '), /launched VS Code runtime version/);
+});
+
+void test('a concrete leg rejects a different launched runtime version', () => {
+  const concrete = {
+    ...CHILD_SUBJECT,
+    expectedVscodeVersion: '1.125.0',
+    receiptFile: '/fixture/first_hour_vscode_receipt.json',
+    exists: () => true,
+  };
+  const mismatched = validateChildSmokeReceipt({
+    ...concrete,
+    readFile: () =>
+      JSON.stringify(
+        childReceipt({}, { requested_vscode_version: '1.125.0', vscode_version: '1.126.0' }),
+      ),
+  });
+  assert.equal(mismatched.ok, false);
+  assert.match(mismatched.violations.join('; '), /launched VS Code .* requested the concrete/);
+
+  const matched = validateChildSmokeReceipt({
+    ...concrete,
+    readFile: () =>
+      JSON.stringify(
+        childReceipt({}, { requested_vscode_version: '1.125.0', vscode_version: '1.125.0' }),
+      ),
+  });
+  assert.equal(matched.ok, true);
+});
+
 void test('a non-terminal or failing child receipt is rejected', () => {
   const incomplete = validateChild(childReceipt({ outcome: 'aborted' }));
   assert.equal(incomplete.ok, false);
@@ -534,6 +1288,118 @@ void test('an unavailable host-resolution receipt is not a product smoke failure
   assert.equal(result.host_resolution.requested_version, '1.125.0');
   assert.equal(result.host_resolution.requested_version, hostFailure.requested_version);
   assert.notEqual(result.host_resolution.requested_version, 'stable');
+});
+
+void test('a typed unsupported-platform child exit stays not_proven without a receipt', () => {
+  const receiptRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-platform-unwritable-'));
+  try {
+    const result = interpretBehavioralSmokeExit({
+      status: 2,
+      candidateBound: true,
+      platform: 'darwin',
+      receiptsRoot: receiptRoot,
+      exists: () => false,
+    });
+    assert.equal(result.status, 'not_proven');
+    assert.equal(result.reason, 'candidate_bound_platform_unavailable');
+  } finally {
+    fs.rmSync(receiptRoot, { recursive: true, force: true });
+  }
+});
+
+void test('a partial Windows candidate-bound exit 2 remains not proven', () => {
+  const result = interpretBehavioralSmokeExit({
+    status: 2,
+    candidateBound: true,
+    platform: 'win32',
+    receiptsRoot: path.join(os.tmpdir(), 'perl-lsp-windows-candidate-exit-does-not-exist'),
+  });
+  assert.equal(result.status, 'not_proven');
+  assert.equal(result.reason, 'candidate_bound_platform_unavailable');
+});
+
+void test('a complete Windows candidate-bound exit 2 remains a product failure', () => {
+  const result = interpretBehavioralSmokeExit({
+    status: 2,
+    candidateBound: true,
+    completeCandidateIdentity: true,
+    platform: 'win32',
+    receiptsRoot: path.join(os.tmpdir(), 'perl-lsp-windows-complete-candidate-exit-does-not-exist'),
+  });
+  assert.equal(result.status, 'failed');
+  assert.equal(result.reason, 'published_extension_smoke_failed');
+});
+
+void test('the typed unsupported-platform exit is failure outside its bound platform case', () => {
+  for (const input of [
+    { candidateBound: false, platform: 'win32' },
+    { candidateBound: true, platform: 'linux' },
+  ]) {
+    const result = interpretBehavioralSmokeExit({
+      status: 2,
+      ...input,
+      receiptsRoot: '/fixture',
+      exists: () => false,
+    });
+    assert.equal(result.status, 'failed');
+    assert.equal(result.reason, 'published_extension_smoke_failed');
+  }
+});
+
+void test('a spawn error is explicitly classified as not_proven', () => {
+  const result = interpretBehavioralSmokeExit({
+    status: null,
+    spawnError: new Error('spawn failed'),
+    receiptsRoot: '/fixture',
+    exists: () => false,
+  });
+  assert.equal(result.status, 'not_proven');
+  assert.equal(result.reason, 'spawn failed');
+});
+
+void test('a spawn error takes precedence over the typed platform exit', () => {
+  const result = interpretBehavioralSmokeExit({
+    status: 2,
+    spawnError: new Error('spawn failed before exit'),
+    candidateBound: true,
+    platform: 'win32',
+    receiptsRoot: '/fixture',
+    exists: () => false,
+  });
+  assert.equal(result.status, 'not_proven');
+  assert.equal(result.reason, 'spawn failed before exit');
+  assert.equal(result.exit_code, null);
+});
+
+void test('a compiler exit 2 is kept separate from the typed child platform exit', () => {
+  const calls = [];
+  const result = runPublishedSmoke({}, (file, args) => {
+    calls.push({ file, args });
+    return { pid: 1, status: 2, signal: null, output: [], stdout: '', stderr: '' };
+  });
+  assert.equal(result.phase, 'compile');
+  assert.equal(result.result.status, 2);
+  assert.equal(calls.length, 1);
+  assert.match(calls[0].args[0], /governed-tsc\.js$/);
+});
+
+void test('a child exit 2 is returned only after compilation succeeds', () => {
+  const calls = [];
+  const result = runPublishedSmoke({}, (file, args) => {
+    calls.push({ file, args });
+    return {
+      pid: 1,
+      status: calls.length === 1 ? 0 : 2,
+      signal: null,
+      output: [],
+      stdout: '',
+      stderr: '',
+    };
+  });
+  assert.equal(result.phase, 'child');
+  assert.equal(result.result.status, 2);
+  assert.equal(calls.length, 2);
+  assert.match(calls[1].args[0], /out[\\/]test[\\/]published[\\/]runPublishedSmoke\.js$/);
 });
 
 void test('network, cache, and runner host failures keep the host-resolution boundary', () => {
@@ -688,6 +1554,10 @@ void test('activation-failure leg env arms only the failure leg with the fault',
       PERL_LSP_PACKAGED_BUNDLE_SMOKE: '1',
       PERL_LSP_FIRST_HOUR_SERVER_PATH: '/ambient/server',
       PERL_LSP_CURRENT_SOURCE_SHA: 'c'.repeat(40),
+      PERL_LSP_CANDIDATE_ID: 'ambient-candidate',
+      PERL_LSP_ARTIFACT_SET_ID: 'ambient-artifacts',
+      PERL_LSP_CANDIDATE_ARTIFACT_MANIFEST: '{}',
+      PERL_LSP_CONSTRUCT_CANDIDATE_MANIFEST: '1',
       PERL_LSP_EXTENSION_TEST_FAIL_ACTIVATION_PHASE: 'stale-from-outer-env',
     },
     'failure',
@@ -709,6 +1579,13 @@ void test('activation-failure leg env arms only the failure leg with the fault',
     undefined,
     'candidate-bound mode is Linux-only and must not leak into the journey legs',
   );
+  for (const key of [
+    'PERL_LSP_CANDIDATE_ID',
+    'PERL_LSP_ARTIFACT_SET_ID',
+    'PERL_LSP_CANDIDATE_ARTIFACT_MANIFEST',
+    'PERL_LSP_CONSTRUCT_CANDIDATE_MANIFEST',
+  ])
+    assert.equal(failureEnv[key], undefined);
 
   // Base env deliberately carries the fault variable: the retry leg must
   // REMOVE it, so deleting the else-branch cleanup would fail this assertion.
@@ -1068,14 +1945,15 @@ void test('a fully passing crash-recovery journey composes a pass verdict with b
   assert.equal(joined.negative_controls.failed_process_not_resurrected, true);
 });
 
-void test('an honestly not_proven watchdog row degrades only the overall verdict', () => {
+void test('an unexplained not_proven watchdog row degrades the overall verdict', () => {
+  // A capability-absence reason is typed pending (#15019); an unexplained
+  // not_proven remains an instrument gap and degrades the journey.
   const transient = passingTransientChild({
     observations: {
       ...passingTransientChild().observations,
       watchdog: {
         status: 'not_proven',
-        reason:
-          'host platform cannot safely suspend the installed server process; deterministic watchdog mechanism proof is owned by #7846',
+        reason: 'suspend failed: unexpected instrument error',
       },
     },
   });
@@ -1086,6 +1964,28 @@ void test('an honestly not_proven watchdog row degrades only the overall verdict
   assert.equal(joined.circuit_breaker.explicit_retry, 'pass');
   assert.equal(joined.cleanup, 'pass');
   assert.equal(joined.verdict, 'not_proven');
+});
+
+void test('an unexercised watchdog leg is typed pending and verdict-neutral', () => {
+  // #15019: on hosts whose transient leg emits no watchdog observation at
+  // all (capability absent), the row is a deliberate `pending` - visible in
+  // the receipt, but it must not degrade the journey to not_proven.
+  const transient = passingTransientChild({
+    observations: {
+      ...passingTransientChild().observations,
+      watchdog: {
+        status: 'pending',
+        reason:
+          'host platform cannot safely suspend the installed server process; deterministic watchdog mechanism proof is owned by #7846',
+      },
+    },
+  });
+  const joined = composeCrashRecoveryReceipt(crashComposeBase({ transient }));
+  assert.equal(joined.watchdog, 'pending');
+  assert.equal(joined.transient_crash.replay, 'pass');
+  assert.equal(joined.circuit_breaker.explicit_retry, 'pass');
+  assert.equal(joined.cleanup, 'pass');
+  assert.equal(joined.verdict, 'pass');
 });
 
 void test('a breaker that never exhausts fails the circuit-breaker rows', () => {
@@ -1329,6 +2229,10 @@ void test('crash-recovery leg env arms one leg and strips foreign selectors', ()
       PERL_LSP_PACKAGED_BUNDLE_SMOKE: '1',
       PERL_LSP_FIRST_HOUR_SERVER_PATH: '/ambient/server',
       PERL_LSP_CURRENT_SOURCE_SHA: 'c'.repeat(40),
+      PERL_LSP_CANDIDATE_ID: 'ambient-candidate',
+      PERL_LSP_ARTIFACT_SET_ID: 'ambient-artifacts',
+      PERL_LSP_CANDIDATE_ARTIFACT_MANIFEST: '{}',
+      PERL_LSP_CONSTRUCT_CANDIDATE_MANIFEST: '1',
       PERL_LSP_ACTIVATION_FAILURE_SMOKE: '1',
       PERL_LSP_ACTIVATION_FAILURE_LEG: 'failure',
       PERL_LSP_EXTENSION_TEST_FAIL_ACTIVATION_PHASE: 'stale-from-outer-env',
@@ -1348,6 +2252,13 @@ void test('crash-recovery leg env arms one leg and strips foreign selectors', ()
   assert.equal('PERL_LSP_PACKAGED_BUNDLE_SMOKE' in transientEnv, false);
   assert.equal('PERL_LSP_FIRST_HOUR_SERVER_PATH' in transientEnv, false);
   assert.equal('PERL_LSP_CURRENT_SOURCE_SHA' in transientEnv, false);
+  for (const key of [
+    'PERL_LSP_CANDIDATE_ID',
+    'PERL_LSP_ARTIFACT_SET_ID',
+    'PERL_LSP_CANDIDATE_ARTIFACT_MANIFEST',
+    'PERL_LSP_CONSTRUCT_CANDIDATE_MANIFEST',
+  ])
+    assert.equal(transientEnv[key], undefined);
   assert.equal('PERL_LSP_ACTIVATION_FAILURE_SMOKE' in transientEnv, false);
   assert.equal('PERL_LSP_ACTIVATION_FAILURE_LEG' in transientEnv, false);
   assert.equal('PERL_LSP_EXTENSION_TEST_FAIL_ACTIVATION_PHASE' in transientEnv, false);
@@ -1397,4 +2308,754 @@ void test('parsed-but-unbound crash children cannot fail the joined receipt', ()
   assert.equal(joined.verdict, 'not_proven');
   assert.equal(joined.negative_controls.user_restart_not_used_for_failure_injection, null);
   assert.equal(joined.negative_controls.budget_exhaustion_spawned_no_background_server, null);
+});
+
+// ---------------------------------------------------------------------------
+// Check-surface stage projection (#6883)
+//
+// The receipt has carried separate typed stage results since #7041, but that
+// evidence only existed inside the uploaded artifact: the check itself showed
+// one aggregate colour, so a blocking package-inventory transition still read
+// as though the behavioural smoke had failed. These tests pin the wording a
+// reviewer actually sees, and pin that producing it can never move a verdict.
+// The cases follow #6883's own negative controls.
+// ---------------------------------------------------------------------------
+
+/**
+ * A complete orchestration receipt, so the projection is proven against the
+ * same shape the run actually persists.
+ *
+ * @returns {import('./run-local-vsix-smoke').SmokeReceipt}
+ */
+function checkReceipt(overrides = {}) {
+  const { stages: stageOverrides = {}, ...rest } = overrides;
+  return {
+    schema_version: 'vscode_current_source_smoke.v1',
+    receipt_kind: 'vscode_current_source_smoke',
+    repository_sha: 'abc123',
+    platform: 'linux',
+    architecture: 'x64',
+    vscode_version: 'stable',
+    observed_vscode_version: null,
+    source_label: 'hosted-linux-current-source',
+    server: { source_sha: 'abc123', path: '/tmp/perllsp', sha256: 'deadbeef' },
+    vsix: { path: '/tmp/perl-lsp-rs-0.17.0.vsix', sha256: 'cafebabe' },
+    stages: {
+      package_creation: { status: 'pass', exit_code: 0 },
+      package_inventory: { status: 'pass', classification: 'pass', behavior_safe: true },
+      behavioral_smoke: { status: 'pass', exit_code: 0 },
+      activation_failure_journey: { status: 'pass' },
+      crash_recovery_journey: { status: 'pass' },
+      ...stageOverrides,
+    },
+    instrument_failure: null,
+    cleanup_failure: null,
+    overall: 'pass',
+    ...rest,
+  };
+}
+
+// Negative control 1: a size-only inventory rejection with a passing installed
+// smoke. This is the exact shape that produced the original misreading.
+void test('a size-only inventory rejection reports the passing behavioral smoke', () => {
+  const summary = composeCheckSummary(
+    checkReceipt({
+      overall: 'failed',
+      stages: {
+        package_inventory: {
+          status: 'failed',
+          classification: 'size_only',
+          behavior_safe: true,
+          transition_state: 'undeclared_transition',
+          violations: ['total bytes grew from 1550736 to 1551627'],
+        },
+      },
+    }),
+  );
+
+  assert.equal(summary.headline, 'package inventory failed; behavioral smoke passed');
+  assert.match(summary.markdown, /\| behavioral smoke \| `pass` \|/);
+  assert.match(summary.markdown, /total bytes grew from 1550736 to 1551627/);
+  // The decisive negative: nothing may assert that behaviour failed.
+  assert.doesNotMatch(summary.headline, /behavioral smoke failed/);
+  assert.equal(
+    summary.annotations.some((line) => /::error/.test(line) && /behavioral smoke/.test(line)),
+    false,
+  );
+  assert.equal(
+    summary.annotations.some((line) => line.startsWith('::error title=package inventory failed')),
+    true,
+  );
+});
+
+// Negative control 2: package creation fails, so behaviour is not_run — which
+// is a different fact from a behavioural failure and must read that way.
+void test('a failed package creation reports behavioral smoke as not run, with its reason', () => {
+  const summary = composeCheckSummary(
+    checkReceipt({
+      overall: 'failed',
+      stages: {
+        package_creation: { status: 'failed', exit_code: 1, reason: 'vsce_package_failed' },
+        package_inventory: {
+          status: 'not_proven',
+          classification: 'not_proven',
+          behavior_safe: false,
+          reason: 'package_creation_failed',
+        },
+        behavioral_smoke: { status: 'not_run', reason: 'package_creation_not_passed' },
+        activation_failure_journey: { status: 'not_run', reason: 'package_creation_not_passed' },
+        crash_recovery_journey: { status: 'not_run', reason: 'package_creation_not_passed' },
+      },
+    }),
+  );
+
+  assert.equal(
+    summary.headline,
+    'package creation failed and package inventory not proven; ' +
+      'behavioral smoke not run: package_creation_not_passed',
+  );
+  assert.doesNotMatch(summary.headline, /behavioral smoke failed/);
+  assert.match(summary.markdown, /Remaining proof:/);
+  assert.match(summary.markdown, /- behavioral smoke \(not_run\): package_creation_not_passed/);
+});
+
+// Negative control 3: structural rejection declines execution with its reason.
+void test('a structural package rejection names the declined behavioral execution', () => {
+  const summary = composeCheckSummary(
+    checkReceipt({
+      overall: 'failed',
+      stages: {
+        package_inventory: {
+          status: 'failed',
+          classification: 'structural',
+          behavior_safe: false,
+          violations: ['file out/extension.js is missing from the package'],
+        },
+        behavioral_smoke: { status: 'not_run', reason: 'inventory_structural' },
+      },
+    }),
+  );
+
+  assert.equal(
+    summary.headline,
+    'package inventory failed; behavioral smoke not run: inventory_structural',
+  );
+  assert.match(summary.markdown, /structural; file out\/extension.js is missing/);
+});
+
+// Negative control 4: with the package clean, a behavioural defect is the
+// proposition on the headline and is not attributed to packaging.
+void test('a behavioral failure under a clean package is attributed to behavior', () => {
+  const summary = composeCheckSummary(
+    checkReceipt({
+      overall: 'failed',
+      stages: {
+        behavioral_smoke: {
+          status: 'failed',
+          exit_code: 1,
+          reason: 'published_extension_smoke_failed',
+        },
+      },
+    }),
+  );
+
+  assert.equal(
+    summary.headline,
+    'package creation and package inventory passed; behavioral smoke failed',
+  );
+  assert.equal(
+    summary.annotations.some((line) => line.startsWith('::error title=behavioral smoke failed')),
+    true,
+  );
+  assert.equal(
+    summary.annotations.some((line) => /::error/.test(line) && /package /.test(line)),
+    false,
+  );
+});
+
+void test('an all-green run states that every stage passed and owes no proof', () => {
+  const summary = composeCheckSummary(checkReceipt());
+
+  assert.equal(
+    summary.headline,
+    'package creation and package inventory passed; behavioral smoke passed',
+  );
+  assert.doesNotMatch(summary.markdown, /Remaining proof:/);
+  assert.equal(summary.annotations.filter((line) => !line.startsWith('::notice')).length, 0);
+});
+
+// Negative control 5/7: instrument and cleanup failure stay visible as their
+// own propositions rather than colouring a product stage.
+void test('instrument and cleanup failures appear as their own propositions', () => {
+  const summary = composeCheckSummary(
+    checkReceipt({
+      overall: 'not_proven',
+      instrument_failure: 'receipt persistence failed',
+      cleanup_failure: { vsix_deletion: 'EBUSY', staged_server_restoration: 'EACCES' },
+    }),
+  );
+
+  assert.equal(
+    summary.headline,
+    'package creation and package inventory passed; behavioral smoke passed; ' +
+      'smoke instrument failed: receipt persistence failed; ' +
+      'cleanup failed: staged_server_restoration, vsix_deletion',
+  );
+  assert.match(summary.markdown, /Aggregate: `not_proven`/);
+});
+
+void test('a not_proven stage annotates as a warning rather than an error', () => {
+  const summary = composeCheckSummary(
+    checkReceipt({
+      overall: 'not_proven',
+      stages: {
+        package_inventory: {
+          status: 'not_proven',
+          classification: 'not_proven',
+          behavior_safe: false,
+          reason: 'transition report could not be parsed',
+        },
+        behavioral_smoke: { status: 'not_run', reason: 'inventory_not_proven' },
+      },
+    }),
+  );
+
+  assert.equal(
+    summary.annotations.some((line) =>
+      line.startsWith('::warning title=package inventory not proven'),
+    ),
+    true,
+  );
+  assert.equal(
+    summary.annotations.some((line) => line.startsWith('::error')),
+    false,
+  );
+});
+
+void test('every stage present in the receipt reaches the summary table', () => {
+  const summary = composeCheckSummary(checkReceipt());
+
+  for (const label of [
+    'package creation',
+    'package inventory',
+    'behavioral smoke',
+    'activation-failure journey',
+    'crash-recovery journey',
+  ]) {
+    assert.match(summary.markdown, new RegExp(`\\| ${label} \\| \``));
+  }
+});
+
+void test('stage detail reaches annotations and table cells without forging structure', () => {
+  const summary = composeCheckSummary(
+    checkReceipt({
+      overall: 'failed',
+      stages: {
+        package_inventory: {
+          status: 'failed',
+          classification: 'size_only',
+          behavior_safe: true,
+          reason: 'grew 50% ,: over\nbaseline',
+          violations: ['a | b'],
+        },
+      },
+    }),
+  );
+
+  const inventoryAnnotation = summary.annotations.find((line) =>
+    line.startsWith('::error title=package inventory failed'),
+  );
+  assert.ok(inventoryAnnotation, 'the failing inventory stage must carry an error annotation');
+  // Line breaks are already normalized out of receipt text as it enters the
+  // projection, so the annotation carries one line. The '%' escape still
+  // applies; ':' and ',' are literal in message position and are only escaped
+  // inside a property value.
+  assert.match(inventoryAnnotation, /grew 50%25 ,: over baseline/);
+  for (const annotation of summary.annotations) {
+    assert.doesNotMatch(annotation, /[\r\n]/);
+  }
+  assert.match(summary.markdown, /a \\\| b/);
+});
+
+// Presentation must never be able to change a verdict.
+void test('publishing emits annotations and the summary without mutating the receipt', () => {
+  const receipt = checkReceipt({ overall: 'failed' });
+  const before = JSON.stringify(receipt);
+  const annotations = [];
+  const appended = [];
+
+  const summary = publishCheckSummary(receipt, {
+    summaryPath: '/tmp/step-summary',
+    appendSummary: (target, text) => appended.push([target, text]),
+    writeAnnotation: (line) => annotations.push(line),
+  });
+
+  assert.equal(JSON.stringify(receipt), before);
+  assert.deepEqual(annotations, summary.annotations);
+  assert.equal(appended.length, 1);
+  assert.equal(appended[0][0], '/tmp/step-summary');
+  assert.equal(appended[0][1], summary.markdown);
+});
+
+void test('a summary write failure is reported without changing the verdict', () => {
+  const receipt = checkReceipt();
+  const diagnostics = [];
+  const annotations = [];
+
+  const summary = publishCheckSummary(receipt, {
+    summaryPath: '/tmp/step-summary',
+    appendSummary: () => {
+      throw new Error('EROFS: read-only file system');
+    },
+    writeAnnotation: (line) => annotations.push(line),
+    writeDiagnostic: (line) => diagnostics.push(line),
+  });
+
+  assert.equal(summary.headline.length > 0, true);
+  assert.equal(annotations.length > 0, true);
+  assert.match(diagnostics[0], /Unable to append the smoke stage summary: EROFS/);
+  assert.equal(receipt.overall, 'pass');
+  assert.equal(receipt.instrument_failure, null);
+});
+
+void test('annotations are still emitted when no job summary destination exists', () => {
+  const annotations = [];
+  let appendCalls = 0;
+
+  publishCheckSummary(checkReceipt(), {
+    summaryPath: '',
+    appendSummary: () => {
+      appendCalls += 1;
+    },
+    writeAnnotation: (line) => annotations.push(line),
+  });
+
+  assert.equal(appendCalls, 0);
+  assert.equal(annotations.length > 0, true);
+});
+
+// The projection is emitted on the terminal path and reports the aggregate the
+// receipt already decided; it never gets a vote on the exit code.
+void test('concluding a run publishes once and returns the receipt-derived exit code', () => {
+  for (const [overall, expected] of [
+    ['pass', 0],
+    ['failed', 1],
+    ['not_proven', 2],
+    ['unrecognized_future_state', 2],
+  ]) {
+    const receipt = checkReceipt({ overall });
+    const published = [];
+
+    const code = concludeRun(receipt, undefined, (publishedReceipt) => {
+      published.push(publishedReceipt);
+    });
+
+    assert.equal(code, expected);
+    assert.deepEqual(published, [receipt]);
+  }
+});
+
+void test('concluding a run reports an explicitly finalized exit code unchanged', () => {
+  const receipt = checkReceipt({ overall: 'failed' });
+  const published = [];
+
+  // finalizeSmokeRun computes the code after cleanup; concludeRun reports it.
+  const code = concludeRun(receipt, 1, (publishedReceipt) => {
+    published.push(publishedReceipt);
+  });
+
+  assert.equal(code, 1);
+  assert.equal(published.length, 1);
+});
+
+// The projection runs last, after the aggregate is decided. A defect in it must
+// cost readability only — never the exit code, and never the persisted receipt.
+void test('a throwing projection cannot change the exit code the run decided', () => {
+  for (const [overall, expected] of [
+    ['pass', 0],
+    ['failed', 1],
+    ['not_proven', 2],
+  ]) {
+    const receipt = checkReceipt({ overall });
+
+    const code = concludeRun(receipt, undefined, () => {
+      throw new Error('projection defect');
+    });
+
+    assert.equal(code, expected);
+    assert.equal(receipt.overall, overall);
+  }
+});
+
+void test('a package stage missing from the receipt reads as absent, never as passing', () => {
+  const receipt = checkReceipt({ overall: 'not_proven' });
+  // Deliberately malformed: the stage the receipt promises is simply not there.
+  const { package_inventory: omitted, ...remainingStages } = receipt.stages;
+  void omitted;
+  receipt.stages = /** @type {typeof receipt.stages} */ (remainingStages);
+
+  const summary = composeCheckSummary(receipt);
+
+  assert.equal(
+    summary.headline,
+    'package inventory absent from the receipt; behavioral smoke passed',
+  );
+  assert.doesNotMatch(summary.headline, /package inventory passed/);
+  assert.doesNotMatch(summary.markdown, /\| package inventory \|/);
+});
+
+void test('multi-line stage detail cannot reshape the summary table', () => {
+  const summary = composeCheckSummary(
+    checkReceipt({
+      overall: 'failed',
+      stages: {
+        behavioral_smoke: {
+          status: 'failed',
+          reason: 'host failed\n| forged | row |\nafter restart',
+        },
+      },
+    }),
+  );
+
+  const tableRows = summary.markdown
+    .split('\n')
+    .filter((line) => line.startsWith('|') && !line.startsWith('| ---'));
+  // One header row plus exactly the five stage rows.
+  assert.equal(tableRows.length, 6);
+  assert.match(summary.markdown, /host failed \\\| forged \\\| row \\\| after restart/);
+});
+
+// Receipt text is not authored by this projection: it carries subprocess
+// stderr, file paths, and error messages. Every surface that quotes it must
+// stay structurally intact, not just the table cell.
+
+void test('an instrument failure cannot forge a heading or a table in the summary', () => {
+  const summary = composeCheckSummary(
+    checkReceipt({
+      overall: 'not_proven',
+      instrument_failure:
+        'boom\n\n### FORGED HEADING\n\n| stage | result | detail |\n| --- | --- | --- |\n| behavioral smoke | `pass` | FORGED ROW |',
+    }),
+  );
+
+  // The payload survives as inert text — evidence is not discarded — but it
+  // cannot open a heading or a table, because it no longer starts a line.
+  const lines = summary.markdown.split('\n');
+  assert.equal(lines.filter((line) => line.startsWith('#')).length, 1);
+  // Exactly one table: its header, its separator, and the five stage rows.
+  assert.equal(lines.filter((line) => line.startsWith('|')).length, 7);
+  assert.match(summary.headline, /smoke instrument failed: boom ### FORGED HEADING/);
+  assert.match(summary.headline, /FORGED ROW/);
+  assert.equal(summary.headline.includes('\n'), false);
+});
+
+void test('a remaining-proof reason cannot forge structure in the summary', () => {
+  const summary = composeCheckSummary(
+    checkReceipt({
+      overall: 'not_proven',
+      stages: {
+        behavioral_smoke: {
+          status: 'not_run',
+          reason: 'declined\n\n### FORGED FROM REMAINING PROOF\n',
+        },
+      },
+    }),
+  );
+
+  assert.doesNotMatch(summary.markdown, /\n### FORGED FROM REMAINING PROOF/);
+  assert.equal(summary.markdown.split('\n').filter((line) => line.startsWith('#')).length, 1);
+  assert.match(
+    summary.markdown,
+    /- behavioral smoke \(not_run\): declined ### FORGED FROM REMAINING PROOF/,
+  );
+});
+
+void test('an empty cleanup_failure object does not assert a cleanup failure', () => {
+  const summary = composeCheckSummary(checkReceipt({ cleanup_failure: {} }));
+
+  assert.equal(
+    summary.headline,
+    'package creation and package inventory passed; behavioral smoke passed',
+  );
+  assert.doesNotMatch(summary.headline, /cleanup failed/);
+});
+
+void test('a failing annotation write does not cost the job summary', () => {
+  const diagnostics = [];
+  const appended = [];
+  let attempts = 0;
+
+  const summary = publishCheckSummary(checkReceipt(), {
+    summaryPath: '/tmp/step-summary',
+    appendSummary: (target, text) => appended.push([target, text]),
+    writeAnnotation: () => {
+      attempts += 1;
+      throw new Error('EPIPE: broken pipe');
+    },
+    writeDiagnostic: (line) => diagnostics.push(line),
+  });
+
+  // Every annotation was attempted, and the independent summary channel still ran.
+  assert.equal(attempts, summary.annotations.length);
+  assert.equal(appended.length, 1);
+  assert.equal(appended[0][1], summary.markdown);
+  assert.match(diagnostics[0], /Unable to emit a smoke stage annotation: EPIPE/);
+});
+
+// A packaged journey can decide the aggregate on its own (#13816 review). The
+// headline must name it, or a run whose only defect is a recovery journey reads
+// entirely green on a red check — the misreading this projection removes.
+
+void test('a failed recovery journey appears in the headline that decided the run', () => {
+  const receipt = checkReceipt({
+    overall: 'failed',
+    stages: {
+      crash_recovery_journey: {
+        status: 'failed',
+        reason: 'provider did not recover after respawn',
+      },
+    },
+  });
+  const summary = composeCheckSummary(receipt);
+
+  // Guard the premise: this stage alone decides the aggregate.
+  assert.equal(computeOverallStatus(receipt.stages), 'failed');
+  assert.equal(
+    summary.headline,
+    'package creation and package inventory passed; behavioral smoke passed; ' +
+      'crash-recovery journey failed: provider did not recover after respawn',
+  );
+});
+
+void test('a not-proven activation journey appears in the headline', () => {
+  const receipt = checkReceipt({
+    overall: 'not_proven',
+    stages: {
+      activation_failure_journey: {
+        status: 'not_proven',
+        reason: 'retry leg receipt was not bound to this VSIX',
+      },
+    },
+  });
+  const summary = composeCheckSummary(receipt);
+
+  assert.equal(computeOverallStatus(receipt.stages), 'not_proven');
+  assert.equal(
+    summary.headline,
+    'package creation and package inventory passed; behavioral smoke passed; ' +
+      'activation-failure journey not proven: retry leg receipt was not bound to this VSIX',
+  );
+});
+
+void test('a journey that was declined stays out of the headline', () => {
+  // `not_run` is already explained by the package phrase that declined it, so
+  // repeating it would bury the proposition that actually decided the run.
+  const summary = composeCheckSummary(
+    checkReceipt({
+      overall: 'failed',
+      stages: {
+        package_inventory: {
+          status: 'failed',
+          classification: 'structural',
+          behavior_safe: false,
+        },
+        behavioral_smoke: { status: 'not_run', reason: 'inventory_structural' },
+        activation_failure_journey: { status: 'not_run', reason: 'inventory_structural' },
+        crash_recovery_journey: { status: 'not_run', reason: 'inventory_structural' },
+      },
+    }),
+  );
+
+  assert.equal(
+    summary.headline,
+    'package inventory failed; behavioral smoke not run: inventory_structural',
+  );
+  assert.doesNotMatch(summary.headline, /journey/);
+});
+
+// The failsafe must itself be safe: if the projection throws and stderr is
+// gone too, the exit code the receipt decided still has to survive (#13816
+// review).
+for (const [overall, expected] of [
+  ['pass', 0],
+  ['failed', 1],
+  ['not_proven', 2],
+]) {
+  void test(`throwing projection preserves finalized ${expected} with descriptor 2 closed`, () => {
+    const { spawnSync } = require('node:child_process');
+    const modulePath = require.resolve('./run-local-vsix-smoke');
+    const receipt = checkReceipt({ overall });
+    const script = `const fs=require('node:fs');const m=require(${JSON.stringify(modulePath)});const receipt=${JSON.stringify(receipt)};const before=JSON.stringify(receipt);fs.closeSync(2);const code=m.concludeRun(receipt,undefined,()=>{throw new Error('projection defect')});if(JSON.stringify(receipt)!==before)process.exit(99);process.exit(code);`;
+    const result = spawnSync(process.execPath, ['-e', script], { encoding: 'utf8' });
+    if (result.status !== expected || result.signal || result.error) {
+      throw new Error(
+        `closed stderr changed finalized ${expected}: status=${result.status} signal=${result.signal} error=${result.error}`,
+      );
+    }
+  });
+}
+
+// Reporting a channel failure must not take down the channels that still work
+// (#13816 review).
+void test('a closed diagnostic channel does not cost the job summary', () => {
+  const appended = [];
+
+  const summary = publishCheckSummary(checkReceipt(), {
+    summaryPath: '/tmp/step-summary',
+    appendSummary: (target, text) => appended.push([target, text]),
+    writeAnnotation: () => {
+      throw new Error('EPIPE: stdout closed');
+    },
+    writeDiagnostic: () => {
+      throw new Error('EPIPE: stderr closed');
+    },
+  });
+
+  // Both reporting channels are gone; the independent summary still lands.
+  assert.equal(appended.length, 1);
+  assert.equal(appended[0][1], summary.markdown);
+});
+
+void test('a closed diagnostic channel does not mask a summary write failure', () => {
+  const receipt = checkReceipt();
+
+  // Every output channel is unusable: publishing still returns its composition
+  // rather than throwing, and the receipt is untouched.
+  const summary = publishCheckSummary(receipt, {
+    summaryPath: '/tmp/step-summary',
+    appendSummary: () => {
+      throw new Error('EROFS: read-only file system');
+    },
+    writeAnnotation: () => {
+      throw new Error('EPIPE: stdout closed');
+    },
+    writeDiagnostic: () => {
+      throw new Error('EPIPE: stderr closed');
+    },
+  });
+
+  assert.equal(summary.headline.length > 0, true);
+  assert.equal(receipt.overall, 'pass');
+  assert.equal(receipt.instrument_failure, null);
+});
+
+for (const [key, label] of [
+  ['activation_failure_journey', 'activation-failure journey'],
+  ['crash_recovery_journey', 'crash-recovery journey'],
+]) {
+  void test(`absent required recovery stage ${key} stays visible without changing verdict`, () => {
+    if (typeof key !== 'string' || typeof label !== 'string') {
+      throw new Error('recovery-stage fixture requires a key and label');
+    }
+    const receipt = checkReceipt({ overall: 'pass' });
+    const remaining = { ...receipt.stages };
+    delete remaining[key];
+    receipt.stages = remaining;
+    const before = JSON.stringify(receipt);
+    const summary = composeCheckSummary(receipt);
+    if (!summary.headline.includes(`${label} absent from the receipt`)) {
+      throw new Error('missing required journey must be named in the headline');
+    }
+    if (
+      !summary.markdown.includes(
+        `| ${label} | ` + '`absent`' + ' | stage absent from the receipt |',
+      )
+    ) {
+      throw new Error('missing required journey must retain an explicit absent table row');
+    }
+    if (concludeRun(receipt, undefined, () => {}) !== 0 || JSON.stringify(receipt) !== before) {
+      throw new Error('presentation must preserve the original receipt and aggregate exit code');
+    }
+  });
+}
+
+void test('projection descriptor output completes partial writes and rejects zero progress', () => {
+  const chunks = [];
+  writeProjectionLine(1, 'évidence', (_fd, bytes, offset, length) => {
+    const count = Math.min(2, length);
+    chunks.push(bytes.subarray(offset, offset + count));
+    return count;
+  });
+  if (Buffer.concat(chunks).toString() !== 'évidence\n')
+    throw new Error('partial UTF-8 output lost bytes');
+  let refused = false;
+  try {
+    writeProjectionLine(1, 'text', () => 0);
+  } catch {
+    refused = true;
+  }
+  if (!refused) throw new Error('zero-progress writer was accepted');
+});
+
+for (const source of [
+  'hosted-linux-current-source',
+  'local-current-source-sample-2',
+  'rolling-installed-stable',
+]) {
+  void test(`smoke summary names its source ${source}`, () => {
+    const summary = composeCheckSummary(checkReceipt({ source_label: source }));
+    if (
+      !summary.markdown.includes(`Source: ${source}`) ||
+      !summary.annotations.some((line) => line.includes(source))
+    ) {
+      throw new Error('smoke source context disappeared');
+    }
+  });
+}
+
+void test('spawned terminal projection drains pipe output and isolates closed channels', () => {
+  const { spawnSync } = require('node:child_process');
+  const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'smoke-projection-'));
+  try {
+    const summaryPath = path.join(temporary, 'summary.md');
+    const receipt = checkReceipt({
+      source_label: 'rolling-installed-pipe',
+      stages: {
+        behavioral_smoke: { status: 'failed', reason: 'x'.repeat(1024 * 1024) + 'TAIL' },
+      },
+      overall: 'failed',
+    });
+    const input = path.join(temporary, 'receipt.json');
+    fs.writeFileSync(input, JSON.stringify(receipt));
+    const modulePath = require.resolve('./run-local-vsix-smoke');
+    const script = `const fs=require('node:fs');const m=require(${JSON.stringify(modulePath)});const r=JSON.parse(fs.readFileSync(${JSON.stringify(input)},'utf8'));process.exit(m.concludeRun(r));`;
+    const result = spawnSync(process.execPath, ['-e', script], {
+      encoding: 'utf8',
+      maxBuffer: 8 * 1024 * 1024,
+      env: { ...process.env, GITHUB_STEP_SUMMARY: summaryPath },
+    });
+    const expected = composeCheckSummary(receipt).annotations.join('\n') + '\n';
+    if (result.status !== 1 || result.stdout !== expected)
+      throw new Error('terminal pipe output incomplete or exit changed');
+    const closed = spawnSync(
+      process.execPath,
+      ['-e', script.replace('process.exit(', 'fs.closeSync(1);fs.closeSync(2);process.exit(')],
+      {
+        encoding: 'utf8',
+        maxBuffer: 8 * 1024 * 1024,
+        env: { ...process.env, GITHUB_STEP_SUMMARY: summaryPath },
+      },
+    );
+    if (
+      closed.status !== 1 ||
+      fs.readFileSync(summaryPath, 'utf8') !== composeCheckSummary(receipt).markdown.repeat(2)
+    ) {
+      throw new Error(
+        `closed output channels changed exit or suppressed file summary: status=${closed.status} signal=${closed.signal} error=${closed.error} summaryBytes=${fs.statSync(summaryPath).size}`,
+      );
+    }
+  } finally {
+    fs.rmSync(temporary, { recursive: true, force: true });
+  }
+});
+
+void test('smoke source labels cannot forge summary rows or workflow commands', () => {
+  const summary = composeCheckSummary(
+    checkReceipt({ source_label: 'sample|row\n::error::forged%' }),
+  );
+  if (!summary.markdown.includes('Source: sample\\|row ::error::forged%'))
+    throw new Error('source label reshaped markdown');
+  const notice = summary.annotations.find((line) => line.startsWith('::notice'));
+  if (!notice || notice.includes('\n') || !notice.includes('%0A::error::forged%25'))
+    throw new Error('source label forged a workflow command');
 });

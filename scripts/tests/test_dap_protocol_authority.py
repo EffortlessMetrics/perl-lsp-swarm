@@ -212,6 +212,9 @@ class DapProtocolAuthorityTests(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.data = schema_bytes()
         self.manifest = manifest_for(self.data)
+        manifest_path = self.root / ".ci/dap/protocol-authority.json"
+        manifest_path.parent.mkdir(parents=True, exist_ok=True)
+        manifest_path.write_text(json.dumps(self.manifest), encoding="utf-8")
         self._write_docs(self.manifest["upstream"]["git_blob_sha1"])
         self._write_production()
 
@@ -378,8 +381,50 @@ macro_rules! dap_request_table {
         {
             Some(DapRequestRoute::Initialize) => out.push(ok()),
             None | Some(_) => {
-                tracing::warn!(command, "BRIDGE_MESSAGE");
-                out.push(self.response(request_seq, command, true, None, None));
+                if matches!(
+                    DapRequestRoute::from_command(command),
+                    Some(DapRequestRoute::SetExpression)
+                ) {
+                    if crate::backend::capabilities::refuse_set_expression(
+                        SETEXPR_ADVERTISED
+                    ) {
+                        out.push(self.response(
+                            request_seq,
+                            command,
+                            false,
+                            None,
+                            Some(
+                                crate::backend::capabilities::SET_EXPRESSION_UNSUPPORTED_MESSAGE
+                                    .to_string(),
+                            ),
+                        ));
+                    } else {
+                        out.push(
+                            self.response(
+                                request_seq,
+                                command,
+                                false,
+                                None,
+                                Some(
+                                    "SETEXPR_DELEGATION"
+                                        .to_string(),
+                                ),
+                            ),
+                        );
+                    }
+                } else if DapRequestRoute::from_command(command).is_some() {
+UNAVAILABLE_WARN
+                    out.push(self.response(
+                        request_seq,
+                        command,
+                        false,
+                        None,
+                        Some("UNAVAILABLE_DETAIL".to_string()),
+                    ));
+                } else {
+                    tracing::warn!(command, "BRIDGE_MESSAGE");
+                    out.push(self.response(request_seq, command, true, None, None));
+                }
             }
         }
         out.extend(self.poll_events());
@@ -387,14 +432,39 @@ macro_rules! dap_request_table {
     }
 }
 """
-        messages = (
-            "peer bridge: unhandled DAP request",
-            "mirror bridge: unhandled DAP request",
+        fallbacks = (
+            (
+                "self.advertised_set_expression(),",
+                "setExpression: external-peer delegation is not implemented",
+                "                    tracing::warn!(command, "
+                '"peer bridge: request is unavailable in this frontend");',
+                "request is unavailable in the external peer frontend",
+                "peer bridge: unhandled DAP request",
+            ),
+            (
+                "crate::backend::capabilities::MIRROR_ADVERTISES_SET_EXPRESSION,",
+                "setExpression: mirror-mode delegation is not implemented",
+                "                    tracing::warn!(\n"
+                "                        command,\n"
+                '                        "mirror bridge: request is unavailable in this frontend"\n'
+                "                    );",
+                "request is unavailable in the mirror peer frontend",
+                "mirror bridge: unhandled DAP request",
+            ),
         )
-        for peer_path, message in zip(PEER_DISPATCH_PATHS, messages, strict=True):
+        for peer_path, (advertised, delegation, unavailable, detail, message) in zip(
+            PEER_DISPATCH_PATHS, fallbacks, strict=True
+        ):
             path = self.root / peer_path
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(peer_source.replace("BRIDGE_MESSAGE", message), encoding="utf-8")
+            path.write_text(
+                peer_source.replace("SETEXPR_ADVERTISED", advertised)
+                .replace("SETEXPR_DELEGATION", delegation)
+                .replace("UNAVAILABLE_WARN", unavailable)
+                .replace("UNAVAILABLE_DETAIL", detail)
+                .replace("BRIDGE_MESSAGE", message),
+                encoding="utf-8",
+            )
 
         event_source = self.root / MODULE.DEBUG_ADAPTER_ROOT / "events.rs"
         event_source.parent.mkdir(parents=True, exist_ok=True)
@@ -828,13 +898,13 @@ macro_rules! dap_request_table {
         )
         self.assertEqual(
             [route["disposition"] for route in production["request_rows"][1]["routes"]],
-            ["handler_present", "not_proven", "not_proven"],
+            ["handler_present", "fail_closed", "fail_closed"],
         )
         self.assertEqual(
             [route["handler"] for route in production["request_rows"][1]["routes"][1:]],
             [
-                "dynamic_compatibility_ack_success_empty",
-                "dynamic_compatibility_ack_success_empty",
+                "fail_closed_unavailable_in_frontend",
+                "fail_closed_unavailable_in_frontend",
             ],
         )
 
@@ -891,6 +961,45 @@ macro_rules! dap_request_table {
                 self.assertAuthorityError(self._production_rows)
         path.write_text(original, encoding="utf-8")
 
+    def test_peer_public_dispatch_must_preserve_capability_admission(self) -> None:
+        path = self.root / PEER_DISPATCH_PATHS[0]
+        original = path.read_text(encoding="utf-8")
+        route = original.replace(
+            "    pub fn dispatch(\n",
+            "    fn dispatch_unchecked(\n",
+            1,
+        )
+        wrapper = (
+            "    pub fn dispatch(\n"
+            "        &mut self, request_seq: i64, command: &str,\n"
+            "        arguments: Option<Value>,\n"
+            "    ) -> Vec<DapMessage> {\n"
+            "        self.dispatch_with_capability_floor(request_seq, command, arguments)\n"
+            "    }\n\n"
+            "    pub fn dispatch_with_capability_floor(\n"
+            "        &mut self, request_seq: i64, command: &str,\n"
+            "        arguments: Option<Value>,\n"
+            "    ) -> Vec<DapMessage> {\n"
+            "        if let Some(response) = self.secondary_floor_response(\n"
+            "            request_seq, command, arguments.as_ref()\n"
+            "        ) { return vec![response]; }\n"
+            "        self.dispatch_unchecked(request_seq, command, arguments)\n"
+            "    }\n\n"
+        )
+        paired = route.replace("impl PeerBridge {\n", "impl PeerBridge {\n" + wrapper, 1)
+        path.write_text(paired, encoding="utf-8")
+        try:
+            self._production_rows()
+            bypass = paired.replace(
+                "self.dispatch_with_capability_floor(request_seq, command, arguments)",
+                "self.dispatch_unchecked(request_seq, command, arguments)",
+                1,
+            )
+            path.write_text(bypass, encoding="utf-8")
+            self.assertAuthorityError(self._production_rows)
+        finally:
+            path.write_text(original, encoding="utf-8")
+
     def test_peer_route_must_match_catalog_availability(self) -> None:
         path = self.root / PEER_DISPATCH_PATHS[0]
         source = path.read_text(encoding="utf-8")
@@ -925,7 +1034,26 @@ macro_rules! dap_request_table {
         path.write_text(original, encoding="utf-8")
 
     def test_dynamic_peer_fallback_is_reported_separately(self) -> None:
+        # Both halves of the pinned peer fallback (#9527/#9069): a known
+        # catalog route that is native-only is refused fail-closed in the peer
+        # frontends, while the success-empty acknowledgement survives only for
+        # commands with no catalog row at all.
         production = self._production_rows()
+        native_only_routes = [
+            route
+            for row in production["request_rows"]
+            if row["availability"] == "native_only"
+            for route in row["routes"]
+            if route["frontend"] != "native"
+        ]
+        self.assertTrue(native_only_routes)
+        self.assertTrue(
+            all(
+                route["handler"] == "fail_closed_unavailable_in_frontend"
+                and route["disposition"] == "fail_closed"
+                for route in native_only_routes
+            )
+        )
         self.assertEqual(
             [policy["disposition"] for policy in production["fallback_policies"]],
             ["not_proven", "not_proven"],
@@ -1532,6 +1660,34 @@ macro_rules! dap_request_table {
             binding["source_graph_digest"], receipt["production"]["source_graph"]["digest"]
         )
 
+    def test_a_changed_authority_manifest_is_rejected_against_its_receipt(self) -> None:
+        receipt = self._receipt()
+        manifest_path = self.root / ".ci/dap/protocol-authority.json"
+        current = json.loads(manifest_path.read_text(encoding="utf-8"))
+        current["upstream"]["sha256"] = "0" * 64
+        manifest_path.write_text(json.dumps(current), encoding="utf-8")
+        self.assertAuthorityErrorMatching(
+            "different DAP authority manifest",
+            lambda: MODULE.verify_inventory_binding(self.root, receipt),
+        )
+
+    def test_a_changed_extension_declaration_is_rejected_against_its_receipt(self) -> None:
+        receipt = self._receipt()
+        manifest_path = self.root / ".ci/dap/protocol-authority.json"
+        current = json.loads(manifest_path.read_text(encoding="utf-8"))
+        current["project_extensions"][0]["version"] = "test.v2"
+        manifest_path.write_text(json.dumps(current), encoding="utf-8")
+        for relative in MODULE.DOC_PATHS:
+            path = self.root / relative
+            path.write_text(
+                path.read_text(encoding="utf-8").replace("test.v1", "test.v2"),
+                encoding="utf-8",
+            )
+        self.assertAuthorityErrorMatching(
+            "different DAP authority manifest",
+            lambda: MODULE.verify_inventory_binding(self.root, receipt),
+        )
+
     def test_a_changed_governed_source_is_rejected_against_its_receipt(self) -> None:
         receipt = self._receipt()
         events = self.root / MODULE.DEBUG_ADAPTER_ROOT / "events.rs"
@@ -1582,6 +1738,42 @@ macro_rules! dap_request_table {
                         )
                     )
 
+    def test_malformed_recorded_extractor_module_rows_are_typed_errors(self) -> None:
+        for value in (None, "not-an-object", ["not-an-object"]):
+            with self.subTest(value=value):
+                malformed = copy.deepcopy(self._receipt())
+                malformed["production"]["extractor"]["digest"] = "0" * 64
+                malformed["production"]["extractor"]["modules"][0] = value
+                self.assertAuthorityError(
+                    lambda receipt=malformed: MODULE.verify_inventory_binding(
+                        self.root, receipt
+                    )
+                )
+
+    def test_cli_reports_malformed_recorded_extractor_module_without_traceback(self) -> None:
+        receipt = self._receipt()
+        receipt["production"]["extractor"]["digest"] = "0" * 64
+        receipt["production"]["extractor"]["modules"][0] = None
+        receipt_path = self.root / "malformed-receipt.json"
+        receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPT),
+                "verify-receipt",
+                "--root",
+                str(self.root),
+                "--receipt",
+                str(receipt_path),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("DAP protocol authority error:", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+
     def test_a_changed_extractor_module_is_rejected_against_its_receipt(self) -> None:
         # End to end through the real entrypoint: an extractor copy with one
         # guard silently removed must not be able to reuse this receipt. The
@@ -1621,6 +1813,27 @@ macro_rules! dap_request_table {
         self.assertEqual(mutated.returncode, 1)
         self.assertIn("different DAP authority extractor", mutated.stderr)
         self.assertIn("dap_authority_common.py", mutated.stderr)
+
+    def test_verify_receipt_resolves_relative_paths_under_root(self) -> None:
+        receipt_path = self.root / "receipt.json"
+        receipt_path.write_text(json.dumps(self._receipt()), encoding="utf-8")
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPT),
+                "verify-receipt",
+                "--root",
+                str(self.root),
+                "--receipt",
+                "receipt.json",
+            ],
+            cwd=Path.cwd(),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("DAP authority receipt is current", result.stdout)
 
     def test_removing_a_route_removes_it_from_the_inventory(self) -> None:
         # The inventory follows executable routing: a withdrawn route cannot
