@@ -194,6 +194,35 @@ END_CPP
 }
 
 #[test]
+fn query_conformance_injections_preserves_inline_trailing_comments() -> Result<(), Box<dyn Error>> {
+    for query in [
+        include_str!("../../../tree-sitter-perl/queries/injections.scm"),
+        tree_sitter_perl_c::INJECTIONS_QUERY,
+    ] {
+        for (language, payload) in [("C", "int inline_c;"), ("CPP", "class InlineCpp {}; ")] {
+            for trailing in ["", " # trailing Perl comment"] {
+                let source = format!(
+                    "use Inline {language} => <<'END_INLINE';{trailing}\n{payload}\nEND_INLINE\n\
+                     my $plain = <<'END_PLAIN'; # another comment\nplain heredoc stays plain\nEND_PLAIN\n"
+                );
+                let captures = collect_captures(query, &source)?;
+                let contents =
+                    captures.get("injection.content").ok_or("missing content captures")?;
+                if !contents.iter().any(|content| content.contains(payload)) {
+                    return Err(
+                        format!("missing Inline {language} body with suffix {trailing:?}").into()
+                    );
+                }
+                if contents.iter().any(|content| content.contains("plain heredoc stays plain")) {
+                    return Err(format!("later plain heredoc inherited Inline {language}").into());
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn query_conformance_injections_does_not_capture_later_plain_heredoc() -> Result<(), Box<dyn Error>>
 {
     let query = include_str!("../../../tree-sitter-perl/queries/injections.scm");

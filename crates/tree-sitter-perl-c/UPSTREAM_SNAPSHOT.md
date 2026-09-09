@@ -38,11 +38,11 @@ only by whitespace hygiene required by this repository's binary-diff gate
 (`git diff --check`) — the trailing space on one separator line in
 `injections.scm` and one blank line at EOF of `highlights.scm`. Every other
 byte matches upstream, including the sibling-adjacency guard for Inline
-heredocs.
+heredocs, which permits intervening Perl comments but not later statements.
 
 - `queries/injections.scm`
-  - upstream-source SHA-256: `6245fab14332427e547da94ad7e43e05340341254c6c71a89560fd2d4f73bd09`
-  - vendored (normalized) SHA-256: `4254c9c94741107382f210d70912d5c7feecf22e3d98c2ef4eb40d53527da254`
+  - upstream-source SHA-256: `ad30147afdf532c0eb893b88c0a23a9efd55f035f02fa7f82303ea4dc5518cb9`
+  - vendored (normalized) SHA-256: `4bb66548d099a80ce6c0898249b0863c46aa12de62250face3d36ae9bcd5af47`
   — compiles cleanly against the current `c-src/` parser via
   `load_injections_query()`.
 - `queries/highlights.scm`
