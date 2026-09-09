@@ -16,12 +16,19 @@ import re
 import subprocess
 import sys
 import tomllib
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
 
 SCHEMA = 1
+SCHEMA_PATH = Path(__file__).resolve().parents[1] / "schemas/release_topology.v1.schema.json"
 PRIMARY_CHANNELS = ["github_release", "crates_io", "vscode_marketplace", "open_vsx"]
+VERSION_DERIVED_SOURCE_PATHS = {
+    "Cargo.toml",
+    "Cargo.lock",
+    "vscode-extension/package.json",
+}
 SOURCE_PATHS = [
     "Cargo.toml",
     "Cargo.lock",
@@ -39,6 +46,39 @@ TARGET_RE = re.compile(
 
 class TopologyError(ValueError):
     """A release topology input is missing, stale, or inconsistent."""
+
+
+def schema_validate(manifest: dict[str, Any]) -> None:
+    """Validate the complete manifest against the checked-in JSON schema.
+
+    The release and rolling-observation workflows install the pinned validator
+    requirements before invoking this script.  Keeping the dependency
+    explicit avoids silently falling back to a partial hand-written validator.
+    """
+    try:
+        import jsonschema
+    except ImportError as error:
+        raise TopologyError(
+            "JSON-schema validation requires the pinned release requirements; "
+            "install scripts/requirements-release.txt"
+        ) from error
+    try:
+        schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+        validator_type = jsonschema.validators.validator_for(schema)
+        validator_type.check_schema(schema)
+        validator = validator_type(schema)
+    except (OSError, json.JSONDecodeError, jsonschema.SchemaError) as error:
+        raise TopologyError(f"release topology schema is invalid: {error}") from error
+    errors = sorted(
+        validator.iter_errors(manifest),
+        key=lambda error: (tuple(str(part) for part in error.absolute_path), error.message),
+    )
+    if errors:
+        details = "; ".join(
+            f"{'.'.join(str(part) for part in error.absolute_path) or '<root>'}: {error.message}"
+            for error in errors
+        )
+        raise TopologyError(f"manifest schema validation failed: {details}")
 
 
 def sha256(path: Path) -> str:
@@ -222,14 +262,295 @@ def derive_targets(release_text: str, release: str) -> list[dict[str, Any]]:
     return targets
 
 
-def source_hashes(root: Path) -> dict[str, str]:
+def source_paths(crates: list[dict[str, Any]]) -> list[str]:
+    paths = list(SOURCE_PATHS)
+    for crate in crates:
+        package_path = crate.get("package_path")
+        if not isinstance(package_path, str):
+            raise TopologyError("published crate package_path must be a string")
+        package = Path(package_path)
+        if package.is_absolute() or ".." in package.parts:
+            raise TopologyError(f"published crate package_path escapes checkout: {package_path}")
+        manifest = (package / "Cargo.toml").as_posix()
+        if manifest not in paths:
+            paths.append(manifest)
+    return paths
+
+
+def source_hashes_for_paths(root: Path, paths: list[str]) -> dict[str, str]:
     result: dict[str, str] = {}
-    for relative in SOURCE_PATHS:
+    for relative in paths:
         path = root / relative
         if not path.is_file():
             raise TopologyError(f"topology source is missing: {relative}")
         result[relative] = sha256(path)
     return result
+
+
+def ensure_committed_topology_inputs(root: Path, paths: list[str]) -> None:
+    """Require every topology input to be tracked and clean in its checkout.
+
+    Release output manifests are intentionally outside this set and may remain
+    untracked.  Git performs the comparison through its configured filters, so
+    a checkout with a harmless working-tree newline conversion is handled the
+    same way as every other committed file.
+    """
+    tracked = subprocess.run(
+        ["git", "ls-files", "--error-unmatch", "--", *paths],
+        cwd=root,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    tracked_paths = set(tracked.stdout.splitlines())
+    missing = sorted(set(paths) - tracked_paths)
+    if missing:
+        raise TopologyError(
+            "topology inputs are not tracked: " + ", ".join(missing)
+        )
+    if tracked.returncode != 0:
+        detail = tracked.stderr.strip() or "git ls-files failed"
+        raise TopologyError(f"cannot inspect tracked topology inputs: {detail}")
+    for label, extra in (("unstaged", []), ("staged", ["--cached"])):
+        result = subprocess.run(
+            ["git", "diff", "--quiet", *extra, "--", *paths],
+            cwd=root,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 1:
+            raise TopologyError(f"topology input has {label} changes")
+        if result.returncode != 0:
+            detail = result.stderr.strip() or "git diff failed"
+            raise TopologyError(f"cannot inspect {label} topology inputs: {detail}")
+
+
+def load_manifest(path: Path) -> dict[str, Any]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise TopologyError(f"cannot read frozen topology {path}: {error}") from error
+    if not isinstance(value, dict):
+        raise TopologyError("frozen topology must be a JSON object")
+    return value
+
+
+def load_frozen_authority(
+    path: Path, expected_digest: str | None
+) -> tuple[dict[str, Any], str]:
+    if expected_digest is None or not re.fullmatch(r"[0-9a-f]{64}", expected_digest):
+        raise TopologyError(
+            "prepared validation requires a lowercase 64-hex frozen topology digest"
+        )
+    try:
+        raw = path.read_bytes()
+    except OSError as error:
+        raise TopologyError(f"cannot read frozen topology {path}: {error}") from error
+    actual_digest = hashlib.sha256(raw).hexdigest()
+    if actual_digest != expected_digest:
+        raise TopologyError(
+            "frozen topology digest differs from --frozen-topology-sha256"
+        )
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError as error:
+        raise TopologyError(f"cannot parse frozen topology {path}: {error}") from error
+    if not isinstance(value, dict):
+        raise TopologyError("frozen topology must be a JSON object")
+    return value, actual_digest
+
+
+def immutable_projection(manifest: dict[str, Any]) -> dict[str, Any]:
+    """Return the product-subject portion that preparation must preserve.
+
+    Version-bearing labels are deliberately removed because preparation may
+    derive new package, archive, and VSIX identities. Source hashes are
+    checked separately against normalized source bytes.
+    All other membership, ordering, target, install, and channel fields remain
+    load-bearing.
+    """
+    projected = deepcopy(manifest)
+    projected.pop("release", None)
+    projected.pop("workspace_version", None)
+    projected.pop("prepared_swarm_sha", None)
+    projected["frozen_product_sha"] = "<frozen-product>"
+    for crate in projected.get("published_crates", []):
+        if isinstance(crate, dict):
+            crate.pop("version", None)
+    for target in projected.get("binary_targets", []):
+        if isinstance(target, dict):
+            target.pop("archive_name", None)
+    vsix = projected.get("vsix")
+    if isinstance(vsix, dict):
+        vsix.pop("version", None)
+        vsix.pop("asset_name", None)
+    return projected
+
+
+def version_derived_source_paths(published_paths: set[str]) -> set[str]:
+    return VERSION_DERIVED_SOURCE_PATHS | published_paths
+
+
+def normalized_source_value(
+    root: Path,
+    relative: str,
+    release: str,
+    published_names: set[str],
+    published_paths: set[str],
+) -> Any:
+    path = root / relative
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as error:
+        raise TopologyError(f"cannot read source {relative}: {error}") from error
+    if relative == "Cargo.toml" or relative in published_paths:
+        value = tomllib.loads(text)
+        if relative == "Cargo.toml":
+            workspace = value.get("workspace", {})
+            package = workspace.get("package", {}) if isinstance(workspace, dict) else {}
+            if isinstance(package, dict) and package.get("version") == release:
+                package["version"] = "<version>"
+            dependencies = (
+                workspace.get("dependencies", {}) if isinstance(workspace, dict) else {}
+            )
+        else:
+            package = value.get("package", {})
+            if isinstance(package, dict) and package.get("version") == release:
+                package["version"] = "<version>"
+            for section in ("dependencies", "dev-dependencies", "build-dependencies"):
+                table = value.get(section, {})
+                if isinstance(table, dict):
+                    for name, dependency in table.items():
+                        if (
+                            name in published_names
+                            and isinstance(dependency, dict)
+                            and (
+                                dependency.get("path") is not None
+                                or dependency.get("workspace") is True
+                            )
+                            and dependency.get("version") == release
+                        ):
+                            dependency["version"] = "<version>"
+        if relative == "Cargo.toml":
+            for name, dependency in dependencies.items():
+                if (
+                    name in published_names
+                    and isinstance(dependency, dict)
+                    and (
+                        dependency.get("path") is not None
+                        or dependency.get("workspace") is True
+                    )
+                    and dependency.get("version") == release
+                ):
+                    dependency["version"] = "<version>"
+        return value
+    if relative == "Cargo.lock":
+        value = tomllib.loads(text)
+        for package in value.get("package", []):
+            if (
+                isinstance(package, dict)
+                and package.get("name") in published_names
+                and package.get("source") is None
+                and package.get("version") == release
+            ):
+                package["version"] = "<version>"
+        return value
+    if relative == "vscode-extension/package.json":
+        value = json.loads(text)
+        if isinstance(value, dict) and value.get("version") == release:
+            value["version"] = "<version>"
+        return value
+    return text
+
+
+def validate_source_transition(
+    frozen: dict[str, Any],
+    prepared: dict[str, Any],
+    frozen_root: Path,
+    prepared_root: Path,
+) -> None:
+    frozen_sources = frozen.get("sources")
+    prepared_sources = prepared.get("sources")
+    if not isinstance(frozen_sources, dict) or not isinstance(prepared_sources, dict):
+        raise TopologyError("frozen/prepared source inventories must be objects")
+    if set(frozen_sources) != set(prepared_sources):
+        raise TopologyError("prepared topology changes the source path set")
+    if git_head(frozen_root) != frozen.get("frozen_product_sha"):
+        raise TopologyError("frozen topology does not identify the supplied frozen checkout")
+    published_names = {
+        entry.get("name")
+        for entry in frozen.get("published_crates", [])
+        if isinstance(entry, dict) and isinstance(entry.get("name"), str)
+    }
+    published_paths = {
+        (Path(entry["package_path"]) / "Cargo.toml").as_posix()
+        for entry in frozen.get("published_crates", [])
+        if isinstance(entry, dict) and isinstance(entry.get("package_path"), str)
+    }
+    ensure_committed_topology_inputs(frozen_root, sorted(frozen_sources))
+    ensure_committed_topology_inputs(prepared_root, sorted(prepared_sources))
+    version_sources = version_derived_source_paths(published_paths)
+    frozen_release = frozen.get("release")
+    prepared_release = prepared.get("release")
+    if not isinstance(frozen_release, str) or not isinstance(prepared_release, str):
+        raise TopologyError("frozen/prepared release identities must be strings")
+    for relative in sorted(frozen_sources):
+        frozen_source = frozen_sources[relative]
+        prepared_source = prepared_sources[relative]
+        if not isinstance(frozen_source, dict) or not isinstance(prepared_source, dict):
+            raise TopologyError(f"source inventory entry is not an object: {relative}")
+        frozen_path = frozen_root / relative
+        prepared_path = prepared_root / relative
+        if not frozen_path.is_file() or not prepared_path.is_file():
+            raise TopologyError(f"prepared source is missing: {relative}")
+        if sha256(frozen_path) != frozen_source.get("sha256"):
+            raise TopologyError(f"frozen source hash is stale: {relative}")
+        if sha256(prepared_path) != prepared_source.get("sha256"):
+            raise TopologyError(f"prepared source hash is stale: {relative}")
+        if relative not in version_sources:
+            if frozen_path.read_bytes() != prepared_path.read_bytes():
+                raise TopologyError(
+                    f"prepared source changed outside version metadata: {relative}"
+                )
+            continue
+        if normalized_source_value(
+            frozen_root, relative, frozen_release, published_names, published_paths
+        ) != normalized_source_value(
+            prepared_root, relative, prepared_release, published_names, published_paths
+        ):
+            raise TopologyError(
+                f"prepared source changed outside version metadata: {relative}"
+            )
+
+
+def validate_prepared_projection(
+    frozen: dict[str, Any],
+    prepared: dict[str, Any],
+    frozen_digest: str,
+    frozen_topology_path: Path,
+    frozen_root: Path,
+    prepared_root: Path,
+) -> None:
+    authoritative, actual_digest = load_frozen_authority(frozen_topology_path, frozen_digest)
+    if authoritative != frozen or actual_digest != frozen_digest:
+        raise TopologyError("frozen topology authority bytes do not match supplied baseline")
+    schema_validate(frozen)
+    schema_validate(prepared)
+    if frozen.get("prepared_swarm_sha") is not None:
+        raise TopologyError("frozen topology must not already bind prepared_swarm_sha")
+    if frozen.get("frozen_product_sha") != prepared.get("frozen_product_sha"):
+        raise TopologyError("prepared topology does not retain frozen_product_sha")
+    validate_source_transition(frozen, prepared, frozen_root, prepared_root)
+    frozen_subjects = deepcopy(frozen)
+    prepared_subjects = deepcopy(prepared)
+    frozen_subjects.pop("sources", None)
+    prepared_subjects.pop("sources", None)
+    if immutable_projection(frozen_subjects) != immutable_projection(prepared_subjects):
+        raise TopologyError(
+            "prepared topology changes an immutable frozen product subject "
+            f"(frozen digest {frozen_digest})"
+        )
 
 
 def derive_downloader_targets(source: str, workflow_targets: set[str]) -> set[str]:
@@ -274,11 +595,21 @@ def build_manifest(
     release: str,
     frozen_product_sha: str,
     prepared_swarm_sha: str | None = None,
+    frozen_topology: dict[str, Any] | None = None,
+    frozen_topology_digest: str | None = None,
+    frozen_topology_path: Path | None = None,
+    frozen_root: Path | None = None,
 ) -> dict[str, Any]:
+    if frozen_topology is not None:
+        schema_validate(frozen_topology)
+    if frozen_topology is not None and prepared_swarm_sha is None:
+        raise TopologyError(
+            "frozen topology authority is only valid for prepared validation"
+        )
     if not re.fullmatch(r"[0-9a-f]{40}", frozen_product_sha):
         raise TopologyError("frozen_product_sha must be a full lowercase commit SHA")
     current_sha = git_head(root)
-    if current_sha != frozen_product_sha:
+    if prepared_swarm_sha is None and current_sha != frozen_product_sha:
         raise TopologyError(
             "frozen_product_sha must identify the exact checkout being inventoried"
         )
@@ -287,9 +618,22 @@ def build_manifest(
             raise TopologyError(
                 "prepared_swarm_sha must be a full lowercase commit SHA"
             )
+        if prepared_swarm_sha == frozen_product_sha:
+            raise TopologyError(
+                "prepared_swarm_sha must differ from frozen_product_sha for a prepared topology"
+            )
         if prepared_swarm_sha != current_sha:
             raise TopologyError(
                 "prepared_swarm_sha must identify the exact prepared checkout"
+            )
+        if (
+            frozen_topology is None
+            or frozen_topology_digest is None
+            or frozen_topology_path is None
+            or frozen_root is None
+        ):
+            raise TopologyError(
+                "prepared topology requires explicit frozen topology bytes, digest, and checkout"
             )
     metadata = cargo_metadata(root)
     cargo_manifest = tomllib.loads((root / "Cargo.toml").read_text(encoding="utf-8"))
@@ -337,6 +681,7 @@ def build_manifest(
         entry["package_path"] = (
             Path(entry["package_path"]).resolve().relative_to(root.resolve()).as_posix()
         )
+    ensure_committed_topology_inputs(root, source_paths(crates))
     manifest = {
         "schema": SCHEMA,
         "release": release,
@@ -359,22 +704,50 @@ def build_manifest(
         "secondary_channels": {"docker": "required", "homebrew": "deferred"},
         "sources": {
             relative: {"path": relative, "sha256": digest}
-            for relative, digest in source_hashes(root).items()
+            for relative, digest in source_hashes_for_paths(
+                root, source_paths(crates)
+            ).items()
         },
     }
+    if frozen_topology is not None:
+        if frozen_topology_digest is None:
+            raise TopologyError("frozen topology digest is missing")
+        validate_prepared_projection(
+            frozen_topology,
+            manifest,
+            frozen_topology_digest,
+            frozen_topology_path,
+            frozen_root,
+            root,
+        )
     return manifest
 
 
 def validate_manifest(
-    manifest: dict[str, Any], root: Path, expected_sha: str | None = None
+    manifest: dict[str, Any],
+    root: Path,
+    expected_sha: str | None = None,
+    expected_prepared_sha: str | None = None,
+    frozen_topology: dict[str, Any] | None = None,
+    frozen_topology_digest: str | None = None,
+    frozen_topology_path: Path | None = None,
+    frozen_root: Path | None = None,
 ) -> None:
+    schema_validate(manifest)
+    if frozen_topology is not None:
+        schema_validate(frozen_topology)
+    if frozen_topology is not None and expected_prepared_sha is None:
+        raise TopologyError(
+            "frozen topology authority is only valid for prepared validation"
+        )
     if manifest.get("schema") != SCHEMA:
         raise TopologyError("manifest schema must be 1")
     if expected_sha is not None and manifest.get("frozen_product_sha") != expected_sha:
         raise TopologyError(
             "manifest frozen_product_sha differs from the reviewed candidate SHA"
         )
-    if expected_sha is not None and git_head(root) != expected_sha:
+    current_sha = git_head(root)
+    if expected_prepared_sha is None and expected_sha is not None and current_sha != expected_sha:
         raise TopologyError(
             "reviewed candidate SHA is not the exact checkout being validated"
         )
@@ -386,10 +759,36 @@ def validate_manifest(
             raise TopologyError(
                 "prepared_swarm_sha must be a full lowercase commit SHA"
             )
-        if prepared_swarm_sha != git_head(root):
+        if prepared_swarm_sha != current_sha:
             raise TopologyError(
                 "prepared_swarm_sha must identify the exact checkout being validated"
             )
+    if expected_prepared_sha is not None:
+        if prepared_swarm_sha != expected_prepared_sha:
+            raise TopologyError(
+                "manifest prepared_swarm_sha differs from the reviewed prepared SHA"
+            )
+        if prepared_swarm_sha == expected_sha:
+            raise TopologyError(
+                "prepared_swarm_sha must differ from frozen_product_sha"
+            )
+        if (
+            frozen_topology is None
+            or frozen_topology_digest is None
+            or frozen_topology_path is None
+            or frozen_root is None
+        ):
+            raise TopologyError(
+                "prepared validation requires explicit frozen topology bytes, digest, and checkout"
+            )
+        validate_prepared_projection(
+            frozen_topology,
+            manifest,
+            frozen_topology_digest,
+            frozen_topology_path,
+            frozen_root,
+            root,
+        )
     release = manifest.get("release")
     if not isinstance(release, str):
         raise TopologyError("manifest release is missing")
@@ -402,6 +801,7 @@ def validate_manifest(
     crates = manifest.get("published_crates")
     if not isinstance(crates, list) or manifest.get("crate_count") != len(crates):
         raise TopologyError("crate_count must be derived from published_crates")
+    ensure_committed_topology_inputs(root, source_paths(crates))
     if crates != expected_crates:
         raise TopologyError("published_crates does not match current Cargo metadata")
     orders = [entry.get("publish_order") for entry in crates]
@@ -476,13 +876,13 @@ def validate_manifest(
     sources = manifest.get("sources")
     if not isinstance(sources, dict):
         raise TopologyError("sources must be an object")
-    expected_source_paths = set(SOURCE_PATHS)
-    source_paths = set(sources)
-    if source_paths != expected_source_paths:
+    expected_source_paths = set(source_paths(expected_crates))
+    manifest_source_paths = set(sources)
+    if manifest_source_paths != expected_source_paths:
         raise TopologyError(
             "source hash set does not match the topology source set: "
-            f"missing={sorted(expected_source_paths - source_paths)}, "
-            f"extra={sorted(source_paths - expected_source_paths)}"
+            f"missing={sorted(expected_source_paths - manifest_source_paths)}, "
+            f"extra={sorted(manifest_source_paths - expected_source_paths)}"
         )
     for relative, source in sources.items():
         if not isinstance(source, dict):
@@ -503,23 +903,82 @@ def main() -> int:
     )
     parser.add_argument("--frozen-product-sha", required=True)
     parser.add_argument("--prepared-swarm-sha")
+    parser.add_argument(
+        "--frozen-topology",
+        type=Path,
+        help="exact reviewed frozen topology JSON (required for prepared validation)",
+    )
+    parser.add_argument(
+        "--frozen-topology-sha256",
+        help="SHA-256 digest of --frozen-topology (required for prepared validation)",
+    )
+    parser.add_argument(
+        "--frozen-root",
+        type=Path,
+        help="exact frozen checkout F (required for prepared validation)",
+    )
+    parser.add_argument(
+        "--root",
+        type=Path,
+        help="checkout to inventory (defaults to the script's repository)",
+    )
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument(
         "--check", action="store_true", help="validate an existing output"
     )
     args = parser.parse_args()
-    root = Path(__file__).resolve().parents[1]
+    root = (args.root or Path(__file__).resolve().parents[1]).resolve()
     try:
         if args.check:
-            manifest = json.loads(args.output.read_text(encoding="utf-8"))
+            manifest = load_manifest(args.output)
+            schema_validate(manifest)
+            frozen_topology = None
+            frozen_digest = None
+            if args.frozen_topology is not None:
+                frozen_topology, frozen_digest = load_frozen_authority(
+                    args.frozen_topology, args.frozen_topology_sha256
+                )
+                schema_validate(frozen_topology)
             if manifest.get("release") != args.release:
                 raise TopologyError("manifest release differs from --release")
-            validate_manifest(manifest, root, args.frozen_product_sha)
-        else:
-            manifest = build_manifest(
-                root, args.release, args.frozen_product_sha, args.prepared_swarm_sha
+            validate_manifest(
+                manifest,
+                root,
+                args.frozen_product_sha,
+                args.prepared_swarm_sha,
+                frozen_topology,
+                frozen_digest,
+                args.frozen_topology,
+                args.frozen_root,
             )
-            validate_manifest(manifest, root, args.frozen_product_sha)
+        else:
+            frozen_topology = None
+            frozen_digest = None
+            if args.frozen_topology is not None:
+                frozen_topology, frozen_digest = load_frozen_authority(
+                    args.frozen_topology, args.frozen_topology_sha256
+                )
+                schema_validate(frozen_topology)
+            manifest = build_manifest(
+                root,
+                args.release,
+                args.frozen_product_sha,
+                args.prepared_swarm_sha,
+                frozen_topology,
+                frozen_digest,
+                args.frozen_topology,
+                args.frozen_root,
+            )
+            validate_manifest(
+                manifest,
+                root,
+                args.frozen_product_sha,
+                args.prepared_swarm_sha,
+                frozen_topology,
+                frozen_digest,
+                args.frozen_topology,
+                args.frozen_root,
+            )
             args.output.write_text(
                 json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
             )

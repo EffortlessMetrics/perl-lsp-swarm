@@ -163,6 +163,12 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Install pinned release topology validator
+        shell: bash
+        run: >-
+          python3 -m pip install --disable-pip-version-check --no-cache-dir
+          --only-binary=:all: -r scripts/requirements-release.txt
+
       - name: Reject an occupied release tag
         shell: bash
         env:
