@@ -118,21 +118,37 @@ function preparePrebuiltPayload(fileSystem = fs, env = process.env) {
   const manifestPath = (env.PERL_LSP_CANDIDATE_PAYLOAD_MANIFEST || '').trim();
   const target = (env.PERL_LSP_VSCODE_TARGET || `${process.platform}-${process.arch}`).trim();
   if (!manifestPath) {
-    const binaryMember = target.startsWith('win32-') ? 'perllsp.exe' : 'perllsp';
-    const destination = path.join(extensionRoot, 'bin', target, binaryMember);
-    if (typeof fileSystem.lstatSync === 'function') {
-      try {
-        if (fileSystem.lstatSync(destination).isSymbolicLink()) {
-          throw new Error(`ambient native payload is a symbolic link: ${destination}`);
+    for (const ambientTarget of [
+      'win32-x64',
+      'win32-arm64',
+      'linux-x64',
+      'linux-arm64',
+      'alpine-x64',
+      'alpine-arm64',
+      'darwin-x64',
+      'darwin-arm64',
+    ]) {
+      for (const basename of ['perllsp', 'perl-dap']) {
+        const member = ambientTarget.startsWith('win32-') ? `${basename}.exe` : basename;
+        const destination = path.join(extensionRoot, 'bin', ambientTarget, member);
+        let present = false;
+        if (typeof fileSystem.lstatSync === 'function') {
+          try {
+            const stats = fileSystem.lstatSync(destination);
+            present = true;
+            if (stats.isSymbolicLink()) {
+              throw new Error(`ambient native payload is a symbolic link: ${destination}`);
+            }
+          } catch (error) {
+            if (error?.code !== 'ENOENT') throw error;
+          }
+        } else {
+          present = fileSystem.existsSync(destination);
         }
-      } catch (error) {
-        if (error?.code !== 'ENOENT') throw error;
+        if (present || fileSystem.existsSync(destination)) {
+          throw new Error('ambient native payload requires a candidate payload manifest');
+        }
       }
-    } else if (fileSystem.existsSync(destination)) {
-      throw new Error('ambient native payload requires a candidate payload manifest');
-    }
-    if (fileSystem.existsSync(destination)) {
-      throw new Error('ambient native payload requires a candidate payload manifest');
     }
     return { manifest: null, cleanup: () => {} };
   }
@@ -174,8 +190,12 @@ function preparePrebuiltPayload(fileSystem = fs, env = process.env) {
     }
     if (typeof fileSystem.lstatSync === 'function') {
       for (const parent of [binRoot, path.dirname(destination), destination]) {
-        if (fileSystem.existsSync(parent) && fileSystem.lstatSync(parent).isSymbolicLink()) {
-          throw new Error(`prebuilt payload destination is a symbolic link: ${parent}`);
+        try {
+          if (fileSystem.lstatSync(parent).isSymbolicLink()) {
+            throw new Error(`prebuilt payload destination is a symbolic link: ${parent}`);
+          }
+        } catch (error) {
+          if (error?.code !== 'ENOENT') throw error;
         }
       }
     }
