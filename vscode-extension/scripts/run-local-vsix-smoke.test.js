@@ -72,6 +72,45 @@ void test('verified packaged child receipt binds candidate and both observed art
   fs.rmSync(directory, { recursive: true, force: true });
 });
 
+void test('verified packaged child receipt rejects stale source, identity, and artifact bindings', () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-verified-child-negative-'));
+  const receiptFile = path.join(directory, 'verified_child_receipt.json');
+  const sourceReceiptFile = path.join(directory, 'packaged_bundle_journey_receipt.json');
+  fs.writeFileSync(sourceReceiptFile, '{"repository_sha":"' + 'a'.repeat(40) + '"}\n');
+  const sourceDigest = crypto.createHash('sha256').update(fs.readFileSync(sourceReceiptFile)).digest('hex');
+  const base = {
+    schema_version: 'verified_child_receipt.v1',
+    receipt_schema_version: 'installed_acceptance.v1',
+    candidate_id: 'candidate-1',
+    frozen_product_sha: 'a'.repeat(40),
+    artifact_set_id: 'set-1',
+    status: 'not_proven',
+    source_receipt_sha256: sourceDigest,
+    artifact_hashes: {
+      vsix_sha256: 'b'.repeat(64),
+      bundled_server_sha256: 'c'.repeat(64),
+    },
+  };
+  const validate = (override) => {
+    fs.writeFileSync(receiptFile, JSON.stringify({ ...base, ...override }));
+    return validateVerifiedCandidateReceipt({
+      receiptFile,
+      sourceReceiptFile,
+      env: {
+        PERL_LSP_CANDIDATE_ID: 'candidate-1',
+        PERL_LSP_CURRENT_SOURCE_SHA: 'a'.repeat(40),
+        PERL_LSP_ARTIFACT_SET_ID: 'set-1',
+      },
+      expectedVsixSha256: 'b'.repeat(64),
+      expectedBundledServerSha256: 'c'.repeat(64),
+    });
+  };
+  assert.equal(validate({ source_receipt_sha256: 'd'.repeat(64) }).ok, false);
+  assert.equal(validate({ candidate_id: 'candidate-other' }).ok, false);
+  assert.equal(validate({ artifact_hashes: { ...base.artifact_hashes, vsix_sha256: 'd'.repeat(64) } }).ok, false);
+  fs.rmSync(directory, { recursive: true, force: true });
+});
+
 void test('candidate construction binds hashes and rejects partial or supplied identity', () => {
   const env = {
     PERL_LSP_CONSTRUCT_CANDIDATE_MANIFEST: '1',
