@@ -545,17 +545,21 @@ fn partial_clone_observation(repository: &Path) -> Result<bool, String> {
     // treating such a repository as complete could turn omitted history into
     // false non-ancestry verdicts. Any successfully read value marks the
     // repository partial; a failed observation fails closed below.
-    let extension = run_git(repository, &["config", "--get", "extensions.partialclone"])?;
+    //
+    // Both probes are `--local`: clone writes the marker into the repository
+    // config, and a global `extensions.partialClone` must not blind every
+    // complete repository on the machine. `--local` still covers
+    // worktree-specific config when `extensions.worktreeConfig` is enabled.
+    let extension =
+        run_git(repository, &["config", "--local", "--get", "extensions.partialclone"])?;
     if extension.succeeded() {
         return Ok(true);
     }
     if !extension.no_match() {
         return Err(format!("partial-clone extension probe failed: {}", extension.diagnostic()));
     }
-    // No `--local`: promisor configuration can also live in worktree-specific
-    // config when `extensions.worktreeConfig` is enabled, and missing it would
-    // let a partial clone be misclassified as complete.
-    let output = run_git(repository, &["config", "--get-regexp", r"^remote\..*\.promisor$"])?;
+    let output =
+        run_git(repository, &["config", "--local", "--get-regexp", r"^remote\..*\.promisor$"])?;
     if output.no_match() {
         return Ok(false);
     }
@@ -606,7 +610,9 @@ fn git_command(repository: &Path, arguments: &[&str]) -> Command {
         // clone, Git would otherwise lazily fetch missing objects from the
         // promisor remote, causing network access and object-store writes.
         // With lazy fetch disabled, a missing object fails the query and the
-        // existing fail-closed paths report it instead.
+        // existing fail-closed paths report it instead. GIT_NO_LAZY_FETCH
+        // requires Git >= 2.45; older Git ignores the unknown variable, and
+        // the fail-closed paths remain the honesty boundary there.
         .env("GIT_NO_LAZY_FETCH", "1");
     command
 }
@@ -765,7 +771,10 @@ mod tests {
 
         let parent = tempfile::tempdir()?;
         let clone = parent.path().join("shallow");
-        let origin_url = format!("file:///{}", origin.path().to_string_lossy().replace('\\', "/"));
+        // The path already carries the leading separator, so a `file://`
+        // prefix (not `file:///`) avoids an implementation-defined double
+        // slash in the URL's path component.
+        let origin_url = format!("file://{}", origin.path().to_string_lossy().replace('\\', "/"));
         git_at(
             parent.path(),
             &[

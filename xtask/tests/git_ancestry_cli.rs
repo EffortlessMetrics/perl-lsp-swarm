@@ -78,6 +78,29 @@ fn run_cli(
     command.output().context("failed to execute git-ancestry CLI")
 }
 
+#[test]
+fn global_partial_clone_marker_does_not_blind_complete_repositories() -> Result<()> {
+    // Devin review, PR #15171: a global `extensions.partialClone` must not
+    // classify every complete repository as partial; the marker only counts
+    // from repository-local configuration.
+    let tmp = tempfile::tempdir()?;
+    let hermetic = HermeticGit::with_pins(
+        &tmp.path().join("git-fixture-pins"),
+        &[("extensions.partialClone", "origin")],
+    )?;
+    let repository: PathBuf = tmp.path().join("repo");
+    hermetic.init_repo(&repository)?;
+    commit_file(&hermetic, &repository, "tracked.txt", "base\n", "base")?;
+    let base = hermetic.git(&repository, &["rev-parse", "HEAD"])?;
+    commit_file(&hermetic, &repository, "second.txt", "second\n", "second")?;
+
+    let output = run_cli(&hermetic, &repository, &base, "HEAD", &[])?;
+
+    assert_eq!(output.status.code(), Some(0));
+    assert!(String::from_utf8_lossy(&output.stdout).contains("git-ancestry: ancestor"));
+    Ok(())
+}
+
 fn initialized_repository() -> Result<(TempDir, HermeticGit)> {
     let tmp = tempfile::tempdir()?;
     let hermetic = HermeticGit::at(&tmp.path().join("git-fixture-pins"))?;
