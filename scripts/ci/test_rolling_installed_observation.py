@@ -123,6 +123,7 @@ class ObservationTest(unittest.TestCase):
         vscode_version: str = "1.125.0",
         smoke_outcome: str | None = None,
         write_verified_child: bool = True,
+        verified_child_status: str = "not_proven",
     ) -> dict[str, object]:
         receipts = self.root / f"receipts-{row_id}"
         if receipt is not None:
@@ -179,7 +180,7 @@ class ObservationTest(unittest.TestCase):
                         "candidate_id": f"rolling-{SHA}-test",
                         "frozen_product_sha": SHA,
                         "artifact_set_id": "rolling-test-artifacts",
-                        "status": "not_proven",
+                        "status": verified_child_status,
                         "source_receipt_sha256": MODULE.sha256(source_receipt_path),
                         "artifact_hashes": {
                             "vsix_sha256": VSIX_SHA,
@@ -395,6 +396,23 @@ class ObservationTest(unittest.TestCase):
             write_verified_child=False,
         )
         self.assertEqual(row["cells"]["packaged_provider_edit_journey"], "not_proven")
+
+    def test_windows_unverified_child_cannot_prove_cleanup(self) -> None:
+        self.package("windows")
+        for child_case in ("missing", "invalid"):
+            with self.subTest(child_case=child_case):
+                row = self.build_row(
+                    receipt=self.windows_receipt({"status": "pass"}, candidate_bound=True),
+                    row_id="windows-current",
+                    platform="windows",
+                    vscode_version="stable",
+                    write_verified_child=child_case != "missing",
+                    verified_child_status="blocked" if child_case == "invalid" else "not_proven",
+                )
+                self.assertEqual(
+                    row["cells"]["packaged_provider_edit_journey"], "not_proven"
+                )
+                self.assertEqual(row["cells"]["process_cleanup"], "not_proven")
 
     def test_windows_malformed_source_artifacts_are_rejected(self) -> None:
         self.package("windows")

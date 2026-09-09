@@ -436,6 +436,19 @@ def validate(document: dict[str, Any]) -> None:
         "PERL_LSP_SERVER_SOURCE_SHA",
         "packaged journey must bind the server to exact source identity",
     )
+    configure = _step_named(
+        row, "installed-row", "Configure exact smoke subject and host selector"
+    )
+    configure_runs = "\n".join(_executable_lines(configure.get("run")))
+    for export in (
+        "PERL_LSP_CONSTRUCT_CANDIDATE_MANIFEST=1",
+        "PERL_LSP_CANDIDATE_ID=",
+        "PERL_LSP_ARTIFACT_SET_ID=",
+    ):
+        _require(
+            export in configure_runs,
+            f"packaged journey must export {export} for candidate construction",
+        )
     assemble = _step_named(
         row, "installed-row", "Assemble exact row without cross-surface inference"
     )
@@ -448,6 +461,12 @@ def validate(document: dict[str, Any]) -> None:
         in "\n".join(_executable_lines(assemble.get("run"))),
         "each platform must produce one typed row",
     )
+    assemble_runs = "\n".join(_executable_lines(assemble.get("run")))
+    for argument in ('--candidate-id "$CANDIDATE_ID"', '--artifact-set-id "$ARTIFACT_SET_ID"'):
+        _require(
+            argument in assemble_runs,
+            f"row assembly must consume {argument} when creating the typed row",
+        )
     assemble_env = assemble.get("env") if isinstance(assemble.get("env"), dict) else {}
     _require(
         assemble_env.get("CANDIDATE_ID")
@@ -570,6 +589,27 @@ def expect_failure(text: str, mutation: str) -> None:
             "PERL_LSP_SERVER_SOURCE_SHA",
             "REMOVED_SERVER_SOURCE_SHA",
         )
+    elif mutation == "drop_candidate_construction":
+        mutated = replace_once(
+            text,
+            "PERL_LSP_CONSTRUCT_CANDIDATE_MANIFEST=1",
+            "REMOVED_CANDIDATE_CONSTRUCTION=1",
+            mutation,
+        )
+    elif mutation == "drop_candidate_cli_identity":
+        mutated = replace_once(
+            text,
+            '--candidate-id "$CANDIDATE_ID"',
+            "--candidate-id \\\"REMOVED_CANDIDATE_ID\\\"",
+            mutation,
+        )
+    elif mutation == "drop_artifact_cli_identity":
+        mutated = replace_once(
+            text,
+            '--artifact-set-id "$ARTIFACT_SET_ID"',
+            "--artifact-set-id \\\"REMOVED_ARTIFACT_SET_ID\\\"",
+            mutation,
+        )
     elif mutation == "needs_contract_drift":
         mutated = replace_once(text, "needs: contract", "needs: contract-lite", mutation)
     elif mutation == "needs_subject_drift":
@@ -628,6 +668,9 @@ def main() -> int:
             "workspace_build",
             "comment_out_build",
             "drop_server_identity",
+            "drop_candidate_construction",
+            "drop_candidate_cli_identity",
+            "drop_artifact_cli_identity",
             "needs_contract_drift",
             "needs_subject_drift",
             "publishing_action",

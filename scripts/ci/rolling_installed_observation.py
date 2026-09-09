@@ -849,7 +849,7 @@ def build_row(args: argparse.Namespace) -> int:
     elif (
         cleanup_reported
         and cleanup_failure is None
-        and behavioral_status == "pass"
+        and cells["packaged_provider_edit_journey"] == "pass"
         and post_exit_observed
     ):
         cells["process_cleanup"] = "pass"
