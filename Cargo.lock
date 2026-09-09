@@ -2306,6 +2306,7 @@ dependencies = [
  "perl-pod",
  "perl-pragma",
  "perl-symbol",
+ "perl-test-must",
  "serde",
  "serde_json",
 ]
