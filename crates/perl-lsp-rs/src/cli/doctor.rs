@@ -1953,7 +1953,7 @@ fn wsl_bash_flavor_report() -> BashFlavorReport {
     // direct Bash invocation proves that a distribution can actually execute
     // the shell used by the Cargo probe below.
     command.args(["--exec", "bash", "-c", "exit 0"]);
-    let status = match run_command_with_timeout(command, DEV_ENV_PROBE_TIMEOUT_SECS) {
+    let status = match run_command_with_timeout(command, DEV_ENV_WSL_TIMEOUT_SECS) {
         Ok(output) if output.status.success() => Ok(()),
         Ok(output) => Err(truncate_for_detail(
             &format!("wsl.exe --exec bash failed: {}", decode_shell_output(&output.stderr).trim()),
@@ -1977,7 +1977,7 @@ fn wsl_bash_flavor_report_from_status(status: Result<(), String>) -> BashFlavorR
         },
         Err(note) => BashFlavorReport {
             flavor: FLAVOR_WSL,
-            status: STATUS_MISSING,
+            status: STATUS_PROBE_ERROR,
             bash_path: None,
             runs_repo_entrypoints: None,
             note,
@@ -3582,6 +3582,27 @@ mod tests {
         assert_eq!(report.status, STATUS_PRESENT);
         assert_eq!(report.runs_repo_entrypoints, None);
         assert!(report.note.contains("execution is not proven"));
+        Ok(())
+    }
+
+    #[test]
+    fn wsl_bash_probe_failure_is_not_reported_as_absence() -> TestResult {
+        for note in [
+            "wsl.exe --exec bash failed: distribution startup timed out",
+            "wsl.exe --exec bash failed: no distribution is installed",
+        ] {
+            let report = wsl_bash_flavor_report_from_status(Err(note.to_string()));
+            if report.status != STATUS_PROBE_ERROR
+                || !report.note.contains(note)
+                || report.fix.is_some()
+            {
+                return Err(format!(
+                    "WSL probe failure was misclassified: status={}, note={}",
+                    report.status, report.note
+                )
+                .into());
+            }
+        }
         Ok(())
     }
 
