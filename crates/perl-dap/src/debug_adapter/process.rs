@@ -1219,9 +1219,13 @@ impl DebugAdapter {
                                     }
 
                                     if was_running {
-                                        let entry_stop = s.entry_stop_pending;
-                                        s.entry_stop_pending = false;
-                                        should_emit_stopped = true;
+                                        let has_source_frame =
+                                            !current_file.is_empty() && current_line > 0;
+                                        let entry_stop = s.entry_stop_pending && has_source_frame;
+                                        if entry_stop {
+                                            s.entry_stop_pending = false;
+                                        }
+                                        should_emit_stopped = !s.entry_stop_pending || entry_stop;
                                         let resume_mode = s.last_resume_mode.clone();
 
                                         let breakpoint_outcome = if matches!(
@@ -1241,7 +1245,12 @@ impl DebugAdapter {
                                             BreakpointHitOutcome::default()
                                         };
 
-                                        if entry_stop {
+                                        if s.entry_stop_pending && !has_source_frame {
+                                            // Do not publish an entry stop with a fabricated
+                                            // <unknown>:1 frame. Keep the request pending until
+                                            // the reader observes an actual source context.
+                                            s.state = DebugState::Running;
+                                        } else if entry_stop {
                                             stop_reason = "entry".to_string();
                                             s.state = DebugState::Stopped;
                                         } else if exception_match || warning_match {
@@ -1354,6 +1363,8 @@ impl DebugAdapter {
                                             s.state = DebugState::Running;
                                             // Keep RunToBreakpoint until we actually hit one.
                                             should_auto_continue = true;
+                                        } else if s.entry_stop_pending && !has_source_frame {
+                                            s.state = DebugState::Running;
                                         } else {
                                             s.state = DebugState::Stopped;
                                         }
@@ -1402,6 +1413,7 @@ impl DebugAdapter {
                         if prompt_re().is_some_and(|re| re.is_match(&sanitized_text)) {
                             _debugger_ready = true;
                             let mut stop_reason = "step".to_string();
+                            let mut should_emit_stopped = false;
                             let thread_id = {
                                 let Ok(mut guard) = session.lock() else {
                                     tracing::warn!(
@@ -1421,8 +1433,10 @@ impl DebugAdapter {
                                         s,
                                         matches!(s.state, DebugState::Running),
                                     );
+                                    let has_source_frame =
+                                        !current_file.is_empty() && current_line > 0;
                                     // Create stack frame with enhanced context validation
-                                    if !current_file.is_empty() && current_line > 0 {
+                                    if has_source_frame {
                                         let frame = StackFrame {
                                             id: current_frame_id,
                                             name: if current_func.is_empty() {
@@ -1448,7 +1462,7 @@ impl DebugAdapter {
                                         };
                                         s.stack_frames = vec![frame];
                                         s.stack_frame_arguments.clear();
-                                    } else {
+                                    } else if !s.entry_stop_pending {
                                         // Provide a fallback frame for when we don't have perfect context
                                         let frame = StackFrame {
                                             id: current_frame_id,
@@ -1466,11 +1480,19 @@ impl DebugAdapter {
                                         s.stack_frames = vec![frame];
                                         s.stack_frame_arguments.clear();
                                     }
-                                    let entry_stop = s.entry_stop_pending;
-                                    s.entry_stop_pending = false;
-                                    s.state = DebugState::Stopped;
-                                    if entry_stop {
-                                        stop_reason = "entry".to_string();
+                                    if s.entry_stop_pending && !has_source_frame {
+                                        // A prompt without a source context cannot satisfy
+                                        // stopOnEntry's frame contract. Keep the entry stop
+                                        // pending instead of exposing a synthetic location.
+                                        s.state = DebugState::Running;
+                                    } else {
+                                        let entry_stop = s.entry_stop_pending;
+                                        s.entry_stop_pending = false;
+                                        s.state = DebugState::Stopped;
+                                        should_emit_stopped = true;
+                                        if entry_stop {
+                                            stop_reason = "entry".to_string();
+                                        }
                                     }
                                     s.thread_id
                                 } else {
@@ -1479,7 +1501,8 @@ impl DebugAdapter {
                             };
 
                             // Send stopped event with robust error handling
-                            if let Some(ref sender) = sender
+                            if should_emit_stopped
+                                && let Some(ref sender) = sender
                                 && !emit_event_safe(
                                     sender,
                                     &seq,

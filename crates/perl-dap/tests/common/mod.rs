@@ -349,6 +349,18 @@ impl DapWorkflowSession {
         Ok(StoppedInfo { reason, thread_id })
     }
 
+    /// Count any additional stopped events already queued after the first
+    /// suspension. A stop-on-entry launch must publish exactly one initial stop.
+    pub fn pending_stopped_events(&self) -> usize {
+        let mut count = 0;
+        while let Ok(message) = self.rx.try_recv() {
+            if matches!(message, DapMessage::Event { ref event, .. } if event == "stopped") {
+                count += 1;
+            }
+        }
+        count
+    }
+
     /// Retrieve the top stack frame for `thread_id`.
     ///
     /// Returns `(frame_id, source_path_str, frame_line)`.

@@ -99,6 +99,32 @@ fn observe_pin_with_session(
             stopped.reason
         ));
     }
+    if launch_path == "launch_with_stop_on_entry" {
+        let expected_name = PathBuf::from(script)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(str::to_owned)
+            .ok_or("launch fixture has no filename")?;
+        if stopped.source_path == "<unknown>"
+            || !PathBuf::from(&stopped.source_path)
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name == expected_name)
+            || stopped.line == 0
+        {
+            return Err(format!(
+                "stopOnEntry frame must identify the initial source location; got path={} line={}",
+                stopped.source_path, stopped.line
+            ));
+        }
+        let extra_stops = session.pending_stopped_events();
+        if extra_stops != 0 {
+            return Err(format!(
+                "stopOnEntry must publish exactly one initial stopped event; got {} extra",
+                extra_stops
+            ));
+        }
+    }
     session.evaluate_expression("$^X", stopped.frame_id).map(|(value, _)| value)
 }
 
@@ -165,6 +191,33 @@ fn all_convenience_launch_paths_reach_the_pinned_interpreter() -> Result<(), Box
             &format!("configured {launch_path}"),
         )
         .map_err(std::io::Error::other)?;
+    }
+    Ok(())
+}
+
+#[test]
+#[serial(dap_debuggee_environment)]
+fn stop_on_entry_publishes_one_real_frame() -> Result<(), Box<dyn Error>> {
+    let Some(perl) = find_configured_or_path_pipe_perl()? else {
+        eprintln!("SKIP stop_on_entry_publishes_one_real_frame: Perl unavailable");
+        return Ok(());
+    };
+    let fixture = tempfile::tempdir()?;
+    let script = fixture.path().join("stop-on-entry-frame.pl");
+    fs::write(&script, "use strict;\nuse warnings;\nmy $entry = 1;\n$entry++;\n")?;
+    let mut session = DapWorkflowSession::new_with_perl(workflow_timeout(), Some(&perl))?;
+    session.launch_with_stop_on_entry(&script.to_string_lossy(), true)?;
+    let stopped = session.wait_stopped_with_frame()?;
+    if stopped.reason != "entry"
+        || stopped.source_path == "<unknown>"
+        || stopped.line == 0
+        || session.pending_stopped_events() != 0
+    {
+        return Err(format!(
+            "stopOnEntry must publish exactly one real entry frame; got reason={} path={} line={}",
+            stopped.reason, stopped.source_path, stopped.line
+        )
+        .into());
     }
     Ok(())
 }
