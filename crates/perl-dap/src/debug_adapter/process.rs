@@ -2679,7 +2679,7 @@ mod tests {
         let child = Command::new("sh")
             .args([
                 "-c",
-                "printf 'main::(/tmp/dap-entry-frame-fixture.pl:3):\\nDB<1>\\nENTRY_READER_DONE\\n' >&2; sleep 1",
+                "printf 'main::(/tmp/dap-entry-frame-fixture.pl:3):\\tmy $entry = 1;\\nDB<1>\\nENTRY_READER_DONE\\n' >&2; sleep 1",
             ])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())

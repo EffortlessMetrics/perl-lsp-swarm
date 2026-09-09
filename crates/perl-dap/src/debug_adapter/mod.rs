@@ -2568,6 +2568,17 @@ print "result: $final\n";
     }
 
     #[test]
+    fn test_context_re_accepts_perl_source_statement_suffix() -> Result<(), String> {
+        let result = apply_context_re("main::(/tmp/script.pl:4):\tif ($x =~ /:99)/) {")
+            .ok_or("perl source statement suffix was not accepted")?;
+        let expected = ("/tmp/script.pl".to_string(), "4".to_string());
+        if result != expected {
+            return Err(format!("source suffix parsed as {result:?}; expected {expected:?}"));
+        }
+        Ok(())
+    }
+
+    #[test]
     fn test_context_re_path_with_earlier_digit_colon_parenthesis() -> Result<(), String> {
         let result = apply_context_re("main::(/tmp/a:12)/file.pl:3):");
         let expected = Some(("/tmp/a:12)/file.pl".to_string(), "3".to_string()));
