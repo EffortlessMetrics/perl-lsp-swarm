@@ -59,6 +59,10 @@ void test('verified packaged child receipt binds candidate and both observed art
     sourceReceiptFile,
     JSON.stringify({
       repository_sha: 'a'.repeat(40),
+      artifact_hashes: {
+        vsix_sha256: 'b'.repeat(64),
+        bundled_server_sha256: 'c'.repeat(64),
+      },
       vscode_version: '1.125.0',
       outcome: 'not_proven',
       product_blockers: [],
@@ -129,6 +133,10 @@ void test('verified packaged child receipt rejects stale source, identity, and a
     sourceReceiptFile,
     JSON.stringify({
       repository_sha: 'a'.repeat(40),
+      artifact_hashes: {
+        vsix_sha256: 'b'.repeat(64),
+        bundled_server_sha256: 'c'.repeat(64),
+      },
       vscode_version: '1.125.0',
       outcome: 'not_proven',
       product_blockers: [],
@@ -193,6 +201,36 @@ void test('verified packaged child receipt rejects stale source, identity, and a
     validate({ artifact_hashes: { ...base.artifact_hashes, vsix_sha256: 'd'.repeat(64) } }).ok,
     false,
   );
+  const sourceMutation = (mutate) => {
+    const source = JSON.parse(fs.readFileSync(sourceReceiptFile, 'utf8'));
+    mutate(source);
+    fs.writeFileSync(sourceReceiptFile, JSON.stringify(source));
+    const digest = crypto
+      .createHash('sha256')
+      .update(fs.readFileSync(sourceReceiptFile))
+      .digest('hex');
+    return validate({ source_receipt_sha256: digest });
+  };
+  assert.equal(sourceMutation((source) => (source.repository_sha = 'd'.repeat(40))).ok, false);
+  assert.equal(sourceMutation((source) => delete source.repository_sha).ok, false);
+  assert.equal(
+    sourceMutation((source) => (source.artifact_hashes.vsix_sha256 = 'd'.repeat(64))).ok,
+    false,
+  );
+  assert.equal(sourceMutation((source) => delete source.artifact_hashes.vsix_sha256).ok, false);
+  assert.equal(
+    sourceMutation((source) => (source.artifact_hashes.bundled_server_sha256 = 'd'.repeat(64))).ok,
+    false,
+  );
+  assert.equal(
+    sourceMutation((source) => delete source.artifact_hashes.bundled_server_sha256).ok,
+    false,
+  );
+  sourceMutation((source) => {
+    source.repository_sha = 'a'.repeat(40);
+    source.artifact_hashes.vsix_sha256 = 'b'.repeat(64);
+    source.artifact_hashes.bundled_server_sha256 = 'c'.repeat(64);
+  });
   assert.equal(validate({ status: undefined }).ok, false);
   assert.equal(validate({ status: 'unexpected' }).ok, false);
   assert.equal(validate({ status: [] }).ok, false);

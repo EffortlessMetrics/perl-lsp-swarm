@@ -1006,6 +1006,15 @@ function validateVerifiedCandidateReceipt({
         `packaged source receipt could not be read: ${error instanceof Error ? error.message : String(error)}`,
       );
     }
+    if (sourceReceipt?.repository_sha !== env.PERL_LSP_CURRENT_SOURCE_SHA) {
+      violations.push('packaged source receipt does not bind this candidate source');
+    }
+    if (sourceReceipt?.artifact_hashes?.vsix_sha256 !== expectedVsixSha256) {
+      violations.push("packaged source receipt VSIX digest is not this run's package");
+    }
+    if (sourceReceipt?.artifact_hashes?.bundled_server_sha256 !== expectedBundledServerSha256) {
+      violations.push("packaged source receipt bundled-server digest is not this run's server");
+    }
     const expectedBundleMarker =
       expectedPlatform === 'windows' ? 'win32-x64' : `${expectedPlatform}-x64`;
     const sourceStartup = sourceReceipt?.startup;
