@@ -563,7 +563,8 @@ export async function suspendServerProcess(
         fail('Windows suspension handshake timed out');
       }, 130_000);
       let output = '';
-      child.stderr.on('data', (chunk: Buffer) => { output = (output + chunk.toString('utf8')).slice(-64 * 1024); });
+      let diagnostics = '';
+      child.stderr.on('data', (chunk: Buffer) => { diagnostics = (diagnostics + chunk.toString('utf8')).slice(-64 * 1024); });
       child.stdout.on('data', (chunk: Buffer) => {
         output = (output + chunk.toString('utf8')).slice(-64 * 1024);
         if (output.split(/\r?\n/).some((line) => line.startsWith('SUSPENDED ')) && !settled) {
@@ -574,7 +575,7 @@ export async function suspendServerProcess(
         fail(`Windows suspension helper error: ${error.message}`);
       });
       child.on('exit', (code) => {
-        fail(`Windows suspension helper exited ${String(code)}: ${output.trim()}`);
+        fail(`Windows suspension helper exited ${String(code)}: ${output.trim()}${diagnostics ? `; ${diagnostics.trim()}` : ''}`);
       });
       child.on('close', () => {
         const state = windowsSuspensionHelpers.get(pid);
