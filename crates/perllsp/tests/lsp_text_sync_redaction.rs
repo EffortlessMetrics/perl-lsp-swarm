@@ -40,7 +40,11 @@ fn shutdown(client: &mut RealProcessClient) -> Result<()> {
 
 #[test]
 fn malformed_did_change_stderr_is_payload_free_over_stdio() -> Result<()> {
-    let mut client = RealProcessClient::spawn_exact()?;
+    // Pin the child's logging filter: the assertions below use the server's
+    // stderr error event as proof, and an inherited filter such as
+    // RUST_LOG=off would suppress it and fail the test even when redaction
+    // is correct.
+    let mut client = RealProcessClient::spawn_exact_with_env(&[("RUST_LOG", "warn")])?;
     initialize(&mut client)?;
 
     let uri = "file:///workspace/redaction-canary.pl";
