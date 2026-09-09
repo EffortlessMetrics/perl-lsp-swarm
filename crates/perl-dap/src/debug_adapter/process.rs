@@ -1363,8 +1363,6 @@ impl DebugAdapter {
                                             s.state = DebugState::Running;
                                             // Keep RunToBreakpoint until we actually hit one.
                                             should_auto_continue = true;
-                                        } else if s.entry_stop_pending && !has_source_frame {
-                                            s.state = DebugState::Running;
                                         } else {
                                             s.state = DebugState::Stopped;
                                         }
