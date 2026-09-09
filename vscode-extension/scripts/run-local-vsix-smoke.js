@@ -946,15 +946,20 @@ function validateVerifiedCandidateReceipt({
   expectedVsixSha256,
   expectedBundledServerSha256,
   sourceReceiptFile,
+  expectedPlatform,
 }) {
   try {
     const receipt = JSON.parse(fs.readFileSync(receiptFile, 'utf8'));
     const violations = [];
+    const allowedStatuses = new Set(['pass', 'limited', 'blocked', 'not_proven']);
     if (receipt.schema_version !== 'verified_child_receipt.v1') {
       violations.push('verified child receipt schema is not verified_child_receipt.v1');
     }
     if (receipt.receipt_schema_version !== 'installed_acceptance.v1') {
       violations.push('verified child receipt is not an installed acceptance envelope');
+    }
+    if (!allowedStatuses.has(receipt.status)) {
+      violations.push('verified child receipt has an invalid or missing bounded status');
     }
     for (const [field, expected] of [
       ['candidate_id', env.PERL_LSP_CANDIDATE_ID],
@@ -981,7 +986,25 @@ function validateVerifiedCandidateReceipt({
     if (receipt.artifact_hashes?.bundled_server_sha256 !== expectedBundledServerSha256) {
       violations.push("verified child bundled-server digest is not this run's server");
     }
-    return violations.length > 0 ? { ok: false, violations } : { ok: true, receipt };
+    let sourceReceipt;
+    try {
+      sourceReceipt = JSON.parse(fs.readFileSync(sourceReceiptFile, 'utf8'));
+    } catch (error) {
+      violations.push(
+        `packaged source receipt could not be read: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+    const expectedBundleMarker = expectedPlatform === 'windows' ? 'win32-x64' : `${expectedPlatform}-x64`;
+    if (
+      !sourceReceipt ||
+      typeof sourceReceipt.server_identity?.path !== 'string' ||
+      !sourceReceipt.server_identity.path.replaceAll('\\', '/').includes(`/${expectedBundleMarker}/`)
+    ) {
+      violations.push('packaged source receipt server identity does not bind this platform');
+    }
+    return violations.length > 0
+      ? { ok: false, violations }
+      : { ok: true, receipt, source_receipt: sourceReceipt };
   } catch (error) {
     return {
       ok: false,
@@ -2934,6 +2957,7 @@ function main() {
         path.dirname(verifiedCandidateReceiptPath()),
         'packaged_bundle_journey_receipt.json',
       ),
+      expectedPlatform: process.platform === 'win32' ? 'windows' : process.platform,
     })
             : validateChildSmokeReceipt({
                 receiptFile: childReceiptFile,
@@ -2962,8 +2986,8 @@ function main() {
             // Propagate the launched runtime version the bound child
             // observed; downstream exactness claims must bind to this, never
             // to the requested selector alone.
-            if (childReceipt.receipt.environment?.vscode_version) {
-              receipt.observed_vscode_version = childReceipt.receipt.environment.vscode_version;
+            if (childReceipt.source_receipt?.vscode_version) {
+              receipt.observed_vscode_version = childReceipt.source_receipt.vscode_version;
             }
           }
         }

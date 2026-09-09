@@ -137,6 +137,10 @@ class ObservationTest(unittest.TestCase):
                 source_receipt = {
                     "schema_version": 1,
                     "repository_sha": SHA,
+                    "vscode_version": "1.125.0",
+                    "server_identity": {
+                        "path": "C:/extension/bin/win32-x64/perllsp.exe"
+                    },
                     "artifact_hashes": {
                         "vsix_sha256": VSIX_SHA,
                         "bundled_server_sha256": MODULE.sha256(self.server),
@@ -370,6 +374,37 @@ class ObservationTest(unittest.TestCase):
             write_verified_child=False,
         )
         self.assertEqual(row["cells"]["packaged_provider_edit_journey"], "not_proven")
+
+    def test_windows_malformed_source_artifacts_are_rejected(self) -> None:
+        self.package("windows")
+        self.build_row(
+            receipt=self.windows_receipt({"status": "pass"}, candidate_bound=True),
+            row_id="windows-current",
+            platform="windows",
+            vscode_version="stable",
+        )
+        source_path = (
+            self.root
+            / "receipts-windows-current"
+            / "local-current-source"
+            / "windows"
+            / "packaged_bundle_journey_receipt.json"
+        )
+        source = json.loads(source_path.read_text(encoding="utf-8"))
+        source["artifact_hashes"] = []
+        source_path.write_text(json.dumps(source), encoding="utf-8")
+        path, value, findings = MODULE.find_verified_candidate_receipt(
+            source_path.parent,
+            source_sha=SHA,
+            expected_platform="win32",
+            expected_vsix_hash=VSIX_SHA,
+            expected_server_hash=MODULE.sha256(self.server),
+            expected_candidate_id=f"rolling-{SHA}-test",
+            expected_artifact_set_id="rolling-test-artifacts",
+        )
+        self.assertIsNone(path)
+        self.assertIsNone(value)
+        self.assertEqual(findings, ["no exact verified child receipt bound the row source and artifacts"])
 
     def test_arbitrary_archive_bytes_cannot_pass(self) -> None:
         self.archive.write_bytes(b"arbitrary-non-zip-bytes")

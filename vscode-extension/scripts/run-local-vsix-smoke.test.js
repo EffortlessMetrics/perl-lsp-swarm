@@ -40,7 +40,11 @@ void test('verified packaged child receipt binds candidate and both observed art
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-verified-child-'));
   const receiptFile = path.join(directory, 'verified_child_receipt.json');
   const sourceReceiptFile = path.join(directory, 'packaged_bundle_journey_receipt.json');
-  fs.writeFileSync(sourceReceiptFile, '{"repository_sha":"' + 'a'.repeat(40) + '"}\n');
+  fs.writeFileSync(sourceReceiptFile, JSON.stringify({
+    repository_sha: 'a'.repeat(40),
+    vscode_version: '1.125.0',
+    server_identity: { path: 'C:/extension/bin/win32-x64/perllsp.exe' },
+  }));
   fs.writeFileSync(
     receiptFile,
     JSON.stringify({
@@ -67,8 +71,10 @@ void test('verified packaged child receipt binds candidate and both observed art
     expectedVsixSha256: 'b'.repeat(64),
     expectedBundledServerSha256: 'c'.repeat(64),
     sourceReceiptFile,
+    expectedPlatform: 'windows',
   });
   assert.equal(result.ok, true);
+  assert.equal(result.source_receipt.vscode_version, '1.125.0');
   fs.rmSync(directory, { recursive: true, force: true });
 });
 
@@ -76,7 +82,11 @@ void test('verified packaged child receipt rejects stale source, identity, and a
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-verified-child-negative-'));
   const receiptFile = path.join(directory, 'verified_child_receipt.json');
   const sourceReceiptFile = path.join(directory, 'packaged_bundle_journey_receipt.json');
-  fs.writeFileSync(sourceReceiptFile, '{"repository_sha":"' + 'a'.repeat(40) + '"}\n');
+  fs.writeFileSync(sourceReceiptFile, JSON.stringify({
+    repository_sha: 'a'.repeat(40),
+    vscode_version: '1.125.0',
+    server_identity: { path: 'C:/extension/bin/win32-x64/perllsp.exe' },
+  }));
   const sourceDigest = crypto.createHash('sha256').update(fs.readFileSync(sourceReceiptFile)).digest('hex');
   const base = {
     schema_version: 'verified_child_receipt.v1',
@@ -103,11 +113,14 @@ void test('verified packaged child receipt rejects stale source, identity, and a
       },
       expectedVsixSha256: 'b'.repeat(64),
       expectedBundledServerSha256: 'c'.repeat(64),
+      expectedPlatform: 'windows',
     });
   };
   assert.equal(validate({ source_receipt_sha256: 'd'.repeat(64) }).ok, false);
   assert.equal(validate({ candidate_id: 'candidate-other' }).ok, false);
   assert.equal(validate({ artifact_hashes: { ...base.artifact_hashes, vsix_sha256: 'd'.repeat(64) } }).ok, false);
+  assert.equal(validate({ status: undefined }).ok, false);
+  assert.equal(validate({ status: 'unexpected' }).ok, false);
   fs.rmSync(directory, { recursive: true, force: true });
 });
 

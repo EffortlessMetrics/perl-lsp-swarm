@@ -478,6 +478,8 @@ def find_verified_candidate_receipt(
         if not isinstance(value, dict):
             continue
         artifacts = value.get("artifact_hashes")
+        status = value.get("status")
+        source_path = path.with_name("packaged_bundle_journey_receipt.json")
         if (
             value.get("schema_version") != "verified_child_receipt.v1"
             or value.get("receipt_schema_version") != "installed_acceptance.v1"
@@ -491,7 +493,8 @@ def find_verified_candidate_receipt(
                 "outcome" in value
                 and value.get("outcome") != "completed"
             )
-            or value.get("status") == "blocked"
+            or status not in {"pass", "limited", "blocked", "not_proven"}
+            or status == "blocked"
             or value.get("candidate_id") != expected_candidate_id
             or value.get("artifact_set_id") != expected_artifact_set_id
             or not isinstance(artifacts, dict)
@@ -499,19 +502,33 @@ def find_verified_candidate_receipt(
             or artifacts.get("bundled_server_sha256") != expected_server_hash
         ):
             continue
-        source_path = path.with_name("packaged_bundle_journey_receipt.json")
         try:
             source_receipt = read_json(source_path)
         except ObservationError:
             continue
+        source_artifacts = (
+            source_receipt.get("artifact_hashes")
+            if isinstance(source_receipt, dict)
+            else None
+        )
+        source_identity = (
+            source_receipt.get("server_identity")
+            if isinstance(source_receipt, dict)
+            else None
+        )
+        source_path_value = (
+            source_identity.get("path") if isinstance(source_identity, dict) else None
+        )
+        bundle_marker = "win32-x64" if expected_platform == "win32" else f"{expected_platform}-x64"
         if (
             not isinstance(source_receipt, dict)
             or source_receipt.get("repository_sha") != source_sha
             or sha256(source_path) != value.get("source_receipt_sha256")
-            or source_receipt.get("artifact_hashes", {}).get("vsix_sha256")
-            != expected_vsix_hash
-            or source_receipt.get("artifact_hashes", {}).get("bundled_server_sha256")
-            != expected_server_hash
+            or not isinstance(source_artifacts, dict)
+            or source_artifacts.get("vsix_sha256") != expected_vsix_hash
+            or source_artifacts.get("bundled_server_sha256") != expected_server_hash
+            or not isinstance(source_path_value, str)
+            or f"/{bundle_marker}/" not in source_path_value.replace("\\", "/")
         ):
             continue
         environment = value.get("environment")
