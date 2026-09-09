@@ -39,6 +39,121 @@ fn evaluate_run_block() -> Result<String> {
     workflow_run_block("ripr", "Evaluate routed result")
 }
 
+#[test]
+fn hosted_measurement_is_manual_bounded_and_separate_from_required_gate() -> Result<()> {
+    let root = project_root()?;
+    let workflow: Value =
+        serde_yaml_ng::from_str(&fs::read_to_string(root.join(".github/workflows/ripr.yml"))?)?;
+    let jobs = workflow
+        .get("jobs")
+        .and_then(Value::as_mapping)
+        .ok_or_else(|| anyhow!("ripr workflow has no jobs mapping"))?;
+    let hosted = jobs
+        .get("ripr-hosted-measurement")
+        .ok_or_else(|| anyhow!("hosted measurement job is missing"))?;
+    let condition = hosted
+        .get("if")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("hosted measurement must have an if condition"))?;
+    ensure!(
+        condition.contains("github.event_name == 'workflow_dispatch'")
+            && condition.contains("inputs.ripr_hosted_measurement == true"),
+        "hosted measurement must be manual-only behind its dedicated input"
+    );
+    ensure!(
+        hosted.get("runs-on").and_then(Value::as_str) == Some("ubuntu-24.04"),
+        "hosted measurement must use the GitHub-hosted Linux runner"
+    );
+    ensure!(hosted.get("needs").is_none(), "hosted measurement must not feed the required gate");
+    let steps = hosted
+        .get("steps")
+        .and_then(Value::as_sequence)
+        .ok_or_else(|| anyhow!("hosted measurement steps are missing"))?;
+    let run = steps
+        .iter()
+        .filter_map(|step| step.get("run").and_then(Value::as_str))
+        .find(|run| run.contains("docker run --rm"))
+        .ok_or_else(|| anyhow!("hosted measurement Docker run is missing"))?;
+    for required in [
+        "job_phase=host-start",
+        "timeout --signal=TERM --kill-after=10s 3m docker pull",
+        "pull_status=$?",
+        "timeout --signal=TERM --kill-after=5s 15s docker image inspect",
+        "inspect_id_status=$?",
+        "inspect_digest_status=$?",
+        "timeout --signal=TERM --kill-after=30s 65m docker run",
+        "container_status=$?",
+        "--memory=6g",
+        "--memory-swap=6g",
+        "RIPR_MAX_DIFF_INDEX_FILES",
+        "git config --global --add safe.directory /workspace",
+        "cargo install ripr --version \"$RIPR_VERSION\" --locked",
+        "/usr/bin/time -v",
+        "cargo xtask ripr-pr --base",
+    ] {
+        ensure!(run.contains(required), "hosted measurement is missing `{required}`");
+    }
+    ensure!(
+        run.contains("ripr-measurement-config.txt") && run.contains("ripr-measurement-time.txt"),
+        "hosted measurement must retain identity and peak-time evidence"
+    );
+    let hosted_env = hosted
+        .get("env")
+        .and_then(Value::as_mapping)
+        .ok_or_else(|| anyhow!("hosted measurement environment is missing"))?;
+    ensure!(
+        hosted_env.get("PR_HEAD_SHA").and_then(Value::as_str)
+            == Some("${{ inputs.measurement_head_sha }}")
+            && hosted_env.get("MEASUREMENT_HEAD_SHA").and_then(Value::as_str)
+                == Some("${{ inputs.measurement_head_sha }}")
+            && hosted_env.get("MEASUREMENT_BASE_SHA").and_then(Value::as_str)
+                == Some("${{ inputs.measurement_base_sha }}")
+            && hosted_env.get("WORKFLOW_SHA").and_then(Value::as_str) == Some("${{ github.sha }}"),
+        "hosted measurement must bind source and workflow identities separately"
+    );
+    let checkout = steps
+        .iter()
+        .find(|step| step.get("name").and_then(Value::as_str) == Some("Checkout"))
+        .ok_or_else(|| anyhow!("hosted measurement checkout is missing"))?;
+    let checkout_with = checkout
+        .get("with")
+        .and_then(Value::as_mapping)
+        .ok_or_else(|| anyhow!("hosted measurement checkout options are missing"))?;
+    ensure!(
+        checkout_with.get("ref").and_then(Value::as_str)
+            == Some("${{ inputs.measurement_head_sha }}")
+            && checkout_with.get("persist-credentials").and_then(Value::as_bool) == Some(false),
+        "hosted measurement checkout must use the exact source head without credentials"
+    );
+    let input_block = workflow
+        .get("on")
+        .and_then(|on| on.get("workflow_dispatch"))
+        .and_then(|dispatch| dispatch.get("inputs"))
+        .ok_or_else(|| anyhow!("workflow_dispatch inputs are missing"))?;
+    ensure!(
+        input_block.get("ripr_measurement").is_some()
+            && input_block.get("ripr_hosted_measurement").is_some()
+            && input_block.get("measurement_head_sha").is_some()
+            && input_block.get("measurement_base_sha").is_some(),
+        "CX53 and hosted experiments must use distinct manual inputs"
+    );
+    let cx53 = jobs.get("ripr-cx53").ok_or_else(|| anyhow!("CX53 job is missing"))?;
+    let cx53_runs = cx53
+        .get("steps")
+        .and_then(Value::as_sequence)
+        .into_iter()
+        .flatten()
+        .filter_map(|step| step.get("run").and_then(Value::as_str))
+        .collect::<Vec<_>>();
+    ensure!(
+        cx53_runs
+            .iter()
+            .any(|run| run.contains("--memory=28g") || run.contains("--memory=\"28g\"")),
+        "ordinary CX53 measurement must retain its 28 GiB bound"
+    );
+    Ok(())
+}
+
 fn evaluate_gh_token_binding() -> Result<String> {
     workflow_step_value("ripr", "Evaluate routed result")?
         .get("env")
