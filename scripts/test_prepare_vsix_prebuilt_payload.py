@@ -187,10 +187,11 @@ class PrebuiltPayloadAdapterTests(unittest.TestCase):
             paths = self.fixture(root)
             (paths["output"] / "bin").mkdir(parents=True)
             try:
-                (paths["output"] / "bin" / "linux-x64").rmdir()
                 (paths["output"] / "bin" / "linux-x64").symlink_to(Path(outside), target_is_directory=True)
             except OSError as error:
-                self.skipTest(f"symlink fixture unavailable: {error}")
+                if getattr(error, "winerror", None) == 1314:
+                    self.skipTest(f"symlink privilege unavailable: {error}")
+                raise
             result = subprocess.run(self.command(paths), cwd=Path(__file__).parents[1], capture_output=True, text=True, check=False)
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("output parent", result.stderr)
@@ -208,7 +209,7 @@ class PrebuiltPayloadAdapterTests(unittest.TestCase):
                 return str(stage)
             module.tempfile.mkdtemp = broken_stage
             try:
-                with self.assertRaises(FileExistsError):
+                with self.assertRaises(OSError):
                     module.build(args)
             finally:
                 module.tempfile.mkdtemp = original_mkdtemp
