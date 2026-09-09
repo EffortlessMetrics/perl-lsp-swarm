@@ -567,7 +567,6 @@ export async function runDiscoveredIncludePathGuidance(
       }
 
       const currentDiscovered: string[] = [];
-      let currentComplete = true;
       for (const candidate of finding.discovered) {
         let candidateRealPath: string | undefined;
         try {
@@ -598,8 +597,6 @@ export async function runDiscoveredIncludePathGuidance(
           candidateRealPath,
         );
         const scan = await directoryContainsPerlModule(candidateRealPath);
-        currentComplete =
-          currentComplete && coverage.complete && descendant.complete && scan.complete;
         if (coverage.covered || descendant.covered || !scan.found) {
           stale.push(finding.folder.name);
           continue;
@@ -654,19 +651,9 @@ export async function runDiscoveredIncludePathGuidance(
           stale.push(finding.folder.name);
           continue;
         }
-        const currentSignature = crypto
-          .createHash('sha256')
-          .update(
-            JSON.stringify({
-              folderUri: finding.folderUri,
-              rootRealPath: finalRootRealPath,
-              includePathsFingerprint: includePathsFingerprint(finalIncludePaths),
-              complete: finding.complete && currentComplete,
-              discovered: currentDiscovered.slice().sort(),
-            }),
-          )
-          .digest('hex');
-        await context.globalState.update(finding.cacheKey, currentSignature);
+        // The accepted paths are now covered by configuration. Clear the old
+        // pre-update dismissal so removing one later can prompt again.
+        await context.globalState.update(finding.cacheKey, undefined);
         applied.push(`${finding.folder.name}: ${currentDiscovered.join(', ')}`);
       } catch (error: unknown) {
         void vscode.window.showWarningMessage(

@@ -195,7 +195,11 @@ test('configuration changes invalidate a prior discovery dismissal', async () =>
   mountWorkspace(workspaceDir, includePaths);
   await runDiscoveredIncludePathGuidance({ globalState } as unknown as vscode.ExtensionContext);
 
-  expect(vscode.window.showInformationMessage).toHaveBeenCalledTimes(2);
+  expect(
+    (vscode.window.showInformationMessage as jest.Mock).mock.calls.filter(([message]) =>
+      String(message).includes('found Perl module roots outside'),
+    ),
+  ).toHaveLength(2);
 });
 
 test('workspace-folder removal invalidates dismissal for a replacement with the same URI', async () => {
@@ -419,7 +423,44 @@ test('adds discovered module directories for the owning workspace folder', async
   );
   expect(globalState.update).toHaveBeenCalledWith(
     expect.stringContaining('perl-lsp.includePathsSuggestion.'),
-    expect.any(String),
+    undefined,
+  );
+});
+
+test('removing an accepted discovered path allows the suggestion again', async () => {
+  const workspaceDir = tempWorkspace('perl-lsp-guidance-removed-accepted-');
+  fs.mkdirSync(path.join(workspaceDir, 'src'), { recursive: true });
+  fs.writeFileSync(path.join(workspaceDir, 'src', 'Module.pm'), 'package Module; 1;\n');
+  const globalState = makeState();
+  const folder = folderFor(workspaceDir);
+  workspaceMock.workspaceFolders = [folder];
+  let includePaths = ['lib'];
+  const update = jest.fn(async () => undefined);
+  (vscode.workspace.getConfiguration as jest.Mock).mockImplementation(() => ({
+    get: jest.fn((_key: string, defaultValue?: unknown) => includePaths ?? defaultValue),
+    inspect: jest.fn(() => ({ defaultValue: ['lib', 'local/lib/perl5'] })),
+    update,
+  }));
+  (vscode.window.showInformationMessage as jest.Mock)
+    .mockResolvedValueOnce('Add for These Folders')
+    .mockResolvedValueOnce('Dismiss');
+
+  const context = { globalState } as unknown as vscode.ExtensionContext;
+  await runDiscoveredIncludePathGuidance(context);
+  includePaths = ['lib', 'src'];
+  await runDiscoveredIncludePathGuidance(context);
+  includePaths = ['lib'];
+  await runDiscoveredIncludePathGuidance(context);
+
+  expect(
+    (vscode.window.showInformationMessage as jest.Mock).mock.calls.filter(([message]) =>
+      String(message).includes('found Perl module roots outside'),
+    ),
+  ).toHaveLength(2);
+  expect(update).toHaveBeenCalledWith(
+    'includePaths',
+    expect.arrayContaining(['src']),
+    vscode.ConfigurationTarget.WorkspaceFolder,
   );
 });
 
