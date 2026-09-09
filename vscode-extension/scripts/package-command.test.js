@@ -238,10 +238,12 @@ void test('manifest staging rolls back partial writes and rejects symlink destin
   });
   const writes = [];
   const removals = [];
+  const chmods = [];
+  const priorServerPath = path.join('bin', 'win32-x64', 'perllsp.exe');
   const projectionPath = 'projection.json';
   /** @type {any} */
   const fileSystem = {
-    existsSync: () => false,
+    existsSync: (file) => file.endsWith(priorServerPath),
     readFileSync: (file, encoding) => {
       if (file === 'manifest.json')
         return encoding ? JSON.stringify(manifest) : Buffer.from(JSON.stringify(manifest));
@@ -251,6 +253,7 @@ void test('manifest staging rolls back partial writes and rejects symlink destin
           : Buffer.from(JSON.stringify(projectionInput()));
       if (file === 'server.bin') return serverBytes;
       if (file === 'dap.bin') return dapBytes;
+      if (file.endsWith(priorServerPath)) return Buffer.from('prior-server');
       throw new Error(`unexpected read: ${file}`);
     },
     mkdirSync: () => {},
@@ -259,6 +262,8 @@ void test('manifest staging rolls back partial writes and rejects symlink destin
       if (writes.length === 2) throw new Error('simulated second payload failure');
     },
     rmSync: (file) => removals.push(file),
+    lstatSync: () => ({ mode: 0o640, isSymbolicLink: () => false }),
+    chmodSync: (file, mode) => chmods.push({ file, mode }),
   };
   assert.throws(
     () =>
@@ -273,7 +278,8 @@ void test('manifest staging rolls back partial writes and rejects symlink destin
       }),
     /simulated second payload failure/,
   );
-  assert.equal(removals.length, 2);
+  assert.equal(removals.length, 1);
+  assert.equal(chmods.at(-1).mode & 0o777, 0o640);
 
   assert.throws(
     () =>
@@ -519,6 +525,7 @@ void test(
     fs.writeFileSync(manifestPath, JSON.stringify(manifest));
     fs.writeFileSync(projectionPath, JSON.stringify(posixProjectionInput()));
     const destination = path.join(stagingRoot, 'bin', 'linux-x64', 'perllsp');
+    const dapDestination = path.join(stagingRoot, 'bin', 'linux-x64', 'perl-dap');
     fs.mkdirSync(path.dirname(destination), { recursive: true });
     fs.writeFileSync(destination, Buffer.from('prior-server'));
     fs.chmodSync(destination, 0o640);
@@ -537,9 +544,11 @@ void test(
         stagingRoot,
       );
       assert.equal(fs.statSync(destination).mode & 0o111, 0o111);
+      assert.equal(fs.statSync(dapDestination).mode & 0o111, 0o111);
       staged.cleanup();
       assert.deepEqual(fs.readFileSync(destination), Buffer.from('prior-server'));
       assert.equal(fs.statSync(destination).mode & 0o777, 0o640);
+      assert.equal(fs.existsSync(dapDestination), false);
     } finally {
       fs.rmSync(stagingRoot, { recursive: true, force: true });
     }
