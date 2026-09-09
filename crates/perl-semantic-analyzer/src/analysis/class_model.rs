@@ -1594,6 +1594,8 @@ impl ClassModelBuilder {
     }
 
     fn native_named_writers_allowed(&self, offset: usize) -> bool {
+        // Capability gate, not feature-bundle identity: build() obtains this
+        // admission state from the AST's pragma tracker, not caller-supplied state.
         self.current_framework == Framework::NativeClass
             && PragmaTracker::state_for_offset(&self.pragma_map, offset)
                 .perl_version

@@ -63,6 +63,21 @@ pub enum DeclaredDependencySource {
 }
 
 impl DeclaredDependencySource {
+    /// Every declared-dependency metadata source, in detection order.
+    ///
+    /// [`detect_declared_dependencies`] iterates this list, so it is the exact
+    /// set of workspace-root files that produce declared-dependency facts.
+    /// `super::project_metadata` classifies watched paths from the same list
+    /// (#13640), which keeps detection and invalidation from drifting apart.
+    pub const ALL: [Self; 6] = [
+        Self::Cpanfile,
+        Self::MakefilePl,
+        Self::BuildPl,
+        Self::DistIni,
+        Self::MetaJson,
+        Self::MetaYml,
+    ];
+
     /// User-facing file label for this metadata source.
     #[must_use]
     pub fn display_name(self) -> &'static str {
@@ -73,6 +88,27 @@ impl DeclaredDependencySource {
             Self::DistIni => "dist.ini",
             Self::MetaJson => "META.json",
             Self::MetaYml => "META.yml",
+        }
+    }
+
+    /// Workspace-root-relative file name this source is read from.
+    ///
+    /// Identical to [`Self::display_name`]; named separately because callers
+    /// resolving a path depend on it being the on-disk spelling.
+    #[must_use]
+    pub fn file_name(self) -> &'static str {
+        self.display_name()
+    }
+
+    /// Literal extractor applied to this source's contents.
+    fn extractor(self) -> fn(&str) -> Vec<DeclaredDependency> {
+        match self {
+            Self::Cpanfile => extract_cpanfile_requirements,
+            Self::MakefilePl => extract_makefile_pl_requirements,
+            Self::BuildPl => extract_build_pl_requirements,
+            Self::DistIni => extract_dist_ini_requirements,
+            Self::MetaJson => extract_meta_json_requirements,
+            Self::MetaYml => extract_meta_yml_requirements,
         }
     }
 }
@@ -117,41 +153,117 @@ const BUILD_PL_KEYS: &[&str] =
 const META_RELATION_KEYS: &[&str] =
     &["requires", "recommends", "build_requires", "test_requires", "configure_requires"];
 
+/// Authoritative text captured for one declared-dependency metadata source.
+///
+/// The watcher route (#13640) resolves each source exactly once per refresh and
+/// passes the outcome here, so detection consumes the same bytes the caller
+/// already observed. That removes the read-twice window in which a source could
+/// succeed during a readability probe and then fail when the detector reopened
+/// it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MetadataSourceRead {
+    /// Authoritative text: the file's bytes, or an open buffer's staged text.
+    Text(String),
+    /// The source does not exist and declares nothing.
+    Absent,
+    /// The source exists but could not be read as text.
+    Unreadable,
+}
+
+/// Compose declared dependencies from per-source captured reads.
+///
+/// Sources are consumed in [`DeclaredDependencySource::ALL`] order and the
+/// first declaration of a module wins, matching
+/// [`detect_declared_dependencies`].
+///
+/// Retention is per source, not per folder: an [`MetadataSourceRead::Unreadable`]
+/// source contributes its entries from `previous`, so an unreadable `META.yml`
+/// cannot erase what a readable `cpanfile` declares, and an unknown source is
+/// never silently downgraded to "declares nothing". An
+/// [`MetadataSourceRead::Absent`] source contributes nothing, which is how a
+/// genuine delete drops its declarations.
+///
+/// `reads` need not be complete. A source it does not mention is *unknown*,
+/// not absent, and retains its previous entries exactly as an unreadable one
+/// does. Every current caller resolves all of
+/// [`DeclaredDependencySource::ALL`], so this decides nothing today; it is
+/// defined this way because the alternative is that a partial slice silently
+/// erases facts about sources it makes no claim about, and `Absent` — the
+/// variant that drops declarations — should only ever come from a caller that
+/// actually looked. Staleness is the caller's to record: omission says nothing
+/// was observed, so an omitting caller that wants the folder marked stale must
+/// say so itself.
+///
+/// # Retention limit for shadowed declarations
+///
+/// `previous` is the deduplicated view, so a module declared by two sources is
+/// recorded once, attributed to the earlier one. If the earlier source is
+/// readable and drops that module while the later source becomes unreadable,
+/// the later source has no retained entry to contribute and the module
+/// disappears, even though the unreadable file may still declare it.
+///
+/// This is a deliberate limit rather than an oversight: recovering it would
+/// require retaining per-source declarations before deduplication, and the
+/// alternative — keeping any module no resolved source declares — would
+/// resurrect modules the readable source deliberately removed, which is a
+/// worse error. The folder is reported stale whenever any source is
+/// unreadable, so the uncertainty is visible rather than silent.
+#[must_use]
+pub fn declared_dependencies_from_reads(
+    reads: &[(DeclaredDependencySource, MetadataSourceRead)],
+    previous: &[DeclaredDependency],
+) -> Vec<DeclaredDependency> {
+    let mut dependencies = Vec::new();
+    // Iterate the canonical order and look each source up, rather than walking
+    // `reads` in whatever order the caller assembled it. Precedence is a
+    // property of `DeclaredDependencySource::ALL` — it is what
+    // `detect_declared_dependencies` uses — so letting the argument order
+    // decide would make the same inputs resolve a duplicate module differently
+    // depending on who built the slice.
+    for source in DeclaredDependencySource::ALL {
+        let Some((_, read)) = reads.iter().find(|(candidate, _)| *candidate == source) else {
+            // Unknown, not absent — see the contract above.
+            retain_previous(&mut dependencies, previous, source);
+            continue;
+        };
+        match read {
+            MetadataSourceRead::Text(text) => {
+                for dependency in source.extractor()(text) {
+                    push_unique(&mut dependencies, dependency);
+                }
+            }
+            MetadataSourceRead::Absent => {}
+            MetadataSourceRead::Unreadable => {
+                retain_previous(&mut dependencies, previous, source);
+            }
+        }
+    }
+    dependencies
+}
+
+/// Carry `source`'s entries from the previous snapshot into `dependencies`.
+fn retain_previous(
+    dependencies: &mut Vec<DeclaredDependency>,
+    previous: &[DeclaredDependency],
+    source: DeclaredDependencySource,
+) {
+    for dependency in previous.iter().filter(|entry| entry.source == source) {
+        push_unique(dependencies, dependency.clone());
+    }
+}
+
 /// Detect declared dependencies from common workspace-root metadata files.
 #[must_use]
 pub fn detect_declared_dependencies(workspace_root: &Path) -> Vec<DeclaredDependency> {
     let mut dependencies = Vec::new();
 
-    collect_from_file(
-        &mut dependencies,
-        &workspace_root.join("cpanfile"),
-        extract_cpanfile_requirements,
-    );
-    collect_from_file(
-        &mut dependencies,
-        &workspace_root.join("Makefile.PL"),
-        extract_makefile_pl_requirements,
-    );
-    collect_from_file(
-        &mut dependencies,
-        &workspace_root.join("Build.PL"),
-        extract_build_pl_requirements,
-    );
-    collect_from_file(
-        &mut dependencies,
-        &workspace_root.join("dist.ini"),
-        extract_dist_ini_requirements,
-    );
-    collect_from_file(
-        &mut dependencies,
-        &workspace_root.join("META.json"),
-        extract_meta_json_requirements,
-    );
-    collect_from_file(
-        &mut dependencies,
-        &workspace_root.join("META.yml"),
-        extract_meta_yml_requirements,
-    );
+    for source in DeclaredDependencySource::ALL {
+        collect_from_file(
+            &mut dependencies,
+            &workspace_root.join(source.file_name()),
+            source.extractor(),
+        );
+    }
 
     dependencies
 }
@@ -1437,5 +1549,131 @@ requires 'Kept#Tag'; # drop
         assert!(stripped.contains("'Kept#Tag'"));
         assert!(!stripped.contains("drop"));
         Ok(())
+    }
+
+    #[test]
+    fn source_precedence_does_not_depend_on_the_order_of_the_reads_slice() -> TestResult {
+        let cpanfile = MetadataSourceRead::Text("requires 'Shared::Module', '1.0';\n".to_string());
+        let meta_yml = MetadataSourceRead::Text("requires:\n  Shared::Module: '2.0'\n".to_string());
+
+        // The same two reads, assembled in opposite orders by the caller. Only
+        // `DeclaredDependencySource::ALL` may decide which source wins, so both
+        // slices must resolve the shared module to `Cpanfile`.
+        let canonical_order = declared_dependencies_from_reads(
+            &[
+                (DeclaredDependencySource::Cpanfile, cpanfile.clone()),
+                (DeclaredDependencySource::MetaYml, meta_yml.clone()),
+            ],
+            &[],
+        );
+        let reversed_order = declared_dependencies_from_reads(
+            &[
+                (DeclaredDependencySource::MetaYml, meta_yml),
+                (DeclaredDependencySource::Cpanfile, cpanfile),
+            ],
+            &[],
+        );
+
+        assert_eq!(
+            canonical_order, reversed_order,
+            "the same reads must compose identically however the caller ordered them"
+        );
+        let shared = canonical_order
+            .first()
+            .ok_or_else(|| missing("expected the shared module to be declared"))?;
+        assert_eq!(canonical_order.len(), 1, "the shared module is deduplicated to one entry");
+        assert_eq!(shared.module, "Shared::Module");
+        assert_eq!(
+            shared.source,
+            DeclaredDependencySource::Cpanfile,
+            "cpanfile precedes META.yml in DeclaredDependencySource::ALL"
+        );
+        assert_eq!(shared.version.as_deref(), Some("1.0"), "the winning source supplies the fact");
+        Ok(())
+    }
+
+    #[test]
+    fn retention_for_an_unreadable_source_does_not_depend_on_the_order_of_the_reads_slice()
+    -> TestResult {
+        // `META.yml` is unreadable and retains its own previous entry; the
+        // readable `cpanfile` declares a different module. Retention must be
+        // attributed by source, not by where the caller placed the read.
+        let previous = vec![DeclaredDependency::new(
+            "Retained::Module",
+            Some("3.0"),
+            "requires",
+            DeclaredDependencySource::MetaYml,
+        )];
+        let reads = [
+            (DeclaredDependencySource::MetaYml, MetadataSourceRead::Unreadable),
+            (
+                DeclaredDependencySource::Cpanfile,
+                MetadataSourceRead::Text("requires 'Fresh::Module', '1.0';\n".to_string()),
+            ),
+        ];
+
+        let composed = declared_dependencies_from_reads(&reads, &previous);
+        let modules: Vec<&str> = composed.iter().map(|entry| entry.module.as_str()).collect();
+        assert_eq!(
+            modules,
+            vec!["Fresh::Module", "Retained::Module"],
+            "composition follows DeclaredDependencySource::ALL, not the reads slice"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_source_missing_from_the_reads_slice_is_unknown_rather_than_absent() {
+        // Only `cpanfile` was resolved. The other five sources are unknown, so
+        // a partial slice must not erase what they previously declared —
+        // `Absent`, the variant that drops declarations, has to come from a
+        // caller that actually looked.
+        let previous = vec![
+            DeclaredDependency::new(
+                "From::MetaYml",
+                Some("2.0"),
+                "requires",
+                DeclaredDependencySource::MetaYml,
+            ),
+            DeclaredDependency::new(
+                "From::DistIni",
+                None,
+                "requires",
+                DeclaredDependencySource::DistIni,
+            ),
+        ];
+        let reads = [(
+            DeclaredDependencySource::Cpanfile,
+            MetadataSourceRead::Text("requires 'Fresh::Module', '1.0';\n".to_string()),
+        )];
+
+        let composed = declared_dependencies_from_reads(&reads, &previous);
+        let modules: Vec<&str> = composed.iter().map(|entry| entry.module.as_str()).collect();
+        assert_eq!(
+            modules,
+            vec!["Fresh::Module", "From::DistIni", "From::MetaYml"],
+            "unmentioned sources retain, in DeclaredDependencySource::ALL order"
+        );
+
+        // The contrast that makes the choice meaningful: an explicit `Absent`
+        // for the same source really does drop it.
+        let explicit_absence = declared_dependencies_from_reads(
+            &[
+                (
+                    DeclaredDependencySource::Cpanfile,
+                    MetadataSourceRead::Text("requires 'Fresh::Module', '1.0';\n".to_string()),
+                ),
+                (DeclaredDependencySource::MetaYml, MetadataSourceRead::Absent),
+                (DeclaredDependencySource::DistIni, MetadataSourceRead::Absent),
+            ],
+            &previous,
+        );
+        let dropped: Vec<&str> =
+            explicit_absence.iter().map(|entry| entry.module.as_str()).collect();
+        assert_eq!(
+            dropped,
+            vec!["Fresh::Module"],
+            "an observed absence still downgrades, which is how a real delete works"
+        );
     }
 }

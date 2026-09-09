@@ -3,6 +3,7 @@
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
+const zlib = require('zlib');
 const { spawnSync } = require('child_process');
 const AdmZip = require('adm-zip');
 const {
@@ -31,15 +32,21 @@ const DECLARATION_KEYS = [
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
 
 function parseArgs(argv) {
-  const result = { base: '', receipt: '', vsix: '' };
+  const result = { base: '', mergeBaseWith: '', receipt: '', vsix: '' };
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
-    if (argument === '--base' || argument === '--receipt' || argument === '--vsix') {
+    if (
+      argument === '--base' ||
+      argument === '--merge-base-with' ||
+      argument === '--receipt' ||
+      argument === '--vsix'
+    ) {
       const value = argv[index + 1];
       if (!value) {
         throw new Error(`${argument} requires a value`);
       }
-      result[argument.slice(2)] = value;
+      const key = argument === '--merge-base-with' ? 'mergeBaseWith' : argument.slice(2);
+      result[key] = value;
       index += 1;
     } else {
       throw new Error(`Unknown argument: ${argument}`);
@@ -115,17 +122,42 @@ function ensureDistinctBase(candidateSha, baseSha, source = 'base revision') {
   return baseSha;
 }
 
-function resolveBaseRevision(candidateSha, explicitBase = '') {
+function assertFullSha(value, label) {
+  if (!/^[0-9a-f]{40}$/.test(value)) {
+    throw new Error(`${label} must be a full lowercase commit SHA, got ${JSON.stringify(value)}`);
+  }
+}
+
+function resolvePullRequestMergeBase(candidateSha, eventBaseSha, dependencies = {}) {
+  const resolve = dependencies.resolveRevision || resolveRevision;
+  const mergeBase = dependencies.runGitOptional || runGitOptional;
+  const requested = eventBaseSha.trim();
+  assertFullSha(requested, 'pull request base revision');
+  const eventBase = resolve(requested);
+  return ensureDistinctBase(
+    candidateSha,
+    mergeBase(['merge-base', candidateSha, eventBase]),
+    'pull request merge base',
+  );
+}
+
+function resolveBaseRevision(candidateSha, explicitBase = '', pullRequestBase = '') {
   const requested = explicitBase.trim() || (process.env.PERL_LSP_PACKAGE_BASE_SHA || '').trim();
+  const eventBase =
+    pullRequestBase.trim() || (process.env.PERL_LSP_PACKAGE_PR_BASE_SHA || '').trim();
+  if (requested && eventBase) {
+    throw new Error(
+      'cannot provide both an accepted base revision and a pull request base revision',
+    );
+  }
   if (requested) {
     // An explicit base (including an all-zero placeholder) is an operator
     // claim: reject it loudly rather than silently falling back.
-    if (!/^[0-9a-f]{40}$/.test(requested)) {
-      throw new Error(
-        `requested base revision must be a full lowercase commit SHA, got ${JSON.stringify(requested)}`,
-      );
-    }
+    assertFullSha(requested, 'requested base revision');
     return ensureDistinctBase(candidateSha, resolveRevision(requested), 'requested base revision');
+  }
+  if (eventBase) {
+    return resolvePullRequestMergeBase(candidateSha, eventBase);
   }
 
   const mergeBase = runGitOptional(['merge-base', 'HEAD', 'origin/main']);
@@ -228,6 +260,30 @@ function collectArchiveInventory(vsixPath) {
     if (entry.isDirectory) {
       continue;
     }
+    const declaredSize = entry.header.size;
+    assertNonNegativeSafeInteger(
+      declaredSize,
+      `VSIX archive entry ${JSON.stringify(rawName)} size`,
+    );
+    let payload;
+    try {
+      payload = entry.getData();
+    } catch (error) {
+      throw new Error(
+        `unable to read VSIX archive entry ${JSON.stringify(rawName)}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+    if (payload.length !== declaredSize) {
+      throw new Error(
+        `VSIX archive entry ${JSON.stringify(rawName)} payload size ${payload.length} does not match header size ${declaredSize}`,
+      );
+    }
+    const payloadCrc = zlib.crc32(payload) >>> 0;
+    if (payloadCrc !== entry.header.crc >>> 0) {
+      throw new Error(
+        `VSIX archive entry ${JSON.stringify(rawName)} CRC mismatch: payload ${payloadCrc} versus header ${entry.header.crc >>> 0}`,
+      );
+    }
     if (!rawName.startsWith(VSIX_PAYLOAD_PREFIX)) {
       // `[Content_Types].xml` and `extension.vsixmanifest` are vsce packaging
       // metadata; they are outside the inventory baseline's claim but are
@@ -237,9 +293,7 @@ function collectArchiveInventory(vsixPath) {
     }
     const file = rawName.slice(VSIX_PAYLOAD_PREFIX.length);
     assertCanonicalPackagePath(file);
-    const bytes = entry.header.size;
-    assertNonNegativeSafeInteger(bytes, `VSIX archive entry ${JSON.stringify(rawName)} size`);
-    entries.push({ file, bytes });
+    entries.push({ file, bytes: declaredSize });
   }
 
   if (entries.length === 0) {
@@ -606,7 +660,7 @@ function main() {
     args = parseArgs(process.argv.slice(2));
     candidateSha = resolveRevision('HEAD');
     receiptPath = args.receipt ? path.resolve(args.receipt) : defaultReceiptPath(candidateSha);
-    baseSha = resolveBaseRevision(candidateSha, args.base);
+    baseSha = resolveBaseRevision(candidateSha, args.base, args.mergeBaseWith);
 
     if (!args.vsix) {
       throw new Error(
@@ -687,6 +741,9 @@ module.exports = {
   parseDeclarationDocument,
   parseInventoryDocument,
   projectInventory,
+  parseArgs,
+  resolveBaseRevision,
+  resolvePullRequestMergeBase,
   semanticInventorySha256,
   validateDeclaration,
   validateInventoryObject,

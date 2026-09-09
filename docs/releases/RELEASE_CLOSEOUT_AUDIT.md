@@ -110,9 +110,13 @@ gh workflow run publish-extension.yml -f version=X.Y.Z
 ### 5. Docker
 
 ```bash
-docker pull effortlessmetrics/perl-lsp:X.Y.Z
-docker pull ghcr.io/effortlessmetrics/perl-lsp:X.Y.Z
+docker pull effortlessmetrics/perl-lsp:X.Y.Z-perl
+docker pull ghcr.io/effortlessmetrics/perl-lsp-perl:X.Y.Z
 ```
+
+The runtime is the only published image. The unsuffixed tags carried the
+Rust build toolchain and are retired (#8980) — do not expect them to
+resolve, and do not re-dispatch the publish workflow to try to create them.
 
 Both should resolve. If either fails with "manifest unknown":
 
@@ -191,7 +195,7 @@ brew upgrade perllsp
 perllsp --version  # -> X.Y.Z
 
 # Docker
-docker run --rm effortlessmetrics/perl-lsp:X.Y.Z --version  # -> X.Y.Z
+docker run --rm effortlessmetrics/perl-lsp:X.Y.Z-perl --version  # -> X.Y.Z
 ```
 
 For LSP4IJ specifically (the JetBrains plugin that hit the 0.14.x
