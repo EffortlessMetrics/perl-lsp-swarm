@@ -4550,6 +4550,10 @@ esac
             let _guard = override_ripr_bin(&fake)?;
             write_pr_evidence(repo.path(), &options)?;
             check_pr_evidence(repo.path(), &options)?;
+            color_eyre::eyre::ensure!(
+                repo.path().join(PR_EVIDENCE_JSON).is_file(),
+                "healthy same-revision check must leave a readable packet"
+            );
         }
 
         // Same repository, but a base that cannot resolve: fails at the first
