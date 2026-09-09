@@ -369,15 +369,17 @@ fn pull_diagnostic_client_with_no_utf16_offer_uses_mandatory_fallback() -> Resul
         })))
         .map_err(|error| format!("valid offer without utf-16 must initialize: {error}"))?
         .ok_or("initialize returned no response")?;
-    assert_eq!(
-        response.pointer("/capabilities/positionEncoding").and_then(Value::as_str),
-        Some("utf-16")
-    );
+    if response.pointer("/capabilities/positionEncoding").and_then(Value::as_str)
+        != Some("utf-16")
+    {
+        return Err("fallback response did not advertise utf-16".to_string());
+    }
     let session = server.accepted_text_sync_session().ok_or("session was not accepted")?;
-    assert_eq!(
-        session.contract().selection_reason(),
-        super::session_contract::Utf16SelectionReason::MandatoryUtf16Fallback
-    );
+    if session.contract().selection_reason()
+        != super::session_contract::Utf16SelectionReason::MandatoryUtf16Fallback
+    {
+        return Err("valid offer without utf-16 did not record mandatory fallback".to_string());
+    }
     Ok(())
 }
 
