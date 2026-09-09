@@ -41,6 +41,7 @@ const SCOPE_FRAME_ID_MAX: u64 = 99_999;
 fn read_debugger_record<R: Read>(
     reader: &mut BufReader<R>,
     line: &mut String,
+    allow_unterminated_prompt: bool,
 ) -> std::io::Result<usize> {
     let mut bytes = Vec::new();
     loop {
@@ -57,7 +58,7 @@ fn read_debugger_record<R: Read>(
         if byte == b'\n' {
             break;
         }
-        if byte == b'>' && is_strict_prompt_candidate(&bytes) {
+        if allow_unterminated_prompt && byte == b'>' && is_strict_prompt_candidate(&bytes) {
             // If the buffered stream already contains more non-whitespace text,
             // this is an ordinary output line beginning with a prompt-shaped
             // token, not a prompt-only record.
@@ -951,7 +952,11 @@ impl DebugAdapter {
             // Diagnostic and stack-fallback locations are useful for later
             // stops, but only perl5db's native context line authorizes the
             // pending initial entry stop.
-            let mut native_context_observed = false;
+            // An unterminated `DB<N>` is only a prompt when it immediately
+            // follows a native context in the current stop sequence. Keeping
+            // this expectation per stop prevents a debuggee's delayed
+            // `DB<N>`-shaped output from becoming a phantom stop.
+            let mut native_context_pending_prompt = false;
             let mut _debugger_ready = false;
             // Most recent `error_re` message line (`<text> at FILE line N`). An
             // uncaught die arrives as that message line followed by the bare
@@ -969,7 +974,7 @@ impl DebugAdapter {
 
             loop {
                 line.clear();
-                match read_debugger_record(&mut reader, &mut line) {
+                match read_debugger_record(&mut reader, &mut line, native_context_pending_prompt) {
                     Ok(0) => {
                         tracing::debug!("Perl debugger process terminated");
                         // Settle every pending framed operation first (#8564):
@@ -1149,6 +1154,7 @@ impl DebugAdapter {
                         // Enhanced context information parsing with multiple patterns
                         let mut context_updated = false;
                         let mut native_context_updated = false;
+                        let mut native_context_has_source = false;
                         // Whether THIS line is the perl5db die/warn-handler suffix
                         // (` at FILE line N.`) — the stream signal that the
                         // debugger's `__DIE__` handler observed an uncaught `die`.
@@ -1158,27 +1164,47 @@ impl DebugAdapter {
                         if let Some(re) = context_re()
                             && let Some(caps) = re.captures(&analysis_text)
                         {
-                            native_context_observed = true;
                             native_context_updated = true;
                             if let Some(func) = caps.name("func") {
                                 current_func = func.as_str().to_string();
                                 context_updated = true;
                             }
-                            if let Some(file) = caps.name("file").or_else(|| caps.name("file2")) {
+                            let has_file_capture = if let Some(file) =
+                                caps.name("file").or_else(|| caps.name("file2"))
+                            {
                                 current_file = file.as_str().to_string();
                                 context_updated = true;
-                            }
-                            if let Some(line_num) = caps.name("line").or_else(|| caps.name("line2"))
+                                true
+                            } else {
+                                false
+                            };
+                            let has_line_capture = if let Some(line_num) =
+                                caps.name("line").or_else(|| caps.name("line2"))
                             {
                                 current_line = line_num.as_str().parse::<i32>().unwrap_or(0);
                                 context_updated = true;
-                            }
+                                true
+                            } else {
+                                false
+                            };
+                            native_context_has_source = has_file_capture
+                                && has_line_capture
+                                && !current_file.is_empty()
+                                && current_line > 0;
                         }
 
                         if native_context_updated {
-                            native_context_file = current_file.clone();
-                            native_context_func = current_func.clone();
-                            native_context_line = current_line;
+                            if native_context_has_source {
+                                native_context_file = current_file.clone();
+                                native_context_func = current_func.clone();
+                                native_context_line = current_line;
+                                native_context_pending_prompt = true;
+                            } else {
+                                native_context_pending_prompt = false;
+                                native_context_file.clear();
+                                native_context_func.clear();
+                                native_context_line = 0;
+                            }
                         }
 
                         // Try stack frame pattern as fallback
@@ -1310,7 +1336,7 @@ impl DebugAdapter {
                                     let current_frame_id = current_stopped_frame_id(s, was_running);
                                     if !current_file.is_empty()
                                         && current_line > 0
-                                        && (!s.entry_stop_pending || native_context_updated)
+                                        && (!s.entry_stop_pending || native_context_has_source)
                                     {
                                         s.stack_frames = vec![StackFrame {
                                             id: current_frame_id,
@@ -1342,7 +1368,7 @@ impl DebugAdapter {
                                         let has_source_frame =
                                             !current_file.is_empty() && current_line > 0;
                                         let has_authoritative_source_frame =
-                                            native_context_observed && has_source_frame;
+                                            native_context_has_source && has_source_frame;
                                         let entry_stop =
                                             s.entry_stop_pending && has_authoritative_source_frame;
                                         // A context-shaped line can be debuggee output (for
@@ -1554,9 +1580,11 @@ impl DebugAdapter {
                                 };
                                 if let Some(ref mut s) = *guard {
                                     let was_running = matches!(s.state, DebugState::Running);
+                                    let prompt_has_native_context = native_context_pending_prompt;
+                                    native_context_pending_prompt = false;
                                     let (prompt_file, prompt_func, prompt_line) = if s
                                         .entry_stop_pending
-                                        && native_context_observed
+                                        && prompt_has_native_context
                                     {
                                         (
                                             native_context_file.clone(),
@@ -1580,9 +1608,11 @@ impl DebugAdapter {
                                     let has_source_frame =
                                         !prompt_file.is_empty() && prompt_line > 0;
                                     let has_authoritative_source_frame =
-                                        native_context_observed && has_source_frame;
+                                        prompt_has_native_context && has_source_frame;
+                                    let can_admit_source_frame = has_source_frame
+                                        && (!s.entry_stop_pending || prompt_has_native_context);
                                     // Create stack frame with enhanced context validation
-                                    if has_source_frame {
+                                    if can_admit_source_frame {
                                         let frame = StackFrame {
                                             id: current_frame_id,
                                             name: if prompt_func.is_empty() {
@@ -2944,6 +2974,96 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn output_reader_does_not_stop_on_delayed_prompt_prefix() -> Result<(), String> {
+        use super::{DapMessage, DebugSession, ResumeMode, VariableCache, lock_or_recover};
+        use std::io::Write;
+        use std::path::PathBuf;
+        use std::process::{Command, Stdio};
+        use std::sync::atomic::Ordering;
+        use std::sync::mpsc::{RecvTimeoutError, sync_channel};
+        use std::time::Duration;
+
+        let (sender, receiver) = sync_channel(32);
+        let mut adapter = DebugAdapter::new();
+        adapter.set_event_sender(sender);
+        adapter.initialized.store(true, Ordering::Release);
+        let mut child = Command::new("sh")
+            .args([
+                "-c",
+                "printf 'DB<12>' >&2; printf 'PREFIX_READY\\n'; read release; printf ' ordinary output\\nPREFIX_DONE\\n' >&2",
+            ])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|error| format!("failed to spawn delayed-prefix fixture: {error}"))?;
+        let stdout = child.stdout.take().ok_or("delayed-prefix fixture stdout missing")?;
+        let (ready_sender, ready_receiver) = sync_channel(1);
+        std::thread::spawn(move || {
+            let mut ready = BufReader::new(stdout);
+            let mut marker = String::new();
+            let result = std::io::BufRead::read_line(&mut ready, &mut marker)
+                .map(|_| marker)
+                .map_err(|error| error.to_string());
+            let _ = ready_sender.send(result);
+        });
+        *lock_or_recover(&adapter.session, "test.session") = Some(DebugSession {
+            process: child,
+            state: DebugState::Running,
+            stack_frames: Vec::new(),
+            stack_frame_arguments: HashMap::new(),
+            variable_cache: VariableCache::default(),
+            thread_id: 1,
+            last_resume_mode: ResumeMode::Unknown,
+            entry_stop_pending: false,
+            stopped_generation: 0,
+        });
+        adapter.start_output_reader(PathBuf::from("/tmp"));
+        let marker = ready_receiver
+            .recv_timeout(Duration::from_secs(2))
+            .map_err(|error| format!("delayed-prefix fixture did not signal readiness: {error}"))?
+            .map_err(|error| format!("delayed-prefix readiness read failed: {error}"))?;
+        if marker != "PREFIX_READY\n" {
+            return Err(format!("unexpected delayed-prefix readiness marker: {marker:?}"));
+        }
+        {
+            let mut guard = lock_or_recover(&adapter.session, "test.session");
+            let session = guard.as_mut().ok_or("reader cleared test session")?;
+            let stdin =
+                session.process.stdin.as_mut().ok_or("delayed-prefix fixture stdin missing")?;
+            stdin
+                .write_all(b"\n")
+                .map_err(|error| format!("failed to release fixture: {error}"))?;
+            stdin.flush().map_err(|error| format!("failed to flush fixture release: {error}"))?;
+        }
+        loop {
+            match receiver.recv_timeout(Duration::from_secs(3)) {
+                Ok(DapMessage::Event { event, body, .. }) if event == "stopped" => {
+                    return Err(format!("delayed prompt prefix fabricated a stop: {body:?}"));
+                }
+                Ok(DapMessage::Event { event, body, .. }) if event == "output" => {
+                    let output = body
+                        .as_ref()
+                        .and_then(|value| value.get("output"))
+                        .and_then(|value| value.as_str())
+                        .unwrap_or_default();
+                    if output.contains("PREFIX_DONE") {
+                        return Ok(());
+                    }
+                }
+                Ok(_) => {}
+                Err(RecvTimeoutError::Timeout) => {
+                    return Err("delayed-prefix fixture timed out".into());
+                }
+                Err(RecvTimeoutError::Disconnected) => {
+                    return Err("delayed-prefix reader disconnected".into());
+                }
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn output_reader_entry_uses_latest_native_context_after_warning() -> Result<(), String> {
         use super::{DapMessage, DebugSession, ResumeMode, VariableCache, lock_or_recover};
         use std::path::PathBuf;
@@ -3019,12 +3139,12 @@ mod tests {
 
         let mut reader = BufReader::new(Cursor::new(b"DB<1> ordinary output\nDB<2>"));
         let mut line = String::new();
-        let first = read_debugger_record(&mut reader, &mut line)
+        let first = read_debugger_record(&mut reader, &mut line, true)
             .map_err(|error| format!("failed to read ordinary output: {error}"))?;
         if first == 0 || line != "DB<1> ordinary output\n" {
             return Err(format!("prompt-shaped output was split: bytes={first}, line={line:?}"));
         }
-        let second = read_debugger_record(&mut reader, &mut line)
+        let second = read_debugger_record(&mut reader, &mut line, true)
             .map_err(|error| format!("failed to read prompt record: {error}"))?;
         if second == 0 || line != "DB<2>" {
             return Err(format!(
@@ -3035,19 +3155,89 @@ mod tests {
     }
 
     #[test]
+    fn debugger_record_reader_does_not_frame_delayed_prompt_prefix() -> Result<(), String> {
+        use std::io::Read as IoRead;
+        use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
+        use std::time::Duration;
+
+        struct DelayedPromptPrefix {
+            release: Receiver<()>,
+            ready: SyncSender<()>,
+            first_read: bool,
+        }
+
+        impl IoRead for DelayedPromptPrefix {
+            fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+                if self.first_read {
+                    self.first_read = false;
+                    buffer
+                        .get_mut(..6)
+                        .ok_or_else(|| std::io::Error::other("reader buffer too small"))?
+                        .copy_from_slice(b"DB<12>");
+                    self.ready
+                        .send(())
+                        .map_err(|_| std::io::Error::other("reader readiness receiver closed"))?;
+                    return Ok(6);
+                }
+                self.release
+                    .recv()
+                    .map_err(|_| std::io::Error::other("delayed prompt release sender closed"))?;
+                buffer
+                    .get_mut(..17)
+                    .ok_or_else(|| std::io::Error::other("reader buffer too small"))?
+                    .copy_from_slice(b" ordinary output\n");
+                Ok(17)
+            }
+        }
+
+        let (release_sender, release_receiver) = sync_channel(0);
+        let (ready_sender, ready_receiver) = sync_channel(0);
+        let (result_sender, result_receiver) = sync_channel(1);
+        let reader = std::thread::spawn(move || {
+            let input = DelayedPromptPrefix {
+                release: release_receiver,
+                ready: ready_sender,
+                first_read: true,
+            };
+            let mut reader = BufReader::new(input);
+            let mut line = String::new();
+            let result = read_debugger_record(&mut reader, &mut line, false).map(|_| line);
+            let _ = result_sender.send(result);
+        });
+
+        ready_receiver
+            .recv_timeout(Duration::from_secs(2))
+            .map_err(|error| format!("delayed prefix fixture did not start: {error}"))?;
+        let premature = !matches!(result_receiver.try_recv(), Err(TryRecvError::Empty));
+        release_sender.send(()).map_err(|_| "delayed prompt release failed".to_string())?;
+        let result = result_receiver
+            .recv_timeout(Duration::from_secs(2))
+            .map_err(|error| format!("delayed prompt fixture did not complete: {error}"))?
+            .map_err(|error| format!("delayed prompt fixture read failed: {error}"))?;
+        reader.join().map_err(|_| "delayed prompt reader panicked".to_string())?;
+        if premature {
+            return Err("delayed DB prompt prefix was framed before its suffix".into());
+        }
+        if result != "DB<12> ordinary output\n" {
+            return Err(format!("delayed prompt prefix was misframed as {result:?}"));
+        }
+        Ok(())
+    }
+
+    #[test]
     fn debugger_record_reader_rejects_bare_prompt_and_invalid_utf8() -> Result<(), String> {
         use std::io::Cursor;
 
         let mut bare = BufReader::new(Cursor::new(b"DB\n"));
         let mut line = String::new();
-        read_debugger_record(&mut bare, &mut line)
+        read_debugger_record(&mut bare, &mut line, false)
             .map_err(|error| format!("failed to read bare DB output: {error}"))?;
         if line != "DB\n" {
             return Err(format!("bare DB output was misclassified: {line:?}"));
         }
 
         let mut invalid = BufReader::new(Cursor::new(vec![0xff, b'\n']));
-        match read_debugger_record(&mut invalid, &mut line) {
+        match read_debugger_record(&mut invalid, &mut line, false) {
             Err(error) if error.kind() == std::io::ErrorKind::InvalidData => Ok(()),
             Ok(_) => Err("invalid UTF-8 was accepted".into()),
             Err(error) => Err(format!("invalid UTF-8 returned wrong error: {error}")),
@@ -3060,12 +3250,12 @@ mod tests {
 
         let mut reader = BufReader::new(Cursor::new(b"DB<3> \nDB<4>"));
         let mut line = String::new();
-        read_debugger_record(&mut reader, &mut line)
+        read_debugger_record(&mut reader, &mut line, true)
             .map_err(|error| format!("failed to read padded prompt: {error}"))?;
         if line != "DB<3> \n" {
             return Err(format!("padded prompt was not framed: {line:?}"));
         }
-        read_debugger_record(&mut reader, &mut line)
+        read_debugger_record(&mut reader, &mut line, true)
             .map_err(|error| format!("failed to read next prompt: {error}"))?;
         if line != "DB<4>" {
             return Err(format!("next prompt was not preserved: {line:?}"));
@@ -3091,7 +3281,7 @@ mod tests {
         let reader = std::thread::spawn(move || {
             let mut reader = BufReader::new(stdout);
             let mut line = String::new();
-            let result = read_debugger_record(&mut reader, &mut line).map(|_| line);
+            let result = read_debugger_record(&mut reader, &mut line, true).map(|_| line);
             let _ = sender.send(result);
         });
         let outcome = receiver
@@ -3129,7 +3319,7 @@ mod tests {
         let reader = std::thread::spawn(move || {
             let mut reader = BufReader::new(stdout);
             let mut line = String::new();
-            let result = read_debugger_record(&mut reader, &mut line).map(|_| line);
+            let result = read_debugger_record(&mut reader, &mut line, true).map(|_| line);
             let _ = sender.send(result);
         });
         let outcome = receiver
@@ -3165,7 +3355,7 @@ mod tests {
         let reader = std::thread::spawn(move || {
             let mut reader = BufReader::new(stdout);
             let mut line = String::new();
-            let result = read_debugger_record(&mut reader, &mut line).map(|_| line);
+            let result = read_debugger_record(&mut reader, &mut line, true).map(|_| line);
             let _ = sender.send(result);
         });
         let outcome = receiver
