@@ -2558,7 +2558,7 @@
       "state": "active"
     },
     {
-      "path": "crates/perl-kwalitee/tests/legacy_parity.rs",
+      "path": "crates/perl-release-readiness/tests/legacy_parity.rs",
       "enclosing_test_or_function": "load_manifest",
       "macro_family": "panic!",
       "normalized_snippet": ".unwrap_or_else(|error| panic!(\"read {}: {error}\", path.display()));",
@@ -2639,7 +2639,7 @@
       "state": "active"
     },
     {
-      "path": "crates/perl-kwalitee/tests/legacy_parity.rs",
+      "path": "crates/perl-release-readiness/tests/legacy_parity.rs",
       "enclosing_test_or_function": "load_manifest",
       "macro_family": "panic!",
       "normalized_snippet": "parse_manifest(&text).unwrap_or_else(|error| panic!(\"decode {}: {error}\", path.display()))",
@@ -2648,7 +2648,7 @@
       "state": "active"
     },
     {
-      "path": "crates/perl-kwalitee/tests/legacy_parity.rs",
+      "path": "crates/perl-release-readiness/tests/legacy_parity.rs",
       "enclosing_test_or_function": "materialize_inputs",
       "macro_family": "panic!",
       "normalized_snippet": ".unwrap_or_else(|error| panic!(\"create {}: {error}\", parent.display()));",
@@ -2657,7 +2657,7 @@
       "state": "active"
     },
     {
-      "path": "crates/perl-kwalitee/tests/legacy_parity.rs",
+      "path": "crates/perl-release-readiness/tests/legacy_parity.rs",
       "enclosing_test_or_function": "materialize_inputs",
       "macro_family": "panic!",
       "normalized_snippet": ".unwrap_or_else(|error| panic!(\"write {}: {error}\", destination.display()));",
@@ -2666,7 +2666,7 @@
       "state": "active"
     },
     {
-      "path": "crates/perl-kwalitee/tests/legacy_parity.rs",
+      "path": "crates/perl-release-readiness/tests/legacy_parity.rs",
       "enclosing_test_or_function": "read_artifact",
       "macro_family": "panic!",
       "normalized_snippet": "fs::read_to_string(&path).unwrap_or_else(|error| panic!(\"read {}: {error}\", path.display()))",
@@ -2675,7 +2675,7 @@
       "state": "active"
     },
     {
-      "path": "crates/perl-kwalitee/tests/legacy_parity.rs",
+      "path": "crates/perl-release-readiness/tests/legacy_parity.rs",
       "enclosing_test_or_function": "pinned_reader_and_migration_reference_are_part_of_the_authority",
       "macro_family": "panic!",
       "normalized_snippet": ".unwrap_or_else(|error| panic!(\"read {}: {error}\", legacy_input_path.display()));",
@@ -2684,7 +2684,7 @@
       "state": "active"
     },
     {
-      "path": "crates/perl-kwalitee/tests/legacy_parity.rs",
+      "path": "crates/perl-release-readiness/tests/legacy_parity.rs",
       "enclosing_test_or_function": "pinned_reader_and_migration_reference_are_part_of_the_authority",
       "macro_family": "panic!",
       "normalized_snippet": ".unwrap_or_else(|error| panic!(\"decode legacy receipt: {error}\"));",
@@ -2693,7 +2693,7 @@
       "state": "active"
     },
     {
-      "path": "crates/perl-kwalitee/tests/legacy_parity.rs",
+      "path": "crates/perl-release-readiness/tests/legacy_parity.rs",
       "enclosing_test_or_function": "pinned_reader_and_migration_reference_are_part_of_the_authority",
       "macro_family": "panic!",
       "normalized_snippet": ".unwrap_or_else(|error| panic!(\"render migration reference: {error}\"));",
@@ -2702,7 +2702,7 @@
       "state": "active"
     },
     {
-      "path": "crates/perl-kwalitee/tests/legacy_parity.rs",
+      "path": "crates/perl-release-readiness/tests/legacy_parity.rs",
       "enclosing_test_or_function": "golden_statuses",
       "macro_family": "panic!",
       "normalized_snippet": ".unwrap_or_else(|| panic!(\"{case_id} case is part of the frozen matrix\"));",
@@ -2711,7 +2711,7 @@
       "state": "active"
     },
     {
-      "path": "crates/perl-kwalitee/tests/legacy_parity.rs",
+      "path": "crates/perl-release-readiness/tests/legacy_parity.rs",
       "enclosing_test_or_function": "golden_statuses",
       "macro_family": "panic!",
       "normalized_snippet": "serde_json::from_str(&expected).unwrap_or_else(|error| panic!(\"decode golden: {error}\"));",
@@ -2720,7 +2720,7 @@
       "state": "active"
     },
     {
-      "path": "crates/perl-kwalitee/tests/legacy_parity.rs",
+      "path": "crates/perl-release-readiness/tests/legacy_parity.rs",
       "enclosing_test_or_function": "supplied_external_results_and_dist_path_forward_into_the_receipt",
       "macro_family": "panic!",
       "normalized_snippet": ".unwrap_or_else(|error| panic!(\"create {}: {error}\", dist_dir.display()));",
@@ -2729,7 +2729,7 @@
       "state": "active"
     },
     {
-      "path": "crates/perl-kwalitee/tests/legacy_parity.rs",
+      "path": "crates/perl-release-readiness/tests/legacy_parity.rs",
       "enclosing_test_or_function": "supplied_external_results_and_dist_path_forward_into_the_receipt",
       "macro_family": "panic!",
       "normalized_snippet": ".unwrap_or_else(|error| panic!(\"write {}: {error}\", dist_artifact.display()));",
@@ -2738,7 +2738,7 @@
       "state": "active"
     },
     {
-      "path": "crates/perl-kwalitee/tests/legacy_parity.rs",
+      "path": "crates/perl-release-readiness/tests/legacy_parity.rs",
       "enclosing_test_or_function": "supplied_external_results_and_dist_path_forward_into_the_receipt",
       "macro_family": "panic!",
       "normalized_snippet": ".unwrap_or_else(|| panic!(\"{id} row is part of the frozen catalog\"));",
@@ -3296,7 +3296,7 @@
       "state": "active"
     },
     {
-      "path": "crates/perl-kwalitee/src/distribution_kwalitee/score.rs",
+      "path": "crates/perl-release-readiness/src/distribution_kwalitee/score.rs",
       "enclosing_test_or_function": "unverified_required_core_stays_in_the_denominator",
       "macro_family": "panic!",
       "normalized_snippet": "other => panic!(\"expected incomplete, got {other:?}\"),",
@@ -3305,7 +3305,7 @@
       "state": "active"
     },
     {
-      "path": "crates/perl-kwalitee/src/distribution_kwalitee/score.rs",
+      "path": "crates/perl-release-readiness/src/distribution_kwalitee/score.rs",
       "enclosing_test_or_function": "missing_core_observation_is_unverified_not_a_silent_shrink",
       "macro_family": "panic!",
       "normalized_snippet": "other => panic!(\"expected incomplete, got {other:?}\"),",
@@ -3314,7 +3314,7 @@
       "state": "active"
     },
     {
-      "path": "crates/perl-kwalitee/src/distribution_kwalitee/score.rs",
+      "path": "crates/perl-release-readiness/src/distribution_kwalitee/score.rs",
       "enclosing_test_or_function": "one_core_fail_lowers_passed_but_keeps_denominator",
       "macro_family": "panic!",
       "normalized_snippet": "other => panic!(\"expected complete, got {other:?}\"),",
@@ -3323,7 +3323,7 @@
       "state": "active"
     },
     {
-      "path": "crates/perl-kwalitee/src/distribution_kwalitee/score.rs",
+      "path": "crates/perl-release-readiness/src/distribution_kwalitee/score.rs",
       "enclosing_test_or_function": "limitation_on_core_is_unverified_not_a_pass",
       "macro_family": "panic!",
       "normalized_snippet": "other => panic!(\"expected incomplete, got {other:?}\"),",
@@ -3332,7 +3332,7 @@
       "state": "active"
     },
     {
-      "path": "crates/perl-kwalitee/src/distribution_kwalitee/score.rs",
+      "path": "crates/perl-release-readiness/src/distribution_kwalitee/score.rs",
       "enclosing_test_or_function": "not_applicable_on_applicable_core_stays_in_the_denominator",
       "macro_family": "panic!",
       "normalized_snippet": "other => panic!(\"expected incomplete, got {other:?}\"),",
@@ -3638,7 +3638,7 @@
       "state": "active"
     },
     {
-      "path": "crates/perl-kwalitee/src/distribution_kwalitee/types.rs",
+      "path": "crates/perl-release-readiness/src/distribution_kwalitee/types.rs",
       "enclosing_test_or_function": "allowed_class_relationship_pairs_pass",
       "macro_family": "panic!",
       "normalized_snippet": "|error| panic!(\"allowed pair {class:?}/{relationship:?} failed: {error}\"),",
@@ -3647,7 +3647,7 @@
       "state": "active"
     },
     {
-      "path": "crates/perl-kwalitee/src/distribution_kwalitee/types.rs",
+      "path": "crates/perl-release-readiness/src/distribution_kwalitee/types.rs",
       "enclosing_test_or_function": "score_class_fields",
       "macro_family": "panic!",
       "normalized_snippet": "other => panic!(\"expected ScoreClassContradiction, got {other}\"),",

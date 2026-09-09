@@ -38,9 +38,9 @@ The parser accepts the source body Perl would hand it for this form. This is a s
 
 | Subject | Status | Missing layer | Evidence | Boundary control | Invocable | Notes |
 | --- | --- | --- | --- | --- | --- | --- |
-| -e | `supported` | — | `e_print_literal`; `e_grep_diamond_input`; `e_map_diamond_input`; `e_explicit_diamond_loop`; `e_sort_diamond_with_for_modifier`; `e_parenthesized_split_slice`; `e_printf_special_variables`; `positive_idioms_have_typed_ast_hir_and_source_range_proof` | `negative_controls_keep_context_errors_and_boundaries_visible` | `cargo test -p perl-parser-core --test command_line_oneliners` | Single-fragment program bodies parse cleanly with typed AST/HIR and source ranges. The `-e` switch itself is not decoded; that is layer 2. |
-| -n | `supported` | — | `ne_implicit_topic_match`; `ne_skip_blank_lines`; `ne_end_phase_counter`; `ne_argv_and_input_line_number`; `ne_begin_phase_input_record_separator`; `ne_capture_group` | `negative_controls_keep_context_errors_and_boundaries_visible` | `cargo test -p perl-parser-core --test command_line_oneliners` | Bodies that rely on `$_`, `next`, `$ARGV`, `$.`, and phase blocks parse. The implicit read loop is not synthesized; that is layer 4. |
-| -p | `supported` | — | `pe_implicit_topic_substitution`; `pe_implicit_topic_transliteration`; `pe_trim_whitespace`; `positive_idioms_have_typed_ast_hir_and_source_range_proof` | `negative_controls_keep_context_errors_and_boundaries_visible` | `cargo test -p perl-parser-core --test command_line_oneliners` | Substitution and transliteration bodies lower to typed HIR. The implicit print-back loop is not synthesized; that is layer 4. |
+| -e | `supported` | — | `e_print_literal`; `e_grep_diamond_input`; `e_map_diamond_input`; `e_explicit_diamond_loop`; `e_sort_diamond_with_for_modifier`; `e_parenthesized_split_slice`; `e_printf_special_variables`; `e_while_diamond_modifier`; `named_idioms_share_one_structural_table` | `negative_controls_keep_context_errors_and_boundaries_visible`; `structurally_wrong_array_slice_fails_element_assertion`; `hash_subscript_neighbor_does_not_satisfy_array_element`; `unrelated_subscript_does_not_satisfy_autosplit_field`; `block_if_neighbor_does_not_satisfy_postfix_match`; `grep_list_neighbor_does_not_satisfy_diamond_input`; `y_transliteration_neighbor_does_not_satisfy_tr_exact_span`; `parenthesized_split_index_keeps_kind_payload_and_children_not_leaky_span` | `cargo test -p perl-parser-core --test command_line_oneliners` | Single-fragment program bodies parse cleanly with typed AST/HIR and source ranges. The `-e` switch itself is not decoded; that is layer 2. |
+| -n | `supported` | — | `ne_implicit_topic_match`; `ne_skip_blank_lines`; `ne_end_phase_counter`; `ne_argv_and_input_line_number`; `ne_begin_phase_input_record_separator`; `ne_capture_group`; `ne_bare_capture_variable` | `negative_controls_keep_context_errors_and_boundaries_visible` | `cargo test -p perl-parser-core --test command_line_oneliners` | Bodies that rely on `$_`, `next`, `$ARGV`, `$.`, and phase blocks parse. The implicit read loop is not synthesized; that is layer 4. |
+| -p | `supported` | — | `pe_implicit_topic_substitution`; `pe_implicit_topic_transliteration`; `pe_trim_whitespace`; `named_idioms_share_one_structural_table` | `negative_controls_keep_context_errors_and_boundaries_visible` | `cargo test -p perl-parser-core --test command_line_oneliners` | Substitution and transliteration bodies lower to typed HIR. The implicit print-back loop is not synthesized; that is layer 4. |
 | -a | `supported` | — | `lane_first_autosplit_field`; `lane_join_autosplit_fields` | — | `cargo test -p perl-parser-core --test command_line_oneliners` | Both cited bodies read `@F`, the variable autosplit populates, so the evidence is specific to this switch rather than incidental. Autosplit inserts no source text; whether `@F` is actually populated is layer 4. |
 | -l | `partial` | switch-specific evidence: no cited body contains anything `-l` changes, so acceptance here is incidental to the `-lane` bundle rather than proof about record separators | `lane_first_autosplit_field`; `lane_join_autosplit_fields` | — | `cargo test -p perl-parser-core --test command_line_oneliners` | The cited bodies arrive through the `-lane` bundle and parse, but unlike `-a` and its `@F`, nothing in them is specific to record-separator handling. Promoting this row needs a body whose parse depends on `-l`. |
 | -E | `unsupported` | — | — | — | — | No corpus case supplies an `-E` body, so feature-enabled constructs such as `say` carry no command-line parser-body evidence here. |
@@ -114,7 +114,7 @@ A trusted oracle compares this toolchain's understanding against real `perl` beh
 
 ## Corpus fixtures
 
-20 fixtures are available as evidence: 18 switch-bundle cases and 2 typed-proof targets.
+29 fixtures are available as evidence: 20 switch-bundle cases and 9 typed-proof targets.
 
 | Fixture | Declared switches |
 | --- | --- |
@@ -125,9 +125,11 @@ A trusted oracle compares this toolchain's understanding against real `perl` beh
 | `e_print_literal` | `-e` |
 | `e_printf_special_variables` | `-e` |
 | `e_sort_diamond_with_for_modifier` | `-e` |
+| `e_while_diamond_modifier` | `-e` |
 | `lane_first_autosplit_field` | `-lane` |
 | `lane_join_autosplit_fields` | `-lane` |
 | `ne_argv_and_input_line_number` | `-ne` |
+| `ne_bare_capture_variable` | `-ne` |
 | `ne_begin_phase_input_record_separator` | `-ne` |
 | `ne_capture_group` | `-ne` |
 | `ne_end_phase_counter` | `-ne` |
@@ -136,5 +138,12 @@ A trusted oracle compares this toolchain's understanding against real `perl` beh
 | `pe_implicit_topic_substitution` | `-pe` |
 | `pe_implicit_topic_transliteration` | `-pe` |
 | `pe_trim_whitespace` | `-pe` |
+| `block_if_neighbor_does_not_satisfy_postfix_match` | typed proof |
+| `grep_list_neighbor_does_not_satisfy_diamond_input` | typed proof |
+| `hash_subscript_neighbor_does_not_satisfy_array_element` | typed proof |
+| `named_idioms_share_one_structural_table` | typed proof |
 | `negative_controls_keep_context_errors_and_boundaries_visible` | typed proof |
-| `positive_idioms_have_typed_ast_hir_and_source_range_proof` | typed proof |
+| `parenthesized_split_index_keeps_kind_payload_and_children_not_leaky_span` | typed proof |
+| `structurally_wrong_array_slice_fails_element_assertion` | typed proof |
+| `unrelated_subscript_does_not_satisfy_autosplit_field` | typed proof |
+| `y_transliteration_neighbor_does_not_satisfy_tr_exact_span` | typed proof |

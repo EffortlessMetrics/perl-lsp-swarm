@@ -237,9 +237,19 @@ const ROWS: &[CapabilityRow] = &[
             "e_sort_diamond_with_for_modifier",
             "e_parenthesized_split_slice",
             "e_printf_special_variables",
-            "positive_idioms_have_typed_ast_hir_and_source_range_proof",
+            "e_while_diamond_modifier",
+            "named_idioms_share_one_structural_table",
         ],
-        boundary_controls: &["negative_controls_keep_context_errors_and_boundaries_visible"],
+        boundary_controls: &[
+            "negative_controls_keep_context_errors_and_boundaries_visible",
+            "structurally_wrong_array_slice_fails_element_assertion",
+            "hash_subscript_neighbor_does_not_satisfy_array_element",
+            "unrelated_subscript_does_not_satisfy_autosplit_field",
+            "block_if_neighbor_does_not_satisfy_postfix_match",
+            "grep_list_neighbor_does_not_satisfy_diamond_input",
+            "y_transliteration_neighbor_does_not_satisfy_tr_exact_span",
+            "parenthesized_split_index_keeps_kind_payload_and_children_not_leaky_span",
+        ],
         missing_layer: "",
         invocable: CORPUS_COMMAND,
         notes: "Single-fragment program bodies parse cleanly with typed AST/HIR and source ranges. The `-e` switch itself is not decoded; that is layer 2.",
@@ -255,6 +265,7 @@ const ROWS: &[CapabilityRow] = &[
             "ne_argv_and_input_line_number",
             "ne_begin_phase_input_record_separator",
             "ne_capture_group",
+            "ne_bare_capture_variable",
         ],
         boundary_controls: &["negative_controls_keep_context_errors_and_boundaries_visible"],
         missing_layer: "",
@@ -269,7 +280,7 @@ const ROWS: &[CapabilityRow] = &[
             "pe_implicit_topic_substitution",
             "pe_implicit_topic_transliteration",
             "pe_trim_whitespace",
-            "positive_idioms_have_typed_ast_hir_and_source_range_proof",
+            "named_idioms_share_one_structural_table",
         ],
         boundary_controls: &["negative_controls_keep_context_errors_and_boundaries_visible"],
         missing_layer: "",
@@ -1704,11 +1715,7 @@ fn negative_controls_keep_context_errors_and_boundaries_visible() -> TestResult 
             "expected the committed corpus to declare at least 18 switch cases, found {}",
             evidence.switch_cases.len()
         );
-        assert!(
-            evidence
-                .proof_tests
-                .contains("positive_idioms_have_typed_ast_hir_and_source_range_proof")
-        );
+        assert!(evidence.proof_tests.contains("named_idioms_share_one_structural_table"));
     }
 
     #[test]
@@ -2098,7 +2105,7 @@ fn negative_controls_keep_context_errors_and_boundaries_visible() -> TestResult 
         let corpus = fs::read_to_string(root.join(CORPUS_PATH)).expect("corpus readable");
         assert!(corpus.contains("macro_rules! command_line_oneliner"), "corpus shape changed");
         let evidence = extract_corpus_evidence(&corpus);
-        assert_eq!(evidence.switch_cases.len(), 18, "{:?}", evidence.switch_cases.keys());
+        assert_eq!(evidence.switch_cases.len(), 20, "{:?}", evidence.switch_cases.keys());
     }
 
     /// Whitespace inside an attribute, or after `mod`, must not decide whether
@@ -2601,10 +2608,6 @@ fn negative_controls_keep_context_errors_and_boundaries_visible() -> TestResult 
     fn code_mask_keeps_the_live_corpus_visible() {
         let evidence = real_evidence();
         assert!(evidence.switch_cases.len() >= 18, "live cases lost: {:?}", evidence.switch_cases);
-        assert!(
-            evidence
-                .proof_tests
-                .contains("positive_idioms_have_typed_ast_hir_and_source_range_proof")
-        );
+        assert!(evidence.proof_tests.contains("named_idioms_share_one_structural_table"));
     }
 }

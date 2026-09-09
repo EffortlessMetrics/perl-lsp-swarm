@@ -42,7 +42,14 @@
 
 #![cfg(feature = "dap-phase2")]
 
+#[path = "common/dap_core_capability_witnesses.rs"]
+mod dap_core_capability_witnesses;
+
 use anyhow::Result;
+use dap_core_capability_witnesses::{
+    DAP_CORE_DERIVED_TRUE_SIBLINGS, FORMER_TRUE_SIBLINGS_NOW_FLOORED, VALUE_FORMAT_FLOOR_FIELD,
+    assert_capability_bool, assert_capability_is_json_boolean,
+};
 use perl_dap::debug_adapter::{DapMessage, DebugAdapter};
 use perl_dap::feature_catalog::has_feature;
 use serde_json::{Value, json};
@@ -127,49 +134,91 @@ fn all_four_optional_breakpoint_capabilities_are_false_while_catalog_advertises(
         "supportsLogPoints",
     ];
     for row in rows {
-        let actual = body.get(row).and_then(Value::as_bool);
-        assert_eq!(actual, Some(false), "{row} must be advertised false (#9578)");
+        assert_capability_is_json_boolean(&body, row);
+        assert_capability_bool(&body, row, false, "must be advertised false (#9578)");
     }
     Ok(())
 }
 
 /// The floor must not be achieved by weakening neighboring capability rows:
-/// the surviving catalog-derived siblings keep their values, so a regression
-/// that simply deletes advertisement rows wholesale is visible.
+/// the surviving `dap.core`-derived siblings keep their values, so a
+/// regression that simply deletes advertisement rows wholesale, or flattens
+/// every boolean to false, is visible.
+///
+/// #9581 closed the previous true-witness (`supportsValueFormattingOptions`)
+/// and the previous `dap.breakpoints.basic` sibling
+/// (`supportsBreakpointLocationsRequest`). Re-pointing at either, or promoting
+/// either to keep this test green, is forbidden (#14933).
 #[test]
 fn optional_floor_does_not_widen_or_flatten_neighboring_capability_rows() -> Result<()> {
+    assert!(
+        has_feature("dap.core"),
+        "precondition: dap.core is advertised; without it the true-sibling table is not a dap.core witness"
+    );
+    assert!(
+        !DAP_CORE_DERIVED_TRUE_SIBLINGS.is_empty(),
+        "anti-flattening is vacuous without at least one surviving dap.core-derived true sibling; \
+         if none remain, replace this table with an explicit alternate proof rather than an empty list"
+    );
+
     let mut adapter = adapter();
     let body = initialize_body(&mut adapter)?;
 
-    // `supportsValueFormattingOptions` is still `dap.core`-derived and advertised.
-    assert_eq!(
-        body.get("supportsValueFormattingOptions").and_then(Value::as_bool),
-        Some(true),
-        "supportsValueFormattingOptions is the surviving dap.core sibling and must stay true"
-    );
-    // `supportsSetVariable` was `dap.core`-derived when #9578 landed; #8354
-    // later floored it on the exact-mutation authority, so it must now read
-    // false — pin the floor here so a later accidental widening is visible.
-    assert_eq!(
-        body.get("supportsSetVariable").and_then(Value::as_bool),
-        Some(false),
-        "supportsSetVariable carries the #8354 floor"
-    );
-    // `supportsBreakpointLocationsRequest` is still `dap.breakpoints.basic`-derived.
-    assert_eq!(
-        body.get("supportsBreakpointLocationsRequest").and_then(Value::as_bool),
-        Some(true),
-        "supportsBreakpointLocationsRequest is the surviving dap.breakpoints.basic sibling"
-    );
-    // The same catalog row that keeps breakpointLocations true cannot be
-    // re-derived into conditional support (#9578: no capability inherits
+    for name in DAP_CORE_DERIVED_TRUE_SIBLINGS {
+        assert_capability_is_json_boolean(&body, name);
+        assert_capability_bool(
+            &body,
+            name,
+            true,
+            "surviving dap.core-derived sibling must stay true (#9578 anti-flattening; #14933)",
+        );
+    }
+
+    for (name, floor) in FORMER_TRUE_SIBLINGS_NOW_FLOORED {
+        assert_capability_is_json_boolean(&body, name);
+        assert_capability_bool(
+            &body,
+            name,
+            false,
+            &format!(
+                "former true-sibling now carries the {floor} floor; do not promote it to satisfy anti-flattening"
+            ),
+        );
+    }
+
+    // The same catalog row that used to keep breakpointLocations true cannot
+    // be re-derived into conditional support (#9578: no capability inherits
     // another's receipt).
-    assert_eq!(
-        body.get("supportsConditionalBreakpoints").and_then(Value::as_bool),
-        Some(false),
-        "dap.breakpoints.basic must not widen supportsConditionalBreakpoints"
+    assert_capability_bool(
+        &body,
+        "supportsConditionalBreakpoints",
+        false,
+        "dap.breakpoints.basic must not widen supportsConditionalBreakpoints",
     );
     Ok(())
+}
+
+/// Each surviving true-sibling is an independent flattening detector: dropping
+/// one from the table would let a later floor close that row unnoticed while
+/// the remaining two still pass. The table must keep distinct names.
+#[test]
+fn anti_flattening_true_siblings_are_distinct_named_rows() {
+    let mut seen = std::collections::BTreeSet::new();
+    for name in DAP_CORE_DERIVED_TRUE_SIBLINGS {
+        assert!(seen.insert(*name), "duplicate anti-flattening witness {name}");
+    }
+    for (name, _) in FORMER_TRUE_SIBLINGS_NOW_FLOORED {
+        assert!(
+            !seen.contains(name),
+            "{name} cannot be both a surviving true-sibling and a former-sibling floor pin"
+        );
+    }
+    assert!(
+        FORMER_TRUE_SIBLINGS_NOW_FLOORED
+            .iter()
+            .any(|(name, floor)| { *name == VALUE_FORMAT_FLOOR_FIELD && *floor == "#9581" }),
+        "{VALUE_FORMAT_FLOOR_FIELD} must remain a #9581 former-sibling pin, not a true-sibling"
+    );
 }
 
 // ---------------------------------------------------------------------------

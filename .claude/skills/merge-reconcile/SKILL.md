@@ -87,11 +87,18 @@ MERGE_BLOCKED
 NOT_PROVEN
 ```
 
+Before either `INTEGRATION_READY` or `PR_IN_FLIGHT` can be returned, enumerate
+the complete live thread set with
+`scripts/reviews/threads <pr> --unresolved-only --json`. The reported
+`unresolved_count` must be `0`; bot-authored and outdated threads count. Any
+non-zero result is `MERGE_BLOCKED`, routed to `address-review-comments`, and is never
+`PR_IN_FLIGHT`.
+
 Verify live GitHub facts:
 
 - PR is ready, not draft;
 - required checks are current for the candidate;
-- no unresolved substantive thread remains;
+- the sanctioned thread enumerator reports `unresolved_count` of 0;
 - no current `CHANGES_REQUESTED` review remains;
 - deliberately requested reviewers are not still pending where their judgment is part
   of this claim;
@@ -118,6 +125,11 @@ Use the current head SHA only as compare-and-swap protection at the instant of m
 ```text
 gh pr merge <n> --squash --match-head-commit <current-head-sha>
 ```
+
+zero unresolved review threads is a precondition of arming auto-merge. Re-run
+`scripts/reviews/threads <pr> --unresolved-only --json` immediately before the
+command. If `unresolved_count` is non-zero, return `MERGE_BLOCKED` and route to
+`address-review-comments`.
 
 When the required union is still pending, arm auto-merge with the current head SHA:
 
@@ -160,6 +172,54 @@ For automation-authored PRs whose `pull_request` runs remain `action_required`, 
 Use an actual trusted approval/identity path or preserve integration as `NOT_PROVEN`.
 
 ## Reconciliation
+
+### Compare the reviewed claim with the landed effect
+
+Establish what each comparison answers before treating a difference as a blocker.
+The reviewed PR delta and the actual merge-parent delta have different bases:
+
+```text
+git diff <review-base> <reviewed-head> -- <claim-paths>
+git rev-parse <merge>^1
+git diff <merge>^1 <merge> -- <claim-paths>
+```
+
+Use the review's comparison base for the first command. The second command selects
+one parent explicitly, including for a normal multi-parent merge. Verify through
+commit/PR history that this first parent is the target branch's pre-merge mainline
+before interpreting the third command; do not substitute the topic parent or all
+parents as the comparison base. A squash merge inherits main's intervening contributions; it
+does not need whole-file equality with the reviewed branch. Inspect the landed claim,
+including reviewed behavior that was already present in the merge parent. If current
+main moved again, distinguish that later delta from the merge's own effect.
+
+A reviewed-head-to-merge comparison can locate differences, but cannot by itself
+classify them. Attribute them through the actual parent and commit/PR history. For
+example, an independent complementary test already landed on main is an inherited
+contribution, not unexplained local mutation. Reconcile it read-only without an
+unrelated rebase or CI replay. Provenance does not prove semantic independence:
+investigate an interacting or unexplained behavioral difference and obtain affected
+proof/review before claiming the landed result satisfies the reviewed claim.
+
+### Resolve ordinary engineering questions under existing authority
+
+Investigate comparison failures, trace provenance, and resolve ordinary engineering
+questions within the authorized lane. An invalid equality assumption or an
+unexecuted investigation is not a reason to request permission again. Ask the user
+only for a decision outside existing authority or necessary information that cannot
+be obtained through the available evidence. Do not invent another approval gate.
+
+This does not relax existing stop/ownership rules for unexpected local uncommitted
+edits, competing writers, destructive actions, or unsalvaged work. Source-backed
+inherited-main contributions are expected integration differences, not those local
+mutation hazards.
+
+Keep an external wait scoped to its claim and name the wake event. When another
+authorized claim can progress, return to `deliver-goal` and continue it. Do not mark
+the umbrella blocked because one claim is waiting, an investigation has not run, or
+a permission question was repeated. A goal-level blocker needs an evidenced external
+dependency and no remaining useful authorized action, subject to the applicable goal
+status rules.
 
 After merge or evidence-backed deliberate closure:
 

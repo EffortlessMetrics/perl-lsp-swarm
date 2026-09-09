@@ -119,6 +119,7 @@ jobs:
         with:
           cache-on-failure: true
           key: ${{ runner.os }}-mutation-${{ hashFiles('Cargo.lock') }}
+          save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}
       - run: cargo install cargo-mutants --locked || true
       - run: cargo mutants --timeout 60 --no-shuffle || true
       - name: Upload mutation results
@@ -154,9 +155,10 @@ jobs:
       with:
         key: ${{ runner.os }}-bench-${{ hashFiles('Cargo.lock') }}
         cache-on-failure: true
+        save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}
 
     - name: Install just
-      uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf  # v2.87.2
+      uses: taiki-e/install-action@5bf6ce016fd2e72eefc647cbca1e4213f65955b8  # v2.87.5
       with:
         tool: just
 
@@ -445,6 +447,7 @@ jobs:
       with:
         key: ${{ runner.os }}-real-repo-latency-${{ hashFiles('Cargo.lock') }}
         cache-on-failure: true
+        save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}
 
     - name: Run all ignored real-project latency tests
       env:
@@ -488,6 +491,7 @@ jobs:
       with:
         key: ${{ runner.os }}-corpus-differential-${{ hashFiles('Cargo.lock') }}
         cache-on-failure: true
+        save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}
 
     - name: Run full corpus differential suite
       run: |
@@ -530,6 +534,7 @@ jobs:
           cache-on-failure: true
           cache-all-crates: true
           shared-key: nightly-lsp-memory-${{ hashFiles('Cargo.lock') }}
+          save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}
 
       - name: Build perllsp release binary
         run: cargo build --release -p perllsp --bin perllsp --locked
@@ -716,7 +721,7 @@ jobs:
           cache-on-failure: true
 
       - name: Install just
-        uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf  # v2.87.2
+        uses: taiki-e/install-action@5bf6ce016fd2e72eefc647cbca1e4213f65955b8  # v2.87.5
         with:
           tool: just
 
@@ -825,6 +830,7 @@ jobs:
         with:
           key: tautology-${{ hashFiles('Cargo.lock') }}
           cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}
 
       - name: Check for tautological assertions
         run: |
@@ -857,57 +863,71 @@ jobs:
         with:
           key: semver-${{ hashFiles('Cargo.lock') }}
           cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}
 
       - name: Install cargo-semver-checks
         run: cargo install cargo-semver-checks --version 0.47.0 --locked
 
+      - name: Fetch release tags from canonical repo
+        # Release tags live on EffortlessMetrics/perl-lsp; swarm origin has none
+        # (same wiring as the PR rail in ci.yml). Without this the baseline
+        # below is empty and every check errors instead of comparing.
+        run: |
+          git fetch --force --tags https://github.com/EffortlessMetrics/perl-lsp.git '+refs/tags/v*:refs/tags/v*'
+
       - name: Determine baseline tag
         id: baseline
         run: |
-          BASELINE=$(git tag | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)
-          echo "baseline=$BASELINE" >> $GITHUB_OUTPUT
-          echo "Using baseline: $BASELINE"
+          BASELINE=$(git tag | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1) || true
+          if [ -z "${BASELINE:-}" ]; then
+            echo "::warning::No v*.*.* release tags on this checkout; skipping semver comparison"
+            echo "baseline=none" >> "$GITHUB_OUTPUT"
+          else
+            echo "baseline=${BASELINE}" >> "$GITHUB_OUTPUT"
+            echo "Using baseline: ${BASELINE}"
+          fi
 
-      - name: Check perl-parser API compatibility
+      - name: Check API-ratcheted crates for compatibility
+        # The crate set is .ci/public-api-baselines/ratchet-crates.txt, the same
+        # list the PR rail and the `just semver-check*` recipes read (#14607).
+        # A missing baseline is handled above so it cannot be reported here as
+        # a compatibility finding.
+        if: steps.baseline.outputs.baseline != 'none'
+        env:
+          SEMVER_BASELINE: ${{ steps.baseline.outputs.baseline }}
         run: |
-          cargo semver-checks check-release -p perl-parser \
-            --baseline-rev ${{ steps.baseline.outputs.baseline }} \
-            || echo "::warning::Breaking changes detected in perl-parser"
+          mapfile -t crates < <(sed -e 's/#.*$//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' .ci/public-api-baselines/ratchet-crates.txt | grep -v '^$')
+          if [ "${#crates[@]}" -eq 0 ]; then
+            echo "::error::.ci/public-api-baselines/ratchet-crates.txt lists no crates; refusing a vacuous semver pass"
+            exit 1
+          fi
+          if [ -n "$(printf '%s\n' "${crates[@]}" | sort | uniq -d)" ]; then
+            echo "::error::.ci/public-api-baselines/ratchet-crates.txt lists a crate twice; fix the list rather than checking it twice"
+            exit 1
+          fi
+          for crate in "${crates[@]}"; do
+            if cargo semver-checks check-release -p "${crate}" --baseline-rev "${SEMVER_BASELINE}"; then
+              echo "semver: ${crate} compatible with ${SEMVER_BASELINE}"
+            else
+              echo "::warning::cargo-semver-checks failed for ${crate} against ${SEMVER_BASELINE} (breaking change or tool error; see the log above)"
+            fi
+          done
 
-      - name: Check perl-lexer API compatibility
-        run: |
-          cargo semver-checks check-release -p perl-lexer \
-            --baseline-rev ${{ steps.baseline.outputs.baseline }} \
-            || echo "::warning::Breaking changes detected in perl-lexer"
-
-      - name: Check perl-parser-core API compatibility
-        run: |
-          cargo semver-checks check-release -p perl-parser-core \
-            --baseline-rev ${{ steps.baseline.outputs.baseline }} \
-            || echo "::warning::Breaking changes detected in perl-parser-core"
-
-      - name: Check perl-lsp-rs API compatibility
-        run: |
-          cargo semver-checks check-release -p perl-lsp-rs \
-            --baseline-rev ${{ steps.baseline.outputs.baseline }} \
-            || echo "::warning::Breaking changes detected in perl-lsp-rs"
-
-      - name: Check perllsp API compatibility
-        run: |
-          cargo semver-checks check-release -p perllsp \
-            --baseline-rev ${{ steps.baseline.outputs.baseline }} \
-            || echo "::warning::Breaking changes detected in perllsp"
-
+      # Without a real baseline there is nothing to compare against, so no
+      # report is generated or uploaded: an artifact produced against the
+      # `none` sentinel would look like evidence while comparing nothing.
       - name: Generate breaking changes report
-        if: always()
+        if: ${{ !cancelled() && steps.baseline.outcome == 'success' && steps.baseline.outputs.baseline != '' && steps.baseline.outputs.baseline != 'none' }}
+        env:
+          SEMVER_BASELINE: ${{ steps.baseline.outputs.baseline }}
         run: |
           mkdir -p target/semver-reports
           cargo semver-checks check-release --workspace \
-            --baseline-rev ${{ steps.baseline.outputs.baseline }} \
+            --baseline-rev "${SEMVER_BASELINE}" \
             --output-format json > target/semver-reports/breaking-changes.json || true
 
       - name: Upload breaking changes report
-        if: always()
+        if: ${{ !cancelled() && steps.baseline.outcome == 'success' && steps.baseline.outputs.baseline != '' && steps.baseline.outputs.baseline != 'none' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
         with:
           name: semver-breaking-changes-report
@@ -960,12 +980,13 @@ jobs:
         with:
           key: public-api-${{ hashFiles('Cargo.lock') }}
           cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}
 
       - name: Install cargo-public-api
         run: cargo install cargo-public-api --locked --version 0.50.1
 
       - name: Install just
-        uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf  # v2.87.2
+        uses: taiki-e/install-action@5bf6ce016fd2e72eefc647cbca1e4213f65955b8  # v2.87.5
         with:
           tool: just
 
@@ -1000,9 +1021,10 @@ jobs:
         with:
           key: scorecard-ratchet-${{ hashFiles('Cargo.lock') }}
           cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}
 
       - name: Install just
-        uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf  # v2.87.2
+        uses: taiki-e/install-action@5bf6ce016fd2e72eefc647cbca1e4213f65955b8  # v2.87.5
         with:
           tool: just
 
@@ -1035,6 +1057,7 @@ jobs:
         with:
           key: ${{ runner.os }}-clippy-strict-${{ hashFiles('Cargo.lock') }}
           cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}
 
       - name: Run clippy (strict mode)
         run: |
@@ -1069,8 +1092,9 @@ jobs:
         with:
           key: ${{ runner.os }}-kwalitee-${{ hashFiles('Cargo.lock') }}
           cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}
 
-      # The `perl-kwalitee` crate is pure — it never spawns a subprocess and
+      # The `perl-release-readiness` crate is pure — it never spawns a subprocess and
       # reads its evidence only from pre-generated JSON receipts. Without these
       # upstream receipts every nightly receipt-backed indicator resolves as
       # `unverified`. Generate them first (all native Rust, no perltidy/
