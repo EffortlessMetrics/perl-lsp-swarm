@@ -1,5 +1,5 @@
 project: product
-component: Parser and lexer
+component: Language intelligence
 kind: Fixed
 body: >-
   Recover incomplete postfix dereferences with diagnostics while preserving
