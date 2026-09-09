@@ -663,7 +663,7 @@ mod tests {
         server.workspace_config.lock().perl_path = Some(perl_path.to_string_lossy().into_owned());
 
         let worker_server = std::sync::Arc::clone(&server);
-        let worker = std::thread::spawn(move || {
+        let worker = std::thread::spawn(move || -> std::io::Result<bool> {
             for _ in 0..500 {
                 if started.exists() {
                     worker_server
@@ -672,20 +672,24 @@ mod tests {
                     worker_server
                         .workspace_topology_stable
                         .store(false, std::sync::atomic::Ordering::SeqCst);
-                    let _ = fs::write(&release, b"release");
-                    return;
+                    fs::write(&release, b"release")?;
+                    return Ok(true);
                 }
                 std::thread::sleep(std::time::Duration::from_millis(10));
             }
-            let _ = fs::write(&release, b"release");
+            fs::write(&release, b"release")?;
+            Ok(false)
         });
 
         let result = server.handle_text_document_content(Some(json!({
             "uri": "perldoc://Fake::Documented"
         })));
-        worker.join().map_err(|_| "topology barrier worker panicked")?;
-        if result.is_ok() {
-            return Err("fallback content crossed a topology transition".into());
+        if !worker.join().map_err(|_| "topology barrier worker panicked")?? {
+            return Err("blocking perldoc fixture never started".into());
+        }
+        let error = result.err().ok_or("fallback content crossed a topology transition")?;
+        if !error.message.contains("content not found") {
+            return Err(format!("unexpected topology barrier error: {}", error.message).into());
         }
         Ok(())
     }
