@@ -448,6 +448,17 @@ def validate(document: dict[str, Any]) -> None:
         in "\n".join(_executable_lines(assemble.get("run"))),
         "each platform must produce one typed row",
     )
+    assemble_env = assemble.get("env") if isinstance(assemble.get("env"), dict) else {}
+    _require(
+        assemble_env.get("CANDIDATE_ID")
+        == "rolling-${{ needs.subject.outputs.source_sha }}-${{ github.run_id }}-${{ matrix.row_id }}",
+        "row assembly must define the candidate identity in its own step environment",
+    )
+    _require(
+        assemble_env.get("ARTIFACT_SET_ID")
+        == "rolling-${{ needs.subject.outputs.source_sha }}-${{ matrix.row_id }}",
+        "row assembly must define the artifact-set identity in its own step environment",
+    )
     upload = _step_named(
         row, "installed-row", "Upload row, exact artifacts, and child receipts"
     )

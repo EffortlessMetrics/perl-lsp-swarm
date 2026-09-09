@@ -290,6 +290,8 @@ jobs:
           PLATFORM: ${{ matrix.platform }}
           ARCHITECTURE: ${{ matrix.architecture }}
           HOST_ROLE: ${{ matrix.host_role }}
+          CANDIDATE_ID: rolling-${{ needs.subject.outputs.source_sha }}-${{ github.run_id }}-${{ matrix.row_id }}
+          ARTIFACT_SET_ID: rolling-${{ needs.subject.outputs.source_sha }}-${{ matrix.row_id }}
         run: |
           set -euo pipefail
           # A failed or skipped setup/build step must still leave an honest
