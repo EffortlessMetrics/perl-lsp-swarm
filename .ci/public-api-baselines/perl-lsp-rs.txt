@@ -738,7 +738,6 @@ pub perl_lsp::state::ClientCapabilities::inline_value_refresh_support: bool
 pub perl_lsp::state::ClientCapabilities::label_details_support: bool
 pub perl_lsp::state::ClientCapabilities::markdown_support: bool
 pub perl_lsp::state::ClientCapabilities::markup_message_support: bool
-pub perl_lsp::state::ClientCapabilities::position_encoding: perl_lsp::textdoc::PosEnc
 pub perl_lsp::state::ClientCapabilities::prepare_support_default_behavior: u8
 pub perl_lsp::state::ClientCapabilities::semantic_tokens_refresh_support: bool
 pub perl_lsp::state::ClientCapabilities::show_document_support: bool
