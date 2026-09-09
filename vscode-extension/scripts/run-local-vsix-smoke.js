@@ -183,7 +183,6 @@ function hasCompleteCandidateIdentity(env) {
   ].every((value) => typeof value === 'string' && value.trim().length > 0);
 }
 
-<<<<<<< HEAD
 function candidateManifestConstructionRequested(env = process.env) {
   return env.PERL_LSP_CONSTRUCT_CANDIDATE_MANIFEST === '1';
 }
@@ -243,8 +242,6 @@ function constructCandidateArtifactManifest(
   });
 }
 
-=======
->>>>>>> origin/main
 function interpretTestExplorerExit(smokeRun, childReceipt, childEnv = {}) {
   if (smokeRun.phase === 'compile') {
     return {
