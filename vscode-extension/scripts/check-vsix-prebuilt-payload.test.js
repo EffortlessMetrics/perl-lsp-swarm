@@ -54,7 +54,7 @@ function setCentralDirectoryAttributes(bytes, attributes) {
 }
 
 function runChecker(script, archive, expected) {
-  return spawnSync(
+  const result = spawnSync(
     process.execPath,
     [script, '--vsix', archive, '--member', 'perllsp.exe', '--sha256', expected],
     {
@@ -63,6 +63,10 @@ function runChecker(script, archive, expected) {
       windowsHide: true,
     },
   );
+  if (result.error) {
+    throw new Error(`failed to launch payload checker ${script}: ${result.error.message}`);
+  }
+  return result;
 }
 
 void test('streams and verifies one regular payload member', async () => {
