@@ -96,6 +96,7 @@ async function fixture(directory, extraFiles = {}) {
 }
 
 function runChecker(paths, { currentSourceSmoke = false } = {}) {
+  /** @type {Record<string, string>} */
   const environment = {
     ...process.env,
     PERL_LSP_CANDIDATE_PAYLOAD_MANIFEST: paths.manifestPath,
