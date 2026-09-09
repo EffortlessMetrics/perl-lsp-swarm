@@ -10091,11 +10091,12 @@ paths = ["archive/**"]
     /// writing its unbounded payload to a temporary file nothing will publish.
     /// The injected read failure itself is not portably reproducible through
     /// `std::process`, so this covers the settle step the failure path calls.
+    /// The producer is a compiled stub, so the test does not require a platform shell.
     #[test]
     fn settling_the_producer_terminates_and_reaps_it() -> Result<()> {
-        let mut child = Command::new("sh")
-            .arg("-c")
-            .arg("sleep 60")
+        let temp = tempfile::tempdir()?;
+        let binary = write_sleeping_ripr_stub(temp.path(), "ripr-sleeping")?;
+        let mut child = Command::new(&binary)
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
@@ -10504,13 +10505,18 @@ paths = ["archive/**"]
         exit_code: i32,
         stderr_bytes: usize,
     ) -> Result<PathBuf> {
+        let main_body = format!(
+            "    use std::io::Write;\n    let payload = {stdout_text:?};\n    let _ = std::io::stdout().write_all(payload.as_bytes());\n    let noise = vec![b'E'; {stderr_bytes}];\n    let _ = std::io::stderr().write_all(&noise);\n    std::process::exit({exit_code});\n"
+        );
+        compile_test_stub(dir, name, &main_body)
+    }
+
+    /// Compiles `main_body` into a test child binary. Both the ripr stubs and
+    /// the long-lived producer stub go through this, so no test depends on a
+    /// platform shell being present.
+    fn compile_test_stub(dir: &Path, name: &str, main_body: &str) -> Result<PathBuf> {
         let source = dir.join(format!("{name}.rs"));
-        fs::write(
-            &source,
-            format!(
-                "fn main() {{\n    use std::io::Write;\n    let payload = {stdout_text:?};\n    let _ = std::io::stdout().write_all(payload.as_bytes());\n    let noise = vec![b'E'; {stderr_bytes}];\n    let _ = std::io::stderr().write_all(&noise);\n    std::process::exit({exit_code});\n}}\n"
-            ),
-        )?;
+        fs::write(&source, format!("fn main() {{\n{main_body}}}\n"))?;
         #[cfg(windows)]
         let binary = dir.join(format!("{name}.exe"));
         #[cfg(not(windows))]
@@ -10528,5 +10534,15 @@ paths = ["archive/**"]
             );
         }
         Ok(binary)
+    }
+
+    /// A producer that outlives the test unless it is killed, so the settle
+    /// path is observable instead of the child exiting by itself.
+    fn write_sleeping_ripr_stub(dir: &Path, name: &str) -> Result<PathBuf> {
+        compile_test_stub(
+            dir,
+            name,
+            "    std::thread::sleep(std::time::Duration::from_secs(60));\n",
+        )
     }
 }
