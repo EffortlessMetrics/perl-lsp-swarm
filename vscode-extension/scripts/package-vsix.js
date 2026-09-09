@@ -114,9 +114,16 @@ function validateProjectionManifest(manifest, projectionInput, target) {
   return validated;
 }
 
-function preparePrebuiltPayload(fileSystem = fs, env = process.env) {
+function preparePrebuiltPayload(fileSystem = fs, env = process.env, stagingRoot = extensionRoot) {
   const manifestPath = (env.PERL_LSP_CANDIDATE_PAYLOAD_MANIFEST || '').trim();
-  const target = (env.PERL_LSP_VSCODE_TARGET || `${process.platform}-${process.arch}`).trim();
+  const rawManifest = manifestPath
+    ? JSON.parse(fileSystem.readFileSync(manifestPath, 'utf8'))
+    : null;
+  const target = (
+    env.PERL_LSP_VSCODE_TARGET ||
+    rawManifest?.package?.vscodeTargetId ||
+    `${process.platform}-${process.arch}`
+  ).trim();
   if (!manifestPath) {
     for (const ambientTarget of [
       'win32-x64',
@@ -130,7 +137,7 @@ function preparePrebuiltPayload(fileSystem = fs, env = process.env) {
     ]) {
       for (const basename of ['perllsp', 'perl-dap']) {
         const member = ambientTarget.startsWith('win32-') ? `${basename}.exe` : basename;
-        const destination = path.join(extensionRoot, 'bin', ambientTarget, member);
+        const destination = path.join(stagingRoot, 'bin', ambientTarget, member);
         let present = false;
         if (typeof fileSystem.lstatSync === 'function') {
           try {
@@ -164,11 +171,7 @@ function preparePrebuiltPayload(fileSystem = fs, env = process.env) {
     throw new Error('prebuilt payload manifest requires PERL_LSP_VSIX_PROJECTION_INPUT');
   }
   const projectionInput = JSON.parse(fileSystem.readFileSync(projectionPath, 'utf8'));
-  const manifest = validateProjectionManifest(
-    JSON.parse(fileSystem.readFileSync(manifestPath, 'utf8')),
-    projectionInput,
-    target,
-  );
+  const manifest = validateProjectionManifest(rawManifest, projectionInput, target);
   if (!manifest.server) throw new Error('prebuilt payload manifest has no server payload');
   const server = manifest.server;
   const rustTarget = (env.PERL_LSP_RUST_TARGET || '').trim();
@@ -182,8 +185,8 @@ function preparePrebuiltPayload(fileSystem = fs, env = process.env) {
     payloads.push({ member: manifest.dap.payload.member, bytes: dapBytes });
   }
   const previous = payloads.map(({ member }) => {
-    const destination = path.join(extensionRoot, 'bin', target, member);
-    const binRoot = path.resolve(extensionRoot, 'bin');
+    const destination = path.join(stagingRoot, 'bin', target, member);
+    const binRoot = path.resolve(stagingRoot, 'bin');
     const resolved = path.resolve(destination);
     if (resolved !== binRoot && !resolved.startsWith(`${binRoot}${path.sep}`)) {
       throw new Error('prebuilt payload destination escapes extension bin directory');
@@ -249,7 +252,7 @@ function runNode(script, args) {
 }
 
 function packageVsix(run = runNode, fileSystem = fs, env = process.env) {
-  const staged = preparePrebuiltPayload(fileSystem, env);
+  const staged = preparePrebuiltPayload(fileSystem, env, extensionRoot);
   const restorePrebuiltPayload = staged.cleanup;
   const manifest = staged.manifest;
   try {

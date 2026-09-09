@@ -1,5 +1,6 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const { test } = require('node:test');
 const {
@@ -397,25 +398,56 @@ void test('ambient native payloads require the candidate manifest path', () => {
   );
 });
 
-void test('real filesystem dangling native link is rejected and cleaned', () => {
-  const extensionRoot = path.resolve(__dirname, '..');
-  const destination = path.join(extensionRoot, 'bin', 'win32-arm64', 'perl-dap.exe');
-  try {
-    fs.lstatSync(destination);
-    return;
-  } catch (error) {
-    if (error?.code !== 'ENOENT') throw error;
-  }
+void test('owned manifest staging rejects a real dangling native link', () => {
+  const stagingRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-9933-'));
+  const serverPath = path.join(stagingRoot, 'server.bin');
+  const dapPath = path.join(stagingRoot, 'dap.bin');
+  const manifestPath = path.join(stagingRoot, 'manifest.json');
+  const projectionPath = path.join(stagingRoot, 'projection.json');
+  const serverBytes = Buffer.from('server');
+  const dapBytes = Buffer.from('dap');
+  const base = prebuiltManifest();
+  const manifest = {
+    ...base,
+    server: {
+      ...base.server,
+      sha256: require('node:crypto').createHash('sha256').update(serverBytes).digest('hex'),
+    },
+    dap: {
+      ...base.dap,
+      payload: {
+        ...base.dap.payload,
+        sha256: require('node:crypto').createHash('sha256').update(dapBytes).digest('hex'),
+      },
+    },
+  };
+  fs.writeFileSync(serverPath, serverBytes);
+  fs.writeFileSync(dapPath, dapBytes);
+  fs.writeFileSync(manifestPath, JSON.stringify(manifest));
+  fs.writeFileSync(projectionPath, JSON.stringify(projectionInput()));
+  const destination = path.join(stagingRoot, 'bin', 'win32-x64', 'perl-dap.exe');
   fs.mkdirSync(path.dirname(destination), { recursive: true });
   try {
-    fs.symlinkSync(path.join(extensionRoot, 'missing-dap.exe'), destination);
+    fs.symlinkSync(path.join(stagingRoot, 'missing-dap.exe'), destination);
     assert.throws(
-      () => preparePrebuiltPayload(fs, { PERL_LSP_VSCODE_TARGET: 'win32-x64' }),
-      /ambient native payload is a symbolic link/,
+      () =>
+        preparePrebuiltPayload(
+          fs,
+          {
+            PERL_LSP_CANDIDATE_PAYLOAD_MANIFEST: manifestPath,
+            PERL_LSP_VSIX_PROJECTION_INPUT: projectionPath,
+            PERL_LSP_PREBUILT_SERVER_PATH: serverPath,
+            PERL_LSP_PREBUILT_DAP_PATH: dapPath,
+            PERL_LSP_CURRENT_SOURCE_SHA: 'a'.repeat(40),
+            PERL_LSP_RUST_TARGET: 'x86_64-pc-windows-msvc',
+            PERL_LSP_VSCODE_TARGET: 'win32-x64',
+          },
+          stagingRoot,
+        ),
+      /prebuilt payload destination is a symbolic link/,
     );
   } finally {
-    fs.rmSync(destination, { force: true });
-    fs.rmSync(path.dirname(destination), { recursive: true, force: true });
+    fs.rmSync(stagingRoot, { recursive: true, force: true });
   }
 });
 
