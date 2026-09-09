@@ -488,20 +488,37 @@ async function readZipEntryBounded(
   const stream = await zip.openReadStreamPromise(entry);
   const chunks: Buffer[] = [];
   let total = 0;
-  for await (const chunk of stream as AsyncIterable<Buffer | Uint8Array>) {
-    if (token?.isCancellationRequested) {
-      stream.destroy();
+  let cancelled = token?.isCancellationRequested ?? false;
+  const cancellationDisposable = token?.onCancellationRequested(() => {
+    cancelled = true;
+    stream.destroy();
+  });
+  try {
+    for await (const chunk of stream as AsyncIterable<Buffer | Uint8Array>) {
+      if (cancelled || token?.isCancellationRequested) {
+        stream.destroy();
+        throw new Error('Archive extraction cancelled');
+      }
+      const data = Buffer.from(chunk);
+      total += data.length;
+      if (total > maxEntryBytes || total > remaining) {
+        stream.destroy();
+        throw new Error(`archive entry exceeds ${maxEntryBytes} bytes: ${entry.fileName}`);
+      }
+      chunks.push(data);
+    }
+    if (cancelled || token?.isCancellationRequested) {
       throw new Error('Archive extraction cancelled');
     }
-    const data = Buffer.from(chunk);
-    total += data.length;
-    if (total > maxEntryBytes || total > remaining) {
-      stream.destroy();
-      throw new Error(`archive entry exceeds ${maxEntryBytes} bytes: ${entry.fileName}`);
+    return Buffer.concat(chunks, total);
+  } catch (error) {
+    if (cancelled || token?.isCancellationRequested) {
+      throw new Error('Archive extraction cancelled');
     }
-    chunks.push(data);
+    throw error;
+  } finally {
+    cancellationDisposable?.dispose();
   }
-  return Buffer.concat(chunks, total);
 }
 
 async function extractZipMembers(

@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import * as zlib from 'zlib';
+import yauzl from 'yauzl';
 import { extractManagedArchive } from '../managedArchiveExtract';
 import type { CancellationTokenLike, DisposableLike } from '../boundedHttpJson';
 import type { ManagedArchiveSafetyLimits } from '../managedArchiveSafetyPolicy';
@@ -24,21 +25,6 @@ class TestCancellationToken implements CancellationTokenLike {
     for (const listener of [...this.listeners]) {
       listener();
     }
-  }
-}
-
-class CancelAfterChecksToken implements CancellationTokenLike {
-  private checks = 0;
-
-  constructor(private readonly cancelAt: number) {}
-
-  get isCancellationRequested(): boolean {
-    this.checks += 1;
-    return this.checks >= this.cancelAt;
-  }
-
-  onCancellationRequested(_listener: () => void): DisposableLike {
-    return { dispose: () => {} };
   }
 }
 
@@ -652,17 +638,38 @@ describe('extractManagedArchive', () => {
   test('cancels after ZIP streaming begins and destroys the extraction tree', async () => {
     const archivePath = path.join(tmpDir, 'cancelled.zip');
     fs.writeFileSync(archivePath, storedZip([['perllsp.exe', 'x'.repeat(256 * 1024)]]));
-    const token = new CancelAfterChecksToken(7);
-    await expect(
-      extractManagedArchive({
-        archivePath,
-        extractDir,
-        format: 'zip',
-        windows: true,
-        limits: { ...TEST_LIMITS, maxUncompressedBytes: 512 * 1024, maxEntryBytes: 512 * 1024 },
-        cancellationToken: token,
-      }),
-    ).rejects.toThrow('Archive extraction cancelled');
+    const token = new TestCancellationToken();
+    let streamStarted = false;
+    const originalOpenReadStream = yauzl.ZipFile.prototype.openReadStreamPromise;
+    const openReadStream = jest.spyOn(yauzl.ZipFile.prototype, 'openReadStreamPromise');
+    openReadStream.mockImplementation(async function (this: yauzl.ZipFile, entry) {
+      const stream = await originalOpenReadStream.call(this, entry);
+      stream.once('data', () => {
+        streamStarted = true;
+        token.cancel();
+      });
+      return stream;
+    });
+    try {
+      await expect(
+        extractManagedArchive({
+          archivePath,
+          extractDir,
+          format: 'zip',
+          windows: true,
+          limits: {
+            ...TEST_LIMITS,
+            maxUncompressedBytes: 512 * 1024,
+            maxEntryBytes: 512 * 1024,
+          },
+          cancellationToken: token,
+        }),
+      ).rejects.toThrow('Archive extraction cancelled');
+    } finally {
+      openReadStream.mockRestore();
+    }
+    expect(streamStarted).toBe(true);
+    expect(token.isCancellationRequested).toBe(true);
     assertOutsideUnchanged();
   });
 
