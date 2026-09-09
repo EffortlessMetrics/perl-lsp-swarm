@@ -1,4 +1,7 @@
-import { observeActiveDocumentReadiness } from './published/journeySupport';
+import {
+  observeActiveDocumentReadiness,
+  waitForActiveDocumentGeneration,
+} from './published/journeySupport';
 
 describe('published journey readiness gate', () => {
   test('withholds provider action until the registered readiness promise resolves', async () => {
@@ -39,5 +42,13 @@ describe('published journey readiness gate', () => {
     );
     expect(timedOut.status).toBe('not_proven');
     expect(String(timedOut.reason)).toMatch(/timed out after 1ms/);
+  });
+
+  test('records cold-start generation timeout instead of continuing silently', async () => {
+    const timedOut = await waitForActiveDocumentGeneration(() => ({ generation: 0 }), 0, 1);
+    expect(timedOut).toMatchObject({
+      status: 'not_proven',
+      reason: 'startup generation did not advance beyond 0 within 1ms',
+    });
   });
 });

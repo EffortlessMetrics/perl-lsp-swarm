@@ -267,16 +267,19 @@ suite('Packaged VSIX bundled-server journey', function () {
       await vscode.window.showTextDocument(document);
       const position = providerPosition(document);
 
-      await waitForActiveDocumentGeneration(
+      const generationWait = await waitForActiveDocumentGeneration(
         activation?.getActiveDocumentReadiness,
         typeof readinessBefore?.generation === 'number' ? readinessBefore.generation : undefined,
         30_000,
       );
-      const readiness = await observeActiveDocumentReadiness(
-        activation?.waitForActiveDocumentReady,
-        document.uri.toString(),
-        30_000,
-      );
+      const readiness =
+        generationWait?.status === 'not_proven'
+          ? generationWait
+          : await observeActiveDocumentReadiness(
+              activation?.waitForActiveDocumentReady,
+              document.uri.toString(),
+              30_000,
+            );
       const readinessWait: ReceiptValue = {
         scope: 'active_document',
         uri: document.uri.toString(),

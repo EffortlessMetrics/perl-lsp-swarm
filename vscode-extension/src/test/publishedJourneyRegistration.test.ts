@@ -66,9 +66,10 @@ function fakeVscode(
   readinessArguments: Array<{ uri: string; timeoutMs?: number }>,
   exposeReadiness: boolean,
   generationStartDelayMs: number,
+  initialGeneration: number,
 ): Record<string, unknown> {
   let edited = false;
-  let generation = 0;
+  let generation = initialGeneration;
   const document = {
     uri: { toString: () => 'file:///workspace/packaged_daily_driver.pl' },
     lineCount: 1,
@@ -128,9 +129,11 @@ function fakeVscode(
       workspaceFolders: [{ uri: { fsPath: workspacePath } }],
       getConfiguration: () => configuration,
       openTextDocument: async () => {
-        setTimeout(() => {
-          generation = 1;
-        }, generationStartDelayMs);
+        if (generation === 0) {
+          setTimeout(() => {
+            generation = 1;
+          }, generationStartDelayMs);
+        }
         return document;
       },
       applyEdit: async () => {
@@ -257,6 +260,7 @@ async function makeHarness(
   readiness: Promise<void>,
   exposeReadiness = true,
   generationStartDelayMs = 0,
+  initialGeneration = 0,
 ): Promise<Harness> {
   const receiptDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-4346-receipts-'));
   const workspacePath = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-4346-workspace-'));
@@ -283,6 +287,7 @@ async function makeHarness(
     readinessArguments,
     exposeReadiness,
     generationStartDelayMs,
+    initialGeneration,
   );
   const journey = loadRegisteredJourney(source, { calls, receiptDirectory, vscode });
   return {
@@ -375,6 +380,20 @@ describe('registered packaged journey readiness contract', () => {
       if (watchdog) clearTimeout(watchdog);
       release?.();
       await run.catch(() => undefined);
+      harness.cleanup();
+    }
+  });
+
+  test('warm registered callback does not wait for a new generation', async () => {
+    const readiness = Promise.resolve();
+    const harness = await makeHarness(journeySource(), readiness, true, 0, 1);
+    try {
+      await harness.journey.call({ timeout: () => undefined });
+      expect(harness.readinessArguments).toEqual([
+        { uri: 'file:///workspace/packaged_daily_driver.pl', timeoutMs: 30_000 },
+      ]);
+      expect(harness.calls).toContain('vscode.executeCompletionItemProvider');
+    } finally {
       harness.cleanup();
     }
   });

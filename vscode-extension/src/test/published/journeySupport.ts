@@ -167,7 +167,7 @@ export async function waitForActiveDocumentGeneration(
   initialGeneration: number | undefined,
   timeoutMs: number,
 ): Promise<ReceiptValue | undefined> {
-  if (!getReadiness || initialGeneration === undefined) {
+  if (!getReadiness || initialGeneration === undefined || initialGeneration > 0) {
     return getReadiness?.();
   }
   const deadline = Date.now() + timeoutMs;
@@ -179,7 +179,14 @@ export async function waitForActiveDocumentGeneration(
     await new Promise((resolve) => setTimeout(resolve, 25));
     snapshot = getReadiness();
   }
-  return snapshot;
+  if (typeof snapshot.generation === 'number' && snapshot.generation > initialGeneration) {
+    return snapshot;
+  }
+  return {
+    ...snapshot,
+    status: 'not_proven',
+    reason: `startup generation did not advance beyond ${initialGeneration} within ${timeoutMs}ms`,
+  };
 }
 
 export async function observeActiveDocumentReadiness(
