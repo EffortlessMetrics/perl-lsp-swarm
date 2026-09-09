@@ -66,6 +66,25 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: xvfb-run -a npm run test:integration
 
+      - name: Package current extension for Windows published smoke
+        if: runner.os == 'Windows'
+        run: npm run package
+
+      - name: Run current extension Test Explorer smoke (Windows)
+        if: runner.os == 'Windows'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PERL_LSP_PUBLISHED_EXTENSION_SOURCE: vsix
+          PERL_LSP_TEST_EXPLORER_SMOKE: '1'
+        shell: pwsh
+        run: |
+          $vsix = @(Get-ChildItem -LiteralPath . -Filter '*.vsix' -File)
+          if ($vsix.Count -ne 1) {
+            throw "npm run package must produce exactly one VSIX archive; found $($vsix.Count)"
+          }
+          $env:PERL_LSP_PUBLISHED_VSIX_PATH = $vsix[0].FullName
+          npm run test:published
+
       - name: Upload smoke artifacts
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
