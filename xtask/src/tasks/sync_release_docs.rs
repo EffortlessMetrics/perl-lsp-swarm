@@ -723,6 +723,8 @@ fn sync_release_notes(content: &str, surface: &ReleaseSurface) -> Result<String>
                 && line.contains(
                     " prep verification; #12876 product-policy closure and #12230 publication projection remain blocked, and #4343 release controller retains NO-GO authority until explicit human approval is recorded.",
                 ))
+            || (line.starts_with("- Remaining work is operational: finish `v")
+                && line.contains(" bounded first RC proceeds under #13768 standing authorization"))
             || (line.starts_with("- Remaining work is operational: verify the existing `v")
                 && line.contains(" release receipt and close the remaining channel receipts"))
         {
@@ -744,7 +746,7 @@ fn sync_release_notes(content: &str, surface: &ReleaseSurface) -> Result<String>
                 )
             } else {
                 format!(
-                    "- Remaining work is operational: finish `v{}` prep verification; #12876 product-policy closure and #12230 publication projection remain blocked, and #4343 release controller retains NO-GO authority until explicit human approval is recorded.",
+                    "- Remaining work is operational: finish `v{0}` prep verification; #12876 product-policy closure remains blocked, the bounded first RC proceeds under #13768 standing authorization through `rc_published_verified` with no second approval, and stable `v{0}` remains explicitly unauthorized.",
                     surface.version
                 )
             });
@@ -1009,12 +1011,20 @@ This closeout remains historical.\n";
         }
         for boundary in [
             "#12876 product-policy closure",
-            "#12230 publication projection",
-            "#4343 release controller retains NO-GO authority",
-            "explicit human approval is recorded",
+            "bounded first RC proceeds under #13768 standing authorization",
+            "no second approval",
+            "stable `v0.18.0` remains explicitly unauthorized",
         ] {
             if !synced.contains(boundary) {
                 bail!("preparation sync omitted authority boundary: {boundary}");
+            }
+        }
+        for retired in [
+            "#12230 publication projection",
+            "NO-GO authority until explicit human approval is recorded",
+        ] {
+            if synced.contains(retired) {
+                bail!("preparation sync kept retired authority wording: {retired}");
             }
         }
         let second = sync_release_notes(&synced, &preparation_release_surface())?;
@@ -1023,12 +1033,41 @@ This closeout remains historical.\n";
         }
         for boundary in [
             "#12876 product-policy closure",
-            "#12230 publication projection",
-            "#4343 release controller retains NO-GO authority",
-            "explicit human approval is recorded",
+            "bounded first RC proceeds under #13768 standing authorization",
+            "no second approval",
+            "stable `v0.18.0` remains explicitly unauthorized",
         ] {
             if !second.contains(boundary) {
                 bail!("second preparation sync omitted authority boundary: {boundary}");
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn sync_release_notes_preparation_names_first_rc_controller() -> Result<()> {
+        let input = "**Current release train**: `v0.17.0` — shipped 2026-06-28 as public beta\n\
+**Workspace version line**: `v0.17.0`\n\
+**Published crate surface**: 34 crates\n\
+## Active Blockers\n\
+- Remaining work is operational: finish `v0.18.0` prep verification; #12876 product-policy closure and #12230 publication projection remain blocked, and #4343 release controller retains NO-GO authority until explicit human approval is recorded.\n";
+        let synced = sync_release_notes(&input, &preparation_release_surface())?;
+        for boundary in [
+            "through `rc_published_verified`",
+            "with no second approval",
+            "stable `v0.18.0` remains explicitly unauthorized",
+        ] {
+            if !synced.contains(boundary) {
+                bail!("migrated preparation sync omitted controller boundary: {boundary}");
+            }
+        }
+        for retired in [
+            "#12230 publication projection remain blocked",
+            "retains NO-GO authority",
+            "until explicit human approval is recorded",
+        ] {
+            if synced.contains(retired) {
+                bail!("migrated preparation sync kept retired controller wording: {retired}");
             }
         }
         Ok(())
