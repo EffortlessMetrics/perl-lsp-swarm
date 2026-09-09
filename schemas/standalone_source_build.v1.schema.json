@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/EffortlessMetrics/perl-lsp-swarm/schemas/standalone_source_build.v1.schema.json",
   "title": "standalone_source_build.v1",
-  "description": "Exact registry-source build plan and bounded execution policy (#11514). Planning is not execution; source mode is advanced and server-only.",
+  "description": "Immutable source-stage extension of #10243. No executor consumes this contract yet. Definitions model synthetic supplied evidence only; matching identities proves internal consistency, never authenticated provenance or build authorization.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -21,7 +21,9 @@
     "network",
     "configuration",
     "resource_policy",
-    "policy_id"
+    "policy_id",
+    "resolved_subject_sha256",
+    "roots"
   ],
   "properties": {
     "schema_version": {
@@ -49,12 +51,40 @@
           ]
         },
         "index": {
-          "$ref": "#/$defs/text"
+          "enum": [
+            "sparse+https://index.crates.io/",
+            "https://github.com/rust-lang/crates.io-index"
+          ]
         },
         "identity": {
-          "$ref": "#/$defs/sha256"
+          "const": "crates.io"
         }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "protocol": {
+                "const": "crates.io_sparse"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "index": {
+                "const": "sparse+https://index.crates.io/"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "index": {
+                "const": "https://github.com/rust-lang/crates.io-index"
+              }
+            }
+          }
+        }
+      ]
     },
     "package": {
       "type": "object",
@@ -63,8 +93,7 @@
         "name",
         "version",
         "checksum",
-        "manifest_sha256",
-        "materialized_checksum"
+        "manifest_sha256"
       ],
       "properties": {
         "name": {
@@ -78,9 +107,6 @@
         },
         "manifest_sha256": {
           "$ref": "#/$defs/sha256"
-        },
-        "materialized_checksum": {
-          "$ref": "#/$defs/sha256"
         }
       }
     },
@@ -90,7 +116,8 @@
       "required": [
         "kind",
         "resolved_source_sha256",
-        "lockfile_sha256"
+        "lockfile_sha256",
+        "dependency_graph_sha256"
       ],
       "properties": {
         "kind": {
@@ -101,8 +128,522 @@
         },
         "lockfile_sha256": {
           "$ref": "#/$defs/sha256"
+        },
+        "dependency_graph_sha256": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/sha256"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       }
+    },
+    "target": {
+      "$ref": "#/$defs/target"
+    },
+    "toolchain": {
+      "$ref": "#/$defs/toolchain"
+    },
+    "features": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "default_features",
+        "enabled"
+      ],
+      "properties": {
+        "default_features": {
+          "type": "boolean"
+        },
+        "enabled": {
+          "type": "array",
+          "maxItems": 32,
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]+$(?![\\s\\S])",
+            "maxLength": 128
+          },
+          "uniqueItems": true
+        }
+      }
+    },
+    "profile": {
+      "enum": [
+        "release"
+      ]
+    },
+    "product_unit": {
+      "enum": [
+        "advanced_source_server_only"
+      ]
+    },
+    "execution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "code_execution",
+        "isolation_claim",
+        "archive_fallback",
+        "authority",
+        "consent_policy_sha256",
+        "disclosure_sha256"
+      ],
+      "properties": {
+        "mode": {
+          "const": "advanced_explicit_source"
+        },
+        "code_execution": {
+          "const": "build_scripts_and_proc_macros_may_execute"
+        },
+        "isolation_claim": {
+          "const": "not_a_security_sandbox"
+        },
+        "archive_fallback": {
+          "const": "forbidden"
+        },
+        "authority": {
+          "const": "unelevated_user"
+        },
+        "consent_policy_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "disclosure_sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "network": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "materialization",
+        "build"
+      ],
+      "properties": {
+        "materialization": {
+          "const": "canonical_registry_only"
+        },
+        "build": {
+          "const": "forbidden"
+        }
+      }
+    },
+    "configuration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "policy",
+        "cargo_home",
+        "rustup_home",
+        "cargo_config",
+        "registry_credentials",
+        "proxy_ca",
+        "rustflags",
+        "rustdocflags",
+        "rustc_wrapper",
+        "rustc_workspace_wrapper",
+        "linker",
+        "runner",
+        "path",
+        "git_config",
+        "target_cache",
+        "incremental",
+        "build_script_environment",
+        "inherited_environment_allowlist",
+        "toolchain_lookup_sha256",
+        "redactions"
+      ],
+      "properties": {
+        "policy": {
+          "const": "closed_initial_v1"
+        },
+        "cargo_home": {
+          "const": "fresh_attempt_private"
+        },
+        "rustup_home": {
+          "const": "identified_toolchain_only"
+        },
+        "cargo_config": {
+          "const": "no_ambient_hierarchy"
+        },
+        "registry_credentials": {
+          "const": "forbidden"
+        },
+        "proxy_ca": {
+          "const": "forbidden"
+        },
+        "rustflags": {
+          "const": "forbidden"
+        },
+        "rustdocflags": {
+          "const": "forbidden"
+        },
+        "rustc_wrapper": {
+          "const": "forbidden"
+        },
+        "rustc_workspace_wrapper": {
+          "const": "forbidden"
+        },
+        "linker": {
+          "const": "identified_toolchain_only"
+        },
+        "runner": {
+          "const": "forbidden"
+        },
+        "path": {
+          "const": "identified_toolchain_only"
+        },
+        "git_config": {
+          "const": "forbidden"
+        },
+        "target_cache": {
+          "const": "fresh_attempt_private"
+        },
+        "incremental": {
+          "const": "disabled"
+        },
+        "build_script_environment": {
+          "const": "inherited_allowlist_only"
+        },
+        "toolchain_lookup_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "redactions": {
+          "const": [
+            "credentials",
+            "tokens",
+            "complete_environment",
+            "private_paths"
+          ]
+        },
+        "inherited_environment_allowlist": {
+          "const": [
+            "CARGO_HOME",
+            "CARGO_TARGET_DIR",
+            "PATH"
+          ]
+        }
+      },
+      "description": "The allowlist bounds inherited ambient installer variables only. Cargo-derived OUT_DIR, TARGET, HOST and CARGO_CFG_* values must derive from the identified toolchain and bound source/target; this does not permit arbitrary ambient overrides."
+    },
+    "resource_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "deadline_seconds",
+        "max_parallel_jobs",
+        "cancellation",
+        "cleanup"
+      ],
+      "properties": {
+        "deadline_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 86400
+        },
+        "max_parallel_jobs": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 64
+        },
+        "cancellation": {
+          "const": "forced_with_cleanup"
+        },
+        "cleanup": {
+          "const": "attempt_private_only_preserve_destination"
+        }
+      }
+    },
+    "policy_id": {
+      "const": "standalone-source-build.v1"
+    },
+    "resolved_subject_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "roots": {
+      "$ref": "#/$defs/roots"
+    }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$(?![\\s\\S])"
+    },
+    "text": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(-(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?(\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$(?![\\s\\S])"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$(?![\\s\\S])",
+      "minLength": 64,
+      "maxLength": 64
+    },
+    "roots": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "cargo_home",
+        "build",
+        "target",
+        "staging",
+        "destination"
+      ],
+      "properties": {
+        "cargo_home": {
+          "$ref": "#/$defs/id"
+        },
+        "build": {
+          "$ref": "#/$defs/id"
+        },
+        "target": {
+          "$ref": "#/$defs/id"
+        },
+        "staging": {
+          "$ref": "#/$defs/id"
+        },
+        "destination": {
+          "$ref": "#/$defs/id"
+        }
+      }
+    },
+    "parent_subject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "transaction_id",
+        "attempt_id",
+        "resolved_subject_sha256",
+        "resolved_source_sha256",
+        "target",
+        "product_unit",
+        "roots"
+      ],
+      "properties": {
+        "transaction_id": {
+          "$ref": "#/$defs/id"
+        },
+        "attempt_id": {
+          "$ref": "#/$defs/id"
+        },
+        "resolved_subject_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "resolved_source_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "target": {
+          "$ref": "#/$defs/target"
+        },
+        "product_unit": {
+          "enum": [
+            "advanced_source_server_only"
+          ]
+        },
+        "roots": {
+          "$ref": "#/$defs/roots"
+        }
+      }
+    },
+    "observation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "identity_sha256"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "matched",
+            "missing",
+            "mismatch",
+            "failed"
+          ]
+        },
+        "identity_sha256": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/sha256"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "consent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "state",
+        "transaction_id",
+        "attempt_id",
+        "plan_sha256",
+        "disclosure_sha256",
+        "consent_policy_sha256"
+      ],
+      "properties": {
+        "state": {
+          "enum": [
+            "required",
+            "recorded"
+          ]
+        },
+        "transaction_id": {
+          "$ref": "#/$defs/id"
+        },
+        "attempt_id": {
+          "$ref": "#/$defs/id"
+        },
+        "plan_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "disclosure_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "consent_policy_sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "parent",
+        "plan_sha256",
+        "transaction_id",
+        "attempt_id",
+        "resolved_source_sha256",
+        "package_checksum",
+        "manifest_sha256",
+        "lockfile_sha256",
+        "dependency_graph",
+        "toolchain",
+        "instrument",
+        "configuration_enforcement",
+        "consent",
+        "materialization_network",
+        "build_network"
+      ],
+      "properties": {
+        "kind": {
+          "const": "synthetic_contract_control"
+        },
+        "parent": {
+          "$ref": "#/$defs/parent_subject"
+        },
+        "plan_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "transaction_id": {
+          "$ref": "#/$defs/id"
+        },
+        "attempt_id": {
+          "$ref": "#/$defs/id"
+        },
+        "resolved_source_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "package_checksum": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/sha256"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "manifest_sha256": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/sha256"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "lockfile_sha256": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/sha256"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "dependency_graph": {
+          "$ref": "#/$defs/observation"
+        },
+        "toolchain": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "status",
+            "identity"
+          ],
+          "properties": {
+            "status": {
+              "enum": [
+                "matched",
+                "missing",
+                "mismatch",
+                "failed"
+              ]
+            },
+            "identity": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/toolchain"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        },
+        "instrument": {
+          "$ref": "#/$defs/observation"
+        },
+        "configuration_enforcement": {
+          "$ref": "#/$defs/observation",
+          "description": "Synthetic claim about the canonical configuration digest (standalone_source_build.configuration.v1 domain); not actual enforcement evidence."
+        },
+        "consent": {
+          "$ref": "#/$defs/consent"
+        },
+        "materialization_network": {
+          "enum": [
+            "canonical_registry_only",
+            "other"
+          ]
+        },
+        "build_network": {
+          "enum": [
+            "none",
+            "accessed"
+          ]
+        }
+      },
+      "description": "Supplied synthetic observations are not authenticated receipts. Future executors must additionally enforce stage order and authenticate observations under #10243; no stage success or authorization is derived here."
     },
     "target": {
       "type": "object",
@@ -121,7 +662,10 @@
           ]
         },
         "triple": {
-          "$ref": "#/$defs/text"
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9_-]+$(?![\\s\\S])"
         },
         "libc": {
           "enum": [
@@ -132,18 +676,103 @@
           ]
         }
       },
+      "description": "Local tuple consistency only; target support belongs to #6067 and the parent resolved subject.",
       "allOf": [
         {
-          "if": { "properties": { "platform": { "const": "linux" } } },
-          "then": { "properties": { "triple": { "pattern": "linux" }, "libc": { "enum": ["gnu", "musl", "none"] } } }
+          "if": {
+            "properties": {
+              "platform": {
+                "const": "linux"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "triple": {
+                "pattern": "-linux-"
+              },
+              "libc": {
+                "enum": [
+                  "gnu",
+                  "musl"
+                ]
+              }
+            }
+          }
         },
         {
-          "if": { "properties": { "platform": { "const": "macos" } } },
-          "then": { "properties": { "triple": { "pattern": "apple-darwin" }, "libc": { "const": "none" } } }
+          "if": {
+            "properties": {
+              "platform": {
+                "const": "macos"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "triple": {
+                "pattern": "-apple-darwin$(?![\\s\\S])"
+              },
+              "libc": {
+                "enum": [
+                  "none"
+                ]
+              }
+            }
+          }
         },
         {
-          "if": { "properties": { "platform": { "const": "windows" } } },
-          "then": { "properties": { "triple": { "pattern": "windows" }, "libc": { "const": "msvc" } } }
+          "if": {
+            "properties": {
+              "platform": {
+                "const": "windows"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "triple": {
+                "pattern": "-windows-msvc$(?![\\s\\S])"
+              },
+              "libc": {
+                "enum": [
+                  "msvc"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "libc": {
+                "const": "gnu"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "triple": {
+                "pattern": "-gnu(?:eabi(?:hf)?)?$(?![\\s\\S])"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "libc": {
+                "const": "musl"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "triple": {
+                "pattern": "-musl(?:eabi(?:hf)?)?$(?![\\s\\S])"
+              }
+            }
+          }
         }
       ]
     },
@@ -152,205 +781,28 @@
       "additionalProperties": false,
       "required": [
         "rustc",
-        "cargo"
+        "cargo",
+        "rustc_sha256",
+        "cargo_sha256",
+        "linker_tools_sha256"
       ],
       "properties": {
         "rustc": {
-          "$ref": "#/$defs/text"
+          "$ref": "#/$defs/version"
         },
         "cargo": {
-          "$ref": "#/$defs/text"
+          "$ref": "#/$defs/version"
         },
-        "rustup_toolchain": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "maxLength": 128
+        "rustc_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "cargo_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "linker_tools_sha256": {
+          "$ref": "#/$defs/sha256"
         }
       }
-    },
-    "features": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "default_features",
-        "enabled"
-      ],
-      "properties": {
-        "default_features": {
-          "type": "boolean"
-        },
-        "enabled": {
-          "type": "array",
-          "maxItems": 32,
-          "items": {
-            "$ref": "#/$defs/text"
-          }
-        }
-      }
-    },
-    "profile": {
-      "enum": ["dev", "release", "agent", "dist", "bench"]
-    },
-    "product_unit": {
-      "enum": [
-        "advanced_source_server_only"
-      ]
-    },
-    "execution": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "consent",
-        "code_execution",
-        "isolation_claim",
-        "archive_fallback",
-        "performed",
-        "network_accessed"
-      ],
-      "properties": {
-        "consent": {
-          "enum": [
-            "required",
-            "recorded"
-          ]
-        },
-        "code_execution": {
-          "const": "build_scripts_and_proc_macros_may_execute"
-        },
-        "isolation_claim": {
-          "const": "not_a_security_sandbox"
-        },
-        "archive_fallback": {
-          "const": "forbidden"
-        },
-        "performed": {
-          "type": "boolean"
-        },
-        "network_accessed": {
-          "type": "boolean"
-        }
-      }
-    },
-    "network": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "materialization",
-        "build"
-      ],
-      "properties": {
-        "materialization": {
-          "enum": [
-            "allowed",
-            "forbidden",
-            "explicit"
-          ]
-        },
-        "build": {
-          "enum": [
-            "allowed",
-            "forbidden",
-            "explicit"
-          ]
-        }
-      }
-    },
-    "configuration": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "inputs",
-        "redactions"
-      ],
-      "properties": {
-        "inputs": {
-          "type": "array",
-          "minItems": 1,
-          "items": {
-            "enum": [
-              "cargo_home",
-              "rustup_home",
-              "cargo_config",
-              "proxy_ca",
-              "rustflags",
-              "rustdocflags",
-              "rustc_wrapper",
-              "rustc_workspace_wrapper",
-              "linker",
-              "runner",
-              "path",
-              "git_config",
-              "target_cache"
-            ]
-          }
-        },
-        "redactions": {
-          "type": "array",
-          "minItems": 4,
-          "uniqueItems": true,
-          "items": {
-            "enum": [
-              "credentials",
-              "tokens",
-              "complete_environment",
-              "private_paths"
-            ]
-          }
-        }
-      }
-    },
-    "resource_policy": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "deadline_seconds",
-        "max_parallel_jobs",
-        "cancellation"
-      ],
-      "properties": {
-        "deadline_seconds": {
-          "type": "integer",
-          "minimum": 1,
-          "maximum": 86400
-        },
-        "max_parallel_jobs": {
-          "type": "integer",
-          "minimum": 1,
-          "maximum": 64
-        },
-        "cancellation": {
-          "enum": [
-            "cooperative",
-            "forced_with_cleanup"
-          ]
-        }
-      }
-    },
-    "policy_id": {
-      "const": "standalone-source-build.v1"
-    }
-  },
-  "$defs": {
-    "id": {
-      "type": "string",
-      "minLength": 1,
-      "maxLength": 128,
-      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
-    },
-    "text": {
-      "type": "string",
-      "minLength": 1,
-      "maxLength": 256
-    },
-    "version": {
-      "type": "string",
-      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?(\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$"
-    },
-    "sha256": {
-      "type": "string",
-      "pattern": "^[0-9a-f]{64}$"
     }
   }
 }

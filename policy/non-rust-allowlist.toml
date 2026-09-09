@@ -3947,6 +3947,6 @@ classification = "test"
 owner = "install/release"
 reason = "Positive and negative deterministic vectors for the standalone source-build contract (#11514)."
 covered_by = ["cargo test -p xtask --test standalone_source_build_contract --locked", "cargo xtask check-file-policy"]
-broad_glob_reason = "All vectors share one closed schema and are consumed by the single contract test; per-vector allowlist rows would not add policy precision."
+broad_glob_reason = "One positive packet and single-field mutation vectors are materialized by the focused contract test, then checked against the plan/evidence schema and semantic bindings; per-vector rows would not add policy precision."
 created = "2026-08-29"
 review_after = "2027-02-28"
