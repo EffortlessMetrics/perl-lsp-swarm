@@ -2932,3 +2932,40 @@ created = "2026-09-08"
 review_after = "2026-09-15"
 expires = "2026-09-22"
 removal_criteria = "Remove when RIPR traces declaration owners through the sibling #[path] tests or a finer line/function selector or targeted mutation replaces this advisory path. Remove or narrow immediately if a future receipt reports an executable no_static_path seam in this file or any classification other than no_static_path."
+
+# -----------------------------------------------------------------------------
+# PR #14815 adds bare-name tool-availability admission to
+# perl-subprocess-runtime. ripr 0.10.0 reports 11 reachable_unrevealed and 4
+# no_static_path probes (run on the merged candidate): the availability.rs
+# findings sit on iterator/closure chains (.components().filter_map(...),
+# .is_absolute(), .metadata().map(...).unwrap_or(false)) whose per-line
+# infection ripr cannot trace from the boolean oracle — the tests assert the
+# final command_exists_in(...) verdict for every policy branch, which is
+# exactly the ripr#1429 predicate-infection-untraceable class of the
+# agent_ledgers.rs / quality_baseline.rs entries. The os_runtime/mod.rs
+# findings are pub(crate) use re-export declaration lines (reach:no on a
+# declaration, no executable seam). The availability/tests.rs findings are
+# the test module's own type alias and fixture field (test-harness plumbing,
+# ripr#1428 class). Coverage: 15 availability policy tests plus the
+# command_exists_contract.rs exact-process contract tests assert every
+# admission branch (empty/relative PATH components refused, cwd candidates
+# excluded, path-bearing input refused, executable-bit honored, missing PATH
+# fails closed).
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-availability-admission-chain-probes"
+kind = "predicate_infection_untraceable"
+paths = [
+  "crates/perl-subprocess-runtime/src/availability.rs",
+  "crates/perl-subprocess-runtime/src/availability/tests.rs",
+  "crates/perl-subprocess-runtime/src/os_runtime/mod.rs",
+  "crates/perl-subprocess-runtime/src/os_runtime/path_selection.rs",
+]
+classification = ["no_static_path", "reachable_unrevealed"]
+owner = "proof-lane"
+issue = "EffortlessMetrics/ripr#1429"
+reason = "PR #14815: 11 reachable_unrevealed + 4 no_static_path probes on the bare-name availability admission policy. The availability.rs seams are iterator/closure chain lines whose per-line infection ripr cannot trace from the boolean command_exists_in oracle (ripr#1429 class; 15 policy tests plus command_exists_contract.rs exact-process tests assert every admission branch). The os_runtime/mod.rs seams are pub(crate) use re-export declarations with no executable behavior. The path_selection.rs:10 match-arm seams are this PR's new candidate-classification arm, asserted by the existing select_path_candidate pipeline tests (the older sibling entry for this file covers only weakly_exposed, and the matcher enforces classification lists). The tests.rs seams are test-harness plumbing (ripr#1428 class). HONEST SCOPE NOTE: the matcher is path-scoped, so availability.rs is covered whole-file for this window; the file is 160 lines with every branch asserted by the named tests, and any future executable gap here must be caught by review and the scheduled removal. Remove when ripr#1429 traces closure-chain infection or targeted mutation is scheduled per #1289."
+created = "2026-09-09"
+review_after = "2026-09-16"
+expires = "2026-09-23"
+removal_criteria = "Remove when ripr#1429 traces closure-chain infection from boolean oracles, or narrow immediately if a future receipt reports an executable seam in availability.rs beyond the traced chain lines."
