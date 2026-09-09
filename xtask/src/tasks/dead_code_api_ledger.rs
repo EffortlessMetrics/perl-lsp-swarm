@@ -1392,8 +1392,6 @@ struct ImportFacts {
     reaches_module: bool,
     /// A `use` tree names one of the surface types directly.
     names_surface_type: bool,
-    /// A `use` tree mentions a prelude route requiring scoped resolution.
-    reaches_prelude: bool,
 }
 
 /// Whether a file consumes the dead-code surface.
@@ -1423,7 +1421,7 @@ fn references_surface(text: &str, inside_owning_crate: bool) -> std::result::Res
     let facts = import_facts(&file, inside_owning_crate);
     Ok(facts.reaches_module
         || facts.names_surface_type
-        || (facts.reaches_prelude && scoped_prelude_use(&file, inside_owning_crate)))
+        || scoped_prelude_use(&file, inside_owning_crate))
 }
 
 /// Resolve explicit prelude paths and bare glob-imported type paths within
@@ -1439,16 +1437,21 @@ fn scoped_prelude_use(file: &syn::File, inside_owning_crate: bool) -> bool {
         imports_surface: bool,
     }
 
-    fn import_bindings(tree: &syn::UseTree, prefix: &mut Vec<String>, scope: &mut Scope) {
+    fn import_bindings(
+        tree: &syn::UseTree,
+        prefix: &mut Vec<String>,
+        scope: &mut Scope,
+        exported: bool,
+    ) {
         match tree {
             syn::UseTree::Path(node) => {
                 prefix.push(node.ident.to_string());
-                import_bindings(&node.tree, prefix, scope);
+                import_bindings(&node.tree, prefix, scope, exported);
                 prefix.pop();
             }
             syn::UseTree::Group(group) => {
                 for tree in &group.items {
-                    import_bindings(tree, prefix, scope);
+                    import_bindings(tree, prefix, scope, exported);
                 }
             }
             syn::UseTree::Glob(_) => {
@@ -1459,6 +1462,7 @@ fn scoped_prelude_use(file: &syn::File, inside_owning_crate: bool) -> bool {
                         && prefix.get(1).is_some_and(|name| name == "prelude"))
                 {
                     scope.glob = true;
+                    scope.imports_surface |= exported;
                 }
             }
             _ => {
@@ -1480,6 +1484,7 @@ fn scoped_prelude_use(file: &syn::File, inside_owning_crate: bool) -> bool {
                 {
                     scope.shadowed.remove(&local);
                     scope.preludes.insert(local);
+                    scope.imports_surface |= exported;
                 } else {
                     if SURFACE_TYPES.contains(&original.as_str())
                         && ((prefix.len() == 1
@@ -1514,7 +1519,12 @@ fn scoped_prelude_use(file: &syn::File, inside_owning_crate: bool) -> bool {
             let previous = scope.clone();
             for item in items {
                 if let syn::Item::Use(node) = item {
-                    import_bindings(&node.tree, &mut Vec::new(), &mut scope);
+                    import_bindings(
+                        &node.tree,
+                        &mut Vec::new(),
+                        &mut scope,
+                        !matches!(node.vis, syn::Visibility::Inherited),
+                    );
                 }
             }
             if scope == previous {
@@ -1653,8 +1663,23 @@ fn scoped_prelude_use(file: &syn::File, inside_owning_crate: bool) -> bool {
         fn visit_path(&mut self, path: &'ast syn::Path) {
             if let Some(first) = path.segments.first() {
                 let name = first.ident.to_string();
+                let segments: Vec<_> =
+                    path.segments.iter().map(|segment| segment.ident.to_string()).collect();
+                let qualified_surface = self.scope.roots.contains(&name)
+                    && ((segments.get(1).is_some_and(|segment| segment == "prelude")
+                        && segments
+                            .get(2)
+                            .is_some_and(|segment| SURFACE_TYPES.contains(&segment.as_str())))
+                        || (segments.get(1).is_some_and(|segment| segment == "compat")
+                            && segments
+                                .get(2)
+                                .is_some_and(|segment| segment == "dead_code_detector")
+                            && segments
+                                .get(3)
+                                .is_some_and(|segment| SURFACE_TYPES.contains(&segment.as_str()))));
                 if !self.scope.shadowed.contains(&name)
-                    && ((self.scope.glob && SURFACE_TYPES.contains(&name.as_str()))
+                    && (qualified_surface
+                        || (self.scope.glob && SURFACE_TYPES.contains(&name.as_str()))
                         || (self.scope.preludes.contains(&name)
                             && path.segments.iter().nth(1).is_some_and(|segment| {
                                 SURFACE_TYPES.contains(&segment.ident.to_string().as_str())
@@ -1745,11 +1770,6 @@ fn classify_import_path(path: &[String], roots: &BTreeSet<String>, facts: &mut I
         && path.iter().any(|seg| seg == "dead_code" || seg == "dead_code_detector")
     {
         facts.reaches_module = true;
-    }
-    // This is only admission to the scoped visitor. Alias chains may not have
-    // reached a crate root in the deliberately shallow import-facts pass.
-    if path.iter().any(|seg| seg == "prelude") {
-        facts.reaches_prelude = true;
     }
     // Only a *rooted* type import counts. Another crate may legitimately define
     // its own `DeadCodeStats`; classifying that as consuming this surface would
@@ -2488,6 +2508,37 @@ mod tests {
         ] {
             if references_surface(text, false).map_err(|error| color_eyre::eyre::eyre!(error))? {
                 bail!("unrelated declaration or out-of-scope prelude became a consumer: {text}");
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn reexports_and_qualified_paths_are_consumers_without_private_imports() -> Result<()> {
+        for text in [
+            "pub use perl_parser::prelude::*;",
+            "pub use perl_parser::prelude as api;",
+            "use perl_parser::prelude as p; pub use p::*;",
+            "use perl_parser as parser; pub use parser::prelude::*;",
+            "fn f(_: perl_parser::prelude::DeadCode) {}",
+            "fn f(_: ::perl_parser::prelude::DeadCodeStats) {}",
+            "fn f(_: perl_parser::compat::dead_code_detector::DeadCode) {}",
+            "use perl_parser as parser; fn f(_: parser::prelude::DeadCode) {}",
+            "use perl_parser as parser; fn f(_: parser::compat::dead_code_detector::DeadCode) {}",
+        ] {
+            if !references_surface(text, false).map_err(|error| color_eyre::eyre::eyre!(error))? {
+                bail!("exported or qualified consumer was missed: {text}");
+            }
+        }
+        for text in [
+            "use perl_parser::prelude::*;",
+            "use perl_parser::prelude as p;",
+            "pub use other_crate::prelude::*;",
+            "fn f(_: other_crate::prelude::DeadCode) {}",
+            "fn f(_: perl_parser::prelude::Parser) {}",
+        ] {
+            if references_surface(text, false).map_err(|error| color_eyre::eyre::eyre!(error))? {
+                bail!("unused private import or unrelated path became a consumer: {text}");
             }
         }
         Ok(())
