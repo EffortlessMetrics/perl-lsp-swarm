@@ -342,7 +342,7 @@ describe('extractManagedArchive', () => {
     assertOutsideUnchanged();
   });
 
-  test('rejects zip64 entry-count sentinels before AdmZip materializes the table', async () => {
+  test('rejects zip64 entry-count sentinels before materializing the table', async () => {
     const archivePath = path.join(tmpDir, 'zip64.zip');
     const bytes = Buffer.from(
       storedZip([
@@ -406,6 +406,27 @@ describe('extractManagedArchive', () => {
       storedZip([
         ['perllsp.exe', 'srv'],
         ['../outside', 'escaped'],
+      ]),
+    );
+    await expect(
+      extractManagedArchive({
+        archivePath,
+        extractDir,
+        format: 'zip',
+        windows: true,
+        limits: { ...TEST_LIMITS, maxUncompressedBytes: 1024, maxEntries: 8 },
+      }),
+    ).rejects.toThrow(/unsafe archive member path/);
+    assertOutsideUnchanged();
+  });
+
+  test('rejects a zip member containing a backslash before extraction', async () => {
+    const archivePath = path.join(tmpDir, 'backslash.zip');
+    fs.writeFileSync(
+      archivePath,
+      storedZip([
+        ['perllsp.exe', 'srv'],
+        ['nested\\outside', 'escaped'],
       ]),
     );
     await expect(
