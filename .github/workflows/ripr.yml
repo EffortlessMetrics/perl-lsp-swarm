@@ -1086,6 +1086,7 @@ jobs:
       PR_HEAD_SHA: ${{ inputs.measurement_head_sha }}
       MEASUREMENT_HEAD_SHA: ${{ inputs.measurement_head_sha }}
       MEASUREMENT_BASE_SHA: ${{ inputs.measurement_base_sha }}
+      WORKFLOW_SHA: ${{ github.sha }}
       CARGO_BUILD_JOBS: "2"
     steps:
       - name: Validate exact measurement source inputs
@@ -1149,6 +1150,7 @@ jobs:
             -e PR_HEAD_SHA \
             -e MEASUREMENT_HEAD_SHA \
             -e MEASUREMENT_BASE_SHA \
+            -e WORKFLOW_SHA \
             -e CARGO_BUILD_JOBS \
             -e MEASUREMENT_IMAGE_ID="$image_id" \
             -e MEASUREMENT_IMAGE_DIGEST="$image_digest" \
@@ -1175,8 +1177,8 @@ jobs:
               ripr_path="$(command -v ripr)"
               ripr_sha256="$(sha256sum "$ripr_path" | cut -d " " -f 1)"
               {
-                printf "docker_memory=6g\ndocker_memory_swap=6g\nworkflow_sha=%s\nsource_head_sha=%s\nsource_base_sha=%s\n"
-                  "$GITHUB_SHA" "$MEASUREMENT_HEAD_SHA" "$MEASUREMENT_BASE_SHA"
+                printf "docker_memory=6g\ndocker_memory_swap=6g\nworkflow_sha=%s\nsource_head_sha=%s\nsource_base_sha=%s\n" \
+                  "$WORKFLOW_SHA" "$MEASUREMENT_HEAD_SHA" "$MEASUREMENT_BASE_SHA"
                 printf "head=%s\nbase=%s\nbase_sha=%s\nripr_version=%s\nripr_sha256=%s\nindex_limit=%s\n" \
                   "$(git rev-parse HEAD)" "$base_arg" "$base_sha" "$ripr_version" "$ripr_sha256" "$RIPR_MAX_DIFF_INDEX_FILES"
                 printf "%s\n%s\n" "$rustc_version" "$cargo_version"
