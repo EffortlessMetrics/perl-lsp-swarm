@@ -2509,6 +2509,24 @@ pub fn validate_snapshot(snapshot: &LiveSnapshot, loaded: &LoadedManifest) -> Re
         let bound = bound_by_node.get(&node.node_id).cloned().unwrap_or_default();
         let probed_a_different_tree =
             node.limitations.iter().any(|limitation| limitation == PROBED_FROM_A_DIFFERENT_TREE);
+        // The re-derivation below substitutes the honest not_proven values for
+        // a cross-tree probe; it must not launder a stored false state through
+        // that substitution. A cross-tree node has exactly one honest record —
+        // not_proven with the marker reason — and anything else is a stale or
+        // tampered producer, even when its digest is self-consistent.
+        if probed_a_different_tree
+            && (node.c02_state != "not_proven"
+                || node.c02_reasons.iter().map(String::as_str).collect::<Vec<_>>()
+                    != [PROBED_FROM_A_DIFFERENT_TREE])
+        {
+            bail!(
+                "cross-tree node {} stores c02 state {:?} with reasons {:?}, but a node probed from a different tree must record not_proven with the {} reason (snapshot tampering or stale producer)",
+                node.node_id,
+                node.c02_state,
+                node.c02_reasons,
+                PROBED_FROM_A_DIFFERENT_TREE
+            );
+        }
         let facts = NodeFacts {
             role: fact.role.clone(),
             buildable: fact.buildable,

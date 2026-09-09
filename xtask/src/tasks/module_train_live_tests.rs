@@ -757,6 +757,35 @@ fn snapshot_validation_detects_tampering() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn cross_tree_validation_rejects_false_stored_state() -> Result<()> {
+    // Devin review, PR #15094: the validator substitutes honest not_proven
+    // values for cross-tree nodes during re-derivation; a snapshot rebuilt
+    // with a self-consistent digest around a false stored state must not be
+    // laundered through that substitution.
+    let snapshot = normalize_text(CORPUS_FIXTURE)?;
+    let manifest = loaded()?;
+    let marker = "c02_implementation_probed_from_a_different_tree";
+
+    let mut forged = snapshot.clone();
+    let node = &mut forged.semantic.nodes[0];
+    node.limitations.push(marker.to_string());
+    node.limitations.sort();
+    node.c02_state = "ready".to_string();
+    node.c02_reasons = Vec::new();
+    let semantic_value = serde_json::to_value(&forged.semantic)?;
+    forged.semantic_digest = canonical_digest(&semantic_value)?;
+
+    let error = validate_snapshot(&forged, &manifest)
+        .err()
+        .ok_or_else(|| color_eyre::eyre::eyre!("false cross-tree state must fail validation"))?;
+    assert!(
+        error.to_string().contains("must record not_proven"),
+        "the failure must name the honest-record invariant, got: {error}"
+    );
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Instrument failures (falsifier 15).
 // ---------------------------------------------------------------------------
