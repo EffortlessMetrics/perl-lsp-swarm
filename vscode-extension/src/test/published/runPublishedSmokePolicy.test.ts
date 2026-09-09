@@ -195,9 +195,7 @@ void test('published install keeps retrying transient failures', async () => {
   await retryPublishedInstall(
     () => {
       attempts += 1;
-      return attempts < 3
-        ? { status: 1, stderr: 'extension install lock is busy' }
-        : { status: 0 };
+      return attempts < 3 ? { status: 1, stderr: 'extension install lock is busy' } : { status: 0 };
     },
     async (milliseconds) => {
       waits.push(milliseconds);
