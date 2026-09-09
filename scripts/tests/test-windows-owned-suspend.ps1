@@ -7,7 +7,16 @@ function Invoke-Helper([string[]]$extra, [bool]$sendResume, [UInt64]$identity, [
   $info = [Diagnostics.ProcessStartInfo]::new()
   $info.FileName = 'powershell.exe'; $info.Arguments = '-NoProfile -ExecutionPolicy Bypass -File "' + $helper + '" -ProcessId ' + $child.Id + ' -CreationTimeFileTime ' + $identity + ' ' + ($extra -join ' ')
   $info.UseShellExecute = $false; $info.CreateNoWindow = $true; $info.RedirectStandardInput = $true; $info.RedirectStandardOutput = $true; $info.RedirectStandardError = $true
-  $worker = [Diagnostics.Process]::new(); $worker.StartInfo = $info; if(!$worker.Start()) { throw 'helper did not start' }
+  $worker = [Diagnostics.Process]::new(); $worker.StartInfo = $info
+  # Windows PowerShell 5's ProcessStartInfo lacks StandardInputEncoding. Set
+  # the console encoding only while Start captures the redirected stream.
+  $originalInputEncoding = [Console]::InputEncoding
+  try {
+    [Console]::InputEncoding = [Text.UTF8Encoding]::new($false)
+    if(!$worker.Start()) { throw 'helper did not start' }
+  } finally {
+    [Console]::InputEncoding = $originalInputEncoding
+  }
   try {
     $lineTask=$worker.StandardOutput.ReadLineAsync(); if(!$lineTask.Wait(5000)) { throw 'suspend handshake timeout' }; $line=$lineTask.Result
     if($observeHold) { $baseline=(Get-Item -LiteralPath $heartbeat).Length; Start-Sleep -Milliseconds 1500; $child.Refresh(); $during=(Get-Item -LiteralPath $heartbeat).Length; if($child.HasExited -or $during -ne $baseline) { throw "heartbeat was not frozen after handshake: $baseline -> $during" } }

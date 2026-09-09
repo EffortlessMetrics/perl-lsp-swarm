@@ -24,6 +24,7 @@ interface Suspension {
   creation: string;
   worker: Worker;
   releasing: boolean;
+  consumed: boolean;
   recovery?: Promise<WindowsSuspendResult>;
 }
 
@@ -88,6 +89,13 @@ async function bounded<T>(promise: Promise<T>, milliseconds: number): Promise<T 
 function requestResume(worker: Worker): void {
   if (!worker.completed && !worker.child.stdin.destroyed && !worker.child.stdin.writableEnded) {
     worker.child.stdin.end('resume\n');
+  }
+}
+
+function consume(state: Suspension): void {
+  state.consumed = true;
+  if (state.worker.completed && suspensions.get(state.pid) === state) {
+    suspensions.delete(state.pid);
   }
 }
 
@@ -179,18 +187,19 @@ export async function suspendOwnedWindowsProcess(
     '-TimeoutMilliseconds',
     String(holdMilliseconds),
   ]);
-  const state: Suspension = { pid, creation, worker, releasing: false };
+  const state: Suspension = { pid, creation, worker, releasing: false, consumed: false };
   suspensions.set(pid, state);
   // Register completion immediately; even an exit just after the handshake is
   // retained and cleaned up instead of being lost before resume adds a listener.
   void worker.completion.then(() => {
+    if (state.consumed && suspensions.get(state.pid) === state) suspensions.delete(state.pid);
     if (!state.releasing) void recover(state);
   });
   try {
     proof.onHelperSpawn?.(worker.child);
   } catch {
     const cleanup = await recover(state);
-    if (worker.completed) suspensions.delete(pid);
+    consume(state);
     return { outcome: 'error', detail: `Windows proof setup failed; ${cleanup.detail}` };
   }
   const ready = await bounded(worker.handshake, handshakeMilliseconds);
@@ -198,7 +207,7 @@ export async function suspendOwnedWindowsProcess(
     return { outcome: 'suspended', detail: `Pinned Windows suspension for pid ${pid}` };
   }
   const cleanup = await recover(state);
-  if (worker.completed) suspensions.delete(pid);
+  consume(state);
   return { outcome: 'error', detail: `Windows suspension handshake failed; ${cleanup.detail}` };
 }
 
@@ -219,6 +228,6 @@ export async function resumeOwnedWindowsProcess(pid: number): Promise<WindowsSus
       result = await recover(state);
     }
   }
-  if (state.worker.completed) suspensions.delete(pid);
+  consume(state);
   return result;
 }

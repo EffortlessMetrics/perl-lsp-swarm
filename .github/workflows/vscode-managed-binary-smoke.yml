@@ -59,9 +59,11 @@ jobs:
         run: |
           node scripts/governed-tsc.js -p tsconfig.published-smoke.json
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          node --test scripts/windows-owned-suspension.test.js
+          node --test scripts/windows-owned-suspension.test.js scripts/windows-owned-suspension-lifecycle.test.js
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           powershell.exe -NoProfile -ExecutionPolicy Bypass -File ../scripts/tests/test-windows-owned-suspend.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -Command '[Console]::InputEncoding = [Text.UTF8Encoding]::new($true); & ../scripts/tests/test-windows-owned-suspend.ps1'
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Compile extension
