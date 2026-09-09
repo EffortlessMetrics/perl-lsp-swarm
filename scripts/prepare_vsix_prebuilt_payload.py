@@ -4,13 +4,13 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
 
-from release_archive_members import selected_member_bytes, selected_member_digest
+from release_archive_members import copy_selected_member, selected_member_digest
 from release_build_identity import load_json_object, validate_topology
 from release_terminal_manifest import (
     digest,
@@ -32,6 +32,10 @@ def build(args: argparse.Namespace) -> None:
         raise ValueError("release build receipt source differs from requested source")
     if identity.get("target") != args.target:
         raise ValueError("release build receipt target differs from requested target")
+    if identity.get("candidate_identity") != args.candidate_id:
+        raise ValueError("release build receipt candidate differs from requested candidate")
+    if identity.get("release_version") != args.release_version:
+        raise ValueError("release build receipt version differs from requested release")
     binaries = validate_receipt(receipt, identity)
     evidence = load_json_object(args.package_evidence, "release package evidence")
     archive = args.archive.resolve(strict=True)
@@ -57,47 +61,58 @@ def build(args: argparse.Namespace) -> None:
     projection = load_json_object(args.projection, "VSIX projection input")
     if projection.get("releaseTopologySha256") != identity.get("release_topology_digest"):
         raise ValueError("VSIX projection topology digest differs from build receipt")
-    row = next(
-        (item for item in projection.get("targets", []) if item.get("target") == args.target),
-        None,
-    )
-    if not isinstance(row, dict):
-        raise ValueError("VSIX projection has no requested target row")
-    os_name = row.get("os")
-    architecture = row.get("architecture")
-    libc = row.get("libc")
-    vscode_target = f"{'linux' if os_name == 'linux' else 'darwin' if os_name == 'macos' else 'win32'}-{'arm64' if architecture == 'aarch64' else 'x64'}"
-    if os_name == "linux" and libc == "musl":
-        vscode_target = f"alpine-{'arm64' if architecture == 'aarch64' else 'x64'}"
-    suffix = ".exe" if os_name == "windows" else ""
     evidence_rows = {item["executable"]: item for item in evidence["binaries"]}
-    payloads: list[tuple[str, str, bytes]] = []
-    for executable, role in (("perllsp", "server"), ("perl-dap", "dap")):
+    payloads: list[dict[str, str]] = []
+    for executable in ("perllsp", "perl-dap"):
         item = evidence_rows.get(executable)
         if item is None:
             raise ValueError(f"package evidence omits {executable}")
-        member = f"{executable}{suffix}"
-        raw = selected_member_bytes(archive, item["member_path"])
-        observed = hashlib.sha256(raw).hexdigest()
+        observed = selected_member_digest(archive, item["member_path"])
         if observed != item["post_strip_sha256"]:
             raise ValueError(f"archive member digest mismatch for {executable}")
-        payloads.append((executable, member, raw))
+        payloads.append({"executable": executable, "source_member": item["member_path"], "sha256": observed})
+    node_input = {
+        "extension": {"id": args.extension_id, "version": args.release_version, "sourceSha": args.source_sha},
+        "candidate": {"id": args.candidate_id, "release": args.release_version, "sourceSha": args.source_sha},
+        "releaseTopologySha256": identity["release_topology_digest"],
+        "projection": projection,
+        "target": args.target,
+        "packageInventorySha256": args.inventory_sha256,
+        "server": {"candidateId": args.candidate_id, "target": args.target, "member": "", "sha256": payloads[0]["sha256"], "identityRef": f"{args.receipt}:binaries/perllsp"},
+        "dap": {"candidateId": args.candidate_id, "target": args.target, "member": "", "sha256": payloads[1]["sha256"], "identityRef": f"{args.receipt}:binaries/perl-dap"},
+    }
+    builder = Path(__file__).with_name("build_vsix_candidate_manifest.js")
+    result = subprocess.run(["node", str(builder)], input=json.dumps(node_input), text=True, capture_output=True, check=False)
+    if result.returncode != 0:
+        raise ValueError(result.stderr.strip() or "projection manifest builder failed")
+    manifest = json.loads(result.stdout)
+    vscode_target = manifest["package"]["vscodeTargetId"]
+    for payload in payloads:
+        native = manifest["server"] if payload["executable"] == "perllsp" else manifest["dap"]["payload"]
+        if not native:
+            raise ValueError(f"projection omitted required {payload['executable']}")
+        payload["member"] = native["member"]
     output = args.output.resolve()
-    output.mkdir(parents=True, exist_ok=True)
     target_dir = output / "bin" / vscode_target
     target_dir.mkdir(parents=True, exist_ok=True)
-    for _, member, raw in payloads:
-        (target_dir / member).write_bytes(raw)
-    manifest = {
-        "schema": "vsix_candidate_payload.v1",
-        "extension": {"id": args.extension_id, "version": identity["release_version"], "sourceSha": args.source_sha},
-        "candidate": {"id": identity["candidate_identity"], "release": identity["release_version"], "sourceSha": args.source_sha},
-        "releaseTopologySha256": identity["release_topology_digest"],
-        "package": {"vscodeTargetId": vscode_target, "rustTarget": args.target, "mode": "target_specific", "inventorySha256": args.inventory_sha256},
-        "server": {"candidateId": identity["candidate_identity"], "target": args.target, "member": payloads[0][1], "sha256": hashlib.sha256(payloads[0][2]).hexdigest(), "identityRef": f"{args.receipt}:binaries/perllsp"},
-        "dap": {"disposition": "required_present", "payload": {"candidateId": identity["candidate_identity"], "target": args.target, "member": payloads[1][1], "sha256": hashlib.sha256(payloads[1][2]).hexdigest(), "identityRef": f"{args.receipt}:binaries/perl-dap"}},
-    }
-    (output / "vsix-candidate-payload.json").write_bytes(canonical(manifest))
+    created: list[Path] = []
+    try:
+        for payload in payloads:
+            destination = target_dir / payload["member"]
+            if destination.exists() or destination.is_symlink():
+                raise ValueError(f"refusing to overwrite existing payload: {destination}")
+            if copy_selected_member(archive, payload["source_member"], destination) != payload["sha256"]:
+                raise ValueError(f"archive member changed while staging {payload['executable']}")
+            created.append(destination)
+        manifest_path = output / "vsix-candidate-payload.json"
+        if manifest_path.exists() or manifest_path.is_symlink():
+            raise ValueError(f"refusing to overwrite existing manifest: {manifest_path}")
+        manifest_path.write_bytes(canonical(manifest))
+        created.append(manifest_path)
+    except Exception:
+        for path in reversed(created):
+            path.unlink(missing_ok=True)
+        raise
 
 
 def main() -> int:
@@ -106,6 +121,8 @@ def main() -> int:
         parser.add_argument(f"--{name.replace('_', '-')}", type=Path, required=True)
     parser.add_argument("--source-sha", required=True)
     parser.add_argument("--target", required=True)
+    parser.add_argument("--candidate-id", required=True)
+    parser.add_argument("--release-version", required=True)
     parser.add_argument("--inventory-sha256", required=True)
     parser.add_argument("--extension-id", required=True)
     args = parser.parse_args()
