@@ -188,6 +188,11 @@ pub struct PrOwnershipInfo {
 /// failure. Cached remote-tracking refs cannot establish either remote fact.
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct RemoteBranchInfo {
+    /// Whether this record is a completed observation at all. A legacy
+    /// snapshot that never carried the field deserializes to `false`, so an
+    /// absent observation can never read as a confirmed remote absence.
+    #[serde(default)]
+    pub observed: bool,
     #[serde(default)]
     pub sha: Option<String>,
     #[serde(default)]
@@ -376,6 +381,18 @@ fn load_snapshot(config: &AdmissionConfig) -> Result<WriterAdmissionSnapshot> {
         if let Some(branch) = &config.branch {
             snapshot.target_branch = branch.clone();
             snapshot.target_branch_state = TargetBranchState::Named;
+            // The fixture's branch-scoped observations describe its original
+            // target, not the override; relabeling must not reattribute
+            // them. Clear each one to its honest unobserved state.
+            snapshot.remote_branch = RemoteBranchInfo::default();
+            snapshot.pr_ownership = PrOwnershipInfo::default();
+            snapshot.worktree_mapping = WorktreeMappingInfo {
+                entries: Vec::new(),
+                error: Some(
+                    "worktree mapping was gathered for the fixture's original target and was discarded for the --branch override"
+                        .to_string(),
+                ),
+            };
         }
         return Ok(snapshot);
     }
@@ -677,6 +694,16 @@ fn check_remote_branch_identity(snapshot: &WriterAdmissionSnapshot) -> CheckResu
         };
     }
     let info = &snapshot.remote_branch;
+    if !info.observed {
+        return CheckResult {
+            name,
+            status: CheckStatus::NotProven,
+            reason: format!(
+                "no remote-branch observation was recorded for `{}`; an absent observation is not a confirmed absence, so CREATE versus RESUME is not established",
+                snapshot.target_branch
+            ),
+        };
+    }
     if let Some(err) = &info.error {
         return CheckResult {
             name,
@@ -1114,8 +1141,10 @@ fn gather_pr_ownership(branch: &str, repo: Option<&str>) -> PrOwnershipInfo {
 /// ls-remote's explicit no-match result; every other failure is NOT_PROVEN.
 fn gather_remote_branch_info(root: &Path, branch: &str) -> RemoteBranchInfo {
     match observe_remote_branch(root, branch, Duration::from_secs(20)) {
-        Ok(sha) => RemoteBranchInfo { sha, error: None },
-        Err(error) => RemoteBranchInfo { sha: None, error: Some(format!("{error:#}")) },
+        Ok(sha) => RemoteBranchInfo { observed: true, sha, error: None },
+        Err(error) => {
+            RemoteBranchInfo { observed: true, sha: None, error: Some(format!("{error:#}")) }
+        }
     }
 }
 
@@ -1344,7 +1373,9 @@ mod tests {
                 error: None,
             },
             pr_ownership: PrOwnershipInfo { status: PrStatus::None, pr_number: None, error: None },
-            remote_branch: RemoteBranchInfo::default(),
+            // A completed observation that found no remote branch —
+            // distinct from no observation at all (RemoteBranchInfo::default()).
+            remote_branch: RemoteBranchInfo { observed: true, sha: None, error: None },
         }
     }
 
@@ -1547,6 +1578,7 @@ mod tests {
         // wrong base, but it still says nothing about writer liveness.
         let mut snapshot = base_snapshot();
         snapshot.remote_branch = RemoteBranchInfo {
+            observed: true,
             sha: None,
             error: Some("git rev-parse --verify failed: fatal: not a git repository".to_string()),
         };
@@ -1564,6 +1596,65 @@ mod tests {
             !checks.iter().any(|c| c.name == "writer-collision"),
             "remote identity failure must not be converted into writer liveness: {checks:?}"
         );
+    }
+
+    #[test]
+    fn an_unrecorded_remote_branch_observation_is_not_proven_never_create() {
+        // Devin review, PR #14834: a legacy snapshot that never carried a
+        // remote_branch field must not read as a confirmed remote absence —
+        // absent observation is not observed absence.
+        let mut snapshot = base_snapshot();
+        snapshot.remote_branch = RemoteBranchInfo::default();
+        let checks = run_checks(&snapshot, &default_config());
+        assert!(
+            checks.iter().any(|c| {
+                c.name == "remote-branch-identity"
+                    && c.status == CheckStatus::NotProven
+                    && c.reason.contains("an absent observation is not a confirmed absence")
+            }),
+            "an unrecorded observation must be NOT_PROVEN, never CREATE: {checks:?}"
+        );
+    }
+
+    #[test]
+    fn branch_override_discards_fixture_branch_scoped_observations() -> Result<()> {
+        // Devin review, PR #14834: --fixture with --branch relabels the
+        // target, but the fixture's branch-scoped observations were gathered
+        // for its original target and must not be reattributed.
+        let fixture = serde_json::json!({
+            "target_branch": "original/branch",
+            "target_branch_state": "named",
+            "remote_branch": {"observed": true, "sha": "f00dcafe"},
+            "pr_ownership": {"status": "open", "pr_number": 42},
+            "worktree_mapping": {"entries": [{"path": "/repo", "branch": "original/branch"}]}
+        });
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("snapshot.json");
+        std::fs::write(&path, serde_json::to_string(&fixture)?)?;
+        let config = AdmissionConfig {
+            branch: Some("override/branch".to_string()),
+            fixture: Some(path),
+            ..default_config()
+        };
+
+        let snapshot = load_snapshot(&config)?;
+
+        assert_eq!(snapshot.target_branch, "override/branch");
+        assert!(
+            !snapshot.remote_branch.observed,
+            "the original target's remote observation must not survive the override"
+        );
+        assert_eq!(
+            snapshot.pr_ownership.status,
+            PrStatus::Unknown,
+            "the original target's PR observation must not survive the override"
+        );
+        assert!(
+            snapshot.worktree_mapping.error.is_some()
+                && snapshot.worktree_mapping.entries.is_empty(),
+            "the original target's worktree mapping must be discarded as not-proven"
+        );
+        Ok(())
     }
 
     #[test]
@@ -1774,7 +1865,7 @@ mod tests {
         snapshot.worktree_mapping.entries =
             vec![WorktreeEntry { path: "/repo".to_string(), branch: Some("main".to_string()) }];
         snapshot.remote_branch =
-            RemoteBranchInfo { sha: Some("f00dcafe".to_string()), error: None };
+            RemoteBranchInfo { observed: true, sha: Some("f00dcafe".to_string()), error: None };
         let guidance = compute_guidance(&snapshot);
         let sha = must_some(guidance.remote_branch_sha);
         assert_eq!(sha, "f00dcafe");
@@ -1795,8 +1886,11 @@ mod tests {
         // Keep the error in guidance while remote-branch-identity carries
         // the same fact into the aggregate NOT_PROVEN verdict.
         let mut snapshot = base_snapshot();
-        snapshot.remote_branch =
-            RemoteBranchInfo { sha: None, error: Some("fatal: not a git repository".to_string()) };
+        snapshot.remote_branch = RemoteBranchInfo {
+            observed: true,
+            sha: None,
+            error: Some("fatal: not a git repository".to_string()),
+        };
         let guidance = compute_guidance(&snapshot);
         assert_eq!(guidance.remote_branch_sha, None, "no SHA was resolved — this must stay None");
         let error = must_some(guidance.remote_branch_lookup_error);
