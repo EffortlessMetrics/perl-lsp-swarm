@@ -245,6 +245,59 @@ async function downloadFileWithRetry(url: string, destination: string): Promise<
   throw new Error(`Failed to download published extension from ${url}\n${lastFailure}`);
 }
 
+export interface PublishedInstallAttemptResult {
+  status: number | null;
+  error?: NodeJS.ErrnoException | undefined;
+  stdout?: string | null | undefined;
+  stderr?: string | null | undefined;
+}
+
+export function isDeterministicPublishedInstallFailure(
+  result: PublishedInstallAttemptResult,
+): boolean {
+  if (result.status === 0) {
+    return false;
+  }
+  const output = `${result.stdout ?? ''}\n${result.stderr ?? ''}`;
+  return (
+    result.status === 127 ||
+    result.error?.code === 'ENOENT' ||
+    /error while loading shared libraries:|cannot open shared object file/i.test(output) ||
+    /To use Visual Studio Code with the Windows Subsystem for Linux|DONT_PROMPT_WSL_INSTALL|Do you want to continue anyway/i.test(
+      output,
+    )
+  );
+}
+
+export async function retryPublishedInstall(
+  install: () => PublishedInstallAttemptResult,
+  wait: (milliseconds: number) => Promise<void> = sleep,
+): Promise<void> {
+  let lastFailure = '';
+  for (let attempt = 1; attempt <= 12; attempt += 1) {
+    const result = install();
+    if (result.status === 0) {
+      return;
+    }
+    lastFailure = [
+      `attempt ${attempt}`,
+      `exit ${result.status ?? 'unknown'}`,
+      result.error instanceof Error ? result.error.message : '',
+      result.stdout,
+      result.stderr,
+    ]
+      .filter(Boolean)
+      .join('\n');
+    if (isDeterministicPublishedInstallFailure(result)) {
+      throw new Error(`Published extension install failed deterministically\n${lastFailure}`);
+    }
+    if (attempt < 12) {
+      await wait(20_000);
+    }
+  }
+  throw new Error(`Failed to install published extension after 12 attempts\n${lastFailure}`);
+}
+
 async function resolveInstallTarget(source: ExtensionSource, tempDir: string): Promise<string> {
   const version = envValue('PERL_LSP_PUBLISHED_EXTENSION_VERSION');
   const extensionId = envValue('PERL_LSP_PUBLISHED_EXTENSION_ID') || EXTENSION_ID;
@@ -301,34 +354,23 @@ async function installExtension(
   ];
   const command = process.platform === 'win32' ? process.env.ComSpec || 'cmd.exe' : cliPath;
   const commandArgs = process.platform === 'win32' ? ['/d', '/s', '/c', cliPath, ...args] : args;
-  let lastFailure = '';
-
-  for (let attempt = 1; attempt <= 12; attempt += 1) {
-    const result = spawnSync(command, commandArgs, {
-      encoding: 'utf8',
-      windowsHide: true,
+  try {
+    await retryPublishedInstall(() => {
+      const result = spawnSync(command, commandArgs, {
+        encoding: 'utf8',
+        windowsHide: true,
+      });
+      return {
+        status: result.status,
+        error: result.error,
+        stdout: result.stdout,
+        stderr: result.stderr,
+      };
     });
-
-    if (result.status === 0) {
-      return;
-    }
-
-    lastFailure = [
-      `attempt ${attempt}`,
-      `exit ${result.status ?? 'unknown'}`,
-      result.error instanceof Error ? result.error.message : '',
-      result.stdout,
-      result.stderr,
-    ]
-      .filter(Boolean)
-      .join('\n');
-
-    if (attempt < 12) {
-      await sleep(20_000);
-    }
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Failed to install published extension ${installTarget}\n${message}`);
   }
-
-  throw new Error(`Failed to install published extension ${installTarget}\n${lastFailure}`);
 }
 
 function configureCurrentSourceSmoke(
