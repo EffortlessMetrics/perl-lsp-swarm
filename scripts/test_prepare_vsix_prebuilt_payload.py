@@ -100,6 +100,28 @@ class PrebuiltPayloadAdapterTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertFalse((paths["output"] / "vsix-candidate-payload.json").exists())
 
+    def test_malformed_build_identity_is_rejected_before_materialization(self) -> None:
+        mutations = (
+            ("schema_version", "unknown.identity.v9"),
+            ("repository", "attacker/example"),
+            ("profile", "debug"),
+            ("artifact_role", "binary"),
+            ("product_identity_contract_digest", "not-a-sha256"),
+        )
+        for field, value in mutations:
+            with self.subTest(field=field), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                paths = self.fixture(root)
+                receipt = json.loads(Path(paths["receipt"]).read_text(encoding="utf-8"))
+                receipt["input"][field] = value
+                receipt["input_sha256"] = digest(
+                    (json.dumps(receipt["input"], sort_keys=True, separators=(",", ":")) + "\n").encode()
+                )
+                Path(paths["receipt"]).write_text(json.dumps(receipt), encoding="utf-8")
+                result = subprocess.run(self.command(paths), cwd=Path(__file__).parents[1], capture_output=True, text=True, check=False)
+                self.assertNotEqual(result.returncode, 0, result.stderr)
+                self.assertFalse((paths["output"] / "vsix-candidate-payload.json").exists())
+
     def test_expected_input_and_archive_failures_leave_no_output(self) -> None:
         for field, value in (("target", "x86_64-unknown-linux-musl"), ("inventory_sha256", "invalid")):
             with self.subTest(field=field), tempfile.TemporaryDirectory() as directory:

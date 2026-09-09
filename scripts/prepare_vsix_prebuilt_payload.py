@@ -16,7 +16,6 @@ from release_archive_members import copy_selected_member, selected_member_digest
 from release_build_identity import ReleaseBuildIdentity, load_json_object, validate_topology
 from release_terminal_manifest import (
     digest,
-    validate_identity,
     validate_package_evidence,
     validate_receipt,
 )
@@ -40,7 +39,6 @@ def build(args: argparse.Namespace) -> None:
     if identity.get("release_version") != args.release_version:
         raise ValueError("release build receipt version differs from requested release")
     validated_identity = ReleaseBuildIdentity.from_mapping(identity)
-    validated_identity.validate()
     if validated_identity.artifact_role != "archive":
         raise ValueError("release build identity is not archive-shaped")
     binaries = validate_receipt(receipt, identity)
