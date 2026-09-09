@@ -1559,6 +1559,7 @@ fn scoped_prelude_use(file: &syn::File, inside_owning_crate: bool) -> bool {
 
     struct Visitor {
         scope: Scope,
+        initial: Scope,
         found: bool,
     }
     impl Visitor {
@@ -1626,12 +1627,13 @@ fn scoped_prelude_use(file: &syn::File, inside_owning_crate: bool) -> bool {
 
         fn visit_item_mod(&mut self, node: &'ast syn::ItemMod) {
             if let Some((_, items)) = &node.content {
-                // Inline modules inherit the lexically enclosing scope: an
-                // extern-crate alias or import visible outside the module
-                // roots consumer paths inside it. Rebuilding from
-                // self.initial would discard those bindings and let nested
-                // consumers escape the ledger.
-                let next = with_items(self.scope.clone(), &items.iter().collect::<Vec<_>>());
+                // Rust does not inherit ordinary `use` bindings into child
+                // modules; copying the enclosing scope in would misclassify a
+                // child's unrelated same-named paths as this surface. Only
+                // crate-root extern-crate aliases are crate-global, and those
+                // live in self.initial, so each inline module rebuilds from
+                // it rather than from the enclosing scope.
+                let next = with_items(self.initial.clone(), &items.iter().collect::<Vec<_>>());
                 self.found |= next.imports_surface;
                 let previous = std::mem::replace(&mut self.scope, next);
                 for item in items {
@@ -1712,9 +1714,21 @@ fn scoped_prelude_use(file: &syn::File, inside_owning_crate: bool) -> bool {
     if inside_owning_crate {
         initial.roots.extend(["crate", "self", "super"].map(str::to_string));
     }
+    // A crate-root `extern crate perl_parser as alias;` joins the extern
+    // prelude and is visible in every module of the file, unlike ordinary
+    // `use` bindings, so the alias roots the shared initial scope that
+    // inline modules rebuild from.
+    for item in &file.items {
+        if let syn::Item::ExternCrate(node) = item
+            && (node.ident == "perl_parser" || (node.ident == "self" && inside_owning_crate))
+        {
+            let local = node.rename.as_ref().map_or(&node.ident, |(_, alias)| alias);
+            initial.roots.insert(local.to_string());
+        }
+    }
     let scope = with_items(initial.clone(), &file.items.iter().collect::<Vec<_>>());
     let found = scope.imports_surface;
-    let mut visitor = Visitor { scope, found };
+    let mut visitor = Visitor { scope, initial, found };
     syn::visit::Visit::visit_file(&mut visitor, file);
     visitor.found
 }
@@ -2590,16 +2604,32 @@ mod tests {
     }
 
     #[test]
-    fn outer_extern_crate_alias_reaches_nested_module_consumers() -> Result<()> {
-        // Devin review, PR #15086: an alias visible in the enclosing scope
-        // must root consumer paths inside nested inline modules; rebuilding
-        // a module's scope from the file-level initial scope discards it.
+    fn crate_root_extern_crate_alias_reaches_nested_module_consumers() -> Result<()> {
+        // A crate-root extern-crate alias joins the extern prelude and is
+        // visible in every module of the file, so a nested consumer through
+        // it must be recorded (Devin review, PR #15086).
+        let text = "extern crate perl_parser as alias; mod inner { fn f(_: alias::dead_code::DeadCode) {} }";
+        let file: syn::File = syn::parse_str(text)?;
+        if !scoped_prelude_use(&file, false) {
+            bail!("nested consumer through crate-root alias escaped");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn inline_modules_do_not_inherit_enclosing_use_bindings() -> Result<()> {
+        // Devin review, PR #15086: child modules do not inherit ordinary
+        // `use` bindings (including use-aliases) or an enclosing module's
+        // extern-crate alias. Rebuilding a child from the enclosing scope
+        // would misclassify its same-named paths as this surface and fail
+        // the ledger on valid files.
         for text in [
-            "extern crate perl_parser as alias; mod inner { fn f(_: alias::dead_code::DeadCode) {} }",
-            "mod outer { extern crate perl_parser as alias; pub mod inner { fn f(_: alias::dead_code_detector::DeadCodeType) {} } }",
+            "use perl_parser as alias; mod inner { fn f(_: alias::dead_code::DeadCode) {} }",
+            "mod outer { extern crate perl_parser as alias; pub mod inner { fn f(_: alias::dead_code::DeadCode) {} } }",
         ] {
-            if !references_surface(text, false).map_err(|error| color_eyre::eyre::eyre!(error))? {
-                bail!("nested consumer through outer alias escaped: {text}");
+            let file: syn::File = syn::parse_str(text)?;
+            if scoped_prelude_use(&file, false) {
+                bail!("enclosing-scope binding leaked into child module: {text}");
             }
         }
         Ok(())
