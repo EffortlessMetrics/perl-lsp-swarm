@@ -3,7 +3,7 @@
   "owner_issue": 15219,
   "reason": "The #15219 yauzl migration changes the packaged extension dependency and bundle inventory; the exact candidate VSIX is measured against the pinned current-main baseline, with the reviewed inventory transition recorded from the produced archive.",
   "base_baseline_file_sha256": "db728d1fdbd59cde136efbf4ca093000703165d7e200bd5468b0a04492e9adf1",
-  "candidate_baseline_file_sha256": "b6ab81dae8ee82f02191499a6f37d0b78e0e0fcceef5e7a6f1400d3c0c6c4a58",
+  "candidate_baseline_file_sha256": "598251b3df686b37a7042fd6917cc45ea7bc228b3b57ebed7569126ef5252cac",
   "base_inventory_sha256": "6a0ba1d92936ed297b912d1c61722d9b1a4b0949804a2d9ece55b7543aff6201",
-  "candidate_inventory_sha256": "00ae6f3fea0b8abd84e1fd02335c50baf42f7037fe5ef8d4a62e57b36ae12d49"
+  "candidate_inventory_sha256": "d383830e286b8fd5026b6afb7b53258297ff3beff00520f843f413792952b530"
 }
