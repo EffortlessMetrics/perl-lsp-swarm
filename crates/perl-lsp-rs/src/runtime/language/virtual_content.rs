@@ -339,6 +339,47 @@ mod tests {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
+    fn write_blocking_perldoc_fixture(
+        temp: &tempfile::TempDir,
+    ) -> Result<
+        (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf),
+        Box<dyn std::error::Error>,
+    > {
+        let perl_name = if cfg!(windows) { "perl.exe" } else { "perl" };
+        let perldoc_name = if cfg!(windows) { "perldoc.bat" } else { "perldoc" };
+        let perl_path = temp.path().join(perl_name);
+        let perldoc_path = temp.path().join(perldoc_name);
+        let started = temp.path().join("perldoc-started");
+        let release = temp.path().join("perldoc-release");
+
+        fs::write(&perl_path, b"")?;
+        let script = if cfg!(windows) {
+            format!(
+                "@echo off\r\n> \"{}\" echo started\r\n:wait\r\nif exist \"{}\" goto done\r\n>nul ping -n 2 127.0.0.1\r\ngoto wait\r\n:done\r\necho NAME\r\necho     Fake::Documented\r\n",
+                started.display(),
+                release.display(),
+            )
+        } else {
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' started > '{}'\nwhile [ ! -f '{}' ]; do sleep 0.01; done\nprintf '%s\\n' NAME '    Fake::Documented'\n",
+                started.display(),
+                release.display(),
+            )
+        };
+        fs::write(&perldoc_path, script)?;
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut permissions = fs::metadata(&perldoc_path)?.permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(&perldoc_path, permissions)?;
+        }
+
+        Ok((perl_path, started, release))
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn parser_fetch_perldoc_request_path_filters_fixture_output() -> TestResult {
         let temp = tempfile::tempdir()?;
@@ -601,6 +642,50 @@ mod tests {
             .ok_or("recovered documentation must contain text")?;
         if !text.contains("Fake::Documented") {
             return Err("stable workspace recovery returned the wrong documentation".into());
+        }
+        Ok(())
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn parser_virtual_content_rechecks_topology_after_system_fallback() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let (perl_path, started, release) = write_blocking_perldoc_fixture(&temp)?;
+        let workspace = temp.path().join("workspace");
+        fs::create_dir_all(&workspace)?;
+        let workspace_uri =
+            url::Url::from_directory_path(&workspace).map_err(|_| "workspace URI")?;
+        let server = std::sync::Arc::new(LspServer::new());
+        *server.workspace_folders.lock() = vec![
+            crate::runtime::workspace_folder::WorkspaceFolderState::new(workspace_uri.to_string())
+                .with_path(workspace),
+        ];
+        server.workspace_config.lock().perl_path = Some(perl_path.to_string_lossy().into_owned());
+
+        let worker_server = std::sync::Arc::clone(&server);
+        let worker = std::thread::spawn(move || {
+            for _ in 0..500 {
+                if started.exists() {
+                    worker_server
+                        .workspace_topology_generation
+                        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    worker_server
+                        .workspace_topology_stable
+                        .store(false, std::sync::atomic::Ordering::SeqCst);
+                    let _ = fs::write(&release, b"release");
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            let _ = fs::write(&release, b"release");
+        });
+
+        let result = server.handle_text_document_content(Some(json!({
+            "uri": "perldoc://Fake::Documented"
+        })));
+        worker.join().map_err(|_| "topology barrier worker panicked")?;
+        if result.is_ok() {
+            return Err("fallback content crossed a topology transition".into());
         }
         Ok(())
     }
