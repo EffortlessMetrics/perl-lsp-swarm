@@ -2,8 +2,10 @@
 import importlib.util
 import io
 import json
+import re
 import subprocess
 import sys
+import tomllib
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from copy import deepcopy
 from tempfile import TemporaryDirectory
@@ -89,6 +91,11 @@ class ReleaseTopologyTests(unittest.TestCase):
                 path = root / relative
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text(contents, encoding="utf-8")
+            schema_path = root / MODULE.SCHEMA_RELATIVE_PATH
+            schema_path.parent.mkdir(parents=True, exist_ok=True)
+            schema_path.write_text(
+                MODULE.SCHEMA_PATH.read_text(encoding="utf-8"), encoding="utf-8"
+            )
 
             targets = MODULE.derive_targets(workflow, release)
             crates = MODULE.derive_crates(metadata)
@@ -170,6 +177,28 @@ class ReleaseTopologyTests(unittest.TestCase):
         with self.assertRaises(MODULE.TopologyError):
             MODULE.derive_targets(workflow, "0.18.0")
 
+    def test_git_input_check_preserves_fatal_repository_error(self):
+        with TemporaryDirectory() as temporary:
+            with self.assertRaisesRegex(
+                MODULE.TopologyError, "cannot inspect tracked topology inputs:.*not a git repository"
+            ):
+                MODULE.ensure_committed_topology_inputs(
+                    Path(temporary), ["Cargo.toml"]
+                )
+
+    def test_malformed_workspace_dependencies_are_rejected_as_typed_errors(self):
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "Cargo.toml").write_text(
+                "[workspace]\ndependencies = 'not-a-table'\n", encoding="utf-8"
+            )
+            with self.assertRaisesRegex(
+                MODULE.TopologyError, "workspace.dependencies must be a table"
+            ):
+                MODULE.normalized_source_value(
+                    root, "Cargo.toml", "0.18.0", set(), set(), set()
+                )
+
     def test_schema_accepts_stable_and_rejects_exact_prerelease(self):
         with self.valid_manifest_fixture() as (_, manifest, _):
             MODULE.schema_validate(manifest)
@@ -194,6 +223,20 @@ class ReleaseTopologyTests(unittest.TestCase):
             unknown["unexpected"] = True
             with self.assertRaises(MODULE.TopologyError):
                 MODULE.validate_manifest(unknown, root, frozen_sha)
+
+            with patch.object(MODULE, "git_head", return_value="b" * 40):
+                with self.assertRaisesRegex(
+                    MODULE.TopologyError, "exact checkout being validated"
+                ):
+                    MODULE.validate_manifest(manifest, root)
+
+            same_frozen_prepared = deepcopy(manifest)
+            same_frozen_prepared["prepared_swarm_sha"] = frozen_sha
+            with patch.object(MODULE, "git_head", return_value=frozen_sha):
+                with self.assertRaisesRegex(
+                    MODULE.TopologyError, "must differ from frozen_product_sha"
+                ):
+                    MODULE.validate_manifest(same_frozen_prepared, root)
 
             malformed_frozen = deepcopy(manifest)
             del malformed_frozen["track"]
@@ -433,6 +476,151 @@ class ReleaseTopologyTests(unittest.TestCase):
                         root,
                     )
 
+    def test_real_repository_workspace_inherited_lock_versions_are_allowed(self):
+        repository_root = MODULE_PATH.parents[1]
+        workspace = tomllib.loads(
+            (repository_root / "Cargo.toml").read_text(encoding="utf-8")
+        )["workspace"]
+        member_paths = []
+        for member in workspace["members"]:
+            candidate = repository_root / member
+            matches = (
+                sorted(candidate.parent.glob(candidate.name))
+                if "*" in member
+                else [candidate]
+            )
+            member_paths.extend(
+                (path / "Cargo.toml").relative_to(repository_root).as_posix()
+                for path in matches
+            )
+        inherited = MODULE.workspace_inherited_package_names(
+            repository_root, member_paths
+        )
+        published = set(workspace["metadata"]["publish"]["allow"])
+        permitted = published | set(inherited)
+        private_inherited = set(inherited) - published
+        explicit_private = set()
+        for relative in member_paths:
+            package = tomllib.loads(
+                (repository_root / relative).read_text(encoding="utf-8")
+            )["package"]
+            if (
+                package["name"] not in published
+                and package.get("version") != {"workspace": True}
+            ):
+                explicit_private.add(package["name"])
+        self.assertTrue(private_inherited)
+        self.assertIn("xtask", private_inherited)
+        self.assertTrue(explicit_private)
+        self.assertTrue(private_inherited.isdisjoint(explicit_private))
+
+        frozen_release = workspace["package"]["version"]
+        version_match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)", frozen_release)
+        self.assertIsNotNone(version_match)
+        major, minor, patch = version_match.groups()
+        prepared_release = f"{major}.{minor}.{int(patch) + 1}"
+
+        frozen_lock = repository_root / "Cargo.lock"
+        raw = frozen_lock.read_text(encoding="utf-8")
+        blocks = re.split(r"(?=^\[\[package\]\])", raw, flags=re.MULTILINE)
+        changed = 0
+        prepared_blocks = []
+        for block in blocks:
+            parsed = tomllib.loads(block) if "[[package]]" in block else {}
+            package = parsed.get("package", [{}])[0]
+            if (
+                package.get("name") in permitted
+                and package.get("source") is None
+                and package.get("version") == frozen_release
+            ):
+                block = block.replace(
+                    f'version = "{frozen_release}"',
+                    f'version = "{prepared_release}"',
+                    1,
+                )
+                changed += 1
+            prepared_blocks.append(block)
+        self.assertEqual(changed, len(permitted))
+        with TemporaryDirectory() as temporary:
+            prepared_root = Path(temporary)
+            (prepared_root / "Cargo.lock").write_text(
+                "".join(prepared_blocks), encoding="utf-8"
+            )
+            self.assertEqual(
+                MODULE.normalized_source_value(
+                    repository_root,
+                    "Cargo.lock",
+                    frozen_release,
+                    published,
+                    set(),
+                    set(inherited),
+                ),
+                MODULE.normalized_source_value(
+                    prepared_root,
+                    "Cargo.lock",
+                    prepared_release,
+                    published,
+                    set(),
+                    set(inherited),
+                ),
+            )
+
+    def test_lock_normalization_rejects_registry_and_private_explicit_deltas(self):
+        def write_lock(root, version, source=None, name="private-inherited"):
+            source_line = f"source = '{source}'\n" if source else ""
+            (root / "Cargo.lock").write_text(
+                f"[[package]]\nname = '{name}'\nversion = '{version}'\n{source_line}",
+                encoding="utf-8",
+            )
+
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            prepared = root / "prepared"
+            prepared.mkdir()
+            write_lock(root, "0.17.0", "registry+https://example.invalid")
+            write_lock(
+                prepared, "0.18.0", "registry+https://example.invalid"
+            )
+            self.assertNotEqual(
+                MODULE.normalized_source_value(
+                    root,
+                    "Cargo.lock",
+                    "0.17.0",
+                    set(),
+                    set(),
+                    {"private-inherited"},
+                ),
+                MODULE.normalized_source_value(
+                    prepared,
+                    "Cargo.lock",
+                    "0.18.0",
+                    set(),
+                    set(),
+                    {"private-inherited"},
+                ),
+            )
+
+            write_lock(root, "0.17.0", name="private-explicit")
+            write_lock(prepared, "0.18.0", name="private-explicit")
+            self.assertNotEqual(
+                MODULE.normalized_source_value(
+                    root,
+                    "Cargo.lock",
+                    "0.17.0",
+                    set(),
+                    set(),
+                    {"private-inherited"},
+                ),
+                MODULE.normalized_source_value(
+                    prepared,
+                    "Cargo.lock",
+                    "0.18.0",
+                    set(),
+                    set(),
+                    {"private-inherited"},
+                ),
+            )
+
     def test_prepared_projection_rejects_package_feature_metadata_change(self):
         with self.valid_manifest_fixture() as (root, frozen, frozen_sha):
             frozen_root = root.parent / f"{root.name}-frozen"
@@ -557,11 +745,21 @@ class ReleaseTopologyTests(unittest.TestCase):
             files = {
                 "Cargo.toml": "[workspace.package]\nversion = '0.18.0'\n\n"
                 "[workspace.dependencies]\n"
-                "fixture-crate = { path = 'fixture', version = '0.18.0' }\n",
+                "fixture-crate = { path = 'fixture', version = '0.18.0' }\n"
+                "private-inherited = { path = 'private-inherited', version = '0.18.0' }\n"
+                "private-explicit = { path = 'private-explicit', version = '0.18.0' }\n",
                 "Cargo.lock": "[[package]]\nname = 'fixture-crate'\n"
                 "version = '0.18.0'\n\n[[package]]\n"
-                "name = 'fixture-crate'\nversion = '99.0.0'\n"
+                "name = 'private-inherited'\nversion = '0.18.0'\n\n"
+                "[[package]]\nname = 'private-explicit'\nversion = '0.18.0'\n\n"
+                "[[package]]\nname = 'fixture-crate'\nversion = '99.0.0'\n"
                 "source = 'registry+https://example.invalid'\n",
+                "private-inherited/Cargo.toml": "[package]\n"
+                "name = 'private-inherited'\nversion.workspace = true\n\n"
+                "[dependencies]\nfixture-crate = { path = '../fixture', version = '0.18.0' }\n",
+                "private-explicit/Cargo.toml": "[package]\n"
+                "name = 'private-explicit'\nversion = '0.18.0'\n\n"
+                "[dependencies]\nfixture-crate = { path = '../fixture', version = '0.18.0' }\n",
                 "fixture/Cargo.toml": "[package]\nname = 'fixture-crate'\n"
                 "version = '0.18.0'\n",
                 ".github/workflows/release.yml": "matrix:\n  include:\n"
@@ -583,6 +781,11 @@ class ReleaseTopologyTests(unittest.TestCase):
                 path = frozen_root / relative
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text(contents, encoding="utf-8")
+            schema_path = frozen_root / MODULE.SCHEMA_RELATIVE_PATH
+            schema_path.parent.mkdir(parents=True, exist_ok=True)
+            schema_path.write_text(
+                MODULE.SCHEMA_PATH.read_text(encoding="utf-8"), encoding="utf-8"
+            )
 
             def git(*args, cwd):
                 return subprocess.run(
@@ -599,9 +802,24 @@ class ReleaseTopologyTests(unittest.TestCase):
             git("clone", "-q", str(frozen_root), str(prepared_root), cwd=workspace)
             git("config", "user.email", "test@example.invalid", cwd=prepared_root)
             git("config", "user.name", "Topology Test", cwd=prepared_root)
+            root_manifest = prepared_root / "Cargo.toml"
+            root_text = root_manifest.read_text(encoding="utf-8")
+            root_text = root_text.replace(
+                "[workspace.package]\nversion = '0.18.0'",
+                "[workspace.package]\nversion = '0.18.1'",
+            )
+            root_text = root_text.replace(
+                "fixture-crate = { path = 'fixture', version = '0.18.0' }",
+                "fixture-crate = { path = 'fixture', version = '0.18.1' }",
+            )
+            root_text = root_text.replace(
+                "private-inherited = { path = 'private-inherited', version = '0.18.0' }",
+                "private-inherited = { path = 'private-inherited', version = '0.18.1' }",
+            )
+            root_manifest.write_text(root_text, encoding="utf-8")
             for relative in (
-                "Cargo.toml",
                 "fixture/Cargo.toml",
+                "private-inherited/Cargo.toml",
                 "vscode-extension/package.json",
             ):
                 path = prepared_root / relative
@@ -609,10 +827,24 @@ class ReleaseTopologyTests(unittest.TestCase):
                     path.read_text(encoding="utf-8").replace("0.18.0", "0.18.1"),
                     encoding="utf-8",
                 )
+            private_explicit = prepared_root / "private-explicit/Cargo.toml"
+            private_explicit.write_text(
+                private_explicit.read_text(encoding="utf-8").replace(
+                    "fixture-crate = { path = '../fixture', version = '0.18.0' }",
+                    "fixture-crate = { path = '../fixture', version = '0.18.1' }",
+                ),
+                encoding="utf-8",
+            )
             lock = prepared_root / "Cargo.lock"
             lock.write_text(
-                lock.read_text(encoding="utf-8").replace(
-                    "version = '0.18.0'", "version = '0.18.1'", 1
+                lock.read_text(encoding="utf-8")
+                .replace(
+                    "name = 'fixture-crate'\nversion = '0.18.0'",
+                    "name = 'fixture-crate'\nversion = '0.18.1'",
+                )
+                .replace(
+                    "name = 'private-inherited'\nversion = '0.18.0'",
+                    "name = 'private-inherited'\nversion = '0.18.1'",
                 ),
                 encoding="utf-8",
             )
@@ -625,7 +857,11 @@ class ReleaseTopologyTests(unittest.TestCase):
                 version = "0.18.1" if root == prepared_root.resolve() else "0.18.0"
                 return {
                     "metadata": {"publish": {"allow": ["fixture-crate"]}},
-                    "workspace_members": ["fixture-id"],
+                    "workspace_members": [
+                        "fixture-id",
+                        "private-inherited-id",
+                        "private-explicit-id",
+                    ],
                     "packages": [
                         {
                             "id": "fixture-id",
@@ -634,7 +870,23 @@ class ReleaseTopologyTests(unittest.TestCase):
                             "manifest_path": str(root / "fixture/Cargo.toml"),
                             "publish": None,
                             "dependencies": [],
-                        }
+                        },
+                        {
+                            "id": "private-inherited-id",
+                            "name": "private-inherited",
+                            "version": version,
+                            "manifest_path": str(root / "private-inherited/Cargo.toml"),
+                            "publish": False,
+                            "dependencies": [],
+                        },
+                        {
+                            "id": "private-explicit-id",
+                            "name": "private-explicit",
+                            "version": "0.18.0",
+                            "manifest_path": str(root / "private-explicit/Cargo.toml"),
+                            "publish": False,
+                            "dependencies": [],
+                        },
                     ],
                 }
 
@@ -697,6 +949,45 @@ class ReleaseTopologyTests(unittest.TestCase):
                 self.assertIn("release-topology: PASS", run[1])
                 outputs.append(output.read_bytes())
             self.assertEqual(outputs[0], outputs[1])
+
+            legacy_manifest = json.loads(outputs[0])
+            legacy_manifest["frozen_product_sha"] = prepared_sha
+            legacy_manifest["prepared_swarm_sha"] = "c" * 40
+            legacy_path = prepared_root / "legacy.json"
+            legacy_path.write_text(json.dumps(legacy_manifest), encoding="utf-8")
+            legacy_prepared = run_cli(
+                [
+                    "--root",
+                    str(prepared_root),
+                    "--check",
+                    "--release",
+                    "0.18.1",
+                    "--frozen-product-sha",
+                    prepared_sha,
+                    "--output",
+                    str(legacy_path),
+                ]
+            )
+            self.assertNotEqual(legacy_prepared[0], 0)
+            self.assertIn("requires an explicit prepared validation authority", legacy_prepared[2])
+
+            stray_authority = run_cli(
+                [
+                    "--root",
+                    str(frozen_root),
+                    "--check",
+                    "--release",
+                    "0.18.0",
+                    "--frozen-product-sha",
+                    frozen_sha,
+                    "--frozen-root",
+                    str(frozen_root),
+                    "--output",
+                    str(frozen_output),
+                ]
+            )
+            self.assertNotEqual(stray_authority[0], 0)
+            self.assertIn("auxiliary arguments require --frozen-topology", stray_authority[2])
 
             dirty_input = prepared_root / "scripts/inject-sha-assets.sh"
             clean_input = dirty_input.read_text(encoding="utf-8")
@@ -851,6 +1142,100 @@ class ReleaseTopologyTests(unittest.TestCase):
             self.assertNotEqual(malformed_frozen_run[0], 0)
             self.assertIn("schema validation failed", malformed_frozen_run[2])
             self.assertNotIn("manifest release differs", malformed_frozen_run[2])
+
+            prepared_schema = prepared_root / MODULE.SCHEMA_RELATIVE_PATH
+            clean_schema = prepared_schema.read_text(encoding="utf-8")
+            prepared_schema.write_text(clean_schema + "\n", encoding="utf-8")
+            dirty_schema_run = run_cli(
+                [
+                    "--root",
+                    str(prepared_root),
+                    "--check",
+                    "--release",
+                    "0.18.1",
+                    "--frozen-product-sha",
+                    frozen_sha,
+                    "--prepared-swarm-sha",
+                    prepared_sha,
+                    "--frozen-root",
+                    str(frozen_root),
+                    "--frozen-topology",
+                    str(prepared_authority),
+                    "--frozen-topology-sha256",
+                    digest,
+                    "--output",
+                    str(prepared_root / "release_topology.1.json"),
+                ]
+            )
+            self.assertNotEqual(dirty_schema_run[0], 0)
+            self.assertIn("schema source hash is stale", dirty_schema_run[2])
+            prepared_schema.write_text(clean_schema + "\n", encoding="utf-8")
+            git("add", MODULE.SCHEMA_RELATIVE_PATH, cwd=prepared_root)
+            git("commit", "-qm", "invalid schema change", cwd=prepared_root)
+            changed_schema_sha = git("rev-parse", "HEAD", cwd=prepared_root)
+            changed_schema_manifest = json.loads(outputs[0])
+            changed_schema_manifest["prepared_swarm_sha"] = changed_schema_sha
+            changed_schema_manifest["sources"][MODULE.SCHEMA_RELATIVE_PATH]["sha256"] = (
+                MODULE.sha256(prepared_schema)
+            )
+            changed_schema_output = prepared_root / "changed-schema.json"
+            changed_schema_output.write_text(
+                json.dumps(changed_schema_manifest), encoding="utf-8"
+            )
+            changed_schema_run = run_cli(
+                [
+                    "--root",
+                    str(prepared_root),
+                    "--check",
+                    "--release",
+                    "0.18.1",
+                    "--frozen-product-sha",
+                    frozen_sha,
+                    "--prepared-swarm-sha",
+                    changed_schema_sha,
+                    "--frozen-root",
+                    str(frozen_root),
+                    "--frozen-topology",
+                    str(prepared_authority),
+                    "--frozen-topology-sha256",
+                    digest,
+                    "--output",
+                    str(changed_schema_output),
+                ]
+            )
+            self.assertNotEqual(changed_schema_run[0], 0)
+            self.assertIn("outside version metadata", changed_schema_run[2])
+            prepared_schema.write_text(clean_schema, encoding="utf-8")
+            git("add", MODULE.SCHEMA_RELATIVE_PATH, cwd=prepared_root)
+            git("commit", "-qm", "restore schema", cwd=prepared_root)
+
+            private_explicit.write_text(
+                private_explicit.read_text(encoding="utf-8").replace(
+                    "name = 'private-explicit'\nversion = '0.18.0'",
+                    "name = 'private-explicit'\nversion = '0.18.1'",
+                ),
+                encoding="utf-8",
+            )
+            git("add", "private-explicit/Cargo.toml", cwd=prepared_root)
+            git("commit", "-qm", "invalid private explicit bump", cwd=prepared_root)
+            invalid_prepared = json.loads(outputs[0])
+            invalid_prepared["prepared_swarm_sha"] = git(
+                "rev-parse", "HEAD", cwd=prepared_root
+            )
+            invalid_prepared["sources"]["private-explicit/Cargo.toml"]["sha256"] = (
+                MODULE.sha256(private_explicit)
+            )
+            with self.assertRaisesRegex(
+                MODULE.TopologyError, "outside version metadata"
+            ):
+                MODULE.validate_prepared_projection(
+                    json.loads(frozen_output.read_bytes()),
+                    invalid_prepared,
+                    digest,
+                    prepared_authority,
+                    frozen_root,
+                    prepared_root,
+                )
 
     def test_publish_cycle_is_rejected(self):
         metadata = {
