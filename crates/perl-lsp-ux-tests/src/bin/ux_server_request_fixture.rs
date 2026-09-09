@@ -174,3 +174,125 @@ fn main() -> io::Result<()> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{expect_response, read_message, write_message};
+    use anyhow::{Result, bail};
+    use serde_json::json;
+    use std::io::{self, Cursor, Write};
+
+    #[test]
+    fn fixture_reads_one_utf8_frame_and_preserves_the_next() -> Result<()> {
+        let first = r#"{"id":"é","result":null}"#;
+        let second = r#"{"method":"exit"}"#;
+        let input = format!(
+            "Content-Length:  {} \r\nContent-Type: application/vscode-jsonrpc; charset=utf-8\r\n\r\n{first}Content-Length: {}\r\n\r\n{second}",
+            first.len(),
+            second.len()
+        );
+        let mut reader = Cursor::new(input.into_bytes());
+        if read_message(&mut reader)? != json!({"id":"é","result":null}) {
+            bail!("fixture lost the first UTF-8 response");
+        }
+        if read_message(&mut reader)? != json!({"method":"exit"}) {
+            bail!("fixture consumed bytes belonging to the next message");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn fixture_rejects_invalid_or_truncated_client_frames() -> Result<()> {
+        for (input, expected) in [
+            ("", "EOF reading fixture message headers"),
+            ("Content-Length: 2\r\n", "EOF reading fixture message headers"),
+            ("Content-Type: application/json\r\n\r\n{}", "missing Content-Length"),
+            ("Content-Length: nope\r\n\r\n{}", "invalid Content-Length"),
+            ("Content-Length: 2\r\n\r\n!x", "invalid fixture JSON"),
+        ] {
+            match read_message(&mut Cursor::new(input.as_bytes())) {
+                Err(error)
+                    if error.kind() == io::ErrorKind::InvalidData
+                        && error.to_string().contains(expected) => {}
+                result => bail!("fixture did not reject {input:?} with {expected:?}: {result:?}"),
+            }
+        }
+        match read_message(&mut Cursor::new(b"Content-Length: 4\r\n\r\n{}")) {
+            Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => {}
+            result => bail!("fixture accepted or misclassified truncated body: {result:?}"),
+        }
+        Ok(())
+    }
+
+    #[derive(Default)]
+    struct RecordingWriter {
+        bytes: Vec<u8>,
+        flushed: bool,
+        fail_write: bool,
+        fail_flush: bool,
+    }
+
+    impl Write for RecordingWriter {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            if self.fail_write {
+                return Err(io::Error::new(io::ErrorKind::BrokenPipe, "write rejected"));
+            }
+            self.bytes.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            self.flushed = true;
+            if self.fail_flush {
+                return Err(io::Error::new(io::ErrorKind::BrokenPipe, "flush rejected"));
+            }
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn fixture_writes_byte_length_flushes_and_propagates_io_failures() -> Result<()> {
+        let message = json!({"id":"é"});
+        let mut writer = RecordingWriter::default();
+        write_message(&mut writer, &message)?;
+        // Literal wire oracle: the 10-character JSON body occupies 11 UTF-8 bytes.
+        if writer.bytes != "Content-Length: 11\r\n\r\n{\"id\":\"é\"}".as_bytes() || !writer.flushed
+        {
+            bail!("fixture emitted an incorrect UTF-8 frame or failed to flush");
+        }
+        for mut writer in [
+            RecordingWriter { fail_write: true, ..Default::default() },
+            RecordingWriter { fail_flush: true, ..Default::default() },
+        ] {
+            match write_message(&mut writer, &message) {
+                Err(error) if error.kind() == io::ErrorKind::BrokenPipe => {}
+                result => bail!("fixture swallowed the writer failure: {result:?}"),
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn fixture_requires_exact_response_id_code_and_capability_evidence() -> Result<()> {
+        for id in [json!(41), json!("configuration-42")] {
+            let response = json!({"id":id,"error":{"code":-32601,"message":"Client capability not advertised: workspace.configuration"}});
+            expect_response(&response, &id, "workspace/configuration")?;
+            for invalid in [
+                json!({"id":null,"error":response.get("error")}),
+                json!({"id":id,"error":{"code":-32602,"message":"Client capability not advertised"}}),
+                json!({"id":id,"error":{"code":-32601,"message":"unrelated failure"}}),
+                json!({"id":id,"error":{"code":-32601}}),
+                json!({"id":id,"result":null}),
+            ] {
+                match expect_response(&invalid, &id, "workspace/configuration") {
+                    Err(error)
+                        if error.kind() == io::ErrorKind::InvalidData
+                            && error.to_string().contains("workspace/configuration") => {}
+                    result => bail!(
+                        "fixture accepted an invalid response or lost method context: {invalid}: {result:?}"
+                    ),
+                }
+            }
+        }
+        Ok(())
+    }
+}
