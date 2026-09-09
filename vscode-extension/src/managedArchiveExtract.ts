@@ -580,6 +580,7 @@ async function extractZipMembers(
   } finally {
     zip.close();
   }
+  throwIfCancelled(token, 'Archive extraction cancelled');
   if (serverPath === null) {
     throw new Error(`archive member missing at extract time: ${inspected.server.originalName}`);
   }

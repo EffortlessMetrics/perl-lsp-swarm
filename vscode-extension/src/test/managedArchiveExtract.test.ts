@@ -760,6 +760,55 @@ describe('extractManagedArchive', () => {
     assertOutsideUnchanged();
   });
 
+  test('cancels when ZIP enumeration completes after streaming the selected member', async () => {
+    const archivePath = path.join(tmpDir, 'cancelled-after-enumeration.zip');
+    fs.writeFileSync(archivePath, storedZip([['perllsp.exe', 'x'.repeat(256 * 1024)]]));
+    const token = new TestCancellationToken();
+    let streamOpened = false;
+    const originalOpenReadStream = yauzl.ZipFile.prototype.openReadStreamPromise;
+    const openReadStream = jest.spyOn(yauzl.ZipFile.prototype, 'openReadStreamPromise');
+    openReadStream.mockImplementation(async function (this: yauzl.ZipFile, entry) {
+      const stream = await originalOpenReadStream.call(this, entry);
+      streamOpened = true;
+      return stream;
+    });
+    const originalEachEntry = yauzl.ZipFile.prototype.eachEntry;
+    const eachEntry = jest.spyOn(yauzl.ZipFile.prototype, 'eachEntry');
+    eachEntry.mockImplementation(function (this: yauzl.ZipFile) {
+      const iterator = originalEachEntry.call(this);
+      return (async function* () {
+        for await (const entry of iterator) {
+          yield entry;
+        }
+        if (streamOpened) {
+          token.cancel();
+        }
+      })();
+    });
+    try {
+      await expect(
+        extractManagedArchive({
+          archivePath,
+          extractDir,
+          format: 'zip',
+          windows: true,
+          limits: {
+            ...TEST_LIMITS,
+            maxUncompressedBytes: 512 * 1024,
+            maxEntryBytes: 512 * 1024,
+          },
+          cancellationToken: token,
+        }),
+      ).rejects.toThrow('Archive extraction cancelled');
+    } finally {
+      eachEntry.mockRestore();
+      openReadStream.mockRestore();
+    }
+    expect(streamOpened).toBe(true);
+    expect(token.isCancellationRequested).toBe(true);
+    assertOutsideUnchanged();
+  });
+
   test('admits a fixture at the injected uncompressed ceiling', async () => {
     const archivePath = path.join(tmpDir, 'near.tar.gz');
     writeTarGz(archivePath, [{ name: 'perllsp', type: '0', content: 'x'.repeat(48) }]);
