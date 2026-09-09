@@ -788,7 +788,7 @@ where
 {
     if let Some((path, _)) = &handoff {
         let marker = path.join(FRESHNESS_MARKER);
-        match fs::remove_file(&marker) {
+        match remove_file(&marker) {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => {
@@ -4486,7 +4486,7 @@ esac
                 if path == old {
                     Err(io::Error::new(io::ErrorKind::PermissionDenied, "injected refusal"))
                 } else {
-                    Ok(())
+                    fs::remove_file(path)
                 }
             },
         );
@@ -4542,6 +4542,113 @@ esac
 
     #[cfg(not(windows))]
     #[test]
+    fn check_pr_evidence_requires_a_published_freshness_handoff_when_requested() -> Result<()> {
+        if let Some(repo) = env::var_os("RIPR_FRESHNESS_TEST_REPO") {
+            let options = evidence_options();
+            let result = check_pr_evidence(Path::new(&repo), &options);
+            let expect_success = env::var_os("RIPR_FRESHNESS_TEST_EXPECT_SUCCESS").is_some();
+            if expect_success {
+                result.context("child consumer check must accept the matching marker")?;
+            } else {
+                let refusal = result
+                    .err()
+                    .ok_or_else(|| eyre!("child consumer check must reject a missing marker"))?;
+                color_eyre::eyre::ensure!(
+                    refusal.to_string().contains("freshness handoff is missing"),
+                    "child refusal must identify the missing marker: {refusal}"
+                );
+            }
+            return Ok(());
+        }
+
+        let repo = evidence_repo()?;
+        let options = evidence_options();
+        let bin_dir = tempfile::tempdir()?;
+        let fake = write_fake_ripr_check_binary(bin_dir.path(), REAL_010_CHECK)?;
+        let _ripr = override_ripr_bin(&fake)?;
+        let handoff = tempfile::tempdir()?;
+        let token = "test/check-consumer";
+
+        write_pr_evidence(repo.path(), &options)?;
+        let marker = handoff.path().join(FRESHNESS_MARKER);
+        for expect_success in [false, true] {
+            if expect_success {
+                fs::write(&marker, format!("{token}\n"))?;
+            }
+            let mut child = Command::new(env::current_exe()?);
+            child
+                .args([
+                    "--nocapture",
+                    "--exact",
+                    "tasks::ripr_evidence::tests::check_pr_evidence_requires_a_published_freshness_handoff_when_requested",
+                ])
+                .current_dir(repo.path())
+                .env("RIPR_FRESHNESS_TEST_REPO", repo.path())
+                .env("RIPR_FRESHNESS_HANDOFF", handoff.path())
+                .env("RIPR_FRESHNESS_TOKEN", token);
+            if expect_success {
+                child.env("RIPR_FRESHNESS_TEST_EXPECT_SUCCESS", "1");
+            } else {
+                child.env_remove("RIPR_FRESHNESS_TEST_EXPECT_SUCCESS");
+            }
+            let output = child.output().context("running child consumer check")?;
+            color_eyre::eyre::ensure!(
+                output.status.success(),
+                "child consumer check failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            color_eyre::eyre::ensure!(
+                String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+                "child consumer check did not execute its test: {}",
+                String::from_utf8_lossy(&output.stdout)
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn marker_removal_uses_the_owned_file_removal_operation() -> Result<()> {
+        let repo = tempfile::tempdir()?;
+        let handoff = tempfile::tempdir()?;
+        let marker = handoff.path().join(FRESHNESS_MARKER);
+        let old_token = "test/old-marker";
+        let token = "test/new-marker";
+        fs::write(&marker, format!("{old_token}\n"))?;
+
+        let refusal = invalidate_and_publish_freshness_handoff(
+            repo.path(),
+            Some((handoff.path().to_path_buf(), token.to_owned())),
+            |path| {
+                if path == marker {
+                    Err(io::Error::new(io::ErrorKind::PermissionDenied, "marker refusal"))
+                } else {
+                    fs::remove_file(path)
+                }
+            },
+        )
+        .err()
+        .ok_or_else(|| eyre!("marker removal refusal must abort invalidation"))?;
+        color_eyre::eyre::ensure!(
+            format!("{refusal:#}").contains("marker refusal"),
+            "marker removal refusal must retain its cause: {refusal}"
+        );
+        color_eyre::eyre::ensure!(
+            marker.exists(),
+            "failed marker removal must preserve the marker"
+        );
+        color_eyre::eyre::ensure!(
+            fs::read_to_string(&marker)?.trim_end() == old_token,
+            "failed marker removal must preserve the old marker token"
+        );
+        color_eyre::eyre::ensure!(
+            validate_freshness_handoff(handoff.path(), token, repo.path()).is_err(),
+            "a refused marker must not authorize a different producer invocation"
+        );
+        Ok(())
+    }
+
+    #[cfg(not(windows))]
+    #[test]
     fn healthy_packet_survives_refused_invalidation_but_handoff_check_rejects() -> Result<()> {
         let repo = evidence_repo()?;
         let options = evidence_options();
@@ -4565,7 +4672,7 @@ esac
                 if path == old {
                     Err(io::Error::new(io::ErrorKind::PermissionDenied, "injected refusal"))
                 } else {
-                    Ok(())
+                    fs::remove_file(path)
                 }
             },
         );

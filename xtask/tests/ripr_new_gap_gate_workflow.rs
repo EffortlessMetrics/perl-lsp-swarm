@@ -1306,13 +1306,18 @@ fn ripr_workflow_runs_on_ready_for_review_without_path_filter()
         4,
         "every producer summary step must suppress stale output without its handoff"
     );
-    assert_eq!(
-        workflow
-            .matches("RIPR artifact invalidation did not complete for this producer invocation")
-            .count(),
-        4,
-        "validation and quality gates must both fail closed without the handoff"
-    );
+    for job in ["ripr-github", "ripr-fallback"] {
+        for step in ["Validate PR evidence contracts", "Enforce new RIPR gap quality gate"] {
+            let run = workflow_run_block(job, step)?;
+            assert!(
+                run.contains("marker=\"$RIPR_FRESHNESS_HANDOFF/clear-succeeded\"")
+                    && run.contains(
+                        "RIPR artifact invalidation did not complete for this producer invocation"
+                    ),
+                "{job} {step} must fail closed when its producer handoff is absent"
+            );
+        }
+    }
     assert!(
         workflow.contains("mktemp -d \"$RUNNER_TEMP/ripr-freshness.XXXXXX\"")
             && workflow.contains("RIPR_FRESHNESS_TOKEN")
