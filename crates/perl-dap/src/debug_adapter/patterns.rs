@@ -49,11 +49,10 @@ pub(super) fn context_re() -> Option<&'static Regex> {
             //   main::(/path/to/file.pl:42):
             //   main::(C:\Windows\path\file.pl:42):
             //
-            // File paths may contain `:` on Windows (drive letter prefix such as `C:\`).
-            // The path-capturing groups allow a `:` only when it is immediately followed
-            // by a non-digit, non-space character — matching `C:\path` but not the `:42`
-            // line-number separator.
-            Regex::new(r"^(?:(?P<func>[A-Za-z_][\w:]*?)(?:::)?(?:\((?P<file>[^:)\s]+(?::[^:)\d\s][^:)\s]*)*):(?P<line>\d+)\):?|__ANON__)|main::(?:\()?(?P<file2>[^:)\s]+(?::[^:)\d\s][^:)\s]*)*)(?:\))?:(?P<line2>\d+):?)")
+            // File paths may contain spaces, parentheses, and `:` (including a
+            // Windows drive prefix). A lazy capture terminated by `:<line>)`
+            // preserves those characters while keeping the line delimiter exact.
+            Regex::new(r"^(?:(?P<func>[A-Za-z_][\w:]*?)(?:::)?(?:\((?P<file>.+?):(?P<line>\d+)\):?|__ANON__)|main::(?:\()?(?P<file2>.+?):(?P<line2>\d+)(?:\))?:?)")
         })
         .as_ref()
         .ok()

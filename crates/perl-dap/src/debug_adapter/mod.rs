@@ -2502,6 +2502,12 @@ print "result: $final\n";
     }
 
     #[test]
+    fn test_context_re_windows_drive_path_with_spaces() {
+        let result = apply_context_re(r"main::(C:\Program Files\Perl\file.pl:7):");
+        assert_eq!(result, Some((r"C:\Program Files\Perl\file.pl".to_string(), "7".to_string())));
+    }
+
+    #[test]
     fn test_context_re_unc_path() {
         // UNC path (Windows network share).
         let result = apply_context_re(r"main::(\\server\share\file.pl:5):");
@@ -2535,10 +2541,20 @@ print "result: $final\n";
     }
 
     #[test]
-    fn test_context_re_no_match_path_with_spaces() {
-        // Paths with spaces do not match — the character class excludes \s.
+    fn test_context_re_path_with_spaces() {
+        // Spaces are valid in Unix and Windows paths and must remain part of the
+        // source location rather than preventing the initial frame from forming.
         let result = apply_context_re("main::(/path with spaces/file.pl:5):");
-        assert!(result.is_none(), "paths with spaces should not match");
+        assert_eq!(result, Some(("/path with spaces/file.pl".to_string(), "5".to_string())));
+    }
+
+    #[test]
+    fn test_context_re_path_with_spaces_and_parentheses() {
+        let result = apply_context_re("main::(/path with spaces (ctx)/file (name).pl:5):");
+        assert_eq!(
+            result,
+            Some(("/path with spaces (ctx)/file (name).pl".to_string(), "5".to_string()))
+        );
     }
 
     #[test]

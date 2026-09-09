@@ -203,7 +203,9 @@ fn stop_on_entry_publishes_one_real_frame() -> Result<(), Box<dyn Error>> {
         return Ok(());
     };
     let fixture = tempfile::tempdir()?;
-    let script = fixture.path().join("stop-on-entry-frame.pl");
+    let spaced_dir = fixture.path().join("fixture with spaces (ctx)");
+    fs::create_dir(&spaced_dir)?;
+    let script = spaced_dir.join("stop on entry (frame).pl");
     fs::write(&script, "use strict;\nuse warnings;\nmy $entry = 1;\n$entry++;\n")?;
     let mut session = DapWorkflowSession::new_with_perl(workflow_timeout(), Some(&perl))?;
     session.launch_with_stop_on_entry(&script.to_string_lossy(), true)?;
