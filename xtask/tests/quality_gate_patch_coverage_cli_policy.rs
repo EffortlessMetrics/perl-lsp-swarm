@@ -474,7 +474,16 @@ fn patch_quality_gate_command(
     patch: Option<f64>,
 ) -> TestResult<Command> {
     let mut command = Command::cargo_bin("xtask")?;
+    let exception_policy = receipt
+        .parent()
+        .ok_or_else(|| "quality-gate receipt path must have a parent".to_string())?
+        .join("quality-gate-exceptions.toml");
+    fs::write(
+        &exception_policy,
+        "schema_version = 1\npolicy = \"quality-gate-exceptions\"\nowner = \"test\"\nstatus = \"active\"\nupdated = \"2026-01-01\"\ndue_review = \"pass\"\n",
+    )?;
     command.current_dir(root).args(["quality-gate", "--mode", "enforce-patch-coverage"]);
+    command.arg("--exception-policy").arg(exception_policy);
     command.arg("--coverage-receipt").arg(coverage);
     command.args(["--codecov", "codecov.yml"]);
     command.arg("--receipt").arg(receipt);
