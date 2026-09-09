@@ -49,6 +49,11 @@ on:
         required: true
         default: false
         type: boolean
+      ripr_hosted_measurement:
+        description: 'Run the bounded 1000-file RIPR measurement in a hosted container'
+        required: true
+        default: false
+        type: boolean
 
 concurrency:
   group: ripr-${{ github.event.pull_request.number || github.ref }}
@@ -1049,6 +1054,125 @@ jobs:
             target/receipts/quality/ripr-badge-producer.json
             target/receipts/quality/quality-gate-ripr.json
             target/receipts/quality/quality-gate-ripr.md
+          retention-days: 14
+          if-no-files-found: error
+
+  # -------------------------------------------------------------------------
+  # 2e. Explicit hosted capacity measurement. This is an independent manual
+  # experiment, not a fallback for the required routed gate. The ordinary
+  # router and its 800-file guard remain unchanged.
+  # -------------------------------------------------------------------------
+  ripr-hosted-measurement:
+    name: RIPR bounded hosted measurement
+    if: github.event_name == 'workflow_dispatch' && inputs.ripr_hosted_measurement == true
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    permissions:
+      contents: read
+    env:
+      RIPR_VERSION: "0.10.0"
+      RIPR_MAX_DIFF_INDEX_FILES: "1000"
+      BASE_REF: ${{ github.event.repository.default_branch }}
+      PR_HEAD_SHA: ${{ github.sha }}
+      CARGO_BUILD_JOBS: "2"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Run canonical RIPR in bounded container
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf target/ripr/pr
+          mkdir -p target/ripr/pr
+          printf "runner=github-hosted\njob_phase=host-start\n" > target/ripr/pr/ripr-measurement-config.txt
+          image='rust:1.95-slim-bookworm'
+          set +e
+          timeout --signal=TERM --kill-after=10s 3m docker pull "$image"
+          pull_status=$?
+          set -e
+          printf "pull_exit=%s\n" "$pull_status" >> target/ripr/pr/ripr-measurement-config.txt
+          if [ "$pull_status" -ne 0 ]; then
+            exit "$pull_status"
+          fi
+          set +e
+          image_id="$(timeout --signal=TERM --kill-after=10s 3m docker image inspect --format '{{.Id}}' "$image")"
+          inspect_id_status=$?
+          image_digest="$(timeout --signal=TERM --kill-after=10s 3m docker image inspect --format '{{index .RepoDigests 0}}' "$image")"
+          inspect_digest_status=$?
+          set -e
+          printf "inspect_id_exit=%s\ninspect_digest_exit=%s\n" "$inspect_id_status" "$inspect_digest_status" >> target/ripr/pr/ripr-measurement-config.txt
+          if [ "$inspect_id_status" -ne 0 ] || [ "$inspect_digest_status" -ne 0 ]; then
+            exit 1
+          fi
+          printf "image_id=%s\nimage_digest=%s\n" "$image_id" "$image_digest" >> target/ripr/pr/ripr-measurement-config.txt
+          set +e
+          timeout --signal=TERM --kill-after=30s 65m docker run --rm \
+            --cpus=4 \
+            --memory=6g \
+            --memory-swap=6g \
+            -e RIPR_VERSION \
+            -e RIPR_MAX_DIFF_INDEX_FILES \
+            -e BASE_REF \
+            -e PR_HEAD_SHA \
+            -e CARGO_BUILD_JOBS \
+            -e MEASUREMENT_IMAGE_ID="$image_id" \
+            -e MEASUREMENT_IMAGE_DIGEST="$image_digest" \
+            -v "$GITHUB_WORKSPACE:/workspace" \
+            -w /workspace \
+            "$image_id" \
+            bash -euo pipefail -c '
+              apt-get update
+              DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+                build-essential pkg-config libssl-dev git curl jq time
+              mkdir -p target/ripr/pr
+              printf "job_phase=container-tools-start\n" >> target/ripr/pr/ripr-measurement-config.txt
+              cargo install ripr --version "$RIPR_VERSION" --locked
+              rustc_version="$(rustc --version)"
+              cargo_version="$(cargo --version)"
+              ripr_version="$(ripr --version)"
+              ripr_path="$(command -v ripr)"
+              ripr_sha256="$(sha256sum "$ripr_path" | cut -d " " -f 1)"
+              base_sha="$(git rev-parse "origin/$BASE_REF")"
+              {
+                printf "docker_memory=6g\ndocker_memory_swap=6g\n"
+                printf "head=%s\nbase=%s\nbase_sha=%s\nripr_version=%s\nripr_sha256=%s\nindex_limit=%s\n" \
+                  "$(git rev-parse HEAD)" "$BASE_REF" "$base_sha" "$ripr_version" "$ripr_sha256" "$RIPR_MAX_DIFF_INDEX_FILES"
+                printf "%s\n%s\n" "$rustc_version" "$cargo_version"
+              } >> target/ripr/pr/ripr-measurement-config.txt
+              cargo build -p xtask --locked
+              ripr doctor
+              set +e
+              timeout --signal=TERM --kill-after=30s 55m \
+                /usr/bin/time -v -o target/ripr/pr/ripr-measurement-time.txt \
+                cargo xtask ripr-pr --base "origin/$BASE_REF" --head HEAD --pr-head "$PR_HEAD_SHA"
+              analysis_status=$?
+              set -e
+              printf "analysis_exit=%s\n" "$analysis_status" >> target/ripr/pr/ripr-measurement-config.txt
+              if [ "$analysis_status" -ne 0 ]; then
+                exit "$analysis_status"
+              fi
+              test -s target/ripr/pr/repo-exposure.json
+              jq -e "(.kind == \"pr_evidence\" and .scope == \"diff\" and .head_sha == \"$(git rev-parse HEAD)\" and .base_sha == \"$base_sha\")" \
+                target/ripr/pr/repo-exposure.json >/dev/null
+              jq -c "{schema_version,scope,status,base_sha,head_sha,summary}" \
+                target/ripr/pr/repo-exposure.json >> target/ripr/pr/ripr-measurement-config.txt
+            '
+          container_status=$?
+          set -e
+          printf "container_exit=%s\n" "$container_status" >> target/ripr/pr/ripr-measurement-config.txt
+          if [ "$container_status" -ne 0 ]; then
+            exit "$container_status"
+          fi
+
+      - name: Upload hosted measurement evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
+        with:
+          name: ripr-hosted-measurement
+          path: target/ripr/pr/**
           retention-days: 14
           if-no-files-found: error
 
