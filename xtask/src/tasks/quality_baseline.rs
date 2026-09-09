@@ -1665,10 +1665,8 @@ coverage:
         let receipt = repo.join("target/receipts/quality/coverage-baseline.json");
         let codecov = repo.join("codecov.yml");
         fs::create_dir_all(receipt.parent().ok_or("receipt missing parent")?)?;
-        let source = repo.join("xtask/src/tasks/quality_baseline.rs");
-        fs::create_dir_all(source.parent().ok_or("source has no parent")?)?;
-        fs::write(&source, "pub fn quality_baseline() -> bool { true }\n")?;
-        fs::write(&lcov, "SF:xtask/src/tasks/quality_baseline.rs\nDA:1,1\nend_of_record\n")?;
+        let source = std::env::current_dir()?.join("src/tasks/quality_baseline.rs");
+        fs::write(&lcov, format!("SF:{}\nDA:1,1\nend_of_record\n", source.display()))?;
         fs::write(
             &codecov,
             "coverage:\n  status:\n    patch:\n      default:\n        target: 95%\n",
