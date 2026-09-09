@@ -15,6 +15,8 @@ on:
       - 'scripts/ci/rolling_installed_observation.py'
       - 'scripts/ci/test_rolling_installed_observation.py'
       - 'scripts/ci/check_rolling_installed_workflow.py'
+      - 'vscode-extension/scripts/run-local-vsix-smoke.js'
+      - 'vscode-extension/scripts/run-local-vsix-smoke.test.js'
 
 permissions:
   contents: read
@@ -214,6 +216,9 @@ jobs:
         shell: bash
         env:
           HOST_ROLE: ${{ matrix.host_role }}
+          CANDIDATE_ID: rolling-${{ needs.subject.outputs.source_sha }}-${{ github.run_id }}-${{ matrix.row_id }}
+          ARTIFACT_SET_ID: rolling-${{ needs.subject.outputs.source_sha }}-${{ matrix.row_id }}
+          PLATFORM: ${{ matrix.platform }}
           MINIMUM_VSCODE: ${{ needs.subject.outputs.minimum_vscode }}
           SOURCE_SHA: ${{ needs.subject.outputs.source_sha }}
           ROW_ID: ${{ matrix.row_id }}
@@ -230,6 +235,16 @@ jobs:
           printf 'PERL_LSP_VSCODE_VERSION=%s\n' "$VSCODE_SELECTOR" >> "$GITHUB_ENV"
           printf 'PERL_LSP_SMOKE_RECEIPTS_DIR=%s/%s/vscode\n' "$GITHUB_WORKSPACE" "$ROW_ROOT" >> "$GITHUB_ENV"
           printf 'PERL_LSP_SMOKE_SOURCE_LABEL=rolling-installed-%s\n' "$ROW_ID" >> "$GITHUB_ENV"
+          if [ "$PLATFORM" = "windows" ]; then
+            # The local orchestrator constructs the existing candidate manifest
+            # only after it has observed the VSIX and bundled-server hashes.
+            # These explicit identities bind that construction to this exact
+            # default-main workflow subject and row artifact set.
+            printf 'PERL_LSP_CONSTRUCT_CANDIDATE_MANIFEST=1\n' >> "$GITHUB_ENV"
+            printf 'PERL_LSP_CANDIDATE_ID=rolling-%s-%s-%s\n' "$SOURCE_SHA" "$GITHUB_RUN_ID" "$ROW_ID" >> "$GITHUB_ENV"
+            printf 'PERL_LSP_ARTIFACT_SET_ID=rolling-%s-%s\n' "$SOURCE_SHA" "$ROW_ID" >> "$GITHUB_ENV"
+            printf 'PERL_LSP_CURRENT_SOURCE_SHA=%s\n' "$SOURCE_SHA" >> "$GITHUB_ENV"
+          fi
 
       - name: Run exact packaged VSIX journey under Xvfb
         id: linux_smoke
@@ -304,6 +319,8 @@ jobs:
             --dap "$DAP_PATH" \
             --archive "$ARCHIVE_PATH" \
             --receipts-root "$ROW_ROOT/vscode" \
+            --candidate-id "$CANDIDATE_ID" \
+            --artifact-set-id "$ARTIFACT_SET_ID" \
             --smoke-outcome "$SMOKE_OUTCOME" \
             --output "$ROW_ROOT/rolling-installed-row.json"
           cat "$ROW_ROOT/rolling-installed-row.json"

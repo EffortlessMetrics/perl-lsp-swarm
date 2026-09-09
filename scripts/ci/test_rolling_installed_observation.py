@@ -122,10 +122,47 @@ class ObservationTest(unittest.TestCase):
         platform: str = "linux",
         vscode_version: str = "1.125.0",
         smoke_outcome: str | None = None,
+        write_verified_child: bool = True,
     ) -> dict[str, object]:
         receipts = self.root / f"receipts-{row_id}"
         if receipt is not None:
             write_json(receipts / "current-source-orchestration.json", receipt)
+            behavioral = receipt.get("stages", {}).get("behavioral_smoke", {})
+            if (
+                platform == "windows"
+                and isinstance(behavioral, dict)
+                and behavioral.get("candidate_bound") is True
+                and write_verified_child
+            ):
+                source_receipt = {
+                    "schema_version": 1,
+                    "repository_sha": SHA,
+                    "artifact_hashes": {
+                        "vsix_sha256": VSIX_SHA,
+                        "bundled_server_sha256": MODULE.sha256(self.server),
+                    },
+                }
+                source_receipt_path = (
+                    receipts / "local-current-source" / "windows" / "packaged_bundle_journey_receipt.json"
+                )
+                write_json(source_receipt_path, source_receipt)
+                write_json(
+                    receipts / "local-current-source" / "windows" / "verified_child_receipt.json",
+                    {
+                        "schema_version": "verified_child_receipt.v1",
+                        "receipt_schema_version": "installed_acceptance.v1",
+                        "candidate_id": f"rolling-{SHA}-test",
+                        "frozen_product_sha": SHA,
+                        "artifact_set_id": "rolling-test-artifacts",
+                        "outcome": "completed",
+                        "status": "not_proven",
+                        "source_receipt_sha256": MODULE.sha256(source_receipt_path),
+                        "artifact_hashes": {
+                            "vsix_sha256": VSIX_SHA,
+                            "bundled_server_sha256": MODULE.sha256(self.server),
+                        },
+                    },
+                )
         output = self.root / f"{row_id}.json"
         result = self.run_row(
             [
@@ -152,6 +189,11 @@ class ObservationTest(unittest.TestCase):
                 str(self.archive),
                 "--receipts-root",
                 str(receipts),
+                *(
+                    ["--candidate-id", f"rolling-{SHA}-test", "--artifact-set-id", "rolling-test-artifacts"]
+                    if platform == "windows"
+                    else []
+                ),
                 "--smoke-outcome",
                 smoke_outcome or ("success" if receipt is not None else "failure"),
                 "--output",
@@ -260,7 +302,12 @@ class ObservationTest(unittest.TestCase):
             any("instrument" in finding for finding in row["findings"])
         )
 
-    def windows_receipt(self, behavioral: dict[str, object]) -> dict[str, object]:
+    def windows_receipt(
+        self, behavioral: dict[str, object], *, candidate_bound: bool = False
+    ) -> dict[str, object]:
+        behavioral = dict(behavioral)
+        if candidate_bound:
+            behavioral["candidate_bound"] = True
         receipt = smoke_receipt(
             self.server,
             platform="win32",
@@ -272,29 +319,38 @@ class ObservationTest(unittest.TestCase):
         )
         return receipt
 
-    def test_windows_behavioral_guard_is_unsupported_not_product_defect(self) -> None:
+    def test_windows_missing_candidate_journey_is_not_proven(self) -> None:
         self.package("windows")
         row = self.build_row(
             receipt=self.windows_receipt(
-                {"status": "failed", "reason": "published_extension_smoke_failed"}
+                {"status": "not_proven", "reason": "candidate_identity_incomplete"}
             ),
             row_id="windows-current",
             platform="windows",
             vscode_version="stable",
             smoke_outcome="failure",
         )
-        # The candidate-bound journey cannot execute on Windows by product
-        # policy; its failure is the guard boundary, never a product defect.
         self.assertEqual(
             row["cells"]["packaged_provider_edit_journey"],
-            "unsupported_or_withdrawn",
+            "not_proven",
         )
         self.assertNotEqual(row["status"], "blocked")
-        self.assertTrue(
-            any("policy-restricted" in finding for finding in row["findings"])
-        )
+        self.assertFalse(any("policy-restricted" in finding for finding in row["findings"]))
 
-    def test_windows_behavioral_pass_contradicts_policy(self) -> None:
+    def test_windows_complete_candidate_journey_can_be_observed(self) -> None:
+        self.package("windows")
+        row = self.build_row(
+            receipt=self.windows_receipt({"status": "pass"}, candidate_bound=True),
+            row_id="windows-current",
+            platform="windows",
+            vscode_version="stable",
+        )
+        self.assertEqual(
+            row["cells"]["packaged_provider_edit_journey"], "pass"
+        )
+        self.assertFalse(any("policy-restricted" in finding for finding in row["findings"]))
+
+    def test_windows_unbound_behavioral_pass_cannot_be_observed(self) -> None:
         self.package("windows")
         row = self.build_row(
             receipt=self.windows_receipt({"status": "pass"}),
@@ -302,14 +358,19 @@ class ObservationTest(unittest.TestCase):
             platform="windows",
             vscode_version="stable",
         )
-        # A candidate-bound behavioral pass on Windows means the product
-        # policy moved; the row must be reclassified, not trusted.
-        self.assertEqual(
-            row["cells"]["packaged_provider_edit_journey"], "instrument_defect"
+        self.assertEqual(row["cells"]["packaged_provider_edit_journey"], "not_proven")
+        self.assertTrue(any("verified child receipt" in finding for finding in row["findings"]))
+
+    def test_windows_forged_candidate_marker_cannot_be_observed(self) -> None:
+        self.package("windows")
+        row = self.build_row(
+            receipt=self.windows_receipt({"status": "pass"}, candidate_bound=True),
+            row_id="windows-current",
+            platform="windows",
+            vscode_version="stable",
+            write_verified_child=False,
         )
-        self.assertTrue(
-            any("policy drifted" in finding for finding in row["findings"])
-        )
+        self.assertEqual(row["cells"]["packaged_provider_edit_journey"], "not_proven")
 
     def test_arbitrary_archive_bytes_cannot_pass(self) -> None:
         self.archive.write_bytes(b"arbitrary-non-zip-bytes")

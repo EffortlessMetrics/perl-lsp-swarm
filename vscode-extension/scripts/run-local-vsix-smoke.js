@@ -183,6 +183,57 @@ function hasCompleteCandidateIdentity(env) {
   ].every((value) => typeof value === 'string' && value.trim().length > 0);
 }
 
+function candidateManifestConstructionRequested(env = process.env) {
+  return env.PERL_LSP_CONSTRUCT_CANDIDATE_MANIFEST === '1';
+}
+
+function requireCandidateManifestConstructionInputs(env, revision) {
+  if (typeof env.PERL_LSP_CANDIDATE_ARTIFACT_MANIFEST === 'string' &&
+      env.PERL_LSP_CANDIDATE_ARTIFACT_MANIFEST.trim()) {
+    throw new Error(
+      'candidate manifest construction cannot be combined with a supplied artifact manifest',
+    );
+  }
+  const fields = {
+    candidateId: env.PERL_LSP_CANDIDATE_ID,
+    artifactSetId: env.PERL_LSP_ARTIFACT_SET_ID,
+    frozenProductSha: env.PERL_LSP_CURRENT_SOURCE_SHA,
+  };
+  const missing = Object.entries(fields)
+    .filter(([, value]) => typeof value !== 'string' || value.trim() === '')
+    .map(([name]) => name);
+  if (missing.length > 0) {
+    throw new Error(
+      `candidate manifest construction requires candidate ID, artifact-set ID, and frozen product SHA; missing ${missing.join(', ')}`,
+    );
+  }
+  if (fields.frozenProductSha.trim() !== revision) {
+    throw new Error(
+      `candidate manifest frozen product SHA ${fields.frozenProductSha.trim()} does not match source revision ${revision}`,
+    );
+  }
+  return {
+    candidateId: fields.candidateId.trim(),
+    artifactSetId: fields.artifactSetId.trim(),
+    frozenProductSha: fields.frozenProductSha.trim(),
+  };
+}
+
+function constructCandidateArtifactManifest(env, revision, platform, vsixSha256, bundledServerSha256) {
+  if (!candidateManifestConstructionRequested(env)) {
+    return undefined;
+  }
+  const identity = requireCandidateManifestConstructionInputs(env, revision);
+  return JSON.stringify({
+    candidate_id: identity.candidateId,
+    frozen_product_sha: identity.frozenProductSha,
+    artifact_set_id: identity.artifactSetId,
+    platform,
+    vsix_sha256: vsixSha256,
+    bundled_server_sha256: bundledServerSha256,
+  });
+}
+
 function interpretTestExplorerExit(smokeRun, childReceipt, childEnv = {}) {
   if (smokeRun.phase === 'compile') {
     return {
@@ -824,8 +875,9 @@ function validateChildSmokeReceipt({
   if (receipt.outcome !== 'completed') {
     violations.push(
       `first-hour receipt outcome is ${JSON.stringify(receipt.outcome)}, not completed`,
-    );
-  }
+  );
+}
+
   if (!Array.isArray(receipt.failures) || receipt.failures.length > 0) {
     violations.push('first-hour receipt reported failures');
   }
@@ -877,6 +929,67 @@ function validateChildSmokeReceipt({
   }
 
   return violations.length > 0 ? { ok: false, violations } : { ok: true, receipt };
+}
+
+function verifiedCandidateReceiptPath() {
+  return path.join(
+    receiptsRoot(),
+    smokeSourceLabel(),
+    smokePlatformLabel(),
+    'verified_child_receipt.json',
+  );
+}
+
+function validateVerifiedCandidateReceipt({
+  receiptFile,
+  env,
+  expectedVsixSha256,
+  expectedBundledServerSha256,
+  sourceReceiptFile,
+}) {
+  try {
+    const receipt = JSON.parse(fs.readFileSync(receiptFile, 'utf8'));
+    const violations = [];
+    if (receipt.schema_version !== 'verified_child_receipt.v1') {
+      violations.push('verified child receipt schema is not verified_child_receipt.v1');
+    }
+    if (receipt.receipt_schema_version !== 'installed_acceptance.v1') {
+      violations.push('verified child receipt is not an installed acceptance envelope');
+    }
+    for (const [field, expected] of [
+      ['candidate_id', env.PERL_LSP_CANDIDATE_ID],
+      ['frozen_product_sha', env.PERL_LSP_CURRENT_SOURCE_SHA],
+      ['artifact_set_id', env.PERL_LSP_ARTIFACT_SET_ID],
+    ]) {
+      if (receipt[field] !== expected) {
+        violations.push(`verified child ${field} does not bind this candidate`);
+      }
+    }
+    if (receipt.status === 'blocked') {
+      violations.push(
+        `verified child status ${JSON.stringify(receipt.status)} is not executable evidence`,
+      );
+    }
+    if (!receipt.source_receipt_sha256 || !sourceReceiptFile) {
+      violations.push('verified child receipt does not bind its packaged source receipt');
+    } else if (receipt.source_receipt_sha256 !== sha256File(sourceReceiptFile)) {
+      violations.push('verified child source receipt digest does not match this run');
+    }
+    if (receipt.artifact_hashes?.vsix_sha256 !== expectedVsixSha256) {
+      violations.push("verified child VSIX digest is not this run's package");
+    }
+    if (receipt.artifact_hashes?.bundled_server_sha256 !== expectedBundledServerSha256) {
+      violations.push("verified child bundled-server digest is not this run's server");
+    }
+    return violations.length > 0 ? { ok: false, violations } : { ok: true, receipt };
+  } catch (error) {
+    return {
+      ok: false,
+      violations: [
+        `verified child receipt could not be read: ${error instanceof Error ? error.message : String(error)}`,
+      ],
+    };
+  }
 }
 
 /** Must match `HOST_RESOLUTION_FAILURE_RECEIPT_NAME` in vscodeHostResolution.ts. */
@@ -2634,6 +2747,9 @@ function main() {
         `Server source revision ${serverSourceRevision} does not match extension source revision ${revision}`,
       );
     }
+    if (candidateManifestConstructionRequested(process.env)) {
+      requireCandidateManifestConstructionInputs(process.env, revision);
+    }
   } catch (error) {
     failInstrument(error);
     return concludeRun(receipt);
@@ -2722,6 +2838,17 @@ function main() {
       receipt.stages.package_creation = { status: 'pass', exit_code: 0 };
       persistReceipt(destination, receipt);
 
+      const constructedManifest = constructCandidateArtifactManifest(
+        process.env,
+        revision,
+        process.platform === 'win32' ? 'windows' : process.platform,
+        receipt.vsix.sha256,
+        sha256File(serverPath),
+      );
+      if (constructedManifest !== undefined) {
+        packageEnv.PERL_LSP_CANDIDATE_ARTIFACT_MANIFEST = constructedManifest;
+      }
+
       receipt.stages.package_inventory = runInventoryTransition(packageEnv, revision, vsixPath);
       persistReceipt(destination, receipt);
 
@@ -2741,6 +2868,14 @@ function main() {
           PERL_LSP_SMOKE_SOURCE_LABEL: smokeSourceLabel(),
           PERL_LSP_VSIX_SHA256: receipt.vsix.sha256 ?? '',
         };
+        if (constructedManifest !== undefined) {
+          smokeEnv.PERL_LSP_CANDIDATE_ARTIFACT_MANIFEST = constructedManifest;
+          smokeEnv.PERL_LSP_PACKAGED_BUNDLE_SMOKE = '1';
+          delete smokeEnv.PERL_LSP_CURRENT_SOURCE_SMOKE;
+          delete smokeEnv.PERL_LSP_FIRST_HOUR_ONLY;
+          delete smokeEnv.PERL_LSP_FIRST_HOUR_RECEIPT;
+          delete smokeEnv.PERL_LSP_FIRST_HOUR_SERVER_PATH;
+        }
         // The first-hour child is one leg of the combined candidate run. Keep
         // its selector exclusive so the second Test Explorer leg can reuse the
         // same staged VSIX after this process completes.
@@ -2752,6 +2887,7 @@ function main() {
         const childReceiptFile = childReceiptPath();
         try {
           fs.rmSync(childReceiptFile, { force: true });
+          fs.rmSync(verifiedCandidateReceiptPath(), { force: true });
           fs.rmSync(hostResolutionFailurePath(), { force: true });
         } catch (error) {
           receipt.stages.behavioral_smoke = {
@@ -2788,18 +2924,34 @@ function main() {
             receiptsRoot: receiptsRoot(),
           });
         } else if (smokeResult.status === 0) {
-          const childReceipt = validateChildSmokeReceipt({
-            receiptFile: childReceiptFile,
-            expectedRevision: revision,
-            expectedVsixSha256: receipt.vsix.sha256,
-            expectedServerSourceSha: serverSourceRevision,
-            // Mirror the child's own default so an unset matrix version is not
-            // reported as an identity mismatch.
-            expectedVscodeVersion: (process.env.PERL_LSP_VSCODE_VERSION || '').trim() || 'stable',
-            expectedSourceLabel: receipt.source_label,
-          });
+          const childReceipt = constructedManifest !== undefined
+            ? validateVerifiedCandidateReceipt({
+      receiptFile: verifiedCandidateReceiptPath(),
+      env: smokeEnv,
+      expectedVsixSha256: receipt.vsix.sha256,
+      expectedBundledServerSha256: sha256File(serverPath),
+      sourceReceiptFile: path.join(
+        path.dirname(verifiedCandidateReceiptPath()),
+        'packaged_bundle_journey_receipt.json',
+      ),
+    })
+            : validateChildSmokeReceipt({
+                receiptFile: childReceiptFile,
+                expectedRevision: revision,
+                expectedVsixSha256: receipt.vsix.sha256,
+                expectedServerSourceSha: serverSourceRevision,
+                // Mirror the child's own default so an unset matrix version is not
+                // reported as an identity mismatch.
+                expectedVscodeVersion: (process.env.PERL_LSP_VSCODE_VERSION || '').trim() || 'stable',
+                expectedSourceLabel: receipt.source_label,
+              });
           receipt.stages.behavioral_smoke = childReceipt.ok
-            ? { status: 'pass', exit_code: 0 }
+            ? {
+                status: 'pass',
+                exit_code: 0,
+                candidate_bound:
+                  constructedManifest !== undefined || hasCompleteCandidateIdentity(smokeEnv),
+              }
             : {
                 status: 'not_proven',
                 exit_code: 0,
@@ -2810,7 +2962,9 @@ function main() {
             // Propagate the launched runtime version the bound child
             // observed; downstream exactness claims must bind to this, never
             // to the requested selector alone.
-            receipt.observed_vscode_version = childReceipt.receipt.environment.vscode_version;
+            if (childReceipt.receipt.environment?.vscode_version) {
+              receipt.observed_vscode_version = childReceipt.receipt.environment.vscode_version;
+            }
           }
         }
       } else {
@@ -2908,6 +3062,8 @@ module.exports = {
   CRASH_RECOVERY_RECEIPTS,
   activationFailureLegEnv,
   bundleTargetForPlatform,
+  candidateManifestConstructionRequested,
+  constructCandidateArtifactManifest,
   childReceiptPath,
   composeActivationRecoveryReceipt,
   composeCheckSummary,
@@ -2923,6 +3079,7 @@ module.exports = {
   runTestExplorerJourneyStage,
   testExplorerSmokeEnv,
   validateTestExplorerReceipt,
+  validateVerifiedCandidateReceipt,
   interpretTransitionResult,
   inventoryTransitionArgs,
   publishCheckSummary,

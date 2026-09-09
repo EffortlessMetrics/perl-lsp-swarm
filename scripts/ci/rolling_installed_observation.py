@@ -44,13 +44,10 @@ VERDICTS = {
 # platform, architecture, host role, and host-version selector kind. A row
 # that keeps its id but drifts on any of these axes is not that row.
 #
-# `behavioral` records the product's candidate-bound platform policy: the
-# packaged first-hour behavioral journey is candidate-bound and therefore
-# Linux-only (assertCandidateBoundPlatform in runPublishedSmoke.ts). On a
-# policy-restricted row the journey can never run, so its cell is honestly
-# unsupported_or_withdrawn; an observed pass there would contradict the
-# policy and is an instrument defect (policy drift), and a failure cannot be
-# a product defect because the journey never executed.
+# `behavioral` records whether the row may consume a directly observed
+# candidate-bound journey. The published runner still rejects incomplete
+# Windows identity before launch; such a receipt remains not_proven rather
+# than becoming evidence merely because the row is platform-enabled.
 ROW_SPECS: Mapping[str, Mapping[str, str]] = {
     "linux-minimum": {
         "platform": "linux",
@@ -71,7 +68,7 @@ ROW_SPECS: Mapping[str, Mapping[str, str]] = {
         "architecture": "x64",
         "host_role": "current_stable",
         "host_selector": "stable",
-        "behavioral": "policy_linux_only",
+        "behavioral": "observed",
     },
 }
 REQUIRED_ROWS = tuple(ROW_SPECS)
@@ -452,6 +449,82 @@ def find_smoke_receipt(
     return path, value, findings
 
 
+def find_verified_candidate_receipt(
+    root: pathlib.Path,
+    *,
+    source_sha: str,
+    expected_platform: str,
+    expected_vsix_hash: str | None,
+    expected_server_hash: str | None,
+    expected_candidate_id: str | None,
+    expected_artifact_set_id: str | None,
+) -> tuple[pathlib.Path | None, Mapping[str, Any] | None, list[str]]:
+    """Find the packaged child receipt that binds this row's exact artifacts.
+
+    The orchestration stage is a summary, so its boolean marker is not an
+    authority by itself.  The child envelope must carry the source identity
+    and both hashes observed by the same packaged journey.
+    """
+    findings: list[str] = []
+    matches: list[tuple[pathlib.Path, Mapping[str, Any]]] = []
+    if not root.exists() or expected_vsix_hash is None or expected_server_hash is None:
+        return None, None, findings
+    for path in sorted(root.rglob("verified_child_receipt.json")):
+        try:
+            value = read_json(path)
+        except ObservationError as error:
+            findings.append(str(error))
+            continue
+        if not isinstance(value, dict):
+            continue
+        artifacts = value.get("artifact_hashes")
+        if (
+            value.get("schema_version") != "verified_child_receipt.v1"
+            or value.get("receipt_schema_version") != "installed_acceptance.v1"
+            or value.get("frozen_product_sha") != source_sha
+            or value.get("outcome") != "completed"
+            or value.get("status") == "blocked"
+            or value.get("candidate_id") != expected_candidate_id
+            or value.get("artifact_set_id") != expected_artifact_set_id
+            or not isinstance(artifacts, dict)
+            or artifacts.get("vsix_sha256") != expected_vsix_hash
+            or artifacts.get("bundled_server_sha256") != expected_server_hash
+        ):
+            continue
+        source_path = path.with_name("packaged_bundle_journey_receipt.json")
+        try:
+            source_receipt = read_json(source_path)
+        except ObservationError:
+            continue
+        if (
+            not isinstance(source_receipt, dict)
+            or source_receipt.get("repository_sha") != source_sha
+            or sha256(source_path) != value.get("source_receipt_sha256")
+            or source_receipt.get("artifact_hashes", {}).get("vsix_sha256")
+            != expected_vsix_hash
+            or source_receipt.get("artifact_hashes", {}).get("bundled_server_sha256")
+            != expected_server_hash
+        ):
+            continue
+        environment = value.get("environment")
+        if isinstance(environment, dict) and environment.get("platform") not in (
+            None,
+            expected_platform,
+        ):
+            continue
+        matches.append((path, value))
+    if len(matches) > 1:
+        return None, None, [
+            "multiple exact verified child receipts matched the row subject: "
+            + ", ".join(path.name for path, _ in matches)
+        ]
+    if not matches:
+        return None, None, [
+            "no exact verified child receipt bound the row source and artifacts"
+        ]
+    return matches[0][0], matches[0][1], findings
+
+
 def stage_verdict(stage: Any) -> str:
     """Classify one smoke stage without laundering instrument failures.
 
@@ -607,6 +680,22 @@ def build_row(args: argparse.Namespace) -> int:
             )
             identity_ok = False
 
+    verified_child_path: pathlib.Path | None = None
+    verified_child: Mapping[str, Any] | None = None
+    if args.platform == "windows":
+        verified_child_path, verified_child, verified_findings = (
+            find_verified_candidate_receipt(
+                pathlib.Path(args.receipts_root),
+                source_sha=source_sha,
+                expected_platform=expected_receipt_platform,
+                expected_vsix_hash=vsix_hash,
+                expected_server_hash=server_hash,
+                expected_candidate_id=args.candidate_id,
+                expected_artifact_set_id=args.artifact_set_id,
+            )
+        )
+        findings.extend(verified_findings)
+
     cells: dict[str, str] = {
         "artifact_identity": (
             "pass" if identity_ok and archive_hash else "instrument_defect"
@@ -658,25 +747,20 @@ def build_row(args: argparse.Namespace) -> int:
         if isinstance(behavioral_stage, dict)
         else None
     )
-
-    # Candidate-bound behavioral journeys are Linux-only by product policy
-    # (assertCandidateBoundPlatform). On a policy-restricted row the journey
-    # can never execute: a pass would contradict the policy (instrument
-    # defect), and a failure is the guard boundary, never product evidence.
-    if receipt is not None and row_spec(args.row_id)["behavioral"] != "observed":
-        findings.append(
-            "candidate-bound behavioral journey is policy-restricted to Linux; "
-            "this row's packaged_provider_edit_journey is unsupported_or_withdrawn"
+    if (
+        args.platform == "windows"
+        and behavioral_status == "pass"
+        and not (
+            isinstance(behavioral_stage, dict)
+            and behavioral_stage.get("candidate_bound") is True
+            and verified_child_path is not None
+            and verified_child is not None
         )
-        if behavioral_status == "pass":
-            findings.append(
-                "candidate-bound behavioral stage passed on a policy-restricted "
-                "platform; the product policy drifted and this row must be "
-                "reclassified"
-            )
-            cells["packaged_provider_edit_journey"] = "instrument_defect"
-        else:
-            cells["packaged_provider_edit_journey"] = "unsupported_or_withdrawn"
+    ):
+        findings.append(
+            "Windows behavioral pass lacks a verified child receipt bound to this source and artifacts"
+        )
+        cells["packaged_provider_edit_journey"] = "not_proven"
 
     # An absent cleanup_failure key is unobserved evidence, never proof of
     # clean cleanup; only an explicitly null observed value can pass.
@@ -1178,6 +1262,8 @@ def parser() -> argparse.ArgumentParser:
     row.add_argument("--dap", required=True)
     row.add_argument("--archive", required=True)
     row.add_argument("--receipts-root", required=True)
+    row.add_argument("--candidate-id")
+    row.add_argument("--artifact-set-id")
     row.add_argument(
         "--smoke-outcome",
         choices=("success", "failure", "skipped"),
