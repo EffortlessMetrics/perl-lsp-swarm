@@ -1422,6 +1422,7 @@ impl DebugAdapter {
                                     continue;
                                 };
                                 if let Some(ref mut s) = *guard {
+                                    let was_running = matches!(s.state, DebugState::Running);
                                     // A prompt can be observed after the context
                                     // branch (which already advanced the
                                     // suspension generation), or without a
@@ -1485,7 +1486,7 @@ impl DebugAdapter {
                                         // stopOnEntry's frame contract. Keep the entry stop
                                         // pending instead of exposing a synthetic location.
                                         s.state = DebugState::Running;
-                                    } else {
+                                    } else if was_running || s.entry_stop_pending {
                                         let entry_stop = s.entry_stop_pending;
                                         s.entry_stop_pending = false;
                                         s.state = DebugState::Stopped;
@@ -2644,6 +2645,96 @@ mod tests {
             return Err("next suspension reused the previous frame id".to_string());
         }
 
+        Ok(())
+    }
+
+    /// The real output reader must publish one stop when a context line is
+    /// followed by the prompt for that same suspension. The prompt is an
+    /// ordered completion marker for the debugger's context, not a second
+    /// suspension.
+    #[cfg(unix)]
+    #[test]
+    fn output_reader_context_then_prompt_publishes_one_stop() -> Result<(), String> {
+        use super::{DapMessage, DebugSession, ResumeMode, VariableCache, lock_or_recover};
+        use std::path::PathBuf;
+        use std::process::{Command, Stdio};
+        use std::sync::atomic::Ordering;
+        use std::sync::mpsc::{RecvTimeoutError, sync_channel};
+        use std::time::Duration;
+
+        let (sender, receiver) = sync_channel(32);
+        let mut adapter = DebugAdapter::new();
+        adapter.set_event_sender(sender);
+        adapter.initialized.store(true, Ordering::Release);
+
+        let child = Command::new("sh")
+            .args([
+                "-c",
+                "printf 'main::(/tmp/dap-entry-frame-fixture.pl:3):\\nDB<1>\\nENTRY_READER_DONE\\n' >&2; sleep 1",
+            ])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|error| format!("failed to spawn reader fixture: {error}"))?;
+
+        *lock_or_recover(&adapter.session, "test.session") = Some(DebugSession {
+            process: child,
+            state: DebugState::Running,
+            stack_frames: Vec::new(),
+            stack_frame_arguments: HashMap::new(),
+            variable_cache: VariableCache::default(),
+            thread_id: 1,
+            last_resume_mode: ResumeMode::Unknown,
+            entry_stop_pending: true,
+            stopped_generation: 0,
+        });
+        adapter.start_output_reader(PathBuf::from("/tmp"));
+
+        let mut stopped = 0;
+        let mut saw_completion_marker = false;
+        let mut saw_terminated = false;
+        while !saw_completion_marker || !saw_terminated {
+            match receiver.recv_timeout(Duration::from_secs(3)) {
+                Ok(DapMessage::Event { event, body, .. }) if event == "stopped" => {
+                    stopped += 1;
+                    if stopped > 1 {
+                        return Err("context plus prompt emitted duplicate stopped events".into());
+                    }
+                    let reason = body
+                        .as_ref()
+                        .and_then(|value| value.get("reason"))
+                        .and_then(|value| value.as_str());
+                    if reason != Some("entry") {
+                        return Err(format!("expected entry stop, got {reason:?}"));
+                    }
+                }
+                Ok(DapMessage::Event { event, body, .. }) if event == "output" => {
+                    if body
+                        .as_ref()
+                        .and_then(|value| value.get("output"))
+                        .and_then(|value| value.as_str())
+                        .is_some_and(|output| output.contains("ENTRY_READER_DONE"))
+                    {
+                        saw_completion_marker = true;
+                    }
+                }
+                Ok(DapMessage::Event { event, .. }) if event == "terminated" => {
+                    saw_terminated = true;
+                }
+                Ok(_) => {}
+                Err(RecvTimeoutError::Timeout) => {
+                    return Err("reader fixture did not reach its completion marker".into());
+                }
+                Err(RecvTimeoutError::Disconnected) => {
+                    return Err("reader event channel disconnected before completion".into());
+                }
+            }
+        }
+
+        if stopped != 1 {
+            return Err(format!("expected exactly one entry stop, got {stopped}"));
+        }
         Ok(())
     }
 
