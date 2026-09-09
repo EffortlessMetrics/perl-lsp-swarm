@@ -1226,9 +1226,10 @@ impl DebugAdapter {
                                     if was_running {
                                         let has_source_frame =
                                             !current_file.is_empty() && current_line > 0;
-                                        let entry_stop = s.entry_stop_pending
-                                            && native_context_observed
-                                            && has_source_frame;
+                                        let has_authoritative_source_frame =
+                                            native_context_observed && has_source_frame;
+                                        let entry_stop =
+                                            s.entry_stop_pending && has_authoritative_source_frame;
                                         if entry_stop {
                                             s.entry_stop_pending = false;
                                         }
@@ -1252,7 +1253,7 @@ impl DebugAdapter {
                                             BreakpointHitOutcome::default()
                                         };
 
-                                        if s.entry_stop_pending && !has_source_frame {
+                                        if s.entry_stop_pending && !has_authoritative_source_frame {
                                             // Do not publish an entry stop with a fabricated
                                             // <unknown>:1 frame. Keep the request pending until
                                             // the reader observes an actual source context.
@@ -2752,6 +2753,7 @@ mod tests {
     #[test]
     fn output_reader_waits_for_native_context_after_warning() -> Result<(), String> {
         use super::{DapMessage, DebugSession, ResumeMode, VariableCache, lock_or_recover};
+        use std::io::Write;
         use std::path::PathBuf;
         use std::process::{Command, Stdio};
         use std::sync::atomic::Ordering;
@@ -2762,11 +2764,12 @@ mod tests {
         let mut adapter = DebugAdapter::new();
         adapter.set_event_sender(sender);
         adapter.initialized.store(true, Ordering::Release);
+        *lock_or_recover(&adapter.exception_break_on_warn, "test.break_on_warn") = true;
 
         let child = Command::new("sh")
             .args([
                 "-c",
-                "printf 'compile warning at /tmp/dap-entry-frame-fixture.pl line 3.\\nmain::(/tmp/dap-entry-frame-fixture.pl:4):\\nDB<1>\\nENTRY_WARNING_DONE\\n' >&2; sleep 1",
+                "printf 'compile warning at /tmp/dap-entry-frame-fixture.pl line 3.\\nWARNING_BEFORE_CONTEXT\\n' >&2; read release; printf 'main::(/tmp/dap-entry-frame-fixture.pl:4):\\nDB<1>\\nENTRY_WARNING_DONE\\n' >&2; sleep 1",
             ])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -2788,11 +2791,15 @@ mod tests {
         adapter.start_output_reader(PathBuf::from("/tmp"));
 
         let mut stopped_line = None;
+        let mut released = false;
         let mut saw_completion_marker = false;
         let mut saw_terminated = false;
         while !saw_completion_marker || !saw_terminated {
             match receiver.recv_timeout(Duration::from_secs(3)) {
                 Ok(DapMessage::Event { event, body, .. }) if event == "stopped" => {
+                    if !released {
+                        return Err("warning consumed entry stop before native context".into());
+                    }
                     if stopped_line.is_some() {
                         return Err("warning/context fixture emitted duplicate stops".into());
                     }
@@ -2812,12 +2819,26 @@ mod tests {
                     stopped_line = Some(frame.line);
                 }
                 Ok(DapMessage::Event { event, body, .. }) if event == "output" => {
-                    if body
+                    let output = body
                         .as_ref()
                         .and_then(|value| value.get("output"))
                         .and_then(|value| value.as_str())
-                        .is_some_and(|output| output.contains("ENTRY_WARNING_DONE"))
-                    {
+                        .unwrap_or_default();
+                    if output.contains("WARNING_BEFORE_CONTEXT") && !released {
+                        if stopped_line.is_some() {
+                            return Err("warning consumed entry stop before native context".into());
+                        }
+                        let mut session = lock_or_recover(&adapter.session, "test.session");
+                        let child_stdin = session
+                            .as_mut()
+                            .and_then(|value| value.process.stdin.as_mut())
+                            .ok_or("warning fixture stdin unavailable")?;
+                        child_stdin
+                            .write_all(b"release\n")
+                            .map_err(|error| format!("release warning fixture: {error}"))?;
+                        released = true;
+                    }
+                    if output.contains("ENTRY_WARNING_DONE") {
                         saw_completion_marker = true;
                     }
                 }
