@@ -231,6 +231,13 @@ Never weaken a test, ratchet, support claim, or required proof merely to obtain 
 status. Missing, partial, stale, contradictory, or instrument-failed evidence is
 `NOT_PROVEN`.
 
+## Self-authored correction and disclosure
+
+Follow the canonical correction and disclosure contract in
+[`docs/agents/DEVELOPMENT_METHOD.md`](docs/agents/DEVELOPMENT_METHOD.md): repair an
+in-scope reversible defect, rerun affected proof, disclose the correction, and request
+approval only for a separate non-derivable or protected decision.
+
 ## Hard stops
 
 Stop only for concrete hazards:
