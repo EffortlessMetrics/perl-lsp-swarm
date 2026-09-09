@@ -766,7 +766,7 @@ pub(crate) fn normalize_explicit_debuggee_pin(path: &Path) -> Result<PathBuf, St
 #[cfg(test)]
 fn decode_evaluate_path(reported: &str) -> Result<String, String> {
     let trimmed = reported.trim();
-    let decoded = if trimmed.starts_with('"') || trimmed.ends_with('"') {
+    let decoded = if trimmed.starts_with('"') {
         serde_json::from_str::<String>(trimmed)
             .map_err(|error| format!("invalid quoted DAP string {trimmed:?}: {error}"))
     } else {
@@ -775,13 +775,37 @@ fn decode_evaluate_path(reported: &str) -> Result<String, String> {
 
     if let Some((prefix, payload)) = decoded.split_once(" '") {
         if prefix.trim().parse::<u64>().is_ok() {
-            let path = payload
-                .strip_suffix('\'')
-                .ok_or_else(|| format!("unclosed perl5db ordinal path {decoded:?}"))?;
+            let mut path = String::with_capacity(payload.len());
+            let mut characters = payload.chars();
+            let mut closed = false;
+            while let Some(character) = characters.next() {
+                match character {
+                    '\\' => match characters.next() {
+                        Some('\\') => path.push('\\'),
+                        Some('\'') => path.push('\''),
+                        Some(other) => {
+                            return Err(format!(
+                                "unsupported perl5db ordinal escape \\{other} in {decoded:?}"
+                            ));
+                        }
+                        None => {
+                            return Err(format!("trailing perl5db ordinal escape in {decoded:?}"));
+                        }
+                    },
+                    '\'' => {
+                        closed = true;
+                        break;
+                    }
+                    other => path.push(other),
+                }
+            }
+            if !closed || characters.any(|character| !character.is_whitespace()) {
+                return Err(format!("unclosed perl5db ordinal path {decoded:?}"));
+            }
             if path.is_empty() {
                 return Err(format!("empty perl5db ordinal path {decoded:?}"));
             }
-            return Ok(path.to_string());
+            return Ok(path);
         }
     }
     Ok(decoded)
@@ -866,15 +890,64 @@ mod explicit_pin_tests {
         fs::write(&pinned, b"pinned").map_err(|error| error.to_string())?;
         fs::write(&ambient, b"ambient").map_err(|error| error.to_string())?;
 
-        let rendered = format!("\"0  '{}'\"", pinned.to_string_lossy().replace('\\', "\\\\"));
+        let perl_quote =
+            |path: &Path| path.to_string_lossy().replace('\\', "\\\\").replace('\'', "\\'");
+        let rendered = serde_json::to_string(&format!("0  '{}'", perl_quote(&pinned)))
+            .map_err(|error| error.to_string())?;
         assert_pinned_identity(&rendered, &pinned, &ambient, "ordinal")?;
 
-        let ambient_rendered = format!("0  '{}'", ambient.to_string_lossy());
+        let ambient_rendered = format!("0  '{}'", perl_quote(&ambient));
         let error = assert_pinned_identity(&ambient_rendered, &pinned, &ambient, "ambient ordinal")
             .err()
             .ok_or_else(|| "the ordinal ambient path was accepted".to_string())?;
         if !error.contains("expected pinned") {
             return Err(format!("ordinal ambient rejection lost its reason: {error}"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn pinned_identity_decodes_raw_perl_debugger_escapes() -> Result<(), String> {
+        let controls = tempfile::tempdir().map_err(|error| error.to_string())?;
+        #[cfg(unix)]
+        let pinned = controls.path().join("nested").join("pinned\\'perl");
+        #[cfg(not(unix))]
+        let pinned = controls.path().join("nested").join("pinned'perl");
+        let ambient = controls.path().join("ambient").join("perl'with spaces");
+        fs::create_dir_all(
+            pinned.parent().ok_or_else(|| "the pinned path should have a parent".to_string())?,
+        )
+        .map_err(|error| error.to_string())?;
+        fs::create_dir_all(
+            ambient.parent().ok_or_else(|| "the ambient path should have a parent".to_string())?,
+        )
+        .map_err(|error| error.to_string())?;
+        fs::write(&pinned, b"pinned").map_err(|error| error.to_string())?;
+        fs::write(&ambient, b"ambient").map_err(|error| error.to_string())?;
+
+        let perl_quote =
+            |path: &Path| path.to_string_lossy().replace('\\', "\\\\").replace('\'', "\\'");
+        let raw_perl5db = format!("0  '{}'", perl_quote(&pinned));
+        assert_pinned_identity(&raw_perl5db, &pinned, &ambient, "raw perl5db")?;
+        let rendered = serde_json::to_string(&raw_perl5db).map_err(|error| error.to_string())?;
+        assert_pinned_identity(&rendered, &pinned, &ambient, "JSON-wrapped perl5db")?;
+
+        let ambient_rendered = format!("0  '{}'", perl_quote(&ambient));
+        let error = assert_pinned_identity(&ambient_rendered, &pinned, &ambient, "raw ambient")
+            .err()
+            .ok_or_else(|| "the escaped ambient path was accepted".to_string())?;
+        if !error.contains("expected pinned") {
+            return Err(format!("escaped ambient rejection lost its reason: {error}"));
+        }
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn plain_path_ending_in_double_quote_is_not_json_decoded() -> Result<(), String> {
+        let path = "/tmp/perl-lsp-15217-plain-quote\"";
+        if super::decode_evaluate_path(path)? != path {
+            return Err("plain path ending in a double quote was changed".to_string());
         }
         Ok(())
     }
@@ -927,6 +1000,25 @@ mod explicit_pin_tests {
         if !empty_ordinal_error.contains("raw DAP result") || !empty_ordinal_error.contains("empty")
         {
             return Err(format!("empty ordinal lost diagnostic context: {empty_ordinal_error}"));
+        }
+
+        let unsupported_escape = assert_pinned_identity("0  'C:\\q'", &pinned, &ambient, "ordinal")
+            .err()
+            .ok_or_else(|| "an unsupported ordinal escape was accepted".to_string())?;
+        if !unsupported_escape.contains("unsupported perl5db ordinal escape") {
+            return Err(format!(
+                "unsupported ordinal escape lost its reason: {unsupported_escape}"
+            ));
+        }
+
+        let escaped_quote_without_close =
+            assert_pinned_identity("0  'C:\\'", &pinned, &ambient, "ordinal")
+                .err()
+                .ok_or_else(|| "an ordinal with no closing quote was accepted".to_string())?;
+        if !escaped_quote_without_close.contains("unclosed") {
+            return Err(format!(
+                "unclosed escaped ordinal lost its reason: {escaped_quote_without_close}"
+            ));
         }
         Ok(())
     }
