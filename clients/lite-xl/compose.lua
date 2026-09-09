@@ -229,7 +229,7 @@ local function list_files_relative(dir)
     abs_input = cwd .. "/" .. dir
   end
   if IS_WINDOWS then
-    local lines = capture_lines('dir /s /b ' .. quote(abs_input) .. ' 2>nul')
+    local lines = capture_lines('dir /s /b /a-d ' .. quote(abs_input) .. ' 2>nul')
     local prefix = abs_input:gsub("\\", "/"):gsub("[/\\]+$", "")
     for _, abs in ipairs(lines) do
       local rel = abs:gsub("\\", "/")
@@ -252,6 +252,120 @@ local function list_files_relative(dir)
   end
   table.sort(out)
   return out
+end
+
+-- Checked variant used by pending-output cleanup.  The older listing helper is
+-- intentionally permissive for verification/read-only callers, but cleanup
+-- must never turn an enumeration failure into an apparently clean tree.
+local function cleanup_absolute_path(path)
+  local normalized = path:gsub("\\", "/")
+  if not normalized:match("^%a:/") and normalized:sub(1, 1) ~= "/" then
+    normalized = current_working_dir():gsub("\\", "/") .. "/" .. normalized
+  end
+  local root, rest = normalized:match("^(%a:/)(.*)$")
+  if not root then root, rest = normalized:match("^(/)(.*)$") end
+  if not root then root, rest = "", normalized end
+  local parts = {}
+  for component in rest:gmatch("[^/]+") do
+    if component == ".." then
+      if #parts == 0 then
+        fail("pending_cleanup", { path = path,
+          operation = "normalize_root", message = "path escapes cleanup root" })
+      end
+      parts[#parts] = nil
+    elseif component ~= "." then
+      parts[#parts + 1] = component
+    end
+  end
+  return root .. table.concat(parts, "/")
+end
+
+local function list_relative_entries_checked(dir, kind)
+  local abs_input = cleanup_absolute_path(dir)
+  local command
+  if IS_WINDOWS then
+    -- `dir /a-d` returns a nonzero status for an empty selection.  Use the
+    -- same status-stable PowerShell enumeration model as alias inspection so
+    -- an empty, valid output tree is distinct from an enumeration failure.
+    quote(abs_input)
+    local literal = abs_input:gsub("'", "''")
+    local selector = kind == "directory" and "-Directory" or "-File"
+    local script = "$ErrorActionPreference='Stop'; $items=Get-ChildItem "
+      .. "-LiteralPath '" .. literal .. "' -Recurse " .. selector
+      .. " -Force; foreach($item in $items){Write-Output $item.FullName}"
+    command = "powershell -NoProfile -NonInteractive -Command "
+      .. quote_windows_command(script)
+  else
+    command = "find -P " .. quote(abs_input) .. " -type "
+      .. (kind == "directory" and "d" or "f")
+  end
+  local lines = capture_lines_checked(command, "pending_cleanup", {
+    path = dir, operation = "enumerate_" .. kind,
+  })
+  local prefix = abs_input:gsub("[/\\]+$", ""):gsub("\\", "/")
+  local out = {}
+  for _, abs in ipairs(lines) do
+    local normalized = abs:gsub("\\", "/")
+    local compared, compared_prefix = normalized, prefix
+    if IS_WINDOWS then
+      compared, compared_prefix = normalized:lower(), prefix:lower()
+    end
+    local idx = compared:find(compared_prefix, 1, true)
+    if idx ~= 1 or (compared ~= compared_prefix
+      and compared:sub(#compared_prefix + 1, #compared_prefix + 1) ~= "/") then
+      fail("pending_cleanup", { path = abs, operation = "enumerate_" .. kind,
+        message = "entry escaped cleanup root" })
+    end
+    local rel = normalized:sub(#prefix + 2)
+    for component in rel:gmatch("[^/]+") do
+      if component == "." or component == ".." then
+        fail("pending_cleanup", { path = abs, operation = "enumerate_" .. kind,
+          message = "entry was not canonical beneath cleanup root" })
+      end
+    end
+    if #rel > 0 then out[#out + 1] = rel end
+  end
+  table.sort(out)
+  return out
+end
+
+local function path_depth(path)
+  local depth = 0
+  for _ in path:gmatch("[/\\]") do depth = depth + 1 end
+  return depth
+end
+
+local function remove_pending_output(out_dir)
+  local files = list_relative_entries_checked(out_dir, "file")
+  table.sort(files, function(a, b)
+    local da, db = path_depth(a), path_depth(b)
+    if da ~= db then return da > db end
+    return a > b
+  end)
+  for _, rel in ipairs(files) do
+    local path = out_dir .. "/" .. rel
+    local removed, cause = os.remove(path)
+    if not removed then
+      fail("pending_cleanup", { path = path, operation = "remove_file",
+        cause = tostring(cause), message = "cannot remove prior output file" })
+    end
+  end
+
+  local dirs = list_relative_entries_checked(out_dir, "directory")
+  table.sort(dirs, function(a, b)
+    local da, db = path_depth(a), path_depth(b)
+    if da ~= db then return da > db end
+    return a > b
+  end)
+  for _, rel in ipairs(dirs) do
+    local path = out_dir .. "/" .. rel
+    -- `os.remove` is not a portable empty-directory primitive on Windows;
+    -- use rmdir without /s so a concurrent/new child fails closed.
+    local redirect = IS_WINDOWS and " 2>nul" or " 2>/dev/null"
+    capture_lines_checked("rmdir " .. quote(path) .. redirect,
+      "pending_cleanup", { path = path, operation = "remove_directory",
+        message = "cannot remove prior output directory" })
+  end
 end
 
 -- ---------------------------------------------------------------------------
@@ -1604,7 +1718,7 @@ local function pending_suite_specs(opts, inherited)
   return deduped
 end
 
-local function inherited_pending_suites(manifest, profile, landed,
+local function inherited_pending_suites(manifest, profile, source_projection,
   adapter, source_ref)
   local matrix = manifest.proof_matrix or {}
   if not adapter.tree_inventory then
@@ -1616,22 +1730,23 @@ local function inherited_pending_suites(manifest, profile, landed,
   local seen = {}
   local out = {}
   for _, module in ipairs(modules) do
-    if landed.inventory[module] then
-      for _, row in ipairs(matrix[module]) do
-        local available = true
-        for _, required in ipairs(row.modules or {}) do
-          if not landed.inventory[required] then available = false end
+    -- Availability belongs to the final source projection.  A pending
+    -- source add may make a row runnable even though the landed base did not
+    -- contain that module; each row still retains its own module predicate.
+    for _, row in ipairs(matrix[module]) do
+      local available = true
+      for _, required in ipairs(row.modules or {}) do
+        if not source_projection.files[required] then available = false end
+      end
+      if available and not seen[row.suite] then
+        local blob = test_blobs[row.suite]
+        if not blob then
+          fail("pending_suite", { suite = row.suite,
+            message = "source-bound profile suite is absent" })
         end
-        if available and not seen[row.suite] then
-          local blob = test_blobs[row.suite]
-          if not blob then
-            fail("pending_suite", { suite = row.suite,
-              message = "source-bound profile suite is absent" })
-          end
-          seen[row.suite] = true
-          out[#out + 1] = { path = "tests/" .. row.suite,
-            source_blob = blob, modules = row.modules }
-        end
+        seen[row.suite] = true
+        out[#out + 1] = { path = "tests/" .. row.suite,
+          source_blob = blob, modules = row.modules }
       end
     end
   end
@@ -1661,6 +1776,12 @@ local function require_changed_module_proof(delta, suites)
   end
 end
 
+-- Pending composition is a caller-owned filesystem transaction.  The caller
+-- must have exclusive ownership of the selected output, temporary, staged
+-- suite, and receipt surfaces, and must keep their ancestor identities stable
+-- from alias inspection through the final receipt write.  These preconditions
+-- prevent ordinary concurrent composition races; they are not an atomic
+-- security boundary and this function does not provide locking.
 function M.materialize_pending(opts)
   local manifest = opts.manifest
   if type(manifest) ~= "table" or manifest.schema ~= "candidate-manifest.v1" then
@@ -1711,7 +1832,8 @@ function M.materialize_pending(opts)
   local source_projection = pending_projection(adapter, source_ref)
   local delta = verify_pending_delta(opts, base_projection, source_projection,
     base_ref, source_ref)
-  local inherited = inherited_pending_suites(manifest, opts.profile, landed,
+  local inherited = inherited_pending_suites(manifest, opts.profile,
+    source_projection,
     adapter, source_ref)
   local suites = pending_suite_specs(opts, inherited)
   local required = pending_required_modules(manifest, opts, source_projection, suites)
@@ -1724,7 +1846,7 @@ function M.materialize_pending(opts)
     })
   end
   ensure_dirs({ out_dir, receipt_dir, tmp_root })
-  for _, rel in ipairs(list_files_relative(out_dir)) do os.remove(out_dir .. "/" .. rel) end
+  remove_pending_output(out_dir)
   for _, path in ipairs(sorted_map_keys(source_projection.files)) do
     local tmp = tmp_root .. "/source-" .. tostring(#path) .. "-" .. path:gsub("[/\\]", "_")
     adapter.snapshot_path(source_ref, source_projection.repo_paths[path], tmp)
@@ -1740,9 +1862,12 @@ function M.materialize_pending(opts)
     write_bytes(dest, read_bytes(tmp))
     os.remove(tmp)
   end
-  local verified = pcall(M.verify_tree, { tree_dir = out_dir,
+  local verified, verify_err = pcall(M.verify_tree, { tree_dir = out_dir,
     inventory = source_projection.files, adapter = adapter })
-  if not verified then fail("pending_unowned_diff", { message = "source tree verification failed" }) end
+  if not verified then
+    fail("pending_unowned_diff", { message = "source tree verification failed",
+      cause = describe(verify_err) })
+  end
 
   for _, rel in ipairs(list_files_relative(out_dir)) do
     local chunk, load_err = loadfile(out_dir .. "/" .. rel)

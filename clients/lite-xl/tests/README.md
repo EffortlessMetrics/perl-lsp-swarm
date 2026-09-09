@@ -179,6 +179,14 @@ test predicates plus `find -P` on POSIX. Process startup, exit, and inspection
 errors refuse composition. Recursive inspection is scoped to the three
 selected writable roots; it has no entry-count or depth cap.
 
+Callers must keep the output, temporary, suite, and receipt surfaces exclusively
+writable by this invocation and prevent replacement or redirection of their
+ancestor paths until it finishes. The library does not enforce ownership across
+processes or provide atomic protection against concurrent path replacement.
+Output reuse removes files and empty directories with checked results, including
+directory-to-file transitions. Inherited proof availability follows the final
+source inventory, so newly added modules can enable existing manifest proof rows.
+
 ## Deliberate boundaries
 
 The harness does not spawn real processes, does not drive `server.lua`'s
