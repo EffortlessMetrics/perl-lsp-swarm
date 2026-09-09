@@ -445,6 +445,21 @@ return {
       },
     },
     {
+      id = "leaf_10785", issue = 10785, pull_request = 12729,
+      title = "server-originated requests receive one exact client response",
+      candidate_sha = "c073b9a25471e715cb07a737fe65b957a0254873",
+      changed_paths = { "server.lua" },
+      hard_prerequisites = { "leaf_10657" },
+      class = "protocol",
+      upstream_state = "internal",
+      owner_issue = 10785,
+      conflict_keys = { "lite-xl.upstream.server.lua" },
+      invalidation_inputs = { "upstream_base_ref", "candidate_sha" },
+      content = {
+        ["server.lua"] = "fd9cc8cdedd6f2354312120897ebc90a193b15ef",
+      },
+    },
+    {
       id = "leaf_11198", issue = 11198, pull_request = 12670,
       title = "document symbols keep duplicate identities and exact "
         .. "navigation targets",
@@ -458,6 +473,21 @@ return {
       invalidation_inputs = { "upstream_base_ref", "candidate_sha" },
       content = {
         ["init.lua"] = "c5184e2657826ee6f9d7320bff4e70b6bb8119a9",
+      },
+    },
+    {
+      id = "leaf_9019", issue = 9019, pull_request = 14509,
+      title = "references requests gate on referencesProvider capability",
+      candidate_sha = "78e88392a412cff740c1990bf2ea2175cbd61fa7",
+      changed_paths = { "init.lua" },
+      hard_prerequisites = { "leaf_11198" },
+      class = "provider",
+      upstream_state = "internal",
+      owner_issue = 9019,
+      conflict_keys = { "lite-xl.upstream.init.lua" },
+      invalidation_inputs = { "upstream_base_ref", "candidate_sha" },
+      content = {
+        ["init.lua"] = "7f5cbd31210f78709b6aadb3e1d2c7ac2362a97f",
       },
     },
   },
@@ -488,7 +518,8 @@ return {
         "leaf_11115", "leaf_11108", "leaf_11124", "leaf_11147",
         "leaf_11128", "leaf_11143", "leaf_11165", "leaf_10845",
         "leaf_10873", "leaf_10833", "leaf_11188", "leaf_11172",
-        "leaf_10653", "leaf_10657", "leaf_11198",
+        "leaf_10653", "leaf_10657", "leaf_10785", "leaf_11198",
+        "leaf_9019",
       },
     },
     {
