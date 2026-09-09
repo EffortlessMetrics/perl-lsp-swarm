@@ -165,7 +165,25 @@ function validateTestExplorerReceipt({
   return violations.length > 0 ? { ok: false, violations } : { ok: true, receipt };
 }
 
-function interpretTestExplorerExit(smokeRun, childReceipt) {
+function hasCandidateIdentity(env) {
+  return [
+    env.PERL_LSP_CANDIDATE_ID,
+    env.PERL_LSP_ARTIFACT_SET_ID,
+    env.PERL_LSP_CURRENT_SOURCE_SHA,
+    env.PERL_LSP_CANDIDATE_ARTIFACT_MANIFEST,
+  ].some((value) => typeof value === 'string' && value.trim().length > 0);
+}
+
+function hasCompleteCandidateIdentity(env) {
+  return [
+    env.PERL_LSP_CANDIDATE_ID,
+    env.PERL_LSP_ARTIFACT_SET_ID,
+    env.PERL_LSP_CURRENT_SOURCE_SHA,
+    env.PERL_LSP_CANDIDATE_ARTIFACT_MANIFEST,
+  ].every((value) => typeof value === 'string' && value.trim().length > 0);
+}
+
+function interpretTestExplorerExit(smokeRun, childReceipt, childEnv = {}) {
   if (smokeRun.phase === 'compile') {
     return {
       status: 'failed',
@@ -179,7 +197,8 @@ function interpretTestExplorerExit(smokeRun, childReceipt) {
     const interpreted = interpretBehavioralSmokeExit({
       status: smokeRun.result.status,
       spawnError: smokeRun.result.error,
-      candidateBound: true,
+      candidateBound: hasCandidateIdentity(childEnv),
+      completeCandidateIdentity: hasCompleteCandidateIdentity(childEnv),
       platform: process.platform,
       receiptsRoot: receiptsRoot(),
     });
@@ -244,7 +263,7 @@ function runTestExplorerJourneyStage(
           expectedVsixSha256: vsixSha256,
         })
       : { ok: false, violations: ['Test Explorer child did not complete successfully'] };
-  return interpretTestExplorerExit(smokeRun, childReceipt);
+  return interpretTestExplorerExit(smokeRun, childReceipt, env);
 }
 
 function gitRevision() {
@@ -908,6 +927,7 @@ function readHostResolutionFailureReceipt(
  *   status?: number | null,
  *   spawnError?: Error | undefined,
  *   candidateBound?: boolean,
+ *   completeCandidateIdentity?: boolean,
  *   platform?: string,
  *   receiptsRoot?: string,
  *   exists?: ((file: string) => boolean) | undefined,
@@ -924,6 +944,7 @@ function interpretBehavioralSmokeExit({
   status = null,
   spawnError,
   candidateBound = false,
+  completeCandidateIdentity = false,
   platform = process.platform,
   receiptsRoot: root = receiptsRoot(),
   exists,
@@ -963,6 +984,7 @@ function interpretBehavioralSmokeExit({
   if (
     candidateBound &&
     platform !== 'linux' &&
+    (!completeCandidateIdentity || platform !== 'win32') &&
     status === CANDIDATE_PLATFORM_UNAVAILABLE_EXIT_CODE
   ) {
     return {
@@ -2760,7 +2782,8 @@ function main() {
           receipt.stages.behavioral_smoke = interpretBehavioralSmokeExit({
             status: smokeResult.status,
             spawnError: smokeResult.error,
-            candidateBound: Boolean(smokeEnv.PERL_LSP_CURRENT_SOURCE_SHA),
+            candidateBound: hasCandidateIdentity(smokeEnv),
+            completeCandidateIdentity: hasCompleteCandidateIdentity(smokeEnv),
             platform: process.platform,
             receiptsRoot: receiptsRoot(),
           });
