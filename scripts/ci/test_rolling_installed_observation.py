@@ -139,8 +139,29 @@ class ObservationTest(unittest.TestCase):
                     "repository_sha": SHA,
                     "vscode_version": "1.125.0",
                     "server_identity": {
-                        "path": "C:/extension/bin/win32-x64/perllsp.exe"
+                        "path": "C:/extension/bin/win32-x64/perllsp.exe",
+                        "source": "packaged_vsix_bundle",
+                        "startup_source": "bundled",
                     },
+                    "outcome": "not_proven",
+                    "product_blockers": [],
+                    "startup": {
+                        "lifecycle_state": "running",
+                        "binary_resolution_status": "ok",
+                        "server_start_status": "ok",
+                        "initialize_status": "ok",
+                    },
+                    "requests": {
+                        "immediate": {
+                            key: {"status": "ok"}
+                            for key in ("completion", "hover", "definition", "references", "symbols")
+                        },
+                        "after_edit": {
+                            "status": "ok",
+                            "immediate_requery": {"status": "ok"},
+                        },
+                    },
+                    "shutdown": "stopped",
                     "artifact_hashes": {
                         "vsix_sha256": VSIX_SHA,
                         "bundled_server_sha256": MODULE.sha256(self.server),

@@ -493,6 +493,7 @@ def find_verified_candidate_receipt(
                 "outcome" in value
                 and value.get("outcome") != "completed"
             )
+            or not isinstance(status, str)
             or status not in {"pass", "limited", "blocked", "not_proven"}
             or status == "blocked"
             or value.get("candidate_id") != expected_candidate_id
@@ -519,16 +520,47 @@ def find_verified_candidate_receipt(
         source_path_value = (
             source_identity.get("path") if isinstance(source_identity, dict) else None
         )
+        source_startup = (
+            source_receipt.get("startup") if isinstance(source_receipt, dict) else None
+        )
+        source_requests = (
+            source_receipt.get("requests") if isinstance(source_receipt, dict) else None
+        )
+        immediate = source_requests.get("immediate") if isinstance(source_requests, dict) else None
+        provider_keys = ("completion", "hover", "definition", "references", "symbols")
         bundle_marker = "win32-x64" if expected_platform == "win32" else f"{expected_platform}-x64"
         if (
             not isinstance(source_receipt, dict)
             or source_receipt.get("repository_sha") != source_sha
+            or source_receipt.get("outcome") != "not_proven"
+            or not isinstance(source_receipt.get("product_blockers"), list)
+            or source_receipt.get("product_blockers")
+            or not isinstance(source_identity, dict)
+            or source_identity.get("source") != "packaged_vsix_bundle"
+            or source_identity.get("startup_source") != "bundled"
             or sha256(source_path) != value.get("source_receipt_sha256")
             or not isinstance(source_artifacts, dict)
             or source_artifacts.get("vsix_sha256") != expected_vsix_hash
             or source_artifacts.get("bundled_server_sha256") != expected_server_hash
             or not isinstance(source_path_value, str)
-            or f"/{bundle_marker}/" not in source_path_value.replace("\\", "/")
+            or bundle_marker not in source_path_value.replace("\\", "/").split("/")
+            or not isinstance(source_startup, dict)
+            or source_startup.get("lifecycle_state") != "running"
+            or source_startup.get("binary_resolution_status") != "ok"
+            or source_startup.get("server_start_status") != "ok"
+            or source_startup.get("initialize_status") != "ok"
+            or not isinstance(source_requests, dict)
+            or not isinstance(source_requests.get("after_edit"), dict)
+            or source_requests["after_edit"].get("status") != "ok"
+            or not isinstance(source_requests["after_edit"].get("immediate_requery"), dict)
+            or source_requests["after_edit"]["immediate_requery"].get("status") != "ok"
+            or not isinstance(immediate, dict)
+            or any(
+                not isinstance(immediate.get(key), dict)
+                or immediate[key].get("status") != "ok"
+                for key in provider_keys
+            )
+            or source_receipt.get("shutdown") != "stopped"
         ):
             continue
         environment = value.get("environment")

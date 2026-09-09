@@ -995,12 +995,31 @@ function validateVerifiedCandidateReceipt({
       );
     }
     const expectedBundleMarker = expectedPlatform === 'windows' ? 'win32-x64' : `${expectedPlatform}-x64`;
+    const sourceStartup = sourceReceipt?.startup;
+    const sourceIdentity = sourceReceipt?.server_identity;
+    const sourceRequests = sourceReceipt?.requests;
+    const providerKeys = ['completion', 'hover', 'definition', 'references', 'symbols'];
     if (
       !sourceReceipt ||
-      typeof sourceReceipt.server_identity?.path !== 'string' ||
-      !sourceReceipt.server_identity.path.replaceAll('\\', '/').includes(`/${expectedBundleMarker}/`)
+      sourceReceipt.outcome !== 'not_proven' ||
+      !Array.isArray(sourceReceipt.product_blockers) ||
+      sourceReceipt.product_blockers.length !== 0 ||
+      sourceIdentity?.source !== 'packaged_vsix_bundle' ||
+      sourceIdentity?.startup_source !== 'bundled' ||
+      typeof sourceIdentity.path !== 'string' ||
+      !sourceIdentity.path.replaceAll('\\', '/').split('/').includes(expectedBundleMarker) ||
+      sourceStartup?.lifecycle_state !== 'running' ||
+      sourceStartup?.binary_resolution_status !== 'ok' ||
+      sourceStartup?.server_start_status !== 'ok' ||
+      sourceStartup?.initialize_status !== 'ok' ||
+      !sourceRequests?.after_edit ||
+      sourceRequests.after_edit.status !== 'ok' ||
+      sourceRequests.after_edit.immediate_requery?.status !== 'ok' ||
+      !sourceRequests.immediate ||
+      providerKeys.some((key) => sourceRequests.immediate[key]?.status !== 'ok') ||
+      sourceReceipt.shutdown !== 'stopped'
     ) {
-      violations.push('packaged source receipt server identity does not bind this platform');
+      violations.push('packaged source receipt does not prove the bounded packaged startup/provider/edit journey');
     }
     return violations.length > 0
       ? { ok: false, violations }
