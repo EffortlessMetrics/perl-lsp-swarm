@@ -81,7 +81,7 @@ def build(args: argparse.Namespace) -> None:
         "server": {"candidateId": args.candidate_id, "target": args.target, "member": "", "sha256": payloads[0]["sha256"], "identityRef": f"{args.receipt}:binaries/perllsp"},
         "dap": {"candidateId": args.candidate_id, "target": args.target, "member": "", "sha256": payloads[1]["sha256"], "identityRef": f"{args.receipt}:binaries/perl-dap"},
     }
-    builder = Path(__file__).with_name("build_vsix_candidate_manifest.js")
+    builder = Path(__file__).parents[1] / "vscode-extension" / "scripts" / "build_vsix_candidate_manifest.js"
     result = subprocess.run(["node", str(builder)], input=json.dumps(node_input), text=True, capture_output=True, check=False)
     if result.returncode != 0:
         raise ValueError(result.stderr.strip() or "projection manifest builder failed")
