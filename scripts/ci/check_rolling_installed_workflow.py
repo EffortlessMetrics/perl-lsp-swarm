@@ -304,6 +304,37 @@ def _require_run(run_texts: list[str], token: str, message: str) -> None:
     )
 
 
+def _require_candidate_exports_inside_windows_guard(run: Any) -> None:
+    lines = _executable_lines(run)
+    guard = 'if [ "$PLATFORM" = "windows" ]; then'
+    start = [index for index, line in enumerate(lines) if line.strip() == guard]
+    _require(
+        len(start) == 1,
+        "candidate construction exports must have one exact Windows platform guard",
+    )
+    guard_start = start[0]
+    guard_end = next(
+        (index for index in range(guard_start + 1, len(lines)) if lines[index].strip() == "fi"),
+        None,
+    )
+    _require(
+        guard_end is not None,
+        "candidate construction Windows platform guard must be closed",
+    )
+    if guard_end is None:
+        return
+    exports = (
+        "PERL_LSP_CONSTRUCT_CANDIDATE_MANIFEST=1",
+        "PERL_LSP_CANDIDATE_ID=",
+        "PERL_LSP_ARTIFACT_SET_ID=",
+    )
+    for export in exports:
+        _require(
+            any(export in lines[index] for index in range(guard_start + 1, guard_end)),
+            f"candidate construction export {export} must remain inside the Windows guard",
+        )
+
+
 def _check_permissions_block(value: Any, scope: str) -> None:
     _require(
         isinstance(value, dict),
@@ -449,6 +480,7 @@ def validate(document: dict[str, Any]) -> None:
             export in configure_runs,
             f"packaged journey must export {export} for candidate construction",
         )
+    _require_candidate_exports_inside_windows_guard(configure.get("run"))
     assemble = _step_named(
         row, "installed-row", "Assemble exact row without cross-surface inference"
     )
@@ -596,6 +628,23 @@ def expect_failure(text: str, mutation: str) -> None:
             "REMOVED_CANDIDATE_CONSTRUCTION=1",
             mutation,
         )
+    elif mutation == "lift_candidate_exports":
+        guard = '          if [ "$PLATFORM" = "windows" ]; then\n'
+        start = text.find(guard)
+        if start < 0:
+            raise WorkflowError(f"negative-control setup {mutation} found no Windows guard")
+        end = text.find("          fi\n", start)
+        if end < 0:
+            raise WorkflowError(f"negative-control setup {mutation} found no guard terminator")
+        end += len("          fi\n")
+        block = text[start:end]
+        exports = [line for line in block.splitlines() if "printf 'PERL_LSP_" in line]
+        if len(exports) != 4:
+            raise WorkflowError(
+                f"negative-control setup {mutation} expected four candidate exports, found {len(exports)}"
+            )
+        retained = [line for line in block.splitlines() if line not in exports]
+        mutated = text[:start] + "\n".join(exports + retained) + "\n" + text[end:]
     elif mutation == "drop_candidate_cli_identity":
         mutated = replace_once(
             text,
@@ -669,6 +718,7 @@ def main() -> int:
             "comment_out_build",
             "drop_server_identity",
             "drop_candidate_construction",
+            "lift_candidate_exports",
             "drop_candidate_cli_identity",
             "drop_artifact_cli_identity",
             "needs_contract_drift",

@@ -124,6 +124,8 @@ class ObservationTest(unittest.TestCase):
         smoke_outcome: str | None = None,
         write_verified_child: bool = True,
         verified_child_status: str = "not_proven",
+        candidate_id: str | None = "",
+        artifact_set_id: str | None = "",
     ) -> dict[str, object]:
         receipts = self.root / f"receipts-{row_id}"
         if receipt is not None:
@@ -215,8 +217,8 @@ class ObservationTest(unittest.TestCase):
                 "--receipts-root",
                 str(receipts),
                 *(
-                    ["--candidate-id", f"rolling-{SHA}-test", "--artifact-set-id", "rolling-test-artifacts"]
-                    if platform == "windows"
+                    ["--candidate-id", candidate_id or f"rolling-{SHA}-test", "--artifact-set-id", artifact_set_id or "rolling-test-artifacts"]
+                    if platform == "windows" and candidate_id is not None and artifact_set_id is not None
                     else []
                 ),
                 "--smoke-outcome",
@@ -603,6 +605,20 @@ class ObservationTest(unittest.TestCase):
         del receipt["cleanup_failure"]
         row = self.build_row(receipt=receipt)
         self.assertEqual(row["cells"]["process_cleanup"], "not_proven")
+
+    def test_windows_missing_candidate_ids_cannot_match_null_receipt_identity(self) -> None:
+        self.package("windows")
+        self.build_row(
+            receipt=self.windows_receipt({"status": "pass"}, candidate_bound=True),
+            row_id="windows-current",
+            platform="windows",
+            vscode_version="stable",
+            candidate_id=None,
+            artifact_set_id=None,
+        )
+        row = json.loads((self.root / "windows-current.json").read_text(encoding="utf-8"))
+        self.assertEqual(row["cells"]["packaged_provider_edit_journey"], "not_proven")
+        self.assertTrue(any("non-empty candidate and artifact-set IDs" in finding for finding in row["findings"]))
 
     def test_unscanned_post_host_exit_processes_are_not_clean_cleanup(self) -> None:
         # A receipt from before the orchestrator recorded its post-host-exit

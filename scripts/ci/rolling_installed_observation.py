@@ -469,6 +469,15 @@ def find_verified_candidate_receipt(
     matches: list[tuple[pathlib.Path, Mapping[str, Any]]] = []
     if not root.exists() or expected_vsix_hash is None or expected_server_hash is None:
         return None, None, findings
+    if (
+        not isinstance(expected_candidate_id, str)
+        or not expected_candidate_id.strip()
+        or not isinstance(expected_artifact_set_id, str)
+        or not expected_artifact_set_id.strip()
+    ):
+        return None, None, [
+            "Windows candidate rows require non-empty candidate and artifact-set IDs"
+        ]
     for path in sorted(root.rglob("verified_child_receipt.json")):
         try:
             value = read_json(path)
