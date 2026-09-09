@@ -13,7 +13,7 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs;
-use std::io::Read;
+use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -764,9 +764,13 @@ fn write_pr_evidence(repo: &Path, options: &PrEvidenceOptions) -> Result<()> {
     // payload is needed to diagnose the refusal — and the only case where nobody has seen it
     // before. Validating first would bail with the evidence directory missing the one file
     // that explains why.
-    write_text(&repo.join(PR_RAW_CHECK_JSON), &check_json)?;
-    let check_value: Value =
-        serde_json::from_str(&check_json).context("ripr check output was not valid JSON")?;
+    let raw_check_path = repo.join(PR_RAW_CHECK_JSON);
+    write_text(&raw_check_path, &check_json)?;
+    drop(check_json);
+    let raw_check = fs::File::open(&raw_check_path)
+        .with_context(|| format!("opening {PR_RAW_CHECK_JSON} for JSON parsing"))?;
+    let check_value: Value = serde_json::from_reader(BufReader::new(raw_check))
+        .context("ripr check output was not valid JSON")?;
     // Fail closed on a producer whose envelope changed shape (#9113), before any
     // counting can turn missing fields into an all-zero "clean" verdict.
     validate_check_envelope(&check_value)?;
