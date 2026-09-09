@@ -1243,8 +1243,8 @@ fn ripr_workflow_runs_on_ready_for_review_without_path_filter()
         hosted_producer.contains("docker run --rm")
             && hosted_producer.contains("--memory=6g")
             && hosted_producer.contains("--memory-swap=6g")
-            && hosted_producer.contains("timeout --signal=TERM --kill-after=30s 65m")
-            && hosted_producer.contains("timeout --signal=TERM --kill-after=30s 55m")
+            && hosted_producer.contains("timeout --signal=TERM --kill-after=30s 40m")
+            && hosted_producer.contains("timeout --signal=TERM --kill-after=30s 25m")
             && hosted_producer.contains("-e RIPR_MAX_DIFF_INDEX_FILES=1000")
             && hosted_producer.contains("-e RIPR_FRESHNESS_HANDOFF=/freshness")
             && hosted_producer.contains("-v \"$RIPR_FRESHNESS_HANDOFF:/freshness\"")
@@ -1380,7 +1380,7 @@ fn hosted_producer_cleanup_preserves_failure_and_restores_target_owner() -> Resu
         r#"set -u
 container_name='fixture-container'
 docker() {{ printf '%s' "$*" > "$DOCKER_MARKER"; return 0; }}
-sudo() {{ printf '%s' "$*" > "$CHOWN_MARKER"; return 0; }}
+sudo() {{ printf '%s' "$*" > "$CHOWN_MARKER"; if [ "${{FAIL_CHOWN:-0}}" = 1 ]; then return 1; fi; return 0; }}
 cleanup_host_state() {{{cleanup_body}
 trap cleanup_host_state EXIT
 exit 23
@@ -1412,6 +1412,27 @@ exit 23
     ensure!(
         fs::read_to_string(sandbox.path().join("chown.marker"))?.contains("target"),
         "cleanup must restore host target ownership after producer failure"
+    );
+
+    let mut cleanup_failure = Command::new(bash_executable())
+        .args(["--noprofile", "--norc", "-s"])
+        .current_dir(sandbox.path())
+        .env("DOCKER_MARKER", sandbox.path().join("docker.failure.marker"))
+        .env("CHOWN_MARKER", sandbox.path().join("chown.failure.marker"))
+        .env("FAIL_CHOWN", "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    cleanup_failure
+        .stdin
+        .take()
+        .ok_or_else(|| anyhow!("cleanup failure fixture stdin unavailable"))?
+        .write_all(script.replace("exit 23", "exit 0").as_bytes())?;
+    let cleanup_failure_output = cleanup_failure.wait_with_output()?;
+    ensure!(
+        cleanup_failure_output.status.code() == Some(1),
+        "cleanup failure must turn an otherwise successful producer into failure: {cleanup_failure_output:?}"
     );
     Ok(())
 }

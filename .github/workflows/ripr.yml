@@ -817,8 +817,14 @@ jobs:
           # Analysis jobs restore the canonical seed but never publish shared state.
           save-if: ${{ false }}
 
+      - name: Install ripr
+        run: cargo install ripr --version "$RIPR_VERSION" --locked
+
       - name: Build xtask
         run: cargo build -p xtask --locked
+
+      - name: Run ripr doctor
+        run: ripr doctor
 
       - name: Generate PR evidence
         shell: bash
@@ -856,7 +862,7 @@ jobs:
           if [ "$inspect_id_status" -ne 0 ] || [ "$inspect_digest_status" -ne 0 ]; then exit 1; fi
           printf "image_id=%s\nimage_digest=%s\n" "$image_id" "$image_digest" >> target/ripr/pr/ripr-measurement-config.txt
           set +e
-          timeout --signal=TERM --kill-after=30s 65m docker run --rm --name "$container_name" \
+          timeout --signal=TERM --kill-after=30s 40m docker run --rm --name "$container_name" \
             --cpus=4 --memory=6g --memory-swap=6g \
             -e RIPR_VERSION -e BASE_REF -e PR_HEAD_SHA \
             -e RIPR_MAX_DIFF_INDEX_FILES=1000 \
@@ -882,7 +888,7 @@ jobs:
               cargo build -p xtask --locked
               ripr doctor
               set +e
-              timeout --signal=TERM --kill-after=30s 55m /usr/bin/time -v -o target/ripr/pr/ripr-measurement-time.txt cargo xtask ripr-pr --base "$base_arg" --head HEAD --pr-head "$PR_HEAD_SHA"
+              timeout --signal=TERM --kill-after=30s 25m /usr/bin/time -v -o target/ripr/pr/ripr-measurement-time.txt cargo xtask ripr-pr --base "$base_arg" --head HEAD --pr-head "$PR_HEAD_SHA"
               analysis_status=$?
               set -e
               printf "analysis_exit=%s\n" "$analysis_status" >> target/ripr/pr/ripr-measurement-config.txt
