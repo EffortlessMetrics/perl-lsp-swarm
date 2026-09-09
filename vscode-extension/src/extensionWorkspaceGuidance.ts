@@ -145,7 +145,30 @@ async function realpathIfExists(targetPath: string): Promise<string | undefined>
 }
 
 function includePathsFingerprint(includePaths: readonly string[]): string {
+  // Preserve representation changes as user edits even when they resolve to
+  // the same effective paths. Apply must not overwrite a newer raw setting.
   return crypto.createHash('sha256').update(JSON.stringify(includePaths)).digest('hex');
+}
+
+function configuredPathsForGuidance(
+  workspaceRoot: string,
+  configuredPaths: readonly string[],
+): string[] {
+  // Server configuration trims and drops empty entries. Keep the first
+  // spelling for messages, deduplicating through the existing filesystem
+  // resolution route without rewriting the user's stored configuration.
+  const paths = new Map<string, string>();
+  for (const configured of configuredPaths) {
+    const trimmed = configured.trim();
+    if (trimmed.length === 0) {
+      continue;
+    }
+    const resolved = path.resolve(workspaceRoot, trimmed);
+    if (!paths.has(resolved)) {
+      paths.set(resolved, trimmed);
+    }
+  }
+  return [...paths.values()];
 }
 
 function scheduleGuidance(
@@ -204,14 +227,16 @@ export async function runIncludePathValidation(context: vscode.ExtensionContext)
 
     const inspected =
       typeof config.inspect === 'function' ? config.inspect<string[]>('includePaths') : undefined;
-    const defaultPaths = new Set<string>([
-      '.',
-      ...(inspected?.defaultValue ?? DEFAULT_INCLUDE_PATHS),
-    ]);
+    const defaultPaths = new Set(
+      configuredPathsForGuidance(folder.uri.fsPath, [
+        '.',
+        ...(inspected?.defaultValue ?? DEFAULT_INCLUDE_PATHS),
+      ]).map((configured) => path.resolve(folder.uri.fsPath, configured)),
+    );
     const missingPaths: string[] = [];
 
-    for (const includePath of includePaths) {
-      if (defaultPaths.has(includePath)) {
+    for (const includePath of configuredPathsForGuidance(folder.uri.fsPath, includePaths)) {
+      if (defaultPaths.has(path.resolve(folder.uri.fsPath, includePath))) {
         continue;
       }
       if (!(await pathExists(path.resolve(folder.uri.fsPath, includePath)))) {
@@ -290,7 +315,7 @@ async function canonicalCoverage(
     }
 
     let complete = true;
-    for (const configured of configuredPaths) {
+    for (const configured of configuredPathsForGuidance(workspaceRoot, configuredPaths)) {
       let configuredRealPath: string | undefined;
       try {
         configuredRealPath = await realpathIfExists(path.resolve(workspaceRoot, configured));
@@ -320,7 +345,7 @@ async function configuredDescendantExclusions(
 ): Promise<ConfiguredDescendantResult> {
   let complete = true;
   const paths: string[] = [];
-  for (const configured of configuredPaths) {
+  for (const configured of configuredPathsForGuidance(workspaceRoot, configuredPaths)) {
     let configuredRealPath: string | undefined;
     try {
       configuredRealPath = await realpathIfExists(path.resolve(workspaceRoot, configured));

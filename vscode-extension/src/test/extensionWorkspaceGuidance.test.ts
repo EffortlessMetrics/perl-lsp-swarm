@@ -138,6 +138,99 @@ test('configured canonical ancestors cover candidates but descendants do not', a
   );
 });
 
+test('validation trims configured paths and deduplicates equivalent missing roots', async () => {
+  const workspaceDir = tempWorkspace('perl-lsp-guidance-trim-validation-');
+  fs.mkdirSync(path.join(workspaceDir, 'src'));
+  mountWorkspace(workspaceDir, [' src ', './src/', '  ', ' ./lib/ ', ' missing ', './missing/']);
+
+  await runIncludePathValidation({
+    globalState: makeState(),
+  } as unknown as vscode.ExtensionContext);
+
+  expect(vscode.window.showWarningMessage).toHaveBeenCalledTimes(1);
+  expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(
+    'Perl LSP: configured include path "missing" (relative to workspace) does not exist.',
+    'Open Settings',
+  );
+});
+
+test('coverage trims configured paths but ignores whitespace-only entries', async () => {
+  const workspaceDir = tempWorkspace('perl-lsp-guidance-trim-coverage-');
+  fs.mkdirSync(path.join(workspaceDir, 'src', 'lib'), { recursive: true });
+
+  await expect(isIncludePathCandidateCovered(workspaceDir, [' src '], 'src/lib')).resolves.toBe(
+    true,
+  );
+  await expect(isIncludePathCandidateCovered(workspaceDir, ['  ', '\t'], 'src')).resolves.toBe(
+    false,
+  );
+});
+
+test('trimmed configured descendants exclude their covered modules from discovery', async () => {
+  const workspaceDir = tempWorkspace('perl-lsp-guidance-trim-descendant-');
+  fs.mkdirSync(path.join(workspaceDir, 'src', 'lib'), { recursive: true });
+  fs.writeFileSync(path.join(workspaceDir, 'src', 'lib', 'Covered.pm'), 'package Covered; 1;\n');
+  mountWorkspace(workspaceDir, [' src/lib ', ' ./src/lib/ ']);
+
+  await runDiscoveredIncludePathGuidance({
+    globalState: makeState(),
+  } as unknown as vscode.ExtensionContext);
+
+  expect(vscode.window.showInformationMessage).not.toHaveBeenCalled();
+});
+
+test('Add preserves raw configured paths and appends only an uncovered root', async () => {
+  const workspaceDir = tempWorkspace('perl-lsp-guidance-trim-add-');
+  for (const name of ['src', 'vendor']) {
+    fs.mkdirSync(path.join(workspaceDir, name));
+    fs.writeFileSync(path.join(workspaceDir, name, 'Module.pm'), 'package Module; 1;\n');
+  }
+  const includePaths = [' src ', ' ./src/ ', '  '];
+  mountWorkspace(workspaceDir, includePaths);
+  const update = jest.fn(async () => undefined);
+  (vscode.workspace.getConfiguration as jest.Mock).mockImplementation(() => ({
+    get: jest.fn(() => includePaths),
+    update,
+  }));
+  (vscode.window.showInformationMessage as jest.Mock).mockResolvedValue('Add for These Folders');
+
+  await runDiscoveredIncludePathGuidance({
+    globalState: makeState(),
+  } as unknown as vscode.ExtensionContext);
+
+  expect(update).toHaveBeenCalledWith(
+    'includePaths',
+    [...includePaths, 'vendor'],
+    vscode.ConfigurationTarget.WorkspaceFolder,
+  );
+});
+
+test('a raw configuration edit during the prompt invalidates even equivalent paths', async () => {
+  const workspaceDir = tempWorkspace('perl-lsp-guidance-trim-edit-');
+  fs.mkdirSync(path.join(workspaceDir, 'vendor'));
+  fs.writeFileSync(path.join(workspaceDir, 'vendor', 'Module.pm'), 'package Module; 1;\n');
+  let includePaths = ['lib'];
+  mountWorkspace(workspaceDir, includePaths);
+  const update = jest.fn(async () => undefined);
+  (vscode.workspace.getConfiguration as jest.Mock).mockImplementation(() => ({
+    get: jest.fn(() => includePaths),
+    update,
+  }));
+  (vscode.window.showInformationMessage as jest.Mock).mockImplementationOnce(async () => {
+    includePaths = [' lib '];
+    return 'Add for These Folders';
+  });
+
+  await runDiscoveredIncludePathGuidance({
+    globalState: makeState(),
+  } as unknown as vscode.ExtensionContext);
+
+  expect(update).not.toHaveBeenCalled();
+  expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(
+    expect.stringContaining('changed before they could be applied'),
+  );
+});
+
 test('continues coverage after an unreadable configured root', async () => {
   const workspaceDir = tempWorkspace('perl-lsp-guidance-cover-unreadable-');
   fs.mkdirSync(path.join(workspaceDir, 'src', 'lib'), { recursive: true });
