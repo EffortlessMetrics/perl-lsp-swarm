@@ -80,6 +80,13 @@ function validatePrebuiltPayload(manifest, context) {
 }
 
 function validateProjectionManifest(manifest, projectionInput, target) {
+  const expectedExtensionId = `${packageManifest.publisher}.${packageManifest.name}`;
+  if (
+    manifest.extension?.id !== expectedExtensionId ||
+    manifest.extension?.version !== packageManifest.version
+  ) {
+    throw new Error('prebuilt payload extension identity disagrees with package.json');
+  }
   if (manifest.releaseTopologySha256 !== projectionInput.releaseTopologySha256) {
     throw new Error('prebuilt payload release topology SHA mismatch');
   }
@@ -109,12 +116,30 @@ function validateProjectionManifest(manifest, projectionInput, target) {
 
 function preparePrebuiltPayload(fileSystem = fs, env = process.env) {
   const manifestPath = (env.PERL_LSP_CANDIDATE_PAYLOAD_MANIFEST || '').trim();
-  if (!manifestPath) return { manifest: null, cleanup: () => {} };
+  const target = (env.PERL_LSP_VSCODE_TARGET || `${process.platform}-${process.arch}`).trim();
+  if (!manifestPath) {
+    const binaryMember = target.startsWith('win32-') ? 'perllsp.exe' : 'perllsp';
+    const destination = path.join(extensionRoot, 'bin', target, binaryMember);
+    if (typeof fileSystem.lstatSync === 'function') {
+      try {
+        if (fileSystem.lstatSync(destination).isSymbolicLink()) {
+          throw new Error(`ambient native payload is a symbolic link: ${destination}`);
+        }
+      } catch (error) {
+        if (error?.code !== 'ENOENT') throw error;
+      }
+    } else if (fileSystem.existsSync(destination)) {
+      throw new Error('ambient native payload requires a candidate payload manifest');
+    }
+    if (fileSystem.existsSync(destination)) {
+      throw new Error('ambient native payload requires a candidate payload manifest');
+    }
+    return { manifest: null, cleanup: () => {} };
+  }
   const serverPath = (env.PERL_LSP_PREBUILT_SERVER_PATH || '').trim();
   if (!serverPath) {
     throw new Error('prebuilt payload manifest requires PERL_LSP_PREBUILT_SERVER_PATH');
   }
-  const target = (env.PERL_LSP_VSCODE_TARGET || `${process.platform}-${process.arch}`).trim();
   if (!/^(?:win32|linux|alpine|darwin)-(?:x64|arm64)$/.test(target)) {
     throw new Error(`unsupported VS Code target for prebuilt payload: ${target}`);
   }
@@ -211,7 +236,14 @@ function packageVsix(run = runNode, fileSystem = fs, env = process.env) {
     if (fileSystem.existsSync(vsixPath)) {
       fileSystem.rmSync(vsixPath, { force: true });
     }
-    if (!run(vsceEntry, ['package', '--out', vsixName])) {
+    const packageArgs = ['package'];
+    if (manifest) {
+      const target = (env.PERL_LSP_VSCODE_TARGET || '').trim();
+      packageArgs.push('--target', target, '--out', vsixName);
+    } else {
+      packageArgs.push('--out', vsixName);
+    }
+    if (!run(vsceEntry, packageArgs)) {
       return false;
     }
     let artifact;

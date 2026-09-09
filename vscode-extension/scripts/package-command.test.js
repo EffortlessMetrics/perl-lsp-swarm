@@ -18,7 +18,7 @@ function prebuiltManifest(overrides = {}) {
     schema: 'vsix_candidate_payload.v1',
     extension: {
       id: 'EffortlessMetrics.perl-lsp-rs',
-      version: '0.18.0',
+      version: '0.17.0',
       sourceSha: 'a'.repeat(40),
     },
     candidate: { id: 'candidate-a', release: '0.18.0', sourceSha: 'a'.repeat(40) },
@@ -337,6 +337,7 @@ void test('manifest-enabled packaging stages the supplied payload and verifies t
   assert.equal(packageVsix(run, fileSystem, env), true);
   assert.equal(writes[0].file.endsWith('bin\\win32-x64\\perllsp.exe'), true);
   assert.equal(writes[0].bytes, serverBytes);
+  assert.deepEqual(calls[0].args, ['package', '--target', 'win32-x64', '--out', vsixName]);
   assert.deepEqual(
     calls.slice(1).map(({ script }) => path.basename(script)),
     [
@@ -355,7 +356,7 @@ void test('ordinary packaging checks the exact VSIX it just produced', () => {
   const calls = [];
   /** @type {any} */
   const fileSystem = {
-    existsSync: () => true,
+    existsSync: (file) => file === path.join(path.resolve(__dirname, '..'), vsixName),
     rmSync: (file, options) => calls.push({ file, options }),
     statSync: () => ({ isFile: () => true, size: 1 }),
   };
@@ -374,11 +375,32 @@ void test('ordinary packaging checks the exact VSIX it just produced', () => {
   ]);
 });
 
+void test('ambient native payloads require the candidate manifest path', () => {
+  /** @type {any} */
+  const ambientFileSystem = {
+    existsSync: () => true,
+    lstatSync: () => ({ isSymbolicLink: () => false }),
+  };
+  assert.throws(
+    () => preparePrebuiltPayload(ambientFileSystem, { PERL_LSP_VSCODE_TARGET: 'win32-x64' }),
+    /requires a candidate payload manifest/,
+  );
+  /** @type {any} */
+  const danglingLinkFileSystem = {
+    existsSync: () => false,
+    lstatSync: () => ({ isSymbolicLink: () => true }),
+  };
+  assert.throws(
+    () => preparePrebuiltPayload(danglingLinkFileSystem, { PERL_LSP_VSCODE_TARGET: 'win32-x64' }),
+    /ambient native payload is a symbolic link/,
+  );
+});
+
 void test('packaging failure prevents archive validation', () => {
   const calls = [];
   /** @type {any} */
   const fileSystem = {
-    existsSync: () => true,
+    existsSync: (file) => file === path.join(path.resolve(__dirname, '..'), vsixName),
     rmSync: (file, options) => calls.push({ file, options }),
   };
   const run = (script, args) => {
@@ -396,7 +418,7 @@ void test('a successful packager without a fresh archive cannot validate a stale
   let staleFile = true;
   /** @type {any} */
   const fileSystem = {
-    existsSync: () => staleFile,
+    existsSync: (file) => staleFile && file === path.join(path.resolve(__dirname, '..'), vsixName),
     rmSync: (file, options) => {
       staleFile = false;
       calls.push({ file, options });

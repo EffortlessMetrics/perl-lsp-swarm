@@ -9,10 +9,6 @@ function argument(name) {
   return index >= 0 ? process.argv[index + 1] : '';
 }
 
-function inventoryDigest(inventory) {
-  return crypto.createHash('sha256').update(JSON.stringify(inventory)).digest('hex');
-}
-
 async function main() {
   const vsix = argument('--vsix');
   const member = argument('--member');
@@ -27,9 +23,12 @@ async function main() {
     if (!/^[0-9a-f]{64}$/.test(expectedInventory)) {
       throw new Error('--inventory-sha256 must be a lowercase SHA-256 digest');
     }
-    const { collectArchiveInventory } = require('./check-vsix-inventory-transition');
+    const {
+      collectArchiveInventory,
+      semanticInventorySha256,
+    } = require('./check-vsix-inventory-transition');
     const actual = await collectArchiveInventory(vsix);
-    const digest = inventoryDigest(actual.inventory);
+    const digest = semanticInventorySha256(actual.inventory);
     if (digest !== expectedInventory) {
       throw new Error(`archive inventory SHA mismatch: ${digest}`);
     }
