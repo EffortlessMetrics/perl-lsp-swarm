@@ -72,26 +72,43 @@ fn valid_offer_matrix_always_selects_full_utf16() {
 }
 
 #[test]
-fn utf16_after_offer_receipt_cap_remains_admissible() {
+fn utf16_after_offer_receipt_cap_remains_admissible() -> Result<(), String> {
     let mut offer = vec![json!("utf-8"); 16];
     offer.push(json!("utf-16"));
-    let contract = accepted_with_offer(json!(offer));
-    let PositionEncodingOffer::Present(receipt) = contract.client_offer() else {
-        unreachable!("present offer must be retained");
-    };
-    assert_eq!(receipt.total_entries, 17);
-    assert_eq!(receipt.entries.len(), 16);
-    assert_eq!(contract.selection_reason(), Utf16SelectionReason::ClientOfferedUtf16);
-
-    let mut malformed = vec![json!("utf-8"); 16];
-    malformed.push(json!(7));
-    let rejection = TextSyncSessionContract::accept(
-        Some(&json!({ "capabilities": { "general": { "positionEncodings": malformed } } })),
-        "s-cap-malformed".to_string(),
+    let contract = TextSyncSessionContract::accept(
+        Some(&json!({ "capabilities": { "general": { "positionEncodings": offer } } })),
+        "s-cap".to_string(),
     )
-    .err()
-    .unwrap_or_else(|| unreachable!("non-string offer after receipt cap must fail"));
-    assert!(matches!(rejection, SessionContractRejection::MalformedOffer { .. }));
+    .map_err(|rejection| {
+        format!("valid offer after receipt cap must be accepted: {rejection:?}")
+    })?;
+    let receipt = match contract.client_offer() {
+        PositionEncodingOffer::Present(receipt) => receipt,
+        other => return Err(format!("expected retained offer receipt, got {other:?}")),
+    };
+    if receipt.total_entries != 17 || receipt.entries.len() != 16 {
+        return Err(format!(
+            "receipt cap accounting was incorrect: total={}, retained={}",
+            receipt.total_entries,
+            receipt.entries.len()
+        ));
+    }
+    if contract.selection_reason() != Utf16SelectionReason::ClientOfferedUtf16 {
+        return Err("late UTF-16 offer was not classified as client-offered".to_string());
+    }
+
+    Ok(())
+}
+
+#[test]
+fn non_string_offer_after_receipt_cap_rejects() -> Result<(), String> {
+    let mut offer = vec![json!("utf-8"); 16];
+    offer.push(json!(7));
+    let params = json!({ "capabilities": { "general": { "positionEncodings": offer } } });
+    match TextSyncSessionContract::accept(Some(&params), "s-cap-malformed".to_string()) {
+        Err(SessionContractRejection::MalformedOffer { .. }) => Ok(()),
+        Ok(_) => Err("non-string offer after receipt cap was accepted".to_string()),
+    }
 }
 
 #[test]

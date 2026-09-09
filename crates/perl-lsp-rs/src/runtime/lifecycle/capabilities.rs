@@ -1012,8 +1012,8 @@ mod tests {
     use crate::protocol::capabilities::BuildFlags;
     use perl_workspace::folder::root_path_to_file_uri;
     use serde_json::{Value, json};
-    use std::sync::{Arc, Barrier};
     use std::sync::atomic::Ordering;
+    use std::sync::{Arc, Barrier};
 
     #[test]
     fn apply_disabled_feature_id_zeros_correct_field() {
