@@ -640,8 +640,12 @@ const PROVENANCE_UNKNOWN: &str = "unknown";
 
 const IDENTITY_MSYS_CYGWIN: &str = "msys_cygwin";
 const IDENTITY_STRAWBERRY: &str = "strawberry";
+const IDENTITY_ACTIVESTATE: &str = "activestate";
 const IDENTITY_SYSTEM_UNIX: &str = "system_unix";
 const IDENTITY_UNKNOWN: &str = "unknown";
+
+/// The DAP-supported ActiveState Perl 64-bit default install path.
+const ACTIVESTATE_PERL64_DEFAULT_PATH: &str = "c:/perl64/bin/perl.exe";
 
 const FLAVOR_NATIVE_SHELL: &str = "native_shell";
 const FLAVOR_GIT_BASH: &str = "git_bash";
@@ -719,7 +723,7 @@ struct SymlinkPrivilegeReport {
     fix: Option<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 struct CargoToolchainReport {
     flavor: &'static str,
     status: &'static str,
@@ -1005,12 +1009,12 @@ fn parse_version_word(word: &str) -> Option<VersionTriple> {
     Some((major, minor, patch))
 }
 
-/// How a reachable cargo was installed, decided purely from its resolved
-/// path: rustup shims live under `.cargo/bin`; direct `.rustup/toolchains`
-/// binaries are rustup-installed but bypass the shim; anything else (apt/distro
-/// cargo) ignores the pin. Path provenance does not observe the active
-/// toolchain selection, so a shim cannot prove that it honored the workspace
-/// file.
+/// How a reachable cargo was installed, inferred from its resolved path and
+/// the provider context that resolved it: rustup shims live under the observed
+/// home's bin; direct .rustup/toolchains binaries are rustup-installed but
+/// bypass the shim; known system paths identify distro cargo. Unresolved path
+/// context remains unknown, and no variant here proves active toolchain
+/// selection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CargoProvenance {
     RustupShim,
@@ -1028,43 +1032,152 @@ impl CargoProvenance {
     }
 }
 
-/// How a reachable cargo was installed, decided purely from its resolved path.
-fn classify_cargo_provenance(cargo_path: &str) -> CargoProvenance {
-    classify_cargo_provenance_with_home(cargo_path, std::env::var("CARGO_HOME").ok().as_deref())
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CargoPathStyle {
+    Windows,
+    Posix,
 }
 
-fn classify_cargo_provenance_with_home(
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CargoProbeContext {
+    path_style: CargoPathStyle,
+    cwd: Option<String>,
+    home: Option<String>,
+    cargo_home: Option<String>,
+}
+
+impl CargoProbeContext {
+    fn native() -> Self {
+        Self {
+            path_style: if cfg!(windows) { CargoPathStyle::Windows } else { CargoPathStyle::Posix },
+            cwd: std::env::current_dir().ok().and_then(|path| path.to_str().map(str::to_owned)),
+            home: native_home(),
+            cargo_home: std::env::var("CARGO_HOME").ok(),
+        }
+    }
+
+    fn shell(home: Option<String>, cargo_home: Option<String>, cwd: Option<String>) -> Self {
+        Self { path_style: CargoPathStyle::Posix, cwd, home, cargo_home }
+    }
+}
+
+fn native_home() -> Option<String> {
+    native_home_from_vars(
+        cfg!(windows),
+        std::env::var("HOME").ok().as_deref(),
+        std::env::var("USERPROFILE").ok().as_deref(),
+    )
+}
+
+fn native_home_from_vars(
+    windows_host: bool,
+    home: Option<&str>,
+    userprofile: Option<&str>,
+) -> Option<String> {
+    let candidate = if windows_host { userprofile } else { home }?;
+    (!candidate.is_empty()).then(|| candidate.to_string())
+}
+
+fn classify_cargo_provenance_with_context(
     cargo_path: &str,
-    cargo_home: Option<&str>,
-) -> CargoProvenance {
-    let normalized = normalize_cargo_path(cargo_path);
+    context: &CargoProbeContext,
+) -> Option<CargoProvenance> {
+    let normalized = normalize_cargo_path(cargo_path, context.path_style);
+    if has_ambiguous_cargo_components(&normalized)
+        || !is_absolute_cargo_path(&normalized, context.path_style)
+    {
+        return None;
+    }
     let parent = normalized.rsplit_once('/').map(|(parent, _)| parent);
-    if parent.is_some_and(|parent| is_rustup_shim_bin(parent, cargo_home)) {
-        return CargoProvenance::RustupShim;
+    if parent.is_some_and(|parent| {
+        effective_cargo_home(context).is_some_and(|home| parent == format!("{home}/bin"))
+    }) {
+        return Some(CargoProvenance::RustupShim);
     }
     if normalized.contains("/.rustup/toolchains/") {
         // A direct toolchain binary is rustup-installed, but it bypasses the
         // rustup shim and therefore does not select rust-toolchain.toml.
-        return CargoProvenance::RustupToolchain;
+        return Some(CargoProvenance::RustupToolchain);
     }
-    CargoProvenance::NonRustup
+    if is_known_non_rustup_path(&normalized, context.path_style) {
+        return Some(CargoProvenance::NonRustup);
+    }
+    // A path outside the observed Cargo home may be a copied shim, an alias,
+    // or a native executable reached through another shell's path spelling.
+    // A failed positive match does not establish how that binary was installed.
+    None
 }
 
-fn normalize_cargo_path(path: &str) -> String {
-    path.trim_end_matches(['/', '\\']).to_ascii_lowercase().replace('\\', "/")
+fn normalize_cargo_path(path: &str, style: CargoPathStyle) -> String {
+    match style {
+        CargoPathStyle::Windows => {
+            path.trim_end_matches(['/', '\\']).replace('\\', "/").to_ascii_lowercase()
+        }
+        CargoPathStyle::Posix => path.trim_end_matches('/').to_string(),
+    }
 }
 
-fn is_rustup_shim_bin(parent: &str, cargo_home: Option<&str>) -> bool {
-    let default_bin = parent == ".cargo/bin" || parent.ends_with("/.cargo/bin");
-    if default_bin {
-        return true;
-    }
-
-    let Some(cargo_home) = cargo_home else {
-        return false;
+fn effective_cargo_home(context: &CargoProbeContext) -> Option<String> {
+    let configured = context.cargo_home.as_deref();
+    let configured_home = match configured {
+        Some("") => return None,
+        Some(value) => value,
+        None => {
+            let home = context.home.as_deref().filter(|value| !value.is_empty())?;
+            let home = normalize_cargo_path(home, context.path_style);
+            if !is_absolute_cargo_path(&home, context.path_style)
+                || has_ambiguous_cargo_components(&home)
+            {
+                return None;
+            }
+            return Some(format!("{}/.cargo", home.trim_end_matches('/')));
+        }
     };
-    let cargo_home = normalize_cargo_path(cargo_home).trim_end_matches('/').to_string();
-    !cargo_home.is_empty() && parent == format!("{cargo_home}/bin")
+    let normalized = normalize_cargo_path(configured_home, context.path_style);
+    if has_ambiguous_cargo_components(&normalized) {
+        return None;
+    }
+    if is_absolute_cargo_path(&normalized, context.path_style) {
+        return Some(normalized);
+    }
+    if is_drive_relative_windows_path(&normalized, context.path_style)
+        || normalized.split('/').any(|component| component.is_empty())
+    {
+        return None;
+    }
+    let cwd = context.cwd.as_deref().filter(|value| !value.is_empty())?;
+    let cwd = normalize_cargo_path(cwd, context.path_style);
+    if !is_absolute_cargo_path(&cwd, context.path_style) || has_ambiguous_cargo_components(&cwd) {
+        return None;
+    }
+    Some(format!("{}/{}", cwd.trim_end_matches('/'), normalized))
+}
+
+fn is_absolute_cargo_path(path: &str, style: CargoPathStyle) -> bool {
+    match style {
+        CargoPathStyle::Windows => {
+            path.starts_with("//")
+                || (path.as_bytes().get(1) == Some(&b':') && path.as_bytes().get(2) == Some(&b'/'))
+        }
+        CargoPathStyle::Posix => path.starts_with('/'),
+    }
+}
+
+fn has_ambiguous_cargo_components(path: &str) -> bool {
+    path.split('/').any(|component| component == "." || component == "..")
+}
+
+fn is_drive_relative_windows_path(path: &str, style: CargoPathStyle) -> bool {
+    style == CargoPathStyle::Windows
+        && path.as_bytes().get(1) == Some(&b':')
+        && path.as_bytes().get(2) != Some(&b'/')
+}
+
+fn is_known_non_rustup_path(path: &str, style: CargoPathStyle) -> bool {
+    match style {
+        CargoPathStyle::Windows => false,
+        CargoPathStyle::Posix => matches!(path, "/usr/bin/cargo" | "/usr/local/bin/cargo"),
+    }
 }
 
 fn probe_native_cargo() -> CargoToolchainReport {
@@ -1151,14 +1264,108 @@ fn probe_wsl_cargo() -> CargoToolchainReport {
         return unreachable_cargo_report(FLAVOR_WSL, "wsl.exe not found on PATH");
     };
     let mut command = Command::new(&wsl_exe);
-    command.args(["bash", "-c", SHELL_CARGO_PROBE_SCRIPT]);
+    // Bypass WSL's default shell: it must not expand this script before the
+    // requested Bash process observes its own environment and emits the record.
+    command.args(["--exec", "bash", "-c", SHELL_CARGO_PROBE_SCRIPT]);
     shell_cargo_report_from_output(
         FLAVOR_WSL,
         run_command_with_timeout(command, DEV_ENV_WSL_TIMEOUT_SECS),
     )
 }
 
-const SHELL_CARGO_PROBE_SCRIPT: &str = "command -v cargo && cargo --version";
+const SHELL_CARGO_PROBE_SCRIPT: &str = r#"
+cargo_path=$(command -v cargo) || exit 127
+cargo_status=0
+cargo_version=$(cargo --version) || cargo_status=$?
+home_state=unset
+test -n "${HOME+x}" && home_state=set
+cargo_home_state=unset
+test -n "${CARGO_HOME+x}" && cargo_home_state=set
+cwd_state=unset
+test -n "${PWD+x}" && cwd_state=set
+printf 'cargo_path\0%s\0cargo_version\0%s\0home_state\0%s\0home\0%s\0cargo_home_state\0%s\0cargo_home\0%s\0cwd_state\0%s\0cwd\0%s\0' \
+    "$cargo_path" "$cargo_version" "$home_state" "${HOME-}" \
+    "$cargo_home_state" "${CARGO_HOME-}" "$cwd_state" "${PWD-}"
+exit "$cargo_status"
+"#;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ShellCargoProbe {
+    cargo_path: PathBuf,
+    version_output: String,
+    context: CargoProbeContext,
+}
+
+fn parse_shell_cargo_probe_output(output: &str) -> Result<ShellCargoProbe, String> {
+    let output = output
+        .strip_suffix('\0')
+        .ok_or_else(|| "shell cargo probe omitted its NUL record terminator".to_string())?;
+    let fields: Vec<&str> = output.split('\0').collect();
+    if !fields.len().is_multiple_of(2) {
+        return Err("shell cargo probe emitted an incomplete NUL-delimited field".to_string());
+    }
+
+    let mut cargo_path = None;
+    let mut version_output = None;
+    let mut home_state = None;
+    let mut home = None;
+    let mut cargo_home_state = None;
+    let mut cargo_home = None;
+    let mut cwd_state = None;
+    let mut cwd = None;
+    for pair in fields.chunks_exact(2) {
+        let [key, value] = pair else {
+            return Err("shell cargo probe emitted an incomplete NUL-delimited field".to_string());
+        };
+        let slot = match *key {
+            "cargo_path" => &mut cargo_path,
+            "cargo_version" => &mut version_output,
+            "home_state" => &mut home_state,
+            "home" => &mut home,
+            "cargo_home_state" => &mut cargo_home_state,
+            "cargo_home" => &mut cargo_home,
+            "cwd_state" => &mut cwd_state,
+            "cwd" => &mut cwd,
+            other => return Err(format!("shell cargo probe emitted unknown field {other:?}")),
+        };
+        if slot.replace(value.to_string()).is_some() {
+            return Err(format!("shell cargo probe emitted duplicate field {key:?}"));
+        }
+    }
+
+    let cargo_path = cargo_path
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "shell cargo probe omitted a non-empty cargo_path field".to_string())?;
+    let version_output =
+        version_output.ok_or_else(|| "shell cargo probe omitted cargo_version".to_string())?;
+    let home_state =
+        home_state.ok_or_else(|| "shell cargo probe omitted home_state".to_string())?;
+    let home = home.ok_or_else(|| "shell cargo probe omitted home".to_string())?;
+    let cargo_home_state =
+        cargo_home_state.ok_or_else(|| "shell cargo probe omitted cargo_home_state".to_string())?;
+    let cargo_home =
+        cargo_home.ok_or_else(|| "shell cargo probe omitted cargo_home".to_string())?;
+    let cwd_state = cwd_state.ok_or_else(|| "shell cargo probe omitted cwd_state".to_string())?;
+    let cwd = cwd.ok_or_else(|| "shell cargo probe omitted cwd".to_string())?;
+
+    let optional_field =
+        |state: &str, value: String, name: &str| -> Result<Option<String>, String> {
+            match state {
+                "set" => Ok(Some(value)),
+                "unset" if value.is_empty() => Ok(None),
+                "unset" => {
+                    Err(format!("shell cargo probe emitted a non-empty {name} value while unset"))
+                }
+                other => Err(format!("shell cargo probe emitted invalid {name} state {other:?}")),
+            }
+        };
+    let home = optional_field(&home_state, home, "home")?;
+    let cargo_home = optional_field(&cargo_home_state, cargo_home, "cargo_home")?;
+    let cwd = optional_field(&cwd_state, cwd, "cwd")?;
+    let context = CargoProbeContext::shell(home, cargo_home, cwd);
+
+    Ok(ShellCargoProbe { cargo_path: PathBuf::from(cargo_path), version_output, context })
+}
 
 /// Which provider owns a Windows `bash.exe` resolution: System32 and the
 /// WindowsApps alias both host WSL shims; Git/MSYS/Cygwin provide native
@@ -1229,6 +1436,7 @@ fn extract_perl_version(version_output: &str) -> Option<String> {
 enum PerlIdentityKind {
     MsysCygwin,
     Strawberry,
+    ActiveState,
     SystemUnix,
     Unknown,
 }
@@ -1238,6 +1446,7 @@ impl PerlIdentityKind {
         match self {
             Self::MsysCygwin => IDENTITY_MSYS_CYGWIN,
             Self::Strawberry => IDENTITY_STRAWBERRY,
+            Self::ActiveState => IDENTITY_ACTIVESTATE,
             Self::SystemUnix => IDENTITY_SYSTEM_UNIX,
             Self::Unknown => IDENTITY_UNKNOWN,
         }
@@ -1258,6 +1467,9 @@ fn classify_perl_identity(path_text: &str, windows_host: bool) -> PerlIdentityKi
     }
     if normalized.contains("strawberry") {
         return PerlIdentityKind::Strawberry;
+    }
+    if normalized == ACTIVESTATE_PERL64_DEFAULT_PATH {
+        return PerlIdentityKind::ActiveState;
     }
     let posix_rooted_perl =
         normalized == "/usr/bin/perl" || normalized.ends_with("/usr/bin/perl.exe");
@@ -1289,6 +1501,26 @@ fn other_named_identities(
         }
     }
     others
+}
+
+/// Assemble the Perl identity verdict from the probe outcome and bounded
+/// discovered identities. Probe failure takes precedence over divergence so a
+/// failed interpreter cannot be reported as a healthy prerequisite.
+fn assemble_perl_identity_status(
+    probe_succeeded: bool,
+    primary: PerlIdentityKind,
+    discovered: &[PerlIdentityKind],
+) -> (&'static str, Vec<&'static str>, Option<String>) {
+    let other_identities = other_named_identities(primary, discovered);
+    let status = if !probe_succeeded {
+        STATUS_PROBE_ERROR
+    } else if other_identities.is_empty() {
+        STATUS_PRESENT
+    } else {
+        STATUS_DIVERGENT
+    };
+    let fix = (status == STATUS_DIVERGENT).then(|| FIX_PERL_IDENTITY_DIVERGENCE.to_string());
+    (status, other_identities, fix)
 }
 
 /// Fixed, well-known default install locations probed for additional perl
@@ -1366,17 +1598,11 @@ fn probe_perl_identity(windows_host: bool) -> PerlIdentityReport {
         .filter(|candidate| candidate.exists())
         .map(|candidate| classify_perl_identity(&candidate.display().to_string(), windows_host))
         .collect();
-    let other_identities = other_named_identities(identity, &discovered);
     // A resolved perl that could not execute is an indeterminate probe
     // failure, never a healthy prerequisite: probe_error wins over both
     // present and identity-divergence classification.
-    let status = if version.is_none() {
-        STATUS_PROBE_ERROR
-    } else if other_identities.is_empty() {
-        STATUS_PRESENT
-    } else {
-        STATUS_DIVERGENT
-    };
+    let (status, other_identities, fix) =
+        assemble_perl_identity_status(version.is_some(), identity, &discovered);
 
     PerlIdentityReport {
         status,
@@ -1385,7 +1611,7 @@ fn probe_perl_identity(windows_host: bool) -> PerlIdentityReport {
         identity: identity.code(),
         other_identities,
         error,
-        fix: (status == STATUS_DIVERGENT).then(|| FIX_PERL_IDENTITY_DIVERGENCE.to_string()),
+        fix,
     }
 }
 
@@ -1457,23 +1683,41 @@ fn cargo_report_from_output(
     }
 }
 
-/// Shell-mediated probe result (`command -v cargo && cargo --version`):
-/// the first output line is the resolved cargo path, the rest is its banner.
+/// Shell-mediated probe result:
+/// the output is a NUL-delimited path/version/environment record emitted by
+/// the same shell invocation.
 fn shell_cargo_report_from_output(
     flavor: &'static str,
     output: ProbeOutput,
 ) -> CargoToolchainReport {
     match output {
-        Ok(process_output) if process_output.status.success() => {
-            let decoded = decode_shell_output(&process_output.stdout);
-            let mut lines = decoded.lines().map(str::trim).filter(|line| !line.is_empty());
-            let cargo_path = lines.next().map(PathBuf::from);
-            let version_text = lines.collect::<Vec<_>>().join(" ");
-            finish_reachable_cargo_report(flavor, cargo_path, &version_text)
+        Ok(process_output) => {
+            let parsed =
+                parse_shell_cargo_probe_output(&decode_shell_output(&process_output.stdout));
+            match (process_output.status.success(), parsed) {
+                (true, Ok(probe)) => finish_reachable_cargo_report_with_context(
+                    flavor,
+                    Some(probe.cargo_path),
+                    &probe.version_output,
+                    &probe.context,
+                ),
+                (false, Ok(probe)) => {
+                    failed_probe_cargo_report(flavor, Some(probe.cargo_path), Ok(process_output))
+                }
+                (_, Err(parse_error)) => failed_probe_cargo_report(
+                    flavor,
+                    None,
+                    Err(format!(
+                        "shell cargo probe output was invalid: {parse_error}; exit status {}; stderr: {}",
+                        process_output.status,
+                        decode_shell_output(&process_output.stderr).trim()
+                    )),
+                ),
+            }
         }
-        // The shell probe failed before resolving a cargo path, so there is
-        // no identity to preserve: the detail still reports probe_error.
-        Ok(_) | Err(_) => failed_probe_cargo_report(flavor, None, output),
+        // The shell probe failed before emitting a complete record, so there
+        // is no trustworthy provider context or cargo identity to preserve.
+        Err(error) => failed_probe_cargo_report(flavor, None, Err(error)),
     }
 }
 
@@ -1515,10 +1759,27 @@ fn finish_reachable_cargo_report(
     binary: Option<PathBuf>,
     version_output: &str,
 ) -> CargoToolchainReport {
+    finish_reachable_cargo_report_with_context(
+        flavor,
+        binary,
+        version_output,
+        &CargoProbeContext::native(),
+    )
+}
+
+fn finish_reachable_cargo_report_with_context(
+    flavor: &'static str,
+    binary: Option<PathBuf>,
+    version_output: &str,
+    context: &CargoProbeContext,
+) -> CargoToolchainReport {
     let version_line =
         version_output.lines().map(str::trim).find(|line| !line.is_empty()).map(String::from);
     let parsed_version = version_line.as_deref().and_then(parse_cargo_version_line);
-    let provenance = binary.as_deref().and_then(Path::to_str).map(classify_cargo_provenance);
+    let provenance = binary
+        .as_deref()
+        .and_then(Path::to_str)
+        .and_then(|path| classify_cargo_provenance_with_context(path, context));
     let (status, meets_workspace_pin) = reachable_cargo_status(provenance, parsed_version);
     let error = if parsed_version.is_none() {
         Some(cargo_version_probe_error(version_output))
@@ -1529,7 +1790,8 @@ fn finish_reachable_cargo_report(
         Some(CargoProvenance::RustupToolchain) => {
             Some(FIX_CARGO_DIRECT_RUSTUP_TOOLCHAIN.to_string())
         }
-        _ => cargo_fix_line(flavor, status),
+        Some(_) => cargo_fix_line(flavor, status),
+        None => None,
     };
     CargoToolchainReport {
         flavor,
@@ -3086,76 +3348,94 @@ mod tests {
     }
 
     #[test]
-    fn classify_cargo_provenance_separates_shims_from_distro_paths() {
-        assert_eq!(
-            classify_cargo_provenance(r"C:\Users\dev\.cargo\bin\cargo.exe"),
-            CargoProvenance::RustupShim
+    fn classify_cargo_provenance_separates_shims_from_distro_paths() -> TestResult {
+        let windows_context = CargoProbeContext {
+            path_style: CargoPathStyle::Windows,
+            cwd: Some(r"C:\work".to_string()),
+            home: Some(r"C:\Users\dev".to_string()),
+            cargo_home: None,
+        };
+        let custom_windows_context = CargoProbeContext {
+            path_style: CargoPathStyle::Windows,
+            cwd: Some(r"C:\work".to_string()),
+            home: None,
+            cargo_home: Some(r"D:\rustup-cache".to_string()),
+        };
+        let posix_context = CargoProbeContext::shell(
+            Some("/home/dev".to_string()),
+            None,
+            Some("/workspace".to_string()),
         );
-        assert_eq!(
-            classify_cargo_provenance(r"C:/Users/dev/.cargo/bin/cargo.exe"),
-            CargoProvenance::RustupShim
-        );
-        assert_eq!(
-            classify_cargo_provenance(r"C:\Users\dev\.cargo\bin-other\cargo.exe"),
-            CargoProvenance::NonRustup
-        );
-        assert_eq!(
-            classify_cargo_provenance(r"C:\Users\dev\.cargo\bin\nested\cargo.exe"),
-            CargoProvenance::NonRustup
-        );
-        assert_eq!(
-            classify_cargo_provenance_with_home(
+        for (path, context, expected) in [
+            (
+                r"C:\Users\dev\.cargo\bin\cargo.exe",
+                &windows_context,
+                Some(CargoProvenance::RustupShim),
+            ),
+            (
+                r"C:/Users/dev/.cargo/bin/cargo.exe",
+                &windows_context,
+                Some(CargoProvenance::RustupShim),
+            ),
+            (r"C:\Users\dev\.cargo\bin-other\cargo.exe", &windows_context, None),
+            (r"C:\Users\dev\.cargo\bin\nested\cargo.exe", &windows_context, None),
+            (
                 r"D:\rustup-cache\bin\cargo.exe",
-                Some(r"D:\rustup-cache"),
+                &custom_windows_context,
+                Some(CargoProvenance::RustupShim),
             ),
-            CargoProvenance::RustupShim
-        );
-        assert_eq!(
-            classify_cargo_provenance_with_home(
-                r"D:\rustup-cache\bin-other\cargo.exe",
-                Some(r"D:\rustup-cache"),
+            (r"D:\rustup-cache\bin-other\cargo.exe", &custom_windows_context, None),
+            (r"D:\rustup-cache\bin\nested\cargo.exe", &custom_windows_context, None),
+            (
+                "/home/dev/.rustup/toolchains/1.95.0-x86_64/bin/cargo",
+                &posix_context,
+                Some(CargoProvenance::RustupToolchain),
             ),
-            CargoProvenance::NonRustup
-        );
-        assert_eq!(
-            classify_cargo_provenance_with_home(
-                r"D:\rustup-cache\bin\nested\cargo.exe",
-                Some(r"D:\rustup-cache"),
-            ),
-            CargoProvenance::NonRustup
-        );
-        assert_eq!(
-            classify_cargo_provenance("/home/dev/.rustup/toolchains/1.95.0-x86_64/bin/cargo"),
-            CargoProvenance::RustupToolchain
-        );
-        assert_eq!(
-            classify_cargo_provenance("/usr/bin/cargo"),
-            CargoProvenance::NonRustup,
-            "apt/distro cargo must not pass as a rustup shim (#12595)"
-        );
+            ("/usr/bin/cargo", &posix_context, Some(CargoProvenance::NonRustup)),
+            ("/opt/vendor/.cargo/bin/cargo", &posix_context, None),
+        ] {
+            let actual = classify_cargo_provenance_with_context(path, context);
+            if actual != expected {
+                return Err(
+                    format!("Cargo path {path:?}: expected {expected:?}, got {actual:?}").into()
+                );
+            }
+        }
+        Ok(())
     }
 
     #[test]
-    fn direct_rustup_toolchain_does_not_claim_to_honor_workspace_pin() {
-        let report = finish_reachable_cargo_report(
+    fn direct_rustup_toolchain_does_not_claim_to_honor_workspace_pin() -> TestResult {
+        let report = finish_reachable_cargo_report_with_context(
             FLAVOR_NATIVE_SHELL,
             Some(PathBuf::from("/home/dev/.rustup/toolchains/1.95.0-x86_64/bin/cargo")),
             "cargo 1.95.0 (8f3d0b0ac 2026-01-30)",
+            &CargoProbeContext::shell(Some("/home/dev".to_string()), None, None),
         );
 
-        assert_eq!(report.status, STATUS_PRESENT);
-        assert_eq!(report.provenance, PROVENANCE_RUSTUP_TOOLCHAIN);
-        assert_eq!(report.honors_toolchain_file, Some(false));
-        assert_eq!(report.meets_workspace_pin, Some(true));
-        assert_eq!(report.fix.as_deref(), Some(FIX_CARGO_DIRECT_RUSTUP_TOOLCHAIN));
+        if report.status != STATUS_PRESENT
+            || report.provenance != PROVENANCE_RUSTUP_TOOLCHAIN
+            || report.honors_toolchain_file != Some(false)
+            || report.meets_workspace_pin != Some(true)
+            || report.fix.as_deref() != Some(FIX_CARGO_DIRECT_RUSTUP_TOOLCHAIN)
+        {
+            return Err(format!("direct toolchain verdict changed: {report:?}").into());
+        }
+        Ok(())
     }
 
     #[test]
     fn rustup_shim_does_not_claim_workspace_selection_from_path_alone() -> TestResult {
-        let report = finish_reachable_cargo_report(
+        let report = finish_reachable_cargo_report_with_context(
             FLAVOR_NATIVE_SHELL,
             Some(PathBuf::from(r"C:\Users\dev\.cargo\bin\cargo.exe")),
             "cargo 1.95.0 (8f3d0b0ac 2026-01-30)",
+            &CargoProbeContext {
+                path_style: CargoPathStyle::Windows,
+                cwd: Some(r"C:\workspace".to_string()),
+                home: Some(r"C:\Users\dev".to_string()),
+                cargo_home: None,
+            },
         );
 
         if report.honors_toolchain_file.is_some() {
@@ -3248,10 +3528,15 @@ mod tests {
         let mut probed_path = None;
         let (cargo, bash) = build_git_bash_reports(true, Some(resolved_fallback.clone()), |path| {
             probed_path = path.clone();
-            finish_reachable_cargo_report(
+            finish_reachable_cargo_report_with_context(
                 FLAVOR_GIT_BASH,
-                Some(PathBuf::from(r"C:\Users\dev\.cargo\bin\cargo.exe")),
+                Some(PathBuf::from("/home/dev/.cargo/bin/cargo")),
                 "cargo 1.95.0 (8f3d0b0ac 2026-01-30)",
+                &CargoProbeContext::shell(
+                    Some("/home/dev".to_string()),
+                    None,
+                    Some("/workspace".to_string()),
+                ),
             )
         });
 
@@ -3313,8 +3598,358 @@ mod tests {
         assert_eq!(extract_perl_version("no version banner"), None);
     }
 
+    fn synthetic_process_output(
+        stdout: &[u8],
+        stderr: &[u8],
+        success: bool,
+    ) -> std::process::Output {
+        #[cfg(unix)]
+        use std::os::unix::process::ExitStatusExt as _;
+        #[cfg(windows)]
+        use std::os::windows::process::ExitStatusExt as _;
+
+        #[cfg(windows)]
+        let status = std::process::ExitStatus::from_raw(u32::from(!success));
+        #[cfg(unix)]
+        let status = std::process::ExitStatus::from_raw(i32::from(!success));
+
+        std::process::Output { status, stdout: stdout.to_vec(), stderr: stderr.to_vec() }
+    }
+
     #[test]
-    fn classify_perl_identity_from_synthetic_paths() {
+    fn shell_cargo_probe_parser_preserves_empty_and_relative_context() -> TestResult {
+        let output = concat!(
+            "cargo_path\0/usr/bin/cargo\0",
+            "cargo_version\0cargo 1.95.0 (fixture)\0",
+            "home_state\0set\0home\0\0",
+            "cargo_home_state\0set\0cargo_home\0.rustup-cache\0",
+            "cwd_state\0set\0cwd\0\0",
+        );
+        let probe = parse_shell_cargo_probe_output(output)?;
+        if probe.cargo_path != PathBuf::from("/usr/bin/cargo") {
+            return Err(format!("unexpected shell cargo path {:?}", probe.cargo_path).into());
+        }
+        if probe.version_output != "cargo 1.95.0 (fixture)" {
+            return Err(format!("unexpected shell cargo version {:?}", probe.version_output).into());
+        }
+        if probe.context.home != Some(String::new())
+            || probe.context.cargo_home != Some(".rustup-cache".to_string())
+            || probe.context.cwd != Some(String::new())
+        {
+            return Err(format!("shell context lost set/empty fields: {:?}", probe.context).into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn healthy_shell_report_uses_observed_home_and_preserves_unknown_paths() -> TestResult {
+        for flavor in [FLAVOR_GIT_BASH, FLAVOR_WSL] {
+            for (cargo_path, expected_provenance) in [
+                ("/shell-home/.cargo/bin/cargo", PROVENANCE_RUSTUP_SHIM),
+                ("/different-home/.cargo/bin/cargo", PROVENANCE_UNKNOWN),
+            ] {
+                let output = format!(
+                    "cargo_path\0{cargo_path}\0cargo_version\0cargo 1.95.0\0\
+                     home_state\0set\0home\0/shell-home\0\
+                     cargo_home_state\0unset\0cargo_home\0\0\
+                     cwd_state\0set\0cwd\0/workspace\0"
+                );
+                let report = shell_cargo_report_from_output(
+                    flavor,
+                    Ok(synthetic_process_output(output.as_bytes(), b"", true)),
+                );
+                if report.status != STATUS_PRESENT
+                    || report.path.as_deref() != Some(cargo_path)
+                    || report.version.as_deref() != Some("cargo 1.95.0")
+                    || report.provenance != expected_provenance
+                    || report.meets_workspace_pin != Some(true)
+                    || report.honors_toolchain_file.is_some()
+                    || report.fix.is_some()
+                {
+                    return Err(format!("{flavor} lost provider context: {report:?}").into());
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn shell_cargo_report_preserves_failed_record_path_and_stderr() -> TestResult {
+        let output = concat!(
+            "cargo_path\0/usr/bin/cargo\0cargo_version\0cargo 1.95.0\0",
+            "home_state\0set\0home\0/home/dev\0",
+            "cargo_home_state\0unset\0cargo_home\0\0",
+            "cwd_state\0set\0cwd\0/workspace\0",
+        );
+        let report = shell_cargo_report_from_output(
+            FLAVOR_GIT_BASH,
+            Ok(synthetic_process_output(output.as_bytes(), b"cargo failed", false)),
+        );
+        if report.status != STATUS_PROBE_ERROR
+            || report.path.as_deref() != Some("/usr/bin/cargo")
+            || !report.error.as_deref().is_some_and(|error| error.contains("cargo failed"))
+        {
+            return Err(format!("failed shell record lost evidence: {report:?}").into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn shell_cargo_report_before_record_preserves_stderr() -> TestResult {
+        let report = shell_cargo_report_from_output(
+            FLAVOR_GIT_BASH,
+            Ok(synthetic_process_output(b"", b"cargo command not found", false)),
+        );
+        if report.status != STATUS_PROBE_ERROR
+            || report.path.is_some()
+            || !report
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("cargo command not found"))
+        {
+            return Err(format!("failed shell startup lost evidence: {report:?}").into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn malformed_shell_record_preserves_parse_and_process_evidence() -> TestResult {
+        for success in [true, false] {
+            let report = shell_cargo_report_from_output(
+                FLAVOR_GIT_BASH,
+                Ok(synthetic_process_output(b"unterminated", b"provider detail", success)),
+            );
+            let error = report.error.as_deref().ok_or("malformed record lost its error")?;
+            if report.status != STATUS_PROBE_ERROR
+                || report.path.is_some()
+                || !error.contains("shell cargo probe omitted its NUL record terminator")
+                || !error.contains("exit status")
+                || !error.contains("provider detail")
+            {
+                return Err(format!("malformed record lost evidence: {report:?}").into());
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn shell_cargo_probe_parser_rejects_malformed_or_duplicate_fields() -> TestResult {
+        if parse_shell_cargo_probe_output("cargo_path\0/usr/bin/cargo\0odd").is_ok() {
+            return Err("odd NUL field sequence was accepted".into());
+        }
+        if parse_shell_cargo_probe_output("cargo_path\0/usr/bin/cargo").is_ok() {
+            return Err("missing NUL record terminator was accepted".into());
+        }
+        let valid_body = concat!(
+            "cargo_path\0/usr/bin/cargo\0cargo_version\0cargo 1.95.0\0",
+            "home_state\0set\0home\0/home/dev\0",
+            "cargo_home_state\0unset\0cargo_home\0\0",
+            "cwd_state\0set\0cwd\0/workspace",
+        );
+        let valid = format!("{valid_body}\0");
+        if parse_shell_cargo_probe_output(&valid).is_err() {
+            return Err("otherwise-valid NUL record was rejected".into());
+        }
+        let trailing_extra = format!("{valid_body}\0extra_key\0extra_value\0");
+        if parse_shell_cargo_probe_output(&trailing_extra).is_ok() {
+            return Err("trailing extra NUL field pair was accepted".into());
+        }
+        let duplicate = format!("{valid_body}\0cargo_path\0/usr/local/bin/cargo\0");
+        if parse_shell_cargo_probe_output(&duplicate).is_ok() {
+            return Err("duplicate NUL field was accepted".into());
+        }
+        let unset_with_value = concat!(
+            "cargo_path\0/usr/bin/cargo\0cargo_version\0cargo 1.95.0\0",
+            "home_state\0unset\0home\0/home/dev\0",
+            "cargo_home_state\0unset\0cargo_home\0/workspace/.cargo\0",
+            "cwd_state\0unset\0cwd\0/workspace\0",
+        );
+        if parse_shell_cargo_probe_output(unset_with_value).is_ok() {
+            return Err("unset shell context accepted a non-empty value".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn cargo_context_classification_resolves_relative_home_and_preserves_posix_case() -> TestResult
+    {
+        let relative = CargoProbeContext::shell(
+            Some("/home/dev".to_string()),
+            Some("rustup-cache".to_string()),
+            Some("/workspace".to_string()),
+        );
+        if classify_cargo_provenance_with_context("/workspace/rustup-cache/bin/cargo", &relative)
+            != Some(CargoProvenance::RustupShim)
+        {
+            return Err("relative shell CARGO_HOME was not resolved against observed PWD".into());
+        }
+        if classify_cargo_provenance_with_context("/other/rustup-cache/bin/cargo", &relative)
+            == Some(CargoProvenance::RustupShim)
+        {
+            return Err("a sibling relative home was classified as a rustup shim".into());
+        }
+
+        let empty = CargoProbeContext::shell(
+            Some("/home/dev".to_string()),
+            Some(String::new()),
+            Some("/workspace".to_string()),
+        );
+        if classify_cargo_provenance_with_context("/workspace/bin/cargo", &empty).is_some() {
+            return Err("explicit empty CARGO_HOME was treated as a known shim home".into());
+        }
+
+        let case_sensitive = CargoProbeContext::shell(
+            Some("/Home/Dev".to_string()),
+            None,
+            Some("/workspace".to_string()),
+        );
+        if classify_cargo_provenance_with_context("/home/dev/.cargo/bin/cargo", &case_sensitive)
+            == Some(CargoProvenance::RustupShim)
+        {
+            return Err("POSIX home comparison was lowercased".into());
+        }
+
+        let posix_backslash = CargoProbeContext::shell(
+            Some(r"/home/dev\cache".to_string()),
+            None,
+            Some("/workspace".to_string()),
+        );
+        if classify_cargo_provenance_with_context(
+            "/home/dev/cache/.cargo/bin/cargo",
+            &posix_backslash,
+        ) == Some(CargoProvenance::RustupShim)
+        {
+            return Err("POSIX backslash was incorrectly treated as a separator".into());
+        }
+
+        let relative_home = CargoProbeContext::shell(
+            Some("home/dev".to_string()),
+            None,
+            Some("/workspace".to_string()),
+        );
+        if classify_cargo_provenance_with_context("/home/dev/.cargo/bin/cargo", &relative_home)
+            .is_some()
+        {
+            return Err("relative HOME produced a cargo provenance".into());
+        }
+
+        let relative_cwd = CargoProbeContext::shell(
+            Some("/home/dev".to_string()),
+            Some("cache".to_string()),
+            Some("workspace".to_string()),
+        );
+        if classify_cargo_provenance_with_context("workspace/cache/bin/cargo", &relative_cwd)
+            .is_some()
+        {
+            return Err("relative PWD produced a cargo provenance".into());
+        }
+
+        let absolute_dotdot = CargoProbeContext::shell(
+            Some("/home/dev".to_string()),
+            Some("/home/dev/../cache".to_string()),
+            Some("/workspace".to_string()),
+        );
+        if classify_cargo_provenance_with_context("/cache/bin/cargo", &absolute_dotdot).is_some() {
+            return Err("dot-dot CARGO_HOME produced a cargo provenance".into());
+        }
+
+        let windows_drive_relative = CargoProbeContext {
+            path_style: CargoPathStyle::Windows,
+            cwd: Some(r"C:\workspace".to_string()),
+            home: Some(r"C:\Users\dev".to_string()),
+            cargo_home: Some(r"C:cache".to_string()),
+        };
+        if classify_cargo_provenance_with_context(
+            r"C:\cache\bin\cargo.exe",
+            &windows_drive_relative,
+        )
+        .is_some()
+        {
+            return Err("drive-relative CARGO_HOME produced a cargo provenance".into());
+        }
+
+        let windows_single_rooted = CargoProbeContext {
+            path_style: CargoPathStyle::Windows,
+            cwd: Some(r"C:\workspace".to_string()),
+            home: Some(r"C:\Users\dev".to_string()),
+            cargo_home: Some(r"\cache".to_string()),
+        };
+        if classify_cargo_provenance_with_context(r"\cache\bin\cargo.exe", &windows_single_rooted)
+            .is_some()
+        {
+            return Err("single-rooted Windows CARGO_HOME produced a cargo provenance".into());
+        }
+
+        let known_home = CargoProbeContext::shell(
+            Some("/home/dev".to_string()),
+            None,
+            Some("/workspace".to_string()),
+        );
+        if classify_cargo_provenance_with_context("cargo", &known_home).is_some() {
+            return Err("relative resolved cargo path produced a provenance".into());
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn native_home_uses_platform_authoritative_variable() -> TestResult {
+        if native_home_from_vars(true, Some(r"C:\wrong"), Some(r"C:\right"))
+            != Some(r"C:\right".to_string())
+        {
+            return Err("Windows native HOME did not use USERPROFILE".into());
+        }
+        if native_home_from_vars(true, Some(r"C:\wrong"), None).is_some() {
+            return Err("missing Windows USERPROFILE was guessed from HOME".into());
+        }
+        if native_home_from_vars(false, Some("/home/dev"), Some(r"C:\wrong"))
+            != Some("/home/dev".to_string())
+        {
+            return Err("POSIX native HOME did not remain authoritative".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn cargo_context_windows_home_comparison_is_case_insensitive() -> TestResult {
+        let context = CargoProbeContext {
+            path_style: CargoPathStyle::Windows,
+            cwd: Some(r"C:\workspace".to_string()),
+            home: Some(r"C:\Users\Dev".to_string()),
+            cargo_home: None,
+        };
+        if classify_cargo_provenance_with_context(r"c:\users\dev\.cargo\bin\cargo.exe", &context)
+            != Some(CargoProvenance::RustupShim)
+        {
+            return Err("Windows default cargo home comparison was case-sensitive".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn unknown_cargo_context_does_not_emit_stale_rustup_fix() -> TestResult {
+        let report = finish_reachable_cargo_report_with_context(
+            FLAVOR_GIT_BASH,
+            Some(PathBuf::from("/opt/custom/bin/cargo")),
+            "cargo 1.90.0 (fixture)",
+            &CargoProbeContext::shell(None, None, None),
+        );
+        if report.provenance != PROVENANCE_UNKNOWN {
+            return Err(
+                format!("unknown shell context got provenance {}", report.provenance).into()
+            );
+        }
+        if report.status != STATUS_STALE || report.meets_workspace_pin != Some(false) {
+            return Err("version facts were lost when provenance was unknown".into());
+        }
+        if report.fix.is_some() {
+            return Err("unknown provenance emitted a misleading stale rustup fix".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn classify_perl_identity_from_synthetic_paths() -> TestResult {
         assert_eq!(
             classify_perl_identity(r"C:\msys64\usr\bin\perl.exe", true),
             PerlIdentityKind::MsysCygwin
@@ -3323,6 +3958,15 @@ mod tests {
             classify_perl_identity(r"C:\Strawberry\perl\bin\perl.exe", true),
             PerlIdentityKind::Strawberry
         );
+        if classify_perl_identity(r"C:\Perl64\bin\perl.exe", true) != PerlIdentityKind::ActiveState
+        {
+            return Err("the DAP-supported ActiveState default path lost its named identity".into());
+        }
+        if classify_perl_identity(r"C:\tools\Perl64\bin\perl.exe", true)
+            != PerlIdentityKind::Unknown
+        {
+            return Err("ActiveState identity escaped its exact default path".into());
+        }
         assert_eq!(
             classify_perl_identity("/usr/bin/perl", false),
             PerlIdentityKind::SystemUnix,
@@ -3337,6 +3981,7 @@ mod tests {
             classify_perl_identity(r"C:\tools\somewhere\perl.exe", true),
             PerlIdentityKind::Unknown
         );
+        Ok(())
     }
 
     #[test]
@@ -3362,6 +4007,40 @@ mod tests {
             )
             .is_empty()
         );
+    }
+
+    #[test]
+    fn perl_identity_status_reports_msys_and_activestate_divergence_with_fix() -> TestResult {
+        let (status, other_identities, fix) = assemble_perl_identity_status(
+            true,
+            PerlIdentityKind::MsysCygwin,
+            &[PerlIdentityKind::ActiveState],
+        );
+
+        if status != STATUS_DIVERGENT
+            || other_identities != vec![IDENTITY_ACTIVESTATE]
+            || fix != Some(FIX_PERL_IDENTITY_DIVERGENCE.to_string())
+        {
+            return Err("ActiveState divergence did not produce the bounded repair".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn perl_identity_probe_failure_precedes_known_divergence() -> TestResult {
+        let (status, other_identities, fix) = assemble_perl_identity_status(
+            false,
+            PerlIdentityKind::MsysCygwin,
+            &[PerlIdentityKind::ActiveState],
+        );
+
+        if status != STATUS_PROBE_ERROR || other_identities != vec![IDENTITY_ACTIVESTATE] {
+            return Err("probe failure did not preserve the discovered identity".into());
+        }
+        if fix.is_some() {
+            return Err("probe failure prescribed divergence repair".into());
+        }
+        Ok(())
     }
 
     #[test]
