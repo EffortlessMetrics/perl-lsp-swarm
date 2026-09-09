@@ -62,13 +62,11 @@ fn read_debugger_record<R: Read>(
             // this is an ordinary output line beginning with a prompt-shaped
             // token, not a prompt-only record.
             let buffered = reader.buffer();
-            let next_non_whitespace = buffered.iter().position(|byte| !byte.is_ascii_whitespace());
-            let only_prompt_padding =
-                buffered.first().is_some_and(|byte| *byte == b'\n' || *byte == b'\r')
-                    || next_non_whitespace.is_none()
-                    || next_non_whitespace
-                        .is_some_and(|index| buffered[index] == b'\n' || buffered[index] == b'\r');
-            if only_prompt_padding {
+            if let Some(padding_length) = prompt_buffer_padding_length(buffered) {
+                if let Some(padding) = buffered.get(..padding_length) {
+                    bytes.extend_from_slice(padding);
+                    reader.consume(padding.len());
+                }
                 break;
             }
         }
@@ -79,6 +77,43 @@ fn read_debugger_record<R: Read>(
         .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
     line.push_str(&text);
     Ok(length)
+}
+
+/// Return the complete prompt padding already buffered after a strict prompt.
+///
+/// A terminal control sequence may be split across reads. In that case the
+/// prompt is still a complete nonblocking record, so leave the incomplete
+/// suffix for the next record rather than waiting for more bytes. A producer
+/// that splits an ANSI suffix across records is inherently ambiguous; callers
+/// retain each observed byte in order.
+fn prompt_buffer_padding_length(buffered: &[u8]) -> Option<usize> {
+    let mut index = 0;
+    while index < buffered.len() {
+        let byte = buffered.get(index).copied()?;
+        match byte {
+            b'\r' | b'\n' => return Some(index + 1),
+            byte if byte.is_ascii_whitespace() => index += 1,
+            0x1b => {
+                let Some(remaining) = buffered.get(index + 1..) else {
+                    return Some(index);
+                };
+                let Some(first) = remaining.first() else {
+                    return Some(index);
+                };
+                if *first != b'[' {
+                    return None;
+                }
+                let Some(end) = remaining.get(1..).and_then(|parameters| {
+                    parameters.iter().position(|byte| (0x40..=0x7e).contains(byte))
+                }) else {
+                    return Some(index);
+                };
+                index += end + 3;
+            }
+            _ => return None,
+        }
+    }
+    Some(index)
 }
 
 fn is_strict_prompt_candidate(bytes: &[u8]) -> bool {
@@ -3016,6 +3051,25 @@ mod tests {
         }
     }
 
+    #[test]
+    fn debugger_record_reader_stops_before_padding_and_next_marker() -> Result<(), String> {
+        use std::io::Cursor;
+
+        let mut reader = BufReader::new(Cursor::new(b"DB<3> \nDB<4>"));
+        let mut line = String::new();
+        read_debugger_record(&mut reader, &mut line)
+            .map_err(|error| format!("failed to read padded prompt: {error}"))?;
+        if line != "DB<3> \n" {
+            return Err(format!("padded prompt was not framed: {line:?}"));
+        }
+        read_debugger_record(&mut reader, &mut line)
+            .map_err(|error| format!("failed to read next prompt: {error}"))?;
+        if line != "DB<4>" {
+            return Err(format!("next prompt was not preserved: {line:?}"));
+        }
+        Ok(())
+    }
+
     #[cfg(unix)]
     #[test]
     fn debugger_record_reader_returns_live_unterminated_prompt() -> Result<(), String> {
@@ -3050,6 +3104,78 @@ mod tests {
         joined?;
         if result != "DB<9>" {
             return Err(format!("unterminated prompt framed as {result:?}"));
+        }
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn debugger_record_reader_returns_live_ansi_prompt() -> Result<(), String> {
+        use std::process::{Command, Stdio};
+        use std::sync::mpsc::sync_channel;
+        use std::time::Duration;
+
+        let mut child = Command::new("sh")
+            .args(["-c", "printf '\\033[0mDB<10>\\033[0m'; read release"])
+            .stdout(Stdio::piped())
+            .stdin(Stdio::piped())
+            .spawn()
+            .map_err(|error| format!("failed to spawn ANSI prompt fixture: {error}"))?;
+        let stdout = child.stdout.take().ok_or("ANSI prompt fixture has no stdout")?;
+        let (sender, receiver) = sync_channel(1);
+        let reader = std::thread::spawn(move || {
+            let mut reader = BufReader::new(stdout);
+            let mut line = String::new();
+            let result = read_debugger_record(&mut reader, &mut line).map(|_| line);
+            let _ = sender.send(result);
+        });
+        let outcome = receiver
+            .recv_timeout(Duration::from_secs(2))
+            .map_err(|error| format!("ANSI prompt did not frame: {error}"))
+            .and_then(|result| result.map_err(|error| format!("ANSI prompt read failed: {error}")));
+        let _ = child.kill();
+        let _ = child.wait();
+        let joined = reader.join().map_err(|_| "ANSI prompt reader thread panicked".to_string());
+        let result = outcome?;
+        joined?;
+        if result != "\u{1b}[0mDB<10>\u{1b}[0m" {
+            return Err(format!("ANSI prompt bytes were not preserved: {result:?}"));
+        }
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn debugger_record_reader_does_not_wait_for_split_ansi_suffix() -> Result<(), String> {
+        use std::process::{Command, Stdio};
+        use std::sync::mpsc::sync_channel;
+        use std::time::Duration;
+
+        let mut child = Command::new("sh")
+            .args(["-c", "printf 'DB<11>\\033['; read release"])
+            .stdout(Stdio::piped())
+            .stdin(Stdio::piped())
+            .spawn()
+            .map_err(|error| format!("failed to spawn split ANSI fixture: {error}"))?;
+        let stdout = child.stdout.take().ok_or("split ANSI fixture has no stdout")?;
+        let (sender, receiver) = sync_channel(1);
+        let reader = std::thread::spawn(move || {
+            let mut reader = BufReader::new(stdout);
+            let mut line = String::new();
+            let result = read_debugger_record(&mut reader, &mut line).map(|_| line);
+            let _ = sender.send(result);
+        });
+        let outcome = receiver
+            .recv_timeout(Duration::from_secs(2))
+            .map_err(|error| format!("split ANSI prompt waited for its suffix: {error}"))
+            .and_then(|result| result.map_err(|error| format!("split ANSI prompt read failed: {error}")));
+        let _ = child.kill();
+        let _ = child.wait();
+        let joined = reader.join().map_err(|_| "split ANSI reader panicked".to_string());
+        let result = outcome?;
+        joined?;
+        if result != "DB<11>" {
+            return Err(format!("split ANSI prompt was not framed promptly: {result:?}"));
         }
         Ok(())
     }

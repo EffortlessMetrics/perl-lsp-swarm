@@ -54,7 +54,7 @@ pub(super) fn context_re() -> Option<&'static Regex> {
             // `:<line>` delimiter required by the end anchor, preserving those
             // characters even when a filename contains an earlier `:digits)`
             // sequence and retaining the legacy optional `)` fallback.
-            Regex::new(r"^(?:(?P<func>[A-Za-z_][\w:]*?)(?:::)?(?:\((?P<file>.+?):(?P<line>\d+)\):?|__ANON__)|main::(?:\()?(?P<file2>.+?)(?:\))?:(?P<line2>\d+):?)(?:\s.*)?$")
+            Regex::new(r"^(?:(?P<func>[A-Za-z_][\w:]*?)(?:::)?(?:\((?P<file>.+?):(?P<line>\d+)\):?|__ANON__)|main::(?:\()?(?P<file2>.+?)(?:\))?:(?P<line2>\d+):?)(?:\t.*)?$")
         })
         .as_ref()
         .ok()
