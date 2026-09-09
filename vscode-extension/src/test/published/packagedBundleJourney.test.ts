@@ -91,7 +91,7 @@ function requireCandidateArtifactManifest(
   assert.equal(
     manifest.platform,
     platformLabel(),
-    'candidate artifact manifest platform mismatch; candidate-bound verification is Linux-only',
+    'candidate artifact manifest platform mismatch; candidate-bound verification requires the host platform',
   );
   assert.match(manifest.vsix_sha256, /^[0-9a-f]{64}$/i, 'manifest VSIX SHA-256 is invalid');
   assert.match(
