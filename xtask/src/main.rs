@@ -442,14 +442,15 @@ enum Commands {
 
     /// Verify landing and content-survival proof without evaluating semantic completion.
     ///
-    /// Implements the landing-proof layer of CLOSE_PROOF_POLICY.md: runs
-    /// `git merge-base --is-ancestor <commit> <canonical-main>` and emits a
+    /// Implements the landing-proof layer of CLOSE_PROOF_POLICY.md: proves
+    /// ancestry through the shared `xtask::git_ancestry` authority and emits a
     /// structured `landing_proof.v1` receipt. Landing ancestry never
     /// authorizes an issue close; `semantic_completion` is always
     /// `not_evaluated`.
     ///
-    /// Exit 0 = landing proof passes, exit 2 = commit is not reachable,
-    /// exit 1 = error (git failed).
+    /// Exit 0 = landing proof passes, exit 2 = commit is provably not
+    /// reachable, exit 1 = error or not-proven (git failed, bad input, or a
+    /// shallow/partial checkout that cannot decide ancestry).
     #[command(name = "landing-proof")]
     PrCloseProof {
         /// Commit SHA to verify.
