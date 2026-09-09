@@ -59,10 +59,19 @@ The child-process fixture validates exact response IDs and envelopes. The public
 `UxClient` evidence accessors expose request payloads and capability violations;
 they do not expose a general client-response or selected-policy ledger.
 
+Request and violation evidence stays in memory for the lifetime of one client.
+Draining normal events does not release these separate copies, and the evidence
+buffers currently have no count or byte budget. Bounded retention with an explicit
+incomplete-evidence outcome is tracked in [#15172](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/15172).
+Boolean capability flags require literal `true`; the structured `window.showMessage`
+capability requires an object. Malformed arrays or objects cannot enable boolean flags.
+
 The stdout transport loop is fail-fast. Malformed framing, invalid JSON, or a
 failure while writing a deterministic client response is retained as transport
 evidence, and foreground request waits return that actionable failure instead
 of consuming the full scenario timeout.
+The boolean `wait_for_message` helper still polls until its deadline; terminal-aware
+message waits are tracked in [#13319](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/13319).
 
 ## Running the tests
 

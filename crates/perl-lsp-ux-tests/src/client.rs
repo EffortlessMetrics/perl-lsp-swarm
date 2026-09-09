@@ -831,10 +831,11 @@ fn capability_is_advertised(capabilities: &Value, path: &str) -> bool {
     }
 
     let pointer = format!("/{}", path.replace('.', "/"));
-    match capabilities.pointer(&pointer) {
-        Some(Value::Bool(value)) => *value,
-        Some(Value::Object(_)) | Some(Value::Array(_)) => true,
-        _ => false,
+    let value = capabilities.pointer(&pointer);
+    if path == "window.showMessage" {
+        value.is_some_and(Value::is_object)
+    } else {
+        value.and_then(Value::as_bool) == Some(true)
     }
 }
 
@@ -1524,6 +1525,117 @@ mod tests {
                 {
                     return Err(anyhow!("{operation} must admit both capabilities: {response}"));
                 }
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn boolean_capability_gates_reject_malformed_advertisements() -> Result<()> {
+        let file_registration = json!({ "registrations": [{
+            "id": "files", "method": "workspace/didCreateFiles",
+            "registerOptions": { "filters": [{ "pattern": { "glob": "**/*.pl" } }] }
+        }] });
+        for (method, path, params) in [
+            ("workspace/configuration", "workspace.configuration", json!({ "items": [] })),
+            ("workspace/codeLens/refresh", "workspace.codeLens.refreshSupport", Value::Null),
+            ("window/workDoneProgress/create", "window.workDoneProgress", json!({ "token": "t" })),
+            (
+                "window/showDocument",
+                "window.showDocument.support",
+                json!({ "uri": "file:///tmp/a.pl" }),
+            ),
+            (
+                "client/registerCapability",
+                "textDocument.completion.dynamicRegistration",
+                json!({
+                    "registrations": [{ "id": "completion", "method": "textDocument/completion",
+                        "registerOptions": { "documentSelector": [{ "language": "perl" }] } }]
+                }),
+            ),
+            (
+                "client/registerCapability",
+                "workspace.fileOperations.dynamicRegistration",
+                file_registration.clone(),
+            ),
+            ("client/registerCapability", "workspace.fileOperations.didCreate", file_registration),
+        ] {
+            for value in [
+                None,
+                Some(json!(true)),
+                Some(json!(false)),
+                Some(json!({})),
+                Some(json!([])),
+                Some(Value::Null),
+                Some(json!("true")),
+                Some(json!(1)),
+            ] {
+                let mut capabilities = match path {
+                    "workspace.fileOperations.dynamicRegistration" => {
+                        json!({ "workspace": { "fileOperations": { "didCreate": true } } })
+                    }
+                    "workspace.fileOperations.didCreate" => {
+                        json!({ "workspace": { "fileOperations": { "dynamicRegistration": true } } })
+                    }
+                    _ => json!({}),
+                };
+                let allowed = value == Some(json!(true));
+                if let Some(leaf) = value {
+                    let nested = path.rsplit('.').fold(leaf, |child, key| {
+                        let mut object = serde_json::Map::new();
+                        object.insert(key.to_owned(), child);
+                        Value::Object(object)
+                    });
+                    merge_json(&mut capabilities, &nested);
+                }
+                let request = json!({ "jsonrpc": "2.0", "id": "typed-capability",
+                    "method": method, "params": params });
+                let decision = server_request_decision(&request, &capabilities)
+                    .ok_or_else(|| anyhow!("missing decision for {method}"))?;
+                if allowed {
+                    if decision.capability_violation.is_some()
+                        || decision.response.get("result").is_none()
+                    {
+                        return Err(anyhow!(
+                            "literal true must permit {path}: {}",
+                            decision.response
+                        ));
+                    }
+                } else if !decision
+                    .capability_violation
+                    .as_ref()
+                    .is_some_and(|v| v.capability == path)
+                    || decision.response.pointer("/error/code") != Some(&json!(-32601))
+                {
+                    return Err(anyhow!(
+                        "non-true advertisement must reject {path}: {}",
+                        decision.response
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn show_message_capability_requires_a_structured_object() -> Result<()> {
+        let request = json!({ "jsonrpc": "2.0", "id": "prompt", "method": "window/showMessageRequest",
+            "params": { "type": 3, "message": "Continue?" } });
+        for value in [json!({}), json!([]), json!(true), json!(false), Value::Null, json!("yes")] {
+            let allowed = value.is_object();
+            let capabilities = json!({ "window": { "showMessage": value } });
+            let decision = server_request_decision(&request, &capabilities)
+                .ok_or_else(|| anyhow!("missing prompt decision"))?;
+            if allowed {
+                if decision.response.get("result") != Some(&Value::Null)
+                    || decision.capability_violation.is_some()
+                {
+                    return Err(anyhow!(
+                        "structured prompt capability must permit conservative null response"
+                    ));
+                }
+            } else if decision.capability_violation.is_none() {
+                return Err(anyhow!("malformed structured prompt capability must be rejected"));
             }
         }
         Ok(())
