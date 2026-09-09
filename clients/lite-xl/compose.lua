@@ -1813,6 +1813,24 @@ function M.materialize_pending(opts)
   local tmp_root = opts.temp_dir or receipt_dir .. "/.pending-compose"
   local out_parent = out_dir:match("^(.*)[/\\]") or "."
   local suite_dir = opts.suite_dir or out_parent .. "/tests"
+  -- Writable paths must not contain dotdot: `alias/..` resolves through the
+  -- link target, so the inspected string tree and the written tree diverge
+  -- and cleanup or writes can escape containment. base_dir is read-only and
+  -- keeps the prefix-pop rule instead.
+  for _, writable in ipairs({
+    { "out_dir", out_dir },
+    { "temp_dir", tmp_root },
+    { "suite_dir", suite_dir },
+    { "receipt_path", receipt_path },
+  }) do
+    -- Plain literal search: Lua patterns have no alternation operator, and
+    -- padding both ends catches leading, trailing, and exact ".." too.
+    local padded = "/" .. writable[2]:gsub("\\", "/") .. "/"
+    if padded:find("/../", 1, true) then
+      fail("pending_path_alias", { path = writable[2], name = writable[1],
+        message = writable[1] .. " must not contain dotdot components" })
+    end
+  end
   ensure_pending_paths_disjoint({
     { name = "base_dir", path = base_dir },
     { name = "out_dir", path = out_dir },

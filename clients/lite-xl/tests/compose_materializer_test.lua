@@ -1263,6 +1263,24 @@ do
     print("P1 dotdot sibling probe: NOT RUN (alias creation unavailable)")
   end
 
+  local dotted_out_spec, dotted_out_ad = fixture()
+  expect_error("pending_path_alias", function()
+    compose.materialize_pending({
+      manifest = pending_manifest, adapter = dotted_out_ad, profile = "empty",
+      base_dir = base_dir,
+      out_dir = pending_root .. "/dotdot/../dotdot-out/upstream",
+      receipt_path = pending_root .. "/dotdot-out/receipt.json",
+      base_ref = refs.base, source_ref = refs.source,
+      declared_delta = {
+        { status = "M", path = "upstream/init.lua",
+          base_blob = base_blobs["init.lua"], source_blob = source_blobs["init.lua"] },
+      }, suite_specs = {
+        { path = "tests/pending_test.lua", source_blob = dotted_out_spec.pending_test_blob,
+          module = "init.lua" },
+      },
+    })
+  end, "P1 writable dotdot output path is rejected before alias inspection")
+
   local unsupported_spec, unsupported_ad = fixture()
   unsupported_spec.diff = { { status = "R", path = "upstream/init.lua" } }
   expect_error("pending_delta_mismatch", function()
