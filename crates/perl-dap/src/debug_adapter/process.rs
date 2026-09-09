@@ -1308,7 +1308,14 @@ impl DebugAdapter {
                                 if let Some(ref mut s) = *guard {
                                     let was_running = matches!(s.state, DebugState::Running);
                                     let current_frame_id = current_stopped_frame_id(s, was_running);
-                                    if !current_file.is_empty() && current_line > 0 {
+                                    let is_current_native_context = native_context_observed
+                                        && current_line > 0
+                                        && current_file == native_context_file
+                                        && current_line == native_context_line;
+                                    if !current_file.is_empty()
+                                        && current_line > 0
+                                        && (!s.entry_stop_pending || is_current_native_context)
+                                    {
                                         s.stack_frames = vec![StackFrame {
                                             id: current_frame_id,
                                             name: if current_func.is_empty() {
@@ -3312,6 +3319,10 @@ mod tests {
             (
                 "zero-line source context",
                 "main::(/tmp/dap-entry-frame-zero.pl:0):\nDB<1>\nENTRY_ZERO_DONE\n",
+            ),
+            (
+                "zero-line source context followed by warning",
+                "main::(/tmp/dap-entry-frame-zero.pl:0):\ncompile warning at /tmp/warn.pl line 9.\nDB<1>\nENTRY_ZERO_WARNING_DONE\n",
             ),
             ("missing source context", "DB<1>\nENTRY_UNKNOWN_DONE\n"),
         ];
