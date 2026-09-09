@@ -457,6 +457,7 @@ function writeJsonAtomic(destination, value) {
  *   violations?: string[],
  *   post_host_exit_processes?: string[],
  *   transition?: unknown,
+ *   candidate_bound?: boolean,
  * }} SmokeStage
  */
 
@@ -948,6 +949,9 @@ function verifiedCandidateReceiptPath() {
   );
 }
 
+/**
+ * @returns {{ok: boolean, receipt?: any, source_receipt?: any, violations?: string[]}}
+ */
 function validateVerifiedCandidateReceipt({
   receiptFile,
   env,
@@ -3012,13 +3016,13 @@ function main() {
                 status: 'not_proven',
                 exit_code: 0,
                 reason: 'child_receipt_did_not_bind_this_run',
-                violations: childReceipt.violations,
+                ...(childReceipt.violations ? { violations: childReceipt.violations } : {}),
               };
           if (childReceipt.ok) {
             // Propagate the launched runtime version the bound child
             // observed; downstream exactness claims must bind to this, never
             // to the requested selector alone.
-            if (childReceipt.source_receipt?.vscode_version) {
+            if ('source_receipt' in childReceipt && childReceipt.source_receipt?.vscode_version) {
               receipt.observed_vscode_version = childReceipt.source_receipt.vscode_version;
             }
           }

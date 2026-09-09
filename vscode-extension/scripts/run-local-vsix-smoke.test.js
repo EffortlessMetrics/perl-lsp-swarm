@@ -102,7 +102,7 @@ void test('verified packaged child receipt binds candidate and both observed art
     expectedPlatform: 'windows',
   });
   assert.equal(result.ok, true);
-  assert.equal(result.source_receipt.vscode_version, '1.125.0');
+  assert.equal(String(result.source_receipt?.vscode_version), '1.125.0');
   fs.rmSync(directory, { recursive: true, force: true });
 });
 
@@ -212,12 +212,14 @@ void test('candidate construction binds hashes and rejects partial or supplied i
   assert.equal(candidateManifestConstructionRequested(env), true);
   assert.deepEqual(
     JSON.parse(
-      constructCandidateArtifactManifest(
-        env,
-        'a'.repeat(40),
-        'windows',
-        'b'.repeat(64),
-        'c'.repeat(64),
+      String(
+        constructCandidateArtifactManifest(
+          env,
+          'a'.repeat(40),
+          'windows',
+          'b'.repeat(64),
+          'c'.repeat(64),
+        ),
       ),
     ),
     {
