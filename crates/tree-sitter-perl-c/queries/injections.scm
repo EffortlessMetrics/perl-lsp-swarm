@@ -23,6 +23,7 @@
     (list_expression
       (autoquoted_bareword) @inline.language
       (heredoc_token)))
+  .
   (heredoc_content) @injection.content)
  (#eq? @inline.package "Inline")
  (#eq? @inline.language "C")
@@ -34,6 +35,7 @@
     (list_expression
       (autoquoted_bareword) @inline.language
       (heredoc_token)))
+  .
   (heredoc_content) @injection.content)
  (#eq? @inline.package "Inline")
  (#eq? @inline.language "CPP")

@@ -36,12 +36,13 @@ Queries are copies of the repository's root grammar snapshot
 Normalization contract: the vendored copies differ from the upstream bytes
 only by whitespace hygiene required by this repository's binary-diff gate
 (`git diff --check`) — the trailing space on one separator line in
-`injections.scm` and one blank line at EOF of `highlights.scm`. Query
-semantics are unaffected; every other byte matches upstream.
+`injections.scm` and one blank line at EOF of `highlights.scm`. Every other
+byte matches upstream, including the sibling-adjacency guard for Inline
+heredocs.
 
 - `queries/injections.scm`
-  - upstream-source SHA-256: `b89b4870f26325c8bc678cf970d10afe7f2bafb9c23b99fae21cbb1a8017a84f`
-  - vendored (normalized) SHA-256: `027e3f0502d08ae647f4be25bb879b8a401cf3f8836cfeaafd3b4e9e88a732d6`
+  - upstream-source SHA-256: `6245fab14332427e547da94ad7e43e05340341254c6c71a89560fd2d4f73bd09`
+  - vendored (normalized) SHA-256: `4254c9c94741107382f210d70912d5c7feecf22e3d98c2ef4eb40d53527da254`
   — compiles cleanly against the current `c-src/` parser via
   `load_injections_query()`.
 - `queries/highlights.scm`

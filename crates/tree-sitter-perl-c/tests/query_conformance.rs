@@ -194,6 +194,37 @@ END_CPP
 }
 
 #[test]
+fn query_conformance_injections_does_not_capture_later_plain_heredoc() -> Result<(), Box<dyn Error>>
+{
+    let query = include_str!("../../../tree-sitter-perl/queries/injections.scm");
+    for (language, payload, delimiter) in
+        [("C", "#include <math.h>", "END_C"), ("CPP", "#include <string>", "END_CPP")]
+    {
+        let source = format!(
+            "use Inline {language} => <<'{delimiter}';\n{payload}\n{delimiter}\n\
+             my $plain = <<'END_PLAIN';\nthis remains Perl text\nEND_PLAIN\n"
+        );
+        let captures = collect_captures(query, &source)?;
+        let contents = captures
+            .get("injection.content")
+            .ok_or_else(|| format!("expected {language} injection.content captures"))?;
+
+        if !contents.iter().any(|value| value.contains(payload)) {
+            return Err(
+                format!("expected the adjacent Inline {language} heredoc to be captured").into()
+            );
+        }
+        if contents.iter().any(|value| value.contains("this remains Perl text")) {
+            return Err(format!(
+                "a later plain heredoc must not inherit the Inline {language} injection"
+            )
+            .into());
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn query_conformance_injections_covers_comment_and_eval_substitution() -> Result<(), Box<dyn Error>>
 {
     let query = include_str!("../../../tree-sitter-perl/queries/injections.scm");
