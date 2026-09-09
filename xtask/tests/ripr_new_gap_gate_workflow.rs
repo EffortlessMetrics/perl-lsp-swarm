@@ -78,6 +78,7 @@ fn hosted_measurement_is_manual_bounded_and_separate_from_required_gate() -> Res
         "job_phase=host-start",
         "timeout --signal=TERM --kill-after=10s 3m docker pull",
         "pull_status=$?",
+        "timeout --signal=TERM --kill-after=5s 15s docker image inspect",
         "inspect_id_status=$?",
         "inspect_digest_status=$?",
         "timeout --signal=TERM --kill-after=30s 65m docker run",

@@ -1098,9 +1098,9 @@ jobs:
             exit "$pull_status"
           fi
           set +e
-          image_id="$(timeout --signal=TERM --kill-after=10s 3m docker image inspect --format '{{.Id}}' "$image")"
+          image_id="$(timeout --signal=TERM --kill-after=5s 15s docker image inspect --format '{{.Id}}' "$image")"
           inspect_id_status=$?
-          image_digest="$(timeout --signal=TERM --kill-after=10s 3m docker image inspect --format '{{index .RepoDigests 0}}' "$image")"
+          image_digest="$(timeout --signal=TERM --kill-after=5s 15s docker image inspect --format '{{index .RepoDigests 0}}' "$image")"
           inspect_digest_status=$?
           set -e
           printf "inspect_id_exit=%s\ninspect_digest_exit=%s\n" "$inspect_id_status" "$inspect_digest_status" >> target/ripr/pr/ripr-measurement-config.txt
