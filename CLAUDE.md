@@ -168,6 +168,19 @@ Keep claim frames and wake events in runtime memory only. Reconstruct them from 
 PRs, reviews, checks, merges, and repository artifacts after compaction or replacement.
 Do not poll unchanged remote state.
 
+A remote wait releases root attention. An exact wake event records the material
+condition that would justify reconstructing the claim later; it is not an instruction
+to keep the current root session alive until that condition changes. Do not create a
+timer, cron, scheduled reminder, recurring wake, or polling loop merely to revisit the
+same remote condition. In a multi-claim goal, release unnecessary live contexts and
+immediately advance another phase-eligible actionable claim. If no remaining
+required claim is actionable because each waits on a real external blocker or
+accountable owner decision, return `EXTERNAL_BLOCKER` with each claim's condition and
+wake event named, and let the bounded engineering session end rather than preserving
+the main thread as a watcher.
+Scheduled monitoring is a different user goal, not a continuation mechanism for
+ordinary engineering work.
+
 ## Useful GitHub handoffs
 
 Post or update GitHub only when information remains useful after the current context
@@ -240,6 +253,13 @@ Keep candidate, integration, and landed evidence distinct.
 Never weaken a test, ratchet, support claim, or required proof merely to obtain green
 status. Missing, partial, stale, contradictory, or instrument-failed evidence is
 `NOT_PROVEN`.
+
+## Self-authored correction and disclosure
+
+Follow the canonical correction and disclosure contract in
+[`docs/agents/DEVELOPMENT_METHOD.md`](docs/agents/DEVELOPMENT_METHOD.md): repair an
+in-scope reversible defect, rerun affected proof, disclose the correction, and request
+approval only for a separate non-derivable or protected decision.
 
 ## Hard stops
 

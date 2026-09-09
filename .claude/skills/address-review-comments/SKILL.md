@@ -221,3 +221,5 @@ or resolve merely to make the thread count green.
 - `PROOF_WEAKENED` → `prepare-proof`
 - `FOLLOW_UP_ACCEPTED` → create/link the bounded follow-up and continue within the current claim
 - `DISPOSITION_INSTRUMENT_FAILURE` / `BLOCKED` / `NOT_PROVEN` → preserve the unresolved finding or missing evidence
+
+> Self-authored reversible corrections follow the canonical [correction and disclosure contract](../../../docs/agents/DEVELOPMENT_METHOD.md); this reference does not override higher-precedence instructions.
