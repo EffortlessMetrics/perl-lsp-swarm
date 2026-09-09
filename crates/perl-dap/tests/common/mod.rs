@@ -757,6 +757,32 @@ pub(crate) fn normalize_explicit_debuggee_pin(path: &Path) -> Result<PathBuf, St
     Ok(canonical)
 }
 
+/// Decode the display form returned by DAP `evaluate` for the debuggee path.
+///
+/// The adapter deliberately renders scalar strings with quotes and escaped
+/// characters, and perl5db prefixes an evaluated scalar with its result
+/// ordinal.  A path identity assertion must compare the represented path,
+/// rather than treating display decoration as filesystem-path content.
+#[cfg(test)]
+fn decode_evaluate_path(reported: &str) -> Result<String, String> {
+    let trimmed = reported.trim();
+    let decoded = if trimmed.starts_with('"') || trimmed.ends_with('"') {
+        serde_json::from_str::<String>(trimmed)
+            .map_err(|error| format!("invalid quoted DAP string {trimmed:?}: {error}"))
+    } else {
+        Ok(trimmed.to_string())
+    }?;
+
+    if let Some((prefix, payload)) = decoded.split_once(" '") {
+        if prefix.trim().parse::<u64>().is_ok() {
+            if let Some(path) = payload.strip_suffix('\'') {
+                return Ok(path.to_string());
+            }
+        }
+    }
+    Ok(decoded)
+}
+
 #[cfg(test)]
 pub(crate) fn assert_pinned_identity(
     reported: &str,
@@ -768,8 +794,14 @@ pub(crate) fn assert_pinned_identity(
         .map_err(|error| format!("{label} pinned path did not normalize: {error}"))?;
     let expected_ambient = normalize_explicit_debuggee_pin(ambient)
         .map_err(|error| format!("{label} ambient path did not normalize: {error}"))?;
-    let actual = normalize_explicit_debuggee_pin(Path::new(reported.trim()))
-        .map_err(|error| format!("{label} reported path did not normalize: {error}"))?;
+    let decoded = decode_evaluate_path(reported).map_err(|error| {
+        format!("{label} reported path did not decode (raw DAP result {reported:?}): {error}")
+    })?;
+    let actual = normalize_explicit_debuggee_pin(Path::new(&decoded)).map_err(|error| {
+        format!(
+            "{label} reported path did not normalize (raw DAP result {reported:?}, decoded {decoded:?}): {error}"
+        )
+    })?;
     if actual != expected_pinned {
         return Err(format!(
             "{label} evaluated $^X from {actual:?}, expected pinned {expected_pinned:?}"
@@ -797,9 +829,95 @@ fn normalize_windows_path_prefix(path: PathBuf) -> PathBuf {
 
 #[cfg(test)]
 mod explicit_pin_tests {
-    use super::{launch_arguments, normalize_explicit_debuggee_pin, resolve_debuggee_candidate};
+    use super::{
+        assert_pinned_identity, launch_arguments, normalize_explicit_debuggee_pin,
+        resolve_debuggee_candidate,
+    };
+    use perl_dap::variables::{PerlValue, PerlVariableRenderer, VariableRenderer};
     use std::fs;
     use std::path::Path;
+
+    #[test]
+    fn pinned_identity_decodes_rendered_dap_string() -> Result<(), String> {
+        let controls = tempfile::tempdir().map_err(|error| error.to_string())?;
+        let pinned = controls.path().join("perl with spaces");
+        let ambient = controls.path().join("ambient-perl");
+        fs::write(&pinned, b"pinned").map_err(|error| error.to_string())?;
+        fs::write(&ambient, b"ambient").map_err(|error| error.to_string())?;
+
+        let rendered = PerlVariableRenderer::new()
+            .render("$^X", &PerlValue::Scalar(pinned.to_string_lossy().to_string()))
+            .value;
+        assert_pinned_identity(&rendered, &pinned, &ambient, "rendered")?;
+        let plain =
+            pinned.to_str().ok_or_else(|| "the test pin should be valid UTF-8".to_string())?;
+        assert_pinned_identity(plain, &pinned, &ambient, "plain")
+    }
+
+    #[test]
+    fn pinned_identity_decodes_perl_debugger_ordinal() -> Result<(), String> {
+        let controls = tempfile::tempdir().map_err(|error| error.to_string())?;
+        let pinned = controls.path().join("perl5");
+        let ambient = controls.path().join("perl");
+        fs::write(&pinned, b"pinned").map_err(|error| error.to_string())?;
+        fs::write(&ambient, b"ambient").map_err(|error| error.to_string())?;
+
+        let rendered = format!("\"0  '{}'\"", pinned.to_string_lossy().replace('\\', "\\\\"));
+        assert_pinned_identity(&rendered, &pinned, &ambient, "ordinal")?;
+
+        let ambient_rendered = format!("0  '{}'", ambient.to_string_lossy());
+        let error = assert_pinned_identity(&ambient_rendered, &pinned, &ambient, "ambient ordinal")
+            .err()
+            .ok_or_else(|| "the ordinal ambient path was accepted".to_string())?;
+        if !error.contains("expected pinned") {
+            return Err(format!("ordinal ambient rejection lost its reason: {error}"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn pinned_identity_rejects_rendered_ambient_path() -> Result<(), String> {
+        let controls = tempfile::tempdir().map_err(|error| error.to_string())?;
+        let pinned = controls.path().join("pinned-perl");
+        let ambient = controls.path().join("ambient-perl");
+        fs::write(&pinned, b"pinned").map_err(|error| error.to_string())?;
+        fs::write(&ambient, b"ambient").map_err(|error| error.to_string())?;
+
+        let rendered_ambient = PerlVariableRenderer::new()
+            .render("$^X", &PerlValue::Scalar(ambient.to_string_lossy().to_string()))
+            .value;
+        let error = assert_pinned_identity(&rendered_ambient, &pinned, &ambient, "ambient")
+            .err()
+            .ok_or_else(|| "the rendered ambient path was accepted".to_string())?;
+        if !error.contains("expected pinned") {
+            return Err(format!("ambient rejection lost its reason: {error}"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn pinned_identity_rejects_ambiguous_unclosed_rendered_string() -> Result<(), String> {
+        let controls = tempfile::tempdir().map_err(|error| error.to_string())?;
+        let pinned = controls.path().join("pinned-perl");
+        let ambient = controls.path().join("ambient-perl");
+        fs::write(&pinned, b"pinned").map_err(|error| error.to_string())?;
+        fs::write(&ambient, b"ambient").map_err(|error| error.to_string())?;
+
+        let error = assert_pinned_identity("\"unclosed", &pinned, &ambient, "malformed")
+            .err()
+            .ok_or_else(|| "malformed rendered output was accepted".to_string())?;
+        if !error.contains("raw DAP result") || !error.contains("invalid quoted DAP string") {
+            return Err(format!("malformed rendered output lost diagnostic context: {error}"));
+        }
+
+        let ordinal_error = assert_pinned_identity("0  '", &pinned, &ambient, "ordinal")
+            .err()
+            .ok_or_else(|| "an empty ordinal payload was accepted".to_string())?;
+        if !ordinal_error.contains("raw DAP result") {
+            return Err(format!("malformed ordinal lost diagnostic context: {ordinal_error}"));
+        }
+        Ok(())
+    }
 
     #[test]
     fn nested_relative_pin_is_frozen_before_different_launch_cwd() -> Result<(), String> {
