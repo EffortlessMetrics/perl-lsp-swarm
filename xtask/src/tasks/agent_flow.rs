@@ -136,6 +136,7 @@ struct RouteObservationReport {
 #[derive(Debug, Serialize)]
 struct ScenarioReport {
     fixture_count: usize,
+    trace_fixture_count: usize,
     checked_providers: Vec<String>,
     errors: Vec<String>,
 }
@@ -145,6 +146,7 @@ struct ScenarioOutput {
     schema: &'static str,
     result: &'static str,
     fixture_count: usize,
+    trace_fixture_count: usize,
     checked_providers: Vec<String>,
     errors: Vec<String>,
 }
@@ -202,6 +204,278 @@ struct ScenarioFixture {
     name: &'static str,
     required_skills: &'static [&'static str],
     required_edges: &'static [(&'static str, &'static str)],
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum TraceEvent {
+    RepairApplied { in_claim: bool, reversible: bool },
+    ProofRerun { affected: bool, passed: bool },
+    Disclosed,
+    ApprovalRequested { basis: ApprovalBasis },
+    CandidateWait { wake_event: &'static str, scope: HoldScope },
+    Polled { state_changed: bool },
+    OtherClaimAvailable,
+    AdvancedOtherClaim,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum HoldScope {
+    Candidate,
+    AffectedClaim,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum ApprovalBasis {
+    MaterialDecision,
+    ProtectedTransaction,
+    SelfAuthoredMistake,
+}
+
+#[derive(Debug)]
+struct ContinuationTrace {
+    name: &'static str,
+    incident: &'static str,
+    claim_constraint: ClaimConstraint,
+    events: &'static [TraceEvent],
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum ClaimConstraint {
+    InAdmittedCandidate,
+    PendingCandidateIntegration,
+    NonDerivableDecision,
+    ProtectedExternalAction,
+    ActiveWriterOwnership,
+    HigherPrecedenceAffectedClaim,
+}
+
+const SELF_CORRECTION_TRACES: &[ContinuationTrace] = &[
+    ContinuationTrace {
+        name: "receipt_identity_self_repair",
+        incident: "#15161",
+        claim_constraint: ClaimConstraint::InAdmittedCandidate,
+        events: &[
+            TraceEvent::RepairApplied { in_claim: true, reversible: true },
+            TraceEvent::ProofRerun { affected: true, passed: true },
+            TraceEvent::Disclosed,
+        ],
+    },
+    ContinuationTrace {
+        name: "positive_fixture_self_repair",
+        incident: "PR #13162",
+        claim_constraint: ClaimConstraint::InAdmittedCandidate,
+        events: &[
+            TraceEvent::RepairApplied { in_claim: true, reversible: true },
+            TraceEvent::ProofRerun { affected: true, passed: true },
+            TraceEvent::Disclosed,
+        ],
+    },
+    ContinuationTrace {
+        name: "pending_ci_keeps_goal_moving",
+        incident: "#14129",
+        claim_constraint: ClaimConstraint::PendingCandidateIntegration,
+        events: &[
+            TraceEvent::Polled { state_changed: true },
+            TraceEvent::CandidateWait {
+                wake_event: "required-check-completion",
+                scope: HoldScope::Candidate,
+            },
+            TraceEvent::OtherClaimAvailable,
+            TraceEvent::AdvancedOtherClaim,
+        ],
+    },
+    ContinuationTrace {
+        name: "material_decision_checkpoint",
+        incident: "material product or policy choice",
+        claim_constraint: ClaimConstraint::NonDerivableDecision,
+        events: &[TraceEvent::ApprovalRequested { basis: ApprovalBasis::MaterialDecision }],
+    },
+    ContinuationTrace {
+        name: "protected_transaction_checkpoint",
+        incident: "protected external transaction",
+        claim_constraint: ClaimConstraint::ProtectedExternalAction,
+        events: &[TraceEvent::ApprovalRequested { basis: ApprovalBasis::ProtectedTransaction }],
+    },
+    ContinuationTrace {
+        name: "active_writer_collision",
+        incident: "#13349",
+        claim_constraint: ClaimConstraint::ActiveWriterOwnership,
+        events: &[
+            TraceEvent::CandidateWait {
+                wake_event: "writer-release-or-handoff",
+                scope: HoldScope::AffectedClaim,
+            },
+            TraceEvent::OtherClaimAvailable,
+            TraceEvent::AdvancedOtherClaim,
+        ],
+    },
+    ContinuationTrace {
+        name: "higher_precedence_hold_is_scoped",
+        incident: "higher-precedence prohibition",
+        claim_constraint: ClaimConstraint::HigherPrecedenceAffectedClaim,
+        events: &[
+            TraceEvent::CandidateWait {
+                wake_event: "instruction-conflict-resolution",
+                scope: HoldScope::AffectedClaim,
+            },
+            TraceEvent::OtherClaimAvailable,
+            TraceEvent::AdvancedOtherClaim,
+        ],
+    },
+];
+
+fn validate_continuation_trace(trace: &ContinuationTrace) -> Vec<String> {
+    let mut errors = Vec::new();
+    if trace.events.is_empty() {
+        errors.push(format!("{} ({}) has no observed events", trace.name, trace.incident));
+        return errors;
+    }
+    let mut repaired = false;
+    let mut proof_result = None;
+    let mut disclosed = false;
+    let mut approval = false;
+    let mut candidate_wait = false;
+    let mut advanced = false;
+    let mut other_claim_available = false;
+    for event in trace.events {
+        if advanced {
+            errors.push(format!("{} has events after advancing the other claim", trace.name));
+        }
+        match event {
+            TraceEvent::RepairApplied { in_claim, reversible } => {
+                if repaired || proof_result.is_some() || disclosed {
+                    errors.push(format!("{} repair is out of order", trace.name));
+                }
+                if !in_claim || !reversible {
+                    errors.push(format!("{} repair is outside its reversible claim", trace.name));
+                }
+                repaired = true;
+            }
+            TraceEvent::ProofRerun { affected, passed } => {
+                if !repaired || proof_result.is_some() || disclosed {
+                    errors.push(format!("{} proof rerun is out of order", trace.name));
+                }
+                if !affected {
+                    errors.push(format!("{} lacks affected proof", trace.name));
+                }
+                // A failed rerun still requires honest disclosure; it is not merge proof.
+                proof_result = Some(*passed);
+            }
+            TraceEvent::Disclosed => {
+                if !repaired || proof_result.is_none() || disclosed {
+                    errors.push(format!("{} disclosure is out of order", trace.name));
+                }
+                disclosed = true;
+            }
+            TraceEvent::ApprovalRequested { basis } => {
+                if *basis == ApprovalBasis::SelfAuthoredMistake {
+                    errors.push(format!("{} turns self-authored repair into approval", trace.name));
+                }
+                approval = true;
+            }
+            TraceEvent::CandidateWait { wake_event, scope } => {
+                if candidate_wait {
+                    errors.push(format!("{} repeats its candidate wait", trace.name));
+                }
+                if wake_event.trim().is_empty() {
+                    errors.push(format!("{} has no exact candidate wake event", trace.name));
+                }
+                if *scope == HoldScope::Candidate
+                    && trace.claim_constraint != ClaimConstraint::PendingCandidateIntegration
+                {
+                    errors
+                        .push(format!("{} uses a broad hold for its claim constraint", trace.name));
+                }
+                if *scope == HoldScope::AffectedClaim
+                    && !matches!(
+                        trace.claim_constraint,
+                        ClaimConstraint::ActiveWriterOwnership
+                            | ClaimConstraint::HigherPrecedenceAffectedClaim
+                    )
+                {
+                    errors.push(format!(
+                        "{} uses an affected hold for the wrong claim constraint",
+                        trace.name
+                    ));
+                }
+                candidate_wait = true;
+            }
+            TraceEvent::Polled { state_changed } => {
+                if !state_changed {
+                    errors.push(format!("{} treats unchanged polling as progress", trace.name));
+                }
+            }
+            TraceEvent::OtherClaimAvailable => {
+                other_claim_available = true;
+            }
+            TraceEvent::AdvancedOtherClaim => {
+                if !candidate_wait {
+                    errors.push(format!(
+                        "{} advances before recording its candidate wait",
+                        trace.name
+                    ));
+                }
+                if !other_claim_available {
+                    errors.push(format!(
+                        "{} advanced a claim without observed availability",
+                        trace.name
+                    ));
+                }
+                advanced = true;
+            }
+        }
+    }
+    if repaired && (proof_result.is_none() || !disclosed) {
+        errors.push(format!(
+            "{} repair must be followed by affected proof and disclosure",
+            trace.name
+        ));
+    }
+    if candidate_wait && other_claim_available && !advanced {
+        errors.push(format!("{} candidate wait became a goal stop", trace.name));
+    }
+    match trace.claim_constraint {
+        ClaimConstraint::InAdmittedCandidate => {
+            if !repaired || approval {
+                errors.push(format!("{} must repair without approval", trace.name));
+            }
+        }
+        ClaimConstraint::PendingCandidateIntegration
+        | ClaimConstraint::ActiveWriterOwnership
+        | ClaimConstraint::HigherPrecedenceAffectedClaim => {
+            if !candidate_wait {
+                errors.push(format!("{} must hold the affected claim locally", trace.name));
+            } else if other_claim_available && !advanced {
+                errors.push(format!("{} must advance available disjoint work", trace.name));
+            }
+        }
+        ClaimConstraint::NonDerivableDecision | ClaimConstraint::ProtectedExternalAction => {
+            if !approval {
+                errors.push(format!("{} must retain its approval checkpoint", trace.name));
+            }
+        }
+    }
+    if repaired && !matches!(trace.claim_constraint, ClaimConstraint::InAdmittedCandidate) {
+        errors.push(format!("{} repairs a claim that requires a hold or decision", trace.name));
+    }
+    let expected_approval = match trace.claim_constraint {
+        ClaimConstraint::NonDerivableDecision => Some(ApprovalBasis::MaterialDecision),
+        ClaimConstraint::ProtectedExternalAction => Some(ApprovalBasis::ProtectedTransaction),
+        _ => None,
+    };
+    for event in trace.events {
+        if let TraceEvent::ApprovalRequested { basis } = event
+            && Some(*basis) != expected_approval
+        {
+            errors
+                .push(format!("{} approval basis does not match its claim constraint", trace.name));
+        }
+    }
+    errors
+}
+
+fn check_continuation_traces() -> Vec<String> {
+    SELF_CORRECTION_TRACES.iter().flat_map(validate_continuation_trace).collect()
 }
 
 const SCENARIO_FIXTURES: &[ScenarioFixture] = &[
@@ -359,8 +633,9 @@ pub fn run_scenarios(config: ScenarioConfig) -> Result<()> {
         "human" => {
             println!("{}", output.result);
             println!(
-                "scenarios: {} fixtures across {} providers",
+                "scenarios: {} route fixtures + {} continuation traces across {} providers",
                 output.fixture_count,
+                output.trace_fixture_count,
                 output.checked_providers.len()
             );
             for error in &output.errors {
@@ -384,6 +659,7 @@ fn scenario_output(report: CheckReport) -> ScenarioOutput {
         schema: "agent-flow-scenarios.v1",
         result,
         fixture_count: scenarios.fixture_count,
+        trace_fixture_count: scenarios.trace_fixture_count,
         checked_providers: scenarios.checked_providers,
         errors: scenarios.errors,
     }
@@ -495,10 +771,13 @@ fn check_repository(root: &Path, selected_skill: Option<&str>) -> Result<CheckRe
         errors.extend(skill_parity_violations(&name_sets, &allowlist, selected_skill));
     }
 
-    let scenario_errors = check_scenarios(&provider_skills);
+    let mut scenario_errors = check_scenarios(&provider_skills);
+    scenario_errors.extend(check_continuation_traces());
+    scenario_errors.extend(check_self_correction_guidance(root, selected_skill));
     errors.extend(scenario_errors.iter().cloned());
     let scenarios = ScenarioReport {
         fixture_count: SCENARIO_FIXTURES.len(),
+        trace_fixture_count: SELF_CORRECTION_TRACES.len(),
         checked_providers: provider_skills.keys().cloned().collect(),
         errors: scenario_errors,
     };
@@ -728,6 +1007,245 @@ fn check_scenarios(
         }
     }
     errors
+}
+
+const SELF_CORRECTION_DOCUMENT: &str = "docs/agents/DEVELOPMENT_METHOD.md";
+const SELF_CORRECTION_MARKER: &str = "Self-authored correction and disclosure";
+const SELF_CORRECTION_REFERENCE: &str = "correction and disclosure contract";
+const CANONICAL_SELF_CORRECTION_CLAUSES: &[(&str, &str)] = &[
+    ("correction", "correct it immediately"),
+    ("proof", "rerun the affected proof"),
+    ("disclosure", "disclose the defect, correction, result, and remaining uncertainty"),
+    ("scope/writer", "covered by the accepted claim and current writer envelope"),
+    (
+        "approval boundary",
+        "ask for a decision only when the correction requires a non-derivable product or policy choice, a separately protected external action, or material scope, cost, privacy, security, or exposure change",
+    ),
+    (
+        "candidate-local continuation",
+        "pending candidate work remains a candidate-local wait with one exact wake event",
+    ),
+    (
+        "higher precedence",
+        "repository guidance cannot override a higher-precedence runtime instruction; that provenance remains an explicit uncertainty boundary",
+    ),
+    (
+        "approval transaction",
+        "the fact that the agent introduced the defect does not create a new approval transaction",
+    ),
+    (
+        "disjoint continuation",
+        "do not turn unchanged polling into progress or an umbrella blocker; advance another disjoint claim when its authority permits",
+    ),
+];
+const KNOWN_BAD_SELF_CORRECTION_WORDING: &[&str] = &[
+    "tell the user rather than going back and correcting your bug",
+    "tell the user rather than correct the bug and let them decide",
+];
+const SELF_CORRECTION_SKILLS: &[&str] = &[
+    "deliver-goal",
+    "deliver-pr",
+    "orchestrate-work",
+    "build-candidate",
+    "address-review-comments",
+    "finish-pr",
+    "merge-reconcile",
+];
+
+#[derive(Deserialize)]
+struct AuthorityStatusDocument {
+    current_method: String,
+    documents: Vec<AuthorityStatusEntry>,
+}
+
+#[derive(Deserialize)]
+struct AuthorityStatusEntry {
+    path: String,
+    status: String,
+}
+
+fn check_self_correction_guidance(root: &Path, selected_skill: Option<&str>) -> Vec<String> {
+    let mut errors = Vec::new();
+    errors.extend(authority_binding_errors(root));
+    let mut surfaces = Vec::new();
+    for relative in [SELF_CORRECTION_DOCUMENT, "AGENTS.md", "CLAUDE.md"] {
+        surfaces.push((relative.to_string(), root.join(relative)));
+    }
+    for provider in [".agents/skills", ".claude/skills"] {
+        for skill in SELF_CORRECTION_SKILLS {
+            if selected_skill.is_some_and(|selected| selected != *skill) {
+                continue;
+            }
+            let relative = format!("{provider}/{skill}/SKILL.md");
+            surfaces.push((relative.clone(), root.join(relative)));
+        }
+    }
+    for (label, path) in surfaces {
+        let text = match fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(error) => {
+                errors.push(format!("{label}: cannot read self-correction guidance: {error}"));
+                continue;
+            }
+        };
+        let required = if label == SELF_CORRECTION_DOCUMENT {
+            SELF_CORRECTION_MARKER
+        } else {
+            SELF_CORRECTION_REFERENCE
+        };
+        if !text.contains(required) {
+            errors.push(format!("{label}: missing self-correction guidance marker '{required}'"));
+        }
+        if label == SELF_CORRECTION_DOCUMENT {
+            errors.extend(
+                canonical_self_correction_errors(&text)
+                    .into_iter()
+                    .map(|error| format!("{label}: {error}")),
+            );
+        }
+        match contains_known_bad_self_correction_wording(&text) {
+            Ok(true) => errors.push(format!("{label}: contains known-bad self-correction wording")),
+            Ok(false) => {}
+            Err(error) => {
+                errors.push(format!("{label}: cannot check self-correction wording: {error}"))
+            }
+        }
+    }
+    errors
+}
+
+fn authority_binding_errors(root: &Path) -> Vec<String> {
+    let relative = "docs/agents/authority_status.toml";
+    let path = root.join(relative);
+    let text = match fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) => {
+            return vec![format!("{relative}: authority binding cannot read registry: {error}")];
+        }
+    };
+    authority_binding_errors_from_text(&text)
+        .into_iter()
+        .map(|error| format!("{relative}: {error}"))
+        .collect()
+}
+
+// Provider references still name this fixed guide. A changed authority must fail
+// until the guide, references, and checker are deliberately migrated together.
+fn authority_binding_errors_from_text(text: &str) -> Vec<String> {
+    let registry = match toml::from_str::<AuthorityStatusDocument>(text) {
+        Ok(registry) => registry,
+        Err(error) => return vec![format!("authority binding registry is malformed: {error}")],
+    };
+    let expected = SELF_CORRECTION_DOCUMENT;
+    let mut errors = Vec::new();
+    if registry.current_method != expected {
+        errors.push(format!("authority binding current_method must be '{expected}'"));
+    }
+    let matches =
+        registry.documents.iter().filter(|entry| entry.path == expected).collect::<Vec<_>>();
+    if matches.len() != 1 {
+        errors.push(format!(
+            "authority binding requires exactly one current '{expected}' document row"
+        ));
+    } else if matches.first().is_none_or(|entry| entry.status != "current") {
+        errors.push(format!("authority binding document '{expected}' must have status 'current'"));
+    }
+    errors
+}
+
+fn canonical_self_correction_errors(text: &str) -> Vec<String> {
+    let section = match canonical_self_correction_section(text) {
+        Ok(section) => section,
+        Err(reason) => return vec![reason.to_owned()],
+    };
+    let normalized = normalize_guidance_text(&section);
+    CANONICAL_SELF_CORRECTION_CLAUSES
+        .iter()
+        .filter(|(_, clause)| !normalized.contains(&normalize_guidance_text(clause)))
+        .map(|(name, _)| format!("canonical self-correction section missing {name} clause"))
+        .collect()
+}
+
+/// Extract the finite, named canonical section used by the guidance checker.
+/// This intentionally handles only the repository's `##` Markdown heading
+/// shape; it is a structural presence check, not a general Markdown parser.
+fn canonical_self_correction_section(text: &str) -> Result<String, &'static str> {
+    let heading = format!("## {SELF_CORRECTION_MARKER}");
+    let heading_count = text.lines().filter(|line| line.trim() == heading).count();
+    if heading_count == 0 {
+        return Err("missing canonical self-correction section body");
+    }
+    if heading_count > 1 {
+        return Err("canonical self-correction section appears more than once");
+    }
+    let mut in_section = false;
+    let mut body = String::new();
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if !in_section {
+            if trimmed == heading {
+                in_section = true;
+            }
+            continue;
+        }
+        if trimmed.starts_with("# ") || trimmed.starts_with("## ") {
+            break;
+        }
+        body.push_str(line);
+        body.push('\n');
+    }
+    if body.trim().is_empty() {
+        return Err("canonical self-correction section body is empty");
+    }
+    Ok(body)
+}
+
+fn normalize_guidance_text(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ").to_ascii_lowercase()
+}
+
+fn contains_known_bad_self_correction_wording(
+    text: &str,
+) -> std::result::Result<bool, regex::Error> {
+    // Finite formatting forms, not a Markdown parser: simple inline links,
+    // non-nested emphasis and single-backtick code. Preserve other punctuation.
+    let links = regex::Regex::new(r"\[([^\[\]\n]+)\]\([^()\n]*\)")?;
+    let formatting =
+        regex::Regex::new(r"\*\*([^*]+)\*\*|__([^_]+)__|\*([^*]+)\*|_([^_]+)_|`([^`]+)`")?;
+    let mut paragraph = String::new();
+    for line in text.lines().chain(std::iter::once("")) {
+        if !line.trim().is_empty() {
+            paragraph.push(' ');
+            paragraph.push_str(line);
+            continue;
+        }
+        let visible = links.replace_all(&paragraph, "$1");
+        let visible = formatting.replace_all(&visible, |captures: &regex::Captures<'_>| {
+            let Some(whole) = captures.get(0) else { return String::new() };
+            let before = visible.get(..whole.start()).and_then(|s| s.chars().next_back());
+            let after = visible.get(whole.end()..).and_then(|s| s.chars().next());
+            // Unmatched adjacent delimiters, escapes and intraword punctuation
+            // must not be converted into spaces that manufacture a phrase.
+            let boundary =
+                |c: char| c.is_alphanumeric() || matches!(c, '*' | '_' | '`' | '~' | '\\');
+            if before.is_some_and(boundary) || after.is_some_and(boundary) {
+                return whole.as_str().to_owned();
+            }
+            captures
+                .iter()
+                .skip(1)
+                .flatten()
+                .next()
+                .map_or_else(|| whole.as_str().to_owned(), |label| label.as_str().to_owned())
+        });
+        let normalized =
+            visible.split_whitespace().collect::<Vec<_>>().join(" ").to_ascii_lowercase();
+        if KNOWN_BAD_SELF_CORRECTION_WORDING.iter().any(|phrase| normalized.contains(phrase)) {
+            return Ok(true);
+        }
+        paragraph.clear();
+    }
+    Ok(false)
 }
 
 fn collect_skills(skill_root: &Path, errors: &mut Vec<String>) -> Result<Vec<Skill>> {
@@ -1128,8 +1646,9 @@ fn print_human(report: &CheckReport) {
         );
     }
     println!(
-        "scenarios: {} fixtures across {} providers",
+        "scenarios: {} route fixtures + {} continuation traces across {} providers",
         report.scenarios.fixture_count,
+        report.scenarios.trace_fixture_count,
         report.scenarios.checked_providers.len()
     );
     for error in &report.errors {
@@ -1755,6 +2274,7 @@ mod tests {
             providers: BTreeMap::new(),
             scenarios: super::ScenarioReport {
                 fixture_count: SCENARIO_FIXTURES.len(),
+                trace_fixture_count: super::SELF_CORRECTION_TRACES.len(),
                 checked_providers: vec!["codex".to_string()],
                 errors: Vec::new(),
             },
@@ -1763,5 +2283,444 @@ mod tests {
         });
         assert_eq!(output.result, "PASS");
         assert!(output.errors.is_empty());
+    }
+
+    #[test]
+    fn continuation_traces_accept_authorized_routes() -> anyhow::Result<()> {
+        anyhow::ensure!(
+            super::check_continuation_traces().is_empty(),
+            "accepted incident traces failed"
+        );
+        Ok(())
+    }
+
+    fn trace_errors(
+        constraint: super::ClaimConstraint,
+        events: &'static [super::TraceEvent],
+    ) -> Vec<String> {
+        super::validate_continuation_trace(&super::ContinuationTrace {
+            name: "control",
+            incident: "self-correction recurrence",
+            claim_constraint: constraint,
+            events,
+        })
+    }
+
+    #[test]
+    fn continuation_rejects_each_incomplete_or_misordered_repair() -> anyhow::Result<()> {
+        use super::{ApprovalBasis as A, ClaimConstraint as C, TraceEvent as E};
+        let cases: &[(&[E], &str)] = &[
+            (&[], "no observed events"),
+            (&[E::ApprovalRequested { basis: A::SelfAuthoredMistake }], "approval"),
+            (&[E::RepairApplied { in_claim: true, reversible: true }, E::Disclosed], "proof"),
+            (
+                &[
+                    E::RepairApplied { in_claim: true, reversible: true },
+                    E::ProofRerun { affected: true, passed: true },
+                ],
+                "disclosure",
+            ),
+            (
+                &[
+                    E::ProofRerun { affected: true, passed: true },
+                    E::RepairApplied { in_claim: true, reversible: true },
+                    E::Disclosed,
+                ],
+                "out of order",
+            ),
+            (
+                &[
+                    E::Disclosed,
+                    E::RepairApplied { in_claim: true, reversible: true },
+                    E::ProofRerun { affected: true, passed: true },
+                ],
+                "out of order",
+            ),
+            (
+                &[
+                    E::RepairApplied { in_claim: false, reversible: true },
+                    E::ProofRerun { affected: true, passed: true },
+                    E::Disclosed,
+                ],
+                "outside",
+            ),
+            (
+                &[
+                    E::RepairApplied { in_claim: true, reversible: false },
+                    E::ProofRerun { affected: true, passed: true },
+                    E::Disclosed,
+                ],
+                "outside",
+            ),
+            (
+                &[
+                    E::RepairApplied { in_claim: true, reversible: true },
+                    E::ProofRerun { affected: false, passed: true },
+                    E::Disclosed,
+                ],
+                "affected proof",
+            ),
+        ];
+        for (events, expected) in cases {
+            let errors = trace_errors(C::InAdmittedCandidate, events);
+            anyhow::ensure!(
+                errors.iter().any(|e| e.contains(expected)),
+                "missing {expected}: {errors:?}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn failed_proof_still_permits_honest_disclosure() -> anyhow::Result<()> {
+        use super::{ClaimConstraint as C, TraceEvent as E};
+        let errors = trace_errors(
+            C::InAdmittedCandidate,
+            &[
+                E::RepairApplied { in_claim: true, reversible: true },
+                E::ProofRerun { affected: true, passed: false },
+                E::Disclosed,
+            ],
+        );
+        anyhow::ensure!(errors.is_empty(), "failed proof disclosure was rejected: {errors:?}");
+        Ok(())
+    }
+
+    #[test]
+    fn protected_claims_reject_even_well_ordered_repairs() -> anyhow::Result<()> {
+        use super::{ClaimConstraint as C, TraceEvent as E};
+        for constraint in [
+            C::ActiveWriterOwnership,
+            C::HigherPrecedenceAffectedClaim,
+            C::ProtectedExternalAction,
+            C::NonDerivableDecision,
+        ] {
+            let errors = trace_errors(
+                constraint,
+                &[
+                    E::RepairApplied { in_claim: true, reversible: true },
+                    E::ProofRerun { affected: true, passed: true },
+                    E::Disclosed,
+                ],
+            );
+            anyhow::ensure!(
+                errors.iter().any(|e| e.contains("requires a hold or decision")),
+                "protected repair accepted: {constraint:?}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn candidate_wait_needs_advancement_only_when_other_work_exists() -> anyhow::Result<()> {
+        use super::{ClaimConstraint as C, HoldScope as H, TraceEvent as E};
+        let errors = trace_errors(
+            C::PendingCandidateIntegration,
+            &[E::CandidateWait { wake_event: "run-34224617469-completed", scope: H::Candidate }],
+        );
+        anyhow::ensure!(errors.is_empty(), "legitimate sole-claim wait rejected: {errors:?}");
+        for (events, expected) in [
+            (
+                &[
+                    E::CandidateWait { wake_event: "run-completed", scope: H::Candidate },
+                    E::OtherClaimAvailable,
+                ][..],
+                "goal stop",
+            ),
+            (&[E::CandidateWait { wake_event: "", scope: H::Candidate }][..], "wake event"),
+            (
+                &[
+                    E::CandidateWait { wake_event: "run-completed", scope: H::Candidate },
+                    E::Polled { state_changed: false },
+                ][..],
+                "unchanged polling",
+            ),
+            (
+                &[
+                    E::CandidateWait { wake_event: "run-completed", scope: H::Candidate },
+                    E::AdvancedOtherClaim,
+                ][..],
+                "without observed availability",
+            ),
+        ] {
+            let errors = trace_errors(C::PendingCandidateIntegration, events);
+            anyhow::ensure!(
+                errors.iter().any(|e| e.contains(expected)),
+                "missing {expected}: {errors:?}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn continuation_cannot_advance_before_wait_or_keep_running_after_advance() -> anyhow::Result<()>
+    {
+        use super::{ClaimConstraint as C, HoldScope as H, TraceEvent as E};
+        for (events, expected) in [
+            (
+                &[
+                    E::OtherClaimAvailable,
+                    E::AdvancedOtherClaim,
+                    E::CandidateWait { wake_event: "run-completed", scope: H::Candidate },
+                ][..],
+                "before recording",
+            ),
+            (
+                &[
+                    E::CandidateWait { wake_event: "run-completed", scope: H::Candidate },
+                    E::OtherClaimAvailable,
+                    E::AdvancedOtherClaim,
+                    E::AdvancedOtherClaim,
+                ][..],
+                "events after",
+            ),
+            (
+                &[
+                    E::CandidateWait { wake_event: "run-completed", scope: H::Candidate },
+                    E::OtherClaimAvailable,
+                    E::AdvancedOtherClaim,
+                    E::Polled { state_changed: true },
+                ][..],
+                "events after",
+            ),
+        ] {
+            let errors = trace_errors(C::PendingCandidateIntegration, events);
+            anyhow::ensure!(
+                errors.iter().any(|e| e.contains(expected)),
+                "missing {expected}: {errors:?}"
+            );
+        }
+        let errors = trace_errors(
+            C::PendingCandidateIntegration,
+            &[
+                E::CandidateWait { wake_event: "run-completed", scope: H::Candidate },
+                E::CandidateWait { wake_event: "run-completed", scope: H::Candidate },
+            ],
+        );
+        anyhow::ensure!(
+            errors.iter().any(|e| e.contains("repeats its candidate wait")),
+            "duplicate wait accepted"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn approval_requires_its_own_exact_basis() -> anyhow::Result<()> {
+        use super::{ApprovalBasis as A, ClaimConstraint as C, TraceEvent as E};
+        let errors = trace_errors(
+            C::ProtectedExternalAction,
+            &[
+                E::ApprovalRequested { basis: A::ProtectedTransaction },
+                E::ApprovalRequested { basis: A::MaterialDecision },
+            ],
+        );
+        anyhow::ensure!(
+            errors.iter().any(|e| e.contains("approval basis")),
+            "one valid approval masked a wrong basis"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn known_bad_wording_survives_case_and_line_wrap_changes() -> anyhow::Result<()> {
+        for text in [
+            "Tell the user rather than going back and correcting your bug.",
+            "tell the user rather than correct the bug and let them decide",
+            "Tell the user rather than going\nback and correcting your bug.",
+            "tell the **user** rather than going back and correcting your bug",
+            "tell the *user* rather than going back and correcting your bug",
+            "tell the __user__ rather than going back and correcting your bug",
+            "tell the _user_ rather than going back and correcting your bug",
+            "tell the [user](https://example.invalid) rather than going back and correcting your bug",
+            "tell the [**user**](https://example.invalid) rather than going back and correcting your bug",
+            "tell the `user` rather than going back and correcting your bug",
+            "tell the **user** rather than going\r\nback and correcting your bug",
+        ] {
+            anyhow::ensure!(
+                super::contains_known_bad_self_correction_wording(text)?,
+                "known regression was missed: {text:?}"
+            );
+        }
+        anyhow::ensure!(
+            !super::contains_known_bad_self_correction_wording(
+                "Correct the reversible defect, rerun proof, and disclose the correction."
+            )?,
+            "canonical guidance rejected"
+        );
+        anyhow::ensure!(
+            !super::contains_known_bad_self_correction_wording(
+                "tell the\n\nuser rather than going back and correcting your bug"
+            )?,
+            "separate paragraphs were incorrectly joined"
+        );
+        for text in [
+            "tell the *user rather than going back and correcting your bug",
+            "tell the u_ser rather than going back and correcting your bug",
+            "tell the ~~user~~ rather than going back and correcting your bug",
+            "tell the **user* rather than going back and correcting your bug * elsewhere",
+            "tell the\r\n\r\nuser rather than going back and correcting your bug",
+            "tell the\n  \nuser rather than going back and correcting your bug",
+        ] {
+            anyhow::ensure!(
+                !super::contains_known_bad_self_correction_wording(text)?,
+                "unsupported Markdown manufactured a known-bad match: {text:?}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn canonical_self_correction_clauses_are_scoped_to_named_section() -> anyhow::Result<()> {
+        let source = include_str!("../../../docs/agents/DEVELOPMENT_METHOD.md");
+        anyhow::ensure!(
+            super::canonical_self_correction_errors(source).is_empty(),
+            "actual canonical guidance rejected"
+        );
+
+        let heading = "## Self-authored correction and disclosure\n";
+        let body = super::CANONICAL_SELF_CORRECTION_CLAUSES
+            .iter()
+            .map(|(_, clause)| *clause)
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        for (clause_name, clause) in super::CANONICAL_SELF_CORRECTION_CLAUSES {
+            let replacement = format!("{heading}{body}");
+            let removed = replacement.replacen(clause, "", 1);
+            let errors = super::canonical_self_correction_errors(&removed);
+            anyhow::ensure!(
+                errors.iter().any(|error| error
+                    == &format!("canonical self-correction section missing {clause_name} clause")),
+                "deleted {clause_name} clause did not trigger its production finding"
+            );
+        }
+
+        let masked = format!(
+            "{heading}Approval must always be requested before correcting an agent-authored defect.\n\n## Elsewhere\n{body}"
+        );
+        anyhow::ensure!(
+            super::canonical_self_correction_errors(&masked).iter().any(|error|
+                error == "canonical self-correction section missing correction clause"
+            ),
+            "body from another section masked missing canonical correction clause"
+        );
+        for (invalid, expected) in [
+            (body.clone(), "missing canonical self-correction section body"),
+            (format!("{heading}\n## Next"), "canonical self-correction section body is empty"),
+            (
+                format!("{heading}{body}\n\n{heading}{body}"),
+                "canonical self-correction section appears more than once",
+            ),
+        ] {
+            anyhow::ensure!(
+                super::canonical_self_correction_errors(&invalid)
+                    .iter()
+                    .any(|error| error == expected),
+                "malformed canonical section did not trigger {expected}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn authority_binding_requires_one_current_canonical_method() -> anyhow::Result<()> {
+        let valid = "current_method = \"docs/agents/DEVELOPMENT_METHOD.md\"\n\n[[documents]]\npath = \"docs/agents/DEVELOPMENT_METHOD.md\"\nstatus = \"current\"\n";
+        anyhow::ensure!(
+            super::authority_binding_errors_from_text(valid).is_empty(),
+            "valid authority binding rejected"
+        );
+        for (text, expected) in [
+            (valid.replacen("DEVELOPMENT_METHOD.md", "OLD_METHOD.md", 1), "current_method"),
+            (valid.replace("status = \"current\"", "status = \"historical\""), "status 'current'"),
+            (valid.replace("current_method =", "current_method = ["), "malformed"),
+            (
+                format!(
+                    "current_method = \"{}\"\ndocuments = []\n",
+                    super::SELF_CORRECTION_DOCUMENT
+                ),
+                "exactly one current",
+            ),
+            (String::new(), "malformed"),
+            (
+                format!(
+                    "{valid}\n[[documents]]\npath = \"docs/agents/DEVELOPMENT_METHOD.md\"\nstatus = \"current\"\n"
+                ),
+                "exactly one current",
+            ),
+        ] {
+            anyhow::ensure!(
+                super::authority_binding_errors_from_text(&text)
+                    .iter()
+                    .any(|error| error.contains(expected)),
+                "authority negative did not trigger {expected}: {text}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn focused_guidance_checks_keep_local_and_shared_boundaries() -> anyhow::Result<()> {
+        let fixture = tempfile::tempdir()?;
+        let root = fixture.path();
+        std::fs::create_dir_all(root.join("docs/agents"))?;
+        let canonical = include_str!("../../../docs/agents/DEVELOPMENT_METHOD.md");
+        let registry = include_str!("../../../docs/agents/authority_status.toml");
+        std::fs::write(root.join(super::SELF_CORRECTION_DOCUMENT), canonical)?;
+        std::fs::write(root.join("docs/agents/authority_status.toml"), registry)?;
+        for front_door in ["AGENTS.md", "CLAUDE.md"] {
+            std::fs::write(root.join(front_door), super::SELF_CORRECTION_REFERENCE)?;
+        }
+        for provider in [".agents/skills", ".claude/skills"] {
+            for skill in super::SELF_CORRECTION_SKILLS {
+                let directory = root.join(provider).join(skill);
+                std::fs::create_dir_all(&directory)?;
+                std::fs::write(directory.join("SKILL.md"), super::SELF_CORRECTION_REFERENCE)?;
+            }
+        }
+        anyhow::ensure!(
+            super::check_self_correction_guidance(root, None).is_empty(),
+            "valid fixture rejected"
+        );
+        let unrelated = ".agents/skills/build-candidate/SKILL.md";
+        std::fs::write(
+            root.join(unrelated),
+            format!(
+                "{}\n\ntell the user rather than going back and correcting your bug",
+                super::SELF_CORRECTION_REFERENCE
+            ),
+        )?;
+        anyhow::ensure!(
+            super::check_self_correction_guidance(root, Some("deliver-pr")).is_empty(),
+            "unrelated skill contaminated the focused guidance check"
+        );
+        for selected in [None, Some("build-candidate")] {
+            anyhow::ensure!(
+                super::check_self_correction_guidance(root, selected)
+                    .iter()
+                    .any(|error| error.contains(unrelated)),
+                "selected/full check missed its bad guidance"
+            );
+        }
+        std::fs::write(
+            root.join(super::SELF_CORRECTION_DOCUMENT),
+            "## Self-authored correction and disclosure\nApproval is always required.\n",
+        )?;
+        anyhow::ensure!(
+            super::check_self_correction_guidance(root, Some("deliver-pr"))
+                .iter()
+                .any(|error| error.contains("missing correction clause")),
+            "focused check bypassed shared canonical obligations"
+        );
+        std::fs::write(root.join(super::SELF_CORRECTION_DOCUMENT), canonical)?;
+        std::fs::write(
+            root.join("docs/agents/authority_status.toml"),
+            registry.replacen("current_method =", "previous_method =", 1),
+        )?;
+        anyhow::ensure!(
+            super::check_self_correction_guidance(root, Some("deliver-pr"))
+                .iter()
+                .any(|error| error.contains("authority binding")),
+            "focused check bypassed shared authority binding"
+        );
+        Ok(())
     }
 }

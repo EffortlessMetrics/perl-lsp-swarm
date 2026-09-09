@@ -168,6 +168,19 @@ Keep claim frames and wake events in runtime memory only. Reconstruct them from 
 PRs, reviews, checks, merges, and repository artifacts after compaction or replacement.
 Do not poll unchanged remote state.
 
+A remote wait releases root attention. An exact wake event records the material
+condition that would justify reconstructing the claim later; it is not an instruction
+to keep the current root session alive until that condition changes. Do not create a
+timer, cron, scheduled reminder, recurring wake, or polling loop merely to revisit the
+same remote condition. In a multi-claim goal, release unnecessary live contexts and
+immediately advance another phase-eligible actionable claim. If no remaining
+required claim is actionable because each waits on a real external blocker or
+accountable owner decision, return `EXTERNAL_BLOCKER` with each claim's condition and
+wake event named, and let the bounded engineering session end rather than preserving
+the main thread as a watcher.
+Scheduled monitoring is a different user goal, not a continuation mechanism for
+ordinary engineering work.
+
 ## Useful GitHub handoffs
 
 Post or update GitHub only when information remains useful after the current context
@@ -241,6 +254,13 @@ Never weaken a test, ratchet, support claim, or required proof merely to obtain 
 status. Missing, partial, stale, contradictory, or instrument-failed evidence is
 `NOT_PROVEN`.
 
+## Self-authored correction and disclosure
+
+Follow the canonical correction and disclosure contract in
+[`docs/agents/DEVELOPMENT_METHOD.md`](docs/agents/DEVELOPMENT_METHOD.md): repair an
+in-scope reversible defect, rerun affected proof, disclose the correction, and request
+approval only for a separate non-derivable or protected decision.
+
 ## Hard stops
 
 Stop only for concrete hazards:
@@ -263,9 +283,36 @@ Otherwise detect, explain, repair, and continue.
 - read nearest package-local owner guidance before modifying an owning crate;
 - production code must not use `unwrap`, `expect`, `panic!`, `todo!`,
   `unimplemented!`, `abort`, or `dbg!` outside documented narrow exceptions;
-- never use `git stash` in worktrees; use scoped restore or a WIP commit;
+- never use `git stash`: `refs/stash` is a single repository-global stack shared by
+  every worktree, so a concurrent agent's `pop` can silently take your entry into
+  its own tree and drop the ref; use scoped restore or a WIP commit;
+- immediately before candidate mutation, establish the exact candidate, head, and
+  mutation owner from live evidence, using typed checks applicable to that operation;
+  new-candidate admission is not a resume check. For an existing candidate, use
+  applicable resume/reuse guidance and current ownership evidence; an open PR alone
+  does not establish another writer. Missing, stale, or contradictory ownership
+  evidence is `NOT_PROVEN`; read-only research and review need no writer admission;
+- if another current writer is established, stop mutating that candidate; continue as
+  a reviewer or take a different claim;
+- rebase and force-push require a candidate's single writer and the applicable user and
+  repository authorization; writer ownership alone grants no rewrite permission;
+- if commits from multiple contexts have already reached the branch, first establish
+  one writer; that writer preserves the commits by merging rather than rewriting
+  history, subject to the applicable authorization;
 - stage intended paths explicitly;
 - use one worktree per genuine concurrent write claim, not per lifecycle pass;
+- regenerate generated projections only through their owning writer and publication
+  policy; never hand-merge or hand-edit them. `docs/policy/NON_RUST_INVENTORY.md` is
+  a default-branch publication: feature branches do not regenerate or stage it.
+  Follow [FILE_POLICY.md](docs/FILE_POLICY.md) and
+  [NON_RUST_POLICY.md](docs/policy/NON_RUST_POLICY.md) for current-tree evidence
+  under `target/policy/` (#14688; #14805);
+- never add temporary workflows that fetch, execute, or push on behalf of a branch
+  (`contents: write` self-repair jobs); apply the edit locally and remove such files
+  when found on a branch;
+- before treating an older branch as an unrelated-history port, check its merge base
+  with current `main`; a branch that shares history is a candidate to compare at
+  claim level, not an unrelated-history port;
 - run focused proof, then affected package proof, then broader proof only when risk or
   the merge gate selects it;
 - do not run repository-wide Clippy or tests after every edit;
