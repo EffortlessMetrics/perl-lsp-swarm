@@ -113,6 +113,37 @@ fn workflow_step_value(job_name: &str, step_name: &str) -> Result<Value> {
         .ok_or_else(|| anyhow!("{job_name} step {step_name} is missing"))
 }
 
+fn require_single_canonical_container_installer(script: &str) -> Result<(), String> {
+    let installers: Vec<_> = script
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.starts_with("cargo install ripr"))
+        .collect();
+    let expected = r#"cargo install ripr --version "$RIPR_VERSION" --locked"#;
+    if installers.len() != 1 || installers.first().copied() != Some(expected) {
+        return Err(format!(
+            "normal hosted producer must have exactly one canonical container RIPR installer; \
+             found {installers:?}"
+        ));
+    }
+    Ok(())
+}
+
+#[test]
+fn container_installer_contract_rejects_extra_or_mismatched_installers()
+-> Result<(), Box<dyn std::error::Error>> {
+    let canonical = r#"cargo install ripr --version "$RIPR_VERSION" --locked"#;
+    require_single_canonical_container_installer(canonical)?;
+
+    for extra in [r#"cargo install ripr --version "0.9.0" --locked"#, "cargo install ripr"] {
+        let script = format!("{canonical}\n{extra}");
+        if require_single_canonical_container_installer(&script).is_ok() {
+            return Err(format!("accepted invalid container installer fixture: {extra}").into());
+        }
+    }
+    Ok(())
+}
+
 #[derive(Clone, Copy)]
 struct GateRoute<'a> {
     router_target: &'a str,
@@ -1247,6 +1278,7 @@ fn ripr_workflow_runs_on_ready_for_review_without_path_filter()
         .into());
     }
     let hosted_producer = workflow_run_block("ripr-github", "Generate PR evidence")?;
+    require_single_canonical_container_installer(&hosted_producer)?;
     assert!(
         hosted_producer.contains("docker run --rm")
             && hosted_producer.contains("--memory=6g")
@@ -1256,7 +1288,6 @@ fn ripr_workflow_runs_on_ready_for_review_without_path_filter()
             && hosted_producer.contains("-e RIPR_MAX_DIFF_INDEX_FILES=1000")
             && hosted_producer.contains("-e RIPR_FRESHNESS_HANDOFF=/freshness")
             && hosted_producer.contains("-v \"$RIPR_FRESHNESS_HANDOFF:/freshness\"")
-            && hosted_producer.contains("cargo install ripr --version \"$RIPR_VERSION\" --locked")
             && hosted_producer.contains("--name \"$container_name\"")
             && hosted_producer.contains("trap cleanup_host_state EXIT")
             && hosted_producer.contains("timeout --signal=TERM --kill-after=5s 15s docker ps -aq")
