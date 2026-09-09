@@ -1,4 +1,5 @@
 import * as assert from 'assert';
+import { spawn, type ChildProcessWithoutNullStreams } from 'child_process';
 import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -337,6 +338,7 @@ const PROCESS_SCAN_OUTPUT_MAX_BYTES = 4 * 1024 * 1024;
 export interface BundledServerProcessIdentity {
   pid: number;
   path: string;
+  creationTimeFileTime?: string;
 }
 
 /**
@@ -360,7 +362,7 @@ export async function scanServerProcessIdentities(
       '-NonInteractive',
       '-Command',
       '(Get-Process -Name perllsp,perl-lsp -ErrorAction SilentlyContinue) | ' +
-        'ForEach-Object { if ($_.Path) { "$($_.Id)`t$($_.Path)" } }',
+        'ForEach-Object { if ($_.Path) { "$($_.Id)`t$($_.Path)`t$($_.StartTime.ToFileTimeUtc())" } }',
     ];
   } else {
     command = 'ps';
@@ -399,8 +401,9 @@ export async function scanServerProcessIdentities(
     .filter((line) => line.length > 0)
     .map((line) => {
       const match = /^(\d+)[ \t]+(.+)$/.exec(line);
-      const pidText = match?.[1];
-      const executable = match?.[2]?.trim();
+      const windowsMatch = process.platform === 'win32' ? /^(\d+)\t(.+)\t(\d+)$/.exec(line) : null;
+      const pidText = windowsMatch?.[1] ?? match?.[1];
+      const executable = (windowsMatch?.[2] ?? match?.[2])?.trim();
       if (pidText === undefined || executable === undefined) {
         return null;
       }
@@ -417,7 +420,10 @@ export async function scanServerProcessIdentities(
       // and digest checks need the real file, so reduce the POSIX row to the
       // invoked binary — the scanned directory plus the binary name.
       if (process.platform === 'win32') {
-        return { pid, path: executable };
+        const creationTimeFileTime = windowsMatch?.[3];
+        return creationTimeFileTime === undefined
+          ? { pid, path: executable }
+          : { pid, path: executable, creationTimeFileTime };
       }
       const remainder = executable.slice(resolved.length);
       const binaryName = remainder.split(/[ \t]/, 1)[0];
@@ -484,14 +490,12 @@ export async function terminateServerProcess(pid: number): Promise<BoundedTermin
 }
 
 /**
- * Whether this host can suspend an external process at all. Only POSIX hosts
- * expose SIGSTOP through Node; Windows has no equivalent without native
- * helpers, so the watchdog row honestly degrades to `not_proven` there
- * instead of fabricating a hang (#7848: typed limitation, never a silent
- * skip; #7846 owns the deterministic watchdog mechanism proof).
+ * Whether this host can suspend an external process at all. Windows uses the
+ * checked-in owned-child PowerShell helper; if the helper is absent, retain
+ * the typed `not_proven` limitation rather than fabricating a hang.
  */
 export function canSuspendServerProcesses(): boolean {
-  return process.platform !== 'win32';
+  return process.platform !== 'win32' || fs.existsSync(path.resolve(__dirname, '../../../../scripts/tests/windows-owned-suspend.ps1'));
 }
 
 export interface SuspendResult {
@@ -499,12 +503,40 @@ export interface SuspendResult {
   detail: string;
 }
 
-/** Suspend the exact server process (SIGSTOP) so it hangs without exiting. */
-export function suspendServerProcess(pid: number): SuspendResult {
+const windowsSuspensionHelpers = new Map<number, ChildProcessWithoutNullStreams>();
+
+/** Suspend the exact server process, using a pinned Windows helper when needed. */
+export async function suspendServerProcess(
+  pid: number,
+  creationTimeFileTime?: string,
+): Promise<SuspendResult> {
   // process.kill(0, ...) would signal the whole process group — including the
   // extension host. Guard every caller, not just the current scan-filtered one.
   if (!Number.isInteger(pid) || pid <= 0) {
     return { outcome: 'error', detail: `invalid server pid: ${pid}` };
+  }
+  if (process.platform === 'win32') {
+    if (creationTimeFileTime === undefined || windowsSuspensionHelpers.has(pid)) {
+      return { outcome: 'error', detail: 'missing or duplicate Windows process identity' };
+    }
+    const helper = path.resolve(__dirname, '../../../../scripts/tests/windows-owned-suspend.ps1');
+    const child = spawn('powershell.exe', [
+      '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', helper,
+      '-ProcessId', String(pid), '-CreationTimeFileTime', creationTimeFileTime,
+    ], { stdio: 'pipe', windowsHide: true });
+    return await new Promise<SuspendResult>((resolve) => {
+      let settled = false;
+      const timer = setTimeout(() => { if (!settled) { settled = true; child.kill(); resolve({ outcome: 'error', detail: 'Windows suspension handshake timed out' }); } }, 10_000);
+      let output = '';
+      child.stdout.on('data', (chunk: Buffer) => {
+        output += chunk.toString('utf8');
+        if (output.split(/\r?\n/).some((line) => line.startsWith('SUSPENDED ')) && !settled) {
+          settled = true; clearTimeout(timer); windowsSuspensionHelpers.set(pid, child); resolve({ outcome: 'suspended', detail: output.trim() });
+        }
+      });
+      child.on('error', (error) => { if (!settled) { settled = true; clearTimeout(timer); resolve({ outcome: 'error', detail: error.message }); } });
+      child.on('exit', (code) => { if (!settled) { settled = true; clearTimeout(timer); resolve({ outcome: 'error', detail: `Windows suspension helper exited ${String(code)}: ${output.trim()}` }); } });
+    });
   }
   try {
     process.kill(pid, 'SIGSTOP');
@@ -517,10 +549,22 @@ export function suspendServerProcess(pid: number): SuspendResult {
   }
 }
 
-/** Resume a suspended server process (SIGCONT). */
-export function resumeServerProcess(pid: number): SuspendResult {
+/** Resume a suspended server process, releasing only its helper-owned handles. */
+export async function resumeServerProcess(pid: number): Promise<SuspendResult> {
   if (!Number.isInteger(pid) || pid <= 0) {
     return { outcome: 'error', detail: `invalid server pid: ${pid}` };
+  }
+  if (process.platform === 'win32') {
+    const child = windowsSuspensionHelpers.get(pid);
+    if (child === undefined) return { outcome: 'error', detail: `no owned Windows suspension for pid ${pid}` };
+    windowsSuspensionHelpers.delete(pid);
+    return await new Promise<SuspendResult>((resolve) => {
+      let error = '';
+      const timer = setTimeout(() => { child.kill(); resolve({ outcome: 'error', detail: 'Windows resume handshake timed out' }); }, 10_000);
+      child.stderr.on('data', (chunk: Buffer) => { error += chunk.toString('utf8'); });
+      child.on('close', (code) => { clearTimeout(timer); resolve(code === 0 ? { outcome: 'resumed', detail: `resumed owned Windows suspension pid ${pid}` } : { outcome: 'error', detail: error || `Windows resume helper exited ${String(code)}` }); });
+      child.stdin.write('resume\n'); child.stdin.end();
+    });
   }
   try {
     process.kill(pid, 'SIGCONT');
