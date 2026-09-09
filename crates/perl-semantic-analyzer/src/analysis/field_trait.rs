@@ -162,12 +162,15 @@ fn decode_argument_body(body: &str) -> FieldTraitArgument {
 ///
 /// Only an identifier can name a generated method. Non-identifier static text
 /// is still meaningful as a `:param` constructor key, and is reported as
-/// [`FieldTraitArgument::LiteralText`] rather than discarded.
+/// [`FieldTraitArgument::LiteralText`] rather than discarded. Identifiers are
+/// Unicode-aware, matching the parser's own rule for variable and method
+/// names under `use utf8` (variables.rs) — an ASCII-only check would drop
+/// valid generated methods such as `:reader(manĝis)`.
 fn is_static_name(name: &str) -> bool {
     let mut chars = name.chars();
     let Some(first) = chars.next() else { return false };
-    (first == '_' || first.is_ascii_alphabetic())
-        && chars.all(|character| character == '_' || character.is_ascii_alphanumeric())
+    (first == '_' || first.is_alphabetic())
+        && chars.all(|character| character == '_' || character.is_alphanumeric())
 }
 
 /// Decode every attribute spelling on one `field` declaration, in source order.

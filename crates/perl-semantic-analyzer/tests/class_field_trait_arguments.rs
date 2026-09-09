@@ -78,6 +78,16 @@ fn explicit_static_names_are_retained_exactly() {
 }
 
 #[test]
+fn unicode_accessor_names_are_static_names() {
+    // Devin review, PR #14997: an ASCII-only identifier check dropped valid
+    // generated methods such as :reader(manĝis); the parser's own
+    // identifier rule is Unicode-aware (variables.rs).
+    let (model, field) = object_pad_field("reader(manĝis)");
+    assert_eq!(field.reader.as_deref(), Some("manĝis"));
+    assert!(synthesizes(&model, "manĝis"));
+}
+
+#[test]
 fn an_explicit_name_replaces_rather_than_supplements_the_bare_default() {
     for (attribute, explicit, default) in [
         ("reader(read_name)", "read_name", "value"),
