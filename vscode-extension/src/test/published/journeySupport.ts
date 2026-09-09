@@ -162,6 +162,55 @@ export async function waitForStartupMetrics(
   return metrics;
 }
 
+export async function waitForActiveDocumentGeneration(
+  getReadiness: (() => ReceiptValue) | undefined,
+  initialGeneration: number | undefined,
+  timeoutMs: number,
+): Promise<ReceiptValue | undefined> {
+  if (!getReadiness || initialGeneration === undefined || initialGeneration > 0) {
+    return getReadiness?.();
+  }
+  const deadline = Date.now() + timeoutMs;
+  let snapshot = getReadiness();
+  while (
+    Date.now() < deadline &&
+    (typeof snapshot.generation !== 'number' || snapshot.generation <= initialGeneration)
+  ) {
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    snapshot = getReadiness();
+  }
+  if (typeof snapshot.generation === 'number' && snapshot.generation > initialGeneration) {
+    return snapshot;
+  }
+  return {
+    ...snapshot,
+    status: 'not_proven',
+    reason: `startup generation did not advance beyond ${initialGeneration} within ${timeoutMs}ms`,
+  };
+}
+
+export async function observeActiveDocumentReadiness(
+  waitForReady: ((uri: string, timeoutMs?: number) => Promise<void>) | undefined,
+  uri: string,
+  timeoutMs: number,
+): Promise<ReceiptValue> {
+  if (!waitForReady) {
+    return {
+      status: 'not_proven',
+      reason: 'installed extension did not expose waitForActiveDocumentReady',
+    };
+  }
+  try {
+    await withTimeout('active-document readiness', waitForReady(uri, timeoutMs), timeoutMs);
+  } catch (error: unknown) {
+    return {
+      status: 'not_proven',
+      reason: error instanceof Error ? error.message : String(error),
+    };
+  }
+  return { status: 'ready' };
+}
+
 export function bundledBinaryPath(extensionPath: string): string {
   const directory = path.join(extensionPath, 'bin', `${process.platform}-${process.arch}`);
   const names =

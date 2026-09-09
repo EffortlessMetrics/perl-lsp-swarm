@@ -124,20 +124,15 @@ fn non_empty(opt: &Option<String>) -> Option<&str> {
     opt.as_deref().filter(|s| !s.is_empty())
 }
 
-/// Is `sha` an ancestor of `base`? `None` means inconclusive (e.g. `sha`
-/// unresolvable in a shallow clone) — degrades to "not confirmed", never
-/// escalates a boundary. Mirrors `changelog.rs::is_ancestor`.
+/// Is `sha` an ancestor of `base`? `None` means inconclusive — a shallow or
+/// partial checkout, an unresolvable revision, or a git failure — which
+/// degrades to "not confirmed", never escalates a boundary. The verdict comes
+/// from the shared `xtask::git_ancestry` authority, never from a bare
+/// `merge-base --is-ancestor` exit code, so a present-but-disconnected graft
+/// cannot report a false "not an ancestor" (#14557). Mirrors
+/// `changelog.rs::is_ancestor`.
 fn is_ancestor(root: &Path, sha: &str, base: &str) -> Option<bool> {
-    let out = Command::new("git")
-        .current_dir(root)
-        .args(["merge-base", "--is-ancestor", sha, base])
-        .output()
-        .ok()?;
-    match out.status.code() {
-        Some(0) => Some(true),
-        Some(1) => Some(false),
-        _ => None,
-    }
+    xtask::git_ancestry::is_ancestor_verdict(&xtask::git_ancestry::is_ancestor(root, sha, base))
 }
 
 fn boundary_state(root: &Path, policy: &WorkflowContractsPolicy, base: &str) -> Boundary {

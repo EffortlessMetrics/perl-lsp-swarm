@@ -148,15 +148,15 @@ function parseArgs(argv) {
   return { updateBaseline, vsixPath };
 }
 
-function main() {
+async function main() {
   const { updateBaseline, vsixPath: requestedVsixPath } = parseArgs(process.argv.slice(2));
   const baseline =
     updateBaseline && !fs.existsSync(BASELINE_PATH)
       ? null
       : JSON.parse(fs.readFileSync(BASELINE_PATH, 'utf8'));
   const vsixPath = requestedVsixPath || path.join(EXTENSION_ROOT, vsixName);
-  const actual = require('./check-vsix-inventory-transition').collectArchiveInventory(
-    vsixPath,
+  const actual = (
+    await require('./check-vsix-inventory-transition').collectArchiveInventory(vsixPath)
   ).inventory;
   if (updateBaseline) {
     fs.writeFileSync(BASELINE_PATH, `${JSON.stringify(actual, null, 2)}\n`);
@@ -200,10 +200,8 @@ module.exports = {
 };
 
 if (require.main === module) {
-  try {
-    main();
-  } catch (error) {
+  main().catch((error) => {
     process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
     process.exitCode = 1;
-  }
+  });
 }
