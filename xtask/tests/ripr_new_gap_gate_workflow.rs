@@ -97,14 +97,33 @@ fn hosted_measurement_is_manual_bounded_and_separate_from_required_gate() -> Res
         run.contains("ripr-measurement-config.txt") && run.contains("ripr-measurement-time.txt"),
         "hosted measurement must retain identity and peak-time evidence"
     );
+    let hosted_env = hosted
+        .get("env")
+        .and_then(Value::as_mapping)
+        .ok_or_else(|| anyhow!("hosted measurement environment is missing"))?;
     ensure!(
-        hosted
-            .get("env")
-            .and_then(Value::as_mapping)
-            .and_then(|env| env.get("PR_HEAD_SHA"))
-            .and_then(Value::as_str)
-            == Some("${{ github.sha }}"),
-        "hosted measurement must bind the measured checkout as its subject"
+        hosted_env.get("PR_HEAD_SHA").and_then(Value::as_str)
+            == Some("${{ inputs.measurement_head_sha }}")
+            && hosted_env.get("MEASUREMENT_HEAD_SHA").and_then(Value::as_str)
+                == Some("${{ inputs.measurement_head_sha }}")
+            && hosted_env.get("MEASUREMENT_BASE_SHA").and_then(Value::as_str)
+                == Some("${{ inputs.measurement_base_sha }}")
+            && hosted_env.get("WORKFLOW_SHA").and_then(Value::as_str) == Some("${{ github.sha }}"),
+        "hosted measurement must bind source and workflow identities separately"
+    );
+    let checkout = steps
+        .iter()
+        .find(|step| step.get("name").and_then(Value::as_str) == Some("Checkout"))
+        .ok_or_else(|| anyhow!("hosted measurement checkout is missing"))?;
+    let checkout_with = checkout
+        .get("with")
+        .and_then(Value::as_mapping)
+        .ok_or_else(|| anyhow!("hosted measurement checkout options are missing"))?;
+    ensure!(
+        checkout_with.get("ref").and_then(Value::as_str)
+            == Some("${{ inputs.measurement_head_sha }}")
+            && checkout_with.get("persist-credentials").and_then(Value::as_bool) == Some(false),
+        "hosted measurement checkout must use the exact source head without credentials"
     );
     let input_block = workflow
         .get("on")
@@ -113,7 +132,9 @@ fn hosted_measurement_is_manual_bounded_and_separate_from_required_gate() -> Res
         .ok_or_else(|| anyhow!("workflow_dispatch inputs are missing"))?;
     ensure!(
         input_block.get("ripr_measurement").is_some()
-            && input_block.get("ripr_hosted_measurement").is_some(),
+            && input_block.get("ripr_hosted_measurement").is_some()
+            && input_block.get("measurement_head_sha").is_some()
+            && input_block.get("measurement_base_sha").is_some(),
         "CX53 and hosted experiments must use distinct manual inputs"
     );
     let cx53 = jobs.get("ripr-cx53").ok_or_else(|| anyhow!("CX53 job is missing"))?;
