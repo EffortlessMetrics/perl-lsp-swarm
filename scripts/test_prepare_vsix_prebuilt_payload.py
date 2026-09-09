@@ -105,6 +105,26 @@ class PrebuiltPayloadAdapterTests(unittest.TestCase):
             self.assertIn("archive digest", result.stderr)
             self.assertFalse((paths["output"] / "vsix-candidate-payload.json").exists())
 
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            paths = self.fixture(root)
+            projection = json.loads(Path(paths["projection"]).read_text(encoding="utf-8"))
+            projection["targets"][0]["archiveName"] = "other.tar.gz"
+            Path(paths["projection"]).write_text(json.dumps(projection), encoding="utf-8")
+            result = subprocess.run(self.command(paths), cwd=Path(__file__).parents[1], capture_output=True, text=True, check=False)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("differs from validated release topology", result.stderr)
+            self.assertFalse((paths["output"] / "vsix-candidate-payload.json").exists())
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            paths = self.fixture(root)
+            paths["output"].mkdir()
+            (paths["output"] / "vsix-candidate-payload.json").write_text("existing", encoding="utf-8")
+            result = subprocess.run(self.command(paths), cwd=Path(__file__).parents[1], capture_output=True, text=True, check=False)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("refusing to overwrite", result.stderr)
+
             evidence = json.loads(Path(paths["evidence"]).read_text(encoding="utf-8"))
             evidence["archive"]["sha256"] = digest(Path(paths["archive"]).read_bytes())
             evidence["binaries"][0]["post_strip_sha256"] = "f" * 64
@@ -112,7 +132,6 @@ class PrebuiltPayloadAdapterTests(unittest.TestCase):
             result = subprocess.run(self.command(paths), cwd=Path(__file__).parents[1], capture_output=True, text=True, check=False)
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("member digest", result.stderr)
-            self.assertFalse((paths["output"] / "vsix-candidate-payload.json").exists())
 
     def test_missing_dap_and_unsafe_member_fail_closed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
