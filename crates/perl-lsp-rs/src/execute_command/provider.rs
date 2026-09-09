@@ -1780,8 +1780,8 @@ pub(crate) fn select_test_runner(
 /// current directory". The current directory is routinely the opened
 /// workspace, so a file planted there must not be able to satisfy a capability
 /// or diagnostics gate (#2764 / #3028). `perl_subprocess_runtime` owns that
-/// policy and applies it at launch too, so the probe cannot certify a subject
-/// the resolver would refuse.
+/// probe policy and applies it at launch on Windows too. Unix launch retains
+/// its existing PATH search behavior; this probe does not harden that path.
 ///
 /// This is deliberately stricter than `execvp`, which honors relative and
 /// empty `PATH` components: a tool reachable only through such a component is

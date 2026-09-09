@@ -6,10 +6,10 @@
 //! answer decides whether a workspace-supplied file can influence product
 //! behavior.
 //!
-//! The admission policy here is the one [`crate::os_runtime`] already applies
-//! when it resolves a program for launch — only **absolute** `PATH` components
-//! are searched, and a candidate sitting in the current directory is excluded —
-//! so an availability probe cannot certify a subject the resolver would refuse.
+//! The admission policy here matches the Windows launch resolver in
+//! [`crate::os_runtime`]: only **absolute** `PATH` components are searched, and
+//! a candidate sitting in the current directory is excluded. On Unix this
+//! probe is stricter than the launch path, as described below.
 //!
 //! # Why the current directory is not searchable
 //!
@@ -73,8 +73,8 @@ pub fn command_exists(command: &str) -> bool {
 /// `unsafe` in the pinned toolchain, so an environment-reading probe cannot be
 /// exercised from their tests at all.
 ///
-/// Cross-platform so the invariant is observable on Linux CI runners; on
-/// Windows the production route is [`command_exists`]'s resolver arm, which
+/// Compiled and tested on non-Windows platforms; on Windows the production
+/// route is [`command_exists`]'s resolver arm, which
 /// applies the same two layers plus the `CreateProcess` extension rules.
 #[cfg(not(windows))]
 pub(crate) fn command_exists_in(command: &str, path: Option<&OsStr>, cwd: &Path) -> bool {
