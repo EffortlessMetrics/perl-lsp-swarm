@@ -2990,15 +2990,15 @@ mod tests {
             }]),
             source_modified: None,
         });
-        if configured.len() != 1 || !configured[0].verified {
+        if configured.len() != 1
+            || !configured.first().is_some_and(|breakpoint| breakpoint.verified)
+        {
             return Err(format!("failed to configure fixture breakpoint: {configured:?}"));
         }
 
-        let script = format!(
-            "printf 'main::({source_path}:1):\\timplicit\\nDB<1>\\nIMPLICIT_DONE\\n' >&2; read -r release; if [ -n \"$release\" ]; then printf 'UNEXPECTED_COMMAND:%s\\n' \"$release\" >&2; exit 1; fi; printf 'main::({source_path}:5):\\tactual\\nDB<2>\\nACTUAL_DONE\\n' >&2"
-        );
+        let script = "printf 'main::(%s:1):\\timplicit\\nDB<1>\\nIMPLICIT_DONE\\n' \"$1\" >&2; read -r release; if [ -n \"$release\" ]; then printf 'UNEXPECTED_COMMAND:%s\\n' \"$release\" >&2; exit 1; fi; printf 'main::(%s:5):\\tactual\\nDB<2>\\nACTUAL_DONE\\n' \"$1\" >&2";
         let child = Command::new("sh")
-            .args(["-c", &script])
+            .args(["-c", script, "dap-run-to-breakpoint-fixture", &source_path])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
