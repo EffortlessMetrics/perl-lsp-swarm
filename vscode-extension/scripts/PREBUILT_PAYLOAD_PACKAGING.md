@@ -15,7 +15,8 @@ It is selected with these environment variables:
   target is authoritative for `vsce` and archive-member checks;
 
 The route stages only the validated target members, verifies their archive bytes
-and semantic inventory digest, then restores the worktree. Ordinary binaryless
+and semantic inventory digest, rejects duplicate or non-regular ZIP payload
+members while streaming their bytes, then restores the worktree. Ordinary binaryless
 packaging remains available without a manifest. Any ambient native server or DAP
 member requires the manifest route.
 
