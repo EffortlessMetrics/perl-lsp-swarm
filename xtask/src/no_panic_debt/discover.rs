@@ -24,8 +24,9 @@ struct ModuleWork {
     /// Covering already in force at the `mod` item, including crate-level and
     /// `#[allow]`/`#[expect]` attributes on the outline module itself. rustc
     /// applies those to the child file; a fresh `scan_file` would otherwise
-    /// drop them.
-    inherited_covering: Vec<Vec<Covering>>,
+    /// drop them. Later edges to the same path intersect this stack so one
+    /// module's allowance cannot own another edge's sites.
+    inherited_covering: Vec<CoveringLayer>,
 }
 
 pub(crate) fn scan(
@@ -65,6 +66,9 @@ pub(crate) fn scan(
     let mut scanned_extra = BTreeMap::new();
     while let Some((path, work)) = pending.pop_first() {
         if already_scanned_with_sufficient_context(&scanned_extra, &path, work.treat_as_test) {
+            if let Ok(relative) = super::repo_relative_path(&path, root) {
+                restrict_site_covering(&mut sites, &relative, &work.inherited_covering);
+            }
             continue;
         }
         let relative = match super::repo_relative_path(&path, root) {
@@ -163,10 +167,68 @@ fn enqueue_module(pending: &mut BTreeMap<PathBuf, ModuleWork>, mut work: ModuleW
     }
     if let Some(existing) = pending.get_mut(&work.path) {
         existing.treat_as_test |= work.treat_as_test;
-        existing.inherited_covering.extend(work.inherited_covering);
+        existing.inherited_covering =
+            intersect_covering_layers(&existing.inherited_covering, &work.inherited_covering);
         return;
     }
     pending.insert(work.path.clone(), work);
+}
+
+fn covering_identities(layers: &[CoveringLayer]) -> BTreeSet<String> {
+    layers
+        .iter()
+        .flat_map(|layer| layer.covering.iter().map(|item| item.identity.clone()))
+        .collect()
+}
+
+fn masked_lints(layers: &[CoveringLayer]) -> BTreeSet<String> {
+    layers.iter().flat_map(|layer| layer.masked_lints.iter().cloned()).collect()
+}
+
+fn intersect_covering_layers(
+    left: &[CoveringLayer],
+    right: &[CoveringLayer],
+) -> Vec<CoveringLayer> {
+    let right_ids = covering_identities(right);
+    let covering = left
+        .iter()
+        .flat_map(|layer| layer.covering.iter().cloned())
+        .filter(|item| right_ids.contains(&item.identity))
+        .collect();
+    vec![CoveringLayer {
+        covering,
+        masked_lints: masked_lints(left).union(&masked_lints(right)).cloned().collect(),
+    }]
+}
+
+fn restrict_site_covering(sites: &mut [RawSite], relative: &str, inherited: &[CoveringLayer]) {
+    let allowed = covering_identities(inherited);
+    let masked = masked_lints(inherited);
+    for site in sites {
+        if site.path != relative {
+            continue;
+        }
+        let lint = family_lint(&site.family);
+        let keep =
+            site.covering_declaration.as_ref().is_some_and(|identity| allowed.contains(identity))
+                && !masked.contains(lint);
+        if !keep {
+            site.covering_declaration = None;
+            site.covering_scope = None;
+            site.covering_owner = None;
+        }
+    }
+}
+
+fn cfg_attr_has_negative_lint(meta: &Meta) -> bool {
+    let Meta::List(list) = meta else {
+        return false;
+    };
+    split_top_level_commas(list.tokens.clone()).into_iter().skip(1).any(|group| {
+        syn::parse2::<Meta>(group)
+            .ok()
+            .is_some_and(|inner| inner.path().is_ident("deny") || inner.path().is_ident("forbid"))
+    })
 }
 
 /// Directory rustc uses to resolve child `mod` items of `file`.
@@ -194,7 +256,7 @@ fn scan_file(
     vocabulary: &Vocabulary,
     follow_modules: bool,
     treat_as_test: bool,
-    inherited_covering: Vec<Vec<Covering>>,
+    inherited_covering: Vec<CoveringLayer>,
 ) -> Result<ScannedFile, String> {
     let abs = root.join(&file.path);
     let source = std::fs::read_to_string(&abs).map_err(|err| err.to_string())?;
@@ -243,6 +305,24 @@ struct Covering {
     lints: BTreeSet<String>,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct CoveringLayer {
+    covering: Vec<Covering>,
+    masked_lints: BTreeSet<String>,
+}
+
+impl Covering {
+    fn covers(&self, lint: &str, family: &str) -> bool {
+        self.lints.contains(lint) || self.lints.iter().any(|name| source_lint_matches(name, family))
+    }
+}
+
+impl CoveringLayer {
+    fn masks(&self, lint: &str) -> bool {
+        self.masked_lints.contains(lint)
+    }
+}
+
 struct DebtVisitor<'a> {
     file: &'a FileRecord,
     lines: &'a [&'a str],
@@ -258,7 +338,7 @@ struct DebtVisitor<'a> {
     current_fn: String,
     current_feature: Option<String>,
     current_platform: Option<String>,
-    declaration_stack: Vec<Vec<Covering>>,
+    declaration_stack: Vec<CoveringLayer>,
     entrypoints: Vec<Entrypoint>,
     sites: Vec<RawSite>,
     declarations: Vec<RawDeclaration>,
@@ -270,7 +350,9 @@ impl DebtVisitor<'_> {
     fn push_attrs(&mut self, attrs: &[Attribute], scope: &str) {
         let covering =
             attrs.iter().filter_map(|attr| self.declaration_from_attr(attr, scope)).collect();
-        self.declaration_stack.push(covering);
+        let masked_lints =
+            attrs.iter().flat_map(|attr| self.masked_lints_from_attr(attr)).collect();
+        self.declaration_stack.push(CoveringLayer { covering, masked_lints });
     }
 
     fn pop_attrs(&mut self) {
@@ -279,10 +361,15 @@ impl DebtVisitor<'_> {
 
     fn covering_for(&self, family: &str) -> Option<&Covering> {
         let lint = family_lint(family);
-        self.declaration_stack.iter().rev().flatten().find(|covering| {
-            covering.lints.contains(lint)
-                || covering.lints.iter().any(|name| source_lint_matches(name, family))
-        })
+        for layer in self.declaration_stack.iter().rev() {
+            if layer.masks(lint) {
+                return None;
+            }
+            if let Some(covering) = layer.covering.iter().find(|item| item.covers(lint, family)) {
+                return Some(covering);
+            }
+        }
+        None
     }
 
     fn declaration_from_attr(&mut self, attr: &Attribute, scope: &str) -> Option<Covering> {
@@ -348,6 +435,42 @@ impl DebtVisitor<'_> {
             return None;
         }
         Some(Covering { identity, scope: scope.to_string(), owner, lints })
+    }
+
+    fn masked_lints_from_attr(&mut self, attr: &Attribute) -> BTreeSet<String> {
+        let Some(ident) = attr.path().segments.last().map(|seg| seg.ident.to_string()) else {
+            return BTreeSet::new();
+        };
+        let negative = ident == "deny"
+            || ident == "forbid"
+            || (ident == "cfg_attr" && cfg_attr_has_negative_lint(&attr.meta));
+        if !negative {
+            return BTreeSet::new();
+        }
+        if ident == "cfg_attr" {
+            match cfg_attr_cover_kind(&attr.meta) {
+                CfgAttrCover::Effective => {}
+                CfgAttrCover::Inactive => return BTreeSet::new(),
+                CfgAttrCover::NotProven => {
+                    self.instruments.push(Instrument {
+                        kind: "cfg_attr_cover".to_string(),
+                        subject: self.file.path.clone(),
+                        status: InstrumentStatus::NotProven,
+                        detail: format!(
+                            "cfg_attr predicate {} cannot be established as a lint-level mask",
+                            collapse(&attr.meta.to_token_string())
+                        ),
+                    });
+                }
+            }
+        }
+        let mentioned = lint_names_from_attr(&ident, &attr.meta);
+        self.vocabulary
+            .lints
+            .iter()
+            .filter(|lint| mentioned.iter().any(|name| name == *lint))
+            .cloned()
+            .collect()
     }
 
     fn record_site(&mut self, family: &'static str, span: proc_macro2::Span) {
@@ -681,7 +804,7 @@ fn cfg_predicate_cover_kind(tokens: proc_macro2::TokenStream) -> CfgAttrCover {
 
 fn lint_names_from_attr(ident: &str, meta: &Meta) -> Vec<String> {
     match ident {
-        "allow" | "expect" => lint_names_from_list_tokens(meta),
+        "allow" | "expect" | "deny" | "forbid" => lint_names_from_list_tokens(meta),
         "cfg_attr" => {
             let Meta::List(list) = meta else {
                 return Vec::new();
@@ -968,6 +1091,7 @@ fn test_generating_macro(name: &str) -> bool {
 mod tests {
     use super::super::model::TargetKind;
     use super::*;
+    use std::collections::BTreeSet;
 
     fn module_work(path: &str, treat_as_test: bool) -> ModuleWork {
         ModuleWork {
@@ -990,6 +1114,10 @@ mod tests {
             owner: "#13397".to_string(),
             lints: ["clippy::unwrap_used".to_string()].into_iter().collect(),
         }
+    }
+
+    fn layer_with(identity: &str) -> CoveringLayer {
+        CoveringLayer { covering: vec![covering(identity)], masked_lints: BTreeSet::new() }
     }
 
     #[test]
@@ -1022,17 +1150,21 @@ mod tests {
     fn enqueue_module_or_treat_as_test_and_keeps_first_identity() {
         let mut pending = BTreeMap::new();
         let mut first = module_work("src/foo.rs", false);
-        first.inherited_covering = vec![vec![covering("lib.rs:1:allow:clippy::unwrap_used")]];
+        first.inherited_covering = vec![layer_with("lib.rs:1:allow:clippy::unwrap_used")];
         let mut later = module_work("src/bar/../foo.rs", true);
-        later.inherited_covering = vec![vec![covering("lib.rs:3:allow:clippy::unwrap_used")]];
+        later.inherited_covering = vec![layer_with("lib.rs:3:allow:clippy::unwrap_used")];
         enqueue_module(&mut pending, first);
         enqueue_module(&mut pending, later);
         let work = pending.get(&PathBuf::from("src/foo.rs"));
         assert!(work.is_some_and(|item| item.treat_as_test && item.package == "demo"));
         assert_eq!(
-            work.map(|item| item.inherited_covering.len()),
-            Some(2),
-            "later outline edge must keep inherited covering, not drop the first parent's stack"
+            work.map(|item| item
+                .inherited_covering
+                .iter()
+                .map(|layer| layer.covering.len())
+                .sum::<usize>()),
+            Some(0),
+            "distinct outline edges must intersect covering, not union one edge's allowance onto the other"
         );
         assert_eq!(pending.len(), 1);
         let mut scanned = BTreeMap::new();
