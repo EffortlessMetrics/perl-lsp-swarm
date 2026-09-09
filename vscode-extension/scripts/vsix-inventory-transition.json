@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "owner_issue": 15232,
+  "owner_issue": 7846,
   "reason": "The #15232 watchdog epoch change updates the packaged extension bundle; the exact candidate VSIX is measured against the merged current-main baseline.",
   "base_baseline_file_sha256": "5bf37ec5a75fb3941643a60bc7679316d4a6cab554efa709b8f273dcdd7b9518",
   "candidate_baseline_file_sha256": "be1c8ee610390d2a9a89ecafaf720546ace49ae543491a70bb2cc6c80f20795d",
