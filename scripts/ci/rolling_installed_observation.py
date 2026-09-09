@@ -482,7 +482,15 @@ def find_verified_candidate_receipt(
             value.get("schema_version") != "verified_child_receipt.v1"
             or value.get("receipt_schema_version") != "installed_acceptance.v1"
             or value.get("frozen_product_sha") != source_sha
-            or value.get("outcome") != "completed"
+            # The verified installed-acceptance envelope deliberately carries
+            # its bounded status and does not have the upstream journey's
+            # ``outcome`` field.  Treat an explicitly non-completed outcome
+            # as a mismatch, while accepting the real envelope shape where
+            # outcome is absent and status remains ``not_proven``.
+            or (
+                "outcome" in value
+                and value.get("outcome") != "completed"
+            )
             or value.get("status") == "blocked"
             or value.get("candidate_id") != expected_candidate_id
             or value.get("artifact_set_id") != expected_artifact_set_id

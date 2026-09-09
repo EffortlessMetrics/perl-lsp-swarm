@@ -154,7 +154,6 @@ class ObservationTest(unittest.TestCase):
                         "candidate_id": f"rolling-{SHA}-test",
                         "frozen_product_sha": SHA,
                         "artifact_set_id": "rolling-test-artifacts",
-                        "outcome": "completed",
                         "status": "not_proven",
                         "source_receipt_sha256": MODULE.sha256(source_receipt_path),
                         "artifact_hashes": {
