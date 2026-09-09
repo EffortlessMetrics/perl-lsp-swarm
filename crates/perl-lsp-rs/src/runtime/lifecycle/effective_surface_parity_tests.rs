@@ -335,9 +335,9 @@ fn malformed_unknown_future_and_sparse_facts_match_runtime_collapse() -> Result<
 #[test]
 fn pull_diagnostic_client_with_refresh_supports_and_non_utf16_first_preference_matches()
 -> Result<(), String> {
-    // The v0.18 envelope (#8129 `full_document_utf16`, #9378) accepts this
-    // subject only because the offer still contains utf-16; selection is
-    // contract-owned UTF-16 regardless of offer order.
+    // The v0.18 envelope (#8129 `full_document_utf16`, #9378) accepts every
+    // valid string offer. This offer explicitly includes the contract-owned
+    // UTF-16 encoding; its order does not change selection.
     assert_initialize_matches_model(json!({
         "clientInfo": { "name": "neovim" },
         "capabilities": {
