@@ -41,6 +41,7 @@ const INVENTORY: &[ConsumerRow] = &[
     ConsumerRow { path: "src/bin/action-pin-provenance.rs", disposition: Disposition::RangeOnly },
     ConsumerRow { path: "src/tasks/ci_contract.rs", disposition: Disposition::RangeOnly },
     ConsumerRow { path: "src/tasks/ci_subject.rs", disposition: Disposition::RangeOnly },
+    ConsumerRow { path: "src/tasks/file_policy.rs", disposition: Disposition::RangeOnly },
     ConsumerRow { path: "src/tasks/merge_integration.rs", disposition: Disposition::RangeOnly },
     ConsumerRow { path: "src/tasks/merge_ready.rs", disposition: Disposition::RangeOnly },
 ];
