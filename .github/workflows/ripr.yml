@@ -1127,6 +1127,7 @@ jobs:
               apt-get update
               DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
                 build-essential pkg-config libssl-dev git curl jq time
+              git config --global --add safe.directory /workspace
               mkdir -p target/ripr/pr
               printf "job_phase=container-tools-start\n" >> target/ripr/pr/ripr-measurement-config.txt
               cargo install ripr --version "$RIPR_VERSION" --locked

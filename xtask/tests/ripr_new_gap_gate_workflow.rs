@@ -86,6 +86,7 @@ fn hosted_measurement_is_manual_bounded_and_separate_from_required_gate() -> Res
         "--memory=6g",
         "--memory-swap=6g",
         "RIPR_MAX_DIFF_INDEX_FILES",
+        "git config --global --add safe.directory /workspace",
         "cargo install ripr --version \"$RIPR_VERSION\" --locked",
         "/usr/bin/time -v",
         "cargo xtask ripr-pr --base",
