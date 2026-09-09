@@ -17,7 +17,7 @@ use std::fmt;
 use std::fs;
 use std::io::{BufReader, ErrorKind, Read};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 use xtask::git_ancestry::{AncestryDisposition, AncestryReceipt, classify_ancestry};
 
@@ -942,9 +942,13 @@ fn run_ripr_streaming_to_file(args: &[String], out_path: &Path, staging_dir: &Pa
         // full pipe and `wait` below would never return.
         let mut chunk = [0_u8; 8 * 1024];
         loop {
-            let read = stderr
-                .read(&mut chunk)
-                .with_context(|| format!("failed to read {binary} stderr"))?;
+            let read = match stderr.read(&mut chunk) {
+                Ok(read) => read,
+                Err(error) => {
+                    settle_ripr_child(&mut child);
+                    return Err(error).with_context(|| format!("failed to read {binary} stderr"));
+                }
+            };
             if read == 0 {
                 break;
             }
@@ -989,6 +993,14 @@ fn remove_orphaned_stdout_temps(staging_dir: &Path) {
             let _ = fs::remove_file(entry.path());
         }
     }
+}
+
+/// Terminates and reaps `child` on a failure path, ignoring errors: the caller
+/// is already returning a failure, and an unsettled producer keeps writing its
+/// unbounded payload to a temporary file no caller will ever publish.
+fn settle_ripr_child(child: &mut Child) {
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 /// Streamed ingestion of one `ripr check --format json` payload (#12860): the
@@ -10072,6 +10084,33 @@ paths = ["archive/**"]
         assert_eq!(ingestion.summary_counts.weakly_exposed, 1);
         assert_eq!(ingestion.summary_counts.reachable_unrevealed, 0);
         assert_eq!(ingestion.summary_counts.no_static_path, 1);
+        Ok(())
+    }
+
+    /// A stderr read failure must not leave the producer running: it would keep
+    /// writing its unbounded payload to a temporary file nothing will publish.
+    /// The injected read failure itself is not portably reproducible through
+    /// `std::process`, so this covers the settle step the failure path calls.
+    #[test]
+    fn settling_the_producer_terminates_and_reaps_it() -> Result<()> {
+        let mut child = Command::new("sh")
+            .arg("-c")
+            .arg("sleep 60")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .context("failed to spawn long-lived test producer")?;
+        let started = Instant::now();
+        settle_ripr_child(&mut child);
+        let status = child.try_wait()?.ok_or_else(|| eyre!("settled producer was not reaped"))?;
+        color_eyre::eyre::ensure!(
+            started.elapsed() < Duration::from_secs(5),
+            "settling the producer waited instead of killing it"
+        );
+        color_eyre::eyre::ensure!(
+            !status.success(),
+            "a settled producer must not report success: {status}"
+        );
         Ok(())
     }
 
