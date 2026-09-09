@@ -452,6 +452,59 @@ void test('owned manifest staging rejects a real dangling native link', () => {
   }
 });
 
+void test(
+  'real POSIX staging marks new native payloads executable',
+  { skip: process.platform === 'win32' },
+  () => {
+    const stagingRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-9933-mode-'));
+    const serverPath = path.join(stagingRoot, 'server.bin');
+    const dapPath = path.join(stagingRoot, 'dap.bin');
+    const manifestPath = path.join(stagingRoot, 'manifest.json');
+    const projectionPath = path.join(stagingRoot, 'projection.json');
+    const serverBytes = Buffer.from('server');
+    const dapBytes = Buffer.from('dap');
+    const base = prebuiltManifest();
+    const manifest = {
+      ...base,
+      dap: {
+        disposition: 'required_present',
+        payload: {
+          ...base.dap.payload,
+          sha256: require('node:crypto').createHash('sha256').update(dapBytes).digest('hex'),
+        },
+      },
+      server: {
+        ...base.server,
+        sha256: require('node:crypto').createHash('sha256').update(serverBytes).digest('hex'),
+      },
+    };
+    fs.writeFileSync(serverPath, serverBytes);
+    fs.writeFileSync(dapPath, dapBytes);
+    fs.writeFileSync(manifestPath, JSON.stringify(manifest));
+    fs.writeFileSync(projectionPath, JSON.stringify(projectionInput()));
+    try {
+      const staged = preparePrebuiltPayload(
+        fs,
+        {
+          PERL_LSP_CANDIDATE_PAYLOAD_MANIFEST: manifestPath,
+          PERL_LSP_VSIX_PROJECTION_INPUT: projectionPath,
+          PERL_LSP_PREBUILT_SERVER_PATH: serverPath,
+          PERL_LSP_PREBUILT_DAP_PATH: dapPath,
+          PERL_LSP_CURRENT_SOURCE_SHA: 'a'.repeat(40),
+          PERL_LSP_RUST_TARGET: 'x86_64-pc-windows-msvc',
+          PERL_LSP_VSCODE_TARGET: 'win32-x64',
+        },
+        stagingRoot,
+      );
+      const destination = path.join(stagingRoot, 'bin', 'win32-x64', 'perllsp.exe');
+      assert.equal(fs.statSync(destination).mode & 0o111, 0o111);
+      staged.cleanup();
+    } finally {
+      fs.rmSync(stagingRoot, { recursive: true, force: true });
+    }
+  },
+);
+
 void test('packaging failure prevents archive validation', () => {
   const calls = [];
   /** @type {any} */

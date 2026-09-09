@@ -205,12 +205,19 @@ function preparePrebuiltPayload(fileSystem = fs, env = process.env, stagingRoot 
     return {
       destination,
       bytes: fileSystem.existsSync(destination) ? fileSystem.readFileSync(destination) : null,
+      mode:
+        typeof fileSystem.lstatSync === 'function' && fileSystem.existsSync(destination)
+          ? fileSystem.lstatSync(destination).mode
+          : null,
     };
   });
   const cleanup = () => {
     for (const item of previous) {
       if (item.bytes !== null) fileSystem.writeFileSync(item.destination, item.bytes);
       else fileSystem.rmSync(item.destination, { force: true });
+      if (item.bytes !== null && item.mode !== null && typeof fileSystem.chmodSync === 'function') {
+        fileSystem.chmodSync(item.destination, item.mode);
+      }
     }
   };
   try {
@@ -220,6 +227,9 @@ function preparePrebuiltPayload(fileSystem = fs, env = process.env, stagingRoot 
       const destination = prior.destination;
       fileSystem.mkdirSync(path.dirname(destination), { recursive: true });
       fileSystem.writeFileSync(destination, payload.bytes);
+      if (typeof fileSystem.chmodSync === 'function') {
+        fileSystem.chmodSync(destination, 0o755);
+      }
     }
   } catch (error) {
     try {
