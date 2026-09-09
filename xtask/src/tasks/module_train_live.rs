@@ -2478,6 +2478,23 @@ pub fn validate_snapshot(snapshot: &LiveSnapshot, loaded: &LoadedManifest) -> Re
         }
     }
 
+    // The producer computes the cross-tree condition once per snapshot, so an
+    // honest record carries the marker on every node or none. A mixed set can
+    // only come from a stale or tampered producer — and an unmarked node would
+    // otherwise skip the stored-state check below.
+    let marked = snapshot
+        .semantic
+        .nodes
+        .iter()
+        .filter(|node| node.limitations.iter().any(|l| l == PROBED_FROM_A_DIFFERENT_TREE))
+        .count();
+    if marked != 0 && marked != snapshot.semantic.nodes.len() {
+        bail!(
+            "cross-tree probe marker is present on {marked} of {} nodes, but the producer computes it snapshot-wide; a mixed record is stale or tampered",
+            snapshot.semantic.nodes.len()
+        );
+    }
+
     // Rebuild classification inputs from the snapshot's fact sections and
     // compare with the stored actions.
     let static_facts = loaded.node_static_facts();

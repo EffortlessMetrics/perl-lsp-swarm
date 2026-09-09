@@ -768,9 +768,13 @@ fn cross_tree_validation_rejects_false_stored_state() -> Result<()> {
     let marker = "c02_implementation_probed_from_a_different_tree";
 
     let mut forged = snapshot.clone();
+    // Mark every node (the producer's marker is snapshot-wide) and forge the
+    // false stored state on the first; the stored-state check must catch it.
+    for node in &mut forged.semantic.nodes {
+        node.limitations.push(marker.to_string());
+        node.limitations.sort();
+    }
     let node = &mut forged.semantic.nodes[0];
-    node.limitations.push(marker.to_string());
-    node.limitations.sort();
     node.c02_state = "ready".to_string();
     node.c02_reasons = Vec::new();
     let semantic_value = serde_json::to_value(&forged.semantic)?;
@@ -782,6 +786,35 @@ fn cross_tree_validation_rejects_false_stored_state() -> Result<()> {
     assert!(
         error.to_string().contains("must record not_proven"),
         "the failure must name the honest-record invariant, got: {error}"
+    );
+    Ok(())
+}
+
+#[test]
+fn cross_tree_marker_must_be_snapshot_wide() -> Result<()> {
+    // Devin review, PR #15094: the producer computes the cross-tree condition
+    // once per snapshot, so a marker on only some nodes is itself evidence of
+    // a stale or tampered record — and an unmarked node would skip the
+    // stored-state check.
+    let snapshot = normalize_text(CORPUS_FIXTURE)?;
+    let manifest = loaded()?;
+    let marker = "c02_implementation_probed_from_a_different_tree";
+
+    // The corpus observation is cross-tree, so every node already carries the
+    // marker and the honest not_proven record. Removing the marker from one
+    // node creates the mixed set a stale or tampered producer would emit.
+    let mut forged = snapshot.clone();
+    let node = &mut forged.semantic.nodes[1];
+    node.limitations.retain(|limitation| limitation != marker);
+    let semantic_value = serde_json::to_value(&forged.semantic)?;
+    forged.semantic_digest = canonical_digest(&semantic_value)?;
+
+    let error = validate_snapshot(&forged, &manifest)
+        .err()
+        .ok_or_else(|| color_eyre::eyre::eyre!("a mixed marker set must fail validation"))?;
+    assert!(
+        error.to_string().contains("snapshot-wide"),
+        "the failure must name the uniformity invariant, got: {error}"
     );
     Ok(())
 }
