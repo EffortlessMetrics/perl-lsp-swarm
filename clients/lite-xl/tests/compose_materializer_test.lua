@@ -191,6 +191,18 @@ local function flush_dirs()
   os.execute(table.concat(parts, IS_WINDOWS and " & " or " && "))
 end
 
+-- Absolute repo-rooted path for symlink targets: a relative link target
+-- resolves against the link's own directory and dangles.
+local function abs_repo_path(path)
+  if path:match("^%a:/") or path:sub(1, 1) == "/" then return path end
+  local probe = IS_WINDOWS and io.popen("cd") or io.popen("pwd")
+  if not probe then return nil end
+  local cwd = probe:read("*l")
+  probe:close()
+  if not cwd or #cwd == 0 then return nil end
+  return cwd:gsub("[/\\]+$", "") .. "/" .. path
+end
+
 local function write_file(path, bytes)
   local dir = path:match("^(.*)[/\\]")
   if dir and not CREATED[dir] then
@@ -955,21 +967,25 @@ do
   local helper_spec, helper_ad = fixture()
   local helper_suite_dir = pending_root .. "/stale-helper/tests"
   write_file(helper_suite_dir .. "/harness.lua", "return true\n")
-  expect_error("pending_unowned_diff", function()
-    compose.materialize_pending({
-      manifest = pending_manifest, adapter = helper_ad, profile = "empty",
-      base_dir = base_dir, out_dir = pending_root .. "/stale-helper/upstream",
-      receipt_path = pending_root .. "/stale-helper/receipt.json",
-      base_ref = refs.base, source_ref = refs.source,
-      declared_delta = {
-        { status = "M", path = "upstream/init.lua",
-          base_blob = base_blobs["init.lua"], source_blob = source_blobs["init.lua"] },
-      }, suite_specs = {
-        { path = "tests/pending_test.lua", source_blob = helper_spec.pending_test_blob,
-          module = "init.lua" },
-      },
-    })
-  end, "P1 exact suite staging rejects a stale helper file")
+  -- The suite root is composer-cleared before staging, so a pre-seeded stale
+  -- helper can never reach the exact-inventory check: it is wiped and the
+  -- run succeeds with only the declared suites staged.
+  local helper_run = compose.materialize_pending({
+    manifest = pending_manifest, adapter = helper_ad, profile = "empty",
+    base_dir = base_dir, out_dir = pending_root .. "/stale-helper/upstream",
+    receipt_path = pending_root .. "/stale-helper/receipt.json",
+    base_ref = refs.base, source_ref = refs.source,
+    declared_delta = {
+      { status = "M", path = "upstream/init.lua",
+        base_blob = base_blobs["init.lua"], source_blob = source_blobs["init.lua"] },
+    }, suite_specs = {
+      { path = "tests/pending_test.lua", source_blob = helper_spec.pending_test_blob,
+        module = "init.lua" },
+    },
+  })
+  ok(helper_run.tree["init.lua"] == source_blobs["init.lua"]
+    and read_file(helper_suite_dir .. "/harness.lua") == nil,
+    "P1 composer-cleared suite root drops a pre-seeded stale helper file")
 
   local invalid_spec, invalid_ad = fixture()
   local invalid_source = "this is not valid lua\n"
@@ -1200,6 +1216,51 @@ do
     end, "P1 existing directory alias is rejected before mutation")
   else
     print("P1 directory alias probe: NOT RUN (alias creation unavailable)")
+  end
+
+  -- `..` in an inspected-only path: base_dir is read, never written, so a
+  -- dotdot spelling is unambiguous here. The rewound sibling must not be
+  -- alias-probed: with the old prefix list the decoy symlink below fails
+  -- the run with pending_path_alias although nothing is created there.
+  -- The decoy sits at the rewound position (never in the final path): it
+  -- points at the base-read child itself, so `decoy-dir/..` physically
+  -- coincides with pending/ and the dotted base spells the real root.
+  for path, value in pairs(bytes) do
+    write_file(pending_root .. "/base-read/" .. path, value)
+  end
+  local decoy_dir = pending_root .. "/decoy-dir"
+  os.remove(decoy_dir)
+  local abs_read = abs_repo_path(pending_root .. "/base-read")
+  local decoy_created
+  if abs_read == nil then
+    decoy_created = nil
+  elseif IS_WINDOWS then
+    decoy_created = os.execute('cmd /c mklink /J "' .. decoy_dir
+      .. '" "' .. abs_read .. '" >nul 2>&1')
+  else
+    decoy_created = os.execute('ln -s "' .. abs_read .. '" "' .. decoy_dir
+      .. '" 2>/dev/null')
+  end
+  if decoy_created == true or decoy_created == 0 then
+    local dotted_spec, dotted_ad = fixture()
+    local dotted_run = compose.materialize_pending({
+      manifest = pending_manifest, adapter = dotted_ad, profile = "empty",
+      base_dir = pending_root .. "/decoy-dir/../base-read",
+      out_dir = pending_root .. "/prefix-clean/upstream",
+      receipt_path = pending_root .. "/prefix-clean/receipt.json",
+      base_ref = refs.base, source_ref = refs.source,
+      declared_delta = {
+        { status = "M", path = "upstream/init.lua",
+          base_blob = base_blobs["init.lua"], source_blob = source_blobs["init.lua"] },
+      }, suite_specs = {
+        { path = "tests/pending_test.lua", source_blob = dotted_spec.pending_test_blob,
+          module = "init.lua" },
+      },
+    })
+    ok(dotted_run.tree["init.lua"] == source_blobs["init.lua"],
+      "P1 dotdot base path does not probe the rewound sibling")
+  else
+    print("P1 dotdot sibling probe: NOT RUN (alias creation unavailable)")
   end
 
   local unsupported_spec, unsupported_ad = fixture()

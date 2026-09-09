@@ -1290,6 +1290,10 @@ local function path_prefixes(path)
       -- Nothing to add.
     elseif component == ".." then
       current = current:match("^(.*)/[^/]+/?$") or current
+      -- Rewinding past an emitted prefix must retract it too: otherwise the
+      -- returned list names a sibling the target never descends through and
+      -- alias inspection probes a path this route never creates or traverses.
+      out[#out] = nil
     else
       current = current:gsub("/$", "") .. "/" .. component
       out[#out + 1] = current
@@ -1718,7 +1722,7 @@ local function pending_suite_specs(opts, inherited)
   return deduped
 end
 
-local function inherited_pending_suites(manifest, profile, source_projection,
+local function inherited_pending_suites(manifest, source_projection,
   adapter, source_ref)
   local matrix = manifest.proof_matrix or {}
   if not adapter.tree_inventory then
@@ -1842,7 +1846,7 @@ function M.materialize_pending(opts)
   local source_projection = pending_projection(adapter, source_ref)
   local delta = verify_pending_delta(opts, base_projection, source_projection,
     base_ref, source_ref)
-  local inherited = inherited_pending_suites(manifest, opts.profile,
+  local inherited = inherited_pending_suites(manifest,
     source_projection,
     adapter, source_ref)
   local suites = pending_suite_specs(opts, inherited)
@@ -1887,6 +1891,10 @@ function M.materialize_pending(opts)
   end
 
   ensure_dirs({ suite_dir })
+  -- A reused parent may hold a shrunken suite set's leftovers; clear with the
+  -- same checked cleanup as the output tree so stale files cannot fail the
+  -- exact staging inventory (or linger beside the new suites).
+  remove_pending_output(suite_dir)
   local test_blobs = normalize_tree_map(adapter.tree_inventory(
     source_ref, "clients/lite-xl/tests"), "tests")
   local support_files = {}

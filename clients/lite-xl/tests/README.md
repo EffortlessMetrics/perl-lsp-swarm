@@ -153,8 +153,8 @@ lua clients/lite-xl/tests/compose_integration_test.lua
 When selected, missing source objects or mismatched blobs fail the run; the
 default integration run reports this proof as `NOT RUN`.
 
-The selected profile's `proof_matrix` is the source of inherited suite
-obligations. Each referenced suite must exist at the exact source blob, and
+The manifest's `proof_matrix` is the source of inherited suite
+obligations, selected identically under every profile. Each referenced suite must exist at the exact source blob, and
 every modified or added generated module must have a suite row that names it.
 The materializer stages the immutable source modules under `upstream/` and
 the source-bound suites under its sibling `tests/` directory; both are

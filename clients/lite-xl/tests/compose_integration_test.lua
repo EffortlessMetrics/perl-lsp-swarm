@@ -361,9 +361,11 @@ if os.getenv("COMPOSE_PENDING_REAL_PROOF") == "1" then
     },
     suite_specs = {
       { path = "tests/init_completion_collision_test.lua",
-        source_blob = "67a229c8b86aa67d8712130af033c4a22e7a5154" },
+        source_blob = "67a229c8b86aa67d8712130af033c4a22e7a5154",
+        modules = { "init.lua" } },
       { path = "tests/init_completion_resolve_test.lua",
-        source_blob = "ec5e92e2d7369ba9fa89347b75e57ca444e60a61" },
+        source_blob = "ec5e92e2d7369ba9fa89347b75e57ca444e60a61",
+        modules = { "init.lua" } },
     },
   })
   ok(pending.tree["init.lua"] ==
@@ -412,9 +414,11 @@ if os.getenv("COMPOSE_PENDING_REAL_PROOF") == "1" then
     },
     suite_specs = {
       { path = "tests/init_completion_collision_test.lua",
-        source_blob = "67a229c8b86aa67d8712130af033c4a22e7a5154" },
+        source_blob = "67a229c8b86aa67d8712130af033c4a22e7a5154",
+        modules = { "init.lua" } },
       { path = "tests/init_completion_resolve_test.lua",
-        source_blob = "ec5e92e2d7369ba9fa89347b75e57ca444e60a61" },
+        source_blob = "ec5e92e2d7369ba9fa89347b75e57ca444e60a61",
+        modules = { "init.lua" } },
     },
   })
   ok(pending.receipt_json == pending_again.receipt_json,
