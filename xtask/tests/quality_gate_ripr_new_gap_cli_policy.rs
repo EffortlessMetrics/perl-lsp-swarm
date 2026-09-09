@@ -428,11 +428,16 @@ fn quality_gate_cli_new_ripr_exception_policy_action_uses_new_ripr_mode_commands
     write_ripr_pr_receipt(&ripr_pr, &head, 0)?;
     write_empty_review_guidance_receipt(&review, &head)?;
 
-    let output =
-        new_ripr_quality_gate_command(&root, &ripr, &ripr_pr, &review, &receipt, &summary)?
-            .arg("--exception-policy")
-            .arg(&missing_policy)
-            .output()?;
+    let output = new_ripr_quality_gate_command_with_policy(
+        &root,
+        &ripr,
+        &ripr_pr,
+        &review,
+        &receipt,
+        &summary,
+        &missing_policy,
+    )?
+    .output()?;
     assert!(!output.status.success(), "missing exception policy must fail new-RIPR mode");
 
     let payload: Value = serde_json::from_str(&fs::read_to_string(&receipt)?)?;
@@ -470,11 +475,10 @@ fn quality_gate_cli_new_ripr_invalid_exception_action_uses_new_ripr_mode_command
     write_empty_review_guidance_receipt(&review, &head)?;
     write_invalid_exception_policy(&policy)?;
 
-    let output =
-        new_ripr_quality_gate_command(&root, &ripr, &ripr_pr, &review, &receipt, &summary)?
-            .arg("--exception-policy")
-            .arg(&policy)
-            .output()?;
+    let output = new_ripr_quality_gate_command_with_policy(
+        &root, &ripr, &ripr_pr, &review, &receipt, &summary, &policy,
+    )?
+    .output()?;
     assert!(!output.status.success(), "invalid exception policy must fail new-RIPR mode");
 
     let payload: Value = serde_json::from_str(&fs::read_to_string(&receipt)?)?;
@@ -1067,8 +1071,37 @@ fn new_ripr_quality_gate_command(
     receipt: &Path,
     summary: &Path,
 ) -> TestResult<Command> {
+    let exception_policy = receipt
+        .parent()
+        .ok_or_else(|| "quality-gate receipt path must have a parent".to_string())?
+        .join("quality-gate-exceptions.toml");
+    fs::write(
+        &exception_policy,
+        "schema_version = 1\npolicy = \"quality-gate-exceptions\"\nowner = \"test\"\nstatus = \"active\"\nupdated = \"2026-01-01\"\ndue_review = \"fail\"\n",
+    )?;
+    new_ripr_quality_gate_command_with_policy(
+        root,
+        ripr,
+        ripr_pr,
+        review,
+        receipt,
+        summary,
+        &exception_policy,
+    )
+}
+
+fn new_ripr_quality_gate_command_with_policy(
+    root: &Path,
+    ripr: &Path,
+    ripr_pr: &Path,
+    review: &Path,
+    receipt: &Path,
+    summary: &Path,
+    exception_policy: &Path,
+) -> TestResult<Command> {
     let mut command = Command::cargo_bin("xtask")?;
     command.current_dir(root).args(["quality-gate", "--mode", "enforce-new-ripr"]);
+    command.arg("--exception-policy").arg(exception_policy);
     command.arg("--ripr-receipt").arg(ripr);
     command.arg("--ripr-pr-receipt").arg(ripr_pr);
     command.arg("--review-receipt").arg(review);
