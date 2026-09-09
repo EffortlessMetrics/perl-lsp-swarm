@@ -66,12 +66,15 @@ pub use project_fixture::{
 };
 pub use recorder::{
     AssertionBasis, AssertionCounts, OperationTiming, RunIdentity, UxCheckFailure, UxRunRecorder,
-    UxScenarioRunReceipt, UxScenarioSkip, run_ux_scenario,
+    UxScenarioRunReceipt, UxScenarioSkip, run_ux_scenario, run_ux_scenario_with_evidence_class,
 };
-pub use scorecard::{EditorUxScorecard, ScenarioScore, aggregate_editor_ux_scorecard};
+pub use scorecard::{
+    EditorUxScorecard, ScenarioScore, aggregate_editor_ux_scorecard,
+    ensure_score_evidence_consistent,
+};
 pub use taxonomy::{
-    MetricState, UxCiTier, UxComponent, UxFailureClass, UxRoute, UxScenarioResult,
-    route_for_failure_class,
+    MetricState, UxCiTier, UxComponent, UxEvidenceClass, UxFailureClass, UxRoute, UxScenarioResult,
+    ensure_evidence_supports_projection, route_for_failure_class,
 };
 pub use workspace::FakeWorkspace;
 
@@ -1714,11 +1717,13 @@ mod strict_binary_guard_subprocess_tests {
     ///    `current_exe()`-walk fallback (it would otherwise find the real,
     ///    already-built `perl-lsp` sitting next to this same test binary in
     ///    a normal CI run).
-    /// 2. Clears `PERL_LSP_BIN`, `CARGO_TARGET_DIR`, and `CARGO_MANIFEST_DIR`
-    ///    in the CHILD's environment only (never the parent's — this crate
-    ///    denies `unsafe_code`, and `std::env::set_var` on the parent
-    ///    process is `unsafe`) so none of `resolve_binary()`'s other
-    ///    fallbacks can find a real binary either.
+    /// 2. Clears the CHILD's entire inherited environment before enabling
+    ///    strict mode (never the parent's — this crate denies `unsafe_code`,
+    ///    and `std::env::set_var` on the parent process is `unsafe`). This
+    ///    removes the explicit override, Cargo directory/profile hints, and
+    ///    `PATH`, so none of `resolve_binary()`'s ambient fallbacks can find a
+    ///    real binary. The child remains launchable because `isolated_exe` is
+    ///    an absolute path.
     ///
     /// Note: merely pointing `PERL_LSP_BIN` at a nonexistent path does NOT
     /// exercise this guard — `resolve_binary()`'s step 1 returns `Ok` for
@@ -1746,9 +1751,7 @@ mod strict_binary_guard_subprocess_tests {
                 "--exact",
                 "--nocapture",
             ])
-            .env_remove("PERL_LSP_BIN")
-            .env_remove("CARGO_TARGET_DIR")
-            .env_remove("CARGO_MANIFEST_DIR")
+            .env_clear()
             .env(REQUIRE_BINARY_ENV, "1")
             .output()?;
 

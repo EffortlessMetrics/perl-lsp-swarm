@@ -189,6 +189,37 @@ fn name_field_never_exceeds_source_after_link_display_text() {
 }
 
 #[test]
+fn synopsis_field_never_exceeds_source_after_link_display_text() {
+    // Regression for the pod_extraction fuzz panic (nightly run 33230657955):
+    // the SYNOPSIS arm still used markdown link rendering, so an unterminated
+    // L<...> percent-encoded its "target" and produced a synopsis several
+    // times longer than the source (#12824 family — display-text rendering).
+    let source =
+        "=head1 SYNOPSIS\n\nL<b0stsor(\"\u{0}\u{FFFD} dynp and more trailing bytes here\n\n=cut\n";
+    let doc = extract_pod(source);
+    let synopsis = doc.synopsis.as_deref().unwrap_or_default();
+    assert!(!synopsis.is_empty(), "SYNOPSIS should be present and non-empty: {:?}", doc.synopsis);
+    assert!(
+        synopsis.contains("b0stsor"),
+        "SYNOPSIS should preserve the display text: {synopsis:?}"
+    );
+    assert!(
+        synopsis.len() <= source.len(),
+        "SYNOPSIS ({} bytes) must not exceed source ({} bytes) — the fuzz target invariant: {synopsis:?}",
+        synopsis.len(),
+        source.len()
+    );
+    assert!(
+        synopsis.chars().count() <= source.chars().count(),
+        "SYNOPSIS ({} chars) must not exceed source ({} chars): {synopsis:?}",
+        synopsis.chars().count(),
+        source.chars().count()
+    );
+    assert!(!synopsis.contains("perldoc://"), "SYNOPSIS must carry no link target: {synopsis:?}");
+    assert!(!synopsis.contains('%'), "SYNOPSIS must carry no percent-encoding: {synopsis:?}");
+}
+
+#[test]
 fn mixed_formatting() {
     let doc = extract_pod("=head1 NAME\n\nUse B<new> to create a C<Foo> object\n\n=cut\n");
     assert_eq!(doc.name.as_deref(), Some("Use new to create a Foo object"));
@@ -1169,5 +1200,75 @@ An author note in a list.
         !doc.synopsis.as_ref().is_some_and(|s| s.contains("An author note")),
         "unsupported-heading list must not leak into synopsis: {:?}",
         doc.synopsis
+    );
+}
+
+// ── #13575: public extract_pod command-map discriminators ────────────────
+
+#[test]
+fn extract_pod_maps_recognized_commands_with_space_tab_and_trailing_args() {
+    // Opposite-direction control for the lookalike suite below: exact commands
+    // with space, tab, and trailing arguments must still classify.
+    let source = "=pod\n\n=encoding\tutf-8\n\n=head1\tNAME\n\nTab::Name - tab-delimited heading\n\n=head1 ARGUMENTS\n\nKeep this.\n\n=over 4\n\n=item\t$param\n\nA parameter.\n\n=back\n\n=begin html\n\n=end html\n\n=for comment skipped\n\n=cut trailing explanation\n\nsub leaked {}\n\n=head2\tmethod_name\n\nMethod body.\n\n=cut\n";
+    let doc = extract_pod(source);
+    assert_eq!(doc.name.as_deref(), Some("Tab::Name - tab-delimited heading"));
+    let args = must_some(doc.arguments.as_ref());
+    assert!(args.contains("Keep this."), "recognized body text must remain: {args}");
+    assert!(args.contains("$param"), "tab-delimited =item must remain a list item: {args}");
+    assert!(
+        !args.contains("sub leaked"),
+        "=cut with trailing text must end the ARGUMENTS region: {args}"
+    );
+    assert!(
+        !args.contains("=begin html") && !args.contains("=for comment"),
+        "recognized skip directives must not leak into ARGUMENTS: {args}"
+    );
+    assert_eq!(
+        doc.methods.get("method_name").map(String::as_str),
+        Some("Method body."),
+        "tab-delimited =head2 after =cut must start a new POD region"
+    );
+}
+
+#[test]
+fn extract_pod_rejects_malformed_unknown_and_lookalike_commands_without_panic() {
+    for source in ["", "=", "= ", "=\t", "==", "==pod", "=☃", "=cut!"] {
+        let doc = extract_pod(source);
+        assert!(doc.is_empty(), "no-argument/malformed source must not start POD: {source:?}");
+    }
+
+    // Lookalikes must not act as their recognized prefixes: they stay body text
+    // inside an active section, and they must not start POD on their own.
+    let lookalike_source = "=head1 ARGUMENTS\n\nBefore.\n\n=cutlery\n=headache\n=head10 not a heading\n=head1:\n=cut!\n=heаd1 confusable\n=overboard\n=unknown value\n=\n=☃\n\nAfter.\n\n=cut\n";
+    let doc = extract_pod(lookalike_source);
+    let args = must_some(doc.arguments.as_ref());
+    for fragment in [
+        "Before.",
+        "=cutlery",
+        "=headache",
+        "=head10 not a heading",
+        "=head1:",
+        "=cut!",
+        "=heаd1 confusable",
+        "=overboard",
+        "=unknown value",
+        "After.",
+    ] {
+        assert!(
+            args.contains(fragment),
+            "lookalike/malformed command {fragment:?} must remain documentation text, got: {args}"
+        );
+    }
+    assert!(
+        !args.contains("- not a heading"),
+        "=head10 must not be consumed as =head1; got: {args}"
+    );
+
+    let headache_only = "=headache NAME\n\nShouldNotBeName\n\n=cut\n";
+    let headache_doc = extract_pod(headache_only);
+    assert!(
+        headache_doc.name.is_none(),
+        "=headache must not start a NAME section: {:?}",
+        headache_doc.name
     );
 }

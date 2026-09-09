@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "owner_issue": 8282,
-  "reason": "Routes VS Code inline completion through one provider owner (#8282). The candidate adds src/inlineCompletionRouting.ts and extends streamingCompletion.ts, growing the bundled out/extension.js from 1591832 to 1605380 bytes. The measured 29-file package remains size-only: no file additions, removals, or permission loosening.",
-  "base_baseline_file_sha256": "d6f01dad2c5a8b18a75dab8bdd0c55a50d168f042b7a3aaa7ed57af7af5d63d2",
-  "candidate_baseline_file_sha256": "c334509714d671bc93c27387a153089cc133eae98f5d516bcac2f4a77ae898fd",
-  "base_inventory_sha256": "af077116d6be5400315a98d2e0f1aa05197c930ac7521fea3f6b72a319d56975",
-  "candidate_inventory_sha256": "b6001a5b7432633f4b24a36899243f507adc4492ff35a6877f6d5b2eb63e1874"
+  "owner_issue": 15188,
+  "reason": "The #15188 dependency proof adds its focused js-yaml regression to the existing receipt test route; the exact VSIX archive is measured against the captured current-main baseline.",
+  "base_baseline_file_sha256": "cbc7b17b4a3828f98e36052024e0e30aa13934562c7ba9ce5ee1561018cfad8d",
+  "candidate_baseline_file_sha256": "f8601dbdd5a42982751b11ab973715d8e11f0986fe8354f54d431ff1e5aa7c0a",
+  "base_inventory_sha256": "4c6ed6924c01d1932568e3730beb12e7a859e4675c1278de0113bbab28aea1e8",
+  "candidate_inventory_sha256": "71e72d35bc3dd8071851823dbf78c8fb460b04004cd806f0a4c62df82d237488"
 }

@@ -77,7 +77,10 @@ fn inlay_hints_for_substr_and_types() -> TestResult {
         assert!(hint.get("label").is_some(), "every hint needs a label");
     }
 
-    let labels: Vec<&str> = hints.iter().filter_map(|h| h["label"].as_str()).collect();
+    let labels: Vec<&str> = hints
+        .iter()
+        .filter_map(|h| perl_lsp_rs_core::providers::inlay_hints::inlay_hint_label_str(h))
+        .collect();
 
     let has_substr_param = ["expr:", "offset:", "length:"].iter().any(|p| labels.contains(p));
     assert!(
@@ -194,7 +197,10 @@ fn inlay_hints_max_length_truncates_hint_labels() -> TestResult {
 
     let result = request_hints(&mut harness, uri)?;
     let hints = result.as_array().ok_or("should return an array")?;
-    let labels: Vec<&str> = hints.iter().filter_map(|h| h["label"].as_str()).collect();
+    let labels: Vec<&str> = hints
+        .iter()
+        .filter_map(|h| perl_lsp_rs_core::providers::inlay_hints::inlay_hint_label_str(h))
+        .collect();
 
     assert!(!labels.is_empty(), "fixture should produce hint labels");
     assert!(

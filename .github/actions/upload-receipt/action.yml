@@ -88,93 +88,15 @@ runs:
         if-no-files-found: warn
         retention-days: ${{ inputs.retention-days }}
 
+    # The renderer lives in `render_summary.py` rather than inline here so it
+    # can be executed against real receipt shapes by the
+    # `upload-receipt-contract` job. An inline heredoc has no such proof seam,
+    # which is how it drifted from the receipt contract unnoticed.
     - name: Generate summary
       if: inputs.generate-summary == 'true' && always()
       shell: bash
       env:
         RECEIPT_PATH: ${{ inputs.receipt-path }}
       run: |
-        python3 - <<'PY'
-        import html
-        import json
-        import os
-        from pathlib import Path
-
-        receipt_path_raw = os.environ["RECEIPT_PATH"]
-        receipt_path = Path(receipt_path_raw)
-        summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
-
-        def summary_text(value: object) -> str:
-            sanitized = str(value).replace("\r", " ").replace("\n", " ")
-            return html.escape(sanitized, quote=True).replace("|", "&#124;")
-
-        def summary_code(value: object) -> str:
-            return f"<code>{summary_text(value)}</code>"
-
-        if not summary_path:
-            raise SystemExit(0)
-
-        lines = ["### Gate Receipt", ""]
-
-        if not receipt_path.is_file():
-            lines.append(f"> Receipt not found at {summary_code(receipt_path_raw)}")
-            Path(summary_path).write_text("\n".join(lines) + "\n", encoding="utf-8")
-            raise SystemExit(0)
-
-        try:
-            data = json.loads(receipt_path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError) as error:
-            lines.append(f"> Failed to read receipt: {summary_code(error)}")
-            Path(summary_path).write_text("\n".join(lines) + "\n", encoding="utf-8")
-            raise SystemExit(0)
-
-        # Header info
-        lines.append(f"**Generated**: {summary_text(data.get('generated_at', 'unknown'))}")
-        commit = str(data.get("commit", "unknown"))[:12]
-        lines.append(f"**Commit**: {summary_code(commit)}")
-
-        # Overall status
-        raw_gates = data.get("gates", [])
-        if not isinstance(raw_gates, list) or not all(isinstance(gate, dict) for gate in raw_gates):
-            lines.append("> Failed to read receipt: `gates` must be an array of objects")
-            Path(summary_path).write_text("\n".join(lines) + "\n", encoding="utf-8")
-            raise SystemExit(0)
-
-        gates = raw_gates
-        passed = sum(1 for gate in gates if gate.get("status") == "passed")
-        failed = sum(1 for gate in gates if gate.get("status") == "failed")
-        total = len(gates)
-
-        if failed == 0:
-            lines.append(f"**Status**: All {passed}/{total} gates passed")
-        else:
-            lines.append(f"**Status**: {failed}/{total} gates failed")
-
-        lines.append("")
-
-        # Gate table
-        lines.append("| Gate | Status | Exit | Duration |")
-        lines.append("|------|--------|------|----------|")
-
-        for gate in gates:
-            name = summary_text(gate.get("name", "unknown"))
-            status = gate.get("status", "unknown")
-            exit_code = summary_text(gate.get("exit_code", "?"))
-            duration = summary_text(gate.get("duration_seconds", "?"))
-
-            if status == "passed":
-                status_text = "passed"
-            elif status == "failed":
-                status_text = "**FAILED**"
-            else:
-                status_text = summary_text(status)
-
-            lines.append(f"| {name} | {status_text} | {exit_code} | {duration}s |")
-
-        if "total_duration_seconds" in data:
-            total_duration = summary_text(data["total_duration_seconds"])
-            lines.append("")
-            lines.append(f"**Total duration**: {total_duration}s")
-
-        Path(summary_path).write_text("\n".join(lines) + "\n", encoding="utf-8")
-        PY
+        set -euo pipefail
+        python3 "$GITHUB_ACTION_PATH/render_summary.py"

@@ -138,7 +138,8 @@ If the editor is using a helper extension or plugin, check its own logs too.
    vim.lsp.enable('perllsp')
    ```
 
-5. Use `perllsp --check path/to/file.pl` for manual diagnostics.
+5. Use `perllsp --check path/to/file.pl` for a native listed-file parser check
+   (it does not execute project Perl).
    Do not test stdio mode by piping unframed JSON.
 
 ## coc.nvim Does Not Start `perllsp`
