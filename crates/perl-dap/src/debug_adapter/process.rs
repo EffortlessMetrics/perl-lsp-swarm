@@ -34,6 +34,32 @@ use perl_spawn::{format_perl_spawn_error, is_valid_perl_interpreter};
 
 const SCOPE_FRAME_ID_MAX: u64 = 99_999;
 
+/// Read one debugger record, accepting either a newline or a prompt-only
+/// record. perl5db may leave `DB<N>` unterminated while it waits for the next
+/// command; `read_line` would block forever in that state and prevent the
+/// reader from associating a native context with its prompt.
+fn read_debugger_record<R: BufRead>(reader: &mut R, line: &mut String) -> std::io::Result<usize> {
+    let mut bytes = Vec::new();
+    loop {
+        let mut byte = [0_u8; 1];
+        let read = reader.read(&mut byte)?;
+        if read == 0 {
+            break;
+        }
+        bytes.push(byte[0]);
+        if byte[0] == b'\n' {
+            break;
+        }
+        let candidate = String::from_utf8_lossy(&bytes);
+        if prompt_re().is_some_and(|re| re.is_match(candidate.trim())) {
+            break;
+        }
+    }
+    line.clear();
+    line.push_str(&String::from_utf8_lossy(&bytes));
+    Ok(bytes.len())
+}
+
 /// Return the authoritative frame id for the current suspension.
 ///
 /// The output reader may observe a context line followed by a prompt for the
@@ -865,7 +891,7 @@ impl DebugAdapter {
 
             loop {
                 line.clear();
-                match reader.read_line(&mut line) {
+                match read_debugger_record(&mut reader, &mut line) {
                     Ok(0) => {
                         tracing::debug!("Perl debugger process terminated");
                         // Settle every pending framed operation first (#8564):
@@ -1230,10 +1256,18 @@ impl DebugAdapter {
                                             native_context_observed && has_source_frame;
                                         let entry_stop =
                                             s.entry_stop_pending && has_authoritative_source_frame;
+                                        // A context-shaped line can be debuggee output (for
+                                        // example from BEGIN) rather than perl5db's current
+                                        // location. Keep the pending entry authority until the
+                                        // following prompt, which is the debugger's ordered
+                                        // completion marker for this context. Normal running
+                                        // contexts still install their frame immediately.
                                         if entry_stop {
-                                            s.entry_stop_pending = false;
+                                            s.state = DebugState::Running;
+                                            should_emit_stopped = false;
+                                        } else {
+                                            should_emit_stopped = !s.entry_stop_pending;
                                         }
-                                        should_emit_stopped = !s.entry_stop_pending || entry_stop;
                                         let resume_mode = s.last_resume_mode.clone();
 
                                         let breakpoint_outcome = if matches!(
@@ -1259,8 +1293,10 @@ impl DebugAdapter {
                                             // the reader observes an actual source context.
                                             s.state = DebugState::Running;
                                         } else if entry_stop {
-                                            stop_reason = "entry".to_string();
-                                            s.state = DebugState::Stopped;
+                                            // Entry is emitted by the prompt branch after the
+                                            // context has reached the debugger's ordered
+                                            // completion marker.
+                                            s.state = DebugState::Running;
                                         } else if exception_match || warning_match {
                                             stop_reason = "exception".to_string();
                                             s.state = DebugState::Stopped;
@@ -2745,6 +2781,64 @@ mod tests {
             return Err(format!("expected exactly one entry stop, got {stopped}"));
         }
         Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn output_reader_fake_context_without_prompt_is_rejected() -> Result<(), String> {
+        use super::{DapMessage, DebugSession, ResumeMode, VariableCache, lock_or_recover};
+        use std::path::PathBuf;
+        use std::process::{Command, Stdio};
+        use std::sync::atomic::Ordering;
+        use std::sync::mpsc::{RecvTimeoutError, sync_channel};
+        use std::time::Duration;
+
+        let (sender, receiver) = sync_channel(32);
+        let mut adapter = DebugAdapter::new();
+        adapter.set_event_sender(sender);
+        adapter.initialized.store(true, Ordering::Release);
+        let child = Command::new("sh")
+            .args([
+                "-c",
+                "printf 'main::(/tmp/begin.pl:1):\\tprint BEGIN\\nFAKE_DONE\\n' >&2; sleep 1",
+            ])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|error| format!("failed to spawn reader fixture: {error}"))?;
+        *lock_or_recover(&adapter.session, "test.session") = Some(DebugSession {
+            process: child,
+            state: DebugState::Running,
+            stack_frames: Vec::new(),
+            stack_frame_arguments: HashMap::new(),
+            variable_cache: VariableCache::default(),
+            thread_id: 1,
+            last_resume_mode: ResumeMode::Unknown,
+            entry_stop_pending: true,
+            stopped_generation: 0,
+        });
+        adapter.start_output_reader(PathBuf::from("/tmp"));
+        loop {
+            match receiver.recv_timeout(Duration::from_secs(3)) {
+                Ok(DapMessage::Event { event, .. }) if event == "stopped" => {
+                    return Err("context-shaped output published entry before prompt".into());
+                }
+                Ok(DapMessage::Event { event, body, .. }) if event == "output" => {
+                    if body
+                        .as_ref()
+                        .and_then(|value| value.get("output"))
+                        .and_then(|value| value.as_str())
+                        .is_some_and(|output| output.contains("FAKE_DONE"))
+                    {
+                        return Ok(());
+                    }
+                }
+                Ok(_) => {}
+                Err(RecvTimeoutError::Timeout) => return Err("fake fixture timed out".into()),
+                Err(RecvTimeoutError::Disconnected) => return Err("reader disconnected".into()),
+            }
+        }
     }
 
     /// A diagnostic location can precede perl5db's first native context. It
