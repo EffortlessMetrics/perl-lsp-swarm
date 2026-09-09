@@ -64,6 +64,10 @@ jobs:
         if: runner.os == 'Linux'
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          # The real-client settlement fixture is Linux-only here so the
+          # existing host job gains one focused production-boundary lane
+          # without expanding the OS matrix.
+          PERL_LSP_REAL_CLIENT_SETTLEMENT: '1'
         run: xvfb-run -a npm run test:integration
 
       - name: Package current extension for Windows published smoke
