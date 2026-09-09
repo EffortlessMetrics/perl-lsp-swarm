@@ -5,8 +5,59 @@ const { test } = require('node:test');
 const { suspendOwnedWindowsProcess, resumeOwnedWindowsProcess } = require(
   path.join(__dirname, '../out/test/published/windowsOwnedSuspension.js'),
 );
-
+/** @type {any} */
+const Module = require('node:module');
+const originalModuleLoad = Module._load;
+Module._load = function (request, parent, isMain) {
+  if (request === 'vscode') return {};
+  return originalModuleLoad.call(this, request, parent, isMain);
+};
+let resumeServerProcess;
+try {
+  ({ resumeServerProcess } = require(
+    path.join(__dirname, '../out/test/published/journeySupport.js'),
+  ));
+} finally {
+  Module._load = originalModuleLoad;
+}
 const pause = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+void test('POSIX resume maps ESRCH to already gone and preserves EPERM', async () => {
+  const originalPlatform = process.platform;
+  const originalKill = process.kill;
+  Object.defineProperty(process, 'platform', { configurable: true, value: 'linux' });
+  try {
+    process.kill = (pid, signal) => {
+      assert.equal(pid, 42);
+      assert.equal(signal, 'SIGCONT');
+      return true;
+    };
+    assert.equal((await resumeServerProcess(42)).outcome, 'resumed');
+    process.kill = (pid, signal) => {
+      assert.equal(pid, 42);
+      assert.equal(signal, 'SIGCONT');
+      throw Object.assign(new Error('kill ESRCH'), { code: 'ESRCH' });
+    };
+    assert.deepEqual(await resumeServerProcess(42), {
+      outcome: 'already_gone',
+      detail: 'pid 42 already gone (ESRCH)',
+    });
+    process.kill = () => {
+      throw new Error('kill ESRCH');
+    };
+    assert.equal((await resumeServerProcess(42)).outcome, 'error');
+
+    process.kill = () => {
+      throw Object.assign(new Error('operation not permitted'), { code: 'EPERM' });
+    };
+    assert.deepEqual(await resumeServerProcess(42), {
+      outcome: 'error',
+      detail: 'operation not permitted',
+    });
+  } finally {
+    process.kill = originalKill;
+    Object.defineProperty(process, 'platform', { configurable: true, value: originalPlatform });
+  }
+});
 
 async function until(predicate, description) {
   const deadline = Date.now() + 5000;
@@ -155,3 +206,29 @@ for (const fault of ['helper-death', 'eof', 'hold-timeout']) {
     },
   );
 }
+
+void test(
+  'POSIX resume recognizes an actually exited owned process',
+  { skip: process.platform === 'win32' },
+  async () => {
+    const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {
+      stdio: 'ignore',
+    });
+    const terminal = new Promise((resolve, reject) => {
+      child.once('close', resolve);
+      child.once('error', reject);
+    });
+    try {
+      await new Promise((resolve, reject) => {
+        child.once('spawn', resolve);
+        child.once('error', reject);
+      });
+      child.kill();
+      await terminal;
+      assert.equal((await resumeServerProcess(child.pid)).outcome, 'already_gone');
+    } finally {
+      if (child.exitCode === null && child.signalCode === null) child.kill();
+      await terminal;
+    }
+  },
+);

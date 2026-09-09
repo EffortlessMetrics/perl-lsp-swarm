@@ -544,6 +544,13 @@ export async function resumeServerProcess(pid: number): Promise<SuspendResult> {
     process.kill(pid, 'SIGCONT');
     return { outcome: 'resumed', detail: `SIGCONT pid ${pid}` };
   } catch (error: unknown) {
+    const code =
+      typeof error === 'object' && error !== null && 'code' in error
+        ? (error as { code?: unknown }).code
+        : undefined;
+    if (code === 'ESRCH') {
+      return { outcome: 'already_gone', detail: `pid ${pid} already gone (ESRCH)` };
+    }
     return {
       outcome: 'error',
       detail: error instanceof Error ? error.message : String(error),
