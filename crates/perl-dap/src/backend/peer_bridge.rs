@@ -15,8 +15,9 @@
 //! The bridge is a **parallel** path: it does not touch the native
 //! [`crate::debug_adapter::DebugAdapter`] dispatch funnel (decision DF1 remains
 //! deferred). [`run_external_peer_session_stdio`] drives it over editor stdio;
-//! [`DapPeerBridge::dispatch`] / [`DapPeerBridge::poll_events`] are the
-//! deterministic, testable core.
+//! [`DapPeerBridge::dispatch`] (which applies the #9581 capability floor before
+//! routing) and [`DapPeerBridge::poll_events`] are the deterministic, testable
+//! core.
 
 #[cfg(test)]
 use perl_tdd_support::{must, must_some};
@@ -204,10 +205,35 @@ impl DapPeerBridge {
         }
     }
 
+    /// Dispatch a single DAP request through the #9581 capability floor.
+    ///
+    /// This is the editor-facing entry point on the external-peer surface. The
+    /// #9581 secondary-capability floor is resolved *here* — outside the
+    /// canonical route match in this method, whose body the
+    /// protocol-authority gate pins to the table-owned shape — so a floored
+    /// request is refused before any AST-oracle source read, peer/backend I/O,
+    /// or queued-event drain can happen. Non-floored requests route exactly
+    /// as this method always has.
+    pub fn dispatch(
+        &mut self,
+        request_seq: i64,
+        command: &str,
+        arguments: Option<Value>,
+    ) -> Vec<DapMessage> {
+        if let Some(response) =
+            self.secondary_floor_response(request_seq, command, arguments.as_ref())
+        {
+            return vec![response];
+        }
+        self.dispatch_unchecked(request_seq, command, arguments)
+    }
+
     /// Dispatch a single DAP request. Returns the response message followed by
     /// any backend events that arrived while servicing it (drained after the
     /// call), so a caller can write them in order.
-    pub fn dispatch(
+    ///
+    /// The fixed, table-owned route match used after capability admission.
+    fn dispatch_unchecked(
         &mut self,
         request_seq: i64,
         command: &str,
@@ -326,7 +352,12 @@ impl DapPeerBridge {
             }
             Some(DapRequestRoute::BreakpointLocations) => {
                 // Answered locally from the AST oracle (the source file is on the
-                // same host as perl-dap), independent of the peer.
+                // same host as perl-dap), independent of the peer. The #9581
+                // capability floor intercepts the request at
+                // [`Self::dispatch`] while
+                // `supportsBreakpointLocationsRequest` is false, so this arm is
+                // unreachable through the floored editor entry until that
+                // per-field re-enable gate passes.
                 let body = handle_breakpoint_locations(arguments.as_ref());
                 out.push(self.response(request_seq, command, true, Some(body), None));
             }
@@ -545,8 +576,16 @@ impl DapPeerBridge {
         json!({
             "supportsConfigurationDoneRequest": true,
             "supportsTerminateRequest": true,
-            // Answered locally from the AST oracle, so always available.
-            "supportsBreakpointLocationsRequest": true,
+            // #9581 secondary-capability floor (external-peer surface): each
+            // row is an independent literal `false` and its request is
+            // rejected by the dispatch gate before any oracle/peer work.
+            "supportsCompletionsRequest": false,
+            "supportsModulesRequest": false,
+            "supportsLoadedSourcesRequest": false,
+            "supportsRestartRequest": false,
+            "supportsValueFormattingOptions": false,
+            "supportsBreakpointLocationsRequest": false,
+            "supportsCancelRequest": false,
             "supportsConditionalBreakpoints": negotiated.supports_conditional_breakpoints,
             "supportsHitConditionalBreakpoints": negotiated.supports_hit_conditional_breakpoints,
             "supportsLogPoints": negotiated.supports_log_points,
@@ -564,6 +603,23 @@ impl DapPeerBridge {
             // setVariable gate refuses on the same authority.
             "supportsSetVariable": negotiated.supports_set_variable,
         })
+    }
+
+    /// The #9581 floor disposition for this request, if it is floored.
+    ///
+    /// The single authority in `backend/capabilities.rs`
+    /// (`capability_floor_message`) decides for both floored families: the
+    /// six secondary requests and a non-default `format` option on the four
+    /// ValueFormat families. This surface only builds its own explicit
+    /// unsupported response from that decision.
+    fn secondary_floor_response(
+        &mut self,
+        request_seq: i64,
+        command: &str,
+        arguments: Option<&Value>,
+    ) -> Option<DapMessage> {
+        crate::backend::capabilities::capability_floor_message(command, arguments)
+            .map(|message| self.response(request_seq, command, false, None, Some(message)))
     }
 
     fn handle_set_breakpoints(&mut self, args: Option<&Value>) -> super::BackendResult<Value> {
@@ -939,6 +995,8 @@ fn dispatch_frame(bridge: &mut DapPeerBridge, body: &[u8]) -> (Vec<DapMessage>, 
     };
     let seq =
         v.get("seq").and_then(|s| s.as_i64().or_else(|| s.as_f64().map(|f| f as i64))).unwrap_or(0);
+    // The editor-facing ingress applies the #9581 capability floor before the
+    // canonical route match.
     let out = bridge.dispatch(seq, command, v.get("arguments").cloned());
     let disconnect = command == "disconnect";
     (out, disconnect)
@@ -1024,6 +1082,13 @@ fn str_field(v: &Value, key: &str) -> Option<String> {
 /// the breakable lines within the requested `[line, endLine]` range. On any error
 /// (missing args, unreadable/unparseable source) returns an empty set rather than
 /// failing the request — the editor treats "no breakable locations" gracefully.
+///
+/// Retained as the AST oracle behind the canonical `BreakpointLocations`
+/// route arm. The #9581 capability floor intercepts the request at
+/// `dispatch` while `supportsBreakpointLocationsRequest`
+/// is `false`, so production reaches this arm only after that per-field
+/// re-enable gate (#10524 + #2300 + #9021 + #7566) passes; the unit proofs
+/// keep proving its geometry/empty-set contract in the meantime.
 fn handle_breakpoint_locations(args: Option<&Value>) -> Value {
     let empty = json!({ "breakpoints": [] });
     let Some(args) = args else { return empty };
@@ -1226,6 +1291,24 @@ mod tests {
         DapPeerBridge::new(Box::new(ScriptBackend::default()))
     }
 
+    #[test]
+    fn floored_request_does_not_drain_queued_backend_events() -> Result<(), String> {
+        let mut backend = ScriptBackend::default();
+        backend.events.push(DebugEvent::Terminated { exit_code: Some(7) });
+        let mut bridge = DapPeerBridge::new(Box::new(backend));
+
+        let out = bridge.dispatch(1, "completions", Some(json!({ "text": "pr" })));
+        assert_eq!(out.len(), 1, "a floored request must return only its response");
+        assert!(matches!(out.first(), Some(DapMessage::Response { success: false, .. })));
+
+        let events = bridge.poll_events();
+        assert_eq!(events.len(), 1, "the queued event must remain available");
+        assert!(
+            matches!(events.first(), Some(DapMessage::Event { event, .. }) if event == "terminated")
+        );
+        Ok(())
+    }
+
     fn as_response(msg: &DapMessage) -> Result<(&str, bool, Option<&Value>), String> {
         match msg {
             DapMessage::Response { command, success, body, .. } => {
@@ -1252,7 +1335,15 @@ mod tests {
         assert!(ok);
         let caps = must_some(body);
         assert_eq!(caps["supportsConfigurationDoneRequest"], true);
-        assert_eq!(caps["supportsBreakpointLocationsRequest"], true);
+        // #9581: the secondary-capability rows are explicit false on the
+        // external-peer surface.
+        assert_eq!(caps["supportsBreakpointLocationsRequest"], false);
+        assert_eq!(caps["supportsCompletionsRequest"], false);
+        assert_eq!(caps["supportsModulesRequest"], false);
+        assert_eq!(caps["supportsLoadedSourcesRequest"], false);
+        assert_eq!(caps["supportsRestartRequest"], false);
+        assert_eq!(caps["supportsValueFormattingOptions"], false);
+        assert_eq!(caps["supportsCancelRequest"], false);
         // ptkdb v1 negotiated: no logpoints/data breakpoints.
         assert_eq!(caps["supportsLogPoints"], false);
         assert_eq!(caps["supportsDataBreakpoints"], false);
@@ -1584,6 +1675,14 @@ mod tests {
         Ok(())
     }
 
+    // --- breakpointLocations oracle contract (re-enable seam) ---------------
+    //
+    // #9581 floors the wire path: `dispatch("breakpointLocations", …)` is
+    // rejected by the capability-floor gate before the oracle ever runs (see
+    // `breakpoint_locations_is_floored_at_the_wire` below). The oracle helper
+    // is retained for the #10524 + #2300 + #9021 + #7566 re-enable gate, so
+    // these rows keep proving its geometry/empty-set contract directly, at the
+    // unit layer, exactly as they did before the floor.
     /// #9089: the peer bridge refuses the routed inlineValues extension on its
     /// own explicit dispatch route — the refusal must not fall through to the
     /// lenient success-empty compatibility acknowledgement, for an extension
@@ -1726,13 +1825,10 @@ mod tests {
         must(writeln!(f, "print $x;")); // line 3 — breakable
         let path = f.path().to_string_lossy().to_string();
 
-        let mut b = bridge();
-        let out = b.dispatch(
-            9,
-            "breakpointLocations",
-            Some(json!({ "source": { "path": path }, "line": 1, "endLine": 3 })),
-        );
-        let bps = must_some(must_some(as_response(&out[0])?.2)["breakpoints"].as_array()).clone();
+        let body = handle_breakpoint_locations(Some(
+            &json!({ "source": { "path": path }, "line": 1, "endLine": 3 }),
+        ));
+        let bps = must_some(body["breakpoints"].as_array()).clone();
         let lines: Vec<i64> = bps.iter().filter_map(|b| b["line"].as_i64()).collect();
         assert!(lines.contains(&2), "line 2 is breakable: {lines:?}");
         assert!(!lines.contains(&1), "comment line 1 is excluded: {lines:?}");
@@ -1746,15 +1842,11 @@ mod tests {
         must(writeln!(f, "my $x = 1;"));
         let path = f.path().to_string_lossy().to_string();
 
-        let mut b = bridge();
         // No "line" field at all. DAP marks `line` required, but a client that
         // omits it must not be answered with every breakable line in the file
-        // (or crash) — the handler must still return the empty-set contract.
-        let out =
-            b.dispatch(20, "breakpointLocations", Some(json!({ "source": { "path": path } })));
-        let (_, ok, body) = as_response(&out[0])?;
-        assert!(ok, "the request itself still succeeds");
-        let bps = must_some(must_some(body)["breakpoints"].as_array()).clone();
+        // (or crash) — the oracle must still return the empty-set contract.
+        let body = handle_breakpoint_locations(Some(&json!({ "source": { "path": path } })));
+        let bps = must_some(body["breakpoints"].as_array()).clone();
         assert!(bps.is_empty(), "missing line yields empty set, not every line: {bps:?}");
         Ok(())
     }
@@ -1767,17 +1859,12 @@ mod tests {
         must(writeln!(f, "my $y = 2;")); // line 2 — breakable
         let path = f.path().to_string_lossy().to_string();
 
-        let mut b = bridge();
         // `endLine` present but `line` absent is the same malformed class as
         // "missing line" — it must NOT return every breakable line up to endLine.
-        let out = b.dispatch(
-            22,
-            "breakpointLocations",
-            Some(json!({ "source": { "path": path }, "endLine": 100 })),
-        );
-        let (_, ok, body) = as_response(&out[0])?;
-        assert!(ok, "the request itself still succeeds");
-        let bps = must_some(must_some(body)["breakpoints"].as_array()).clone();
+        let body = handle_breakpoint_locations(Some(
+            &json!({ "source": { "path": path }, "endLine": 100 }),
+        ));
+        let bps = must_some(body["breakpoints"].as_array()).clone();
         assert!(bps.is_empty(), "endLine-only (no line) yields empty set: {bps:?}");
         Ok(())
     }
@@ -1790,15 +1877,11 @@ mod tests {
         must(writeln!(f, "my $x = 1;")); // line 2 — breakable
         let path = f.path().to_string_lossy().to_string();
 
-        let mut b = bridge();
         // A valid single-line query (`line` with no `endLine`) must still work:
         // endLine defaults to line, so line 2 is reported.
-        let out = b.dispatch(
-            23,
-            "breakpointLocations",
-            Some(json!({ "source": { "path": path }, "line": 2 })),
-        );
-        let bps = must_some(must_some(as_response(&out[0])?.2)["breakpoints"].as_array()).clone();
+        let body =
+            handle_breakpoint_locations(Some(&json!({ "source": { "path": path }, "line": 2 })));
+        let bps = must_some(body["breakpoints"].as_array()).clone();
         let lines: Vec<i64> = bps.iter().filter_map(|b| b["line"].as_i64()).collect();
         assert_eq!(lines, vec![2], "line-only query reports just that breakable line: {lines:?}");
         Ok(())
@@ -1813,13 +1896,10 @@ mod tests {
         must(writeln!(f, "print $x + $y;")); // line 3
         let path = f.path().to_string_lossy().to_string();
 
-        let mut b = bridge();
-        let out = b.dispatch(
-            21,
-            "breakpointLocations",
-            Some(json!({ "source": { "path": path }, "line": 3, "endLine": 1 })),
-        );
-        let bps = must_some(must_some(as_response(&out[0])?.2)["breakpoints"].as_array()).clone();
+        let body = handle_breakpoint_locations(Some(
+            &json!({ "source": { "path": path }, "line": 3, "endLine": 1 }),
+        ));
+        let bps = must_some(body["breakpoints"].as_array()).clone();
         assert!(bps.is_empty(), "endLine < line is an empty (not inverted) range: {bps:?}");
         Ok(())
     }
@@ -1827,40 +1907,51 @@ mod tests {
     #[test]
     fn breakpoint_locations_unreadable_path_returns_empty_not_an_error_response()
     -> Result<(), String> {
-        let mut b = bridge();
-        let out = b.dispatch(
-            22,
-            "breakpointLocations",
-            Some(json!({
-                "source": { "path": "/nonexistent/definitely-not-a-real-path.pl" },
-                "line": 1,
-                "endLine": 10,
-            })),
-        );
-        let (_, ok, body) = as_response(&out[0])?;
-        assert!(ok, "an unreadable source must not fail the DAP request");
-        let bps = must_some(must_some(body)["breakpoints"].as_array()).clone();
+        let body = handle_breakpoint_locations(Some(&json!({
+            "source": { "path": "/nonexistent/definitely-not-a-real-path.pl" },
+            "line": 1,
+            "endLine": 10,
+        })));
+        let bps = must_some(body["breakpoints"].as_array()).clone();
         assert!(bps.is_empty(), "unreadable path yields empty set: {bps:?}");
         Ok(())
     }
 
     #[test]
     fn breakpoint_locations_missing_source_path_returns_empty() -> Result<(), String> {
-        let mut b = bridge();
-        let out = b.dispatch(23, "breakpointLocations", Some(json!({ "line": 1, "endLine": 3 })));
-        let bps = must_some(must_some(as_response(&out[0])?.2)["breakpoints"].as_array()).clone();
+        let body = handle_breakpoint_locations(Some(&json!({ "line": 1, "endLine": 3 })));
+        let bps = must_some(body["breakpoints"].as_array()).clone();
         assert!(bps.is_empty(), "missing source.path yields empty set: {bps:?}");
         Ok(())
     }
 
     #[test]
     fn breakpoint_locations_missing_arguments_returns_empty() -> Result<(), String> {
-        let mut b = bridge();
-        let out = b.dispatch(24, "breakpointLocations", None);
-        let (_, ok, body) = as_response(&out[0])?;
-        assert!(ok, "even a bodyless breakpointLocations request must get a success response");
-        let bps = must_some(must_some(body)["breakpoints"].as_array()).clone();
+        let body = handle_breakpoint_locations(None);
+        let bps = must_some(body["breakpoints"].as_array()).clone();
         assert!(bps.is_empty(), "missing arguments yields empty set: {bps:?}");
+        Ok(())
+    }
+
+    /// #9581: at the wire, the floored request is rejected before the oracle
+    /// runs — explicit unsupported, no breakpoints body.
+    #[test]
+    fn breakpoint_locations_is_floored_at_the_wire() -> Result<(), String> {
+        use std::io::Write;
+        let mut f = must(tempfile::NamedTempFile::new());
+        must(writeln!(f, "my $x = 1;")); // would be breakable if the oracle ran
+        let path = f.path().to_string_lossy().to_string();
+
+        let mut b = bridge();
+        let out = b.dispatch(
+            9,
+            "breakpointLocations",
+            Some(json!({ "source": { "path": path }, "line": 1, "endLine": 1 })),
+        );
+        let (cmd, ok, body) = as_response(&out[0])?;
+        assert_eq!(cmd, "breakpointLocations");
+        assert!(!ok, "breakpointLocations is floored (#9581)");
+        assert!(body.is_none(), "a floored response must not carry locations");
         Ok(())
     }
 

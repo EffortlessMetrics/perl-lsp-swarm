@@ -186,3 +186,5 @@ A subordinate claim-orchestrator hierarchy, repository scheduler, tracked fronti
 active-goal file, portfolio queue, build-all wave, overlap ledger, agent registry,
 comment-per-transition protocol, batch review approval, or merge authority independent
 of each candidate's review and live ruleset.
+
+> Self-authored reversible corrections follow the canonical [correction and disclosure contract](../../../docs/agents/DEVELOPMENT_METHOD.md); this reference does not override higher-precedence instructions.
