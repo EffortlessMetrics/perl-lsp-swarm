@@ -12,6 +12,9 @@ const checker = path.join(__dirname, 'check-vsix-inventory.js');
 const baseline = JSON.parse(
   fs.readFileSync(path.join(__dirname, 'vsix-inventory-baseline.json'), 'utf8'),
 );
+const packageVersion = JSON.parse(
+  fs.readFileSync(path.join(extensionRoot, 'package.json'), 'utf8'),
+).version;
 const sourceSha = 'a'.repeat(40);
 const topologySha = 'b'.repeat(64);
 
@@ -63,8 +66,8 @@ async function fixture(directory, extraFiles = {}) {
   const inventory = semanticInventory(files);
   const manifest = {
     schema: 'vsix_candidate_payload.v1',
-    extension: { id: 'EffortlessMetrics.perl-lsp-rs', version: '0.17.0', sourceSha },
-    candidate: { id: 'fixture', release: '0.17.0', sourceSha },
+    extension: { id: 'EffortlessMetrics.perl-lsp-rs', version: packageVersion, sourceSha },
+    candidate: { id: 'fixture', release: packageVersion, sourceSha },
     releaseTopologySha256: topologySha,
     package: {
       vscodeTargetId: 'win32-x64',
