@@ -130,6 +130,11 @@ fn position_to_line_col_handles_empty_source() -> Result<(), Box<dyn std::error:
 }
 
 #[test]
+fn position_to_line_col_clamps_offsets_past_eof() -> Result<(), Box<dyn std::error::Error>> {
+    check_line_col("é\n🙂x", usize::MAX, (2, 3))
+}
+
+#[test]
 fn position_to_line_col_floors_offsets_inside_utf8_scalars()
 -> Result<(), Box<dyn std::error::Error>> {
     check_line_col("é", 1, (1, 1))?;
@@ -721,6 +726,35 @@ fn write_error_unexpected_token_includes_context_bytes() -> Result<(), Box<dyn s
     check_equal(
         &(utf8(&stderr)?),
         &("Parse error: Unexpected token at line 2, column 2\n  Expected: expression\n  Found: d\n\n  1 | ab\n  2 | cd\n    |  ^\n"),
+    )?;
+    Ok(())
+}
+
+#[test]
+fn write_error_projects_parser_generated_utf8_location() -> Result<(), Box<dyn std::error::Error>> {
+    let source = "\"é🙂\";\nmy $x = ;\n";
+    let mut parser = perl_parser::Parser::new(source);
+    // Recovery returns an AST and retains the actual syntax diagnostic.
+    // This proves the producer-to-renderer contract, not execute's handling
+    // of recovered parses (which currently does not render these errors).
+    let _ast = parser.parse()?;
+    let error = parser
+        .errors()
+        .iter()
+        .find(|error| matches!(error, ParseError::Recovered { location: 16, .. }))
+        .ok_or_else(|| {
+            format!("expected recovery diagnostic at byte 16, got {:?}", parser.errors())
+        })?;
+    let mut stderr = Vec::new();
+    write_error(error, source, &mut stderr)?;
+    let rendered = utf8(&stderr)?;
+    check(
+        rendered.starts_with("Parse recovery: MissingOperand at InfixRhs (line 2, column 7)\n"),
+        &format!("wrong parser-generated diagnostic coordinates: {rendered}"),
+    )?;
+    check(
+        rendered.contains("\n  1 | \"é🙂\";\n  2 | my $x = ;\n    |       ^\n"),
+        &format!("wrong parser-generated diagnostic context: {rendered}"),
     )?;
     Ok(())
 }
