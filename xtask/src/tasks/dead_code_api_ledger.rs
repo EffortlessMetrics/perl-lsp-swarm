@@ -1502,6 +1502,15 @@ fn scoped_prelude_use(file: &syn::File, inside_owning_crate: bool) -> bool {
     }
 
     fn with_items(mut scope: Scope, items: &[&syn::Item]) -> Scope {
+        for item in items {
+            if let syn::Item::ExternCrate(node) = item
+                && (node.ident == "perl_parser"
+                    || (node.ident == "self" && scope.roots.contains("self")))
+            {
+                let local = node.rename.as_ref().map_or(&node.ident, |(_, alias)| alias);
+                scope.roots.insert(local.to_string());
+            }
+        }
         // Imports are item-scoped, independent of their textual order. Each
         // round can resolve another alias link. Stop at the fixed point;
         // flattened import count bounds even chains inside one grouped use.
@@ -1666,17 +1675,20 @@ fn scoped_prelude_use(file: &syn::File, inside_owning_crate: bool) -> bool {
                 let segments: Vec<_> =
                     path.segments.iter().map(|segment| segment.ident.to_string()).collect();
                 let qualified_surface = self.scope.roots.contains(&name)
-                    && ((segments.get(1).is_some_and(|segment| segment == "prelude")
-                        && segments
-                            .get(2)
-                            .is_some_and(|segment| SURFACE_TYPES.contains(&segment.as_str())))
-                        || (segments.get(1).is_some_and(|segment| segment == "compat")
-                            && segments
-                                .get(2)
-                                .is_some_and(|segment| segment == "dead_code_detector")
-                            && segments
-                                .get(3)
-                                .is_some_and(|segment| SURFACE_TYPES.contains(&segment.as_str()))));
+                    && match segments.as_slice() {
+                        [_, route, ..] if route == "dead_code" || route == "dead_code_detector" => {
+                            true
+                        }
+                        [_, route, symbol, ..] if route == "prelude" => {
+                            SURFACE_TYPES.contains(&symbol.as_str())
+                        }
+                        [_, route, module, ..]
+                            if route == "compat" && module == "dead_code_detector" =>
+                        {
+                            true
+                        }
+                        _ => false,
+                    };
                 if !self.scope.shadowed.contains(&name)
                     && (qualified_surface
                         || (self.scope.glob && SURFACE_TYPES.contains(&name.as_str()))
@@ -2539,6 +2551,35 @@ mod tests {
         ] {
             if references_surface(text, false).map_err(|error| color_eyre::eyre::eyre!(error))? {
                 bail!("unused private import or unrelated path became a consumer: {text}");
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn crate_aliases_reach_direct_module_type_and_expression_paths() -> Result<()> {
+        for declaration in ["use perl_parser as alias;", "extern crate perl_parser as alias;"] {
+            for route in ["dead_code", "dead_code_detector", "compat::dead_code_detector"] {
+                for usage in [
+                    format!("fn f(_: alias::{route}::DeadCode) {{}}"),
+                    format!("fn f() {{ let _ = alias::{route}::generate_report; }}"),
+                ] {
+                    let text = format!("{declaration} {usage}");
+                    if !references_surface(&text, false)
+                        .map_err(|error| color_eyre::eyre::eyre!(error))?
+                    {
+                        bail!("direct crate-alias consumer escaped: {text}");
+                    }
+                }
+            }
+        }
+        for text in [
+            "extern crate other_crate as alias; fn f(_: alias::dead_code::DeadCode) {}",
+            "use other_crate as alias; fn f(_: alias::dead_code_detector::DeadCode) {}",
+            "extern crate perl_parser as alias; fn f(_: alias::prelude::Parser) {}",
+        ] {
+            if references_surface(text, false).map_err(|error| color_eyre::eyre::eyre!(error))? {
+                bail!("unrelated crate alias became a consumer: {text}");
             }
         }
         Ok(())
