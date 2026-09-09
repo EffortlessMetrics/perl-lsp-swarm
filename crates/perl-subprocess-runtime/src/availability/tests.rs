@@ -6,7 +6,9 @@
 
 #![cfg(not(windows))]
 
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
+#[cfg(unix)]
+use std::os::unix::ffi::OsStringExt;
 use std::path::{Path, PathBuf};
 
 use super::command_exists_in;
@@ -79,7 +81,7 @@ fn empty_path_component_cannot_admit_a_current_directory_candidate() -> TestResu
     // A single empty component: `PATH=""`. POSIX reads it as the current
     // directory, and that is exactly what must not be searchable.
     require(
-        !command_exists_in("perlcritic", Some(&OsString::from("")), &cwd),
+        !command_exists_in("perlcritic", Some(OsStr::new("")), &cwd),
         "an empty PATH component must not admit a current-directory candidate",
     )?;
     Ok(())
@@ -92,7 +94,7 @@ fn dot_path_component_cannot_admit_a_current_directory_candidate() -> TestResult
     plant_tool(&cwd, "perlcritic")?;
 
     require(
-        !command_exists_in("perlcritic", Some(&OsString::from(".")), &cwd),
+        !command_exists_in("perlcritic", Some(OsStr::new(".")), &cwd),
         "a `.` PATH component must not admit a current-directory candidate",
     )?;
     Ok(())
@@ -128,7 +130,7 @@ fn relative_path_component_is_never_admitted() -> TestResult {
     // `tools` resolves against the current directory, so it is the planted
     // directory under another spelling.
     require(
-        !command_exists_in("perlcritic", Some(&OsString::from("tools")), &cwd),
+        !command_exists_in("perlcritic", Some(OsStr::new("tools")), &cwd),
         "a relative PATH component must not be admitted",
     )?;
     Ok(())
@@ -164,6 +166,26 @@ fn tool_in_an_absolute_path_directory_is_admitted() -> TestResult {
         "a tool in a legitimate absolute PATH directory must remain available",
     )?;
     Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn non_utf8_absolute_path_component_preserves_admission_policy() -> TestResult {
+    let tree = TempTree::new("non-utf8-path")?;
+    let name = OsString::from_vec(b"bin-\xff".to_vec());
+    let bin = tree.root.join(&name);
+    std::fs::create_dir_all(&bin).map_err(|e| format!("create non-utf8 dir: {e}"))?;
+    plant_tool(&bin, "perlcritic")?;
+
+    let path = path_of(&[&bin])?;
+    require(
+        command_exists_in("perlcritic", Some(&path), &tree.root),
+        "an executable under an absolute non-UTF-8 PATH component must remain available",
+    )?;
+    require(
+        !command_exists_in("perlcritic", Some(&path), &bin),
+        "a non-UTF-8 directory must still be excluded when it is the current directory",
+    )
 }
 
 #[test]

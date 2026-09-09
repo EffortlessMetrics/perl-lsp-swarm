@@ -37,8 +37,9 @@
 
 #[cfg(not(windows))]
 use std::ffi::OsStr;
-#[cfg(not(windows))]
 use std::path::Path;
+#[cfg(not(windows))]
+use std::path::PathBuf;
 
 /// Whether a bare command name is available under the admission policy
 /// described in the [module documentation](self).
@@ -53,6 +54,15 @@ pub fn command_exists(command: &str) -> bool {
         // The Windows resolver already implements this exact policy, including
         // the executable-extension rules `CreateProcess` applies.  Reuse it
         // rather than growing a second candidate generator.
+        if command.is_empty()
+            || command.contains('/')
+            || command.contains('\\')
+            || Path::new(command)
+                .components()
+                .any(|component| !matches!(component, std::path::Component::Normal(_)))
+        {
+            return false;
+        }
         crate::os_runtime::resolve_windows_program_pub(command).is_some()
     }
     #[cfg(not(windows))]
@@ -91,7 +101,7 @@ pub(crate) fn command_exists_in(command: &str, path: Option<&OsStr>, cwd: &Path)
         return false;
     };
 
-    let candidates: Vec<String> = std::env::split_paths(path)
+    let candidates: Vec<PathBuf> = std::env::split_paths(path)
         .filter_map(|component| {
             // Layer 1 — component admission, decided on the component as
             // written. Only absolute components are searched.
@@ -112,13 +122,11 @@ pub(crate) fn command_exists_in(command: &str, path: Option<&OsStr>, cwd: &Path)
             Some(cwd.join(component).join(command))
         })
         .filter(|candidate| is_executable_file(candidate))
-        .filter_map(|candidate| candidate.to_str().map(str::to_string))
         .collect();
 
-    let candidate_refs: Vec<&str> = candidates.iter().map(String::as_str).collect();
     // Layer 2 — CWD exclusion, applied by the shared selector so this probe and
     // the launch resolver cannot drift apart.
-    crate::os_runtime::select_path_candidate(&candidate_refs, cwd).is_some()
+    crate::os_runtime::select_path_candidate(&candidates, cwd).is_some()
 }
 
 /// Whether `candidate` is a regular file with at least one executable mode bit on Unix.
