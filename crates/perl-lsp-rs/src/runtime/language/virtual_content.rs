@@ -75,7 +75,19 @@ fn is_valid_virtual_content_uri(uri: &str) -> bool {
 impl LspServer {
     fn fetch_virtual_content(&self, uri: &str) -> Option<String> {
         if let Some(target) = PerlDocumentationTarget::from_perldoc_uri(uri) {
-            self.fetch_workspace_perldoc(&target)
+            let topology_generation =
+                self.workspace_topology_generation.load(std::sync::atomic::Ordering::SeqCst);
+            if !self.workspace_topology_stable.load(std::sync::atomic::Ordering::SeqCst) {
+                return None;
+            }
+            let workspace_content = self.fetch_workspace_perldoc(&target);
+            if self.workspace_topology_generation.load(std::sync::atomic::Ordering::SeqCst)
+                != topology_generation
+                || !self.workspace_topology_stable.load(std::sync::atomic::Ordering::SeqCst)
+            {
+                return None;
+            }
+            workspace_content
                 .or_else(|| {
                     let workspace_config = self.workspace_config.lock().clone();
                     fetch_perldoc(target.name(), &workspace_config)
@@ -92,6 +104,9 @@ impl LspServer {
         // opposite order while validating an accepted subject).
         let topology_generation =
             self.workspace_topology_generation.load(std::sync::atomic::Ordering::SeqCst);
+        if !self.workspace_topology_stable.load(std::sync::atomic::Ordering::SeqCst) {
+            return None;
+        }
         let has_root = self.root_path.lock().is_some();
         let workspace_folders_empty = self.workspace_folders.lock().is_empty();
         if !has_root && workspace_folders_empty {
@@ -109,6 +124,7 @@ impl LspServer {
         };
         if self.workspace_topology_generation.load(std::sync::atomic::Ordering::SeqCst)
             != topology_generation
+            || !self.workspace_topology_stable.load(std::sync::atomic::Ordering::SeqCst)
         {
             tracing::debug!(
                 module = module_name,
@@ -547,6 +563,35 @@ mod tests {
         assert!(content.contains("Local::Doc - local docs"));
         assert!(content.contains("DESCRIPTION\nLocal POD."));
         assert!(content.contains("METHOD reset\nReset local state."));
+        Ok(())
+    }
+
+    #[test]
+    fn parser_virtual_content_rejects_unstable_workspace_before_system_fallback() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let perl_path = write_fake_perldoc_fixture(&temp)?;
+        let workspace = temp.path().join("workspace");
+        fs::create_dir_all(&workspace)?;
+        let workspace_uri =
+            url::Url::from_directory_path(&workspace).map_err(|_| "workspace URI")?;
+        let server = LspServer::new();
+        *server.workspace_folders.lock() = vec![
+            crate::runtime::workspace_folder::WorkspaceFolderState::new(workspace_uri.to_string())
+                .with_path(workspace),
+        ];
+        {
+            let mut config = server.workspace_config.lock();
+            config.perl_path = Some(perl_path.to_string_lossy().into_owned());
+        }
+        server.workspace_topology_stable.store(false, std::sync::atomic::Ordering::SeqCst);
+
+        let error = server
+            .handle_text_document_content(Some(json!({ "uri": "perldoc://Fake::Documented" })))
+            .err()
+            .ok_or("unstable workspace content must not fall back to system perldoc")?;
+        if !error.message.contains("content not found") {
+            return Err(format!("unexpected unstable workspace error: {}", error.message).into());
+        }
         Ok(())
     }
 
