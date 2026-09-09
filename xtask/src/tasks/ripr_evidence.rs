@@ -10075,8 +10075,8 @@ paths = ["archive/**"]
         Ok(())
     }
 
-    /// A killed run may leave staging residue, but no partial stdout may enter
-    /// the uploaded evidence tree before or after successful publication.
+    /// A killed run may leave staging residue, but the uploaded evidence tree
+    /// holds only the published artifact: stdout temporaries live in staging.
     #[test]
     fn run_ripr_check_stages_stdout_outside_the_uploaded_evidence_tree() -> Result<()> {
         let temp = tempfile::tempdir()?;
