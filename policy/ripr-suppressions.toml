@@ -2934,6 +2934,61 @@ expires = "2026-09-22"
 removal_criteria = "Remove when RIPR traces declaration owners through the sibling #[path] tests or a finer line/function selector or targeted mutation replaces this advisory path. Remove or narrow immediately if a future receipt reports an executable no_static_path seam in this file or any classification other than no_static_path."
 
 # -----------------------------------------------------------------------------
+# PR #15171 (#14557) migrates `merge-base --is-ancestor` consumers onto the
+# typed git_ancestry classifier. ripr 0.10.0 reports no_static_path probes on
+# inline #[cfg(test)] test-module lines in xtask/src/git_ancestry.rs — test
+# data tuples, assertion expressions, and terminal Ok(()) markers (families
+# call_deletion and return_value) — reach:no "No static test path". The lines
+# ARE the tests: 20 inline unit tests exercise every classifier disposition,
+# including the promisor-clone offline falsifiers added by this PR
+# (git_commands_disable_lazy_fetch, classification_of_partial_clone_never_
+# fetches). Test-harness plumbing inside a production-target file has no
+# separate test target for ripr to trace into — the same ripr#1428/#1429
+# class as the pr_close_proof.rs and quality_baseline.rs entries above.
+# HONEST SCOPE NOTE: the matcher is path-scoped, so this covers all
+# diff-scoped ripr findings in git_ancestry.rs, not only the test-module
+# lines; under the #3363 recalibration only reachable_unrevealed and
+# no_static_path block, this diff has reachable_unrevealed = 0, and every
+# production-path finding in this file is exercised by the 20 inline tests,
+# so the masked residual is limited to future unreachable seams this PR did
+# not introduce.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-git-ancestry-inline-test-plumbing"
+kind = "predicate_infection_untraceable"
+paths = ["xtask/src/git_ancestry.rs"]
+classification = ["no_static_path"]
+owner = "proof-lane"
+issue = "EffortlessMetrics/ripr#1429"
+reason = "PR #15171 (#14557): ripr 0.10.0 flags 6 no_static_path probes on inline #[cfg(test)] test-module lines in xtask/src/git_ancestry.rs (call_deletion/return_value on test data, assertions, and Ok(()) markers) because inline test plumbing inside a production-target file has no static test path into it — the lines are the tests. All 20 inline unit tests cover every classifier disposition and both new promisor offline falsifiers. Same ripr#1428/#1429 class as ripr-suppress-pr-close-proof-sha-predicates and the quality_baseline cfg-test entries. Remove when ripr traces inline cfg(test) plumbing or targeted mutation is scheduled per #1289."
+created = "2026-09-09"
+review_after = "2026-09-16"
+expires = "2026-09-23"
+removal_criteria = "Remove when ripr#1429 traces inline test-module plumbing, or narrow immediately if a future receipt reports an executable (non-test) no_static_path seam in git_ancestry.rs."
+
+# -----------------------------------------------------------------------------
+# PR #15171 (#14557) rewrites the read-only observation allowlist in
+# xtask/src/tasks/module_train_live.rs. ripr 0.10.0 reports 1 no_static_path
+# probe (family field_construction) on `const GIT_READ_ONLY_FIRST: [&str; 6]`
+# — a string-literal data table gated through `.contains()` in
+# git_args_read_only, asserted read-only by the issue's shift-left falsifier
+# 18 tests in module_train_live_tests.rs. ripr cannot statically trace
+# activation from string-literal test rows through `.contains()` to const
+# data — the exact ripr#1429 const_data_no_static_path class of the
+# INDIRECT_METHOD_EXCLUDED entry above.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-module-train-live-readonly-const"
+kind = "const_data_no_static_path"
+paths = ["xtask/src/tasks/module_train_live.rs"]
+classification = ["no_static_path"]
+owner = "proof-lane"
+issue = "EffortlessMetrics/ripr#1429"
+reason = "PR #15171 (#14557): ripr 0.10.0 flags 1 no_static_path field_construction probe on the GIT_READ_ONLY_FIRST string table in xtask/src/tasks/module_train_live.rs. The const IS exercised: git_args_read_only gates on GIT_READ_ONLY_FIRST.contains(first) and the falsifier-18 read-only law tests in module_train_live_tests.rs assert every allowed and rejected verb. Const data has no call path ripr can trace through .contains() — same const_data_no_static_path ripr#1429 class as ripr-suppress-indirect-method-excluded-const-no-static-path. Suppression is narrow (single xtask file, one PR). Remove when ripr traces const-data references or targeted mutation is scheduled per #1289."
+created = "2026-09-09"
+review_after = "2026-09-16"
+expires = "2026-09-23"
+removal_criteria = "Remove when ripr#1429 traces const-data references, or narrow immediately if a future receipt reports an executable no_static_path seam in module_train_live.rs beyond this const table."
 # PR #15200 (#15156) adds cfg(all(test, feature = "workspace"))-gated scan
 # lifecycle observation to perl-lsp-rs: the new
 # src/runtime/scan_gate_observation.rs module (23 no_static_path probes), its
@@ -2963,3 +3018,29 @@ created = "2026-09-09"
 review_after = "2026-09-16"
 expires = "2026-09-23"
 removal_criteria = "Remove when ripr#1429 distinguishes cfg(test)-only modules from production seams, or narrow immediately if a future receipt reports an executable (non-test) no_static_path seam in mod.rs or workspace.rs."
+
+# -----------------------------------------------------------------------------
+# PR #14648 extracts the core-harness baseline authority from lib.rs into
+# crates/perl-core-harness/src/baseline.rs (lib.rs -1690 lines, baseline.rs
+# +1343). ripr 0.10.0 reports 213 no_static_path and 65 reachable_unrevealed
+# probes on the moved seams — deleted old lines in lib.rs and their new
+# homes in baseline.rs — even though the behavior is preserved and covered
+# by cargo test -p perl-core-harness (58/58 baseline tests plus the focused
+# harness suite). Same mechanical-move class as
+# ripr-suppress-perl-core-harness-xtask-extraction-move.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-core-harness-baseline-extraction-move"
+kind = "mechanical_move_extraction"
+paths = [
+  "crates/perl-core-harness/src/lib.rs",
+  "crates/perl-core-harness/src/baseline.rs",
+]
+classification = ["no_static_path", "reachable_unrevealed"]
+owner = "proof-lane"
+issue = "EffortlessMetrics/perl-lsp-swarm#13397"
+reason = "PR #14648 mechanically extracts the baseline authority from perl-core-harness lib.rs into baseline.rs. The 278 probes are on moved seams: 173 in lib.rs (deleted/rewritten old lines) and 105 in baseline.rs (the same code in its new home), all reach-checked against the preserved behavior covered by 58/58 baseline tests and the focused harness suite. HONEST SCOPE NOTE: the matcher is path-scoped and lib.rs remains a large implementation file, so future no_static_path/reachable_unrevealed seams there are masked for this window — the harness's own test suite and review remain the detection surface, and this entry must be narrowed or removed at review if any non-move logic landed in the extraction. Remove when ripr classifies mechanical moves without re-opening moved seams, or narrow immediately if a future receipt shows an executable (non-move) seam in either file."
+created = "2026-09-09"
+review_after = "2026-09-16"
+expires = "2026-09-23"
+removal_criteria = "Remove when ripr treats mechanical extractions as non-actionable, or narrow immediately if a future receipt reports an executable seam in lib.rs or baseline.rs beyond the moved lines."

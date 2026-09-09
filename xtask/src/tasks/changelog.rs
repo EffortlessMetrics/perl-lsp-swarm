@@ -1085,22 +1085,17 @@ fn non_empty(opt: &Option<String>) -> Option<&str> {
 }
 
 /// Is `sha` an ancestor of `base` in `root`'s git history? `None` means the
-/// check was inconclusive (e.g. `sha` unresolvable in a shallow clone) — a
-/// soft degrade to "not confirmed" (treated as `false` by callers), not an
-/// instrument failure. This is a soak-period safety gate, not a correctness
-/// check on user input, so failing open here (never escalating a boundary
-/// during an unresolvable ancestry check) is the advisory-correct choice.
+/// check was inconclusive — a shallow or partial checkout, an unresolvable
+/// revision, or a git failure — a soft degrade to "not confirmed" (treated as
+/// `false` by callers), not an instrument failure. The verdict comes from the
+/// shared `xtask::git_ancestry` authority, never from a bare
+/// `merge-base --is-ancestor` exit code, so a present-but-disconnected graft
+/// cannot report a false "not an ancestor" (#14557). This is a soak-period
+/// safety gate, not a correctness check on user input, so failing open here
+/// (never escalating a boundary during an unprovable ancestry check) is the
+/// advisory-correct choice.
 fn is_ancestor(root: &Path, sha: &str, base: &str) -> Option<bool> {
-    let out = Command::new("git")
-        .current_dir(root)
-        .args(["merge-base", "--is-ancestor", sha, base])
-        .output()
-        .ok()?;
-    match out.status.code() {
-        Some(0) => Some(true),
-        Some(1) => Some(false),
-        _ => None,
-    }
+    xtask::git_ancestry::is_ancestor_verdict(&xtask::git_ancestry::is_ancestor(root, sha, base))
 }
 
 /// The subset of `changed` that is not present in `root`'s working tree.
