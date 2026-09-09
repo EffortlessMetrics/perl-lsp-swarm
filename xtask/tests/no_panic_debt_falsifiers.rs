@@ -2095,3 +2095,101 @@ fn still_prod() -> u8 { Some(2).unwrap() }
         inventory.rows
     );
 }
+
+#[test]
+fn crate_level_allow_covers_outline_child_unwrap_and_not_panic() {
+    let temp = tempfile::tempdir().expect("temp");
+    write_policy(temp.path());
+    write_empty_registry(temp.path());
+    write_package(
+        temp.path(),
+        "demo",
+        r##"
+#![allow(clippy::unwrap_used, reason = "#13397")]
+mod foo;
+"##,
+        &[("known.rs", "#[test]\nfn known() {}\n")],
+    );
+    fs::write(
+        temp.path().join("crates/demo/src/foo.rs"),
+        r#"
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn unit() {
+        let _ = Some(1).unwrap();
+        panic!("still unowned");
+    }
+}
+"#,
+    )
+    .expect("foo.rs");
+    let inventory = inventory_at(temp.path());
+    let unwrap = inventory.rows.iter().find(|row| {
+        row.kind == "site"
+            && row.path.ends_with("src/foo.rs")
+            && row.entrypoint == "unit"
+            && row.site_family == "unwrap"
+    });
+    let unwrap = unwrap.unwrap_or_else(|| panic!("outline unwrap omitted: {:?}", inventory.rows));
+    assert_eq!(unwrap.owner, "#13397", "crate allow owner was not inherited: {unwrap:?}");
+    assert!(
+        unwrap.declaration_identity.contains("src/lib.rs")
+            && unwrap.declaration_identity.contains("allow"),
+        "covering identity must stay on the crate declaration, not the child file: {unwrap:?}"
+    );
+    assert_eq!(unwrap.declaration_scope, "crate");
+    let panic = inventory.rows.iter().find(|row| {
+        row.kind == "site"
+            && row.path.ends_with("src/foo.rs")
+            && row.entrypoint == "unit"
+            && row.site_family == "panic!"
+    });
+    let panic = panic.unwrap_or_else(|| panic!("outline panic! omitted: {:?}", inventory.rows));
+    assert!(
+        panic.owner.is_empty() && panic.declaration_identity.is_empty(),
+        "unwrap crate allow must not cover panic! in the child: {panic:?}"
+    );
+}
+
+#[test]
+fn allow_on_outline_mod_covers_child_file_unwrap() {
+    let temp = tempfile::tempdir().expect("temp");
+    write_policy(temp.path());
+    write_empty_registry(temp.path());
+    write_package(
+        temp.path(),
+        "demo",
+        r##"
+#[allow(clippy::unwrap_used, reason = "#13397")]
+mod foo;
+"##,
+        &[("known.rs", "#[test]\nfn known() {}\n")],
+    );
+    fs::write(
+        temp.path().join("crates/demo/src/foo.rs"),
+        r#"
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn unit() { let _ = Some(1).unwrap(); }
+}
+"#,
+    )
+    .expect("foo.rs");
+    let inventory = inventory_at(temp.path());
+    let unwrap = inventory.rows.iter().find(|row| {
+        row.kind == "site"
+            && row.path.ends_with("src/foo.rs")
+            && row.entrypoint == "unit"
+            && row.site_family == "unwrap"
+    });
+    let unwrap = unwrap.unwrap_or_else(|| panic!("outline unwrap omitted: {:?}", inventory.rows));
+    assert_eq!(unwrap.owner, "#13397", "mod-item allow owner was not inherited: {unwrap:?}");
+    assert!(
+        unwrap.declaration_identity.contains("src/lib.rs")
+            && unwrap.declaration_identity.contains("allow"),
+        "covering identity must stay on the mod foo declaration: {unwrap:?}"
+    );
+    assert_eq!(unwrap.declaration_scope, "module");
+}

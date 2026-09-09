@@ -21,6 +21,11 @@ struct ModuleWork {
     feature: Option<String>,
     required_features: Vec<String>,
     platform: Option<String>,
+    /// Covering already in force at the `mod` item, including crate-level and
+    /// `#[allow]`/`#[expect]` attributes on the outline module itself. rustc
+    /// applies those to the child file; a fresh `scan_file` would otherwise
+    /// drop them.
+    inherited_covering: Vec<Vec<Covering>>,
 }
 
 pub(crate) fn scan(
@@ -36,7 +41,7 @@ pub(crate) fn scan(
     let mut covered_paths = BTreeSet::new();
 
     for file in &topology.files {
-        match scan_file(root, file, vocabulary, true, false) {
+        match scan_file(root, file, vocabulary, true, false, Vec::new()) {
             Ok(mut scanned) => {
                 covered_paths.insert(file.path.clone());
                 for work in scanned.external_modules {
@@ -88,7 +93,8 @@ pub(crate) fn scan(
             platform: work.platform.clone(),
         });
         scanned_extra.insert(path.clone(), work.treat_as_test);
-        match scan_file(root, &file, vocabulary, true, work.treat_as_test) {
+        match scan_file(root, &file, vocabulary, true, work.treat_as_test, work.inherited_covering)
+        {
             Ok(mut scanned) => {
                 covered_paths.insert(file.path.clone());
                 for nested in scanned.external_modules {
@@ -157,6 +163,7 @@ fn enqueue_module(pending: &mut BTreeMap<PathBuf, ModuleWork>, mut work: ModuleW
     }
     if let Some(existing) = pending.get_mut(&work.path) {
         existing.treat_as_test |= work.treat_as_test;
+        existing.inherited_covering.extend(work.inherited_covering);
         return;
     }
     pending.insert(work.path.clone(), work);
@@ -187,6 +194,7 @@ fn scan_file(
     vocabulary: &Vocabulary,
     follow_modules: bool,
     treat_as_test: bool,
+    inherited_covering: Vec<Vec<Covering>>,
 ) -> Result<ScannedFile, String> {
     let abs = root.join(&file.path);
     let source = std::fs::read_to_string(&abs).map_err(|err| err.to_string())?;
@@ -208,7 +216,7 @@ fn scan_file(
         current_fn: "<file>".to_string(),
         current_feature: file.feature.clone(),
         current_platform: file.platform.clone(),
-        declaration_stack: Vec::new(),
+        declaration_stack: inherited_covering,
         entrypoints: Vec::new(),
         sites: Vec::new(),
         declarations: Vec::new(),
@@ -227,6 +235,7 @@ fn scan_file(
     })
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct Covering {
     identity: String,
     scope: String,
@@ -404,6 +413,7 @@ impl<'ast> Visit<'ast> for DebtVisitor<'_> {
                 feature: self.current_feature.clone(),
                 required_features: self.file.required_features.clone(),
                 platform: self.current_platform.clone(),
+                inherited_covering: self.declaration_stack.clone(),
             });
         }
         syn::visit::visit_item_mod(self, node);
@@ -969,6 +979,16 @@ mod tests {
             feature: None,
             required_features: Vec::new(),
             platform: None,
+            inherited_covering: Vec::new(),
+        }
+    }
+
+    fn covering(identity: &str) -> Covering {
+        Covering {
+            identity: identity.to_string(),
+            scope: "crate".to_string(),
+            owner: "#13397".to_string(),
+            lints: ["clippy::unwrap_used".to_string()].into_iter().collect(),
         }
     }
 
@@ -1001,10 +1021,19 @@ mod tests {
     #[test]
     fn enqueue_module_or_treat_as_test_and_keeps_first_identity() {
         let mut pending = BTreeMap::new();
-        enqueue_module(&mut pending, module_work("src/foo.rs", false));
-        enqueue_module(&mut pending, module_work("src/bar/../foo.rs", true));
+        let mut first = module_work("src/foo.rs", false);
+        first.inherited_covering = vec![vec![covering("lib.rs:1:allow:clippy::unwrap_used")]];
+        let mut later = module_work("src/bar/../foo.rs", true);
+        later.inherited_covering = vec![vec![covering("lib.rs:3:allow:clippy::unwrap_used")]];
+        enqueue_module(&mut pending, first);
+        enqueue_module(&mut pending, later);
         let work = pending.get(&PathBuf::from("src/foo.rs"));
         assert!(work.is_some_and(|item| item.treat_as_test && item.package == "demo"));
+        assert_eq!(
+            work.map(|item| item.inherited_covering.len()),
+            Some(2),
+            "later outline edge must keep inherited covering, not drop the first parent's stack"
+        );
         assert_eq!(pending.len(), 1);
         let mut scanned = BTreeMap::new();
         scanned.insert(PathBuf::from("src/shared.rs"), false);
