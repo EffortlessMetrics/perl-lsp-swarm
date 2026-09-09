@@ -1033,7 +1033,9 @@ impl DebugAdapter {
                         };
                         let prompt_has_native_context = native_context_pending_prompt
                             && (has_prompt_prefix(&sanitized_text)
-                                || sanitized_text.lines().any(has_prompt_prefix));
+                                || sanitized_text
+                                    .split_once('\n')
+                                    .is_some_and(|(_, rest)| has_prompt_prefix(rest)));
                         if prompt_has_native_context {
                             // Consume the per-stop authority before logpoint and
                             // drain early-continue paths. A coalesced prompt plus
@@ -2923,7 +2925,7 @@ mod tests {
                         .as_ref()
                         .and_then(|value| value.get("output"))
                         .and_then(|value| value.as_str())
-                        .is_some_and(|output| output.contains("3==>"))
+                        .is_some_and(|output| output.contains("3==>\tmy $entry = 1;"))
                     {
                         listing_outputs += 1;
                     }
