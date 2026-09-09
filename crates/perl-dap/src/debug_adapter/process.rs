@@ -41,23 +41,58 @@ const SCOPE_FRAME_ID_MAX: u64 = 99_999;
 fn read_debugger_record<R: BufRead>(reader: &mut R, line: &mut String) -> std::io::Result<usize> {
     let mut bytes = Vec::new();
     loop {
-        let mut byte = [0_u8; 1];
-        let read = reader.read(&mut byte)?;
-        if read == 0 {
+        let byte = match reader.fill_buf() {
+            Ok(buffer) => buffer.first().copied(),
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        };
+        let Some(byte) = byte else {
+            break;
+        };
+        reader.consume(1);
+        bytes.push(byte);
+        if byte == b'\n' {
             break;
         }
-        bytes.push(byte[0]);
-        if byte[0] == b'\n' {
-            break;
-        }
-        let candidate = String::from_utf8_lossy(&bytes);
-        if prompt_re().is_some_and(|re| re.is_match(candidate.trim())) {
-            break;
+        if byte == b'>' && is_strict_prompt_candidate(&bytes) {
+            // If the buffered stream already contains more non-whitespace text,
+            // this is an ordinary output line beginning with a prompt-shaped
+            // token, not a prompt-only record.
+            let buffered = reader.fill_buf()?;
+            let next_non_whitespace = buffered.iter().position(|byte| !byte.is_ascii_whitespace());
+            let only_prompt_padding = next_non_whitespace.is_none()
+                || next_non_whitespace
+                    .is_some_and(|index| buffered[index] == b'\n' || buffered[index] == b'\r');
+            if only_prompt_padding {
+                break;
+            }
         }
     }
     line.clear();
-    line.push_str(&String::from_utf8_lossy(&bytes));
-    Ok(bytes.len())
+    let length = bytes.len();
+    let text = String::from_utf8(bytes)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+    line.push_str(&text);
+    Ok(length)
+}
+
+fn is_strict_prompt_candidate(bytes: &[u8]) -> bool {
+    // Prompt records are tiny; bounding this inspection keeps a long source
+    // line from repeatedly decoding and scanning its full prefix.
+    if bytes.len() > 128 {
+        return false;
+    }
+    let Ok(candidate) = std::str::from_utf8(bytes) else {
+        return false;
+    };
+    let without_ansi = ansi_escape_re()
+        .map(|re| re.replace_all(candidate, "").into_owned())
+        .unwrap_or_else(|| candidate.to_string());
+    let prompt = without_ansi.trim();
+    let Some(digits) = prompt.strip_prefix("DB<").and_then(|value| value.strip_suffix('>')) else {
+        return false;
+    };
+    !digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit())
 }
 
 /// Return the authoritative frame id for the current suspension.
@@ -2649,9 +2684,9 @@ pub(super) fn emit_terminated_event_guarded(
 #[cfg(test)]
 mod tests {
     use super::{
-        DebugAdapter, DebugState, current_stopped_frame_id, detect_perl_info,
+        BufReader, DebugAdapter, DebugState, current_stopped_frame_id, detect_perl_info,
         emit_terminated_event, format_perl_spawn_error, is_valid_perl_interpreter,
-        reserve_terminated_event, terminated_delivery_is_current,
+        read_debugger_record, reserve_terminated_event, terminated_delivery_is_current,
     };
     use crate::tcp_attach::DapEvent;
     use perl_test_must::must_some_with;
@@ -2839,6 +2874,27 @@ mod tests {
                 Err(RecvTimeoutError::Disconnected) => return Err("reader disconnected".into()),
             }
         }
+    }
+
+    #[test]
+    fn debugger_record_reader_preserves_prompt_shaped_output() -> Result<(), String> {
+        use std::io::Cursor;
+
+        let mut reader = BufReader::new(Cursor::new(b"DB<1> ordinary output\nDB<2>"));
+        let mut line = String::new();
+        let first = read_debugger_record(&mut reader, &mut line)
+            .map_err(|error| format!("failed to read ordinary output: {error}"))?;
+        if first == 0 || line != "DB<1> ordinary output\n" {
+            return Err(format!("prompt-shaped output was split: bytes={first}, line={line:?}"));
+        }
+        let second = read_debugger_record(&mut reader, &mut line)
+            .map_err(|error| format!("failed to read prompt record: {error}"))?;
+        if second == 0 || line != "DB<2>" {
+            return Err(format!(
+                "prompt-only record was not preserved: bytes={second}, line={line:?}"
+            ));
+        }
+        Ok(())
     }
 
     /// A diagnostic location can precede perl5db's first native context. It
