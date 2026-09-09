@@ -3445,8 +3445,18 @@ mod tests {
         let mut invalid = BufReader::new(Cursor::new(vec![0xff, b'\n']));
         match read_debugger_record(&mut invalid, &mut line, false) {
             Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {
-                if error.to_string() != "invalid utf-8 sequence of 1 bytes from index 0" {
-                    return Err(format!("invalid UTF-8 location was changed: {error}"));
+                let source = match error
+                    .get_ref()
+                    .and_then(|value| value.downcast_ref::<std::string::FromUtf8Error>())
+                {
+                    Some(source) => source,
+                    None => return Err("invalid UTF-8 cause was not preserved".into()),
+                };
+                if source.as_bytes() != [0xff, b'\n']
+                    || source.utf8_error().valid_up_to() != 0
+                    || source.utf8_error().error_len() != Some(1)
+                {
+                    return Err(format!("invalid UTF-8 cause was changed: {source}"));
                 }
                 Ok(())
             }
@@ -3459,22 +3469,32 @@ mod tests {
     fn debugger_record_reader_preserves_underlying_read_error() -> Result<(), String> {
         use std::io::Read;
 
+        #[derive(Debug)]
+        struct ReadSentinel;
+        impl std::fmt::Display for ReadSentinel {
+            fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("fixture read failed")
+            }
+        }
+        impl std::error::Error for ReadSentinel {}
+
         struct FailingReader;
         impl Read for FailingReader {
             fn read(&mut self, _buffer: &mut [u8]) -> std::io::Result<usize> {
-                Err(std::io::Error::new(
-                    std::io::ErrorKind::PermissionDenied,
-                    "fixture read failed",
-                ))
+                Err(std::io::Error::new(std::io::ErrorKind::Other, ReadSentinel))
             }
         }
 
         let mut reader = BufReader::new(FailingReader);
         let mut line = String::new();
-        let error = read_debugger_record(&mut reader, &mut line, false)
-            .expect_err("underlying read error was swallowed");
-        if error.kind() != std::io::ErrorKind::PermissionDenied
+        let error = match read_debugger_record(&mut reader, &mut line, false) {
+            Ok(_) => return Err("underlying read error was swallowed".into()),
+            Err(error) => error,
+        };
+        if error.kind() != std::io::ErrorKind::Other
             || error.to_string() != "fixture read failed"
+            || error.raw_os_error().is_some()
+            || error.get_ref().and_then(|value| value.downcast_ref::<ReadSentinel>()).is_none()
         {
             return Err(format!("underlying read error was changed: {error}"));
         }
