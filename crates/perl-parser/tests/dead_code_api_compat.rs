@@ -31,6 +31,91 @@ use std::path::PathBuf;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
+// Every field participates; exhaustive destructuring makes future fields a
+// compile-time obligation. Float bits preserve NaNs and signed zero exactly.
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct FindingKey {
+    code_type: String,
+    name: Option<String>,
+    file_path: PathBuf,
+    start_line: usize,
+    end_line: usize,
+    reason: String,
+    confidence: u32,
+    suggestion: Option<String>,
+}
+
+fn finding_keys(findings: &[DeadCode]) -> Vec<FindingKey> {
+    let mut keys: Vec<_> = findings
+        .iter()
+        .map(|finding| {
+            let DeadCode {
+                code_type,
+                name,
+                file_path,
+                start_line,
+                end_line,
+                reason,
+                confidence,
+                suggestion,
+            } = finding;
+            FindingKey {
+                code_type: format!("{code_type:?}"),
+                name: name.clone(),
+                file_path: file_path.clone(),
+                start_line: *start_line,
+                end_line: *end_line,
+                reason: reason.clone(),
+                confidence: confidence.to_bits(),
+                suggestion: suggestion.clone(),
+            }
+        })
+        .collect();
+    keys.sort();
+    keys
+}
+
+#[test]
+fn finding_multiset_observes_all_fields_and_multiplicity() -> TestResult {
+    let original = DeadCode {
+        code_type: DeadCodeType::UnusedSubroutine,
+        name: Some("unused".into()),
+        file_path: PathBuf::from("/main.pl"),
+        start_line: 1,
+        end_line: 2,
+        reason: "unreferenced".into(),
+        confidence: 0.9,
+        suggestion: Some("inspect".into()),
+    };
+    let mutations: [fn(&mut DeadCode); 8] = [
+        |d| d.code_type = DeadCodeType::UnusedVariable,
+        |d| d.name = None,
+        |d| d.file_path = PathBuf::from("/other.pl"),
+        |d| d.start_line = 3,
+        |d| d.end_line = 4,
+        |d| d.reason = "changed".into(),
+        |d| d.confidence = f32::from_bits(d.confidence.to_bits() + 1),
+        |d| d.suggestion = None,
+    ];
+    let baseline = finding_keys(std::slice::from_ref(&original));
+    for mutate in mutations {
+        let mut changed = original.clone();
+        mutate(&mut changed);
+        if baseline == finding_keys(std::slice::from_ref(&changed)) {
+            return Err("a field-only mutation escaped the finding comparison".into());
+        }
+        if finding_keys(&[original.clone(), changed.clone()])
+            != finding_keys(&[changed, original.clone()])
+        {
+            return Err("finding order affected multiset comparison".into());
+        }
+    }
+    if baseline == finding_keys(&[original.clone(), original]) {
+        return Err("finding multiplicity escaped the comparison".into());
+    }
+    Ok(())
+}
+
 /// The constant every current producer stamps on `DeadCode::confidence`.
 const CONSTANT_CONFIDENCE: f32 = 0.9;
 
@@ -275,18 +360,9 @@ fn dcapi_entry_point_is_inert() -> TestResult {
     // *contents* are the claim here and an order difference is not a finding.
     // (That instability is itself consistent with the ledger, which records
     // `DeadCodeAnalysis::dead_code` as an unordered accumulation.)
-    let keys = |analysis: &DeadCodeAnalysis| {
-        let mut keys: Vec<String> = analysis
-            .dead_code
-            .iter()
-            .map(|d| format!("{:?}|{:?}|{}", d.code_type, d.name, d.start_line))
-            .collect();
-        keys.sort();
-        keys
-    };
     assert_eq!(
-        keys(&baseline),
-        keys(&configured),
+        finding_keys(&baseline.dead_code),
+        finding_keys(&configured.dead_code),
         "declaring entry points changed the findings; the ledger's `inert` disposition is stale"
     );
 
