@@ -159,6 +159,79 @@ test('continues coverage after an unreadable configured root', async () => {
   realpath.mockRestore();
 });
 
+test('suggests a mixed root while excluding its configured descendant', async () => {
+  const workspaceDir = tempWorkspace('perl-lsp-guidance-mixed-layout-');
+  fs.mkdirSync(path.join(workspaceDir, 'src', 'lib'), { recursive: true });
+  fs.writeFileSync(path.join(workspaceDir, 'src', 'TopLevel.pm'), 'package TopLevel; 1;\n');
+  fs.writeFileSync(path.join(workspaceDir, 'src', 'lib', 'Nested.pm'), 'package Nested; 1;\n');
+  mountWorkspace(workspaceDir, ['src/lib']);
+  (vscode.window.showInformationMessage as jest.Mock).mockResolvedValue('Dismiss');
+
+  const reports = await runDiscoveredIncludePathGuidance({
+    globalState: makeState(),
+  } as unknown as vscode.ExtensionContext);
+
+  expect(reports).toEqual(
+    expect.arrayContaining([expect.objectContaining({ discovered: ['src'], complete: true })]),
+  );
+  expect(vscode.window.showInformationMessage).toHaveBeenCalledWith(
+    expect.stringContaining('workspace: src'),
+    'Add for These Folders',
+    'Open Settings',
+    'Dismiss',
+  );
+});
+
+test('keeps a root silent when all modules are under a configured descendant', async () => {
+  const workspaceDir = tempWorkspace('perl-lsp-guidance-covered-descendant-');
+  fs.mkdirSync(path.join(workspaceDir, 'src', 'lib'), { recursive: true });
+  fs.writeFileSync(path.join(workspaceDir, 'src', 'lib', 'Nested.pm'), 'package Nested; 1;\n');
+  mountWorkspace(workspaceDir, ['src/lib']);
+
+  const reports = await runDiscoveredIncludePathGuidance({
+    globalState: makeState(),
+  } as unknown as vscode.ExtensionContext);
+
+  expect(reports).toEqual(
+    expect.arrayContaining([expect.objectContaining({ discovered: [], complete: true })]),
+  );
+  expect(vscode.window.showInformationMessage).not.toHaveBeenCalled();
+});
+
+test('does not exhaust the exact entry budget on a configured descendant', async () => {
+  const workspaceDir = tempWorkspace('perl-lsp-guidance-covered-budget-');
+  const srcDir = path.join(workspaceDir, 'src');
+  fs.mkdirSync(path.join(srcDir, 'lib'), { recursive: true });
+  for (let index = 0; index < 199; index += 1) {
+    fs.writeFileSync(path.join(srcDir, `file-${index}.txt`), 'not perl\n');
+  }
+  mountWorkspace(workspaceDir, ['src/lib']);
+
+  const reports = await runDiscoveredIncludePathGuidance({
+    globalState: makeState(),
+  } as unknown as vscode.ExtensionContext);
+
+  expect(reports).toEqual(
+    expect.arrayContaining([expect.objectContaining({ discovered: [], complete: true })]),
+  );
+  expect(vscode.window.showInformationMessage).not.toHaveBeenCalled();
+});
+
+test('does not exhaust the depth budget on a configured descendant', async () => {
+  const workspaceDir = tempWorkspace('perl-lsp-guidance-covered-depth-');
+  fs.mkdirSync(path.join(workspaceDir, 'src', 'one', 'two', 'three'), { recursive: true });
+  mountWorkspace(workspaceDir, ['src/one/two/three']);
+
+  const reports = await runDiscoveredIncludePathGuidance({
+    globalState: makeState(),
+  } as unknown as vscode.ExtensionContext);
+
+  expect(reports).toEqual(
+    expect.arrayContaining([expect.objectContaining({ discovered: [], complete: true })]),
+  );
+  expect(vscode.window.showInformationMessage).not.toHaveBeenCalled();
+});
+
 test('a configured symlink alias covers its canonical candidate', async () => {
   const workspaceDir = tempWorkspace('perl-lsp-guidance-alias-');
   fs.mkdirSync(path.join(workspaceDir, 'src'), { recursive: true });
@@ -673,6 +746,47 @@ test('continues discovery when a configured descendant is unreadable', async () 
   );
 });
 
+test('allows a partial positive while disclosing an incomplete scan', async () => {
+  const workspaceDir = tempWorkspace('perl-lsp-guidance-partial-positive-');
+  fs.mkdirSync(path.join(workspaceDir, 'src'), { recursive: true });
+  fs.writeFileSync(path.join(workspaceDir, 'src', 'Module.pm'), 'package Module; 1;\n');
+  mountWorkspace(workspaceDir, ['blocked\0child']);
+  const update = jest.fn(async () => undefined);
+  (vscode.workspace.getConfiguration as jest.Mock).mockImplementation(() => ({
+    get: jest.fn(() => ['blocked\0child']),
+    inspect: jest.fn(() => ({ defaultValue: ['lib', 'local/lib/perl5'] })),
+    update,
+  }));
+  const originalRealpath = fs.promises.realpath;
+  const realpath = jest.spyOn(fs.promises, 'realpath').mockImplementation(async (target) => {
+    if (String(target).includes('\0')) {
+      throw new Error('permission denied');
+    }
+    return originalRealpath.call(fs.promises, target);
+  });
+  (vscode.window.showInformationMessage as jest.Mock).mockResolvedValue('Add for These Folders');
+
+  const reports = await runDiscoveredIncludePathGuidance({
+    globalState: makeState(),
+  } as unknown as vscode.ExtensionContext);
+  realpath.mockRestore();
+
+  expect(reports).toEqual(
+    expect.arrayContaining([expect.objectContaining({ discovered: ['src'], complete: false })]),
+  );
+  expect(vscode.window.showInformationMessage).toHaveBeenCalledWith(
+    expect.stringContaining('additional paths may exist'),
+    'Add for These Folders',
+    'Open Settings',
+    'Dismiss',
+  );
+  expect(update).toHaveBeenCalledWith(
+    'includePaths',
+    expect.arrayContaining(['src']),
+    vscode.ConfigurationTarget.WorkspaceFolder,
+  );
+});
+
 test('queues one validation rerun for a change during an active prompt', async () => {
   const workspaceDir = tempWorkspace('perl-lsp-guidance-rerun-');
   mountWorkspace(workspaceDir, ['first/missing']);
@@ -804,6 +918,36 @@ test('does not apply a module root removed while the prompt is open', async () =
   await run;
 
   expect(update).not.toHaveBeenCalled();
+});
+
+test('does not apply a mixed root after its uncovered top-level module is removed', async () => {
+  const workspaceDir = tempWorkspace('perl-lsp-guidance-mixed-stale-');
+  const topLevel = path.join(workspaceDir, 'src', 'TopLevel.pm');
+  fs.mkdirSync(path.join(workspaceDir, 'src', 'lib'), { recursive: true });
+  fs.writeFileSync(topLevel, 'package TopLevel; 1;\n');
+  fs.writeFileSync(path.join(workspaceDir, 'src', 'lib', 'Nested.pm'), 'package Nested; 1;\n');
+  const folder = folderFor(workspaceDir);
+  workspaceMock.workspaceFolders = [folder];
+  const update = jest.fn(async () => undefined);
+  (vscode.workspace.getConfiguration as jest.Mock).mockImplementation(() => ({
+    get: jest.fn(() => ['src/lib']),
+    update,
+  }));
+  const prompt = new Deferred<string>();
+  (vscode.window.showInformationMessage as jest.Mock).mockReturnValue(prompt.promise);
+
+  const run = runDiscoveredIncludePathGuidance({
+    globalState: makeState(),
+  } as unknown as vscode.ExtensionContext);
+  await waitForCalls(vscode.window.showInformationMessage as jest.Mock, 1);
+  fs.rmSync(topLevel);
+  prompt.resolve('Add for These Folders');
+  await run;
+
+  expect(update).not.toHaveBeenCalled();
+  expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(
+    expect.stringContaining('changed before they could be applied'),
+  );
 });
 
 test('rejects a configuration change during candidate revalidation', async () => {

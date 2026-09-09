@@ -278,12 +278,18 @@ async function canonicalCoverage(
   }
 }
 
-async function hasConfiguredDescendant(
+interface ConfiguredDescendantResult {
+  readonly paths: readonly string[];
+  readonly complete: boolean;
+}
+
+async function configuredDescendantExclusions(
   workspaceRoot: string,
   configuredPaths: readonly string[],
   candidateRealPath: string,
-): Promise<CoverageResult> {
+): Promise<ConfiguredDescendantResult> {
   let complete = true;
+  const paths: string[] = [];
   for (const configured of configuredPaths) {
     let configuredRealPath: string | undefined;
     try {
@@ -293,10 +299,10 @@ async function hasConfiguredDescendant(
       continue;
     }
     if (configuredRealPath && isWithinBasePath(candidateRealPath, configuredRealPath)) {
-      return { covered: true, complete };
+      paths.push(configuredRealPath);
     }
   }
-  return { covered: false, complete };
+  return { paths, complete };
 }
 
 /** True when a current canonical configured root is equal to or an ancestor of the candidate. */
@@ -312,10 +318,14 @@ async function directoryContainsPerlModule(
   dir: string,
   maxDepth = DISCOVERY_MAX_DEPTH,
   entryBudget = DISCOVERY_ENTRY_BUDGET,
+  excludedRoots: readonly string[] = [],
 ): Promise<DiscoveryScanResult> {
   const state = { remaining: entryBudget, visited: 0, complete: true };
 
   const walk = async (current: string, depth: number): Promise<boolean> => {
+    if (excludedRoots.some((root) => isWithinBasePath(root, current))) {
+      return false;
+    }
     if (state.remaining <= 0) {
       state.complete = false;
       return false;
@@ -358,6 +368,10 @@ async function directoryContainsPerlModule(
       if (!entry.isDirectory() || entry.name.startsWith('.')) {
         continue;
       }
+      const child = path.join(current, entry.name);
+      if (excludedRoots.some((root) => isWithinBasePath(root, child))) {
+        continue;
+      }
       if (depth >= maxDepth) {
         state.complete = false;
         continue;
@@ -366,7 +380,7 @@ async function directoryContainsPerlModule(
         state.complete = false;
         continue;
       }
-      if (await walk(path.join(current, entry.name), depth + 1)) {
+      if (await walk(child, depth + 1)) {
         return true;
       }
       if (!state.complete && state.remaining <= 0) {
@@ -487,17 +501,19 @@ export async function runDiscoveredIncludePathGuidance(
       if (coverage.covered) {
         continue;
       }
-      const descendant = await hasConfiguredDescendant(
+      const exclusions = await configuredDescendantExclusions(
         folder.uri.fsPath,
         includePaths,
         candidateRealPath,
       );
-      complete = complete && descendant.complete;
-      if (descendant.covered) {
-        continue;
-      }
+      complete = complete && exclusions.complete;
 
-      const scan = await directoryContainsPerlModule(candidateRealPath);
+      const scan = await directoryContainsPerlModule(
+        candidateRealPath,
+        DISCOVERY_MAX_DEPTH,
+        DISCOVERY_ENTRY_BUDGET,
+        exclusions.paths,
+      );
       complete = complete && scan.complete;
       if (scan.found) {
         discovered.push(candidate);
@@ -615,13 +631,18 @@ export async function runDiscoveredIncludePathGuidance(
           currentIncludePaths,
           candidate,
         );
-        const descendant = await hasConfiguredDescendant(
+        const exclusions = await configuredDescendantExclusions(
           currentFolder.uri.fsPath,
           currentIncludePaths,
           candidateRealPath,
         );
-        const scan = await directoryContainsPerlModule(candidateRealPath);
-        if (coverage.covered || descendant.covered || !scan.found) {
+        const scan = await directoryContainsPerlModule(
+          candidateRealPath,
+          DISCOVERY_MAX_DEPTH,
+          DISCOVERY_ENTRY_BUDGET,
+          exclusions.paths,
+        );
+        if (coverage.covered || !scan.found) {
           stale.push(finding.folder.name);
           continue;
         }
