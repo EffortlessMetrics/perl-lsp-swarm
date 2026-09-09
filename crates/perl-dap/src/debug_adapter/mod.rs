@@ -2502,9 +2502,13 @@ print "result: $final\n";
     }
 
     #[test]
-    fn test_context_re_windows_drive_path_with_spaces() {
+    fn test_context_re_windows_drive_path_with_spaces() -> Result<(), String> {
         let result = apply_context_re(r"main::(C:\Program Files\Perl\file.pl:7):");
-        assert_eq!(result, Some((r"C:\Program Files\Perl\file.pl".to_string(), "7".to_string())));
+        let expected = Some((r"C:\Program Files\Perl\file.pl".to_string(), "7".to_string()));
+        if result != expected {
+            return Err(format!("Windows spaced path parsed as {result:?}; expected {expected:?}"));
+        }
+        Ok(())
     }
 
     #[test]
@@ -2541,20 +2545,45 @@ print "result: $final\n";
     }
 
     #[test]
-    fn test_context_re_path_with_spaces() {
+    fn test_context_re_path_with_spaces() -> Result<(), String> {
         // Spaces are valid in Unix and Windows paths and must remain part of the
         // source location rather than preventing the initial frame from forming.
         let result = apply_context_re("main::(/path with spaces/file.pl:5):");
-        assert_eq!(result, Some(("/path with spaces/file.pl".to_string(), "5".to_string())));
+        let expected = Some(("/path with spaces/file.pl".to_string(), "5".to_string()));
+        if result != expected {
+            return Err(format!("spaced path parsed as {result:?}; expected {expected:?}"));
+        }
+        Ok(())
     }
 
     #[test]
-    fn test_context_re_path_with_spaces_and_parentheses() {
+    fn test_context_re_path_with_spaces_and_parentheses() -> Result<(), String> {
         let result = apply_context_re("main::(/path with spaces (ctx)/file (name).pl:5):");
-        assert_eq!(
-            result,
-            Some(("/path with spaces (ctx)/file (name).pl".to_string(), "5".to_string()))
-        );
+        let expected =
+            Some(("/path with spaces (ctx)/file (name).pl".to_string(), "5".to_string()));
+        if result != expected {
+            return Err(format!("parenthesized path parsed as {result:?}; expected {expected:?}"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_context_re_path_with_earlier_digit_colon_parenthesis() -> Result<(), String> {
+        let result = apply_context_re("main::(/tmp/a:12)/file.pl:3):");
+        let expected = Some(("/tmp/a:12)/file.pl".to_string(), "3".to_string()));
+        if result != expected {
+            return Err(format!("digit-colon path parsed as {result:?}; expected {expected:?}"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_context_re_rejects_malformed_line_delimiter() -> Result<(), String> {
+        let result = apply_context_re("main::(/tmp/file.pl:3x):");
+        if result.is_some() {
+            return Err(format!("malformed line delimiter was accepted as {result:?}"));
+        }
+        Ok(())
     }
 
     #[test]
