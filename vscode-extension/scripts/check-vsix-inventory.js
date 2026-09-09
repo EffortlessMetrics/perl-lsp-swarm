@@ -189,7 +189,13 @@ async function main() {
       validatedManifest.dap?.payload?.member,
     ].filter((member) => typeof member === 'string');
     for (const member of members) {
-      allowedFiles.push(`bin/${target}/${member}`);
+      const packagedFile = `bin/${target}/${member}`;
+      if (!Object.hasOwn(actual.files, packagedFile)) {
+        throw new Error(
+          `candidate payload member is missing from the produced VSIX: ${packagedFile}`,
+        );
+      }
+      allowedFiles.push(packagedFile);
     }
   }
   const violations = compareInventory(actual, baseline, process.platform, {
