@@ -523,6 +523,7 @@ impl DebtVisitor<'_> {
                                 collapse(&attr.meta.to_token_string())
                             ),
                         });
+                        return (BTreeSet::new(), BTreeSet::new());
                     }
                 }
                 let mut denied = BTreeSet::new();

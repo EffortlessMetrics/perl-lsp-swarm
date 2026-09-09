@@ -2111,6 +2111,126 @@ mod tests {
 }
 
 #[test]
+fn feature_cfg_attr_deny_does_not_erase_established_allow() {
+    let temp = tempfile::tempdir().expect("temp");
+    write_policy(temp.path());
+    write_empty_registry(temp.path());
+    write_package(
+        temp.path(),
+        "demo",
+        r##"
+#![allow(clippy::unwrap_used, reason = "#13397")]
+#[cfg(test)]
+mod tests {
+    #[cfg_attr(feature = "need-me", deny(clippy::unwrap_used))]
+    #[test]
+    fn unit() { let _ = Some(1).unwrap(); }
+}
+"##,
+        &[("known.rs", "#[test]\nfn known() {}\n")],
+    );
+    let inventory = inventory_at(temp.path());
+    let unwrap = inventory.rows.iter().find(|row| {
+        row.kind == "site"
+            && row.path.ends_with("src/lib.rs")
+            && row.entrypoint == "unit"
+            && row.site_family == "unwrap"
+    });
+    assert!(unwrap.is_some(), "unwrap omitted: {:?}", inventory.rows);
+    let unwrap = unwrap.expect("unwrap omitted");
+    assert_eq!(
+        unwrap.owner, "#13397",
+        "unproven feature deny must not erase crate allow: {unwrap:?}"
+    );
+    assert!(
+        inventory.instruments.iter().any(|instrument| {
+            instrument.kind == "cfg_attr_cover"
+                && instrument.status == InstrumentStatus::NotProven
+                && instrument.subject.ends_with("src/lib.rs")
+        }),
+        "feature-conditional deny must stay not_proven: {:?}",
+        inventory.instruments
+    );
+}
+
+#[test]
+fn feature_cfg_attr_forbid_does_not_erase_established_allow() {
+    let temp = tempfile::tempdir().expect("temp");
+    write_policy(temp.path());
+    write_empty_registry(temp.path());
+    write_package(
+        temp.path(),
+        "demo",
+        r##"
+#![allow(clippy::unwrap_used, reason = "#13397")]
+#[cfg(test)]
+mod tests {
+    #[cfg_attr(feature = "need-me", forbid(clippy::unwrap_used))]
+    #[test]
+    fn unit() { let _ = Some(1).unwrap(); }
+}
+"##,
+        &[("known.rs", "#[test]\nfn known() {}\n")],
+    );
+    let inventory = inventory_at(temp.path());
+    let unwrap = inventory.rows.iter().find(|row| {
+        row.kind == "site"
+            && row.path.ends_with("src/lib.rs")
+            && row.entrypoint == "unit"
+            && row.site_family == "unwrap"
+    });
+    assert!(unwrap.is_some(), "unwrap omitted: {:?}", inventory.rows);
+    let unwrap = unwrap.expect("unwrap omitted");
+    assert_eq!(
+        unwrap.owner, "#13397",
+        "unproven feature forbid must not erase crate allow: {unwrap:?}"
+    );
+    assert!(
+        inventory.instruments.iter().any(|instrument| {
+            instrument.kind == "cfg_attr_cover"
+                && instrument.status == InstrumentStatus::NotProven
+                && instrument.subject.ends_with("src/lib.rs")
+        }),
+        "feature-conditional forbid must stay not_proven: {:?}",
+        inventory.instruments
+    );
+}
+
+#[test]
+fn cfg_attr_test_deny_still_masks_established_allow() {
+    let temp = tempfile::tempdir().expect("temp");
+    write_policy(temp.path());
+    write_empty_registry(temp.path());
+    write_package(
+        temp.path(),
+        "demo",
+        r##"
+#![allow(clippy::unwrap_used, reason = "#13397")]
+#[cfg(test)]
+mod tests {
+    #[cfg_attr(test, deny(clippy::unwrap_used))]
+    #[test]
+    fn unit() { let _ = Some(1).unwrap(); }
+}
+"##,
+        &[("known.rs", "#[test]\nfn known() {}\n")],
+    );
+    let inventory = inventory_at(temp.path());
+    let unwrap = inventory.rows.iter().find(|row| {
+        row.kind == "site"
+            && row.path.ends_with("src/lib.rs")
+            && row.entrypoint == "unit"
+            && row.site_family == "unwrap"
+    });
+    assert!(unwrap.is_some(), "unwrap omitted: {:?}", inventory.rows);
+    let unwrap = unwrap.expect("unwrap omitted");
+    assert!(
+        unwrap.owner.is_empty() && unwrap.declaration_identity.is_empty(),
+        "effective cfg_attr(test, deny) must still mask crate allow: {unwrap:?}"
+    );
+}
+
+#[test]
 fn crate_cfg_attr_test_allow_does_not_make_production_unwrap_debt() {
     let temp = tempfile::tempdir().expect("temp");
     write_policy(temp.path());
