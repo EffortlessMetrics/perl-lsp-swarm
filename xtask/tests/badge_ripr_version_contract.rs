@@ -151,16 +151,21 @@ fn badge_installer_matches_the_reviewed_ripr_workflow_release()
 
         let install_steps: Vec<_> = job_run_steps(job)
             .into_iter()
-            .filter(|run| run.contains("cargo install ripr --version"))
+            .filter(|run| {
+                if *job_name == "ripr-github" {
+                    run.trim() == VARIABLE_INSTALL_COMMAND
+                } else {
+                    run.contains("cargo install ripr --version")
+                }
+            })
             .collect();
-        let expected_installers = if *job_name == "ripr-github" { 2 } else { 1 };
         assert_eq!(
             install_steps.len(),
-            expected_installers,
-            "RIPR execution job `{job_name}` must have the expected host/container installers"
+            1,
+            "RIPR execution job `{job_name}` must have one explicit installer"
         );
         assert!(
-            install_steps.iter().all(|step| step.contains(VARIABLE_INSTALL_COMMAND)),
+            install_steps[0].contains(VARIABLE_INSTALL_COMMAND),
             "RIPR execution job `{job_name}` must install through its canonical RIPR_VERSION"
         );
         lane_versions.push(((*job_name).to_string(), version.to_string()));

@@ -1436,6 +1436,7 @@ exit 23
         .current_dir(sandbox.path())
         .env("DOCKER_MARKER", sandbox.path().join("docker.failure.marker"))
         .env("CHOWN_MARKER", sandbox.path().join("chown.failure.marker"))
+        .env("TIMEOUT_MARKER", sandbox.path().join("timeout.failure.marker"))
         .env("FAIL_CHOWN", "1")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -1450,6 +1451,17 @@ exit 23
     ensure!(
         cleanup_failure_output.status.code() == Some(1),
         "cleanup failure must turn an otherwise successful producer into failure: {cleanup_failure_output:?}"
+    );
+    ensure!(
+        fs::read_to_string(sandbox.path().join("chown.failure.marker"))?.contains("target")
+            && fs::read_to_string(sandbox.path().join("timeout.failure.marker"))?
+                .contains("docker rm -f"),
+        "cleanup failure fixture must execute ownership restoration after bounded removal"
+    );
+    ensure!(
+        String::from_utf8_lossy(&cleanup_failure_output.stderr)
+            .contains("failed to restore hosted RIPR target ownership"),
+        "cleanup failure must report the ownership error"
     );
     Ok(())
 }
