@@ -381,12 +381,14 @@ function runChecker(paths, { currentSourceSmoke = false } = {}) {
     PERL_LSP_VSCODE_TARGET: 'win32-x64',
   };
   if (currentSourceSmoke) environment.PERL_LSP_CURRENT_SOURCE_SMOKE = '1';
-  return spawnSync(process.execPath, [checker, '--vsix', paths.vsixPath], {
+  const result = spawnSync(process.execPath, [checker, '--vsix', paths.vsixPath], {
     cwd: extensionRoot,
     env: environment,
     encoding: 'utf8',
     windowsHide: true,
   });
+  if (result.error) throw new Error(`checker failed to launch: ${result.error.message}`);
+  return result;
 }
 
 void test('CLI admits validated manifest server and DAP members', async () => {
@@ -420,7 +422,6 @@ void test('CLI rejects forged manifest identity and inventory claims', async () 
       if (mutation === 'inventory') manifest.package.inventorySha256 = 'c'.repeat(64);
       fs.writeFileSync(paths.manifestPath, JSON.stringify(manifest));
       const result = runChecker(paths);
-      assert.equal(result.error, undefined, `${mutation} failed to launch: ${result.error}`);
       assert.notEqual(result.status, 0, `${mutation} unexpectedly passed`);
       assert.match(`${result.stdout}\n${result.stderr}`, expectedError);
     } finally {
@@ -452,7 +453,6 @@ void test('CLI rejects a manifest whose required native member is absent', async
     try {
       const paths = await fixture(directory, {}, [member]);
       const result = runChecker(paths);
-      assert.equal(result.error, undefined, `checker failed to launch: ${result.error}`);
       assert.notEqual(result.status, 0, `${member} unexpectedly passed`);
       assert.match(
         `${result.stdout}\n${result.stderr}`,
