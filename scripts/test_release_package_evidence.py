@@ -4,9 +4,11 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import importlib.util
 import json
 import os
+import stat
 import tarfile
 import tempfile
 import unittest
@@ -78,6 +80,65 @@ def fixture(root: Path, target: str = TARGET) -> tuple[Path, Path, Path]:
 
 
 class ReleasePackageEvidenceTests(unittest.TestCase):
+    def test_identical_duplicate_tar_member_is_rejected_by_build(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            receipt, package_dir, archive = fixture(root)
+            package_name = package_dir.name
+            with tarfile.open(archive, "w:gz") as bundle:
+                for payload in (b"post-strip-perllsp", b"post-strip-perllsp"):
+                    member = tarfile.TarInfo(f"{package_name}/perllsp")
+                    member.size = len(payload)
+                    bundle.addfile(member, io.BytesIO(payload))
+                payload = b"post-strip-perl-dap"
+                member = tarfile.TarInfo(f"{package_name}/perl-dap")
+                member.size = len(payload)
+                bundle.addfile(member, io.BytesIO(payload))
+            previous = Path.cwd()
+            os.chdir(root)
+            try:
+                with self.assertRaisesRegex(subject.PackageEvidenceError, "duplicate"):
+                    subject.build(receipt, package_dir, archive, SOURCE, VERSION, TARGET)
+            finally:
+                os.chdir(previous)
+
+    def test_archive_member_digest_rejects_ambiguous_and_nonregular_members(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            duplicate = root / "duplicate.zip"
+            with zipfile.ZipFile(duplicate, "w") as bundle:
+                bundle.writestr("perllsp.exe", b"same")
+                bundle.writestr("perllsp.exe", b"same")
+            with self.assertRaisesRegex(subject.PackageEvidenceError, "duplicate"):
+                subject.archive_member_digest(duplicate, "perllsp.exe")
+
+            link = root / "link.zip"
+            info = zipfile.ZipInfo("perllsp.exe")
+            info.create_system = 3
+            info.external_attr = (stat.S_IFLNK | 0o777) << 16
+            with zipfile.ZipFile(link, "w") as bundle:
+                bundle.writestr(info, b"target")
+            with self.assertRaisesRegex(subject.PackageEvidenceError, "regular"):
+                subject.archive_member_digest(link, "perllsp.exe")
+
+            tar_link = root / "link.tar.gz"
+            with tarfile.open(tar_link, "w:gz") as bundle:
+                member = tarfile.TarInfo("perllsp")
+                member.type = tarfile.SYMTYPE
+                member.linkname = "target"
+                bundle.addfile(member)
+            with self.assertRaisesRegex(subject.PackageEvidenceError, "regular"):
+                subject.archive_member_digest(tar_link, "perllsp")
+
+            tar_hardlink = root / "hardlink.tar.gz"
+            with tarfile.open(tar_hardlink, "w:gz") as bundle:
+                member = tarfile.TarInfo("perllsp")
+                member.type = tarfile.LNKTYPE
+                member.linkname = "target"
+                bundle.addfile(member)
+            with self.assertRaisesRegex(subject.PackageEvidenceError, "regular"):
+                subject.archive_member_digest(tar_hardlink, "perllsp")
+
     def test_post_strip_members_are_bound_to_pre_strip_receipt(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

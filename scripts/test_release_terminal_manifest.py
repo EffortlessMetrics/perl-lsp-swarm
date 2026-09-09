@@ -5,8 +5,10 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import io
 import json
 import shutil
+import stat
 import sys
 import tempfile
 import unittest
@@ -180,6 +182,58 @@ def candidate(root: Path) -> Path:
 
 
 class ReleaseTerminalManifestTests(unittest.TestCase):
+    def test_archive_member_digest_rejects_duplicate_and_nonregular_entries(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            duplicate = root / "duplicate.zip"
+            with zipfile.ZipFile(duplicate, "w") as bundle:
+                bundle.writestr("perllsp", b"same")
+                bundle.writestr("perllsp", b"same")
+            with self.assertRaisesRegex(subject.ManifestError, "duplicate"):
+                subject.archive_member_digest(duplicate, "perllsp")
+
+            link = root / "link.tar.gz"
+            with tarfile.open(link, "w:gz") as bundle:
+                member = tarfile.TarInfo("perllsp")
+                member.type = tarfile.SYMTYPE
+                member.linkname = "target"
+                bundle.addfile(member)
+            with self.assertRaisesRegex(subject.ManifestError, "regular"):
+                subject.archive_member_digest(link, "perllsp")
+
+            zip_link = root / "link.zip"
+            info = zipfile.ZipInfo("perllsp")
+            info.create_system = 3
+            info.external_attr = (stat.S_IFLNK | 0o777) << 16
+            with zipfile.ZipFile(zip_link, "w") as bundle:
+                bundle.writestr(info, b"target")
+            with self.assertRaisesRegex(subject.ManifestError, "regular"):
+                subject.archive_member_digest(zip_link, "perllsp")
+
+    def test_identical_duplicate_tar_member_fails_at_build_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = candidate(Path(directory))
+            package_name = f"perllsp-{VERSION}-{TARGET}"
+            archive = root / "dist" / f"{package_name}.tar.gz"
+            with tarfile.open(archive, "w:gz") as bundle:
+                for payload in (b"post-strip-server", b"post-strip-server"):
+                    member = tarfile.TarInfo(f"{package_name}/perllsp")
+                    member.size = len(payload)
+                    bundle.addfile(member, io.BytesIO(payload))
+                payload = b"post-strip-dap"
+                member = tarfile.TarInfo(f"{package_name}/perl-dap")
+                member.size = len(payload)
+                bundle.addfile(member, io.BytesIO(payload))
+            evidence_path = root / "evidence" / TARGET / "release-package-evidence.json"
+            evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+            evidence["archive"]["sha256"] = sha256(archive)
+            write_json(evidence_path, evidence)
+            (root / "dist" / "SHA256SUMS").write_text(
+                f"{sha256(archive)}  {archive.name}\n", encoding="utf-8"
+            )
+            with self.assertRaisesRegex(subject.ManifestError, "duplicate"):
+                subject.build_manifest(root, SOURCE, TAG)
+
     def test_complete_candidate_is_deterministic(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = candidate(Path(directory))
