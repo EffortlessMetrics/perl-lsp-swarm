@@ -2,7 +2,13 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const { test } = require('node:test');
-const { packageVsix, validatePrebuiltPayload, vsixName, vsceEntry } = require('./package-vsix');
+const {
+  packageVsix,
+  preparePrebuiltPayload,
+  validatePrebuiltPayload,
+  vsixName,
+  vsceEntry,
+} = require('./package-vsix');
 
 const packageJson = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
 
@@ -29,17 +35,34 @@ function prebuiltManifest(overrides = {}) {
       sha256: 'd'.repeat(64),
       identityRef: 'server-a',
     },
-    dap: { disposition: 'preview_unavailable', payload: null },
+    dap: {
+      disposition: 'required_present',
+      payload: {
+        candidateId: 'candidate-a',
+        target: 'x86_64-pc-windows-msvc',
+        member: 'perl-dap.exe',
+        sha256: 'e'.repeat(64),
+        identityRef: 'dap-a',
+      },
+    },
     ...overrides,
   };
 }
 
 void test('prebuilt manifest binds exact Windows server source, target, and bytes', () => {
   const serverBytes = Buffer.from('candidate server bytes');
+  const dapBytes = Buffer.from('candidate dap bytes');
   const valid = prebuiltManifest({
     server: {
       ...prebuiltManifest().server,
       sha256: require('node:crypto').createHash('sha256').update(serverBytes).digest('hex'),
+    },
+    dap: {
+      ...prebuiltManifest().dap,
+      payload: {
+        ...prebuiltManifest().dap.payload,
+        sha256: require('node:crypto').createHash('sha256').update(dapBytes).digest('hex'),
+      },
     },
   });
   assert.doesNotThrow(() =>
@@ -48,7 +71,32 @@ void test('prebuilt manifest binds exact Windows server source, target, and byte
       target: 'win32-x64',
       rustTarget: 'x86_64-pc-windows-msvc',
       serverBytes,
+      dapBytes,
     }),
+  );
+  assert.doesNotThrow(() =>
+    validatePrebuiltPayload(
+      {
+        ...valid,
+        package: {
+          ...valid.package,
+          vscodeTargetId: 'win32-arm64',
+          rustTarget: 'aarch64-pc-windows-msvc',
+        },
+        server: { ...valid.server, target: 'aarch64-pc-windows-msvc' },
+        dap: {
+          ...valid.dap,
+          payload: { ...valid.dap.payload, target: 'aarch64-pc-windows-msvc' },
+        },
+      },
+      {
+        sourceSha: 'a'.repeat(40),
+        target: 'win32-arm64',
+        rustTarget: 'aarch64-pc-windows-msvc',
+        serverBytes,
+        dapBytes,
+      },
+    ),
   );
   assert.throws(
     () =>
@@ -106,16 +154,96 @@ void test('prebuilt manifest binds exact Windows server source, target, and byte
   );
 });
 
-void test('manifest-enabled packaging stages the supplied payload and verifies the archive member', () => {
+void test('manifest staging rolls back partial writes and rejects symlink destinations', () => {
   const serverBytes = Buffer.from('candidate server bytes');
+  const dapBytes = Buffer.from('candidate dap bytes');
   const manifest = prebuiltManifest({
     server: {
       ...prebuiltManifest().server,
       sha256: require('node:crypto').createHash('sha256').update(serverBytes).digest('hex'),
     },
+    dap: {
+      ...prebuiltManifest().dap,
+      payload: {
+        ...prebuiltManifest().dap.payload,
+        sha256: require('node:crypto').createHash('sha256').update(dapBytes).digest('hex'),
+      },
+    },
+  });
+  const writes = [];
+  const removals = [];
+  /** @type {any} */
+  const fileSystem = {
+    existsSync: () => false,
+    readFileSync: (file, encoding) => {
+      if (file === 'manifest.json')
+        return encoding ? JSON.stringify(manifest) : Buffer.from(JSON.stringify(manifest));
+      if (file === 'server.bin') return serverBytes;
+      if (file === 'dap.bin') return dapBytes;
+      throw new Error(`unexpected read: ${file}`);
+    },
+    mkdirSync: () => {},
+    writeFileSync: (file, bytes) => {
+      writes.push({ file, bytes });
+      if (writes.length === 2) throw new Error('simulated second payload failure');
+    },
+    rmSync: (file) => removals.push(file),
+  };
+  assert.throws(
+    () =>
+      preparePrebuiltPayload(fileSystem, {
+        PERL_LSP_CANDIDATE_PAYLOAD_MANIFEST: 'manifest.json',
+        PERL_LSP_PREBUILT_SERVER_PATH: 'server.bin',
+        PERL_LSP_PREBUILT_DAP_PATH: 'dap.bin',
+        PERL_LSP_CURRENT_SOURCE_SHA: 'a'.repeat(40),
+        PERL_LSP_RUST_TARGET: 'x86_64-pc-windows-msvc',
+        PERL_LSP_VSCODE_TARGET: 'win32-x64',
+      }),
+    /simulated second payload failure/,
+  );
+  assert.equal(removals.length, 2);
+
+  assert.throws(
+    () =>
+      preparePrebuiltPayload(
+        /** @type {any} */
+        {
+          ...fileSystem,
+          existsSync: () => true,
+          lstatSync: () => ({ isSymbolicLink: () => true }),
+        },
+        {
+          PERL_LSP_CANDIDATE_PAYLOAD_MANIFEST: 'manifest.json',
+          PERL_LSP_PREBUILT_SERVER_PATH: 'server.bin',
+          PERL_LSP_PREBUILT_DAP_PATH: 'dap.bin',
+          PERL_LSP_CURRENT_SOURCE_SHA: 'a'.repeat(40),
+          PERL_LSP_RUST_TARGET: 'x86_64-pc-windows-msvc',
+          PERL_LSP_VSCODE_TARGET: 'win32-x64',
+        },
+      ),
+    /symbolic link/,
+  );
+});
+
+void test('manifest-enabled packaging stages the supplied payload and verifies the archive member', () => {
+  const serverBytes = Buffer.from('candidate server bytes');
+  const dapBytes = Buffer.from('candidate dap bytes');
+  const manifest = prebuiltManifest({
+    server: {
+      ...prebuiltManifest().server,
+      sha256: require('node:crypto').createHash('sha256').update(serverBytes).digest('hex'),
+    },
+    dap: {
+      ...prebuiltManifest().dap,
+      payload: {
+        ...prebuiltManifest().dap.payload,
+        sha256: require('node:crypto').createHash('sha256').update(dapBytes).digest('hex'),
+      },
+    },
   });
   const manifestPath = 'manifest.json';
   const serverPath = 'prebuilt/perllsp.exe';
+  const dapPath = 'prebuilt/perl-dap.exe';
   const writes = [];
   const calls = [];
   /** @type {any} */
@@ -126,6 +254,7 @@ void test('manifest-enabled packaging stages the supplied payload and verifies t
       if (file === manifestPath)
         return encoding ? JSON.stringify(manifest) : Buffer.from(JSON.stringify(manifest));
       if (file === serverPath) return serverBytes;
+      if (file === dapPath) return dapBytes;
       throw new Error(`unexpected read: ${file}`);
     },
     mkdirSync: () => {},
@@ -138,6 +267,7 @@ void test('manifest-enabled packaging stages the supplied payload and verifies t
     PERL_LSP_CURRENT_SOURCE_SHA: 'a'.repeat(40),
     PERL_LSP_RUST_TARGET: 'x86_64-pc-windows-msvc',
     PERL_LSP_VSCODE_TARGET: 'win32-x64',
+    PERL_LSP_PREBUILT_DAP_PATH: dapPath,
   };
   const run = (script, args) => {
     calls.push({ script, args });
@@ -148,7 +278,12 @@ void test('manifest-enabled packaging stages the supplied payload and verifies t
   assert.equal(writes[0].bytes, serverBytes);
   assert.deepEqual(
     calls.slice(1).map(({ script }) => path.basename(script)),
-    ['check-vsix-prebuilt-payload.js', 'check-vsix-inventory.js'],
+    [
+      'check-vsix-prebuilt-payload.js',
+      'check-vsix-prebuilt-payload.js',
+      'check-vsix-prebuilt-payload.js',
+      'check-vsix-inventory.js',
+    ],
   );
 });
 

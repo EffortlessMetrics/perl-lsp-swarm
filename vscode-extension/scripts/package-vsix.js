@@ -4,6 +4,10 @@ const path = require('node:path');
 const fs = require('node:fs');
 const crypto = require('node:crypto');
 const { spawnSync } = require('node:child_process');
+const {
+  buildVsixCandidatePayloadManifest,
+  canonicalVsixPayloadJson,
+} = require('../src/vsixPackageProjection.ts');
 
 const extensionRoot = path.resolve(__dirname, '..');
 const packageManifest = JSON.parse(
@@ -24,6 +28,7 @@ function validatePrebuiltPayload(manifest, context) {
   if (!manifest.extension || !manifest.candidate || !manifest.package || !manifest.server) {
     throw new Error('prebuilt payload manifest is missing required identity');
   }
+  const server = manifest.server;
   if (
     manifest.extension.sourceSha !== context.sourceSha ||
     manifest.candidate.sourceSha !== context.sourceSha
@@ -42,14 +47,14 @@ function validatePrebuiltPayload(manifest, context) {
   ) {
     throw new Error(`prebuilt payload target mismatch: expected ${context.target}`);
   }
-  const expectedMember = context.target === 'win32-x64' ? 'perllsp.exe' : 'perllsp';
-  if (manifest.server.member !== expectedMember || manifest.server.target !== context.rustTarget) {
+  const expectedMember = context.target.startsWith('win32-') ? 'perllsp.exe' : 'perllsp';
+  if (server.member !== expectedMember || server.target !== context.rustTarget) {
     throw new Error('prebuilt payload target member mismatch');
   }
-  if (manifest.server.candidateId !== manifest.candidate.id) {
+  if (server.candidateId !== manifest.candidate.id) {
     throw new Error('prebuilt payload candidate mismatch');
   }
-  if (manifest.server.sha256 !== sha256(context.serverBytes)) {
+  if (server.sha256 !== sha256(context.serverBytes)) {
     throw new Error('prebuilt payload server payload SHA mismatch');
   }
   if (manifest.dap?.disposition === 'required_present' && !manifest.dap.payload) {
@@ -59,7 +64,7 @@ function validatePrebuiltPayload(manifest, context) {
     if (manifest.dap.payload.candidateId !== manifest.candidate.id) {
       throw new Error('prebuilt payload DAP candidate mismatch');
     }
-    const expectedDap = context.target === 'win32-x64' ? 'perl-dap.exe' : 'perl-dap';
+    const expectedDap = context.target.startsWith('win32-') ? 'perl-dap.exe' : 'perl-dap';
     if (
       manifest.dap.payload.member !== expectedDap ||
       manifest.dap.payload.target !== context.rustTarget
@@ -73,14 +78,50 @@ function validatePrebuiltPayload(manifest, context) {
   return manifest;
 }
 
+function validateProjectionManifest(manifest) {
+  const packageIdentity = manifest.package;
+  const server = manifest.server;
+  const dap = manifest.dap;
+  /** @type {any} */
+  const projection = {
+    vscodeTargetId: packageIdentity.vscodeTargetId,
+    rustTarget: packageIdentity.rustTarget,
+    platform: 'unsupported',
+    architecture: 'unsupported',
+    libc: null,
+    packageMode: packageIdentity.mode,
+    archiveName: null,
+    serverMember: server?.member ?? null,
+    dapMember: dap?.payload?.member ?? null,
+    dapDisposition: dap.disposition,
+  };
+  const validated = buildVsixCandidatePayloadManifest({
+    extension: manifest.extension,
+    candidate: manifest.candidate,
+    releaseTopologySha256: manifest.releaseTopologySha256,
+    projection,
+    packageInventorySha256: packageIdentity.inventorySha256,
+    server: server ?? undefined,
+    dap: dap.payload ?? undefined,
+  });
+  if (canonicalVsixPayloadJson(validated) !== canonicalVsixPayloadJson(manifest)) {
+    throw new Error('prebuilt payload manifest is not the canonical projection output');
+  }
+  return validated;
+}
+
 function preparePrebuiltPayload(fileSystem = fs, env = process.env) {
   const manifestPath = (env.PERL_LSP_CANDIDATE_PAYLOAD_MANIFEST || '').trim();
-  if (!manifestPath) return () => {};
+  if (!manifestPath) return { manifest: null, cleanup: () => {} };
   const serverPath = (env.PERL_LSP_PREBUILT_SERVER_PATH || '').trim();
   if (!serverPath) {
     throw new Error('prebuilt payload manifest requires PERL_LSP_PREBUILT_SERVER_PATH');
   }
-  const manifest = JSON.parse(fileSystem.readFileSync(manifestPath, 'utf8'));
+  const manifest = validateProjectionManifest(
+    JSON.parse(fileSystem.readFileSync(manifestPath, 'utf8')),
+  );
+  if (!manifest.server) throw new Error('prebuilt payload manifest has no server payload');
+  const server = manifest.server;
   const target = (env.PERL_LSP_VSCODE_TARGET || `${process.platform}-${process.arch}`).trim();
   if (!/^(?:win32|linux|alpine|darwin)-(?:x64|arm64)$/.test(target)) {
     throw new Error(`unsupported VS Code target for prebuilt payload: ${target}`);
@@ -91,30 +132,55 @@ function preparePrebuiltPayload(fileSystem = fs, env = process.env) {
   const dapPath = (env.PERL_LSP_PREBUILT_DAP_PATH || '').trim();
   const dapBytes = dapPath ? fileSystem.readFileSync(dapPath) : null;
   validatePrebuiltPayload(manifest, { sourceSha, target, rustTarget, serverBytes, dapBytes });
-  const payloads = [{ member: manifest.server.member, bytes: serverBytes }];
+  const payloads = [{ member: server.member, bytes: serverBytes }];
   if (manifest.dap?.payload && dapBytes) {
     payloads.push({ member: manifest.dap.payload.member, bytes: dapBytes });
   }
   const previous = payloads.map(({ member }) => {
     const destination = path.join(extensionRoot, 'bin', target, member);
+    const binRoot = path.resolve(extensionRoot, 'bin');
+    const resolved = path.resolve(destination);
+    if (resolved !== binRoot && !resolved.startsWith(`${binRoot}${path.sep}`)) {
+      throw new Error('prebuilt payload destination escapes extension bin directory');
+    }
+    if (typeof fileSystem.lstatSync === 'function') {
+      for (const parent of [binRoot, path.dirname(destination), destination]) {
+        if (fileSystem.existsSync(parent) && fileSystem.lstatSync(parent).isSymbolicLink()) {
+          throw new Error(`prebuilt payload destination is a symbolic link: ${parent}`);
+        }
+      }
+    }
     return {
       destination,
       bytes: fileSystem.existsSync(destination) ? fileSystem.readFileSync(destination) : null,
     };
   });
-  for (const [index, payload] of payloads.entries()) {
-    const prior = previous[index];
-    if (!prior) throw new Error('prebuilt payload staging state is inconsistent');
-    const destination = prior.destination;
-    fileSystem.mkdirSync(path.dirname(destination), { recursive: true });
-    fileSystem.writeFileSync(destination, payload.bytes);
-  }
-  return () => {
+  const cleanup = () => {
     for (const item of previous) {
       if (item.bytes !== null) fileSystem.writeFileSync(item.destination, item.bytes);
       else fileSystem.rmSync(item.destination, { force: true });
     }
   };
+  try {
+    for (const [index, payload] of payloads.entries()) {
+      const prior = previous[index];
+      if (!prior) throw new Error('prebuilt payload staging state is inconsistent');
+      const destination = prior.destination;
+      fileSystem.mkdirSync(path.dirname(destination), { recursive: true });
+      fileSystem.writeFileSync(destination, payload.bytes);
+    }
+  } catch (error) {
+    try {
+      cleanup();
+    } catch (rollbackError) {
+      throw new Error(
+        `prebuilt payload staging failed and rollback failed: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`,
+        { cause: error },
+      );
+    }
+    throw error;
+  }
+  return { manifest, cleanup };
 }
 
 function runNode(script, args) {
@@ -134,7 +200,9 @@ function runNode(script, args) {
 }
 
 function packageVsix(run = runNode, fileSystem = fs, env = process.env) {
-  const restorePrebuiltPayload = preparePrebuiltPayload(fileSystem, env);
+  const staged = preparePrebuiltPayload(fileSystem, env);
+  const restorePrebuiltPayload = staged.cleanup;
+  const manifest = staged.manifest;
   try {
     if (fileSystem.existsSync(vsixPath)) {
       fileSystem.rmSync(vsixPath, { force: true });
@@ -151,9 +219,8 @@ function packageVsix(run = runNode, fileSystem = fs, env = process.env) {
     if (!artifact.isFile() || artifact.size <= 0) {
       throw new Error(`packager exited successfully without producing ${vsixName}`);
     }
-    const manifestPath = (env.PERL_LSP_CANDIDATE_PAYLOAD_MANIFEST || '').trim();
-    if (manifestPath) {
-      const manifest = JSON.parse(fileSystem.readFileSync(manifestPath, 'utf8'));
+    if (manifest) {
+      if (!manifest.server) throw new Error('prebuilt payload manifest has no server payload');
       const target = (env.PERL_LSP_VSCODE_TARGET || `${process.platform}-${process.arch}`).trim();
       const verifyScript = path.join(__dirname, 'check-vsix-prebuilt-payload.js');
       const payloads = [
@@ -178,6 +245,16 @@ function packageVsix(run = runNode, fileSystem = fs, env = process.env) {
         ) {
           return false;
         }
+      }
+      if (
+        !run(verifyScript, [
+          '--vsix',
+          vsixName,
+          '--inventory-sha256',
+          manifest.package.inventorySha256,
+        ])
+      ) {
+        return false;
       }
     }
     return run(path.join(__dirname, 'check-vsix-inventory.js'), ['--vsix', vsixName]);
