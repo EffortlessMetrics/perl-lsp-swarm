@@ -1248,12 +1248,18 @@ fn ripr_workflow_runs_on_ready_for_review_without_path_filter()
             && hosted_producer.contains("-e RIPR_MAX_DIFF_INDEX_FILES=1000")
             && hosted_producer.contains("-e RIPR_FRESHNESS_HANDOFF=/freshness")
             && hosted_producer.contains("-v \"$RIPR_FRESHNESS_HANDOFF:/freshness\"")
-            && hosted_producer.contains("-e HOST_UID=\"$(id -u)\"")
-            && hosted_producer.contains("chown -R \"$HOST_UID:$HOST_GID\" target")
+            && hosted_producer.contains("--name \"$container_name\"")
+            && hosted_producer.contains("trap cleanup_host_state EXIT")
+            && hosted_producer.contains("docker rm -f \"$container_name\"")
+            && hosted_producer.contains("sudo -n chown -R \"$(id -u):$(id -g)\" target")
             && hosted_producer.contains(
                 "cargo xtask ripr-pr --base \"$base_arg\" --head HEAD --pr-head \"$PR_HEAD_SHA\""
             ),
         "normal GitHub-hosted RIPR production must use the bounded Docker producer"
+    );
+    assert!(
+        !hosted_producer.contains("test -n \"$PR_HEAD_SHA\""),
+        "normal hosted producer must preserve empty PR_HEAD_SHA for merge-group and push events"
     );
     assert!(
         !workflow.contains("ripr_hosted_measurement")
@@ -1356,6 +1362,57 @@ fn ripr_workflow_runs_on_ready_for_review_without_path_filter()
         "RIPR summary step must publish only current evidence after a successful handoff"
     );
 
+    Ok(())
+}
+
+#[test]
+fn hosted_producer_cleanup_preserves_failure_and_restores_target_owner() -> Result<()> {
+    let hosted_producer = workflow_run_block("ripr-github", "Generate PR evidence")?;
+    let cleanup_body = hosted_producer
+        .split_once("cleanup_host_state() {")
+        .ok_or_else(|| anyhow!("hosted producer cleanup function is missing"))?
+        .1
+        .split_once("trap cleanup_host_state EXIT")
+        .ok_or_else(|| anyhow!("hosted producer cleanup trap is missing"))?
+        .0;
+    let sandbox = tempfile::tempdir()?;
+    let script = format!(
+        r#"set -u
+container_name='fixture-container'
+docker() {{ printf '%s' "$*" > "$DOCKER_MARKER"; return 0; }}
+sudo() {{ printf '%s' "$*" > "$CHOWN_MARKER"; return 0; }}
+cleanup_host_state() {{{cleanup_body}
+trap cleanup_host_state EXIT
+exit 23
+"#
+    );
+    let mut child = Command::new(bash_executable())
+        .args(["--noprofile", "--norc", "-s"])
+        .current_dir(sandbox.path())
+        .env("DOCKER_MARKER", sandbox.path().join("docker.marker"))
+        .env("CHOWN_MARKER", sandbox.path().join("chown.marker"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    child
+        .stdin
+        .take()
+        .ok_or_else(|| anyhow!("cleanup fixture stdin unavailable"))?
+        .write_all(script.as_bytes())?;
+    let output = child.wait_with_output()?;
+    ensure!(
+        output.status.code() == Some(23),
+        "cleanup must preserve producer failure status: {output:?}"
+    );
+    ensure!(
+        fs::read_to_string(sandbox.path().join("docker.marker"))?.contains("fixture-container"),
+        "cleanup must attempt removal of the uniquely named container"
+    );
+    ensure!(
+        fs::read_to_string(sandbox.path().join("chown.marker"))?.contains("target"),
+        "cleanup must restore host target ownership after producer failure"
+    );
     Ok(())
 }
 

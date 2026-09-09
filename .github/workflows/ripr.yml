@@ -826,6 +826,18 @@ jobs:
           set -euo pipefail
           rm -rf target/ripr/pr
           mkdir -p target/ripr/pr
+          container_name="ripr-github-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-0}"
+          cleanup_host_state() {
+            status=$?
+            set +e
+            docker rm -f "$container_name" >/dev/null 2>&1 || true
+            if ! sudo -n chown -R "$(id -u):$(id -g)" target; then
+              echo "::error::failed to restore hosted RIPR target ownership" >&2
+              if [ "$status" -eq 0 ]; then status=1; fi
+            fi
+            exit "$status"
+          }
+          trap cleanup_host_state EXIT
           printf "runner=github-hosted\njob_phase=host-start\n" > target/ripr/pr/ripr-measurement-config.txt
           image='rust:1.95-slim-bookworm'
           set +e
@@ -844,12 +856,11 @@ jobs:
           if [ "$inspect_id_status" -ne 0 ] || [ "$inspect_digest_status" -ne 0 ]; then exit 1; fi
           printf "image_id=%s\nimage_digest=%s\n" "$image_id" "$image_digest" >> target/ripr/pr/ripr-measurement-config.txt
           set +e
-          timeout --signal=TERM --kill-after=30s 65m docker run --rm \
+          timeout --signal=TERM --kill-after=30s 65m docker run --rm --name "$container_name" \
             --cpus=4 --memory=6g --memory-swap=6g \
             -e RIPR_VERSION -e BASE_REF -e PR_HEAD_SHA \
             -e RIPR_MAX_DIFF_INDEX_FILES=1000 \
             -e RIPR_FRESHNESS_HANDOFF=/freshness -e RIPR_FRESHNESS_TOKEN \
-            -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
             -e MEASUREMENT_IMAGE_ID="$image_id" -e MEASUREMENT_IMAGE_DIGEST="$image_digest" \
             -v "$GITHUB_WORKSPACE:/workspace" -v "$RIPR_FRESHNESS_HANDOFF:/freshness" \
             -w /workspace "$image_id" bash -euo pipefail -c '
@@ -859,7 +870,6 @@ jobs:
               mkdir -p target/ripr/pr
               printf "job_phase=container-tools-start\n" >> target/ripr/pr/ripr-measurement-config.txt
               base_arg="origin/$BASE_REF"
-              test -n "$PR_HEAD_SHA"
               cargo install ripr --version "$RIPR_VERSION" --locked
               rustc_version="$(rustc --version)"; cargo_version="$(cargo --version)"
               ripr_version="$(ripr --version)"; ripr_path="$(command -v ripr)"
@@ -881,7 +891,6 @@ jobs:
               cargo xtask ripr-pr --base "$base_arg" --head HEAD --pr-head "$PR_HEAD_SHA" --check
               marker="$RIPR_FRESHNESS_HANDOFF/clear-succeeded"
               test -f "$marker" && test "$(cat "$marker")" = "$RIPR_FRESHNESS_TOKEN"
-              chown -R "$HOST_UID:$HOST_GID" target
             '
           container_status=$?
           set -e
