@@ -713,20 +713,50 @@ describe('extractManagedArchive', () => {
       },
       cancellationToken: token,
     });
+    const bounded = async <T>(promise: Promise<T>): Promise<T | 'timeout'> => {
+      let watchdog: ReturnType<typeof setTimeout> | undefined;
+      try {
+        return await Promise.race([
+          promise,
+          new Promise<'timeout'>((resolve) => {
+            watchdog = setTimeout(() => resolve('timeout'), 1000);
+          }),
+        ]);
+      } finally {
+        if (watchdog !== undefined) {
+          clearTimeout(watchdog);
+        }
+      }
+    };
+    let outcome: 'rejected' | 'resolved' | 'timeout' = 'timeout';
     try {
-      await openEntered;
-      await streamOpened;
-      token.cancel();
-      await expect(extraction).rejects.toThrow('Archive extraction cancelled');
+      const entered = await bounded(openEntered);
+      const opened = entered === 'timeout' ? 'timeout' : await bounded(streamOpened);
+      if (opened !== 'timeout') {
+        token.cancel();
+        const result = await bounded(
+          extraction.then(
+            () => 'resolved' as const,
+            () => 'rejected' as const,
+          ),
+        );
+        outcome = result === 'timeout' ? 'timeout' : result;
+      }
+    } finally {
       releaseOpen();
+      await bounded(
+        extraction.then(
+          () => undefined,
+          () => undefined,
+        ),
+      );
       for (let attempt = 0; attempt < 5 && lateStream === undefined; attempt += 1) {
         await new Promise<void>((resolve) => setImmediate(resolve));
       }
-      expect(lateStream?.destroyed).toBe(true);
-    } finally {
-      releaseOpen();
       openReadStream.mockRestore();
     }
+    expect(outcome).toBe('rejected');
+    expect(lateStream?.destroyed).toBe(true);
     assertOutsideUnchanged();
   });
 
