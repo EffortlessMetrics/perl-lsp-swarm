@@ -254,6 +254,14 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Prepare RIPR freshness handoff
+        shell: bash
+        run: |
+          set -euo pipefail
+          handoff="$(mktemp -d "$RUNNER_TEMP/ripr-freshness.XXXXXX")"
+          token="${GITHUB_RUN_ID}/${GITHUB_RUN_ATTEMPT}/$$"
+          printf "RIPR_FRESHNESS_HANDOFF=%s\nRIPR_FRESHNESS_TOKEN=%s\n" "$handoff" "$token" >> "$GITHUB_ENV"
+
       - name: Preflight disk
         id: preflight
         shell: bash
@@ -311,6 +319,8 @@ jobs:
             -e RIPR_VERSION="$RIPR_VERSION" \
             -e BASE_REF="$BASE_REF" \
             -e PR_HEAD_SHA="$PR_HEAD_SHA" \
+            -e RIPR_FRESHNESS_HANDOFF=/freshness \
+            -e RIPR_FRESHNESS_TOKEN="$RIPR_FRESHNESS_TOKEN" \
             -e PR_LABELS="$PR_LABELS" \
             -e CARGO_HOME=/cargo-home \
             -e SCCACHE_DIR=/sccache \
@@ -323,6 +333,7 @@ jobs:
             -e CARGO_TERM_COLOR=always \
             -e TMPDIR=/tmp/jobtmp \
             -v "$GITHUB_WORKSPACE:/workspace" \
+            -v "$RIPR_FRESHNESS_HANDOFF:/freshness" \
             -v "$CARGO_HOME:/cargo-home" \
             -v "$SCCACHE_DIR:/sccache" \
             -v "$CARGO_TARGET_DIR:/target" \
@@ -397,6 +408,11 @@ jobs:
         if: always()
         shell: bash
         run: |
+          marker="${RIPR_FRESHNESS_HANDOFF:-}/clear-succeeded"
+          if [ ! -f "$marker" ] || [ "$(cat "$marker")" != "${RIPR_FRESHNESS_TOKEN:-}" ]; then
+            echo "RIPR freshness handoff unavailable; suppressing stale summary and annotations."
+            exit 0
+          fi
           if [ -f target/ripr/pr/summary.md ]; then
             cat target/ripr/pr/summary.md >> "$GITHUB_STEP_SUMMARY"
           else
@@ -412,8 +428,21 @@ jobs:
             cat target/ripr/review/annotations.txt
           fi
 
-      - name: Upload ripr PR evidence
+      - name: Record RIPR freshness handoff result
+        id: ripr-freshness-result
         if: always()
+        shell: bash
+        run: |
+          marker="$RIPR_FRESHNESS_HANDOFF/clear-succeeded"
+          if [ -f "$marker" ] && [ "$(cat "$marker")" = "$RIPR_FRESHNESS_TOKEN" ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "No successful artifact invalidation handoff; stale RIPR files will not be uploaded."
+          fi
+
+      - name: Upload ripr PR evidence
+        if: always() && steps.ripr-freshness-result.outputs.ready == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
         with:
           name: ripr-pr-evidence
@@ -503,6 +532,14 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Prepare RIPR freshness handoff
+        shell: bash
+        run: |
+          set -euo pipefail
+          handoff="$(mktemp -d "$RUNNER_TEMP/ripr-freshness.XXXXXX")"
+          token="${GITHUB_RUN_ID}/${GITHUB_RUN_ATTEMPT}/$$"
+          printf "RIPR_FRESHNESS_HANDOFF=%s\nRIPR_FRESHNESS_TOKEN=%s\n" "$handoff" "$token" >> "$GITHUB_ENV"
+
       - name: Preflight disk
         id: preflight
         shell: bash
@@ -564,6 +601,8 @@ jobs:
             -e RIPR_VERSION="$RIPR_VERSION" \
             -e BASE_REF="$BASE_REF" \
             -e PR_HEAD_SHA="$PR_HEAD_SHA" \
+            -e RIPR_FRESHNESS_HANDOFF=/freshness \
+            -e RIPR_FRESHNESS_TOKEN="$RIPR_FRESHNESS_TOKEN" \
             -e PR_LABELS="$PR_LABELS" \
             -e CARGO_HOME=/cargo-home \
             -e SCCACHE_DIR=/sccache \
@@ -576,6 +615,7 @@ jobs:
             -e CARGO_TERM_COLOR=always \
             -e TMPDIR=/tmp/jobtmp \
             -v "$GITHUB_WORKSPACE:/workspace" \
+            -v "$RIPR_FRESHNESS_HANDOFF:/freshness" \
             -v "$CARGO_HOME:/cargo-home" \
             -v "$SCCACHE_DIR:/sccache" \
             -v "$CARGO_TARGET_DIR:/target" \
@@ -650,6 +690,11 @@ jobs:
         if: always()
         shell: bash
         run: |
+          marker="${RIPR_FRESHNESS_HANDOFF:-}/clear-succeeded"
+          if [ ! -f "$marker" ] || [ "$(cat "$marker")" != "${RIPR_FRESHNESS_TOKEN:-}" ]; then
+            echo "RIPR freshness handoff unavailable; suppressing stale summary and annotations."
+            exit 0
+          fi
           if [ -f target/ripr/pr/summary.md ]; then
             cat target/ripr/pr/summary.md >> "$GITHUB_STEP_SUMMARY"
           else
@@ -665,8 +710,21 @@ jobs:
             cat target/ripr/review/annotations.txt
           fi
 
-      - name: Upload ripr PR evidence
+      - name: Record RIPR freshness handoff result
+        id: ripr-freshness-result
         if: always()
+        shell: bash
+        run: |
+          marker="$RIPR_FRESHNESS_HANDOFF/clear-succeeded"
+          if [ -f "$marker" ] && [ "$(cat "$marker")" = "$RIPR_FRESHNESS_TOKEN" ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "No successful artifact invalidation handoff; stale RIPR files will not be uploaded."
+          fi
+
+      - name: Upload ripr PR evidence
+        if: always() && steps.ripr-freshness-result.outputs.ready == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
         with:
           name: ripr-pr-evidence
@@ -722,6 +780,14 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           fetch-depth: 0
+
+      - name: Prepare RIPR freshness handoff
+        shell: bash
+        run: |
+          set -euo pipefail
+          handoff="$(mktemp -d "$RUNNER_TEMP/ripr-freshness.XXXXXX")"
+          token="${GITHUB_RUN_ID}/${GITHUB_RUN_ATTEMPT}/$$"
+          printf "RIPR_FRESHNESS_HANDOFF=%s\nRIPR_FRESHNESS_TOKEN=%s\n" "$handoff" "$token" >> "$GITHUB_ENV"
 
       - name: Toolchain (rust-toolchain.toml pins 1.95.0)
         run: rustc --version
@@ -792,6 +858,11 @@ jobs:
       - name: Validate PR evidence contracts
         if: always()
         run: |
+          marker="$RIPR_FRESHNESS_HANDOFF/clear-succeeded"
+          if [ ! -f "$marker" ] || [ "$(cat "$marker")" != "$RIPR_FRESHNESS_TOKEN" ]; then
+            echo "RIPR artifact invalidation did not complete for this producer invocation" >&2
+            exit 1
+          fi
           cargo xtask ripr-pr --base "origin/$BASE_REF" --head HEAD --pr-head "$PR_HEAD_SHA" --check
           cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json --check
           cargo xtask ripr-review-comments --base "origin/$BASE_REF" --head HEAD --pr-head "$PR_HEAD_SHA" --check
@@ -802,6 +873,11 @@ jobs:
       - name: Enforce new RIPR gap quality gate
         if: always()
         run: |
+          marker="$RIPR_FRESHNESS_HANDOFF/clear-succeeded"
+          if [ ! -f "$marker" ] || [ "$(cat "$marker")" != "$RIPR_FRESHNESS_TOKEN" ]; then
+            echo "RIPR artifact invalidation did not complete for this producer invocation" >&2
+            exit 1
+          fi
           cargo xtask quality-gate \
             --mode enforce-new-ripr \
             --ripr-receipt target/receipts/quality/ripr-plus.json \
@@ -826,6 +902,11 @@ jobs:
         if: always()
         shell: bash
         run: |
+          marker="${RIPR_FRESHNESS_HANDOFF:-}/clear-succeeded"
+          if [ ! -f "$marker" ] || [ "$(cat "$marker")" != "${RIPR_FRESHNESS_TOKEN:-}" ]; then
+            echo "RIPR freshness handoff unavailable; suppressing stale summary and annotations."
+            exit 0
+          fi
           if [ -f target/ripr/pr/summary.md ]; then
             cat target/ripr/pr/summary.md >> "$GITHUB_STEP_SUMMARY"
           else
@@ -841,8 +922,21 @@ jobs:
             cat target/ripr/review/annotations.txt
           fi
 
-      - name: Upload ripr PR evidence
+      - name: Record RIPR freshness handoff result
+        id: ripr-freshness-result
         if: always()
+        shell: bash
+        run: |
+          marker="$RIPR_FRESHNESS_HANDOFF/clear-succeeded"
+          if [ -f "$marker" ] && [ "$(cat "$marker")" = "$RIPR_FRESHNESS_TOKEN" ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "No successful artifact invalidation handoff; stale RIPR files will not be uploaded."
+          fi
+
+      - name: Upload ripr PR evidence
+        if: always() && steps.ripr-freshness-result.outputs.ready == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
         with:
           name: ripr-pr-evidence
@@ -903,6 +997,14 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           fetch-depth: 0
+
+      - name: Prepare RIPR freshness handoff
+        shell: bash
+        run: |
+          set -euo pipefail
+          handoff="$(mktemp -d "$RUNNER_TEMP/ripr-freshness.XXXXXX")"
+          token="${GITHUB_RUN_ID}/${GITHUB_RUN_ATTEMPT}/$$"
+          printf "RIPR_FRESHNESS_HANDOFF=%s\nRIPR_FRESHNESS_TOKEN=%s\n" "$handoff" "$token" >> "$GITHUB_ENV"
 
       - name: Toolchain (rust-toolchain.toml pins 1.95.0)
         run: rustc --version
@@ -966,6 +1068,11 @@ jobs:
       - name: Validate PR evidence contracts
         if: always()
         run: |
+          marker="$RIPR_FRESHNESS_HANDOFF/clear-succeeded"
+          if [ ! -f "$marker" ] || [ "$(cat "$marker")" != "$RIPR_FRESHNESS_TOKEN" ]; then
+            echo "RIPR artifact invalidation did not complete for this producer invocation" >&2
+            exit 1
+          fi
           cargo xtask ripr-pr --base "origin/$BASE_REF" --head HEAD --pr-head "$PR_HEAD_SHA" --check
           cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json --check
           cargo xtask ripr-review-comments --base "origin/$BASE_REF" --head HEAD --pr-head "$PR_HEAD_SHA" --check
@@ -976,6 +1083,11 @@ jobs:
       - name: Enforce new RIPR gap quality gate
         if: always()
         run: |
+          marker="$RIPR_FRESHNESS_HANDOFF/clear-succeeded"
+          if [ ! -f "$marker" ] || [ "$(cat "$marker")" != "$RIPR_FRESHNESS_TOKEN" ]; then
+            echo "RIPR artifact invalidation did not complete for this producer invocation" >&2
+            exit 1
+          fi
           cargo xtask quality-gate \
             --mode enforce-new-ripr \
             --ripr-receipt target/receipts/quality/ripr-plus.json \
@@ -1000,6 +1112,11 @@ jobs:
         if: always()
         shell: bash
         run: |
+          marker="${RIPR_FRESHNESS_HANDOFF:-}/clear-succeeded"
+          if [ ! -f "$marker" ] || [ "$(cat "$marker")" != "${RIPR_FRESHNESS_TOKEN:-}" ]; then
+            echo "RIPR freshness handoff unavailable; suppressing stale summary and annotations."
+            exit 0
+          fi
           if [ -f target/ripr/pr/summary.md ]; then
             cat target/ripr/pr/summary.md >> "$GITHUB_STEP_SUMMARY"
           else
@@ -1015,8 +1132,21 @@ jobs:
             cat target/ripr/review/annotations.txt
           fi
 
-      - name: Upload ripr PR evidence
+      - name: Record RIPR freshness handoff result
+        id: ripr-freshness-result
         if: always()
+        shell: bash
+        run: |
+          marker="$RIPR_FRESHNESS_HANDOFF/clear-succeeded"
+          if [ -f "$marker" ] && [ "$(cat "$marker")" = "$RIPR_FRESHNESS_TOKEN" ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "No successful artifact invalidation handoff; stale RIPR files will not be uploaded."
+          fi
+
+      - name: Upload ripr PR evidence
+        if: always() && steps.ripr-freshness-result.outputs.ready == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
         with:
           name: ripr-pr-evidence

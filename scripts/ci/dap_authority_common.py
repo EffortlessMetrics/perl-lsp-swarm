@@ -8,7 +8,7 @@ import re
 import urllib.parse
 from collections import Counter
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 MANIFEST_SCHEMA = "dap_protocol_authority.v1"
 RECEIPT_SCHEMA = "dap_protocol_authority_receipt.v1"
@@ -26,6 +26,16 @@ DOC_PATHS = (
 )
 DISPATCH_PATH = Path("crates/perl-dap/src/debug_adapter/dispatch.rs")
 DEBUG_ADAPTER_ROOT = Path("crates/perl-dap/src/debug_adapter")
+# Every Rust file production extraction reads. `production_dispatch_sources`
+# scans this whole tree, so it is the exact governed read set rather than a
+# narrower list that could omit a file the extractor actually consulted.
+PRODUCTION_SOURCE_ROOT = Path("crates/perl-dap/src")
+# The extractor modules whose content identity is bound into every receipt.
+# This is the same naming convention the workflow's own path filter uses, so a
+# module that participates in extraction is already expected to match it. A
+# helper deliberately named outside the convention is not bound — the same
+# stated boundary `production_dispatch_sources` carries for source owners.
+EXTRACTOR_MODULE_GLOBS = ("dap_protocol_authority.py", "dap_authority_*.py")
 PEER_DISPATCH_PATHS = (
     Path("crates/perl-dap/src/backend/peer_bridge.rs"),
     Path("crates/perl-dap/src/backend/peer_launch.rs"),
@@ -861,6 +871,14 @@ def parse_peer_dispatch_routes(source: str, owner: Path) -> set[str]:
     return set(variants)
 
 
+def production_source_files(root: Path) -> list[Path]:
+    """Every governed production source file, in deterministic order."""
+    source_root = root / PRODUCTION_SOURCE_ROOT
+    if not source_root.is_dir():
+        raise AuthorityError(f"missing perl-dap production source root: {source_root}")
+    return sorted(source_root.rglob("*.rs"))
+
+
 def production_dispatch_sources(root: Path) -> set[Path]:
     """Discover convention-named dispatch owners alongside the exact pinned owners.
 
@@ -868,15 +886,64 @@ def production_dispatch_sources(root: Path) -> set[Path]:
     named future ingress is discoverable. Adding a differently named frontend
     requires extending the explicit owner contract.
     """
-    source_root = root / "crates/perl-dap/src"
     owners: set[Path] = set()
-    if not source_root.is_dir():
-        raise AuthorityError(f"missing perl-dap production source root: {source_root}")
-    for path in source_root.rglob("*.rs"):
+    for path in production_source_files(root):
         _, masked = scan_rust_source(read_text(path, "DAP production source"))
         if PRODUCTION_DISPATCH_FN_RE.search(masked):
             owners.add(path.relative_to(root))
     return owners
+
+
+def _content_digest(rows: Sequence[Mapping[str, str]]) -> str:
+    """One SHA-256 over an ordered (name, blob) list."""
+    payload = json.dumps(rows, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def production_source_graph(root: Path) -> Mapping[str, Any]:
+    """Content identity for the governed production source graph.
+
+    The receipt records one digest over every governed file rather than 100+
+    per-file rows: the aggregate still binds every module, and any edit to any
+    of them changes it. `file_count` makes an added or deleted file legible in
+    a mismatch report instead of only shifting an opaque hash.
+    """
+    rows = [
+        {
+            "path": path.relative_to(root).as_posix(),
+            "git_blob_sha1": git_blob_sha1(path.read_bytes()),
+        }
+        for path in production_source_files(root)
+    ]
+    return {
+        "root": PRODUCTION_SOURCE_ROOT.as_posix(),
+        "file_count": len(rows),
+        "digest": _content_digest(rows),
+    }
+
+
+def extractor_identity() -> Mapping[str, Any]:
+    """Content identity of the extractor modules that produced an inventory.
+
+    Bound from the running module's own directory, so the receipt names the
+    code that actually ran rather than a version string someone must remember
+    to bump. A guard silently removed from any of these modules changes the
+    digest, which is what makes a stale receipt detectable at all.
+    """
+    module_dir = Path(__file__).resolve().parent
+    paths = sorted(
+        {path for pattern in EXTRACTOR_MODULE_GLOBS for path in module_dir.glob(pattern)}
+    )
+    modules = [
+        {"module": path.name, "git_blob_sha1": git_blob_sha1(path.read_bytes())}
+        for path in paths
+        if path.is_file()
+    ]
+    if not modules:
+        raise AuthorityError(
+            f"no DAP authority extractor modules found under {module_dir}"
+        )
+    return {"modules": modules, "digest": _content_digest(modules)}
 SEND_EVENT_CALL_RE = re.compile(r"\bself\.send_event\s*\(")
 SEND_EVENT_LITERAL_RE = re.compile(r'\s*"([A-Za-z][A-Za-z0-9]*)"')
 DEFINITION_REF_PREFIX = "#/definitions/"
