@@ -775,9 +775,13 @@ fn decode_evaluate_path(reported: &str) -> Result<String, String> {
 
     if let Some((prefix, payload)) = decoded.split_once(" '") {
         if prefix.trim().parse::<u64>().is_ok() {
-            if let Some(path) = payload.strip_suffix('\'') {
-                return Ok(path.to_string());
+            let path = payload
+                .strip_suffix('\'')
+                .ok_or_else(|| format!("unclosed perl5db ordinal path {decoded:?}"))?;
+            if path.is_empty() {
+                return Err(format!("empty perl5db ordinal path {decoded:?}"));
             }
+            return Ok(path.to_string());
         }
     }
     Ok(decoded)
@@ -913,8 +917,16 @@ mod explicit_pin_tests {
         let ordinal_error = assert_pinned_identity("0  '", &pinned, &ambient, "ordinal")
             .err()
             .ok_or_else(|| "an empty ordinal payload was accepted".to_string())?;
-        if !ordinal_error.contains("raw DAP result") {
+        if !ordinal_error.contains("raw DAP result") || !ordinal_error.contains("unclosed") {
             return Err(format!("malformed ordinal lost diagnostic context: {ordinal_error}"));
+        }
+
+        let empty_ordinal_error = assert_pinned_identity("0  ''", &pinned, &ambient, "ordinal")
+            .err()
+            .ok_or_else(|| "an empty quoted ordinal payload was accepted".to_string())?;
+        if !empty_ordinal_error.contains("raw DAP result") || !empty_ordinal_error.contains("empty")
+        {
+            return Err(format!("empty ordinal lost diagnostic context: {empty_ordinal_error}"));
         }
         Ok(())
     }
