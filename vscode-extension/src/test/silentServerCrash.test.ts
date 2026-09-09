@@ -282,6 +282,7 @@ describe('mid-session silent server crash recovery (#4625)', () => {
     _setLastStartupDiagnosisForTest(undefined);
     _setExtensionContextForTest(makeContext());
     _setLanguageClientLifecycleForTest(undefined);
+    _setOutputChannelForTest({ warn: jest.fn(), info: jest.fn(), error: jest.fn() } as never);
     showErrorMessage.mockReset();
     showErrorMessage.mockResolvedValue(undefined);
     showWarningMessage.mockReset();
@@ -470,7 +471,6 @@ describe('mid-session silent server crash recovery (#4625)', () => {
   test('a fresh watchdog timeout still starts one recovery episode', async () => {
     jest.useFakeTimers();
     const sendRequest = jest.fn(() => new Promise<never>(() => undefined));
-    _setOutputChannelForTest({ warn: jest.fn(), info: jest.fn(), error: jest.fn() } as never);
     _setLanguageClientLifecycleForTest({
       snapshot: { state: 'running', generation: 0 },
       client: { sendRequest },
@@ -493,7 +493,6 @@ describe('mid-session silent server crash recovery (#4625)', () => {
   test('a restarted watchdog accepts the current timeout but suppresses the old one', async () => {
     jest.useFakeTimers();
     const sendRequest = jest.fn(() => new Promise<never>(() => undefined));
-    _setOutputChannelForTest({ warn: jest.fn(), info: jest.fn(), error: jest.fn() } as never);
     _setLanguageClientLifecycleForTest({
       snapshot: { state: 'running', generation: 0 },
       client: { sendRequest },
