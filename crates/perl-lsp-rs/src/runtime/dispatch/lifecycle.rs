@@ -533,6 +533,7 @@ mod tests {
     #[derive(Clone, Copy, Debug)]
     enum LifecycleAction {
         Initialize,
+        MalformedInitialize,
         InitializedNotification,
         AutoInitializeCompat,
     }
@@ -540,6 +541,7 @@ mod tests {
     #[derive(Debug, Default)]
     struct LifecycleModel {
         initialize_requested: bool,
+        accepted_session: bool,
         initialized: bool,
     }
 
@@ -549,11 +551,20 @@ mod tests {
                 return Err(-32600);
             }
             self.initialize_requested = true;
+            self.accepted_session = true;
             Ok(())
         }
 
+        fn malformed_initialize(&mut self) -> Result<(), i32> {
+            if self.initialize_requested {
+                return Err(-32600);
+            }
+            self.initialize_requested = true;
+            Err(-32602)
+        }
+
         fn initialized_notification(&mut self) -> Result<(), i32> {
-            if !self.initialize_requested {
+            if !self.accepted_session {
                 return Err(-32002);
             }
             if self.initialized {
@@ -564,7 +575,7 @@ mod tests {
         }
 
         fn auto_initialize_compat(&mut self) {
-            if self.initialize_requested {
+            if self.accepted_session {
                 self.initialized = true;
             }
         }
@@ -573,6 +584,7 @@ mod tests {
     fn action_strategy() -> impl Strategy<Value = LifecycleAction> {
         prop_oneof![
             Just(LifecycleAction::Initialize),
+            Just(LifecycleAction::MalformedInitialize),
             Just(LifecycleAction::InitializedNotification),
             Just(LifecycleAction::AutoInitializeCompat),
         ]
@@ -596,6 +608,16 @@ mod tests {
                             expected.is_ok(),
                             "initialize result should match model"
                         );
+                        if let (Err(actual_error), Err(expected_code)) = (&actual, &expected) {
+                            prop_assert_eq!(actual_error.code, *expected_code);
+                        }
+                    }
+                    LifecycleAction::MalformedInitialize => {
+                        let actual = server.handle_initialize(Some(json!({
+                            "capabilities": { "general": { "positionEncodings": ["utf-16", 7] } }
+                        }))).map(|_| ());
+                        let expected = model.malformed_initialize();
+                        prop_assert_eq!(actual.is_ok(), expected.is_ok());
                         if let (Err(actual_error), Err(expected_code)) = (&actual, &expected) {
                             prop_assert_eq!(actual_error.code, *expected_code);
                         }
@@ -628,6 +650,11 @@ mod tests {
                     server.is_initialized(),
                     model.initialized,
                     "initialized flag must track model"
+                );
+                prop_assert_eq!(
+                    server.accepted_text_sync_session().is_some(),
+                    model.accepted_session,
+                    "accepted session must track model"
                 );
             }
         }

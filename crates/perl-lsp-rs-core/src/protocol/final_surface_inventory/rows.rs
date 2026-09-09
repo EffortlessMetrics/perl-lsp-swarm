@@ -1199,12 +1199,12 @@ fn compatibility_rows() -> Vec<SurfaceRow> {
         ),
         compat(
             "compat.protocol.positionEncodingUtf16Pin",
-            "positionEncoding always advertised utf-16; offers without utf-16 are rejected",
+            "positionEncoding always advertised utf-16; offers without utf-16 use mandatory fallback",
             RT_INIT,
             &["general.positionEncodings"],
             "accepted text-sync session contract in handle_initialize (#9378); position authority #2298",
-            "every client whose positionEncodings offer excludes utf-16",
-            "the v0.18 envelope (#8129 full_document_utf16) owns one immutable FULL + UTF-16 session contract: absent/empty offers default to utf-16, offers containing utf-16 select it, and a nonempty offer without utf-16 fails typed initialize before any state is published",
+            "every client whose valid positionEncodings offer excludes utf-16",
+            "the v0.18 envelope (#8129 full_document_utf16) owns one immutable FULL + UTF-16 session contract: absent/empty offers default to utf-16, offers containing utf-16 select it, and a valid nonempty offer without utf-16 selects mandatory UTF-16 fallback",
             "#9380/#9383 own the later full-replacement and range-refusal leaves; #8129 keeps the release claim ceiling",
         ),
         compat(

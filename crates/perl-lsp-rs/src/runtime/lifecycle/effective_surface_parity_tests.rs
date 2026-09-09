@@ -355,11 +355,11 @@ fn pull_diagnostic_client_with_refresh_supports_and_non_utf16_first_preference_m
 }
 
 #[test]
-fn pull_diagnostic_client_with_no_common_offer_fails_initialize() -> Result<(), String> {
-    // LSP-FS16-004: a client whose offer excludes utf-16 is rejected before
-    // any state mutation, so there is no surface for the model to match.
+fn pull_diagnostic_client_with_no_utf16_offer_uses_mandatory_fallback() -> Result<(), String> {
+    // LSP-FS16-003: every valid string offer selects the immutable UTF-16
+    // contract; omitting utf-16 records mandatory fallback.
     let server = LspServer::new();
-    let error = server
+    let response = server
         .handle_initialize(Some(json!({
             "clientInfo": { "name": "neovim" },
             "capabilities": {
@@ -367,12 +367,16 @@ fn pull_diagnostic_client_with_no_common_offer_fails_initialize() -> Result<(), 
                 "general": { "positionEncodings": ["utf-32", "utf-8"] }
             }
         })))
-        .err()
-        .ok_or("no-common offer must fail initialize")?;
-    assert_eq!(error.code, -32602, "no-common offer must be typed InvalidParams");
-    assert!(
-        server.accepted_text_sync_session().is_none(),
-        "rejected initialize must not publish a session contract"
+        .map_err(|error| format!("valid offer without utf-16 must initialize: {error}"))?
+        .ok_or("initialize returned no response")?;
+    assert_eq!(
+        response.pointer("/capabilities/positionEncoding").and_then(Value::as_str),
+        Some("utf-16")
+    );
+    let session = server.accepted_text_sync_session().ok_or("session was not accepted")?;
+    assert_eq!(
+        session.contract().selection_reason(),
+        super::session_contract::Utf16SelectionReason::MandatoryUtf16Fallback
     );
     Ok(())
 }
