@@ -4535,6 +4535,11 @@ esac
             |path| fs::remove_file(path),
         )?;
         validate_freshness_handoff(current_handoff.path(), &current_token, current.path())?;
+        color_eyre::eyre::ensure!(
+            validate_freshness_handoff(current_handoff.path(), "test/old-token", current.path())
+                .is_err(),
+            "a marker from an earlier producer invocation must not validate with a new token"
+        );
         color_eyre::eyre::ensure!(!current_packet.exists() && !current_ancillary.exists());
         Ok(())
     }

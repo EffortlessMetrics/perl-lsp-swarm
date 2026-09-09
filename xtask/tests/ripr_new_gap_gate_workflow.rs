@@ -1306,6 +1306,13 @@ fn ripr_workflow_runs_on_ready_for_review_without_path_filter()
         4,
         "every producer summary step must suppress stale output without its handoff"
     );
+    assert_eq!(
+        workflow
+            .matches("RIPR artifact invalidation did not complete for this producer invocation")
+            .count(),
+        4,
+        "validation and quality gates must both fail closed without the handoff"
+    );
     assert!(
         workflow.contains("mktemp -d \"$RUNNER_TEMP/ripr-freshness.XXXXXX\"")
             && workflow.contains("RIPR_FRESHNESS_TOKEN")
@@ -1390,6 +1397,55 @@ fn ripr_append_summary_suppresses_stale_files_without_freshness_handoff() -> Res
         summary_text.contains("stale prior invocation")
             && stdout.contains("stale prior invocation"),
         "matching handoff must permit current summary and annotation publication"
+    );
+    Ok(())
+}
+
+#[test]
+fn ripr_validation_requires_freshness_before_invoking_consumers() -> Result<()> {
+    let sandbox = tempfile::tempdir()?;
+    let calls = sandbox.path().join("cargo-calls");
+    let script = workflow_run_block("ripr-fallback", "Validate PR evidence contracts")?;
+    let fake_cargo = format!(
+        "cargo() {{ printf '%s\\n' \"$*\" >> '{}' ; }}\n{}",
+        calls.display(),
+        script
+    );
+    let run = |handoff: Option<(&PathBuf, &str)>| -> Result<std::process::Output> {
+        let mut command = Command::new(bash_executable());
+        command
+            .args(["--noprofile", "--norc", "-s"])
+            .current_dir(sandbox.path())
+            .env("BASE_REF", "main")
+            .env("PR_HEAD_SHA", "0123456789abcdef0123456789abcdef01234567")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        if let Some((path, token)) = handoff {
+            command.env("RIPR_FRESHNESS_HANDOFF", path).env("RIPR_FRESHNESS_TOKEN", token);
+        }
+        let mut child = command.spawn()?;
+        child
+            .stdin
+            .take()
+            .ok_or_else(|| anyhow!("validation bash stdin unavailable"))?
+            .write_all(fake_cargo.as_bytes())?;
+        Ok(child.wait_with_output()?)
+    };
+
+    let rejected = run(None)?;
+    ensure!(!rejected.status.success(), "validation must reject a missing handoff");
+    ensure!(!calls.exists(), "missing handoff must prevent Cargo consumer invocation");
+
+    let handoff = sandbox.path().join("validation-freshness");
+    let token = "validation-test/1/producer";
+    fs::create_dir_all(&handoff)?;
+    fs::write(handoff.join("clear-succeeded"), format!("{token}\n"))?;
+    let accepted = run(Some((&handoff, token)))?;
+    ensure!(accepted.status.success(), "matching handoff must admit validation");
+    ensure!(
+        fs::read_to_string(&calls)?.contains("ripr-pr --base"),
+        "matching handoff must invoke the Cargo consumers"
     );
     Ok(())
 }

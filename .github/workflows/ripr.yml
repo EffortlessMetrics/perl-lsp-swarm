@@ -858,6 +858,11 @@ jobs:
       - name: Validate PR evidence contracts
         if: always()
         run: |
+          marker="$RIPR_FRESHNESS_HANDOFF/clear-succeeded"
+          if [ ! -f "$marker" ] || [ "$(cat "$marker")" != "$RIPR_FRESHNESS_TOKEN" ]; then
+            echo "RIPR artifact invalidation did not complete for this producer invocation" >&2
+            exit 1
+          fi
           cargo xtask ripr-pr --base "origin/$BASE_REF" --head HEAD --pr-head "$PR_HEAD_SHA" --check
           cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json --check
           cargo xtask ripr-review-comments --base "origin/$BASE_REF" --head HEAD --pr-head "$PR_HEAD_SHA" --check
@@ -1063,6 +1068,11 @@ jobs:
       - name: Validate PR evidence contracts
         if: always()
         run: |
+          marker="$RIPR_FRESHNESS_HANDOFF/clear-succeeded"
+          if [ ! -f "$marker" ] || [ "$(cat "$marker")" != "$RIPR_FRESHNESS_TOKEN" ]; then
+            echo "RIPR artifact invalidation did not complete for this producer invocation" >&2
+            exit 1
+          fi
           cargo xtask ripr-pr --base "origin/$BASE_REF" --head HEAD --pr-head "$PR_HEAD_SHA" --check
           cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json --check
           cargo xtask ripr-review-comments --base "origin/$BASE_REF" --head HEAD --pr-head "$PR_HEAD_SHA" --check
