@@ -141,10 +141,9 @@ fn has_prompt_prefix(text: &str) -> bool {
     let Some(rest) = prompt.strip_prefix("DB<") else {
         return false;
     };
-    let Some(end) = rest.find('>') else {
+    let Some((digits, _)) = rest.split_once('>') else {
         return false;
     };
-    let digits = &rest[..end];
     !digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit())
 }
 
