@@ -442,6 +442,16 @@ enum InertRegion {
     Fence { marker: char, length: usize },
     /// An HTML comment.
     Comment,
+    /// The one raw HTML wrapper used by the pinned htmx reference.
+    ///
+    /// CommonMark treats a block tag as raw HTML until a blank line. The
+    /// reviewed document deliberately puts that blank line before each table;
+    /// if it disappears, reading the following table as Markdown would invent
+    /// a clean result. Track whether the wrapper contained non-blank text so
+    /// that malformed or ambiguous boundaries fail closed.
+    RawHtml { closing: bool, invalid: bool },
+    /// A raw HTML block this small scanner does not model.
+    UnsupportedRawHtml,
 }
 
 /// Inert-region state for one pass over the document.
@@ -508,7 +518,25 @@ impl InertScanner {
             }
             // A fence marker inside a comment is commented-out text and must
             // not open a fence; only the comment's own close ends the region.
-            Some(InertRegion::Comment) => self.visible_content(trimmed_line),
+            Some(InertRegion::Comment) => {
+                let visible = self.visible_content(trimmed_line);
+                self.classify_visible_content(visible)
+            }
+            Some(InertRegion::RawHtml { closing, invalid }) => {
+                if trimmed_line.is_empty() {
+                    if invalid {
+                        // Keep the region open so `unterminated` reports the
+                        // unsafe boundary instead of silently resuming.
+                        self.inside = Some(InertRegion::RawHtml { closing, invalid: true });
+                    } else {
+                        self.inside = None;
+                    }
+                } else {
+                    self.inside = Some(InertRegion::RawHtml { closing, invalid: true });
+                }
+                None
+            }
+            Some(InertRegion::UnsupportedRawHtml) => None,
             // An indented code block is sample text with no delimiter to look
             // for. Reading it as document structure lets an indented heading
             // end the section early, dropping every row below it into a clean
@@ -522,8 +550,43 @@ impl InertScanner {
                     });
                     None
                 }
-                None => self.visible_content(trimmed_line),
+                None => {
+                    let visible = self.visible_content(trimmed_line);
+                    self.classify_visible_content(visible)
+                }
             },
+        }
+    }
+
+    fn classify_visible_content<'line>(
+        &mut self,
+        content: Option<Cow<'line, str>>,
+    ) -> Option<Cow<'line, str>> {
+        let content = content?;
+        let raw_start = raw_html_block_start(content.trim());
+        // Do not replace an unterminated comment with a raw-HTML state when a
+        // line exposes both constructs; otherwise later rows could re-enter
+        // the Markdown scan after a blank line. A real data row may itself
+        // open a trailing comment, so it remains visible when no raw tag is
+        // present.
+        if matches!(self.inside, Some(InertRegion::Comment)) && raw_start.is_some() {
+            self.inside = Some(InertRegion::UnsupportedRawHtml);
+            return None;
+        }
+        match raw_start {
+            Some(RawHtmlStart::InfoTable) => {
+                self.inside = Some(InertRegion::RawHtml { closing: false, invalid: false });
+                None
+            }
+            Some(RawHtmlStart::Unsupported) => {
+                self.inside = Some(InertRegion::UnsupportedRawHtml);
+                None
+            }
+            Some(RawHtmlStart::ClosingInfoTable) => {
+                self.inside = Some(InertRegion::RawHtml { closing: true, invalid: false });
+                None
+            }
+            None => Some(content),
         }
     }
 
@@ -575,6 +638,9 @@ impl InertScanner {
                     }
                 },
                 Some(InertRegion::Fence { .. }) => return Cow::Owned(visible),
+                Some(InertRegion::RawHtml { .. }) | Some(InertRegion::UnsupportedRawHtml) => {
+                    return Cow::Owned(visible);
+                }
             }
         }
     }
@@ -588,8 +654,37 @@ impl InertScanner {
             None => None,
             Some(InertRegion::Fence { .. }) => Some("a code fence"),
             Some(InertRegion::Comment) => Some("an HTML comment"),
+            Some(InertRegion::RawHtml { closing: true, invalid: false }) => None,
+            Some(InertRegion::RawHtml { closing: false, invalid: false }) => {
+                Some("a raw HTML info-table wrapper")
+            }
+            Some(InertRegion::RawHtml { invalid: true, .. }) => {
+                Some("a raw HTML info-table wrapper with an unsafe boundary")
+            }
+            Some(InertRegion::UnsupportedRawHtml) => Some("an unsupported raw HTML block"),
         }
     }
+}
+
+enum RawHtmlStart {
+    InfoTable,
+    ClosingInfoTable,
+    Unsupported,
+}
+
+/// Recognize block-level raw HTML without pretending to be an HTML parser.
+///
+/// The pinned reference uses exactly this wrapper. Other CommonMark raw HTML
+/// block forms are refused because their termination rules differ; treating
+/// them as ordinary Markdown could hide a heading or row inside the block.
+fn raw_html_block_start(line: &str) -> Option<RawHtmlStart> {
+    if line == r#"<div class="info-table">"# {
+        return Some(RawHtmlStart::InfoTable);
+    }
+    if line == "</div>" {
+        return Some(RawHtmlStart::ClosingInfoTable);
+    }
+    line.starts_with('<').then_some(RawHtmlStart::Unsupported)
 }
 
 /// Byte ranges of this line that sit inside an inline code span.
@@ -915,6 +1010,131 @@ mod tests {
 
         assert!(core.is_ok_and(|names| names == ["hx-get", "hx-on*"]));
         assert!(request.is_ok_and(|names| names == ["HX-Boosted", "HX-Trigger"]));
+    }
+
+    #[test]
+    fn the_pinned_info_table_wrapper_ends_at_its_blank_line() {
+        let wrapped = "\
+## Core Attribute Reference {#attributes}
+
+<div class=\"info-table\">
+
+| Attribute | Description |
+|-----------|-------------|
+| [`hx-get`](@/attributes/hx-get.md) | issues a GET |
+
+</div>
+";
+
+        assert!(section_names(wrapped, &CORE_ATTRIBUTES).is_ok_and(|names| names == ["hx-get"]));
+    }
+
+    #[test]
+    fn a_table_inside_a_raw_html_wrapper_fails_closed() {
+        // Removing the pinned wrapper's blank line makes the table part of the
+        // CommonMark raw HTML block. Reading it as Markdown would turn a
+        // malformed reference into a false clean result.
+        let no_boundary = "\
+## Core Attribute Reference {#attributes}
+
+<div class=\"info-table\">
+| Attribute | Description |
+|-----------|-------------|
+| [`hx-phantom`](@/attributes/hx-phantom.md) | hidden by raw HTML |
+
+</div>
+";
+
+        assert!(
+            section_names(no_boundary, &CORE_ATTRIBUTES)
+                .is_err_and(|error| error.to_string().contains("unsafe boundary"))
+        );
+
+        let closing_without_boundary = "\
+## Core Attribute Reference {#attributes}
+
+| Attribute | Description |
+|-----------|-------------|
+| `hx-get` | issues a GET |
+</div>
+| `hx-phantom` | hidden after a raw HTML close |
+";
+        assert!(
+            section_names(closing_without_boundary, &CORE_ATTRIBUTES)
+                .is_err_and(|error| error.to_string().contains("unsafe boundary"))
+        );
+
+        for unsupported in ["<style>", "<textarea>", "<h1>"] {
+            let raw = format!(
+                "## Core Attribute Reference {{#attributes}}\n\n{unsupported}\n| Attribute | Description |\n|-----------|-------------|\n| `hx-phantom` | hidden by raw HTML |\n"
+            );
+            assert!(
+                section_names(&raw, &CORE_ATTRIBUTES)
+                    .is_err_and(|error| error.to_string().contains("unsupported raw HTML")),
+                "{unsupported} must be refused"
+            );
+        }
+
+        let commented_opener = "\
+## Core Attribute Reference {#attributes}
+
+<!-- generated wrapper --><div class=\"info-table\">
+| Attribute | Description |
+|-----------|-------------|
+| `hx-phantom` | hidden by raw HTML |
+";
+        assert!(
+            section_names(commented_opener, &CORE_ATTRIBUTES)
+                .is_err_and(|error| error.to_string().contains("unsafe boundary"))
+        );
+
+        let mixed_unclosed_comment = "\
+## Core Attribute Reference {#attributes}
+
+<div class=\"info-table\"> <!-- comment never closes
+
+| Attribute | Description |
+|-----------|-------------|
+| `hx-phantom` | hidden in the comment |
+";
+        assert!(
+            section_names(mixed_unclosed_comment, &CORE_ATTRIBUTES)
+                .is_err_and(|error| error.to_string().contains("unsupported raw HTML"))
+        );
+
+        let row_before_closed_comment = "\
+## Core Attribute Reference {#attributes}
+
+| Attribute | Description |
+|-----------|-------------|
+| `hx-get` | issues a GET | <!-- row annotation
+| `hx-post` | issues a POST |
+-->
+
+| Attribute | Description |
+|-----------|-------------|
+| `hx-new` | added after the comment |
+";
+        assert!(
+            section_names(row_before_closed_comment, &CORE_ATTRIBUTES)
+                .is_ok_and(|names| names == ["hx-get", "hx-new"])
+        );
+    }
+
+    #[test]
+    fn unsupported_raw_html_cannot_supply_a_decoy_heading_or_rows() {
+        let decoy = "\
+<script>
+## Core Attribute Reference {#attributes}
+| [`hx-phantom`](@/attributes/hx-phantom.md) | decoy |
+</script>
+
+## Other Section {#other}
+";
+
+        let error = section_names(decoy, &CORE_ATTRIBUTES)
+            .expect_err("unsupported raw HTML must not become a section");
+        assert!(error.to_string().contains("no core attributes section"));
     }
 
     #[test]
