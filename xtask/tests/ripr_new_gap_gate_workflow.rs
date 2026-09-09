@@ -914,7 +914,7 @@ checkout_action
         .env("BASE_REF", "refs/heads/main")
         .env("PR_HEAD_SHA", "0123456789abcdef0123456789abcdef01234567")
         .env("PR_LABELS", "ci")
-        .env("RIPR_VERSION", "0.9.0")
+        .env("RIPR_VERSION", "0.10.0")
         .env("GITHUB_ENV", &github_env)
         .env("GITHUB_STEP_SUMMARY", &summary)
         .env("FAKE_CALLS", &calls)

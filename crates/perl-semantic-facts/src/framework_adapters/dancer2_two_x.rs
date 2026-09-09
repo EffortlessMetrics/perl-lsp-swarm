@@ -51,7 +51,9 @@ use crate::framework::{
     AdapterId, DetectionAbsenceReason, DetectionOutcome, ModuleSelectorEvaluation,
     ModuleSelectorOutcome, UnavailableReason,
 };
-use crate::framework_adapters::dancer2::{AppNameSelection, DslKeywordScope, DslSelection};
+use crate::framework_adapters::dancer2::{
+    AppNameSelection, Dancer2KeywordState, DslKeywordScope, DslSelection,
+};
 use crate::{Confidence, SourceGeneration};
 use std::cmp::Ordering;
 
@@ -485,6 +487,86 @@ pub fn detect_dancer2_two_x(input: &AdapterDetectionInput) -> AdapterDetectionRe
             }
         }
     }
+}
+
+/// Keyword-state view over the 2.x activation facts: lets the shared
+/// route-family core mint 2.x route facts without type duplication
+/// (#14989).
+pub struct Dancer2TwoXKeywordView<'a> {
+    facts: &'a Dancer2TwoXActivationFacts,
+}
+
+impl<'a> Dancer2TwoXKeywordView<'a> {
+    pub fn new(facts: &'a Dancer2TwoXActivationFacts) -> Self {
+        Self { facts }
+    }
+}
+
+impl super::dancer2_routes::RouteFamilyKeywordView for Dancer2TwoXKeywordView<'_> {
+    fn is_exact(&self) -> bool {
+        self.facts.is_exact()
+    }
+    fn adapter_id(&self) -> crate::framework::AdapterId {
+        DANCER2_TWO_X_ADAPTER_ID
+    }
+    fn application_name(&self) -> Option<&str> {
+        match &self.facts.state {
+            Dancer2TwoXActivationState::Exact { application_name, .. } => {
+                Some(application_name.as_str())
+            }
+            _ => None,
+        }
+    }
+    fn framework_version(&self) -> Option<&str> {
+        match &self.facts.state {
+            Dancer2TwoXActivationState::Exact { framework_version, .. } => {
+                Some(framework_version.as_str())
+            }
+            _ => None,
+        }
+    }
+    fn source_generation(&self) -> Option<&SourceGeneration> {
+        match &self.facts.state {
+            Dancer2TwoXActivationState::Exact { source_generation, .. } => Some(source_generation),
+            _ => None,
+        }
+    }
+    fn keyword_state(&self, keyword: &str) -> Option<Dancer2KeywordState> {
+        self.facts.keywords.iter().find(|fact| fact.keyword == keyword).map(|fact| {
+            match fact.state {
+                Dancer2TwoXKeywordState::Imported => Dancer2KeywordState::Imported,
+                Dancer2TwoXKeywordState::Excluded => Dancer2KeywordState::Excluded,
+                // A shadowed keyword was never installed (the name was
+                // already owned), so a route using it is not a route of
+                // this activation - the view reports Excluded, which the
+                // shared core skips (#14989).
+                Dancer2TwoXKeywordState::Shadowed => Dancer2KeywordState::Excluded,
+            }
+        })
+    }
+}
+
+/// Mint the canonical route-family facts for one exact 2.x activation
+/// through the shared view core. The bundle carries
+/// [`RouteFactsContract::TwoX`]: comparison-only output of a Shadow
+/// adapter, never publication authority (#14989).
+pub fn dancer2_two_x_route_family_facts(
+    detection_detected: bool,
+    activation: &Dancer2TwoXActivationFacts,
+    package: Option<&str>,
+    declarations: &[crate::framework_adapters::dancer2_routes::Dancer2RouteDeclaration],
+    prefix_declarations: &[crate::framework_adapters::dancer2_routes::Dancer2PrefixDeclaration],
+) -> crate::framework_adapters::dancer2_routes::Dancer2RouteFacts {
+    let view = Dancer2TwoXKeywordView::new(activation);
+    crate::framework_adapters::dancer2_routes::route_family_facts_from_view(
+        detection_detected,
+        &view,
+        package,
+        declarations,
+        prefix_declarations,
+        crate::framework_adapters::dancer2_routes::RouteFactsContract::TwoX,
+        activation.dsl_contract_version,
+    )
 }
 
 /// Import-argument state of one keyword for one 2.x activation.
