@@ -125,7 +125,14 @@ void test('CLI admits validated manifest server and DAP members', async () => {
 });
 
 void test('CLI rejects forged manifest identity and inventory claims', async () => {
-  for (const mutation of ['schema', 'member', 'target', 'inventory']) {
+  /** @type {Record<string, RegExp>} */
+  const expectedErrors = {
+    schema: /schema is unsupported/,
+    member: /canonical projection output/,
+    target: /target is absent from the release projection/,
+    inventory: /inventory SHA does not match/,
+  };
+  for (const mutation of Object.keys(expectedErrors)) {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-manifest-'));
     try {
       const paths = await fixture(directory);
@@ -136,7 +143,9 @@ void test('CLI rejects forged manifest identity and inventory claims', async () 
       if (mutation === 'inventory') manifest.package.inventorySha256 = 'c'.repeat(64);
       fs.writeFileSync(paths.manifestPath, JSON.stringify(manifest));
       const result = runChecker(paths);
+      assert.equal(result.error, undefined, `${mutation} failed to launch: ${result.error}`);
       assert.notEqual(result.status, 0, `${mutation} unexpectedly passed`);
+      assert.match(`${result.stdout}\n${result.stderr}`, expectedErrors[mutation]);
     } finally {
       fs.rmSync(directory, { recursive: true, force: true });
     }
