@@ -337,7 +337,7 @@ void test('manifest-enabled packaging stages the supplied payload and verifies t
   };
   const { PERL_LSP_VSCODE_TARGET: _ignoredTarget, ...envWithoutTarget } = env;
   assert.equal(packageVsix(run, fileSystem, envWithoutTarget), true);
-  assert.equal(writes[0].file.endsWith('bin\\win32-x64\\perllsp.exe'), true);
+  assert.equal(writes[0].file.endsWith(path.join('bin', 'win32-x64', 'perllsp.exe')), true);
   assert.equal(writes[0].bytes, serverBytes);
   assert.deepEqual(calls[0].args, ['package', '--target', 'win32-x64', '--out', vsixName]);
   assert.deepEqual(
@@ -446,6 +446,7 @@ void test('owned manifest staging rejects a real dangling native link', () => {
         ),
       /prebuilt payload destination is a symbolic link/,
     );
+    assert.equal(fs.existsSync(path.join(stagingRoot, 'missing-dap.exe')), false);
   } finally {
     fs.rmSync(stagingRoot, { recursive: true, force: true });
   }
