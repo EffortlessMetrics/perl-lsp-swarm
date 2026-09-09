@@ -249,7 +249,6 @@ fn request_large_symbol_frame(process: &mut ProcessGuard) -> Result<(usize, u64)
             .parse::<usize>()?;
         ensure!(length <= MAX_FRAME_BYTES, "response body exceeded {MAX_FRAME_BYTES} bytes");
         if length > 64 * 1024 {
-            eprintln!("large documentSymbol frame length={length}");
             return Ok((length, request_id));
         }
         let body = read_exact_with_deadline(process, length, deadline)?;
@@ -287,10 +286,10 @@ fn assert_symbol_response(body: &[u8], expected_id: u64) -> Result<()> {
 
 fn collect_symbol_names(values: &[Value], names: &mut Vec<String>) {
     for value in values {
-        if let Some(name) = value.get("name").and_then(Value::as_str) {
-            if name.starts_with("symbol_") {
-                names.push(name.to_string());
-            }
+        if let Some(name) = value.get("name").and_then(Value::as_str)
+            && name.starts_with("symbol_")
+        {
+            names.push(name.to_string());
         }
         if let Some(children) = value.get("children").and_then(Value::as_array) {
             collect_symbol_names(children, names);
