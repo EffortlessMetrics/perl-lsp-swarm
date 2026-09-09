@@ -171,6 +171,24 @@ void test('published install fails fast for the WSL launcher refusal', async () 
   assert.equal(attempts, 1);
 });
 
+void test('published install retries generic WSL environment and prompt diagnostics', async () => {
+  let attempts = 0;
+  const waits: number[] = [];
+  await retryPublishedInstall(
+    () => {
+      attempts += 1;
+      return attempts === 1
+        ? { status: 1, stderr: 'DONT_PROMPT_WSL_INSTALL=1\nDo you want to continue anyway? [y/N]' }
+        : { status: 0 };
+    },
+    async (milliseconds) => {
+      waits.push(milliseconds);
+    },
+  );
+  assert.equal(attempts, 2);
+  assert.deepEqual(waits, [20_000]);
+});
+
 void test('published install keeps retrying transient failures', async () => {
   let attempts = 0;
   const waits: number[] = [];

@@ -263,9 +263,7 @@ export function isDeterministicPublishedInstallFailure(
     result.status === 127 ||
     result.error?.code === 'ENOENT' ||
     /error while loading shared libraries:|cannot open shared object file/i.test(output) ||
-    /To use Visual Studio Code with the Windows Subsystem for Linux|DONT_PROMPT_WSL_INSTALL|Do you want to continue anyway/i.test(
-      output,
-    )
+    /To use Visual Studio Code with the Windows Subsystem for Linux/i.test(output)
   );
 }
 
