@@ -404,7 +404,7 @@ fn is_required_production_source_path(lcov_path: &str, source_root: &Path) -> bo
     }
     for marker in ["crates/", "xtask/src/", "xtask/tests/"] {
         if let Some(index) = normalized.find(marker) {
-            return is_patch_coverage_source_path(&normalized[index..]);
+            return normalized.get(index..).is_some_and(is_patch_coverage_source_path);
         }
     }
     false
@@ -449,7 +449,7 @@ pub fn run(args: CoverageBaselineArgs) -> Result<()> {
 }
 
 fn run_from_root(root: &Path, args: CoverageBaselineArgs) -> Result<()> {
-    let receipt = build_receipt(&root, &args)?;
+    let receipt = build_receipt(root, &args)?;
     let rendered = render_json(&receipt)?;
 
     if args.check {
