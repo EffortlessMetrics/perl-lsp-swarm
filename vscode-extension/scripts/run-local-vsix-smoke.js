@@ -3072,7 +3072,7 @@ function main() {
 
       if (testExplorerRequested && shouldRunBehavioralSmoke(receipt.stages)) {
         receipt.stages.test_explorer_journey = runTestExplorerJourneyStage(
-          process.env,
+          packageEnv,
           revision,
           vsixPath,
           receipt.vsix.sha256 ?? '',
