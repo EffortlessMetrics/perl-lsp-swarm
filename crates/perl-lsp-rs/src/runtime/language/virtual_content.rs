@@ -81,18 +81,17 @@ impl LspServer {
                 return None;
             }
             let workspace_content = self.fetch_workspace_perldoc(&target);
+            let content = workspace_content.or_else(|| {
+                let workspace_config = self.workspace_config.lock().clone();
+                fetch_perldoc(target.name(), &workspace_config)
+            })?;
             if self.workspace_topology_generation.load(std::sync::atomic::Ordering::SeqCst)
                 != topology_generation
                 || !self.workspace_topology_stable.load(std::sync::atomic::Ordering::SeqCst)
             {
                 return None;
             }
-            workspace_content
-                .or_else(|| {
-                    let workspace_config = self.workspace_config.lock().clone();
-                    fetch_perldoc(target.name(), &workspace_config)
-                })
-                .map(|content| enrich_core_pragma_perldoc(target.name(), content))
+            Some(enrich_core_pragma_perldoc(target.name(), content))
         } else {
             None
         }
@@ -591,6 +590,17 @@ mod tests {
             .ok_or("unstable workspace content must not fall back to system perldoc")?;
         if !error.message.contains("content not found") {
             return Err(format!("unexpected unstable workspace error: {}", error.message).into());
+        }
+        server.workspace_topology_stable.store(true, std::sync::atomic::Ordering::SeqCst);
+        let recovered = server
+            .handle_text_document_content(Some(json!({ "uri": "perldoc://Fake::Documented" })))?
+            .ok_or("stable workspace recovery must return fixture documentation")?;
+        let text = recovered
+            .get("text")
+            .and_then(Value::as_str)
+            .ok_or("recovered documentation must contain text")?;
+        if !text.contains("Fake::Documented") {
+            return Err("stable workspace recovery returned the wrong documentation".into());
         }
         Ok(())
     }
