@@ -14,6 +14,7 @@ const {
   crashRecoveryLegEnv,
   finalizeSmokeRun,
   interpretBehavioralSmokeExit,
+  inventoryTransitionArgs,
   interpretTestExplorerExit,
   validateTestExplorerReceipt,
   runPublishedSmoke,
@@ -30,6 +31,34 @@ const {
   validateCrashRecoveryChildReceipts,
   writeJsonAtomic,
 } = require('./run-local-vsix-smoke');
+
+void test('inventory transition forwarding keeps PR and manual base modes explicit', () => {
+  const vsix = 'candidate.vsix';
+  assert.deepEqual(
+    inventoryTransitionArgs(
+      { PERL_LSP_PACKAGE_BASE_MODE: 'pull_request', PERL_LSP_PACKAGE_PR_BASE_SHA: 'b'.repeat(40) },
+      vsix,
+    ),
+    [
+      path.join(__dirname, 'check-vsix-inventory-transition.js'),
+      '--vsix',
+      vsix,
+      '--merge-base-with',
+      'b'.repeat(40),
+    ],
+  );
+  assert.deepEqual(
+    inventoryTransitionArgs({ PERL_LSP_PACKAGE_BASE_MODE: 'pull_request' }, vsix).slice(-2),
+    ['--merge-base-with', ''],
+  );
+  assert.deepEqual(
+    inventoryTransitionArgs(
+      { PERL_LSP_PACKAGE_BASE_MODE: 'accepted', PERL_LSP_PACKAGE_BASE_SHA: 'a'.repeat(40) },
+      vsix,
+    ).slice(-2),
+    ['--base', 'a'.repeat(40)],
+  );
+});
 
 void test('builds an exclusive candidate-bound Test Explorer child environment', () => {
   const environment = testExplorerSmokeEnv(
