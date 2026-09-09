@@ -704,8 +704,7 @@ suite('Packaged crash-recovery journey (#7848)', function () {
                 sample.server_pids.filter((pid) => pid !== watchdogTarget.pid).length === 1 &&
                 sample.lifecycle_state === 'running',
             );
-            const resumeSafe =
-              resume.outcome === 'resumed' || resume.outcome === 'already_gone';
+            const resumeSafe = resume.outcome === 'resumed' || resume.outcome === 'already_gone';
             watchdogRow = {
               status:
                 recoveryGeneration !== null &&
