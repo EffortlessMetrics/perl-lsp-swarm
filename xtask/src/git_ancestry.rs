@@ -546,20 +546,21 @@ fn partial_clone_observation(repository: &Path) -> Result<bool, String> {
     // false non-ancestry verdicts. Any successfully read value marks the
     // repository partial; a failed observation fails closed below.
     //
-    // Both probes are `--local`: clone writes the marker into the repository
-    // config, and a global `extensions.partialClone` must not blind every
-    // complete repository on the machine. `--local` still covers
-    // worktree-specific config when `extensions.worktreeConfig` is enabled.
-    let extension =
-        run_git(repository, &["config", "--local", "--get", "extensions.partialclone"])?;
+    // Neither probe is scope-limited: Git honors this configuration from
+    // every scope it resolves — including worktree-specific config when
+    // `extensions.worktreeConfig` is enabled — so the observation must read
+    // the same effective value Git does. A worktree-only marker otherwise
+    // slips past the guard and lets an incomplete graph produce false
+    // verdicts, which is worse than the fail-closed cost of a pathological
+    // global marker.
+    let extension = run_git(repository, &["config", "--get", "extensions.partialclone"])?;
     if extension.succeeded() {
         return Ok(true);
     }
     if !extension.no_match() {
         return Err(format!("partial-clone extension probe failed: {}", extension.diagnostic()));
     }
-    let output =
-        run_git(repository, &["config", "--local", "--get-regexp", r"^remote\..*\.promisor$"])?;
+    let output = run_git(repository, &["config", "--get-regexp", r"^remote\..*\.promisor$"])?;
     if output.no_match() {
         return Ok(false);
     }
