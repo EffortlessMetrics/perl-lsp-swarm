@@ -334,7 +334,8 @@ void test('manifest-enabled packaging stages the supplied payload and verifies t
     calls.push({ script, args });
     return true;
   };
-  assert.equal(packageVsix(run, fileSystem, env), true);
+  const { PERL_LSP_VSCODE_TARGET: _ignoredTarget, ...envWithoutTarget } = env;
+  assert.equal(packageVsix(run, fileSystem, envWithoutTarget), true);
   assert.equal(writes[0].file.endsWith('bin\\win32-x64\\perllsp.exe'), true);
   assert.equal(writes[0].bytes, serverBytes);
   assert.deepEqual(calls[0].args, ['package', '--target', 'win32-x64', '--out', vsixName]);
@@ -394,6 +395,28 @@ void test('ambient native payloads require the candidate manifest path', () => {
     () => preparePrebuiltPayload(danglingLinkFileSystem, { PERL_LSP_VSCODE_TARGET: 'win32-x64' }),
     /ambient native payload is a symbolic link/,
   );
+});
+
+void test('real filesystem dangling native link is rejected and cleaned', () => {
+  const extensionRoot = path.resolve(__dirname, '..');
+  const destination = path.join(extensionRoot, 'bin', 'win32-arm64', 'perl-dap.exe');
+  try {
+    fs.lstatSync(destination);
+    return;
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error;
+  }
+  fs.mkdirSync(path.dirname(destination), { recursive: true });
+  try {
+    fs.symlinkSync(path.join(extensionRoot, 'missing-dap.exe'), destination);
+    assert.throws(
+      () => preparePrebuiltPayload(fs, { PERL_LSP_VSCODE_TARGET: 'win32-x64' }),
+      /ambient native payload is a symbolic link/,
+    );
+  } finally {
+    fs.rmSync(destination, { force: true });
+    fs.rmSync(path.dirname(destination), { recursive: true, force: true });
+  }
 });
 
 void test('packaging failure prevents archive validation', () => {

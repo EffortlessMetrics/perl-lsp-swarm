@@ -258,7 +258,7 @@ function packageVsix(run = runNode, fileSystem = fs, env = process.env) {
     }
     const packageArgs = ['package'];
     if (manifest) {
-      const target = (env.PERL_LSP_VSCODE_TARGET || '').trim();
+      const target = manifest.package.vscodeTargetId;
       packageArgs.push('--target', target, '--out', vsixName);
     } else {
       packageArgs.push('--out', vsixName);
@@ -277,7 +277,7 @@ function packageVsix(run = runNode, fileSystem = fs, env = process.env) {
     }
     if (manifest) {
       if (!manifest.server) throw new Error('prebuilt payload manifest has no server payload');
-      const target = (env.PERL_LSP_VSCODE_TARGET || `${process.platform}-${process.arch}`).trim();
+      const target = manifest.package.vscodeTargetId;
       const verifyScript = path.join(__dirname, 'check-vsix-prebuilt-payload.js');
       const payloads = [
         { member: `bin/${target}/${manifest.server.member}`, sha256: manifest.server.sha256 },
