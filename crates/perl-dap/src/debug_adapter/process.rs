@@ -136,6 +136,18 @@ fn is_strict_prompt_candidate(bytes: &[u8]) -> bool {
     !digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit())
 }
 
+fn has_prompt_prefix(text: &str) -> bool {
+    let prompt = text.trim_start();
+    let Some(rest) = prompt.strip_prefix("DB<") else {
+        return false;
+    };
+    let Some(end) = rest.find('>') else {
+        return false;
+    };
+    let digits = &rest[..end];
+    !digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit())
+}
+
 /// Return the authoritative frame id for the current suspension.
 ///
 /// The output reader may observe a context line followed by a prompt for the
@@ -1020,6 +1032,14 @@ impl DebugAdapter {
                         } else {
                             text.clone()
                         };
+                        let prompt_has_native_context =
+                            native_context_pending_prompt && has_prompt_prefix(&sanitized_text);
+                        if prompt_has_native_context {
+                            // Consume the per-stop authority before logpoint and
+                            // drain early-continue paths. A coalesced prompt plus
+                            // DAPLPV payload is still the prompt for this stop.
+                            native_context_pending_prompt = false;
+                        }
                         // The logpoint protocol carries payload bytes, so it reads the
                         // delimiter-stripped line rather than the whitespace-trimmed
                         // one every other consumer below uses.
@@ -1580,8 +1600,6 @@ impl DebugAdapter {
                                 };
                                 if let Some(ref mut s) = *guard {
                                     let was_running = matches!(s.state, DebugState::Running);
-                                    let prompt_has_native_context = native_context_pending_prompt;
-                                    native_context_pending_prompt = false;
                                     let (prompt_file, prompt_func, prompt_line) = if s
                                         .entry_stop_pending
                                         && prompt_has_native_context
@@ -2781,8 +2799,9 @@ pub(super) fn emit_terminated_event_guarded(
 mod tests {
     use super::{
         BufReader, DebugAdapter, DebugState, current_stopped_frame_id, detect_perl_info,
-        emit_terminated_event, format_perl_spawn_error, is_valid_perl_interpreter,
-        read_debugger_record, reserve_terminated_event, terminated_delivery_is_current,
+        emit_terminated_event, format_perl_spawn_error, has_prompt_prefix,
+        is_valid_perl_interpreter, read_debugger_record, reserve_terminated_event,
+        terminated_delivery_is_current,
     };
     use crate::tcp_attach::DapEvent;
     use perl_test_must::must_some_with;
@@ -3150,6 +3169,20 @@ mod tests {
             return Err(format!(
                 "prompt-only record was not preserved: bytes={second}, line={line:?}"
             ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn prompt_prefix_authority_covers_coalesced_logpoint_payloads() -> Result<(), String> {
+        if !has_prompt_prefix("  DB<4> DAPLPV:x\t42") {
+            return Err("coalesced prompt prefix was not recognized".into());
+        }
+        if has_prompt_prefix("debuggee text DB<4> DAPLPV:x\t42") {
+            return Err("embedded prompt token was treated as a prefix".into());
+        }
+        if has_prompt_prefix("DB<incomplete") {
+            return Err("incomplete prompt prefix was accepted".into());
         }
         Ok(())
     }
