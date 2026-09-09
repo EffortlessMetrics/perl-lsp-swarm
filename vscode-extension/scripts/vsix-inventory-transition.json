@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "owner_issue": 14452,
-  "reason": "The #14475 guidance recovery changes the packaged extension bundle; the exact candidate VSIX is measured against the pinned current-main baseline, with the size-only transition recorded from the raw candidate inventory.",
+  "owner_issue": 15219,
+  "reason": "The #15219 yauzl migration changes the packaged extension dependency and bundle inventory; the exact candidate VSIX is measured against the pinned current-main baseline, with the reviewed inventory transition recorded from the produced archive.",
   "base_baseline_file_sha256": "db728d1fdbd59cde136efbf4ca093000703165d7e200bd5468b0a04492e9adf1",
   "candidate_baseline_file_sha256": "b6ab81dae8ee82f02191499a6f37d0b78e0e0fcceef5e7a6f1400d3c0c6c4a58",
   "base_inventory_sha256": "6a0ba1d92936ed297b912d1c61722d9b1a4b0949804a2d9ece55b7543aff6201",
