@@ -34,11 +34,16 @@ outputs and removes its temporary staging directory on failure. The adapter invo
 the existing TypeScript projection builder, so topology mode and required DAP status
 remain authoritative there.
 
-Run it with the repository's Node 26 and Python 3 toolchains, for example:
+Run it with Python 3.11+ (the adapter imports `tomllib`) and the repository's Node 26/npm 11.18 toolchain. Keep its output in a fresh staging directory, for example:
 
 ```text
-python scripts/prepare_vsix_prebuilt_payload.py --receipt <receipt> --package-evidence <package-evidence> --archive <archive> --topology <topology> --projection <projection> --output vscode-extension --source-sha <40-hex-sha> --target <rust-target> --candidate-id <candidate> --release-version <version> --inventory-sha256 <64-hex-sha> --extension-id EffortlessMetrics.perl-lsp-rs
+python scripts/prepare_vsix_prebuilt_payload.py --receipt <receipt> --package-evidence <package-evidence> --archive <archive> --topology <topology> --projection <projection> --output dist/vsix-input --source-sha <40-hex-sha> --target <rust-target> --candidate-id <candidate> --release-version <version> --inventory-sha256 <64-hex-sha> --extension-id EffortlessMetrics.perl-lsp-rs
 ```
 
-The emitted `vsix-candidate-payload.json` and staged members are inputs to
-`npm run package`; this adapter does not build Rust binaries or publish an artifact.
+Pass the emitted files through the existing manifest route when packaging:
+`PERL_LSP_CANDIDATE_PAYLOAD_MANIFEST=dist/vsix-input/vsix-candidate-payload.json`,
+`PERL_LSP_PREBUILT_SERVER_PATH=dist/vsix-input/bin/<vscode-target>/perllsp`, and
+`PERL_LSP_PREBUILT_DAP_PATH=dist/vsix-input/bin/<vscode-target>/perl-dap`, together
+with the documented projection, source, Rust-target, and VS Code-target variables,
+then run `npm run package` from `vscode-extension`. The adapter does not build Rust
+binaries or publish an artifact.

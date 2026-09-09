@@ -124,12 +124,15 @@ class PrebuiltPayloadAdapterTests(unittest.TestCase):
             root = Path(directory)
             paths = self.fixture(root)
             projection = json.loads(Path(paths["projection"]).read_text(encoding="utf-8"))
-            projection["targets"][0]["archiveName"] = "other.tar.gz"
-            Path(paths["projection"]).write_text(json.dumps(projection), encoding="utf-8")
-            result = subprocess.run(self.command(paths), cwd=Path(__file__).parents[1], capture_output=True, text=True, check=False)
-            self.assertNotEqual(result.returncode, 0)
-            self.assertIn("differs from validated release topology", result.stderr)
-            self.assertFalse((paths["output"] / "vsix-candidate-payload.json").exists())
+            for field, value in (("archiveName", "other.tar.gz"), ("os", "windows"), ("architecture", "aarch64"), ("libc", "musl"), ("requiredMembers", ["perllsp"])):
+                with self.subTest(field=field):
+                    altered = json.loads(json.dumps(projection))
+                    altered["targets"][0][field] = value
+                    Path(paths["projection"]).write_text(json.dumps(altered), encoding="utf-8")
+                    result = subprocess.run(self.command(paths), cwd=Path(__file__).parents[1], capture_output=True, text=True, check=False)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("differs from validated release topology", result.stderr)
+                    self.assertFalse((paths["output"] / "vsix-candidate-payload.json").exists())
 
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
