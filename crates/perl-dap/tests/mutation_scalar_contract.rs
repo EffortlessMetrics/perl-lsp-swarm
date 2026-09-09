@@ -193,6 +193,23 @@ fn container_member_without_a_proven_referent_is_refused() -> TestResult {
 }
 
 #[test]
+fn negative_array_index_is_refused_before_binding() -> TestResult {
+    // Codex review, PR #14931: Perl negative subscripts are relative to the
+    // array length, so -1 and len-1 can name the same cell while hashing as
+    // different identities. The location layer has no length to canonicalize
+    // against, so a negative index is refused rather than aliased.
+    let mut candidate = lexical_candidate("frame#1", "pad:@rows@0");
+    candidate.kind = Some(MutationLocationKind::CurrentFrameArrayElement);
+    candidate.member = Some(MutationMember::ArrayIndex(-1));
+
+    let error = binding_error(&candidate)?;
+    if error != MutationTargetBindingError::NegativeArrayIndex {
+        return Err(format!("expected a negative-index refusal, got {error:?}"));
+    }
+    Ok(())
+}
+
+#[test]
 fn member_selector_must_match_the_location_kind() -> TestResult {
     let mut candidate = lexical_candidate("frame#1", "pad:$x@0");
     candidate.member = Some(MutationMember::ArrayIndex(0));
@@ -740,8 +757,12 @@ fn outcome_receipts_carry_classification_not_observed_data() -> TestResult {
     let receipt = success_outcome().receipt_projection();
     let rendered = serde_json::to_string(&receipt).map_err(|error| error.to_string())?;
 
-    if rendered.contains("observed\"") && rendered.contains("pad:$x@0") {
-        return Err(format!("outcome receipt leaked observed data: {rendered}"));
+    // Each leak class is asserted independently: a receipt leaking only one
+    // of them must not escape through a conjunction. The payload needle is
+    // the JSON string form so classification tokens like
+    // `success_with_observed_read_back` cannot match it.
+    if rendered.contains("\"observed\"") {
+        return Err(format!("outcome receipt leaked the observed payload: {rendered}"));
     }
     if rendered.contains("pad:$x@0") {
         return Err(format!("outcome receipt leaked binding identity: {rendered}"));

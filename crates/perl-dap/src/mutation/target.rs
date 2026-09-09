@@ -440,6 +440,14 @@ pub enum MutationTargetBindingError {
     /// The member selector does not match the location kind.
     #[error("mutation member selector does not match the location kind")]
     MemberKindMismatch,
+    /// A negative array index was claimed.
+    ///
+    /// Perl negative subscripts are relative to the array length, so `-1`
+    /// and `len - 1` can name the same cell while hashing as different
+    /// identities; the location layer has no length to canonicalize
+    /// against, so a negative index is refused rather than aliased.
+    #[error("mutation target array index must be non-negative")]
+    NegativeArrayIndex,
     /// A container member was claimed without a proven container referent.
     #[error("container member requires a proven referent identity")]
     MissingReferentForContainerMember,
@@ -527,6 +535,16 @@ impl MutationTargetCandidate {
         let member = self.member.clone().ok_or(MutationTargetBindingError::MissingMember)?;
         if !member.matches_kind(kind) {
             return Err(MutationTargetBindingError::MemberKindMismatch);
+        }
+        if let MutationMember::ArrayIndex(index) = &member {
+            // Perl negative subscripts are relative to the array length, so
+            // `-1` and `len - 1` can name the same cell while hashing as
+            // different identities. The location layer has no length to
+            // canonicalize against, so a negative index is refused rather
+            // than aliased.
+            if *index < 0 {
+                return Err(MutationTargetBindingError::NegativeArrayIndex);
+            }
         }
         let cohort = MutationTargetCohort::from_kind(kind)
             .ok_or(MutationTargetBindingError::UnsupportedLocationKind(kind))?;
