@@ -38,11 +38,11 @@ class PrebuiltPayloadAdapterTests(unittest.TestCase):
         topology_path = root / "topology.json"
         topology_path.write_text(json.dumps(topology), encoding="utf-8")
         topology_sha = digest(topology_path.read_bytes())
-        identity = {"schema_version": "perl_lsp.release_build_identity.v1", "repository": "EffortlessMetrics/perl-lsp-swarm", "source_revision": SOURCE, "source_tree_digest": "b" * 64, "release_version": VERSION, "target": TARGET, "profile": "release", "candidate_identity": f"v{VERSION}", "artifact_role": "archive", "product_identity_contract_digest": "c" * 64, "release_topology_digest": topology_sha, "toolchain_digest": "d" * 64}
+        identity = {"schema_version": "perl_lsp.release_build_identity.v1", "repository": "EffortlessMetrics/perl-lsp-swarm", "source_revision": SOURCE, "source_tree_digest": "b" * 64, "release_version": VERSION, "target": TARGET, "profile": "release", "candidate_identity": "candidate-1", "artifact_role": "archive", "product_identity_contract_digest": "c" * 64, "release_topology_digest": topology_sha, "toolchain_digest": "d" * 64}
         receipt_path = root / "receipt.json"
         binaries = []
         for name, role in (("perllsp", "server"), ("perl-dap", "dap")):
-            packet = {"schema_version": "perl_lsp.binary_identity.v1", "product": {"name": "perl-lsp", "public_repository": "EffortlessMetrics/perl-lsp", "development_repository": "EffortlessMetrics/perl-lsp-swarm"}, "binary": {"executable": name, "cargo_package": name, "role": role, "version": VERSION}, "build": {"source_revision": SOURCE, "source_tree_digest": "b" * 64, "target": TARGET, "profile": "release", "identity_state": "exact"}, "artifact": {"role": "archive", "digest": None, "candidate_identity": f"v{VERSION}"}, "compatibility": {"expected_product_identity_version": 1, "dap_posture": "preview"}, "limitations": []}
+            packet = {"schema_version": "perl_lsp.binary_identity.v1", "product": {"name": "perl-lsp", "public_repository": "EffortlessMetrics/perl-lsp", "development_repository": "EffortlessMetrics/perl-lsp-swarm"}, "binary": {"executable": name, "cargo_package": name, "role": role, "version": VERSION}, "build": {"source_revision": SOURCE, "source_tree_digest": "b" * 64, "target": TARGET, "profile": "release", "identity_state": "exact"}, "artifact": {"role": "archive", "digest": None, "candidate_identity": "candidate-1"}, "compatibility": {"expected_product_identity_version": 1, "dap_posture": "preview"}, "limitations": []}
             binaries.append({"role": role, "executable": name, "path_role": f"target/{TARGET}/release/{name}", "file_sha256": digest(b"build-" + name.encode()), "packet_sha256": digest(json.dumps(packet, sort_keys=True, separators=(",", ":")).encode() + b"\n"), "packet": packet})
         receipt = {"schema_version": "perl_lsp.release_build_identity_receipt.v1", "status": "pass", "input_sha256": digest(json.dumps(identity, sort_keys=True, separators=(",", ":")).encode() + b"\n"), "input": identity, "runner": "cargo", "build_execution": "external_release_workflow", "build_commands": [["cargo", "build", "--locked", "--release", "--target", TARGET, "-p", "perllsp", "--bin", "perllsp"], ["cargo", "build", "--locked", "--release", "--target", TARGET, "-p", "perl-dap", "--bin", "perl-dap"]], "binaries": binaries, "claim_boundary": "test"}
         receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
@@ -57,7 +57,7 @@ class PrebuiltPayloadAdapterTests(unittest.TestCase):
         values = {
             "source_sha": SOURCE,
             "target": TARGET,
-            "candidate_id": f"v{VERSION}",
+            "candidate_id": "candidate-1",
             "release_version": VERSION,
             "inventory_sha256": "c" * 64,
             "extension_id": "EffortlessMetrics.perl-lsp-rs",
@@ -76,7 +76,7 @@ class PrebuiltPayloadAdapterTests(unittest.TestCase):
             spec.loader.exec_module(module)
         finally:
             sys.path.remove(scripts_dir)
-        return module, type("Args", (), {"receipt": paths["receipt"], "package_evidence": paths["evidence"], "archive": paths["archive"], "topology": paths["topology"], "projection": paths["projection"], "output": paths["output"], "source_sha": SOURCE, "target": TARGET, "candidate_id": f"v{VERSION}", "release_version": VERSION, "inventory_sha256": "c" * 64, "extension_id": "EffortlessMetrics.perl-lsp-rs"})()
+        return module, type("Args", (), {"receipt": paths["receipt"], "package_evidence": paths["evidence"], "archive": paths["archive"], "topology": paths["topology"], "projection": paths["projection"], "output": paths["output"], "source_sha": SOURCE, "target": TARGET, "candidate_id": "candidate-1", "release_version": VERSION, "inventory_sha256": "c" * 64, "extension_id": "EffortlessMetrics.perl-lsp-rs"})()
 
     def test_real_evidence_pipeline_emits_payload_and_bytes(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

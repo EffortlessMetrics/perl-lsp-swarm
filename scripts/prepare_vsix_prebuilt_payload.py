@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from release_archive_members import copy_selected_member, selected_member_digest
-from release_build_identity import load_json_object, validate_topology
+from release_build_identity import ReleaseBuildIdentity, load_json_object, validate_topology
 from release_terminal_manifest import (
     digest,
     validate_identity,
@@ -39,7 +39,10 @@ def build(args: argparse.Namespace) -> None:
         raise ValueError("release build receipt candidate differs from requested candidate")
     if identity.get("release_version") != args.release_version:
         raise ValueError("release build receipt version differs from requested release")
-    validate_identity(identity, args.source_sha, args.release_version)
+    validated_identity = ReleaseBuildIdentity.from_mapping(identity)
+    validated_identity.validate()
+    if validated_identity.artifact_role != "archive":
+        raise ValueError("release build identity is not archive-shaped")
     binaries = validate_receipt(receipt, identity)
     evidence = load_json_object(args.package_evidence, "release package evidence")
     archive = args.archive.resolve(strict=True)
