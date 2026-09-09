@@ -133,6 +133,37 @@ regeneration with wall-clock-free receipts. Generated output lands under
 demand. The pristine upstream base copies live under `../leaves/base/`,
 hashing to the documented upstream blob digests.
 
+Pending multi-commit repairs use the explicit `compose.materialize_pending`
+library route. It first proves the selected landed profile is the complete
+base projection, then compares the immutable source tree's no-renames M/A/D
+delta and exact raw blobs before staging source-bound suites beside the
+generated `upstream/` tree. Its `pending-composed-candidate-receipt.v1`
+records `pre-merge` admission and is rejected by the landed `verify` route;
+it cannot provide landed or support evidence.
+
+The immutable #14468 source-bound integration proof is an explicit opt-in
+because its unmerged commit objects are not a permanent main-branch
+dependency:
+
+```powershell
+$env:COMPOSE_PENDING_REAL_PROOF = '1'
+lua clients/lite-xl/tests/compose_integration_test.lua
+```
+
+When selected, missing source objects or mismatched blobs fail the run; the
+default integration run reports this proof as `NOT RUN`.
+
+The selected profile's `proof_matrix` is the source of inherited suite
+obligations. Each referenced suite must exist at the exact source blob, and
+every modified or added generated module must have a suite row that names it.
+The materializer stages the immutable source modules under `upstream/` and
+the source-bound suites under its sibling `tests/` directory; both are
+composer-owned outputs rooted at the same pending parent. Inputs are the
+immutable base/source refs, the landed profile projection, the declared
+M/A/D delta, and explicit suite additions. The pending receipt records those
+inputs and the staged output ownership, while the generated tree and staged
+suites are disposable pre-merge artifacts.
+
 ## Deliberate boundaries
 
 The harness does not spawn real processes, does not drive `server.lua`'s

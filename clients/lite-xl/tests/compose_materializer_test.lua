@@ -596,5 +596,444 @@ do
   ok(okv, "F16 regenerated tree verifies clean")
 end
 
+-- ---------------------------------------------------------------------------
+-- Pending composition fixtures: immutable base/source projections and raw
+-- M/A/D deltas are checked before any source bytes are admitted.
+-- ---------------------------------------------------------------------------
+
+do
+  local pending_root = sandbox("pending")
+  local bytes = {
+    ["init.lua"] = "return { pending = 'base' }\n",
+    ["json.lua"] = "return { pending = 'json' }\n",
+    ["util.lua"] = "return { pending = 'util' }\n",
+    ["capability_manifest.lua"] = "return { pending = 'cap' }\n",
+  }
+  local source_bytes = {}
+  for path, value in pairs(bytes) do source_bytes[path] = value end
+  source_bytes["init.lua"] = "return { pending = 'source' }\n"
+  local base_blobs, source_blobs = {}, {}
+  for path, value in pairs(bytes) do
+    base_blobs[path] = fnv_hex(value)
+    source_blobs[path] = fnv_hex(source_bytes[path])
+  end
+  local base_dir = sandbox("pending-base")
+  for path, value in pairs(bytes) do write_file(base_dir .. "/" .. path, value) end
+  local pending_manifest = manifest({}, { prof("empty", {}) }, base_blobs)
+  local function pending_adapter(spec)
+    return {
+      tree_inventory = function(ref, prefix)
+        local root = prefix:find("upstream") and "upstream"
+          or prefix:find("tests") and "tests" or "fallback"
+        local tree = spec.trees[ref] and spec.trees[ref][root] or {}
+        local out = {}
+        for path, blob in pairs(tree) do out[path] = blob end
+        return out
+      end,
+      diff_entries = function() return spec.diff end,
+      is_ancestor = function(a, b) return spec.ancestors[a .. ">" .. b] == true end,
+      snapshot_path = function(ref, repo_path, dest)
+        if repo_path:find("/tests/") then
+          local suite = repo_path:match("/tests/([^/]+)$")
+          write_file(dest, spec.test_bytes[ref][suite])
+          return
+        end
+        local path = repo_path:match("/([^/]+)$")
+        local value = spec.bytes[ref][path]
+        if not value then error("missing pending fixture snapshot") end
+        write_file(dest, value)
+      end,
+      hash_file = function(path) return fnv_hex(read_file(path)) end,
+      digest_text = function(text) return fnv_hex(text) end,
+    }
+  end
+  local refs = {
+    base = "1111111111111111111111111111111111111111",
+    source = "2222222222222222222222222222222222222222",
+    wrong = "3333333333333333333333333333333333333333",
+  }
+  local function fixture()
+    local base_tree, source_tree = {}, {}
+    for path, blob in pairs(base_blobs) do base_tree[path] = blob end
+    for path, blob in pairs(source_blobs) do source_tree[path] = blob end
+    local base_snapshot, source_snapshot = {}, {}
+    for path, value in pairs(bytes) do base_snapshot[path] = value end
+    for path, value in pairs(source_bytes) do source_snapshot[path] = value end
+    local proof_source = "local f = io.open(arg[1], 'rb')\n"
+      .. "if not f then os.exit(1) end\nf:close()\n"
+    local proof_blob = fnv_hex(proof_source)
+    local spec = {
+      trees = {
+        [refs.base] = { upstream = base_tree, fallback = {} },
+        [refs.source] = { upstream = source_tree, fallback = {} },
+      },
+      bytes = { [refs.base] = base_snapshot, [refs.source] = source_snapshot },
+      test_bytes = { [refs.base] = { ["pending_test.lua"] = proof_source },
+        [refs.source] = { ["pending_test.lua"] = proof_source } },
+      pending_test_blob = proof_blob,
+      ancestors = { [refs.base .. ">" .. refs.source] = true },
+      diff = { { status = "M", path = "upstream/init.lua" } },
+    }
+    return spec, pending_adapter(spec)
+  end
+  local function pending_run(spec, ad, tag, delta, base_ref)
+    return compose.materialize_pending({
+      manifest = pending_manifest, adapter = ad, profile = "empty",
+      base_dir = base_dir, out_dir = pending_root .. "/" .. tag .. "/upstream",
+      receipt_path = pending_root .. "/" .. tag .. "/receipt.json",
+      base_ref = base_ref or refs.base, source_ref = refs.source,
+      required_modules = { "init.lua", "json.lua", "util.lua", "capability_manifest.lua" },
+      declared_delta = delta or {
+        { status = "M", path = "upstream/init.lua",
+          base_blob = base_blobs["init.lua"], source_blob = source_blobs["init.lua"] },
+      },
+      suite_specs = {
+        { path = "tests/pending_test.lua", source_blob = spec.pending_test_blob,
+          module = "init.lua" },
+      },
+    })
+  end
+  local spec, ad = fixture()
+  local accepted = pending_run(spec, ad, "accepted")
+  ok(accepted.tree["init.lua"] == source_blobs["init.lua"],
+    "P1 fixture applies the immutable source snapshot")
+  local repeated = pending_run(spec, ad, "accepted-again")
+  ok(accepted.receipt_json == repeated.receipt_json,
+    "P1 fixture regeneration is byte-identical")
+
+  local inherited_manifest = manifest({}, { prof("empty", {}) }, base_blobs)
+  inherited_manifest.proof_matrix = {
+    ["init.lua"] = { { suite = "inherited_profile_test.lua",
+      modules = { "init.lua" } } },
+  }
+  local inherited_source = "local f = io.open(arg[1], 'rb')\n"
+    .. "if not f then os.exit(1) end\nf:close()\n"
+  local inherited_blob = fnv_hex(inherited_source)
+  spec.trees[refs.base].tests = {}
+  spec.trees[refs.source].tests = { ["inherited_profile_test.lua"] = inherited_blob }
+  spec.test_bytes = {
+    [refs.base] = {}, [refs.source] = {
+      ["inherited_profile_test.lua"] = inherited_source,
+    },
+  }
+  local inherited = compose.materialize_pending({
+    manifest = inherited_manifest, adapter = ad, profile = "empty",
+    base_dir = base_dir, out_dir = pending_root .. "/inherited/upstream",
+    receipt_path = pending_root .. "/inherited/receipt.json",
+    base_ref = refs.base, source_ref = refs.source,
+    declared_delta = {
+      { status = "M", path = "upstream/init.lua",
+        base_blob = base_blobs["init.lua"], source_blob = source_blobs["init.lua"] },
+    }, suite_specs = {},
+  })
+  ok(inherited.suites[1].suite == "inherited_profile_test.lua"
+    and inherited.suites[1].exit_code == 0,
+    "P1 selected profile proof row runs from the immutable source")
+
+  local stale_spec, stale_ad = fixture()
+  stale_spec.trees[refs.base].tests = {}
+  stale_spec.trees[refs.source].tests = {}
+  stale_spec.test_bytes = { [refs.base] = {}, [refs.source] = {} }
+  expect_error("pending_suite", function()
+    compose.materialize_pending({
+      manifest = inherited_manifest, adapter = stale_ad, profile = "empty",
+      base_dir = base_dir, out_dir = pending_root .. "/stale-suite/upstream",
+      receipt_path = pending_root .. "/stale-suite/receipt.json",
+      base_ref = refs.base, source_ref = refs.source,
+      declared_delta = {
+        { status = "M", path = "upstream/init.lua",
+          base_blob = base_blobs["init.lua"], source_blob = source_blobs["init.lua"] },
+      }, suite_specs = {},
+    })
+  end, "P1 inherited proof rejects a stale source suite inventory")
+
+  local helper_spec, helper_ad = fixture()
+  local helper_suite_dir = pending_root .. "/stale-helper/tests"
+  write_file(helper_suite_dir .. "/harness.lua", "return true\n")
+  expect_error("pending_unowned_diff", function()
+    compose.materialize_pending({
+      manifest = pending_manifest, adapter = helper_ad, profile = "empty",
+      base_dir = base_dir, out_dir = pending_root .. "/stale-helper/upstream",
+      receipt_path = pending_root .. "/stale-helper/receipt.json",
+      base_ref = refs.base, source_ref = refs.source,
+      declared_delta = {
+        { status = "M", path = "upstream/init.lua",
+          base_blob = base_blobs["init.lua"], source_blob = source_blobs["init.lua"] },
+      }, suite_specs = {
+        { path = "tests/pending_test.lua", source_blob = helper_spec.pending_test_blob,
+          module = "init.lua" },
+      },
+    })
+  end, "P1 exact suite staging rejects a stale helper file")
+
+  local invalid_spec, invalid_ad = fixture()
+  local invalid_source = "this is not valid lua\n"
+  local invalid_blob = fnv_hex(invalid_source)
+  invalid_spec.trees[refs.source].upstream["init.lua"] = invalid_blob
+  invalid_spec.bytes[refs.source]["init.lua"] = invalid_source
+  expect_error("pending_proof", function()
+    compose.materialize_pending({
+      manifest = pending_manifest, adapter = invalid_ad, profile = "empty",
+      base_dir = base_dir, out_dir = pending_root .. "/invalid-lua/upstream",
+      receipt_path = pending_root .. "/invalid-lua/receipt.json",
+      base_ref = refs.base, source_ref = refs.source,
+      declared_delta = {
+        { status = "M", path = "upstream/init.lua",
+          base_blob = base_blobs["init.lua"], source_blob = invalid_blob },
+      }, suite_specs = {
+        { path = "tests/pending_test.lua", source_blob = invalid_spec.pending_test_blob,
+          module = "init.lua" },
+      },
+    })
+  end, "P1 correct source blob still rejects invalid generated Lua")
+
+  local omitted_manifest = manifest({}, { prof("empty", {}) }, base_blobs)
+  local omitted_spec, omitted_ad = fixture()
+  expect_error("pending_proof", function()
+    compose.materialize_pending({
+      manifest = omitted_manifest, adapter = omitted_ad, profile = "empty",
+      base_dir = base_dir, out_dir = pending_root .. "/omitted-proof/upstream",
+      receipt_path = pending_root .. "/omitted-proof/receipt.json",
+      base_ref = refs.base, source_ref = refs.source,
+      declared_delta = {
+        { status = "M", path = "upstream/init.lua",
+          base_blob = base_blobs["init.lua"], source_blob = source_blobs["init.lua"] },
+      }, suite_specs = {},
+    })
+  end, "P1 modified module requires a profile proof row")
+
+  local deleted_spec, deleted_ad = fixture()
+  deleted_spec.trees[refs.base].tests = {}
+  deleted_spec.trees[refs.source].tests = { ["inherited_profile_test.lua"] = inherited_blob }
+  deleted_spec.test_bytes = spec.test_bytes
+  deleted_spec.trees[refs.source].upstream["init.lua"] = nil
+  deleted_spec.bytes[refs.source]["init.lua"] = nil
+  deleted_spec.diff = { { status = "D", path = "upstream/init.lua" } }
+  expect_error("pending_required_module", function()
+    compose.materialize_pending({
+      manifest = inherited_manifest, adapter = deleted_ad, profile = "empty",
+      base_dir = base_dir, out_dir = pending_root .. "/inherited-delete/upstream",
+      receipt_path = pending_root .. "/inherited-delete/receipt.json",
+      base_ref = refs.base, source_ref = refs.source,
+      declared_delta = {
+        { status = "D", path = "upstream/init.lua",
+          base_blob = base_blobs["init.lua"] },
+      }, suite_specs = {},
+    })
+  end, "P1 inherited proof obligation blocks required deletion")
+
+  local wrong_base, wrong_ad = fixture()
+  wrong_base.trees[refs.wrong] = { upstream = {}, fallback = {} }
+  wrong_base.ancestors[refs.wrong .. ">" .. refs.source] = true
+  local err = expect_error("pending_base_mismatch", function()
+    compose.materialize_pending({ manifest = pending_manifest, adapter = wrong_ad,
+      profile = "empty", base_dir = base_dir,
+      out_dir = pending_root .. "/wrong-base/upstream",
+      receipt_path = pending_root .. "/wrong-base/receipt.json",
+      base_ref = refs.wrong, source_ref = refs.source,
+      required_modules = { "init.lua", "json.lua", "util.lua", "capability_manifest.lua" },
+      declared_delta = {}, suite_specs = {} })
+  end, "P1 wrong base")
+  ok(err ~= nil, "P1 wrong base refuses inherited landed coverage")
+
+  local _, ancestry_ad = fixture()
+  local ancestry_spec = fixture()
+  ancestry_spec.ancestors = {}
+  ancestry_ad = pending_adapter(ancestry_spec)
+  expect_error("pending_source_ancestry", function()
+    pending_run(ancestry_spec, ancestry_ad, "wrong-ancestry")
+  end, "P1 unrelated source")
+
+  expect_error("pending_identity", function()
+    pending_run(spec, ad, "mutable-ref", {
+      { status = "M", path = "upstream/init.lua",
+        base_blob = base_blobs["init.lua"], source_blob = source_blobs["init.lua"] },
+    }, "main")
+  end, "P1 non-immutable ref")
+
+  expect_error("pending_path_collision", function()
+    compose.materialize_pending({ manifest = pending_manifest, adapter = ad,
+      profile = "empty", base_dir = base_dir,
+      out_dir = pending_root .. "/collision/upstream",
+      receipt_path = pending_root .. "/collision/receipt.json",
+      temp_dir = pending_root .. "/collision/upstream",
+      base_ref = refs.base, source_ref = refs.source,
+      required_modules = { "init.lua", "json.lua", "util.lua", "capability_manifest.lua" },
+      declared_delta = {
+        { status = "M", path = "upstream/init.lua",
+          base_blob = base_blobs["init.lua"], source_blob = source_blobs["init.lua"] },
+      }, suite_specs = {}, })
+  end, "P1 output/temp collision")
+
+  expect_error("pending_path_collision", function()
+    compose.materialize_pending({ manifest = pending_manifest, adapter = ad,
+      profile = "empty", base_dir = base_dir, out_dir = base_dir,
+      receipt_path = pending_root .. "/base-collision/receipt.json",
+      base_ref = refs.base, source_ref = refs.source,
+      required_modules = { "init.lua", "json.lua", "util.lua", "capability_manifest.lua" },
+      declared_delta = {
+        { status = "M", path = "upstream/init.lua",
+          base_blob = base_blobs["init.lua"], source_blob = source_blobs["init.lua"] },
+      }, suite_specs = {}, })
+  end, "P1 base/output collision")
+
+  expect_error("pending_path_collision", function()
+    compose.materialize_pending({ manifest = pending_manifest, adapter = ad,
+      profile = "empty", base_dir = base_dir, out_dir = base_dir .. "/./",
+      receipt_path = pending_root .. "/base-alias-collision/receipt.json",
+      base_ref = refs.base, source_ref = refs.source,
+      required_modules = { "init.lua", "json.lua", "util.lua", "capability_manifest.lua" },
+      declared_delta = {
+        { status = "M", path = "upstream/init.lua",
+          base_blob = base_blobs["init.lua"], source_blob = source_blobs["init.lua"] },
+      }, suite_specs = {}, })
+  end, "P1 base/output dot alias collision")
+
+  expect_error("pending_path_layout", function()
+    compose.materialize_pending({ manifest = pending_manifest, adapter = ad,
+      profile = "empty", base_dir = base_dir,
+      out_dir = pending_root .. "/layout/upstream",
+      suite_dir = pending_root .. "/other/tests",
+      receipt_path = pending_root .. "/layout/receipt.json",
+      base_ref = refs.base, source_ref = refs.source,
+      required_modules = { "init.lua", "json.lua", "util.lua", "capability_manifest.lua" },
+      declared_delta = {
+        { status = "M", path = "upstream/init.lua",
+          base_blob = base_blobs["init.lua"], source_blob = source_blobs["init.lua"] },
+      }, suite_specs = {}, })
+  end, "P1 suite/output sibling layout")
+
+  local unsupported_spec, unsupported_ad = fixture()
+  unsupported_spec.diff = { { status = "R", path = "upstream/init.lua" } }
+  expect_error("pending_delta_mismatch", function()
+    pending_run(unsupported_spec, unsupported_ad, "unsupported-status")
+  end, "P1 unsupported diff status")
+
+  expect_error("pending_suite", function()
+    compose.materialize_pending({ manifest = pending_manifest, adapter = ad,
+      profile = "empty", base_dir = base_dir,
+      out_dir = pending_root .. "/suite-traversal/upstream",
+      receipt_path = pending_root .. "/suite-traversal/receipt.json",
+      base_ref = refs.base, source_ref = refs.source,
+      required_modules = { "init.lua", "json.lua", "util.lua", "capability_manifest.lua" },
+      declared_delta = {
+        { status = "M", path = "upstream/init.lua",
+          base_blob = base_blobs["init.lua"], source_blob = source_blobs["init.lua"] },
+      }, suite_specs = {
+        { path = "../tests/bad.lua", source_blob = source_blobs["init.lua"] },
+      }, })
+  end, "P1 suite traversal")
+
+  expect_error("pending_required_module", function()
+    compose.materialize_pending({ manifest = pending_manifest, adapter = ad,
+      profile = "empty", base_dir = base_dir,
+      out_dir = pending_root .. "/suite-module/upstream",
+      receipt_path = pending_root .. "/suite-module/receipt.json",
+      base_ref = refs.base, source_ref = refs.source,
+      required_modules = { "init.lua", "json.lua", "util.lua", "capability_manifest.lua" },
+      declared_delta = {
+        { status = "M", path = "upstream/init.lua",
+          base_blob = base_blobs["init.lua"], source_blob = source_blobs["init.lua"] },
+      }, suite_specs = {
+        { path = "tests/missing.lua", source_blob = source_blobs["init.lua"], module = "missing.lua" },
+      }, })
+  end, "P1 suite module missing from tree")
+
+  local _, blob_ad = fixture()
+  expect_error("pending_delta_mismatch", function()
+    pending_run(spec, blob_ad, "wrong-blob", {
+      { status = "M", path = "upstream/init.lua",
+        base_blob = "00000000", source_blob = source_blobs["init.lua"] },
+    })
+  end, "P1 wrong blob")
+
+  local extra_spec, extra_ad = fixture()
+  extra_spec.trees[refs.source].upstream["extra.lua"] = fnv_hex("extra\n")
+  extra_spec.bytes[refs.source]["extra.lua"] = "extra\n"
+  extra_spec.diff[#extra_spec.diff + 1] = { status = "A", path = "upstream/extra.lua" }
+  expect_error("pending_delta_mismatch", function()
+    pending_run(extra_spec, extra_ad, "extra-path")
+  end, "P1 undeclared extra path")
+
+  local missing_spec, missing_ad = fixture()
+  missing_spec.trees[refs.source].upstream["capability_manifest.lua"] = nil
+  missing_spec.bytes[refs.source]["capability_manifest.lua"] = nil
+  missing_spec.diff[#missing_spec.diff + 1] =
+    { status = "D", path = "upstream/capability_manifest.lua" }
+  expect_error("pending_required_module", function()
+    pending_run(missing_spec, missing_ad, "missing-required", {
+      { status = "M", path = "upstream/init.lua",
+        base_blob = base_blobs["init.lua"], source_blob = source_blobs["init.lua"] },
+      { status = "D", path = "upstream/capability_manifest.lua",
+        base_blob = base_blobs["capability_manifest.lua"] },
+    })
+  end, "P1 missing required inherited module")
+
+  -- A source rename is deliberately represented as a delete plus an add;
+  -- neither Git's rename heuristic nor a modify-only shortcut may hide it.
+  local rename_spec, rename_ad = fixture()
+  local rename_bytes = {}
+  for path, value in pairs(bytes) do rename_bytes[path] = value end
+  rename_bytes["obsolete.lua"] = "return { obsolete = true }\n"
+  local renamed_source = {}
+  for path, value in pairs(source_bytes) do renamed_source[path] = value end
+  renamed_source["renamed.lua"] = "return { renamed = true }\n"
+  local rename_base_blobs, rename_source_blobs = {}, {}
+  for path, value in pairs(rename_bytes) do
+    rename_base_blobs[path] = fnv_hex(value)
+  end
+  for path, value in pairs(renamed_source) do
+    rename_source_blobs[path] = fnv_hex(value)
+  end
+  write_file(base_dir .. "/obsolete.lua", rename_bytes["obsolete.lua"])
+  rename_spec.trees[refs.base].upstream["obsolete.lua"] = rename_base_blobs["obsolete.lua"]
+  rename_spec.trees[refs.source].upstream["renamed.lua"] = rename_source_blobs["renamed.lua"]
+  rename_spec.bytes[refs.base] = rename_bytes
+  rename_spec.bytes[refs.source] = renamed_source
+  rename_spec.diff = {
+    { status = "A", path = "upstream/renamed.lua" },
+    { status = "D", path = "upstream/obsolete.lua" },
+    { status = "M", path = "upstream/init.lua" },
+  }
+  local rename_manifest = manifest({}, { prof("empty", {}) }, rename_base_blobs)
+  local rename_result = compose.materialize_pending({
+    manifest = rename_manifest, adapter = rename_ad, profile = "empty",
+    base_dir = base_dir, out_dir = pending_root .. "/rename/upstream",
+    receipt_path = pending_root .. "/rename/receipt.json",
+    base_ref = refs.base, source_ref = refs.source,
+    required_modules = { "init.lua", "json.lua", "util.lua", "capability_manifest.lua" },
+    declared_delta = {
+      { status = "A", path = "upstream/renamed.lua",
+        source_blob = rename_source_blobs["renamed.lua"] },
+      { status = "D", path = "upstream/obsolete.lua",
+        base_blob = rename_base_blobs["obsolete.lua"] },
+      { status = "M", path = "upstream/init.lua",
+        base_blob = rename_base_blobs["init.lua"],
+        source_blob = rename_source_blobs["init.lua"] },
+    },
+    suite_specs = {
+      { path = "tests/pending_test.lua", source_blob = rename_spec.pending_test_blob,
+        modules = { "init.lua", "renamed.lua" } },
+    },
+  })
+  ok(rename_result.tree["renamed.lua"] == rename_source_blobs["renamed.lua"],
+    "P1 rename-as-add installs the new source path")
+  ok(rename_result.tree["obsolete.lua"] == nil,
+    "P1 rename-as-delete removes the old source path")
+
+  local clean_tree = pending_root .. "/accepted-again/upstream"
+  write_file(clean_tree .. "/hand-edit.lua", "return true\n")
+  expect_error("unowned_diff", function()
+    compose.verify_tree({ tree_dir = clean_tree,
+      inventory = accepted.inventory, adapter = ad })
+  end, "P1 extra generated file")
+  os.remove(clean_tree .. "/hand-edit.lua")
+  write_file(clean_tree .. "/init.lua", "return { mutated = true }\n")
+  expect_error("unowned_diff", function()
+    compose.verify_tree({ tree_dir = clean_tree,
+      inventory = accepted.inventory, adapter = ad })
+  end, "P1 mutated generated file")
+end
+
 print(string.format("compose_materializer_test: %d passed, %d failed", passed, failed))
 os.exit(failed == 0 and 0 or 1)
