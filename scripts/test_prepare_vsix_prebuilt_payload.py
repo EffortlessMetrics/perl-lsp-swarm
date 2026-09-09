@@ -9,6 +9,8 @@ import io
 import tarfile
 import tempfile
 import unittest
+import importlib.util
+import sys
 from pathlib import Path
 
 
@@ -62,6 +64,19 @@ class PrebuiltPayloadAdapterTests(unittest.TestCase):
         }
         values.update(overrides)
         return ["python", "scripts/prepare_vsix_prebuilt_payload.py", "--receipt", str(paths["receipt"]), "--package-evidence", str(paths["evidence"]), "--archive", str(paths["archive"]), "--topology", str(paths["topology"]), "--projection", str(paths["projection"]), "--output", str(paths["output"]), "--source-sha", values["source_sha"], "--target", values["target"], "--candidate-id", values["candidate_id"], "--release-version", values["release_version"], "--inventory-sha256", values["inventory_sha256"], "--extension-id", values["extension_id"]]
+
+    def namespace(self, paths: dict[str, Path | str]) -> object:
+        spec = importlib.util.spec_from_file_location("prepare_payload", Path(__file__).with_name("prepare_vsix_prebuilt_payload.py"))
+        if spec is None or spec.loader is None:
+            raise RuntimeError("unable to load adapter")
+        module = importlib.util.module_from_spec(spec)
+        scripts_dir = str(Path(__file__).parent)
+        sys.path.insert(0, scripts_dir)
+        try:
+            spec.loader.exec_module(module)
+        finally:
+            sys.path.remove(scripts_dir)
+        return module, type("Args", (), {"receipt": paths["receipt"], "package_evidence": paths["evidence"], "archive": paths["archive"], "topology": paths["topology"], "projection": paths["projection"], "output": paths["output"], "source_sha": SOURCE, "target": TARGET, "candidate_id": "candidate-1", "release_version": VERSION, "inventory_sha256": "c" * 64, "extension_id": "EffortlessMetrics.perl-lsp-rs"})()
 
     def test_real_evidence_pipeline_emits_payload_and_bytes(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -180,6 +195,40 @@ class PrebuiltPayloadAdapterTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("output parent", result.stderr)
             self.assertEqual(list(Path(outside).iterdir()), [])
+
+    def test_staging_setup_and_partial_copy_failures_clean_owned_temp(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            paths = self.fixture(root)
+            module, args = self.namespace(paths)
+            original_mkdtemp = module.tempfile.mkdtemp
+            def broken_stage(**kwargs: object) -> str:
+                stage = Path(original_mkdtemp(**kwargs))
+                (stage / "bin").write_text("collision", encoding="utf-8")
+                return str(stage)
+            module.tempfile.mkdtemp = broken_stage
+            try:
+                with self.assertRaises(FileExistsError):
+                    module.build(args)
+            finally:
+                module.tempfile.mkdtemp = original_mkdtemp
+            self.assertEqual(list(root.glob(".prebuilt-payload-*")), [])
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            paths = self.fixture(root)
+            module, args = self.namespace(paths)
+            original_copy = module.copy_selected_member
+            def broken_copy(archive: Path, name: str, output: Path) -> str:
+                output.write_bytes(b"partial")
+                raise OSError("injected copy failure")
+            module.copy_selected_member = broken_copy
+            try:
+                with self.assertRaisesRegex(OSError, "injected copy failure"):
+                    module.build(args)
+            finally:
+                module.copy_selected_member = original_copy
+            self.assertEqual(list(root.glob(".prebuilt-payload-*")), [])
 
 
 if __name__ == "__main__":
