@@ -709,6 +709,7 @@ impl DebugAdapter {
                 variable_cache: VariableCache::default(),
                 thread_id: 1,
                 last_resume_mode: ResumeMode::Continue,
+                entry_stop_pending: false,
                 stopped_generation: 0,
             });
         }
@@ -741,6 +742,7 @@ impl DebugAdapter {
             variable_cache: VariableCache::default(),
             thread_id: 1,
             last_resume_mode: ResumeMode::Unknown,
+            entry_stop_pending: false,
             stopped_generation: 0,
         });
         Ok(())
@@ -846,6 +848,7 @@ impl DebugAdapter {
             variable_cache: VariableCache::default(),
             thread_id: 1,
             last_resume_mode: ResumeMode::Unknown,
+            entry_stop_pending: false,
             stopped_generation: 0,
         });
     }

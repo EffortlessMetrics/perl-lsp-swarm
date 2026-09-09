@@ -93,6 +93,12 @@ fn observe_pin_with_session(
         other => return Err(format!("unknown launch path {other}")),
     }
     let stopped = session.wait_stopped_with_frame()?;
+    if launch_path == "launch_with_stop_on_entry" && stopped.reason != "entry" {
+        return Err(format!(
+            "stopOnEntry must publish the entry stop after its frame snapshot; got {:?}",
+            stopped.reason
+        ));
+    }
     session.evaluate_expression("$^X", stopped.frame_id).map(|(value, _)| value)
 }
 

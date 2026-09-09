@@ -350,28 +350,17 @@ impl DebugAdapter {
                 user_cwd,
                 debuggee_timeout_secs,
             ) {
-                Ok(thread_id) => {
-                    // Send stopped event if stop on entry
-                    if stop_on_entry {
-                        self.send_event(
-                            "stopped",
-                            Some(json!({
-                                "reason": "entry",
-                                "threadId": thread_id,
-                                "allThreadsStopped": true
-                            })),
-                        );
-                    }
-
-                    DapMessage::Response {
-                        seq,
-                        request_seq,
-                        success: true,
-                        command: "launch".to_string(),
-                        body: None,
-                        message: None,
-                    }
-                }
+                // The output reader owns the first debugger context and frame snapshot.
+                // It publishes the entry stop after that snapshot is installed; emitting
+                // here races a client's immediate stackTrace request with the reader.
+                Ok(_thread_id) => DapMessage::Response {
+                    seq,
+                    request_seq,
+                    success: true,
+                    command: "launch".to_string(),
+                    body: None,
+                    message: None,
+                },
                 Err(e) => {
                     let perl_info = detect_perl_info();
                     DapMessage::Response {
@@ -641,6 +630,7 @@ impl DebugAdapter {
                     variable_cache: VariableCache::default(),
                     thread_id,
                     last_resume_mode: ResumeMode::Unknown,
+                    entry_stop_pending: stop_on_entry,
                     stopped_generation: 0,
                 };
 
@@ -1229,6 +1219,8 @@ impl DebugAdapter {
                                     }
 
                                     if was_running {
+                                        let entry_stop = s.entry_stop_pending;
+                                        s.entry_stop_pending = false;
                                         should_emit_stopped = true;
                                         let resume_mode = s.last_resume_mode.clone();
 
@@ -1249,7 +1241,10 @@ impl DebugAdapter {
                                             BreakpointHitOutcome::default()
                                         };
 
-                                        if exception_match || warning_match {
+                                        if entry_stop {
+                                            stop_reason = "entry".to_string();
+                                            s.state = DebugState::Stopped;
+                                        } else if exception_match || warning_match {
                                             stop_reason = "exception".to_string();
                                             s.state = DebugState::Stopped;
                                         } else if breakpoint_outcome.matched {
@@ -1406,6 +1401,7 @@ impl DebugAdapter {
                         // Detect debugger prompt (stopped state) with enhanced pattern matching
                         if prompt_re().is_some_and(|re| re.is_match(&sanitized_text)) {
                             _debugger_ready = true;
+                            let mut stop_reason = "step".to_string();
                             let thread_id = {
                                 let Ok(mut guard) = session.lock() else {
                                     tracing::warn!(
@@ -1470,7 +1466,12 @@ impl DebugAdapter {
                                         s.stack_frames = vec![frame];
                                         s.stack_frame_arguments.clear();
                                     }
+                                    let entry_stop = s.entry_stop_pending;
+                                    s.entry_stop_pending = false;
                                     s.state = DebugState::Stopped;
+                                    if entry_stop {
+                                        stop_reason = "entry".to_string();
+                                    }
                                     s.thread_id
                                 } else {
                                     continue;
@@ -1484,7 +1485,7 @@ impl DebugAdapter {
                                     &seq,
                                     "stopped",
                                     Some(json!({
-                                        "reason": "step",
+                                        "reason": stop_reason,
                                         "threadId": thread_id,
                                         "allThreadsStopped": true
                                     })),
@@ -2242,8 +2243,9 @@ impl DebugAdapter {
             && let Some(stdin) = session.process.stdin.as_mut()
         {
             if stop_on_entry {
-                // The entry stopped event was already emitted during launch.
-                // List the current source location so the IDE can display it.
+                // The output reader emits the entry stopped event after capturing the
+                // initial context. Request the current source location for any debugger
+                // that did not include a parseable context in that first stop.
                 let _ = stdin.write_all(b"l\n");
                 let _ = stdin.flush();
             } else {
@@ -3434,6 +3436,7 @@ mod tests {
             variable_cache: VariableCache::default(),
             thread_id: 1,
             last_resume_mode: ResumeMode::Unknown,
+            entry_stop_pending: false,
             stopped_generation: 0,
         };
         *lock_or_recover(&adapter.session, "test.session") = Some(session);
@@ -3552,6 +3555,7 @@ mod tests {
             variable_cache: VariableCache::default(),
             thread_id: 1,
             last_resume_mode: ResumeMode::Unknown,
+            entry_stop_pending: false,
             stopped_generation: 0,
         };
         *lock_or_recover(&adapter.session, "test.session") = Some(session);

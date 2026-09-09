@@ -181,7 +181,8 @@ impl DapWorkflowSession {
     /// Launch a script with explicit `stopOnEntry` control.
     ///
     /// When `stop_on_entry` is `true`, the adapter emits a `stopped(reason=entry)` event
-    /// immediately after launch, before any `configurationDone` is sent.
+    /// after the initial debugger context has populated the frame snapshot, before any
+    /// `configurationDone` is sent.
     /// When `false`, callers must call `set_breakpoints` and `configuration_done` before
     /// `wait_stopped` to follow the DAP ordering requirement.
     pub fn launch_with_stop_on_entry(
