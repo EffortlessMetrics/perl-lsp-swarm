@@ -1934,5 +1934,40 @@ UNAVAILABLE_WARN
         self.assertAuthorityError(self._production_rows)
 
 
+class WorkflowCommandPairingTests(unittest.TestCase):
+    """Every command the workflow invokes must exist in the script's parser.
+
+    #14692 added a workflow step calling `verify-receipt` while older PR
+    heads still carried a script without that subcommand — the lane then
+    failed every PR whose checkout predated the pairing. Pin the pairing
+    so a future workflow edit cannot orphan a command name again.
+    """
+
+    def test_every_workflow_invocation_names_a_supported_command(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        workflow = (repo_root / ".github" / "workflows" / "dap-protocol-authority.yml").read_text()
+        # The regex's lowercase start already excludes option spellings like
+        # --help. Scope note: this pairs the workflow and script in ONE tree
+        # (what push-to-main CI checks); a pull_request run evaluates the
+        # merge-ref workflow against the candidate checkout, and that
+        # mixed-revision pairing is covered by the runtime --help guard in
+        # the workflow step, which no single-tree test can observe.
+        invoked = set(re.findall(r"dap_protocol_authority\.py\s+([a-z][a-z-]*)", workflow))
+        source = SCRIPT.read_text()
+        supported = set(re.findall(r'add_parser\("([a-z][a-z-]*)"', source))
+        supported.update(
+            name
+            for group in re.findall(r"for command in \(([^)]*)\)", source)
+            for name in re.findall(r'"([a-z][a-z-]*)"', group)
+        )
+        self.assertTrue(invoked, "fixture must find at least one workflow invocation")
+        self.assertTrue(supported, "fixture must find at least one supported command")
+        self.assertEqual(
+            invoked - supported,
+            set(),
+            f"workflow invokes commands the script does not support: {invoked - supported}",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
