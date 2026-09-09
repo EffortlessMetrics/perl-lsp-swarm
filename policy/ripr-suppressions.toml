@@ -3067,3 +3067,26 @@ created = "2026-09-09"
 review_after = "2026-09-16"
 expires = "2026-09-23"
 removal_criteria = "Remove when ripr treats mechanical extractions as non-actionable, or narrow immediately if a future receipt reports an executable seam in lib.rs or baseline.rs beyond the moved lines."
+
+# -----------------------------------------------------------------------------
+# Streaming RIPR evidence ingestion (#12569, PR #13512): diff-scoped RIPR reports
+# 51 no_static_path probes on declaration lines and inline #[cfg(test)] fixture
+# lines of the streaming transport, not on any executable behavior the suite
+# leaves unproven. Run 34332782218 receipt (evaluated tree
+# b1f5bb9562c4484cfde1e53f3364358e23e42d6f, base
+# ea1ac9ca98de6e9a206c29dce756938848033f05) breaks down as 35 field_construction,
+# 15 call_deletion, 1 predicate, every one reach:no "No static test path found
+# for the changed owner", severity info, confidence 0.48. RIPR's own repair text
+# on these probes says to say so in the PR rather than add proof theatre.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-streaming-ripr-evidence-declaration-probes"
+kind = "analyzer_declaration_probe"
+paths = ["xtask/src/tasks/ripr_evidence.rs"]
+classification = ["no_static_path"]
+owner = "proof-lane"
+issue = "EffortlessMetrics/ripr#1429"
+reason = "PR #13512 (#12569) replaces buffered stdout capture with file-backed streaming ingestion of the top-level findings array, and merges #15215's direct-field projection into the per-finding decode seed. RIPR 0.10.0 reports 51 no_static_path probes in ripr_evidence.rs, and every one is a declaration or inline-test line, not an unproven behavior: (A) three transport constants at lines 41/45/50 (RIPR_STDOUT_TEMP_PREFIX, RIPR_STDOUT_STAGING_DIR, MAX_RIPR_STDERR_BYTES), each exercised by direct tests — run_ripr_check_stages_stdout_outside_the_uploaded_evidence_tree and ripr_stdout_staging_workflow_upload_globs_exclude_staging_dir assert the staging dir and partial prefix, drain_stderr_and_wait_drains_and_bounds_successful_stderr and run_ripr_check_failure_retains_bounded_stderr assert the retained stderr is exactly MAX_RIPR_STDERR_BYTES; (B) LARGE_FINDING_FIELDS, reported twice — once at the deleted #15215 pre-image line 891 and once at the head declaration — while projected_findings_preserve_consumed_fields_and_gate_counts and malformed_payload_inside_projected_field_is_refused assert the projection through the production ingestion seam; (C) private struct-field, enum-payload, type-alias and generic-bound declarations of the streaming machinery (RiprCheckPayload summary/base/findings_is_array, RiprCheckIngestion summary_counts/check_summary_present, the visitor on_event fields, the `F: for<'a> FnMut(StreamFindingsEvent<'a>)` bound counted on both families, StreamFindingsEvent::Finding, RiprFindingBuckets bucket fields and their default let-bindings, head_extents, FallbackSeam and FallbackEvent::Emit), whose behavior is asserted by streaming_ingestion_receipt_matches_dom_bytes and its extents/suppression variants, streamed_envelope_validation_matches_the_dom_oracle, streamed_ingestion_counts_match_the_dom_oracle_on_captured_producer_output, fallback_streaming_matches_dom_oracle_over_a_wide_payload, and streaming_ingestion_completes_on_large_payload_with_correct_buckets; (D) probes on struct ProjectedCheck, ProjectionSeed and ProjectedVisitor, which this merge deletes — they are not in the head tree, so no head-tree test can own them; (E) inline #[cfg(test)] fixture declarations (the chunked/streaming fixture readers, FINDING_COUNT = 400, FILLER_BYTES = 256 * 1024) — the lines are the tests, same ripr#1428/#1429 class as ripr-suppress-git-ancestry-inline-cfg-test-plumbing; and (F) one predicate on `if check_summary_present` inside ripr_summary_counts_merge, whose false arm the production path cannot reach because validate_check_summary_counts refuses an absent summary before the merge is called, and whose true and false arms are both asserted through the DOM oracle helper. The declaration classes are the same const-data and private-field shapes accepted in ripr-suppress-indirect-method-excluded-const-no-static-path, ripr-suppress-git-read-only-first-const and the #12049 reachability-contract entry. HONEST SCOPE NOTE: like every sibling entry the matcher is PATH-scoped, so classification records intent and this covers diff-scoped no_static_path findings anywhere in ripr_evidence.rs, not only these 51; the accepted time-boxed residual is that a future no_static_path gap in this file is masked for this window. It does not mask the blocking bucket that carries real signal here: this diff reports reachable_unrevealed = 0, weakly_exposed stays advisory, and the 105 weakly_exposed findings remain visible in the receipts. Producer memory capacity stays NOT_PROVEN under #15117 and is not claimed by this entry. Remove when ripr stops probing declaration lines and deleted pre-image lines for a static test path (EffortlessMetrics/ripr#1429), when it traces inline cfg(test) plumbing (#1428), or when targeted mutation replaces this advisory path per #1289."
+created = "2026-09-09"
+review_after = "2026-10-09"
+expires = "2026-11-09"
