@@ -14,7 +14,16 @@ function Invoke-Helper([string[]]$extra, [bool]$sendResume, [UInt64]$identity, [
     if($sendResume) { $worker.StandardInput.WriteLine('resume'); $worker.StandardInput.Flush() }
     if(!$worker.WaitForExit(7000)) { $worker.Kill(); throw 'helper did not exit' }
     [pscustomobject]@{ Exit=$worker.ExitCode; Line=$line; Error=$worker.StandardError.ReadToEnd() }
-  } finally { $worker.Dispose() }
+  } finally {
+    if(!$worker.HasExited) {
+      try { $worker.StandardInput.Close() } catch { }
+      if(!$worker.WaitForExit(500)) {
+        try { $worker.Kill() } catch { }
+        $null=$worker.WaitForExit(3000)
+      }
+    }
+    $worker.Dispose()
+  }
 }
 try {
   $deadline = [DateTime]::UtcNow.AddSeconds(5)
@@ -30,6 +39,9 @@ try {
   $deadline=[DateTime]::UtcNow.AddSeconds(3); do { Start-Sleep -Milliseconds 50; $recovered=(Get-Item -LiteralPath $heartbeat).Length } while($recovered -le $after -and [DateTime]::UtcNow -lt $deadline); if($recovered -le $after) { throw 'rollback did not resume owned child' }
   $wrong=Invoke-Helper @() $false ($creation + 1) $false
   if($wrong.Exit -eq 0 -or $wrong.Error -notmatch 'creation identity mismatch') { throw "identity control failed: $($wrong | Out-String)" }
+  $timeout=Invoke-Helper @('-TimeoutMilliseconds','100') $false $creation $false
+  if($timeout.Exit -eq 0 -or $timeout.Error -notmatch 'resume handshake timeout') { throw "timeout control failed: $($timeout | Out-String)" }
+  $deadline=[DateTime]::UtcNow.AddSeconds(3); do { Start-Sleep -Milliseconds 50; $timeoutRecovered=(Get-Item -LiteralPath $heartbeat).Length } while($timeoutRecovered -le $recovered -and [DateTime]::UtcNow -lt $deadline); if($timeoutRecovered -le $recovered) { throw 'timeout finally did not resume owned child' }
   $resumeFailure=Invoke-Helper @('-InjectResumeFailure') $true $creation $false
   if($resumeFailure.Exit -ne 2 -or $resumeFailure.Error -notmatch 'ROLLBACK_INCOMPLETE') { throw "resume rollback control failed: $($resumeFailure | Out-String)" }
   Write-Output 'WINDOWS_OWNED_SUSPEND_PROTOCOL_PASS'
