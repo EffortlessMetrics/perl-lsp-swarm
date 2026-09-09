@@ -844,6 +844,10 @@ impl DebugAdapter {
             let mut current_file = String::new();
             let mut current_func = String::new();
             let mut current_line = 0;
+            // Diagnostic and stack-fallback locations are useful for later
+            // stops, but only perl5db's native context line authorizes the
+            // pending initial entry stop.
+            let mut native_context_observed = false;
             let mut _debugger_ready = false;
             // Most recent `error_re` message line (`<text> at FILE line N`). An
             // uncaught die arrives as that message line followed by the bare
@@ -1049,6 +1053,7 @@ impl DebugAdapter {
                         if let Some(re) = context_re()
                             && let Some(caps) = re.captures(&analysis_text)
                         {
+                            native_context_observed = true;
                             if let Some(func) = caps.name("func") {
                                 current_func = func.as_str().to_string();
                                 context_updated = true;
@@ -1221,7 +1226,9 @@ impl DebugAdapter {
                                     if was_running {
                                         let has_source_frame =
                                             !current_file.is_empty() && current_line > 0;
-                                        let entry_stop = s.entry_stop_pending && has_source_frame;
+                                        let entry_stop = s.entry_stop_pending
+                                            && native_context_observed
+                                            && has_source_frame;
                                         if entry_stop {
                                             s.entry_stop_pending = false;
                                         }
@@ -1434,6 +1441,8 @@ impl DebugAdapter {
                                     );
                                     let has_source_frame =
                                         !current_file.is_empty() && current_line > 0;
+                                    let has_authoritative_source_frame =
+                                        native_context_observed && has_source_frame;
                                     // Create stack frame with enhanced context validation
                                     if has_source_frame {
                                         let frame = StackFrame {
@@ -1479,13 +1488,14 @@ impl DebugAdapter {
                                         s.stack_frames = vec![frame];
                                         s.stack_frame_arguments.clear();
                                     }
-                                    if s.entry_stop_pending && !has_source_frame {
+                                    if s.entry_stop_pending && !has_authoritative_source_frame {
                                         // A prompt without a source context cannot satisfy
                                         // stopOnEntry's frame contract. Keep the entry stop
                                         // pending instead of exposing a synthetic location.
                                         s.state = DebugState::Running;
                                     } else if was_running || s.entry_stop_pending {
-                                        let entry_stop = s.entry_stop_pending;
+                                        let entry_stop =
+                                            s.entry_stop_pending && has_authoritative_source_frame;
                                         s.entry_stop_pending = false;
                                         s.state = DebugState::Stopped;
                                         should_emit_stopped = true;
@@ -2732,6 +2742,100 @@ mod tests {
 
         if stopped != 1 {
             return Err(format!("expected exactly one entry stop, got {stopped}"));
+        }
+        Ok(())
+    }
+
+    /// A diagnostic location can precede perl5db's first native context. It
+    /// must not consume stopOnEntry or become the initial frame authority.
+    #[cfg(unix)]
+    #[test]
+    fn output_reader_waits_for_native_context_after_warning() -> Result<(), String> {
+        use super::{DapMessage, DebugSession, ResumeMode, VariableCache, lock_or_recover};
+        use std::path::PathBuf;
+        use std::process::{Command, Stdio};
+        use std::sync::atomic::Ordering;
+        use std::sync::mpsc::{RecvTimeoutError, sync_channel};
+        use std::time::Duration;
+
+        let (sender, receiver) = sync_channel(32);
+        let mut adapter = DebugAdapter::new();
+        adapter.set_event_sender(sender);
+        adapter.initialized.store(true, Ordering::Release);
+
+        let child = Command::new("sh")
+            .args([
+                "-c",
+                "printf 'compile warning at /tmp/dap-entry-frame-fixture.pl line 3.\\nmain::(/tmp/dap-entry-frame-fixture.pl:4):\\nDB<1>\\nENTRY_WARNING_DONE\\n' >&2; sleep 1",
+            ])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|error| format!("failed to spawn warning fixture: {error}"))?;
+
+        *lock_or_recover(&adapter.session, "test.session") = Some(DebugSession {
+            process: child,
+            state: DebugState::Running,
+            stack_frames: Vec::new(),
+            stack_frame_arguments: HashMap::new(),
+            variable_cache: VariableCache::default(),
+            thread_id: 1,
+            last_resume_mode: ResumeMode::Unknown,
+            entry_stop_pending: true,
+            stopped_generation: 0,
+        });
+        adapter.start_output_reader(PathBuf::from("/tmp"));
+
+        let mut stopped_line = None;
+        let mut saw_completion_marker = false;
+        let mut saw_terminated = false;
+        while !saw_completion_marker || !saw_terminated {
+            match receiver.recv_timeout(Duration::from_secs(3)) {
+                Ok(DapMessage::Event { event, body, .. }) if event == "stopped" => {
+                    if stopped_line.is_some() {
+                        return Err("warning/context fixture emitted duplicate stops".into());
+                    }
+                    let reason = body
+                        .as_ref()
+                        .and_then(|value| value.get("reason"))
+                        .and_then(|value| value.as_str())
+                        .ok_or("warning/context stop did not contain a reason")?;
+                    if reason != "entry" {
+                        return Err(format!("warning/context stopped for {reason}, not entry"));
+                    }
+                    let session = lock_or_recover(&adapter.session, "test.session");
+                    let frame = session
+                        .as_ref()
+                        .and_then(|value| value.stack_frames.first())
+                        .ok_or("entry stop did not install a source frame")?;
+                    stopped_line = Some(frame.line);
+                }
+                Ok(DapMessage::Event { event, body, .. }) if event == "output" => {
+                    if body
+                        .as_ref()
+                        .and_then(|value| value.get("output"))
+                        .and_then(|value| value.as_str())
+                        .is_some_and(|output| output.contains("ENTRY_WARNING_DONE"))
+                    {
+                        saw_completion_marker = true;
+                    }
+                }
+                Ok(DapMessage::Event { event, .. }) if event == "terminated" => {
+                    saw_terminated = true;
+                }
+                Ok(_) => {}
+                Err(RecvTimeoutError::Timeout) => {
+                    return Err("warning fixture did not reach its completion marker".into());
+                }
+                Err(RecvTimeoutError::Disconnected) => {
+                    return Err("warning fixture event channel disconnected".into());
+                }
+            }
+        }
+
+        if stopped_line != Some(4) {
+            return Err(format!("warning location consumed entry frame: {stopped_line:?}"));
         }
         Ok(())
     }
