@@ -164,6 +164,21 @@ M/A/D delta, and explicit suite additions. The pending receipt records those
 inputs and the staged output ownership, while the generated tree and staged
 suites are disposable pre-merge artifacts.
 
+Pending composition validates every shell path before invoking a process and
+rejects existing symlink or Windows reparse-point aliases before it creates,
+clears, or traverses composer-owned roots. Existing output, temporary, and
+suite roots receive recursive alias inspection; ancestor prefixes and
+the base and receipt paths receive direct inspection. UNC, device, and
+drive-relative Windows roots are rejected because this route has no
+realpath-aware adapter for them. The shared path quoting also applies to the
+landed composition routes, so ordinary paths with spaces remain supported but
+shell-active path characters fail closed.
+
+Alias inspection uses Windows PowerShell (`powershell`) on Windows and shell
+test predicates plus `find -P` on POSIX. Process startup, exit, and inspection
+errors refuse composition. Recursive inspection is scoped to the three
+selected writable roots; it has no entry-count or depth cap.
+
 ## Deliberate boundaries
 
 The harness does not spawn real processes, does not drive `server.lua`'s

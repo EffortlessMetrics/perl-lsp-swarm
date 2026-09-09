@@ -160,7 +160,10 @@ end
 -- ---------------------------------------------------------------------------
 
 local scratch_root = (os.getenv("TEMP") or ".") .. "/compose_materializer_scratch"
-os.execute('mkdir "' .. scratch_root .. '" 2>nul')
+local IS_WINDOWS = package.config:sub(1, 1) == "\\"
+os.execute(IS_WINDOWS
+  and ('mkdir "' .. scratch_root .. '" 2>nul')
+  or ('mkdir -p "' .. scratch_root .. '" 2>/dev/null'))
 
 -- Directory creation is deferred and flushed as ONE chained command:
 -- process spawns dominate runtime on this host.
@@ -180,10 +183,12 @@ local function flush_dirs()
   if #PENDING == 0 then return end
   local parts = {}
   for _, d in ipairs(PENDING) do
-    parts[#parts + 1] = 'mkdir "' .. d .. '" 2>nul'
+    parts[#parts + 1] = IS_WINDOWS
+      and ('mkdir "' .. d .. '" 2>nul')
+      or ('mkdir -p "' .. d .. '" 2>/dev/null')
   end
   PENDING = {}
-  os.execute(table.concat(parts, " & "))
+  os.execute(table.concat(parts, IS_WINDOWS and " & " or " && "))
 end
 
 local function write_file(path, bytes)
@@ -622,6 +627,25 @@ do
   local pending_manifest = manifest({}, { prof("empty", {}) }, base_blobs)
   local function pending_adapter(spec)
     return {
+      component_exists = function(sha)
+        return spec.components and spec.components[sha] ~= nil or false
+      end,
+      touched_upstream_paths = function(sha)
+        local component = spec.components and spec.components[sha]
+        local out = {}
+        for path in pairs(component and component.paths or {}) do
+          out[#out + 1] = path
+        end
+        table.sort(out)
+        return out
+      end,
+      snapshot = function(sha, path, dest)
+        local component = spec.components and spec.components[sha]
+        local bytes = component and component.paths[path]
+        if not bytes then error("missing pending component snapshot") end
+        write_file(dest, bytes)
+        return true
+      end,
       tree_inventory = function(ref, prefix)
         local root = prefix:find("upstream") and "upstream"
           or prefix:find("tests") and "tests" or "fallback"
@@ -787,6 +811,49 @@ do
     })
   end, "P1 correct source blob still rejects invalid generated Lua")
 
+  local receipt_spec, receipt_ad = fixture()
+  local receipt_first = pending_run(receipt_spec, receipt_ad, "receipt-reuse")
+  ok(read_file(receipt_first.receipt_path) ~= nil,
+    "P1 successful pending composition writes its receipt")
+  local original_remove = os.remove
+  local original_open = io.open
+  os.remove = function(path)
+    if path == receipt_first.receipt_path then return nil end
+    return original_remove(path)
+  end
+  io.open = function(path, mode)
+    if path == receipt_first.receipt_path and mode == "rb" then return nil end
+    return original_open(path, mode)
+  end
+  expect_error("pending_receipt", function()
+    pending_run(receipt_spec, receipt_ad, "receipt-reuse")
+  end, "P1 existing receipt removal failure blocks recomposition")
+  os.remove = original_remove
+  io.open = original_open
+  ok(read_file(receipt_first.receipt_path) ~= nil,
+    "P1 removal failure preserves the prior receipt for diagnosis")
+  local receipt_invalid = "this source is invalid lua\n"
+  local receipt_invalid_blob = fnv_hex(receipt_invalid)
+  receipt_spec.trees[refs.source].upstream["init.lua"] = receipt_invalid_blob
+  receipt_spec.bytes[refs.source]["init.lua"] = receipt_invalid
+  expect_error("pending_proof", function()
+    compose.materialize_pending({
+      manifest = pending_manifest, adapter = receipt_ad, profile = "empty",
+      base_dir = base_dir, out_dir = receipt_first.tree_dir,
+      receipt_path = receipt_first.receipt_path,
+      base_ref = refs.base, source_ref = refs.source,
+      declared_delta = {
+        { status = "M", path = "upstream/init.lua",
+          base_blob = base_blobs["init.lua"], source_blob = receipt_invalid_blob },
+      }, suite_specs = {
+        { path = "tests/pending_test.lua", source_blob = receipt_spec.pending_test_blob,
+          module = "init.lua" },
+      },
+    })
+  end, "P1 failed recomposition invalidates the prior receipt")
+  ok(read_file(receipt_first.receipt_path) == nil,
+    "P1 failed recomposition leaves no stale receipt")
+
   local omitted_manifest = manifest({}, { prof("empty", {}) }, base_blobs)
   local omitted_spec, omitted_ad = fixture()
   expect_error("pending_proof", function()
@@ -903,6 +970,34 @@ do
       }, suite_specs = {}, })
   end, "P1 suite/output sibling layout")
 
+  local alias_dir = pending_root .. "/base-alias"
+  local alias_created
+  if IS_WINDOWS then
+    alias_created = os.execute('cmd /c mklink /J "' .. alias_dir
+      .. '" "' .. base_dir .. '" >nul 2>&1')
+  else
+    alias_created = os.execute('ln -s "' .. base_dir .. '" "' .. alias_dir
+      .. '" 2>/dev/null')
+  end
+  if alias_created == true or alias_created == 0 then
+    expect_error("pending_path_alias", function()
+      compose.materialize_pending({ manifest = pending_manifest, adapter = ad,
+        profile = "empty", base_dir = alias_dir,
+        out_dir = pending_root .. "/alias-check/upstream",
+        receipt_path = pending_root .. "/alias-check/receipt.json",
+        base_ref = refs.base, source_ref = refs.source,
+        required_modules = { "init.lua", "json.lua", "util.lua",
+          "capability_manifest.lua" },
+        declared_delta = {
+          { status = "M", path = "upstream/init.lua",
+            base_blob = base_blobs["init.lua"],
+            source_blob = source_blobs["init.lua"] },
+        }, suite_specs = {}, })
+    end, "P1 existing directory alias is rejected before mutation")
+  else
+    print("P1 directory alias probe: NOT RUN (alias creation unavailable)")
+  end
+
   local unsupported_spec, unsupported_ad = fixture()
   unsupported_spec.diff = { { status = "R", path = "upstream/init.lua" } }
   expect_error("pending_delta_mismatch", function()
@@ -990,12 +1085,21 @@ do
   rename_spec.trees[refs.source].upstream["renamed.lua"] = rename_source_blobs["renamed.lua"]
   rename_spec.bytes[refs.base] = rename_bytes
   rename_spec.bytes[refs.source] = renamed_source
+  local optional_sha = "3333333333333333333333333333333333333333"
+  rename_spec.components = { [optional_sha] = { paths = {
+    ["obsolete.lua"] = rename_bytes["obsolete.lua"],
+  } } }
   rename_spec.diff = {
     { status = "A", path = "upstream/renamed.lua" },
     { status = "D", path = "upstream/obsolete.lua" },
     { status = "M", path = "upstream/init.lua" },
   }
-  local rename_manifest = manifest({}, { prof("empty", {}) }, rename_base_blobs)
+  local rename_base_files = {}
+  for path, blob in pairs(base_blobs) do rename_base_files[path] = blob end
+  local rename_manifest = manifest({
+    comp("optional", optional_sha, { "obsolete.lua" },
+      { ["obsolete.lua"] = rename_bytes["obsolete.lua"] }),
+  }, { prof("empty", { "optional" }) }, rename_base_files)
   local rename_result = compose.materialize_pending({
     manifest = rename_manifest, adapter = rename_ad, profile = "empty",
     base_dir = base_dir, out_dir = pending_root .. "/rename/upstream",
@@ -1019,7 +1123,109 @@ do
   ok(rename_result.tree["renamed.lua"] == rename_source_blobs["renamed.lua"],
     "P1 rename-as-add installs the new source path")
   ok(rename_result.tree["obsolete.lua"] == nil,
-    "P1 rename-as-delete removes the old source path")
+    "P1 optional component delete removes its effective module")
+
+  local runtime_spec, runtime_ad = fixture()
+  local runtime_bytes = "return { runtime = true }\n"
+  local runtime_blob = fnv_hex(runtime_bytes)
+  local runtime_base_blobs = {}
+  for path, blob in pairs(base_blobs) do runtime_base_blobs[path] = blob end
+  runtime_base_blobs["listbox.lua"] = runtime_blob
+  write_file(base_dir .. "/listbox.lua", runtime_bytes)
+  runtime_spec.trees[refs.base].upstream["listbox.lua"] = runtime_blob
+  runtime_spec.trees[refs.source].upstream["listbox.lua"] = nil
+  runtime_spec.bytes[refs.base]["listbox.lua"] = runtime_bytes
+  runtime_spec.bytes[refs.source]["listbox.lua"] = nil
+  runtime_spec.diff = { { status = "D", path = "upstream/listbox.lua",
+    base_blob = runtime_blob } }
+  local runtime_manifest = manifest({}, { prof("empty", {}) }, runtime_base_blobs)
+  expect_error("pending_required_module", function()
+    compose.materialize_pending({
+      manifest = runtime_manifest, adapter = runtime_ad, profile = "empty",
+      base_dir = base_dir, out_dir = pending_root .. "/runtime-delete/upstream",
+      receipt_path = pending_root .. "/runtime-delete/receipt.json",
+      base_ref = refs.base, source_ref = refs.source,
+      declared_delta = { { status = "D", path = "upstream/listbox.lua",
+        base_blob = runtime_blob } }, suite_specs = {},
+    })
+  end, "P1 pristine runtime module deletion requires projected retention")
+
+  local function fake_popen(lines, close_result)
+    local handle = {}
+    function handle:lines()
+      local index = 0
+      return function()
+        index = index + 1
+        return lines[index]
+      end
+    end
+    function handle:close()
+      return table.unpack(close_result)
+    end
+    return handle
+  end
+  local function with_fake_popen(lines, close_result, fn, on_open)
+    local original = io.popen
+    io.popen = function(command)
+      if on_open then on_open(command) end
+      return fake_popen(lines, close_result)
+    end
+    local ran, result = pcall(fn)
+    io.popen = original
+    if not ran then error(result, 0) end
+    return result
+  end
+  local empty_git = compose.git_adapter({ repo_root = scratch_root })
+  local empty_inventory = with_fake_popen({}, { true }, function()
+    return empty_git.tree_inventory(refs.source, "clients/lite-xl/tests")
+  end)
+  local empty_delta = with_fake_popen({}, { true }, function()
+    return empty_git.diff_entries(refs.base, refs.source,
+      { "clients/lite-xl/upstream" })
+  end)
+  ok(next(empty_inventory) == nil and next(empty_delta) == nil,
+    "P1 proof Git reads preserve successful empty output")
+
+  local failed_git = compose.git_adapter({ repo_root = scratch_root })
+  expect_error("pending_tree_inventory", function()
+    with_fake_popen({}, { nil, "exit", 1 }, function()
+      return failed_git.tree_inventory(refs.source, "clients/lite-xl/tests")
+    end)
+  end, "P1 failed tree read cannot become an empty inventory")
+  expect_error("pending_diff", function()
+    with_fake_popen({}, { nil, "exit", 1 }, function()
+      return failed_git.diff_entries(refs.base, refs.source,
+        { "clients/lite-xl/upstream" })
+    end)
+  end, "P1 failed diff read cannot become an empty delta")
+
+  local abnormal_git = compose.git_adapter({ repo_root = scratch_root })
+  expect_error("pending_tree_inventory", function()
+    with_fake_popen({}, { nil, "signal", 9 }, function()
+      return abnormal_git.tree_inventory(refs.source, "clients/lite-xl/tests")
+    end)
+  end, "P1 abnormal tree read fails closed")
+  expect_error("pending_diff", function()
+    with_fake_popen({}, { nil, "signal", 9 }, function()
+      return abnormal_git.diff_entries(refs.base, refs.source,
+        { "clients/lite-xl/upstream" })
+    end)
+  end, "P1 abnormal diff read fails closed")
+
+  local shell_calls = 0
+  local shell_git = compose.git_adapter({ repo_root = scratch_root })
+  with_fake_popen({}, { true }, function()
+    expect_error("unsafe_shell_path", function()
+      shell_git.tree_inventory(refs.source, "clients/lite-xl/tests/evil&name")
+    end, "P1 shell-active tree path is rejected before execution")
+  end, function() shell_calls = shell_calls + 1 end)
+  ok(shell_calls == 0, "P1 denied shell path does not reach the process")
+  local allowed_inventory = with_fake_popen({}, { true }, function()
+    return shell_git.tree_inventory(refs.source,
+      "clients/lite-xl/tests/allowed name.lua")
+  end, function() shell_calls = shell_calls + 1 end)
+  ok(next(allowed_inventory) == nil and shell_calls == 1,
+    "P1 safe tree path reaches the mocked process")
 
   local clean_tree = pending_root .. "/accepted-again/upstream"
   write_file(clean_tree .. "/hand-edit.lua", "return true\n")

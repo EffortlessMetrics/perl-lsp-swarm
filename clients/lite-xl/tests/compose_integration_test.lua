@@ -384,9 +384,9 @@ if os.getenv("COMPOSE_PENDING_REAL_PROOF") == "1" then
     and resolve.modules[1] == "init.lua",
     "P1 source-bound resolve suite is green with exact source/module")
   local pending_receipt_text = read_file(pending_receipt)
-  ok(pending_receipt_text:find('"schema":"pending%-composed%-candidate%-receipt%.v1"'),
+  ok(pending_receipt_text:find('"schema":"pending-composed-candidate-receipt.v1"', 1, true),
     "P1 receipt has distinct pre-merge schema")
-  ok(pending_receipt_text:find('"admission":"pre%-merge"'),
+  ok(pending_receipt_text:find('"admission":"pre-merge"', 1, true),
     "P1 receipt records pre-merge admission")
 
   local rejected, rejection_output = run_capture(string.format(

@@ -87,7 +87,45 @@ end
 local IS_WINDOWS = package.config:sub(1, 1) == "\\"
 
 local function quote(path)
+  if type(path) ~= "string" then
+    fail("unsafe_shell_path", { path = tostring(path),
+      shell = IS_WINDOWS and "windows-cmd" or "posix-sh",
+      message = "path must be a string" })
+  end
+  local active = IS_WINDOWS
+    and { ["\0"] = true, ["\r"] = true, ["\n"] = true,
+      ["\""] = true, ["%"] = true, ["&"] = true, ["|"] = true,
+      ["<"] = true, [">"] = true, ["^"] = true, ["("] = true,
+      [")"] = true, ["!"] = true, ["$"] = true, ["`"] = true,
+      [";"] = true }
+    or { ["\0"] = true, ["\r"] = true, ["\n"] = true,
+      ["\""] = true, ["$"] = true, ["&"] = true, ["|"] = true,
+      ["<"] = true, [">"] = true, [";"] = true, ["("] = true,
+      [")"] = true, ["`"] = true, ["\\"] = true }
+  for i = 1, #path do
+    local char = path:sub(i, i)
+    if active[char] then
+      fail("unsafe_shell_path", { path = path,
+        shell = IS_WINDOWS and "windows-cmd" or "posix-sh",
+        message = "unsupported shell-active path character" })
+    end
+  end
   return '"' .. path .. '"'
+end
+
+local function quote_windows_command(text)
+  if not IS_WINDOWS then return quote(text) end
+  for i = 1, #text do
+    local char = text:sub(i, i)
+    if char == "\0" or char == "\r" or char == "\n"
+      or char == '"' or char == "%" or char == "&"
+      or char == "|" or char == "<" or char == ">"
+      or char == "^" or char == "!" then
+      fail("unsafe_shell_path", { shell = "windows-cmd",
+        message = "unsupported shell-active command character" })
+    end
+  end
+  return '"' .. text .. '"'
 end
 
 local function capture_lines(cmd)
@@ -97,6 +135,30 @@ local function capture_lines(cmd)
     if #line > 0 then out[#out + 1] = line end
   end
   ph:close()
+  return out
+end
+
+local function capture_lines_checked(cmd, code, fields)
+  local ph, open_err = io.popen(cmd)
+  if not ph then
+    local details = {}
+    for k, v in pairs(fields or {}) do details[k] = v end
+    details.message = "process could not start"
+    details.error = open_err
+    fail(code, details)
+  end
+  local out = {}
+  for line in ph:lines() do
+    if #line > 0 then out[#out + 1] = line end
+  end
+  local ok, kind, status = ph:close()
+  if ok ~= true then
+    local details = {}
+    for k, v in pairs(fields or {}) do details[k] = v end
+    details.kind, details.status = kind, status
+    details.message = "process terminated unsuccessfully"
+    fail(code, details)
+  end
   return out
 end
 
@@ -213,6 +275,10 @@ function M.git_adapter(opts)
     return 'git -C ' .. quote(root) .. ' ' .. args
   end
 
+  local function proof_lines(cmd, code, fields)
+    return capture_lines_checked(cmd, code, fields)
+  end
+
   -- Batch helpers: one spawn per batch instead of one per item (git
   -- process startup dominates runtime on this host). Scratch file names
   -- carry a per-adapter tag so concurrent compositions in one checkout
@@ -304,8 +370,9 @@ function M.git_adapter(opts)
           ref = ref, prefix = prefix, message = "invalid tree prefix",
         })
       end
-      local lines = capture_lines(git("ls-tree -r " .. ref .. " -- "
-        .. quote(clean_prefix)))
+      local lines = proof_lines(git("ls-tree -r " .. ref .. " -- "
+        .. quote(clean_prefix)), "pending_tree_inventory",
+        { ref = ref, prefix = prefix })
       local out = {}
       local marker = clean_prefix .. "/"
       for _, line in ipairs(lines) do
@@ -361,7 +428,8 @@ function M.git_adapter(opts)
       for _, prefix in ipairs(prefixes or {}) do
         args[#args + 1] = quote(prefix)
       end
-      local lines = capture_lines(git(table.concat(args, " ")))
+      local lines = proof_lines(git(table.concat(args, " ")), "pending_diff",
+        { base_ref = base_ref, source_ref = source_ref })
       local out = {}
       for _, line in ipairs(lines) do
         local status, path = line:match("^([A-Z])\t(.+)$")
@@ -1077,12 +1145,189 @@ local function local_path_key(path)
       parts[#parts + 1] = component
     end
   end
-  return (root .. table.concat(parts, "/")):gsub("/$", ""):lower()
+  local key = (root .. table.concat(parts, "/")):gsub("/$", "")
+  return IS_WINDOWS and key:lower() or key
 end
 
 local function path_contains(parent, child)
   local p, c = local_path_key(parent), local_path_key(child)
   return c == p or c:sub(1, #p + 1) == p .. "/"
+end
+
+local function path_prefixes(path)
+  local normalized = path:gsub("\\", "/")
+  -- UNC, device, and drive-relative roots need a realpath-aware adapter;
+  -- rejecting them here avoids inspecting a different local path after the
+  -- normalization below.
+  if normalized:match("^//") or normalized:match("^%a:$")
+    or normalized:match("^%a:[^/]") then
+    fail("pending_path_alias", { path = path,
+      message = "unsupported filesystem path root" })
+  end
+  if not normalized:match("^%a:/") and normalized:sub(1, 1) ~= "/" then
+    normalized = current_working_dir():gsub("\\", "/") .. "/" .. normalized
+  end
+  local root, rest = normalized:match("^(%a:/)(.*)$")
+  if not root then root, rest = normalized:match("^(/)(.*)$") end
+  if not root then root, rest = "", normalized end
+  local current, out = root, {}
+  for component in rest:gmatch("[^/]+") do
+    if component == "." then
+      -- Nothing to add.
+    elseif component == ".." then
+      current = current:match("^(.*)/[^/]+/?$") or current
+    else
+      current = current:gsub("/$", "") .. "/" .. component
+      out[#out + 1] = current
+    end
+  end
+  return out
+end
+
+local function reject_pending_aliases(paths)
+  if IS_WINDOWS then
+    local script = { "$ErrorActionPreference='Stop';" }
+    local present = {}
+    for _, entry in ipairs(paths) do
+      local prefixes = path_prefixes(entry.path)
+      local quoted = {}
+      for _, prefix in ipairs(prefixes) do
+        -- Validate every path before embedding it in the PowerShell literal.
+        quote(prefix)
+        quoted[#quoted + 1] = "'" .. prefix:gsub("'", "''") .. "'"
+      end
+      local target = "'" .. entry.path:gsub("'", "''") .. "'"
+      script[#script + 1] = "Write-Output 'TARGET_BEGIN'; "
+        .. "$prefixes=@(" .. table.concat(quoted, ",") .. "); "
+        .. "$targetState='ABSENT'; $bad=$false; "
+        .. "foreach($p in $prefixes){try{$i=Get-Item -LiteralPath $p "
+        .. "-Force -ErrorAction Stop; if(($i.Attributes -band "
+        .. "[IO.FileAttributes]::ReparsePoint) -ne 0){"
+        .. "Write-Output 'P_ALIAS'; $bad=$true; break}; "
+        .. "Write-Output 'P_NORMAL'; $targetState='NORMAL'} catch {"
+        .. "if($_.CategoryInfo.Category -eq 'ObjectNotFound'){"
+        .. "Write-Output 'P_ABSENT'; $targetState='ABSENT'; break}; "
+        .. "Write-Output 'P_ERROR'; "
+        .. "$bad=$true; break}}; "
+        .. "if(-not $bad -and $targetState -eq 'NORMAL'"
+        .. (entry.recursive and "){" or "){ }; ")
+      if entry.recursive then
+        script[#script + 1] = "$i=Get-Item -LiteralPath " .. target
+          .. " -Force -ErrorAction Stop; if($i.PSIsContainer){"
+          .. "$q=New-Object 'System.Collections.Generic.Queue[System.IO.DirectoryInfo]'; "
+          .. "$q.Enqueue($i); $alias=$false; while($q.Count -ne 0 "
+          .. "-and -not $alias){$d=$q.Dequeue(); $j=@(Get-ChildItem "
+          .. "-LiteralPath $d.FullName -Force -ErrorAction Stop); "
+          .. "foreach($x in $j){if(($x.Attributes -band "
+          .. "[IO.FileAttributes]::ReparsePoint) -ne 0){$alias=$true; break}; "
+          .. "if($x.PSIsContainer){$q.Enqueue($x)}}}; "
+          .. "if($alias){Write-Output 'R_ALIAS'}else{Write-Output 'R_NORMAL'}} "
+          .. "else {Write-Output 'R_NORMAL'}}; "
+      end
+      script[#script + 1] = "Write-Output 'TARGET_END';"
+    end
+    local lines = capture_lines_checked(
+      "powershell -NoProfile -NonInteractive -Command "
+        .. quote_windows_command(table.concat(script, " ")),
+      "pending_path_alias", { message = "path alias inspection failed" })
+    local index = 1
+    for _, entry in ipairs(paths) do
+      if lines[index] ~= "TARGET_BEGIN" then
+        fail("pending_path_alias", { path = entry.path, name = entry.name,
+          message = "path inspection returned an unknown state" })
+      end
+      index = index + 1
+      local alias, error_state, target_state, recursive_state = false, false,
+        "ABSENT", nil
+      while lines[index] and lines[index] ~= "TARGET_END" do
+        local state = lines[index]
+        if state == "P_ALIAS" then alias = true
+        elseif state == "P_ERROR" then error_state = true
+        elseif state == "P_NORMAL" then target_state = "NORMAL"
+        elseif state == "P_ABSENT" then target_state = "ABSENT"
+        elseif state == "R_ALIAS" then recursive_state = "ALIAS"
+        elseif state == "R_NORMAL" then recursive_state = "NORMAL"
+        else error_state = true end
+        index = index + 1
+      end
+      if lines[index] ~= "TARGET_END" then error_state = true end
+      index = index + 1
+      if alias then
+        fail("pending_path_alias", { path = entry.path, name = entry.name,
+          message = "existing path is a symlink or reparse point" })
+      elseif error_state then
+        fail("pending_path_alias", { path = entry.path, name = entry.name,
+          message = "path inspection returned an unknown state" })
+      elseif entry.recursive and target_state == "NORMAL"
+        and recursive_state ~= "NORMAL" then
+        fail("pending_path_alias", { path = entry.path, name = entry.name,
+          message = "recursive path inspection returned an unknown state" })
+      elseif recursive_state == "ALIAS" then
+        fail("pending_path_alias", { path = entry.path, name = entry.name,
+          message = "nested symlink or reparse point is not allowed" })
+      end
+      present[entry.path] = target_state == "NORMAL"
+    end
+    return present
+  end
+
+  local probe_cache = {}
+  local present = {}
+  local function probe(path, parent, name)
+    local cached = probe_cache[path]
+    if cached then return cached end
+    local q = quote(path)
+    local lines
+    lines = capture_lines_checked(
+      "if [ -L " .. q .. " ]; then printf ALIAS; "
+        .. "elif [ -e " .. q .. " ]; then printf NORMAL; "
+        .. "elif [ -d " .. quote(parent) .. " ] && [ -r "
+        .. quote(parent) .. " ] && [ -x " .. quote(parent)
+        .. " ]; then printf ABSENT; else printf ERROR; fi",
+      "pending_path_alias", { path = path, name = name })
+    local state = lines[1]
+    if state == "ALIAS" then
+      fail("pending_path_alias", { path = path, name = name,
+        message = "existing path is a symlink or reparse point" })
+    elseif state ~= "NORMAL" and state ~= "ABSENT" then
+      fail("pending_path_alias", { path = path, name = name,
+        message = "path inspection returned an unknown state" })
+    end
+    probe_cache[path] = state
+    return state
+  end
+
+  for _, entry in ipairs(paths) do
+    local target_state = "ABSENT"
+    -- Probe each existing prefix so an alias parent is rejected before any
+    -- descendant is created or traversed. Stop after the first absent
+    -- component; deeper components cannot exist independently.
+    local parent
+    for _, prefix in ipairs(path_prefixes(entry.path)) do
+      parent = prefix:match("^(.*)/[^/]+$") or "/"
+      if parent == "" then parent = "/" end
+      target_state = probe(prefix, parent, entry.name)
+      if target_state == "ABSENT" then break end
+    end
+    -- Existing output, suite, and temp directories are scanned recursively
+    -- without following aliases. Scan only the requested target: scanning
+    -- every existing ancestor repeats work and broadens the protected scope.
+    if entry.recursive and target_state == "NORMAL" then
+      local lines = capture_lines_checked(
+        "find -P " .. quote(entry.path) .. " -type l -print",
+        "pending_path_alias", { path = entry.path, name = entry.name })
+      if #lines > 0 then lines = { "ALIAS" } else lines = { "NORMAL" } end
+      if lines[1] == "ALIAS" then
+        fail("pending_path_alias", { path = entry.path, name = entry.name,
+          message = "nested symlink or reparse point is not allowed" })
+      elseif lines[1] ~= "NORMAL" then
+        fail("pending_path_alias", { path = entry.path, name = entry.name,
+          message = "recursive path inspection returned an unknown state" })
+      end
+    end
+    present[entry.path] = target_state == "NORMAL"
+  end
+  return present
 end
 
 local function ensure_pending_paths_disjoint(paths)
@@ -1186,11 +1431,12 @@ local function pending_blob(entry, first, second)
   return entry[first] or entry[second]
 end
 
-local function verify_pending_delta(opts, base_projection, source_projection)
+local function verify_pending_delta(opts, base_projection, source_projection,
+  base_ref, source_ref)
   if not opts.adapter.diff_entries then
     fail("pending_adapter", { message = "diff_entries is required" })
   end
-  local actual = opts.adapter.diff_entries(opts.base_ref, opts.source_ref, {
+  local actual = opts.adapter.diff_entries(base_ref, source_ref, {
     "clients/lite-xl/leaves/base", "clients/lite-xl/upstream",
   })
   local actual_by_path = {}
@@ -1258,9 +1504,13 @@ local function verify_pending_delta(opts, base_projection, source_projection)
   return exact
 end
 
-local function pending_required_modules(opts, source_projection, suite_specs)
-  local required = opts.required_modules
+local function pending_required_modules(manifest, opts, source_projection, suite_specs)
   local names = {}
+  for path in pairs((manifest.upstream_base or {}).files or {}) do
+    names[#names + 1] = require_canonical_relative(path,
+      "pending_required_module", "path")
+  end
+  local required = opts.required_modules
   if required and #required > 0 then
     for _, path in ipairs(required) do
       names[#names + 1] = require_canonical_relative(path,
@@ -1421,7 +1671,6 @@ function M.materialize_pending(opts)
   local source_ref = opts.source_ref or (opts.source and opts.source.ref)
   require_pending_ref(base_ref, "base_ref")
   require_pending_ref(source_ref, "source_ref")
-  opts.base_ref, opts.source_ref = base_ref, source_ref
   local base_dir = opts.base_dir or fail("pending_identity", { message = "base_dir required" })
   local out_dir = opts.out_dir or fail("pending_identity", { message = "out_dir required" })
   local receipt_path = opts.receipt_path or fail("pending_identity", { message = "receipt_path required" })
@@ -1443,6 +1692,13 @@ function M.materialize_pending(opts)
       message = "suite directory must be beside generated upstream tree",
     })
   end
+  local pending_path_state = reject_pending_aliases({
+    { name = "base_dir", path = base_dir },
+    { name = "out_dir", path = out_dir, recursive = true },
+    { name = "temp_dir", path = tmp_root, recursive = true },
+    { name = "suite_dir", path = suite_dir, recursive = true },
+    { name = "receipt_path", path = receipt_path },
+  })
   if not adapter.is_ancestor or not adapter.is_ancestor(base_ref, source_ref) then
     fail("pending_source_ancestry", { base_ref = base_ref, source_ref = source_ref })
   end
@@ -1453,13 +1709,20 @@ function M.materialize_pending(opts)
   same_inventory(base_projection.files, landed.inventory,
     "pending_base_mismatch", "landed")
   local source_projection = pending_projection(adapter, source_ref)
-  local delta = verify_pending_delta(opts, base_projection, source_projection)
+  local delta = verify_pending_delta(opts, base_projection, source_projection,
+    base_ref, source_ref)
   local inherited = inherited_pending_suites(manifest, opts.profile, landed,
     adapter, source_ref)
   local suites = pending_suite_specs(opts, inherited)
-  local required = pending_required_modules(opts, source_projection, suites)
+  local required = pending_required_modules(manifest, opts, source_projection, suites)
   require_changed_module_proof(delta, suites)
 
+  if pending_path_state[receipt_path] and not os.remove(receipt_path) then
+    fail("pending_receipt", {
+      receipt_path = receipt_path,
+      message = "cannot invalidate prior pending receipt",
+    })
+  end
   ensure_dirs({ out_dir, receipt_dir, tmp_root })
   for _, rel in ipairs(list_files_relative(out_dir)) do os.remove(out_dir .. "/" .. rel) end
   for _, path in ipairs(sorted_map_keys(source_projection.files)) do
@@ -1807,7 +2070,7 @@ local function cli(argv)
       repo_root = script_dir() .. "/../..",
     })
     local existing = read_bytes(flags.receipt)
-    if existing and existing:find('"schema":"pending%-composed%-candidate%-receipt%.v1"', 1, false) then
+    if existing and existing:find('"schema":"pending-composed-candidate-receipt.v1"', 1, true) then
       print("verification FAILED: pending pre-merge receipt is not landed/support evidence")
       return 1
     end
