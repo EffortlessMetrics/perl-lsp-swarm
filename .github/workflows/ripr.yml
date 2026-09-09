@@ -54,6 +54,16 @@ on:
         required: true
         default: false
         type: boolean
+      measurement_head_sha:
+        description: 'Exact 40-character source head SHA for the hosted measurement'
+        required: false
+        default: ''
+        type: string
+      measurement_base_sha:
+        description: 'Exact 40-character source base SHA for the hosted measurement'
+        required: false
+        default: ''
+        type: string
 
 concurrency:
   group: ripr-${{ github.event.pull_request.number || github.ref }}
@@ -1073,13 +1083,33 @@ jobs:
       RIPR_VERSION: "0.10.0"
       RIPR_MAX_DIFF_INDEX_FILES: "1000"
       BASE_REF: ${{ github.event.repository.default_branch }}
-      PR_HEAD_SHA: ${{ github.sha }}
+      PR_HEAD_SHA: ${{ inputs.measurement_head_sha }}
+      MEASUREMENT_HEAD_SHA: ${{ inputs.measurement_head_sha }}
+      MEASUREMENT_BASE_SHA: ${{ inputs.measurement_base_sha }}
       CARGO_BUILD_JOBS: "2"
     steps:
+      - name: Validate exact measurement source inputs
+        shell: bash
+        env:
+          MEASUREMENT_HEAD_SHA: ${{ inputs.measurement_head_sha }}
+          MEASUREMENT_BASE_SHA: ${{ inputs.measurement_base_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$MEASUREMENT_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "::error::measurement_head_sha must be an exact 40-character lowercase commit SHA"
+            exit 1
+          }
+          [[ "$MEASUREMENT_BASE_SHA" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "::error::measurement_base_sha must be an exact 40-character lowercase commit SHA"
+            exit 1
+          }
+
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           fetch-depth: 0
+          ref: ${{ inputs.measurement_head_sha }}
+          persist-credentials: false
 
       - name: Run canonical RIPR in bounded container
         shell: bash
@@ -1117,6 +1147,8 @@ jobs:
             -e RIPR_MAX_DIFF_INDEX_FILES \
             -e BASE_REF \
             -e PR_HEAD_SHA \
+            -e MEASUREMENT_HEAD_SHA \
+            -e MEASUREMENT_BASE_SHA \
             -e CARGO_BUILD_JOBS \
             -e MEASUREMENT_IMAGE_ID="$image_id" \
             -e MEASUREMENT_IMAGE_DIGEST="$image_digest" \
@@ -1130,17 +1162,23 @@ jobs:
               git config --global --add safe.directory /workspace
               mkdir -p target/ripr/pr
               printf "job_phase=container-tools-start\n" >> target/ripr/pr/ripr-measurement-config.txt
+              test "$(git rev-parse HEAD)" = "$MEASUREMENT_HEAD_SHA"
+              git cat-file -e "$MEASUREMENT_BASE_SHA^{commit}"
+              base_sha="$(git rev-parse "$MEASUREMENT_BASE_SHA^{commit}")"
+              test "$base_sha" = "$MEASUREMENT_BASE_SHA"
+              base_arg="$MEASUREMENT_BASE_SHA"
+              pr_head_arg="$MEASUREMENT_HEAD_SHA"
               cargo install ripr --version "$RIPR_VERSION" --locked
               rustc_version="$(rustc --version)"
               cargo_version="$(cargo --version)"
               ripr_version="$(ripr --version)"
               ripr_path="$(command -v ripr)"
               ripr_sha256="$(sha256sum "$ripr_path" | cut -d " " -f 1)"
-              base_sha="$(git rev-parse "origin/$BASE_REF")"
               {
-                printf "docker_memory=6g\ndocker_memory_swap=6g\n"
+                printf "docker_memory=6g\ndocker_memory_swap=6g\nworkflow_sha=%s\nsource_head_sha=%s\nsource_base_sha=%s\n"
+                  "$GITHUB_SHA" "$MEASUREMENT_HEAD_SHA" "$MEASUREMENT_BASE_SHA"
                 printf "head=%s\nbase=%s\nbase_sha=%s\nripr_version=%s\nripr_sha256=%s\nindex_limit=%s\n" \
-                  "$(git rev-parse HEAD)" "$BASE_REF" "$base_sha" "$ripr_version" "$ripr_sha256" "$RIPR_MAX_DIFF_INDEX_FILES"
+                  "$(git rev-parse HEAD)" "$base_arg" "$base_sha" "$ripr_version" "$ripr_sha256" "$RIPR_MAX_DIFF_INDEX_FILES"
                 printf "%s\n%s\n" "$rustc_version" "$cargo_version"
               } >> target/ripr/pr/ripr-measurement-config.txt
               cargo build -p xtask --locked
@@ -1148,7 +1186,7 @@ jobs:
               set +e
               timeout --signal=TERM --kill-after=30s 55m \
                 /usr/bin/time -v -o target/ripr/pr/ripr-measurement-time.txt \
-                cargo xtask ripr-pr --base "origin/$BASE_REF" --head HEAD --pr-head "$PR_HEAD_SHA"
+                cargo xtask ripr-pr --base "$base_arg" --head HEAD --pr-head "$pr_head_arg"
               analysis_status=$?
               set -e
               printf "analysis_exit=%s\n" "$analysis_status" >> target/ripr/pr/ripr-measurement-config.txt
