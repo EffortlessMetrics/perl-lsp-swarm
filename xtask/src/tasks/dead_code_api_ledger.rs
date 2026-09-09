@@ -1392,7 +1392,7 @@ struct ImportFacts {
     reaches_module: bool,
     /// A `use` tree names one of the surface types directly.
     names_surface_type: bool,
-    /// A `use` tree reaches `perl_parser::prelude` (or `crate::prelude`).
+    /// A `use` tree mentions a prelude route requiring scoped resolution.
     reaches_prelude: bool,
 }
 
@@ -1408,8 +1408,8 @@ struct ImportFacts {
 /// all.
 ///
 /// The bare identifier `DeadCode` is never sufficient on its own: `perl-tdd-support`
-/// has an unrelated `CodeSmell::DeadCode` variant. It counts only alongside a
-/// prelude import, which is the wildcard case.
+/// has an unrelated `CodeSmell::DeadCode` variant. Prelude consumption requires
+/// a path in the import's source scope, rather than a file-wide token match.
 ///
 /// Returns `Err` when the file cannot be parsed, so a scan that cannot see a
 /// file is recorded as instrument failure rather than silently reading as
@@ -1423,7 +1423,259 @@ fn references_surface(text: &str, inside_owning_crate: bool) -> std::result::Res
     let facts = import_facts(&file, inside_owning_crate);
     Ok(facts.reaches_module
         || facts.names_surface_type
-        || (facts.reaches_prelude && contains_word(text, "DeadCode")))
+        || (facts.reaches_prelude && scoped_prelude_use(&file, inside_owning_crate)))
+}
+
+/// Resolve explicit prelude paths and bare glob-imported type paths within
+/// source scopes. This is not compiler name resolution: macro expansion and
+/// ambiguous competing glob imports remain outside this source-only check.
+fn scoped_prelude_use(file: &syn::File, inside_owning_crate: bool) -> bool {
+    #[derive(Clone, Default, PartialEq, Eq)]
+    struct Scope {
+        roots: BTreeSet<String>,
+        preludes: BTreeSet<String>,
+        shadowed: BTreeSet<String>,
+        glob: bool,
+        imports_surface: bool,
+    }
+
+    fn import_bindings(tree: &syn::UseTree, prefix: &mut Vec<String>, scope: &mut Scope) {
+        match tree {
+            syn::UseTree::Path(node) => {
+                prefix.push(node.ident.to_string());
+                import_bindings(&node.tree, prefix, scope);
+                prefix.pop();
+            }
+            syn::UseTree::Group(group) => {
+                for tree in &group.items {
+                    import_bindings(tree, prefix, scope);
+                }
+            }
+            syn::UseTree::Glob(_) => {
+                if (prefix.len() == 1
+                    && prefix.first().is_some_and(|name| scope.preludes.contains(name)))
+                    || (prefix.len() == 2
+                        && prefix.first().is_some_and(|root| scope.roots.contains(root))
+                        && prefix.get(1).is_some_and(|name| name == "prelude"))
+                {
+                    scope.glob = true;
+                }
+            }
+            _ => {
+                let (original, local) = match tree {
+                    syn::UseTree::Name(node) => (node.ident.to_string(), node.ident.to_string()),
+                    syn::UseTree::Rename(node) => (node.ident.to_string(), node.rename.to_string()),
+                    _ => return,
+                };
+                if prefix.is_empty() && scope.roots.contains(&original) {
+                    scope.shadowed.remove(&local);
+                    scope.roots.insert(local);
+                } else if (prefix.is_empty() && scope.preludes.contains(&original))
+                    || (prefix.len() == 1
+                        && prefix.first().is_some_and(|root| scope.roots.contains(root))
+                        && original == "prelude")
+                    || (prefix.len() == 1
+                        && prefix.first().is_some_and(|name| scope.preludes.contains(name))
+                        && original == "self")
+                {
+                    scope.shadowed.remove(&local);
+                    scope.preludes.insert(local);
+                } else {
+                    if SURFACE_TYPES.contains(&original.as_str())
+                        && ((prefix.len() == 1
+                            && prefix.first().is_some_and(|name| scope.preludes.contains(name)))
+                            || (prefix.len() == 2
+                                && prefix.first().is_some_and(|name| scope.roots.contains(name))
+                                && prefix.get(1).is_some_and(|name| name == "prelude")))
+                    {
+                        scope.imports_surface = true;
+                    }
+                    scope.shadowed.insert(local);
+                }
+            }
+        }
+    }
+
+    fn with_items(mut scope: Scope, items: &[&syn::Item]) -> Scope {
+        // Imports are item-scoped, independent of their textual order. Each
+        // round can resolve another alias link. Stop at the fixed point;
+        // flattened import count bounds even chains inside one grouped use.
+        let import_count: usize = items
+            .iter()
+            .filter_map(|item| {
+                if let syn::Item::Use(node) = item {
+                    Some(flatten_use_tree(&node.tree, &mut Vec::new()).len())
+                } else {
+                    None
+                }
+            })
+            .sum();
+        for _ in 0..=import_count {
+            let previous = scope.clone();
+            for item in items {
+                if let syn::Item::Use(node) = item {
+                    import_bindings(&node.tree, &mut Vec::new(), &mut scope);
+                }
+            }
+            if scope == previous {
+                break;
+            }
+        }
+        for item in items {
+            let ident = match item {
+                syn::Item::Struct(node) => Some(&node.ident),
+                syn::Item::Enum(node) => Some(&node.ident),
+                syn::Item::Union(node) => Some(&node.ident),
+                syn::Item::Type(node) => Some(&node.ident),
+                syn::Item::Trait(node) => Some(&node.ident),
+                syn::Item::Mod(node) => Some(&node.ident),
+                _ => None,
+            };
+            if let Some(ident) = ident {
+                scope.shadowed.insert(ident.to_string());
+            }
+        }
+        scope
+    }
+
+    struct Visitor {
+        scope: Scope,
+        initial: Scope,
+        found: bool,
+    }
+    impl Visitor {
+        fn with_generics(&mut self, generics: &syn::Generics, visit: impl FnOnce(&mut Self)) {
+            let previous = self.scope.clone();
+            for parameter in &generics.params {
+                if let syn::GenericParam::Type(parameter) = parameter {
+                    self.scope.shadowed.insert(parameter.ident.to_string());
+                }
+            }
+            visit(self);
+            self.scope = previous;
+        }
+    }
+    impl<'ast> syn::visit::Visit<'ast> for Visitor {
+        fn visit_item_fn(&mut self, node: &'ast syn::ItemFn) {
+            self.with_generics(&node.sig.generics, |this| syn::visit::visit_item_fn(this, node));
+        }
+
+        fn visit_item_struct(&mut self, node: &'ast syn::ItemStruct) {
+            self.with_generics(&node.generics, |this| syn::visit::visit_item_struct(this, node));
+        }
+
+        fn visit_item_enum(&mut self, node: &'ast syn::ItemEnum) {
+            self.with_generics(&node.generics, |this| syn::visit::visit_item_enum(this, node));
+        }
+
+        fn visit_item_union(&mut self, node: &'ast syn::ItemUnion) {
+            self.with_generics(&node.generics, |this| syn::visit::visit_item_union(this, node));
+        }
+
+        fn visit_item_type(&mut self, node: &'ast syn::ItemType) {
+            self.with_generics(&node.generics, |this| syn::visit::visit_item_type(this, node));
+        }
+
+        fn visit_item_impl(&mut self, node: &'ast syn::ItemImpl) {
+            self.with_generics(&node.generics, |this| syn::visit::visit_item_impl(this, node));
+        }
+
+        fn visit_item_trait(&mut self, node: &'ast syn::ItemTrait) {
+            self.with_generics(&node.generics, |this| syn::visit::visit_item_trait(this, node));
+        }
+
+        fn visit_impl_item_fn(&mut self, node: &'ast syn::ImplItemFn) {
+            self.with_generics(&node.sig.generics, |this| {
+                syn::visit::visit_impl_item_fn(this, node)
+            });
+        }
+
+        fn visit_trait_item_fn(&mut self, node: &'ast syn::TraitItemFn) {
+            self.with_generics(&node.sig.generics, |this| {
+                syn::visit::visit_trait_item_fn(this, node)
+            });
+        }
+
+        fn visit_impl_item_type(&mut self, node: &'ast syn::ImplItemType) {
+            self.with_generics(&node.generics, |this| syn::visit::visit_impl_item_type(this, node));
+        }
+
+        fn visit_trait_item_type(&mut self, node: &'ast syn::TraitItemType) {
+            self.with_generics(&node.generics, |this| {
+                syn::visit::visit_trait_item_type(this, node)
+            });
+        }
+
+        fn visit_item_mod(&mut self, node: &'ast syn::ItemMod) {
+            if let Some((_, items)) = &node.content {
+                let next = with_items(self.initial.clone(), &items.iter().collect::<Vec<_>>());
+                self.found |= next.imports_surface;
+                let previous = std::mem::replace(&mut self.scope, next);
+                for item in items {
+                    self.visit_item(item);
+                }
+                self.scope = previous;
+            }
+        }
+
+        fn visit_block(&mut self, node: &'ast syn::Block) {
+            let items: Vec<_> = node
+                .stmts
+                .iter()
+                .filter_map(|stmt| if let syn::Stmt::Item(item) = stmt { Some(item) } else { None })
+                .collect();
+            let next = with_items(self.scope.clone(), &items);
+            self.found |= next.imports_surface;
+            let previous = std::mem::replace(&mut self.scope, next);
+            syn::visit::visit_block(self, node);
+            self.scope = previous;
+        }
+
+        fn visit_expr_path(&mut self, node: &'ast syn::ExprPath) {
+            // These governed types have no bare value constructor. A local
+            // variable/constant called `DeadCode` is not a type consumption.
+            // Keep qualified constructors and generic type arguments visible.
+            for attribute in &node.attrs {
+                self.visit_attribute(attribute);
+            }
+            if let Some(qself) = &node.qself {
+                self.visit_qself(qself);
+            }
+            if node.path.segments.len() > 1 {
+                self.visit_path(&node.path);
+            } else {
+                for segment in &node.path.segments {
+                    self.visit_path_arguments(&segment.arguments);
+                }
+            }
+        }
+
+        fn visit_path(&mut self, path: &'ast syn::Path) {
+            if let Some(first) = path.segments.first() {
+                let name = first.ident.to_string();
+                if !self.scope.shadowed.contains(&name)
+                    && ((self.scope.glob && SURFACE_TYPES.contains(&name.as_str()))
+                        || (self.scope.preludes.contains(&name)
+                            && path.segments.iter().nth(1).is_some_and(|segment| {
+                                SURFACE_TYPES.contains(&segment.ident.to_string().as_str())
+                            })))
+                {
+                    self.found = true;
+                }
+            }
+            syn::visit::visit_path(self, path);
+        }
+    }
+    let mut initial = Scope::default();
+    initial.roots.insert("perl_parser".to_string());
+    if inside_owning_crate {
+        initial.roots.extend(["crate", "self", "super"].map(str::to_string));
+    }
+    let scope = with_items(initial.clone(), &file.items.iter().collect::<Vec<_>>());
+    let found = scope.imports_surface;
+    let mut visitor = Visitor { scope, initial, found };
+    syn::visit::Visit::visit_file(&mut visitor, file);
+    visitor.found
 }
 
 /// Extract the import facts that decide whether a file consumes this surface.
@@ -1494,7 +1746,9 @@ fn classify_import_path(path: &[String], roots: &BTreeSet<String>, facts: &mut I
     {
         facts.reaches_module = true;
     }
-    if rooted_at_surface_crate && path.iter().any(|seg| seg == "prelude") {
+    // This is only admission to the scoped visitor. Alias chains may not have
+    // reached a crate root in the deliberately shallow import-facts pass.
+    if path.iter().any(|seg| seg == "prelude") {
         facts.reaches_prelude = true;
     }
     // Only a *rooted* type import counts. Another crate may legitimately define
@@ -2187,6 +2441,56 @@ mod tests {
         assert!(!is_consumer("enum CodeSmell { DeadCode, Other }\n"));
         // Nor does a prelude import on its own.
         assert!(!is_consumer("use perl_parser::prelude::*;\nfn f(p: Parser) {}\n"));
+    }
+
+    #[test]
+    fn prelude_consumers_require_paths_in_the_import_scope() -> Result<()> {
+        for text in [
+            "use perl_parser::prelude::*; fn f(_: DeadCode) {}",
+            "use perl_parser::{prelude as p}; fn f(_: p::DeadCode) {}",
+            "mod hidden { use perl_parser::prelude::*; fn f(_: DeadCodeStats) {} }",
+            "fn f() { use perl_parser::prelude::*; let _: Option<DeadCode> = None; }",
+            "use perl_parser::prelude::*; fn f() { let _: Option<DeadCodeType> = None; }",
+            "use pf::prelude as p; use perl_parser as pf; fn f(_: p::DeadCode) {}",
+            "use perl_parser::prelude as p; use p::*; fn f(_: DeadCode) {}",
+            "use perl_parser::prelude as p; pub use p::DeadCode;",
+            "use perl_parser::prelude as p; fn f() { use p::DeadCode as D; }",
+            "use perl_parser::prelude::*; fn f() { let _ = DeadCodeStats::default(); }",
+            "use perl_parser::prelude::*; fn f() { let _ = None::<DeadCode>; }",
+            "use q::*; use p as q; use pf::prelude as p; use parser as pf; use perl_parser as parser; fn f(_: DeadCode) {}",
+            "use {q::*, p as q, pf::prelude as p, parser as pf, perl_parser as parser}; fn f(_: DeadCode) {}",
+            "use perl_parser::prelude as p; fn f() { use p::*; let _: Option<DeadCode> = None; }",
+            "use perl_parser::prelude::*; struct Holder<DeadCode> { value: DeadCode } fn actual(_: DeadCode) {}",
+        ] {
+            if !references_surface(text, false).map_err(|error| color_eyre::eyre::eyre!(error))? {
+                bail!("scoped prelude consumer was missed: {text}");
+            }
+        }
+        for text in [
+            "use perl_parser::prelude::*; enum CodeSmell { DeadCode }",
+            "use perl_parser::prelude::*; enum CodeSmell { DeadCode } fn f() { let _ = CodeSmell::DeadCode; }",
+            "use perl_parser::prelude::*; fn f() { let _ = \"DeadCode\"; }",
+            "use perl_parser::prelude::*; fn f(DeadCode: u32) { let _ = DeadCode; }",
+            "mod a { use perl_parser::prelude::*; } mod b { struct DeadCode; fn f(_: DeadCode) {} }",
+            "use perl_parser::prelude::*; struct DeadCode; fn f(_: DeadCode) {}",
+            "use perl_parser::prelude::*; fn f<DeadCode>(_: DeadCode) {}",
+            "use perl_parser::prelude::*; fn f() { struct DeadCode; let _: Option<DeadCode> = None; }",
+            "use perl_parser::prelude::*; mod child { struct DeadCode; fn f(_: DeadCode) {} }",
+            "use perl_parser::prelude::*; struct Holder<DeadCode> { value: DeadCode }",
+            "use perl_parser::prelude::*; enum Holder<DeadCode> { Value(DeadCode) }",
+            "use perl_parser::prelude::*; union Holder<DeadCode: Copy> { value: DeadCode }",
+            "use perl_parser::prelude::*; type Holder<DeadCode> = Option<DeadCode>;",
+            "use perl_parser::prelude::*; struct Holder<T>(T); impl<DeadCode> Holder<DeadCode> { fn take(value: DeadCode) {} }",
+            "use perl_parser::prelude::*; trait Holder<DeadCode> { fn take(value: DeadCode); }",
+            "use perl_parser::prelude::*; struct Holder; impl Holder { fn take<DeadCode>(value: DeadCode) {} }",
+            "use perl_parser::prelude::*; trait Holder { fn take<DeadCode>(value: DeadCode); }",
+            "use perl_parser::prelude::*; trait Holder { type Value<DeadCode>: Into<DeadCode>; }",
+        ] {
+            if references_surface(text, false).map_err(|error| color_eyre::eyre::eyre!(error))? {
+                bail!("unrelated declaration or out-of-scope prelude became a consumer: {text}");
+            }
+        }
+        Ok(())
     }
 
     /// Devin review, PR #15086: grouped and aliased imports carry none of the
