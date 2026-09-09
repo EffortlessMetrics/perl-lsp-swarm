@@ -836,10 +836,21 @@ jobs:
           cleanup_host_state() {
             status=$?
             set +e
-            docker rm -f "$container_name" >/dev/null 2>&1 || true
+            cleanup_failed=0
+            container_id="$(timeout --signal=TERM --kill-after=5s 15s docker ps -aq --filter "name=^/${container_name}$" 2>/dev/null)"
+            if [ "$?" -ne 0 ]; then
+              echo "::error::failed to inspect hosted RIPR container during cleanup" >&2
+              cleanup_failed=1
+            elif [ -n "$container_id" ] && ! timeout --signal=TERM --kill-after=5s 15s docker rm -f "$container_name" >/dev/null 2>&1; then
+              echo "::error::failed to stop hosted RIPR container during cleanup" >&2
+              cleanup_failed=1
+            fi
             if ! sudo -n chown -R "$(id -u):$(id -g)" target; then
               echo "::error::failed to restore hosted RIPR target ownership" >&2
-              if [ "$status" -eq 0 ]; then status=1; fi
+              cleanup_failed=1
+            fi
+            if [ "$cleanup_failed" -ne 0 ] && [ "$status" -eq 0 ]; then
+              status=1
             fi
             exit "$status"
           }

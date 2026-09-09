@@ -1238,6 +1238,14 @@ fn ripr_workflow_runs_on_ready_for_review_without_path_filter()
         workflow.contains("cargo xtask ripr-pr --base") && workflow.contains("target/ripr/pr/**"),
         "ripr.yml must produce and upload diff-scoped RIPR PR receipts"
     );
+    if workflow_run_block("ripr-github", "Install ripr")?.trim()
+        != r#"cargo install ripr --version "$RIPR_VERSION" --locked"#
+    {
+        return Err(anyhow!(
+            "normal hosted job must retain its pinned host-side ripr installer for downstream consumers"
+        )
+        .into());
+    }
     let hosted_producer = workflow_run_block("ripr-github", "Generate PR evidence")?;
     assert!(
         hosted_producer.contains("docker run --rm")
@@ -1250,7 +1258,10 @@ fn ripr_workflow_runs_on_ready_for_review_without_path_filter()
             && hosted_producer.contains("-v \"$RIPR_FRESHNESS_HANDOFF:/freshness\"")
             && hosted_producer.contains("--name \"$container_name\"")
             && hosted_producer.contains("trap cleanup_host_state EXIT")
-            && hosted_producer.contains("docker rm -f \"$container_name\"")
+            && hosted_producer.contains("timeout --signal=TERM --kill-after=5s 15s docker ps -aq")
+            && hosted_producer.contains(
+                "timeout --signal=TERM --kill-after=5s 15s docker rm -f \"$container_name\""
+            )
             && hosted_producer.contains("sudo -n chown -R \"$(id -u):$(id -g)\" target")
             && hosted_producer.contains(
                 "cargo xtask ripr-pr --base \"$base_arg\" --head HEAD --pr-head \"$PR_HEAD_SHA\""
@@ -1379,8 +1390,9 @@ fn hosted_producer_cleanup_preserves_failure_and_restores_target_owner() -> Resu
     let script = format!(
         r#"set -u
 container_name='fixture-container'
-docker() {{ printf '%s' "$*" > "$DOCKER_MARKER"; return 0; }}
+docker() {{ printf '%s' "$*" > "$DOCKER_MARKER"; if [ "$1" = ps ]; then printf 'fixture-id\n'; fi; return 0; }}
 sudo() {{ printf '%s' "$*" > "$CHOWN_MARKER"; if [ "${{FAIL_CHOWN:-0}}" = 1 ]; then return 1; fi; return 0; }}
+timeout() {{ printf '%s' "$*" > "$TIMEOUT_MARKER"; shift 3; "$@"; }}
 cleanup_host_state() {{{cleanup_body}
 trap cleanup_host_state EXIT
 exit 23
@@ -1391,6 +1403,7 @@ exit 23
         .current_dir(sandbox.path())
         .env("DOCKER_MARKER", sandbox.path().join("docker.marker"))
         .env("CHOWN_MARKER", sandbox.path().join("chown.marker"))
+        .env("TIMEOUT_MARKER", sandbox.path().join("timeout.marker"))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -1408,6 +1421,10 @@ exit 23
     ensure!(
         fs::read_to_string(sandbox.path().join("docker.marker"))?.contains("fixture-container"),
         "cleanup must attempt removal of the uniquely named container"
+    );
+    ensure!(
+        fs::read_to_string(sandbox.path().join("timeout.marker"))?.contains("docker"),
+        "cleanup must route container inspection/removal through bounded timeout"
     );
     ensure!(
         fs::read_to_string(sandbox.path().join("chown.marker"))?.contains("target"),
