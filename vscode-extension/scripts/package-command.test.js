@@ -5,6 +5,7 @@ const { test } = require('node:test');
 const {
   packageVsix,
   preparePrebuiltPayload,
+  validateProjectionManifest,
   validatePrebuiltPayload,
   vsixName,
   vsceEntry,
@@ -46,6 +47,23 @@ function prebuiltManifest(overrides = {}) {
       },
     },
     ...overrides,
+  };
+}
+
+function projectionInput() {
+  return {
+    releaseTopologySha256: 'b'.repeat(64),
+    includeUniversalManaged: false,
+    targets: [
+      {
+        target: 'x86_64-pc-windows-msvc',
+        os: 'windows',
+        architecture: 'x86_64',
+        libc: null,
+        archiveName: 'perllsp-0.18.0-x86_64-pc-windows-msvc.zip',
+        requiredMembers: ['perllsp.exe', 'perl-dap.exe'],
+      },
+    ],
   };
 }
 
@@ -152,6 +170,36 @@ void test('prebuilt manifest binds exact Windows server source, target, and byte
       ),
     /missing required DAP payload/,
   );
+  assert.throws(
+    () =>
+      validateProjectionManifest(
+        { ...valid, dap: { disposition: 'preview_unavailable', payload: null } },
+        projectionInput(),
+        'win32-x64',
+      ),
+    /required DAP payload/,
+  );
+  assert.throws(
+    () =>
+      validateProjectionManifest(
+        {
+          ...valid,
+          package: {
+            ...valid.package,
+            vscodeTargetId: 'win32-arm64',
+            rustTarget: 'aarch64-pc-windows-msvc',
+          },
+          server: { ...valid.server, target: 'aarch64-pc-windows-msvc' },
+          dap: {
+            ...valid.dap,
+            payload: { ...valid.dap.payload, target: 'aarch64-pc-windows-msvc' },
+          },
+        },
+        projectionInput(),
+        'win32-x64',
+      ),
+    /another target/,
+  );
 });
 
 void test('manifest staging rolls back partial writes and rejects symlink destinations', () => {
@@ -172,12 +220,17 @@ void test('manifest staging rolls back partial writes and rejects symlink destin
   });
   const writes = [];
   const removals = [];
+  const projectionPath = 'projection.json';
   /** @type {any} */
   const fileSystem = {
     existsSync: () => false,
     readFileSync: (file, encoding) => {
       if (file === 'manifest.json')
         return encoding ? JSON.stringify(manifest) : Buffer.from(JSON.stringify(manifest));
+      if (file === projectionPath)
+        return encoding
+          ? JSON.stringify(projectionInput())
+          : Buffer.from(JSON.stringify(projectionInput()));
       if (file === 'server.bin') return serverBytes;
       if (file === 'dap.bin') return dapBytes;
       throw new Error(`unexpected read: ${file}`);
@@ -193,6 +246,7 @@ void test('manifest staging rolls back partial writes and rejects symlink destin
     () =>
       preparePrebuiltPayload(fileSystem, {
         PERL_LSP_CANDIDATE_PAYLOAD_MANIFEST: 'manifest.json',
+        PERL_LSP_VSIX_PROJECTION_INPUT: projectionPath,
         PERL_LSP_PREBUILT_SERVER_PATH: 'server.bin',
         PERL_LSP_PREBUILT_DAP_PATH: 'dap.bin',
         PERL_LSP_CURRENT_SOURCE_SHA: 'a'.repeat(40),
@@ -214,6 +268,7 @@ void test('manifest staging rolls back partial writes and rejects symlink destin
         },
         {
           PERL_LSP_CANDIDATE_PAYLOAD_MANIFEST: 'manifest.json',
+          PERL_LSP_VSIX_PROJECTION_INPUT: projectionPath,
           PERL_LSP_PREBUILT_SERVER_PATH: 'server.bin',
           PERL_LSP_PREBUILT_DAP_PATH: 'dap.bin',
           PERL_LSP_CURRENT_SOURCE_SHA: 'a'.repeat(40),
@@ -242,6 +297,7 @@ void test('manifest-enabled packaging stages the supplied payload and verifies t
     },
   });
   const manifestPath = 'manifest.json';
+  const projectionPath = 'projection.json';
   const serverPath = 'prebuilt/perllsp.exe';
   const dapPath = 'prebuilt/perl-dap.exe';
   const writes = [];
@@ -253,6 +309,10 @@ void test('manifest-enabled packaging stages the supplied payload and verifies t
     readFileSync: (file, encoding) => {
       if (file === manifestPath)
         return encoding ? JSON.stringify(manifest) : Buffer.from(JSON.stringify(manifest));
+      if (file === projectionPath)
+        return encoding
+          ? JSON.stringify(projectionInput())
+          : Buffer.from(JSON.stringify(projectionInput()));
       if (file === serverPath) return serverBytes;
       if (file === dapPath) return dapBytes;
       throw new Error(`unexpected read: ${file}`);
@@ -263,6 +323,7 @@ void test('manifest-enabled packaging stages the supplied payload and verifies t
   };
   const env = {
     PERL_LSP_CANDIDATE_PAYLOAD_MANIFEST: manifestPath,
+    PERL_LSP_VSIX_PROJECTION_INPUT: projectionPath,
     PERL_LSP_PREBUILT_SERVER_PATH: serverPath,
     PERL_LSP_CURRENT_SOURCE_SHA: 'a'.repeat(40),
     PERL_LSP_RUST_TARGET: 'x86_64-pc-windows-msvc',

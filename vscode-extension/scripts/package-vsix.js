@@ -7,6 +7,7 @@ const { spawnSync } = require('node:child_process');
 const {
   buildVsixCandidatePayloadManifest,
   canonicalVsixPayloadJson,
+  deriveVsixTargetProjection,
 } = require('../src/vsixPackageProjection.ts');
 
 const extensionRoot = path.resolve(__dirname, '..');
@@ -78,23 +79,19 @@ function validatePrebuiltPayload(manifest, context) {
   return manifest;
 }
 
-function validateProjectionManifest(manifest) {
+function validateProjectionManifest(manifest, projectionInput, target) {
+  if (manifest.releaseTopologySha256 !== projectionInput.releaseTopologySha256) {
+    throw new Error('prebuilt payload release topology SHA mismatch');
+  }
+  const projection = deriveVsixTargetProjection(projectionInput).find(
+    (row) => row.vscodeTargetId === target,
+  );
+  if (!projection) {
+    throw new Error(`prebuilt payload target is absent from the release projection: ${target}`);
+  }
   const packageIdentity = manifest.package;
   const server = manifest.server;
   const dap = manifest.dap;
-  /** @type {any} */
-  const projection = {
-    vscodeTargetId: packageIdentity.vscodeTargetId,
-    rustTarget: packageIdentity.rustTarget,
-    platform: 'unsupported',
-    architecture: 'unsupported',
-    libc: null,
-    packageMode: packageIdentity.mode,
-    archiveName: null,
-    serverMember: server?.member ?? null,
-    dapMember: dap?.payload?.member ?? null,
-    dapDisposition: dap.disposition,
-  };
   const validated = buildVsixCandidatePayloadManifest({
     extension: manifest.extension,
     candidate: manifest.candidate,
@@ -117,15 +114,22 @@ function preparePrebuiltPayload(fileSystem = fs, env = process.env) {
   if (!serverPath) {
     throw new Error('prebuilt payload manifest requires PERL_LSP_PREBUILT_SERVER_PATH');
   }
-  const manifest = validateProjectionManifest(
-    JSON.parse(fileSystem.readFileSync(manifestPath, 'utf8')),
-  );
-  if (!manifest.server) throw new Error('prebuilt payload manifest has no server payload');
-  const server = manifest.server;
   const target = (env.PERL_LSP_VSCODE_TARGET || `${process.platform}-${process.arch}`).trim();
   if (!/^(?:win32|linux|alpine|darwin)-(?:x64|arm64)$/.test(target)) {
     throw new Error(`unsupported VS Code target for prebuilt payload: ${target}`);
   }
+  const projectionPath = (env.PERL_LSP_VSIX_PROJECTION_INPUT || '').trim();
+  if (!projectionPath) {
+    throw new Error('prebuilt payload manifest requires PERL_LSP_VSIX_PROJECTION_INPUT');
+  }
+  const projectionInput = JSON.parse(fileSystem.readFileSync(projectionPath, 'utf8'));
+  const manifest = validateProjectionManifest(
+    JSON.parse(fileSystem.readFileSync(manifestPath, 'utf8')),
+    projectionInput,
+    target,
+  );
+  if (!manifest.server) throw new Error('prebuilt payload manifest has no server payload');
+  const server = manifest.server;
   const rustTarget = (env.PERL_LSP_RUST_TARGET || '').trim();
   const sourceSha = (env.PERL_LSP_CURRENT_SOURCE_SHA || '').trim();
   const serverBytes = fileSystem.readFileSync(serverPath);
@@ -277,6 +281,7 @@ if (require.main === module) {
 module.exports = {
   packageVsix,
   preparePrebuiltPayload,
+  validateProjectionManifest,
   validatePrebuiltPayload,
   vsixName,
   vsceEntry,
