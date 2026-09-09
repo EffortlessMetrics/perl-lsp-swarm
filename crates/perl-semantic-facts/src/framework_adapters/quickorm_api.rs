@@ -2007,14 +2007,14 @@ pub const QUICKORM_API_CASES: &[QuickOrmApiCase] = &[
         receiver: R::Handle,
         receiver_constraints: NO_CONSTRAINTS,
         arguments: A::ZeroArgGetter,
-        return_class: C::MetadataOrScalar,
+        return_class: C::SingleOptionalRow,
         multiplicity: N::ZeroOrOne,
-        type_params: T::NotApplicable,
+        type_params: T::PreservedFromReceiver,
         mode: M::SyncAsyncAsideForked,
         void_context: V::Croaks,
         boundary: B::Exact,
         evidence: QuickOrmEvidence { file: HANDLE, line: 1308 },
-        notes: "Zero-argument form returns the bound row, if any.",
+        notes: "Zero-argument form returns the bound row object, if any. `_check_row` admits a bound row only when its source shares the handle's `source_orm_name` (Handle.pm:291-304), so the returned row's class is the receiver's source row class rather than an untyped scalar.",
     },
     QuickOrmApiCase {
         api_case_id: "handle.row.set",
@@ -4188,11 +4188,18 @@ mod tests {
             "clearing the binding passes no row, so it has no row precondition"
         );
 
-        // The reading form still just returns the bound row, if any.
-        assert_eq!(
-            case_by_id("handle.row.get").return_class,
-            QuickOrmReturnClass::MetadataOrScalar
+        // The reading form returns the bound row object, if any — a
+        // row-carrying return, not metadata. `_check_row` only admits rows
+        // whose source shares the handle's source_orm_name
+        // (Handle.pm:291-304), so the row's class is the receiver's source
+        // row class and stays parameterized by the receiver.
+        let row_get = case_by_id("handle.row.get");
+        assert!(
+            row_get.return_class.may_carry_row_identity(),
+            "bound-row getter must keep row identity, got {:?}",
+            row_get.return_class
         );
+        assert_eq!(row_get.type_params, QuickOrmTypeParamEffect::PreservedFromReceiver);
     }
 
     /// A call that returns nothing cannot carry a type parameter. `iterate`
