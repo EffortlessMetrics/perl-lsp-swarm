@@ -132,6 +132,31 @@ test('configured canonical ancestors cover candidates but descendants do not', a
     false,
   );
   await expect(isIncludePathCandidateCovered(workspaceDir, ['./src'], 'src')).resolves.toBe(true);
+  fs.mkdirSync(path.join(workspaceDir, 'src', '..sources'), { recursive: true });
+  await expect(
+    isIncludePathCandidateCovered(workspaceDir, ['src'], 'src/..sources'),
+  ).resolves.toBe(true);
+});
+
+test('continues coverage after an unreadable configured root', async () => {
+  const workspaceDir = tempWorkspace('perl-lsp-guidance-cover-unreadable-');
+  fs.mkdirSync(path.join(workspaceDir, 'src', 'lib'), { recursive: true });
+  const blocked = path.join(workspaceDir, 'blocked');
+  const originalRealpath = fs.promises.realpath;
+  const realpath = jest.spyOn(fs.promises, 'realpath').mockImplementation(async (target) => {
+    if (String(target) === blocked) {
+      const error = new Error('permission denied') as NodeJS.ErrnoException;
+      error.code = 'EACCES';
+      throw error;
+    }
+    return originalRealpath.call(fs.promises, target);
+  });
+
+  await expect(
+    isIncludePathCandidateCovered(workspaceDir, ['blocked', 'src'], 'src/lib'),
+  ).resolves.toBe(true);
+
+  realpath.mockRestore();
 });
 
 test('a configured symlink alias covers its canonical candidate', async () => {
@@ -673,6 +698,58 @@ test('queues one validation rerun for a change during an active prompt', async (
     expect.stringContaining('second/missing'),
     'Open Settings',
   );
+});
+
+test('does not cache a warning after configuration changes during its prompt', async () => {
+  const workspaceDir = tempWorkspace('perl-lsp-guidance-validation-stale-');
+  let includePaths = ['first/missing'];
+  const globalState = makeState();
+  mountWorkspace(workspaceDir, includePaths);
+  (vscode.workspace.getConfiguration as jest.Mock).mockImplementation(() => ({
+    get: jest.fn(() => includePaths),
+    inspect: jest.fn(() => ({ defaultValue: ['lib', 'local/lib/perl5'] })),
+    update: jest.fn(async () => undefined),
+  }));
+  (vscode.window.showWarningMessage as jest.Mock).mockImplementationOnce(async () => {
+    includePaths = ['changed/missing'];
+    return undefined;
+  });
+
+  const context = { globalState } as unknown as vscode.ExtensionContext;
+  await runIncludePathValidation(context);
+
+  expect(globalState.update).not.toHaveBeenCalled();
+});
+
+test('does not warn or cache when configuration changes during path access', async () => {
+  const workspaceDir = tempWorkspace('perl-lsp-guidance-validation-access-');
+  let includePaths = ['first/missing'];
+  const globalState = makeState();
+  mountWorkspace(workspaceDir, includePaths);
+  (vscode.workspace.getConfiguration as jest.Mock).mockImplementation(() => ({
+    get: jest.fn(() => includePaths),
+    inspect: jest.fn(() => ({ defaultValue: ['lib', 'local/lib/perl5'] })),
+    update: jest.fn(async () => undefined),
+  }));
+  let rejectAccess!: () => void;
+  const accessGate = new Promise<void>((_resolve, reject) => {
+    rejectAccess = () => {
+      const error = new Error('missing') as NodeJS.ErrnoException;
+      error.code = 'ENOENT';
+      reject(error);
+    };
+  });
+  const access = jest.spyOn(fs.promises, 'access').mockReturnValueOnce(accessGate);
+
+  const run = runIncludePathValidation({ globalState } as unknown as vscode.ExtensionContext);
+  await waitForCalls(access as unknown as jest.Mock, 1);
+  includePaths = ['changed/missing'];
+  rejectAccess();
+  await run;
+
+  access.mockRestore();
+  expect(vscode.window.showWarningMessage).not.toHaveBeenCalled();
+  expect(globalState.update).not.toHaveBeenCalled();
 });
 
 test('live guidance rerun coalesces a configuration event during discovery', async () => {

@@ -88,7 +88,10 @@ function errorCode(error: unknown): string | undefined {
 
 function isWithinBasePath(basePath: string, targetPath: string): boolean {
   const relative = path.relative(basePath, targetPath);
-  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+  return (
+    relative === '' ||
+    (!path.isAbsolute(relative) && relative !== '..' && !relative.startsWith(`..${path.sep}`))
+  );
 }
 
 async function pathExists(targetPath: string): Promise<boolean> {
@@ -166,7 +169,10 @@ export async function runIncludePathValidation(context: vscode.ExtensionContext)
   for (const folder of workspaceFolders) {
     const cacheKey = `perl-lsp.includePathsWarning.${encodeURIComponent(folder.uri.toString())}`;
     const config = vscode.workspace.getConfiguration('perl-lsp', folder.uri);
-    const includePaths: string[] = config.get('includePaths', [...DEFAULT_INCLUDE_PATHS]);
+    const includePaths: string[] = [
+      ...config.get('includePaths', [...DEFAULT_INCLUDE_PATHS]),
+    ];
+    const initialIncludePathsFingerprint = includePathsFingerprint(includePaths);
 
     const inspected =
       typeof config.inspect === 'function' ? config.inspect<string[]>('includePaths') : undefined;
@@ -186,6 +192,14 @@ export async function runIncludePathValidation(context: vscode.ExtensionContext)
     }
 
     if (!isCurrentWorkspaceFolder(context, folder)) {
+      continue;
+    }
+
+    const afterChecksConfig = vscode.workspace.getConfiguration('perl-lsp', folder.uri);
+    const afterChecksIncludePaths: string[] = afterChecksConfig.get('includePaths', [
+      ...DEFAULT_INCLUDE_PATHS,
+    ]);
+    if (includePathsFingerprint(afterChecksIncludePaths) !== initialIncludePathsFingerprint) {
       continue;
     }
 
@@ -218,6 +232,14 @@ export async function runIncludePathValidation(context: vscode.ExtensionContext)
       continue;
     }
 
+    const afterPromptConfig = vscode.workspace.getConfiguration('perl-lsp', folder.uri);
+    const afterPromptIncludePaths: string[] = afterPromptConfig.get('includePaths', [
+      ...DEFAULT_INCLUDE_PATHS,
+    ]);
+    if (includePathsFingerprint(afterPromptIncludePaths) !== initialIncludePathsFingerprint) {
+      continue;
+    }
+
     if (choice === 'Open Settings') {
       void vscode.commands.executeCommand(
         'workbench.action.openSettings',
@@ -239,16 +261,20 @@ async function canonicalCoverage(
       return { covered: false, complete: false };
     }
 
+    let complete = true;
     for (const configured of configuredPaths) {
-      const configuredRealPath = await realpathIfExists(path.resolve(workspaceRoot, configured));
-      if (!configuredRealPath) {
+      let configuredRealPath: string | undefined;
+      try {
+        configuredRealPath = await realpathIfExists(path.resolve(workspaceRoot, configured));
+      } catch {
+        complete = false;
         continue;
       }
-      if (isWithinBasePath(configuredRealPath, candidateRealPath)) {
-        return { covered: true, complete: true };
+      if (configuredRealPath && isWithinBasePath(configuredRealPath, candidateRealPath)) {
+        return { covered: true, complete };
       }
     }
-    return { covered: false, complete: true };
+    return { covered: false, complete };
   } catch {
     return { covered: false, complete: false };
   }

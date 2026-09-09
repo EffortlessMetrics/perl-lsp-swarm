@@ -3,7 +3,7 @@
   "owner_issue": 14452,
   "reason": "The #14475 guidance recovery changes the packaged extension bundle; the exact candidate VSIX is measured against the pinned current-main baseline, with the size-only transition recorded from the raw candidate inventory.",
   "base_baseline_file_sha256": "949c75c589fe21743ad92ca29b7d9c7d27efed516a3b4633e2c00e5b06f8347d",
-  "candidate_baseline_file_sha256": "e71a04183de92f45b5c8fd6b0e3b005243b0c65edb7a873eadac23e4f9ecd7b0",
+  "candidate_baseline_file_sha256": "ec560c53262fead2ea029e6556d472107b91e9b65faeeaa11f6b755e02f68bc6",
   "base_inventory_sha256": "984fb74e54c9864533b3f6fd62e10c08f433c04bfb8099ce540721b183975888",
-  "candidate_inventory_sha256": "b297a1424e32edd966baf102fcbf908c81b10c48588c583ae0ff2c34d53c0a63"
+  "candidate_inventory_sha256": "987da1abc9023c0e1aca3c6682ecde63b6f12ca07b7405acb8372009ccbdf703"
 }
