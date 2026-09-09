@@ -107,6 +107,10 @@ fn unsupported_literals_do_not_admit_or_reuse_an_earlier_profile() -> TestResult
         "use 5.044001;",
         "use 5.043008;",
         "use 5.043_008;",
+        "use 5.0441;",
+        "use 5.04308;",
+        "use 5.44001;",
+        "use 5.44_1;",
         "use 5.42;",
         "use 5.036;",
         "use 5.36;",
@@ -149,7 +153,9 @@ fn unsupported_admission_does_not_silently_rewrite_legacy_use_semantics() -> Tes
 
 #[test]
 fn malformed_recovered_declarations_cannot_reuse_known_authority() -> TestResult {
-    for tail in ["use v5.bad;", "use v5.44.;", "use v5.44.1.2;", "use v5.44 qw(foo);"] {
+    for tail in
+        ["use v5.bad;", "use v5.44.;", "use v5.44.1.2;", "use v5.44.1.;", "use v5.44 qw(foo);"]
+    {
         let source = format!("use v5.44; {tail}");
         check_unknown(&recovered_snapshot_for(&source)?, &source)?;
     }
