@@ -3444,10 +3444,73 @@ mod tests {
 
         let mut invalid = BufReader::new(Cursor::new(vec![0xff, b'\n']));
         match read_debugger_record(&mut invalid, &mut line, false) {
-            Err(error) if error.kind() == std::io::ErrorKind::InvalidData => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {
+                if error.to_string() != "invalid utf-8 sequence of 1 bytes from index 0" {
+                    return Err(format!("invalid UTF-8 location was changed: {error}"));
+                }
+                Ok(())
+            }
             Ok(_) => Err("invalid UTF-8 was accepted".into()),
             Err(error) => Err(format!("invalid UTF-8 returned wrong error: {error}")),
         }
+    }
+
+    #[test]
+    fn debugger_record_reader_preserves_underlying_read_error() -> Result<(), String> {
+        use std::io::Read;
+
+        struct FailingReader;
+        impl Read for FailingReader {
+            fn read(&mut self, _buffer: &mut [u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "fixture read failed",
+                ))
+            }
+        }
+
+        let mut reader = BufReader::new(FailingReader);
+        let mut line = String::new();
+        let error = read_debugger_record(&mut reader, &mut line, false)
+            .expect_err("underlying read error was swallowed");
+        if error.kind() != std::io::ErrorKind::PermissionDenied
+            || error.to_string() != "fixture read failed"
+        {
+            return Err(format!("underlying read error was changed: {error}"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn debugger_record_reader_retries_interrupted_read() -> Result<(), String> {
+        use std::io::Read;
+
+        struct InterruptedThenSuccess {
+            interrupted: bool,
+        }
+        impl Read for InterruptedThenSuccess {
+            fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+                if self.interrupted {
+                    self.interrupted = false;
+                    return Err(std::io::Error::from(std::io::ErrorKind::Interrupted));
+                }
+                let bytes = b"DB<1>\n";
+                let destination = buffer
+                    .get_mut(..bytes.len())
+                    .ok_or_else(|| std::io::Error::other("reader buffer too small"))?;
+                destination.copy_from_slice(bytes);
+                Ok(bytes.len())
+            }
+        }
+
+        let mut reader = BufReader::new(InterruptedThenSuccess { interrupted: true });
+        let mut line = String::new();
+        read_debugger_record(&mut reader, &mut line, false)
+            .map_err(|error| format!("interrupted read was not retried: {error}"))?;
+        if line != "DB<1>\n" {
+            return Err(format!("retry returned wrong record: {line:?}"));
+        }
+        Ok(())
     }
 
     #[test]
