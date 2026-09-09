@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "owner_issue": 14155,
-  "reason": "Accept the #14857 lifecycle repair requiring captured process exit after every settled stop, with conservative PID-probe error handling. The actual VSIX retains 29 payload files; out/extension.js changes from 1675187 to 1678515 bytes, with 1856473 total payload bytes. Generated from the archive; installed recovery is a separate proof surface.",
-  "base_baseline_file_sha256": "9b80146ec2f0f4a7ef38522b127429dfc612aa01d1c8e6d4e33e37c768e6de26",
-  "candidate_baseline_file_sha256": "a0ff6132d090487820a562be18de96e17a9e0b6f1c22c5304386519490aac8c5",
-  "base_inventory_sha256": "1a42390c7e64fd313065bd959fdcd1db6885894b838ac35be42996652edf4aeb",
-  "candidate_inventory_sha256": "58b0b7699290c02ba693c03393cc5fc7771c687386499ebd1d426ac3850b1b02"
+  "owner_issue": 9933,
+  "reason": "The #9933 receipt-summary test entry changes the packaged extension package.json by 44 bytes; the exact candidate VSIX is measured against the merged current-main baseline.",
+  "base_baseline_file_sha256": "d95cf9327ba072657b6481b42fa3c3076d7774d4b5a03e7496b431518c765683",
+  "candidate_baseline_file_sha256": "d0f4bd2eaf0a74de3e8e74119e79ec070be3cdd3fb498188b68944f6e38f1d42",
+  "base_inventory_sha256": "695a05e2c3e7508d19ff0c35c30b5aedf5149e0953f31912d823c044f8a9e4d2",
+  "candidate_inventory_sha256": "f96e90df387423bb1b58aeed16ec63df14638bc35c37ce748e423333314856ce"
 }

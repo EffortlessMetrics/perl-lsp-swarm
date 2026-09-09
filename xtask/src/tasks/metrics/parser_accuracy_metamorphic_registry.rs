@@ -610,7 +610,7 @@ impl MetamorphicSafeRegistry {
         let dangling = registry.cases.values().find_map(|case| {
             let control_id = case.opposite_control?;
             let valid = control_id != case.case_id && registry.cases.contains_key(control_id);
-            (!valid).then(|| (case.case_id, control_id))
+            (!valid).then_some((case.case_id, control_id))
         });
         if let Some((case_id, control_id)) = dangling {
             return Err(RegistryError::InvalidDeclaration {
@@ -1479,10 +1479,37 @@ const AUTHORED_CASES: &[CaseDeclaration] = &[
 mod tests {
     use super::*;
 
+    use perl_tdd_support::{must_err_with, must_some_with, must_with};
+
     type TestResult = Result<(), Box<dyn Error>>;
 
-    fn authored() -> Result<MetamorphicSafeRegistry, Box<dyn Error>> {
-        Ok(authored_registry()?)
+    #[track_caller]
+    fn authored() -> MetamorphicSafeRegistry {
+        must_with(authored_registry(), "authored registry must construct")
+    }
+
+    #[track_caller]
+    fn from_declarations_err(cases: Vec<CaseDeclaration>, context: &'static str) -> RegistryError {
+        must_err_with(MetamorphicSafeRegistry::from_declarations(cases), context)
+    }
+
+    #[track_caller]
+    fn declared_case<'a>(
+        registry: &'a MetamorphicSafeRegistry,
+        case_id: &str,
+        context: &'static str,
+    ) -> &'a CaseDeclaration {
+        must_some_with(registry.declaration(case_id), context)
+    }
+
+    #[track_caller]
+    fn evaluate_source_err(
+        registry: &MetamorphicSafeRegistry,
+        fixture_id: &str,
+        source: &[u8],
+        context: &'static str,
+    ) -> RegistryError {
+        must_err_with(registry.evaluate_source(fixture_id, source), context)
     }
 
     const ADMITTED_EXPECTED: usize = 9;
@@ -1490,7 +1517,7 @@ mod tests {
 
     #[test]
     fn authored_registry_construction_is_valid() -> TestResult {
-        let registry = authored_registry()?;
+        let registry = authored();
         assert_eq!(registry.case_count(), AUTHORED_CASES.len());
         assert!(!registry.case_ids().is_empty());
         assert_eq!(registry.case_ids().len(), registry.case_count());
@@ -1499,15 +1526,16 @@ mod tests {
 
     #[test]
     fn authored_pinned_source_identities_match_exact_fixture_bytes() -> TestResult {
-        let registry = authored()?;
+        let registry = authored();
         for fixture_id in registry.fixture_ids() {
-            let bytes = registry
-                .fixture_bytes(fixture_id)
-                .ok_or_else(|| format!("missing fixture {fixture_id}"))?;
-            let declared = AUTHORED_FIXTURES
-                .iter()
-                .find(|fixture| fixture.fixture_id == fixture_id)
-                .ok_or_else(|| format!("undeclared fixture {fixture_id}"))?;
+            let bytes = must_some_with(
+                registry.fixture_bytes(fixture_id),
+                "authored fixture bytes must exist",
+            );
+            let declared = must_some_with(
+                AUTHORED_FIXTURES.iter().find(|fixture| fixture.fixture_id == fixture_id),
+                "authored fixture declaration must exist",
+            );
             assert_eq!(sha256_hex(bytes), declared.source_identity, "fixture {fixture_id}");
         }
         Ok(())
@@ -1549,7 +1577,7 @@ mod tests {
 
     #[test]
     fn authored_integrity_report_is_empty_and_outcomes_are_fully_accounted() -> TestResult {
-        let registry = authored()?;
+        let registry = authored();
         assert!(registry.integrity_report().is_empty());
         let outcomes = registry.evaluate();
         assert_eq!(outcomes.len(), registry.case_count());
@@ -1572,7 +1600,7 @@ mod tests {
 
     #[test]
     fn dispositioned_cases_carry_explicit_terminal_reasons() -> TestResult {
-        let registry = authored()?;
+        let registry = authored();
         let expected_reasons: &[(&str, Applicability, &str)] = &[
             (
                 "registry-quote-payload.trailing-hw.q-body.v1",
@@ -1621,9 +1649,7 @@ mod tests {
             ),
         ];
         for (case_id, state, reason) in expected_reasons {
-            let case = registry
-                .declaration(case_id)
-                .ok_or_else(|| format!("missing declared case {case_id}"))?;
+            let case = declared_case(&registry, case_id, "dispositioned case must stay authored");
             assert_eq!(case.applicability.state, *state, "state drift for {case_id}");
             assert_eq!(case.applicability.reason, *reason, "reason drift for {case_id}");
         }
@@ -1632,7 +1658,7 @@ mod tests {
 
     #[test]
     fn point_admission_is_fail_closed_outside_registered_regions() -> TestResult {
-        let registry = authored()?;
+        let registry = authored();
 
         // Registered and admitted points admit with their covering case.
         assert_eq!(
@@ -1721,9 +1747,7 @@ mod tests {
         let mut cases = AUTHORED_CASES.to_vec();
         let duplicated = AUTHORED_CASES[0].clone();
         cases.push(duplicated);
-        let Err(error) = MetamorphicSafeRegistry::from_declarations(cases) else {
-            return Err("duplicate case ids must be rejected".into());
-        };
+        let error = from_declarations_err(cases, "duplicate case ids must be rejected");
         assert!(
             matches!(error, RegistryError::DuplicateCaseId { .. }),
             "unexpected error: {error}"
@@ -1735,9 +1759,7 @@ mod tests {
     fn declarations_without_terminal_reasons_are_rejected() -> TestResult {
         let mut case = AUTHORED_CASES[0].clone();
         case.applicability = ApplicabilityDeclaration::new(Applicability::Admitted, "");
-        let Err(error) = MetamorphicSafeRegistry::from_declarations(vec![case]) else {
-            return Err("empty reasons must be rejected".into());
-        };
+        let error = from_declarations_err(vec![case], "empty reasons must be rejected");
         assert!(
             matches!(error, RegistryError::InvalidDeclaration { .. }),
             "unexpected error: {error}"
@@ -1753,23 +1775,24 @@ mod tests {
             offset: FIXTURE_LF_ORDINARY.len() + 1,
             payload: TRAILING_TWO_SPACES,
         };
-        let Err(error) = MetamorphicSafeRegistry::from_declarations(vec![case]) else {
-            return Err("unresolvable anchors must be rejected".into());
-        };
+        let error = from_declarations_err(vec![case], "unresolvable anchors must be rejected");
         assert!(matches!(error, RegistryError::InvalidAnchor { .. }), "unexpected error: {error}");
         Ok(())
     }
 
     #[test]
     fn evaluation_is_deterministic_and_independent_of_construction_order() -> TestResult {
-        let registry = authored()?;
+        let registry = authored();
         let first = registry.evaluate();
         let second = registry.evaluate();
         assert_eq!(first, second);
 
         let mut reversed = AUTHORED_CASES.to_vec();
         reversed.reverse();
-        let shuffled = MetamorphicSafeRegistry::from_declarations(reversed)?;
+        let shuffled = must_with(
+            MetamorphicSafeRegistry::from_declarations(reversed),
+            "reversed construction must succeed",
+        );
         assert_eq!(shuffled.case_ids(), registry.case_ids());
         assert_eq!(shuffled.evaluate(), first);
         Ok(())
@@ -1777,18 +1800,18 @@ mod tests {
 
     #[test]
     fn edit_plans_exist_only_for_admitted_cases_and_carry_exact_anchors() -> TestResult {
-        let registry = authored()?;
+        let registry = authored();
         for case in AUTHORED_CASES {
             let plan = registry.edit_plan(case.case_id);
             if case.applicability.state == Applicability::Admitted {
-                let edits =
-                    plan.ok_or_else(|| format!("admitted case {} lost its plan", case.case_id))?;
+                let edits = must_some_with(plan, "admitted case must keep its edit plan");
                 assert!(!edits.is_empty());
                 // Every generated edit is anchored: the base range carries
                 // exactly the expected old bytes of the authored proposition.
-                let bytes = registry
-                    .fixture_bytes(case.fixture_id)
-                    .ok_or_else(|| format!("missing fixture {}", case.fixture_id))?;
+                let bytes = must_some_with(
+                    registry.fixture_bytes(case.fixture_id),
+                    "admitted case fixture bytes must exist",
+                );
                 for edit in &edits {
                     let range = edit.base_range();
                     // Point insertions are zero-width; region conversion edits
@@ -1806,9 +1829,10 @@ mod tests {
                                 NewlineConversion::LfToCrLf => b"\n",
                                 NewlineConversion::CrLfToLf => b"\r\n",
                             };
-                            let observed = bytes.get(range.start..range.end).ok_or_else(|| {
-                                format!("edit range out of bounds for {}", case.case_id)
-                            })?;
+                            let observed = must_some_with(
+                                bytes.get(range.start..range.end),
+                                "edit range must stay inside fixture bytes",
+                            );
                             assert_eq!(observed, expected, "anchor drift for {}", case.case_id);
                         }
                     }
@@ -1822,10 +1846,13 @@ mod tests {
 
     #[test]
     fn tampered_source_fails_stale_and_stays_in_accounting() -> TestResult {
-        let registry = authored()?;
+        let registry = authored();
         let mut tampered = FIXTURE_LF_ORDINARY.as_bytes().to_vec();
         tampered[0] = b'M';
-        let outcomes = registry.evaluate_source("registry-lf-ordinary", &tampered)?;
+        let outcomes = must_with(
+            registry.evaluate_source("registry-lf-ordinary", &tampered),
+            "tampered source evaluation must stay in accounting",
+        );
         assert_eq!(outcomes.len(), registry.declaration_count_for("registry-lf-ordinary"));
         for outcome in &outcomes {
             let CaseOutcome::StaleSource { claimed, observed, .. } = outcome else {
@@ -1849,7 +1876,10 @@ mod tests {
             "sha256:0000000000000000000000000000000000000000000000000000000000000000";
         let original_id = drifted.case_id;
         cases[0] = drifted;
-        let registry = MetamorphicSafeRegistry::from_declarations(cases)?;
+        let registry = must_with(
+            MetamorphicSafeRegistry::from_declarations(cases),
+            "stale-identity construction must succeed",
+        );
         let report = registry.integrity_report();
         assert!(
             report.iter().any(|inconsistency| inconsistency.case_id == original_id),
@@ -1860,10 +1890,13 @@ mod tests {
 
     #[test]
     fn evaluation_source_rejects_unknown_fixtures() -> TestResult {
-        let registry = authored()?;
-        let Err(error) = registry.evaluate_source("registry-unauthored", b"") else {
-            return Err("unknown fixtures must be rejected".into());
-        };
+        let registry = authored();
+        let error = evaluate_source_err(
+            &registry,
+            "registry-unauthored",
+            b"",
+            "unknown fixtures must be rejected",
+        );
         assert!(
             matches!(error, RegistryError::UnknownFixtureRef { .. }),
             "unexpected error: {error}"
@@ -1901,9 +1934,10 @@ mod tests {
     fn dangling_opposite_control_reference_is_rejected_at_construction() -> TestResult {
         let mut drifted = AUTHORED_CASES[0].clone();
         drifted.opposite_control = Some("registry-undeclared.opposite-control.v1");
-        let Err(error) = MetamorphicSafeRegistry::from_declarations(vec![drifted]) else {
-            return Err("dangling opposite control must fail construction".into());
-        };
+        let error = from_declarations_err(
+            vec![drifted],
+            "dangling opposite control must fail construction",
+        );
         assert!(
             matches!(&error, RegistryError::InvalidDeclaration { detail, .. }
                 if detail.contains("opposite control")),
@@ -1916,9 +1950,8 @@ mod tests {
     fn empty_review_owner_is_rejected_at_construction() -> TestResult {
         let mut drifted = AUTHORED_CASES[0].clone();
         drifted.owner = "";
-        let Err(error) = MetamorphicSafeRegistry::from_declarations(vec![drifted]) else {
-            return Err("empty review owner must fail construction".into());
-        };
+        let error =
+            from_declarations_err(vec![drifted], "empty review owner must fail construction");
         assert!(
             matches!(&error, RegistryError::InvalidDeclaration { detail, .. }
                 if detail.contains("review owner")),
@@ -1933,22 +1966,28 @@ mod tests {
     /// one (#13659 review).
     #[test]
     fn malformed_dispositioned_anchor_is_rejected_at_construction() -> TestResult {
-        let quote_case = AUTHORED_CASES
-            .iter()
-            .find(|case| case.case_id == "registry-quote-payload.trailing-hw.q-body.v1")
-            .cloned()
-            .ok_or("the dispositioned quote case must stay authored")?;
+        let quote_case = must_some_with(
+            AUTHORED_CASES
+                .iter()
+                .find(|case| case.case_id == "registry-quote-payload.trailing-hw.q-body.v1")
+                .cloned(),
+            "the dispositioned quote case must stay authored",
+        );
 
         let mut blank_id = quote_case.clone();
         blank_id.anchor = match blank_id.anchor {
             AuthoredAnchor::Point { offset, payload, .. } => {
                 AuthoredAnchor::Point { anchor_id: "", offset, payload }
             }
-            _ => return Err("expected the quote case to be a point anchor".into()),
+            _ => must_some_with(
+                None::<AuthoredAnchor>,
+                "the dispositioned quote case must stay a point anchor",
+            ),
         };
-        let Err(error) = MetamorphicSafeRegistry::from_declarations(vec![blank_id]) else {
-            return Err("an empty dispositioned anchor id must fail construction".into());
-        };
+        let error = from_declarations_err(
+            vec![blank_id],
+            "an empty dispositioned anchor id must fail construction",
+        );
         assert!(
             matches!(&error, RegistryError::InvalidAnchor { detail, .. }
                 if detail.contains("anchor id is empty")),
@@ -1962,17 +2001,75 @@ mod tests {
                 offset: FIXTURE_QUOTE_PAYLOAD.len() + 1,
                 payload,
             },
-            _ => return Err("expected the quote case to be a point anchor".into()),
+            _ => must_some_with(
+                None::<AuthoredAnchor>,
+                "the dispositioned quote case must stay a point anchor",
+            ),
         };
-        let Err(error) = MetamorphicSafeRegistry::from_declarations(vec![out_of_bounds]) else {
-            return Err("an out-of-bounds dispositioned anchor must fail construction".into());
-        };
+        let error = from_declarations_err(
+            vec![out_of_bounds],
+            "an out-of-bounds dispositioned anchor must fail construction",
+        );
         assert!(
             matches!(&error, RegistryError::InvalidAnchor { detail, .. }
                 if detail.contains("exceeds fixture length")),
             "unexpected error: {error}"
         );
         Ok(())
+    }
+
+    #[test]
+    fn converted_must_wrappers_carry_track_caller() {
+        let src = include_str!("parser_accuracy_metamorphic_registry.rs");
+        let mut failures = Vec::new();
+        for helper in [
+            "fn authored()",
+            "fn from_declarations_err(",
+            "fn declared_case<",
+            "fn evaluate_source_err(",
+        ] {
+            let Some(idx) = src.find(helper) else {
+                failures.push(format!("missing wrapper {helper}"));
+                continue;
+            };
+            let preceding = src.get(..idx).unwrap_or("");
+            let last_attr_line =
+                preceding.lines().rev().find(|line| !line.trim().is_empty()).unwrap_or("");
+            if last_attr_line.trim() != "#[track_caller]" {
+                failures.push(format!(
+                    "{helper} is not immediately preceded by #[track_caller] (found {last_attr_line:?})"
+                ));
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    #[test]
+    #[should_panic(expected = "must_err: valid authored population must not fail construction:")]
+    fn from_declarations_err_still_fails_when_construction_succeeds() {
+        let _ = from_declarations_err(
+            AUTHORED_CASES.to_vec(),
+            "valid authored population must not fail construction",
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "must_some: unknown case must exist:")]
+    fn declared_case_still_fails_when_the_case_is_missing() {
+        let registry = authored();
+        let _ = declared_case(&registry, "registry-unauthored.v1", "unknown case must exist");
+    }
+
+    #[test]
+    #[should_panic(expected = "must_err: known fixture must not fail evaluate_source:")]
+    fn evaluate_source_err_still_fails_when_the_fixture_is_known() {
+        let registry = authored();
+        let _ = evaluate_source_err(
+            &registry,
+            "registry-lf-ordinary",
+            FIXTURE_LF_ORDINARY.as_bytes(),
+            "known fixture must not fail evaluate_source",
+        );
     }
 
     impl MetamorphicSafeRegistry {

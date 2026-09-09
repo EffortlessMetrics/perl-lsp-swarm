@@ -545,6 +545,22 @@ fn notify_index_ready_wait_entered() {
 #[cfg(not(any(test, feature = "expose_lsp_test_api")))]
 fn notify_index_ready_wait_entered() {}
 
+/// Serializes tests that reach the `index building` wait, which consumes the
+/// process-global `INDEX_READY_WAIT_ENTERED_OBSERVER` slot (#15016).
+///
+/// `notify_index_ready_wait_entered` takes whichever sender is installed. A
+/// peer test that enters that wait while another test's observer is armed
+/// steals the signal, so the installer can observe `Partial` instead of
+/// `Waited`. Hold this lock for the full body of every test that can call
+/// `notify_index_ready_wait_entered`.
+///
+/// Self-heals from a poisoned lock, matching `timing::capture::test_lock`.
+#[cfg(test)]
+pub(crate) fn readiness_wait_path_test_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 #[cfg(any(test, feature = "expose_lsp_test_api"))]
 /// Removes a test-only readiness receipt observer when dropped.
 #[allow(dead_code)] // Test-only receipt observers are used only by readiness probes.
@@ -825,6 +841,7 @@ mod tests {
 
     #[test]
     fn readiness_contract_waitbriefly_building_times_out() -> Result<()> {
+        let _serial = super::readiness_wait_path_test_lock();
         let coordinator = Arc::new(IndexCoordinator::new());
         let indexing = AtomicBool::new(true);
 
@@ -843,6 +860,7 @@ mod tests {
 
     #[test]
     fn readiness_contract_waitbriefly_building_can_become_ready() -> Result<()> {
+        let _serial = super::readiness_wait_path_test_lock();
         let coordinator = Arc::new(IndexCoordinator::new());
         let indexing = Arc::new(AtomicBool::new(true));
         let worker_coordinator = Arc::clone(&coordinator);
@@ -982,12 +1000,65 @@ mod tests {
     }
 
     #[test]
+    fn readiness_wait_entered_observer_stolen_by_peer_building_wait_is_partial() -> Result<()> {
+        // Discriminator for #15016: the wait-entered observer is a single
+        // process-global slot. A peer Building wait consumes it, the worker
+        // degrades before this coordinator has iterated once, and the first
+        // look returns Partial rather than Waited. Isolation (the wait-path
+        // lock on every notify-capable test) exists so the contract test
+        // below cannot observe this interleaving.
+        let _serial = super::readiness_wait_path_test_lock();
+        let coordinator = Arc::new(IndexCoordinator::new());
+        let indexing = AtomicBool::new(true);
+        let (wait_entered_tx, wait_entered_rx) = std::sync::mpsc::channel();
+        set_index_ready_wait_entered_observer(wait_entered_tx);
+        let worker_coordinator = Arc::clone(&coordinator);
+
+        let worker = std::thread::spawn(move || -> Result<()> {
+            wait_entered_rx.recv_timeout(Duration::from_secs(30))?;
+            worker_coordinator
+                .transition_to_degraded(DegradationReason::ScanTimeout { elapsed_ms: 456 });
+            Ok(())
+        });
+
+        let peer = Arc::new(IndexCoordinator::new());
+        let peer_indexing = AtomicBool::new(true);
+        let peer_outcome = check_readiness_with_budget(
+            Some(&peer),
+            &peer_indexing,
+            IndexReadinessPolicy::WaitBriefly,
+            Duration::from_millis(2),
+        );
+        assert!(
+            matches!(peer_outcome, IndexReadinessOutcome::TimedOut(_)),
+            "peer Building wait must enter the wait path and notify: {peer_outcome:?}"
+        );
+
+        worker.join().map_err(|_| anyhow::anyhow!("readiness observer thread panicked"))??;
+
+        let outcome = check_readiness_with_budget(
+            Some(&coordinator),
+            &indexing,
+            IndexReadinessPolicy::WaitBriefly,
+            Duration::from_secs(30),
+        );
+        assert!(
+            matches!(outcome, IndexReadinessOutcome::Partial(_)),
+            "stolen observer must resolve as Partial, not Waited: {outcome:?}"
+        );
+        assert!(outcome.is_fallback_safe());
+        assert!(outcome.reason().contains("scan timeout"));
+        Ok(())
+    }
+
+    #[test]
     fn readiness_contract_waitbriefly_degraded_after_building_records_wait() -> Result<()> {
-        // Budgets are wide on purpose: the contract under test is "a wait
-        // that observes a degrade resolves as Waited", not "the wake-up
-        // beats a one-second budget". A tight budget failed on loaded
-        // 4-core CI runners where the post-transition wake-up exceeded the
-        // remaining budget and resolved as TimedOut (#15016).
+        // The wait-entered observer is a process-global single slot (#15016).
+        // Hold the wait-path lock so a peer Building wait cannot consume this
+        // test's sender before the first `index building` iteration. Budgets
+        // stay wide as defense in depth; they cannot prevent a stolen notify
+        // from resolving as Partial.
+        let _serial = super::readiness_wait_path_test_lock();
         let coordinator = Arc::new(IndexCoordinator::new());
         let indexing = AtomicBool::new(true);
         let (wait_entered_tx, wait_entered_rx) = std::sync::mpsc::channel();
