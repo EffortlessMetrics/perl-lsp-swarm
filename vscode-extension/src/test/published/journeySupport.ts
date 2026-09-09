@@ -162,6 +162,26 @@ export async function waitForStartupMetrics(
   return metrics;
 }
 
+export async function waitForActiveDocumentGeneration(
+  getReadiness: (() => ReceiptValue) | undefined,
+  initialGeneration: number | undefined,
+  timeoutMs: number,
+): Promise<ReceiptValue | undefined> {
+  if (!getReadiness || initialGeneration === undefined) {
+    return getReadiness?.();
+  }
+  const deadline = Date.now() + timeoutMs;
+  let snapshot = getReadiness();
+  while (
+    Date.now() < deadline &&
+    (typeof snapshot.generation !== 'number' || snapshot.generation <= initialGeneration)
+  ) {
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    snapshot = getReadiness();
+  }
+  return snapshot;
+}
+
 export async function observeActiveDocumentReadiness(
   waitForReady: ((uri: string, timeoutMs?: number) => Promise<void>) | undefined,
   uri: string,

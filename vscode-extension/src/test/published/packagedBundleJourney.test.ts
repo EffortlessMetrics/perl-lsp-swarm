@@ -12,6 +12,7 @@ import {
   providerResult,
   receiptsDir,
   observeActiveDocumentReadiness,
+  waitForActiveDocumentGeneration,
   sha256,
   waitForStartupMetrics,
   withTimeout,
@@ -261,11 +262,16 @@ suite('Packaged VSIX bundled-server journey', function () {
         | undefined;
       const activationCompleted = performance.now();
       const bundledVersion = await bundledServerVersion(bundledServerPath);
+      const readinessBefore = activation?.getActiveDocumentReadiness?.() ?? null;
       const document = await vscode.workspace.openTextDocument(workspaceFile);
       await vscode.window.showTextDocument(document);
       const position = providerPosition(document);
 
-      const readinessBefore = activation?.getActiveDocumentReadiness?.() ?? null;
+      await waitForActiveDocumentGeneration(
+        activation?.getActiveDocumentReadiness,
+        typeof readinessBefore?.generation === 'number' ? readinessBefore.generation : undefined,
+        30_000,
+      );
       const readiness = await observeActiveDocumentReadiness(
         activation?.waitForActiveDocumentReady,
         document.uri.toString(),

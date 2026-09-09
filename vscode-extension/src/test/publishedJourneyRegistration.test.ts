@@ -10,6 +10,7 @@ interface Harness {
   calls: string[];
   firstProviderCall: Promise<void>;
   readinessEntered: Promise<void>;
+  readinessArguments: Array<{ uri: string; timeoutMs?: number }>;
   receiptDirectory: string;
   cleanup: () => void;
 }
@@ -62,9 +63,12 @@ function fakeVscode(
   calls: string[],
   firstProviderCall: () => void,
   readinessEntered: () => void,
+  readinessArguments: Array<{ uri: string; timeoutMs?: number }>,
   exposeReadiness: boolean,
+  generationStartDelayMs: number,
 ): Record<string, unknown> {
   let edited = false;
+  let generation = 0;
   const document = {
     uri: { toString: () => 'file:///workspace/packaged_daily_driver.pl' },
     lineCount: 1,
@@ -85,12 +89,16 @@ function fakeVscode(
       server_version: '0.17.0',
     }),
     getActiveDocumentReadiness: () => ({
-      generation: 1,
+      generation,
       indexState: 'building',
       fullyReady: false,
     }),
-    waitForActiveDocumentReady: async () => {
+    waitForActiveDocumentReady: async (uri: string, timeoutMs?: number) => {
+      readinessArguments.push(timeoutMs === undefined ? { uri } : { uri, timeoutMs });
       readinessEntered();
+      if (generation === 0) {
+        throw new Error('readiness waiter was registered before startup generation');
+      }
       return await readiness;
     },
     stop: async () => undefined,
@@ -119,7 +127,12 @@ function fakeVscode(
     workspace: {
       workspaceFolders: [{ uri: { fsPath: workspacePath } }],
       getConfiguration: () => configuration,
-      openTextDocument: async () => document,
+      openTextDocument: async () => {
+        setTimeout(() => {
+          generation = 1;
+        }, generationStartDelayMs);
+        return document;
+      },
       applyEdit: async () => {
         edited = true;
         return true;
@@ -243,6 +256,7 @@ async function makeHarness(
   source: string,
   readiness: Promise<void>,
   exposeReadiness = true,
+  generationStartDelayMs = 0,
 ): Promise<Harness> {
   const receiptDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-4346-receipts-'));
   const workspacePath = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-4346-workspace-'));
@@ -258,6 +272,7 @@ async function makeHarness(
   const readinessEntered = new Promise<void>((resolve) => {
     readinessEnteredResolve = resolve;
   });
+  const readinessArguments: Array<{ uri: string; timeoutMs?: number }> = [];
   const vscode = fakeVscode(
     extensionPath,
     workspacePath,
@@ -265,7 +280,9 @@ async function makeHarness(
     calls,
     () => firstProviderResolve?.(),
     () => readinessEnteredResolve?.(),
+    readinessArguments,
     exposeReadiness,
+    generationStartDelayMs,
   );
   const journey = loadRegisteredJourney(source, { calls, receiptDirectory, vscode });
   return {
@@ -273,6 +290,7 @@ async function makeHarness(
     calls,
     firstProviderCall,
     readinessEntered,
+    readinessArguments,
     receiptDirectory,
     cleanup: () => {
       fs.rmSync(receiptDirectory, { recursive: true, force: true });
@@ -311,7 +329,7 @@ describe('registered packaged journey readiness contract', () => {
     const readiness = new Promise<void>((resolve) => {
       release = resolve;
     });
-    const harness = await makeHarness(source, readiness);
+    const harness = await makeHarness(source, readiness, true, 25);
     const run = harness.journey.call({ timeout: () => undefined });
     let watchdog: NodeJS.Timeout | undefined;
     try {
@@ -329,12 +347,16 @@ describe('registered packaged journey readiness contract', () => {
       await run;
       expect(harness.calls).toContain('vscode.executeCompletionItemProvider');
       expect(harness.calls).toContain('vscode.executeDocumentSymbolProvider');
+      expect(harness.readinessArguments).toEqual([
+        { uri: 'file:///workspace/packaged_daily_driver.pl', timeoutMs: 30_000 },
+      ]);
       const receipt = JSON.parse(
         fs.readFileSync(
           path.join(harness.receiptDirectory, 'packaged_bundle_journey_receipt.json'),
           'utf8',
         ),
       ) as {
+        readiness_before?: Record<string, unknown>;
         readiness_wait?: Record<string, unknown>;
         readiness_after?: Record<string, unknown>;
         requests?: { immediate_phase?: unknown };
@@ -348,6 +370,7 @@ describe('registered packaged journey readiness contract', () => {
         fullyReady: false,
       });
       expect(receipt.requests?.immediate_phase).toBe('after_active_document_readiness');
+      expect((receipt.readiness_before as { generation?: number }).generation).toBe(0);
     } finally {
       if (watchdog) clearTimeout(watchdog);
       release?.();
@@ -364,10 +387,10 @@ describe('registered packaged journey readiness contract', () => {
     const readiness = new Promise<void>((_resolve, reject) => {
       rejectReadiness = reject;
     });
+    void readiness.catch(() => undefined);
     const harness = await makeHarness(journeySource(), readiness, exposeReadiness);
     const run = harness.journey.call({ timeout: () => undefined });
     let watchdog: NodeJS.Timeout | undefined;
-    let readinessStarted = false;
     try {
       if (exposeReadiness) {
         const observed = await Promise.race([
@@ -379,7 +402,6 @@ describe('registered packaged journey readiness contract', () => {
           }),
         ]);
         expect(observed).toBe('entered');
-        readinessStarted = observed === 'entered';
         rejectReadiness?.(new Error('readiness refused'));
       } else {
         await Promise.race([
@@ -402,9 +424,7 @@ describe('registered packaged journey readiness contract', () => {
       assertProvidersNotProven(receipt);
     } finally {
       if (watchdog) clearTimeout(watchdog);
-      if (readinessStarted) {
-        rejectReadiness?.(new Error('readiness test teardown'));
-      }
+      rejectReadiness?.(new Error('readiness test teardown'));
       await run.catch(() => undefined);
       harness.cleanup();
     }
