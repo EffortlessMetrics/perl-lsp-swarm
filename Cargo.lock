@@ -2112,6 +2112,7 @@ version = "0.17.0"
 dependencies = [
  "criterion",
  "perl-ast",
+ "perl-parser-core",
  "proptest",
 ]
 
