@@ -45,9 +45,26 @@ void test('verified packaged child receipt binds candidate and both observed art
     vscode_version: '1.125.0',
     outcome: 'not_proven',
     product_blockers: [],
-    server_identity: { path: 'C:/extension/bin/win32-x64/perllsp.exe', source: 'packaged_vsix_bundle', startup_source: 'bundled' },
-    startup: { lifecycle_state: 'running', binary_resolution_status: 'ok', server_start_status: 'ok', initialize_status: 'ok' },
-    requests: { immediate: Object.fromEntries(['completion', 'hover', 'definition', 'references', 'symbols'].map((key) => [key, { status: 'ok' }])), after_edit: { status: 'ok', immediate_requery: { status: 'ok' } } },
+    server_identity: {
+      path: 'C:/extension/bin/win32-x64/perllsp.exe',
+      source: 'packaged_vsix_bundle',
+      startup_source: 'bundled',
+    },
+    startup: {
+      lifecycle_state: 'running',
+      binary_resolution_status: 'ok',
+      server_start_status: 'ok',
+      initialize_status: 'ok',
+    },
+    requests: {
+      immediate: Object.fromEntries(
+        ['completion', 'hover', 'definition', 'references', 'symbols'].map((key) => [
+          key,
+          { status: 'ok' },
+        ]),
+      ),
+      after_edit: { status: 'ok', immediate_requery: { status: 'ok' } },
+    },
     shutdown: 'stopped',
   }));
   fs.writeFileSync(
@@ -92,9 +109,26 @@ void test('verified packaged child receipt rejects stale source, identity, and a
     vscode_version: '1.125.0',
     outcome: 'not_proven',
     product_blockers: [],
-    server_identity: { path: 'C:/extension/bin/win32-x64/perllsp.exe', source: 'packaged_vsix_bundle', startup_source: 'bundled' },
-    startup: { lifecycle_state: 'running', binary_resolution_status: 'ok', server_start_status: 'ok', initialize_status: 'ok' },
-    requests: { immediate: Object.fromEntries(['completion', 'hover', 'definition', 'references', 'symbols'].map((key) => [key, { status: 'ok' }])), after_edit: { status: 'ok', immediate_requery: { status: 'ok' } } },
+    server_identity: {
+      path: 'C:/extension/bin/win32-x64/perllsp.exe',
+      source: 'packaged_vsix_bundle',
+      startup_source: 'bundled',
+    },
+    startup: {
+      lifecycle_state: 'running',
+      binary_resolution_status: 'ok',
+      server_start_status: 'ok',
+      initialize_status: 'ok',
+    },
+    requests: {
+      immediate: Object.fromEntries(
+        ['completion', 'hover', 'definition', 'references', 'symbols'].map((key) => [
+          key,
+          { status: 'ok' },
+        ]),
+      ),
+      after_edit: { status: 'ok', immediate_requery: { status: 'ok' } },
+    },
     shutdown: 'stopped',
   }));
   const sourceDigest = crypto.createHash('sha256').update(fs.readFileSync(sourceReceiptFile)).digest('hex');
@@ -131,6 +165,19 @@ void test('verified packaged child receipt rejects stale source, identity, and a
   assert.equal(validate({ artifact_hashes: { ...base.artifact_hashes, vsix_sha256: 'd'.repeat(64) } }).ok, false);
   assert.equal(validate({ status: undefined }).ok, false);
   assert.equal(validate({ status: 'unexpected' }).ok, false);
+  assert.equal(validate({ status: [] }).ok, false);
+  const failedSource = JSON.parse(fs.readFileSync(sourceReceiptFile, 'utf8'));
+  failedSource.outcome = 'failed';
+  failedSource.product_blockers = [{ label: 'provider', result: { status: 'error' } }];
+  fs.writeFileSync(sourceReceiptFile, JSON.stringify(failedSource));
+  const failedSourceDigest = crypto.createHash('sha256').update(fs.readFileSync(sourceReceiptFile)).digest('hex');
+  assert.equal(validate({ source_receipt_sha256: failedSourceDigest }).ok, false);
+  failedSource.outcome = 'not_proven';
+  failedSource.product_blockers = [];
+  failedSource.requests.immediate = {};
+  fs.writeFileSync(sourceReceiptFile, JSON.stringify(failedSource));
+  const emptyProviderDigest = crypto.createHash('sha256').update(fs.readFileSync(sourceReceiptFile)).digest('hex');
+  assert.equal(validate({ source_receipt_sha256: emptyProviderDigest }).ok, false);
   fs.rmSync(directory, { recursive: true, force: true });
 });
 

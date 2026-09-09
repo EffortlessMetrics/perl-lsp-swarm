@@ -427,6 +427,40 @@ class ObservationTest(unittest.TestCase):
         self.assertIsNone(value)
         self.assertEqual(findings, ["no exact verified child receipt bound the row source and artifacts"])
 
+    def test_windows_failed_or_empty_source_journey_is_rejected_with_recomputed_digest(self) -> None:
+        self.package("windows")
+        self.build_row(
+            receipt=self.windows_receipt({"status": "pass"}, candidate_bound=True),
+            row_id="windows-current",
+            platform="windows",
+            vscode_version="stable",
+        )
+        receipts = self.root / "receipts-windows-current" / "local-current-source" / "windows"
+        source_path = receipts / "packaged_bundle_journey_receipt.json"
+        child_path = receipts / "verified_child_receipt.json"
+        source = json.loads(source_path.read_text(encoding="utf-8"))
+        child = json.loads(child_path.read_text(encoding="utf-8"))
+        for mutation in (
+            {"outcome": "failed", "product_blockers": [{"label": "provider"}]},
+            {"outcome": "not_proven", "product_blockers": [], "requests": {"immediate": {}}},
+        ):
+            source.update(mutation)
+            source_path.write_text(json.dumps(source), encoding="utf-8")
+            child["source_receipt_sha256"] = MODULE.sha256(source_path)
+            child_path.write_text(json.dumps(child), encoding="utf-8")
+            path, value, findings = MODULE.find_verified_candidate_receipt(
+                receipts,
+                source_sha=SHA,
+                expected_platform="win32",
+                expected_vsix_hash=VSIX_SHA,
+                expected_server_hash=MODULE.sha256(self.server),
+                expected_candidate_id=f"rolling-{SHA}-test",
+                expected_artifact_set_id="rolling-test-artifacts",
+            )
+            self.assertIsNone(path)
+            self.assertIsNone(value)
+            self.assertEqual(findings, ["no exact verified child receipt bound the row source and artifacts"])
+
     def test_arbitrary_archive_bytes_cannot_pass(self) -> None:
         self.archive.write_bytes(b"arbitrary-non-zip-bytes")
         row = self.build_row(receipt=smoke_receipt(self.server))
