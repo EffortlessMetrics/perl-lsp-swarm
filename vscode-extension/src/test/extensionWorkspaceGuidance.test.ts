@@ -7,10 +7,18 @@ import {
   runDiscoveredIncludePathGuidance,
   runIncludePathValidation,
   suggestAiCompletionIfSupported,
+  validateIncludePaths,
 } from '../extensionWorkspaceGuidance';
 
 const workspaceMock = vscode.workspace as unknown as { workspaceFolders: unknown };
 const extensionsMock = vscode.extensions as unknown as { all: unknown[] };
+const fixtureDirs: string[] = [];
+
+function tempWorkspace(prefix: string): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  fixtureDirs.push(dir);
+  return dir;
+}
 
 class Deferred<T> {
   readonly promise: Promise<T>;
@@ -68,6 +76,9 @@ async function settleAsyncWork(): Promise<void> {
 }
 
 afterEach(() => {
+  for (const dir of fixtureDirs.splice(0)) {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
   jest.clearAllMocks();
   workspaceMock.workspaceFolders = undefined;
   extensionsMock.all = [];
@@ -79,7 +90,7 @@ afterEach(() => {
 });
 
 test('does not prompt for absent built-in include paths', async () => {
-  const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-guidance-default-'));
+  const workspaceDir = tempWorkspace('perl-lsp-guidance-default-');
   mountWorkspace(workspaceDir, ['lib']);
 
   await runIncludePathValidation({
@@ -90,7 +101,7 @@ test('does not prompt for absent built-in include paths', async () => {
 });
 
 test('missing include-path validation no longer offers a filesystem mutation', async () => {
-  const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-guidance-missing-'));
+  const workspaceDir = tempWorkspace('perl-lsp-guidance-missing-');
   mountWorkspace(workspaceDir, ['generated/perl']);
 
   await runIncludePathValidation({
@@ -105,7 +116,7 @@ test('missing include-path validation no longer offers a filesystem mutation', a
 });
 
 test('configured canonical ancestors cover candidates but descendants do not', async () => {
-  const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-guidance-cover-'));
+  const workspaceDir = tempWorkspace('perl-lsp-guidance-cover-');
   fs.mkdirSync(path.join(workspaceDir, 'src', 'lib'), { recursive: true });
 
   await expect(isIncludePathCandidateCovered(workspaceDir, ['src'], 'src/lib')).resolves.toBe(true);
@@ -116,7 +127,7 @@ test('configured canonical ancestors cover candidates but descendants do not', a
 });
 
 test('a configured symlink alias covers its canonical candidate', async () => {
-  const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-guidance-alias-'));
+  const workspaceDir = tempWorkspace('perl-lsp-guidance-alias-');
   fs.mkdirSync(path.join(workspaceDir, 'src'), { recursive: true });
   try {
     fs.symlinkSync(path.join(workspaceDir, 'src'), path.join(workspaceDir, 'alias'), 'dir');
@@ -128,8 +139,8 @@ test('a configured symlink alias covers its canonical candidate', async () => {
 });
 
 test('does not scan or suggest a candidate symlinked outside the workspace', async () => {
-  const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-guidance-escape-'));
-  const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-guidance-outside-'));
+  const workspaceDir = tempWorkspace('perl-lsp-guidance-escape-');
+  const outsideDir = tempWorkspace('perl-lsp-guidance-outside-');
   fs.writeFileSync(path.join(outsideDir, 'Escaped.pm'), 'package Escaped; 1;\n');
   try {
     fs.symlinkSync(outsideDir, path.join(workspaceDir, 'vendor'), 'dir');
@@ -149,7 +160,7 @@ test('does not scan or suggest a candidate symlinked outside the workspace', asy
 });
 
 test('dismissal is sticky for an unchanged discovered module layout', async () => {
-  const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-guidance-cache-'));
+  const workspaceDir = tempWorkspace('perl-lsp-guidance-cache-');
   fs.mkdirSync(path.join(workspaceDir, 'src'), { recursive: true });
   fs.writeFileSync(path.join(workspaceDir, 'src', 'Module.pm'), 'package Module; 1;\n');
   const globalState = makeState();
@@ -163,7 +174,7 @@ test('dismissal is sticky for an unchanged discovered module layout', async () =
 });
 
 test('configuration changes invalidate a prior discovery dismissal', async () => {
-  const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-guidance-config-'));
+  const workspaceDir = tempWorkspace('perl-lsp-guidance-config-');
   fs.mkdirSync(path.join(workspaceDir, 'src'), { recursive: true });
   fs.writeFileSync(path.join(workspaceDir, 'src', 'Module.pm'), 'package Module; 1;\n');
   const globalState = makeState();
@@ -180,7 +191,7 @@ test('configuration changes invalidate a prior discovery dismissal', async () =>
 });
 
 test('retries a discovered-path suggestion after an update failure', async () => {
-  const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-guidance-retry-'));
+  const workspaceDir = tempWorkspace('perl-lsp-guidance-retry-');
   fs.mkdirSync(path.join(workspaceDir, 'src'), { recursive: true });
   fs.writeFileSync(path.join(workspaceDir, 'src', 'Module.pm'), 'package Module; 1;\n');
   const globalState = makeState();
@@ -207,7 +218,7 @@ test('retries a discovered-path suggestion after an update failure', async () =>
 });
 
 test('adds discovered module directories for the owning workspace folder', async () => {
-  const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-guidance-add-'));
+  const workspaceDir = tempWorkspace('perl-lsp-guidance-add-');
   fs.mkdirSync(path.join(workspaceDir, 'src'), { recursive: true });
   fs.mkdirSync(path.join(workspaceDir, 'vendor'), { recursive: true });
   fs.writeFileSync(path.join(workspaceDir, 'src', 'Module.pm'), 'package Module; 1;\n');
@@ -244,7 +255,7 @@ test('adds discovered module directories for the owning workspace folder', async
 });
 
 test('reports entry-budget exhaustion as incomplete', async () => {
-  const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-guidance-budget-'));
+  const workspaceDir = tempWorkspace('perl-lsp-guidance-budget-');
   const srcDir = path.join(workspaceDir, 'src');
   fs.mkdirSync(srcDir, { recursive: true });
   for (let index = 0; index < 220; index += 1) {
@@ -266,7 +277,7 @@ test('reports entry-budget exhaustion as incomplete', async () => {
 });
 
 test('reports depth-budget exhaustion as incomplete', async () => {
-  const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-guidance-depth-'));
+  const workspaceDir = tempWorkspace('perl-lsp-guidance-depth-');
   const deep = path.join(workspaceDir, 'src', 'one', 'two', 'three');
   fs.mkdirSync(deep, { recursive: true });
   fs.writeFileSync(path.join(deep, 'Deep.pm'), 'package Deep; 1;\n');
@@ -284,7 +295,7 @@ test('reports depth-budget exhaustion as incomplete', async () => {
 });
 
 test('does not overwrite include paths changed while the suggestion is open', async () => {
-  const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-guidance-stale-config-'));
+  const workspaceDir = tempWorkspace('perl-lsp-guidance-stale-config-');
   fs.mkdirSync(path.join(workspaceDir, 'src'), { recursive: true });
   fs.writeFileSync(path.join(workspaceDir, 'src', 'Module.pm'), 'package Module; 1;\n');
   const folder = folderFor(workspaceDir);
@@ -313,7 +324,7 @@ test('does not overwrite include paths changed while the suggestion is open', as
 });
 
 test('does not apply a finding after the folder is removed and re-added', async () => {
-  const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-guidance-stale-root-'));
+  const workspaceDir = tempWorkspace('perl-lsp-guidance-stale-root-');
   fs.mkdirSync(path.join(workspaceDir, 'src'), { recursive: true });
   fs.writeFileSync(path.join(workspaceDir, 'src', 'Module.pm'), 'package Module; 1;\n');
   const original = folderFor(workspaceDir);
@@ -337,6 +348,160 @@ test('does not apply a finding after the folder is removed and re-added', async 
   expect(update).not.toHaveBeenCalled();
   expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(
     expect.stringContaining('changed before they could be applied'),
+  );
+});
+
+test('does not mark an exactly full directory budget incomplete', async () => {
+  const workspaceDir = tempWorkspace('perl-lsp-guidance-budget-exact-');
+  const srcDir = path.join(workspaceDir, 'src');
+  fs.mkdirSync(srcDir, { recursive: true });
+  for (let index = 0; index < 200; index += 1) {
+    fs.writeFileSync(path.join(srcDir, `file-${index}.txt`), 'not perl\n');
+  }
+  mountWorkspace(workspaceDir, ['lib']);
+
+  const reports = await runDiscoveredIncludePathGuidance({
+    globalState: makeState(),
+  } as unknown as vscode.ExtensionContext);
+
+  expect(reports).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({ folder: 'workspace', discovered: [], complete: true }),
+    ]),
+  );
+});
+
+test('marks a directory with an entry beyond the budget incomplete', async () => {
+  const workspaceDir = tempWorkspace('perl-lsp-guidance-budget-over-');
+  const srcDir = path.join(workspaceDir, 'src');
+  fs.mkdirSync(srcDir, { recursive: true });
+  for (let index = 0; index < 201; index += 1) {
+    fs.writeFileSync(path.join(srcDir, `file-${index}.txt`), 'not perl\n');
+  }
+  mountWorkspace(workspaceDir, ['lib']);
+
+  const reports = await runDiscoveredIncludePathGuidance({
+    globalState: makeState(),
+  } as unknown as vscode.ExtensionContext);
+
+  expect(reports).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({ folder: 'workspace', discovered: [], complete: false }),
+    ]),
+  );
+});
+
+test('continues discovery when a configured descendant is unreadable', async () => {
+  const workspaceDir = tempWorkspace('perl-lsp-guidance-error-');
+  fs.mkdirSync(path.join(workspaceDir, 'src'), { recursive: true });
+  fs.writeFileSync(path.join(workspaceDir, 'src', 'Module.pm'), 'package Module; 1;\n');
+  // The embedded NUL makes realpath reject this configured descendant with a
+  // non-ENOENT error while the independent src candidate remains discoverable.
+  mountWorkspace(workspaceDir, ['blocked\0child']);
+
+  const reports = await runDiscoveredIncludePathGuidance({
+    globalState: makeState(),
+  } as unknown as vscode.ExtensionContext);
+
+  expect(reports).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({ folder: 'workspace', discovered: ['src'], complete: false }),
+    ]),
+  );
+});
+
+test('queues one validation rerun for a change during an active prompt', async () => {
+  const workspaceDir = tempWorkspace('perl-lsp-guidance-rerun-');
+  mountWorkspace(workspaceDir, ['first/missing']);
+  let includePaths = ['first/missing'];
+  (vscode.workspace.getConfiguration as jest.Mock).mockImplementation(() => ({
+    get: jest.fn(() => includePaths),
+    inspect: jest.fn(() => ({ defaultValue: ['lib', 'local/lib/perl5'] })),
+    update: jest.fn(async () => undefined),
+  }));
+  const firstPrompt = new Deferred<string | undefined>();
+  (vscode.window.showWarningMessage as jest.Mock).mockReturnValue(firstPrompt.promise);
+
+  const context = { globalState: makeState() } as unknown as vscode.ExtensionContext;
+  void validateIncludePaths(context);
+  await settleAsyncWork();
+  includePaths = ['second/missing'];
+  void validateIncludePaths(context);
+  firstPrompt.resolve(undefined);
+  await settleAsyncWork();
+  await settleAsyncWork();
+
+  expect(vscode.window.showWarningMessage).toHaveBeenCalledTimes(2);
+  expect(vscode.window.showWarningMessage).toHaveBeenLastCalledWith(
+    expect.stringContaining('second/missing'),
+    'Open Settings',
+  );
+});
+
+test('does not apply a module root removed while the prompt is open', async () => {
+  const workspaceDir = tempWorkspace('perl-lsp-guidance-removed-module-');
+  const modulePath = path.join(workspaceDir, 'src', 'Module.pm');
+  fs.mkdirSync(path.dirname(modulePath), { recursive: true });
+  fs.writeFileSync(modulePath, 'package Module; 1;\n');
+  const update = jest.fn(async () => undefined);
+  const folder = folderFor(workspaceDir);
+  workspaceMock.workspaceFolders = [folder];
+  (vscode.workspace.getConfiguration as jest.Mock).mockImplementation(() => ({
+    get: jest.fn((_key: string, defaultValue?: unknown) => defaultValue),
+    update,
+  }));
+  const prompt = new Deferred<string>();
+  (vscode.window.showInformationMessage as jest.Mock).mockReturnValue(prompt.promise);
+
+  const run = runDiscoveredIncludePathGuidance({
+    globalState: makeState(),
+  } as unknown as vscode.ExtensionContext);
+  await settleAsyncWork();
+  fs.rmSync(modulePath);
+  prompt.resolve('Add for These Folders');
+  await run;
+
+  expect(update).not.toHaveBeenCalled();
+});
+
+test('reports only the module roots applied after partial revalidation', async () => {
+  const firstDir = tempWorkspace('perl-lsp-guidance-partial-first-');
+  const secondDir = tempWorkspace('perl-lsp-guidance-partial-second-');
+  const firstModule = path.join(firstDir, 'src', 'First.pm');
+  fs.mkdirSync(path.dirname(firstModule), { recursive: true });
+  fs.writeFileSync(firstModule, 'package First; 1;\n');
+  fs.mkdirSync(path.join(secondDir, 'vendor'), { recursive: true });
+  fs.writeFileSync(path.join(secondDir, 'vendor', 'Second.pm'), 'package Second; 1;\n');
+  const first = folderFor(firstDir, 'first');
+  const second = folderFor(secondDir, 'second');
+  workspaceMock.workspaceFolders = [first, second];
+  const firstUpdate = jest.fn(async () => undefined);
+  const secondUpdate = jest.fn(async () => undefined);
+  (vscode.workspace.getConfiguration as jest.Mock).mockImplementation(
+    (_section: string, folder: vscode.Uri) => ({
+      get: jest.fn((_key: string, defaultValue?: unknown) => defaultValue),
+      update: folder.fsPath === firstDir ? firstUpdate : secondUpdate,
+    }),
+  );
+  const prompt = new Deferred<string>();
+  (vscode.window.showInformationMessage as jest.Mock).mockReturnValue(prompt.promise);
+
+  const run = runDiscoveredIncludePathGuidance({
+    globalState: makeState(),
+  } as unknown as vscode.ExtensionContext);
+  await settleAsyncWork();
+  fs.rmSync(firstModule);
+  prompt.resolve('Add for These Folders');
+  await run;
+
+  expect(firstUpdate).not.toHaveBeenCalled();
+  expect(secondUpdate).toHaveBeenCalledWith(
+    'includePaths',
+    expect.arrayContaining(['vendor']),
+    vscode.ConfigurationTarget.WorkspaceFolder,
+  );
+  expect(vscode.window.showInformationMessage).toHaveBeenCalledWith(
+    'Added include paths for second: vendor.',
   );
 });
 

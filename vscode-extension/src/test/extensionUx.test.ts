@@ -42,8 +42,6 @@ import {
   runDiscoveredIncludePathGuidance,
   runIncludePathValidation,
   suggestAiCompletionIfSupported,
-  suggestDiscoveredIncludePaths,
-  validateIncludePaths,
 } from '../extensionWorkspaceGuidance';
 
 describe('formatting provider experience projection', () => {
@@ -1646,20 +1644,15 @@ describe('openDemoProjectCommand (#1635)', () => {
   test('opens the bundled demo project and records engagement', async () => {
     const update = jest.fn(async () => undefined);
     const context = makeContext();
-    const storage = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-demo-storage-'));
     context.extensionPath = extRoot;
-    context.globalStorageUri = { fsPath: storage } as vscode.Uri;
     context.globalState = { get: jest.fn(), update };
 
     await openDemoProjectCommand(asExtensionContext(context));
 
-    expect(update).toHaveBeenCalledWith(
-      expect.stringMatching(/^perl-lsp\.demoProjectOpened\./),
-      true,
-    );
+    expect(update).toHaveBeenCalledWith('perl-lsp.demoProjectOpened', true);
     expect(vscode.commands.executeCommand).toHaveBeenCalledWith(
       'vscode.openFolder',
-      expect.objectContaining({ fsPath: expect.stringContaining('demo-projects') }),
+      expect.objectContaining({ fsPath: path.join(extRoot, 'assets', 'demo-project') }),
       { forceNewWindow: true },
     );
     expect(vscode.window.showInformationMessage).toHaveBeenCalled();

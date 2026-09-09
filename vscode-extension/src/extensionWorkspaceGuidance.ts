@@ -8,8 +8,13 @@ const DISCOVERY_CANDIDATE_DIRS = ['src', 'local', 'vendor', 'lib', 't/lib', 'bli
 const DISCOVERY_ENTRY_BUDGET = 200;
 const DISCOVERY_MAX_DEPTH = 2;
 
-const validationRuns = new WeakMap<vscode.ExtensionContext, Promise<void>>();
-const discoveryRuns = new WeakMap<vscode.ExtensionContext, Promise<void>>();
+interface GuidanceRun {
+  pending: Promise<void>;
+  dirty: boolean;
+}
+
+const validationRuns = new WeakMap<vscode.ExtensionContext, GuidanceRun>();
+const discoveryRuns = new WeakMap<vscode.ExtensionContext, GuidanceRun>();
 
 interface DiscoveryScanResult {
   readonly found: boolean;
@@ -80,27 +85,33 @@ function includePathsFingerprint(includePaths: readonly string[]): string {
 }
 
 function scheduleGuidance(
-  runs: WeakMap<vscode.ExtensionContext, Promise<void>>,
+  runs: WeakMap<vscode.ExtensionContext, GuidanceRun>,
   context: vscode.ExtensionContext,
   label: string,
   task: () => Promise<unknown>,
 ): Promise<void> {
-  if (runs.has(context)) {
+  const existing = runs.get(context);
+  if (existing) {
+    existing.dirty = true;
     return Promise.resolve();
   }
 
-  let pending: Promise<void>;
-  pending = task()
-    .then(() => undefined)
-    .catch((error: unknown) => {
-      void vscode.window.showWarningMessage(`Perl LSP: ${label} failed: ${errorMessage(error)}`);
-    })
-    .finally(() => {
-      if (runs.get(context) === pending) {
-        runs.delete(context);
+  const run: GuidanceRun = { pending: Promise.resolve(), dirty: false };
+  run.pending = (async () => {
+    do {
+      run.dirty = false;
+      try {
+        await task();
+      } catch (error: unknown) {
+        void vscode.window.showWarningMessage(`Perl LSP: ${label} failed: ${errorMessage(error)}`);
       }
-    });
-  runs.set(context, pending);
+    } while (run.dirty);
+  })().finally(() => {
+    if (runs.get(context) === run) {
+      runs.delete(context);
+    }
+  });
+  runs.set(context, run);
   return Promise.resolve();
 }
 
@@ -208,14 +219,21 @@ async function hasConfiguredDescendant(
   workspaceRoot: string,
   configuredPaths: readonly string[],
   candidateRealPath: string,
-): Promise<boolean> {
+): Promise<CoverageResult> {
+  let complete = true;
   for (const configured of configuredPaths) {
-    const configuredRealPath = await realpathIfExists(path.resolve(workspaceRoot, configured));
+    let configuredRealPath: string | undefined;
+    try {
+      configuredRealPath = await realpathIfExists(path.resolve(workspaceRoot, configured));
+    } catch {
+      complete = false;
+      continue;
+    }
     if (configuredRealPath && isWithinBasePath(candidateRealPath, configuredRealPath)) {
-      return true;
+      return { covered: true, complete };
     }
   }
-  return false;
+  return { covered: false, complete };
 }
 
 /** True when a current canonical configured root is equal to or an ancestor of the candidate. */
@@ -253,10 +271,13 @@ async function directoryContainsPerlModule(
           state.visited += 1;
           entries.push(entry);
         }
-      } finally {
-        if (state.remaining <= 0) {
-          state.complete = false;
+        if (state.remaining === 0) {
+          const extra = await directory.read();
+          if (extra !== null) {
+            state.complete = false;
+          }
         }
+      } finally {
         await directory.close();
       }
     } catch {
@@ -275,6 +296,10 @@ async function directoryContainsPerlModule(
         continue;
       }
       if (depth >= maxDepth) {
+        state.complete = false;
+        continue;
+      }
+      if (state.remaining <= 0) {
         state.complete = false;
         continue;
       }
@@ -298,7 +323,7 @@ async function directoryContainsPerlModule(
 /** Schedule discovery as advisory background work. */
 export function suggestDiscoveredIncludePaths(context: vscode.ExtensionContext): Promise<void> {
   return scheduleGuidance(discoveryRuns, context, 'include-path discovery', async () => {
-    await validationRuns.get(context);
+    await validationRuns.get(context)?.pending;
     await runDiscoveredIncludePathGuidance(context);
   });
 }
@@ -351,7 +376,13 @@ export async function runDiscoveredIncludePathGuidance(
       if (coverage.covered) {
         continue;
       }
-      if (await hasConfiguredDescendant(folder.uri.fsPath, includePaths, candidateRealPath)) {
+      const descendant = await hasConfiguredDescendant(
+        folder.uri.fsPath,
+        includePaths,
+        candidateRealPath,
+      );
+      complete = complete && descendant.complete;
+      if (descendant.covered) {
         continue;
       }
 
@@ -446,6 +477,7 @@ export async function runDiscoveredIncludePathGuidance(
       }
 
       const currentDiscovered: string[] = [];
+      let currentComplete = true;
       for (const candidate of finding.discovered) {
         const candidateRealPath = await realpathIfExists(
           path.resolve(currentFolder.uri.fsPath, candidate),
@@ -456,6 +488,23 @@ export async function runDiscoveredIncludePathGuidance(
         }
         const stat = await fs.promises.stat(candidateRealPath).catch(() => undefined);
         if (!stat?.isDirectory()) {
+          stale.push(finding.folder.name);
+          continue;
+        }
+        const coverage = await canonicalCoverage(
+          currentFolder.uri.fsPath,
+          currentIncludePaths,
+          candidate,
+        );
+        const descendant = await hasConfiguredDescendant(
+          currentFolder.uri.fsPath,
+          currentIncludePaths,
+          candidateRealPath,
+        );
+        const scan = await directoryContainsPerlModule(candidateRealPath);
+        currentComplete =
+          currentComplete && coverage.complete && descendant.complete && scan.complete;
+        if (coverage.covered || descendant.covered || !scan.found) {
           stale.push(finding.folder.name);
           continue;
         }
@@ -471,8 +520,20 @@ export async function runDiscoveredIncludePathGuidance(
           next,
           vscode.ConfigurationTarget.WorkspaceFolder,
         );
-        await context.globalState.update(finding.cacheKey, finding.signature);
-        applied.push(`${finding.folder.name}: ${finding.discovered.join(', ')}`);
+        const currentSignature = crypto
+          .createHash('sha256')
+          .update(
+            JSON.stringify({
+              folderUri: finding.folderUri,
+              rootRealPath: currentRootRealPath,
+              includePathsFingerprint: includePathsFingerprint(currentIncludePaths),
+              complete: finding.complete && currentComplete,
+              discovered: currentDiscovered.slice().sort(),
+            }),
+          )
+          .digest('hex');
+        await context.globalState.update(finding.cacheKey, currentSignature);
+        applied.push(`${finding.folder.name}: ${currentDiscovered.join(', ')}`);
       } catch (error: unknown) {
         void vscode.window.showWarningMessage(
           `Perl LSP: could not update include paths for ${finding.folder.name}: ${errorMessage(error)}`,
@@ -555,4 +616,20 @@ export async function suggestAiCompletionIfSupported(
   }
 }
 
-export { openUserOwnedDemoProject as openDemoProjectCommand } from './demoProject';
+export async function openDemoProjectCommand(context: vscode.ExtensionContext): Promise<void> {
+  const demoPath = path.join(context.extensionPath, 'assets', 'demo-project');
+  if (!fs.existsSync(path.join(demoPath, 'main.pl'))) {
+    void vscode.window.showErrorMessage(
+      'Perl LSP: demo project is not available in this installation.',
+    );
+    return;
+  }
+
+  await context.globalState.update('perl-lsp.demoProjectOpened', true);
+  void vscode.window.showInformationMessage(
+    'Opening the Perl demo project. Try code completion (Ctrl+Space) in main.pl, or hover over Utils / Database for go-to-definition.',
+  );
+  await vscode.commands.executeCommand('vscode.openFolder', vscode.Uri.file(demoPath), {
+    forceNewWindow: true,
+  });
+}
