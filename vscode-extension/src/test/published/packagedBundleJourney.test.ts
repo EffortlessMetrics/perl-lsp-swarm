@@ -11,6 +11,7 @@ import {
   providerPosition,
   providerResult,
   receiptsDir,
+  observeActiveDocumentReadiness,
   sha256,
   waitForStartupMetrics,
   withTimeout,
@@ -47,6 +48,14 @@ interface ArtifactHashes {
 
 const SOURCE_CLAIM_BOUNDARY =
   'Packaged VSIX and bundled-server journey exercised by the VS Code extension host.';
+
+function readinessDeferredProvider(label: string, reason: string): ReceiptValue {
+  return {
+    status: 'not_proven',
+    label,
+    reason,
+  };
+}
 
 function requireCandidateArtifactManifest(
   observedVsixSha256: string | undefined,
@@ -246,6 +255,7 @@ suite('Packaged VSIX bundled-server journey', function () {
               indexReason?: string;
               fullyReady: boolean;
             };
+            waitForActiveDocumentReady?: (uri: string, timeoutMs?: number) => Promise<void>;
             stop?: () => Promise<void>;
           }
         | undefined;
@@ -255,38 +265,63 @@ suite('Packaged VSIX bundled-server journey', function () {
       await vscode.window.showTextDocument(document);
       const position = providerPosition(document);
 
-      const immediate = {
-        completion: await providerResult(
-          'bundled completion',
-          'vscode.executeCompletionItemProvider',
-          document.uri,
-          position,
-        ),
-        hover: await providerResult(
-          'bundled hover',
-          'vscode.executeHoverProvider',
-          document.uri,
-          position,
-        ),
-        definition: await providerResult(
-          'bundled definition',
-          'vscode.executeDefinitionProvider',
-          document.uri,
-          position,
-        ),
-        references: await providerResult(
-          'bundled references',
-          'vscode.executeReferenceProvider',
-          document.uri,
-          position,
-          { includeDeclaration: true },
-        ),
-        symbols: await providerResult(
-          'bundled symbols',
-          'vscode.executeDocumentSymbolProvider',
-          document.uri,
-        ),
+      const readinessBefore = activation?.getActiveDocumentReadiness?.() ?? null;
+      const readiness = await observeActiveDocumentReadiness(
+        activation?.waitForActiveDocumentReady,
+        document.uri.toString(),
+        30_000,
+      );
+      const readinessWait: ReceiptValue = {
+        scope: 'active_document',
+        uri: document.uri.toString(),
+        ...readiness,
       };
+      const readinessReady = readiness.status === 'ready';
+      const readinessAfter = activation?.getActiveDocumentReadiness?.() ?? null;
+      const readinessReason =
+        readinessWait.status === 'ready'
+          ? 'active-document readiness resolved before provider requests'
+          : `provider requests were withheld: ${String(readinessWait.reason ?? 'readiness unavailable')}`;
+      const readyProviders = readinessReady
+        ? {
+            completion: await providerResult(
+              'bundled completion',
+              'vscode.executeCompletionItemProvider',
+              document.uri,
+              position,
+            ),
+            hover: await providerResult(
+              'bundled hover',
+              'vscode.executeHoverProvider',
+              document.uri,
+              position,
+            ),
+            definition: await providerResult(
+              'bundled definition',
+              'vscode.executeDefinitionProvider',
+              document.uri,
+              position,
+            ),
+            references: await providerResult(
+              'bundled references',
+              'vscode.executeReferenceProvider',
+              document.uri,
+              position,
+              { includeDeclaration: true },
+            ),
+            symbols: await providerResult(
+              'bundled symbols',
+              'vscode.executeDocumentSymbolProvider',
+              document.uri,
+            ),
+          }
+        : {
+            completion: readinessDeferredProvider('bundled completion', readinessReason),
+            hover: readinessDeferredProvider('bundled hover', readinessReason),
+            definition: readinessDeferredProvider('bundled definition', readinessReason),
+            references: readinessDeferredProvider('bundled references', readinessReason),
+            symbols: readinessDeferredProvider('bundled symbols', readinessReason),
+          };
 
       const editStarted = performance.now();
       const edit = new vscode.WorkspaceEdit();
@@ -296,53 +331,61 @@ suite('Packaged VSIX bundled-server journey', function () {
       const afterEdit = {
         status: editApplied && editedText.includes('# packaged edit') ? 'ok' : 'error',
         duration_ms: Math.round(performance.now() - editStarted),
-        immediate_requery: await providerResult(
-          'bundled completion after edit',
-          'vscode.executeCompletionItemProvider',
-          document.uri,
-          position,
-        ),
+        immediate_requery: readinessReady
+          ? await providerResult(
+              'bundled completion after edit',
+              'vscode.executeCompletionItemProvider',
+              document.uri,
+              position,
+            )
+          : readinessDeferredProvider('bundled completion after edit', readinessReason),
       };
 
-      const formatting = await providerResult(
-        'bundled formatting',
-        'vscode.executeFormatDocumentProvider',
-        document.uri,
-        { tabSize: 4, insertSpaces: true },
-      );
+      const formatting = readinessReady
+        ? await providerResult(
+            'bundled formatting',
+            'vscode.executeFormatDocumentProvider',
+            document.uri,
+            { tabSize: 4, insertSpaces: true },
+          )
+        : readinessDeferredProvider('bundled formatting', readinessReason);
 
       const renameStarted = performance.now();
       let rename: ReceiptValue;
       try {
-        const result = (await withTimeout(
-          'bundled rename/refusal',
-          vscode.commands.executeCommand(
-            'vscode.executeDocumentRenameProvider',
-            document.uri,
-            position,
-            'renamed_value',
-          ),
-          15_000,
-        )) as vscode.WorkspaceEdit | undefined;
-        const entries = result?.entries() ?? [];
-        const workspaceResolved = path.resolve(workspacePath);
-        const workspacePrefix = workspaceResolved + path.sep;
-        const caseInsensitive = process.platform === 'win32' || process.platform === 'darwin';
-        const safe = entries.every(([uri]) => {
-          const resolved = path.resolve(uri.fsPath);
-          if (caseInsensitive) {
-            const normalized = resolved.toLowerCase();
-            const normalizedWorkspace = workspaceResolved.toLowerCase();
-            const normalizedPrefix = workspacePrefix.toLowerCase();
-            return normalized === normalizedWorkspace || normalized.startsWith(normalizedPrefix);
-          }
-          return resolved === workspaceResolved || resolved.startsWith(workspacePrefix);
-        });
-        rename = {
-          status: result ? (safe ? 'offered_not_applied' : 'unsafe_refusal') : 'safe_refusal',
-          edit_count: entries.length,
-          duration_ms: Math.round(performance.now() - renameStarted),
-        };
+        if (!readinessReady) {
+          rename = readinessDeferredProvider('bundled rename/refusal', readinessReason);
+        } else {
+          const result = (await withTimeout(
+            'bundled rename/refusal',
+            vscode.commands.executeCommand(
+              'vscode.executeDocumentRenameProvider',
+              document.uri,
+              position,
+              'renamed_value',
+            ),
+            15_000,
+          )) as vscode.WorkspaceEdit | undefined;
+          const entries = result?.entries() ?? [];
+          const workspaceResolved = path.resolve(workspacePath);
+          const workspacePrefix = workspaceResolved + path.sep;
+          const caseInsensitive = process.platform === 'win32' || process.platform === 'darwin';
+          const safe = entries.every(([uri]) => {
+            const resolved = path.resolve(uri.fsPath);
+            if (caseInsensitive) {
+              const normalized = resolved.toLowerCase();
+              const normalizedWorkspace = workspaceResolved.toLowerCase();
+              const normalizedPrefix = workspacePrefix.toLowerCase();
+              return normalized === normalizedWorkspace || normalized.startsWith(normalizedPrefix);
+            }
+            return resolved === workspaceResolved || resolved.startsWith(workspacePrefix);
+          });
+          rename = {
+            status: result ? (safe ? 'offered_not_applied' : 'unsafe_refusal') : 'safe_refusal',
+            edit_count: entries.length,
+            duration_ms: Math.round(performance.now() - renameStarted),
+          };
+        }
       } catch (error: unknown) {
         rename = {
           status: 'error',
@@ -355,7 +398,7 @@ suite('Packaged VSIX bundled-server journey', function () {
       const metrics = activation?.getLanguageClientStartupMetrics
         ? await waitForStartupMetrics(activation.getLanguageClientStartupMetrics, 30_000)
         : {};
-      const readiness = activation?.getActiveDocumentReadiness?.() ?? null;
+      const finalReadiness = activation?.getActiveDocumentReadiness?.() ?? null;
       const receipt: ReceiptValue = {
         schema_version: 1,
         outcome: 'completed',
@@ -398,9 +441,18 @@ suite('Packaged VSIX bundled-server journey', function () {
         workspaces: [
           { path: workspacePath, mode: 'single-root', trust: vscode.workspace.isTrusted },
         ],
-        requests: { immediate, after_edit: afterEdit, formatting, rename },
+        requests: {
+          immediate: readyProviders,
+          immediate_phase: readinessReady ? 'after_active_document_readiness' : 'not_proven',
+          after_edit: afterEdit,
+          formatting,
+          rename,
+        },
         index_generation: 'not_observable_from_public_extension_api',
-        index_readiness: readiness ?? 'not_observable_from_public_extension_api',
+        readiness_wait: readinessWait,
+        readiness_before: readinessBefore ?? 'not_observable_from_public_extension_api',
+        readiness_after: readinessAfter ?? 'not_observable_from_public_extension_api',
+        index_readiness: finalReadiness ?? 'not_observable_from_public_extension_api',
         answering_tier: 'bundled_server_provider',
         fallback_or_refusal_reason:
           rename.status === 'safe_refusal' ? 'rename provider returned no edit' : null,
@@ -412,6 +464,11 @@ suite('Packaged VSIX bundled-server journey', function () {
         known_limitations: [
           'DAP preview is not exercised by this slice.',
           'The public VS Code API does not expose server index generation or semantic exactness.',
+          ...(readinessReady
+            ? []
+            : [
+                'Active-document readiness did not resolve before provider requests; provider claims are not proven.',
+              ]),
           'A rename edit is never applied by this receipt; offered edits are checked for workspace containment first.',
           ...(criticSettingRegistered
             ? []
@@ -444,11 +501,11 @@ suite('Packaged VSIX bundled-server journey', function () {
       }
 
       const providerResults = [
-        ['completion', immediate.completion],
-        ['hover', immediate.hover],
-        ['definition', immediate.definition],
-        ['references', immediate.references],
-        ['symbols', immediate.symbols],
+        ['completion', readyProviders.completion],
+        ['hover', readyProviders.hover],
+        ['definition', readyProviders.definition],
+        ['references', readyProviders.references],
+        ['symbols', readyProviders.symbols],
         ['completion after edit', afterEdit.immediate_requery],
         ['formatting', formatting],
         ['rename', rename],
