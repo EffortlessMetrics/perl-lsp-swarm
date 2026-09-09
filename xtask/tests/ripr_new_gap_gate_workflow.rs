@@ -1351,13 +1351,15 @@ fn ripr_append_summary_suppresses_stale_files_without_freshness_handoff() -> Res
         .write_all(script.as_bytes())?;
     let output = child.wait_with_output()?;
     ensure!(output.status.success(), "append step failed: {output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
     let summary_text = match fs::read_to_string(&summary) {
         Ok(text) => text,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
         Err(error) => return Err(error.into()),
     };
     ensure!(
-        !summary_text.contains("stale prior invocation"),
+        !summary_text.contains("stale prior invocation")
+            && !stdout.contains("stale prior invocation"),
         "append step must not publish stale files without a matching handoff"
     );
 

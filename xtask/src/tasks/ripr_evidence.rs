@@ -775,16 +775,30 @@ fn prepare_freshness_handoff() -> Result<Option<(PathBuf, String)>> {
     let path = PathBuf::from(path);
     fs::create_dir_all(&path)
         .with_context(|| format!("creating freshness handoff {}", path.display()))?;
-    let marker = path.join(FRESHNESS_MARKER);
-    match fs::remove_file(&marker) {
-        Ok(()) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => {
-            return Err(error)
-                .with_context(|| format!("clearing freshness handoff {}", marker.display()));
+    Ok(Some((path, token)))
+}
+
+fn invalidate_and_publish_freshness_handoff<F>(
+    repo: &Path,
+    handoff: Option<(PathBuf, String)>,
+    remove_file: F,
+) -> Result<()>
+where
+    F: for<'a> Fn(&'a Path) -> io::Result<()> + Copy,
+{
+    if let Some((path, _)) = &handoff {
+        let marker = path.join(FRESHNESS_MARKER);
+        match fs::remove_file(&marker) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("clearing freshness handoff {}", marker.display()));
+            }
         }
     }
-    Ok(Some((path, token)))
+    clear_stale_pr_artifacts_with(repo, remove_file, handoff.is_some())?;
+    publish_freshness_handoff(handoff)
 }
 
 fn publish_freshness_handoff(handoff: Option<(PathBuf, String)>) -> Result<()> {
@@ -794,13 +808,8 @@ fn publish_freshness_handoff(handoff: Option<(PathBuf, String)>) -> Result<()> {
     write_text(&path.join(FRESHNESS_MARKER), &format!("{token}\n"))
 }
 
-fn require_freshness_handoff(repo: &Path) -> Result<()> {
-    let Some(path) = env::var_os(FRESHNESS_HANDOFF_ENV) else {
-        return Ok(());
-    };
-    let token = env::var(FRESHNESS_TOKEN_ENV)
-        .context("RIPR_FRESHNESS_TOKEN is required with RIPR_FRESHNESS_HANDOFF")?;
-    let marker = PathBuf::from(path).join(FRESHNESS_MARKER);
+fn validate_freshness_handoff(path: &Path, token: &str, repo: &Path) -> Result<()> {
+    let marker = path.join(FRESHNESS_MARKER);
     let actual = fs::read_to_string(&marker).with_context(|| {
         format!("freshness handoff is missing for this producer invocation: {}", marker.display())
     })?;
@@ -810,13 +819,25 @@ fn require_freshness_handoff(repo: &Path) -> Result<()> {
     Ok(())
 }
 
+fn require_freshness_handoff(repo: &Path) -> Result<()> {
+    let Some(path) = env::var_os(FRESHNESS_HANDOFF_ENV) else {
+        return Ok(());
+    };
+    let token = env::var(FRESHNESS_TOKEN_ENV)
+        .context("RIPR_FRESHNESS_TOKEN is required with RIPR_FRESHNESS_HANDOFF")?;
+    validate_freshness_handoff(&PathBuf::from(path), &token, repo)
+}
+
 fn write_pr_evidence(repo: &Path, options: &PrEvidenceOptions) -> Result<()> {
     // Invalidate before revision, diff, or producer work. Once clearing succeeds,
     // later failures cannot expose earlier copies to the always-run validator
     // or artifact upload (#9113 review). Removal failures leave no handoff marker.
     let freshness_handoff = prepare_freshness_handoff()?;
-    clear_stale_pr_artifacts_with(repo, |path| fs::remove_file(path), freshness_handoff.is_some())?;
-    publish_freshness_handoff(freshness_handoff)?;
+    invalidate_and_publish_freshness_handoff(
+        repo,
+        freshness_handoff,
+        |path| fs::remove_file(path),
+    )?;
     verify_revision(repo, &options.base)?;
     verify_revision(repo, &options.head)?;
     if let Some(pr_head_sha) = &options.pr_head_sha {
@@ -4456,9 +4477,13 @@ esac
         let old = repo.path().join(PR_EVIDENCE_JSON);
         fs::create_dir_all(old.parent().ok_or_else(|| eyre!("evidence parent missing"))?)?;
         fs::write(&old, "old matching packet")?;
+        let handoff = tempfile::tempdir()?;
+        let token = "test/failed-clear".to_owned();
+        fs::write(handoff.path().join(FRESHNESS_MARKER), format!("{token}\n"))?;
 
-        let refusal = clear_stale_pr_artifacts_with(
+        let refusal = invalidate_and_publish_freshness_handoff(
             repo.path(),
+            Some((handoff.path().to_path_buf(), token.clone())),
             |path| {
                 if path == old {
                     Err(io::Error::new(io::ErrorKind::PermissionDenied, "injected refusal"))
@@ -4466,13 +4491,51 @@ esac
                     Ok(())
                 }
             },
-            false,
         );
         refusal.err().ok_or_else(|| eyre!("injected invalidation refusal must remain an error"))?;
         color_eyre::eyre::ensure!(
             old.exists(),
             "the deterministic refusal must leave the old readable packet for the consumer test"
         );
+        color_eyre::eyre::ensure!(
+            validate_freshness_handoff(handoff.path(), &token, repo.path()).is_err(),
+            "a marker from before a failed clear must not authorize consumer validation"
+        );
+
+        let standalone = tempfile::tempdir()?;
+        let ancillary = standalone.path().join(REVIEW_COMMENTS_JSON);
+        fs::create_dir_all(ancillary.parent().ok_or_else(|| eyre!("review parent missing"))?)?;
+        fs::write(&ancillary, "standalone artifact")?;
+        clear_stale_pr_artifacts_with(standalone.path(), |path| fs::remove_file(path), false)?;
+        color_eyre::eyre::ensure!(
+            ancillary.exists(),
+            "standalone ripr-pr must not claim ownership of ancillary workflow artifacts"
+        );
+
+        let current = tempfile::tempdir()?;
+        let current_packet = current.path().join(PR_EVIDENCE_JSON);
+        let current_ancillary = current.path().join(REVIEW_COMMENTS_JSON);
+        fs::create_dir_all(
+            current_packet
+                .parent()
+                .ok_or_else(|| eyre!("current parent missing"))?,
+        )?;
+        fs::create_dir_all(
+            current_ancillary
+                .parent()
+                .ok_or_else(|| eyre!("review parent missing"))?,
+        )?;
+        fs::write(&current_packet, "old packet")?;
+        fs::write(&current_ancillary, "old review")?;
+        let current_handoff = tempfile::tempdir()?;
+        let current_token = "test/successful-clear".to_owned();
+        invalidate_and_publish_freshness_handoff(
+            current.path(),
+            Some((current_handoff.path().to_path_buf(), current_token.clone())),
+            |path| fs::remove_file(path),
+        )?;
+        validate_freshness_handoff(current_handoff.path(), &current_token, current.path())?;
+        color_eyre::eyre::ensure!(!current_packet.exists() && !current_ancillary.exists());
         Ok(())
     }
 
