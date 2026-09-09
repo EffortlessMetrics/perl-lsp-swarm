@@ -24,8 +24,10 @@ struct ModuleWork {
     /// Covering already in force at the `mod` item, including crate-level and
     /// `#[allow]`/`#[expect]` attributes on the outline module itself. rustc
     /// applies those to the child file; a fresh `scan_file` would otherwise
-    /// drop them. Later edges to the same path intersect this stack so one
-    /// module's allowance cannot own another edge's sites.
+    /// drop them. Later edges to the same path intersect covering identities so
+    /// one module's allowance cannot own another edge's sites. A later edge's
+    /// `deny` does not erase covering minted on the shared file (`allow`
+    /// overrides `deny`); `forbid` cannot be overridden.
     inherited_covering: Vec<CoveringLayer>,
 }
 
@@ -181,8 +183,12 @@ fn covering_identities(layers: &[CoveringLayer]) -> BTreeSet<String> {
         .collect()
 }
 
-fn masked_lints(layers: &[CoveringLayer]) -> BTreeSet<String> {
-    layers.iter().flat_map(|layer| layer.masked_lints.iter().cloned()).collect()
+fn denied_lints(layers: &[CoveringLayer]) -> BTreeSet<String> {
+    layers.iter().flat_map(|layer| layer.denied_lints.iter().cloned()).collect()
+}
+
+fn forbidden_lints(layers: &[CoveringLayer]) -> BTreeSet<String> {
+    layers.iter().flat_map(|layer| layer.forbidden_lints.iter().cloned()).collect()
 }
 
 fn intersect_covering_layers(
@@ -197,7 +203,8 @@ fn intersect_covering_layers(
         .collect();
     vec![CoveringLayer {
         covering,
-        masked_lints: masked_lints(left).union(&masked_lints(right)).cloned().collect(),
+        denied_lints: denied_lints(left).union(&denied_lints(right)).cloned().collect(),
+        forbidden_lints: forbidden_lints(left).union(&forbidden_lints(right)).cloned().collect(),
     }]
 }
 
@@ -207,32 +214,29 @@ fn covering_identity_is_local(identity: &str, relative: &str) -> bool {
 
 fn restrict_site_covering(sites: &mut [RawSite], relative: &str, inherited: &[CoveringLayer]) {
     let allowed = covering_identities(inherited);
-    let masked = masked_lints(inherited);
+    let denied = denied_lints(inherited);
+    let forbidden = forbidden_lints(inherited);
     for site in sites {
         if site.path != relative {
             continue;
         }
         let lint = family_lint(&site.family);
         let keep = site.covering_declaration.as_ref().is_some_and(|identity| {
-            allowed.contains(identity) || covering_identity_is_local(identity, relative)
-        }) && !masked.contains(lint);
+            let local = covering_identity_is_local(identity, relative);
+            if forbidden.contains(lint) {
+                return false;
+            }
+            if local {
+                return true;
+            }
+            allowed.contains(identity) && !denied.contains(lint)
+        });
         if !keep {
             site.covering_declaration = None;
             site.covering_scope = None;
             site.covering_owner = None;
         }
     }
-}
-
-fn cfg_attr_has_negative_lint(meta: &Meta) -> bool {
-    let Meta::List(list) = meta else {
-        return false;
-    };
-    split_top_level_commas(list.tokens.clone()).into_iter().skip(1).any(|group| {
-        syn::parse2::<Meta>(group)
-            .ok()
-            .is_some_and(|inner| inner.path().is_ident("deny") || inner.path().is_ident("forbid"))
-    })
 }
 
 /// Directory rustc uses to resolve child `mod` items of `file`.
@@ -309,10 +313,15 @@ struct Covering {
     lints: BTreeSet<String>,
 }
 
+/// One declaration-stack frame.
+///
+/// rustc lets an inner `allow`/`expect` override an outer `deny`. `forbid`
+/// cannot be weakened by a later attribute, including a child-file inner allow.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct CoveringLayer {
     covering: Vec<Covering>,
-    masked_lints: BTreeSet<String>,
+    denied_lints: BTreeSet<String>,
+    forbidden_lints: BTreeSet<String>,
 }
 
 impl Covering {
@@ -322,8 +331,12 @@ impl Covering {
 }
 
 impl CoveringLayer {
-    fn masks(&self, lint: &str) -> bool {
-        self.masked_lints.contains(lint)
+    fn denies(&self, lint: &str) -> bool {
+        self.denied_lints.contains(lint)
+    }
+
+    fn forbids(&self, lint: &str) -> bool {
+        self.forbidden_lints.contains(lint)
     }
 }
 
@@ -354,9 +367,14 @@ impl DebtVisitor<'_> {
     fn push_attrs(&mut self, attrs: &[Attribute], scope: &str) {
         let covering =
             attrs.iter().filter_map(|attr| self.declaration_from_attr(attr, scope)).collect();
-        let masked_lints =
-            attrs.iter().flat_map(|attr| self.masked_lints_from_attr(attr)).collect();
-        self.declaration_stack.push(CoveringLayer { covering, masked_lints });
+        let mut denied_lints = BTreeSet::new();
+        let mut forbidden_lints = BTreeSet::new();
+        for attr in attrs {
+            let (denied, forbidden) = self.masks_from_attr(attr);
+            denied_lints.extend(denied);
+            forbidden_lints.extend(forbidden);
+        }
+        self.declaration_stack.push(CoveringLayer { covering, denied_lints, forbidden_lints });
     }
 
     fn pop_attrs(&mut self) {
@@ -365,8 +383,11 @@ impl DebtVisitor<'_> {
 
     fn covering_for(&self, family: &str) -> Option<&Covering> {
         let lint = family_lint(family);
+        if self.declaration_stack.iter().any(|layer| layer.forbids(lint)) {
+            return None;
+        }
         for layer in self.declaration_stack.iter().rev() {
-            if layer.masks(lint) {
+            if layer.denies(lint) {
                 return None;
             }
             if let Some(covering) = layer.covering.iter().find(|item| item.covers(lint, family)) {
@@ -441,34 +462,51 @@ impl DebtVisitor<'_> {
         Some(Covering { identity, scope: scope.to_string(), owner, lints })
     }
 
-    fn masked_lints_from_attr(&mut self, attr: &Attribute) -> BTreeSet<String> {
+    fn masks_from_attr(&mut self, attr: &Attribute) -> (BTreeSet<String>, BTreeSet<String>) {
         let Some(ident) = attr.path().segments.last().map(|seg| seg.ident.to_string()) else {
-            return BTreeSet::new();
+            return (BTreeSet::new(), BTreeSet::new());
         };
-        let negative = ident == "deny"
-            || ident == "forbid"
-            || (ident == "cfg_attr" && cfg_attr_has_negative_lint(&attr.meta));
-        if !negative {
-            return BTreeSet::new();
-        }
-        if ident == "cfg_attr" {
-            match cfg_attr_cover_kind(&attr.meta) {
-                CfgAttrCover::Effective => {}
-                CfgAttrCover::Inactive => return BTreeSet::new(),
-                CfgAttrCover::NotProven => {
-                    self.instruments.push(Instrument {
-                        kind: "cfg_attr_cover".to_string(),
-                        subject: self.file.path.clone(),
-                        status: InstrumentStatus::NotProven,
-                        detail: format!(
-                            "cfg_attr predicate {} cannot be established as a lint-level mask",
-                            collapse(&attr.meta.to_token_string())
-                        ),
-                    });
+        match ident.as_str() {
+            "deny" => (self.vocabulary_lints_from_attr(&ident, &attr.meta), BTreeSet::new()),
+            "forbid" => (BTreeSet::new(), self.vocabulary_lints_from_attr(&ident, &attr.meta)),
+            "cfg_attr" => {
+                match cfg_attr_cover_kind(&attr.meta) {
+                    CfgAttrCover::Effective => {}
+                    CfgAttrCover::Inactive => return (BTreeSet::new(), BTreeSet::new()),
+                    CfgAttrCover::NotProven => {
+                        self.instruments.push(Instrument {
+                            kind: "cfg_attr_cover".to_string(),
+                            subject: self.file.path.clone(),
+                            status: InstrumentStatus::NotProven,
+                            detail: format!(
+                                "cfg_attr predicate {} cannot be established as a lint-level mask",
+                                collapse(&attr.meta.to_token_string())
+                            ),
+                        });
+                    }
                 }
+                let mut denied = BTreeSet::new();
+                let mut forbidden = BTreeSet::new();
+                for inner in cfg_attr_inner_metas(&attr.meta) {
+                    let Some(inner_ident) = inner.path().get_ident() else {
+                        continue;
+                    };
+                    let name = inner_ident.to_string();
+                    let lints = self.vocabulary_lints_from_attr(&name, &inner);
+                    if name == "deny" {
+                        denied.extend(lints);
+                    } else if name == "forbid" {
+                        forbidden.extend(lints);
+                    }
+                }
+                (denied, forbidden)
             }
+            _ => (BTreeSet::new(), BTreeSet::new()),
         }
-        let mentioned = lint_names_from_attr(&ident, &attr.meta);
+    }
+
+    fn vocabulary_lints_from_attr(&self, ident: &str, meta: &Meta) -> BTreeSet<String> {
+        let mentioned = lint_names_from_attr(ident, meta);
         self.vocabulary
             .lints
             .iter()
@@ -806,6 +844,17 @@ fn cfg_predicate_cover_kind(tokens: proc_macro2::TokenStream) -> CfgAttrCover {
     }
 }
 
+fn cfg_attr_inner_metas(meta: &Meta) -> Vec<Meta> {
+    let Meta::List(list) = meta else {
+        return Vec::new();
+    };
+    split_top_level_commas(list.tokens.clone())
+        .into_iter()
+        .skip(1)
+        .filter_map(|group| syn::parse2::<Meta>(group).ok())
+        .collect()
+}
+
 fn lint_names_from_attr(ident: &str, meta: &Meta) -> Vec<String> {
     match ident {
         "allow" | "expect" | "deny" | "forbid" => lint_names_from_list_tokens(meta),
@@ -1121,7 +1170,11 @@ mod tests {
     }
 
     fn layer_with(identity: &str) -> CoveringLayer {
-        CoveringLayer { covering: vec![covering(identity)], masked_lints: BTreeSet::new() }
+        CoveringLayer {
+            covering: vec![covering(identity)],
+            denied_lints: BTreeSet::new(),
+            forbidden_lints: BTreeSet::new(),
+        }
     }
 
     #[test]
@@ -1341,18 +1394,50 @@ mod tests {
         restrict_site_covering(&mut stripped, "src/shared.rs", &[]);
         assert!(stripped[0].covering_declaration.is_none());
 
-        let mut masked = vec![local_site(local)];
+        let mut denied = vec![local_site(local)];
         restrict_site_covering(
-            &mut masked,
+            &mut denied,
             "src/shared.rs",
             &[CoveringLayer {
                 covering: Vec::new(),
-                masked_lints: ["clippy::unwrap_used".to_string()].into_iter().collect(),
+                denied_lints: ["clippy::unwrap_used".to_string()].into_iter().collect(),
+                forbidden_lints: BTreeSet::new(),
+            }],
+        );
+        assert_eq!(
+            denied[0].covering_declaration.as_deref(),
+            Some(local),
+            "later-edge deny must not erase a shared-file local allow"
+        );
+
+        let mut forbidden = vec![local_site(local)];
+        restrict_site_covering(
+            &mut forbidden,
+            "src/shared.rs",
+            &[CoveringLayer {
+                covering: Vec::new(),
+                denied_lints: BTreeSet::new(),
+                forbidden_lints: ["clippy::unwrap_used".to_string()].into_iter().collect(),
             }],
         );
         assert!(
-            masked[0].covering_declaration.is_none(),
-            "later-edge deny/forbid must still mask local allow"
+            forbidden[0].covering_declaration.is_none(),
+            "later-edge forbid must still mask local allow"
+        );
+
+        let mut inherited_denied = vec![local_site(foreign)];
+        restrict_site_covering(
+            &mut inherited_denied,
+            "src/shared.rs",
+            &[CoveringLayer {
+                covering: vec![covering(foreign)],
+                denied_lints: ["clippy::unwrap_used".to_string()].into_iter().collect(),
+                forbidden_lints: BTreeSet::new(),
+            }],
+        );
+        assert!(
+            inherited_denied[0].covering_declaration.is_none(),
+            "later-edge deny must still strip inherited-only covering"
         );
     }
 }

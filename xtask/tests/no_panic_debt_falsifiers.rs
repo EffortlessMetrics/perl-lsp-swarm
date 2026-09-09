@@ -2435,6 +2435,196 @@ fn unit() { let _ = Some(1).unwrap(); }
 }
 
 #[test]
+fn child_inner_allow_overrides_inherited_mod_deny() {
+    let temp = tempfile::tempdir().expect("temp");
+    write_policy(temp.path());
+    write_empty_registry(temp.path());
+    write_package(
+        temp.path(),
+        "demo",
+        r#"
+#[deny(clippy::unwrap_used)]
+mod foo;
+"#,
+        &[("known.rs", "#[test]\nfn known() {}\n")],
+    );
+    fs::write(
+        temp.path().join("crates/demo/src/foo.rs"),
+        r##"
+#![allow(clippy::unwrap_used, reason = "#13397")]
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn unit() { let _ = Some(1).unwrap(); }
+}
+"##,
+    )
+    .expect("foo.rs");
+    let inventory = inventory_at(temp.path());
+    let unwrap = inventory.rows.iter().find(|row| {
+        row.kind == "site"
+            && row.path.ends_with("src/foo.rs")
+            && row.entrypoint == "unit"
+            && row.site_family == "unwrap"
+    });
+    assert!(unwrap.is_some(), "unwrap omitted: {:?}", inventory.rows);
+    let unwrap = unwrap.expect("unwrap omitted");
+    assert_eq!(
+        unwrap.owner, "#13397",
+        "child-file allow must override parent-mod deny: {unwrap:?}"
+    );
+}
+
+#[test]
+fn child_inner_allow_does_not_override_inherited_mod_forbid() {
+    let temp = tempfile::tempdir().expect("temp");
+    write_policy(temp.path());
+    write_empty_registry(temp.path());
+    write_package(
+        temp.path(),
+        "demo",
+        r#"
+#[forbid(clippy::unwrap_used)]
+mod foo;
+"#,
+        &[("known.rs", "#[test]\nfn known() {}\n")],
+    );
+    fs::write(
+        temp.path().join("crates/demo/src/foo.rs"),
+        r##"
+#![allow(clippy::unwrap_used, reason = "#13397")]
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn unit() { let _ = Some(1).unwrap(); }
+}
+"##,
+    )
+    .expect("foo.rs");
+    let inventory = inventory_at(temp.path());
+    let unwrap = inventory.rows.iter().find(|row| {
+        row.kind == "site"
+            && row.path.ends_with("src/foo.rs")
+            && row.entrypoint == "unit"
+            && row.site_family == "unwrap"
+    });
+    assert!(unwrap.is_some(), "forbidden unwrap omitted: {:?}", inventory.rows);
+    let unwrap = unwrap.expect("forbidden unwrap omitted");
+    assert!(
+        unwrap.owner.is_empty() && unwrap.declaration_identity.is_empty(),
+        "child-file allow must not override parent-mod forbid: {unwrap:?}"
+    );
+}
+
+#[test]
+fn later_nested_deny_does_not_erase_shared_file_local_allow() {
+    let temp = tempfile::tempdir().expect("temp");
+    write_policy(temp.path());
+    write_empty_registry(temp.path());
+    write_package(
+        temp.path(),
+        "demo",
+        "mod aaa;\nmod zzz;\n",
+        &[("known.rs", "#[test]\nfn known() {}\n")],
+    );
+    fs::write(
+        temp.path().join("crates/demo/src/aaa.rs"),
+        r#"
+#[cfg(test)]
+#[path = "shared.rs"]
+mod shared;
+"#,
+    )
+    .expect("aaa.rs");
+    fs::write(
+        temp.path().join("crates/demo/src/zzz.rs"),
+        r#"
+#[cfg(test)]
+#[deny(clippy::unwrap_used)]
+#[path = "shared.rs"]
+mod shared;
+"#,
+    )
+    .expect("zzz.rs");
+    fs::write(
+        temp.path().join("crates/demo/src/shared.rs"),
+        r##"
+#![allow(clippy::unwrap_used, reason = "#13397")]
+#[test]
+fn unit() { let _ = Some(1).unwrap(); }
+"##,
+    )
+    .expect("shared.rs");
+    let inventory = inventory_at(temp.path());
+    let unwrap = inventory.rows.iter().find(|row| {
+        row.kind == "site"
+            && row.path.ends_with("src/shared.rs")
+            && row.entrypoint == "unit"
+            && row.site_family == "unwrap"
+    });
+    assert!(unwrap.is_some(), "shared unwrap omitted: {:?}", inventory.rows);
+    let unwrap = unwrap.expect("shared unwrap omitted");
+    assert_eq!(
+        unwrap.owner, "#13397",
+        "local allow on the shared file must survive a later nested deny: {unwrap:?}"
+    );
+}
+
+#[test]
+fn later_nested_forbid_erases_shared_file_local_allow() {
+    let temp = tempfile::tempdir().expect("temp");
+    write_policy(temp.path());
+    write_empty_registry(temp.path());
+    write_package(
+        temp.path(),
+        "demo",
+        "mod aaa;\nmod zzz;\n",
+        &[("known.rs", "#[test]\nfn known() {}\n")],
+    );
+    fs::write(
+        temp.path().join("crates/demo/src/aaa.rs"),
+        r#"
+#[cfg(test)]
+#[path = "shared.rs"]
+mod shared;
+"#,
+    )
+    .expect("aaa.rs");
+    fs::write(
+        temp.path().join("crates/demo/src/zzz.rs"),
+        r#"
+#[cfg(test)]
+#[forbid(clippy::unwrap_used)]
+#[path = "shared.rs"]
+mod shared;
+"#,
+    )
+    .expect("zzz.rs");
+    fs::write(
+        temp.path().join("crates/demo/src/shared.rs"),
+        r##"
+#![allow(clippy::unwrap_used, reason = "#13397")]
+#[test]
+fn unit() { let _ = Some(1).unwrap(); }
+"##,
+    )
+    .expect("shared.rs");
+    let inventory = inventory_at(temp.path());
+    let unwrap = inventory.rows.iter().find(|row| {
+        row.kind == "site"
+            && row.path.ends_with("src/shared.rs")
+            && row.entrypoint == "unit"
+            && row.site_family == "unwrap"
+    });
+    assert!(unwrap.is_some(), "shared unwrap omitted: {:?}", inventory.rows);
+    let unwrap = unwrap.expect("shared unwrap omitted");
+    assert!(
+        unwrap.owner.is_empty() && unwrap.declaration_identity.is_empty(),
+        "later nested forbid must strip the shared file's local allow: {unwrap:?}"
+    );
+}
+
+#[test]
 fn dot_component_root_still_scans_outline_child_sites() {
     let temp = tempfile::tempdir().expect("temp");
     write_policy(temp.path());
