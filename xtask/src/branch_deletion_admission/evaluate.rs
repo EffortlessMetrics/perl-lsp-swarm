@@ -34,6 +34,7 @@ use super::model::{
 /// 6. `SAFE_TO_DELETE`.
 pub fn evaluate(request: &AdmissionRequest) -> AdmissionOutcome {
     let parent = &request.parent;
+    let branch_ref = request.branch.local_ref.as_deref().unwrap_or(&parent.head_ref);
     let outcome = |admission: DeletionAdmission,
                    detail: String,
                    retained_children: Vec<RetainedChild>| AdmissionOutcome {
@@ -41,7 +42,8 @@ pub fn evaluate(request: &AdmissionRequest) -> AdmissionOutcome {
         policy_version: BRANCH_DELETION_ADMISSION_POLICY_VERSION.to_string(),
         repository: parent.repository.render(),
         parent_number: parent.number,
-        branch: parent.head_ref.clone(),
+        branch: branch_ref.to_string(),
+        local_ref: request.branch.local_ref.clone(),
         admission,
         detail,
         retained_children,

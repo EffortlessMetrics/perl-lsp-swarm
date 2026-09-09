@@ -34,7 +34,7 @@ fn admissible_request() -> AdmissionRequest {
             terminality: ParentTerminality::Merged,
             head_in_admitted_repository: true,
         },
-        branch: BranchSubject { current_sha: Some(REVIEWED_SHA.to_string()) },
+        branch: BranchSubject { local_ref: None, current_sha: Some(REVIEWED_SHA.to_string()) },
         graph: OpenChildGraph {
             completeness: GraphCompleteness::Complete,
             pull_requests: Vec::new(),
@@ -79,6 +79,55 @@ fn a_merged_unencumbered_branch_with_a_proven_empty_graph_is_admitted() {
         ]),
         "deletion must be leased on the admitted tip",
     );
+}
+
+/// A local alias may be the only surviving ref after a squash merge. It is
+/// admitted against the terminal PR head, but the route must delete only the
+/// local ref and must never emit a remote branch deletion.
+#[test]
+fn an_exact_local_alias_uses_a_local_compare_and_delete() -> Result<(), Box<dyn std::error::Error>>
+{
+    let mut request = admissible_request();
+    request.branch.local_ref = Some("codex/13178-dancer2-v1-integrated".to_string());
+
+    let outcome = evaluate(&request);
+    if outcome.admission != DeletionAdmission::SafeToDelete {
+        return Err(format!("local alias retained: {}", outcome.detail).into());
+    }
+    if outcome.branch != "codex/13178-dancer2-v1-integrated"
+        || outcome.local_ref.as_deref() != Some("codex/13178-dancer2-v1-integrated")
+    {
+        return Err(format!("local alias identity drifted: {outcome:?}").into());
+    }
+    let command = branch_deletion_command(&outcome).ok_or("local alias emitted no command")?;
+    let expected = [
+        "git",
+        "update-ref",
+        "--no-deref",
+        "-d",
+        "refs/heads/codex/13178-dancer2-v1-integrated",
+        REVIEWED_SHA,
+    ];
+    if command.iter().map(String::as_str).collect::<Vec<_>>() != expected {
+        return Err(format!("unexpected local deletion command: {command:?}").into());
+    }
+    Ok(())
+}
+
+#[test]
+fn a_moved_local_alias_retains_without_remote_mutation() -> Result<(), Box<dyn std::error::Error>> {
+    let mut request = admissible_request();
+    request.branch.local_ref = Some("codex/13178-dancer2-v1-integrated".to_string());
+    request.branch.current_sha = Some(OTHER_SHA.to_string());
+
+    let outcome = evaluate(&request);
+    if outcome.admission != DeletionAdmission::RetainBranchMoved {
+        return Err(format!("moved local alias was not retained: {:?}", outcome.admission).into());
+    }
+    if branch_deletion_command(&outcome).is_some() {
+        return Err("moved local alias emitted a deletion command".into());
+    }
+    Ok(())
 }
 
 /// The deletion must be leased on the admitted tip, not merely issued.
@@ -826,6 +875,29 @@ fn an_unchanged_re_read_proceeds_to_the_deletion() {
         RecheckGate::Proceed,
         "an identical, still-admitted re-read is the only shape that may delete",
     );
+}
+
+/// A local-only admission must not be revalidated as a remote deletion (or
+/// vice versa). The mutation mode is part of the leased subject, even when
+/// both reads carry the same reviewed tip and remain otherwise admissible.
+#[test]
+fn a_re_read_that_swaps_local_and_remote_deletion_mode_retains()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut local_request = admissible_request();
+    local_request.branch.local_ref = Some("codex/13178-dancer2-v1-integrated".to_string());
+    let admitted = evaluate(&local_request);
+    if admitted.admission != DeletionAdmission::SafeToDelete {
+        return Err(format!("local admission retained: {:?}", admitted.admission).into());
+    }
+
+    let recheck = evaluate(&admissible_request());
+    let RecheckGate::Retain { detail } = recheck_gate(&admitted, &recheck) else {
+        return Err("a re-read that changes mutation mode proceeded".into());
+    };
+    if !detail.contains("deletion mode") {
+        return Err(format!("mode drift was not identified: {detail}").into());
+    }
+    Ok(())
 }
 
 /// The reason the second read exists: a dependency that did not exist when the
