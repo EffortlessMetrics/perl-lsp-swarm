@@ -74,6 +74,10 @@ void test('streams and verifies one regular payload member', async () => {
   const fixture = await writeZip([{ name: 'extension/perllsp.exe', value }]);
   try {
     await verifyPayloadMember(fixture.archive, 'perllsp.exe', sha256(value));
+    await assert.rejects(
+      verifyPayloadMember(fixture.archive, 'perllsp.exe', sha256(Buffer.from('wrong'))),
+      /archive payload SHA mismatch/,
+    );
   } finally {
     fs.rmSync(fixture.root, { recursive: true, force: true });
   }
