@@ -7,7 +7,7 @@ use std::{
     process::{Command, Stdio},
 };
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow, bail, ensure};
 use serde_json::Value as JsonValue;
 use serde_yaml_ng::Value;
 use zip::{ZipWriter, write::SimpleFileOptions};
@@ -797,6 +797,10 @@ fn run_fallback_path(quality_gate_fails: bool) -> Result<FallbackPathEvidence> {
     let summary = sandbox.path().join("summary.md");
     let quality_receipt = sandbox.path().join("target/receipts/quality/quality-gate-ripr.json");
     let quality_summary = sandbox.path().join("target/receipts/quality/quality-gate-ripr.md");
+    let freshness_handoff = sandbox.path().join("ripr-freshness");
+    let freshness_token = "fallback-test/1/producer";
+    fs::create_dir_all(&freshness_handoff)?;
+    fs::write(freshness_handoff.join("clear-succeeded"), format!("{freshness_token}\n"))?;
     let annotation = workflow_run_block("ripr-fallback", "Annotate failover reason")?
         .replace("${{ needs.route-ripr.outputs.target }}", "cx53");
     let normalize = workflow_run_block("ripr-fallback", "Normalize base ref")?;
@@ -917,6 +921,8 @@ checkout_action
         .env("RIPR_VERSION", "0.10.0")
         .env("GITHUB_ENV", &github_env)
         .env("GITHUB_STEP_SUMMARY", &summary)
+        .env("RIPR_FRESHNESS_HANDOFF", &freshness_handoff)
+        .env("RIPR_FRESHNESS_TOKEN", freshness_token)
         .env("FAKE_CALLS", &calls)
         .env("FAKE_CHECKOUT_MARKER", &checkout_marker)
         .env(
@@ -1285,13 +1291,104 @@ fn ripr_workflow_runs_on_ready_for_review_without_path_filter()
         upload_step.contains("if-no-files-found: error"),
         "RIPR proof artifacts are required after PR8"
     );
+    assert_eq!(
+        workflow.matches("Prepare RIPR freshness handoff").count(),
+        4,
+        "every producer job must create a distinct freshness handoff"
+    );
+    assert_eq!(
+        workflow.matches("steps.ripr-freshness-result.outputs.ready == 'true'").count(),
+        4,
+        "every producer upload must require its producer freshness handoff"
+    );
+    assert_eq!(
+        workflow.matches("RIPR freshness handoff unavailable; suppressing stale summary").count(),
+        4,
+        "every producer summary step must suppress stale output without its handoff"
+    );
+    assert!(
+        workflow.contains("mktemp -d \"$RUNNER_TEMP/ripr-freshness.XXXXXX\"")
+            && workflow.contains("RIPR_FRESHNESS_TOKEN")
+            && workflow.contains("clear-succeeded"),
+        "RIPR producer jobs must bind uploads to a per-invocation clear-success marker"
+    );
     let summary_step =
         workflow_step(&workflow, "Append PR evidence summary").ok_or("missing summary step")?;
     assert!(
-        summary_step.contains("if: always()") && summary_step.contains("target/ripr/pr/summary.md"),
-        "RIPR summary step must publish PR evidence even when earlier receipt steps fail"
+        summary_step.contains("if: always()")
+            && summary_step.contains("target/ripr/pr/summary.md")
+            && summary_step.contains("RIPR freshness handoff unavailable"),
+        "RIPR summary step must publish only current evidence after a successful handoff"
     );
 
+    Ok(())
+}
+
+#[test]
+fn ripr_append_summary_suppresses_stale_files_without_freshness_handoff() -> Result<()> {
+    let sandbox = tempfile::tempdir()?;
+    let summary = sandbox.path().join("summary.md");
+    let stale_summary = sandbox.path().join("target/ripr/pr/summary.md");
+    let stale_quality = sandbox.path().join("target/receipts/quality/quality-gate-ripr.md");
+    let stale_annotations = sandbox.path().join("target/ripr/review/annotations.txt");
+    for path in [&stale_summary, &stale_quality, &stale_annotations] {
+        fs::create_dir_all(path.parent().ok_or_else(|| anyhow!("stale parent missing"))?)?;
+        fs::write(path, "stale prior invocation\n")?;
+    }
+    let script = workflow_run_block("ripr-fallback", "Append PR evidence summary")?;
+    let mut child = Command::new(bash_executable())
+        .args(["--noprofile", "--norc", "-s"])
+        .current_dir(sandbox.path())
+        .env("GITHUB_STEP_SUMMARY", &summary)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    child
+        .stdin
+        .take()
+        .ok_or_else(|| anyhow!("append-summary bash stdin unavailable"))?
+        .write_all(script.as_bytes())?;
+    let output = child.wait_with_output()?;
+    ensure!(output.status.success(), "append step failed: {output:?}");
+    let summary_text = match fs::read_to_string(&summary) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(error) => return Err(error.into()),
+    };
+    ensure!(
+        !summary_text.contains("stale prior invocation"),
+        "append step must not publish stale files without a matching handoff"
+    );
+
+    let handoff = sandbox.path().join("freshness");
+    let token = "append-test/1/producer";
+    fs::create_dir_all(&handoff)?;
+    fs::write(handoff.join("clear-succeeded"), format!("{token}\n"))?;
+    let mut child = Command::new(bash_executable())
+        .args(["--noprofile", "--norc", "-s"])
+        .current_dir(sandbox.path())
+        .env("GITHUB_STEP_SUMMARY", &summary)
+        .env("RIPR_FRESHNESS_HANDOFF", &handoff)
+        .env("RIPR_FRESHNESS_TOKEN", token)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    child
+        .stdin
+        .take()
+        .ok_or_else(|| anyhow!("positive append-summary bash stdin unavailable"))?
+        .write_all(script.as_bytes())?;
+    let output = child.wait_with_output()?;
+    ensure!(output.status.success(), "positive append step failed: {output:?}");
+    let summary_text = fs::read_to_string(&summary)?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    ensure!(
+        summary_text.contains("stale prior invocation")
+            && stdout.contains("stale prior invocation"),
+        "matching handoff must permit current summary and annotation publication"
+    );
     Ok(())
 }
 
