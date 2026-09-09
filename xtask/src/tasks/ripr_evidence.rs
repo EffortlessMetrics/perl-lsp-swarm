@@ -4551,7 +4551,7 @@ esac
         check_pr_evidence(repo.path(), &options)
             .context("healthy same-revision packet must check successfully")?;
         let old = repo.path().join(PR_EVIDENCE_JSON);
-        color_eyre::eyre::ensure!(old.is_file(), "healthy packet must remain readable")?;
+        color_eyre::eyre::ensure!(old.is_file(), "healthy packet must remain readable");
 
         let handoff = tempfile::tempdir()?;
         let token = "test/refused-after-healthy".to_owned();
@@ -4567,10 +4567,11 @@ esac
                 }
             },
         );
-        refusal
-            .err()
-            .ok_or_else(|| eyre!("invalidation refusal must remain an error"))?;
-        color_eyre::eyre::ensure!(old.is_file(), "refused invalidation must leave old packet readable");
+        refusal.err().ok_or_else(|| eyre!("invalidation refusal must remain an error"))?;
+        color_eyre::eyre::ensure!(
+            old.is_file(),
+            "refused invalidation must leave old packet readable"
+        );
         check_pr_evidence(repo.path(), &options)
             .context("standalone check should still validate the readable old packet")?;
         color_eyre::eyre::ensure!(
