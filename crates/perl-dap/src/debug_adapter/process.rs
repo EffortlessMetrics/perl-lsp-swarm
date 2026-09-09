@@ -1031,11 +1031,8 @@ impl DebugAdapter {
                         } else {
                             text.clone()
                         };
-                        let prompt_has_native_context = native_context_pending_prompt
-                            && (has_prompt_prefix(&sanitized_text)
-                                || sanitized_text
-                                    .split_once('\n')
-                                    .is_some_and(|(_, rest)| has_prompt_prefix(rest)));
+                        let prompt_has_native_context =
+                            native_context_pending_prompt && has_prompt_prefix(&sanitized_text);
                         if prompt_has_native_context {
                             // Consume the per-stop authority before logpoint and
                             // drain early-continue paths. A coalesced prompt plus
