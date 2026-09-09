@@ -208,7 +208,12 @@ export async function suspendOwnedWindowsProcess(
   }
   const cleanup = await recover(state);
   consume(state);
-  return { outcome: 'error', detail: `Windows suspension handshake failed; ${cleanup.detail}` };
+  const helperFailure = worker.completed ? await worker.completion : undefined;
+  const helperDetail = helperFailure?.error.trim();
+  return {
+    outcome: 'error',
+    detail: `Windows suspension handshake failed${helperDetail ? `; helper: ${helperDetail}` : ''}; ${cleanup.detail}`,
+  };
 }
 
 export async function resumeOwnedWindowsProcess(pid: number): Promise<WindowsSuspendResult> {

@@ -87,6 +87,7 @@ void test(
         (BigInt(fixture.creation) + 1n).toString(),
       );
       assert.equal(result.outcome, 'error');
+      assert.match(result.detail, /creation identity mismatch/);
       assert.equal(fixture.exited(), false);
       const before = fixture.bytes();
       await until(() => fixture.bytes() > before, 'wrong-identity child remains responsive');

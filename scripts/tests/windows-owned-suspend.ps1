@@ -159,8 +159,15 @@ public static class PerlLspOwnedSuspend {
       Console.WriteLine("SUSPENDED {0} THREADS", held.Count);
       Console.Out.Flush();
       var input = Task.Run(() => Console.ReadLine());
-      if (!input.Wait(timeout) || !String.Equals(input.Result, "resume", StringComparison.OrdinalIgnoreCase)) {
-        throw new TimeoutException("resume handshake timeout or invalid command");
+      if (!input.Wait(timeout)) {
+        throw new TimeoutException("resume handshake timeout after " + timeout + "ms");
+      }
+      var command = input.Result;
+      if (command == null) {
+        throw new InvalidOperationException("resume handshake stdin closed before a command arrived");
+      }
+      if (!String.Equals(command, "resume", StringComparison.OrdinalIgnoreCase)) {
+        throw new InvalidOperationException("resume handshake received an unexpected command");
       }
       if (WaitForSingleObject(process, 0) == WaitObject0) {
         Console.WriteLine("ALREADY_GONE");
