@@ -1308,13 +1308,9 @@ impl DebugAdapter {
                                 if let Some(ref mut s) = *guard {
                                     let was_running = matches!(s.state, DebugState::Running);
                                     let current_frame_id = current_stopped_frame_id(s, was_running);
-                                    let is_current_native_context = native_context_observed
-                                        && current_line > 0
-                                        && current_file == native_context_file
-                                        && current_line == native_context_line;
                                     if !current_file.is_empty()
                                         && current_line > 0
-                                        && (!s.entry_stop_pending || is_current_native_context)
+                                        && (!s.entry_stop_pending || native_context_updated)
                                     {
                                         s.stack_frames = vec![StackFrame {
                                             id: current_frame_id,
@@ -3175,7 +3171,9 @@ mod tests {
         let outcome = receiver
             .recv_timeout(Duration::from_secs(2))
             .map_err(|error| format!("split ANSI prompt waited for its suffix: {error}"))
-            .and_then(|result| result.map_err(|error| format!("split ANSI prompt read failed: {error}")));
+            .and_then(|result| {
+                result.map_err(|error| format!("split ANSI prompt read failed: {error}"))
+            });
         let _ = child.kill();
         let _ = child.wait();
         let joined = reader.join().map_err(|_| "split ANSI reader panicked".to_string());
