@@ -16,8 +16,9 @@ use super::{
 
 fn accepted_with_offer(offer: serde_json::Value) -> TextSyncSessionContract {
     let params = json!({ "capabilities": { "general": { "positionEncodings": offer } } });
-    TextSyncSessionContract::accept(Some(&params), "s-1".to_string())
-        .unwrap_or_else(|rejection| unreachable!("valid string-list offer must be accepted: {rejection:?}"))
+    TextSyncSessionContract::accept(Some(&params), "s-1".to_string()).unwrap_or_else(|rejection| {
+        unreachable!("valid string-list offer must be accepted: {rejection:?}")
+    })
 }
 
 #[test]
@@ -68,6 +69,29 @@ fn valid_offer_matrix_always_selects_full_utf16() {
             "offer {offer} must retain the correct selection reason"
         );
     }
+}
+
+#[test]
+fn utf16_after_offer_receipt_cap_remains_admissible() {
+    let mut offer = vec![json!("utf-8"); 16];
+    offer.push(json!("utf-16"));
+    let contract = accepted_with_offer(json!(offer));
+    let PositionEncodingOffer::Present(receipt) = contract.client_offer() else {
+        unreachable!("present offer must be retained");
+    };
+    assert_eq!(receipt.total_entries, 17);
+    assert_eq!(receipt.entries.len(), 16);
+    assert_eq!(contract.selection_reason(), Utf16SelectionReason::ClientOfferedUtf16);
+
+    let mut malformed = vec![json!("utf-8"); 16];
+    malformed.push(json!(7));
+    let rejection = TextSyncSessionContract::accept(
+        Some(&json!({ "capabilities": { "general": { "positionEncodings": malformed } } })),
+        "s-cap-malformed".to_string(),
+    )
+    .err()
+    .unwrap_or_else(|| unreachable!("non-string offer after receipt cap must fail"));
+    assert!(matches!(rejection, SessionContractRejection::MalformedOffer { .. }));
 }
 
 #[test]
