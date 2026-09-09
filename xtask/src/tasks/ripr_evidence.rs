@@ -4569,9 +4569,7 @@ esac
                 }
             },
         );
-        let _ = refusal
-            .err()
-            .ok_or_else(|| eyre!("invalidation refusal must remain an error"))?;
+        let _ = refusal.err().ok_or_else(|| eyre!("invalidation refusal must remain an error"))?;
         color_eyre::eyre::ensure!(
             old.is_file(),
             "refused invalidation must leave old packet readable"
