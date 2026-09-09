@@ -17,7 +17,7 @@ use std::fmt;
 use std::fs;
 use std::io::{BufReader, ErrorKind, Read};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 use xtask::git_ancestry::{AncestryDisposition, AncestryReceipt, classify_ancestry};
 
@@ -935,30 +935,8 @@ fn run_ripr_streaming_to_file(args: &[String], out_path: &Path, staging_dir: &Pa
         .stderr(Stdio::piped())
         .spawn()
         .with_context(|| format!("failed to run {binary}"))?;
-    let mut stderr_bytes = Vec::new();
-    if let Some(mut stderr) = child.stderr.take() {
-        // Drain everything, retain at most MAX_RIPR_STDERR_BYTES. Truncating
-        // by stopping the read instead would leave the child blocked on a
-        // full pipe and `wait` below would never return.
-        let mut chunk = [0_u8; 8 * 1024];
-        loop {
-            let read = match stderr.read(&mut chunk) {
-                Ok(read) => read,
-                Err(error) => {
-                    settle_ripr_child(&mut child);
-                    return Err(error).with_context(|| format!("failed to read {binary} stderr"));
-                }
-            };
-            if read == 0 {
-                break;
-            }
-            let spare = MAX_RIPR_STDERR_BYTES.saturating_sub(stderr_bytes.len());
-            if spare > 0 {
-                stderr_bytes.extend_from_slice(&chunk[..read.min(spare)]);
-            }
-        }
-    }
-    let status = child.wait().with_context(|| format!("failed to wait for {binary}"))?;
+    let stderr = child.stderr.take();
+    let (status, stderr_bytes) = drain_stderr_and_wait(&mut child, stderr, &binary)?;
     if !status.success() {
         let mut stdout_excerpt = Vec::new();
         if let Ok(stdout_reader) = stdout_file.reopen() {
@@ -1001,6 +979,48 @@ fn remove_orphaned_stdout_temps(staging_dir: &Path) {
 fn settle_ripr_child(child: &mut Child) {
     let _ = child.kill();
     let _ = child.wait();
+}
+
+/// Drains the producer's stderr to EOF, retaining at most
+/// `MAX_RIPR_STDERR_BYTES`, then waits for it. Every failure arm settles the
+/// producer first: a returned error must not leave it writing an unbounded
+/// payload into a staged file nothing will publish.
+fn drain_stderr_and_wait(
+    child: &mut Child,
+    stderr: Option<impl Read>,
+    binary: &str,
+) -> Result<(ExitStatus, Vec<u8>)> {
+    let mut stderr_bytes = Vec::new();
+    if let Some(mut stderr) = stderr {
+        // Drain everything, retain at most MAX_RIPR_STDERR_BYTES. Truncating
+        // by stopping the read instead would leave the child blocked on a
+        // full pipe and `wait` below would never return.
+        let mut chunk = [0_u8; 8 * 1024];
+        loop {
+            let read = match stderr.read(&mut chunk) {
+                Ok(read) => read,
+                Err(error) => {
+                    settle_ripr_child(child);
+                    return Err(error).with_context(|| format!("failed to read {binary} stderr"));
+                }
+            };
+            if read == 0 {
+                break;
+            }
+            let spare = MAX_RIPR_STDERR_BYTES.saturating_sub(stderr_bytes.len());
+            if spare > 0 {
+                stderr_bytes.extend_from_slice(&chunk[..read.min(spare)]);
+            }
+        }
+    }
+    let status = match child.wait() {
+        Ok(status) => status,
+        Err(error) => {
+            settle_ripr_child(child);
+            return Err(error).with_context(|| format!("failed to wait for {binary}"));
+        }
+    };
+    Ok((status, stderr_bytes))
 }
 
 /// Streamed ingestion of one `ripr check --format json` payload (#12860): the
@@ -1055,36 +1075,6 @@ fn ripr_check_ingestion_from_file(
     })
 }
 
-/// Streams one JSON document from `reader`, invoking `on_finding` for every
-/// element of the top-level `findings` array as it is parsed. The findings
-/// array is never materialized: each element becomes one
-/// `serde_json::Value` for the callback and is dropped before the next. Any
-/// other top-level shape (arrays, scalars) is still validated but carries no
-/// summary and no findings, which is what the previous DOM path saw through
-/// `Value::get`. A single huge finding can still dominate memory; this bounds
-/// the many-finding, unconsumed-blob shape observed in #12860.
-///
-/// Findings-only convenience wrapper over
-/// [`stream_ripr_check_payload_with_events`]. Production ingestion needs the
-/// array-boundary events for duplicate-key reset, so it drives the event API
-/// directly and this wrapper stays test-only.
-#[cfg(test)]
-fn stream_ripr_check_payload<R, F>(
-    reader: R,
-    on_finding: &mut F,
-) -> serde_json::Result<Option<Value>>
-where
-    R: Read,
-    F: FnMut(&Value),
-{
-    stream_ripr_check_payload_with_events(reader, &mut |event| {
-        if let StreamFindingsEvent::Finding(finding) = event {
-            on_finding(finding);
-        }
-    })
-    .map(|payload| payload.summary)
-}
-
 /// Events emitted while streaming a top-level `findings` value.
 enum StreamFindingsEvent<'a> {
     Start,
@@ -1096,6 +1086,13 @@ enum StreamFindingsEvent<'a> {
 /// Emitting `Start` before every `findings` value lets a streaming sink discard
 /// the prior value before consuming the replacement, including when the
 /// replacement is not an array.
+///
+/// The findings array is never materialized: each element becomes one
+/// `serde_json::Value` for the callback and is dropped before the next. Any
+/// other top-level shape (arrays, scalars) is still validated but carries no
+/// summary and no findings, which is what the previous DOM path saw through
+/// `Value::get`. A single huge finding can still dominate memory; this bounds
+/// the many-finding, unconsumed-blob shape observed in #12860.
 fn stream_ripr_check_payload_with_events<R, F>(
     reader: R,
     on_event: &mut F,
@@ -10115,6 +10112,90 @@ paths = ["archive/**"]
         Ok(())
     }
 
+    struct FailingStderrReader;
+
+    impl Read for FailingStderrReader {
+        fn read(&mut self, _buf: &mut [u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::new(std::io::ErrorKind::BrokenPipe, "injected stderr read failure"))
+        }
+    }
+
+    struct ChunkedStderrReader {
+        remaining: usize,
+        chunk_size: usize,
+    }
+
+    impl Read for ChunkedStderrReader {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            if self.remaining == 0 || buf.is_empty() {
+                return Ok(0);
+            }
+            let read = self.remaining.min(self.chunk_size).min(buf.len());
+            buf[..read].fill(b'E');
+            self.remaining -= read;
+            Ok(read)
+        }
+    }
+
+    #[test]
+    fn drain_stderr_and_wait_settles_the_producer_on_read_failure() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let binary = write_sleeping_ripr_stub(temp.path(), "ripr-failing-stderr")?;
+        let mut child = Command::new(&binary)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .context("failed to spawn long-lived test producer")?;
+        let started = Instant::now();
+        let error = drain_stderr_and_wait(&mut child, Some(FailingStderrReader), "ripr")
+            .err()
+            .ok_or_else(|| eyre!("a failing stderr reader must return an error"))?;
+        let message = format!("{error:#}");
+        color_eyre::eyre::ensure!(
+            message.contains("failed to read ripr stderr"),
+            "read failure context was missing: {message}"
+        );
+        let status = child
+            .try_wait()?
+            .ok_or_else(|| eyre!("producer was not reaped after the stderr read failure"))?;
+        color_eyre::eyre::ensure!(
+            !status.success(),
+            "a settled producer must not report success: {status}"
+        );
+        color_eyre::eyre::ensure!(
+            started.elapsed() < Duration::from_secs(5),
+            "settling the producer waited instead of killing it"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn drain_stderr_and_wait_drains_and_bounds_successful_stderr() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let binary = write_ripr_stub(temp.path(), "ripr-short-lived", "", 0)?;
+        let mut child = Command::new(&binary)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .context("failed to spawn short-lived test producer")?;
+        let (status, stderr_bytes) = drain_stderr_and_wait(
+            &mut child,
+            Some(ChunkedStderrReader { remaining: MAX_RIPR_STDERR_BYTES * 2, chunk_size: 1024 }),
+            "ripr",
+        )?;
+        color_eyre::eyre::ensure!(
+            status.success(),
+            "the short-lived producer must report success: {status}"
+        );
+        color_eyre::eyre::ensure!(
+            stderr_bytes.len() == MAX_RIPR_STDERR_BYTES,
+            "retained stderr had {} bytes, expected exactly {}",
+            stderr_bytes.len(),
+            MAX_RIPR_STDERR_BYTES
+        );
+        Ok(())
+    }
+
     /// A killed run may leave staging residue, but the uploaded evidence tree
     /// holds only the published artifact: stdout temporaries live in staging.
     #[test]
@@ -10261,12 +10342,13 @@ paths = ["archive/**"]
     /// noisy failure restored exactly the unbounded buffer #12569 removes. The
     /// stub emits far more than the cap and more than a pipe buffer holds, so a
     /// fix that truncates by *stopping* the read instead of draining would
-    /// deadlock here rather than pass.
+    /// deadlock here rather than pass. The oracle inspects the stderr section
+    /// only because the surrounding diagnostic carries the binary path.
     #[test]
     fn run_ripr_check_failure_retains_bounded_stderr() -> Result<()> {
         let temp = tempfile::tempdir()?;
         let repo = temp.path().join("repo");
-        let stubs = temp.path().join("stubs");
+        let stubs = temp.path().join("EEEE-stubs");
         fs::create_dir_all(&repo)?;
         fs::create_dir_all(&stubs)?;
         let noise = MAX_RIPR_STDERR_BYTES * 4;
@@ -10284,9 +10366,14 @@ paths = ["archive/**"]
         let message = format!("{err:#}");
 
         assert!(message.contains("status"), "exit status must still appear: {message}");
-        assert!(
-            message.matches('E').count() <= MAX_RIPR_STDERR_BYTES,
-            "retained stderr must be bounded, not the child's whole output"
+        let stderr = message
+            .split_once("\nstderr:\n")
+            .map(|(_, stderr)| stderr)
+            .ok_or_else(|| eyre!("failure message did not include a stderr section"))?;
+        let retained = stderr.matches('E').count();
+        color_eyre::eyre::ensure!(
+            retained == MAX_RIPR_STDERR_BYTES,
+            "retained stderr section had {retained} E bytes, expected exactly {MAX_RIPR_STDERR_BYTES}"
         );
         assert!(
             message.len() < noise,
@@ -10330,13 +10417,10 @@ paths = ["archive/**"]
         Ok(())
     }
 
-    /// Lazily generates a `ripr check` payload whose findings[] is ~100MB —
-    /// the shape that killed the evidence runner (#12860): few findings, each
-    /// carrying a huge unconsumed blob. The generator yields chunk by chunk and
-    /// the streaming parser never materializes the findings array and retains
-    /// one finding at a time, so this test completing with correct buckets is
-    /// the memory-safety shape assertion in CI; the previous String-plus-DOM
-    /// ingestion would have buffered all of it before producing anything.
+    /// Lazily generates a large `ripr check` payload with exact summary counts
+    /// and findings buckets for the production ingestion seam. The generator
+    /// yields chunk by chunk so the fixture is never held in memory as one
+    /// buffer; this test does not measure a memory bound.
     struct SyntheticCheckStream {
         header: Vec<u8>,
         header_pos: usize,
@@ -10356,7 +10440,7 @@ paths = ["archive/**"]
         fn new() -> Self {
             Self {
                 header: format!(
-                    r#"{{"schema_version":"0.2","tool":"ripr","summary":{{"findings":{},"weakly_exposed":{}}},"findings":["#,
+                    r#"{{"schema_version":"0.2","tool":"ripr","summary":{{"findings":{},"weakly_exposed":{},"reachable_unrevealed":0,"no_static_path":0}},"findings":["#,
                     Self::FINDING_COUNT,
                     Self::FINDING_COUNT
                 )
@@ -10411,33 +10495,21 @@ paths = ["archive/**"]
         }
     }
 
+    /// Runs the large fixture once through `ripr_check_ingestion_from_file`,
+    /// proving the production seam validates it and computes exact bucket
+    /// counts without claiming a measured memory bound.
     #[test]
     fn streaming_ingestion_completes_on_large_payload_with_correct_buckets() -> Result<()> {
-        let seen = std::cell::Cell::new(0usize);
-        let summary = stream_ripr_check_payload(
-            BufReader::with_capacity(64 * 1024, SyntheticCheckStream::new()),
-            &mut |_finding| seen.set(seen.get() + 1),
-        )?;
-        assert_eq!(seen.get(), SyntheticCheckStream::FINDING_COUNT);
-        let Some(summary) = summary else {
-            bail!("synthetic payload carries a summary");
-        };
-        assert_eq!(
-            count_field(summary.as_object(), "weakly_exposed"),
-            SyntheticCheckStream::FINDING_COUNT
-        );
-
-        // Bucket correctness over the streamed findings, without the summary seed.
-        let mut buckets = RiprFindingBuckets::default();
-        let summary = stream_ripr_check_payload(
-            BufReader::with_capacity(64 * 1024, SyntheticCheckStream::new()),
-            &mut |finding| buckets.absorb(finding, &no_suppressions(), None, None, None),
-        )?;
-        assert!(summary.is_some());
-        let counts = ripr_summary_counts_merge(ripr_summary_counts_seed(None), buckets, false);
-        assert_eq!(counts.weakly_exposed, SyntheticCheckStream::FINDING_COUNT);
-        assert_eq!(counts.reachable_unrevealed, 0);
-        assert_eq!(counts.no_static_path, 0);
+        let temp = tempfile::tempdir()?;
+        let raw_path = temp.path().join("raw-check.json");
+        let mut raw_file = fs::File::create(&raw_path)?;
+        std::io::copy(&mut SyntheticCheckStream::new(), &mut raw_file)?;
+        let ingestion =
+            ripr_check_ingestion_from_file(&raw_path, &no_suppressions(), None, None, None)?;
+        assert!(ingestion.check_summary_present);
+        assert_eq!(ingestion.summary_counts.weakly_exposed, SyntheticCheckStream::FINDING_COUNT);
+        assert_eq!(ingestion.summary_counts.reachable_unrevealed, 0);
+        assert_eq!(ingestion.summary_counts.no_static_path, 0);
         Ok(())
     }
 
