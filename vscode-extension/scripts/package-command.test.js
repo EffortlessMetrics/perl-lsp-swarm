@@ -367,7 +367,8 @@ void test('manifest-enabled packaging stages the supplied payload and verifies t
     calls.push({ script, args });
     return true;
   };
-  const { PERL_LSP_VSCODE_TARGET: _ignoredTarget, ...envWithoutTarget } = env;
+  const envWithoutTarget = { ...env };
+  delete envWithoutTarget.PERL_LSP_VSCODE_TARGET;
   assert.equal(packageVsix(run, fileSystem, envWithoutTarget), true);
   assert.equal(writes[0].file.endsWith(path.join('bin', 'win32-x64', 'perllsp.exe')), true);
   assert.equal(writes[0].bytes, serverBytes);
