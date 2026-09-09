@@ -523,6 +523,11 @@ export function _stopWatchdogForTest(): void {
   stopWatchdog();
 }
 
+/** @internal */
+export function _setOutputChannelForTest(channel: vscode.LogOutputChannel): void {
+  outputChannel = channel;
+}
+
 /**
  * Test helper — simulate the lifecycle spawning one replacement generation
  * while a recovery continuation is still awaiting its restart promise.
