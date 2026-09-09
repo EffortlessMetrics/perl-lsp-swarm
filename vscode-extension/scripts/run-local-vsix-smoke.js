@@ -183,7 +183,7 @@ function hasCompleteCandidateIdentity(env) {
   ].every((value) => typeof value === 'string' && value.trim().length > 0);
 }
 
-function interpretTestExplorerExit(smokeRun, childReceipt, childEnv = process.env) {
+function interpretTestExplorerExit(smokeRun, childReceipt, childEnv = {}) {
   if (smokeRun.phase === 'compile') {
     return {
       status: 'failed',

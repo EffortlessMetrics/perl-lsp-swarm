@@ -168,7 +168,7 @@ void test(
   'classifies Test Explorer exits from the synthesized child identity, not ambient parent identity',
   { skip: process.platform !== 'win32' },
   () => {
-    const receiptsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-test-explorer-child-env-'));
+    const receiptsDir = path.join(os.tmpdir(), 'perl-lsp-test-explorer-child-env-does-not-exist');
     const names = [
       'PERL_LSP_CANDIDATE_ID',
       'PERL_LSP_ARTIFACT_SET_ID',
@@ -195,12 +195,29 @@ void test(
         exit_code: 2,
         reason: 'candidate_bound_platform_unavailable',
       });
+
+      for (const name of names.slice(0, 4)) delete process.env[name];
+      const completeChild = runTestExplorerJourneyStage(
+        {
+          PERL_LSP_CANDIDATE_ID: 'child-candidate',
+          PERL_LSP_ARTIFACT_SET_ID: 'child-artifacts',
+          PERL_LSP_CANDIDATE_ARTIFACT_MANIFEST: '{}',
+        },
+        'b'.repeat(40),
+        'candidate.vsix',
+        'c'.repeat(64),
+        (_env) => ({ phase: 'child', result: { status: 2 } }),
+      );
+      assert.deepEqual(completeChild, {
+        status: 'failed',
+        exit_code: 2,
+        reason: 'test_explorer_journey_failed',
+      });
     } finally {
       for (const name of names) {
         if (previous[name] === undefined) delete process.env[name];
         else process.env[name] = previous[name];
       }
-      fs.rmSync(receiptsDir, { recursive: true, force: true });
     }
   },
 );
@@ -1021,7 +1038,7 @@ void test('a partial Windows candidate-bound exit 2 remains not proven', () => {
     status: 2,
     candidateBound: true,
     platform: 'win32',
-    receiptsRoot: fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-windows-candidate-exit-')),
+    receiptsRoot: path.join(os.tmpdir(), 'perl-lsp-windows-candidate-exit-does-not-exist'),
   });
   assert.equal(result.status, 'not_proven');
   assert.equal(result.reason, 'candidate_bound_platform_unavailable');
@@ -1033,9 +1050,7 @@ void test('a complete Windows candidate-bound exit 2 remains a product failure',
     candidateBound: true,
     completeCandidateIdentity: true,
     platform: 'win32',
-    receiptsRoot: fs.mkdtempSync(
-      path.join(os.tmpdir(), 'perl-lsp-windows-complete-candidate-exit-'),
-    ),
+    receiptsRoot: path.join(os.tmpdir(), 'perl-lsp-windows-complete-candidate-exit-does-not-exist'),
   });
   assert.equal(result.status, 'failed');
   assert.equal(result.reason, 'published_extension_smoke_failed');
