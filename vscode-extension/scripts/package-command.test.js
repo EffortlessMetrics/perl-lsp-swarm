@@ -68,6 +68,23 @@ function projectionInput() {
   };
 }
 
+function posixProjectionInput() {
+  return {
+    releaseTopologySha256: 'b'.repeat(64),
+    includeUniversalManaged: false,
+    targets: [
+      {
+        target: 'x86_64-unknown-linux-gnu',
+        os: 'linux',
+        architecture: 'x86_64',
+        libc: 'gnu',
+        archiveName: 'perllsp-0.18.0-x86_64-unknown-linux-gnu.tar.gz',
+        requiredMembers: ['perllsp', 'perl-dap'],
+      },
+    ],
+  };
+}
+
 void test('prebuilt manifest binds exact Windows server source, target, and bytes', () => {
   const serverBytes = Buffer.from('candidate server bytes');
   const dapBytes = Buffer.from('candidate dap bytes');
@@ -463,7 +480,26 @@ void test(
     const projectionPath = path.join(stagingRoot, 'projection.json');
     const serverBytes = Buffer.from('server');
     const dapBytes = Buffer.from('dap');
-    const base = prebuiltManifest();
+    const base = prebuiltManifest({
+      package: {
+        ...prebuiltManifest().package,
+        vscodeTargetId: 'linux-x64',
+        rustTarget: 'x86_64-unknown-linux-gnu',
+      },
+      server: {
+        ...prebuiltManifest().server,
+        target: 'x86_64-unknown-linux-gnu',
+        member: 'perllsp',
+      },
+      dap: {
+        ...prebuiltManifest().dap,
+        payload: {
+          ...prebuiltManifest().dap.payload,
+          target: 'x86_64-unknown-linux-gnu',
+          member: 'perl-dap',
+        },
+      },
+    });
     const manifest = {
       ...base,
       dap: {
@@ -481,7 +517,11 @@ void test(
     fs.writeFileSync(serverPath, serverBytes);
     fs.writeFileSync(dapPath, dapBytes);
     fs.writeFileSync(manifestPath, JSON.stringify(manifest));
-    fs.writeFileSync(projectionPath, JSON.stringify(projectionInput()));
+    fs.writeFileSync(projectionPath, JSON.stringify(posixProjectionInput()));
+    const destination = path.join(stagingRoot, 'bin', 'linux-x64', 'perllsp');
+    fs.mkdirSync(path.dirname(destination), { recursive: true });
+    fs.writeFileSync(destination, Buffer.from('prior-server'));
+    fs.chmodSync(destination, 0o640);
     try {
       const staged = preparePrebuiltPayload(
         fs,
@@ -491,14 +531,15 @@ void test(
           PERL_LSP_PREBUILT_SERVER_PATH: serverPath,
           PERL_LSP_PREBUILT_DAP_PATH: dapPath,
           PERL_LSP_CURRENT_SOURCE_SHA: 'a'.repeat(40),
-          PERL_LSP_RUST_TARGET: 'x86_64-pc-windows-msvc',
-          PERL_LSP_VSCODE_TARGET: 'win32-x64',
+          PERL_LSP_RUST_TARGET: 'x86_64-unknown-linux-gnu',
+          PERL_LSP_VSCODE_TARGET: 'linux-x64',
         },
         stagingRoot,
       );
-      const destination = path.join(stagingRoot, 'bin', 'win32-x64', 'perllsp.exe');
       assert.equal(fs.statSync(destination).mode & 0o111, 0o111);
       staged.cleanup();
+      assert.deepEqual(fs.readFileSync(destination), Buffer.from('prior-server'));
+      assert.equal(fs.statSync(destination).mode & 0o777, 0o640);
     } finally {
       fs.rmSync(stagingRoot, { recursive: true, force: true });
     }
