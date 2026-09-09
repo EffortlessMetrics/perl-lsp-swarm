@@ -104,11 +104,15 @@ def build(args: argparse.Namespace) -> None:
     if output.exists() and (output.is_symlink() or not output.is_dir()):
         raise ValueError("output must be a real directory")
     output.mkdir(parents=True, exist_ok=True)
-    temp_root = Path(tempfile.mkdtemp(prefix=".prebuilt-payload-", dir=output.parent))
-    target_dir = temp_root / "bin" / vscode_target
-    target_dir.mkdir(parents=True)
+    temp_root: Path | None = None
     created: list[Path] = []
     try:
+        for parent in (output / "bin", output / "bin" / vscode_target):
+            if parent.exists() and (parent.is_symlink() or not parent.is_dir()):
+                raise ValueError(f"output parent is not a real directory: {parent}")
+        temp_root = Path(tempfile.mkdtemp(prefix=".prebuilt-payload-", dir=output.parent))
+        target_dir = temp_root / "bin" / vscode_target
+        target_dir.mkdir(parents=True)
         for payload in payloads:
             destination = target_dir / payload["member"]
             if copy_selected_member(archive, payload["source_member"], destination) != payload["sha256"]:
@@ -130,7 +134,8 @@ def build(args: argparse.Namespace) -> None:
             path.unlink(missing_ok=True)
         raise
     finally:
-        shutil.rmtree(temp_root, ignore_errors=True)
+        if temp_root is not None:
+            shutil.rmtree(temp_root, ignore_errors=True)
 
 
 def main() -> int:

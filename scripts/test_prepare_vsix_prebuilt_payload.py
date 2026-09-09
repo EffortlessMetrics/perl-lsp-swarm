@@ -73,7 +73,7 @@ class PrebuiltPayloadAdapterTests(unittest.TestCase):
             manifest = json.loads((paths["output"] / "vsix-candidate-payload.json").read_text(encoding="utf-8"))
             self.assertEqual(manifest["package"]["vscodeTargetId"], "linux-x64")
             self.assertEqual((paths["output"] / "bin" / "linux-x64" / "perllsp").read_bytes(), b"server")
-            consumer = subprocess.run(["node", "-e", "const fs=require('fs'); const {preparePrebuiltPayload}=require('./vscode-extension/scripts/package-vsix.js'); const root=process.argv[1]; const env={PERL_LSP_CANDIDATE_PAYLOAD_MANIFEST:process.argv[2],PERL_LSP_VSIX_PROJECTION_INPUT:process.argv[3],PERL_LSP_PREBUILT_SERVER_PATH:process.argv[4],PERL_LSP_PREBUILT_DAP_PATH:process.argv[5],PERL_LSP_CURRENT_SOURCE_SHA:'a'.repeat(40),PERL_LSP_RUST_TARGET:'x86_64-unknown-linux-gnu',PERL_LSP_VSCODE_TARGET:'linux-x64'}; const staged=preparePrebuiltPayload(fs,env,root); if(staged.manifest.package.vscodeTargetId!=='linux-x64') process.exit(2); staged.cleanup();", str(root / "consumer"), str(paths["output"] / "vsix-candidate-payload.json"), str(paths["projection"]), str(paths["output"] / "bin" / "linux-x64" / "perllsp"), str(paths["output"] / "bin" / "linux-x64" / "perl-dap")], cwd=Path(__file__).parents[1], capture_output=True, text=True, check=False)
+            consumer = subprocess.run(["node", "-e", "const fs=require('fs'); const {preparePrebuiltPayload}=require('./vscode-extension/scripts/package-vsix.js'); const root=process.argv[1]; const env={PERL_LSP_CANDIDATE_PAYLOAD_MANIFEST:process.argv[2],PERL_LSP_VSIX_PROJECTION_INPUT:process.argv[3],PERL_LSP_PREBUILT_SERVER_PATH:process.argv[4],PERL_LSP_PREBUILT_DAP_PATH:process.argv[5],PERL_LSP_CURRENT_SOURCE_SHA:'a'.repeat(40),PERL_LSP_RUST_TARGET:'x86_64-unknown-linux-gnu',PERL_LSP_VSCODE_TARGET:'linux-x64'}; const staged=preparePrebuiltPayload(fs,env,root); if(staged.manifest.package.vscodeTargetId!=='linux-x64'||fs.readFileSync(root+'/bin/linux-x64/perllsp','utf8')!=='server'||fs.readFileSync(root+'/bin/linux-x64/perl-dap','utf8')!=='dap') process.exit(2); staged.cleanup();", str(root / "consumer"), str(paths["output"] / "vsix-candidate-payload.json"), str(paths["projection"]), str(paths["output"] / "bin" / "linux-x64" / "perllsp"), str(paths["output"] / "bin" / "linux-x64" / "perl-dap")], cwd=Path(__file__).parents[1], capture_output=True, text=True, check=False)
             self.assertEqual(consumer.returncode, 0, consumer.stderr)
 
     def test_wrong_candidate_fails_before_creating_output(self) -> None:
@@ -165,6 +165,21 @@ class PrebuiltPayloadAdapterTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("regular", result.stderr)
             self.assertFalse((paths["output"] / "vsix-candidate-payload.json").exists())
+
+    def test_symlinked_output_parent_is_rejected_without_external_write(self) -> None:
+        with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryDirectory() as outside:
+            root = Path(directory)
+            paths = self.fixture(root)
+            (paths["output"] / "bin").mkdir(parents=True)
+            try:
+                (paths["output"] / "bin" / "linux-x64").rmdir()
+                (paths["output"] / "bin" / "linux-x64").symlink_to(Path(outside), target_is_directory=True)
+            except OSError as error:
+                self.skipTest(f"symlink fixture unavailable: {error}")
+            result = subprocess.run(self.command(paths), cwd=Path(__file__).parents[1], capture_output=True, text=True, check=False)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("output parent", result.stderr)
+            self.assertEqual(list(Path(outside).iterdir()), [])
 
 
 if __name__ == "__main__":
