@@ -6,6 +6,8 @@ import {
   isIncludePathCandidateCovered,
   runDiscoveredIncludePathGuidance,
   runIncludePathValidation,
+  registerIncludePathGuidanceWorkspaceListener,
+  rerunIncludePathGuidance,
   suggestAiCompletionIfSupported,
   validateIncludePaths,
 } from '../extensionWorkspaceGuidance';
@@ -73,6 +75,12 @@ async function settleAsyncWork(): Promise<void> {
   await Promise.resolve();
   await Promise.resolve();
   await new Promise<void>((resolve) => setImmediate(resolve));
+}
+
+async function waitForCalls(mock: jest.Mock, count: number): Promise<void> {
+  for (let attempt = 0; attempt < 50 && mock.mock.calls.length < count; attempt += 1) {
+    await new Promise<void>((resolve) => setTimeout(resolve, 5));
+  }
 }
 
 afterEach(() => {
@@ -190,6 +198,167 @@ test('configuration changes invalidate a prior discovery dismissal', async () =>
   expect(vscode.window.showInformationMessage).toHaveBeenCalledTimes(2);
 });
 
+test('workspace-folder removal invalidates dismissal for a replacement with the same URI', async () => {
+  const workspaceDir = tempWorkspace('perl-lsp-guidance-folder-generation-');
+  fs.mkdirSync(path.join(workspaceDir, 'src'), { recursive: true });
+  fs.writeFileSync(path.join(workspaceDir, 'src', 'Module.pm'), 'package Module; 1;\n');
+  const globalState = makeState();
+  const original = folderFor(workspaceDir);
+  workspaceMock.workspaceFolders = [original];
+  (vscode.workspace.getConfiguration as jest.Mock).mockImplementation(() => ({
+    get: jest.fn((_key: string, defaultValue?: unknown) => defaultValue),
+    inspect: jest.fn(() => ({ defaultValue: ['lib', 'local/lib/perl5'] })),
+    update: jest.fn(async () => undefined),
+  }));
+  (vscode.window.showInformationMessage as jest.Mock).mockResolvedValue('Dismiss');
+
+  await runDiscoveredIncludePathGuidance({ globalState } as unknown as vscode.ExtensionContext);
+  let onFoldersChanged!: (event: { removed: vscode.WorkspaceFolder[] }) => void;
+  (vscode.workspace.onDidChangeWorkspaceFolders as jest.Mock).mockImplementationOnce(
+    (callback: (event: { removed: vscode.WorkspaceFolder[] }) => void) => {
+      onFoldersChanged = callback;
+      return { dispose: jest.fn() };
+    },
+  );
+  const context = { globalState } as unknown as vscode.ExtensionContext;
+  const listener = registerIncludePathGuidanceWorkspaceListener(context);
+  const replacement = folderFor(workspaceDir);
+  workspaceMock.workspaceFolders = [replacement];
+  onFoldersChanged({ removed: [original] });
+  await waitForCalls(vscode.window.showInformationMessage as jest.Mock, 2);
+
+  listener.dispose();
+  expect(vscode.window.showInformationMessage).toHaveBeenCalledTimes(2);
+});
+
+test('a removed folder prompt cannot restore dismissal for its replacement', async () => {
+  const workspaceDir = tempWorkspace('perl-lsp-guidance-folder-inflight-');
+  fs.mkdirSync(path.join(workspaceDir, 'src'), { recursive: true });
+  fs.writeFileSync(path.join(workspaceDir, 'src', 'Module.pm'), 'package Module; 1;\n');
+  const globalState = makeState();
+  const original = folderFor(workspaceDir);
+  workspaceMock.workspaceFolders = [original];
+  (vscode.workspace.getConfiguration as jest.Mock).mockImplementation(() => ({
+    get: jest.fn((_key: string, defaultValue?: unknown) => defaultValue),
+    inspect: jest.fn(() => ({ defaultValue: ['lib', 'local/lib/perl5'] })),
+    update: jest.fn(async () => undefined),
+  }));
+  const oldPrompt = new Deferred<string>();
+  const newPrompt = new Deferred<string>();
+  (vscode.window.showInformationMessage as jest.Mock)
+    .mockReturnValueOnce(oldPrompt.promise)
+    .mockReturnValueOnce(newPrompt.promise);
+
+  const context = { globalState } as unknown as vscode.ExtensionContext;
+  const oldRun = runDiscoveredIncludePathGuidance(context);
+  await waitForCalls(vscode.window.showInformationMessage as jest.Mock, 1);
+  let onFoldersChanged!: (event: { removed: vscode.WorkspaceFolder[] }) => void;
+  (vscode.workspace.onDidChangeWorkspaceFolders as jest.Mock).mockImplementationOnce(
+    (callback: (event: { removed: vscode.WorkspaceFolder[] }) => void) => {
+      onFoldersChanged = callback;
+      return { dispose: jest.fn() };
+    },
+  );
+  registerIncludePathGuidanceWorkspaceListener(context);
+  const replacement = folderFor(workspaceDir);
+  workspaceMock.workspaceFolders = [replacement];
+  onFoldersChanged({ removed: [original] });
+  oldPrompt.resolve('Dismiss');
+  await oldRun;
+  await waitForCalls(vscode.window.showInformationMessage as jest.Mock, 2);
+  newPrompt.resolve('Dismiss');
+  await waitForCalls(vscode.window.showInformationMessage as jest.Mock, 2);
+
+  expect(vscode.window.showInformationMessage).toHaveBeenCalledTimes(2);
+});
+
+test('added-only workspace topology changes rerun guidance', async () => {
+  const workspaceDir = tempWorkspace('perl-lsp-guidance-folder-added-');
+  fs.mkdirSync(path.join(workspaceDir, 'src'), { recursive: true });
+  fs.writeFileSync(path.join(workspaceDir, 'src', 'Module.pm'), 'package Module; 1;\n');
+  const folder = folderFor(workspaceDir);
+  workspaceMock.workspaceFolders = [folder];
+  (vscode.workspace.getConfiguration as jest.Mock).mockImplementation(() => ({
+    get: jest.fn((_key: string, defaultValue?: unknown) => defaultValue),
+    inspect: jest.fn(() => ({ defaultValue: ['lib', 'local/lib/perl5'] })),
+    update: jest.fn(async () => undefined),
+  }));
+  (vscode.window.showInformationMessage as jest.Mock).mockResolvedValue('Dismiss');
+  let onFoldersChanged!: (event: {
+    removed: vscode.WorkspaceFolder[];
+    added: vscode.WorkspaceFolder[];
+  }) => void;
+  (vscode.workspace.onDidChangeWorkspaceFolders as jest.Mock).mockImplementationOnce(
+    (callback: typeof onFoldersChanged) => {
+      onFoldersChanged = callback;
+      return { dispose: jest.fn() };
+    },
+  );
+
+  registerIncludePathGuidanceWorkspaceListener({
+    globalState: makeState(),
+  } as unknown as vscode.ExtensionContext);
+  onFoldersChanged({ removed: [], added: [folder] });
+  await waitForCalls(vscode.window.showInformationMessage as jest.Mock, 1);
+
+  expect(vscode.window.showInformationMessage).toHaveBeenCalledTimes(1);
+});
+
+test('removal during discovery invalidates the pre-removal scan', async () => {
+  const workspaceDir = tempWorkspace('perl-lsp-guidance-folder-scan-generation-');
+  fs.mkdirSync(path.join(workspaceDir, 'src'), { recursive: true });
+  fs.writeFileSync(path.join(workspaceDir, 'src', 'Module.pm'), 'package Module; 1;\n');
+  const original = folderFor(workspaceDir);
+  workspaceMock.workspaceFolders = [original];
+  (vscode.workspace.getConfiguration as jest.Mock).mockImplementation(() => ({
+    get: jest.fn((_key: string, defaultValue?: unknown) => defaultValue),
+    inspect: jest.fn(() => ({ defaultValue: ['lib', 'local/lib/perl5'] })),
+    update: jest.fn(async () => undefined),
+  }));
+  (vscode.window.showInformationMessage as jest.Mock).mockResolvedValue('Dismiss');
+  let onFoldersChanged!: (event: {
+    removed: vscode.WorkspaceFolder[];
+    added: vscode.WorkspaceFolder[];
+  }) => void;
+  (vscode.workspace.onDidChangeWorkspaceFolders as jest.Mock).mockImplementationOnce(
+    (callback: typeof onFoldersChanged) => {
+      onFoldersChanged = callback;
+      return { dispose: jest.fn() };
+    },
+  );
+  const context = { globalState: makeState() } as unknown as vscode.ExtensionContext;
+  registerIncludePathGuidanceWorkspaceListener(context);
+
+  let rootStarted = false;
+  let releaseRoot!: () => void;
+  const rootGate = new Promise<void>((resolve) => {
+    releaseRoot = resolve;
+  });
+  const originalRealpath = fs.promises.realpath;
+  const realpath = jest.spyOn(fs.promises, 'realpath').mockImplementation(async (target) => {
+    const result = await originalRealpath.call(fs.promises, target);
+    if (String(target) === workspaceDir && !rootStarted) {
+      rootStarted = true;
+      await rootGate;
+    }
+    return result;
+  });
+
+  const run = runDiscoveredIncludePathGuidance(context);
+  for (let attempt = 0; attempt < 50 && !rootStarted; attempt += 1) {
+    await new Promise<void>((resolve) => setTimeout(resolve, 5));
+  }
+  const replacement = folderFor(workspaceDir);
+  workspaceMock.workspaceFolders = [replacement];
+  onFoldersChanged({ removed: [original], added: [replacement] });
+  releaseRoot();
+  await run;
+  await waitForCalls(vscode.window.showInformationMessage as jest.Mock, 1);
+
+  realpath.mockRestore();
+  expect(vscode.window.showInformationMessage).toHaveBeenCalledTimes(1);
+});
+
 test('retries a discovered-path suggestion after an update failure', async () => {
   const workspaceDir = tempWorkspace('perl-lsp-guidance-retry-');
   fs.mkdirSync(path.join(workspaceDir, 'src'), { recursive: true });
@@ -290,6 +459,34 @@ test('reports depth-budget exhaustion as incomplete', async () => {
   expect(reports).toEqual(
     expect.arrayContaining([
       expect.objectContaining({ folder: 'workspace', discovered: [], complete: false }),
+    ]),
+  );
+});
+
+test('continues with independent candidates when one candidate realpath fails', async () => {
+  const workspaceDir = tempWorkspace('perl-lsp-guidance-realpath-error-');
+  fs.mkdirSync(path.join(workspaceDir, 'src'), { recursive: true });
+  fs.writeFileSync(path.join(workspaceDir, 'src', 'Module.pm'), 'package Module; 1;\n');
+  fs.mkdirSync(path.join(workspaceDir, 'vendor'), { recursive: true });
+  const originalRealpath = fs.promises.realpath;
+  const realpath = jest.spyOn(fs.promises, 'realpath').mockImplementation(async (target) => {
+    if (String(target).endsWith(path.join('vendor'))) {
+      const error = new Error('permission denied') as NodeJS.ErrnoException;
+      error.code = 'EACCES';
+      throw error;
+    }
+    return originalRealpath.call(fs.promises, target);
+  });
+  mountWorkspace(workspaceDir, ['lib']);
+
+  const reports = await runDiscoveredIncludePathGuidance({
+    globalState: makeState(),
+  } as unknown as vscode.ExtensionContext);
+
+  realpath.mockRestore();
+  expect(reports).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({ folder: 'workspace', discovered: ['src'], complete: false }),
     ]),
   );
 });
@@ -424,18 +621,45 @@ test('queues one validation rerun for a change during an active prompt', async (
 
   const context = { globalState: makeState() } as unknown as vscode.ExtensionContext;
   void validateIncludePaths(context);
-  await settleAsyncWork();
+  await waitForCalls(vscode.window.showWarningMessage as jest.Mock, 1);
   includePaths = ['second/missing'];
   void validateIncludePaths(context);
   firstPrompt.resolve(undefined);
-  await settleAsyncWork();
-  await settleAsyncWork();
+  await waitForCalls(vscode.window.showWarningMessage as jest.Mock, 2);
 
   expect(vscode.window.showWarningMessage).toHaveBeenCalledTimes(2);
   expect(vscode.window.showWarningMessage).toHaveBeenLastCalledWith(
     expect.stringContaining('second/missing'),
     'Open Settings',
   );
+});
+
+test('live guidance rerun coalesces a configuration event during discovery', async () => {
+  const workspaceDir = tempWorkspace('perl-lsp-guidance-live-event-');
+  fs.mkdirSync(path.join(workspaceDir, 'src'), { recursive: true });
+  fs.writeFileSync(path.join(workspaceDir, 'src', 'Module.pm'), 'package Module; 1;\n');
+  let includePaths = ['lib'];
+  mountWorkspace(workspaceDir, includePaths);
+  (vscode.workspace.getConfiguration as jest.Mock).mockImplementation(() => ({
+    get: jest.fn(() => includePaths),
+    inspect: jest.fn(() => ({ defaultValue: ['lib', 'local/lib/perl5'] })),
+    update: jest.fn(async () => undefined),
+  }));
+  const firstPrompt = new Deferred<string>();
+  (vscode.window.showInformationMessage as jest.Mock)
+    .mockReturnValueOnce(firstPrompt.promise)
+    .mockResolvedValue('Dismiss');
+  const context = { globalState: makeState() } as unknown as vscode.ExtensionContext;
+
+  const firstEvent = rerunIncludePathGuidance(context);
+  await waitForCalls(vscode.window.showInformationMessage as jest.Mock, 1);
+  includePaths = ['lib', 'changed-during-discovery'];
+  void rerunIncludePathGuidance(context);
+  firstPrompt.resolve('Dismiss');
+  await firstEvent;
+  await waitForCalls(vscode.window.showInformationMessage as jest.Mock, 2);
+
+  expect(vscode.window.showInformationMessage).toHaveBeenCalledTimes(2);
 });
 
 test('does not apply a module root removed while the prompt is open', async () => {
@@ -456,12 +680,105 @@ test('does not apply a module root removed while the prompt is open', async () =
   const run = runDiscoveredIncludePathGuidance({
     globalState: makeState(),
   } as unknown as vscode.ExtensionContext);
-  await settleAsyncWork();
+  await waitForCalls(vscode.window.showInformationMessage as jest.Mock, 1);
   fs.rmSync(modulePath);
   prompt.resolve('Add for These Folders');
   await run;
 
   expect(update).not.toHaveBeenCalled();
+});
+
+test('rejects a configuration change during candidate revalidation', async () => {
+  const workspaceDir = tempWorkspace('perl-lsp-guidance-final-recheck-');
+  const modulePath = path.join(workspaceDir, 'src', 'Module.pm');
+  fs.mkdirSync(path.dirname(modulePath), { recursive: true });
+  fs.writeFileSync(modulePath, 'package Module; 1;\n');
+  let includePaths = ['lib'];
+  const update = jest.fn(async () => undefined);
+  const folder = folderFor(workspaceDir);
+  workspaceMock.workspaceFolders = [folder];
+  (vscode.workspace.getConfiguration as jest.Mock).mockImplementation(() => ({
+    get: jest.fn((_key: string, defaultValue?: unknown) => includePaths ?? defaultValue),
+    update,
+  }));
+  const prompt = new Deferred<string>();
+  (vscode.window.showInformationMessage as jest.Mock).mockReturnValue(prompt.promise);
+  let revalidation = false;
+  const originalRealpath = fs.promises.realpath;
+  const realpath = jest.spyOn(fs.promises, 'realpath').mockImplementation(async (target) => {
+    const result = await originalRealpath.call(fs.promises, target);
+    if (revalidation && String(target).endsWith(path.join('src'))) {
+      includePaths = ['lib', 'changed-during-rescan'];
+      revalidation = false;
+    }
+    return result;
+  });
+
+  const run = runDiscoveredIncludePathGuidance({
+    globalState: makeState(),
+  } as unknown as vscode.ExtensionContext);
+  await waitForCalls(vscode.window.showInformationMessage as jest.Mock, 1);
+  revalidation = true;
+  prompt.resolve('Add for These Folders');
+  await run;
+
+  realpath.mockRestore();
+  expect(update).not.toHaveBeenCalled();
+  expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(
+    expect.stringContaining('changed before they could be applied'),
+  );
+});
+
+test('rejects a workspace-folder replacement during final root realpath', async () => {
+  const workspaceDir = tempWorkspace('perl-lsp-guidance-final-root-replacement-');
+  const modulePath = path.join(workspaceDir, 'src', 'Module.pm');
+  fs.mkdirSync(path.dirname(modulePath), { recursive: true });
+  fs.writeFileSync(modulePath, 'package Module; 1;\n');
+  const update = jest.fn(async () => undefined);
+  const folder = folderFor(workspaceDir);
+  workspaceMock.workspaceFolders = [folder];
+  (vscode.workspace.getConfiguration as jest.Mock).mockImplementation(() => ({
+    get: jest.fn((_key: string, defaultValue?: unknown) => defaultValue),
+    update,
+  }));
+  const prompt = new Deferred<string>();
+  (vscode.window.showInformationMessage as jest.Mock).mockReturnValue(prompt.promise);
+  let rootRealpathCalls = 0;
+  let finalRootStarted = false;
+  let releaseFinalRoot!: () => void;
+  const finalRootGate = new Promise<void>((resolve) => {
+    releaseFinalRoot = resolve;
+  });
+  const originalRealpath = fs.promises.realpath;
+  const realpath = jest.spyOn(fs.promises, 'realpath').mockImplementation(async (target) => {
+    const result = await originalRealpath.call(fs.promises, target);
+    if (String(target) === workspaceDir) {
+      rootRealpathCalls += 1;
+      if (rootRealpathCalls === 3) {
+        finalRootStarted = true;
+        await finalRootGate;
+      }
+    }
+    return result;
+  });
+
+  const run = runDiscoveredIncludePathGuidance({
+    globalState: makeState(),
+  } as unknown as vscode.ExtensionContext);
+  await waitForCalls(vscode.window.showInformationMessage as jest.Mock, 1);
+  prompt.resolve('Add for These Folders');
+  for (let attempt = 0; attempt < 50 && !finalRootStarted; attempt += 1) {
+    await new Promise<void>((resolve) => setTimeout(resolve, 5));
+  }
+  workspaceMock.workspaceFolders = [folderFor(tempWorkspace('perl-lsp-guidance-replaced-'))];
+  releaseFinalRoot();
+  await run;
+
+  realpath.mockRestore();
+  expect(update).not.toHaveBeenCalled();
+  expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(
+    expect.stringContaining('changed before they could be applied'),
+  );
 });
 
 test('reports only the module roots applied after partial revalidation', async () => {

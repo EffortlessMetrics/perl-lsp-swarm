@@ -28,12 +28,15 @@ import { OnboardingManager } from './onboarding';
 import { ProcessBoundLanguageClient } from './processBoundLanguageClient';
 import {
   openDemoProjectCommand,
+  registerIncludePathGuidanceWorkspaceListener,
+  rerunIncludePathGuidance,
   suggestAiCompletionIfSupported,
   suggestDiscoveredIncludePaths,
   validateIncludePaths,
 } from './extensionWorkspaceGuidance';
 export {
   openDemoProjectCommand,
+  registerIncludePathGuidanceWorkspaceListener,
   suggestAiCompletionIfSupported,
   suggestDiscoveredIncludePaths,
   validateIncludePaths,
@@ -1265,7 +1268,7 @@ async function runExtensionActivation(
         }
 
         if (event.affectsConfiguration('perl-lsp.includePaths')) {
-          await validateIncludePaths(context);
+          await rerunIncludePathGuidance(context);
         }
 
         const criticChanged = CRITIC_SETTINGS.some((setting) =>
@@ -1316,6 +1319,9 @@ async function runExtensionActivation(
     },
   );
   activation.own('workspace_listeners', 'optional_degradable', legacyMigrationFolderWatcher);
+
+  const includePathGuidanceFolderWatcher = registerIncludePathGuidanceWorkspaceListener(context);
+  activation.own('workspace_listeners', 'optional_degradable', includePathGuidanceFolderWatcher);
 
   const fileCreationWatcher = vscode.workspace.onDidCreateFiles(async (event) => {
     try {

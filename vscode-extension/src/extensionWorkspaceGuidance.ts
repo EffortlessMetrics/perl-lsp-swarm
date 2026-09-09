@@ -15,6 +15,37 @@ interface GuidanceRun {
 
 const validationRuns = new WeakMap<vscode.ExtensionContext, GuidanceRun>();
 const discoveryRuns = new WeakMap<vscode.ExtensionContext, GuidanceRun>();
+const invalidatedWorkspaceFolders = new WeakMap<
+  vscode.ExtensionContext,
+  WeakSet<vscode.WorkspaceFolder>
+>();
+
+function invalidatedFolders(context: vscode.ExtensionContext): WeakSet<vscode.WorkspaceFolder> {
+  let folders = invalidatedWorkspaceFolders.get(context);
+  if (!folders) {
+    folders = new WeakSet<vscode.WorkspaceFolder>();
+    invalidatedWorkspaceFolders.set(context, folders);
+  }
+  return folders;
+}
+
+function isCurrentWorkspaceFolder(
+  context: vscode.ExtensionContext,
+  folder: vscode.WorkspaceFolder,
+): boolean {
+  return (
+    !invalidatedFolders(context).has(folder) &&
+    (vscode.workspace.workspaceFolders?.some((current) => current === folder) ?? false)
+  );
+}
+
+function guidanceCacheKeys(folderUri: string): string[] {
+  const encodedUri = encodeURIComponent(folderUri);
+  return [
+    `perl-lsp.includePathsWarning.${encodedUri}`,
+    `perl-lsp.includePathsSuggestion.${encodedUri}`,
+  ];
+}
 
 interface DiscoveryScanResult {
   readonly found: boolean;
@@ -154,6 +185,10 @@ export async function runIncludePathValidation(context: vscode.ExtensionContext)
       }
     }
 
+    if (!isCurrentWorkspaceFolder(context, folder)) {
+      continue;
+    }
+
     if (missingPaths.length === 0) {
       await context.globalState.update(cacheKey, undefined);
       continue;
@@ -178,6 +213,10 @@ export async function runIncludePathValidation(context: vscode.ExtensionContext)
       `Perl LSP: configured include path "${firstMissing}" (${relativeNote}) does not exist.${suffix}`,
       'Open Settings',
     );
+
+    if (!isCurrentWorkspaceFolder(context, folder)) {
+      continue;
+    }
 
     if (choice === 'Open Settings') {
       void vscode.commands.executeCommand(
@@ -328,6 +367,48 @@ export function suggestDiscoveredIncludePaths(context: vscode.ExtensionContext):
   });
 }
 
+/**
+ * Invalidate folder-scoped guidance when a workspace folder is removed.
+ *
+ * VS Code can remove and re-add the same URI during workspace topology
+ * changes. Invalidating the removed folder object prevents an older in-flight
+ * prompt from restoring dismissal state for the replacement folder.
+ */
+export function registerIncludePathGuidanceWorkspaceListener(
+  context: vscode.ExtensionContext,
+): vscode.Disposable {
+  return vscode.workspace.onDidChangeWorkspaceFolders((event) => {
+    const removed = event.removed ?? [];
+    const added = event.added ?? [];
+    if (removed.length === 0 && added.length === 0) {
+      return;
+    }
+
+    const updates: Promise<void>[] = [];
+    for (const folder of removed) {
+      const folderUri = folder.uri.toString();
+      invalidatedFolders(context).add(folder);
+      for (const cacheKey of guidanceCacheKeys(folderUri)) {
+        updates.push(Promise.resolve(context.globalState.update(cacheKey, undefined)));
+      }
+    }
+
+    void Promise.all(updates)
+      .then(() => rerunIncludePathGuidance(context))
+      .catch((error: unknown) => {
+        void vscode.window.showWarningMessage(
+          `Perl LSP: could not refresh workspace-folder guidance: ${errorMessage(error)}`,
+        );
+      });
+  });
+}
+
+/** Re-run both include-path guidance passes for a live configuration event. */
+export async function rerunIncludePathGuidance(context: vscode.ExtensionContext): Promise<void> {
+  await validateIncludePaths(context);
+  await suggestDiscoveredIncludePaths(context);
+}
+
 /** Execute the discovery pass to completion for tests and explicit callers. */
 export async function runDiscoveredIncludePathGuidance(
   context: vscode.ExtensionContext,
@@ -355,7 +436,13 @@ export async function runDiscoveredIncludePathGuidance(
 
     for (const candidate of DISCOVERY_CANDIDATE_DIRS) {
       const resolved = path.resolve(folder.uri.fsPath, candidate);
-      const candidateRealPath = await realpathIfExists(resolved);
+      let candidateRealPath: string | undefined;
+      try {
+        candidateRealPath = await realpathIfExists(resolved);
+      } catch {
+        complete = false;
+        continue;
+      }
       if (!candidateRealPath || !isWithinBasePath(rootRealPath, candidateRealPath)) {
         continue;
       }
@@ -393,6 +480,9 @@ export async function runDiscoveredIncludePathGuidance(
       }
     }
 
+    if (invalidatedFolders(context).has(folder)) {
+      continue;
+    }
     reports.push({ folder: folder.name, discovered: [...discovered], complete });
     if (discovered.length === 0) {
       continue;
@@ -479,9 +569,15 @@ export async function runDiscoveredIncludePathGuidance(
       const currentDiscovered: string[] = [];
       let currentComplete = true;
       for (const candidate of finding.discovered) {
-        const candidateRealPath = await realpathIfExists(
-          path.resolve(currentFolder.uri.fsPath, candidate),
-        );
+        let candidateRealPath: string | undefined;
+        try {
+          candidateRealPath = await realpathIfExists(
+            path.resolve(currentFolder.uri.fsPath, candidate),
+          );
+        } catch {
+          stale.push(finding.folder.name);
+          continue;
+        }
         if (!candidateRealPath || !isWithinBasePath(currentRootRealPath, candidateRealPath)) {
           stale.push(finding.folder.name);
           continue;
@@ -513,20 +609,58 @@ export async function runDiscoveredIncludePathGuidance(
       if (currentDiscovered.length === 0) {
         continue;
       }
-      const next = Array.from(new Set([...currentIncludePaths, ...currentDiscovered]));
+
+      // Re-read the complete subject after every asynchronous candidate
+      // rescan. A folder or configuration can change while the prompt is
+      // open or while the rescans are running; the update must target the
+      // same folder/root/configuration that produced the finding.
+      const finalFolder = vscode.workspace.workspaceFolders?.find(
+        (folder) => folder === finding.folder && folder.uri.toString() === finding.folderUri,
+      );
+      if (!finalFolder) {
+        stale.push(finding.folder.name);
+        continue;
+      }
+      let finalRootRealPath: string;
       try {
-        await currentConfig.update(
-          'includePaths',
-          next,
-          vscode.ConfigurationTarget.WorkspaceFolder,
-        );
+        finalRootRealPath = await fs.promises.realpath(finalFolder.uri.fsPath);
+      } catch {
+        stale.push(finding.folder.name);
+        continue;
+      }
+      const currentFinalFolder = vscode.workspace.workspaceFolders?.find(
+        (folder) => folder === finalFolder && folder.uri.toString() === finding.folderUri,
+      );
+      if (!currentFinalFolder || !isCurrentWorkspaceFolder(context, finding.folder)) {
+        stale.push(finding.folder.name);
+        continue;
+      }
+      const finalConfig = vscode.workspace.getConfiguration('perl-lsp', finalFolder.uri);
+      const finalIncludePaths: string[] = finalConfig.get('includePaths', [
+        ...DEFAULT_INCLUDE_PATHS,
+      ]);
+      if (
+        finalRootRealPath !== finding.rootRealPath ||
+        includePathsFingerprint(finalIncludePaths) !== finding.includePathsFingerprint
+      ) {
+        stale.push(finding.folder.name);
+        continue;
+      }
+
+      const next = Array.from(new Set([...finalIncludePaths, ...currentDiscovered]));
+      try {
+        await finalConfig.update('includePaths', next, vscode.ConfigurationTarget.WorkspaceFolder);
+        if (!isCurrentWorkspaceFolder(context, finding.folder)) {
+          stale.push(finding.folder.name);
+          continue;
+        }
         const currentSignature = crypto
           .createHash('sha256')
           .update(
             JSON.stringify({
               folderUri: finding.folderUri,
-              rootRealPath: currentRootRealPath,
-              includePathsFingerprint: includePathsFingerprint(currentIncludePaths),
+              rootRealPath: finalRootRealPath,
+              includePathsFingerprint: includePathsFingerprint(finalIncludePaths),
               complete: finding.complete && currentComplete,
               discovered: currentDiscovered.slice().sort(),
             }),
@@ -559,6 +693,9 @@ export async function runDiscoveredIncludePathGuidance(
   }
 
   for (const finding of findings) {
+    if (!isCurrentWorkspaceFolder(context, finding.folder)) {
+      continue;
+    }
     await context.globalState.update(finding.cacheKey, finding.signature);
   }
   return reports;
