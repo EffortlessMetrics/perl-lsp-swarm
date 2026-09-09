@@ -52,3 +52,8 @@ binaries or publish an artifact. The caller owns the accepted inventory policy; 
 adapter checks inventory format and identity binding but does not approve a release
 baseline. Start downstream consumers only after the adapter exits successfully and
 has published all of its output files.
+
+Publication requires hard-link support between the staging directory and its output
+filesystem. A destination collision during publication fails without replacing the
+competing file; if hard-linking is unsupported, the adapter fails closed rather than
+falling back to overwrite-based publication.
