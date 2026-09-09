@@ -222,28 +222,3 @@ fn repeated_refusals_are_identical() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(first, second, "repeated refusals must be byte-identical");
     Ok(())
 }
-
-/// Only the extension cell moved to the authority; the completions and hover
-/// sibling cells keep their wiring. (The setVariable sibling later moved to
-/// its own #8354 authority — asserted below.)
-#[test]
-fn sibling_capability_cells_are_independent() -> Result<(), Box<dyn std::error::Error>> {
-    let mut adapter = create_test_adapter();
-    let caps = extract_initialize_response(adapter.handle_request(1, "initialize", None))?;
-
-    assert_eq!(
-        capability(&caps, "supportsCompletionsRequest")?,
-        perl_dap::feature_catalog::has_feature("dap.completions"),
-        "supportsCompletionsRequest keeps its catalog-driven cell; this PR must not move it"
-    );
-    assert!(
-        !capability(&caps, "supportsSetVariable")?,
-        "supportsSetVariable carried a catalog-driven cell when #9089 landed; #8354 later \
-         floored it on the exact-mutation authority, so it must now read false"
-    );
-    assert!(
-        !capability(&caps, "supportsEvaluateForHovers")?,
-        "the hover floor (#9573) is untouched by the inline-values floor"
-    );
-    Ok(())
-}

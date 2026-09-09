@@ -1795,6 +1795,19 @@ jobs:
       - name: Dependabot GitHub Actions and npm commit-message contract (required merge surface)
         run: cargo test -p xtask --test dependabot_gha_npm_commit_message --locked -- --nocapture
 
+      # #15100: same required-surface reasoning as the contracts above. These
+      # suites assert that every generated-PR CI dispatcher (post-merge-status
+      # today, lane-history after this change) satisfies ci.yml's required
+      # workflow_dispatch subject inputs (#13019) and refuses to prove a moved
+      # subject. No workflow named either target: the post-merge suite sat red
+      # on main unobserved after #13468 changed the dispatch shape, and the
+      # lane-history suite would never run at all.
+      - name: Post-merge generated-PR dispatch contract (required merge surface)
+        run: cargo test -p xtask --test post_merge_status_regen_tests --locked -- --nocapture
+
+      - name: Lane-history generated-PR dispatch contract (required merge surface)
+        run: cargo test -p xtask --test lane_history_ci_dispatch_contract --locked -- --nocapture
+
       # #11933: the freshness cfg-binding test lives in
       # `xtask/tests/gate_policy_profile_tests.rs`. unit_routed_full only
       # executes xtask integration tests when the PR diff selects xtask, and

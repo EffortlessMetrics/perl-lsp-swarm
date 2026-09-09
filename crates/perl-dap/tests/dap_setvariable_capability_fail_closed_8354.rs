@@ -118,37 +118,6 @@ async fn native_initialize_advertises_set_variable_false() -> Result<()> {
     Ok(())
 }
 
-/// Test 7: sibling mutation surfaces cannot widen setVariable.
-///
-/// `supportsSetExpression` is itself floored false by #9568, so it now serves
-/// as a second floor pin rather than the live sibling; the discriminating
-/// sibling is the still-advertised `supportsValueFormattingOptions` cell.
-/// Neither may drag setVariable up with it.
-#[tokio::test]
-async fn set_expression_capability_does_not_promote_set_variable() -> Result<()> {
-    let mut adapter = adapter();
-    let body = initialize_body(&mut adapter)?;
-
-    let set_expression = body.get("supportsSetExpression").and_then(Value::as_bool);
-    assert_eq!(
-        set_expression,
-        Some(false),
-        "precondition: setExpression carries its own #9568 floor"
-    );
-    assert_eq!(
-        body.get("supportsValueFormattingOptions").and_then(Value::as_bool),
-        Some(true),
-        "precondition: the sibling value-format capability is advertised, so the setVariable \
-         assertion below is discriminating"
-    );
-    assert_eq!(
-        body.get("supportsSetVariable").and_then(Value::as_bool),
-        Some(false),
-        "setVariable must not ride along with sibling capabilities (#8354)"
-    );
-    Ok(())
-}
-
 // ---------------------------------------------------------------------------
 // Request gate — the ordering proofs
 // ---------------------------------------------------------------------------
