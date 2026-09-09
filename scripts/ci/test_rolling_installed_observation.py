@@ -21,6 +21,8 @@ SHA = "a" * 40
 OTHER_SHA = "b" * 40
 VSIX_SHA = "c" * 64
 VERSION = "0.17.0"
+DEFAULT_CANDIDATE_ID = f"rolling-{SHA}-test"
+DEFAULT_ARTIFACT_SET_ID = "rolling-test-artifacts"
 
 
 def write_json(path: pathlib.Path, value: object) -> None:
@@ -124,10 +126,10 @@ class ObservationTest(unittest.TestCase):
         smoke_outcome: str | None = None,
         write_verified_child: bool = True,
         verified_child_status: str = "not_proven",
-        candidate_id: str | None = "",
-        artifact_set_id: str | None = "",
-        verified_candidate_id: str | None = "",
-        verified_artifact_set_id: str | None = "",
+        candidate_id: str | None = DEFAULT_CANDIDATE_ID,
+        artifact_set_id: str | None = DEFAULT_ARTIFACT_SET_ID,
+        verified_candidate_id: str | None = DEFAULT_CANDIDATE_ID,
+        verified_artifact_set_id: str | None = DEFAULT_ARTIFACT_SET_ID,
     ) -> dict[str, object]:
         receipts = self.root / f"receipts-{row_id}"
         if receipt is not None:
@@ -182,15 +184,11 @@ class ObservationTest(unittest.TestCase):
                         "schema_version": "verified_child_receipt.v1",
                         "receipt_schema_version": "installed_acceptance.v1",
                         "candidate_id": (
-                            f"rolling-{SHA}-test"
-                            if verified_candidate_id == ""
-                            else verified_candidate_id
+                            verified_candidate_id
                         ),
                         "frozen_product_sha": SHA,
                         "artifact_set_id": (
-                            "rolling-test-artifacts"
-                            if verified_artifact_set_id == ""
-                            else verified_artifact_set_id
+                            verified_artifact_set_id
                         ),
                         "status": verified_child_status,
                         "source_receipt_sha256": MODULE.sha256(source_receipt_path),
@@ -227,7 +225,7 @@ class ObservationTest(unittest.TestCase):
                 "--receipts-root",
                 str(receipts),
                 *(
-                    ["--candidate-id", candidate_id or f"rolling-{SHA}-test", "--artifact-set-id", artifact_set_id or "rolling-test-artifacts"]
+                    ["--candidate-id", candidate_id, "--artifact-set-id", artifact_set_id]
                     if platform == "windows" and candidate_id is not None and artifact_set_id is not None
                     else []
                 ),
@@ -634,19 +632,21 @@ class ObservationTest(unittest.TestCase):
 
     def test_windows_empty_candidate_ids_cannot_match_empty_receipt_identity(self) -> None:
         self.package("windows")
-        self.build_row(
-            receipt=self.windows_receipt({"status": "pass"}, candidate_bound=True),
-            row_id="windows-current",
-            platform="windows",
-            vscode_version="stable",
-            candidate_id="   ",
-            artifact_set_id="\t",
-            verified_candidate_id="   ",
-            verified_artifact_set_id="\t",
-        )
-        row = json.loads((self.root / "windows-current.json").read_text(encoding="utf-8"))
-        self.assertEqual(row["cells"]["packaged_provider_edit_journey"], "not_proven")
-        self.assertTrue(any("non-empty candidate and artifact-set IDs" in finding for finding in row["findings"]))
+        for candidate_id, artifact_set_id in (("", ""), ("   ", "\t")):
+            with self.subTest(candidate_id=repr(candidate_id), artifact_set_id=repr(artifact_set_id)):
+                self.build_row(
+                    receipt=self.windows_receipt({"status": "pass"}, candidate_bound=True),
+                    row_id="windows-current",
+                    platform="windows",
+                    vscode_version="stable",
+                    candidate_id=candidate_id,
+                    artifact_set_id=artifact_set_id,
+                    verified_candidate_id=candidate_id,
+                    verified_artifact_set_id=artifact_set_id,
+                )
+                row = json.loads((self.root / "windows-current.json").read_text(encoding="utf-8"))
+                self.assertEqual(row["cells"]["packaged_provider_edit_journey"], "not_proven")
+                self.assertTrue(any("non-empty candidate and artifact-set IDs" in finding for finding in row["findings"]))
 
     def test_unscanned_post_host_exit_processes_are_not_clean_cleanup(self) -> None:
         # A receipt from before the orchestrator recorded its post-host-exit
