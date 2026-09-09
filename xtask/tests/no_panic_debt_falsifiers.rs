@@ -2381,12 +2381,7 @@ fn dot_component_root_still_scans_outline_child_sites() {
     let temp = tempfile::tempdir().expect("temp");
     write_policy(temp.path());
     write_empty_registry(temp.path());
-    write_package(
-        temp.path(),
-        "demo",
-        "mod foo;\n",
-        &[("known.rs", "#[test]\nfn known() {}\n")],
-    );
+    write_package(temp.path(), "demo", "mod foo;\n", &[("known.rs", "#[test]\nfn known() {}\n")]);
     fs::write(
         temp.path().join("crates/demo/src/foo.rs"),
         r#"
