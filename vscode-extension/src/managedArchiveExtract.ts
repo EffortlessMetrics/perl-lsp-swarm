@@ -26,6 +26,7 @@ const UNIX_S_IFMT = 0xf000;
 const UNIX_S_IFDIR = 0x4000;
 const UNIX_S_IFREG = 0x8000;
 const UNIX_MADE_UNIX = 3;
+const DOS_FILE_ATTRIBUTE_DIRECTORY = 0x10;
 const DOS_FILE_ATTRIBUTE_DEVICE = 0x40;
 const DOS_FILE_ATTRIBUTE_REPARSE_POINT = 0x400;
 
@@ -238,6 +239,9 @@ function classifyZipEntry(
   if ((entry.externalFileAttributes & DOS_FILE_ATTRIBUTE_DEVICE) !== 0) {
     return 'special';
   }
+  if ((entry.externalFileAttributes & DOS_FILE_ATTRIBUTE_DIRECTORY) !== 0) {
+    return 'directory';
+  }
   const mode = zipUnixMode(entry);
   if (mode === null) {
     return 'file';
@@ -340,12 +344,14 @@ async function inspectZip(
   archivePath: string,
   windows: boolean,
   limits: ManagedArchiveSafetyLimits,
+  token: CancellationTokenLike | undefined,
 ): Promise<InspectedArchive> {
   preflightZipMembership(archivePath, limits);
   const zip = await openManagedZip(archivePath);
   const members: InspectedMember[] = [];
   try {
     for await (const entry of zip.eachEntry()) {
+      throwIfCancelled(token, 'Archive extraction cancelled');
       if (members.length >= limits.maxEntries) {
         throw new Error(`archive exceeds ${limits.maxEntries} entries`);
       }
@@ -471,16 +477,22 @@ async function readZipEntryBounded(
   entry: yauzl.Entry,
   remaining: number,
   maxEntryBytes: number,
+  token: CancellationTokenLike | undefined,
 ): Promise<Buffer> {
   if (entry.compressionMethod !== ZIP_STORE && entry.compressionMethod !== ZIP_DEFLATE) {
     throw new Error(
       `unsupported zip compression method ${entry.compressionMethod}: ${entry.fileName}`,
     );
   }
+  throwIfCancelled(token, 'Archive extraction cancelled');
   const stream = await zip.openReadStreamPromise(entry);
   const chunks: Buffer[] = [];
   let total = 0;
   for await (const chunk of stream as AsyncIterable<Buffer | Uint8Array>) {
+    if (token?.isCancellationRequested) {
+      stream.destroy();
+      throw new Error('Archive extraction cancelled');
+    }
     const data = Buffer.from(chunk);
     total += data.length;
     if (total > maxEntryBytes || total > remaining) {
@@ -498,6 +510,7 @@ async function extractZipMembers(
   inspected: InspectedArchive,
   windows: boolean,
   limits: ManagedArchiveSafetyLimits,
+  token: CancellationTokenLike | undefined,
 ): Promise<ExtractedManagedArchive> {
   const zip = await openManagedZip(archivePath);
   let remaining = limits.maxUncompressedBytes;
@@ -505,6 +518,7 @@ async function extractZipMembers(
   let dapPath: string | null = null;
   try {
     for await (const entry of zip.eachEntry()) {
+      throwIfCancelled(token, 'Archive extraction cancelled');
       let destName: string | null = null;
       if (entry.fileName === inspected.server.originalName) {
         destName = installedServerBasename(windows);
@@ -514,7 +528,7 @@ async function extractZipMembers(
       if (destName === null) {
         continue;
       }
-      const data = await readZipEntryBounded(zip, entry, remaining, limits.maxEntryBytes);
+      const data = await readZipEntryBounded(zip, entry, remaining, limits.maxEntryBytes, token);
       const destPath = path.join(extractDir, destName);
       remaining -= writeBoundedBuffer(destPath, data, remaining, limits.maxEntryBytes);
       if (destName === installedServerBasename(windows)) {
@@ -633,13 +647,20 @@ export async function extractManagedArchive(
   try {
     const inspected =
       format === 'zip'
-        ? await inspectZip(archivePath, windows, limits)
+        ? await inspectZip(archivePath, windows, limits, cancellationToken)
         : await inspectTar(archivePath, windows, limits, cancellationToken);
 
     throwIfCancelled(cancellationToken, 'Archive extraction cancelled');
 
     if (format === 'zip') {
-      return await extractZipMembers(archivePath, extractDir, inspected, windows, limits);
+      return await extractZipMembers(
+        archivePath,
+        extractDir,
+        inspected,
+        windows,
+        limits,
+        cancellationToken,
+      );
     }
     return await extractTarMembers(
       archivePath,

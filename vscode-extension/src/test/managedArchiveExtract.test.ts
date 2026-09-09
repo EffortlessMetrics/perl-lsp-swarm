@@ -27,6 +27,21 @@ class TestCancellationToken implements CancellationTokenLike {
   }
 }
 
+class CancelAfterChecksToken implements CancellationTokenLike {
+  private checks = 0;
+
+  constructor(private readonly cancelAt: number) {}
+
+  get isCancellationRequested(): boolean {
+    this.checks += 1;
+    return this.checks >= this.cancelAt;
+  }
+
+  onCancellationRequested(_listener: () => void): DisposableLike {
+    return { dispose: () => {} };
+  }
+}
+
 const TEST_LIMITS: ManagedArchiveSafetyLimits = {
   maxCompressedBytes: 64 * 1024,
   maxUncompressedBytes: 64,
@@ -144,6 +159,17 @@ function storedZip(entries: ReadonlyArray<[string, string]>, uncompressedLies?: 
   end.writeUInt32LE(centralBytes.length, 12);
   end.writeUInt32LE(offset, 16);
   return Buffer.concat([...locals, centralBytes, end]);
+}
+
+function storedZipWithDosAttributes(name: string, contents: string, attributes: number): Buffer {
+  const bytes = storedZip([[name, contents]]);
+  const eocd = bytes.lastIndexOf(Buffer.from([0x50, 0x4b, 0x05, 0x06]));
+  if (eocd < 0) {
+    throw new Error('stored ZIP fixture has no end of central directory');
+  }
+  const centralOffset = bytes.readUInt32LE(eocd + 16);
+  bytes.writeUInt32LE(attributes, centralOffset + 38);
+  return bytes;
 }
 
 function unixSymlinkZip(name: string, target: string): Buffer {
@@ -441,6 +467,21 @@ describe('extractManagedArchive', () => {
     assertOutsideUnchanged();
   });
 
+  test('rejects a DOS directory-bit executable member without a trailing slash', async () => {
+    const archivePath = path.join(tmpDir, 'dos-directory.zip');
+    fs.writeFileSync(archivePath, storedZipWithDosAttributes('perllsp.exe', '', 0x10));
+    await expect(
+      extractManagedArchive({
+        archivePath,
+        extractDir,
+        format: 'zip',
+        windows: true,
+        limits: { ...TEST_LIMITS, maxUncompressedBytes: 1024, maxEntries: 8 },
+      }),
+    ).rejects.toThrow('Binary not found in archive');
+    assertOutsideUnchanged();
+  });
+
   test('rejects tar symlinks and hardlinks that point outside the extraction root', async () => {
     const symlinkArchive = path.join(tmpDir, 'sym.tar.gz');
     writeTarGz(symlinkArchive, [
@@ -602,6 +643,23 @@ describe('extractManagedArchive', () => {
         format: 'tar.gz',
         windows: false,
         limits: { ...TEST_LIMITS, maxUncompressedBytes: 1024, maxEntryBytes: 256, maxEntries: 8 },
+        cancellationToken: token,
+      }),
+    ).rejects.toThrow('Archive extraction cancelled');
+    assertOutsideUnchanged();
+  });
+
+  test('cancels after ZIP streaming begins and destroys the extraction tree', async () => {
+    const archivePath = path.join(tmpDir, 'cancelled.zip');
+    fs.writeFileSync(archivePath, storedZip([['perllsp.exe', 'x'.repeat(256 * 1024)]]));
+    const token = new CancelAfterChecksToken(7);
+    await expect(
+      extractManagedArchive({
+        archivePath,
+        extractDir,
+        format: 'zip',
+        windows: true,
+        limits: { ...TEST_LIMITS, maxUncompressedBytes: 512 * 1024, maxEntryBytes: 512 * 1024 },
         cancellationToken: token,
       }),
     ).rejects.toThrow('Archive extraction cancelled');
