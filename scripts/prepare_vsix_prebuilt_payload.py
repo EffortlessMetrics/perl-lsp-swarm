@@ -7,6 +7,8 @@ import argparse
 import json
 import subprocess
 import sys
+import tempfile
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -61,6 +63,12 @@ def build(args: argparse.Namespace) -> None:
     projection = load_json_object(args.projection, "VSIX projection input")
     if projection.get("releaseTopologySha256") != identity.get("release_topology_digest"):
         raise ValueError("VSIX projection topology digest differs from build receipt")
+    topology_row = next((item for item in topology["binary_targets"] if item.get("target") == args.target), None)
+    projection_row = next((item for item in projection.get("targets", []) if item.get("target") == args.target), None)
+    if not isinstance(topology_row, dict) or not isinstance(projection_row, dict):
+        raise ValueError("topology and projection omit the requested target")
+    if projection_row.get("archiveName") != topology_row.get("archive_name") or projection_row.get("requiredMembers") != topology_row.get("required_members"):
+        raise ValueError("projection target row differs from validated release topology")
     evidence_rows = {item["executable"]: item for item in evidence["binaries"]}
     payloads: list[dict[str, str]] = []
     for executable in ("perllsp", "perl-dap"):
@@ -92,27 +100,37 @@ def build(args: argparse.Namespace) -> None:
         if not native:
             raise ValueError(f"projection omitted required {payload['executable']}")
         payload["member"] = native["member"]
-    output = args.output.resolve()
-    target_dir = output / "bin" / vscode_target
-    target_dir.mkdir(parents=True, exist_ok=True)
+    output = args.output
+    if output.exists() and (output.is_symlink() or not output.is_dir()):
+        raise ValueError("output must be a real directory")
+    output.mkdir(parents=True, exist_ok=True)
+    temp_root = Path(tempfile.mkdtemp(prefix=".prebuilt-payload-", dir=output.parent))
+    target_dir = temp_root / "bin" / vscode_target
+    target_dir.mkdir(parents=True)
     created: list[Path] = []
     try:
         for payload in payloads:
             destination = target_dir / payload["member"]
-            if destination.exists() or destination.is_symlink():
-                raise ValueError(f"refusing to overwrite existing payload: {destination}")
             if copy_selected_member(archive, payload["source_member"], destination) != payload["sha256"]:
                 raise ValueError(f"archive member changed while staging {payload['executable']}")
+        staged_manifest = temp_root / "vsix-candidate-payload.json"
+        staged_manifest.write_bytes(canonical(manifest))
+        final_files = [(temp_root / "bin" / vscode_target / p["member"], output / "bin" / vscode_target / p["member"]) for p in payloads]
+        final_files.append((staged_manifest, output / "vsix-candidate-payload.json"))
+        for _, destination in final_files:
+            if destination.exists() or destination.is_symlink():
+                raise ValueError(f"refusing to overwrite existing output: {destination}")
+        (output / "bin" / vscode_target).mkdir(parents=True, exist_ok=True)
+        for source, destination in final_files:
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            source.replace(destination)
             created.append(destination)
-        manifest_path = output / "vsix-candidate-payload.json"
-        if manifest_path.exists() or manifest_path.is_symlink():
-            raise ValueError(f"refusing to overwrite existing manifest: {manifest_path}")
-        manifest_path.write_bytes(canonical(manifest))
-        created.append(manifest_path)
     except Exception:
         for path in reversed(created):
             path.unlink(missing_ok=True)
         raise
+    finally:
+        shutil.rmtree(temp_root, ignore_errors=True)
 
 
 def main() -> int:
