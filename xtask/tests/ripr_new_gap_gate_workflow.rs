@@ -1238,6 +1238,29 @@ fn ripr_workflow_runs_on_ready_for_review_without_path_filter()
         workflow.contains("cargo xtask ripr-pr --base") && workflow.contains("target/ripr/pr/**"),
         "ripr.yml must produce and upload diff-scoped RIPR PR receipts"
     );
+    let hosted_producer = workflow_run_block("ripr-github", "Generate PR evidence")?;
+    assert!(
+        hosted_producer.contains("docker run --rm")
+            && hosted_producer.contains("--memory=6g")
+            && hosted_producer.contains("--memory-swap=6g")
+            && hosted_producer.contains("timeout --signal=TERM --kill-after=30s 65m")
+            && hosted_producer.contains("timeout --signal=TERM --kill-after=30s 55m")
+            && hosted_producer.contains("-e RIPR_MAX_DIFF_INDEX_FILES=1000")
+            && hosted_producer.contains("-e RIPR_FRESHNESS_HANDOFF=/freshness")
+            && hosted_producer.contains("-v \"$RIPR_FRESHNESS_HANDOFF:/freshness\"")
+            && hosted_producer.contains("-e HOST_UID=\"$(id -u)\"")
+            && hosted_producer.contains("chown -R \"$HOST_UID:$HOST_GID\" target")
+            && hosted_producer.contains(
+                "cargo xtask ripr-pr --base \"$base_arg\" --head HEAD --pr-head \"$PR_HEAD_SHA\""
+            ),
+        "normal GitHub-hosted RIPR production must use the bounded Docker producer"
+    );
+    assert!(
+        !workflow.contains("ripr_hosted_measurement")
+            && !workflow.contains("measurement_head_sha")
+            && !workflow.contains("ripr-hosted-measurement"),
+        "capacity measurement must be part of the normal hosted producer, not a duplicate manual job"
+    );
     assert!(
         workflow.contains("PR_HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || '' }}")
             && workflow.matches("--pr-head \"$PR_HEAD_SHA\"").count() >= 8,

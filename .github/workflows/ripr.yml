@@ -817,17 +817,76 @@ jobs:
           # Analysis jobs restore the canonical seed but never publish shared state.
           save-if: ${{ false }}
 
-      - name: Install ripr
-        run: cargo install ripr --version "$RIPR_VERSION" --locked
-
       - name: Build xtask
         run: cargo build -p xtask --locked
 
-      - name: Run ripr doctor
-        run: ripr doctor
-
       - name: Generate PR evidence
-        run: cargo xtask ripr-pr --base "origin/$BASE_REF" --head HEAD --pr-head "$PR_HEAD_SHA"
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf target/ripr/pr
+          mkdir -p target/ripr/pr
+          printf "runner=github-hosted\njob_phase=host-start\n" > target/ripr/pr/ripr-measurement-config.txt
+          image='rust:1.95-slim-bookworm'
+          set +e
+          timeout --signal=TERM --kill-after=10s 3m docker pull "$image"
+          pull_status=$?
+          set -e
+          printf "pull_exit=%s\n" "$pull_status" >> target/ripr/pr/ripr-measurement-config.txt
+          if [ "$pull_status" -ne 0 ]; then exit "$pull_status"; fi
+          set +e
+          image_id="$(timeout --signal=TERM --kill-after=5s 15s docker image inspect --format '{{.Id}}' "$image")"
+          inspect_id_status=$?
+          image_digest="$(timeout --signal=TERM --kill-after=5s 15s docker image inspect --format '{{index .RepoDigests 0}}' "$image")"
+          inspect_digest_status=$?
+          set -e
+          printf "inspect_id_exit=%s\ninspect_digest_exit=%s\n" "$inspect_id_status" "$inspect_digest_status" >> target/ripr/pr/ripr-measurement-config.txt
+          if [ "$inspect_id_status" -ne 0 ] || [ "$inspect_digest_status" -ne 0 ]; then exit 1; fi
+          printf "image_id=%s\nimage_digest=%s\n" "$image_id" "$image_digest" >> target/ripr/pr/ripr-measurement-config.txt
+          set +e
+          timeout --signal=TERM --kill-after=30s 65m docker run --rm \
+            --cpus=4 --memory=6g --memory-swap=6g \
+            -e RIPR_VERSION -e BASE_REF -e PR_HEAD_SHA \
+            -e RIPR_MAX_DIFF_INDEX_FILES=1000 \
+            -e RIPR_FRESHNESS_HANDOFF=/freshness -e RIPR_FRESHNESS_TOKEN \
+            -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
+            -e MEASUREMENT_IMAGE_ID="$image_id" -e MEASUREMENT_IMAGE_DIGEST="$image_digest" \
+            -v "$GITHUB_WORKSPACE:/workspace" -v "$RIPR_FRESHNESS_HANDOFF:/freshness" \
+            -w /workspace "$image_id" bash -euo pipefail -c '
+              apt-get update
+              DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends build-essential pkg-config libssl-dev git curl jq time
+              git config --global --add safe.directory /workspace
+              mkdir -p target/ripr/pr
+              printf "job_phase=container-tools-start\n" >> target/ripr/pr/ripr-measurement-config.txt
+              base_arg="origin/$BASE_REF"
+              test -n "$PR_HEAD_SHA"
+              cargo install ripr --version "$RIPR_VERSION" --locked
+              rustc_version="$(rustc --version)"; cargo_version="$(cargo --version)"
+              ripr_version="$(ripr --version)"; ripr_path="$(command -v ripr)"
+              ripr_sha256="$(sha256sum "$ripr_path" | cut -d " " -f 1)"
+              {
+                printf "docker_memory=6g\ndocker_memory_swap=6g\nsource_head_sha=%s\nsource_base_ref=%s\n" "$(git rev-parse HEAD)" "$base_arg"
+                printf "head=%s\nbase=%s\nripr_version=%s\nripr_sha256=%s\nindex_limit=%s\n" "$(git rev-parse HEAD)" "$base_arg" "$ripr_version" "$ripr_sha256" "$RIPR_MAX_DIFF_INDEX_FILES"
+                printf "%s\n%s\n" "$rustc_version" "$cargo_version"
+              } >> target/ripr/pr/ripr-measurement-config.txt
+              cargo build -p xtask --locked
+              ripr doctor
+              set +e
+              timeout --signal=TERM --kill-after=30s 55m /usr/bin/time -v -o target/ripr/pr/ripr-measurement-time.txt cargo xtask ripr-pr --base "$base_arg" --head HEAD --pr-head "$PR_HEAD_SHA"
+              analysis_status=$?
+              set -e
+              printf "analysis_exit=%s\n" "$analysis_status" >> target/ripr/pr/ripr-measurement-config.txt
+              if [ "$analysis_status" -ne 0 ]; then exit "$analysis_status"; fi
+              test -s target/ripr/pr/repo-exposure.json
+              cargo xtask ripr-pr --base "$base_arg" --head HEAD --pr-head "$PR_HEAD_SHA" --check
+              marker="$RIPR_FRESHNESS_HANDOFF/clear-succeeded"
+              test -f "$marker" && test "$(cat "$marker")" = "$RIPR_FRESHNESS_TOKEN"
+              chown -R "$HOST_UID:$HOST_GID" target
+            '
+          container_status=$?
+          set -e
+          printf "container_exit=%s\n" "$container_status" >> target/ripr/pr/ripr-measurement-config.txt
+          exit "$container_status"
 
       - name: Generate repo-wide RIPR+ baseline receipt
         if: always()
