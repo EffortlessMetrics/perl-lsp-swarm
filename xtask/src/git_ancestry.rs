@@ -539,6 +539,19 @@ fn normalize_git_path(repository: &Path, value: &str) -> String {
 }
 
 fn partial_clone_observation(repository: &Path) -> Result<bool, String> {
+    // `extensions.partialClone` is the canonical marker: it names the promisor
+    // remote for this repository. A repository can carry it without any
+    // `remote.<name>.promisor` key (legacy or hand-written config), and
+    // treating such a repository as complete could turn omitted history into
+    // false non-ancestry verdicts. Any successfully read value marks the
+    // repository partial; a failed observation fails closed below.
+    let extension = run_git(repository, &["config", "--get", "extensions.partialclone"])?;
+    if extension.succeeded() {
+        return Ok(true);
+    }
+    if !extension.no_match() {
+        return Err(format!("partial-clone extension probe failed: {}", extension.diagnostic()));
+    }
     // No `--local`: promisor configuration can also live in worktree-specific
     // config when `extensions.worktreeConfig` is enabled, and missing it would
     // let a partial clone be misclassified as complete.
@@ -821,6 +834,40 @@ mod tests {
         assert_eq!(receipt.disposition, AncestryDisposition::NotProvenPartialClone);
         assert_eq!(receipt.is_partial_clone, Some(true));
         assert!(receipt.reason.contains("not proof of unrelated history"));
+        Ok(())
+    }
+
+    #[test]
+    fn partial_clone_extension_keeps_unprovable_relation_not_proven() -> Result<()> {
+        // Devin review, PR #15171: extensions.partialClone is the canonical
+        // partial-clone marker and must guard even without any promisor key.
+        let repository = initialized_repository()?;
+        git(&repository, &["config", "extensions.partialClone", "origin"])?;
+
+        let receipt = classify_ancestry(
+            repository.path(),
+            "1111111111111111111111111111111111111111",
+            "HEAD",
+        );
+
+        assert_eq!(receipt.disposition, AncestryDisposition::NotProvenPartialClone);
+        assert_eq!(receipt.is_partial_clone, Some(true));
+        Ok(())
+    }
+
+    #[test]
+    fn partial_clone_extension_guards_orphan_relation() -> Result<()> {
+        // Without the marker this pair classifies as unrelated; the marker
+        // must turn the absence proof into not_proven_partial_clone.
+        let repository = initialized_repository()?;
+        let base = git(&repository, &["rev-parse", "HEAD"])?;
+        git(&repository, &["switch", "--orphan", "orphan"])?;
+        commit_file(&repository, "orphan.txt", "orphan\n", "orphan")?;
+        git(&repository, &["config", "extensions.partialClone", "origin"])?;
+
+        let receipt = classify_ancestry(repository.path(), &base, "HEAD");
+
+        assert_eq!(receipt.disposition, AncestryDisposition::NotProvenPartialClone);
         Ok(())
     }
 
