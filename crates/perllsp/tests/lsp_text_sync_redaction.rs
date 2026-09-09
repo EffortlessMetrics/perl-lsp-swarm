@@ -80,6 +80,10 @@ fn malformed_did_change_stderr_is_payload_free_over_stdio() -> Result<()> {
     shutdown(&mut client)?;
 
     let stderr = client.stderr_tail();
+    ensure!(
+        !stderr.contains("[stderr truncated to last"),
+        "stderr capture was truncated; canary absence is inconclusive: {stderr}"
+    );
     ensure!(!stderr.contains(text_canary), "stderr leaked document text: {stderr}");
     ensure!(!stderr.contains(range_canary), "stderr leaked malformed range: {stderr}");
     ensure!(stderr.contains("change_index=0"), "stderr lost change index: {stderr}");
