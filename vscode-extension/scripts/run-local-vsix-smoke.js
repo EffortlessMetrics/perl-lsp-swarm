@@ -188,8 +188,10 @@ function candidateManifestConstructionRequested(env = process.env) {
 }
 
 function requireCandidateManifestConstructionInputs(env, revision) {
-  if (typeof env.PERL_LSP_CANDIDATE_ARTIFACT_MANIFEST === 'string' &&
-      env.PERL_LSP_CANDIDATE_ARTIFACT_MANIFEST.trim()) {
+  if (
+    typeof env.PERL_LSP_CANDIDATE_ARTIFACT_MANIFEST === 'string' &&
+    env.PERL_LSP_CANDIDATE_ARTIFACT_MANIFEST.trim()
+  ) {
     throw new Error(
       'candidate manifest construction cannot be combined with a supplied artifact manifest',
     );
@@ -219,7 +221,13 @@ function requireCandidateManifestConstructionInputs(env, revision) {
   };
 }
 
-function constructCandidateArtifactManifest(env, revision, platform, vsixSha256, bundledServerSha256) {
+function constructCandidateArtifactManifest(
+  env,
+  revision,
+  platform,
+  vsixSha256,
+  bundledServerSha256,
+) {
   if (!candidateManifestConstructionRequested(env)) {
     return undefined;
   }
@@ -875,8 +883,8 @@ function validateChildSmokeReceipt({
   if (receipt.outcome !== 'completed') {
     violations.push(
       `first-hour receipt outcome is ${JSON.stringify(receipt.outcome)}, not completed`,
-  );
-}
+    );
+  }
 
   if (!Array.isArray(receipt.failures) || receipt.failures.length > 0) {
     violations.push('first-hour receipt reported failures');
@@ -994,7 +1002,8 @@ function validateVerifiedCandidateReceipt({
         `packaged source receipt could not be read: ${error instanceof Error ? error.message : String(error)}`,
       );
     }
-    const expectedBundleMarker = expectedPlatform === 'windows' ? 'win32-x64' : `${expectedPlatform}-x64`;
+    const expectedBundleMarker =
+      expectedPlatform === 'windows' ? 'win32-x64' : `${expectedPlatform}-x64`;
     const sourceStartup = sourceReceipt?.startup;
     const sourceIdentity = sourceReceipt?.server_identity;
     const sourceRequests = sourceReceipt?.requests;
@@ -1019,7 +1028,9 @@ function validateVerifiedCandidateReceipt({
       providerKeys.some((key) => sourceRequests.immediate[key]?.status !== 'ok') ||
       sourceReceipt.shutdown !== 'stopped'
     ) {
-      violations.push('packaged source receipt does not prove the bounded packaged startup/provider/edit journey');
+      violations.push(
+        'packaged source receipt does not prove the bounded packaged startup/provider/edit journey',
+      );
     }
     return violations.length > 0
       ? { ok: false, violations }
@@ -2966,28 +2977,30 @@ function main() {
             receiptsRoot: receiptsRoot(),
           });
         } else if (smokeResult.status === 0) {
-          const childReceipt = constructedManifest !== undefined
-            ? validateVerifiedCandidateReceipt({
-      receiptFile: verifiedCandidateReceiptPath(),
-      env: smokeEnv,
-      expectedVsixSha256: receipt.vsix.sha256,
-      expectedBundledServerSha256: sha256File(serverPath),
-      sourceReceiptFile: path.join(
-        path.dirname(verifiedCandidateReceiptPath()),
-        'packaged_bundle_journey_receipt.json',
-      ),
-      expectedPlatform: process.platform === 'win32' ? 'windows' : process.platform,
-    })
-            : validateChildSmokeReceipt({
-                receiptFile: childReceiptFile,
-                expectedRevision: revision,
-                expectedVsixSha256: receipt.vsix.sha256,
-                expectedServerSourceSha: serverSourceRevision,
-                // Mirror the child's own default so an unset matrix version is not
-                // reported as an identity mismatch.
-                expectedVscodeVersion: (process.env.PERL_LSP_VSCODE_VERSION || '').trim() || 'stable',
-                expectedSourceLabel: receipt.source_label,
-              });
+          const childReceipt =
+            constructedManifest !== undefined
+              ? validateVerifiedCandidateReceipt({
+                  receiptFile: verifiedCandidateReceiptPath(),
+                  env: smokeEnv,
+                  expectedVsixSha256: receipt.vsix.sha256,
+                  expectedBundledServerSha256: sha256File(serverPath),
+                  sourceReceiptFile: path.join(
+                    path.dirname(verifiedCandidateReceiptPath()),
+                    'packaged_bundle_journey_receipt.json',
+                  ),
+                  expectedPlatform: process.platform === 'win32' ? 'windows' : process.platform,
+                })
+              : validateChildSmokeReceipt({
+                  receiptFile: childReceiptFile,
+                  expectedRevision: revision,
+                  expectedVsixSha256: receipt.vsix.sha256,
+                  expectedServerSourceSha: serverSourceRevision,
+                  // Mirror the child's own default so an unset matrix version is not
+                  // reported as an identity mismatch.
+                  expectedVscodeVersion:
+                    (process.env.PERL_LSP_VSCODE_VERSION || '').trim() || 'stable',
+                  expectedSourceLabel: receipt.source_label,
+                });
           receipt.stages.behavioral_smoke = childReceipt.ok
             ? {
                 status: 'pass',

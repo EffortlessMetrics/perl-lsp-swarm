@@ -40,33 +40,36 @@ void test('verified packaged child receipt binds candidate and both observed art
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-verified-child-'));
   const receiptFile = path.join(directory, 'verified_child_receipt.json');
   const sourceReceiptFile = path.join(directory, 'packaged_bundle_journey_receipt.json');
-  fs.writeFileSync(sourceReceiptFile, JSON.stringify({
-    repository_sha: 'a'.repeat(40),
-    vscode_version: '1.125.0',
-    outcome: 'not_proven',
-    product_blockers: [],
-    server_identity: {
-      path: 'C:/extension/bin/win32-x64/perllsp.exe',
-      source: 'packaged_vsix_bundle',
-      startup_source: 'bundled',
-    },
-    startup: {
-      lifecycle_state: 'running',
-      binary_resolution_status: 'ok',
-      server_start_status: 'ok',
-      initialize_status: 'ok',
-    },
-    requests: {
-      immediate: Object.fromEntries(
-        ['completion', 'hover', 'definition', 'references', 'symbols'].map((key) => [
-          key,
-          { status: 'ok' },
-        ]),
-      ),
-      after_edit: { status: 'ok', immediate_requery: { status: 'ok' } },
-    },
-    shutdown: 'stopped',
-  }));
+  fs.writeFileSync(
+    sourceReceiptFile,
+    JSON.stringify({
+      repository_sha: 'a'.repeat(40),
+      vscode_version: '1.125.0',
+      outcome: 'not_proven',
+      product_blockers: [],
+      server_identity: {
+        path: 'C:/extension/bin/win32-x64/perllsp.exe',
+        source: 'packaged_vsix_bundle',
+        startup_source: 'bundled',
+      },
+      startup: {
+        lifecycle_state: 'running',
+        binary_resolution_status: 'ok',
+        server_start_status: 'ok',
+        initialize_status: 'ok',
+      },
+      requests: {
+        immediate: Object.fromEntries(
+          ['completion', 'hover', 'definition', 'references', 'symbols'].map((key) => [
+            key,
+            { status: 'ok' },
+          ]),
+        ),
+        after_edit: { status: 'ok', immediate_requery: { status: 'ok' } },
+      },
+      shutdown: 'stopped',
+    }),
+  );
   fs.writeFileSync(
     receiptFile,
     JSON.stringify({
@@ -76,7 +79,10 @@ void test('verified packaged child receipt binds candidate and both observed art
       frozen_product_sha: 'a'.repeat(40),
       artifact_set_id: 'set-1',
       status: 'not_proven',
-      source_receipt_sha256: crypto.createHash('sha256').update(fs.readFileSync(sourceReceiptFile)).digest('hex'),
+      source_receipt_sha256: crypto
+        .createHash('sha256')
+        .update(fs.readFileSync(sourceReceiptFile))
+        .digest('hex'),
       artifact_hashes: {
         vsix_sha256: 'b'.repeat(64),
         bundled_server_sha256: 'c'.repeat(64),
@@ -104,34 +110,40 @@ void test('verified packaged child receipt rejects stale source, identity, and a
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-verified-child-negative-'));
   const receiptFile = path.join(directory, 'verified_child_receipt.json');
   const sourceReceiptFile = path.join(directory, 'packaged_bundle_journey_receipt.json');
-  fs.writeFileSync(sourceReceiptFile, JSON.stringify({
-    repository_sha: 'a'.repeat(40),
-    vscode_version: '1.125.0',
-    outcome: 'not_proven',
-    product_blockers: [],
-    server_identity: {
-      path: 'C:/extension/bin/win32-x64/perllsp.exe',
-      source: 'packaged_vsix_bundle',
-      startup_source: 'bundled',
-    },
-    startup: {
-      lifecycle_state: 'running',
-      binary_resolution_status: 'ok',
-      server_start_status: 'ok',
-      initialize_status: 'ok',
-    },
-    requests: {
-      immediate: Object.fromEntries(
-        ['completion', 'hover', 'definition', 'references', 'symbols'].map((key) => [
-          key,
-          { status: 'ok' },
-        ]),
-      ),
-      after_edit: { status: 'ok', immediate_requery: { status: 'ok' } },
-    },
-    shutdown: 'stopped',
-  }));
-  const sourceDigest = crypto.createHash('sha256').update(fs.readFileSync(sourceReceiptFile)).digest('hex');
+  fs.writeFileSync(
+    sourceReceiptFile,
+    JSON.stringify({
+      repository_sha: 'a'.repeat(40),
+      vscode_version: '1.125.0',
+      outcome: 'not_proven',
+      product_blockers: [],
+      server_identity: {
+        path: 'C:/extension/bin/win32-x64/perllsp.exe',
+        source: 'packaged_vsix_bundle',
+        startup_source: 'bundled',
+      },
+      startup: {
+        lifecycle_state: 'running',
+        binary_resolution_status: 'ok',
+        server_start_status: 'ok',
+        initialize_status: 'ok',
+      },
+      requests: {
+        immediate: Object.fromEntries(
+          ['completion', 'hover', 'definition', 'references', 'symbols'].map((key) => [
+            key,
+            { status: 'ok' },
+          ]),
+        ),
+        after_edit: { status: 'ok', immediate_requery: { status: 'ok' } },
+      },
+      shutdown: 'stopped',
+    }),
+  );
+  const sourceDigest = crypto
+    .createHash('sha256')
+    .update(fs.readFileSync(sourceReceiptFile))
+    .digest('hex');
   const base = {
     schema_version: 'verified_child_receipt.v1',
     receipt_schema_version: 'installed_acceptance.v1',
@@ -162,7 +174,10 @@ void test('verified packaged child receipt rejects stale source, identity, and a
   };
   assert.equal(validate({ source_receipt_sha256: 'd'.repeat(64) }).ok, false);
   assert.equal(validate({ candidate_id: 'candidate-other' }).ok, false);
-  assert.equal(validate({ artifact_hashes: { ...base.artifact_hashes, vsix_sha256: 'd'.repeat(64) } }).ok, false);
+  assert.equal(
+    validate({ artifact_hashes: { ...base.artifact_hashes, vsix_sha256: 'd'.repeat(64) } }).ok,
+    false,
+  );
   assert.equal(validate({ status: undefined }).ok, false);
   assert.equal(validate({ status: 'unexpected' }).ok, false);
   assert.equal(validate({ status: [] }).ok, false);
@@ -170,13 +185,19 @@ void test('verified packaged child receipt rejects stale source, identity, and a
   failedSource.outcome = 'failed';
   failedSource.product_blockers = [{ label: 'provider', result: { status: 'error' } }];
   fs.writeFileSync(sourceReceiptFile, JSON.stringify(failedSource));
-  const failedSourceDigest = crypto.createHash('sha256').update(fs.readFileSync(sourceReceiptFile)).digest('hex');
+  const failedSourceDigest = crypto
+    .createHash('sha256')
+    .update(fs.readFileSync(sourceReceiptFile))
+    .digest('hex');
   assert.equal(validate({ source_receipt_sha256: failedSourceDigest }).ok, false);
   failedSource.outcome = 'not_proven';
   failedSource.product_blockers = [];
   failedSource.requests.immediate = {};
   fs.writeFileSync(sourceReceiptFile, JSON.stringify(failedSource));
-  const emptyProviderDigest = crypto.createHash('sha256').update(fs.readFileSync(sourceReceiptFile)).digest('hex');
+  const emptyProviderDigest = crypto
+    .createHash('sha256')
+    .update(fs.readFileSync(sourceReceiptFile))
+    .digest('hex');
   assert.equal(validate({ source_receipt_sha256: emptyProviderDigest }).ok, false);
   fs.rmSync(directory, { recursive: true, force: true });
 });
@@ -209,23 +230,25 @@ void test('candidate construction binds hashes and rejects partial or supplied i
     },
   );
   assert.throws(
-    () => constructCandidateArtifactManifest(
-      { ...env, PERL_LSP_ARTIFACT_SET_ID: undefined },
-      'a'.repeat(40),
-      'windows',
-      'b'.repeat(64),
-      'c'.repeat(64),
-    ),
+    () =>
+      constructCandidateArtifactManifest(
+        { ...env, PERL_LSP_ARTIFACT_SET_ID: undefined },
+        'a'.repeat(40),
+        'windows',
+        'b'.repeat(64),
+        'c'.repeat(64),
+      ),
     /missing artifactSetId/,
   );
   assert.throws(
-    () => constructCandidateArtifactManifest(
-      { ...env, PERL_LSP_CANDIDATE_ARTIFACT_MANIFEST: '{}'},
-      'a'.repeat(40),
-      'windows',
-      'b'.repeat(64),
-      'c'.repeat(64),
-    ),
+    () =>
+      constructCandidateArtifactManifest(
+        { ...env, PERL_LSP_CANDIDATE_ARTIFACT_MANIFEST: '{}' },
+        'a'.repeat(40),
+        'windows',
+        'b'.repeat(64),
+        'c'.repeat(64),
+      ),
     /cannot be combined/,
   );
 });
