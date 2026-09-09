@@ -3481,7 +3481,7 @@ mod tests {
         struct FailingReader;
         impl Read for FailingReader {
             fn read(&mut self, _buffer: &mut [u8]) -> std::io::Result<usize> {
-                Err(std::io::Error::new(std::io::ErrorKind::Other, ReadSentinel))
+                Err(std::io::Error::other(ReadSentinel))
             }
         }
 
