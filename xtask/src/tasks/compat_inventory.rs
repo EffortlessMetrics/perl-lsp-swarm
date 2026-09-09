@@ -2615,6 +2615,22 @@ mod tests {
         Ok(())
     }
 
+    /// Retention control for #15076: retiring a stale consumer from the
+    /// checked-in ledger must not silence the rule that a row with no tracked
+    /// package mention is refused.
+    #[test]
+    fn a_stale_consumer_row_fails_closed() -> TestResult {
+        let path = "docs/policy/NON_RUST_INVENTORY.md";
+        let l = ledger(vec![], vec![consumer(path, ReferenceKind::Documentation)]);
+        let d = discovered(vec![], vec![]);
+
+        let err =
+            validate_err(&l, &d, "stale consumer row with no tracked package reference must fail");
+        assert!(err.contains("remove the stale row"), "unexpected error: {err}");
+        assert!(err.contains(path), "error must name the stale path: {err}");
+        Ok(())
+    }
+
     #[test]
     fn an_unknown_row_without_an_owner_fails_closed() -> TestResult {
         let mut row = symbol("parse_to_tree", Disposition::UnknownBlocking);

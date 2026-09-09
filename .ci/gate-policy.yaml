@@ -1580,6 +1580,7 @@ gates:
       cargo xtask check-semantic-token-classes &&
       cargo xtask check-workspace-symbol-classes &&
       cargo xtask check-provider-promotion-ledger &&
+      cargo xtask check-code-action-generation-ledger &&
       cargo xtask check-provider-confidence-matrix &&
       cargo xtask check-native-product-surface --strict &&
       bash scripts/check-version-sync.sh &&

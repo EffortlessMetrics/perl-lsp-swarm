@@ -919,7 +919,10 @@ fn token_advance_seam_is_unique() {
 /// #7074, and the terminal fallback shell).
 #[test]
 fn node_construction_seam_is_unique() {
-    assert_every_raw_use_is_annotated("Node::new(", 5);
+    // 6 = the charging seam plus five annotated exemptions; the sixth is
+    // #14174's truncated-arrow recovery node (synthetic recovery shell,
+    // #7074's accounting dimension, not admitted parse work).
+    assert_every_raw_use_is_annotated("Node::new(", 6);
 }
 
 /// No production parser code may retain a diagnostic directly, except the
