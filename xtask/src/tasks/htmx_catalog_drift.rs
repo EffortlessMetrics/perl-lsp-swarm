@@ -452,6 +452,8 @@ enum InertRegion {
     RawHtml { closing: bool, invalid: bool },
     /// A raw HTML block this small scanner does not model.
     UnsupportedRawHtml,
+    /// An inline-code span whose delimiter may continue across a line break.
+    UnsupportedInlineCode,
 }
 
 /// Inert-region state for one pass over the document.
@@ -461,11 +463,14 @@ enum InertRegion {
 /// earlier silent defects arose, so the rule lives here once.
 struct InertScanner {
     inside: Option<InertRegion>,
+    // A literal run stays harmless at a paragraph boundary. Before that
+    // boundary, a later matching run or comment marker makes it ambiguous.
+    pending_inline_run: Option<usize>,
 }
 
 impl InertScanner {
     fn new() -> Self {
-        Self { inside: None }
+        Self { inside: None, pending_inline_run: None }
     }
 
     /// The ATX depth of a heading-shaped line currently inside an HTML
@@ -491,6 +496,16 @@ impl InertScanner {
     /// commented span would invent one.
     fn content<'line>(&mut self, line: &'line str) -> Option<Cow<'line, str>> {
         let trimmed_line = line.trim_start();
+        if trimmed_line.is_empty() {
+            self.pending_inline_run = None;
+        } else if let Some(run) = self.pending_inline_run {
+            let closes =
+                line.as_bytes().split(|byte| *byte != b'`').any(|ticks| ticks.len() == run);
+            if closes || line.contains("<!--") || line.contains("-->") {
+                self.inside = Some(InertRegion::UnsupportedInlineCode);
+                return None;
+            }
+        }
 
         match self.inside {
             // Only the fence's own close ends it. An info-string line such as
@@ -536,7 +551,9 @@ impl InertScanner {
                 }
                 None
             }
-            Some(InertRegion::UnsupportedRawHtml) => None,
+            Some(InertRegion::UnsupportedRawHtml) | Some(InertRegion::UnsupportedInlineCode) => {
+                None
+            }
             // An indented code block is sample text with no delimiter to look
             // for. Reading it as document structure lets an indented heading
             // end the section early, dropping every row below it into a clean
@@ -610,11 +627,13 @@ impl InertScanner {
     /// Both delimiters and the backtick are ASCII, so every byte offset here is
     /// a character boundary and the slicing cannot split a code point.
     fn strip_commented_spans<'line>(&mut self, line: &'line str) -> Cow<'line, str> {
-        if !matches!(self.inside, Some(InertRegion::Comment)) && !line.contains("<!--") {
+        if !matches!(self.inside, Some(InertRegion::Comment))
+            && !line.contains("<!--")
+            && !line.contains('`')
+        {
             return Cow::Borrowed(line);
         }
 
-        let spans = code_span_ranges(line);
         let mut visible = String::new();
         let mut cursor = 0;
         loop {
@@ -626,19 +645,38 @@ impl InertScanner {
                     }
                     None => return Cow::Owned(visible),
                 },
-                None => match next_comment_opener(line, cursor, &spans) {
-                    Some(at) => {
-                        visible.push_str(&line[cursor..at]);
-                        self.inside = Some(InertRegion::Comment);
-                        cursor = at + "<!--".len();
+                None => {
+                    // Rescan only visible text after a comment closes: ticks
+                    // inside that comment cannot delimit a later code span.
+                    let remaining = &line[cursor..];
+                    let scan = scan_code_spans(remaining);
+                    let comment = next_comment_opener(remaining, 0, &scan.ranges);
+                    if let Some(at) =
+                        scan.unmatched_at.filter(|at| comment.is_none_or(|start| *at < start))
+                    {
+                        if comment.is_some() || remaining.contains("-->") {
+                            self.inside = Some(InertRegion::UnsupportedInlineCode);
+                            return Cow::Owned(visible);
+                        }
+                        self.pending_inline_run =
+                            Some(remaining[at..].bytes().take_while(|byte| *byte == b'`').count());
                     }
-                    None => {
-                        visible.push_str(&line[cursor..]);
-                        return Cow::Owned(visible);
+                    match comment {
+                        Some(offset) => {
+                            visible.push_str(&remaining[..offset]);
+                            self.inside = Some(InertRegion::Comment);
+                            cursor += offset + "<!--".len();
+                        }
+                        None => {
+                            visible.push_str(&line[cursor..]);
+                            return Cow::Owned(visible);
+                        }
                     }
-                },
+                }
                 Some(InertRegion::Fence { .. }) => return Cow::Owned(visible),
-                Some(InertRegion::RawHtml { .. }) | Some(InertRegion::UnsupportedRawHtml) => {
+                Some(InertRegion::RawHtml { .. })
+                | Some(InertRegion::UnsupportedRawHtml)
+                | Some(InertRegion::UnsupportedInlineCode) => {
                     return Cow::Owned(visible);
                 }
             }
@@ -662,6 +700,9 @@ impl InertScanner {
                 Some("a raw HTML info-table wrapper with an unsafe boundary")
             }
             Some(InertRegion::UnsupportedRawHtml) => Some("an unsupported raw HTML block"),
+            Some(InertRegion::UnsupportedInlineCode) => {
+                Some("an unsupported multiline inline-code span")
+            }
         }
     }
 }
@@ -687,23 +728,21 @@ fn raw_html_block_start(line: &str) -> Option<RawHtmlStart> {
     line.starts_with('<').then_some(RawHtmlStart::Unsupported)
 }
 
-/// Byte ranges of this line that sit inside an inline code span.
+/// Same-line code spans and the first backtick run without a same-line mate.
 ///
-/// A code span is delimited by matching backtick runs of equal length; a run
-/// with no match is literal text rather than an opener. Comment delimiters
-/// inside a span are examples of markup, not markup, so the comment scan skips
-/// these ranges.
-///
-/// Scoped to one line. A code span may in principle continue across a line
-/// break, which this does not model. An over-broad range makes a real comment
-/// opener look like an example, so the rows inside it read as data and produce
-/// a false *addition* — noise a maintainer sees. An under-broad one is the
-/// silent direction, and only an unmatched run produces it, which is correctly
-/// literal text anyway.
-fn code_span_ranges(line: &str) -> Vec<(usize, usize)> {
+/// An unmatched run may open a multiline CommonMark span. The caller retains
+/// its width until a blank paragraph boundary and refuses a later matching
+/// run or comment marker. Inside an actual HTML comment, backticks are inert.
+struct CodeSpanScan {
+    ranges: Vec<(usize, usize)>,
+    unmatched_at: Option<usize>,
+}
+
+fn scan_code_spans(line: &str) -> CodeSpanScan {
     let bytes = line.as_bytes();
     let mut ranges = Vec::new();
     let mut index = 0;
+    let mut unmatched_at = None;
 
     while index < bytes.len() {
         if bytes[index] != b'`' {
@@ -734,14 +773,21 @@ fn code_span_ranges(line: &str) -> Vec<(usize, usize)> {
             }
         }
 
-        // An unmatched run is literal, so the scan resumes just after it.
         if let Some(end) = closed {
             ranges.push((opener, end));
             index = end;
+        } else {
+            unmatched_at = Some(opener);
+            break;
         }
     }
 
-    ranges
+    CodeSpanScan { ranges, unmatched_at }
+}
+
+#[cfg(test)]
+fn code_span_ranges(line: &str) -> Vec<(usize, usize)> {
+    scan_code_spans(line).ranges
 }
 
 /// The next real `<!--` at or after `cursor`, skipping examples in code spans.
@@ -1388,6 +1434,60 @@ let example = 1;
         assert_eq!(code_span_ranges("a `b` c"), vec![(2, 5)]);
         assert_eq!(code_span_ranges("a ` b c"), Vec::new());
         assert_eq!(code_span_ranges("``a `b` c``"), vec![(0, 11)]);
+    }
+
+    #[test]
+    fn a_multiline_code_span_with_comment_markers_fails_closed() {
+        // The opener is inside a multiline code span; the later closer is a
+        // separate inline example. A line-local scanner would open a comment
+        // on the first line and swallow the real addition between them.
+        let multiline = "\
+## Core Attribute Reference {#attributes}
+
+| Attribute | Description |
+|-----------|-------------|
+| `hx-get` | issues a GET |
+
+`<!--
+`
+
+| Attribute | Description |
+|-----------|-------------|
+| `hx-brandnew` | a real addition after the code span |
+
+Separate example: `-->`
+";
+
+        assert!(
+            section_names(multiline, &CORE_ATTRIBUTES)
+                .is_err_and(|error| error.to_string().contains("multiline inline-code span"))
+        );
+        // The opener need not share a line with the comment marker. Keep
+        // the ambiguity through ordinary text, until a paragraph boundary.
+        let delayed = multiline.replace("`<!--\n`", "`example\nstill an example\nexample <!--\n`");
+        assert!(
+            section_names(&delayed, &CORE_ATTRIBUTES)
+                .is_err_and(|error| error.to_string().contains("multiline inline-code span"))
+        );
+    }
+
+    #[test]
+    fn a_comment_close_followed_by_a_multiline_code_opener_fails_closed() {
+        let mixed = "\
+## Core Attribute Reference {#attributes}
+
+<!-- old note
+--> `<!--
+| Attribute | Description |
+|-----------|-------------|
+| `hx-brandnew` | hidden by ambiguous markup |
+`
+";
+
+        assert!(
+            section_names(mixed, &CORE_ATTRIBUTES)
+                .is_err_and(|error| error.to_string().contains("multiline inline-code span"))
+        );
     }
 
     #[test]
