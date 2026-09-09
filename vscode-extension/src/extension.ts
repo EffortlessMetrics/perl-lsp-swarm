@@ -115,6 +115,7 @@ import {
 } from './refactoringCommands';
 import { registerSupportCommandGroup } from './supportCommandGroup';
 import { reportIssueCommand } from './supportCommands';
+import { probeServerVersion } from './serverVersionProbe';
 export { formatIssueDiagnosticInfo } from './supportCommands';
 import { ExtensionLanguageClientLifecycle } from './extensionComposition';
 import { LanguageClientLifecycleError } from './languageClientLifecycle';
@@ -1195,24 +1196,14 @@ async function runExtensionActivation(
     reportIssue: () =>
       reportIssueCommand({
         getServerVersion: () =>
-          new Promise((resolve) => {
-            if (!currentServerPath) {
-              resolve('unavailable');
-              return;
-            }
-            execFile(
-              currentServerPath,
-              ['--version'],
-              { timeout: 3000 },
-              (error: Error | null, stdout: string) => {
-                if (error) {
-                  resolve('unavailable');
-                  return;
-                }
-                const firstLine = stdout.trim().split('\n')[0] ?? '';
-                resolve(firstLine.trim() || 'unavailable');
-              },
-            );
+          probeServerVersion(() => {
+            const lifecycle = languageClientLifecycle;
+            const snapshot = lifecycle?.snapshot;
+            return {
+              lifecycle: lifecycle ?? null,
+              serverPath: snapshot?.serverPath ?? null,
+              generation: snapshot?.generation,
+            };
           }),
         extensionVersion: (context.extension.packageJSON.version as string) ?? 'unknown',
         editorVersion: vscode.version,
