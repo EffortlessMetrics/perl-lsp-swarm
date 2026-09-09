@@ -544,18 +544,16 @@ fn use_developer_version_enables_effective_strict_only() -> Result<(), Box<dyn s
 }
 
 #[test]
-fn require_version_keeps_lexical_pragma_state_unchanged() -> Result<(), Box<dyn std::error::Error>>
-{
-    // In real Perl, `require VERSION` only checks the running interpreter at
-    // runtime; unlike `use VERSION` it enables no strict, warnings, or feature
-    // bundle lexically. (#13113)
+fn require_version_does_not_enable_effective_pragmas() -> Result<(), Box<dyn std::error::Error>> {
+    // `require VERSION` checks compatibility at runtime; it has no lexical
+    // pragma effects. (#5106)
     let ast = program(vec![function_call("require", vec![number_node("5.36", 8, 12)], 0, 13)]);
     let map = PragmaTracker::build(&ast);
     let state = PragmaTracker::state_for_offset(&map, 12);
-    assert!(!state.strict_vars, "require 5.36 must not enable strict vars");
-    assert!(!state.strict_subs, "require 5.36 must not enable strict subs");
-    assert!(!state.strict_refs, "require 5.36 must not enable strict refs");
-    assert!(!state.warnings, "require 5.36 must not enable warnings");
+    assert!(!state.strict_vars, "require VERSION should not enable strict vars");
+    assert!(!state.strict_subs, "require VERSION should not enable strict subs");
+    assert!(!state.strict_refs, "require VERSION should not enable strict refs");
+    assert!(!state.warnings, "require VERSION should not enable warnings");
     Ok(())
 }
 
@@ -1910,61 +1908,14 @@ fn parse_perl_version_accepts_single_component_major_only() -> Result<(), Box<dy
 fn parse_perl_version_accepts_developer_release_notation() -> Result<(), Box<dyn std::error::Error>>
 {
     let parsed = perl_pragma::parse_perl_version("5.012_001");
-    assert_eq!(parsed, Some(PerlVersion::with_patch(5, 12, 1)));
+    assert_eq!(parsed, Some(PerlVersion::new(5, 12)));
     Ok(())
 }
 
 #[test]
-fn parse_perl_version_preserves_patch_component() -> Result<(), Box<dyn std::error::Error>> {
+fn parse_perl_version_ignores_patch_component() -> Result<(), Box<dyn std::error::Error>> {
     let parsed = perl_pragma::parse_perl_version("v5.36.2");
-    assert_eq!(parsed, Some(PerlVersion::with_patch(5, 36, 2)));
-    Ok(())
-}
-
-#[test]
-fn parse_perl_version_keeps_v_string_patch_component() -> Result<(), Box<dyn std::error::Error>> {
-    let parsed = perl_pragma::parse_perl_version("v5.44.1");
-    assert_eq!(parsed, Some(PerlVersion::with_patch(5, 44, 1)));
-    assert!(
-        parsed.is_some_and(|version| version > PerlVersion::new(5, 44)),
-        "v5.44.1 must order above v5.44"
-    );
-    Ok(())
-}
-
-#[test]
-fn parse_perl_version_normalizes_decimal_fraction_groups() -> Result<(), Box<dyn std::error::Error>>
-{
-    // `5.044001` is Perl decimal notation for 5.44.1, not minor 44001.
-    assert_eq!(
-        perl_pragma::parse_perl_version("5.044001"),
-        Some(PerlVersion::with_patch(5, 44, 1))
-    );
-    // Developer release 5.43.8 orders below the 5.44 bundle instead of
-    // reading as minor 43008.
-    assert_eq!(
-        perl_pragma::parse_perl_version("5.043008"),
-        Some(PerlVersion::with_patch(5, 43, 8))
-    );
-    // Short forms keep their plain minor reading.
-    assert_eq!(perl_pragma::parse_perl_version("5.44"), Some(PerlVersion::new(5, 44)));
-    assert_eq!(perl_pragma::parse_perl_version("5.036"), Some(PerlVersion::new(5, 36)));
-    Ok(())
-}
-
-#[test]
-fn decimal_developer_release_orders_below_next_stable_bundle()
--> Result<(), Box<dyn std::error::Error>> {
-    // 5.043008 (5.43.8) must select the 5.42 bundle, not read as newer than
-    // 5.44, when downstream code admits or rejects syntax by this authority.
-    let developer = perl_pragma::parse_perl_version("5.043008")
-        .ok_or("5.043008 must parse into a version value")?;
-    assert!(developer < PerlVersion::new(5, 44), "5.43.8 must order below 5.44.0");
-    assert!(
-        perl_pragma::features_enabled_by_version(developer)
-            == perl_pragma::features_enabled_by_version(PerlVersion::new(5, 42)),
-        "5.43.8 must select the 5.42 feature bundle"
-    );
+    assert_eq!(parsed, Some(PerlVersion::new(5, 36)));
     Ok(())
 }
 

@@ -31,11 +31,15 @@ pub mod reachability_operation;
 pub mod route;
 /// Transport-neutral stable semantic identity and ownership contract (#12121).
 pub mod semantic_identity;
+/// Transport-neutral semantic query outcomes and completeness requirements
+/// (#8911).
+pub mod semantic_query;
 
 pub use envelope::*;
 pub use handler::*;
 pub use hook::*;
 pub use route::*;
+pub use semantic_query::*;
 
 macro_rules! id_newtype {
     ($name:ident) => {
@@ -490,6 +494,14 @@ pub struct ReferenceEdge {
     /// File containing the reference.
     pub file_id: FileId,
     /// Bare or qualified symbol key used at the reference site.
+    ///
+    /// This is display/lookup spelling, not target identity: it carries the
+    /// canonical name when the producer could derive one, and is empty when it
+    /// could not. Target identity lives in
+    /// [`target_candidates`](Self::target_candidates), which may name a
+    /// resolved entity even when no spelling was derived. Producers must not
+    /// synthesize a placeholder name for an unresolved occurrence
+    /// (perl-lsp-swarm#8083).
     pub symbol_key: String,
     /// Zero, one, or many candidate target entities.
     pub target_candidates: Vec<EntityId>,

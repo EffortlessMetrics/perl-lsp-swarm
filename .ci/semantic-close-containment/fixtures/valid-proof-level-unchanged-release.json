@@ -1,0 +1,35 @@
+{
+  "schema_version": "semantic_close_containment_fixture.v1",
+  "provenance": {
+    "captured_at": "2026-09-06",
+    "sources": [
+      "https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/14821"
+    ],
+    "subject_shas": [],
+    "boundary": "Immutable bounded structured excerpts; canonical GitHub subjects and exact candidate SHAs are retained. The fixture proves CP00-PROOF-LEVEL-CONTRADICTION does not arm when the issue pairs a proof-level term with an unchanged-clause and the PR excludes that same level."
+  },
+  "repository": "effortlessmetrics/perl-lsp-swarm",
+  "pull_request": {
+    "number": 990017,
+    "title": "fix(readiness): keep the mechanism seam honest (#9001401)",
+    "body": "## Claim Boundary\n\nRelease evidence is explicitly out of scope.\n\nCloses #9001401."
+  },
+  "issues": [
+    {
+      "repository": "effortlessmetrics/perl-lsp-swarm",
+      "number": 9001401,
+      "title": "fix(readiness): keep the mechanism seam honest",
+      "body": "## Acceptance\n\nThe release surface remains unchanged. Mechanism-level proof is required."
+    }
+  ],
+  "expected": {
+    "aggregate_code": "PASS_NO_HIGH_CONFIDENCE_CONTRADICTION",
+    "rows": [
+      {
+        "repository": "effortlessmetrics/perl-lsp-swarm",
+        "issue_number": 9001401,
+        "code": "PASS_NO_HIGH_CONFIDENCE_CONTRADICTION"
+      }
+    ]
+  }
+}

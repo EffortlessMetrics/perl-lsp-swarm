@@ -1,15 +1,19 @@
 //! Corpus file discovery helpers.
 
+pub use crate::api::root::CORPUS_ROOT_ENV;
+use crate::api::root::{CorpusRoot, CorpusRootError, CorpusRootSource};
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// Environment variable used to override corpus root discovery.
-pub const CORPUS_ROOT_ENV: &str = "PERL_CORPUS_ROOT";
 const TEST_EXTENSIONS: &[&str] = &["pl", "pm", "plx", "t", "psgi", "cgi"];
 
 /// Common corpus paths anchored at a root directory.
-#[derive(Debug, Clone)]
+///
+/// This public mutable shape is retained for compatibility. It is not evidence
+/// that the root was validated; use [`ResolvedCorpusPaths`] for load-bearing
+/// work.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CorpusPaths {
     /// Workspace root used for discovery.
     pub root: PathBuf,
@@ -17,6 +21,115 @@ pub struct CorpusPaths {
     pub test_corpus: PathBuf,
     /// Directory containing fuzz regression fixtures.
     pub fuzz: PathBuf,
+}
+
+/// Validated compatibility paths plus their retained root authority.
+///
+/// This type deliberately does not implement [`Deref`](std::ops::Deref) or any
+/// other implicit conversion into [`CorpusPaths`]. Downgrading validated paths
+/// to the unchecked compatibility shape is a decision a caller has to write
+/// down, either as the borrowed view [`Self::as_paths`] or the consuming
+/// [`Self::into_paths`].
+///
+/// The examples below are illustrative, not enforcement. This repository runs
+/// no `cargo test --doc` gate (see issue #13774), so a doctest here cannot fail
+/// CI. The boundary is actually held by `assert_does_not_implement!` in
+/// `tests/root_path_authority.rs`, which stops that test target from compiling
+/// if such an impl reappears.
+///
+/// A resolved value is not accepted where unchecked compatibility paths are
+/// expected:
+///
+/// ```compile_fail
+/// use perl_corpus::{CorpusPaths, ResolvedCorpusPaths};
+///
+/// fn compatibility_discovery(_paths: &CorpusPaths) {}
+///
+/// fn downgrade_without_saying_so(resolved: &ResolvedCorpusPaths) {
+///     // No `Deref` coercion exists, so this is a type error.
+///     compatibility_discovery(resolved);
+/// }
+/// ```
+///
+/// The same call site compiles once the downgrade is explicit, which is the
+/// opposite-direction control for the example above:
+///
+/// ```
+/// use perl_corpus::{CorpusPaths, ResolvedCorpusPaths};
+///
+/// fn compatibility_discovery(_paths: &CorpusPaths) {}
+///
+/// fn downgrade_explicitly(resolved: &ResolvedCorpusPaths) {
+///     compatibility_discovery(resolved.as_paths());
+/// }
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedCorpusPaths {
+    root: CorpusRoot,
+    paths: CorpusPaths,
+}
+
+impl ResolvedCorpusPaths {
+    fn from_root(root: CorpusRoot) -> Self {
+        let paths = CorpusPaths::from_root(root.path().to_path_buf());
+        Self { root, paths }
+    }
+
+    /// Return how the authoritative root was selected.
+    #[must_use]
+    pub const fn root_source(&self) -> CorpusRootSource {
+        self.root.source()
+    }
+
+    /// Borrow the retained root authority.
+    #[must_use]
+    pub const fn root_authority(&self) -> &CorpusRoot {
+        &self.root
+    }
+
+    /// Borrow the derived compatibility paths.
+    ///
+    /// This is the intentional borrowed compatibility view. It is the only way
+    /// to reach `&CorpusPaths` from a retained resolution, and it is never
+    /// applied implicitly.
+    #[must_use]
+    pub const fn as_paths(&self) -> &CorpusPaths {
+        &self.paths
+    }
+
+    /// Consume the value and explicitly downgrade to unchecked compatibility paths.
+    ///
+    /// Downgrading discards the retained root authority, so the resulting
+    /// [`CorpusPaths`] is no longer evidence that the root was validated.
+    ///
+    /// The example is illustrative rather than enforced proof: no gate in this
+    /// repository runs `cargo test --doc` (see issue #13774), so a false
+    /// assertion here would not fail CI. The executed regression lives in
+    /// `tests/root_path_authority.rs`.
+    ///
+    /// ```
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// use perl_corpus::CorpusPaths;
+    ///
+    /// let root = tempfile::tempdir()?;
+    /// let resolved = CorpusPaths::try_from_root(root.path())?;
+    /// let authority_root = resolved.root_authority().path().to_path_buf();
+    ///
+    /// let compatibility = resolved.into_paths();
+    /// assert_eq!(compatibility.root, authority_root);
+    /// assert_eq!(compatibility.test_corpus, authority_root.join("test_corpus"));
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// # }
+    /// ```
+    #[must_use]
+    pub fn into_paths(self) -> CorpusPaths {
+        self.paths
+    }
+
+    /// Require the repository's two checked-in top-level corpus layers.
+    pub fn require_repository_layout(&self) -> Result<(), CorpusRootError> {
+        self.root.require_repository_layout()
+    }
 }
 
 /// Corpus layers managed by perl-corpus.
@@ -38,7 +151,11 @@ pub struct CorpusFile {
 }
 
 impl CorpusPaths {
-    /// Discover corpus paths from environment or workspace layout.
+    /// Discover corpus paths through the historical compatibility contract.
+    ///
+    /// This method deliberately preserves raw environment and compile-time
+    /// workspace paths. It performs no strict validation and cannot produce a
+    /// [`CorpusRoot`]. Use [`Self::resolve_authoritative`] for load-bearing work.
     pub fn discover() -> Self {
         if let Ok(root) = env::var(CORPUS_ROOT_ENV) {
             return Self::from_root(PathBuf::from(root));
@@ -47,7 +164,28 @@ impl CorpusPaths {
         Self::from_root(find_workspace_root())
     }
 
-    /// Build corpus paths from an explicit root.
+    /// Discover the compile-time workspace and bind it as strict authority.
+    pub fn try_discover() -> Result<ResolvedCorpusPaths, CorpusRootError> {
+        CorpusRoot::try_discover().map(ResolvedCorpusPaths::from_root)
+    }
+
+    /// Resolve strict authority from explicit input, then [`CORPUS_ROOT_ENV`].
+    pub fn resolve_authoritative(
+        explicit: Option<&Path>,
+    ) -> Result<ResolvedCorpusPaths, CorpusRootError> {
+        CorpusRoot::resolve_authoritative(explicit).map(ResolvedCorpusPaths::from_root)
+    }
+
+    /// Validate an explicit root and derive its common corpus paths.
+    pub fn try_from_root(root: impl AsRef<Path>) -> Result<ResolvedCorpusPaths, CorpusRootError> {
+        CorpusRoot::explicit(root).map(ResolvedCorpusPaths::from_root)
+    }
+
+    /// Build corpus paths from an unchecked explicit root.
+    ///
+    /// This compatibility constructor preserves the existing public shape for
+    /// synthetic tests and callers that own their own validation.
+    #[must_use]
     pub fn from_root(root: PathBuf) -> Self {
         Self {
             test_corpus: root.join("test_corpus"),

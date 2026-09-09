@@ -1,0 +1,9 @@
+project: product
+component: Developer experience
+kind: Added
+body: Report migrations that drop an .expect explanation into a bare perl-test-must helper, and re-export the context-preserving _with variants from perl-tdd-support.
+time: 2026-08-31T06:30:00Z
+custom:
+  PR: "14384"
+  Slug: must-context-guard
+  Breaking: "no"

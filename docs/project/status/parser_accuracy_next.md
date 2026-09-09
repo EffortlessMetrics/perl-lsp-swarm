@@ -2,20 +2,16 @@
 
 Source: `target/metrics/parser_accuracy.json`
 
-Denominator: 50 fixtures / 29 families; 139 scored lines; 117 scored symbols.
+Denominator: 53 fixtures / 30 families; 159 scored lines; 131 scored symbols.
 
-Failure packets: 0 active.
+Failure packets: 50 active.
 
-Pointer: no active failure packets.
+| Field | Value |
+|---|---|
+| Pointer | `ast_shape_mismatch` |
+| Packet count | 45 |
+| Likely layer | `ast_projection` |
+| First fixture | `dynamic_require_boundary` |
+| Suggested PR | `feat(parser-accuracy): tighten AST projection fixture expectations` |
 
-## Next Measurement Gaps
-
-| Metric | Reason | Suggested PR |
-|---|---|---|
-| none | n/a | n/a |
-
-Use the measurement gap table only when there are no active failure packets. Keep each measurement gap in its own PR and regenerate this file after a lane lands.
-
-## Capability Handoff
-
-Measurement wiring is clear. Follow [`parser.md`](parser.md#raw-failure-buckets) for capability work only when the generated parser status lists a nonzero raw failure bucket. If parser status lists `none`, do not start parser bucket work from stale context; refresh the Linux corpus receipt or move to the next provider or real-workspace trust lane.
+Use this pointer only after open measurement/tracking PRs are settled. If the pointed lane has already landed, regenerate this file and take the next row.

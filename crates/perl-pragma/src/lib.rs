@@ -23,8 +23,8 @@ pub use map::{
     CompileTimePragmaEnvironment, PragmaEntry, PragmaMap, PragmaQueryCursor, PragmaStateQuery,
 };
 pub use version::{
-    FeatureBundle, PerlVersion, feature_bundle_for_version, features_enabled_by_version,
-    parse_perl_version, version_implies_strict, version_implies_warnings,
+    FeatureBundle, PerlVersion, features_enabled_by_version, parse_perl_version,
+    version_implies_strict, version_implies_warnings,
 };
 
 pub(crate) use args::{
@@ -35,16 +35,23 @@ pub(crate) use conditional::conditional_pragma_target;
 pub(crate) use features::{apply_feature_state, canonical_feature_query};
 pub(crate) use map::normalize_state;
 pub(crate) use version::enable_effective_version_semantics;
-pub(crate) use version::{admitted_vstring_version, looks_like_version_literal};
+pub(crate) use version::{
+    admitted_vstring_version, feature_bundle_for_version, looks_like_version_literal,
+};
 
 /// Pragma state at a given point in the code
 #[derive(Debug, Clone, PartialEq)]
 pub struct PragmaState {
-    /// The effective Perl version declared in the current lexical scope.
+    /// A bounded compatibility projection of a lexical version declaration.
     ///
-    /// This is retained alongside the derived feature set so semantic consumers
-    /// can distinguish an exact version profile from an equivalent explicit
-    /// feature selection.
+    /// In tracker-produced state, only unambiguous two-component `v5.MINOR`
+    /// declarations with a known even minor through 44 retain this value.
+    /// Decimal, patch, developer, future, malformed and conditional version
+    /// declarations leave admission unknown. Broad legacy feature effects are
+    /// tracked separately and cannot establish this authority.
+    ///
+    /// This is not an exact minimum version, interpreter identity or patch-level
+    /// model. Caller-constructed public state is not a source attestation.
     pub perl_version: Option<PerlVersion>,
     /// Whether strict vars is enabled
     pub strict_vars: bool,
@@ -147,7 +154,9 @@ impl PragmaSnapshot {
     /// Project the retained legacy version onto a named reviewed bundle.
     ///
     /// This is a projection for parser/tracker-built snapshots, not an
-    /// attestation for caller-constructed public state values.
+    /// attestation for caller-constructed public state values. It describes
+    /// the selected declaration/profile, not the current feature vector after
+    /// explicit `use feature` or `no feature` overrides.
     #[must_use]
     pub fn feature_bundle(&self) -> FeatureBundle {
         self.state.perl_version.map_or(FeatureBundle::Unknown, feature_bundle_for_version)

@@ -2,7 +2,7 @@ name: Agent Authority Status
 
 # The path filters below are not hand-maintained: they must equal every
 # `documents[].path` in `docs/agents/authority_status.toml` plus this workflow
-# and its test. The registry asserts that each registered path exists, so a PR
+# and the tests it runs. The registry asserts that each registered path exists, so a PR
 # that deletes or renames a registered authority has to run this check --
 # otherwise `path exists` goes false on `main` with no gate having run.
 # `test_workflow_triggers_on_every_registered_path` enforces the equality.
@@ -26,9 +26,14 @@ on:
       - 'docs/agents/SKILL_CONTRACT.md'
       - 'docs/agents/authority_status.toml'
       - 'docs/articles/PIPELINE_STATE_MACHINE.md'
+      - 'docs/ci/perl-lsp-rust-1.95-rollout.md'
+      - 'docs/development/RUST_1_95_PROACTIVE_GUARDS.md'
+      - 'docs/development/RUST_1_95_ROLLOUT.md'
+      - 'docs/development/STRONG_CLIPPY_LINTS_ROLLOUT.md'
       - 'docs/handoff/SWARM_DESIGN.md'
       - 'docs/how-to/AGENT_CONTRIBUTING.md'
       - 'docs/how-to/SESSION_OPERATIONS.md'
+      - 'docs/project/RAILS_INDEX.md'
       - 'docs/reference/GLOSSARY.md'
       - 'docs/reference/LIVE_SIGNALS_VS_LABELS.md'
       - 'docs/reference/MAINTAINER_AGENT_DOCTRINE.md'
@@ -41,6 +46,7 @@ on:
       - 'scripts/ci/check-pr-review-convergence-core'
       - 'scripts/reviews/claim-digest'
       - 'tests/test_agent_authority_status.py'
+      - 'tests/test_legacy_authority_banners.py'
   push:
     branches: [main]
     paths:
@@ -59,9 +65,14 @@ on:
       - 'docs/agents/SKILL_CONTRACT.md'
       - 'docs/agents/authority_status.toml'
       - 'docs/articles/PIPELINE_STATE_MACHINE.md'
+      - 'docs/ci/perl-lsp-rust-1.95-rollout.md'
+      - 'docs/development/RUST_1_95_PROACTIVE_GUARDS.md'
+      - 'docs/development/RUST_1_95_ROLLOUT.md'
+      - 'docs/development/STRONG_CLIPPY_LINTS_ROLLOUT.md'
       - 'docs/handoff/SWARM_DESIGN.md'
       - 'docs/how-to/AGENT_CONTRIBUTING.md'
       - 'docs/how-to/SESSION_OPERATIONS.md'
+      - 'docs/project/RAILS_INDEX.md'
       - 'docs/reference/GLOSSARY.md'
       - 'docs/reference/LIVE_SIGNALS_VS_LABELS.md'
       - 'docs/reference/MAINTAINER_AGENT_DOCTRINE.md'
@@ -74,6 +85,7 @@ on:
       - 'scripts/ci/check-pr-review-convergence-core'
       - 'scripts/reviews/claim-digest'
       - 'tests/test_agent_authority_status.py'
+      - 'tests/test_legacy_authority_banners.py'
 
 permissions:
   contents: read
@@ -91,6 +103,11 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
 
       - name: Validate authority registry and mutation controls
-        run: python3 -m unittest tests/test_agent_authority_status.py
+        run: |
+          python3 -m unittest \
+            tests/test_agent_authority_status.py \
+            tests/test_legacy_authority_banners.py

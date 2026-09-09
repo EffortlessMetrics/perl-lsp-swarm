@@ -1,10 +1,11 @@
 //! End-to-end validation task
 //!
 //! Orchestrates a comprehensive validation sweep across the workspace:
-//! 1. Release-mode tests for core crates (parser, LSP, DAP)
-//! 2. Large workspace smoke test (start LSP server, verify no crash)
-//! 3. Benchmark compilation check
-//! 4. Structured JSON report with actual pass/fail tracking
+//! 1. Exact real-process contracts for Cargo's public `perllsp` binary
+//! 2. Release-mode tests for core crates (parser, LSP, DAP)
+//! 3. Large-workspace process-liveness smoke (not protocol proof)
+//! 4. Benchmark compilation check
+//! 5. Structured JSON report with actual pass/fail tracking
 //!
 //! This replaces the shell script `scripts/e2e-validation.sh` with a
 //! focused, non-duplicative Rust implementation that produces reliable
@@ -28,6 +29,19 @@ use crate::utils::project_root;
 // Configuration
 // =============================================================================
 
+/// The two exact public-process targets governed by issue #13057, exercised
+/// as E2E proof. This is the issue's selected contract set, deliberately not
+/// the full `*_process.rs` inventory under `crates/perllsp/tests/`; the
+/// `governed_public_process_targets_exist_in_perllsp_test_inventory` test
+/// fails if any governed target disappears from that inventory.
+const PUBLIC_PROCESS_TARGETS: &[&str] =
+    &["lsp_stdio_process_contract", "lsp_document_lifecycle_process"];
+
+/// How long the large-workspace liveness smoke waits before requiring the
+/// public binary to still be running. A liveness-only signal, not protocol
+/// proof; named so the window is greppable and single-sourced.
+const LIVENESS_WINDOW: Duration = Duration::from_secs(2);
+
 /// Core crates whose release-mode lib tests are exercised.
 const CORE_CRATES: &[&str] = &["perl-parser", "perl-lsp-rs", "perl-dap"];
 
@@ -41,7 +55,7 @@ pub struct E2eConfig {
     pub workspace_size: usize,
     /// Path for the JSON report (None = skip report).
     pub report_path: Option<PathBuf>,
-    /// Skip the large-workspace smoke test.
+    /// Skip the large-workspace liveness smoke.
     pub skip_workspace: bool,
     /// Skip the benchmark compilation check.
     pub skip_bench: bool,
@@ -61,23 +75,30 @@ pub fn run(config: E2eConfig) -> Result<()> {
     let overall_start = Instant::now();
     let mut results = Vec::new();
 
-    // ── Phase 1: Release-mode core-crate tests ──────────────────────────
-    println!("\n{}", bold.apply_to("Phase 1: Release-mode core crate tests"));
+    // ── Phase 1: Exact public-binary process contracts ─────────────────
+    println!("\n{}", bold.apply_to("Phase 1: Exact public perllsp process contracts"));
+    for target in PUBLIC_PROCESS_TARGETS {
+        let outcome = run_public_process_test(target, config.verbose)?;
+        results.push(outcome);
+    }
+
+    // ── Phase 2: Release-mode core-crate tests ──────────────────────────
+    println!("\n{}", bold.apply_to("Phase 2: Release-mode core crate tests"));
     for crate_name in CORE_CRATES {
         let outcome = run_crate_test(crate_name, config.verbose)?;
         results.push(outcome);
     }
 
-    // ── Phase 2: Large workspace smoke test ─────────────────────────────
+    // ── Phase 3: Large-workspace process-liveness smoke ─────────────────
     if !config.skip_workspace {
-        println!("\n{}", bold.apply_to("Phase 2: Large workspace smoke test"));
-        let outcome = run_workspace_smoke_test(config.workspace_size, &root)?;
+        println!("\n{}", bold.apply_to("Phase 3: Large-workspace process-liveness smoke"));
+        let outcome = run_workspace_liveness_smoke_test(config.workspace_size, &root)?;
         results.push(outcome);
     }
 
-    // ── Phase 3: Benchmark compilation ──────────────────────────────────
+    // ── Phase 4: Benchmark compilation ──────────────────────────────────
     if !config.skip_bench {
-        println!("\n{}", bold.apply_to("Phase 3: Benchmark compilation check"));
+        println!("\n{}", bold.apply_to("Phase 4: Benchmark compilation check"));
         let outcome = run_bench_compile_check()?;
         results.push(outcome);
     }
@@ -105,6 +126,54 @@ pub fn run(config: E2eConfig) -> Result<()> {
 // =============================================================================
 // Step implementations
 // =============================================================================
+
+fn public_process_test_args(target: &str, verbose: bool) -> Vec<&str> {
+    let mut args = vec![
+        "test",
+        "-p",
+        "perllsp",
+        "--test",
+        target,
+        "--release",
+        "--locked",
+        "--",
+        "--test-threads=1",
+    ];
+    if !verbose {
+        args.push("-q");
+    }
+    args
+}
+
+/// Run one exact public `perllsp` integration target and capture its result.
+fn run_public_process_test(target: &str, verbose: bool) -> Result<StepOutcome> {
+    let spinner = make_spinner()?;
+    spinner.set_message(format!("Testing public perllsp process target {target}..."));
+
+    let start = Instant::now();
+    let result = cmd("cargo", public_process_test_args(target, verbose))
+        .stderr_to_stdout()
+        .unchecked()
+        .run();
+
+    let elapsed = start.elapsed();
+    let (passed, detail) = match result {
+        Ok(output) => {
+            let success = output.status.success();
+            let detail = if success {
+                None
+            } else {
+                Some(String::from_utf8_lossy(&output.stdout).to_string())
+            };
+            (success, detail)
+        }
+        Err(e) => (false, Some(format!("Failed to execute: {e}"))),
+    };
+
+    let label = format!("perllsp exact-process target {target}");
+    print_step_result(&spinner, &label, passed, elapsed);
+    Ok(StepOutcome { name: label, passed, duration: elapsed, detail })
+}
 
 /// Run `cargo test -p <crate> --lib --release` and capture result.
 fn run_crate_test(crate_name: &str, verbose: bool) -> Result<StepOutcome> {
@@ -138,9 +207,21 @@ fn run_crate_test(crate_name: &str, verbose: bool) -> Result<StepOutcome> {
     Ok(StepOutcome { name: label, passed, duration: elapsed, detail })
 }
 
-/// Generate N Perl files in a temp directory, start the LSP binary,
-/// wait briefly, then verify the process has not crashed.
-fn run_workspace_smoke_test(
+fn perllsp_release_build_args() -> &'static [&'static str] {
+    &["build", "-p", "perllsp", "--bin", "perllsp", "--release", "--locked"]
+}
+
+fn perllsp_binary_path(project_root: &std::path::Path, profile: &str) -> PathBuf {
+    project_root
+        .join("target")
+        .join(profile)
+        .join(format!("perllsp{}", std::env::consts::EXE_SUFFIX))
+}
+
+/// Generate N Perl files in a temp directory, start the public LSP binary,
+/// wait briefly, then verify the process remains alive. This is deliberately
+/// a liveness signal only; the exact-process targets above own protocol proof.
+fn run_workspace_liveness_smoke_test(
     file_count: usize,
     project_root: &std::path::Path,
 ) -> Result<StepOutcome> {
@@ -163,26 +244,30 @@ fn run_workspace_smoke_test(
             .with_context(|| format!("Failed to write {}", file_path.display()))?;
     }
 
-    spinner.set_message("Starting LSP server against large workspace...");
+    spinner.set_message("Starting perllsp liveness smoke against large workspace...");
 
     // Locate binary
     let binary = find_lsp_binary(project_root);
     let (passed, detail) = match binary {
-        Some(bin) => run_lsp_smoke(&bin, tmp_path)?,
+        Some(bin) => run_lsp_liveness_smoke(&bin, tmp_path)?,
         None => {
-            // Try building first
-            spinner.set_message("Building perl-lsp (release)...");
-            let build_result = cmd("cargo", &["build", "-p", "perl-lsp-rs", "--release"])
-                .stderr_to_stdout()
-                .unchecked()
-                .run();
+            // Try building the actual public binary first.
+            spinner.set_message("Building public perllsp binary (release)...");
+            let build_result =
+                cmd("cargo", perllsp_release_build_args()).stderr_to_stdout().unchecked().run();
             match build_result {
                 Ok(output) if output.status.success() => {
-                    let bin = project_root.join("target/release/perllsp");
+                    let bin = perllsp_binary_path(project_root, "release");
                     if bin.exists() {
-                        run_lsp_smoke(&bin, tmp_path)?
+                        run_lsp_liveness_smoke(&bin, tmp_path)?
                     } else {
-                        (false, Some("perllsp binary not found after build".to_string()))
+                        (
+                            false,
+                            Some(format!(
+                                "perllsp binary not found after build: {}",
+                                bin.display()
+                            )),
+                        )
                     }
                 }
                 Ok(output) => (
@@ -198,7 +283,7 @@ fn run_workspace_smoke_test(
     };
 
     let elapsed = start.elapsed();
-    let label = format!("Large workspace smoke test ({file_count} files)");
+    let label = format!("Large-workspace process-liveness smoke ({file_count} files)");
     print_step_result(&spinner, &label, passed, elapsed);
 
     // Clean up
@@ -328,70 +413,105 @@ fn write_report(results: &[StepOutcome], total: Duration, path: &std::path::Path
     Ok(())
 }
 
-/// Locate an existing `perllsp` binary (release preferred).
+/// Locate an existing public `perllsp` binary (release preferred).
 fn find_lsp_binary(project_root: &std::path::Path) -> Option<PathBuf> {
-    let release = project_root.join("target/release/perllsp");
+    let release = perllsp_binary_path(project_root, "release");
     if release.exists() {
         return Some(release);
     }
-    let debug = project_root.join("target/debug/perllsp");
+    let debug = perllsp_binary_path(project_root, "debug");
     if debug.exists() {
         return Some(debug);
     }
     None
 }
 
-/// Start the LSP binary with `--stdio`, wait briefly, check if it's alive, then kill.
-fn run_lsp_smoke(
+/// What the liveness window observed about the spawned server process.
+#[derive(Debug)]
+enum LivenessObservation {
+    /// The process was still running when the window closed.
+    Alive,
+    /// The process exited before the window closed.
+    ExitedEarly { status: std::process::ExitStatus, stderr: String },
+    /// The probe itself failed (e.g. `try_wait` errored).
+    ProbeFailed(String),
+}
+
+/// Map a liveness observation to the step's pass/fail surface. Diagnostic
+/// wording lives only here, so tests assert on the classification instead of
+/// coupling to message text.
+fn render_liveness(observation: LivenessObservation) -> (bool, Option<String>) {
+    match observation {
+        LivenessObservation::Alive => (true, None),
+        LivenessObservation::ExitedEarly { status, stderr } => (
+            false,
+            Some(format!(
+                "LSP server exited before the liveness window completed with status {status}: {stderr}"
+            )),
+        ),
+        LivenessObservation::ProbeFailed(reason) => (false, Some(reason)),
+    }
+}
+
+/// Start the LSP binary with `--stdio`, wait one liveness window, and
+/// classify what the window observed. Protocol behavior is proved separately
+/// by the exact public-process targets.
+fn observe_liveness_window(
     binary: &std::path::Path,
     workspace_dir: &std::path::Path,
-) -> Result<(bool, Option<String>)> {
+) -> Result<LivenessObservation> {
     use std::process::{Command, Stdio};
 
     let mut child = Command::new(binary)
         .arg("--stdio")
         .current_dir(workspace_dir)
+        .env("PERL_LSP_QUIET", "1")
         .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
+        // The liveness window does not observe the server's stdout, and a
+        // piped-but-never-drained handle could block the child once the OS
+        // pipe buffer fills, so send it to null instead.
+        .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()
         .with_context(|| format!("Failed to spawn {}", binary.display()))?;
 
-    // Give the server a moment to initialize (or crash)
-    std::thread::sleep(Duration::from_secs(2));
+    // Drain stderr in the background for the whole window so the child can
+    // never block on a full stderr pipe either; the drained bytes remain
+    // available as early-exit diagnostics.
+    let stderr_tail = child.stderr.take().map(|mut stderr| {
+        std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            let _ = std::io::Read::read_to_end(&mut stderr, &mut buf);
+            String::from_utf8_lossy(&buf).to_string()
+        })
+    });
 
-    // Check if still alive
+    // Give the server a moment to initialize (or exit/crash).
+    std::thread::sleep(LIVENESS_WINDOW);
+
     match child.try_wait() {
         Ok(Some(status)) => {
-            // Process exited -- if it exited with 0 that's fine (some modes exit),
-            // but a crash (non-zero) is a failure.
-            let stderr_output = child
-                .stderr
-                .take()
-                .map(|mut s| {
-                    let mut buf = String::new();
-                    std::io::Read::read_to_string(&mut s, &mut buf).ok();
-                    buf
-                })
-                .unwrap_or_default();
-
-            if status.success() {
-                Ok((true, None))
-            } else {
-                Ok((
-                    false,
-                    Some(format!("LSP server exited with status {}: {}", status, stderr_output)),
-                ))
-            }
+            let stderr = stderr_tail.and_then(|handle| handle.join().ok()).unwrap_or_default();
+            Ok(LivenessObservation::ExitedEarly { status, stderr })
         }
         Ok(None) => {
-            // Still running -- that's the expected happy path
             let _ = child.kill();
             let _ = child.wait();
-            Ok((true, None))
+            Ok(LivenessObservation::Alive)
         }
-        Err(e) => Ok((false, Some(format!("Failed to check process status: {e}")))),
+        Err(e) => {
+            Ok(LivenessObservation::ProbeFailed(format!("Failed to check process status: {e}")))
+        }
     }
+}
+
+/// Start the LSP binary, observe one liveness window, and report pass/fail
+/// with diagnostics for the step outcome.
+fn run_lsp_liveness_smoke(
+    binary: &std::path::Path,
+    workspace_dir: &std::path::Path,
+) -> Result<(bool, Option<String>)> {
+    Ok(render_liveness(observe_liveness_window(binary, workspace_dir)?))
 }
 
 /// Create a temporary directory for the large-workspace test.
@@ -438,18 +558,97 @@ mod tests {
     }
 
     #[test]
+    fn exact_public_process_targets_are_selected() {
+        assert_eq!(
+            PUBLIC_PROCESS_TARGETS,
+            &["lsp_stdio_process_contract", "lsp_document_lifecycle_process"]
+        );
+    }
+
+    #[test]
+    fn governed_public_process_targets_exist_in_perllsp_test_inventory() -> Result<()> {
+        let root = project_root()?;
+        for target in PUBLIC_PROCESS_TARGETS {
+            let test_path =
+                root.join("crates").join("perllsp").join("tests").join(format!("{target}.rs"));
+            assert!(
+                test_path.is_file(),
+                "governed target {target} missing from crates/perllsp/tests: {}",
+                test_path.display()
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn liveness_rendering_maps_classifications_to_pass_fail() {
+        assert_eq!(render_liveness(LivenessObservation::Alive), (true, None));
+        assert_eq!(
+            render_liveness(LivenessObservation::ProbeFailed("boom".to_string())),
+            (false, Some("boom".to_string()))
+        );
+    }
+
+    #[test]
+    fn public_process_contract_args_are_release_locked_and_serial() {
+        assert_eq!(
+            public_process_test_args("lsp_stdio_process_contract", true),
+            vec![
+                "test",
+                "-p",
+                "perllsp",
+                "--test",
+                "lsp_stdio_process_contract",
+                "--release",
+                "--locked",
+                "--",
+                "--test-threads=1",
+            ]
+        );
+        assert_eq!(
+            public_process_test_args("lsp_document_lifecycle_process", false),
+            vec![
+                "test",
+                "-p",
+                "perllsp",
+                "--test",
+                "lsp_document_lifecycle_process",
+                "--release",
+                "--locked",
+                "--",
+                "--test-threads=1",
+                "-q",
+            ]
+        );
+    }
+
+    #[test]
+    fn public_binary_fallback_builds_the_perllsp_package_and_binary() {
+        assert_eq!(
+            perllsp_release_build_args(),
+            &["build", "-p", "perllsp", "--bin", "perllsp", "--release", "--locked"]
+        );
+    }
+
+    #[test]
     fn find_lsp_binary_prefers_release() -> Result<()> {
         let root = unique_path("bin-locate");
-        let release_dir = root.join("target/release");
-        let debug_dir = root.join("target/debug");
-        fs::create_dir_all(&release_dir)?;
-        fs::create_dir_all(&debug_dir)?;
+        let release = perllsp_binary_path(&root, "release");
+        let debug = perllsp_binary_path(&root, "debug");
+        let release_dir = release
+            .parent()
+            .ok_or_else(|| color_eyre::eyre::eyre!("release path must have a parent"))?;
+        let debug_dir = debug
+            .parent()
+            .ok_or_else(|| color_eyre::eyre::eyre!("debug path must have a parent"))?;
+        fs::create_dir_all(release_dir)?;
+        fs::create_dir_all(debug_dir)?;
 
-        fs::write(release_dir.join("perllsp"), "#!/bin/sh\nexit 0\n")?;
-        fs::write(debug_dir.join("perllsp"), "#!/bin/sh\nexit 0\n")?;
+        fs::write(&release, "#!/bin/sh\nexit 0\n")?;
+        fs::write(&debug, "#!/bin/sh\nexit 0\n")?;
 
         let found = find_lsp_binary(&root);
-        assert_eq!(found, Some(release_dir.join("perllsp")));
+        assert_eq!(found, Some(release));
 
         fs::remove_dir_all(root)?;
         Ok(())
@@ -493,39 +692,63 @@ mod tests {
         use super::*;
         use std::os::unix::fs::PermissionsExt;
 
+        fn write_executable_script(path: &std::path::Path, content: &str) -> Result<()> {
+            fs::write(path, content)?;
+            let mut perms = fs::metadata(path)?.permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(path, perms)?;
+            Ok(())
+        }
+
         #[test]
-        fn run_lsp_smoke_reports_nonzero_exit() -> Result<()> {
+        fn liveness_smoke_reports_nonzero_exit() -> Result<()> {
             let temp_root = unique_path("nonzero");
             fs::create_dir_all(&temp_root)?;
             let script = temp_root.join("fake_perllsp.sh");
-            fs::write(&script, "#!/usr/bin/env bash\necho crash >&2\nexit 7\n")?;
-            let mut perms = fs::metadata(&script)?.permissions();
-            perms.set_mode(0o755);
-            fs::set_permissions(&script, perms)?;
+            write_executable_script(&script, "#!/usr/bin/env bash\necho crash >&2\nexit 7\n")?;
 
-            let (passed, detail) = run_lsp_smoke(&script, &temp_root)?;
-            assert!(!passed);
-            let message = detail.unwrap_or_default();
-            assert!(message.contains("status"));
-            assert!(message.contains("crash"));
+            let observation = observe_liveness_window(&script, &temp_root)?;
+            let (status, stderr) = match observation {
+                LivenessObservation::ExitedEarly { status, stderr } => (status, stderr),
+                other => panic!("expected ExitedEarly, got {other:?}"),
+            };
+            assert_eq!(status.code(), Some(7));
+            assert!(stderr.contains("crash"));
 
             fs::remove_dir_all(temp_root)?;
             Ok(())
         }
 
         #[test]
-        fn run_lsp_smoke_treats_running_process_as_success() -> Result<()> {
+        fn liveness_smoke_rejects_early_clean_exit() -> Result<()> {
+            let temp_root = unique_path("early-clean-exit");
+            fs::create_dir_all(&temp_root)?;
+            let script = temp_root.join("fake_perllsp.sh");
+            write_executable_script(&script, "#!/usr/bin/env bash\nexit 0\n")?;
+
+            let observation = observe_liveness_window(&script, &temp_root)?;
+            let status = match observation {
+                LivenessObservation::ExitedEarly { status, .. } => status,
+                other => panic!("expected ExitedEarly, got {other:?}"),
+            };
+            assert!(status.success());
+
+            fs::remove_dir_all(temp_root)?;
+            Ok(())
+        }
+
+        #[test]
+        fn liveness_smoke_accepts_a_running_process() -> Result<()> {
             let temp_root = unique_path("long-running");
             fs::create_dir_all(&temp_root)?;
             let script = temp_root.join("fake_perllsp.sh");
-            fs::write(&script, "#!/usr/bin/env bash\nsleep 5\n")?;
-            let mut perms = fs::metadata(&script)?.permissions();
-            perms.set_mode(0o755);
-            fs::set_permissions(&script, perms)?;
+            write_executable_script(&script, "#!/usr/bin/env bash\nsleep 5\n")?;
 
-            let (passed, detail) = run_lsp_smoke(&script, &temp_root)?;
-            assert!(passed);
-            assert!(detail.is_none());
+            let observation = observe_liveness_window(&script, &temp_root)?;
+            assert!(
+                matches!(observation, LivenessObservation::Alive),
+                "expected Alive, got {observation:?}"
+            );
 
             fs::remove_dir_all(temp_root)?;
             Ok(())

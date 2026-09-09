@@ -39,7 +39,7 @@ use perl_lsp_ux_tests::taxonomy::{MetricState, UxScenarioResult};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 // ---------------------------------------------------------------------------
 // Output schema for .ci/metrics/editor_ux.json
@@ -171,8 +171,14 @@ impl ObservedUxRates {
 /// When `receipt_dir` is provided, the command reads `ux_scenario_run` receipts
 /// from that directory and writes the measured `.ci/metrics/editor_ux.json`
 /// scorecard when `json` is true. Without `receipt_dir`, the command preserves
-/// the legacy fixture-inventory output.
-pub fn run_with_receipt_dir(json: bool, receipt_dir: Option<&Path>) -> Result<()> {
+/// the legacy fixture-inventory output. `output` overrides where the JSON
+/// receipt is written (reads of historical metrics stay on the default path),
+/// keeping callers such as tests off the tracked artifact.
+pub fn run_with_receipt_dir(
+    json: bool,
+    receipt_dir: Option<&Path>,
+    output: Option<&Path>,
+) -> Result<()> {
     let root = project_root()?;
 
     if let Some(receipts_dir) = receipt_dir {
@@ -181,7 +187,7 @@ pub fn run_with_receipt_dir(json: bool, receipt_dir: Option<&Path>) -> Result<()
             .join("perl-lsp-ux-tests")
             .join("fixtures")
             .join("editor_ux_fixture_matrix.json");
-        let output_path = root.join(".ci").join("metrics").join("editor_ux.json");
+        let output_path = json_output_path(&root, output);
         let scorecard = aggregate_from_receipts(receipts_dir, &fixture_matrix, None)?;
 
         print_measured_scorecard_summary(&scorecard, receipts_dir);
@@ -224,6 +230,7 @@ pub fn run_with_receipt_dir(json: bool, receipt_dir: Option<&Path>) -> Result<()
 
     if json {
         let metrics = build_metrics(observed_rates.as_ref());
+        let output_path = json_output_path(&root, output);
         let output = EditorUxMetrics {
             schema_version: 1,
             measured_at: Utc::now().to_rfc3339(),
@@ -231,12 +238,20 @@ pub fn run_with_receipt_dir(json: bool, receipt_dir: Option<&Path>) -> Result<()
             last_run: last_run.clone(),
             metrics,
         };
-        write_json_receipt(&receipt_path, &output)
-            .with_context(|| format!("writing receipt to {}", receipt_path.display()))?;
-        println!("\nWrote receipt: {}", receipt_path.display());
+        write_json_receipt(&output_path, &output)
+            .with_context(|| format!("writing receipt to {}", output_path.display()))?;
+        println!("\nWrote receipt: {}", output_path.display());
     }
 
     Ok(())
+}
+
+/// Resolve the JSON receipt destination: an explicit `--output` override or
+/// the tracked default `.ci/metrics/editor_ux.json`.
+fn json_output_path(root: &Path, output: Option<&Path>) -> PathBuf {
+    output
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| root.join(".ci").join("metrics").join("editor_ux.json"))
 }
 
 // ---------------------------------------------------------------------------
@@ -668,6 +683,12 @@ struct WorkflowBucket {
     fail_count: usize,
     quarantined_count: usize,
     skipped_count: usize,
+    /// Pass count restricted to receipts whose evidence class supports
+    /// semantic proof; component (semantic) metrics count only these (#13570).
+    semantic_pass_count: usize,
+    /// Fail count restricted to semantic-proof receipts (see
+    /// `semantic_pass_count`).
+    semantic_fail_count: usize,
     /// Timing values from passing scenarios with non-null timing.
     pass_timings: Vec<f64>,
     /// All receipts for this workflow (for stability computation).
@@ -878,12 +899,20 @@ pub fn aggregate_from_receipts(
         match effective_result {
             UxScenarioResult::Pass => {
                 bucket.pass_count += 1;
+                if receipt.evidence_class.supports_semantic_proof() {
+                    bucket.semantic_pass_count += 1;
+                }
                 // Only passing scenarios with non-null timing contribute to p95.
                 if let Some(timing) = receipt.time_to_first_useful_result_ms {
                     bucket.pass_timings.push(timing);
                 }
             }
-            UxScenarioResult::Fail => bucket.fail_count += 1,
+            UxScenarioResult::Fail => {
+                bucket.fail_count += 1;
+                if receipt.evidence_class.supports_semantic_proof() {
+                    bucket.semantic_fail_count += 1;
+                }
+            }
             UxScenarioResult::Quarantined => {
                 bucket.quarantined_count += 1;
                 bucket.quarantined_test_names.push(receipt.test_name.clone());
@@ -999,9 +1028,13 @@ pub fn aggregate_from_receipts(
         };
 
         // Component metric contributions based on fixture matrix `measures`.
+        // These are semantic projections, so only receipts whose evidence
+        // class supports semantic proof contribute: a transport-only pass
+        // (e.g. Scenario 24's post-edit navigation row, #13570) must not
+        // inflate `cross_file_definition_success_rate` and its siblings.
         if let Some(b) = bucket {
-            let wf_pass = b.pass_count;
-            let wf_eligible = b.pass_count + b.fail_count;
+            let wf_pass = b.semantic_pass_count;
+            let wf_eligible = b.semantic_pass_count + b.semantic_fail_count;
             if wf_eligible > 0 {
                 for measure in &wf.measures {
                     match measure.as_str() {
@@ -1490,6 +1523,141 @@ mod tests {
         let path = dir.join(filename);
         fs::write(&path, serde_json::to_string_pretty(&receipt).unwrap_or_default())
             .unwrap_or_default();
+    }
+
+    /// Helper: like `write_receipt_file`, but stamps an explicit
+    /// `evidence_class` on the receipt.
+    fn write_classified_receipt_file(
+        dir: &Path,
+        workflow_id: &str,
+        test_name: &str,
+        result: &str,
+        evidence_class: &str,
+    ) {
+        let receipt = serde_json::json!({
+            "kind": "ux_scenario_run",
+            "schema_version": 1,
+            "measured_at": "2026-06-01T00:00:00Z",
+            "run_identity": {
+                "sha": "abcdef12",
+                "branch": "main",
+            },
+            "workflow_id": workflow_id,
+            "scenario_file": format!("{workflow_id}.rs"),
+            "test_name": test_name,
+            "evidence_class": evidence_class,
+            "ci_tier": "pr",
+            "result": result,
+            "duration_ms": 100.0,
+            "assertions": {
+                "passed": 1,
+                "failed": 0,
+                "basis": "instrumented",
+            },
+            "canonical_repro": "cargo test ...",
+            "friendly_repro": "just ux-tests ...",
+        });
+        let filename = format!("{workflow_id}-{test_name}-abcdef12.json");
+        let path = dir.join(filename);
+        fs::write(&path, serde_json::to_string_pretty(&receipt).unwrap_or_default())
+            .unwrap_or_default();
+    }
+
+    /// Transport-characterization receipts must not feed the semantic
+    /// component metrics (#13570): a transport-only pass on a workflow
+    /// declaring `cross_file_definition_success_rate` is not definition
+    /// correctness, and a workflow with only transport receipts reports
+    /// insufficient data rather than a 100% semantic rate.
+    #[test]
+    fn test_aggregate_from_receipts_excludes_transport_rows_from_component_metrics()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let receipts_dir = tmp.path().join("receipts");
+        fs::create_dir_all(&receipts_dir)?;
+
+        let matrix_path = write_fixture_matrix(
+            tmp.path(),
+            &[
+                (
+                    "live_edit_feedback_loop",
+                    "ux_scenario_24_live_edit_feedback.rs",
+                    "text_sync",
+                    &["cross_file_definition_success_rate"],
+                ),
+                (
+                    "transport_only_wf",
+                    "ux_scenario_99.rs",
+                    "text_sync",
+                    &["module_resolution_workflow_success_rate"],
+                ),
+            ],
+        );
+
+        // One semantic pass + one semantic fail + one transport pass on the
+        // cross-file workflow: the semantic rate must be 1/2, not 2/3.
+        write_classified_receipt_file(
+            &receipts_dir,
+            "live_edit_feedback_loop",
+            "sem_pass",
+            "pass",
+            "semantic_proof",
+        );
+        write_classified_receipt_file(
+            &receipts_dir,
+            "live_edit_feedback_loop",
+            "sem_fail",
+            "fail",
+            "semantic_proof",
+        );
+        write_classified_receipt_file(
+            &receipts_dir,
+            "live_edit_feedback_loop",
+            "transport_pass",
+            "pass",
+            "transport_characterization",
+        );
+        // A workflow whose only receipts are transport-classified passes.
+        write_classified_receipt_file(
+            &receipts_dir,
+            "transport_only_wf",
+            "transport_pass",
+            "pass",
+            "transport_characterization",
+        );
+
+        let scorecard = aggregate_from_receipts(&receipts_dir, &matrix_path, None)?;
+
+        let cross_file = &scorecard.components.cross_file_definition_success_rate;
+        assert!(
+            (rate_value(cross_file) - 0.5).abs() < 0.001,
+            "transport pass must not inflate cross_file_definition_success_rate: {cross_file:?}"
+        );
+        assert_eq!(
+            cross_file.basis,
+            vec!["2 receipts".to_string()],
+            "component metric basis must count semantic receipts only"
+        );
+
+        let module_resolution = &scorecard.components.module_resolution_workflow_success_rate;
+        assert_eq!(
+            module_resolution.state, "insufficient_data",
+            "transport-only workflow must not produce a measured semantic rate: {module_resolution:?}"
+        );
+
+        // Transport receipts still count toward the workflow pass-rate row
+        // (responsiveness characterization stays useful there).
+        let live_edit_row = scorecard
+            .workflows
+            .iter()
+            .find(|row| row.id == "live_edit_feedback_loop")
+            .ok_or("live_edit_feedback_loop row")?;
+        assert!(
+            (rate_value(&live_edit_row.pass_rate) - (2.0 / 3.0)).abs() < 0.001,
+            "workflow pass rate must still count transport receipts: {:?}",
+            live_edit_row.pass_rate
+        );
+
+        Ok(())
     }
 
     #[test]
@@ -2501,6 +2669,14 @@ mod tests {
 
         let conditionals = evidence["allOf"].as_array().ok_or("evidence.allOf")?;
         let verified_then = &conditionals[0]["then"]["properties"];
+        assert_eq!(
+            verified_then["verification_pr"]["type"], "integer",
+            "verified rows must carry a non-null verification_pr identity"
+        );
+        assert_eq!(
+            verified_then["verification_pr"]["minimum"], 1,
+            "verified rows must not carry a placeholder verification_pr"
+        );
         assert_eq!(
             verified_then["verified_sha"]["type"], "string",
             "verified rows must carry a non-null 40-hex verified_sha"

@@ -907,7 +907,12 @@ fn sexp_heredoc_variants() -> Result<(), Box<dyn std::error::Error>> {
 #[test]
 fn sexp_data_section() -> Result<(), Box<dyn std::error::Error>> {
     let ds = Node::new(
-        NodeKind::DataSection { marker: "__DATA__".to_string(), body: Some("stuff".to_string()) },
+        NodeKind::DataSection {
+            marker: "__DATA__".to_string(),
+            marker_span: None,
+            body: Some("stuff".to_string()),
+            body_span: None,
+        },
         loc(0, 20),
     );
     let sexp = ds.to_sexp();
@@ -1808,7 +1813,15 @@ fn leaf_nodes_have_no_children() -> Result<(), Box<dyn std::error::Error>> {
             loc(0, 13),
         ),
         Node::new(NodeKind::Prototype { content: "$".to_string() }, loc(0, 3)),
-        Node::new(NodeKind::DataSection { marker: "__END__".to_string(), body: None }, loc(0, 7)),
+        Node::new(
+            NodeKind::DataSection {
+                marker: "__END__".to_string(),
+                marker_span: None,
+                body: None,
+                body_span: None,
+            },
+            loc(0, 7),
+        ),
         Node::new(
             NodeKind::Format {
                 name: "STDOUT".to_string(),

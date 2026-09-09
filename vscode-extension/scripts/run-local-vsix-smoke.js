@@ -23,6 +23,230 @@ function runNpm(args, env) {
   });
 }
 
+/**
+ * Compile the published smoke entrypoint separately from executing it. A
+ * compiler exit code must never be confused with the child's typed platform
+ * boundary exit code.
+ *
+ * @param {NodeJS.ProcessEnv} env
+ * @param {(file: string, args: string[], options: object) => import('child_process').SpawnSyncReturns<string>} [runner]
+ */
+function runPublishedSmoke(env, runner = spawnSync) {
+  const options = {
+    cwd: root,
+    env,
+    encoding: 'utf8',
+    windowsHide: true,
+    stdio: 'inherit',
+  };
+  const compile = runner(
+    process.execPath,
+    [path.join(__dirname, 'governed-tsc.js'), '-p', './tsconfig.published-smoke.json'],
+    options,
+  );
+  if (compile.error || compile.status !== 0) {
+    return { phase: 'compile', result: compile };
+  }
+  return {
+    phase: 'child',
+    result: runner(
+      process.execPath,
+      [path.join(root, 'out/test/published/runPublishedSmoke.js')],
+      options,
+    ),
+  };
+}
+
+function testExplorerSmokeEnv(baseEnv, revision, vsixPath, vsixSha256) {
+  const explorerLabel = `${smokeSourceLabel()}-test-explorer`;
+  const env = {
+    ...baseEnv,
+    PERL_LSP_CURRENT_SOURCE_SHA: revision,
+    PERL_LSP_SERVER_SOURCE_SHA: serverSourceRevision || revision,
+    PERL_LSP_PUBLISHED_EXTENSION_SOURCE: 'vsix',
+    PERL_LSP_PUBLISHED_VSIX_PATH: vsixPath,
+    PERL_LSP_SMOKE_SOURCE_LABEL: explorerLabel,
+    PERL_LSP_TEST_EXPLORER_SMOKE: '1',
+    PERL_LSP_TEST_EXPLORER_RECEIPT: path.join(
+      receiptsRoot(),
+      explorerLabel,
+      smokePlatformLabel(),
+      'test_explorer_journey_receipt.json',
+    ),
+    PERL_LSP_SERVER_ARTIFACT_SHA256:
+      serverPath && fs.existsSync(serverPath) ? sha256File(serverPath) : '',
+    PERL_LSP_VSIX_SHA256: vsixSha256,
+  };
+  delete env.PERL_LSP_CURRENT_SOURCE_SMOKE;
+  delete env.PERL_LSP_PACKAGED_BUNDLE_SMOKE;
+  delete env.PERL_LSP_HEALTH_CHECK_FAILURE_SMOKE;
+  delete env.PERL_LSP_HEALTH_CHECK_RECOVERY_SMOKE;
+  delete env.PERL_LSP_ACTIVATION_FAILURE_SMOKE;
+  delete env.PERL_LSP_ACTIVATION_FAILURE_LEG;
+  delete env.PERL_LSP_CRASH_RECOVERY_SMOKE;
+  delete env.PERL_LSP_CRASH_RECOVERY_LEG;
+  delete env.PERL_LSP_TEST_EXPLORER_JOURNEY;
+  delete env.PERL_LSP_FIRST_HOUR_ONLY;
+  delete env.PERL_LSP_FIRST_HOUR_RECEIPT;
+  delete env.PERL_LSP_FIRST_HOUR_SERVER_PATH;
+  return env;
+}
+
+function validateTestExplorerReceipt({
+  receiptFile,
+  expectedRevision,
+  expectedServerSourceSha,
+  expectedServerArtifactSha256,
+  expectedVsixSha256,
+  readFile = (file) => fs.readFileSync(file, 'utf8'),
+  exists = (file) => fs.existsSync(file),
+}) {
+  if (!exists(receiptFile)) {
+    return { ok: false, violations: ['Test Explorer child did not write its completion receipt'] };
+  }
+  let receipt;
+  try {
+    receipt = JSON.parse(readFile(receiptFile));
+  } catch (error) {
+    return {
+      ok: false,
+      violations: [
+        `Test Explorer child receipt was not valid JSON: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      ],
+    };
+  }
+  const violations = [];
+  if (receipt?.schema_version !== 'test_explorer_journey.v1') {
+    violations.push('Test Explorer child receipt has an unexpected schema');
+  }
+  if (receipt?.outcome !== 'completed') violations.push('Test Explorer child did not complete');
+  if (receipt?.source_revision !== expectedRevision) {
+    violations.push('Test Explorer child source revision is not this candidate');
+  }
+  if (receipt?.server_source_revision !== expectedServerSourceSha) {
+    violations.push('Test Explorer child server revision is not the staged server');
+  }
+  if (
+    receipt?.server_artifact_sha256 !== expectedServerArtifactSha256 ||
+    !/^[0-9a-f]{64}$/i.test(String(receipt?.server_artifact_sha256 ?? ''))
+  ) {
+    violations.push('Test Explorer child server artifact digest is not the staged server');
+  }
+  if (receipt?.binary_resolution_source !== 'bundled') {
+    violations.push('Test Explorer child did not report the bundled server as its source');
+  }
+  if (receipt?.binary_resolution_status !== 'ok') {
+    violations.push('Test Explorer child did not report successful server resolution');
+  }
+  if (
+    typeof receipt?.binary_resolution_path !== 'string' ||
+    receipt.binary_resolution_path.length === 0
+  ) {
+    violations.push('Test Explorer child did not report the selected server path');
+  }
+  if (receipt?.binary_resolution_sha256 !== receipt?.server_artifact_sha256) {
+    violations.push('Test Explorer child selected a server with a different digest');
+  }
+  if (!expectedVsixSha256 || receipt?.vsix_sha256 !== expectedVsixSha256) {
+    violations.push('Test Explorer child VSIX digest is not the package this run created');
+  }
+  if (
+    typeof receipt?.fixture !== 'string' ||
+    receipt.fixture.length === 0 ||
+    typeof receipt?.test_zero !== 'string' ||
+    receipt.test_zero.length === 0
+  ) {
+    violations.push('Test Explorer child receipt is missing selected fixture evidence');
+  } else if (path.normalize(receipt.fixture) !== path.normalize(receipt.test_zero)) {
+    violations.push('Test Explorer child receipt selected a different test than its fixture');
+  }
+  return violations.length > 0 ? { ok: false, violations } : { ok: true, receipt };
+}
+
+function interpretTestExplorerExit(smokeRun, childReceipt) {
+  if (smokeRun.phase === 'compile') {
+    return {
+      status: 'failed',
+      exit_code: smokeRun.result.status ?? null,
+      reason: smokeRun.result.error
+        ? 'published_smoke_compile_spawn_failed'
+        : 'published_smoke_compile_failed',
+    };
+  }
+  if (smokeRun.result.error || smokeRun.result.status !== 0) {
+    const interpreted = interpretBehavioralSmokeExit({
+      status: smokeRun.result.status,
+      spawnError: smokeRun.result.error,
+      candidateBound: true,
+      platform: process.platform,
+      receiptsRoot: receiptsRoot(),
+    });
+    return interpreted.reason === 'published_extension_smoke_failed'
+      ? { ...interpreted, reason: 'test_explorer_journey_failed' }
+      : interpreted;
+  }
+  if (!childReceipt.ok) {
+    return {
+      status: 'not_proven',
+      exit_code: 0,
+      reason: 'test_explorer_child_receipt_did_not_bind_this_run',
+      violations: childReceipt.violations,
+    };
+  }
+  return {
+    status: 'pass',
+    exit_code: 0,
+    reason: 'test_explorer_child_completed',
+    fixture: childReceipt.receipt.fixture,
+    test_zero: childReceipt.receipt.test_zero,
+  };
+}
+
+/**
+ * @param {NodeJS.ProcessEnv} baseEnv
+ * @param {string} revision
+ * @param {string} vsixPath
+ * @param {string} vsixSha256
+ * @param {(env: NodeJS.ProcessEnv) => {phase: string, result: {status: number | null, error?: Error}}} [runner]
+ */
+function runTestExplorerJourneyStage(
+  baseEnv,
+  revision,
+  vsixPath,
+  vsixSha256,
+  runner = (env) => runPublishedSmoke(env),
+) {
+  const env = testExplorerSmokeEnv(baseEnv, revision, vsixPath, vsixSha256);
+  const receiptFile = env.PERL_LSP_TEST_EXPLORER_RECEIPT;
+  try {
+    for (const staleReceipt of [receiptFile, hostResolutionFailurePath()]) {
+      fs.rmSync(staleReceipt, { force: true });
+    }
+  } catch (error) {
+    return {
+      status: 'not_proven',
+      exit_code: null,
+      reason: `unable to clear the previous Test Explorer or host-resolution receipt: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    };
+  }
+  const smokeRun = runner(env);
+  const childReceipt =
+    smokeRun.phase === 'child' && smokeRun.result.status === 0
+      ? validateTestExplorerReceipt({
+          receiptFile,
+          expectedRevision: revision,
+          expectedServerSourceSha: serverSourceRevision || revision,
+          expectedServerArtifactSha256: env.PERL_LSP_SERVER_ARTIFACT_SHA256,
+          expectedVsixSha256: vsixSha256,
+        })
+      : { ok: false, violations: ['Test Explorer child did not complete successfully'] };
+  return interpretTestExplorerExit(smokeRun, childReceipt);
+}
+
 function gitRevision() {
   const result = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' });
   if (result.status !== 0) {
@@ -153,6 +377,7 @@ function writeJsonAtomic(destination, value) {
  *   behavior_safe?: boolean,
  *   transition_state?: string,
  *   violations?: string[],
+ *   post_host_exit_processes?: string[],
  *   transition?: unknown,
  * }} SmokeStage
  */
@@ -165,6 +390,7 @@ function writeJsonAtomic(destination, value) {
  *   platform: string,
  *   architecture: string,
  *   vscode_version: string,
+ *   observed_vscode_version: string | null,
  *   source_label: string,
  *   server: { source_sha: string | null, path: string | null, sha256: string | null },
  *   vsix: { path: string | null, sha256: string | null },
@@ -172,6 +398,7 @@ function writeJsonAtomic(destination, value) {
  *     package_creation: SmokeStage,
  *     package_inventory: SmokeStage,
  *     behavioral_smoke: SmokeStage,
+ *     test_explorer_journey?: SmokeStage,
  *     activation_failure_journey: SmokeStage,
  *     crash_recovery_journey: SmokeStage,
  *   },
@@ -196,6 +423,10 @@ function initialReceipt(revision) {
     // One default across receipt and child check: the extension-host child
     // records 'stable' when the matrix version is unset, so we do too.
     vscode_version: (process.env.PERL_LSP_VSCODE_VERSION || '').trim() || 'stable',
+    // The launched runtime version observed by the extension-host child; null
+    // until a bound first-hour receipt reports it. Consumers must treat null
+    // as unobserved, never as agreement with the requested selector.
+    observed_vscode_version: null,
     source_label: (process.env.PERL_LSP_SMOKE_SOURCE_LABEL || '').trim() || 'local-current-source',
     server: {
       source_sha: serverSourceRevision || null,
@@ -251,9 +482,9 @@ function shouldRunActivationFailureJourney(stages) {
  * The packaged crash-recovery journey (#7848) needs only a behavior-safe
  * package for the same reason: it installs the exact VSIX into its own
  * isolated profile and terminates the exact server process from the harness
- * in both legs. Its verdict composes per-row results, so an honestly
- * `not_proven` watchdog row on hosts without a suspend capability degrades
- * the stage verdict without weakening the other rows.
+ * in both legs. Its verdict composes per-row results; on hosts without a
+ * suspend capability the watchdog row is typed `pending` (visible,
+ * verdict-neutral) instead of degrading the stage verdict (#15019).
  */
 function shouldRunCrashRecoveryJourney(stages) {
   return (
@@ -283,6 +514,10 @@ function computeOverallStatus(stages, instrumentFailure = null, cleanupFailure =
     activationFailure.status !== 'pass' &&
     activationFailure.status !== 'not_run'
   ) {
+    return 'not_proven';
+  }
+  const testExplorer = stages.test_explorer_journey;
+  if (testExplorer && testExplorer.status !== 'pass' && testExplorer.status !== 'not_run') {
     return 'not_proven';
   }
   const crashRecovery = stages.crash_recovery_journey;
@@ -458,13 +693,21 @@ function interpretTransitionResult(
   };
 }
 
-function runInventoryTransition(env, expectedRevision, vsixPath) {
+function inventoryTransitionArgs(env, vsixPath) {
   const scriptPath = path.join(__dirname, 'check-vsix-inventory-transition.js');
   const args = [scriptPath, '--vsix', vsixPath];
   const explicitBase = (env.PERL_LSP_PACKAGE_BASE_SHA || '').trim();
-  if (explicitBase) {
+  const pullRequestBase = (env.PERL_LSP_PACKAGE_PR_BASE_SHA || '').trim();
+  if ((env.PERL_LSP_PACKAGE_BASE_MODE || '').trim() === 'pull_request') {
+    args.push('--merge-base-with', pullRequestBase);
+  } else if (explicitBase) {
     args.push('--base', explicitBase);
   }
+  return args;
+}
+
+function runInventoryTransition(env, expectedRevision, vsixPath) {
+  const args = inventoryTransitionArgs(env, vsixPath);
   const result = spawnSync(process.execPath, args, {
     cwd: root,
     env,
@@ -587,6 +830,22 @@ function validateChildSmokeReceipt({
       `first-hour receipt VS Code version ${JSON.stringify(environment.requested_vscode_version)} is not this matrix leg`,
     );
   }
+  // The requested selector alone never proves the launched host: the child
+  // must record the actual runtime version, and on a concrete leg that
+  // runtime must equal the request.
+  const runtimeVersion = environment.vscode_version;
+  if (typeof runtimeVersion !== 'string' || !/^\d+\.\d+\.\d+$/.test(runtimeVersion)) {
+    violations.push(
+      `first-hour receipt does not record a concrete launched VS Code runtime version, got ${JSON.stringify(runtimeVersion)}`,
+    );
+  } else if (
+    /^\d+\.\d+\.\d+$/.test(expectedVscodeVersion) &&
+    runtimeVersion !== expectedVscodeVersion
+  ) {
+    violations.push(
+      `first-hour receipt launched VS Code ${JSON.stringify(runtimeVersion)} but this matrix leg requested the concrete ${JSON.stringify(expectedVscodeVersion)}`,
+    );
+  }
   if (environment.extension_id !== 'EffortlessMetrics.perl-lsp-rs') {
     violations.push(
       `first-hour receipt extension id ${JSON.stringify(environment.extension_id)} is not the packaged extension`,
@@ -603,6 +862,8 @@ function validateChildSmokeReceipt({
 
 /** Must match `HOST_RESOLUTION_FAILURE_RECEIPT_NAME` in vscodeHostResolution.ts. */
 const HOST_RESOLUTION_FAILURE_RECEIPT = 'vscode_host_resolution_failure.json';
+// Reserved by runPublishedSmoke.ts for the candidate-bound platform boundary.
+const CANDIDATE_PLATFORM_UNAVAILABLE_EXIT_CODE = 2;
 
 function hostResolutionFailurePath(root = receiptsRoot()) {
   return path.join(root, HOST_RESOLUTION_FAILURE_RECEIPT);
@@ -646,6 +907,8 @@ function readHostResolutionFailureReceipt(
  * @param {{
  *   status?: number | null,
  *   spawnError?: Error | undefined,
+ *   candidateBound?: boolean,
+ *   platform?: string,
  *   receiptsRoot?: string,
  *   exists?: ((file: string) => boolean) | undefined,
  *   readFile?: ((file: string) => string) | undefined,
@@ -660,6 +923,8 @@ function readHostResolutionFailureReceipt(
 function interpretBehavioralSmokeExit({
   status = null,
   spawnError,
+  candidateBound = false,
+  platform = process.platform,
   receiptsRoot: root = receiptsRoot(),
   exists,
   readFile,
@@ -695,6 +960,17 @@ function interpretBehavioralSmokeExit({
       reason: spawnError.message,
     };
   }
+  if (
+    candidateBound &&
+    platform !== 'linux' &&
+    status === CANDIDATE_PLATFORM_UNAVAILABLE_EXIT_CODE
+  ) {
+    return {
+      status: 'not_proven',
+      exit_code: status,
+      reason: 'candidate_bound_platform_unavailable',
+    };
+  }
   return {
     status: 'failed',
     exit_code: status ?? null,
@@ -707,6 +983,391 @@ function exitCodeFor(overall) {
     return 0;
   }
   return overall === 'failed' ? 1 : 2;
+}
+
+/**
+ * Stage-truth projection onto the GitHub check surface (#6883).
+ *
+ * The receipt already keeps package creation, package inventory, and installed
+ * behaviour as separate typed facts, but that evidence only exists inside an
+ * uploaded artifact. A reviewer reading the check itself sees one aggregate
+ * colour, so a blocking package-inventory transition still reads as though the
+ * behavioural smoke failed — including when the behavioural smoke passed, or
+ * never ran at all.
+ *
+ * Everything below is presentation derived from the finished receipt. It never
+ * decides a stage verdict, never changes the aggregate, and never changes the
+ * process exit code; `composeCheckSummary` is pure so the wording it produces
+ * can be proven directly against a receipt.
+ */
+const CHECK_STAGE_ORDER = [
+  'package_creation',
+  'package_inventory',
+  'behavioral_smoke',
+  'test_explorer_journey',
+  'activation_failure_journey',
+  'crash_recovery_journey',
+];
+
+const CHECK_STAGE_LABELS = {
+  package_creation: 'package creation',
+  package_inventory: 'package inventory',
+  behavioral_smoke: 'behavioral smoke',
+  test_explorer_journey: 'Test Explorer journey',
+  activation_failure_journey: 'activation-failure journey',
+  crash_recovery_journey: 'crash-recovery journey',
+};
+
+function checkStageOrder(stages) {
+  return stages.test_explorer_journey
+    ? CHECK_STAGE_ORDER
+    : CHECK_STAGE_ORDER.filter((key) => key !== 'test_explorer_journey');
+}
+
+/** The receipt's typed stage vocabulary, rendered as English. */
+const CHECK_VERDICT_WORDS = {
+  pass: 'passed',
+  failed: 'failed',
+  not_run: 'not run',
+  not_proven: 'not proven',
+};
+
+/** Stages whose verdict describes the package rather than installed behaviour. */
+const CHECK_PACKAGE_STAGES = ['package_creation', 'package_inventory'];
+
+/**
+ * Packaged journeys that can decide the aggregate on their own.
+ *
+ * `computeOverallStatus` degrades the run when either is failed or not proven,
+ * so the headline has to be able to name them: a run whose only defect is a
+ * recovery journey would otherwise read entirely green on a red check, which
+ * is the misreading this projection exists to remove.
+ */
+const CHECK_JOURNEY_STAGES = [
+  'test_explorer_journey',
+  'activation_failure_journey',
+  'crash_recovery_journey',
+];
+
+function checkVerdictWord(status) {
+  return CHECK_VERDICT_WORDS[status] ?? String(status);
+}
+
+/**
+ * Every fact this projection quotes is one line.
+ *
+ * Receipt text is not authored here — it carries subprocess stderr, file paths,
+ * and error messages — so a line break inside it would otherwise let a stage
+ * reason open a heading, a list, or a second table in the job summary, above
+ * the authoritative one. Normalizing at the single point where receipt strings
+ * enter the projection keeps every downstream surface (headline, annotations,
+ * table cells, remaining-proof bullets) structurally safe by construction.
+ */
+function singleLine(value) {
+  return String(value).replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * Why a stage reached its verdict, in one line, without repeating the verdict.
+ *
+ * @param {SmokeStage | undefined} stage
+ */
+function checkStageDetail(stage) {
+  if (!stage) {
+    return 'stage absent from the receipt';
+  }
+  const parts = [];
+  if (stage.classification && stage.classification !== stage.status) {
+    parts.push(singleLine(stage.classification));
+  }
+  if (stage.transition_state) {
+    parts.push(singleLine(stage.transition_state));
+  }
+  if (stage.reason) {
+    parts.push(singleLine(stage.reason));
+  }
+  if (typeof stage.exit_code === 'number') {
+    parts.push(`exit ${stage.exit_code}`);
+  }
+  for (const violation of Array.isArray(stage.violations) ? stage.violations : []) {
+    parts.push(singleLine(violation));
+  }
+  // The stage label and verdict already carry the fact; a stage that recorded
+  // nothing further gets a placeholder rather than invented prose.
+  return parts.length > 0 ? parts.join('; ') : '—';
+}
+
+/**
+ * The package half of the headline: which package proposition actually
+ * rejected, or that neither did.
+ */
+function checkPackagePhrase(stages) {
+  const rejected = [];
+  for (const key of CHECK_PACKAGE_STAGES) {
+    const stage = stages[key];
+    if (!stage) {
+      // A missing stage is reported as missing, never quietly as passing.
+      rejected.push(`${CHECK_STAGE_LABELS[key]} absent from the receipt`);
+    } else if (stage.status !== 'pass') {
+      rejected.push(`${CHECK_STAGE_LABELS[key]} ${checkVerdictWord(stage.status)}`);
+    }
+  }
+  return rejected.length > 0
+    ? rejected.join(' and ')
+    : 'package creation and package inventory passed';
+}
+
+/**
+ * The behavioural half of the headline. `not_run` and `not_proven` carry their
+ * reason, because "did not run" and "ran and failed" are the two facts this
+ * projection exists to keep apart.
+ *
+ * `pass` and `failed` deliberately stop at the verdict, unlike the journey
+ * segments below: this stage's verdict is itself the triage surface, and its
+ * failure reason is a restatement of it (`published_extension_smoke_failed`).
+ * The table row carries the full `checkStageDetail` either way, so the
+ * asymmetry costs no evidence — do not "fix" it into a journey-style line.
+ */
+function checkBehavioralPhrase(stage) {
+  const label = CHECK_STAGE_LABELS.behavioral_smoke;
+  if (!stage) {
+    return `${label} absent from the receipt`;
+  }
+  const phrase = `${label} ${checkVerdictWord(stage.status)}`;
+  if (stage.status === 'pass' || stage.status === 'failed' || !stage.reason) {
+    return phrase;
+  }
+  return `${phrase}: ${singleLine(stage.reason)}`;
+}
+
+/**
+ * One sentence naming the proposition that actually decided the run. This is
+ * the line a reviewer reads instead of "Current-source Linux smoke failed".
+ */
+function checkHeadline(receipt) {
+  const stages = receipt.stages ?? {};
+  const segments = [checkPackagePhrase(stages), checkBehavioralPhrase(stages.behavioral_smoke)];
+  // A journey that did not run is already explained by the package phrase that
+  // declined it; one that reached a non-passing verdict decided this run.
+  for (const key of CHECK_JOURNEY_STAGES) {
+    const stage = stages[key];
+    if (!stage) {
+      if (key === 'test_explorer_journey') continue;
+      segments.push(`${CHECK_STAGE_LABELS[key]} absent from the receipt`);
+      continue;
+    }
+    if (stage.status === 'pass' || stage.status === 'not_run') {
+      continue;
+    }
+    const phrase = `${CHECK_STAGE_LABELS[key]} ${checkVerdictWord(stage.status)}`;
+    segments.push(stage.reason ? `${phrase}: ${singleLine(stage.reason)}` : phrase);
+  }
+  if (receipt.instrument_failure) {
+    segments.push(`smoke instrument failed: ${singleLine(receipt.instrument_failure)}`);
+  }
+  // An empty object is not a cleanup failure: naming one with nothing after the
+  // colon would assert a failure the receipt does not record.
+  const cleanupFailures = Object.keys(receipt.cleanup_failure ?? {}).sort();
+  if (cleanupFailures.length > 0) {
+    segments.push(`cleanup failed: ${cleanupFailures.join(', ')}`);
+  }
+  return segments.join('; ');
+}
+
+/** Stages that carry no verdict yet, so the summary can say what is still owed. */
+function checkRemainingProof(stages) {
+  return checkStageOrder(stages)
+    .filter((key) => {
+      const status = stages[key]?.status;
+      return status === 'not_run' || status === 'not_proven';
+    })
+    .map(
+      (key) =>
+        `${CHECK_STAGE_LABELS[key]} (${stages[key].status}): ${checkStageDetail(stages[key])}`,
+    );
+}
+
+/** Workflow-command data escaping, per GitHub's documented encoding. */
+function escapeAnnotationData(value) {
+  return String(value).replace(/%/g, '%25').replace(/\r/g, '%0D').replace(/\n/g, '%0A');
+}
+
+function escapeAnnotationProperty(value) {
+  return escapeAnnotationData(value).replace(/:/g, '%3A').replace(/,/g, '%2C');
+}
+
+/** Keep a cell inside its row: a pipe or newline would otherwise reshape the table. */
+function markdownCell(value) {
+  return String(value)
+    .replace(/\|/g, '\\|')
+    .replace(/[\r\n]+/g, ' ');
+}
+
+/**
+ * Compose the check-surface projection of a finished receipt.
+ *
+ * @param {SmokeReceipt} receipt
+ * @returns {{headline: string, markdown: string, annotations: string[]}}
+ */
+function composeCheckSummary(receipt) {
+  const stages = receipt.stages ?? {};
+  const headline = checkHeadline(receipt);
+  const overall = receipt.overall ?? 'not_proven';
+  const present = checkStageOrder(stages).filter((key) => stages[key]);
+
+  const annotations = [
+    `::notice title=VS Code smoke::${escapeAnnotationData(`${receipt.source_label ?? 'unknown'}: ${headline}`)}`,
+  ];
+  for (const key of present) {
+    const stage = stages[key];
+    if (stage.status === 'pass' || stage.status === 'not_run') {
+      continue;
+    }
+    const level = stage.status === 'failed' ? 'error' : 'warning';
+    const title = `${CHECK_STAGE_LABELS[key]} ${checkVerdictWord(stage.status)}`;
+    annotations.push(
+      `::${level} title=${escapeAnnotationProperty(title)}::${escapeAnnotationData(checkStageDetail(stage))}`,
+    );
+  }
+
+  const displayed = checkStageOrder(stages).filter(
+    (key) => stages[key] || CHECK_JOURNEY_STAGES.includes(key),
+  );
+  const rows = displayed.map(
+    (key) =>
+      `| ${markdownCell(CHECK_STAGE_LABELS[key])} | \`${markdownCell(stages[key]?.status ?? 'absent')}\` | ${markdownCell(checkStageDetail(stages[key]))} |`,
+  );
+  const remaining = checkRemainingProof(stages);
+  const lines = [
+    `### VS Code smoke — ${receipt.vscode_version ?? 'unknown'}`,
+    '',
+    headline,
+    '',
+    `Source: ${markdownCell(singleLine(receipt.source_label ?? 'unknown'))}`,
+    '',
+    `Aggregate: \`${overall}\` · subject \`${receipt.repository_sha ?? 'unknown'}\``,
+    '',
+    '| stage | result | detail |',
+    '| --- | --- | --- |',
+    ...rows,
+    '',
+  ];
+  if (remaining.length > 0) {
+    lines.push('Remaining proof:', '', ...remaining.map((entry) => `- ${entry}`), '');
+  }
+  lines.push(
+    'Stage results are independent: a blocking package result does not assert anything about installed behavior, and vice versa.',
+    '',
+  );
+
+  return { headline, markdown: `${lines.join('\n')}\n`, annotations };
+}
+
+// Complete UTF-8 bytes before the synchronous CLI exit; failures stay channel-local.
+function writeProjectionLine(fd, line, write = fs.writeSync) {
+  const bytes = Buffer.from(`${line}\n`, 'utf8');
+  let offset = 0;
+  while (offset < bytes.length) {
+    const written = write(fd, bytes, offset, bytes.length - offset);
+    if (!Number.isInteger(written) || written <= 0 || written > bytes.length - offset) {
+      throw new Error('smoke projection output made invalid write progress');
+    }
+    offset += written;
+  }
+}
+
+/**
+ * Emit the projection to the live check surface.
+ *
+ * Presentation must not be able to change a verdict, so a failure to write the
+ * job summary is reported and then dropped: the receipt remains the evidence,
+ * and a summary-write error must never turn a proven run red or manufacture an
+ * instrument failure.
+ */
+function publishCheckSummary(receipt, options = {}) {
+  const {
+    summaryPath = (process.env.GITHUB_STEP_SUMMARY || '').trim(),
+    appendSummary = (target, text) => fs.appendFileSync(target, text),
+    writeAnnotation = (line) => writeProjectionLine(1, line),
+    writeDiagnostic = (line) => writeProjectionLine(2, line),
+  } = options;
+
+  const summary = composeCheckSummary(receipt);
+
+  // Reporting that a channel failed must not itself take down the channels that
+  // still work: with both stdout and stderr closed, the job summary writes to a
+  // different destination entirely and is still worth having.
+  const reportDiagnostic = (line) => {
+    try {
+      writeDiagnostic(line);
+    } catch {
+      // Nothing left to report through, and nothing here is worth losing an
+      // output channel over.
+    }
+  };
+
+  // The channels fail independently: a closed stdout (EPIPE) must not cost the
+  // job summary, and vice versa.
+  for (const annotation of summary.annotations) {
+    try {
+      writeAnnotation(annotation);
+    } catch (error) {
+      reportDiagnostic(
+        `Unable to emit a smoke stage annotation: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+  if (summaryPath) {
+    try {
+      appendSummary(summaryPath, summary.markdown);
+    } catch (error) {
+      reportDiagnostic(
+        `Unable to append the smoke stage summary: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+  return summary;
+}
+
+/**
+ * The single terminal join: publish the stage projection, then return the
+ * aggregate exit code the receipt already decided.
+ *
+ * Publishing is contained: presentation is the last thing a run does, and a
+ * defect in it must not be able to convert a decided aggregate into an
+ * uncaught exception. The receipt is already persisted, so a lost summary
+ * costs readability, never evidence.
+ *
+ * @param {SmokeReceipt} receipt
+ * @param {number} [exitCode] the code a completed run already finalized
+ * @param {(receipt: SmokeReceipt) => unknown} [publish]
+ */
+function concludeRun(
+  receipt,
+  exitCode = exitCodeFor(receipt.overall),
+  publish = publishCheckSummary,
+) {
+  try {
+    publish(receipt);
+  } catch (error) {
+    // Direct stderr on purpose, unlike `publishCheckSummary`'s injectable
+    // `writeDiagnostic`: the publisher that just threw may be the very thing
+    // that closed or replaced the injectable channel, so the last-resort report
+    // reaches for a fresh one. Do not "consistency-fix" this back to a
+    // callback.
+    try {
+      writeProjectionLine(
+        2,
+        `Unable to publish the smoke stage summary: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    } catch {
+      // A failsafe that can throw is not one. If even stderr is gone there is
+      // nothing left to report through, and the exit code the receipt already
+      // decided still has to survive; the persisted receipt remains the
+      // evidence.
+    }
+  }
+  return exitCode;
 }
 
 const ACTIVATION_FAILURE_LEG_SCHEMA = 'vscode_activation_recovery_leg.v1';
@@ -924,10 +1585,12 @@ function crashRowFromObservation(value, legExitCode, isPass) {
  * child legs and the orchestrator's own post-host-exit process scan. The
  * verdict is fail-closed: any missing or contradictory child evidence leaves
  * the affected row `not_proven`, an observed product failure fails its row
- * outright, and any failed row fails the receipt while an honestly
- * `not_proven` row (for example the watchdog row on hosts that cannot suspend
- * a process) keeps the overall verdict `not_proven` without weakening the
- * other rows.
+ * outright, and any failed or `not_proven` row fails the receipt. A
+ * capability-absent leg (for example the watchdog row on hosts that cannot
+ * suspend a process, where the child leg emits no watchdog observation) is a
+ * typed `pending` row: visible in the receipt and verdict-neutral, so the
+ * journey's pass/fail signal stays actionable on hosts that cannot exercise
+ * every leg (#15019).
  *
  * @param {{
  *   vsixSha256: string,
@@ -1005,12 +1668,20 @@ function composeCrashRecoveryReceipt({
     ),
   );
 
+  // Typed pending (#15019): the child producer emits `pending` for a
+  // capability-absent watchdog leg (host cannot suspend), and the driver
+  // stays fail-closed for everything else — a malformed observation or an
+  // unexplained not_proven remains an instrument gap that degrades the
+  // journey.
+  const watchdogObservation = transientObservations.watchdog;
   const watchdogStatus =
-    transientObservations.watchdog && typeof transientObservations.watchdog.status === 'string'
-      ? transientObservations.watchdog.status
+    watchdogObservation && typeof watchdogObservation.status === 'string'
+      ? watchdogObservation.status
       : 'not_proven';
   const watchdogRow = boundRow(
-    ['pass', 'failed', 'not_proven'].includes(watchdogStatus) ? watchdogStatus : 'not_proven',
+    ['pass', 'failed', 'not_proven', 'pending'].includes(watchdogStatus)
+      ? watchdogStatus
+      : 'not_proven',
   );
 
   const legsExitedCleanly = legExitCodes.transient === 0 && legExitCodes.breaker === 0;
@@ -1089,6 +1760,8 @@ function composeCrashRecoveryReceipt({
     cleanupRow,
   ];
   let verdict;
+  // `pending` rows are neither failed nor not_proven, so they are
+  // naturally verdict-neutral here.
   if (observedChildFailure || rows.includes('failed')) {
     verdict = 'failed';
   } else if (rows.includes('not_proven')) {
@@ -1580,6 +2253,7 @@ function runActivationFailureJourneyAttempt(baseEnv, context, paths) {
       exit_codes: legExitCodes,
       reason: 'activation_failure_journey_leg_did_not_exit_cleanly',
       recovery_verdict: joined.verdict,
+      post_host_exit_processes: postHostExitProcesses,
     };
   }
   if (!validation.ok) {
@@ -1589,6 +2263,7 @@ function runActivationFailureJourneyAttempt(baseEnv, context, paths) {
       reason: 'journey child receipts did not bind this run',
       violations: validation.violations,
       recovery_verdict: joined.verdict,
+      post_host_exit_processes: postHostExitProcesses,
     };
   }
   return {
@@ -1596,6 +2271,7 @@ function runActivationFailureJourneyAttempt(baseEnv, context, paths) {
     exit_codes: legExitCodes,
     recovery_verdict: joined.verdict,
     receipt: path.relative(repoRoot, joinedReceiptFile).replaceAll('\\', '/'),
+    post_host_exit_processes: postHostExitProcesses,
   };
 }
 
@@ -1801,6 +2477,7 @@ function runCrashRecoveryJourneyAttempt(baseEnv, context, paths) {
         exit_codes: legExitCodes,
         reason: 'crash_recovery_journey_leg_observed_failure',
         recovery_verdict: joined.verdict,
+        post_host_exit_processes: postHostExitProcesses,
       };
     }
     // Aligned with the composer: a leg that did not exit cleanly is an
@@ -1810,6 +2487,7 @@ function runCrashRecoveryJourneyAttempt(baseEnv, context, paths) {
       exit_codes: legExitCodes,
       reason: 'crash_recovery_journey_leg_did_not_exit_cleanly',
       recovery_verdict: joined.verdict,
+      post_host_exit_processes: postHostExitProcesses,
     };
   }
   if (!validation.ok) {
@@ -1819,6 +2497,7 @@ function runCrashRecoveryJourneyAttempt(baseEnv, context, paths) {
       reason: 'journey child receipts did not bind this run',
       violations: validation.violations,
       recovery_verdict: joined.verdict,
+      post_host_exit_processes: postHostExitProcesses,
     };
   }
   return {
@@ -1829,6 +2508,7 @@ function runCrashRecoveryJourneyAttempt(baseEnv, context, paths) {
       joined.verdict === 'pass' ? 'pass' : joined.verdict === 'failed' ? 'failed' : 'not_proven',
     exit_codes: legExitCodes,
     recovery_verdict: joined.verdict,
+    post_host_exit_processes: postHostExitProcesses,
     receipt: path.relative(repoRoot, joinedReceiptFile).replaceAll('\\', '/'),
   };
 }
@@ -1875,6 +2555,10 @@ function main() {
 
   const destination = receiptPath(revision);
   const receipt = initialReceipt(revision);
+  const testExplorerRequested = process.env.PERL_LSP_TEST_EXPLORER_JOURNEY === '1';
+  if (testExplorerRequested) {
+    receipt.stages.test_explorer_journey = { status: 'not_run', reason: 'not_started' };
+  }
   persistReceipt(destination, receipt);
 
   const failInstrument = (error) => {
@@ -1907,7 +2591,7 @@ function main() {
         'PERL_LSP_FIRST_HOUR_SERVER_PATH must point to an existing server built from the current source revision.',
       ),
     );
-    return exitCodeFor(receipt.overall);
+    return concludeRun(receipt);
   }
   if (!serverSourceRevision) {
     failInstrument(
@@ -1915,7 +2599,7 @@ function main() {
         'PERL_LSP_SERVER_SOURCE_SHA must identify the source revision used to build the server.',
       ),
     );
-    return exitCodeFor(receipt.overall);
+    return concludeRun(receipt);
   }
 
   try {
@@ -1930,7 +2614,7 @@ function main() {
     }
   } catch (error) {
     failInstrument(error);
-    return exitCodeFor(receipt.overall);
+    return concludeRun(receipt);
   }
 
   const packageJson = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
@@ -1940,13 +2624,15 @@ function main() {
   const runStageBody = () => {
     try {
       restoreStagedServer = stageServerForPackage(serverPath);
+      /** @type {NodeJS.ProcessEnv} */
       const packageEnv = {
         ...process.env,
         PERL_LSP_CURRENT_SOURCE_SMOKE: '1',
         PERL_LSP_SMOKE_RECEIPTS_DIR: receiptsRoot(),
       };
+      delete packageEnv.PERL_LSP_TEST_EXPLORER_JOURNEY;
       const packageResult = runNpm(
-        ['exec', '--offline', '--no', '--', '@vscode/vsce', 'package'],
+        ['exec', '--offline', '--no', '--', 'vsce', 'package'],
         packageEnv,
       );
       if (packageResult.error) {
@@ -2018,6 +2704,7 @@ function main() {
       persistReceipt(destination, receipt);
 
       if (shouldRunBehavioralSmoke(receipt.stages)) {
+        /** @type {NodeJS.ProcessEnv} */
         const smokeEnv = {
           ...process.env,
           PERL_LSP_CURRENT_SOURCE_SHA: revision,
@@ -2030,8 +2717,13 @@ function main() {
           PERL_LSP_SERVER_SOURCE_SHA: serverSourceRevision,
           PERL_LSP_SMOKE_RECEIPTS_DIR: receiptsRoot(),
           PERL_LSP_SMOKE_SOURCE_LABEL: smokeSourceLabel(),
-          PERL_LSP_VSIX_SHA256: receipt.vsix.sha256,
+          PERL_LSP_VSIX_SHA256: receipt.vsix.sha256 ?? '',
         };
+        // The first-hour child is one leg of the combined candidate run. Keep
+        // its selector exclusive so the second Test Explorer leg can reuse the
+        // same staged VSIX after this process completes.
+        delete smokeEnv.PERL_LSP_TEST_EXPLORER_SMOKE;
+        delete smokeEnv.PERL_LSP_TEST_EXPLORER_JOURNEY;
 
         // Clear any receipt left by an earlier run so a stale artifact can
         // never be mistaken for this run's behavioral evidence.
@@ -2051,11 +2743,25 @@ function main() {
           return;
         }
 
-        const smokeResult = runNpm(['run', 'test:published'], smokeEnv);
+        const smokeRun = runPublishedSmoke(smokeEnv);
+        const smokeResult = smokeRun.result;
+        if (smokeRun.phase === 'compile') {
+          receipt.stages.behavioral_smoke = {
+            status: 'failed',
+            exit_code: smokeResult.status ?? null,
+            reason: smokeResult.error
+              ? 'published_smoke_compile_spawn_failed'
+              : 'published_smoke_compile_failed',
+          };
+          persistReceipt(destination, receipt);
+          return;
+        }
         if (smokeResult.error || smokeResult.status !== 0) {
           receipt.stages.behavioral_smoke = interpretBehavioralSmokeExit({
             status: smokeResult.status,
             spawnError: smokeResult.error,
+            candidateBound: Boolean(smokeEnv.PERL_LSP_CURRENT_SOURCE_SHA),
+            platform: process.platform,
             receiptsRoot: receiptsRoot(),
           });
         } else if (smokeResult.status === 0) {
@@ -2077,6 +2783,12 @@ function main() {
                 reason: 'child_receipt_did_not_bind_this_run',
                 violations: childReceipt.violations,
               };
+          if (childReceipt.ok) {
+            // Propagate the launched runtime version the bound child
+            // observed; downstream exactness claims must bind to this, never
+            // to the requested selector alone.
+            receipt.observed_vscode_version = childReceipt.receipt.environment.vscode_version;
+          }
         }
       } else {
         receipt.stages.behavioral_smoke = {
@@ -2089,6 +2801,20 @@ function main() {
                   receipt.stages.package_inventory.classification ||
                   'not_proven'
                 }`,
+        };
+      }
+
+      if (testExplorerRequested && shouldRunBehavioralSmoke(receipt.stages)) {
+        receipt.stages.test_explorer_journey = runTestExplorerJourneyStage(
+          process.env,
+          revision,
+          vsixPath,
+          receipt.vsix.sha256 ?? '',
+        );
+      } else if (testExplorerRequested) {
+        receipt.stages.test_explorer_journey = {
+          status: 'not_run',
+          reason: 'package_not_behavior_safe',
         };
       }
 
@@ -2146,7 +2872,8 @@ function main() {
   };
 
   runStageBody();
-  return finalizeSmokeRun(destination, receipt, vsixPath, restoreStagedServer);
+  const exitCode = finalizeSmokeRun(destination, receipt, vsixPath, restoreStagedServer);
+  return concludeRun(receipt, exitCode);
 }
 
 if (require.main === module) {
@@ -2160,13 +2887,23 @@ module.exports = {
   bundleTargetForPlatform,
   childReceiptPath,
   composeActivationRecoveryReceipt,
+  composeCheckSummary,
   composeCrashRecoveryReceipt,
   computeOverallStatus,
+  concludeRun,
   crashRecoveryLegEnv,
   finalizeSmokeRun,
   initialReceipt,
   interpretBehavioralSmokeExit,
+  interpretTestExplorerExit,
+  runPublishedSmoke,
+  runTestExplorerJourneyStage,
+  testExplorerSmokeEnv,
+  validateTestExplorerReceipt,
   interpretTransitionResult,
+  inventoryTransitionArgs,
+  publishCheckSummary,
+  writeProjectionLine,
   readHostResolutionFailureReceipt,
   receiptPath,
   scanBundledServerProcesses,

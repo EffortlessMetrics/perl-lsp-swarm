@@ -102,6 +102,38 @@ impl<'a> Parser<'a> {
         })
     }
 
+    /// Consume one assignment operator, including Perl's identifier-shaped `x=`.
+    ///
+    /// The lexer intentionally keeps `x` contextual, so contiguous `x=` arrives as
+    /// an `Identifier("x")` followed by `Assign`. Exact source adjacency is required:
+    /// Perl accepts `$value x= 3` but not `$value x = 3`.
+    fn consume_assignment_operator(&mut self) -> ParseResult<Option<(&'static str, usize)>> {
+        if let Some(op) = self.peek_kind().and_then(Self::assignment_operator_text) {
+            let token = self.tokens.next()?;
+            return Ok(Some((op, token.start())));
+        }
+
+        if self.peek_kind() == Some(TokenKind::Identifier) {
+            let (is_repetition, start, end) = {
+                let token = self.tokens.peek()?;
+                (token.text.as_ref() == "x", token.start(), token.end())
+            };
+            let adjacent_assign = is_repetition
+                && self
+                    .tokens
+                    .peek_second()
+                    .is_ok_and(|token| token.kind() == TokenKind::Assign && token.start() == end);
+
+            if adjacent_assign {
+                self.tokens.next()?; // consume x
+                self.tokens.next()?; // consume =
+                return Ok(Some(("x=", start)));
+            }
+        }
+
+        Ok(None)
+    }
+
     /// Parse assignment expression
     fn parse_assignment(&mut self) -> ParseResult<Node> {
         if let Some(kind) = self.peek_kind() {
@@ -126,59 +158,32 @@ impl<'a> Parser<'a> {
         // Handle 'return' as an expression in expression context
         // This allows patterns like: open $fh, $file or return;
         // But NOT when followed by => (autoquoted hash key: return => $val)
-        if self.peek_kind() == Some(TokenKind::Return)
-            && !self.is_keyword_before_fat_arrow()
-        {
+        if self.peek_kind() == Some(TokenKind::Return) && !self.is_keyword_before_fat_arrow() {
             return self.parse_return_expr();
         }
 
         let mut expr = self.parse_ternary()?;
 
-        // Check for assignment operators
-        if let Some(kind) = self.peek_kind() {
-            let op = match kind {
-                TokenKind::Assign => Some("="),
-                TokenKind::PlusAssign => Some("+="),
-                TokenKind::MinusAssign => Some("-="),
-                TokenKind::StarAssign => Some("*="),
-                TokenKind::SlashAssign => Some("/="),
-                TokenKind::PercentAssign => Some("%="),
-                TokenKind::DotAssign => Some(".="),
-                TokenKind::AndAssign => Some("&="),
-                TokenKind::OrAssign => Some("|="),
-                TokenKind::XorAssign => Some("^="),
-                TokenKind::PowerAssign => Some("**="),
-                TokenKind::LeftShiftAssign => Some("<<="),
-                TokenKind::RightShiftAssign => Some(">>="),
-                TokenKind::LogicalAndAssign => Some("&&="),
-                TokenKind::LogicalOrAssign => Some("||="),
-                TokenKind::DefinedOrAssign => Some("//="),
-                _ => None,
+        if let Some((op, op_start)) = self.consume_assignment_operator()? {
+            // The RHS can be a 'not' expression, or missing (recovery)
+            let rhs = if let Some(missing) = self.recover_missing_infix_rhs(op_start) {
+                missing
+            } else if self.peek_kind() == Some(TokenKind::WordNot) {
+                self.parse_word_not_expr()?
+            } else {
+                self.parse_assignment()?
             };
+            let start = expr.location.start;
+            let end = rhs.location.end;
 
-            if let Some(op) = op {
-                let op_token = self.tokens.next()?; // consume operator
-                // The RHS can be a 'not' expression, or missing (recovery)
-                let rhs =
-                    if let Some(missing) = self.recover_missing_infix_rhs(op_token.start()) {
-                        missing
-                    } else if self.peek_kind() == Some(TokenKind::WordNot) {
-                        self.parse_word_not_expr()?
-                    } else {
-                        self.parse_assignment()?
-                    };
-                let start = expr.location.start;
-                let end = rhs.location.end;
-
-                expr = Node::new(
-                    NodeKind::Assignment {
-                        lhs: Box::new(expr),
-                        rhs: Box::new(rhs),
-                        op: op.to_string(),
-                    },
-                    SourceLocation { start, end },
-                );
-            }
+            expr = Node::new(
+                NodeKind::Assignment {
+                    lhs: Box::new(expr),
+                    rhs: Box::new(rhs),
+                    op: op.to_string(),
+                },
+                SourceLocation { start, end },
+            );
         }
 
         Ok(expr)
@@ -195,7 +200,7 @@ impl<'a> Parser<'a> {
     /// chained ternaries (`$a ? $b : $c ? $d : $e`) are right-associative
     /// without accidentally capturing a surrounding assignment.
     fn parse_ternary(&mut self) -> ParseResult<Node> {
-        let mut expr = self.parse_or()?;
+        let mut expr = self.parse_range()?;
 
         if self.peek_kind() == Some(TokenKind::Question) {
             self.tokens.next()?; // consume ?
@@ -286,10 +291,8 @@ impl<'a> Parser<'a> {
             // Auto-quote a bare identifier before =>
             if let NodeKind::Identifier { ref name } = elements[0].kind {
                 let loc = elements[0].location;
-                elements[0] = Node::new(
-                    NodeKind::String { value: name.clone(), interpolated: false },
-                    loc,
-                );
+                elements[0] =
+                    Node::new(NodeKind::String { value: name.clone(), interpolated: false }, loc);
             }
             self.tokens.next()?; // consume =>
             if !matches!(
@@ -329,12 +332,13 @@ impl<'a> Parser<'a> {
                 saw_fat_arrow = true;
                 // Auto-quote the last element (the key before =>)
                 if let Some(last) = elements.last_mut()
-                    && let NodeKind::Identifier { ref name } = last.kind {
-                        *last = Node::new(
-                            NodeKind::String { value: name.clone(), interpolated: false },
-                            last.location,
-                        );
-                    }
+                    && let NodeKind::Identifier { ref name } = last.kind
+                {
+                    *last = Node::new(
+                        NodeKind::String { value: name.clone(), interpolated: false },
+                        last.location,
+                    );
+                }
             }
 
             // Stop before parsing the value if we hit a terminator.
@@ -397,9 +401,9 @@ impl<'a> Parser<'a> {
     ///   `(our $AUTOLOAD =~ /pattern/)` — `=~` after the declaration
     ///   `(my $x || "default")`        — `||` after the declaration
     ///
-    /// The chain applies operators from highest to lowest precedence (shift → add →
-    /// mul → relational → equality → bitwise-and → range → bitwise-xor →
-    /// bitwise-or → logical-and → logical-or → ternary) so that the declaration
+    /// The chain applies operators from highest to lowest precedence (multiplicative →
+    /// additive → shift → relational → equality → bitwise-and → bitwise-xor →
+    /// bitwise-or → logical-and → logical-or → range → ternary) so that the declaration
     /// node is correctly used as the leftmost operand of whatever operator follows.
     ///
     /// Assignment operators (`=`, `+=`, …) are NOT applied here — they are handled
@@ -411,11 +415,11 @@ impl<'a> Parser<'a> {
         let expr = self.parse_relational_with(expr)?;
         let expr = self.parse_equality_with(expr)?;
         let expr = self.parse_bitwise_and_with(expr)?;
-        let expr = self.parse_range_with(expr)?;
         let expr = self.parse_bitwise_xor_with(expr)?;
         let expr = self.parse_bitwise_or_with(expr)?;
         let expr = self.parse_and_with(expr)?;
         let expr = self.parse_or_with(expr)?;
+        let expr = self.parse_range_with(expr)?;
         self.parse_ternary_with(expr)
     }
 
@@ -445,13 +449,13 @@ impl<'a> Parser<'a> {
 
     /// Parse range expression
     fn parse_range(&mut self) -> ParseResult<Node> {
-        let expr = self.parse_equality()?;
+        let expr = self.parse_or()?;
         self.parse_range_with(expr)
     }
 
     /// Parse bitwise AND expression
     fn parse_bitwise_and(&mut self) -> ParseResult<Node> {
-        let expr = self.parse_range()?;
+        let expr = self.parse_equality()?;
         self.parse_bitwise_and_with(expr)
     }
 
@@ -563,13 +567,22 @@ impl<'a> Parser<'a> {
         Ok(expr)
     }
 
+    /// Parse at most one range operator at this precedence level.
+    ///
+    /// Perl's `..` is non-associative (perlop: "In scalar context .. returns
+    /// a boolean value... the operator is non-associative and it is a syntax
+    /// error to chain it"). One unparenthesized range is valid; an adjacent
+    /// second `..` at the same level must not be silently left-folded
+    /// (#13903). Explicitly parenthesized nesting still parses because each
+    /// nesting level re-enters this rung through its own recursive-descent
+    /// descent (`parse_or` on the right, the caller's ladder on the left).
     fn parse_range_with(&mut self, mut expr: Node) -> ParseResult<Node> {
-        while self.peek_kind() == Some(TokenKind::Range) {
+        if self.peek_kind() == Some(TokenKind::Range) {
             let op_token = self.tokens.next()?;
             let right = if let Some(missing) = self.recover_missing_infix_rhs(op_token.start()) {
                 missing
             } else {
-                self.parse_equality()?
+                self.parse_or()?
             };
             let start = expr.location.start;
             let end = right.location.end;
@@ -593,7 +606,7 @@ impl<'a> Parser<'a> {
             let right = if let Some(missing) = self.recover_missing_infix_rhs(op_token.start()) {
                 missing
             } else {
-                self.parse_range()?
+                self.parse_equality()?
             };
             let start = expr.location.start;
             let end = right.location.end;
@@ -642,13 +655,12 @@ impl<'a> Parser<'a> {
                 }
                 TokenKind::Spaceship | TokenKind::StringCompare => {
                     let op_token = self.tokens.next()?;
-                    let right = if let Some(missing) =
-                        self.recover_missing_infix_rhs(op_token.start())
-                    {
-                        missing
-                    } else {
-                        self.parse_relational()?
-                    };
+                    let right =
+                        if let Some(missing) = self.recover_missing_infix_rhs(op_token.start()) {
+                            missing
+                        } else {
+                            self.parse_relational()?
+                        };
                     let start = expr.location.start;
                     let end = right.location.end;
 
@@ -667,19 +679,23 @@ impl<'a> Parser<'a> {
                 | TokenKind::NotMatch
                 | TokenKind::SmartMatch => {
                     let op_token = self.tokens.next()?;
-                    let right = if let Some(missing) =
-                        self.recover_missing_infix_rhs(op_token.start())
-                    {
-                        missing
-                    } else {
-                        self.parse_relational()?
-                    };
+                    let right =
+                        if let Some(missing) = self.recover_missing_infix_rhs(op_token.start()) {
+                            missing
+                        } else {
+                            self.parse_relational()?
+                        };
                     let start = expr.location.start;
                     let end = right.location.end;
 
                     if matches!(op_token.kind(), TokenKind::Match | TokenKind::NotMatch) {
-                        if let NodeKind::Substitution { pattern, replacement, modifiers, has_embedded_code, .. } =
-                            &right.kind
+                        if let NodeKind::Substitution {
+                            pattern,
+                            replacement,
+                            modifiers,
+                            has_embedded_code,
+                            ..
+                        } = &right.kind
                         {
                             let negated = matches!(op_token.kind(), TokenKind::NotMatch);
                             expr = Node::new(
@@ -708,8 +724,12 @@ impl<'a> Parser<'a> {
                                 },
                                 SourceLocation { start, end },
                             );
-                        } else if let NodeKind::Regex { pattern, replacement, modifiers, has_embedded_code } =
-                            &right.kind
+                        } else if let NodeKind::Regex {
+                            pattern,
+                            replacement,
+                            modifiers,
+                            has_embedded_code,
+                        } = &right.kind
                         {
                             let negated = matches!(op_token.kind(), TokenKind::NotMatch);
                             if let Some(replacement) = replacement {
@@ -795,8 +815,7 @@ impl<'a> Parser<'a> {
             let peek_text = self.tokens.peek()?.text.as_ref().to_string();
             if peek_text == "ISA" || peek_text == "isa" {
                 let op_token = self.tokens.next()?;
-                let right = if let Some(missing) =
-                    self.recover_missing_infix_rhs(op_token.start())
+                let right = if let Some(missing) = self.recover_missing_infix_rhs(op_token.start())
                 {
                     missing
                 } else {
@@ -854,9 +873,7 @@ impl<'a> Parser<'a> {
 
         while self.peek_is_relational_op() {
             let op_token = self.tokens.next()?;
-            let operand = if let Some(missing) =
-                self.recover_missing_infix_rhs(op_token.start())
-            {
+            let operand = if let Some(missing) = self.recover_missing_infix_rhs(op_token.start()) {
                 missing
             } else {
                 self.parse_shift()?
@@ -866,10 +883,7 @@ impl<'a> Parser<'a> {
         }
 
         let end = operands.last().map_or(start, |n| n.location.end);
-        Ok(Node::new(
-            NodeKind::ChainedComparison { operands, ops },
-            SourceLocation { start, end },
-        ))
+        Ok(Node::new(NodeKind::ChainedComparison { operands, ops }, SourceLocation { start, end }))
     }
 
     /// Parse shift expression
@@ -903,13 +917,12 @@ impl<'a> Parser<'a> {
             match kind {
                 TokenKind::LeftShift | TokenKind::RightShift => {
                     let op_token = self.tokens.next()?;
-                    let right = if let Some(missing) =
-                        self.recover_missing_infix_rhs(op_token.start())
-                    {
-                        missing
-                    } else {
-                        self.parse_additive()?
-                    };
+                    let right =
+                        if let Some(missing) = self.recover_missing_infix_rhs(op_token.start()) {
+                            missing
+                        } else {
+                            self.parse_additive()?
+                        };
                     let start = expr.location.start;
                     let end = right.location.end;
 
@@ -934,13 +947,12 @@ impl<'a> Parser<'a> {
             match kind {
                 TokenKind::Plus | TokenKind::Minus | TokenKind::Dot => {
                     let op_token = self.tokens.next()?;
-                    let right = if let Some(missing) =
-                        self.recover_missing_infix_rhs(op_token.start())
-                    {
-                        missing
-                    } else {
-                        self.parse_multiplicative()?
-                    };
+                    let right =
+                        if let Some(missing) = self.recover_missing_infix_rhs(op_token.start()) {
+                            missing
+                        } else {
+                            self.parse_multiplicative()?
+                        };
                     let start = expr.location.start;
                     let end = right.location.end;
 
@@ -960,6 +972,75 @@ impl<'a> Parser<'a> {
         Ok(expr)
     }
 
+    /// Whether `kind`/`text` may start the RHS of ordinary binary string repetition.
+    ///
+    /// Kept local to this seam: filehandle, block, list, and recovery contexts have
+    /// different legal starts. Do not reuse this as a global expression-starter
+    /// predicate. Angle-bracket terms, word `not`, magic constants, and yada-yada
+    /// `...` are intentionally omitted.
+    fn ordinary_binary_repetition_rhs_starts(kind: TokenKind, text: &str) -> bool {
+        match kind {
+            TokenKind::Number
+            | TokenKind::ScalarSigil
+            | TokenKind::ArraySigil
+            | TokenKind::HashSigil
+            | TokenKind::LeftParen
+            | TokenKind::LeftBracket
+            | TokenKind::LeftBrace
+            | TokenKind::String
+            | TokenKind::QuoteSingle
+            | TokenKind::QuoteDouble
+            | TokenKind::Undef
+            | TokenKind::Do
+            | TokenKind::Sub
+            | TokenKind::Not
+            | TokenKind::Minus
+            | TokenKind::Plus
+            | TokenKind::Increment
+            | TokenKind::Decrement
+            | TokenKind::Backslash
+            | TokenKind::BitwiseNot
+            | TokenKind::VString
+            | TokenKind::QuoteWords
+            | TokenKind::QuoteCommand
+            | TokenKind::Regex
+            | TokenKind::Substitution
+            | TokenKind::Transliteration
+            | TokenKind::Eval
+            | TokenKind::HeredocStart
+            // `/` after binary `x` is a term, not division. Unary reclassifies it
+            // to `Regex` so `"x" x /3/` reaches `parse_primary`.
+            | TokenKind::Slash => true,
+            TokenKind::Identifier => {
+                // Sigil-prefixed pseudo-identifiers count as operand starts.
+                if text.starts_with('$') || text.starts_with('@') || text.starts_with('%') {
+                    true
+                } else {
+                    // A plain identifier (e.g. an imported function like `width`)
+                    // can also be the start of the x-repetition RHS, provided it
+                    // is not a binary operator keyword (or, and, not, eq, ne, …).
+                    // This allows `'-' x width $n` inside parentheses.
+                    !matches!(
+                        text,
+                        "or" | "and"
+                            | "not"
+                            | "xor"
+                            | "eq"
+                            | "ne"
+                            | "lt"
+                            | "le"
+                            | "gt"
+                            | "ge"
+                            | "cmp"
+                            | "x"
+                            | "isa"
+                    )
+                }
+            }
+            _ => false,
+        }
+    }
+
     fn parse_multiplicative_with(&mut self, mut expr: Node) -> ParseResult<Node> {
         while let Some(kind) = self.peek_kind() {
             match kind {
@@ -967,13 +1048,12 @@ impl<'a> Parser<'a> {
                     let op_token = self.tokens.next()?;
                     // Use parse_power() so that `a * b**c` parses as `a * (b**c)`.
                     // Exponentiation binds more tightly than multiplication in Perl.
-                    let right = if let Some(missing) =
-                        self.recover_missing_infix_rhs(op_token.start())
-                    {
-                        missing
-                    } else {
-                        self.parse_power()?
-                    };
+                    let right =
+                        if let Some(missing) = self.recover_missing_infix_rhs(op_token.start()) {
+                            missing
+                        } else {
+                            self.parse_power()?
+                        };
                     let start = expr.location.start;
                     let end = right.location.end;
 
@@ -1020,47 +1100,16 @@ impl<'a> Parser<'a> {
                     if peeked_text != "x" {
                         break;
                     }
-                    let is_operand_start = if let Ok(next) = self.tokens.peek_second() {
-                        match next.kind() {
-                            TokenKind::Number
-                            | TokenKind::ScalarSigil
-                            | TokenKind::ArraySigil
-                            | TokenKind::HashSigil
-                            | TokenKind::LeftParen
-                            | TokenKind::LeftBracket
-                            | TokenKind::String
-                            | TokenKind::QuoteSingle
-                            | TokenKind::QuoteDouble
-                            | TokenKind::Not
-                            | TokenKind::Minus
-                            | TokenKind::Plus
-                            | TokenKind::Increment
-                            | TokenKind::Decrement
-                            | TokenKind::Backslash
-                            | TokenKind::BitwiseNot => true,
-                            TokenKind::Identifier => {
-                                let t = next.text.as_ref();
-                                // Sigil-prefixed pseudo-identifiers count as operand starts
-                                if t.starts_with('$') || t.starts_with('@') || t.starts_with('%') {
-                                    true
-                                } else {
-                                    // A plain identifier (e.g. an imported function like `width`)
-                                    // can also be the start of the x-repetition RHS, provided it
-                                    // is not a binary operator keyword (or, and, not, eq, ne, …).
-                                    // This allows `'-' x width $n` inside parentheses.
-                                    !matches!(
-                                        t,
-                                        "or" | "and" | "not" | "xor"
-                                            | "eq" | "ne" | "lt" | "le" | "gt" | "ge"
-                                            | "cmp" | "x" | "isa"
-                                    )
-                                }
-                            }
-                            _ => false,
-                        }
-                    } else {
-                        false
-                    };
+                    let is_operand_start = self
+                        .tokens
+                        .peek_second()
+                        .ok()
+                        .is_some_and(|next| {
+                            Self::ordinary_binary_repetition_rhs_starts(
+                                next.kind(),
+                                next.text.as_ref(),
+                            )
+                        });
                     if !is_operand_start {
                         break;
                     }
@@ -1110,5 +1159,4 @@ impl<'a> Parser<'a> {
 
         Ok(expr)
     }
-
 }

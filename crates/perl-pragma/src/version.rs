@@ -1,6 +1,8 @@
 use crate::PragmaState;
 
-/// Parsed Perl version from a lexical `use v...;` or `use 5.xxx;` pragma.
+/// Legacy major/minor projection used by pragma compatibility behavior.
+///
+/// This does not represent exact Perl version literals or patch/developer identity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct PerlVersion {
     /// Major Perl version component.
@@ -11,33 +13,20 @@ pub struct PerlVersion {
 
 /// Named reviewed feature-bundle identities retained by legacy state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum FeatureBundle {
-    Perl5_10,
-    Perl5_12,
-    Perl5_16,
-    Perl5_24,
-    Perl5_28,
-    Perl5_34,
-    Perl5_36,
-    Perl5_38,
-    Perl5_40,
+    /// The reviewed Perl 5.42 bundle identity.
     Perl5_42,
+    /// The reviewed Perl 5.44 bundle identity.
     Perl5_44,
+    /// No named bundle authority is retained.
     Unknown,
 }
 
 #[must_use]
-pub const fn feature_bundle_for_version(version: PerlVersion) -> FeatureBundle {
+/// Map an admitted legacy value to the named bundle rows owned by this slice.
+pub(crate) const fn feature_bundle_for_version(version: PerlVersion) -> FeatureBundle {
     match (version.major, version.minor) {
-        (5, 10) => FeatureBundle::Perl5_10,
-        (5, 12) => FeatureBundle::Perl5_12,
-        (5, 16) => FeatureBundle::Perl5_16,
-        (5, 24) => FeatureBundle::Perl5_24,
-        (5, 28) => FeatureBundle::Perl5_28,
-        (5, 34) => FeatureBundle::Perl5_34,
-        (5, 36) => FeatureBundle::Perl5_36,
-        (5, 38) => FeatureBundle::Perl5_38,
-        (5, 40) => FeatureBundle::Perl5_40,
         (5, 42) => FeatureBundle::Perl5_42,
         (5, 44) => FeatureBundle::Perl5_44,
         _ => FeatureBundle::Unknown,
@@ -58,14 +47,17 @@ pub(crate) fn admitted_vstring_version(module: &str) -> Option<PerlVersion> {
     {
         return None;
     }
-    let version = PerlVersion::new(5, minor.parse().ok()?);
-    (feature_bundle_for_version(version) != FeatureBundle::Unknown).then_some(version)
+    let minor = minor.parse::<u32>().ok()?;
+    let version = PerlVersion::new(5, minor);
+    (minor % 2 == 0 && minor <= 44).then_some(version)
 }
 
 pub(crate) fn looks_like_version_literal(module: &str) -> bool {
     let body = module.strip_prefix('v').unwrap_or(module);
-    body.starts_with(|c: char| c.is_ascii_digit())
-        && (module.starts_with('v') || module.contains('.'))
+    let Some((major, _)) = body.split_once('.') else {
+        return false;
+    };
+    !major.is_empty() && major.chars().all(|c| c.is_ascii_digit()) && !module.contains("::")
 }
 
 impl PerlVersion {
@@ -76,6 +68,9 @@ impl PerlVersion {
 }
 
 /// Parse a Perl version string into a major/minor pair.
+///
+/// This lossy compatibility helper does not validate an exact language profile.
+/// Source-facing admission uses a separate conservative declaration boundary.
 ///
 /// Handles lexical version pragmas such as:
 /// - `v5.36`
@@ -170,6 +165,8 @@ pub fn version_implies_warnings(version: PerlVersion) -> bool {
 pub fn features_enabled_by_version(version: PerlVersion) -> Vec<&'static str> {
     let bundle = if version < PerlVersion::new(5, 10) {
         DEFAULT_FEATURES
+    } else if version >= PerlVersion::new(5, 44) {
+        BUNDLE_5_44_FEATURES
     } else if version >= PerlVersion::new(5, 42) {
         BUNDLE_5_42_FEATURES
     } else if version >= PerlVersion::new(5, 40) {
@@ -330,6 +327,10 @@ const BUNDLE_5_40_FEATURES: &[&str] = &[
     "unicode_eval",
     "unicode_strings",
 ];
+
+// Perl 5.44 has its own named bundle, with the same membership as 5.42.
+// enhanced_xx is explicit opt-in and belongs to neither implicit bundle.
+const BUNDLE_5_44_FEATURES: &[&str] = BUNDLE_5_42_FEATURES;
 
 const BUNDLE_5_42_FEATURES: &[&str] = &[
     "bitwise",

@@ -1,3 +1,5 @@
+#![deny(clippy::map_err_ignore)]
+// Cohort C1 activation (#12598): all production rows exact-excepted; new findings move the crate back to non-C1.
 //! End-to-end canonical Dancer2 route fact proof (#8918).
 //!
 //! Drives the full #8918 chain — AST route extraction
@@ -655,7 +657,7 @@ fn issue_fixture_mints_prefix_params_and_handler_context() {
     assert_eq!(facts.handler_contexts.len(), 1);
     let context = &facts.handler_contexts[0];
     assert_eq!(context.envelope.kind, perl_semantic_facts::SemanticFactKind::RouteHandlerContext);
-    assert_eq!(context.dsl_contract_version, "dancer2-dsl.1-1.v2");
+    assert_eq!(context.dsl_contract_version, "dancer2-dsl.1-1.v3");
     let interval = context.envelope.anchor;
     assert_eq!(
         &code[interval.start_byte as usize..interval.end_byte as usize],

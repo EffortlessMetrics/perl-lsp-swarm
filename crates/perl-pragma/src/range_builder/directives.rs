@@ -64,7 +64,7 @@ pub(super) fn apply_use_directive(
         }
         _ => {
             if let Some(version) = parse_perl_version(module) {
-                enable_version_semantics(state, module, version);
+                enable_version_semantics(state, module, version, args.is_empty());
                 push_state(range, state, ranges);
             } else if looks_like_version_literal(module) {
                 state.perl_version = None;
@@ -74,9 +74,14 @@ pub(super) fn apply_use_directive(
     }
 }
 
-fn enable_version_semantics(state: &mut PragmaState, module: &str, version: crate::PerlVersion) {
+fn enable_version_semantics(
+    state: &mut PragmaState,
+    module: &str,
+    version: crate::PerlVersion,
+    has_no_args: bool,
+) {
     enable_effective_version_semantics(state, version);
-    state.perl_version = admitted_vstring_version(module);
+    state.perl_version = has_no_args.then(|| admitted_vstring_version(module)).flatten();
 }
 
 pub(super) fn apply_no_directive(
@@ -190,6 +195,8 @@ fn apply_conditional_use_target(
                 // retain broad compatibility effects but never claim that
                 // the conditional target established version authority.
                 enable_effective_version_semantics(state, version);
+                state.perl_version = None;
+            } else if looks_like_version_literal(module) {
                 state.perl_version = None;
             } else {
                 return;
