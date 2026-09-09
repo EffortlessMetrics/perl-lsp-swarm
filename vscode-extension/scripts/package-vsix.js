@@ -80,6 +80,16 @@ function validatePrebuiltPayload(manifest, context) {
 }
 
 function validateProjectionManifest(manifest, projectionInput, target) {
+  if (
+    !manifest ||
+    typeof manifest !== 'object' ||
+    !manifest.package ||
+    typeof manifest.package !== 'object' ||
+    !manifest.dap ||
+    typeof manifest.dap !== 'object'
+  ) {
+    throw new Error('prebuilt payload manifest is missing package or DAP identity');
+  }
   const expectedExtensionId = `${packageManifest.publisher}.${packageManifest.name}`;
   if (
     manifest.extension?.id !== expectedExtensionId ||

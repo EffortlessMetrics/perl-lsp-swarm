@@ -218,6 +218,15 @@ void test('prebuilt manifest binds exact Windows server source, target, and byte
       ),
     /another target/,
   );
+  assert.throws(
+    () =>
+      validateProjectionManifest({ ...valid, package: undefined }, projectionInput(), 'win32-x64'),
+    /missing package or DAP identity/,
+  );
+  assert.throws(
+    () => validateProjectionManifest({ ...valid, dap: undefined }, projectionInput(), 'win32-x64'),
+    /missing package or DAP identity/,
+  );
 });
 
 void test('manifest staging rolls back partial writes and rejects symlink destinations', () => {
