@@ -57,16 +57,13 @@ impl CompileTimePragmaEnvironment {
     #[must_use]
     pub fn build(ast: &Node) -> Self {
         let mut ranges = Vec::new();
-        let mut current_state = range_builder::TrackedPragmaState::default();
+        let mut current_state = PragmaState::default();
         range_builder::build_ranges(ast, &mut current_state, &mut ranges);
         ranges.sort_by_key(|(range, _)| range.start);
 
         let entries = ranges
             .into_iter()
-            .map(|(range, tracked)| PragmaEntry {
-                range,
-                snapshot: PragmaSnapshot::from_parts(tracked.state, tracked.perl_version),
-            })
+            .map(|(range, state)| PragmaEntry { range, snapshot: PragmaSnapshot::from(state) })
             .collect::<Vec<_>>()
             .into_boxed_slice();
 

@@ -23,8 +23,8 @@ pub use map::{
     CompileTimePragmaEnvironment, PragmaEntry, PragmaMap, PragmaQueryCursor, PragmaStateQuery,
 };
 pub use version::{
-    PerlVersion, features_enabled_by_version, parse_perl_version, version_implies_strict,
-    version_implies_warnings,
+    FeatureBundle, PerlVersion, feature_bundle_for_version, features_enabled_by_version,
+    parse_perl_version, version_implies_strict, version_implies_warnings,
 };
 
 pub(crate) use args::{
@@ -35,6 +35,7 @@ pub(crate) use conditional::conditional_pragma_target;
 pub(crate) use features::{apply_feature_state, canonical_feature_query};
 pub(crate) use map::normalize_state;
 pub(crate) use version::enable_effective_version_semantics;
+pub(crate) use version::{admitted_vstring_version, looks_like_version_literal};
 
 /// Pragma state at a given point in the code
 #[derive(Debug, Clone, PartialEq)]
@@ -128,21 +129,13 @@ impl Default for PragmaState {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct PragmaSnapshot {
     state: PragmaState,
-    perl_version: Option<PerlVersion>,
 }
 
 impl PragmaSnapshot {
     /// Create a snapshot from a concrete state value.
-    ///
-    /// A standalone state value has no retained version-declaration authority.
     #[must_use]
     pub fn from_state(state: PragmaState) -> Self {
-        Self { state, perl_version: None }
-    }
-
-    /// Create a snapshot from the complete internally tracked state.
-    pub(crate) fn from_parts(state: PragmaState, perl_version: Option<PerlVersion>) -> Self {
-        Self { state, perl_version }
+        Self { state }
     }
 
     /// Borrow the underlying state.
@@ -151,13 +144,13 @@ impl PragmaSnapshot {
         &self.state
     }
 
-    /// Return the lexical Perl version selected at this source position.
+    /// Project the retained legacy version onto a named reviewed bundle.
     ///
-    /// `None` means no version declaration is retained for the snapshot; it
-    /// does not assert which Perl interpreter will execute the file.
+    /// This is a projection for parser/tracker-built snapshots, not an
+    /// attestation for caller-constructed public state values.
     #[must_use]
-    pub fn perl_version(&self) -> Option<PerlVersion> {
-        self.perl_version
+    pub fn feature_bundle(&self) -> FeatureBundle {
+        self.state.perl_version.map_or(FeatureBundle::Unknown, feature_bundle_for_version)
     }
 
     /// Whether all strict categories are active in this snapshot.
