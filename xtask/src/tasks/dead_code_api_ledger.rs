@@ -1559,7 +1559,6 @@ fn scoped_prelude_use(file: &syn::File, inside_owning_crate: bool) -> bool {
 
     struct Visitor {
         scope: Scope,
-        initial: Scope,
         found: bool,
     }
     impl Visitor {
@@ -1627,7 +1626,12 @@ fn scoped_prelude_use(file: &syn::File, inside_owning_crate: bool) -> bool {
 
         fn visit_item_mod(&mut self, node: &'ast syn::ItemMod) {
             if let Some((_, items)) = &node.content {
-                let next = with_items(self.initial.clone(), &items.iter().collect::<Vec<_>>());
+                // Inline modules inherit the lexically enclosing scope: an
+                // extern-crate alias or import visible outside the module
+                // roots consumer paths inside it. Rebuilding from
+                // self.initial would discard those bindings and let nested
+                // consumers escape the ledger.
+                let next = with_items(self.scope.clone(), &items.iter().collect::<Vec<_>>());
                 self.found |= next.imports_surface;
                 let previous = std::mem::replace(&mut self.scope, next);
                 for item in items {
@@ -1710,7 +1714,7 @@ fn scoped_prelude_use(file: &syn::File, inside_owning_crate: bool) -> bool {
     }
     let scope = with_items(initial.clone(), &file.items.iter().collect::<Vec<_>>());
     let found = scope.imports_surface;
-    let mut visitor = Visitor { scope, initial, found };
+    let mut visitor = Visitor { scope, found };
     syn::visit::Visit::visit_file(&mut visitor, file);
     visitor.found
 }
@@ -2580,6 +2584,22 @@ mod tests {
         ] {
             if references_surface(text, false).map_err(|error| color_eyre::eyre::eyre!(error))? {
                 bail!("unrelated crate alias became a consumer: {text}");
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn outer_extern_crate_alias_reaches_nested_module_consumers() -> Result<()> {
+        // Devin review, PR #15086: an alias visible in the enclosing scope
+        // must root consumer paths inside nested inline modules; rebuilding
+        // a module's scope from the file-level initial scope discards it.
+        for text in [
+            "extern crate perl_parser as alias; mod inner { fn f(_: alias::dead_code::DeadCode) {} }",
+            "mod outer { extern crate perl_parser as alias; pub mod inner { fn f(_: alias::dead_code_detector::DeadCodeType) {} } }",
+        ] {
+            if !references_surface(text, false).map_err(|error| color_eyre::eyre::eyre!(error))? {
+                bail!("nested consumer through outer alias escaped: {text}");
             }
         }
         Ok(())
