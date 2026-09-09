@@ -403,8 +403,14 @@ fn is_required_production_source_path(lcov_path: &str, source_root: &Path) -> bo
         return true;
     }
     for marker in ["crates/", "xtask/src/", "xtask/tests/"] {
-        if let Some(index) = normalized.find(marker) {
-            return normalized.get(index..).is_some_and(is_patch_coverage_source_path);
+        for (index, _) in normalized.match_indices(marker) {
+            // The marker must start a real path component: a foreign path
+            // like `/tmp/vendor-crates/client_generated.rs` contains the
+            // marker inside a directory name and must stay excluded.
+            let at_component_boundary = index == 0 || normalized.as_bytes()[index - 1] == b'/';
+            if at_component_boundary {
+                return normalized.get(index..).is_some_and(is_patch_coverage_source_path);
+            }
         }
     }
     false
@@ -2109,6 +2115,36 @@ mod tests {\n\
             strip_cfg_test_lines(&mut summary, Path::new("missing-source-root"))?;
             if summary.line_found != 1 || summary.line_hit != 0 {
                 return Err("explicitly excluded source must retain raw counters".into());
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn marker_fallback_requires_path_component_boundary() -> TestResult {
+        let root = Path::new("missing-source-root");
+        // A marker inside a directory name is a foreign path: it must stay
+        // excluded so its raw LCOV counters are retained instead of
+        // aborting receipt generation.
+        for foreign in [
+            "/tmp/vendor-crates/client_generated.rs",
+            "vendor-crates/foo.rs",
+            "/tmp/my-xtask/src/tool.rs",
+            "/deps/some-crates/src/lib.rs",
+        ] {
+            if is_required_production_source_path(foreign, root) {
+                return Err(format!("foreign path {foreign} must stay excluded").into());
+            }
+        }
+        // A marker at a component boundary keeps the conservative
+        // fail-closed behavior for genuinely unavailable production sources.
+        for required in [
+            "crates/perl-lexer/src/lib.rs",
+            "/home/runner/work/repo/repo/crates/perl-lexer/src/lib.rs",
+            "C:/old-checkout/xtask/src/tasks/example.rs",
+        ] {
+            if !is_required_production_source_path(required, root) {
+                return Err(format!("boundary path {required} must stay required").into());
             }
         }
         Ok(())
