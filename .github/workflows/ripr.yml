@@ -47,26 +47,8 @@ on:
       seed_cache:
         description: 'Seed the shared RIPR Cargo cache from canonical main/master'
         required: false
-      ripr_measurement:
-        description: 'Run the bounded 1000-file RIPR measurement on CX53'
-        required: true
         default: false
         type: boolean
-      ripr_hosted_measurement:
-        description: 'Run the bounded 1000-file RIPR measurement in a hosted container'
-        required: true
-        default: false
-        type: boolean
-      measurement_head_sha:
-        description: 'Exact 40-character source head SHA for the hosted measurement'
-        required: false
-        default: ''
-        type: string
-      measurement_base_sha:
-        description: 'Exact 40-character source base SHA for the hosted measurement'
-        required: false
-        default: ''
-        type: string
 
 concurrency:
   group: ripr-${{ github.event.pull_request.number || github.ref }}
@@ -101,7 +83,6 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.EM_RUNNER_READ_TOKEN }}
           ORG: EffortlessMetrics
-          RIPR_MEASUREMENT: ${{ github.event_name == 'workflow_dispatch' && inputs.ripr_measurement || false }}
           IS_FORK_PR: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
           PR_AUTHOR_LOGIN: ${{ github.event_name == 'pull_request' && github.event.pull_request.user.login || '' }}
           PR_AUTHOR_TYPE: ${{ github.event_name == 'pull_request' && github.event.pull_request.user.type || '' }}
@@ -150,10 +131,6 @@ jobs:
 
           # No runner token -- cannot query availability; fall back safely.
           if [ -z "${GH_TOKEN:-}" ]; then
-            if [ "${RIPR_MEASUREMENT:-false}" = "true" ]; then
-              echo "::error::RIPR measurement requires runner telemetry and an idle CX53 runner"
-              exit 1
-            fi
             emit "github" "runner_token_missing" "true"
             exit 0
           fi
@@ -166,10 +143,6 @@ jobs:
             "https://api.github.com/orgs/$ORG/actions/runners?per_page=100" || true)"
 
           if [ "$status" != "200" ]; then
-            if [ "${RIPR_MEASUREMENT:-false}" = "true" ]; then
-              echo "::error::RIPR measurement runner telemetry returned HTTP $status"
-              exit 1
-            fi
             echo "::warning::runner API returned HTTP $status; falling back to GitHub-hosted"
             emit "github" "runner_api_failed" "true"
             exit 0
@@ -197,15 +170,6 @@ jobs:
 
           echo "idle_cx53=${idle_cx53:-0}"
           echo "idle_cx43=${idle_cx43:-0}"
-
-          if [ "${RIPR_MEASUREMENT:-false}" = "true" ]; then
-            if [ "${idle_cx53:-0}" -gt 0 ]; then
-              emit "cx53" "manual_measurement_cx53" "false"
-              exit 0
-            fi
-            echo "::error::RIPR measurement requires an idle CX53 runner; refusing hosted fallback"
-            exit 1
-          fi
 
           # TEMPORARY: CX43 is demoted from routing. The CX43 host has lost its
           # preloaded em-ci-rust:1.95 Docker image (a local-only image, not in any
@@ -254,8 +218,6 @@ jobs:
       preflight_ok: ${{ steps.preflight.outputs.preflight_ok }}
     env:
       RIPR_VERSION: "0.10.0"
-      RIPR_MAX_DIFF_INDEX_FILES: ${{ github.event_name == 'workflow_dispatch' && inputs.ripr_measurement && '1000' || '800' }}
-      RIPR_MEASUREMENT: ${{ github.event_name == 'workflow_dispatch' && inputs.ripr_measurement || false }}
       BASE_REF: ${{ github.base_ref || github.event.merge_group.base_ref || github.event.repository.default_branch }}
       PR_HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || '' }}
       PR_LABELS: ${{ github.event_name == 'pull_request' && join(github.event.pull_request.labels.*.name, ',') || '' }}
@@ -360,8 +322,6 @@ jobs:
             -e RIPR_FRESHNESS_HANDOFF=/freshness \
             -e RIPR_FRESHNESS_TOKEN="$RIPR_FRESHNESS_TOKEN" \
             -e PR_LABELS="$PR_LABELS" \
-            -e RIPR_MAX_DIFF_INDEX_FILES="$RIPR_MAX_DIFF_INDEX_FILES" \
-            -e RIPR_MEASUREMENT="$RIPR_MEASUREMENT" \
             -e CARGO_HOME=/cargo-home \
             -e SCCACHE_DIR=/sccache \
             -e SCCACHE_CACHE_SIZE="$SCCACHE_CACHE_SIZE" \
@@ -400,16 +360,7 @@ jobs:
 
               # Generation phase: keep going on individual failures so we can
               # still upload whatever artifacts were produced.
-              if [ "$RIPR_MEASUREMENT" = "true" ]; then
-                mkdir -p target/ripr/pr
-                printf "runner=cx53\\ndocker_memory=28g\\nripr_version=%s\\nindex_limit=%s\\nhead=%s\\n" \
-                  "$RIPR_VERSION" "$RIPR_MAX_DIFF_INDEX_FILES" "$(git rev-parse HEAD)" \
-                  > target/ripr/pr/ripr-measurement-config.txt
-                /usr/bin/time -v -o target/ripr/pr/ripr-measurement-time.txt \
-                  cargo xtask ripr-pr --base "origin/$BASE_REF" --head HEAD --pr-head "$PR_HEAD_SHA" || RIPR_FAILED=1
-              else
-                cargo xtask ripr-pr --base "origin/$BASE_REF" --head HEAD --pr-head "$PR_HEAD_SHA" || RIPR_FAILED=1
-              fi
+              cargo xtask ripr-pr --base "origin/$BASE_REF" --head HEAD --pr-head "$PR_HEAD_SHA" || RIPR_FAILED=1
               cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json || RIPR_FAILED=1
               mkdir -p target/receipts/quality
               printf '{"schema_version":1,"kind":"ripr_badge_producer","head":"%s","root":".","source_format":"ripr-plus repo-badge-json","ripr_version":"%s"}\n' "$(git rev-parse HEAD)" "$RIPR_VERSION" > target/receipts/quality/ripr-badge-producer.json
@@ -1018,7 +969,6 @@ jobs:
     if: >-
       always() &&
       needs.route-ripr.result == 'success' &&
-      inputs.ripr_measurement != true &&
       (
         (needs.route-ripr.outputs.target == 'cx53' && needs.ripr-cx53.result == 'failure' && needs.ripr-cx53.outputs.preflight_ok == 'false') ||
         (needs.route-ripr.outputs.target == 'cx43' && needs.ripr-cx43.result == 'failure' && needs.ripr-cx43.outputs.preflight_ok == 'false')
@@ -1212,158 +1162,8 @@ jobs:
           if-no-files-found: error
 
   # -------------------------------------------------------------------------
-  # 2e. Explicit hosted capacity measurement. This is an independent manual
-  # experiment, not a fallback for the required routed gate. The ordinary
-  # router and its 800-file guard remain unchanged.
-  # -------------------------------------------------------------------------
-  ripr-hosted-measurement:
-    name: RIPR bounded hosted measurement
-    if: github.event_name == 'workflow_dispatch' && inputs.ripr_hosted_measurement == true
-    runs-on: ubuntu-24.04
-    timeout-minutes: 75
-    permissions:
-      contents: read
-    env:
-      RIPR_VERSION: "0.10.0"
-      RIPR_MAX_DIFF_INDEX_FILES: "1000"
-      BASE_REF: ${{ github.event.repository.default_branch }}
-      PR_HEAD_SHA: ${{ inputs.measurement_head_sha }}
-      MEASUREMENT_HEAD_SHA: ${{ inputs.measurement_head_sha }}
-      MEASUREMENT_BASE_SHA: ${{ inputs.measurement_base_sha }}
-      WORKFLOW_SHA: ${{ github.sha }}
-      CARGO_BUILD_JOBS: "2"
-    steps:
-      - name: Validate exact measurement source inputs
-        shell: bash
-        env:
-          MEASUREMENT_HEAD_SHA: ${{ inputs.measurement_head_sha }}
-          MEASUREMENT_BASE_SHA: ${{ inputs.measurement_base_sha }}
-        run: |
-          set -euo pipefail
-          [[ "$MEASUREMENT_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]] || {
-            echo "::error::measurement_head_sha must be an exact 40-character lowercase commit SHA"
-            exit 1
-          }
-          [[ "$MEASUREMENT_BASE_SHA" =~ ^[0-9a-f]{40}$ ]] || {
-            echo "::error::measurement_base_sha must be an exact 40-character lowercase commit SHA"
-            exit 1
-          }
-
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          fetch-depth: 0
-          ref: ${{ inputs.measurement_head_sha }}
-          persist-credentials: false
-
-      - name: Run canonical RIPR in bounded container
-        shell: bash
-        run: |
-          set -euo pipefail
-          rm -rf target/ripr/pr
-          mkdir -p target/ripr/pr
-          printf "runner=github-hosted\njob_phase=host-start\n" > target/ripr/pr/ripr-measurement-config.txt
-          image='rust:1.95-slim-bookworm'
-          set +e
-          timeout --signal=TERM --kill-after=10s 3m docker pull "$image"
-          pull_status=$?
-          set -e
-          printf "pull_exit=%s\n" "$pull_status" >> target/ripr/pr/ripr-measurement-config.txt
-          if [ "$pull_status" -ne 0 ]; then
-            exit "$pull_status"
-          fi
-          set +e
-          image_id="$(timeout --signal=TERM --kill-after=5s 15s docker image inspect --format '{{.Id}}' "$image")"
-          inspect_id_status=$?
-          image_digest="$(timeout --signal=TERM --kill-after=5s 15s docker image inspect --format '{{index .RepoDigests 0}}' "$image")"
-          inspect_digest_status=$?
-          set -e
-          printf "inspect_id_exit=%s\ninspect_digest_exit=%s\n" "$inspect_id_status" "$inspect_digest_status" >> target/ripr/pr/ripr-measurement-config.txt
-          if [ "$inspect_id_status" -ne 0 ] || [ "$inspect_digest_status" -ne 0 ]; then
-            exit 1
-          fi
-          printf "image_id=%s\nimage_digest=%s\n" "$image_id" "$image_digest" >> target/ripr/pr/ripr-measurement-config.txt
-          set +e
-          timeout --signal=TERM --kill-after=30s 65m docker run --rm \
-            --cpus=4 \
-            --memory=6g \
-            --memory-swap=6g \
-            -e RIPR_VERSION \
-            -e RIPR_MAX_DIFF_INDEX_FILES \
-            -e BASE_REF \
-            -e PR_HEAD_SHA \
-            -e MEASUREMENT_HEAD_SHA \
-            -e MEASUREMENT_BASE_SHA \
-            -e WORKFLOW_SHA \
-            -e CARGO_BUILD_JOBS \
-            -e MEASUREMENT_IMAGE_ID="$image_id" \
-            -e MEASUREMENT_IMAGE_DIGEST="$image_digest" \
-            -v "$GITHUB_WORKSPACE:/workspace" \
-            -w /workspace \
-            "$image_id" \
-            bash -euo pipefail -c '
-              apt-get update
-              DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-                build-essential pkg-config libssl-dev git curl jq time
-              git config --global --add safe.directory /workspace
-              mkdir -p target/ripr/pr
-              printf "job_phase=container-tools-start\n" >> target/ripr/pr/ripr-measurement-config.txt
-              test "$(git rev-parse HEAD)" = "$MEASUREMENT_HEAD_SHA"
-              git cat-file -e "$MEASUREMENT_BASE_SHA^{commit}"
-              base_sha="$(git rev-parse "$MEASUREMENT_BASE_SHA^{commit}")"
-              test "$base_sha" = "$MEASUREMENT_BASE_SHA"
-              base_arg="$MEASUREMENT_BASE_SHA"
-              pr_head_arg="$MEASUREMENT_HEAD_SHA"
-              cargo install ripr --version "$RIPR_VERSION" --locked
-              rustc_version="$(rustc --version)"
-              cargo_version="$(cargo --version)"
-              ripr_version="$(ripr --version)"
-              ripr_path="$(command -v ripr)"
-              ripr_sha256="$(sha256sum "$ripr_path" | cut -d " " -f 1)"
-              {
-                printf "docker_memory=6g\ndocker_memory_swap=6g\nworkflow_sha=%s\nsource_head_sha=%s\nsource_base_sha=%s\n" \
-                  "$WORKFLOW_SHA" "$MEASUREMENT_HEAD_SHA" "$MEASUREMENT_BASE_SHA"
-                printf "head=%s\nbase=%s\nbase_sha=%s\nripr_version=%s\nripr_sha256=%s\nindex_limit=%s\n" \
-                  "$(git rev-parse HEAD)" "$base_arg" "$base_sha" "$ripr_version" "$ripr_sha256" "$RIPR_MAX_DIFF_INDEX_FILES"
-                printf "%s\n%s\n" "$rustc_version" "$cargo_version"
-              } >> target/ripr/pr/ripr-measurement-config.txt
-              cargo build -p xtask --locked
-              ripr doctor
-              set +e
-              timeout --signal=TERM --kill-after=30s 55m \
-                /usr/bin/time -v -o target/ripr/pr/ripr-measurement-time.txt \
-                cargo xtask ripr-pr --base "$base_arg" --head HEAD --pr-head "$pr_head_arg"
-              analysis_status=$?
-              set -e
-              printf "analysis_exit=%s\n" "$analysis_status" >> target/ripr/pr/ripr-measurement-config.txt
-              if [ "$analysis_status" -ne 0 ]; then
-                exit "$analysis_status"
-              fi
-              test -s target/ripr/pr/repo-exposure.json
-              jq -e "(.kind == \"pr_evidence\" and .scope == \"diff\" and .head_sha == \"$(git rev-parse HEAD)\" and .base_sha == \"$base_sha\")" \
-                target/ripr/pr/repo-exposure.json >/dev/null
-              jq -c "{schema_version,scope,status,base_sha,head_sha,summary}" \
-                target/ripr/pr/repo-exposure.json >> target/ripr/pr/ripr-measurement-config.txt
-            '
-          container_status=$?
-          set -e
-          printf "container_exit=%s\n" "$container_status" >> target/ripr/pr/ripr-measurement-config.txt
-          if [ "$container_status" -ne 0 ]; then
-            exit "$container_status"
-          fi
-
-      - name: Upload hosted measurement evidence
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
-        with:
-          name: ripr-hosted-measurement
-          path: target/ripr/pr/**
-          retention-days: 14
-          if-no-files-found: error
-
-  # -------------------------------------------------------------------------
-  # 3. Cache seed (#12563) -- scheduled main-ref run that warms both ripr
-  # rust-cache keys so hosted PR runs restore instead of cold-building ~6.5m
+  # 3. Cache seed (#12563) -- scheduled or explicit canonical main-ref run that
+  # warms the shared ripr rust-cache key so hosted PR runs restore instead of cold-building ~6.5m
   # into the runner-eviction window. Pull_request runs stay restore-only
   # (docs/ci/cache-policy.md); this job is the only writer. Builds the same
   # artifacts the analysis jobs build (ripr binary + xtask).
