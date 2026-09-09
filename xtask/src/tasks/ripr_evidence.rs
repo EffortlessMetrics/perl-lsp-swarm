@@ -833,11 +833,9 @@ fn write_pr_evidence(repo: &Path, options: &PrEvidenceOptions) -> Result<()> {
     // later failures cannot expose earlier copies to the always-run validator
     // or artifact upload (#9113 review). Removal failures leave no handoff marker.
     let freshness_handoff = prepare_freshness_handoff()?;
-    invalidate_and_publish_freshness_handoff(
-        repo,
-        freshness_handoff,
-        |path| fs::remove_file(path),
-    )?;
+    invalidate_and_publish_freshness_handoff(repo, freshness_handoff, |path| {
+        fs::remove_file(path)
+    })?;
     verify_revision(repo, &options.base)?;
     verify_revision(repo, &options.head)?;
     if let Some(pr_head_sha) = &options.pr_head_sha {
@@ -4516,14 +4514,10 @@ esac
         let current_packet = current.path().join(PR_EVIDENCE_JSON);
         let current_ancillary = current.path().join(REVIEW_COMMENTS_JSON);
         fs::create_dir_all(
-            current_packet
-                .parent()
-                .ok_or_else(|| eyre!("current parent missing"))?,
+            current_packet.parent().ok_or_else(|| eyre!("current parent missing"))?,
         )?;
         fs::create_dir_all(
-            current_ancillary
-                .parent()
-                .ok_or_else(|| eyre!("review parent missing"))?,
+            current_ancillary.parent().ok_or_else(|| eyre!("review parent missing"))?,
         )?;
         fs::write(&current_packet, "old packet")?;
         fs::write(&current_ancillary, "old review")?;

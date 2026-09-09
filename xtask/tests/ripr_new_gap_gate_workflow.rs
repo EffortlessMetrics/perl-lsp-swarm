@@ -1406,11 +1406,8 @@ fn ripr_validation_requires_freshness_before_invoking_consumers() -> Result<()> 
     let sandbox = tempfile::tempdir()?;
     let calls = sandbox.path().join("cargo-calls");
     let script = workflow_run_block("ripr-fallback", "Validate PR evidence contracts")?;
-    let fake_cargo = format!(
-        "cargo() {{ printf '%s\\n' \"$*\" >> '{}' ; }}\n{}",
-        calls.display(),
-        script
-    );
+    let fake_cargo =
+        format!("cargo() {{ printf '%s\\n' \"$*\" >> '{}' ; }}\n{}", calls.display(), script);
     let run = |handoff: Option<(&PathBuf, &str)>| -> Result<std::process::Output> {
         let mut command = Command::new(bash_executable());
         command
