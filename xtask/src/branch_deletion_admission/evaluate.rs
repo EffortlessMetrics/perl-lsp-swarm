@@ -174,7 +174,7 @@ pub fn evaluate(request: &AdmissionRequest) -> AdmissionOutcome {
                 DeletionAdmission::RetainBranchMoved,
                 format!(
                     "{} now points at {current}, not the reviewed subject {}",
-                    parent.head_ref, parent.reviewed_head_sha
+                    branch_ref, parent.reviewed_head_sha
                 ),
                 Vec::new(),
             );
@@ -182,7 +182,7 @@ pub fn evaluate(request: &AdmissionRequest) -> AdmissionOutcome {
         None => {
             return outcome(
                 DeletionAdmission::RetainBranchMoved,
-                format!("current tip of {} could not be read", parent.head_ref),
+                format!("current tip of {} could not be read", branch_ref),
                 Vec::new(),
             );
         }
@@ -194,14 +194,14 @@ pub fn evaluate(request: &AdmissionRequest) -> AdmissionOutcome {
         WorktreeOwnership::ActiveWriter { detail } => {
             return outcome(
                 DeletionAdmission::RetainGraphNotProven,
-                format!("a local writer still owns {}: {detail}", parent.head_ref),
+                format!("a local writer still owns {}: {detail}", branch_ref),
                 Vec::new(),
             );
         }
         WorktreeOwnership::NotProven { detail } => {
             return outcome(
                 DeletionAdmission::RetainGraphNotProven,
-                format!("local worktree ownership of {} is not proven: {detail}", parent.head_ref),
+                format!("local worktree ownership of {} is not proven: {detail}", branch_ref),
                 Vec::new(),
             );
         }
@@ -212,8 +212,8 @@ pub fn evaluate(request: &AdmissionRequest) -> AdmissionOutcome {
     let mut admitted = outcome(
         DeletionAdmission::SafeToDelete,
         format!(
-            "#{} is merged, no open pull request uses {} as a base, the branch still points at {}, and no local writer owns it",
-            parent.number, parent.head_ref, parent.reviewed_head_sha
+            "#{} is merged, no open pull request uses {} as a base, local subject {} still points at {}, and no local writer owns it",
+            parent.number, parent.head_ref, branch_ref, parent.reviewed_head_sha
         ),
         Vec::new(),
     );

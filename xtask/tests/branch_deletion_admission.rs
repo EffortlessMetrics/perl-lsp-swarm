@@ -99,6 +99,9 @@ fn an_exact_local_alias_uses_a_local_compare_and_delete() -> Result<(), Box<dyn 
     {
         return Err(format!("local alias identity drifted: {outcome:?}").into());
     }
+    if !outcome.detail.contains("codex/13178-dancer2-v1-integrated") {
+        return Err(format!("success detail omitted the local alias: {}", outcome.detail).into());
+    }
     let command = branch_deletion_command(&outcome).ok_or("local alias emitted no command")?;
     let expected = [
         "git",
