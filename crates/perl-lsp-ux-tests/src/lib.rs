@@ -56,7 +56,7 @@ pub mod scorecard;
 pub mod taxonomy;
 pub mod workspace;
 
-pub use client::{LspEvent, UxClient};
+pub use client::{CapabilityViolation, LspEvent, UxClient};
 pub use diagnostics::DiagnosticsTracker;
 pub use env::{PathGuard, RestrictedPath};
 pub use project_fixture::{
