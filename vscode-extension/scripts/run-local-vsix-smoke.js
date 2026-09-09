@@ -2283,6 +2283,10 @@ function activationFailureLegEnv(baseEnv, leg, fault, context) {
   delete env.PERL_LSP_PACKAGED_BUNDLE_SMOKE;
   delete env.PERL_LSP_FIRST_HOUR_SERVER_PATH;
   delete env.PERL_LSP_CURRENT_SOURCE_SHA;
+  delete env.PERL_LSP_CANDIDATE_ID;
+  delete env.PERL_LSP_ARTIFACT_SET_ID;
+  delete env.PERL_LSP_CANDIDATE_ARTIFACT_MANIFEST;
+  delete env.PERL_LSP_CONSTRUCT_CANDIDATE_MANIFEST;
   return env;
 }
 
@@ -2507,6 +2511,10 @@ function crashRecoveryLegEnv(baseEnv, leg, context) {
   delete env.PERL_LSP_PACKAGED_BUNDLE_SMOKE;
   delete env.PERL_LSP_FIRST_HOUR_SERVER_PATH;
   delete env.PERL_LSP_CURRENT_SOURCE_SHA;
+  delete env.PERL_LSP_CANDIDATE_ID;
+  delete env.PERL_LSP_ARTIFACT_SET_ID;
+  delete env.PERL_LSP_CANDIDATE_ARTIFACT_MANIFEST;
+  delete env.PERL_LSP_CONSTRUCT_CANDIDATE_MANIFEST;
   delete env.PERL_LSP_ACTIVATION_FAILURE_SMOKE;
   delete env.PERL_LSP_ACTIVATION_FAILURE_LEG;
   delete env.PERL_LSP_EXTENSION_TEST_FAIL_ACTIVATION_PHASE;

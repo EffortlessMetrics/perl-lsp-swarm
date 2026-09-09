@@ -1518,6 +1518,10 @@ void test('activation-failure leg env arms only the failure leg with the fault',
       PERL_LSP_PACKAGED_BUNDLE_SMOKE: '1',
       PERL_LSP_FIRST_HOUR_SERVER_PATH: '/ambient/server',
       PERL_LSP_CURRENT_SOURCE_SHA: 'c'.repeat(40),
+      PERL_LSP_CANDIDATE_ID: 'ambient-candidate',
+      PERL_LSP_ARTIFACT_SET_ID: 'ambient-artifacts',
+      PERL_LSP_CANDIDATE_ARTIFACT_MANIFEST: '{}',
+      PERL_LSP_CONSTRUCT_CANDIDATE_MANIFEST: '1',
       PERL_LSP_EXTENSION_TEST_FAIL_ACTIVATION_PHASE: 'stale-from-outer-env',
     },
     'failure',
@@ -1539,6 +1543,13 @@ void test('activation-failure leg env arms only the failure leg with the fault',
     undefined,
     'candidate-bound mode is Linux-only and must not leak into the journey legs',
   );
+  for (const key of [
+    'PERL_LSP_CANDIDATE_ID',
+    'PERL_LSP_ARTIFACT_SET_ID',
+    'PERL_LSP_CANDIDATE_ARTIFACT_MANIFEST',
+    'PERL_LSP_CONSTRUCT_CANDIDATE_MANIFEST',
+  ])
+    assert.equal(failureEnv[key], undefined);
 
   // Base env deliberately carries the fault variable: the retry leg must
   // REMOVE it, so deleting the else-branch cleanup would fail this assertion.
@@ -2182,6 +2193,10 @@ void test('crash-recovery leg env arms one leg and strips foreign selectors', ()
       PERL_LSP_PACKAGED_BUNDLE_SMOKE: '1',
       PERL_LSP_FIRST_HOUR_SERVER_PATH: '/ambient/server',
       PERL_LSP_CURRENT_SOURCE_SHA: 'c'.repeat(40),
+      PERL_LSP_CANDIDATE_ID: 'ambient-candidate',
+      PERL_LSP_ARTIFACT_SET_ID: 'ambient-artifacts',
+      PERL_LSP_CANDIDATE_ARTIFACT_MANIFEST: '{}',
+      PERL_LSP_CONSTRUCT_CANDIDATE_MANIFEST: '1',
       PERL_LSP_ACTIVATION_FAILURE_SMOKE: '1',
       PERL_LSP_ACTIVATION_FAILURE_LEG: 'failure',
       PERL_LSP_EXTENSION_TEST_FAIL_ACTIVATION_PHASE: 'stale-from-outer-env',
@@ -2201,6 +2216,13 @@ void test('crash-recovery leg env arms one leg and strips foreign selectors', ()
   assert.equal('PERL_LSP_PACKAGED_BUNDLE_SMOKE' in transientEnv, false);
   assert.equal('PERL_LSP_FIRST_HOUR_SERVER_PATH' in transientEnv, false);
   assert.equal('PERL_LSP_CURRENT_SOURCE_SHA' in transientEnv, false);
+  for (const key of [
+    'PERL_LSP_CANDIDATE_ID',
+    'PERL_LSP_ARTIFACT_SET_ID',
+    'PERL_LSP_CANDIDATE_ARTIFACT_MANIFEST',
+    'PERL_LSP_CONSTRUCT_CANDIDATE_MANIFEST',
+  ])
+    assert.equal(transientEnv[key], undefined);
   assert.equal('PERL_LSP_ACTIVATION_FAILURE_SMOKE' in transientEnv, false);
   assert.equal('PERL_LSP_ACTIVATION_FAILURE_LEG' in transientEnv, false);
   assert.equal('PERL_LSP_EXTENSION_TEST_FAIL_ACTIVATION_PHASE' in transientEnv, false);
