@@ -4540,6 +4540,48 @@ esac
 
     #[cfg(not(windows))]
     #[test]
+    fn healthy_packet_survives_refused_invalidation_but_handoff_check_rejects() -> Result<()> {
+        let repo = evidence_repo()?;
+        let options = evidence_options();
+        let bin_dir = tempfile::tempdir()?;
+        let fake = write_fake_ripr_check_binary(bin_dir.path(), REAL_010_CHECK)?;
+        let _guard = override_ripr_bin(&fake)?;
+
+        write_pr_evidence(repo.path(), &options)?;
+        check_pr_evidence(repo.path(), &options)
+            .context("healthy same-revision packet must check successfully")?;
+        let old = repo.path().join(PR_EVIDENCE_JSON);
+        color_eyre::eyre::ensure!(old.is_file(), "healthy packet must remain readable")?;
+
+        let handoff = tempfile::tempdir()?;
+        let token = "test/refused-after-healthy".to_owned();
+        fs::write(handoff.path().join(FRESHNESS_MARKER), format!("{token}\n"))?;
+        let refusal = invalidate_and_publish_freshness_handoff(
+            repo.path(),
+            Some((handoff.path().to_path_buf(), token.clone())),
+            |path| {
+                if path == old {
+                    Err(io::Error::new(io::ErrorKind::PermissionDenied, "injected refusal"))
+                } else {
+                    Ok(())
+                }
+            },
+        );
+        refusal
+            .err()
+            .ok_or_else(|| eyre!("invalidation refusal must remain an error"))?;
+        color_eyre::eyre::ensure!(old.is_file(), "refused invalidation must leave old packet readable");
+        check_pr_evidence(repo.path(), &options)
+            .context("standalone check should still validate the readable old packet")?;
+        color_eyre::eyre::ensure!(
+            validate_freshness_handoff(handoff.path(), &token, repo.path()).is_err(),
+            "handoff-aware consumer admission must reject the refused invalidation"
+        );
+        Ok(())
+    }
+
+    #[cfg(not(windows))]
+    #[test]
     fn an_early_failure_also_invalidates_the_previous_packet() -> Result<()> {
         let repo = evidence_repo()?;
         let options = evidence_options();
@@ -4550,10 +4592,6 @@ esac
             let _guard = override_ripr_bin(&fake)?;
             write_pr_evidence(repo.path(), &options)?;
             check_pr_evidence(repo.path(), &options)?;
-            color_eyre::eyre::ensure!(
-                repo.path().join(PR_EVIDENCE_JSON).is_file(),
-                "healthy same-revision check must leave a readable packet"
-            );
         }
 
         // Same repository, but a base that cannot resolve: fails at the first
