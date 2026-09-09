@@ -218,6 +218,28 @@ pub(crate) fn is_full_object_id(candidate: &str) -> bool {
         && candidate.chars().all(|ch| ch.is_ascii_hexdigit() && !ch.is_ascii_uppercase())
 }
 
+/// Match the restrictions Git applies to a branch ref below `refs/heads/`.
+///
+/// Live collection asks Git directly; snapshots cannot run that command, so
+/// they need the same fail-closed structural boundary before evaluation.
+fn is_valid_local_alias(alias: &str) -> bool {
+    if alias.is_empty()
+        || alias.starts_with('/')
+        || alias.ends_with('/')
+        || alias.ends_with('.')
+        || alias.contains("..")
+        || alias.contains("@{")
+        || alias.chars().any(|ch| {
+            ch.is_ascii_control() || matches!(ch, ' ' | '~' | '^' | ':' | '?' | '*' | '[' | '\\')
+        })
+    {
+        return false;
+    }
+    alias.split('/').all(|component| {
+        !component.is_empty() && !component.starts_with('.') && !component.ends_with(".lock")
+    })
+}
+
 impl AdmissionRequest {
     /// Structural validation of the request before any admission logic runs.
     ///
@@ -240,6 +262,11 @@ impl AdmissionRequest {
             && local_ref.trim().is_empty()
         {
             return Some("local branch alias must be non-empty".to_string());
+        }
+        if let Some(local_ref) = self.branch.local_ref.as_deref()
+            && !is_valid_local_alias(local_ref)
+        {
+            return Some(format!("local branch alias {local_ref:?} is not a valid Git ref"));
         }
         if self.remote.trim().is_empty() {
             return Some("remote must be non-empty".to_string());

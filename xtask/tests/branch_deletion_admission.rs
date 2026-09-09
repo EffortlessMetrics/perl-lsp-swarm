@@ -118,6 +118,44 @@ fn an_exact_local_alias_uses_a_local_compare_and_delete() -> Result<(), Box<dyn 
 }
 
 #[test]
+fn malformed_local_aliases_cannot_reach_safe_to_delete() -> Result<(), Box<dyn std::error::Error>> {
+    for alias in [
+        "bad..alias",
+        ".hidden",
+        "nested/.hidden",
+        "trailing.",
+        "nested/name.lock",
+        "nested/name@{x",
+        "nested//name",
+        "bad alias",
+    ] {
+        let mut request = admissible_request();
+        request.branch.local_ref = Some(alias.to_string());
+        let outcome = evaluate(&request);
+        if outcome.admission == DeletionAdmission::SafeToDelete {
+            return Err(
+                format!("malformed alias {alias:?} reached SAFE_TO_DELETE: {outcome:?}").into()
+            );
+        }
+    }
+
+    let mut valid = admissible_request();
+    valid.branch.local_ref = Some("-valid/alias_1".to_string());
+    let outcome = evaluate(&valid);
+    if outcome.admission != DeletionAdmission::SafeToDelete {
+        return Err(format!("valid Git alias was rejected: {outcome:?}").into());
+    }
+    for alias in ["@", "folder./name", "folder/name@"] {
+        valid.branch.local_ref = Some(alias.to_string());
+        let outcome = evaluate(&valid);
+        if outcome.admission != DeletionAdmission::SafeToDelete {
+            return Err(format!("valid Git alias was rejected: {outcome:?}").into());
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn a_moved_local_alias_retains_without_remote_mutation() -> Result<(), Box<dyn std::error::Error>> {
     let mut request = admissible_request();
     request.branch.local_ref = Some("codex/13178-dancer2-v1-integrated".to_string());
