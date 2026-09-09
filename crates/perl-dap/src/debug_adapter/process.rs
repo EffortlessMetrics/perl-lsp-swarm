@@ -63,9 +63,11 @@ fn read_debugger_record<R: Read>(
             // token, not a prompt-only record.
             let buffered = reader.buffer();
             let next_non_whitespace = buffered.iter().position(|byte| !byte.is_ascii_whitespace());
-            let only_prompt_padding = next_non_whitespace.is_none()
-                || next_non_whitespace
-                    .is_some_and(|index| buffered[index] == b'\n' || buffered[index] == b'\r');
+            let only_prompt_padding =
+                buffered.first().is_some_and(|byte| *byte == b'\n' || *byte == b'\r')
+                    || next_non_whitespace.is_none()
+                    || next_non_whitespace
+                        .is_some_and(|index| buffered[index] == b'\n' || buffered[index] == b'\r');
             if only_prompt_padding {
                 break;
             }
