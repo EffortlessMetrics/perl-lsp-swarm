@@ -172,10 +172,8 @@ pub fn language() -> Language {
 ///
 /// Mirrors how upstream grammar bindings embed their query files as public
 /// string constants; the copy lives inside this crate (like `c-src/`) so the
-/// published package stays self-contained. Provenance is recorded in
-/// [`UPSTREAM_SNAPSHOT.md`].
-///
-/// [`UPSTREAM_SNAPSHOT.md`]: crate documentation root
+/// published package stays self-contained. Provenance is recorded in the
+/// package's `UPSTREAM_SNAPSHOT.md` file.
 pub const INJECTIONS_QUERY: &str = include_str!("../queries/injections.scm");
 
 /// The vendored upstream `queries/highlights.scm` source.
