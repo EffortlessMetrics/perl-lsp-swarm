@@ -2963,3 +2963,32 @@ created = "2026-09-09"
 review_after = "2026-09-16"
 expires = "2026-09-23"
 removal_criteria = "Remove when ripr#1429 traces async/channel plumbing, or narrow immediately if a future receipt reports an executable seam used outside the test harness."
+# PR #15200 (#15156) adds cfg(all(test, feature = "workspace"))-gated scan
+# lifecycle observation to perl-lsp-rs: the new
+# src/runtime/scan_gate_observation.rs module (23 no_static_path probes), its
+# cfg(test) module registration in src/runtime/mod.rs (1), and the gated
+# indexing_scan_observation field in src/runtime/workspace.rs (1). The
+# surface is compiled only for workspace unit tests and is exercised by the
+# scan_gate_observation_reports_real_empty_scan_exit_with_sender_retained and
+# scan_gate_observation_is_consumed_only_when_a_queued_scan_is_admitted
+# lifecycle tests; ripr cannot trace same-file cfg(test) activation, so the
+# probes report reach:no on test-only instrumentation (ripr#1428/#1429
+# class). The wiring lines are inside #[cfg(all(test, ...))] items, so no
+# production seam is masked.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-scan-gate-observation-test-instrumentation"
+kind = "test_receipt_surface"
+paths = [
+  "crates/perl-lsp-rs/src/runtime/scan_gate_observation.rs",
+  "crates/perl-lsp-rs/src/runtime/mod.rs",
+  "crates/perl-lsp-rs/src/runtime/workspace.rs",
+]
+classification = ["no_static_path"]
+owner = "proof-lane"
+issue = "EffortlessMetrics/ripr#1429"
+reason = "PR #15200 (#15156): 25 no_static_path probes on cfg(all(test, feature = \"workspace\"))-gated scan lifecycle observation in perl-lsp-rs — a new test-only module plus its two gated wiring lines. The instrumentation is exercised by the workspace scan lifecycle unit tests that install it; ripr cannot trace same-file cfg(test) activation (ripr#1428/#1429 class). Path scope includes mod.rs and workspace.rs only for their cfg(test)-gated registration/field lines; both files' production seams remain gated as usual — remove or narrow immediately if a future receipt reports an executable no_static_path seam in those files outside the gated lines. Remove when ripr distinguishes cfg(test) instrumentation from production behavior."
+created = "2026-09-09"
+review_after = "2026-09-16"
+expires = "2026-09-23"
+removal_criteria = "Remove when ripr#1429 distinguishes cfg(test)-only modules from production seams, or narrow immediately if a future receipt reports an executable (non-test) no_static_path seam in mod.rs or workspace.rs."

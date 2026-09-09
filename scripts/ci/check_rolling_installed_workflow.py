@@ -304,6 +304,39 @@ def _require_run(run_texts: list[str], token: str, message: str) -> None:
     )
 
 
+def _require_candidate_exports_inside_windows_guard(run: Any) -> None:
+    lines = _executable_lines(run)
+    guard = 'if [ "$PLATFORM" = "windows" ]; then'
+    start = [index for index, line in enumerate(lines) if line.strip() == guard]
+    _require(
+        len(start) == 1,
+        "candidate construction exports must have one exact Windows platform guard",
+    )
+    guard_start = start[0]
+    guard_end = next(
+        (index for index in range(guard_start + 1, len(lines)) if lines[index].strip() == "fi"),
+        None,
+    )
+    _require(
+        guard_end is not None,
+        "candidate construction Windows platform guard must be closed",
+    )
+    if guard_end is None:
+        return
+    exports = (
+        "PERL_LSP_CONSTRUCT_CANDIDATE_MANIFEST=1",
+        "PERL_LSP_CANDIDATE_ID=",
+        "PERL_LSP_ARTIFACT_SET_ID=",
+    )
+    for export in exports:
+        occurrences = [index for index, line in enumerate(lines) if export in line]
+        _require(
+            occurrences
+            and all(guard_start < index < guard_end for index in occurrences),
+            f"candidate construction export {export} must remain inside the Windows guard",
+        )
+
+
 def _check_permissions_block(value: Any, scope: str) -> None:
     _require(
         isinstance(value, dict),
@@ -436,6 +469,20 @@ def validate(document: dict[str, Any]) -> None:
         "PERL_LSP_SERVER_SOURCE_SHA",
         "packaged journey must bind the server to exact source identity",
     )
+    configure = _step_named(
+        row, "installed-row", "Configure exact smoke subject and host selector"
+    )
+    configure_runs = "\n".join(_executable_lines(configure.get("run")))
+    for export in (
+        "PERL_LSP_CONSTRUCT_CANDIDATE_MANIFEST=1",
+        "PERL_LSP_CANDIDATE_ID=",
+        "PERL_LSP_ARTIFACT_SET_ID=",
+    ):
+        _require(
+            export in configure_runs,
+            f"packaged journey must export {export} for candidate construction",
+        )
+    _require_candidate_exports_inside_windows_guard(configure.get("run"))
     assemble = _step_named(
         row, "installed-row", "Assemble exact row without cross-surface inference"
     )
@@ -447,6 +494,23 @@ def validate(document: dict[str, Any]) -> None:
         "rolling_installed_observation.py row"
         in "\n".join(_executable_lines(assemble.get("run"))),
         "each platform must produce one typed row",
+    )
+    assemble_runs = "\n".join(_executable_lines(assemble.get("run")))
+    for argument in ('--candidate-id "$CANDIDATE_ID"', '--artifact-set-id "$ARTIFACT_SET_ID"'):
+        _require(
+            argument in assemble_runs,
+            f"row assembly must consume {argument} when creating the typed row",
+        )
+    assemble_env = assemble.get("env") if isinstance(assemble.get("env"), dict) else {}
+    _require(
+        assemble_env.get("CANDIDATE_ID")
+        == "rolling-${{ needs.subject.outputs.source_sha }}-${{ github.run_id }}-${{ matrix.row_id }}",
+        "row assembly must define the candidate identity in its own step environment",
+    )
+    _require(
+        assemble_env.get("ARTIFACT_SET_ID")
+        == "rolling-${{ needs.subject.outputs.source_sha }}-${{ matrix.row_id }}",
+        "row assembly must define the artifact-set identity in its own step environment",
     )
     upload = _step_named(
         row, "installed-row", "Upload row, exact artifacts, and child receipts"
@@ -559,6 +623,55 @@ def expect_failure(text: str, mutation: str) -> None:
             "PERL_LSP_SERVER_SOURCE_SHA",
             "REMOVED_SERVER_SOURCE_SHA",
         )
+    elif mutation == "drop_candidate_construction":
+        mutated = replace_once(
+            text,
+            "PERL_LSP_CONSTRUCT_CANDIDATE_MANIFEST=1",
+            "REMOVED_CANDIDATE_CONSTRUCTION=1",
+            mutation,
+        )
+    elif mutation == "lift_candidate_exports":
+        guard = '          if [ "$PLATFORM" = "windows" ]; then\n'
+        start = text.find(guard)
+        if start < 0:
+            raise WorkflowError(f"negative-control setup {mutation} found no Windows guard")
+        end = text.find("          fi\n", start)
+        if end < 0:
+            raise WorkflowError(f"negative-control setup {mutation} found no guard terminator")
+        end += len("          fi\n")
+        block = text[start:end]
+        exports = [line for line in block.splitlines() if "printf 'PERL_LSP_" in line]
+        if len(exports) != 4:
+            raise WorkflowError(
+                f"negative-control setup {mutation} expected four candidate exports, found {len(exports)}"
+            )
+        retained = [line for line in block.splitlines() if line not in exports]
+        mutated = text[:start] + "\n".join(exports + retained) + "\n" + text[end:]
+    elif mutation == "duplicate_candidate_exports_outside_guard":
+        guard = '          if [ "$PLATFORM" = "windows" ]; then\n'
+        start = text.find(guard)
+        if start < 0:
+            raise WorkflowError(f"negative-control setup {mutation} found no Windows guard")
+        exports = [
+            "          printf 'PERL_LSP_CONSTRUCT_CANDIDATE_MANIFEST=1\\n' >> \"$GITHUB_ENV\"",
+            "          printf 'PERL_LSP_CANDIDATE_ID=outside\\n' >> \"$GITHUB_ENV\"",
+            "          printf 'PERL_LSP_ARTIFACT_SET_ID=outside\\n' >> \"$GITHUB_ENV\"",
+        ]
+        mutated = text[:start] + "\n".join(exports) + "\n" + text[start:]
+    elif mutation == "drop_candidate_cli_identity":
+        mutated = replace_once(
+            text,
+            '--candidate-id "$CANDIDATE_ID"',
+            "--candidate-id \\\"REMOVED_CANDIDATE_ID\\\"",
+            mutation,
+        )
+    elif mutation == "drop_artifact_cli_identity":
+        mutated = replace_once(
+            text,
+            '--artifact-set-id "$ARTIFACT_SET_ID"',
+            "--artifact-set-id \\\"REMOVED_ARTIFACT_SET_ID\\\"",
+            mutation,
+        )
     elif mutation == "needs_contract_drift":
         mutated = replace_once(text, "needs: contract", "needs: contract-lite", mutation)
     elif mutation == "needs_subject_drift":
@@ -617,6 +730,11 @@ def main() -> int:
             "workspace_build",
             "comment_out_build",
             "drop_server_identity",
+            "drop_candidate_construction",
+            "lift_candidate_exports",
+            "duplicate_candidate_exports_outside_guard",
+            "drop_candidate_cli_identity",
+            "drop_artifact_cli_identity",
             "needs_contract_drift",
             "needs_subject_drift",
             "publishing_action",
