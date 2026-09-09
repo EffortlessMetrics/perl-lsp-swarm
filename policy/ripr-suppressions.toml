@@ -3018,3 +3018,29 @@ created = "2026-09-09"
 review_after = "2026-09-16"
 expires = "2026-09-23"
 removal_criteria = "Remove when ripr#1429 distinguishes cfg(test)-only modules from production seams, or narrow immediately if a future receipt reports an executable (non-test) no_static_path seam in mod.rs or workspace.rs."
+
+# -----------------------------------------------------------------------------
+# PR #14648 extracts the core-harness baseline authority from lib.rs into
+# crates/perl-core-harness/src/baseline.rs (lib.rs -1690 lines, baseline.rs
+# +1343). ripr 0.10.0 reports 213 no_static_path and 65 reachable_unrevealed
+# probes on the moved seams — deleted old lines in lib.rs and their new
+# homes in baseline.rs — even though the behavior is preserved and covered
+# by cargo test -p perl-core-harness (58/58 baseline tests plus the focused
+# harness suite). Same mechanical-move class as
+# ripr-suppress-perl-core-harness-xtask-extraction-move.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-core-harness-baseline-extraction-move"
+kind = "mechanical_move_extraction"
+paths = [
+  "crates/perl-core-harness/src/lib.rs",
+  "crates/perl-core-harness/src/baseline.rs",
+]
+classification = ["no_static_path", "reachable_unrevealed"]
+owner = "proof-lane"
+issue = "EffortlessMetrics/perl-lsp-swarm#13397"
+reason = "PR #14648 mechanically extracts the baseline authority from perl-core-harness lib.rs into baseline.rs. The 278 probes are on moved seams: 173 in lib.rs (deleted/rewritten old lines) and 105 in baseline.rs (the same code in its new home), all reach-checked against the preserved behavior covered by 58/58 baseline tests and the focused harness suite. HONEST SCOPE NOTE: the matcher is path-scoped and lib.rs remains a large implementation file, so future no_static_path/reachable_unrevealed seams there are masked for this window — the harness's own test suite and review remain the detection surface, and this entry must be narrowed or removed at review if any non-move logic landed in the extraction. Remove when ripr classifies mechanical moves without re-opening moved seams, or narrow immediately if a future receipt shows an executable (non-move) seam in either file."
+created = "2026-09-09"
+review_after = "2026-09-16"
+expires = "2026-09-23"
+removal_criteria = "Remove when ripr treats mechanical extractions as non-actionable, or narrow immediately if a future receipt reports an executable seam in lib.rs or baseline.rs beyond the moved lines."
