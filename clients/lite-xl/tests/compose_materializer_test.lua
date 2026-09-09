@@ -1084,6 +1084,29 @@ do
   end, "P1 wrong base")
   ok(err ~= nil, "P1 wrong base refuses inherited landed coverage")
 
+  local shadow_spec, shadow_ad = fixture()
+  local shadow_source = "return { pending = 'shadow' }\n"
+  local shadow_blob = fnv_hex(shadow_source)
+  shadow_spec.trees[refs.source].upstream["init.lua"] = base_blobs["init.lua"]
+  shadow_spec.bytes[refs.source]["init.lua"] = bytes["init.lua"]
+  shadow_spec.trees[refs.source].fallback = { ["init.lua"] = shadow_blob }
+  shadow_spec.diff = { { status = "M", path = "leaves/base/init.lua" } }
+  expect_error("pending_proof", function()
+    compose.materialize_pending({
+      manifest = pending_manifest, adapter = shadow_ad, profile = "empty",
+      base_dir = base_dir, out_dir = pending_root .. "/shadowed-fallback/upstream",
+      receipt_path = pending_root .. "/shadowed-fallback/receipt.json",
+      base_ref = refs.base, source_ref = refs.source,
+      declared_delta = {
+        { status = "M", path = "leaves/base/init.lua",
+          source_blob = shadow_blob },
+      }, suite_specs = {
+        { path = "tests/pending_test.lua", source_blob = shadow_spec.pending_test_blob,
+          module = "init.lua" },
+      },
+    })
+  end, "P1 shadowed fallback change receives no generated-tree proof")
+
   local _, ancestry_ad = fixture()
   local ancestry_spec = fixture()
   ancestry_spec.ancestors = {}

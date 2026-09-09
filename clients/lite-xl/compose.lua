@@ -1757,11 +1757,21 @@ local function pending_suite_modules(spec)
   return spec.modules or { spec.module }
 end
 
-local function require_changed_module_proof(delta, suites)
+local function require_changed_module_proof(delta, suites, source_projection)
+  if type(source_projection) ~= "table"
+    or type(source_projection.roots) ~= "table"
+    or type(source_projection.roots.upstream) ~= "table" then
+    fail("pending_adapter", { message = "source projection roots are required" })
+  end
+  local upstream = source_projection.roots.upstream
   for _, change in ipairs(delta) do
     if change.status == "M" or change.status == "A" then
       local module = change.path:gsub("^upstream/", "")
         :gsub("^leaves/base/", "")
+      if change.path:match("^leaves/base/.+") and upstream[module] ~= nil then
+        fail("pending_proof", { path = change.path,
+          message = "shadowed fallback change is superseded by the upstream module and receives no generated-tree proof" })
+      end
       local covered = false
       for _, suite in ipairs(suites) do
         for _, candidate in ipairs(pending_suite_modules(suite)) do
@@ -1837,7 +1847,7 @@ function M.materialize_pending(opts)
     adapter, source_ref)
   local suites = pending_suite_specs(opts, inherited)
   local required = pending_required_modules(manifest, opts, source_projection, suites)
-  require_changed_module_proof(delta, suites)
+  require_changed_module_proof(delta, suites, source_projection)
 
   if pending_path_state[receipt_path] and not os.remove(receipt_path) then
     fail("pending_receipt", {
