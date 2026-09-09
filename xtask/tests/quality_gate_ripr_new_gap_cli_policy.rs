@@ -1077,7 +1077,7 @@ fn new_ripr_quality_gate_command(
         .join("quality-gate-exceptions.toml");
     fs::write(
         &exception_policy,
-        "schema_version = 1\npolicy = \"quality-gate-exceptions\"\nowner = \"test\"\nstatus = \"active\"\nupdated = \"2026-01-01\"\ndue_review = \"fail\"\nrequired_active = []\n",
+        "schema_version = 1\npolicy = \"quality-gate-exceptions\"\nowner = \"test\"\nstatus = \"active\"\nupdated = \"2026-01-01\"\ndue_review = \"fail\"\n[requirements]\nrequired_active = []\n",
     )?;
     new_ripr_quality_gate_command_with_policy(
         root,

@@ -480,7 +480,7 @@ fn patch_quality_gate_command(
         .join("quality-gate-exceptions.toml");
     fs::write(
         &exception_policy,
-        "schema_version = 1\npolicy = \"quality-gate-exceptions\"\nowner = \"test\"\nstatus = \"active\"\nupdated = \"2026-01-01\"\ndue_review = \"fail\"\nrequired_active = []\n",
+        "schema_version = 1\npolicy = \"quality-gate-exceptions\"\nowner = \"test\"\nstatus = \"active\"\nupdated = \"2026-01-01\"\ndue_review = \"fail\"\n[requirements]\nrequired_active = []\n",
     )?;
     command.current_dir(root).args(["quality-gate", "--mode", "enforce-patch-coverage"]);
     command.arg("--exception-policy").arg(exception_policy);
