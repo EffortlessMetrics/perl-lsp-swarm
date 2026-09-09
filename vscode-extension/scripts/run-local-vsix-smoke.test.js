@@ -1,4 +1,5 @@
 const assert = require('node:assert/strict');
+const crypto = require('node:crypto');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -6,6 +7,8 @@ const { test } = require('node:test');
 const {
   activationFailureLegEnv,
   bundleTargetForPlatform,
+  candidateManifestConstructionRequested,
+  constructCandidateArtifactManifest,
   composeActivationRecoveryReceipt,
   composeCheckSummary,
   composeCrashRecoveryReceipt,
@@ -28,9 +31,280 @@ const {
   stageServerForPackage,
   validateActivationRecoveryChildReceipts,
   validateChildSmokeReceipt,
+  validateVerifiedCandidateReceipt,
+  observedVscodeVersion,
   validateCrashRecoveryChildReceipts,
   writeJsonAtomic,
 } = require('./run-local-vsix-smoke');
+
+void test('preserves source-bound and ordinary child VS Code runtime identity', () => {
+  assert.equal(
+    observedVscodeVersion({ ok: true, source_receipt: { vscode_version: '1.125.0' } }, true),
+    '1.125.0',
+  );
+  assert.equal(
+    observedVscodeVersion(
+      { ok: true, receipt: { environment: { vscode_version: '1.124.2' } } },
+      false,
+    ),
+    '1.124.2',
+  );
+});
+
+void test('verified packaged child receipt binds candidate and both observed artifacts', () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-verified-child-'));
+  const receiptFile = path.join(directory, 'verified_child_receipt.json');
+  const sourceReceiptFile = path.join(directory, 'packaged_bundle_journey_receipt.json');
+  fs.writeFileSync(
+    sourceReceiptFile,
+    JSON.stringify({
+      repository_sha: 'a'.repeat(40),
+      artifact_hashes: {
+        vsix_sha256: 'b'.repeat(64),
+        bundled_server_sha256: 'c'.repeat(64),
+      },
+      vscode_version: '1.125.0',
+      outcome: 'not_proven',
+      product_blockers: [],
+      server_identity: {
+        path: 'C:/extension/bin/win32-x64/perllsp.exe',
+        source: 'packaged_vsix_bundle',
+        startup_source: 'bundled',
+      },
+      startup: {
+        lifecycle_state: 'running',
+        binary_resolution_status: 'ok',
+        server_start_status: 'ok',
+        initialize_status: 'ok',
+      },
+      requests: {
+        immediate: Object.fromEntries(
+          ['completion', 'hover', 'definition', 'references', 'symbols'].map((key) => [
+            key,
+            { status: 'ok' },
+          ]),
+        ),
+        after_edit: { status: 'ok', immediate_requery: { status: 'ok' } },
+      },
+      shutdown: 'stopped',
+    }),
+  );
+  fs.writeFileSync(
+    receiptFile,
+    JSON.stringify({
+      schema_version: 'verified_child_receipt.v1',
+      receipt_schema_version: 'installed_acceptance.v1',
+      candidate_id: 'candidate-1',
+      frozen_product_sha: 'a'.repeat(40),
+      artifact_set_id: 'set-1',
+      status: 'not_proven',
+      source_receipt_sha256: crypto
+        .createHash('sha256')
+        .update(fs.readFileSync(sourceReceiptFile))
+        .digest('hex'),
+      artifact_hashes: {
+        vsix_sha256: 'b'.repeat(64),
+        bundled_server_sha256: 'c'.repeat(64),
+      },
+    }),
+  );
+  const result = validateVerifiedCandidateReceipt({
+    receiptFile,
+    env: {
+      PERL_LSP_CANDIDATE_ID: 'candidate-1',
+      PERL_LSP_CURRENT_SOURCE_SHA: 'a'.repeat(40),
+      PERL_LSP_ARTIFACT_SET_ID: 'set-1',
+    },
+    expectedVsixSha256: 'b'.repeat(64),
+    expectedBundledServerSha256: 'c'.repeat(64),
+    sourceReceiptFile,
+    expectedPlatform: 'windows',
+  });
+  assert.equal(result.ok, true);
+  assert.equal(String(result.source_receipt?.vscode_version), '1.125.0');
+  fs.rmSync(directory, { recursive: true, force: true });
+});
+
+void test('verified packaged child receipt rejects stale source, identity, and artifact bindings', () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-verified-child-negative-'));
+  const receiptFile = path.join(directory, 'verified_child_receipt.json');
+  const sourceReceiptFile = path.join(directory, 'packaged_bundle_journey_receipt.json');
+  fs.writeFileSync(
+    sourceReceiptFile,
+    JSON.stringify({
+      repository_sha: 'a'.repeat(40),
+      artifact_hashes: {
+        vsix_sha256: 'b'.repeat(64),
+        bundled_server_sha256: 'c'.repeat(64),
+      },
+      vscode_version: '1.125.0',
+      outcome: 'not_proven',
+      product_blockers: [],
+      server_identity: {
+        path: 'C:/extension/bin/win32-x64/perllsp.exe',
+        source: 'packaged_vsix_bundle',
+        startup_source: 'bundled',
+      },
+      startup: {
+        lifecycle_state: 'running',
+        binary_resolution_status: 'ok',
+        server_start_status: 'ok',
+        initialize_status: 'ok',
+      },
+      requests: {
+        immediate: Object.fromEntries(
+          ['completion', 'hover', 'definition', 'references', 'symbols'].map((key) => [
+            key,
+            { status: 'ok' },
+          ]),
+        ),
+        after_edit: { status: 'ok', immediate_requery: { status: 'ok' } },
+      },
+      shutdown: 'stopped',
+    }),
+  );
+  const sourceDigest = crypto
+    .createHash('sha256')
+    .update(fs.readFileSync(sourceReceiptFile))
+    .digest('hex');
+  const base = {
+    schema_version: 'verified_child_receipt.v1',
+    receipt_schema_version: 'installed_acceptance.v1',
+    candidate_id: 'candidate-1',
+    frozen_product_sha: 'a'.repeat(40),
+    artifact_set_id: 'set-1',
+    status: 'not_proven',
+    source_receipt_sha256: sourceDigest,
+    artifact_hashes: {
+      vsix_sha256: 'b'.repeat(64),
+      bundled_server_sha256: 'c'.repeat(64),
+    },
+  };
+  const validate = (override) => {
+    fs.writeFileSync(receiptFile, JSON.stringify({ ...base, ...override }));
+    return validateVerifiedCandidateReceipt({
+      receiptFile,
+      sourceReceiptFile,
+      env: {
+        PERL_LSP_CANDIDATE_ID: 'candidate-1',
+        PERL_LSP_CURRENT_SOURCE_SHA: 'a'.repeat(40),
+        PERL_LSP_ARTIFACT_SET_ID: 'set-1',
+      },
+      expectedVsixSha256: 'b'.repeat(64),
+      expectedBundledServerSha256: 'c'.repeat(64),
+      expectedPlatform: 'windows',
+    });
+  };
+  assert.equal(validate({ source_receipt_sha256: 'd'.repeat(64) }).ok, false);
+  assert.equal(validate({ candidate_id: 'candidate-other' }).ok, false);
+  assert.equal(
+    validate({ artifact_hashes: { ...base.artifact_hashes, vsix_sha256: 'd'.repeat(64) } }).ok,
+    false,
+  );
+  const validSource = JSON.parse(fs.readFileSync(sourceReceiptFile, 'utf8'));
+  const sourceMutation = (mutate) => {
+    const source = structuredClone(validSource);
+    mutate(source);
+    fs.writeFileSync(sourceReceiptFile, JSON.stringify(source));
+    const digest = crypto
+      .createHash('sha256')
+      .update(fs.readFileSync(sourceReceiptFile))
+      .digest('hex');
+    return validate({ source_receipt_sha256: digest });
+  };
+  assert.equal(sourceMutation((source) => (source.repository_sha = 'd'.repeat(40))).ok, false);
+  assert.equal(sourceMutation((source) => delete source.repository_sha).ok, false);
+  assert.equal(
+    sourceMutation((source) => (source.artifact_hashes.vsix_sha256 = 'd'.repeat(64))).ok,
+    false,
+  );
+  assert.equal(sourceMutation((source) => delete source.artifact_hashes.vsix_sha256).ok, false);
+  assert.equal(
+    sourceMutation((source) => (source.artifact_hashes.bundled_server_sha256 = 'd'.repeat(64))).ok,
+    false,
+  );
+  assert.equal(
+    sourceMutation((source) => delete source.artifact_hashes.bundled_server_sha256).ok,
+    false,
+  );
+  assert.equal(sourceMutation((source) => delete source.artifact_hashes).ok, false);
+  assert.equal(sourceMutation(() => {}).ok, true);
+  assert.equal(validate({ status: undefined }).ok, false);
+  assert.equal(validate({ status: 'unexpected' }).ok, false);
+  assert.equal(validate({ status: [] }).ok, false);
+  const failedSource = JSON.parse(fs.readFileSync(sourceReceiptFile, 'utf8'));
+  failedSource.outcome = 'failed';
+  failedSource.product_blockers = [{ label: 'provider', result: { status: 'error' } }];
+  fs.writeFileSync(sourceReceiptFile, JSON.stringify(failedSource));
+  const failedSourceDigest = crypto
+    .createHash('sha256')
+    .update(fs.readFileSync(sourceReceiptFile))
+    .digest('hex');
+  assert.equal(validate({ source_receipt_sha256: failedSourceDigest }).ok, false);
+  failedSource.outcome = 'not_proven';
+  failedSource.product_blockers = [];
+  failedSource.requests.immediate = {};
+  fs.writeFileSync(sourceReceiptFile, JSON.stringify(failedSource));
+  const emptyProviderDigest = crypto
+    .createHash('sha256')
+    .update(fs.readFileSync(sourceReceiptFile))
+    .digest('hex');
+  assert.equal(validate({ source_receipt_sha256: emptyProviderDigest }).ok, false);
+  fs.rmSync(directory, { recursive: true, force: true });
+});
+
+void test('candidate construction binds hashes and rejects partial or supplied identity', () => {
+  const env = {
+    PERL_LSP_CONSTRUCT_CANDIDATE_MANIFEST: '1',
+    PERL_LSP_CANDIDATE_ID: 'candidate-1',
+    PERL_LSP_ARTIFACT_SET_ID: 'set-1',
+    PERL_LSP_CURRENT_SOURCE_SHA: 'a'.repeat(40),
+  };
+  assert.equal(candidateManifestConstructionRequested(env), true);
+  assert.deepEqual(
+    JSON.parse(
+      String(
+        constructCandidateArtifactManifest(
+          env,
+          'a'.repeat(40),
+          'windows',
+          'b'.repeat(64),
+          'c'.repeat(64),
+        ),
+      ),
+    ),
+    {
+      candidate_id: 'candidate-1',
+      frozen_product_sha: 'a'.repeat(40),
+      artifact_set_id: 'set-1',
+      platform: 'windows',
+      vsix_sha256: 'b'.repeat(64),
+      bundled_server_sha256: 'c'.repeat(64),
+    },
+  );
+  assert.throws(
+    () =>
+      constructCandidateArtifactManifest(
+        { ...env, PERL_LSP_ARTIFACT_SET_ID: undefined },
+        'a'.repeat(40),
+        'windows',
+        'b'.repeat(64),
+        'c'.repeat(64),
+      ),
+    /missing artifactSetId/,
+  );
+  assert.throws(
+    () =>
+      constructCandidateArtifactManifest(
+        { ...env, PERL_LSP_CANDIDATE_ARTIFACT_MANIFEST: '{}' },
+        'a'.repeat(40),
+        'windows',
+        'b'.repeat(64),
+        'c'.repeat(64),
+      ),
+    /cannot be combined/,
+  );
+});
 
 void test('inventory transition forwarding keeps PR and manual base modes explicit', () => {
   const vsix = 'candidate.vsix';
@@ -163,6 +437,64 @@ void test('does not turn missing or failed Test Explorer children into a pass', 
     fs.rmSync(receiptsDir, { recursive: true, force: true });
   }
 });
+
+void test(
+  'classifies Test Explorer exits from the synthesized child identity, not ambient parent identity',
+  { skip: process.platform !== 'win32' },
+  () => {
+    const receiptsDir = path.join(os.tmpdir(), 'perl-lsp-test-explorer-child-env-does-not-exist');
+    const names = [
+      'PERL_LSP_CANDIDATE_ID',
+      'PERL_LSP_ARTIFACT_SET_ID',
+      'PERL_LSP_CURRENT_SOURCE_SHA',
+      'PERL_LSP_CANDIDATE_ARTIFACT_MANIFEST',
+      'PERL_LSP_SMOKE_RECEIPTS_DIR',
+    ];
+    const previous = Object.fromEntries(names.map((name) => [name, process.env[name]]));
+    try {
+      process.env.PERL_LSP_CANDIDATE_ID = 'ambient-candidate';
+      process.env.PERL_LSP_ARTIFACT_SET_ID = 'ambient-artifacts';
+      process.env.PERL_LSP_CURRENT_SOURCE_SHA = 'a'.repeat(40);
+      process.env.PERL_LSP_CANDIDATE_ARTIFACT_MANIFEST = '{}';
+      process.env.PERL_LSP_SMOKE_RECEIPTS_DIR = receiptsDir;
+      const result = runTestExplorerJourneyStage(
+        {},
+        'b'.repeat(40),
+        'candidate.vsix',
+        'c'.repeat(64),
+        (_env) => ({ phase: 'child', result: { status: 2 } }),
+      );
+      assert.deepEqual(result, {
+        status: 'not_proven',
+        exit_code: 2,
+        reason: 'candidate_bound_platform_unavailable',
+      });
+
+      for (const name of names.slice(0, 4)) delete process.env[name];
+      const completeChild = runTestExplorerJourneyStage(
+        {
+          PERL_LSP_CANDIDATE_ID: 'child-candidate',
+          PERL_LSP_ARTIFACT_SET_ID: 'child-artifacts',
+          PERL_LSP_CANDIDATE_ARTIFACT_MANIFEST: '{}',
+        },
+        'b'.repeat(40),
+        'candidate.vsix',
+        'c'.repeat(64),
+        (_env) => ({ phase: 'child', result: { status: 2 } }),
+      );
+      assert.deepEqual(completeChild, {
+        status: 'failed',
+        exit_code: 2,
+        reason: 'test_explorer_journey_failed',
+      });
+    } finally {
+      for (const name of names) {
+        if (previous[name] === undefined) delete process.env[name];
+        else process.env[name] = previous[name];
+      }
+    }
+  },
+);
 
 void test('classifies unavailable Test Explorer host resolution as not-proven', () => {
   const receiptsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-test-explorer-host-'));
@@ -964,7 +1296,7 @@ void test('a typed unsupported-platform child exit stays not_proven without a re
     const result = interpretBehavioralSmokeExit({
       status: 2,
       candidateBound: true,
-      platform: 'win32',
+      platform: 'darwin',
       receiptsRoot: receiptRoot,
       exists: () => false,
     });
@@ -973,6 +1305,29 @@ void test('a typed unsupported-platform child exit stays not_proven without a re
   } finally {
     fs.rmSync(receiptRoot, { recursive: true, force: true });
   }
+});
+
+void test('a partial Windows candidate-bound exit 2 remains not proven', () => {
+  const result = interpretBehavioralSmokeExit({
+    status: 2,
+    candidateBound: true,
+    platform: 'win32',
+    receiptsRoot: path.join(os.tmpdir(), 'perl-lsp-windows-candidate-exit-does-not-exist'),
+  });
+  assert.equal(result.status, 'not_proven');
+  assert.equal(result.reason, 'candidate_bound_platform_unavailable');
+});
+
+void test('a complete Windows candidate-bound exit 2 remains a product failure', () => {
+  const result = interpretBehavioralSmokeExit({
+    status: 2,
+    candidateBound: true,
+    completeCandidateIdentity: true,
+    platform: 'win32',
+    receiptsRoot: path.join(os.tmpdir(), 'perl-lsp-windows-complete-candidate-exit-does-not-exist'),
+  });
+  assert.equal(result.status, 'failed');
+  assert.equal(result.reason, 'published_extension_smoke_failed');
 });
 
 void test('the typed unsupported-platform exit is failure outside its bound platform case', () => {
@@ -1199,6 +1554,10 @@ void test('activation-failure leg env arms only the failure leg with the fault',
       PERL_LSP_PACKAGED_BUNDLE_SMOKE: '1',
       PERL_LSP_FIRST_HOUR_SERVER_PATH: '/ambient/server',
       PERL_LSP_CURRENT_SOURCE_SHA: 'c'.repeat(40),
+      PERL_LSP_CANDIDATE_ID: 'ambient-candidate',
+      PERL_LSP_ARTIFACT_SET_ID: 'ambient-artifacts',
+      PERL_LSP_CANDIDATE_ARTIFACT_MANIFEST: '{}',
+      PERL_LSP_CONSTRUCT_CANDIDATE_MANIFEST: '1',
       PERL_LSP_EXTENSION_TEST_FAIL_ACTIVATION_PHASE: 'stale-from-outer-env',
     },
     'failure',
@@ -1220,6 +1579,13 @@ void test('activation-failure leg env arms only the failure leg with the fault',
     undefined,
     'candidate-bound mode is Linux-only and must not leak into the journey legs',
   );
+  for (const key of [
+    'PERL_LSP_CANDIDATE_ID',
+    'PERL_LSP_ARTIFACT_SET_ID',
+    'PERL_LSP_CANDIDATE_ARTIFACT_MANIFEST',
+    'PERL_LSP_CONSTRUCT_CANDIDATE_MANIFEST',
+  ])
+    assert.equal(failureEnv[key], undefined);
 
   // Base env deliberately carries the fault variable: the retry leg must
   // REMOVE it, so deleting the else-branch cleanup would fail this assertion.
@@ -1863,6 +2229,10 @@ void test('crash-recovery leg env arms one leg and strips foreign selectors', ()
       PERL_LSP_PACKAGED_BUNDLE_SMOKE: '1',
       PERL_LSP_FIRST_HOUR_SERVER_PATH: '/ambient/server',
       PERL_LSP_CURRENT_SOURCE_SHA: 'c'.repeat(40),
+      PERL_LSP_CANDIDATE_ID: 'ambient-candidate',
+      PERL_LSP_ARTIFACT_SET_ID: 'ambient-artifacts',
+      PERL_LSP_CANDIDATE_ARTIFACT_MANIFEST: '{}',
+      PERL_LSP_CONSTRUCT_CANDIDATE_MANIFEST: '1',
       PERL_LSP_ACTIVATION_FAILURE_SMOKE: '1',
       PERL_LSP_ACTIVATION_FAILURE_LEG: 'failure',
       PERL_LSP_EXTENSION_TEST_FAIL_ACTIVATION_PHASE: 'stale-from-outer-env',
@@ -1882,6 +2252,13 @@ void test('crash-recovery leg env arms one leg and strips foreign selectors', ()
   assert.equal('PERL_LSP_PACKAGED_BUNDLE_SMOKE' in transientEnv, false);
   assert.equal('PERL_LSP_FIRST_HOUR_SERVER_PATH' in transientEnv, false);
   assert.equal('PERL_LSP_CURRENT_SOURCE_SHA' in transientEnv, false);
+  for (const key of [
+    'PERL_LSP_CANDIDATE_ID',
+    'PERL_LSP_ARTIFACT_SET_ID',
+    'PERL_LSP_CANDIDATE_ARTIFACT_MANIFEST',
+    'PERL_LSP_CONSTRUCT_CANDIDATE_MANIFEST',
+  ])
+    assert.equal(transientEnv[key], undefined);
   assert.equal('PERL_LSP_ACTIVATION_FAILURE_SMOKE' in transientEnv, false);
   assert.equal('PERL_LSP_ACTIVATION_FAILURE_LEG' in transientEnv, false);
   assert.equal('PERL_LSP_EXTENSION_TEST_FAIL_ACTIVATION_PHASE' in transientEnv, false);

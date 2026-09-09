@@ -29,17 +29,10 @@ fn last_feature_state(ast: &Node) -> PragmaState {
 }
 
 #[test]
-fn require_version_enables_strict_and_features() {
+fn require_version_keeps_features_and_warnings_unchanged() {
     let ast = program(vec![require_node("5.036")]);
     let state = last_feature_state(&ast);
-    assert!(state.strict_vars, "require 5.036 should enable strict vars");
-    assert!(state.has_feature("signatures"), "require 5.036 should enable signatures feature");
-}
-
-#[test]
-fn require_version_enables_warnings() {
-    let ast = program(vec![require_node("5.038")]);
-    let state = last_feature_state(&ast);
-    assert!(state.strict_vars, "require 5.038 should enable strict vars");
-    assert!(state.has_feature("say"), "require 5.038 should enable say feature");
+    assert!(!state.strict_vars, "require 5.036 must not enable strict vars");
+    assert!(!state.has_feature("signatures"), "require 5.036 must not enable signatures feature");
+    assert!(!state.has_feature("say"), "require 5.036 must not enable say feature");
 }

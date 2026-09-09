@@ -758,14 +758,13 @@ impl LspServer {
                 for (i, c) in changes.iter().enumerate() {
                     match serde_json::from_value::<TextDocumentContentChangeEvent>(c.clone()) {
                         Ok(change) => lsp_changes.push(change),
-                        Err(e) => {
+                        Err(_) => {
                             tracing::error!(
-                                "Failed to deserialize change {} for {}: {}",
-                                i,
-                                uri,
-                                e
+                                change_index = i,
+                                uri = %uri,
+                                error_category = "invalid_content_change",
+                                "Rejected malformed textDocument/didChange content change"
                             );
-                            tracing::error!("Change JSON: {:?}", c);
                             // Continue processing other changes; LSP has no server-initiated
                             // full sync, so logging is critical for diagnosing state issues.
                         }

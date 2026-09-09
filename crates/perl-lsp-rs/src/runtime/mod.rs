@@ -40,6 +40,8 @@ mod refresh;
 mod resolve_session;
 /// Routing module for lifecycle-aware index access
 pub mod routing;
+#[cfg(all(test, feature = "workspace"))]
+mod scan_gate_observation;
 pub(crate) mod scheduler;
 mod serving;
 mod session_warning_dedup;
@@ -425,6 +427,10 @@ pub struct LspServer {
     #[cfg(all(feature = "workspace", any(test, feature = "expose_lsp_test_api")))]
     indexing_commit_gate:
         Arc<std::sync::Mutex<Option<crate::runtime::readiness::WorkspaceIndexingStartGate>>>,
+    /// One-shot, instance-owned observation for the next admitted unit-test scan.
+    #[cfg(all(test, feature = "workspace"))]
+    indexing_scan_observation:
+        Arc<Mutex<Option<scan_gate_observation::ScanObservationRegistration>>>,
     /// One-time guard for the `window/showMessage` permission-denied warning.
     ///
     /// Set to `true` after the first permission-denied file is encountered during

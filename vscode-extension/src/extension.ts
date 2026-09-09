@@ -28,12 +28,15 @@ import { OnboardingManager } from './onboarding';
 import { ProcessBoundLanguageClient } from './processBoundLanguageClient';
 import {
   openDemoProjectCommand,
+  registerIncludePathGuidanceWorkspaceListener,
+  rerunIncludePathGuidance,
   suggestAiCompletionIfSupported,
   suggestDiscoveredIncludePaths,
   validateIncludePaths,
 } from './extensionWorkspaceGuidance';
 export {
   openDemoProjectCommand,
+  registerIncludePathGuidanceWorkspaceListener,
   suggestAiCompletionIfSupported,
   suggestDiscoveredIncludePaths,
   validateIncludePaths,
@@ -112,6 +115,7 @@ import {
 } from './refactoringCommands';
 import { registerSupportCommandGroup } from './supportCommandGroup';
 import { reportIssueCommand } from './supportCommands';
+import { probeServerVersion } from './serverVersionProbe';
 export { formatIssueDiagnosticInfo } from './supportCommands';
 import { ExtensionLanguageClientLifecycle } from './extensionComposition';
 import { LanguageClientLifecycleError } from './languageClientLifecycle';
@@ -1192,24 +1196,14 @@ async function runExtensionActivation(
     reportIssue: () =>
       reportIssueCommand({
         getServerVersion: () =>
-          new Promise((resolve) => {
-            if (!currentServerPath) {
-              resolve('unavailable');
-              return;
-            }
-            execFile(
-              currentServerPath,
-              ['--version'],
-              { timeout: 3000 },
-              (error: Error | null, stdout: string) => {
-                if (error) {
-                  resolve('unavailable');
-                  return;
-                }
-                const firstLine = stdout.trim().split('\n')[0] ?? '';
-                resolve(firstLine.trim() || 'unavailable');
-              },
-            );
+          probeServerVersion(() => {
+            const lifecycle = languageClientLifecycle;
+            const snapshot = lifecycle?.snapshot;
+            return {
+              lifecycle: lifecycle ?? null,
+              serverPath: snapshot?.serverPath ?? null,
+              generation: snapshot?.generation,
+            };
           }),
         extensionVersion: (context.extension.packageJSON.version as string) ?? 'unknown',
         editorVersion: vscode.version,
@@ -1265,7 +1259,7 @@ async function runExtensionActivation(
         }
 
         if (event.affectsConfiguration('perl-lsp.includePaths')) {
-          await validateIncludePaths(context);
+          await rerunIncludePathGuidance(context);
         }
 
         const criticChanged = CRITIC_SETTINGS.some((setting) =>
@@ -1316,6 +1310,9 @@ async function runExtensionActivation(
     },
   );
   activation.own('workspace_listeners', 'optional_degradable', legacyMigrationFolderWatcher);
+
+  const includePathGuidanceFolderWatcher = registerIncludePathGuidanceWorkspaceListener(context);
+  activation.own('workspace_listeners', 'optional_degradable', includePathGuidanceFolderWatcher);
 
   const fileCreationWatcher = vscode.workspace.onDidCreateFiles(async (event) => {
     try {
