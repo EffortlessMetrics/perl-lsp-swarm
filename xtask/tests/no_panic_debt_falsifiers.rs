@@ -2322,3 +2322,56 @@ mod tests {
         "child forbid must mask inherited mod allow: {unwrap:?}"
     );
 }
+
+#[test]
+fn later_nested_edge_after_scan_does_not_keep_first_edges_allow() {
+    let temp = tempfile::tempdir().expect("temp");
+    write_policy(temp.path());
+    write_empty_registry(temp.path());
+    write_package(
+        temp.path(),
+        "demo",
+        "mod aaa;\nmod zzz;\n",
+        &[("known.rs", "#[test]\nfn known() {}\n")],
+    );
+    fs::write(
+        temp.path().join("crates/demo/src/aaa.rs"),
+        r##"
+#[cfg(test)]
+#[allow(clippy::unwrap_used, reason = "#13397")]
+#[path = "shared.rs"]
+mod shared;
+"##,
+    )
+    .expect("aaa.rs");
+    fs::write(
+        temp.path().join("crates/demo/src/zzz.rs"),
+        r#"
+#[cfg(test)]
+#[path = "shared.rs"]
+mod shared;
+"#,
+    )
+    .expect("zzz.rs");
+    fs::write(
+        temp.path().join("crates/demo/src/shared.rs"),
+        r#"
+#[test]
+fn unit() { let _ = Some(1).unwrap(); }
+"#,
+    )
+    .expect("shared.rs");
+    let inventory = inventory_at(temp.path());
+    let unwrap = inventory.rows.iter().find(|row| {
+        row.kind == "site"
+            && row.path.ends_with("src/shared.rs")
+            && row.entrypoint == "unit"
+            && row.site_family == "unwrap"
+    });
+    assert!(unwrap.is_some(), "shared unwrap omitted: {:?}", inventory.rows);
+    let unwrap = unwrap.expect("shared unwrap omitted");
+    assert!(
+        unwrap.owner.is_empty() && unwrap.declaration_identity.is_empty(),
+        "later nested edge after first scan must strip the earlier edge's allow: {unwrap:?}"
+    );
+}
