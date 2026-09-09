@@ -313,13 +313,15 @@ describe('registered packaged journey readiness contract', () => {
     });
     const harness = await makeHarness(source, readiness);
     const run = harness.journey.call({ timeout: () => undefined });
+    let watchdog: NodeJS.Timeout | undefined;
     try {
+      const watchdogPromise = new Promise<never>((_, reject) => {
+        watchdog = setTimeout(() => reject(new Error('readiness gate was not entered')), 1_000);
+      });
       const readinessObserved = await Promise.race([
         harness.readinessEntered.then(() => 'entered' as const),
         harness.firstProviderCall.then(() => 'provider' as const),
-        new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error('readiness gate was not entered')), 1_000),
-        ),
+        watchdogPromise,
       ]);
       expect(readinessObserved).toBe('entered');
       expect(harness.calls).toEqual([]);
@@ -347,6 +349,7 @@ describe('registered packaged journey readiness contract', () => {
       });
       expect(receipt.requests?.immediate_phase).toBe('after_active_document_readiness');
     } finally {
+      if (watchdog) clearTimeout(watchdog);
       release?.();
       await run.catch(() => undefined);
       harness.cleanup();
@@ -362,11 +365,32 @@ describe('registered packaged journey readiness contract', () => {
       rejectReadiness = reject;
     });
     const harness = await makeHarness(journeySource(), readiness, exposeReadiness);
+    const run = harness.journey.call({ timeout: () => undefined });
+    let watchdog: NodeJS.Timeout | undefined;
+    let readinessStarted = false;
     try {
-      const run = harness.journey.call({ timeout: () => undefined });
       if (exposeReadiness) {
-        await harness.readinessEntered;
+        const observed = await Promise.race([
+          harness.readinessEntered.then(() => 'entered' as const),
+          harness.firstProviderCall.then(() => 'provider' as const),
+          run.then(() => 'completed' as const),
+          new Promise<never>((_, reject) => {
+            watchdog = setTimeout(() => reject(new Error('readiness gate was not entered')), 1_000);
+          }),
+        ]);
+        expect(observed).toBe('entered');
+        readinessStarted = observed === 'entered';
         rejectReadiness?.(new Error('readiness refused'));
+      } else {
+        await Promise.race([
+          run,
+          new Promise<never>((_, reject) => {
+            watchdog = setTimeout(
+              () => reject(new Error('missing readiness journey stalled')),
+              1_000,
+            );
+          }),
+        ]);
       }
       await run;
       expect(harness.calls).toEqual([]);
@@ -377,6 +401,11 @@ describe('registered packaged journey readiness contract', () => {
       });
       assertProvidersNotProven(receipt);
     } finally {
+      if (watchdog) clearTimeout(watchdog);
+      if (readinessStarted) {
+        rejectReadiness?.(new Error('readiness test teardown'));
+      }
+      await run.catch(() => undefined);
       harness.cleanup();
     }
   });
