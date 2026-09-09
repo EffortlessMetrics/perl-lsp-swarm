@@ -1216,6 +1216,7 @@ async function runExtensionActivation(
         platform: process.platform,
         arch: process.arch,
         editorName: (vscode.env as unknown as { appName?: string }).appName,
+        supportFailureSink: outputChannel,
       }),
   });
   activation.ownDisposables(
@@ -2069,25 +2070,22 @@ async function finalizeStartedLanguageClient(
 
 /**
  * Present the remediation for replacement startup blocked by incomplete
- * client cleanup (#14448): the lifecycle refuses to construct a replacement
- * client until the window reloads, so generic start/restart guidance would
- * mislead the user into retrying a permanently blocked lifecycle.
+ * client cleanup (#14448). A later explicit restart may re-observe the exact
+ * old process and recover once it is terminal; reload remains the fallback
+ * when that observation cannot be established.
  */
-function presentCleanupIncompleteBlockedRecovery(): void {
+function presentCleanupIncompleteBlockedRecovery(retryableCleanup = false): void {
   healthWidget?.onStateChange(ClientState.Stopped);
-  void vscode.window
-    .showErrorMessage(
-      'The previous Perl language client did not finish cleaning up, so replacement startup is blocked. Reload the window before trying again.',
-      'Reload Window',
-      'View Logs',
-    )
-    .then((choice) => {
-      if (choice === 'Reload Window') {
-        void vscode.commands.executeCommand('workbench.action.reloadWindow');
-      } else if (choice === 'View Logs') {
-        outputChannel.show();
-      }
-    });
+  const message = retryableCleanup
+    ? 'The previous Perl language client did not finish cleaning up. Try Restart Server again after it exits, or reload the window if cleanup cannot be observed.'
+    : 'The previous Perl language client did not finish cleaning up. Reload the window before trying again.';
+  void vscode.window.showErrorMessage(message, 'Reload Window', 'View Logs').then((choice) => {
+    if (choice === 'Reload Window') {
+      void vscode.commands.executeCommand('workbench.action.reloadWindow');
+    } else if (choice === 'View Logs') {
+      outputChannel.show();
+    }
+  });
 }
 
 async function initializeLanguageClient(context: vscode.ExtensionContext): Promise<boolean> {
@@ -2121,7 +2119,7 @@ async function initializeLanguageClient(context: vscode.ExtensionContext): Promi
       startError instanceof LanguageClientLifecycleError &&
       startError.reason === 'cleanup-incomplete'
     ) {
-      presentCleanupIncompleteBlockedRecovery();
+      presentCleanupIncompleteBlockedRecovery(startError.retryableCleanup);
       return false;
     }
 
@@ -3018,9 +3016,10 @@ function getSupportedFeatureProfiles(): string[] {
  * Restart the language server through the authoritative lifecycle.
  *
  * Returns true only when restart was refused because the lifecycle's client
- * cleanup is incomplete (#14448): that lifecycle cannot admit a replacement
- * until the window reloads, so automatic crash recovery must not spend
- * further retry slots on it.
+ * cleanup is incomplete (#14448): automatic crash recovery must not spend
+ * further retry slots on it. An explicit retry is admitted only when the
+ * lifecycle retained an exact terminal process subject to recheck; otherwise
+ * the user must reload the window.
  */
 async function restartServer(_context: vscode.ExtensionContext): Promise<boolean> {
   const lifecycle = languageClientLifecycle;
@@ -3113,10 +3112,10 @@ async function restartServer(_context: vscode.ExtensionContext): Promise<boolean
     // `retry` only overrides `failed`.
     serverDemand?.noteStopped();
     if (error instanceof LanguageClientLifecycleError && error.reason === 'cleanup-incomplete') {
-      // Incomplete cleanup blocks this lifecycle until the window reloads
-      // (#14448): present that remediation instead of a bare restart failure,
-      // and report the block so automatic crash recovery stops retrying.
-      presentCleanupIncompleteBlockedRecovery();
+      // Incomplete cleanup blocks this lifecycle until a later explicit retry
+      // proves the exact subject terminal, or until the window is reloaded
+      // (#14448). Automatic crash recovery must still stop retrying here.
+      presentCleanupIncompleteBlockedRecovery(error.retryableCleanup);
       return true;
     }
     vscode.window
@@ -3549,9 +3548,8 @@ async function recoverFromObservedCrash(
     return;
   }
   // restartServer surfaces its own dialogs/logs; its boolean result reports
-  // the one terminal refusal automatic recovery must not retry: a lifecycle
-  // whose client cleanup is incomplete stays blocked until the window
-  // reloads, and re-arming it would only burn the remaining retry budget.
+  // the one terminal refusal automatic recovery must not retry. An explicit
+  // restart may later re-observe a retained exact process subject.
   const restartBlockedByIncompleteCleanup = await restartServer(context);
   // The replacement run now owns the next failed-generation identity (in
   // the unit-test harness the lifecycle controller is absent, so the
