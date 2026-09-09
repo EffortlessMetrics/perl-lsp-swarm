@@ -21,6 +21,38 @@ async function writeZip(files) {
   return { root, archive };
 }
 
+async function writeDuplicateZip() {
+  const fixture = await writeZip([
+    { name: 'extension/perllsp.exe', value: 'one' },
+    { name: 'extension/perllsp.exf', value: 'one' },
+  ]);
+  const bytes = fs.readFileSync(fixture.archive);
+  const from = Buffer.from('extension/perllsp.exf');
+  const to = Buffer.from('extension/perllsp.exe');
+  for (let offset = 0; ;) {
+    const index = bytes.indexOf(from, offset);
+    if (index < 0) break;
+    to.copy(bytes, index);
+    offset = index + to.length;
+  }
+  fs.writeFileSync(fixture.archive, bytes);
+  return fixture;
+}
+
+function setCentralDirectoryAttributes(bytes, attributes) {
+  const signature = Buffer.from([0x50, 0x4b, 0x01, 0x02]);
+  const name = Buffer.from('extension/perllsp.exe');
+  for (let offset = 0; ;) {
+    const index = bytes.indexOf(signature, offset);
+    if (index < 0) break;
+    const nameLength = bytes.readUInt16LE(index + 28);
+    if (bytes.subarray(index + 46, index + 46 + nameLength).equals(name)) {
+      bytes.writeUInt32LE(attributes >>> 0, index + 38);
+    }
+    offset = index + 4;
+  }
+}
+
 function runChecker(script, archive, expected) {
   return spawnSync(
     process.execPath,
@@ -44,24 +76,17 @@ void test('streams and verifies one regular payload member', async () => {
 });
 
 void test('rejects duplicate payload members', async () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-vsix-duplicate-'));
-  const archive = path.join(root, 'fixture.vsix');
+  const fixture = await writeDuplicateZip();
   try {
-    const python = spawnSync('python', [
-      '-c',
-      "import sys,zipfile; z=zipfile.ZipFile(sys.argv[1],'w'); z.writestr('extension/perllsp.exe',b'one'); z.writestr('extension/perllsp.exe',b'one'); z.close()",
-      archive,
-    ]);
-    assert.equal(python.status, 0);
     const result = runChecker(
       path.join(__dirname, 'check-vsix-prebuilt-payload.js'),
-      archive,
+      fixture.archive,
       sha256(Buffer.from('one')),
     );
     assert.notEqual(result.status, 0);
     assert.match(result.stderr ?? '', /duplicate payload member/);
   } finally {
-    fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(fixture.root, { recursive: true, force: true });
   }
 });
 
@@ -77,13 +102,17 @@ void test('rejects non-regular payload types', async () => {
     ]) {
       const fileType = fileTypeValue ?? '';
       const archive = path.join(root, `${label}.vsix`);
-      const python = spawnSync('python', [
-        '-c',
-        "import stat,sys,zipfile; z=zipfile.ZipFile(sys.argv[1],'w'); i=zipfile.ZipInfo('extension/perllsp.exe'); mode=0x10 if sys.argv[2]=='DOS' else (getattr(stat,sys.argv[2])|0o777)<<16; i.external_attr=mode; z.writestr(i,b'target'); z.close()",
-        archive,
-        fileType,
-      ]);
-      assert.equal(python.status, 0);
+      const zip = new JSZip();
+      zip.file('extension/perllsp.exe', 'target');
+      const bytes = await zip.generateAsync({ type: 'nodebuffer', platform: 'UNIX' });
+      const attributes =
+        fileType === 'DOS'
+          ? 0x10
+          : { S_IFLNK: 0o120777, S_IFDIR: 0o40777, S_IFIFO: 0o010777, S_IFCHR: 0o020666 }[
+              fileType
+            ] << 16;
+      setCentralDirectoryAttributes(bytes, attributes);
+      fs.writeFileSync(archive, bytes);
       const expected = sha256(Buffer.from('target'));
       const result = runChecker(
         path.join(__dirname, 'check-vsix-prebuilt-payload.js'),
