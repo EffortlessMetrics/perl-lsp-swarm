@@ -143,23 +143,30 @@ impl DebounceClock for SystemClock {
 }
 
 #[cfg(test)]
-struct ManualClock(Mutex<u64>);
+struct ManualClock {
+    millis: Mutex<u64>,
+    after_advance: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+}
 
 #[cfg(test)]
 impl ManualClock {
     fn new() -> Self {
-        Self(Mutex::new(0))
+        Self { millis: Mutex::new(0), after_advance: Mutex::new(None) }
     }
 
     fn advance_millis(&self, millis: u64) {
-        *self.0.lock() += millis;
+        *self.millis.lock() += millis;
+        let observer = self.after_advance.lock().take();
+        if let Some(observer) = observer {
+            observer();
+        }
     }
 }
 
 #[cfg(test)]
 impl DebounceClock for ManualClock {
     fn now_millis(&self) -> u64 {
-        *self.0.lock()
+        *self.millis.lock()
     }
 
     fn wait_until(
@@ -168,7 +175,7 @@ impl DebounceClock for ManualClock {
         guard: &mut MutexGuard<'_, IntakeState>,
         deadline_millis: u64,
     ) {
-        while *self.0.lock() < deadline_millis && !guard.shutting_down {
+        while *self.millis.lock() < deadline_millis && !guard.shutting_down {
             cv.wait(guard);
         }
     }
@@ -936,6 +943,9 @@ mod tests {
         }
 
         fn advance(&self, millis: u64) {
+            // Serialize clock changes and notifications with the worker's
+            // predicate check and wait registration to avoid a lost wakeup.
+            let _state = self.shared.state.lock();
             self.clock.advance_millis(millis);
             self.shared.intake_cv.notify_all();
             self.shared.handoff_cv.notify_all();
@@ -971,6 +981,37 @@ mod tests {
         let sink_delivered = Arc::clone(&delivered);
         let sink = move |uris: Vec<String>| sink_delivered.lock().push(uris);
         (delivered, sink)
+    }
+
+    #[test]
+    fn manual_clock_advance_holds_waiter_state_lock() -> Result<(), String> {
+        let harness = Harness::with_sink(|_| {});
+        harness.debouncer.shutdown_now();
+        if !harness.workers_joined() {
+            return Err("workers must be joined before observing notifier lock ownership".into());
+        }
+
+        let observer_ran = Arc::new(AtomicBool::new(false));
+        let state_was_locked = Arc::new(AtomicBool::new(false));
+        let observed = Arc::clone(&observer_ran);
+        let locked = Arc::clone(&state_was_locked);
+        let shared = Arc::clone(&harness.shared);
+        *harness.clock.after_advance.lock() = Some(Box::new(move || {
+            locked.store(shared.state.try_lock().is_none(), Ordering::SeqCst);
+            observed.store(true, Ordering::SeqCst);
+        }));
+
+        harness.advance(101);
+        if !observer_ran.load(Ordering::SeqCst) {
+            return Err("clock advancement observer did not execute".into());
+        }
+        if harness.clock.now_millis() != 101 {
+            return Err("the real harness must advance virtual time to 101".into());
+        }
+        if !state_was_locked.load(Ordering::SeqCst) {
+            return Err("virtual time advanced without the waiter's state lock".into());
+        }
+        Ok(())
     }
 
     #[test]
