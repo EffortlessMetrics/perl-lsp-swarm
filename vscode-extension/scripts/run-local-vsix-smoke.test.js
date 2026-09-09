@@ -201,8 +201,9 @@ void test('verified packaged child receipt rejects stale source, identity, and a
     validate({ artifact_hashes: { ...base.artifact_hashes, vsix_sha256: 'd'.repeat(64) } }).ok,
     false,
   );
+  const validSource = JSON.parse(fs.readFileSync(sourceReceiptFile, 'utf8'));
   const sourceMutation = (mutate) => {
-    const source = JSON.parse(fs.readFileSync(sourceReceiptFile, 'utf8'));
+    const source = structuredClone(validSource);
     mutate(source);
     fs.writeFileSync(sourceReceiptFile, JSON.stringify(source));
     const digest = crypto
@@ -226,11 +227,8 @@ void test('verified packaged child receipt rejects stale source, identity, and a
     sourceMutation((source) => delete source.artifact_hashes.bundled_server_sha256).ok,
     false,
   );
-  sourceMutation((source) => {
-    source.repository_sha = 'a'.repeat(40);
-    source.artifact_hashes.vsix_sha256 = 'b'.repeat(64);
-    source.artifact_hashes.bundled_server_sha256 = 'c'.repeat(64);
-  });
+  assert.equal(sourceMutation((source) => delete source.artifact_hashes).ok, false);
+  assert.equal(sourceMutation(() => {}).ok, true);
   assert.equal(validate({ status: undefined }).ok, false);
   assert.equal(validate({ status: 'unexpected' }).ok, false);
   assert.equal(validate({ status: [] }).ok, false);
