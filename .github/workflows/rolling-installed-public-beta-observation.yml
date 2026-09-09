@@ -350,9 +350,14 @@ jobs:
           persist-credentials: false
           ref: ${{ needs.subject.outputs.source_sha }}
 
+      - name: Setup Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+
       - name: Install pinned release topology validator
         run: >-
-          python3 -m pip install --disable-pip-version-check --no-cache-dir
+          python -m pip install --disable-pip-version-check --no-cache-dir
           --only-binary=:all: -r scripts/requirements-release.txt
 
       - name: Download all available platform rows
@@ -373,7 +378,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p target/receipts/rolling-installed/fan-in
-          python3 scripts/generate_release_topology.py \
+          python scripts/generate_release_topology.py \
             --release "$SOURCE_VERSION" \
             --frozen-product-sha "$SOURCE_SHA" \
             --output target/receipts/rolling-installed/fan-in/release-topology.json
@@ -390,7 +395,7 @@ jobs:
           if [ "$REQUIRE_READY" = "true" ]; then
             EXTRA+=(--require-ready)
           fi
-          python3 scripts/ci/rolling_installed_observation.py fan-in \
+          python scripts/ci/rolling_installed_observation.py fan-in \
             --source-sha "$SOURCE_SHA" \
             --source-version "$SOURCE_VERSION" \
             --rows-root target/receipts/rolling-installed/rows \
@@ -408,7 +413,7 @@ jobs:
             echo 'No fan-in packet was produced; the instrument failed before synthesis.' >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
-          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
           import json
           from pathlib import Path
           packet = json.loads(Path('target/receipts/rolling-installed/fan-in/rolling_installed_public_beta_fan_in.json').read_text(encoding='utf-8'))

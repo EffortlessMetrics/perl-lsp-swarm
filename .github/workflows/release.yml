@@ -163,10 +163,15 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Setup Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+
       - name: Install pinned release topology validator
         shell: bash
         run: >-
-          python3 -m pip install --disable-pip-version-check --no-cache-dir
+          python -m pip install --disable-pip-version-check --no-cache-dir
           --only-binary=:all: -r scripts/requirements-release.txt
 
       - name: Reject an occupied release tag
@@ -219,11 +224,11 @@ jobs:
             BUILD_CMD="cross"
           fi
           mkdir -p target/release-identity
-          python3 scripts/generate_release_topology.py \
+          python scripts/generate_release_topology.py \
             --release "$VERSION" \
             --frozen-product-sha "$SOURCE_SHA" \
             --output target/release-identity/release-topology.json
-          python3 scripts/release_build_identity.py prepare \
+          python scripts/release_build_identity.py prepare \
             --repository "$REPOSITORY" \
             --release-version "$VERSION" \
             --source-revision "$SOURCE_SHA" \
@@ -253,7 +258,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python3 scripts/release_build_identity.py verify \
+          python scripts/release_build_identity.py verify \
             --input target/release-identity/release-build-identity.json \
             --runner "$BUILD_CMD" \
             --receipt target/release-identity/release-build-receipt.json
@@ -317,7 +322,7 @@ jobs:
           SOURCE_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
-          python3 scripts/release_package_evidence.py \
+          python scripts/release_package_evidence.py \
             --receipt target/release-identity/release-build-receipt.json \
             --package-dir "$PKG_NAME" \
             --archive "$ASSET" \
