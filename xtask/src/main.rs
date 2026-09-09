@@ -517,8 +517,9 @@ enum Commands {
         #[arg(long)]
         expected_base_sha: Option<String>,
 
-        /// GitHub repo (owner/name) for the writer-collision PR-ownership
-        /// check.
+        /// GitHub repo (owner/name) for the advisory candidate-presence
+        /// lookup: an open PR is surfaced as continuation evidence, never
+        /// as proof of a live writer or a collision.
         #[arg(long)]
         repo: Option<String>,
 
