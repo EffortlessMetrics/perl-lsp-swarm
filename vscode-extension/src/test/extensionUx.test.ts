@@ -370,21 +370,20 @@ describe('extension UX warnings', () => {
     expect(fs.existsSync(path.join(outsideDir, 'created-from-warning'))).toBe(false);
   });
 
-  test('does not create directories outside workspace when user clicks Create Missing Directories with a symlinked include path', async () => {
-    // This test verifies the T2 re-check guard in the mkdir loop: even if creatablePaths
-    // somehow contains a symlinked path (e.g. due to a race between the T1 filter and the
-    // actual mkdir call), hasSafeExistingAncestor is re-evaluated before mkdirSync runs.
-    // We simulate this by injecting a mixed set of paths: one safe (inside workspace) and
-    // one that resolves through a symlink to outside.  We then verify only the safe one is
-    // created and nothing lands outside.
+  test('ignores retired directory-creation choice without creating paths', async () => {
+    // Directory creation was retired from this warning flow. Keep the old choice in the
+    // test as a regression input and prove that it cannot create any path, including one
+    // that resolves through a workspace symlink.
     const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-ux-symlink2-'));
     const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-ux-outside2-'));
     const symlinkPath = path.join(workspaceDir, 'linked2');
+    let symlinkCreated = false;
     try {
       fs.symlinkSync(outsideDir, symlinkPath, 'dir');
+      symlinkCreated = true;
     } catch {
-      // Symlink creation not supported on this platform/environment — skip.
-      return;
+      // Symlink creation is unavailable in some environments; the unconditional
+      // no-creation assertion below still exercises the retired choice on Windows.
     }
 
     const context = makeContext();
@@ -394,7 +393,8 @@ describe('extension UX warnings', () => {
     };
 
     const getConfiguration = vscode.workspace.getConfiguration as jest.Mock;
-    // 'safe-lib' is inside the workspace; 'linked2/escape' traverses the symlink outside.
+    // 'safe-lib' is inside the workspace; when available, 'linked2/escape' traverses
+    // the symlink outside.
     getConfiguration.mockImplementation(() => ({
       get: jest.fn(() => ['safe-lib', 'linked2/escape']),
     }));
@@ -415,9 +415,19 @@ describe('extension UX warnings', () => {
 
     await runIncludePathValidation(asExtensionContext(context));
 
-    // 'safe-lib' is safe: it should be created inside the workspace.
-    expect(fs.existsSync(path.join(workspaceDir, 'safe-lib'))).toBe(true);
-    // 'linked2/escape' resolves through a symlink outside: nothing should be created there.
+    // The warning still offers only the supported settings action; the retired choice
+    // is merely an injected response and must not become a production action.
+    expect(showWarningMessage).toHaveBeenCalledWith(
+      expect.stringContaining('safe-lib'),
+      'Open Settings',
+    );
+    // The retired choice cannot create even the safe candidate.
+    expect(fs.existsSync(path.join(workspaceDir, 'safe-lib'))).toBe(false);
+    // A symlinked candidate must remain untouched whenever the platform supports it.
+    if (symlinkCreated) {
+      expect(fs.existsSync(path.join(symlinkPath, 'escape'))).toBe(false);
+    }
+    // 'linked2/escape' resolves through a symlink outside when present.
     expect(fs.existsSync(path.join(outsideDir, 'escape'))).toBe(false);
   });
 
