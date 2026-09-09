@@ -177,18 +177,31 @@ fn enqueue_module(pending: &mut BTreeMap<PathBuf, ModuleWork>, mut work: ModuleW
 }
 
 fn covering_identities(layers: &[CoveringLayer]) -> BTreeSet<String> {
-    layers
-        .iter()
-        .flat_map(|layer| layer.covering.iter().map(|item| item.identity.clone()))
-        .collect()
+    layers.iter().flat_map(|layer| layer.coverings().map(|item| item.identity.clone())).collect()
 }
 
 fn denied_lints(layers: &[CoveringLayer]) -> BTreeSet<String> {
-    layers.iter().flat_map(|layer| layer.denied_lints.iter().cloned()).collect()
+    let mut out = BTreeSet::new();
+    for layer in layers {
+        for op in &layer.ops {
+            if let LintAction::Deny(lints) = op {
+                out.extend(lints.iter().cloned());
+            }
+        }
+    }
+    out
 }
 
 fn forbidden_lints(layers: &[CoveringLayer]) -> BTreeSet<String> {
-    layers.iter().flat_map(|layer| layer.forbidden_lints.iter().cloned()).collect()
+    let mut out = BTreeSet::new();
+    for layer in layers {
+        for op in &layer.ops {
+            if let LintAction::Forbid(lints) = op {
+                out.extend(lints.iter().cloned());
+            }
+        }
+    }
+    out
 }
 
 fn intersect_covering_layers(
@@ -196,16 +209,22 @@ fn intersect_covering_layers(
     right: &[CoveringLayer],
 ) -> Vec<CoveringLayer> {
     let right_ids = covering_identities(right);
-    let covering = left
+    let mut ops: Vec<LintAction> = left
         .iter()
-        .flat_map(|layer| layer.covering.iter().cloned())
+        .flat_map(|layer| layer.coverings().cloned())
         .filter(|item| right_ids.contains(&item.identity))
+        .map(LintAction::Cover)
         .collect();
-    vec![CoveringLayer {
-        covering,
-        denied_lints: denied_lints(left).union(&denied_lints(right)).cloned().collect(),
-        forbidden_lints: forbidden_lints(left).union(&forbidden_lints(right)).cloned().collect(),
-    }]
+    let denied = denied_lints(left).union(&denied_lints(right)).cloned().collect::<BTreeSet<_>>();
+    let forbidden =
+        forbidden_lints(left).union(&forbidden_lints(right)).cloned().collect::<BTreeSet<_>>();
+    if !denied.is_empty() {
+        ops.push(LintAction::Deny(denied));
+    }
+    if !forbidden.is_empty() {
+        ops.push(LintAction::Forbid(forbidden));
+    }
+    vec![CoveringLayer { ops }]
 }
 
 fn covering_identity_is_local(identity: &str, relative: &str) -> bool {
@@ -313,15 +332,25 @@ struct Covering {
     lints: BTreeSet<String>,
 }
 
+/// One source-order lint action on a syntax scope.
+///
+/// rustc applies later attributes over earlier ones, except that `forbid`
+/// cannot be lowered. Same-item `deny` then `allow` therefore covers; `allow`
+/// then `deny` does not; `forbid` stays sticky.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum LintAction {
+    Cover(Covering),
+    Deny(BTreeSet<String>),
+    Forbid(BTreeSet<String>),
+}
+
 /// One declaration-stack frame.
 ///
 /// rustc lets an inner `allow`/`expect` override an outer `deny`. `forbid`
 /// cannot be weakened by a later attribute, including a child-file inner allow.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct CoveringLayer {
-    covering: Vec<Covering>,
-    denied_lints: BTreeSet<String>,
-    forbidden_lints: BTreeSet<String>,
+    ops: Vec<LintAction>,
 }
 
 impl Covering {
@@ -331,12 +360,11 @@ impl Covering {
 }
 
 impl CoveringLayer {
-    fn denies(&self, lint: &str) -> bool {
-        self.denied_lints.contains(lint)
-    }
-
-    fn forbids(&self, lint: &str) -> bool {
-        self.forbidden_lints.contains(lint)
+    fn coverings(&self) -> impl Iterator<Item = &Covering> {
+        self.ops.iter().filter_map(|op| match op {
+            LintAction::Cover(covering) => Some(covering),
+            _ => None,
+        })
     }
 }
 
@@ -365,16 +393,20 @@ struct DebtVisitor<'a> {
 
 impl DebtVisitor<'_> {
     fn push_attrs(&mut self, attrs: &[Attribute], scope: &str) {
-        let covering =
-            attrs.iter().filter_map(|attr| self.declaration_from_attr(attr, scope)).collect();
-        let mut denied_lints = BTreeSet::new();
-        let mut forbidden_lints = BTreeSet::new();
+        let mut ops = Vec::new();
         for attr in attrs {
+            if let Some(covering) = self.declaration_from_attr(attr, scope) {
+                ops.push(LintAction::Cover(covering));
+            }
             let (denied, forbidden) = self.masks_from_attr(attr);
-            denied_lints.extend(denied);
-            forbidden_lints.extend(forbidden);
+            if !forbidden.is_empty() {
+                ops.push(LintAction::Forbid(forbidden));
+            }
+            if !denied.is_empty() {
+                ops.push(LintAction::Deny(denied));
+            }
         }
-        self.declaration_stack.push(CoveringLayer { covering, denied_lints, forbidden_lints });
+        self.declaration_stack.push(CoveringLayer { ops });
     }
 
     fn pop_attrs(&mut self) {
@@ -383,18 +415,26 @@ impl DebtVisitor<'_> {
 
     fn covering_for(&self, family: &str) -> Option<&Covering> {
         let lint = family_lint(family);
-        if self.declaration_stack.iter().any(|layer| layer.forbids(lint)) {
-            return None;
-        }
-        for layer in self.declaration_stack.iter().rev() {
-            if layer.denies(lint) {
-                return None;
+        let mut found = None;
+        let mut forbidden = false;
+        for layer in &self.declaration_stack {
+            for op in &layer.ops {
+                match op {
+                    LintAction::Forbid(lints) if lints.contains(lint) => {
+                        forbidden = true;
+                        found = None;
+                    }
+                    LintAction::Deny(lints) if lints.contains(lint) && !forbidden => {
+                        found = None;
+                    }
+                    LintAction::Cover(covering) if !forbidden && covering.covers(lint, family) => {
+                        found = Some(covering);
+                    }
+                    _ => {}
+                }
             }
-            if let Some(covering) = layer.covering.iter().find(|item| item.covers(lint, family)) {
-                return Some(covering);
-            }
         }
-        None
+        found
     }
 
     fn declaration_from_attr(&mut self, attr: &Attribute, scope: &str) -> Option<Covering> {
@@ -936,7 +976,18 @@ fn panic_method_shape(
 ) -> bool {
     match family {
         "unwrap" | "unwrap_err" => args.is_empty(),
-        "expect" | "expect_err" => args.first().is_some_and(is_panic_message_expr),
+        "expect" | "expect_err" => {
+            let Some(first) = args.first() else {
+                return false;
+            };
+            if is_panic_message_expr(first) {
+                return true;
+            }
+            if is_custom_typed_expect_arg(first) {
+                return false;
+            }
+            args.len() == 1
+        }
         _ => true,
     }
 }
@@ -965,6 +1016,20 @@ fn is_panic_message_expr(expr: &Expr) -> bool {
                 .unwrap_or_default();
             matches!(name.as_str(), "format" | "concat" | "format_args")
         }
+        Expr::Reference(reference) => is_panic_message_expr(&reference.expr),
+        Expr::Paren(paren) => is_panic_message_expr(&paren.expr),
+        _ => false,
+    }
+}
+
+/// Multi-segment paths such as `TokenType::Ident` are the custom-method
+/// expect shape this inventory must keep out of `clippy::expect_used`.
+/// Single-segment idents (`msg`) are treated as Option/Result messages.
+fn is_custom_typed_expect_arg(expr: &Expr) -> bool {
+    match expr {
+        Expr::Path(path) => path.path.segments.len() > 1,
+        Expr::Reference(reference) => is_custom_typed_expect_arg(&reference.expr),
+        Expr::Paren(paren) => is_custom_typed_expect_arg(&paren.expr),
         _ => false,
     }
 }
@@ -1170,11 +1235,15 @@ mod tests {
     }
 
     fn layer_with(identity: &str) -> CoveringLayer {
-        CoveringLayer {
-            covering: vec![covering(identity)],
-            denied_lints: BTreeSet::new(),
-            forbidden_lints: BTreeSet::new(),
-        }
+        CoveringLayer { ops: vec![LintAction::Cover(covering(identity))] }
+    }
+
+    fn deny_only(lint: &str) -> CoveringLayer {
+        CoveringLayer { ops: vec![LintAction::Deny(std::iter::once(lint.to_string()).collect())] }
+    }
+
+    fn forbid_only(lint: &str) -> CoveringLayer {
+        CoveringLayer { ops: vec![LintAction::Forbid(std::iter::once(lint.to_string()).collect())] }
     }
 
     #[test]
@@ -1218,7 +1287,7 @@ mod tests {
             work.map(|item| item
                 .inherited_covering
                 .iter()
-                .map(|layer| layer.covering.len())
+                .map(|layer| layer.coverings().count())
                 .sum::<usize>()),
             Some(0),
             "distinct outline edges must intersect covering, not union one edge's allowance onto the other"
@@ -1395,15 +1464,7 @@ mod tests {
         assert!(stripped[0].covering_declaration.is_none());
 
         let mut denied = vec![local_site(local)];
-        restrict_site_covering(
-            &mut denied,
-            "src/shared.rs",
-            &[CoveringLayer {
-                covering: Vec::new(),
-                denied_lints: ["clippy::unwrap_used".to_string()].into_iter().collect(),
-                forbidden_lints: BTreeSet::new(),
-            }],
-        );
+        restrict_site_covering(&mut denied, "src/shared.rs", &[deny_only("clippy::unwrap_used")]);
         assert_eq!(
             denied[0].covering_declaration.as_deref(),
             Some(local),
@@ -1414,11 +1475,7 @@ mod tests {
         restrict_site_covering(
             &mut forbidden,
             "src/shared.rs",
-            &[CoveringLayer {
-                covering: Vec::new(),
-                denied_lints: BTreeSet::new(),
-                forbidden_lints: ["clippy::unwrap_used".to_string()].into_iter().collect(),
-            }],
+            &[forbid_only("clippy::unwrap_used")],
         );
         assert!(
             forbidden[0].covering_declaration.is_none(),
@@ -1430,14 +1487,40 @@ mod tests {
             &mut inherited_denied,
             "src/shared.rs",
             &[CoveringLayer {
-                covering: vec![covering(foreign)],
-                denied_lints: ["clippy::unwrap_used".to_string()].into_iter().collect(),
-                forbidden_lints: BTreeSet::new(),
+                ops: vec![
+                    LintAction::Cover(covering(foreign)),
+                    LintAction::Deny(std::iter::once("clippy::unwrap_used".to_string()).collect()),
+                ],
             }],
         );
         assert!(
             inherited_denied[0].covering_declaration.is_none(),
             "later-edge deny must still strip inherited-only covering"
         );
+    }
+
+    fn method_call(src: &str) -> color_eyre::eyre::Result<ExprMethodCall> {
+        match syn::parse_str::<Expr>(src)
+            .map_err(|err| color_eyre::eyre::eyre!("parse {src}: {err}"))?
+        {
+            Expr::MethodCall(call) => Ok(call),
+            other => Err(color_eyre::eyre::eyre!("expected method call, got {other:?}")),
+        }
+    }
+
+    #[test]
+    fn panic_method_shape_keeps_nonliteral_expect_and_excludes_typed_custom_args()
+    -> color_eyre::eyre::Result<()> {
+        let literal = method_call(r#"x.expect("msg")"#)?;
+        let variable = method_call("x.expect(msg)")?;
+        let custom = method_call("x.expect(TokenType::Ident)")?;
+        let format_macro = method_call(r#"x.expect(format!("x"))"#)?;
+        assert!(panic_method_shape("expect", &literal.args));
+        assert!(panic_method_shape("expect", &variable.args));
+        assert!(!panic_method_shape("expect", &custom.args));
+        assert!(panic_method_shape("expect", &format_macro.args));
+        let expect_err = method_call("x.expect_err(msg)")?;
+        assert!(panic_method_shape("expect_err", &expect_err.args));
+        Ok(())
     }
 }

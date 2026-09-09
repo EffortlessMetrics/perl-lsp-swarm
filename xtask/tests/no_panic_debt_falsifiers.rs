@@ -1971,6 +1971,146 @@ mod tests {
 }
 
 #[test]
+fn nonliteral_expect_message_is_still_expect_debt() {
+    let temp = tempfile::tempdir().expect("temp");
+    write_policy(temp.path());
+    write_empty_registry(temp.path());
+    write_package(
+        temp.path(),
+        "demo",
+        r#"
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn unit() {
+        let msg = "missing";
+        let _ = Some(1).expect(msg);
+        let _ = Err::<u8, &str>("e").expect_err(msg);
+    }
+}
+"#,
+        &[("known.rs", "#[test]\nfn known() {}\n")],
+    );
+    let inventory = inventory_at(temp.path());
+    let expect_site = inventory.rows.iter().find(|row| {
+        row.kind == "site"
+            && row.path.ends_with("src/lib.rs")
+            && row.entrypoint == "unit"
+            && row.site_family == "expect"
+    });
+    assert!(expect_site.is_some(), "variable-message expect omitted: {:?}", inventory.rows);
+    let expect_err_site = inventory.rows.iter().find(|row| {
+        row.kind == "site"
+            && row.path.ends_with("src/lib.rs")
+            && row.entrypoint == "unit"
+            && row.site_family == "expect_err"
+    });
+    assert!(expect_err_site.is_some(), "variable-message expect_err omitted: {:?}", inventory.rows);
+}
+
+#[test]
+fn same_item_deny_then_allow_covers_unwrap() {
+    let temp = tempfile::tempdir().expect("temp");
+    write_policy(temp.path());
+    write_empty_registry(temp.path());
+    write_package(
+        temp.path(),
+        "demo",
+        r##"
+#[cfg(test)]
+mod tests {
+    #[test]
+    #[deny(clippy::unwrap_used)]
+    #[allow(clippy::unwrap_used, reason = "#13397")]
+    fn unit() { let _ = Some(1).unwrap(); }
+}
+"##,
+        &[("known.rs", "#[test]\nfn known() {}\n")],
+    );
+    let inventory = inventory_at(temp.path());
+    let unwrap = inventory.rows.iter().find(|row| {
+        row.kind == "site"
+            && row.path.ends_with("src/lib.rs")
+            && row.entrypoint == "unit"
+            && row.site_family == "unwrap"
+    });
+    assert!(unwrap.is_some(), "unwrap omitted: {:?}", inventory.rows);
+    let unwrap = unwrap.expect("unwrap omitted");
+    assert_eq!(
+        unwrap.owner, "#13397",
+        "later same-item allow must override earlier deny: {unwrap:?}"
+    );
+}
+
+#[test]
+fn same_item_allow_then_deny_does_not_cover_unwrap() {
+    let temp = tempfile::tempdir().expect("temp");
+    write_policy(temp.path());
+    write_empty_registry(temp.path());
+    write_package(
+        temp.path(),
+        "demo",
+        r##"
+#[cfg(test)]
+mod tests {
+    #[test]
+    #[allow(clippy::unwrap_used, reason = "#13397")]
+    #[deny(clippy::unwrap_used)]
+    fn unit() { let _ = Some(1).unwrap(); }
+}
+"##,
+        &[("known.rs", "#[test]\nfn known() {}\n")],
+    );
+    let inventory = inventory_at(temp.path());
+    let unwrap = inventory.rows.iter().find(|row| {
+        row.kind == "site"
+            && row.path.ends_with("src/lib.rs")
+            && row.entrypoint == "unit"
+            && row.site_family == "unwrap"
+    });
+    assert!(unwrap.is_some(), "unwrap omitted: {:?}", inventory.rows);
+    let unwrap = unwrap.expect("unwrap omitted");
+    assert!(
+        unwrap.owner.is_empty() && unwrap.declaration_identity.is_empty(),
+        "later same-item deny must override earlier allow: {unwrap:?}"
+    );
+}
+
+#[test]
+fn same_item_forbid_then_allow_does_not_cover_unwrap() {
+    let temp = tempfile::tempdir().expect("temp");
+    write_policy(temp.path());
+    write_empty_registry(temp.path());
+    write_package(
+        temp.path(),
+        "demo",
+        r##"
+#[cfg(test)]
+mod tests {
+    #[test]
+    #[forbid(clippy::unwrap_used)]
+    #[allow(clippy::unwrap_used, reason = "#13397")]
+    fn unit() { let _ = Some(1).unwrap(); }
+}
+"##,
+        &[("known.rs", "#[test]\nfn known() {}\n")],
+    );
+    let inventory = inventory_at(temp.path());
+    let unwrap = inventory.rows.iter().find(|row| {
+        row.kind == "site"
+            && row.path.ends_with("src/lib.rs")
+            && row.entrypoint == "unit"
+            && row.site_family == "unwrap"
+    });
+    assert!(unwrap.is_some(), "forbidden unwrap omitted: {:?}", inventory.rows);
+    let unwrap = unwrap.expect("forbidden unwrap omitted");
+    assert!(
+        unwrap.owner.is_empty() && unwrap.declaration_identity.is_empty(),
+        "same-item allow must not lower forbid: {unwrap:?}"
+    );
+}
+
+#[test]
 fn crate_cfg_attr_test_allow_does_not_make_production_unwrap_debt() {
     let temp = tempfile::tempdir().expect("temp");
     write_policy(temp.path());
