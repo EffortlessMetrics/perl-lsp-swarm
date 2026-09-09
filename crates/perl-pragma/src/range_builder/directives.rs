@@ -194,7 +194,11 @@ fn apply_conditional_use_target(
                 // The condition is not evaluated by this pragma walker, so
                 // retain broad compatibility effects but never claim that
                 // the conditional target established version authority.
-                enable_effective_version_semantics(state, version);
+                // A retained dotted recovery tail makes the prefix incomplete;
+                // invalidate admission without replacing prior effective state.
+                if args.is_empty() {
+                    enable_effective_version_semantics(state, version);
+                }
                 state.perl_version = None;
             } else if looks_like_version_literal(module) {
                 state.perl_version = None;

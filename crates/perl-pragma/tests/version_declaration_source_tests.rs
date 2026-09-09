@@ -207,6 +207,31 @@ fn conditional_version_targets_never_establish_unconditional_authority() -> Test
 }
 
 #[test]
+fn malformed_conditional_targets_only_invalidate_admission() -> TestResult {
+    for prefix in [
+        "use v5.44;",
+        "use v5.42; use feature 'enhanced_xx'; no warnings; no strict 'vars'; use utf8;",
+    ] {
+        let mut expected = snapshot_for(prefix)?.state().clone();
+        expected.perl_version = None;
+        for conditional in ["if", "unless"] {
+            for condition in ["0", "1", "$enabled"] {
+                for target in ["v5.bad", "v5.44.bad"] {
+                    let source = format!("{prefix} use {conditional} {condition}, {target};");
+                    let snapshot = snapshot_for(&source)?;
+                    check_unknown(&snapshot, &source)?;
+                    check(
+                        snapshot.state() == &expected,
+                        format!("malformed conditional changed effective pragma state: {source}"),
+                    )?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn require_version_leaves_the_entire_lexical_state_unchanged() -> TestResult {
     for prefix in ["", "use v5.42; use feature 'enhanced_xx'; no warnings; use utf8; "] {
         let before = snapshot_for(&format!("{prefix}1;"))?;
