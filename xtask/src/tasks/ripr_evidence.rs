@@ -7,13 +7,14 @@ use crate::tasks::change_set::{self, ArtifactIdentity};
 use crate::tasks::git_context::{default_windows_drive_mount_root, git_output_with_mount_root};
 use color_eyre::eyre::{Context, Result, bail, eyre};
 use glob::Pattern;
-use serde::{Deserialize, Serialize};
+use serde::de::{self, DeserializeSeed, IgnoredAny, MapAccess, SeqAccess, Visitor};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs;
-use std::io::Read;
+use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -764,9 +765,13 @@ fn write_pr_evidence(repo: &Path, options: &PrEvidenceOptions) -> Result<()> {
     // payload is needed to diagnose the refusal — and the only case where nobody has seen it
     // before. Validating first would bail with the evidence directory missing the one file
     // that explains why.
-    write_text(&repo.join(PR_RAW_CHECK_JSON), &check_json)?;
-    let check_value: Value =
-        serde_json::from_str(&check_json).context("ripr check output was not valid JSON")?;
+    let raw_check_path = repo.join(PR_RAW_CHECK_JSON);
+    write_text(&raw_check_path, &check_json)?;
+    drop(check_json);
+    let raw_check = fs::File::open(&raw_check_path)
+        .with_context(|| format!("opening {PR_RAW_CHECK_JSON} for JSON parsing"))?;
+    let check_value = deserialize_check_with_projected_findings(BufReader::new(raw_check))
+        .context("ripr check output was not valid JSON")?;
     // Fail closed on a producer whose envelope changed shape (#9113), before any
     // counting can turn missing fields into an all-zero "clean" verdict.
     validate_check_envelope(&check_value)?;
@@ -853,6 +858,157 @@ fn run_ripr_check(repo: &Path, options: &PrEvidenceOptions) -> Result<String> {
         "--format".to_string(),
         "json".to_string(),
     ])
+}
+
+const LARGE_FINDING_FIELDS: &[&str] = &["activation", "observed_values", "assertion_texts"];
+
+/// Deserialize the producer envelope while dropping only the large diagnostic fields that this
+/// consumer never reads.  The raw payload has already been persisted by the caller, so this
+/// projection reduces the retained heap without changing the diagnostic artifact or the gate's
+/// semantic inputs.
+fn deserialize_check_with_projected_findings<R: Read>(reader: R) -> serde_json::Result<Value> {
+    serde_json::from_reader::<_, ProjectedCheck>(reader).map(|projected| projected.0)
+}
+
+struct ProjectedCheck(Value);
+
+impl<'de> Deserialize<'de> for ProjectedCheck {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        ProjectionSeed(ProjectionMode::Root).deserialize(deserializer).map(ProjectedCheck)
+    }
+}
+
+#[derive(Clone, Copy)]
+enum ProjectionMode {
+    Root,
+    FindingsValue,
+    Finding,
+}
+
+struct ProjectionSeed(ProjectionMode);
+
+impl<'de> DeserializeSeed<'de> for ProjectionSeed {
+    type Value = Value;
+
+    fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        match self.0 {
+            ProjectionMode::Root => deserializer.deserialize_map(ProjectedVisitor(self.0)),
+            ProjectionMode::FindingsValue | ProjectionMode::Finding => {
+                deserializer.deserialize_any(ProjectedVisitor(self.0))
+            }
+        }
+    }
+}
+
+struct ProjectedVisitor(ProjectionMode);
+
+impl<'de> Visitor<'de> for ProjectedVisitor {
+    type Value = Value;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("a RIPR JSON value")
+    }
+
+    fn visit_map<A>(self, mut access: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut object = Map::new();
+        while let Some(key) = access.next_key::<String>()? {
+            let value = match self.0 {
+                ProjectionMode::Root if key == "findings" => {
+                    access.next_value_seed(ProjectionSeed(ProjectionMode::FindingsValue))?
+                }
+                ProjectionMode::Finding if LARGE_FINDING_FIELDS.contains(&key.as_str()) => {
+                    access.next_value::<IgnoredAny>()?;
+                    continue;
+                }
+                _ => access.next_value::<Value>()?,
+            };
+            object.insert(key, value);
+        }
+        Ok(Value::Object(object))
+    }
+
+    fn visit_seq<A>(self, mut access: A) -> Result<Self::Value, A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        let mut values = Vec::new();
+        while let Some(value) = match self.0 {
+            ProjectionMode::FindingsValue => {
+                access.next_element_seed(ProjectionSeed(ProjectionMode::Finding))?
+            }
+            _ => access.next_element::<Value>()?,
+        } {
+            values.push(value);
+        }
+        Ok(Value::Array(values))
+    }
+
+    fn visit_bool<E>(self, value: bool) -> Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        Ok(Value::Bool(value))
+    }
+
+    fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        Ok(Value::Number(value.into()))
+    }
+
+    fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        Ok(Value::Number(value.into()))
+    }
+
+    fn visit_f64<E>(self, value: f64) -> Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        let number = serde_json::Number::from_f64(value)
+            .ok_or_else(|| E::custom("RIPR finding contained a non-finite number"))?;
+        Ok(Value::Number(number))
+    }
+
+    fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        Ok(Value::String(value.to_string()))
+    }
+
+    fn visit_string<E>(self, value: String) -> Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        Ok(Value::String(value))
+    }
+
+    fn visit_none<E>(self) -> Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        Ok(Value::Null)
+    }
+
+    fn visit_unit<E>(self) -> Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        Ok(Value::Null)
+    }
 }
 
 #[derive(Debug, Default)]
@@ -3910,6 +4066,126 @@ mod tests {
     }
 
     #[test]
+    fn projected_findings_preserve_consumed_fields_and_gate_counts() -> Result<()> {
+        let raw = r#"{
+          "summary": {"weakly_exposed": 1, "reachable_unrevealed": 0, "no_static_path": 0},
+          "findings": [
+            {
+              "classification": "no_static_path",
+              "classification": "weakly_exposed",
+              "probe": {"file": "crates/example/src/lib.rs", "line": 7},
+              "seam": {"file": "crates/example/src/lib.rs", "line": 7, "family": "navigation"},
+              "location": {"line": 7, "column": 3},
+              "placement": {"kind": "body", "expression": "return $value"},
+              "evidence_record": {"id": "evidence-7", "family": "coverage"},
+              "ripr": {"reach": {"summary": "No static path found"}},
+              "activation": "discard this large diagnostic field",
+              "observed_values": ["discard", "these"],
+              "assertion_texts": {"discard": true},
+              "unknown_semantic_field": {"keep": "last value", "nested": {"activation": "retain"}}
+            },
+            "scalar-finding",
+            null
+          ]
+        }"#;
+        let projected = deserialize_check_with_projected_findings(raw.as_bytes())?;
+        validate_check_envelope(&projected)?;
+        let findings = projected
+            .get("findings")
+            .and_then(Value::as_array)
+            .context("projected findings array")?;
+        color_eyre::eyre::ensure!(findings.len() == 3, "scalar and null findings must survive");
+        let first = findings.get(0).context("first projected finding")?;
+        let second = findings.get(1).context("second projected finding")?;
+        let third = findings.get(2).context("third projected finding")?;
+        color_eyre::eyre::ensure!(second == &json!("scalar-finding"));
+        color_eyre::eyre::ensure!(third.is_null());
+        color_eyre::eyre::ensure!(first.get("activation").is_none());
+        color_eyre::eyre::ensure!(first.get("observed_values").is_none());
+        color_eyre::eyre::ensure!(first.get("assertion_texts").is_none());
+        color_eyre::eyre::ensure!(
+            first.get("classification").and_then(Value::as_str) == Some("weakly_exposed")
+        );
+        color_eyre::eyre::ensure!(
+            first.pointer("/unknown_semantic_field/keep").and_then(Value::as_str)
+                == Some("last value")
+        );
+        let mut expected = parse_check(raw)?;
+        let expected_first = expected
+            .get_mut("findings")
+            .and_then(Value::as_array_mut)
+            .and_then(|findings| findings.get_mut(0))
+            .context("unprojected first finding")?;
+        let expected_object = expected_first.as_object_mut().context("finding object")?;
+        for field in ["activation", "observed_values", "assertion_texts"] {
+            expected_object.remove(field);
+        }
+        color_eyre::eyre::ensure!(
+            first == expected_first,
+            "projection must preserve every non-diagnostic finding field"
+        );
+        color_eyre::eyre::ensure!(
+            projected == expected,
+            "projection must preserve the complete envelope except the three direct fields"
+        );
+        let projected_counts = counts_for(&projected);
+        color_eyre::eyre::ensure!(
+            (
+                projected_counts.weakly_exposed,
+                projected_counts.reachable_unrevealed,
+                projected_counts.no_static_path
+            ) == (1, 0, 0)
+        );
+
+        let unprojected = parse_check(REAL_010_CHECK)?;
+        let projected_fixture =
+            deserialize_check_with_projected_findings(REAL_010_CHECK.as_bytes())?;
+        let unprojected_counts = counts_for(&unprojected);
+        let projected_fixture_counts = counts_for(&projected_fixture);
+        color_eyre::eyre::ensure!(
+            (
+                unprojected_counts.weakly_exposed,
+                unprojected_counts.reachable_unrevealed,
+                unprojected_counts.no_static_path
+            ) == (
+                projected_fixture_counts.weakly_exposed,
+                projected_fixture_counts.reachable_unrevealed,
+                projected_fixture_counts.no_static_path
+            ),
+            "projection must preserve every real fixture gate count"
+        );
+        let suppression = rules_for(&["crates/example/**"])?;
+        color_eyre::eyre::ensure!(
+            counts_with(&projected, &suppression).weakly_exposed
+                == counts_with(&parse_check(raw)?, &suppression).weakly_exposed,
+            "projection must preserve suppression-derived counts"
+        );
+
+        let duplicate_keys = r#"{
+          "summary": "earlier malformed summary",
+          "summary": {"weakly_exposed": 0, "reachable_unrevealed": 0, "no_static_path": 0},
+          "findings": "earlier non-array findings",
+          "findings": []
+        }"#;
+        let duplicate = deserialize_check_with_projected_findings(duplicate_keys.as_bytes())?;
+        validate_check_envelope(&duplicate).context("last duplicate envelope must win")?;
+        Ok(())
+    }
+
+    #[test]
+    fn malformed_payload_inside_projected_field_is_refused() -> Result<()> {
+        let malformed = br#"{
+          "summary": {"weakly_exposed": 0, "reachable_unrevealed": 0, "no_static_path": 0},
+          "findings": [{"activation": "unterminated}]
+        }"#;
+        color_eyre::eyre::ensure!(
+            deserialize_check_with_projected_findings(malformed.as_slice()).is_err(),
+            "malformed ignored field payload must still fail JSON parsing"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn ripr_010_is_schema_compatible_with_009_for_every_consumed_field() -> Result<()> {
         let old = parse_check(REAL_009_CHECK)?;
         let new = parse_check(REAL_010_CHECK)?;
@@ -5194,6 +5470,56 @@ paths = ["archive/["]
         assert!(!suppression_matches_finding(
             &rules,
             &json!({"grip_class": "weakly_gripped", "seam": {"file": path}})
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn tautology_declaration_suppression_matches_no_static_path_only() -> Result<()> {
+        let rules =
+            read_ripr_suppression_rules(&repo_root()?, Path::new("policy/ripr-suppressions.toml"))?;
+        let paths = [
+            "xtask/src/tasks/check_tautology/expr.rs",
+            "xtask/src/tasks/check_tautology/scan.rs",
+            "xtask/src/tasks/check_tautology/mod.rs",
+        ];
+
+        for path in paths {
+            assert!(
+                suppression_matches_finding(
+                    &rules,
+                    &json!({"classification": "no_static_path", "probe": {"file": path}})
+                ),
+                "no_static_path on {path} must match the #14058 declaration suppression"
+            );
+            assert!(
+                suppression_matches_finding(
+                    &rules,
+                    &json!({"grip_class": "no_static_path", "seam": {"file": path}})
+                ),
+                "ripr 0.9.x grip_class no_static_path on {path} must match"
+            );
+            assert!(
+                !suppression_matches_finding(
+                    &rules,
+                    &json!({"classification": "reachable_unrevealed", "probe": {"file": path}})
+                ),
+                "reachable_unrevealed on {path} must remain visible"
+            );
+            assert!(
+                !suppression_matches_finding(
+                    &rules,
+                    &json!({"classification": "weakly_exposed", "probe": {"file": path}})
+                ),
+                "weakly_exposed on {path} must remain visible"
+            );
+        }
+        assert!(!suppression_matches_finding(
+            &rules,
+            &json!({
+                "classification": "no_static_path",
+                "probe": {"file": "xtask/src/tasks/check_tautology/detect.rs"}
+            })
         ));
         Ok(())
     }

@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "owner_issue": 15069,
-  "reason": "PR #15104 preserves the formatter-required Markdown badge separator. Both hosted Linux smoke artifacts 10037841067 and 10037834538 from run 34177157278 measured readme.md at 25231 bytes, up one byte, and total inventory at 1857610 bytes. All other 28 paths and sizes match base c01b5a6a856227cab6bf97db67d67937ce07f4bd. Package creation, behavioral smoke, activation recovery and crash recovery passed on c1b82c19ee7d4f2bb44953cdd3ba76538d7f883e; inventory alone refused the undeclared byte increase. This declaration uses that measured inventory, not a new package or installed-smoke receipt. No validator, threshold or admission rule changes; fresh hosted transition validation remains required.",
-  "base_baseline_file_sha256": "043e9c99fbe2ad917624b248a50ec498c808480445e219f2589178c2c0dd694e",
-  "candidate_baseline_file_sha256": "5c73582a6a7ae22a9f648492731ef3315336bfb17553aee22bfb48c332f89411",
-  "base_inventory_sha256": "689fa5b8485cd88e79dc906275a51883b3d574dccff965435faffe678beb5ec7",
-  "candidate_inventory_sha256": "7780c5f86aebdd24b900a76bf412fcc05ad1c1acfd0b16717be6444bd884bcbb"
+  "owner_issue": 14452,
+  "reason": "The #14475 guidance recovery changes the packaged extension bundle; the exact candidate VSIX is measured against the pinned current-main baseline, with the size-only transition recorded from the raw candidate inventory.",
+  "base_baseline_file_sha256": "949c75c589fe21743ad92ca29b7d9c7d27efed516a3b4633e2c00e5b06f8347d",
+  "candidate_baseline_file_sha256": "db728d1fdbd59cde136efbf4ca093000703165d7e200bd5468b0a04492e9adf1",
+  "base_inventory_sha256": "984fb74e54c9864533b3f6fd62e10c08f433c04bfb8099ce540721b183975888",
+  "candidate_inventory_sha256": "6a0ba1d92936ed297b912d1c61722d9b1a4b0949804a2d9ece55b7543aff6201"
 }

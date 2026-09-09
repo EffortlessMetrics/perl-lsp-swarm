@@ -1054,17 +1054,17 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          # Match the PR merge workflow's gate list to its commands and policy (#14946).
+          ref: ${{ github.sha }}
           # Release-history verification compares every fetched release tag.
           fetch-depth: 0
           fetch-tags: true
 
-      - name: Bind inventory source
+      - name: Bind shard integration source
         id: inventory-source
-        if: matrix.name == 'policy'
         shell: bash
         env:
-          EXPECTED_SOURCE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          EXPECTED_SOURCE_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
           source_sha="$(git rev-parse 'HEAD^{commit}')"
@@ -1794,6 +1794,19 @@ jobs:
       # name contract.
       - name: Dependabot GitHub Actions and npm commit-message contract (required merge surface)
         run: cargo test -p xtask --test dependabot_gha_npm_commit_message --locked -- --nocapture
+
+      # #15100: same required-surface reasoning as the contracts above. These
+      # suites assert that every generated-PR CI dispatcher (post-merge-status
+      # today, lane-history after this change) satisfies ci.yml's required
+      # workflow_dispatch subject inputs (#13019) and refuses to prove a moved
+      # subject. No workflow named either target: the post-merge suite sat red
+      # on main unobserved after #13468 changed the dispatch shape, and the
+      # lane-history suite would never run at all.
+      - name: Post-merge generated-PR dispatch contract (required merge surface)
+        run: cargo test -p xtask --test post_merge_status_regen_tests --locked -- --nocapture
+
+      - name: Lane-history generated-PR dispatch contract (required merge surface)
+        run: cargo test -p xtask --test lane_history_ci_dispatch_contract --locked -- --nocapture
 
       # #11933: the freshness cfg-binding test lives in
       # `xtask/tests/gate_policy_profile_tests.rs`. unit_routed_full only

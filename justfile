@@ -2053,26 +2053,26 @@ coverage-proof base='origin/main':
         --test ripr_new_gap_gate_workflow
     "$HOME/.cargo/bin/rustup" run nightly cargo llvm-cov report --lcov --output-path target/lcov.info \
         --ignore-filename-regex '(^|/)(archive|tests|benches|examples)(/|$)|(^|/)build\.rs$|(^|/)crates/tree-sitter-perl-c/|(^|/)crates/perl-dap/src/main\.rs$'
-    cargo xtask coverage-baseline \
+    "$HOME/.cargo/bin/rustup" run nightly cargo xtask coverage-baseline \
         --lcov target/lcov.info \
         --receipt target/receipts/quality/coverage-baseline.json \
         --codecov codecov.yml \
         --patch-base "{{base}}" \
         --scope workspace-lib-xtask-quality
-    cargo xtask coverage-baseline \
+    "$HOME/.cargo/bin/rustup" run nightly cargo xtask coverage-baseline \
         --lcov target/lcov.info \
         --receipt target/receipts/quality/coverage-baseline.json \
         --codecov codecov.yml \
         --patch-base "{{base}}" \
         --scope workspace-lib-xtask-quality \
         --check
-    cargo xtask quality-gate \
+    "$HOME/.cargo/bin/rustup" run nightly cargo xtask quality-gate \
         --mode enforce-patch-coverage \
         --coverage-receipt target/receipts/quality/coverage-baseline.json \
         --codecov codecov.yml \
         --receipt target/receipts/quality/quality-gate-coverage.json \
         --summary target/receipts/quality/quality-gate-coverage.md
-    cargo xtask quality-gate \
+    "$HOME/.cargo/bin/rustup" run nightly cargo xtask quality-gate \
         --mode enforce-patch-coverage \
         --coverage-receipt target/receipts/quality/coverage-baseline.json \
         --codecov codecov.yml \
