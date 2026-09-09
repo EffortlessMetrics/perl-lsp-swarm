@@ -64,10 +64,19 @@ export function assertCandidateBoundInstallSource({
   }
 }
 
-export function assertCandidateBoundPlatform(platform: string, candidateBound: boolean): void {
-  if (candidateBound && platform !== 'linux') {
+export function assertCandidateBoundPlatform(
+  platform: string,
+  candidateBound: boolean,
+  completeCandidateIdentity = false,
+): void {
+  if (candidateBound && platform === 'win32' && !completeCandidateIdentity) {
     throw new CandidateBoundPlatformUnavailableError(
-      `Candidate-bound installed acceptance is restricted to Linux; refusing ${platform} bundled-server digest binding.`,
+      'Candidate-bound Windows installed acceptance requires candidate ID, artifact-set ID, frozen product SHA, and artifact manifest before bundled-server digest binding.',
+    );
+  }
+  if (candidateBound && platform !== 'linux' && platform !== 'win32') {
+    throw new CandidateBoundPlatformUnavailableError(
+      `Candidate-bound installed acceptance is supported only on Linux and Windows; refusing ${platform} bundled-server digest binding.`,
     );
   }
 }
@@ -407,9 +416,16 @@ async function main(): Promise<void> {
     envValue('PERL_LSP_CURRENT_SOURCE_SHA') ||
     envValue('PERL_LSP_CANDIDATE_ARTIFACT_MANIFEST'),
   );
+  const completeCandidateIdentity = [
+    envValue('PERL_LSP_CANDIDATE_ID'),
+    envValue('PERL_LSP_ARTIFACT_SET_ID'),
+    envValue('PERL_LSP_CURRENT_SOURCE_SHA'),
+    envValue('PERL_LSP_CANDIDATE_ARTIFACT_MANIFEST'),
+  ].every(Boolean);
   assertCandidateBoundPlatform(
     process.platform === 'linux' ? 'linux' : process.platform,
     candidateBound,
+    completeCandidateIdentity,
   );
   assertCandidateBoundInstallSource({
     source,

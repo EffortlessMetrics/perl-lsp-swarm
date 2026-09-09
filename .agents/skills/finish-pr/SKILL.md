@@ -283,3 +283,5 @@ rather than copying them.
 - `MERGE_BLOCKED` → return `PR_IN_FLIGHT` for GitHub-owned waits; otherwise preserve
   the real blocker
 - `BLOCKED` / `NOT_PROVEN` → preserve the exact blocker or missing evidence
+
+> Self-authored reversible corrections follow the canonical [correction and disclosure contract](../../../docs/agents/DEVELOPMENT_METHOD.md); this reference does not override higher-precedence instructions.
