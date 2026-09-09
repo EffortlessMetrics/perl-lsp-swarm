@@ -201,6 +201,10 @@ fn intersect_covering_layers(
     }]
 }
 
+fn covering_identity_is_local(identity: &str, relative: &str) -> bool {
+    identity.strip_prefix(relative).is_some_and(|rest| rest.starts_with(':'))
+}
+
 fn restrict_site_covering(sites: &mut [RawSite], relative: &str, inherited: &[CoveringLayer]) {
     let allowed = covering_identities(inherited);
     let masked = masked_lints(inherited);
@@ -209,9 +213,9 @@ fn restrict_site_covering(sites: &mut [RawSite], relative: &str, inherited: &[Co
             continue;
         }
         let lint = family_lint(&site.family);
-        let keep =
-            site.covering_declaration.as_ref().is_some_and(|identity| allowed.contains(identity))
-                && !masked.contains(lint);
+        let keep = site.covering_declaration.as_ref().is_some_and(|identity| {
+            allowed.contains(identity) || covering_identity_is_local(identity, relative)
+        }) && !masked.contains(lint);
         if !keep {
             site.covering_declaration = None;
             site.covering_scope = None;
@@ -1089,7 +1093,7 @@ fn test_generating_macro(name: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::super::model::TargetKind;
+    use super::super::model::{RawSite, TargetKind};
     use super::*;
     use std::collections::BTreeSet;
 
@@ -1300,5 +1304,55 @@ mod tests {
             vec!["clippy::unwrap_used".to_string()]
         );
         Ok(())
+    }
+
+    #[test]
+    fn restrict_site_covering_keeps_local_allow_and_strips_foreign() {
+        let local = "src/shared.rs:1:allow:clippy::unwrap_used";
+        let foreign = "src/aaa.rs:2:allow:clippy::unwrap_used";
+        assert!(covering_identity_is_local(local, "src/shared.rs"));
+        assert!(!covering_identity_is_local(foreign, "src/shared.rs"));
+        assert!(!covering_identity_is_local(
+            "src/shared.rs.bak:1:allow:clippy::unwrap_used",
+            "src/shared.rs"
+        ));
+
+        let local_site = |identity: &str| RawSite {
+            package: "demo".to_string(),
+            target_kind: TargetKind::UnitTest,
+            path: "src/shared.rs".to_string(),
+            entrypoint: "unit".to_string(),
+            family: "unwrap".to_string(),
+            snippet: "unwrap()".to_string(),
+            line: 4,
+            column: 1,
+            feature: None,
+            platform: None,
+            covering_declaration: Some(identity.to_string()),
+            covering_scope: Some("crate".to_string()),
+            covering_owner: Some("#13397".to_string()),
+        };
+        let mut kept = vec![local_site(local)];
+        restrict_site_covering(&mut kept, "src/shared.rs", &[]);
+        assert_eq!(kept[0].covering_declaration.as_deref(), Some(local));
+        assert_eq!(kept[0].covering_owner.as_deref(), Some("#13397"));
+
+        let mut stripped = vec![local_site(foreign)];
+        restrict_site_covering(&mut stripped, "src/shared.rs", &[]);
+        assert!(stripped[0].covering_declaration.is_none());
+
+        let mut masked = vec![local_site(local)];
+        restrict_site_covering(
+            &mut masked,
+            "src/shared.rs",
+            &[CoveringLayer {
+                covering: Vec::new(),
+                masked_lints: ["clippy::unwrap_used".to_string()].into_iter().collect(),
+            }],
+        );
+        assert!(
+            masked[0].covering_declaration.is_none(),
+            "later-edge deny/forbid must still mask local allow"
+        );
     }
 }

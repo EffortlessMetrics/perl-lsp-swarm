@@ -2377,6 +2377,64 @@ fn unit() { let _ = Some(1).unwrap(); }
 }
 
 #[test]
+fn later_nested_edge_does_not_erase_shared_file_local_allow() {
+    let temp = tempfile::tempdir().expect("temp");
+    write_policy(temp.path());
+    write_empty_registry(temp.path());
+    write_package(
+        temp.path(),
+        "demo",
+        "mod aaa;\nmod zzz;\n",
+        &[("known.rs", "#[test]\nfn known() {}\n")],
+    );
+    fs::write(
+        temp.path().join("crates/demo/src/aaa.rs"),
+        r#"
+#[cfg(test)]
+#[path = "shared.rs"]
+mod shared;
+"#,
+    )
+    .expect("aaa.rs");
+    fs::write(
+        temp.path().join("crates/demo/src/zzz.rs"),
+        r#"
+#[cfg(test)]
+#[path = "shared.rs"]
+mod shared;
+"#,
+    )
+    .expect("zzz.rs");
+    fs::write(
+        temp.path().join("crates/demo/src/shared.rs"),
+        r##"
+#![allow(clippy::unwrap_used, reason = "#13397")]
+#[test]
+fn unit() { let _ = Some(1).unwrap(); }
+"##,
+    )
+    .expect("shared.rs");
+    let inventory = inventory_at(temp.path());
+    let unwrap = inventory.rows.iter().find(|row| {
+        row.kind == "site"
+            && row.path.ends_with("src/shared.rs")
+            && row.entrypoint == "unit"
+            && row.site_family == "unwrap"
+    });
+    assert!(unwrap.is_some(), "shared unwrap omitted: {:?}", inventory.rows);
+    let unwrap = unwrap.expect("shared unwrap omitted");
+    assert_eq!(
+        unwrap.owner, "#13397",
+        "local allow on the shared file must survive a later nested edge: {unwrap:?}"
+    );
+    assert!(
+        unwrap.declaration_identity.contains("src/shared.rs")
+            && unwrap.declaration_identity.contains("allow"),
+        "covering identity must stay on the shared file, not a parent edge: {unwrap:?}"
+    );
+}
+
+#[test]
 fn dot_component_root_still_scans_outline_child_sites() {
     let temp = tempfile::tempdir().expect("temp");
     write_policy(temp.path());
