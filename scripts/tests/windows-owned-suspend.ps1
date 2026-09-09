@@ -4,7 +4,8 @@ param(
   [int]$TimeoutMilliseconds = 120000,
   [int]$MaxRounds = 4,
   [int]$InjectFailureAfter = 0,
-  [switch]$InjectResumeFailure
+  [switch]$InjectResumeFailure,
+  [switch]$Cleanup
 )
 $ErrorActionPreference = 'Stop'
 Add-Type -TypeDefinition @"
@@ -17,6 +18,7 @@ using System.Threading.Tasks;
 public static class PerlLspOwnedSuspend {
   const uint QueryLimited=0x1000, ThreadSuspendResume=0x0002, ThreadQueryLimited=0x0800;
   const uint SnapshotThread=0x00000004, Invalid=0xffffffff, NoMoreFiles=18;
+  const uint Synchronize=0x00100000, WaitObject0=0;
   [StructLayout(LayoutKind.Sequential)] struct FileTime { public uint Lo; public uint Hi; public ulong Value() { return ((ulong)Hi << 32) | Lo; } }
   [StructLayout(LayoutKind.Sequential)] struct ThreadEntry { public uint Size, Usage, ThreadId, OwnerProcessId, BasePriority, DeltaPriority, Flags; }
   [DllImport("kernel32.dll", SetLastError=true)] static extern IntPtr OpenProcess(uint a,bool i,uint p);
@@ -28,6 +30,8 @@ public static class PerlLspOwnedSuspend {
   [DllImport("kernel32.dll", SetLastError=true)] static extern uint GetProcessIdOfThread(IntPtr h);
   [DllImport("kernel32.dll", SetLastError=true)] static extern uint SuspendThread(IntPtr h);
   [DllImport("kernel32.dll", SetLastError=true)] static extern uint ResumeThread(IntPtr h);
+  [DllImport("kernel32.dll", SetLastError=true)] static extern bool TerminateProcess(IntPtr h,uint code);
+  [DllImport("kernel32.dll", SetLastError=true)] static extern uint WaitForSingleObject(IntPtr h,uint milliseconds);
   [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr h);
   static void Check(IntPtr h,string what) { if(h==IntPtr.Zero || h==new IntPtr(-1)) throw new Win32Exception(Marshal.GetLastWin32Error(),what); }
   static ulong Creation(IntPtr h) { FileTime c,e,k,u; if(!GetProcessTimes(h,out c,out e,out k,out u)) throw new Win32Exception(Marshal.GetLastWin32Error(),"GetProcessTimes"); return c.Value(); }
@@ -58,7 +62,12 @@ public static class PerlLspOwnedSuspend {
     } catch { ResumeAll(held,false,ref incomplete); if(incomplete) Console.Error.WriteLine("ROLLBACK_INCOMPLETE"); throw; }
     finally { foreach(var t in held.Values) CloseHandle(t); if(snap!=IntPtr.Zero) CloseHandle(snap); CloseHandle(process); }
   }
+  public static int Cleanup(uint pid,ulong expected) {
+    IntPtr process=OpenProcess(QueryLimited|0x0001|Synchronize,false,pid); Check(process,"OpenProcess");
+    try { if(Creation(process)!=expected) throw new InvalidOperationException("owned process creation identity mismatch"); if(!TerminateProcess(process,1)) throw new Win32Exception(Marshal.GetLastWin32Error(),"TerminateProcess"); if(WaitForSingleObject(process,10000)!=WaitObject0) throw new TimeoutException("owned process termination did not complete"); return 0; }
+    finally { CloseHandle(process); }
+  }
 }
 "@
-try { $exit=[PerlLspOwnedSuspend]::Run([uint32]$ProcessId,$CreationTimeFileTime,$TimeoutMilliseconds,$MaxRounds,$InjectFailureAfter,$InjectResumeFailure.IsPresent); exit $exit }
+try { $exit=if($Cleanup) { [PerlLspOwnedSuspend]::Cleanup([uint32]$ProcessId,$CreationTimeFileTime) } else { [PerlLspOwnedSuspend]::Run([uint32]$ProcessId,$CreationTimeFileTime,$TimeoutMilliseconds,$MaxRounds,$InjectFailureAfter,$InjectResumeFailure.IsPresent) }; exit $exit }
 catch { Write-Error $_; exit 1 }
