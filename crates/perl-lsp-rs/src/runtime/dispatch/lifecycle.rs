@@ -564,8 +564,11 @@ mod tests {
         }
 
         fn initialized_notification(&mut self) -> Result<(), i32> {
-            if !self.accepted_session {
+            if !self.initialize_requested {
                 return Err(-32002);
+            }
+            if !self.accepted_session {
+                return Ok(());
             }
             if self.initialized {
                 return Err(-32600);
@@ -588,6 +591,33 @@ mod tests {
             Just(LifecycleAction::InitializedNotification),
             Just(LifecycleAction::AutoInitializeCompat),
         ]
+    }
+
+    #[test]
+    fn malformed_initialize_then_completion_remains_unaccepted() -> TestResult {
+        let server = LspServer::new();
+        let rejection = server
+            .handle_initialize(Some(json!({
+                "capabilities": { "general": { "positionEncodings": ["utf-16", 7] } }
+            })))
+            .err()
+            .ok_or("malformed initialize must be rejected")?;
+        if rejection.code != -32602 {
+            return Err(format!("malformed initialize returned {}", rejection.code));
+        }
+
+        server
+            .handle_initialized_dispatch()
+            .map_err(|error| format!("completion must remain a no-op: {error}"))?;
+        if server.is_initialized() || server.accepted_text_sync_session().is_some() {
+            return Err("rejected initialize gained lifecycle authority".to_string());
+        }
+
+        server.auto_initialize_for_compat("textDocument/completion");
+        if server.is_initialized() {
+            return Err("compat completion activated rejected initialize".to_string());
+        }
+        Ok(())
     }
 
     proptest! {
