@@ -1503,10 +1503,16 @@ coverage:
         let lcov = repo.join("lcov.info");
         let mut lcov_body = String::new();
         for file_index in 0..12 {
+            let source = repo.join(format!("crates/product-{file_index}/src/lib.rs"));
+            fs::create_dir_all(source.parent().ok_or("source has no parent")?)?;
+            fs::write(&source, "pub fn product() -> bool { true }\n")?;
             lcov_body.push_str(&format!(
                 "SF:crates/product-{file_index}/src/lib.rs\nDA:1,0\nDA:2,0\nDA:3,1\nend_of_record\n"
             ));
         }
+        let quality_gate_source = repo.join("xtask/src/tasks/quality_gate.rs");
+        fs::create_dir_all(quality_gate_source.parent().ok_or("source has no parent")?)?;
+        fs::write(&quality_gate_source, "pub fn quality_gate() -> bool { true }\n")?;
         lcov_body.push_str("SF:xtask/src/tasks/quality_gate.rs\nDA:1,0\nDA:2,1\nend_of_record\n");
         fs::write(&lcov, lcov_body)?;
         let codecov = repo.join("codecov.yml");
@@ -1659,6 +1665,9 @@ coverage:
         let receipt = repo.join("target/receipts/quality/coverage-baseline.json");
         let codecov = repo.join("codecov.yml");
         fs::create_dir_all(receipt.parent().ok_or("receipt missing parent")?)?;
+        let source = repo.join("xtask/src/tasks/quality_baseline.rs");
+        fs::create_dir_all(source.parent().ok_or("source has no parent")?)?;
+        fs::write(&source, "pub fn quality_baseline() -> bool { true }\n")?;
         fs::write(&lcov, "SF:xtask/src/tasks/quality_baseline.rs\nDA:1,1\nend_of_record\n")?;
         fs::write(
             &codecov,
