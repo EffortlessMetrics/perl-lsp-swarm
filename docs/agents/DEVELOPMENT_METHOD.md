@@ -184,9 +184,10 @@ A remote wait releases root attention. An exact wake event is a resumability con
 not a request to schedule the current engineering context to wake itself. Do not create
 a timer, cron, scheduled reminder, recurring wake, or polling loop merely to revisit
 the same remote condition. While any disjoint claim remains useful, release unnecessary
-claim-local contexts and continue that work immediately. If every remaining required
-claim genuinely shares one external blocker, return the goal-level external blocker and
-let the bounded engineering session end. Scheduled monitoring is a distinct user goal;
+claim-local contexts and continue that work immediately. If no remaining required claim is
+actionable because each waits on a real external blocker or accountable owner decision,
+return the goal-level external blocker with each claim's condition and wake event
+named, and let the bounded engineering session end. Scheduled monitoring is a distinct user goal;
 it must not be introduced merely to keep ordinary engineering work attached to a
 remote wait.
 

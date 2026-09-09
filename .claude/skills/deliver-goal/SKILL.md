@@ -123,10 +123,11 @@ to revisit the same remote condition. In a multi-claim goal, retain the waiting 
 select another phase-eligible actionable claim. A waiting candidate consumes no live
 attention merely because the main thread still stewards it.
 
-If every remaining required claim genuinely shares one external condition, return
-`EXTERNAL_BLOCKER` and let the bounded engineering session end. Scheduled monitoring is
-a different user goal; do not smuggle it in as the continuation mechanism for ordinary
-engineering work.
+If no remaining required claim is actionable because each waits on a real external
+condition or accountable owner decision — the conditions need not be identical —
+return `EXTERNAL_BLOCKER` with each claim's condition and wake event named, and let
+the bounded engineering session end. Scheduled monitoring is a different user goal; do
+not smuggle it in as the continuation mechanism for ordinary engineering work.
 
 ## Bounded related-PR review orchestration
 
@@ -189,8 +190,9 @@ Return `GOAL_SATISFIED` only when every acceptance predicate is `PASS` or explic
 PRs or an exhausted issue list is not sufficient.
 
 Use `GOAL_PARTIAL` only when progress was deliberately bounded or the durable outcome
-was narrowed/superseded. Use `EXTERNAL_BLOCKER` only when every remaining required
-claim shares one real external condition or accountable owner decision. Use
+was narrowed/superseded. Use `EXTERNAL_BLOCKER` only when no remaining required claim is
+actionable and each waits on a real external condition or accountable owner decision,
+with each claim's condition and wake event named. Use
 `NOT_PROVEN` when the reliable goal boundary or live graph cannot be reconstructed.
 
 ## What this establishes

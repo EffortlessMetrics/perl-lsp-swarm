@@ -10,8 +10,11 @@ use std::path::{Path, PathBuf};
 type DynError = Box<dyn std::error::Error>;
 
 const ATTENTION_RELEASE: &str = "A remote wait releases root attention.";
-const NO_SCHEDULED_POLLING: &str =
-    "Do not create a timer, cron, scheduled reminder, recurring wake, or polling loop merely to revisit the same remote condition.";
+const NO_SCHEDULED_POLLING: &str = "Do not create a timer, cron, scheduled reminder, recurring wake, or polling loop merely to revisit the same remote condition.";
+/// Lowercase affirmative form of the polling directive. Marker presence alone
+/// cannot reject a surface that keeps the negative sentence but adds the exact
+/// polling behavior elsewhere, so validation rejects the directive itself.
+const ADDITIVE_POLLING_DIRECTIVE: &str = "create a timer to revisit the same remote condition";
 
 const SURFACES: &[&str] = &[
     "AGENTS.md",
@@ -47,6 +50,11 @@ fn validate_surface(path: &str, text: &str) -> Result<(), String> {
             return Err(format!("{path} lost remote-wait invariant {marker:?}"));
         }
     }
+    if text.to_lowercase().contains(ADDITIVE_POLLING_DIRECTIVE) {
+        return Err(format!(
+            "{path} adds a same-session polling directive that contradicts the remote-wait invariant"
+        ));
+    }
     Ok(())
 }
 
@@ -63,7 +71,9 @@ fn remote_wait_releases_root_attention_across_current_authorities() -> Result<()
 #[test]
 fn ratchet_rejects_same_session_timer_polling() -> Result<(), DynError> {
     let root = root()?;
-    let source = read(&root, ".claude/skills/deliver-goal/SKILL.md")?;
+    // Normalize before the replacement: the raw markdown wraps the marker
+    // sentence across lines, so a single-line replacen would not apply.
+    let source = normalized(&read(&root, ".claude/skills/deliver-goal/SKILL.md")?);
     let regressed = source.replacen(
         NO_SCHEDULED_POLLING,
         "Create a timer to revisit the same remote condition.",
@@ -79,14 +89,24 @@ fn ratchet_rejects_same_session_timer_polling() -> Result<(), DynError> {
 }
 
 #[test]
+fn ratchet_rejects_additive_polling_directive() -> Result<(), DynError> {
+    let root = root()?;
+    let source = read(&root, ".claude/skills/deliver-goal/SKILL.md")?;
+    // Both required markers survive; the contradiction is purely additive.
+    let regressed = format!("{source}\nCreate a timer to revisit the same remote condition.\n");
+
+    assert!(
+        validate_surface("mutated deliver-goal", &regressed).is_err(),
+        "an additive polling directive must fail the contract even when both markers survive"
+    );
+    Ok(())
+}
+
+#[test]
 fn ratchet_rejects_attention_retention_during_remote_wait() -> Result<(), DynError> {
     let root = root()?;
-    let source = read(&root, ".agents/skills/deliver-goal/SKILL.md")?;
-    let regressed = source.replacen(
-        ATTENTION_RELEASE,
-        "A remote wait retains root attention.",
-        1,
-    );
+    let source = normalized(&read(&root, ".agents/skills/deliver-goal/SKILL.md")?);
+    let regressed = source.replacen(ATTENTION_RELEASE, "A remote wait retains root attention.", 1);
 
     assert_ne!(regressed, source, "attention-retention mutation fixture must apply");
     assert!(
