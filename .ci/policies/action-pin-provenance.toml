@@ -179,6 +179,15 @@ sha = 'a1948c3f048ba23858d222213b7c278aabede763'
 kind = 'release_tag'
 value = 'v4.1.1'
 
+# Verified against upstream on 2026-09-09:
+#   git ls-remote --tags https://github.com/actions/attest v4.2.2
+#   1e69f48acb82d1966a394da916b4c1698aa569d6  refs/tags/v4.2.2
+[[pin]]
+action = 'actions/attest'
+sha = '1e69f48acb82d1966a394da916b4c1698aa569d6'
+kind = 'release_tag'
+value = 'v4.2.2'
+
 [[pin]]
 action = 'actions/upload-artifact'
 sha = '043fb46d1a93c77aae656e7c1c64a875d1fc6a0a'
