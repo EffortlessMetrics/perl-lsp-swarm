@@ -7,6 +7,7 @@ import stat
 import tarfile
 import zipfile
 from pathlib import Path
+from typing import BinaryIO
 
 
 CHUNK_SIZE = 1 << 20
@@ -19,18 +20,16 @@ class ArchiveMemberError(ValueError):
 def _regular_zip(info: zipfile.ZipInfo, name: str) -> None:
     if info.filename.endswith("/"):
         raise ArchiveMemberError(f"archive member is not a regular file: {name}")
-    if info.create_system == 3:
-        mode = (info.external_attr >> 16) & 0xFFFF
-        if stat.S_IFMT(mode) not in (0, stat.S_IFREG):
-            raise ArchiveMemberError(f"archive member is not a regular file: {name}")
-    elif info.external_attr & 0x10:
+    if info.external_attr & 0x10:
+        raise ArchiveMemberError(f"archive member is not a regular file: {name}")
+    mode = (info.external_attr >> 16) & 0xFFFF
+    if stat.S_IFMT(mode) not in (0, stat.S_IFREG):
         raise ArchiveMemberError(f"archive member is not a regular file: {name}")
 
 
-def _digest(handle: object) -> str:
+def _digest(handle: BinaryIO) -> str:
     value = hashlib.sha256()
-    read = getattr(handle, "read")
-    for chunk in iter(lambda: read(CHUNK_SIZE), b""):
+    for chunk in iter(lambda: handle.read(CHUNK_SIZE), b""):
         value.update(chunk)
     return value.hexdigest()
 

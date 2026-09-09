@@ -121,6 +121,34 @@ class ReleasePackageEvidenceTests(unittest.TestCase):
             with self.assertRaisesRegex(subject.PackageEvidenceError, "regular"):
                 subject.archive_member_digest(link, "perllsp.exe")
 
+            creator_bypass = root / "creator-bypass.zip"
+            info = zipfile.ZipInfo("perllsp.exe")
+            info.create_system = 0
+            info.external_attr = (stat.S_IFLNK | 0o777) << 16
+            with zipfile.ZipFile(creator_bypass, "w") as bundle:
+                bundle.writestr(info, b"target")
+            with self.assertRaisesRegex(subject.PackageEvidenceError, "regular"):
+                subject.archive_member_digest(creator_bypass, "perllsp.exe")
+
+            dos_bypass = root / "dos-bypass.zip"
+            info = zipfile.ZipInfo("perllsp.exe")
+            info.create_system = 3
+            info.external_attr = (stat.S_IFREG | 0o755) << 16 | 0x10
+            with zipfile.ZipFile(dos_bypass, "w") as bundle:
+                bundle.writestr(info, b"regular")
+            with self.assertRaisesRegex(subject.PackageEvidenceError, "regular"):
+                subject.archive_member_digest(dos_bypass, "perllsp.exe")
+
+            unix_regular = root / "unix-regular.zip"
+            info = zipfile.ZipInfo("perllsp.exe")
+            info.create_system = 3
+            info.external_attr = (stat.S_IFREG | 0o755) << 16
+            with zipfile.ZipFile(unix_regular, "w") as bundle:
+                bundle.writestr(info, b"regular")
+            self.assertEqual(
+                subject.archive_member_digest(unix_regular, "perllsp.exe"), sha(b"regular")
+            )
+
             tar_link = root / "link.tar.gz"
             with tarfile.open(tar_link, "w:gz") as bundle:
                 member = tarfile.TarInfo("perllsp")

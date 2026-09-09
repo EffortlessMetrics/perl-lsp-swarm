@@ -210,6 +210,26 @@ class ReleaseTerminalManifestTests(unittest.TestCase):
             with self.assertRaisesRegex(subject.ManifestError, "regular"):
                 subject.archive_member_digest(zip_link, "perllsp")
 
+            creator_bypass = root / "creator-bypass.zip"
+            info = zipfile.ZipInfo("perllsp")
+            info.create_system = 0
+            info.external_attr = (stat.S_IFLNK | 0o777) << 16
+            with zipfile.ZipFile(creator_bypass, "w") as bundle:
+                bundle.writestr(info, b"target")
+            with self.assertRaisesRegex(subject.ManifestError, "regular"):
+                subject.archive_member_digest(creator_bypass, "perllsp")
+
+            unix_regular = root / "unix-regular.zip"
+            info = zipfile.ZipInfo("perllsp")
+            info.create_system = 3
+            info.external_attr = (stat.S_IFREG | 0o755) << 16
+            with zipfile.ZipFile(unix_regular, "w") as bundle:
+                bundle.writestr(info, b"regular")
+            self.assertEqual(
+                subject.archive_member_digest(unix_regular, "perllsp"),
+                hashlib.sha256(b"regular").hexdigest(),
+            )
+
     def test_identical_duplicate_tar_member_fails_at_build_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = candidate(Path(directory))

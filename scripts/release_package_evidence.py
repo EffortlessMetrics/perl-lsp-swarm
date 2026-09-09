@@ -22,10 +22,6 @@ class PackageEvidenceError(ValueError):
     """Package lineage could not be proven."""
 
 
-def digest_bytes(value: bytes) -> str:
-    return hashlib.sha256(value).hexdigest()
-
-
 def digest(path: Path) -> str:
     # Stream in bounded chunks: release archives and build outputs can be far
     # larger than a whole-file read wants to hold in memory.
