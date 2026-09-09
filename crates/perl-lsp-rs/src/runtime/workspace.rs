@@ -325,6 +325,9 @@ struct IndexingResources {
     #[cfg(all(feature = "workspace", any(test, feature = "expose_lsp_test_api")))]
     indexing_commit_gate:
         Arc<std::sync::Mutex<Option<super::readiness::WorkspaceIndexingStartGate>>>,
+    #[cfg(test)]
+    indexing_scan_observation:
+        Arc<Mutex<Option<super::scan_gate_observation::ScanObservationRegistration>>>,
     invocation_count: Arc<std::sync::atomic::AtomicUsize>,
     outbound: outbound::OutboundSender,
     work_done_progress: bool,
@@ -2551,6 +2554,8 @@ impl LspServer {
             indexing_transition_lock: Arc::clone(&self.indexing_transition_lock),
             #[cfg(all(feature = "workspace", any(test, feature = "expose_lsp_test_api")))]
             indexing_commit_gate: Arc::clone(&self.indexing_commit_gate),
+            #[cfg(test)]
+            indexing_scan_observation: Arc::clone(&self.indexing_scan_observation),
             invocation_count: Arc::clone(&self.workspace_indexing_invocation_count),
             outbound: self.outbound.clone(),
             work_done_progress: self.client_capabilities.lock().work_done_progress_support,
@@ -2568,6 +2573,19 @@ impl LspServer {
         });
     }
 
+    #[cfg(all(test, feature = "workspace"))]
+    fn test_observe_indexing_scan(
+        &self,
+    ) -> Result<super::scan_gate_observation::ScanGateObservation, &'static str> {
+        let mut slot = self.indexing_scan_observation.lock();
+        if slot.is_some() {
+            return Err("a scan observation is already waiting for admission on this server");
+        }
+        let (registration, observation) = super::scan_gate_observation::observe_scan();
+        *slot = Some(registration);
+        Ok(observation)
+    }
+
     #[cfg(feature = "workspace")]
     fn start_workspace_indexing_with_resources(resources: IndexingResources) {
         resources.invocation_count.fetch_add(1, Ordering::SeqCst);
@@ -2580,6 +2598,15 @@ impl LspServer {
             tracing::debug!("Workspace indexing already in progress, queued a follow-up scan");
             return;
         }
+
+        // Take this registration only after admission. A queued follow-up or a
+        // different server must not complete the current scan's observation.
+        #[cfg(test)]
+        let scan_observation = resources
+            .indexing_scan_observation
+            .lock()
+            .take()
+            .map(super::scan_gate_observation::ScanObservationRegistration::admitted);
 
         let restart_resources = resources.clone();
         let indexing_guard = IndexingGuard {
@@ -2649,12 +2676,20 @@ impl LspServer {
         let readiness_observer_id = resources.readiness_observer_id;
 
         std::thread::spawn(move || {
+            // Declare first so exit is observed after the indexing/cancellation
+            // guards have completed their cleanup, including early returns.
+            #[cfg(test)]
+            let mut scan_observation = scan_observation;
             let _guard = indexing_guard; // moved into closure, drops when closure exits
             let _cancellation_guard = work_done_progress.then(|| WorkspaceIndexCancellationGuard {
                 progress_tokens,
                 progress_token_to_request,
                 request_id: progress_request_id.clone(),
             });
+            #[cfg(test)]
+            if let Some(observation) = &scan_observation {
+                observation.worker_started();
+            }
             let budget_start = Instant::now();
             {
                 let mut receipt = readiness_receipt.lock();
@@ -2917,6 +2952,10 @@ impl LspServer {
                 let indexed_uri = url.to_string();
                 let index_result = {
                     let _transition = indexing_transition_lock.lock();
+                    #[cfg(test)]
+                    if let Some(observation) = &mut scan_observation {
+                        observation.first_commit_gate();
+                    }
                     #[cfg(all(feature = "workspace", any(test, feature = "expose_lsp_test_api")))]
                     crate::runtime::readiness::notify_indexing_commit_gate(&indexing_commit_gate);
                     let current_folders = current_workspace_folders.lock();
@@ -5538,6 +5577,78 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn scan_gate_observation_reports_real_empty_scan_exit_with_sender_retained()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let server = gated_scan_server(&dir)?;
+        let (started, receiver) = std::sync::mpsc::channel();
+        let (_release, release_receiver) = std::sync::mpsc::channel();
+        server.test_gate_indexing_commit(started, release_receiver);
+        let mut observation = server.test_observe_indexing_scan()?;
+        server.start_workspace_indexing();
+        observation.wait_for_exit(std::time::Duration::from_secs(5));
+        let snapshot = observation.snapshot_at(std::time::Instant::now());
+        if snapshot.state() != "exited_before_first_commit_gate" {
+            return Err(
+                format!("empty real scan did not report its terminal state: {snapshot:?}").into()
+            );
+        }
+        if receiver.try_recv() != Err(std::sync::mpsc::TryRecvError::Empty) {
+            return Err(
+                "empty scan control did not retain its unconsumed commit-gate sender".into()
+            );
+        }
+        if server.indexing_in_progress.load(std::sync::atomic::Ordering::Acquire) {
+            return Err("scan exit was observed before the indexing guard released its slot".into());
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn scan_gate_observation_is_consumed_only_when_a_queued_scan_is_admitted()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let server = gated_scan_server(&dir)?;
+        let mut first = server.test_observe_indexing_scan()?;
+        let (started, receiver) = std::sync::mpsc::channel();
+        let (release, release_receiver) = std::sync::mpsc::channel();
+        server.test_gate_workspace_indexing_start(started, release_receiver);
+        server.start_workspace_indexing();
+        if let Err(error) = receiver.recv_timeout(std::time::Duration::from_secs(5)) {
+            let _ = release.send(());
+            first.wait_for_exit(std::time::Duration::from_secs(1));
+            return Err(error.into());
+        }
+
+        // The first scan owns the slot while parked at startup. A request to
+        // rescan must leave the second registration for the admitted follow-up.
+        let mut second = match server.test_observe_indexing_scan() {
+            Ok(observation) => observation,
+            Err(error) => {
+                let _ = release.send(());
+                first.wait_for_exit(std::time::Duration::from_secs(1));
+                return Err(error.into());
+            }
+        };
+        server.start_workspace_indexing();
+        let queued_snapshot = second.snapshot_at(std::time::Instant::now());
+        let _ = release.send(());
+        first.wait_for_exit(std::time::Duration::from_secs(5));
+        second.wait_for_exit(std::time::Duration::from_secs(5));
+        if queued_snapshot.state() != "no_scan_admission_observed"
+            || first.snapshot_at(std::time::Instant::now()).state()
+                != "exited_before_first_commit_gate"
+            || second.snapshot_at(std::time::Instant::now()).state()
+                != "exited_before_first_commit_gate"
+        {
+            return Err("queued scan observation was consumed outside its admitted owner".into());
+        }
+        Ok(())
+    }
+
     /// Shared harness for the transition-lock insertion-wait proof: pause the
     /// real scan at its commit seam, then run `didOpen` on a thread and prove
     /// the handler cannot complete (and therefore cannot insert the document)
@@ -5551,10 +5662,23 @@ mod tests {
         let (started_tx, started_rx) = std::sync::mpsc::channel();
         let (release_tx, release_rx) = std::sync::mpsc::channel();
         server.test_gate_indexing_commit(started_tx, release_rx);
+        let mut observation = server.test_observe_indexing_scan()?;
         server.start_workspace_indexing();
-        started_rx
-            .recv_timeout(std::time::Duration::from_secs(5))
-            .map_err(|_| "scan never reached its commit gate")?;
+        let wait_started = std::time::Instant::now();
+        let wait_budget = std::time::Duration::from_secs(5);
+        let deadline =
+            wait_started.checked_add(wait_budget).ok_or("commit-gate deadline overflow")?;
+        if let Err(error) = started_rx.recv_timeout(wait_budget) {
+            return Err(observation
+                .failed_gate_wait(
+                    error,
+                    deadline,
+                    wait_started.elapsed(),
+                    &release_tx,
+                    std::time::Duration::from_secs(1),
+                )
+                .into());
+        }
 
         let (done_tx, done_rx) = std::sync::mpsc::channel();
         let did_open_server = Arc::clone(&server);

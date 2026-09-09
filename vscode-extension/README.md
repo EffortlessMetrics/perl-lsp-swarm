@@ -261,6 +261,12 @@ Open the command palette (`Ctrl+Shift+P` / `Cmd+Shift+P`) and search for
 | **Perl: Show Perl Workspace Status**   | Show the current server, workspace, and diagnostic state   |
 | **Perl: Report Issue**                 | Open a pre-filled issue report                             |
 
+Run Health Check reports binary presence separately from language-server runtime
+health. If the configured executable exists but startup or initialization fails,
+the runtime check remains an error. When cleanup cannot be confirmed, restart is
+blocked and the notification directs you to reload the VS Code window before
+trying again; this avoids launching a second server over an unknown process.
+
 ### Editing and refactoring
 
 | Command                            | Description                                 |
