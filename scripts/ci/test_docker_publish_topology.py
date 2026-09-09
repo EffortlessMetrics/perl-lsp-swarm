@@ -31,6 +31,14 @@ LOGIN_PREFIX = "docker/login-action"
 PUSH_STEP_HINT = "skopeo copy --multi-arch all"
 APPROVED_ANCHOR_OUTPUT = "approved_sha"
 
+# The Rust build toolchain retired from product publication (#8980).
+BUILDER_DOCKERFILE_DIR = ".docker/rust"
+BUILDER_CI_REPOSITORY = "perl-lsp-ci"
+# Repository basenames that mean "the product" to a consumer. The runtime is
+# published as `effortlessmetrics/perl-lsp` with `-perl` tags and as
+# `ghcr.io/<repo>-perl`, so these bare names must never denote the builder.
+PRODUCT_IMAGE_REPOSITORIES = frozenset({"perl-lsp", "perllsp"})
+
 
 def _noncomment_lines(lines: list[str]) -> list[tuple[int, str]]:
     """Return (index, line) pairs that are not blank or pure comments."""
@@ -124,6 +132,41 @@ def _steps(job_body: list[str]) -> list[dict[str, object]]:
                 step["persist_false"] = True
         steps.append(step)
     return steps
+
+
+def _enclosing_job(lines: list[str], index: int) -> list[tuple[int, str]]:
+    """Return the (index, line) pairs of the workflow job containing `index`.
+
+    Scanning the whole job, rather than the single step that names the
+    builder Dockerfile, is deliberate. A two-step job can build the
+    toolchain under a safe tag and then re-label it under the product name
+    in a *separate* step:
+
+        - run: docker build -t perl-lsp-ci:$SHA -f .docker/rust/Dockerfile .
+        - run: docker tag perl-lsp-ci:$SHA perl-lsp:$SHA
+
+    The second step contains no `.docker/rust` substring, so a step-scoped
+    scan never looks at it and the retired identity comes back undetected.
+    The job is the smallest enclosure that still holds both halves.
+    """
+    header = re.compile(r"^  ([A-Za-z0-9_-]+):\s*$")
+    jobs_key = next(
+        (i for i, line in enumerate(lines) if re.match(r"^jobs:\s*$", line)),
+        None,
+    )
+    if jobs_key is None or index <= jobs_key:
+        return [(index, lines[index])]
+
+    starts = [i for i, line in enumerate(lines) if i > jobs_key and header.match(line)]
+    start = max((i for i in starts if i <= index), default=None)
+    if start is None:
+        return [(index, lines[index])]
+    end = next((i for i in starts if i > start), len(lines))
+    return [
+        (i, lines[i])
+        for i in range(start, end)
+        if lines[i].strip() and not lines[i].lstrip().startswith("#")
+    ]
 
 
 def _job_declares_permissions(job_body: list[str]) -> bool:
@@ -319,9 +362,10 @@ class DigestSplitTopology(unittest.TestCase):
             )
         ]
         self.assertEqual(
-            ["build", "build-perl-runtime"],
+            ["build-perl-runtime"],
             sorted(build_jobs),
-            "both image builds must remain credential-free build jobs",
+            "the runtime image is the only published subject (#8980) and its "
+            "build must remain a credential-free build job",
         )
         for job_id in build_jobs:
             run_text = "\n".join(
@@ -342,6 +386,152 @@ class DigestSplitTopology(unittest.TestCase):
                 run_text,
                 f"build job {job_id} run steps must receive expressions via env (workflow-security ratchet)",
             )
+
+
+class RustBuilderIsNotAProduct(unittest.TestCase):
+    """The Rust build toolchain is retired from product publication (#8980).
+
+    `.docker/rust/Dockerfile` builds a Rust toolchain over a copy of the
+    repository source. It ships no `perllsp`, yet it used to publish under the
+    unsuffixed `perl-lsp:<version>` tags on both registries, so the obvious
+    product reference resolved to an image that cannot run the product. These
+    are the negative controls for that retirement: each one fails against the
+    pre-retirement workflows rather than merely restating the current shape.
+
+    The Dockerfile itself is retained — `trivy-docker-scan` in ci-security.yml
+    still builds it locally — so absence of the file is not the invariant.
+    What is pinned is that no product identity ever denotes it.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.publish_text = WORKFLOW.read_text(encoding="utf-8")
+        cls.jobs = _job_blocks(cls.publish_text)
+        cls.steps = {job_id: _steps(body) for job_id, body in cls.jobs.items()}
+        # GitHub Actions accepts both extensions, so a control that scanned
+        # only *.yml could be evaded by a workflow named *.yaml.
+        cls.workflows = sorted(
+            path
+            for pattern in ("*.yml", "*.yaml")
+            for path in WORKFLOW.parent.glob(pattern)
+        )
+        if not cls.workflows:
+            raise AssertionError(f"no workflows found under {WORKFLOW.parent}")
+
+    def test_publication_workflow_never_builds_the_rust_builder(self) -> None:
+        # Comments are stripped deliberately: the surviving prose explains the
+        # retirement, so a substring scan over the raw file would pass for the
+        # wrong reason.
+        live = [
+            line
+            for _, line in _noncomment_lines(self.publish_text.splitlines())
+            if BUILDER_DOCKERFILE_DIR in line
+        ]
+        self.assertEqual(
+            [],
+            live,
+            "docker-publish.yml must not build or publish the Rust builder "
+            f"({BUILDER_DOCKERFILE_DIR}); it is retired from product publication",
+        )
+
+    def test_no_workflow_gives_the_builder_a_product_image_name(self) -> None:
+        # The publication path is not the only way the canonical name can come
+        # to mean the builder: a local `docker build -t perl-lsp:<sha>` for a
+        # security scan asserts the same false identity inside CI.
+        #
+        # The whole enclosing job is scanned, not the `docker build` line, so
+        # that neither hoisting the tag into `env:` — which the
+        # workflow-security ratchet requires for expressions in run source —
+        # nor re-tagging in a later step can launder a product name past this
+        # control. See `_enclosing_job`.
+        offenders: list[str] = []
+        for workflow in self.workflows:
+            lines = workflow.read_text(encoding="utf-8").splitlines()
+            for index, line in _noncomment_lines(lines):
+                if BUILDER_DOCKERFILE_DIR not in line:
+                    continue
+                for offset, step_line in _enclosing_job(lines, index):
+                    for reference in re.findall(r"[\w./-]+:[\w${}.-]+", step_line):
+                        repository = reference.split(":", 1)[0].rsplit("/", 1)[-1]
+                        if repository in PRODUCT_IMAGE_REPOSITORIES:
+                            offenders.append(
+                                f"{workflow.name}:{offset + 1}: {reference}"
+                            )
+        self.assertEqual(
+            [],
+            sorted(set(offenders)),
+            "the canonical product image name must never denote the Rust "
+            f"builder; use a CI-toolchain name such as {BUILDER_CI_REPOSITORY}",
+        )
+
+    def test_each_publication_job_pushes_exactly_one_subject(self) -> None:
+        for job_id in self.jobs:
+            pushes = [
+                line
+                for step in self.steps[job_id]
+                for line in step["run_lines"]  # type: ignore[union-attr]
+                if line.startswith("publish_layout ")
+            ]
+            if not pushes:
+                continue
+            self.assertEqual(
+                1,
+                len(pushes),
+                f"publication job {job_id} must push only the runtime subject, "
+                f"got: {pushes}",
+            )
+            self.assertTrue(
+                pushes[0].startswith("publish_layout runtime-layout "),
+                f"publication job {job_id} must push the runtime layout, "
+                f"got: {pushes[0]}",
+            )
+
+    def test_every_needs_edge_resolves_to_a_declared_job(self) -> None:
+        # Removing a job is exactly the edit that strands a `needs:` edge in
+        # some other job, and GitHub rejects the whole workflow when that
+        # happens. This caught a real stranded `build` edge on
+        # `publish-dockerhub` during the #8980 retirement, which none of the
+        # identity controls above would have noticed.
+        declared = set(self.jobs)
+        stranded: list[str] = []
+        for job_id, body in self.jobs.items():
+            for line in body:
+                match = re.match(r"^    needs:\s*(.+?)\s*$", line)
+                if not match:
+                    continue
+                raw = match.group(1).strip()
+                names = (
+                    raw[1:-1].split(",")
+                    if raw.startswith("[") and raw.endswith("]")
+                    else [raw]
+                )
+                for name in (n.strip() for n in names):
+                    if name and name not in declared:
+                        stranded.append(f"{job_id} -> {name}")
+        self.assertEqual(
+            [],
+            stranded,
+            f"every needs edge must name a declared job; declared={sorted(declared)}",
+        )
+
+    def test_summary_advertises_no_builder_image(self) -> None:
+        summary_text = "\n".join(
+            line
+            for step in self.steps["summary"]
+            for line in step["run_lines"]  # type: ignore[union-attr]
+        )
+        self.assertNotIn(
+            "Builder image",
+            summary_text,
+            "the publish summary must not advertise a builder image to consumers",
+        )
+        # The runtime section must survive; an empty summary would otherwise
+        # satisfy the assertion above.
+        self.assertIn(
+            "Runtime image",
+            summary_text,
+            "the publish summary must still advertise the runtime image",
+        )
 
 
 if __name__ == "__main__":

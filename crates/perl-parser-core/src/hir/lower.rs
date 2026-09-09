@@ -465,6 +465,27 @@ impl Lowerer {
                     self.visit(arg, confidence);
                 }
             }
+            NodeKind::Identifier { name } if is_synthesized_operand(node, name) => {
+                // A parser-synthesized operand, not source text. Unbound `s///`,
+                // `tr///` and `y///` materialize their implicit `$_` topic as a
+                // zero-width `Identifier { name: "$_" }` (#14641).
+                //
+                // Adopting it would assert a maximum-strength claim — `ExactAst`
+                // provenance at `High` confidence — about a name unrepresentable
+                // in Perl source, over a range covering no text. Emit neither the
+                // `BarewordExpr` item nor the `BarewordFact`, so no downstream
+                // consumer can mistake the fabrication for a bareword. Modeling
+                // the implicit topic as a first-class operand is #6666's claim,
+                // not this arm's.
+                //
+                // The empty range is the proven discriminator. The sigil alone
+                // is not enough: `new $class` is a *written* dynamic indirect
+                // constructor whose receiver the parser records as a real,
+                // nonzero-width `Identifier { name: "$class" }`. Dropping that
+                // would discard a source-backed fact. Whether such a receiver
+                // should be a bareword at all is a separate defect (#15031); this
+                // arm deliberately leaves that behavior exactly as it was.
+            }
             NodeKind::Identifier { name } => {
                 let item_id = self.push_item(
                     node,
@@ -713,6 +734,69 @@ impl Lowerer {
                 }
                 self.visit_children(node, confidence);
             }
+            // `tie`/`untie` change what a place *is*. After a tie, ordinary-looking
+            // reads and writes of the target dispatch to hidden TIE* methods, so
+            // flat HIR must not present the place as ordinary storage.
+            //
+            // Children are traversed *before* the boundary is pushed, unlike the
+            // pre-order shape used elsewhere in this lowerer. That is deliberate:
+            // Perl evaluates the target, the class expression, and the constructor
+            // arguments first, and only then dispatches the hidden TIE* method.
+            // `pir::lower` turns consecutive items into `Fallthrough` edges, so
+            // pushing the boundary first would make it fall through into its own
+            // arguments and assert an evaluation order Perl does not have. The
+            // boundary belongs at the hidden dispatch point, after the operands.
+            //
+            // The reasons are deliberately constant and do not name the tie class.
+            // Modeling the tied place identity, the hidden constructor dispatch,
+            // and the tied access classes belongs to #6683; a class name embedded
+            // in prose here would imply a machine-readable fact this slice has not
+            // established.
+            NodeKind::Tie { .. } => {
+                // Capture the tie *site's* context before traversing. An operand
+                // can contain a no-block `package Foo;` (legal inside a `do`
+                // block), which mutates `package_context` and leaves an unpopped
+                // package scope behind. Reading the context after traversal would
+                // then attribute the boundary to the operand's package and scope
+                // rather than the one the tie statement actually sits in.
+                let site_package = self.package_context.clone();
+                let site_scope = self.current_scope();
+                self.visit_children(node, confidence);
+                self.push_item(
+                    node,
+                    None,
+                    confidence,
+                    HirKind::DynamicBoundary(DynamicBoundary {
+                        kind: DynamicBoundaryKind::TiedPlaceBinding,
+                        reason: "tie binds the place to a tie class; subsequent access \
+                                 dispatches to hidden TIE* methods"
+                            .to_string(),
+                    }),
+                    site_package,
+                    Some(site_scope),
+                );
+            }
+            NodeKind::Untie { .. } => {
+                // Same site-context capture as `Tie` above: the target expression
+                // may carry a package declaration that must not be attributed to
+                // the untie boundary.
+                let site_package = self.package_context.clone();
+                let site_scope = self.current_scope();
+                self.visit_children(node, confidence);
+                self.push_item(
+                    node,
+                    None,
+                    confidence,
+                    HirKind::DynamicBoundary(DynamicBoundary {
+                        kind: DynamicBoundaryKind::TiedPlaceRelease,
+                        reason: "untie releases a tied place; hidden UNTIE/DESTROY effects \
+                                 and the resulting storage semantics are not modeled"
+                            .to_string(),
+                    }),
+                    site_package,
+                    Some(site_scope),
+                );
+            }
             NodeKind::Regex { pattern, replacement, modifiers, has_embedded_code } => {
                 self.push_item(
                     node,
@@ -898,7 +982,8 @@ impl Lowerer {
                 self.visit_children(node, confidence);
             }
             NodeKind::VariableDeclaration { declarator, variable, attributes, initializer } => {
-                let (variables, has_embedded_initializer) = variable_decl_bindings(variable);
+                let variables = variable_decl_bindings(declarator, variable);
+                let initializer = declaration_initializer_node(variable, initializer.as_deref());
                 let item_id = self.push_item(
                     node,
                     variables.first().map(|binding| binding.range),
@@ -907,26 +992,26 @@ impl Lowerer {
                         declarator: declarator.clone(),
                         variables: variables.clone(),
                         attribute_count: attributes.len(),
-                        has_initializer: initializer.is_some() || has_embedded_initializer,
-                        initializer_range: initializer
-                            .as_deref()
-                            .map(|initializer| initializer.location),
+                        has_initializer: initializer.is_some(),
+                        initializer_range: initializer.map(|initializer| initializer.location),
                         is_list: false,
                     }),
                     self.package_context.clone(),
                     Some(self.current_scope()),
                 );
-                self.record_declaration_bindings(declarator, &variables, item_id);
-                self.record_variable_stash_effects(
-                    declarator,
-                    &variables,
-                    initializer.as_deref(),
-                    item_id,
-                );
+                // A legacy `field` call declares nothing. Body lowering owns
+                // the argument's resolved read/write effects instead.
+                if declarator != "field" {
+                    self.record_declaration_bindings(declarator, &variables, item_id);
+                    self.record_variable_stash_effects(
+                        declarator,
+                        &variables,
+                        initializer,
+                        item_id,
+                    );
+                }
                 if let Some(initializer) = initializer {
                     self.visit(initializer, confidence);
-                } else if has_embedded_initializer {
-                    self.visit_declaration_variable_payload(variable, confidence);
                 }
             }
             NodeKind::VariableListDeclaration {
@@ -2368,20 +2453,6 @@ impl Lowerer {
         None
     }
 
-    fn visit_declaration_variable_payload(
-        &mut self,
-        variable: &Node,
-        confidence: RecoveryConfidence,
-    ) {
-        match &variable.kind {
-            NodeKind::Assignment { rhs, .. } => self.visit(rhs, confidence),
-            NodeKind::VariableWithAttributes { variable, .. } => {
-                self.visit_declaration_variable_payload(variable, confidence);
-            }
-            _ => {}
-        }
-    }
-
     fn visit_declaration_list_entries(
         &mut self,
         variables: &[Node],
@@ -2555,12 +2626,52 @@ fn is_export_symbol_name(value: &str) -> bool {
     let Some(first) = value.chars().next() else {
         return false;
     };
-    let body = if matches!(first, '$' | '@' | '%' | '&' | '*') {
-        &value[first.len_utf8()..]
-    } else {
-        value
-    };
+    let body = if PERL_SIGILS.contains(&first) { &value[first.len_utf8()..] } else { value };
     is_bareword_like(body)
+}
+
+/// Sigils that introduce a non-bareword Perl symbol form.
+///
+/// A bareword is by definition an unquoted name carrying no sigil, so each of
+/// these characters marks a name as something other than a bareword.
+const PERL_SIGILS: [char; 5] = ['$', '@', '%', '&', '*'];
+
+/// Whether `value` begins with a Perl sigil, and therefore cannot be a bareword.
+fn is_sigil_prefixed(value: &str) -> bool {
+    value.chars().next().is_some_and(|first| PERL_SIGILS.contains(&first))
+}
+
+/// Whether an `Identifier` node was fabricated by the parser rather than scanned
+/// from source, and so must not be recorded as a bareword (#14641).
+///
+/// Two conditions, of unequal strength:
+///
+/// - **the range is empty**, so the node covers no source text at all;
+/// - **the name carries a sigil**, so it could not be a bareword even if it had.
+///
+/// The empty range is the load-bearing half. The sigil alone is *not* sufficient
+/// and an earlier revision that relied on it was wrong: `new $class` is a legal
+/// dynamic indirect constructor whose receiver arrives here as a real
+/// `Identifier { name: "$class" }` spanning the characters the author typed.
+/// Discarding that would drop a source-backed fact. (Whether such a receiver
+/// should be classified as a *bareword* at all is a separate defect, #15031;
+/// this predicate deliberately leaves that behavior unchanged.)
+///
+/// The sigil test is defence in depth rather than a proven discriminator. A finite
+/// probe over malformed and recovery-path inputs found no zero-width
+/// `Identifier` with a non-sigil name; every zero-width identifier in that
+/// corpus was the `"$_"` topic. Keeping the sigil test
+/// means that if recovery ever does synthesize a zero-width placeholder named
+/// like an ordinary bareword, it is still recorded rather than silently dropped
+/// by this arm. `hir_synthesized_topic_not_a_bareword.rs` states that limit
+/// rather than implying the condition is falsifiable today.
+///
+/// Together they identify the synthesized shape: a name that cannot be a
+/// bareword, over a span containing nothing. The implicit `$_` topic of an
+/// unbound `s///`, `tr///` or `y///` is the only such node the parser builds
+/// today, at three sites (`expressions/quotes.rs`, `expressions/primary.rs`).
+fn is_synthesized_operand(node: &Node, name: &str) -> bool {
+    node.location.start == node.location.end && is_sigil_prefixed(name)
 }
 
 fn is_bareword_like(value: &str) -> bool {
@@ -2916,12 +3027,139 @@ fn is_isa_target(node: &Node) -> bool {
         if sigil == "@" && package_and_symbol(name, None).1 == "ISA")
 }
 
-fn variable_decl_bindings(node: &Node) -> (Vec<VariableBinding>, bool) {
+fn variable_decl_bindings(declarator: &str, node: &Node) -> Vec<VariableBinding> {
     match &node.kind {
-        NodeKind::Assignment { lhs, .. } => (variable_binding(lhs).into_iter().collect(), true),
-        NodeKind::VariableWithAttributes { variable, .. } => variable_decl_bindings(variable),
-        _ => (variable_binding(node).into_iter().collect(), false),
+        NodeKind::Assignment { lhs, .. } => variable_decl_bindings(declarator, lhs),
+        NodeKind::VariableWithAttributes { variable, .. } => {
+            variable_decl_bindings(declarator, variable)
+        }
+        _ => {
+            if let Some(binding) = variable_binding(node) {
+                // Computed `*{$name}` captures are not a static declaration name.
+                if binding.sigil == "*" && !is_direct_glob_name(&binding.name) {
+                    return Vec::new();
+                }
+                return vec![binding];
+            }
+            // `my $cache->{key}` declares the base lexical, not the hash slot.
+            // Direct-subscript `local $ENV{PATH}` must not bind `ENV`.
+            if declarator != "local"
+                && let Some((sigil, name, binding_node)) = declared_base_variable(node)
+            {
+                return vec![VariableBinding {
+                    sigil: sigil.to_string(),
+                    name,
+                    range: binding_node.location,
+                }];
+            }
+            Vec::new()
+        }
     }
+}
+
+/// The expression that initializes a single-variable declaration, as the flat
+/// lowerer sees it.
+///
+/// `my`/`our`/`state` carry their RHS in the separate `initializer` field.
+/// `local $x = EXPR` (and compound forms such as `local $x .= EXPR`) instead
+/// parse the whole assignment into `variable`, because `local` accepts
+/// arbitrary lvalues. The flat lowerer wants only that assignment's RHS: the
+/// localized `$x` is the declaration's own binding, and traversing it as an
+/// expression would record a spurious self-reference in the scope graph. The
+/// canonical body lowerer lowers the embedded assignment node itself, because
+/// there the operator and place are the payload.
+fn declaration_initializer_node<'a>(
+    variable: &'a Node,
+    initializer: Option<&'a Node>,
+) -> Option<&'a Node> {
+    initializer.or_else(|| match &variable.kind {
+        NodeKind::Assignment { rhs, .. } => Some(rhs),
+        NodeKind::VariableWithAttributes { variable, .. } => {
+            declaration_initializer_node(variable, None)
+        }
+        _ => None,
+    })
+}
+
+/// Peel an embedded `Assignment` so the localized lvalue is the declaration target.
+fn declaration_target_node(variable: &Node) -> &Node {
+    match &variable.kind {
+        NodeKind::Assignment { lhs, .. } => lhs.as_ref(),
+        _ => variable,
+    }
+}
+
+/// A declaration target that is itself a named variable or typeglob.
+fn named_variable_or_glob(node: &Node) -> Option<(&str, String)> {
+    match &node.kind {
+        NodeKind::Variable { sigil, name } => Some((sigil.as_str(), name.clone())),
+        NodeKind::VariableWithAttributes { variable, .. } => named_variable_or_glob(variable),
+        NodeKind::Typeglob { name } if is_direct_glob_name(name) => Some(("*", name.clone())),
+        _ => None,
+    }
+}
+
+fn is_arrow_postfix_op(op: &str) -> bool {
+    matches!(op, "->" | "->{}" | "->[]")
+}
+
+/// Walk only arrow-postfix / method-call objects to the declared base name.
+///
+/// Direct `[]`/`{}` subscripts are not walked: `local $ENV{PATH}` must not
+/// become a binding of `ENV`. `local $obj->{key}` is likewise an element
+/// localization, not a binding of `$obj`.
+fn declared_base_variable(node: &Node) -> Option<(&str, String, &Node)> {
+    match &node.kind {
+        NodeKind::Variable { sigil, name } => Some((sigil.as_str(), name.clone(), node)),
+        NodeKind::Typeglob { name } if is_direct_glob_name(name) => Some(("*", name.clone(), node)),
+        NodeKind::VariableWithAttributes { variable, .. } => declared_base_variable(variable),
+        NodeKind::Binary { op, left, .. } if is_arrow_postfix_op(op) => {
+            declared_base_variable(left)
+        }
+        NodeKind::MethodCall { object, .. } => declared_base_variable(object),
+        _ => None,
+    }
+}
+
+/// Whether `init` is the declaration's own compound assignment (`+=`, `.=`, …)
+/// whose LHS is the declared target, rather than an assignment used only as
+/// the initializer *value* (`local($ENV{PATH}) = ($x = 1)`).
+fn initializer_is_target_assignment(init: &Node, target: &Node) -> bool {
+    match &init.kind {
+        NodeKind::Assignment { lhs, .. } => {
+            lhs.location.start == target.location.start && lhs.location.end == target.location.end
+        }
+        _ => false,
+    }
+}
+
+struct NamedDeclTarget<'a> {
+    sigil_str: &'a str,
+    var_name: String,
+    binding_node: &'a Node,
+    recovered_from_postfix: bool,
+}
+
+fn named_declaration_target<'a>(declarator: &str, target: &'a Node) -> Option<NamedDeclTarget<'a>> {
+    if let Some((sigil_str, var_name)) = named_variable_or_glob(target) {
+        return Some(NamedDeclTarget {
+            sigil_str,
+            var_name,
+            binding_node: target,
+            recovered_from_postfix: false,
+        });
+    }
+    if declarator != "local"
+        && let Some((sigil_str, var_name, binding_node)) = declared_base_variable(target)
+    {
+        return Some(NamedDeclTarget {
+            sigil_str,
+            var_name,
+            binding_node,
+            recovered_from_postfix: true,
+        });
+    }
+    None
 }
 
 fn require_target(argument: Option<&Node>) -> Option<String> {
@@ -3279,6 +3517,24 @@ impl<'a> BodyBuilder2<'a> {
         VariableKind::Package
     }
 
+    /// Whether `expr_id` is already an assignment whose target is the same
+    /// variable a declaration-shaped node names.
+    ///
+    /// Distinguishes `field $x += 1` — where the lowered initializer is the
+    /// complete operation over `$x` — from `field $x = ($y += 1)`, where the
+    /// inner assignment targets a different variable and the outer write to
+    /// `$x` is real.
+    fn assign_targets_same_variable(&self, expr_id: HirExprId, sigil: &str, name: &str) -> bool {
+        let Some(HirExpr::Assign { lhs, .. }) = self.exprs.get(expr_id.0) else {
+            return false;
+        };
+        let wanted = sigil_from_str(sigil);
+        matches!(
+            self.exprs.get(lhs.0),
+            Some(HirExpr::Variable(var)) if var.name == name && var.sigil == wanted
+        )
+    }
+
     fn lower_statement(&mut self, node: &Node) -> HirStmtId {
         let range = node.location;
 
@@ -3305,73 +3561,180 @@ impl<'a> BodyBuilder2<'a> {
                 )
             }
 
-            NodeKind::VariableDeclaration { declarator, variable, initializer, .. } => {
-                // `local $x = EXPR` parses its target as an `Assignment` (`$x = EXPR`)
-                // rather than a bare `Variable`, because `local` accepts arbitrary
-                // lvalues. Unwrap to the localized lvalue so the declared name and
-                // the `binding_range` anchor at the variable token, not the whole
-                // `$x = EXPR` span (mirrors `variable_binding()` in the first pass).
-                // For `my`/`our`/`state` the initializer is a separate field, so
-                // `variable` is already the bare token and this unwrap is a no-op.
-                let binding_node: &Node = match &variable.kind {
-                    NodeKind::Assignment { lhs, .. } => lhs.as_ref(),
-                    _ => variable.as_ref(),
-                };
-                let (sigil_str, var_name) = match &binding_node.kind {
-                    NodeKind::Variable { sigil, name } => (sigil.as_str(), name.clone()),
-                    NodeKind::VariableWithAttributes { variable, .. } => match &variable.kind {
-                        NodeKind::Variable { sigil, name } => (sigil.as_str(), name.clone()),
-                        _ => ("$", String::from("<unknown>")),
+            NodeKind::VariableDeclaration { declarator, variable, initializer, .. } => self
+                .lower_variable_declaration_stmt(
+                    declarator,
+                    variable,
+                    initializer.as_deref(),
+                    range,
+                ),
+
+            _ => {
+                let expr_id = self.lower_expr(node);
+                self.alloc_stmt(HirStmt::Expr(expr_id), range)
+            }
+        }
+    }
+
+    /// Named-variable / typeglob declarations stay `Let`. A `local` whose
+    /// target is an element, slice, or other non-binding place is a
+    /// dynamic-scope write of that place, not a binding named `<unknown>`.
+    /// Non-`local` arrow-postfix forms (`my $cache->{key}`) recover the
+    /// declared base name and keep the postfix write as the initializer.
+    fn lower_variable_declaration_stmt(
+        &mut self,
+        declarator: &str,
+        variable: &Node,
+        initializer: Option<&Node>,
+        range: crate::SourceLocation,
+    ) -> HirStmtId {
+        let target = declaration_target_node(variable);
+        match named_declaration_target(declarator, target) {
+            Some(named) if !named.recovered_from_postfix => self.lower_named_declaration_let(
+                declarator,
+                variable,
+                initializer,
+                named.binding_node,
+                named.sigil_str,
+                named.var_name,
+                range,
+            ),
+            Some(named) => {
+                let init = Some(self.lower_complex_local_effect(variable, initializer));
+                self.alloc_stmt(
+                    HirStmt::Let {
+                        name: named.var_name,
+                        sigil: sigil_from_str(named.sigil_str),
+                        storage: storage_class_for_decl(declarator),
+                        init,
+                        binding_range: named.binding_node.location,
                     },
-                    _ => ("$", String::from("<unknown>")),
+                    range,
+                )
+            }
+            None => {
+                let effect = self.lower_complex_local_effect(variable, initializer);
+                self.alloc_stmt(HirStmt::Expr(effect), range)
+            }
+        }
+    }
+
+    fn lower_named_declaration_let(
+        &mut self,
+        declarator: &str,
+        variable: &Node,
+        initializer: Option<&Node>,
+        binding_node: &Node,
+        sigil_str: &str,
+        var_name: String,
+        range: crate::SourceLocation,
+    ) -> HirStmtId {
+        let sigil = sigil_from_str(sigil_str);
+        let storage = storage_class_for_decl(declarator);
+        // Unknown storage represents a legacy call. Its argument uses the
+        // visible binding rather than creating a new declaration.
+        let is_legacy_call = storage == DeclStorageClass::Unknown;
+
+        let init_expr_id = match (initializer, &variable.kind) {
+            // `local $x = EXPR` / `local $x .= EXPR`: the parser stores the
+            // whole assignment in `variable`, so lower that node directly. It
+            // already owns the place, RHS, operator mode, and exact range; a
+            // second synthetic assignment would double-count the write.
+            (None, NodeKind::Assignment { .. }) => Some(self.lower_expr(variable)),
+            (None, _) => None,
+            (Some(init_node), _) => Some({
+                // Allocate the write-place for the declared variable.
+                // Real declarations own their place; legacy calls resolve
+                // their argument through the existing scope authority.
+                let place_kind = match declarator {
+                    "our" => VariableKind::Package,
+                    "field" => self.resolve_variable_kind(sigil_str, &var_name),
+                    _ => VariableKind::Lexical,
                 };
-                let sigil = sigil_from_str(sigil_str);
-                let storage = storage_class_for_decl(declarator);
+                let place_expr = HirExpr::Variable(HirVariable {
+                    sigil: sigil_from_str(sigil_str),
+                    name: var_name.clone(),
+                    kind: place_kind,
+                    access: AccessMode::Write,
+                });
+                let place_id = self.alloc_expr(place_expr, variable.location);
 
-                let init_expr_id = initializer.as_ref().map(|init_node| {
-                    // Allocate the write-place for the declared variable.
-                    // Always Lexical regardless of declarator — the place IS the
-                    // declaration site, not a resolved binding.
-                    let place_kind = match declarator.as_str() {
-                        "our" => VariableKind::Package,
-                        _ => VariableKind::Lexical,
-                    };
-                    let place_expr = HirExpr::Variable(HirVariable {
-                        sigil: sigil_from_str(sigil_str),
-                        name: var_name.clone(),
-                        kind: place_kind,
-                        access: AccessMode::Write,
-                    });
-                    let place_id = self.alloc_expr(place_expr, variable.location);
-
-                    // Lower the RHS.
-                    let rhs_id = self.lower_expr(init_node);
-
-                    // Assign node spanning from variable to end of initializer.
-                    let assign_range = SourceLocation {
+                let rhs_id = self.lower_expr(init_node);
+                // A parser-folded compound argument already owns its write.
+                // Nested same-target assignments start later and need both
+                // writes, so matching the variable name alone is insufficient.
+                if is_legacy_call
+                    && init_node.location.start == variable.location.start
+                    && self.assign_targets_same_variable(rhs_id, sigil_str, &var_name)
+                {
+                    rhs_id
+                } else {
+                    let assign_range = crate::SourceLocation {
                         start: variable.location.start,
                         end: init_node.location.end,
                     };
                     let assign_expr =
                         HirExpr::Assign { lhs: place_id, rhs: rhs_id, mode: AssignMode::Simple };
                     self.alloc_expr(assign_expr, assign_range)
-                });
+                }
+            }),
+        };
 
-                self.alloc_stmt(
-                    HirStmt::Let {
-                        name: var_name,
-                        sigil,
-                        storage,
-                        init: init_expr_id,
-                        binding_range: binding_node.location,
-                    },
-                    range,
-                )
+        let init_expr_id = init_expr_id.or_else(|| {
+            if !is_legacy_call {
+                return None;
             }
+            let argument = HirExpr::Variable(HirVariable {
+                sigil: sigil_from_str(sigil_str),
+                name: var_name.clone(),
+                kind: self.resolve_variable_kind(sigil_str, &var_name),
+                access: AccessMode::Read,
+            });
+            Some(self.alloc_expr(argument, binding_node.location))
+        });
 
-            _ => {
-                let expr_id = self.lower_expr(node);
-                self.alloc_stmt(HirStmt::Expr(expr_id), range)
+        self.alloc_stmt(
+            HirStmt::Let {
+                name: var_name,
+                sigil,
+                storage,
+                init: init_expr_id,
+                binding_range: binding_node.location,
+            },
+            range,
+        )
+    }
+
+    /// Effect of a complex-lvalue `local`: the embedded assignment, a separate
+    /// initializer assigned to the real target place, or the bare write place.
+    fn lower_complex_local_effect(
+        &mut self,
+        variable: &Node,
+        initializer: Option<&Node>,
+    ) -> HirExprId {
+        let target = declaration_target_node(variable);
+        match (initializer, &variable.kind) {
+            (None, NodeKind::Assignment { .. }) => self.lower_expr(variable),
+            (None, _) => self.lower_expr_as_place(target, AccessMode::Write),
+            (Some(init_node), _) if initializer_is_target_assignment(init_node, target) => {
+                // Compound `my $cache->{key} += 1` stores the RMW assignment in
+                // `initializer` with the postfix as LHS. Lower that node once.
+                // An assignment-valued RHS (`foo(local($ENV{PATH}) = ($x = 1))`)
+                // must not take this arm: that Assignment is the value, not the
+                // localized write.
+                self.lower_expr(init_node)
+            }
+            (Some(init_node), _) => {
+                let place_id = self.lower_expr_as_place(target, AccessMode::Write);
+                let rhs_id = self.lower_expr(init_node);
+                let assign_range = crate::SourceLocation {
+                    start: target.location.start,
+                    end: init_node.location.end,
+                };
+                self.alloc_expr(
+                    HirExpr::Assign { lhs: place_id, rhs: rhs_id, mode: AssignMode::Simple },
+                    assign_range,
+                )
             }
         }
     }
@@ -3559,6 +3922,16 @@ impl<'a> BodyBuilder2<'a> {
             NodeKind::Return { value } => {
                 let value_id = value.as_deref().map(|expr| self.lower_expr(expr));
                 self.alloc_expr(HirExpr::Return { value: value_id }, range)
+            }
+
+            NodeKind::VariableDeclaration { declarator, variable, initializer, .. }
+                if declarator == "local"
+                    && named_variable_or_glob(declaration_target_node(variable)).is_none() =>
+            {
+                // Expression-position complex `local` (`foo(local($ENV{PATH}) = …)`)
+                // is not a named binding. Lower the real write/RMW/bare place so
+                // PIR sees the target instead of an Opaque declaration shell.
+                self.lower_complex_local_effect(variable, initializer.as_deref())
             }
 
             NodeKind::FunctionCall { args, .. } => {
@@ -4112,40 +4485,35 @@ impl<'a> BodyBuilder2<'a> {
         match &node.kind {
             NodeKind::Variable { .. } => self.lower_expr_as_place(node, AccessMode::Write),
             NodeKind::VariableDeclaration { declarator, variable, .. } => {
-                let (sigil, name) = variable_name(variable);
-                let kind = match declarator.as_str() {
-                    "our" => VariableKind::Package,
-                    _ => VariableKind::Lexical,
-                };
-                // Anchor at the variable token, not the whole `my $i` declaration
-                // span — mirrors the statement-level VariableDeclaration path,
-                // which anchors at `variable.location` (body.rs). Anchoring at
-                // `node.location` widens PIR lexical-write anchors to include
-                // the declarator keyword (#12191/#12274).
-                let binding_node = match &variable.kind {
-                    NodeKind::VariableWithAttributes { variable, .. } => variable.as_ref(),
-                    _ => variable.as_ref(),
-                };
-                self.alloc_expr(
-                    HirExpr::Variable(HirVariable {
-                        sigil: sigil_from_str(sigil),
-                        name: name.to_string(),
-                        kind,
-                        access: AccessMode::Write,
-                    }),
-                    binding_node.location,
-                )
+                let target = declaration_target_node(variable);
+                match named_declaration_target(declarator, target) {
+                    Some(named) if !named.recovered_from_postfix => {
+                        let kind = match declarator.as_str() {
+                            "our" => VariableKind::Package,
+                            _ => VariableKind::Lexical,
+                        };
+                        // Anchor at the variable token, not the whole `my $i`
+                        // declaration span — mirrors the statement-level path
+                        // (#12191/#12274).
+                        let binding_node = match &named.binding_node.kind {
+                            NodeKind::VariableWithAttributes { variable, .. } => variable.as_ref(),
+                            _ => named.binding_node,
+                        };
+                        self.alloc_expr(
+                            HirExpr::Variable(HirVariable {
+                                sigil: sigil_from_str(named.sigil_str),
+                                name: named.var_name,
+                                kind,
+                                access: AccessMode::Write,
+                            }),
+                            binding_node.location,
+                        )
+                    }
+                    _ => self.lower_expr_as_place(target, AccessMode::Write),
+                }
             }
             _ => self.lower_expr(node),
         }
-    }
-}
-
-fn variable_name(node: &Node) -> (&str, String) {
-    match &node.kind {
-        NodeKind::Variable { sigil, name } => (sigil.as_str(), name.clone()),
-        NodeKind::VariableWithAttributes { variable, .. } => variable_name(variable),
-        _ => ("$", String::from("<unknown>")),
     }
 }
 
@@ -4237,7 +4605,7 @@ fn storage_class_for_decl(declarator: &str) -> DeclStorageClass {
         "our" => DeclStorageClass::Our,
         "local" => DeclStorageClass::Local,
         "state" => DeclStorageClass::State,
-        _ => DeclStorageClass::My,
+        _ => DeclStorageClass::Unknown,
     }
 }
 
