@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "owner_issue": 14452,
-  "reason": "The #14475 guidance recovery changes the packaged extension bundle; the exact candidate VSIX is measured against the pinned current-main baseline, with the size-only transition recorded from the raw candidate inventory.",
-  "base_baseline_file_sha256": "949c75c589fe21743ad92ca29b7d9c7d27efed516a3b4633e2c00e5b06f8347d",
-  "candidate_baseline_file_sha256": "db728d1fdbd59cde136efbf4ca093000703165d7e200bd5468b0a04492e9adf1",
-  "base_inventory_sha256": "984fb74e54c9864533b3f6fd62e10c08f433c04bfb8099ce540721b183975888",
-  "candidate_inventory_sha256": "6a0ba1d92936ed297b912d1c61722d9b1a4b0949804a2d9ece55b7543aff6201"
+  "owner_issue": 7846,
+  "reason": "The #7846 watchdog epoch change updates the packaged extension bundle; the exact candidate VSIX is measured against the merged current-main baseline.",
+  "base_baseline_file_sha256": "5bf37ec5a75fb3941643a60bc7679316d4a6cab554efa709b8f273dcdd7b9518",
+  "candidate_baseline_file_sha256": "d95cf9327ba072657b6481b42fa3c3076d7774d4b5a03e7496b431518c765683",
+  "base_inventory_sha256": "11e0261afd2e089da857c27861830820a1ece17c62acf455c041defd5c61c632",
+  "candidate_inventory_sha256": "695a05e2c3e7508d19ff0c35c30b5aedf5149e0953f31912d823c044f8a9e4d2"
 }
