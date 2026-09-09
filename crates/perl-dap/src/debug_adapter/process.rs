@@ -1678,6 +1678,17 @@ impl DebugAdapter {
                                         // stopOnEntry's frame contract. Keep the entry stop
                                         // pending instead of exposing a synthetic location.
                                         s.state = DebugState::Running;
+                                    } else if was_running
+                                        && matches!(s.last_resume_mode, ResumeMode::RunToBreakpoint)
+                                    {
+                                        // RunToBreakpoint is already driving the debugger with
+                                        // the original `c`.  Its implicit context is followed by
+                                        // a prompt before the requested breakpoint; that prompt
+                                        // is not a new step stop and must not queue another
+                                        // resume command.  A real breakpoint context transitions
+                                        // the session to Stopped in the context branch, so this
+                                        // guard only covers the implicit prompt.
+                                        s.state = DebugState::Running;
                                     } else if was_running || s.entry_stop_pending {
                                         let entry_stop =
                                             s.entry_stop_pending && has_authoritative_source_frame;
@@ -2928,6 +2939,169 @@ mod tests {
 
         if stopped != 1 {
             return Err(format!("expected exactly one entry stop, got {stopped}"));
+        }
+        Ok(())
+    }
+
+    /// A RunToBreakpoint request first reports perl5db's implicit context and
+    /// prompt before reaching the requested breakpoint.  The implicit prompt
+    /// must not become a fabricated step stop or consume the request's resume
+    /// intent; the later breakpoint prompt must publish exactly one stop.
+    #[cfg(unix)]
+    #[test]
+    fn output_reader_run_to_breakpoint_ignores_implicit_prompt() -> Result<(), String> {
+        use super::{DapMessage, DebugSession, ResumeMode, VariableCache, lock_or_recover};
+        use crate::protocol::{SetBreakpointsArguments, Source, SourceBreakpoint};
+        use std::io::Write;
+        use std::path::PathBuf;
+        use std::process::{Command, Stdio};
+        use std::sync::atomic::Ordering;
+        use std::sync::mpsc::{RecvTimeoutError, sync_channel};
+        use std::time::Duration;
+        use tempfile::NamedTempFile;
+
+        let mut source_file = NamedTempFile::with_suffix(".pl")
+            .map_err(|error| format!("failed to create breakpoint fixture: {error}"))?;
+        source_file
+            .write_all(
+                b"#!/usr/bin/perl\nmy $implicit = 1;\nmy $x = 2;\nmy $y = 3;\nprint $x + $y;\n",
+            )
+            .map_err(|error| format!("failed to write breakpoint fixture: {error}"))?;
+        source_file
+            .flush()
+            .map_err(|error| format!("failed to flush breakpoint fixture: {error}"))?;
+        let source_path = source_file.path().to_string_lossy().into_owned();
+
+        let (sender, receiver) = sync_channel(64);
+        let mut adapter = DebugAdapter::new();
+        adapter.set_event_sender(sender);
+        adapter.initialized.store(true, Ordering::Release);
+        let configured = adapter.breakpoints.set_breakpoints(&SetBreakpointsArguments {
+            source: Source {
+                path: Some(source_path.to_string()),
+                name: Some("dap-run-to-breakpoint-fixture.pl".to_string()),
+            },
+            breakpoints: Some(vec![SourceBreakpoint {
+                line: 5,
+                column: None,
+                condition: None,
+                hit_condition: None,
+                log_message: None,
+            }]),
+            source_modified: None,
+        });
+        if configured.len() != 1 || !configured[0].verified {
+            return Err(format!("failed to configure fixture breakpoint: {configured:?}"));
+        }
+
+        let script = format!(
+            "printf 'main::({source_path}:1):\\timplicit\\nDB<1>\\nIMPLICIT_DONE\\n' >&2; read -r release; if [ -n \"$release\" ]; then printf 'UNEXPECTED_COMMAND:%s\\n' \"$release\" >&2; exit 1; fi; printf 'main::({source_path}:5):\\tactual\\nDB<2>\\nACTUAL_DONE\\n' >&2"
+        );
+        let child = Command::new("sh")
+            .args(["-c", &script])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|error| format!("failed to spawn RunToBreakpoint fixture: {error}"))?;
+
+        *lock_or_recover(&adapter.session, "test.session") = Some(DebugSession {
+            process: child,
+            state: DebugState::Running,
+            stack_frames: Vec::new(),
+            stack_frame_arguments: HashMap::new(),
+            variable_cache: VariableCache::default(),
+            thread_id: 1,
+            last_resume_mode: ResumeMode::RunToBreakpoint,
+            entry_stop_pending: false,
+            stopped_generation: 0,
+        });
+        adapter.start_output_reader(PathBuf::from("/tmp"));
+
+        let mut saw_implicit = false;
+        let mut released = false;
+        let mut stopped = 0;
+        let mut saw_actual = false;
+        let mut saw_terminated = false;
+        while !saw_actual || !saw_terminated {
+            match receiver.recv_timeout(Duration::from_secs(3)) {
+                Ok(DapMessage::Event { event, body, .. }) if event == "output" => {
+                    let output = body
+                        .as_ref()
+                        .and_then(|value| value.get("output"))
+                        .and_then(|value| value.as_str())
+                        .unwrap_or_default();
+                    if output.contains("IMPLICIT_DONE") {
+                        saw_implicit = true;
+                        if !released {
+                            let mut guard = lock_or_recover(&adapter.session, "test.session");
+                            let session = guard.as_mut().ok_or("reader cleared session")?;
+                            let stdin = session
+                                .process
+                                .stdin
+                                .as_mut()
+                                .ok_or("RunToBreakpoint fixture stdin missing")?;
+                            stdin
+                                .write_all(b"\n")
+                                .map_err(|error| format!("failed to release fixture: {error}"))?;
+                            stdin.flush().map_err(|error| {
+                                format!("failed to flush fixture release: {error}")
+                            })?;
+                            released = true;
+                        }
+                    }
+                    if output.contains("ACTUAL_DONE") {
+                        saw_actual = true;
+                    }
+                    if output.contains("UNEXPECTED_COMMAND:") {
+                        return Err(format!(
+                            "fixture observed an unexpected resume command: {output:?}"
+                        ));
+                    }
+                }
+                Ok(DapMessage::Event { event, body, .. }) if event == "stopped" => {
+                    stopped += 1;
+                    let reason = body
+                        .as_ref()
+                        .and_then(|value| value.get("reason"))
+                        .and_then(|value| value.as_str());
+                    if !saw_implicit {
+                        return Err(format!(
+                            "implicit RunToBreakpoint prompt stopped early: {body:?}"
+                        ));
+                    }
+                    if reason != Some("breakpoint") {
+                        return Err(format!("expected breakpoint stop, got {reason:?}"));
+                    }
+                    let guard = lock_or_recover(&adapter.session, "test.session");
+                    let frame = guard
+                        .as_ref()
+                        .and_then(|session| session.stack_frames.first())
+                        .ok_or("breakpoint frame missing")?;
+                    if frame.source.path != source_path || frame.line != 5 {
+                        return Err(format!(
+                            "breakpoint frame mismatch: path={}, line={}",
+                            frame.source.path, frame.line
+                        ));
+                    }
+                }
+                Ok(DapMessage::Event { event, .. }) if event == "terminated" => {
+                    saw_terminated = true;
+                }
+                Ok(_) => {}
+                Err(RecvTimeoutError::Timeout) => {
+                    return Err("RunToBreakpoint fixture timed out".into());
+                }
+                Err(RecvTimeoutError::Disconnected) => {
+                    return Err("RunToBreakpoint event channel disconnected".into());
+                }
+            }
+        }
+
+        if !saw_implicit || !saw_actual || stopped != 1 {
+            return Err(format!(
+                "expected implicit barrier, actual barrier, and one breakpoint stop; implicit={saw_implicit}, actual={saw_actual}, stopped={stopped}"
+            ));
         }
         Ok(())
     }
