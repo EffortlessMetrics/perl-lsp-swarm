@@ -162,9 +162,11 @@ async function main() {
     process.stdout.write(`Updated ${BASELINE_PATH}\n`);
     return;
   }
-  const allowedFiles =
-    process.env.PERL_LSP_CURRENT_SOURCE_SMOKE === '1' ? [currentSourceBundleFile()] : [];
   const manifestPath = (process.env.PERL_LSP_CANDIDATE_PAYLOAD_MANIFEST || '').trim();
+  const allowedFiles = [];
+  if (!manifestPath && process.env.PERL_LSP_CURRENT_SOURCE_SMOKE === '1') {
+    allowedFiles.push(currentSourceBundleFile());
+  }
   if (manifestPath) {
     const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
     const projectionPath = (process.env.PERL_LSP_VSIX_PROJECTION_INPUT || '').trim();

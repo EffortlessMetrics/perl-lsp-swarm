@@ -95,13 +95,14 @@ async function fixture(directory, extraFiles = {}) {
   return { manifest, manifestPath, projectionPath, vsixPath, files };
 }
 
-function runChecker(paths) {
+function runChecker(paths, { currentSourceSmoke = false } = {}) {
   const environment = {
     ...process.env,
     PERL_LSP_CANDIDATE_PAYLOAD_MANIFEST: paths.manifestPath,
     PERL_LSP_VSIX_PROJECTION_INPUT: paths.projectionPath,
     PERL_LSP_VSCODE_TARGET: 'win32-x64',
   };
+  if (currentSourceSmoke) environment.PERL_LSP_CURRENT_SOURCE_SMOKE = '1';
   return spawnSync(process.execPath, [checker, '--vsix', paths.vsixPath], {
     cwd: extensionRoot,
     env: environment,
@@ -149,7 +150,7 @@ void test('CLI rejects foreign native and unrelated additions despite matching m
       const manifest = JSON.parse(fs.readFileSync(paths.manifestPath, 'utf8'));
       manifest.package.inventorySha256 = semanticInventory(paths.files).sha;
       fs.writeFileSync(paths.manifestPath, JSON.stringify(manifest));
-      const result = runChecker(paths);
+      const result = runChecker(paths, { currentSourceSmoke: true });
       assert.notEqual(result.status, 0, `${extra} unexpectedly passed`);
       assert.match(result.stdout, /unexpected|foreign|new packaged file/);
     } finally {
