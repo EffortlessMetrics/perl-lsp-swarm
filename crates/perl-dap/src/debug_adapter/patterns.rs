@@ -50,10 +50,11 @@ pub(super) fn context_re() -> Option<&'static Regex> {
             //   main::(C:\Windows\path\file.pl:42):
             //
             // File paths may contain spaces, parentheses, and `:` (including a
-            // Windows drive prefix). A greedy capture backtracks to the final
-            // `:<line>` delimiter, preserving those characters even when a
-            // filename contains an earlier `:digits)` sequence.
-            Regex::new(r"^(?:(?P<func>[A-Za-z_][\w:]*?)(?:::)?(?:\((?P<file>.+):(?P<line>\d+)\):?|__ANON__)|main::(?:\()?(?P<file2>.+)(?:\))?:(?P<line2>\d+):?)")
+            // Windows drive prefix). A lazy capture expands to the final
+            // `:<line>` delimiter required by the end anchor, preserving those
+            // characters even when a filename contains an earlier `:digits)`
+            // sequence and retaining the legacy optional `)` fallback.
+            Regex::new(r"^(?:(?P<func>[A-Za-z_][\w:]*?)(?:::)?(?:\((?P<file>.+?):(?P<line>\d+)\):?|__ANON__)|main::(?:\()?(?P<file2>.+?)(?:\))?:(?P<line2>\d+):?)$")
         })
         .as_ref()
         .ok()

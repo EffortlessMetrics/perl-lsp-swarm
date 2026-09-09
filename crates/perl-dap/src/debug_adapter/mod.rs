@@ -2578,6 +2578,24 @@ print "result: $final\n";
     }
 
     #[test]
+    fn test_context_re_preserves_legacy_main_fallback_shapes() -> Result<(), String> {
+        let cases = [
+            ("main::(/tmp/file.pl):3:", "/tmp/file.pl"),
+            ("main::/tmp/file.pl:3:", "/tmp/file.pl"),
+        ];
+        for (input, expected_file) in cases {
+            let result = apply_context_re(input);
+            let expected = Some((expected_file.to_string(), "3".to_string()));
+            if result != expected {
+                return Err(format!(
+                    "legacy context {input:?} parsed as {result:?}; expected {expected:?}"
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
     fn test_context_re_rejects_malformed_line_delimiter() -> Result<(), String> {
         let result = apply_context_re("main::(/tmp/file.pl:3x):");
         if result.is_some() {
