@@ -452,14 +452,8 @@ mod tests {
             return Ok(());
         }
 
-        if checkout_is_shallow() {
-            // A shallow checkout cannot prove ancestry either way: the typed
-            // query stays `not_proven_shallow` and fails closed (#14557),
-            // instead of reporting the old exit-0 self-ancestry.
-            let result = check_ancestry(&sha, &sha);
-            assert!(result.is_err(), "shallow checkout must fail closed, got {result:?}");
-            return Ok(());
-        }
+        // Self-ancestry is witnessed entirely locally, so the typed query
+        // proves `ancestor` even in a shallow checkout (#14557).
         let reachable = check_ancestry(&sha, &sha)?;
         assert!(reachable, "current HEAD should be an ancestor of itself");
         Ok(())
@@ -557,17 +551,6 @@ mod tests {
         }
     }
 
-    /// Whether the test checkout itself is shallow. Required-CI lanes check
-    /// out with `fetch-depth: 1`, so live-repo ancestry tests must expect the
-    /// fail-closed error there instead of a proved verdict (#14557).
-    fn checkout_is_shallow() -> bool {
-        Command::new("git")
-            .args(["rev-parse", "--is-shallow-repository"])
-            .output()
-            .map(|output| String::from_utf8_lossy(&output.stdout).trim() == "true")
-            .unwrap_or(false)
-    }
-
     /// Resolve `refname` to a full SHA, returning `None` when git or the ref
     /// is unavailable (tests degrade to skip in that case).
     fn resolve_ref(refname: &str) -> Option<String> {
@@ -622,13 +605,9 @@ mod tests {
             // Single-commit repo: property does not apply.
             return Ok(());
         }
-        if checkout_is_shallow() {
-            // A shallow checkout cannot prove non-ancestry either: the typed
-            // query stays `not_proven_shallow` and fails closed (#14557).
-            let result = check_ancestry(&head, &root);
-            assert!(result.is_err(), "shallow checkout must fail closed, got {result:?}");
-            return Ok(());
-        }
+        // The local root (the shallow boundary in a shallow checkout) is an
+        // ancestor of HEAD in the local graph, so the merge base is the root
+        // itself and the typed query proves `diverged` locally (#14557).
         let reachable = check_ancestry(&head, &root)?;
         assert!(!reachable, "HEAD cannot be an ancestor of its own root commit");
         Ok(())
@@ -654,18 +633,8 @@ mod tests {
     #[test]
     fn test_run_reachable_receipt_is_landing_only() -> Result<()> {
         let Some(head) = resolve_ref("HEAD") else { return Ok(()) };
-        if checkout_is_shallow() {
-            // Self-ancestry is not provable from a shallow checkout either:
-            // the run fails closed instead of emitting a landing receipt.
-            let result = run(CloseProofConfig {
-                commit: head.clone(),
-                canonical_main: head,
-                substance_grep: None,
-                format: CloseProofFormat::Json,
-            });
-            assert!(result.is_err(), "shallow checkout must fail closed, got {result:?}");
-            return Ok(());
-        }
+        // Self-ancestry is witnessed entirely locally, so the run emits the
+        // landing receipt even in a shallow checkout (#14557).
         let reachable = run(CloseProofConfig {
             commit: head.clone(),
             canonical_main: head,

@@ -584,10 +584,22 @@ fn resolve_commit(repository: &Path, revision: &str) -> Option<String> {
     }
 }
 
-fn run_git(repository: &Path, arguments: &[&str]) -> Result<GitOutput, String> {
-    let output = Command::new("git")
+fn git_command(repository: &Path, arguments: &[&str]) -> Command {
+    let mut command = Command::new("git");
+    command
         .args(arguments)
         .current_dir(repository)
+        // The classifier is read-only and offline: in a partial (promisor)
+        // clone, Git would otherwise lazily fetch missing objects from the
+        // promisor remote, causing network access and object-store writes.
+        // With lazy fetch disabled, a missing object fails the query and the
+        // existing fail-closed paths report it instead.
+        .env("GIT_NO_LAZY_FETCH", "1");
+    command
+}
+
+fn run_git(repository: &Path, arguments: &[&str]) -> Result<GitOutput, String> {
+    let output = git_command(repository, arguments)
         .output()
         .map_err(|error| format!("failed to execute git {}: {error}", arguments.join(" ")))?;
     Ok(GitOutput {
@@ -988,6 +1000,48 @@ mod tests {
         // admits the proven relation; the invariant this test pins is that
         // classification never fetches or deepens to reach it.
         assert_eq!(receipt.disposition, AncestryDisposition::Ancestor);
+        assert_eq!(listing_before, listing_after);
+        Ok(())
+    }
+
+    #[test]
+    fn git_commands_disable_lazy_fetch() {
+        // Falsifier for the offline contract in promisor clones: if the env
+        // guard is dropped, Git may answer object queries with network
+        // fetches and object-store writes instead of failing closed.
+        let command = git_command(Path::new("."), &["status"]);
+        let lazy_fetch = command
+            .get_envs()
+            .find(|(key, _)| *key == "GIT_NO_LAZY_FETCH")
+            .and_then(|(_, value)| value);
+        assert_eq!(lazy_fetch, Some(std::ffi::OsStr::new("1")));
+    }
+
+    #[test]
+    fn classification_of_partial_clone_never_fetches() -> Result<()> {
+        let source = initialized_repository()?;
+        commit_file(&source, "second.txt", "second\n", "second")?;
+        let clone_parent = tempfile::tempdir()?;
+        let clone = clone_parent.path().join("repository");
+        let source_arg = source.path().to_string_lossy().into_owned();
+        let clone_arg = clone.to_string_lossy().into_owned();
+        git_at(
+            clone_parent.path(),
+            &["clone", "--filter=blob:none", "--no-local", &source_arg, &clone_arg],
+        )?;
+        // Any lazy fetch must fail loudly rather than succeed: the promisor
+        // remote is made unreachable before classification.
+        git_at(&clone, &["remote", "set-url", "origin", "/definitely/unreachable"])?;
+        let listing_before = git_dir_listing(&clone.join(".git"))?;
+
+        let receipt = classify_ancestry(&clone, "HEAD", "HEAD");
+
+        let listing_after = git_dir_listing(&clone.join(".git"))?;
+        // HEAD vs HEAD is witnessed entirely locally, so the partial-clone
+        // guard admits the proven relation; the invariant this test pins is
+        // that classification reaches it without fetching from the promisor.
+        assert_eq!(receipt.disposition, AncestryDisposition::Ancestor);
+        assert_eq!(receipt.is_partial_clone, Some(true));
         assert_eq!(listing_before, listing_after);
         Ok(())
     }
