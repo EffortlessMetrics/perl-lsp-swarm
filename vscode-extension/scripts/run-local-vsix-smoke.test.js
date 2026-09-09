@@ -32,9 +32,24 @@ const {
   validateActivationRecoveryChildReceipts,
   validateChildSmokeReceipt,
   validateVerifiedCandidateReceipt,
+  observedVscodeVersion,
   validateCrashRecoveryChildReceipts,
   writeJsonAtomic,
 } = require('./run-local-vsix-smoke');
+
+void test('preserves source-bound and ordinary child VS Code runtime identity', () => {
+  assert.equal(
+    observedVscodeVersion({ ok: true, source_receipt: { vscode_version: '1.125.0' } }, true),
+    '1.125.0',
+  );
+  assert.equal(
+    observedVscodeVersion(
+      { ok: true, receipt: { environment: { vscode_version: '1.124.2' } } },
+      false,
+    ),
+    '1.124.2',
+  );
+});
 
 void test('verified packaged child receipt binds candidate and both observed artifacts', () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-verified-child-'));

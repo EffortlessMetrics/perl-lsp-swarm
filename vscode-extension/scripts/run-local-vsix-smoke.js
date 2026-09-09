@@ -1049,6 +1049,14 @@ function validateVerifiedCandidateReceipt({
   }
 }
 
+function observedVscodeVersion(childReceipt, constructedManifest) {
+  if (!childReceipt?.ok) return undefined;
+  if (constructedManifest && 'source_receipt' in childReceipt) {
+    return childReceipt.source_receipt?.vscode_version;
+  }
+  return childReceipt.receipt?.environment?.vscode_version;
+}
+
 /** Must match `HOST_RESOLUTION_FAILURE_RECEIPT_NAME` in vscodeHostResolution.ts. */
 const HOST_RESOLUTION_FAILURE_RECEIPT = 'vscode_host_resolution_failure.json';
 // Reserved by runPublishedSmoke.ts for the candidate-bound platform boundary.
@@ -3022,8 +3030,12 @@ function main() {
             // Propagate the launched runtime version the bound child
             // observed; downstream exactness claims must bind to this, never
             // to the requested selector alone.
-            if ('source_receipt' in childReceipt && childReceipt.source_receipt?.vscode_version) {
-              receipt.observed_vscode_version = childReceipt.source_receipt.vscode_version;
+            const observedVersion = observedVscodeVersion(
+              childReceipt,
+              constructedManifest !== undefined,
+            );
+            if (observedVersion) {
+              receipt.observed_vscode_version = observedVersion;
             }
           }
         }
@@ -3140,6 +3152,7 @@ module.exports = {
   testExplorerSmokeEnv,
   validateTestExplorerReceipt,
   validateVerifiedCandidateReceipt,
+  observedVscodeVersion,
   interpretTransitionResult,
   inventoryTransitionArgs,
   publishCheckSummary,
