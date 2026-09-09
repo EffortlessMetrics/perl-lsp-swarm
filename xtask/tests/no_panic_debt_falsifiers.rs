@@ -2131,7 +2131,8 @@ mod tests {
             && row.entrypoint == "unit"
             && row.site_family == "unwrap"
     });
-    let unwrap = unwrap.unwrap_or_else(|| panic!("outline unwrap omitted: {:?}", inventory.rows));
+    assert!(unwrap.is_some(), "outline unwrap omitted: {:?}", inventory.rows);
+    let unwrap = unwrap.expect("outline unwrap omitted");
     assert_eq!(unwrap.owner, "#13397", "crate allow owner was not inherited: {unwrap:?}");
     assert!(
         unwrap.declaration_identity.contains("src/lib.rs")
@@ -2139,16 +2140,17 @@ mod tests {
         "covering identity must stay on the crate declaration, not the child file: {unwrap:?}"
     );
     assert_eq!(unwrap.declaration_scope, "crate");
-    let panic = inventory.rows.iter().find(|row| {
+    let panic_site = inventory.rows.iter().find(|row| {
         row.kind == "site"
             && row.path.ends_with("src/foo.rs")
             && row.entrypoint == "unit"
             && row.site_family == "panic!"
     });
-    let panic = panic.unwrap_or_else(|| panic!("outline panic! omitted: {:?}", inventory.rows));
+    assert!(panic_site.is_some(), "outline panic! omitted: {:?}", inventory.rows);
+    let panic_site = panic_site.expect("outline panic! omitted");
     assert!(
-        panic.owner.is_empty() && panic.declaration_identity.is_empty(),
-        "unwrap crate allow must not cover panic! in the child: {panic:?}"
+        panic_site.owner.is_empty() && panic_site.declaration_identity.is_empty(),
+        "unwrap crate allow must not cover panic! in the child: {panic_site:?}"
     );
 }
 
@@ -2184,7 +2186,8 @@ mod tests {
             && row.entrypoint == "unit"
             && row.site_family == "unwrap"
     });
-    let unwrap = unwrap.unwrap_or_else(|| panic!("outline unwrap omitted: {:?}", inventory.rows));
+    assert!(unwrap.is_some(), "outline unwrap omitted: {:?}", inventory.rows);
+    let unwrap = unwrap.expect("outline unwrap omitted");
     assert_eq!(unwrap.owner, "#13397", "mod-item allow owner was not inherited: {unwrap:?}");
     assert!(
         unwrap.declaration_identity.contains("src/lib.rs")
