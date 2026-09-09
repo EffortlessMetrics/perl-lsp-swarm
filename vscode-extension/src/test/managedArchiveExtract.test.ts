@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import type { Readable } from 'stream';
 import * as zlib from 'zlib';
 import yauzl from 'yauzl';
 import { extractManagedArchive } from '../managedArchiveExtract';
@@ -670,6 +671,62 @@ describe('extractManagedArchive', () => {
     }
     expect(streamStarted).toBe(true);
     expect(token.isCancellationRequested).toBe(true);
+    assertOutsideUnchanged();
+  });
+
+  test('cancels while opening a ZIP stream and destroys a late stream', async () => {
+    const archivePath = path.join(tmpDir, 'cancelled-before-stream.zip');
+    fs.writeFileSync(archivePath, storedZip([['perllsp.exe', 'x'.repeat(256 * 1024)]]));
+    const token = new TestCancellationToken();
+    let enterOpen: () => void = () => {};
+    const openEntered = new Promise<void>((resolve) => {
+      enterOpen = resolve;
+    });
+    let releaseOpen: () => void = () => {};
+    const openReleased = new Promise<void>((resolve) => {
+      releaseOpen = resolve;
+    });
+    let streamReady: () => void = () => {};
+    const streamOpened = new Promise<void>((resolve) => {
+      streamReady = resolve;
+    });
+    let lateStream: Readable | undefined;
+    const originalOpenReadStream = yauzl.ZipFile.prototype.openReadStreamPromise;
+    const openReadStream = jest.spyOn(yauzl.ZipFile.prototype, 'openReadStreamPromise');
+    openReadStream.mockImplementation(async function (this: yauzl.ZipFile, entry) {
+      enterOpen();
+      const opened = await originalOpenReadStream.call(this, entry);
+      streamReady();
+      await openReleased;
+      lateStream = opened;
+      return opened;
+    });
+    const extraction = extractManagedArchive({
+      archivePath,
+      extractDir,
+      format: 'zip',
+      windows: true,
+      limits: {
+        ...TEST_LIMITS,
+        maxUncompressedBytes: 512 * 1024,
+        maxEntryBytes: 512 * 1024,
+      },
+      cancellationToken: token,
+    });
+    try {
+      await openEntered;
+      await streamOpened;
+      token.cancel();
+      await expect(extraction).rejects.toThrow('Archive extraction cancelled');
+      releaseOpen();
+      for (let attempt = 0; attempt < 5 && lateStream === undefined; attempt += 1) {
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
+      expect(lateStream?.destroyed).toBe(true);
+    } finally {
+      releaseOpen();
+      openReadStream.mockRestore();
+    }
     assertOutsideUnchanged();
   });
 

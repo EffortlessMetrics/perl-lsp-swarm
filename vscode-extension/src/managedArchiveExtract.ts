@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { pipeline } from 'stream/promises';
-import { Transform } from 'stream';
+import { Transform, type Readable } from 'stream';
 import * as zlib from 'zlib';
 import { Parser } from 'tar';
 import type { ReadEntry } from 'tar';
@@ -485,15 +485,36 @@ async function readZipEntryBounded(
     );
   }
   throwIfCancelled(token, 'Archive extraction cancelled');
-  const stream = await zip.openReadStreamPromise(entry);
-  const chunks: Buffer[] = [];
-  let total = 0;
   let cancelled = token?.isCancellationRequested ?? false;
+  let stream: Readable | undefined;
+  let rejectCancellation: ((reason: Error) => void) | undefined;
+  const cancellationPromise = token
+    ? new Promise<never>((_, reject) => {
+        rejectCancellation = reject;
+      })
+    : undefined;
   const cancellationDisposable = token?.onCancellationRequested(() => {
     cancelled = true;
-    stream.destroy();
+    stream?.destroy();
+    rejectCancellation?.(new Error('Archive extraction cancelled'));
   });
   try {
+    const openedStream = zip.openReadStreamPromise(entry).then((opened) => {
+      stream = opened;
+      if (cancelled || token?.isCancellationRequested) {
+        opened.destroy();
+      }
+      return opened;
+    });
+    stream = await (cancellationPromise
+      ? Promise.race([openedStream, cancellationPromise])
+      : openedStream);
+    if (cancelled || token?.isCancellationRequested) {
+      stream.destroy();
+      throw new Error('Archive extraction cancelled');
+    }
+    const chunks: Buffer[] = [];
+    let total = 0;
     for await (const chunk of stream as AsyncIterable<Buffer | Uint8Array>) {
       if (cancelled || token?.isCancellationRequested) {
         stream.destroy();
