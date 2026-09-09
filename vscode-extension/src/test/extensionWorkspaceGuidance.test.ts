@@ -133,9 +133,9 @@ test('configured canonical ancestors cover candidates but descendants do not', a
   );
   await expect(isIncludePathCandidateCovered(workspaceDir, ['./src'], 'src')).resolves.toBe(true);
   fs.mkdirSync(path.join(workspaceDir, 'src', '..sources'), { recursive: true });
-  await expect(
-    isIncludePathCandidateCovered(workspaceDir, ['src'], 'src/..sources'),
-  ).resolves.toBe(true);
+  await expect(isIncludePathCandidateCovered(workspaceDir, ['src'], 'src/..sources')).resolves.toBe(
+    true,
+  );
 });
 
 test('continues coverage after an unreadable configured root', async () => {

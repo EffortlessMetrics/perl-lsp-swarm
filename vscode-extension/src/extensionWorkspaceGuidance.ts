@@ -169,9 +169,7 @@ export async function runIncludePathValidation(context: vscode.ExtensionContext)
   for (const folder of workspaceFolders) {
     const cacheKey = `perl-lsp.includePathsWarning.${encodeURIComponent(folder.uri.toString())}`;
     const config = vscode.workspace.getConfiguration('perl-lsp', folder.uri);
-    const includePaths: string[] = [
-      ...config.get('includePaths', [...DEFAULT_INCLUDE_PATHS]),
-    ];
+    const includePaths: string[] = [...config.get('includePaths', [...DEFAULT_INCLUDE_PATHS])];
     const initialIncludePathsFingerprint = includePathsFingerprint(includePaths);
 
     const inspected =
