@@ -668,6 +668,7 @@ const DETAIL_MAX_CHARS: usize = 240;
 const WINDOWS_ERROR_PRIVILEGE_NOT_HELD: i32 = 1314;
 
 /// Prescribed enablement step for the symlink privilege finding (#12595).
+#[cfg(any(windows, test))]
 const FIX_SYMLINK_PRIVILEGE: &str = "Settings > Privacy & security > For developers > Developer Mode: On, or run from an elevated shell";
 
 /// Copyable rustup bootstrap; guidance only — doctor never executes it.
@@ -1274,9 +1275,12 @@ fn probe_wsl_cargo() -> CargoToolchainReport {
 }
 
 const SHELL_CARGO_PROBE_SCRIPT: &str = r#"
-cargo_path=$(command -v cargo) || exit 127
 cargo_status=0
-cargo_version=$(cargo --version) || cargo_status=$?
+cargo_path=$(command -v cargo 2>/dev/null || true)
+cargo_version=
+if test -n "$cargo_path"; then
+    cargo_version=$(cargo --version) || cargo_status=$?
+fi
 home_state=unset
 test -n "${HOME+x}" && home_state=set
 cargo_home_state=unset
@@ -1291,7 +1295,7 @@ exit "$cargo_status"
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ShellCargoProbe {
-    cargo_path: PathBuf,
+    cargo_path: Option<PathBuf>,
     version_output: String,
     context: CargoProbeContext,
 }
@@ -1333,9 +1337,9 @@ fn parse_shell_cargo_probe_output(output: &str) -> Result<ShellCargoProbe, Strin
         }
     }
 
-    let cargo_path = cargo_path
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| "shell cargo probe omitted a non-empty cargo_path field".to_string())?;
+    let cargo_path =
+        cargo_path.ok_or_else(|| "shell cargo probe omitted cargo_path".to_string())?;
+    let cargo_path = (!cargo_path.is_empty()).then(|| PathBuf::from(cargo_path));
     let version_output =
         version_output.ok_or_else(|| "shell cargo probe omitted cargo_version".to_string())?;
     let home_state =
@@ -1364,7 +1368,7 @@ fn parse_shell_cargo_probe_output(output: &str) -> Result<ShellCargoProbe, Strin
     let cwd = optional_field(&cwd_state, cwd, "cwd")?;
     let context = CargoProbeContext::shell(home, cargo_home, cwd);
 
-    Ok(ShellCargoProbe { cargo_path: PathBuf::from(cargo_path), version_output, context })
+    Ok(ShellCargoProbe { cargo_path, version_output, context })
 }
 
 /// Which provider owns a Windows `bash.exe` resolution: System32 and the
@@ -1632,7 +1636,9 @@ fn reachable_cargo_status(
     };
     let below_pin = version_below_workspace_pin(version);
     match (provenance, below_pin) {
-        (Some(CargoProvenance::NonRustup), _) => (STATUS_NON_RUSTUP, Some(!below_pin)),
+        (Some(CargoProvenance::NonRustup | CargoProvenance::RustupToolchain), _) => {
+            (STATUS_NON_RUSTUP, Some(!below_pin))
+        }
         (_, true) => (STATUS_STALE, Some(false)),
         _ => (STATUS_PRESENT, Some(!below_pin)),
     }
@@ -1695,14 +1701,17 @@ fn shell_cargo_report_from_output(
             let parsed =
                 parse_shell_cargo_probe_output(&decode_shell_output(&process_output.stdout));
             match (process_output.status.success(), parsed) {
-                (true, Ok(probe)) => finish_reachable_cargo_report_with_context(
-                    flavor,
-                    Some(probe.cargo_path),
-                    &probe.version_output,
-                    &probe.context,
-                ),
+                (true, Ok(probe)) => match probe.cargo_path {
+                    Some(cargo_path) => finish_reachable_cargo_report_with_context(
+                        flavor,
+                        Some(cargo_path),
+                        &probe.version_output,
+                        &probe.context,
+                    ),
+                    None => unreachable_cargo_report(flavor, "cargo was not found in this shell"),
+                },
                 (false, Ok(probe)) => {
-                    failed_probe_cargo_report(flavor, Some(probe.cargo_path), Ok(process_output))
+                    failed_probe_cargo_report(flavor, probe.cargo_path, Ok(process_output))
                 }
                 (_, Err(parse_error)) => failed_probe_cargo_report(
                     flavor,
@@ -1940,11 +1949,14 @@ fn wsl_bash_flavor_report() -> BashFlavorReport {
         };
     };
     let mut command = Command::new(&wsl_exe);
-    command.arg("--status");
+    // `wsl --status` only reports that the host integration is installed. A
+    // direct Bash invocation proves that a distribution can actually execute
+    // the shell used by the Cargo probe below.
+    command.args(["--exec", "bash", "-c", "exit 0"]);
     let status = match run_command_with_timeout(command, DEV_ENV_PROBE_TIMEOUT_SECS) {
         Ok(output) if output.status.success() => Ok(()),
         Ok(output) => Err(truncate_for_detail(
-            &format!("wsl.exe --status failed: {}", decode_shell_output(&output.stderr).trim()),
+            &format!("wsl.exe --exec bash failed: {}", decode_shell_output(&output.stderr).trim()),
             DETAIL_MAX_CHARS,
         )),
         Err(timeout_error) => Err(truncate_for_detail(&timeout_error, DETAIL_MAX_CHARS)),
@@ -3413,7 +3425,7 @@ mod tests {
             &CargoProbeContext::shell(Some("/home/dev".to_string()), None, None),
         );
 
-        if report.status != STATUS_PRESENT
+        if report.status != STATUS_NON_RUSTUP
             || report.provenance != PROVENANCE_RUSTUP_TOOLCHAIN
             || report.honors_toolchain_file != Some(false)
             || report.meets_workspace_pin != Some(true)
@@ -3626,7 +3638,7 @@ mod tests {
             "cwd_state\0set\0cwd\0\0",
         );
         let probe = parse_shell_cargo_probe_output(output)?;
-        if probe.cargo_path != PathBuf::from("/usr/bin/cargo") {
+        if probe.cargo_path != Some(PathBuf::from("/usr/bin/cargo")) {
             return Err(format!("unexpected shell cargo path {:?}", probe.cargo_path).into());
         }
         if probe.version_output != "cargo 1.95.0 (fixture)" {
@@ -3637,6 +3649,30 @@ mod tests {
             || probe.context.cwd != Some(String::new())
         {
             return Err(format!("shell context lost set/empty fields: {:?}", probe.context).into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn shell_cargo_missing_is_a_missing_prerequisite() -> TestResult {
+        let output = concat!(
+            "cargo_path\0\0cargo_version\0\0",
+            "home_state\0set\0home\0/home/dev\0",
+            "cargo_home_state\0unset\0cargo_home\0\0",
+            "cwd_state\0set\0cwd\0/workspace\0",
+        );
+        let report = shell_cargo_report_from_output(
+            FLAVOR_WSL,
+            Ok(synthetic_process_output(output.as_bytes(), b"", true)),
+        );
+        if report.status != STATUS_MISSING
+            || report.path.is_some()
+            || report.error.as_deref() != Some("cargo was not found in this shell")
+            || report.fix.is_none()
+        {
+            return Err(
+                format!("missing shell Cargo was not classified as missing: {report:?}").into()
+            );
         }
         Ok(())
     }
@@ -3734,6 +3770,13 @@ mod tests {
 
     #[test]
     fn shell_cargo_probe_parser_rejects_malformed_or_duplicate_fields() -> TestResult {
+        let missing_cargo_path = concat!(
+            "cargo_version\0cargo 1.95.0\0home_state\0set\0home\0/home/dev\0",
+            "cargo_home_state\0unset\0cargo_home\0\0cwd_state\0set\0cwd\0/workspace\0",
+        );
+        if parse_shell_cargo_probe_output(missing_cargo_path).is_ok() {
+            return Err("missing cargo_path field was accepted".into());
+        }
         if parse_shell_cargo_probe_output("cargo_path\0/usr/bin/cargo\0odd").is_ok() {
             return Err("odd NUL field sequence was accepted".into());
         }
