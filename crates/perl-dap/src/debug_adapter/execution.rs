@@ -884,6 +884,7 @@ mod thread_identity_tests {
             variable_cache: VariableCache::default(),
             thread_id,
             last_resume_mode: ResumeMode::Unknown,
+            entry_stop_pending: false,
             stopped_generation: 0,
         }
     }

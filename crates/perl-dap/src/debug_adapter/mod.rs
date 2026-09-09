@@ -709,6 +709,7 @@ impl DebugAdapter {
                 variable_cache: VariableCache::default(),
                 thread_id: 1,
                 last_resume_mode: ResumeMode::Continue,
+                entry_stop_pending: false,
                 stopped_generation: 0,
             });
         }
@@ -741,6 +742,7 @@ impl DebugAdapter {
             variable_cache: VariableCache::default(),
             thread_id: 1,
             last_resume_mode: ResumeMode::Unknown,
+            entry_stop_pending: false,
             stopped_generation: 0,
         });
         Ok(())
@@ -846,6 +848,7 @@ impl DebugAdapter {
             variable_cache: VariableCache::default(),
             thread_id: 1,
             last_resume_mode: ResumeMode::Unknown,
+            entry_stop_pending: false,
             stopped_generation: 0,
         });
     }
@@ -2499,6 +2502,16 @@ print "result: $final\n";
     }
 
     #[test]
+    fn test_context_re_windows_drive_path_with_spaces() -> Result<(), String> {
+        let result = apply_context_re(r"main::(C:\Program Files\Perl\file.pl:7):");
+        let expected = Some((r"C:\Program Files\Perl\file.pl".to_string(), "7".to_string()));
+        if result != expected {
+            return Err(format!("Windows spaced path parsed as {result:?}; expected {expected:?}"));
+        }
+        Ok(())
+    }
+
+    #[test]
     fn test_context_re_unc_path() {
         // UNC path (Windows network share).
         let result = apply_context_re(r"main::(\\server\share\file.pl:5):");
@@ -2532,10 +2545,94 @@ print "result: $final\n";
     }
 
     #[test]
-    fn test_context_re_no_match_path_with_spaces() {
-        // Paths with spaces do not match — the character class excludes \s.
+    fn test_context_re_path_with_spaces() -> Result<(), String> {
+        // Spaces are valid in Unix and Windows paths and must remain part of the
+        // source location rather than preventing the initial frame from forming.
         let result = apply_context_re("main::(/path with spaces/file.pl:5):");
-        assert!(result.is_none(), "paths with spaces should not match");
+        let expected = Some(("/path with spaces/file.pl".to_string(), "5".to_string()));
+        if result != expected {
+            return Err(format!("spaced path parsed as {result:?}; expected {expected:?}"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_context_re_path_with_spaces_and_parentheses() -> Result<(), String> {
+        let result = apply_context_re("main::(/path with spaces (ctx)/file (name).pl:5):");
+        let expected =
+            Some(("/path with spaces (ctx)/file (name).pl".to_string(), "5".to_string()));
+        if result != expected {
+            return Err(format!("parenthesized path parsed as {result:?}; expected {expected:?}"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_context_re_accepts_perl_source_statement_suffix() -> Result<(), String> {
+        let result = apply_context_re("main::(/tmp/script.pl:4):\tif ($x =~ /:99)/) {")
+            .ok_or("perl source statement suffix was not accepted")?;
+        let expected = ("/tmp/script.pl".to_string(), "4".to_string());
+        if result != expected {
+            return Err(format!("source suffix parsed as {result:?}; expected {expected:?}"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_context_re_path_with_earlier_digit_colon_parenthesis() -> Result<(), String> {
+        let result = apply_context_re("main::(/tmp/a:12)/file.pl:3):");
+        let expected = Some(("/tmp/a:12)/file.pl".to_string(), "3".to_string()));
+        if result != expected {
+            return Err(format!("digit-colon path parsed as {result:?}; expected {expected:?}"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_context_re_source_suffix_uses_last_delimiter() -> Result<(), String> {
+        let result = apply_context_re("main::(/tmp/a:12): b.pl:3):\tmy $entry = 1;")
+            .ok_or("context with source suffix did not match")?;
+        let expected = ("/tmp/a:12): b.pl".to_string(), "3".to_string());
+        if result != expected {
+            return Err(format!("source suffix parsed as {result:?}; expected {expected:?}"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_context_re_rejects_unmarked_prompt_text() -> Result<(), String> {
+        let result = apply_context_re("main::(/tmp/file.pl:3): text :99) text");
+        if result.is_some() {
+            return Err(format!("unmarked prompt text was accepted as {result:?}"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_context_re_preserves_legacy_main_fallback_shapes() -> Result<(), String> {
+        let cases = [
+            ("main::(/tmp/file.pl):3:", "/tmp/file.pl"),
+            ("main::/tmp/file.pl:3:", "/tmp/file.pl"),
+        ];
+        for (input, expected_file) in cases {
+            let result = apply_context_re(input);
+            let expected = Some((expected_file.to_string(), "3".to_string()));
+            if result != expected {
+                return Err(format!(
+                    "legacy context {input:?} parsed as {result:?}; expected {expected:?}"
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_context_re_rejects_malformed_line_delimiter() -> Result<(), String> {
+        let result = apply_context_re("main::(/tmp/file.pl:3x):");
+        if result.is_some() {
+            return Err(format!("malformed line delimiter was accepted as {result:?}"));
+        }
+        Ok(())
     }
 
     #[test]

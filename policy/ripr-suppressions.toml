@@ -3117,3 +3117,26 @@ reason = "PR #13512 (#12569) replaces buffered stdout capture with file-backed s
 created = "2026-09-09"
 review_after = "2026-10-09"
 expires = "2026-11-09"
+
+# PR #15220 stop-on-entry reader boundary predicates. The hosted RIPR receipt
+# reports these as activation_unknown/static_limitation: the discriminating
+# operands are local/computed (`current_line > 0` and
+# `!current_file.is_empty() && current_line > 0`), rather than an absent
+# production test. The reader-level barrier test and its old-gate mutant prove
+# the native-context ordering and the boundary outcomes. The policy schema
+# has no seam-id or line selector, so this is intentionally restricted to the
+# reported activation_unknown class on this one production file; any future
+# executable finding there must narrow or remove this entry.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-dap-entry-reader-local-boundaries"
+kind = "predicate_infection_untraceable"
+paths = ["crates/perl-dap/src/debug_adapter/process.rs"]
+classification = ["activation_unknown"]
+owner = "proof-lane"
+issue = "EffortlessMetrics/ripr#1429"
+reason = "The exact hosted RIPR receipt for PR #15220 reports four activation_unknown predicate-boundary findings in process.rs (seams bebf17059a062f3d, c7b6be059f3099fd, 1ae4339eeecae0c9, and summary-only 1af5359eeed95762) at lines 1223 and 1436. Each is gap_state=static_limitation and states that the missing discriminator is a local/computed current_line/current_file operand; RIPR requests analyzer support rather than a production repair. The reader-level barrier test output_reader_waits_for_native_context_after_warning exercises the native-context ordering with a warning-before-context fixture, the old-gate mutant fails with warning location line 3 consumed as the entry frame, and the focused process reader test command cargo test -p perl-dap --lib debug_adapter::process::tests --locked passes 35 tests on the repaired candidate. The suppression is path-plus-class scoped because schema version 1 has no seam-id or line selector; the receipt's six actionable execution.rs findings remain unaffected. Narrow/remove immediately if a future receipt reports an executable activation_unknown seam in process.rs. Remove when RIPR resolves local/computed boundary operands or targeted mutation replaces this advisory path."
+created = "2026-09-09"
+review_after = "2026-09-16"
+expires = "2026-09-23"
+removal_criteria = "Remove when RIPR resolves local/computed predicate-boundary operands, or narrow immediately if a future receipt reports an executable activation_unknown seam in process.rs outside the four #15220 boundaries."
