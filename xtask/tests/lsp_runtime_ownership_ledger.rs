@@ -168,6 +168,20 @@ const MODULES: &[ModuleRow] = &[
         "#7390"
     ),
     module_row!(
+        "metadata_invalidation",
+        PerlApplication,
+        "perl-lsp-rs",
+        "retain metadata-change fact invalidation beside the workspace model it protects",
+        "#13640"
+    ),
+    module_row!(
+        "metadata_invalidation_tests",
+        PerlApplication,
+        "perl-lsp-rs",
+        "retain as cfg(test) falsifiers of metadata-change invalidation beside its subject",
+        "#13640"
+    ),
+    module_row!(
         "notebook",
         PerlApplication,
         "perl-lsp-rs DocumentStore",
@@ -229,6 +243,13 @@ const MODULES: &[ModuleRow] = &[
         "PerlLspAdapter",
         "provide explicit route descriptors to generic runtime",
         "#9503"
+    ),
+    module_row!(
+        "scan_gate_observation",
+        PerlApplication,
+        "perl-lsp-rs",
+        "retain as cfg(test) observation of the failed commit-gate scan lifecycle beside its subject",
+        "#15156"
     ),
     module_row!(
         "scheduler",
@@ -423,6 +444,7 @@ const DEPENDENCIES: &[DependencyRow] = &[
     dependency!("tracing", RetainGeneric, "#9291"),
     dependency!("tracing-appender", ProductOnly, "#9510"),
     dependency!("tracing-subscriber", ProductOnly, "#9510"),
+    dependency!("unicode-ident", MoveToPerlAdapter, "#13159"),
     dependency!("ureq", ProductOnly, "#8400"),
     dependency!("url", MoveToPerlAdapter, "#8617"),
     dependency!("uuid", RetainGeneric, "#9291"),
