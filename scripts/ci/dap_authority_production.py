@@ -9,6 +9,7 @@ from dap_authority_common import (
     DEBUG_ADAPTER_ROOT,
     DISPATCH_PATH,
     PEER_DISPATCH_PATHS,
+    RECEIPT_SCHEMA,
     SEND_EVENT_CALL_RE,
     SEND_EVENT_LITERAL_RE,
     AuthorityError,
@@ -105,6 +106,12 @@ def verify_inventory_binding(
     on any drift, including a receipt that predates a binding and therefore
     carries no identity to compare at all.
     """
+    receipt = object_value(receipt, "receipt")
+    if receipt.get("schema_version") != RECEIPT_SCHEMA:
+        raise AuthorityError(
+            f"receipt.schema_version must be {RECEIPT_SCHEMA!r}"
+        )
+
     current_manifest_path = manifest_path or root / ".ci/dap/protocol-authority.json"
     current_manifest = validate_manifest(
         read_json(current_manifest_path), require_sha256=True

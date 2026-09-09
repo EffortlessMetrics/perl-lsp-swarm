@@ -1660,6 +1660,96 @@ UNAVAILABLE_WARN
             binding["source_graph_digest"], receipt["production"]["source_graph"]["digest"]
         )
 
+    def test_malformed_receipt_envelope_is_a_typed_error(self) -> None:
+        cases = (
+            None,
+            [],
+            "not-an-object",
+            7,
+            {},
+            {"schema_version": "unsupported"},
+            {"schema_version": None},
+            {"schema_version": 7},
+            {"schema_version": []},
+        )
+        for value in cases:
+            with self.subTest(value=value):
+                self.assertAuthorityError(
+                    lambda receipt=value: MODULE.verify_inventory_binding(
+                        self.root, receipt
+                    )
+                )
+
+    def test_receipt_schema_must_match_before_binding(self) -> None:
+        for schema in (None, "unsupported", 7, []):
+            with self.subTest(schema=schema):
+                malformed = self._receipt()
+                malformed["schema_version"] = schema
+                self.assertAuthorityError(
+                    lambda receipt=malformed: MODULE.verify_inventory_binding(
+                        self.root, receipt
+                    )
+                )
+
+    def test_cli_rejects_malformed_receipt_envelope_without_traceback(self) -> None:
+        cases = (
+            None,
+            [],
+            "not-an-object",
+            7,
+            {},
+            {"schema_version": "unsupported"},
+            {"schema_version": None},
+            {"schema_version": 7},
+            {"schema_version": []},
+        )
+        for index, value in enumerate(cases):
+            with self.subTest(index=index, value=value):
+                receipt_path = self.root / f"malformed-envelope-{index}.json"
+                receipt_path.write_text(json.dumps(value), encoding="utf-8")
+                result = subprocess.run(
+                    [
+                        sys.executable,
+                        str(SCRIPT),
+                        "verify-receipt",
+                        "--root",
+                        str(self.root),
+                        "--receipt",
+                        str(receipt_path),
+                    ],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(result.returncode, 1)
+                self.assertIn("DAP protocol authority error:", result.stderr)
+                self.assertNotIn("Traceback", result.stderr)
+
+    def test_cli_rejects_schema_drift_without_traceback(self) -> None:
+        for index, schema in enumerate((None, "unsupported", 7, [])):
+            with self.subTest(schema=schema):
+                receipt = self._receipt()
+                receipt["schema_version"] = schema
+                receipt_path = self.root / f"schema-drift-{index}.json"
+                receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+                result = subprocess.run(
+                    [
+                        sys.executable,
+                        str(SCRIPT),
+                        "verify-receipt",
+                        "--root",
+                        str(self.root),
+                        "--receipt",
+                        str(receipt_path),
+                    ],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(result.returncode, 1)
+                self.assertIn("DAP protocol authority error:", result.stderr)
+                self.assertNotIn("Traceback", result.stderr)
+
     def test_a_changed_authority_manifest_is_rejected_against_its_receipt(self) -> None:
         receipt = self._receipt()
         manifest_path = self.root / ".ci/dap/protocol-authority.json"
