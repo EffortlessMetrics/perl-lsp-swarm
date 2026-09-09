@@ -38,7 +38,10 @@ const SCOPE_FRAME_ID_MAX: u64 = 99_999;
 /// record. perl5db may leave `DB<N>` unterminated while it waits for the next
 /// command; `read_line` would block forever in that state and prevent the
 /// reader from associating a native context with its prompt.
-fn read_debugger_record<R: BufRead>(reader: &mut R, line: &mut String) -> std::io::Result<usize> {
+fn read_debugger_record<R: Read>(
+    reader: &mut BufReader<R>,
+    line: &mut String,
+) -> std::io::Result<usize> {
     let mut bytes = Vec::new();
     loop {
         let byte = match reader.fill_buf() {
@@ -58,7 +61,7 @@ fn read_debugger_record<R: BufRead>(reader: &mut R, line: &mut String) -> std::i
             // If the buffered stream already contains more non-whitespace text,
             // this is an ordinary output line beginning with a prompt-shaped
             // token, not a prompt-only record.
-            let buffered = reader.fill_buf()?;
+            let buffered = reader.buffer();
             let next_non_whitespace = buffered.iter().position(|byte| !byte.is_ascii_whitespace());
             let only_prompt_padding = next_non_whitespace.is_none()
                 || next_non_whitespace
@@ -905,6 +908,9 @@ impl DebugAdapter {
             let mut current_file = String::new();
             let mut current_func = String::new();
             let mut current_line = 0;
+            let mut native_context_file = String::new();
+            let mut native_context_func = String::new();
+            let mut native_context_line = 0;
             // Diagnostic and stack-fallback locations are useful for later
             // stops, but only perl5db's native context line authorizes the
             // pending initial entry stop.
@@ -1105,6 +1111,7 @@ impl DebugAdapter {
 
                         // Enhanced context information parsing with multiple patterns
                         let mut context_updated = false;
+                        let mut native_context_updated = false;
                         // Whether THIS line is the perl5db die/warn-handler suffix
                         // (` at FILE line N.`) — the stream signal that the
                         // debugger's `__DIE__` handler observed an uncaught `die`.
@@ -1115,6 +1122,7 @@ impl DebugAdapter {
                             && let Some(caps) = re.captures(&analysis_text)
                         {
                             native_context_observed = true;
+                            native_context_updated = true;
                             if let Some(func) = caps.name("func") {
                                 current_func = func.as_str().to_string();
                                 context_updated = true;
@@ -1128,6 +1136,12 @@ impl DebugAdapter {
                                 current_line = line_num.as_str().parse::<i32>().unwrap_or(0);
                                 context_updated = true;
                             }
+                        }
+
+                        if native_context_updated {
+                            native_context_file = current_file.clone();
+                            native_context_func = current_func.clone();
+                            native_context_line = current_line;
                         }
 
                         // Try stack frame pattern as fallback
@@ -1500,6 +1514,18 @@ impl DebugAdapter {
                                 };
                                 if let Some(ref mut s) = *guard {
                                     let was_running = matches!(s.state, DebugState::Running);
+                                    let (prompt_file, prompt_func, prompt_line) = if s
+                                        .entry_stop_pending
+                                        && native_context_observed
+                                    {
+                                        (
+                                            native_context_file.clone(),
+                                            native_context_func.clone(),
+                                            native_context_line,
+                                        )
+                                    } else {
+                                        (current_file.clone(), current_func.clone(), current_line)
+                                    };
                                     // A prompt can be observed after the context
                                     // branch (which already advanced the
                                     // suspension generation), or without a
@@ -1512,30 +1538,30 @@ impl DebugAdapter {
                                         matches!(s.state, DebugState::Running),
                                     );
                                     let has_source_frame =
-                                        !current_file.is_empty() && current_line > 0;
+                                        !prompt_file.is_empty() && prompt_line > 0;
                                     let has_authoritative_source_frame =
                                         native_context_observed && has_source_frame;
                                     // Create stack frame with enhanced context validation
                                     if has_source_frame {
                                         let frame = StackFrame {
                                             id: current_frame_id,
-                                            name: if current_func.is_empty() {
+                                            name: if prompt_func.is_empty() {
                                                 "main".to_string()
                                             } else {
-                                                current_func.clone()
+                                                prompt_func.clone()
                                             },
                                             source: Source {
                                                 name: Some(
-                                                    std::path::Path::new(&current_file)
+                                                    std::path::Path::new(&prompt_file)
                                                         .file_name()
                                                         .and_then(|n| n.to_str())
-                                                        .unwrap_or(&current_file)
+                                                        .unwrap_or(&prompt_file)
                                                         .to_string(),
                                                 ),
-                                                path: current_file.clone(),
+                                                path: prompt_file.clone(),
                                                 source_reference: None,
                                             },
-                                            line: current_line,
+                                            line: prompt_line,
                                             column: 1,
                                             end_line: None,
                                             end_column: None,
@@ -2876,6 +2902,77 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn output_reader_entry_uses_latest_native_context_after_warning() -> Result<(), String> {
+        use super::{DapMessage, DebugSession, ResumeMode, VariableCache, lock_or_recover};
+        use std::path::PathBuf;
+        use std::process::{Command, Stdio};
+        use std::sync::atomic::Ordering;
+        use std::sync::mpsc::{RecvTimeoutError, sync_channel};
+        use std::time::Duration;
+
+        let (sender, receiver) = sync_channel(32);
+        let mut adapter = DebugAdapter::new();
+        adapter.set_event_sender(sender);
+        adapter.initialized.store(true, Ordering::Release);
+        *lock_or_recover(&adapter.exception_break_on_warn, "test.break_on_warn") = true;
+        let child = Command::new("sh")
+            .args([
+                "-c",
+                "printf 'main::(/tmp/begin.pl:1):\\tprint BEGIN\\nmain::(/tmp/real.pl:4):\\tmy $entry = 1;\\ncompile warning at /tmp/warn.pl line 9.\\nDB<1>' >&2; read release",
+            ])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|error| format!("failed to spawn context fixture: {error}"))?;
+        *lock_or_recover(&adapter.session, "test.session") = Some(DebugSession {
+            process: child,
+            state: DebugState::Running,
+            stack_frames: Vec::new(),
+            stack_frame_arguments: HashMap::new(),
+            variable_cache: VariableCache::default(),
+            thread_id: 1,
+            last_resume_mode: ResumeMode::Unknown,
+            entry_stop_pending: true,
+            stopped_generation: 0,
+        });
+        adapter.start_output_reader(PathBuf::from("/tmp"));
+        let mut observed = Vec::new();
+        loop {
+            match receiver.recv_timeout(Duration::from_secs(3)) {
+                Ok(DapMessage::Event { event, body, .. }) if event == "stopped" => {
+                    let reason = body
+                        .as_ref()
+                        .and_then(|value| value.get("reason"))
+                        .and_then(|value| value.as_str());
+                    if reason != Some("entry") {
+                        return Err(format!("expected entry stop, got {reason:?}"));
+                    }
+                    let guard = lock_or_recover(&adapter.session, "test.session");
+                    let session = guard.as_ref().ok_or("reader cleared test session")?;
+                    let frame = session.stack_frames.first().ok_or("entry frame missing")?;
+                    if frame.source.path != "/tmp/real.pl" || frame.line != 4 {
+                        return Err(format!(
+                            "warning location replaced native entry frame: path={}, line={}",
+                            frame.source.path, frame.line
+                        ));
+                    }
+                    return Ok(());
+                }
+                Ok(DapMessage::Event { event, body, .. }) => {
+                    observed.push(format!("{event}:{body:?}"));
+                }
+                Ok(other) => observed.push(format!("message:{other:?}")),
+                Err(RecvTimeoutError::Timeout) => {
+                    return Err(format!("context fixture timed out: {observed:?}"));
+                }
+                Err(RecvTimeoutError::Disconnected) => return Err("reader disconnected".into()),
+            }
+        }
+    }
+
     #[test]
     fn debugger_record_reader_preserves_prompt_shaped_output() -> Result<(), String> {
         use std::io::Cursor;
@@ -2915,6 +3012,44 @@ mod tests {
             Ok(_) => Err("invalid UTF-8 was accepted".into()),
             Err(error) => Err(format!("invalid UTF-8 returned wrong error: {error}")),
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn debugger_record_reader_returns_live_unterminated_prompt() -> Result<(), String> {
+        use std::process::{Command, Stdio};
+        use std::sync::mpsc::sync_channel;
+        use std::time::Duration;
+
+        let mut child = Command::new("sh")
+            .args(["-c", "printf 'DB<9>'; read release"])
+            .stdout(Stdio::piped())
+            .stdin(Stdio::piped())
+            .spawn()
+            .map_err(|error| format!("failed to spawn prompt fixture: {error}"))?;
+        let stdout = child.stdout.take().ok_or("prompt fixture has no stdout")?;
+        let (sender, receiver) = sync_channel(1);
+        let reader = std::thread::spawn(move || {
+            let mut reader = BufReader::new(stdout);
+            let mut line = String::new();
+            let result = read_debugger_record(&mut reader, &mut line).map(|_| line);
+            let _ = sender.send(result);
+        });
+        let outcome = receiver
+            .recv_timeout(Duration::from_secs(2))
+            .map_err(|error| format!("unterminated prompt did not frame: {error}"))
+            .and_then(|result| {
+                result.map_err(|error| format!("unterminated prompt read failed: {error}"))
+            });
+        let _ = child.kill();
+        let _ = child.wait();
+        let joined = reader.join().map_err(|_| "prompt reader thread panicked".to_string());
+        let result = outcome?;
+        joined?;
+        if result != "DB<9>" {
+            return Err(format!("unterminated prompt framed as {result:?}"));
+        }
+        Ok(())
     }
 
     /// A diagnostic location can precede perl5db's first native context. It
