@@ -1032,7 +1032,11 @@ impl DebugAdapter {
                             text.clone()
                         };
                         let prompt_has_native_context =
-                            native_context_pending_prompt && has_prompt_prefix(&sanitized_text);
+                            native_context_pending_prompt
+                                && (has_prompt_prefix(&sanitized_text)
+                                    || sanitized_text
+                                        .lines()
+                                        .any(has_prompt_prefix));
                         if prompt_has_native_context {
                             // Consume the per-stop authority before logpoint and
                             // drain early-continue paths. A coalesced prompt plus
@@ -1586,7 +1590,9 @@ impl DebugAdapter {
                         }
 
                         // Detect debugger prompt (stopped state) with enhanced pattern matching
-                        if prompt_re().is_some_and(|re| re.is_match(&sanitized_text)) {
+                        if prompt_re().is_some_and(|re| re.is_match(&sanitized_text))
+                            || prompt_has_native_context
+                        {
                             _debugger_ready = true;
                             let mut stop_reason = "step".to_string();
                             let mut should_emit_stopped = false;
@@ -2875,7 +2881,7 @@ mod tests {
         let child = Command::new("sh")
             .args([
                 "-c",
-                "printf 'main::(/tmp/dap-entry-frame-fixture.pl:3):\\tmy $entry = 1;\\nDB<1>\\nENTRY_READER_DONE\\n' >&2; sleep 1",
+                "printf 'main::(/tmp/dap-entry-frame-fixture.pl:3):\\tmy $entry = 1;\\n\\033[4m  DB<1> \\033[24m\\033[1m\\033[0m\\033[0m3==>\\tmy $entry = 1;\\nDB<1>\\nENTRY_READER_DONE\\n' >&2; sleep 1",
             ])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -2897,6 +2903,7 @@ mod tests {
         adapter.start_output_reader(PathBuf::from("/tmp"));
 
         let mut stopped = 0;
+        let mut listing_outputs = 0;
         let mut saw_completion_marker = false;
         let mut saw_terminated = false;
         while !saw_completion_marker || !saw_terminated {
@@ -2915,6 +2922,14 @@ mod tests {
                     }
                 }
                 Ok(DapMessage::Event { event, body, .. }) if event == "output" => {
+                    if body
+                        .as_ref()
+                        .and_then(|value| value.get("output"))
+                        .and_then(|value| value.as_str())
+                        .is_some_and(|output| output.contains("3==>"))
+                    {
+                        listing_outputs += 1;
+                    }
                     if body
                         .as_ref()
                         .and_then(|value| value.get("output"))
@@ -2939,6 +2954,9 @@ mod tests {
 
         if stopped != 1 {
             return Err(format!("expected exactly one entry stop, got {stopped}"));
+        }
+        if listing_outputs != 1 {
+            return Err(format!("expected one preserved queued listing, got {listing_outputs}"));
         }
         Ok(())
     }
