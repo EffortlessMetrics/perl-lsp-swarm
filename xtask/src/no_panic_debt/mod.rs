@@ -189,8 +189,10 @@ pub(crate) fn lexically_normalize(path: &Path) -> Option<PathBuf> {
 pub(crate) fn repo_relative_path(path: &Path, root: &Path) -> Result<String, String> {
     let normalized = lexically_normalize(path)
         .ok_or_else(|| format!("{} escapes its prefix via ..", path.display()))?;
+    let normalized_root = lexically_normalize(root)
+        .ok_or_else(|| format!("{} escapes its prefix via ..", root.display()))?;
     let stripped = normalized
-        .strip_prefix(root)
+        .strip_prefix(&normalized_root)
         .map_err(|_| format!("{} is not under {}", normalized.display(), root.display()))?;
     if stripped.components().any(|component| matches!(component, Component::ParentDir)) {
         return Err(format!("{} retains .. after lexical collapse", path.display()));
@@ -224,6 +226,22 @@ mod tests {
             "src/foo.rs"
         );
         assert!(repo_relative_path(Path::new("/tmp/outside.rs"), Path::new("/tmp/a")).is_err());
+        assert_eq!(
+            repo_relative_path(Path::new("./crates/demo/src/foo.rs"), Path::new(".")).as_deref(),
+            Ok("crates/demo/src/foo.rs")
+        );
+        assert_eq!(
+            repo_relative_path(Path::new("crates/demo/src/foo.rs"), Path::new(".")).as_deref(),
+            Ok("crates/demo/src/foo.rs")
+        );
+        assert_eq!(
+            repo_relative_path(Path::new("./crates/demo/src/foo.rs"), Path::new("./.")).as_deref(),
+            Ok("crates/demo/src/foo.rs")
+        );
+        assert_eq!(
+            repo_relative_path(Path::new("/tmp/a/./src/foo.rs"), Path::new("/tmp/a/.")).as_deref(),
+            Ok("src/foo.rs")
+        );
         assert!(lexically_normalize(Path::new("../outside.rs")).is_none());
         assert_eq!(sha256_hex(b"abc").len(), 64);
     }

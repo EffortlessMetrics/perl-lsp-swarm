@@ -2375,3 +2375,46 @@ fn unit() { let _ = Some(1).unwrap(); }
         "later nested edge after first scan must strip the earlier edge's allow: {unwrap:?}"
     );
 }
+
+#[test]
+fn dot_component_root_still_scans_outline_child_sites() {
+    let temp = tempfile::tempdir().expect("temp");
+    write_policy(temp.path());
+    write_empty_registry(temp.path());
+    write_package(
+        temp.path(),
+        "demo",
+        "mod foo;\n",
+        &[("known.rs", "#[test]\nfn known() {}\n")],
+    );
+    fs::write(
+        temp.path().join("crates/demo/src/foo.rs"),
+        r#"
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn unit() { let _ = Some(1).unwrap(); }
+}
+"#,
+    )
+    .expect("foo.rs");
+    let dotted = temp.path().join(".");
+    let inventory = inventory_at(&dotted);
+    assert!(
+        inventory.rows.iter().any(|row| {
+            row.kind == "site"
+                && row.path.ends_with("src/foo.rs")
+                && row.entrypoint == "unit"
+                && row.site_family == "unwrap"
+        }),
+        "outline child omitted when root retains a `.` component: {:?}",
+        inventory.rows
+    );
+    assert!(
+        !inventory.instruments.iter().any(|instrument| {
+            instrument.kind == "module_path" && instrument.status == InstrumentStatus::NotProven
+        }),
+        "`.` root turned child modules into module_path not_proven: {:?}",
+        inventory.instruments
+    );
+}
