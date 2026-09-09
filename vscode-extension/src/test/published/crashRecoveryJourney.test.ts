@@ -651,6 +651,10 @@ suite('Packaged crash-recovery journey (#7848)', function () {
           };
         } else {
           let watchdogRecovery;
+          let resume: Awaited<ReturnType<typeof resumeServerProcess>> = {
+            outcome: 'error',
+            detail: 'resume not attempted',
+          };
           try {
             watchdogRecovery = await awaitGenerationAdvance(
               api,
@@ -663,7 +667,7 @@ suite('Packaged crash-recovery journey (#7848)', function () {
             // so a leftover cannot wedge the host teardown (kill delivered
             // while suspended takes effect after SIGCONT) — even when the
             // generation wait itself throws.
-            const resume = await resumeServerProcess(watchdogTarget.pid);
+            resume = await resumeServerProcess(watchdogTarget.pid);
             observations.watchdog_resume = resume;
           }
           if (!watchdogRecovery.advanced) {
@@ -700,10 +704,13 @@ suite('Packaged crash-recovery journey (#7848)', function () {
                 sample.server_pids.filter((pid) => pid !== watchdogTarget.pid).length === 1 &&
                 sample.lifecycle_state === 'running',
             );
+            const resumeSafe =
+              resume.outcome === 'resumed' || resume.outcome === 'already_gone';
             watchdogRow = {
               status:
                 recoveryGeneration !== null &&
                 replacementRunning &&
+                resumeSafe &&
                 maxOverlap(dedupeSamples) <= 1 &&
                 generationStable
                   ? 'pass'

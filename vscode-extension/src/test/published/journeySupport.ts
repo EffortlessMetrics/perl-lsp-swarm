@@ -499,7 +499,7 @@ export function canSuspendServerProcesses(): boolean {
 }
 
 export interface SuspendResult {
-  outcome: 'suspended' | 'resumed' | 'error';
+  outcome: 'suspended' | 'resumed' | 'already_gone' | 'error';
   detail: string;
 }
 
@@ -523,11 +523,13 @@ export async function suspendServerProcess(
     const child = spawn('powershell.exe', [
       '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', helper,
       '-ProcessId', String(pid), '-CreationTimeFileTime', creationTimeFileTime,
+      '-TimeoutMilliseconds', '120000',
     ], { stdio: 'pipe', windowsHide: true });
     return await new Promise<SuspendResult>((resolve) => {
       let settled = false;
       const timer = setTimeout(() => { if (!settled) { settled = true; child.kill(); resolve({ outcome: 'error', detail: 'Windows suspension handshake timed out' }); } }, 10_000);
       let output = '';
+      child.stderr.resume();
       child.stdout.on('data', (chunk: Buffer) => {
         output += chunk.toString('utf8');
         if (output.split(/\r?\n/).some((line) => line.startsWith('SUSPENDED ')) && !settled) {
@@ -560,9 +562,22 @@ export async function resumeServerProcess(pid: number): Promise<SuspendResult> {
     windowsSuspensionHelpers.delete(pid);
     return await new Promise<SuspendResult>((resolve) => {
       let error = '';
+      if (child.exitCode !== null) {
+        resolve({ outcome: 'error', detail: `Windows resume helper already exited ${String(child.exitCode)}` });
+        return;
+      }
       const timer = setTimeout(() => { child.kill(); resolve({ outcome: 'error', detail: 'Windows resume handshake timed out' }); }, 10_000);
       child.stderr.on('data', (chunk: Buffer) => { error += chunk.toString('utf8'); });
-      child.on('close', (code) => { clearTimeout(timer); resolve(code === 0 ? { outcome: 'resumed', detail: `resumed owned Windows suspension pid ${pid}` } : { outcome: 'error', detail: error || `Windows resume helper exited ${String(code)}` }); });
+      child.stdin.on('error', (inputError) => { error += inputError.message; });
+      child.on('close', (code) => {
+        clearTimeout(timer);
+        if (code === 0) {
+          resolve({ outcome: 'resumed', detail: `resumed owned Windows suspension pid ${pid}` });
+        } else {
+          try { process.kill(pid, 0); resolve({ outcome: 'error', detail: error || `Windows resume helper exited ${String(code)}` }); }
+          catch { resolve({ outcome: 'already_gone', detail: `owned Windows process pid ${pid} exited before resume` }); }
+        }
+      });
       child.stdin.write('resume\n'); child.stdin.end();
     });
   }

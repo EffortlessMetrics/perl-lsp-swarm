@@ -1,7 +1,7 @@
 param(
   [Parameter(Mandatory=$true)][int]$ProcessId,
   [Parameter(Mandatory=$true)][UInt64]$CreationTimeFileTime,
-  [int]$TimeoutMilliseconds = 5000,
+  [int]$TimeoutMilliseconds = 120000,
   [int]$MaxRounds = 4,
   [int]$InjectFailureAfter = 0,
   [switch]$InjectResumeFailure
