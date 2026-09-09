@@ -70,6 +70,36 @@ interface DiscoveryFinding {
   readonly signature: string;
 }
 
+async function hasCurrentDiscoveryRoot(
+  context: vscode.ExtensionContext,
+  finding: DiscoveryFinding,
+): Promise<boolean> {
+  if (!isCurrentWorkspaceFolder(context, finding.folder)) {
+    return false;
+  }
+  let currentRootRealPath: string;
+  try {
+    currentRootRealPath = await fs.promises.realpath(finding.folder.uri.fsPath);
+  } catch {
+    return false;
+  }
+  return currentRootRealPath === finding.rootRealPath;
+}
+
+function hasCurrentDiscoveryConfig(
+  context: vscode.ExtensionContext,
+  finding: DiscoveryFinding,
+): boolean {
+  if (!isCurrentWorkspaceFolder(context, finding.folder)) {
+    return false;
+  }
+  const currentConfig = vscode.workspace.getConfiguration('perl-lsp', finding.folder.uri);
+  const currentIncludePaths: string[] = currentConfig.get('includePaths', [
+    ...DEFAULT_INCLUDE_PATHS,
+  ]);
+  return includePathsFingerprint(currentIncludePaths) === finding.includePathsFingerprint;
+}
+
 export interface IncludePathDiscoveryReport {
   readonly folder: string;
   readonly discovered: readonly string[];
@@ -431,8 +461,17 @@ export function registerIncludePathGuidanceWorkspaceListener(
       }
     }
 
-    void Promise.all(updates)
-      .then(() => rerunIncludePathGuidance(context))
+    void Promise.allSettled(updates)
+      .then((results) => {
+        for (const result of results) {
+          if (result.status === 'rejected') {
+            void vscode.window.showWarningMessage(
+              `Perl LSP: could not clear workspace-folder guidance state: ${errorMessage(result.reason)}`,
+            );
+          }
+        }
+        return rerunIncludePathGuidance(context);
+      })
       .catch((error: unknown) => {
         void vscode.window.showWarningMessage(
           `Perl LSP: could not refresh workspace-folder guidance: ${errorMessage(error)}`,
@@ -461,7 +500,8 @@ export async function runDiscoveredIncludePathGuidance(
 
   for (const folder of workspaceFolders) {
     const config = vscode.workspace.getConfiguration('perl-lsp', folder.uri);
-    const includePaths: string[] = config.get('includePaths', [...DEFAULT_INCLUDE_PATHS]);
+    const includePaths: string[] = [...config.get('includePaths', [...DEFAULT_INCLUDE_PATHS])];
+    const includePathsSnapshotFingerprint = includePathsFingerprint(includePaths);
     const discovered: string[] = [];
     let complete = true;
     let rootRealPath: string;
@@ -534,7 +574,7 @@ export async function runDiscoveredIncludePathGuidance(
         JSON.stringify({
           folderUri: folder.uri.toString(),
           rootRealPath,
-          includePathsFingerprint: includePathsFingerprint(includePaths),
+          includePathsFingerprint: includePathsSnapshotFingerprint,
           complete,
           discovered: discovered.slice().sort(),
         }),
@@ -550,7 +590,7 @@ export async function runDiscoveredIncludePathGuidance(
       folderUri: folder.uri.toString(),
       rootRealPath,
       includePaths: [...includePaths],
-      includePathsFingerprint: includePathsFingerprint(includePaths),
+      includePathsFingerprint: includePathsSnapshotFingerprint,
       discovered,
       complete,
       cacheKey,
@@ -558,14 +598,30 @@ export async function runDiscoveredIncludePathGuidance(
     });
   }
 
-  if (findings.length === 0) {
+  // All filesystem work above is asynchronous. Re-check each snapshot before
+  // presenting one combined prompt so a later folder's scan cannot leave an
+  // earlier folder's obsolete finding holding the prompt open.
+  const rootCheckedFindings: DiscoveryFinding[] = [];
+  for (const finding of findings) {
+    if (await hasCurrentDiscoveryRoot(context, finding)) {
+      rootCheckedFindings.push(finding);
+    }
+  }
+  // Root canonicalization is asynchronous and folders can change while later
+  // roots are being checked. This final synchronous identity/configuration
+  // sweep catches those earlier changes without pretending filesystem reads
+  // are atomic.
+  const currentFindings = rootCheckedFindings.filter((finding) =>
+    hasCurrentDiscoveryConfig(context, finding),
+  );
+  if (currentFindings.length === 0) {
     return reports;
   }
 
-  const summary = findings
+  const summary = currentFindings
     .map((finding) => `${finding.folder.name}: ${finding.discovered.join(', ')}`)
     .join('; ');
-  const incomplete = findings.some((finding) => !finding.complete)
+  const incomplete = currentFindings.some((finding) => !finding.complete)
     ? ' The bounded scan was incomplete, so additional paths may exist.'
     : '';
   const choice = await vscode.window.showInformationMessage(
@@ -578,7 +634,7 @@ export async function runDiscoveredIncludePathGuidance(
   if (choice === 'Add for These Folders') {
     const applied: string[] = [];
     const stale: string[] = [];
-    for (const finding of findings) {
+    for (const finding of currentFindings) {
       const currentFolder = vscode.workspace.workspaceFolders?.find(
         (folder) => folder === finding.folder && folder.uri.toString() === finding.folderUri,
       );
@@ -692,14 +748,19 @@ export async function runDiscoveredIncludePathGuidance(
       const next = Array.from(new Set([...finalIncludePaths, ...currentDiscovered]));
       try {
         await finalConfig.update('includePaths', next, vscode.ConfigurationTarget.WorkspaceFolder);
+        applied.push(`${finding.folder.name}: ${currentDiscovered.join(', ')}`);
         if (!isCurrentWorkspaceFolder(context, finding.folder)) {
-          stale.push(finding.folder.name);
           continue;
         }
         // The accepted paths are now covered by configuration. Clear the old
         // pre-update dismissal so removing one later can prompt again.
-        await context.globalState.update(finding.cacheKey, undefined);
-        applied.push(`${finding.folder.name}: ${currentDiscovered.join(', ')}`);
+        try {
+          await context.globalState.update(finding.cacheKey, undefined);
+        } catch (error: unknown) {
+          void vscode.window.showWarningMessage(
+            `Perl LSP: include paths were updated for ${finding.folder.name}, but guidance state cleanup failed: ${errorMessage(error)}`,
+          );
+        }
       } catch (error: unknown) {
         void vscode.window.showWarningMessage(
           `Perl LSP: could not update include paths for ${finding.folder.name}: ${errorMessage(error)}`,
@@ -724,7 +785,7 @@ export async function runDiscoveredIncludePathGuidance(
     );
   }
 
-  for (const finding of findings) {
+  for (const finding of currentFindings) {
     if (!isCurrentWorkspaceFolder(context, finding.folder)) {
       continue;
     }
