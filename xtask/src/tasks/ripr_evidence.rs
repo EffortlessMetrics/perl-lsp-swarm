@@ -705,7 +705,55 @@ fn revision_sha(repo: &Path, revision: &str) -> Result<String> {
     Ok(run_git_output(repo, &["rev-parse", revision])?.trim().to_string())
 }
 
+/// Invalidate every artifact this command regenerates, before any of it can fail.
+///
+/// `.github/workflows/ripr.yml` runs both `Validate PR evidence contracts` and
+/// `Upload ripr PR evidence` with `if: always()`, so they execute even when
+/// generation failed, and the self-hosted lanes reuse `target/` across runs.
+/// Anything an earlier run of the same base/head left behind is therefore still
+/// read afterwards, in two distinct ways:
+///
+/// - the evidence packet and markdown are **gate input**: `check_pr_evidence`
+///   accepts them for matching revisions, so a failed analysis passes the
+///   contract — failing *open* at the gate immediately after failing closed at
+///   ingest;
+/// - `raw-check.json` is **diagnostic**: a stale payload is uploaded as though it
+///   were the failed run's output, misattributing an earlier producer's bytes to
+///   the current failure.
+///
+/// Both follow from the same rule, so both are cleared together here: once a
+/// generation attempt successfully clears these files, none of their old copies
+/// may survive later failures. A removal error aborts and may retain old readable
+/// artifacts (#15097); the workflow still propagates the generation failure. This runs
+/// before every fallible step — revision checks, diff resolution, the diff
+/// write, and the producer invocation — because each of them can fail and leave
+/// the previous run's artifacts otherwise readable.
+///
+/// This does not conflict with preserving a refused envelope's payload: the
+/// current producer output is written back to `raw-check.json` immediately after
+/// `run_ripr_check` returns successfully and before JSON parsing or the envelope
+/// check, so syntax failures and refused envelopes both retain their current
+/// UTF-8 payload. A producer failure or non-UTF-8 stdout returns earlier.
+fn clear_stale_pr_artifacts(repo: &Path) -> Result<()> {
+    for relative in [PR_EVIDENCE_JSON, PR_EVIDENCE_MD, PR_RAW_CHECK_JSON, PR_DIFF, PR_DIFF_RECEIPT]
+    {
+        let path = repo.join(relative);
+        match fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(error).with_context(|| format!("clearing stale {relative}"));
+            }
+        }
+    }
+    Ok(())
+}
+
 fn write_pr_evidence(repo: &Path, options: &PrEvidenceOptions) -> Result<()> {
+    // Invalidate before revision, diff, or producer work. Once clearing succeeds,
+    // later failures cannot expose earlier copies to the always-run validator
+    // or artifact upload (#9113 review). Removal failures remain #15097.
+    clear_stale_pr_artifacts(repo)?;
     verify_revision(repo, &options.base)?;
     verify_revision(repo, &options.head)?;
     if let Some(pr_head_sha) = &options.pr_head_sha {
@@ -716,11 +764,16 @@ fn write_pr_evidence(repo: &Path, options: &PrEvidenceOptions) -> Result<()> {
     let diff_receipt = resolve_committed_diff(repo, &options.base, &options.head)?;
     let changed_file_count = diff_receipt.entries.len();
     write_pr_diff(repo, &diff_receipt)?;
-    // Stream raw check output for offline diagnostics (#1346) straight to its
-    // artifact path: repo-exposure.json only contains per-bucket counts; the
-    // findings[] array (which carries per-finding classification and path) is
-    // required to diagnose suppression mismatches.  This file is included in the
+    // Write raw check output for offline diagnostics (#1346): repo-exposure.json only contains
+    // per-bucket counts; the findings[] array (which carries per-finding classification and path)
+    // is required to diagnose suppression mismatches.  This file is included in the
     // ripr-pr-evidence artifact upload so it is available without re-running ripr.
+    //
+    // This must precede JSON parsing and envelope validation (#9113). The artifact upload is
+    // `if: always()`, so an unrecognized producer shape is exactly the case where the exact
+    // payload is needed to diagnose the refusal — and the only case where nobody has seen it
+    // before. Validating first would bail with the evidence directory missing the one file
+    // that explains why.
     run_ripr_check(repo, options)?;
     let suppressions = read_ripr_suppression_rules(repo, Path::new(DEFAULT_RIPR_SUPPRESSIONS))?;
     let head_extents = HeadLineExtents::from_committed_diff(repo, &diff_receipt);
@@ -966,6 +1019,8 @@ fn ripr_check_ingestion_from_file(
     })
     .context("ripr check output was not valid JSON")?;
     let check_summary = payload.summary.as_ref().and_then(Value::as_object);
+    validate_check_summary_counts(check_summary)?;
+    validate_check_findings_array(payload.findings_is_array)?;
     Ok(RiprCheckIngestion {
         summary_counts: ripr_summary_counts_merge(
             ripr_summary_counts_seed(check_summary),
@@ -1036,6 +1091,7 @@ where
 struct RiprCheckPayload {
     summary: Option<Value>,
     base: Option<Value>,
+    findings_is_array: bool,
 }
 
 /// Hand-driven map visitor so `findings` elements are consumed one at a time;
@@ -1065,7 +1121,8 @@ where
                 "summary" => payload.summary = Some(map.next_value()?),
                 "findings" => {
                     (self.on_event)(StreamFindingsEvent::Start);
-                    map.next_value_seed(StreamFindingsSeed { on_event: self.on_event })?;
+                    payload.findings_is_array =
+                        map.next_value_seed(StreamFindingsSeed { on_event: self.on_event })?;
                 }
                 "base" => payload.base = Some(map.next_value()?),
                 // Values the receipt never consumes are skipped in place —
@@ -1124,7 +1181,7 @@ impl<'de, F> DeserializeSeed<'de> for StreamFindingsSeed<'_, F>
 where
     F: for<'a> FnMut(StreamFindingsEvent<'a>),
 {
-    type Value = ();
+    type Value = bool;
 
     fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
     where
@@ -1138,7 +1195,7 @@ impl<'de, F> Visitor<'de> for StreamFindingsSeed<'_, F>
 where
     F: for<'a> FnMut(StreamFindingsEvent<'a>),
 {
-    type Value = ();
+    type Value = bool;
 
     fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
         formatter.write_str("an array of ripr findings")
@@ -1151,7 +1208,7 @@ where
         while let Some(finding) = seq.next_element::<Value>()? {
             (self.on_event)(StreamFindingsEvent::Finding(&finding));
         }
-        Ok(())
+        Ok(true)
     }
 
     // A `findings` value that is not an array behaves as absent, matching the
@@ -1161,31 +1218,31 @@ where
         A: MapAccess<'de>,
     {
         while map.next_entry::<de::IgnoredAny, de::IgnoredAny>()?.is_some() {}
-        Ok(())
+        Ok(false)
     }
 
     fn visit_bool<E>(self, _value: bool) -> Result<Self::Value, E> {
-        Ok(())
+        Ok(false)
     }
 
     fn visit_i64<E>(self, _value: i64) -> Result<Self::Value, E> {
-        Ok(())
+        Ok(false)
     }
 
     fn visit_u64<E>(self, _value: u64) -> Result<Self::Value, E> {
-        Ok(())
+        Ok(false)
     }
 
     fn visit_f64<E>(self, _value: f64) -> Result<Self::Value, E> {
-        Ok(())
+        Ok(false)
     }
 
     fn visit_str<E>(self, _value: &str) -> Result<Self::Value, E> {
-        Ok(())
+        Ok(false)
     }
 
     fn visit_unit<E>(self) -> Result<Self::Value, E> {
-        Ok(())
+        Ok(false)
     }
 }
 
@@ -1219,6 +1276,74 @@ struct RiprPrSummaryCounts {
     /// Same, for findings whose classification was not recognized. Decrements
     /// `severe_gaps` directly, like `suppressed_unclassified`.
     non_production_unclassified: usize,
+}
+
+/// The `summary` counts the required `ripr+ New Gap Gate` decision is derived from.
+///
+/// [`count_field`] reads an absent field as `0`. That is correct for a producer
+/// that genuinely found nothing, and catastrophic for one that renamed the field:
+/// every actionable bucket collapses to zero, `severe_gaps` becomes `0`, and
+/// `ripr_severe_gap` reports `false` for a diff whose exposure was never actually
+/// measured. The gate reads only `ripr_severe_gap`, so nothing downstream notices.
+///
+/// That is not hypothetical — it is the recorded regression in
+/// `docs/learnings/2026-06-ripr-output-schema-break.md`, where a RIPR version bump
+/// changed JSON fields and the suppression parser silently stopped matching them.
+const REQUIRED_CHECK_SUMMARY_COUNTS: [&str; 3] =
+    ["weakly_exposed", "reachable_unrevealed", "no_static_path"];
+
+/// Refuse a `ripr check` envelope that cannot support an honest gate decision.
+///
+/// This is a producer-contract check at ingest, deliberately separate from the
+/// counting logic: a schema break must surface as an instrument failure, never as
+/// a clean zero-gap result.
+///
+/// Absence is always a break, never a legitimate clean run. Real 0.9.0 and 0.10.0
+/// output for a diff touching no Rust at all still carries every one of these keys
+/// as an explicit `0` (captured in `xtask/tests/fixtures/ripr-0.10/`), so
+/// "field present and zero" and "field gone" are distinguishable, and only the
+/// former means clean.
+fn validate_check_summary_counts(summary: Option<&Map<String, Value>>) -> Result<()> {
+    let Some(summary) = summary else {
+        bail!(
+            "ripr check output did not include a `summary` object; refusing to report \
+             a zero-gap result from an envelope the gate cannot measure"
+        );
+    };
+    for key in REQUIRED_CHECK_SUMMARY_COUNTS {
+        match summary.get(key) {
+            None => bail!(
+                "ripr check `summary` is missing required count `{key}`; the producer \
+                 output schema changed and an absent count would be read as zero gaps"
+            ),
+            Some(value) if value.as_u64().is_none() => bail!(
+                "ripr check `summary.{key}` is not a non-negative integer ({value}); \
+                 refusing to coerce a malformed count into zero gaps"
+            ),
+            Some(_) => {}
+        }
+    }
+    Ok(())
+}
+
+fn validate_check_findings_array(findings_is_array: bool) -> Result<()> {
+    if !findings_is_array {
+        bail!(
+            "ripr check output did not include a `findings` array; per-finding \
+             classification and path are required to apply suppressions honestly"
+        );
+    }
+    Ok(())
+}
+
+/// Validate the captured DOM envelope used by fixture tests.
+///
+/// Production validates the same contract from the streamed envelope through
+/// [`validate_check_summary_counts`] and [`validate_check_findings_array`].
+#[cfg(test)]
+fn validate_check_envelope(check_value: &Value) -> Result<()> {
+    validate_check_summary_counts(check_value.get("summary").and_then(Value::as_object))?;
+    validate_check_findings_array(check_value.get("findings").is_some_and(Value::is_array))
 }
 
 /// DOM-path aggregation, retained as the test oracle for the streaming
@@ -4310,6 +4435,808 @@ fn bullet_list(values: &[String]) -> String {
 mod tests {
     use super::*;
 
+    use color_eyre::eyre::ContextCompat;
+
+    // ---------------------------------------------------------------------
+    // #9113: RIPR 0.9.0 → 0.10.0 consumer migration.
+    //
+    // These run against *captured producer output*, not hand-authored JSON.
+    // The repository has a recorded regression where a RIPR version bump
+    // changed JSON fields and the consumer silently stopped matching them
+    // (`docs/learnings/2026-06-ripr-output-schema-break.md`), and hand-written
+    // fixtures cannot catch that class because they encode the assumption
+    // under test. Provenance is in `xtask/tests/fixtures/ripr-0.10/README.md`.
+    // ---------------------------------------------------------------------
+
+    /// Real `ripr 0.10.0 check --format json` output, one `weakly_exposed` finding.
+    const REAL_010_CHECK: &str =
+        include_str!("../../tests/fixtures/ripr-0.10/weakly-exposed-check.json");
+    /// Real `ripr 0.9.0` output for the *same* diff and subject.
+    const REAL_009_CHECK: &str =
+        include_str!("../../tests/fixtures/ripr-0.10/weakly-exposed-check-0.9.json");
+
+    fn parse_check(raw: &str) -> Result<Value> {
+        serde_json::from_str(raw).context("captured ripr output must be valid JSON")
+    }
+
+    fn counts_for(check: &Value) -> RiprPrSummaryCounts {
+        let summary = check.get("summary").and_then(Value::as_object);
+        ripr_pr_summary_counts(check, summary, &RiprSuppressionRules::default(), None, None, None)
+    }
+
+    #[test]
+    fn real_ripr_010_output_still_reaches_the_actionable_bucket() -> Result<()> {
+        let check = parse_check(REAL_010_CHECK)?;
+
+        // The envelope 0.10 actually emits is accepted, not merely tolerated.
+        validate_check_envelope(&check)
+            .context("real 0.10 output must satisfy the producer contract")?;
+
+        let counts = counts_for(&check);
+
+        // This is the assertion that would have caught the 2026-06 break. It is
+        // discriminating rather than tautological because the count is reached
+        // through *two independent paths that must agree*: the summary field
+        // `summary.weakly_exposed`, and the per-finding `classification` string
+        // that `ripr_pr_summary_counts` matches against its recognized set. A
+        // 0.10 that renamed either one collapses this to 0 while the fixture
+        // still parses as valid JSON.
+        color_eyre::eyre::ensure!(
+            (counts.weakly_exposed) == (1),
+            "real 0.10 output must still land in the actionable bucket the gate counts"
+        );
+        color_eyre::eyre::ensure!(
+            (counts.reachable_unrevealed) == (0),
+            "proof predicate failed: {}",
+            stringify!((counts.reachable_unrevealed) == (0))
+        );
+        color_eyre::eyre::ensure!(
+            (counts.no_static_path) == (0),
+            "proof predicate failed: {}",
+            stringify!((counts.no_static_path) == (0))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn ripr_010_is_schema_compatible_with_009_for_every_consumed_field() -> Result<()> {
+        let old = parse_check(REAL_009_CHECK)?;
+        let new = parse_check(REAL_010_CHECK)?;
+
+        // The declared break signal did move, so these really are two different
+        // producer schemas and the comparison below is not comparing one release
+        // against itself.
+        color_eyre::eyre::ensure!(
+            (old.get("schema_version").and_then(Value::as_str)) == (Some("0.1")),
+            "proof predicate failed: {}",
+            stringify!((old.get("schema_version").and_then(Value::as_str)) == (Some("0.1")))
+        );
+        color_eyre::eyre::ensure!(
+            (new.get("schema_version").and_then(Value::as_str)) == (Some("0.2")),
+            "proof predicate failed: {}",
+            stringify!((new.get("schema_version").and_then(Value::as_str)) == (Some("0.2")))
+        );
+
+        // Every `summary` key the consumer may read survives the bump. Asserting
+        // over the whole key set (not just the three required counts) is what
+        // makes this a *migration* control: a field this consumer does not read
+        // today but a sibling consumer does would still show up here.
+        let keys = |value: &Value| -> BTreeSet<String> {
+            value
+                .get("summary")
+                .and_then(Value::as_object)
+                .map(|summary| summary.keys().cloned().collect())
+                .unwrap_or_default()
+        };
+        color_eyre::eyre::ensure!(
+            (keys(&old)) == (keys(&new)),
+            "0.10 changed the `summary` key set; every removed key would be read as zero"
+        );
+
+        // Identical input must produce an identical gate decision across the
+        // bump. This is the actual migration claim: not "0.10 parses", but
+        // "0.10 does not move the number the required check acts on".
+        let (old_counts, new_counts) = (counts_for(&old), counts_for(&new));
+        color_eyre::eyre::ensure!(
+            ((
+                old_counts.weakly_exposed,
+                old_counts.reachable_unrevealed,
+                old_counts.no_static_path
+            )) == ((
+                new_counts.weakly_exposed,
+                new_counts.reachable_unrevealed,
+                new_counts.no_static_path
+            )),
+            "the reviewed bump must not change the actionable counts for identical input"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_removed_summary_count_is_an_instrument_failure_not_a_clean_result() -> Result<()> {
+        // The required negative control from #9113: "0.9-shaped output with a
+        // field removed must not silently become clean."
+        for key in REQUIRED_CHECK_SUMMARY_COUNTS {
+            let mut check = parse_check(REAL_010_CHECK)?;
+            check
+                .get_mut("summary")
+                .and_then(Value::as_object_mut)
+                .context("fixture has a summary object")?
+                .remove(key);
+
+            // Counting alone cannot tell this apart from a clean run — that is
+            // precisely the defect, and asserting it here keeps the negative
+            // control honest about *why* the envelope check has to exist.
+            color_eyre::eyre::ensure!(
+                (counts_for(&check).weakly_exposed)
+                    == (if key == "weakly_exposed" { 0 } else { 1 }),
+                "counting reads a removed `{key}` as zero, so refusal must happen at ingest"
+            );
+
+            let refusal = validate_check_envelope(&check).err().ok_or_else(|| {
+                eyre!("a removed required count must be refused, not counted as zero")
+            })?;
+            color_eyre::eyre::ensure!(
+                refusal.to_string().contains(key),
+                "refusal must name the missing field, got: {refusal}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_malformed_summary_count_is_refused_rather_than_coerced() -> Result<()> {
+        for malformed in [json!("3"), json!(-1), json!(1.5), json!(null), json!({})] {
+            let mut check = parse_check(REAL_010_CHECK)?;
+            check
+                .get_mut("summary")
+                .and_then(Value::as_object_mut)
+                .context("fixture has a summary object")?
+                .insert("weakly_exposed".to_string(), malformed.clone());
+
+            color_eyre::eyre::ensure!(
+                validate_check_envelope(&check).is_err(),
+                "a non-integer count must be an instrument failure, not coerced to zero: \
+                 {malformed}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_missing_findings_array_is_refused() -> Result<()> {
+        // Without `findings[]` no suppression can be applied by path or
+        // classification, so a summary-only envelope would silently report
+        // unsuppressed totals as if the policy had been consulted.
+        let mut check = parse_check(REAL_010_CHECK)?;
+        check.as_object_mut().context("object")?.remove("findings");
+        let _refusal = validate_check_envelope(&check).err().ok_or_else(|| {
+            eyre!("summary-only output must be refused, not treated as unsuppressed truth")
+        })?;
+        Ok(())
+    }
+
+    #[test]
+    fn a_genuinely_clean_run_is_still_accepted() -> Result<()> {
+        // The complement that keeps the refusal from being a blunt instrument:
+        // explicit zeros are a real result and must pass. Real producer output
+        // for a diff touching no Rust carries exactly this shape, which is why
+        // absence can be treated as a break without failing docs-only PRs.
+        let mut check = parse_check(REAL_010_CHECK)?;
+        let summary = check.get_mut("summary").and_then(Value::as_object_mut).context("summary")?;
+        for key in REQUIRED_CHECK_SUMMARY_COUNTS {
+            summary.insert(key.to_string(), json!(0));
+        }
+        *check.get_mut("findings").ok_or_else(|| eyre!("fixture findings must exist"))? = json!([]);
+
+        validate_check_envelope(&check)
+            .context("an explicitly-zero envelope is clean, not broken")?;
+        color_eyre::eyre::ensure!(
+            (counts_for(&check).weakly_exposed) == (0),
+            "proof predicate failed: {}",
+            stringify!((counts_for(&check).weakly_exposed) == (0))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn streamed_envelope_validation_matches_the_dom_oracle() -> Result<()> {
+        let real = parse_check(REAL_010_CHECK)?;
+        let mut cases = vec![("complete envelope", real.clone(), None)];
+        for key in REQUIRED_CHECK_SUMMARY_COUNTS {
+            let mut check = real.clone();
+            check
+                .get_mut("summary")
+                .and_then(Value::as_object_mut)
+                .context("fixture has a summary object")?
+                .remove(key);
+            cases.push((key, check, Some(key)));
+        }
+        for malformed in [json!("3"), json!(-1), json!(1.5), json!(null)] {
+            let mut check = real.clone();
+            check
+                .get_mut("summary")
+                .and_then(Value::as_object_mut)
+                .context("fixture has a summary object")?
+                .insert("weakly_exposed".to_string(), malformed);
+            cases.push(("weakly_exposed", check, Some("weakly_exposed")));
+        }
+        let mut missing_findings = real.clone();
+        missing_findings.as_object_mut().context("fixture is an object")?.remove("findings");
+        cases.push(("findings missing", missing_findings, Some("findings")));
+
+        let mut object_findings = real.clone();
+        object_findings
+            .as_object_mut()
+            .context("fixture is an object")?
+            .insert("findings".to_string(), json!({}));
+        cases.push(("findings object", object_findings, Some("findings")));
+
+        let mut empty_findings = real.clone();
+        let summary = empty_findings
+            .get_mut("summary")
+            .and_then(Value::as_object_mut)
+            .context("fixture has a summary object")?;
+        for key in REQUIRED_CHECK_SUMMARY_COUNTS {
+            summary.insert(key.to_string(), json!(0));
+        }
+        empty_findings
+            .as_object_mut()
+            .context("fixture is an object")?
+            .insert("findings".to_string(), json!([]));
+        cases.push(("explicitly clean envelope", empty_findings, None));
+
+        for (label, dom, field) in cases {
+            let temp = tempfile::tempdir()?;
+            let raw_path = temp.path().join("raw-check.json");
+            fs::write(&raw_path, serde_json::to_vec(&dom)?)?;
+            let streamed =
+                ripr_check_ingestion_from_file(&raw_path, &no_suppressions(), None, None, None);
+            let dom_refusal = validate_check_envelope(&dom).err();
+            color_eyre::eyre::ensure!(
+                streamed.is_err() == dom_refusal.is_some(),
+                "{label}: streamed and DOM refusal decisions differ"
+            );
+            if let Some(field) = field {
+                let streamed_refusal =
+                    streamed.as_ref().err().map(ToString::to_string).ok_or_else(|| {
+                        eyre!("{label}: streamed ingestion unexpectedly succeeded")
+                    })?;
+                color_eyre::eyre::ensure!(
+                    streamed_refusal.contains(field),
+                    "{label}: streamed refusal must name `{field}`, got: {streamed_refusal}"
+                );
+                color_eyre::eyre::ensure!(
+                    dom_refusal.as_ref().is_some_and(|refusal| refusal.to_string().contains(field)),
+                    "{label}: DOM refusal must name `{field}`"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// Both paths share `RiprFindingBuckets::absorb`, so this proves streaming
+    /// traversal/aggregation parity on real producer output rather than independent bucket-classification logic.
+    #[test]
+    fn streamed_ingestion_counts_match_the_dom_oracle_on_captured_producer_output() -> Result<()> {
+        for raw in [REAL_010_CHECK, REAL_009_CHECK] {
+            let dom = parse_check(raw)?;
+            let temp = tempfile::tempdir()?;
+            let raw_path = temp.path().join("raw-check.json");
+            fs::write(&raw_path, raw)?;
+            let streamed =
+                ripr_check_ingestion_from_file(&raw_path, &no_suppressions(), None, None, None)?;
+            let expected = ripr_pr_summary_counts(
+                &dom,
+                dom.get("summary").and_then(Value::as_object),
+                &RiprSuppressionRules::default(),
+                None,
+                None,
+                None,
+            );
+            let expected_check_summary_present =
+                dom.get("summary").and_then(Value::as_object).is_some();
+            let actual_check_summary_present = streamed.check_summary_present;
+            let actual = streamed.summary_counts;
+            for (field, actual, expected) in [
+                ("weakly_exposed", actual.weakly_exposed, expected.weakly_exposed),
+                (
+                    "reachable_unrevealed",
+                    actual.reachable_unrevealed,
+                    expected.reachable_unrevealed,
+                ),
+                ("no_static_path", actual.no_static_path, expected.no_static_path),
+                (
+                    "suppressed_by_policy",
+                    actual.suppressed_by_policy,
+                    expected.suppressed_by_policy,
+                ),
+                (
+                    "suppressed_unclassified",
+                    actual.suppressed_unclassified,
+                    expected.suppressed_unclassified,
+                ),
+                (
+                    "outside_head_revision",
+                    actual.outside_head_revision,
+                    expected.outside_head_revision,
+                ),
+                (
+                    "outside_head_unclassified",
+                    actual.outside_head_unclassified,
+                    expected.outside_head_unclassified,
+                ),
+                (
+                    "out_of_dependency_graph",
+                    actual.out_of_dependency_graph,
+                    expected.out_of_dependency_graph,
+                ),
+                (
+                    "non_production_excluded",
+                    actual.non_production_excluded,
+                    expected.non_production_excluded,
+                ),
+                (
+                    "non_production_unclassified",
+                    actual.non_production_unclassified,
+                    expected.non_production_unclassified,
+                ),
+            ] {
+                color_eyre::eyre::ensure!(
+                    actual == expected,
+                    "{field}: streamed count {actual} != DOM count {expected}"
+                );
+            }
+            color_eyre::eyre::ensure!(
+                actual_check_summary_present == expected_check_summary_present,
+                "summary presence must match between streamed and DOM paths"
+            );
+        }
+        Ok(())
+    }
+
+    fn rules_for(patterns: &[&str]) -> Result<RiprSuppressionRules> {
+        let mut rules = RiprSuppressionRules::default();
+        for pattern in patterns {
+            rules.display_patterns.push((*pattern).to_string());
+            rules.path_patterns.push(Pattern::new(pattern).context("test glob must be valid")?);
+            // Empty = no classification filter, matching how the current matcher
+            // treats `policy/ripr-suppressions.toml` classification lists as
+            // documentary rather than selective.
+            rules.classification_patterns.push(Vec::new());
+        }
+        Ok(rules)
+    }
+
+    fn counts_with(check: &Value, rules: &RiprSuppressionRules) -> RiprPrSummaryCounts {
+        let summary = check.get("summary").and_then(Value::as_object);
+        ripr_pr_summary_counts(check, summary, rules, None, None, None)
+    }
+
+    #[test]
+    fn suppression_selects_exactly_the_intended_finding_on_real_010_output() -> Result<()> {
+        let check = parse_check(REAL_010_CHECK)?;
+        // The captured finding's `probe.file` is `./src/lib.rs`.
+
+        // Positive control: a rule whose path matches moves the finding out of
+        // the actionable bucket and into the policy-suppressed count. Both
+        // halves are asserted — a matcher that dropped findings entirely would
+        // also zero the bucket, and only `suppressed_by_policy` tells them apart.
+        let matched = counts_with(&check, &rules_for(&["src/lib.rs"])?);
+        color_eyre::eyre::ensure!(
+            (matched.weakly_exposed) == (0),
+            "a matching rule must clear the actionable bucket"
+        );
+        color_eyre::eyre::ensure!(
+            (matched.suppressed_by_policy) == (1),
+            "the finding must be accounted as suppressed"
+        );
+
+        // Same, through a glob, since the real policy file is glob-shaped.
+        let globbed = counts_with(&check, &rules_for(&["src/**"])?);
+        color_eyre::eyre::ensure!(
+            (globbed.weakly_exposed) == (0),
+            "proof predicate failed: {}",
+            stringify!((globbed.weakly_exposed) == (0))
+        );
+        color_eyre::eyre::ensure!(
+            (globbed.suppressed_by_policy) == (1),
+            "proof predicate failed: {}",
+            stringify!((globbed.suppressed_by_policy) == (1))
+        );
+
+        // Negative control: an unsuppressed finding stays visible and blocking.
+        // Without this, a matcher that suppressed everything would pass the
+        // positive controls above.
+        let unmatched = counts_with(&check, &rules_for(&["crates/somewhere-else/**"])?);
+        color_eyre::eyre::ensure!(
+            (unmatched.weakly_exposed) == (1),
+            "a non-matching rule must leave the finding visible to the gate"
+        );
+        color_eyre::eyre::ensure!(
+            (unmatched.suppressed_by_policy) == (0),
+            "proof predicate failed: {}",
+            stringify!((unmatched.suppressed_by_policy) == (0))
+        );
+
+        // And the no-policy baseline agrees with the non-matching rule, so the
+        // rule set is doing the selecting rather than the fixture.
+        color_eyre::eyre::ensure!(
+            (counts_for(&check).weakly_exposed) == (1),
+            "proof predicate failed: {}",
+            stringify!((counts_for(&check).weakly_exposed) == (1))
+        );
+        Ok(())
+    }
+
+    /// Write a fake `ripr` that answers `--format json` with `check_json`.
+    ///
+    /// Only the `json` format is served: the evidence path under test asks for
+    /// exactly that, and refusing everything else keeps the double from quietly
+    /// absorbing an invocation change.
+    #[cfg(not(windows))]
+    fn write_fake_ripr_check_binary(dir: &Path, check_json: &str) -> Result<PathBuf> {
+        let path = dir.join("ripr");
+        write_text(
+            &path,
+            &format!(
+                r#"#!/bin/sh
+case "$*" in
+  *"--format json"*)
+    cat <<'RIPR_EOF'
+{check_json}
+RIPR_EOF
+    ;;
+  *)
+    echo "unexpected ripr args: $*" >&2
+    exit 2
+    ;;
+esac
+"#
+            ),
+        )?;
+        let mut permissions = fs::metadata(&path)?.permissions();
+        use std::os::unix::fs::PermissionsExt;
+        permissions.set_mode(0o755);
+        fs::set_permissions(&path, permissions)?;
+        Ok(path)
+    }
+
+    /// Build a repository the evidence path can actually run against.
+    #[cfg(not(windows))]
+    fn evidence_repo() -> Result<tempfile::TempDir> {
+        let repo = tempfile::tempdir()?;
+        init_git_repo(repo.path())?;
+        // An empty but present policy, so the only difference between the
+        // refusal and acceptance tests is the producer envelope itself.
+        fs::create_dir_all(repo.path().join("policy"))?;
+        write_text(
+            &repo.path().join(DEFAULT_RIPR_SUPPRESSIONS),
+            "schema_version = 1\npolicy = \"ripr-suppressions\"\n",
+        )?;
+        Ok(repo)
+    }
+
+    #[cfg(not(windows))]
+    fn evidence_options() -> PrEvidenceOptions {
+        PrEvidenceOptions {
+            root: DEFAULT_ROOT.to_string(),
+            base: "HEAD".to_string(),
+            head: "HEAD".to_string(),
+            pr_head_sha: None,
+        }
+    }
+
+    /// The envelope check must be *wired into* evidence generation, not merely
+    /// present and unit-tested.
+    ///
+    /// The direct `validate_check_envelope` tests above all survive deleting its
+    /// call site in `write_pr_evidence`, because they call the function
+    /// themselves. Only this test fails when the ingest guard is removed, so it
+    /// is the one that holds the pipeline claim: a producer whose summary lost a
+    /// required count must abort evidence generation rather than write a packet
+    /// reporting zero gaps.
+    #[cfg(not(windows))]
+    #[test]
+    fn evidence_generation_refuses_a_producer_missing_a_required_count() -> Result<()> {
+        let repo = evidence_repo()?;
+
+        // A real 0.10-shaped envelope with exactly one required count removed.
+        let mut broken = parse_check(REAL_010_CHECK)?;
+        broken
+            .get_mut("summary")
+            .and_then(Value::as_object_mut)
+            .context("summary")?
+            .remove("weakly_exposed");
+
+        let bin_dir = tempfile::tempdir()?;
+        let fake = write_fake_ripr_check_binary(bin_dir.path(), &broken.to_string())?;
+        let _guard = override_ripr_bin(&fake)?;
+
+        let error = write_pr_evidence(repo.path(), &evidence_options())
+            .err()
+            .ok_or_else(|| eyre!("evidence generation must abort on a broken producer envelope"))?;
+        color_eyre::eyre::ensure!(
+            error.to_string().contains("weakly_exposed"),
+            "the refusal must name the missing count, got: {error}"
+        );
+
+        // No evidence packet was left behind claiming a clean result.
+        color_eyre::eyre::ensure!(
+            !repo.path().join(PR_EVIDENCE_JSON).exists(),
+            "a refused run must not write an evidence packet"
+        );
+
+        // But the exact producer payload IS preserved (Codex review on PR #14996).
+        // The `ripr-pr-evidence` artifact uploads `if: always()`, so a refusal is
+        // precisely when someone needs the bytes that caused it — and, being an
+        // unrecognized shape, the one case nobody has seen before. Refusing before
+        // writing this file would upload an evidence directory missing the only
+        // thing that explains the refusal.
+        let raw = fs::read_to_string(repo.path().join(PR_RAW_CHECK_JSON))
+            .context("the raw producer payload must survive a refusal for offline diagnosis")?;
+        let recovered: Value = serde_json::from_str(&raw)
+            .context("preserved raw output must be the producer's bytes")?;
+        color_eyre::eyre::ensure!(
+            recovered.get("summary").is_some_and(|summary| summary.get("weakly_exposed").is_none()),
+            "the preserved payload must be the offending envelope, not a repaired one"
+        );
+        Ok(())
+    }
+
+    /// The complement: the same pipeline accepts real, complete 0.10 output.
+    ///
+    /// Without this, the guard above could be satisfied by a validator that
+    /// refuses everything.
+    /// A refused rerun must not leave the previous run's packet behind.
+    ///
+    /// `Validate PR evidence contracts` runs `if: always()` in
+    /// `.github/workflows/ripr.yml`, so it executes even after generation failed,
+    /// and the self-hosted lanes reuse `target/` between runs. Without this, a
+    /// producer schema break aborts generation while `ripr-pr --check` happily
+    /// accepts the packet an earlier run of the *same* base/head wrote — failing
+    /// closed at ingest and open at the gate, which is worse than either alone.
+    #[cfg(not(windows))]
+    #[test]
+    fn a_refused_rerun_leaves_no_stale_evidence_to_accept() -> Result<()> {
+        let repo = evidence_repo()?;
+        let options = evidence_options();
+        let bin_dir = tempfile::tempdir()?;
+
+        // First run: healthy producer writes a packet, and --check accepts it.
+        {
+            let fake = write_fake_ripr_check_binary(bin_dir.path(), REAL_010_CHECK)?;
+            let _guard = override_ripr_bin(&fake)?;
+            write_pr_evidence(repo.path(), &options)?;
+            check_pr_evidence(repo.path(), &options)
+                .context("freshly written evidence must validate")?;
+        }
+        color_eyre::eyre::ensure!(
+            repo.path().join(PR_EVIDENCE_JSON).exists(),
+            "proof predicate failed: {}",
+            stringify!(repo.path().join(PR_EVIDENCE_JSON).exists())
+        );
+        color_eyre::eyre::ensure!(
+            repo.path().join(PR_EVIDENCE_MD).exists(),
+            "proof predicate failed: {}",
+            stringify!(repo.path().join(PR_EVIDENCE_MD).exists())
+        );
+
+        // Second run, same revisions, broken producer envelope.
+        let mut broken = parse_check(REAL_010_CHECK)?;
+        broken
+            .get_mut("summary")
+            .and_then(Value::as_object_mut)
+            .context("summary")?
+            .remove("weakly_exposed");
+        {
+            let fake = write_fake_ripr_check_binary(bin_dir.path(), &broken.to_string())?;
+            let _guard = override_ripr_bin(&fake)?;
+            let _refusal = write_pr_evidence(repo.path(), &options)
+                .err()
+                .ok_or_else(|| eyre!("the broken envelope must still be refused"))?;
+        }
+
+        // The previous run's packet must be gone, not merely superseded.
+        color_eyre::eyre::ensure!(
+            !repo.path().join(PR_EVIDENCE_JSON).exists(),
+            "a refused rerun must not leave the earlier packet on disk"
+        );
+        color_eyre::eyre::ensure!(
+            !repo.path().join(PR_EVIDENCE_MD).exists(),
+            "a refused rerun must not leave the earlier markdown on disk"
+        );
+
+        // And the always-run contract check must now refuse rather than accept
+        // stale evidence for these revisions. This is the assertion that makes
+        // the whole operation fail closed, not just its ingest.
+        let _refusal = check_pr_evidence(repo.path(), &options)
+            .err()
+            .ok_or_else(|| eyre!("stale evidence must not validate after a refused rerun"))?;
+
+        // The offending payload still survives for diagnosis.
+        color_eyre::eyre::ensure!(
+            repo.path().join(PR_RAW_CHECK_JSON).exists(),
+            "proof predicate failed: {}",
+            stringify!(repo.path().join(PR_RAW_CHECK_JSON).exists())
+        );
+        Ok(())
+    }
+
+    /// Malformed JSON must fail closed while preserving this attempt's exact output.
+    #[cfg(not(windows))]
+    #[test]
+    fn a_malformed_json_rerun_preserves_current_payload_and_refuses_stale_evidence() -> Result<()> {
+        let repo = evidence_repo()?;
+        let options = evidence_options();
+        let bin_dir = tempfile::tempdir()?;
+
+        {
+            let fake = write_fake_ripr_check_binary(bin_dir.path(), REAL_010_CHECK)?;
+            let _guard = override_ripr_bin(&fake)?;
+            write_pr_evidence(repo.path(), &options)?;
+            check_pr_evidence(repo.path(), &options)
+                .context("healthy prior evidence must validate before the malformed rerun")?;
+        }
+
+        // Intentionally invalid syntax, not a valid envelope missing a count.
+        // The existing fake producer's heredoc appends one newline to this text.
+        let malformed = r#"{"summary": broken-current-payload"#;
+        {
+            let fake = write_fake_ripr_check_binary(bin_dir.path(), malformed)?;
+            let _guard = override_ripr_bin(&fake)?;
+            let refusal = write_pr_evidence(repo.path(), &options)
+                .err()
+                .ok_or_else(|| eyre!("malformed JSON must refuse evidence generation"))?;
+            color_eyre::eyre::ensure!(
+                refusal.to_string().contains("ripr check output was not valid JSON"),
+                "the instrument must fail at JSON parsing, got: {refusal}"
+            );
+        }
+
+        for artifact in [PR_EVIDENCE_JSON, PR_EVIDENCE_MD] {
+            color_eyre::eyre::ensure!(
+                !repo.path().join(artifact).exists(),
+                "malformed output must not retain the prior evidence artifact: {artifact}"
+            );
+        }
+        let _refusal = check_pr_evidence(repo.path(), &options)
+            .err()
+            .ok_or_else(|| eyre!("original valid revisions must not accept stale evidence"))?;
+        let actual = fs::read(repo.path().join(PR_RAW_CHECK_JSON))
+            .context("malformed producer output must survive for offline diagnosis")?;
+        let expected = format!("{malformed}\n");
+        color_eyre::eyre::ensure!(
+            actual == expected.as_bytes(),
+            "raw diagnostic must retain the exact current malformed payload, including its newline"
+        );
+        Ok(())
+    }
+
+    /// A failure *before* the producer runs must also invalidate the old packet.
+    ///
+    /// Placement control for `clear_stale_pr_artifacts`. An invalid base fails at
+    /// `verify_revision`, which is upstream of the diff write and the producer —
+    /// so this passes only while the clear is the first thing `write_pr_evidence`
+    /// does. Moving it back behind `write_pr_diff` (where it originally sat)
+    /// fails here, because none of those steps ever run.
+    #[cfg(not(windows))]
+    #[test]
+    fn an_early_failure_also_invalidates_the_previous_packet() -> Result<()> {
+        let repo = evidence_repo()?;
+        let options = evidence_options();
+        let bin_dir = tempfile::tempdir()?;
+
+        {
+            let fake = write_fake_ripr_check_binary(bin_dir.path(), REAL_010_CHECK)?;
+            let _guard = override_ripr_bin(&fake)?;
+            write_pr_evidence(repo.path(), &options)?;
+            check_pr_evidence(repo.path(), &options)?;
+        }
+
+        // Same repository, but a base that cannot resolve: fails at the first
+        // `verify_revision`, long before any artifact would be rewritten.
+        let bogus = PrEvidenceOptions {
+            base: "refs/heads/does-not-exist".to_string(),
+            ..evidence_options()
+        };
+        let _refusal = write_pr_evidence(repo.path(), &bogus)
+            .err()
+            .ok_or_else(|| eyre!("an unresolvable base must fail"))?;
+
+        color_eyre::eyre::ensure!(
+            !repo.path().join(PR_EVIDENCE_JSON).exists(),
+            "an early failure must not leave the previous packet acceptable"
+        );
+        // The diff and its receipt are regenerated by this command too, and the
+        // upload globs `target/ripr/pr/**` with `if: always()`, so leaving them
+        // would publish an earlier run's diff as this failed run's artifacts.
+        // Safe to clear: `resolve_committed_diff` derives the receipt from git
+        // rather than from this file, and `write_pr_diff` rewrites both.
+        color_eyre::eyre::ensure!(
+            !repo.path().join(PR_DIFF).exists(),
+            "an early failure must not publish the previous run's diff"
+        );
+        color_eyre::eyre::ensure!(
+            !repo.path().join(PR_DIFF_RECEIPT).exists(),
+            "an early failure must not publish the previous run's committed-diff receipt"
+        );
+        // Checked with the ORIGINAL revisions: those still resolve, so this is a
+        // real acceptance test of the leftovers rather than a second failure for
+        // the same reason the generation failed.
+        let _refusal = check_pr_evidence(repo.path(), &options)
+            .err()
+            .ok_or_else(|| eyre!("stale evidence must not validate after an early failure"))?;
+        Ok(())
+    }
+
+    /// A producer that fails outright must not leave someone else's payload behind.
+    ///
+    /// `Upload ripr PR evidence` runs `if: always()`, so a `raw-check.json` from an
+    /// earlier run would be uploaded as this failed run's diagnostic evidence.
+    /// Distinct from the refusal case, where there *is* current output and keeping
+    /// it is the point.
+    #[cfg(not(windows))]
+    #[test]
+    fn a_failed_producer_leaves_no_stale_raw_payload() -> Result<()> {
+        let repo = evidence_repo()?;
+        let options = evidence_options();
+        let bin_dir = tempfile::tempdir()?;
+
+        {
+            let fake = write_fake_ripr_check_binary(bin_dir.path(), REAL_010_CHECK)?;
+            let _guard = override_ripr_bin(&fake)?;
+            write_pr_evidence(repo.path(), &options)?;
+        }
+        color_eyre::eyre::ensure!(
+            repo.path().join(PR_RAW_CHECK_JSON).exists(),
+            "first run wrote a payload"
+        );
+
+        // A producer that exits non-zero without emitting anything.
+        let failing = bin_dir.path().join("ripr");
+        write_text(&failing, "#!/bin/sh\necho 'ripr exploded' >&2\nexit 3\n")?;
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut permissions = fs::metadata(&failing)?.permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(&failing, permissions)?;
+        }
+        let _guard = override_ripr_bin(&failing)?;
+        let _refusal = write_pr_evidence(repo.path(), &options)
+            .err()
+            .ok_or_else(|| eyre!("a failing producer must abort"))?;
+
+        color_eyre::eyre::ensure!(
+            !repo.path().join(PR_RAW_CHECK_JSON).exists(),
+            "an earlier run's payload must not be uploaded as this failure's diagnostic"
+        );
+        color_eyre::eyre::ensure!(
+            !repo.path().join(PR_EVIDENCE_JSON).exists(),
+            "proof predicate failed: {}",
+            stringify!(!repo.path().join(PR_EVIDENCE_JSON).exists())
+        );
+        Ok(())
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn evidence_generation_accepts_real_ripr_010_output() -> Result<()> {
+        let repo = evidence_repo()?;
+
+        let bin_dir = tempfile::tempdir()?;
+        let fake = write_fake_ripr_check_binary(bin_dir.path(), REAL_010_CHECK)?;
+        let _guard = override_ripr_bin(&fake)?;
+
+        write_pr_evidence(repo.path(), &evidence_options())
+            .context("real 0.10 output must flow through evidence generation")?;
+        color_eyre::eyre::ensure!(
+            repo.path().join(PR_EVIDENCE_JSON).exists(),
+            "an accepted run writes its packet"
+        );
+        Ok(())
+    }
+
     // ---------------------------------------------------------------------
     // #13809 falsifiers: the two path helpers whose Clippy repairs are only
     // mechanical if their refusal semantics are exact. `main` carried no
@@ -5012,6 +5939,56 @@ paths = ["archive/["]
         assert!(!suppression_matches_finding(
             &rules,
             &json!({"grip_class": "weakly_gripped", "seam": {"file": path}})
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn tautology_declaration_suppression_matches_no_static_path_only() -> Result<()> {
+        let rules =
+            read_ripr_suppression_rules(&repo_root()?, Path::new("policy/ripr-suppressions.toml"))?;
+        let paths = [
+            "xtask/src/tasks/check_tautology/expr.rs",
+            "xtask/src/tasks/check_tautology/scan.rs",
+            "xtask/src/tasks/check_tautology/mod.rs",
+        ];
+
+        for path in paths {
+            assert!(
+                suppression_matches_finding(
+                    &rules,
+                    &json!({"classification": "no_static_path", "probe": {"file": path}})
+                ),
+                "no_static_path on {path} must match the #14058 declaration suppression"
+            );
+            assert!(
+                suppression_matches_finding(
+                    &rules,
+                    &json!({"grip_class": "no_static_path", "seam": {"file": path}})
+                ),
+                "ripr 0.9.x grip_class no_static_path on {path} must match"
+            );
+            assert!(
+                !suppression_matches_finding(
+                    &rules,
+                    &json!({"classification": "reachable_unrevealed", "probe": {"file": path}})
+                ),
+                "reachable_unrevealed on {path} must remain visible"
+            );
+            assert!(
+                !suppression_matches_finding(
+                    &rules,
+                    &json!({"classification": "weakly_exposed", "probe": {"file": path}})
+                ),
+                "weakly_exposed on {path} must remain visible"
+            );
+        }
+        assert!(!suppression_matches_finding(
+            &rules,
+            &json!({
+                "classification": "no_static_path",
+                "probe": {"file": "xtask/src/tasks/check_tautology/detect.rs"}
+            })
         ));
         Ok(())
     }
@@ -7978,7 +8955,17 @@ paths = ["archive/["]
             .to_string())
     }
 
-    struct RiprBinOverrideGuard;
+    /// Serializes every test that swaps the `ripr` binary.
+    ///
+    /// `RIPR_BIN_OVERRIDE` is process-global and `override_ripr_bin` releases its
+    /// lock as soon as the value is stored, so two tests overriding concurrently
+    /// each run against whichever double was installed last. That is not a
+    /// theoretical race: it made a refusal test observe a *well-formed* stub and
+    /// pass its pipeline instead of failing it. Holding this lock for the whole
+    /// override lifetime is what keeps each test bound to its own double.
+    static RIPR_BIN_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    struct RiprBinOverrideGuard(#[allow(dead_code)] std::sync::MutexGuard<'static, ()>);
 
     impl Drop for RiprBinOverrideGuard {
         fn drop(&mut self) {
@@ -7989,10 +8976,13 @@ paths = ["archive/["]
     }
 
     fn override_ripr_bin(binary: &Path) -> Result<RiprBinOverrideGuard> {
+        // A panicking test poisons this lock; recover rather than cascading an
+        // unrelated failure into every other override test.
+        let exclusive = RIPR_BIN_TEST_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let mut guard =
             RIPR_BIN_OVERRIDE.lock().map_err(|_| eyre!("RIPR_BIN test override lock poisoned"))?;
         *guard = Some(binary.display().to_string());
-        Ok(RiprBinOverrideGuard)
+        Ok(RiprBinOverrideGuard(exclusive))
     }
 
     fn write_fake_ripr_binary(dir: &Path) -> Result<PathBuf> {
@@ -8884,45 +9874,21 @@ esac
             ),
             // Unrecognized classification on suppression-relevant paths (#1346).
             concat!(
-                r#"{"summary":{"weakly_exposed":1},"findings":["#,
+                r#"{"summary":{"weakly_exposed":1,"reachable_unrevealed":0,"no_static_path":0},"findings":["#,
                 r#"{"classification":"exposed","probe":{"path":"archive/old.rs"}},"#,
                 r#"{"classification":"reachable_unrevealed","probe":{"path":"archive/old.rs"}}]}"#
             ),
-            // Summary without findings.
-            r#"{"summary":{"weakly_exposed":3,"reachable_unrevealed":0,"no_static_path":0}}"#,
-            // Findings without summary (Path B counting).
-            concat!(
-                r#"{"findings":[{"classification":"no_static_path","probe":{"path":"a.rs"}},"#,
-                r#"{"classification":"unknown","probe":{"path":"b.rs"}}]}"#
-            ),
-            // Neither.
-            r#"{"tool":"ripr"}"#,
-            r#"{}"#,
-            // Degenerate summary/findings shapes the DOM path tolerated.
-            r#"{"summary":"not-an-object","findings":null}"#,
-            r#"{"summary":{"weakly_exposed":2},"findings":5}"#,
-            r#"{"summary":{"weakly_exposed":2},"findings":{"a":1}}"#,
-            r#"{"summary":{"weakly_exposed":2},"findings":["a-string",42,null,true,{"classification":"weakly_exposed","probe":{"path":"mixed.rs"}}]}"#,
-            // Count fields the DOM path ignored (strings, negatives, floats).
-            r#"{"summary":{"weakly_exposed":"3","reachable_unrevealed":-2,"no_static_path":1.5},"findings":[]}"#,
             // Duplicate keys: DOM semantics keep the last occurrence.
-            r#"{"summary":{"weakly_exposed":1},"summary":{"weakly_exposed":7},"findings":[],"findings":[]}"#,
+            r#"{"summary":{"weakly_exposed":1},"summary":{"weakly_exposed":7,"reachable_unrevealed":0,"no_static_path":0},"findings":[],"findings":[]}"#,
             // A non-empty duplicate findings value must replace, not add to,
             // the earlier array (serde_json DOM maps are last-key-wins).
             concat!(
-                r#"{"summary":{"reachable_unrevealed":1,"no_static_path":1},"findings":["#,
+                r#"{"summary":{"weakly_exposed":0,"reachable_unrevealed":1,"no_static_path":1},"findings":["#,
                 r#"{"classification":"no_static_path","probe":{"path":"first.rs","line":1}}],"findings":["#,
                 r#"{"classification":"reachable_unrevealed","probe":{"path":"last.rs","line":2}}]}"#
             ),
-            // Top-level non-object payloads validate but carry nothing.
-            r#"[1,2,3]"#,
-            r#""just a string""#,
-            r#"42"#,
-            r#"-7"#,
-            r#"true"#,
-            r#"null"#,
             // Trailing whitespace is allowed by both paths.
-            "{}\n  ",
+            r#"{"summary":{"weakly_exposed":0,"reachable_unrevealed":0,"no_static_path":0},"findings":[]}"#,
         ];
         for payload in payloads {
             assert_streaming_receipt_matches_dom(payload, None, &no_suppressions())?;

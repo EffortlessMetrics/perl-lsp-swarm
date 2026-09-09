@@ -11,7 +11,7 @@ schema_version = 1
 policy = "ripr-suppressions"
 owner = "EffortlessMetrics"
 status = "advisory"
-updated = "2026-08-23"
+updated = "2026-09-08"
 
 # -----------------------------------------------------------------------------
 # Generated status docs: validated through status-generation checks, not
@@ -2877,3 +2877,89 @@ reason = "Two ripr#1429-class seams in PR #12255 semantic_identity module: Seman
 created = "2026-08-24"
 review_after = "2026-09-23"
 expires = "2026-10-24"
+
+# -----------------------------------------------------------------------------
+# Tautology checker type/env declarations (#14058 TP1, PR #14902): RIPR reports
+# no_static_path on non-executable enum/struct/field owners and on #[cfg(test)]
+# path-security fixture bytes inside the production module file.
+#
+# Same-file tests already construct QueryKind / PreludeShadow / TypeEnv
+# (typed_option_queries_are_side_effect_free,
+# local_prelude_shadows_refuse_bare_option_result) and scan the path-security
+# fixtures (path_security_bound_option_tautology_is_red,
+# original_two_call_path_security_shape_is_conservatively_skipped). RIPR cannot
+# statically trace those tests to the declaration/const owners (ripr#1429) and
+# treats the in-file test fixtures as production seams (ripr#1428). Constructor-
+# only tests would be proof theatre. Classification is no_static_path only so
+# a later reachable_unrevealed gap in these files still blocks. Remove when
+# ripr#1429/#1428 land or when targeted mutation replaces this advisory path.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-14058-tautology-declaration-seams"
+kind = "predicate_infection_untraceable"
+paths = [
+  "xtask/src/tasks/check_tautology/expr.rs",
+  "xtask/src/tasks/check_tautology/scan.rs",
+  "xtask/src/tasks/check_tautology/mod.rs",
+]
+classification = ["no_static_path"]
+owner = "proof-lane"
+issue = "EffortlessMetrics/ripr#1429"
+reason = "PR #14902 (issue #14058 TP1) adds the tautology checker's lexical TypeEnv / PreludeShadow / QueryKind owners and path-security scan fixtures. RIPR 0.10.x reports 19 no_static_path gaps on those enum/struct/field declarations (expr.rs QueryKind/PreludeShadow/TypeEnv, scan.rs AssertionVisitor env/shadow fields) and on #[cfg(test)] PATH_SECURITY_* fixture bytes plus their embedded sample functions in mod.rs. Same-file tests already construct the types and scan the fixtures; RIPR cannot statically trace declaration owners to those tests (ripr#1429) and treats in-file test fixtures as production seams (ripr#1428). Constructor-only tests would be proof theatre. Suppression is narrow: three checker files, no_static_path only. Remove when EffortlessMetrics/ripr#1429 and #1428 are fixed upstream or targeted mutation replaces this advisory path."
+created = "2026-09-08"
+review_after = "2026-10-08"
+expires = "2026-12-08"
+removal_criteria = "ripr#1429 traces declaration owners to same-file tests and ripr#1428 stops flagging #[cfg(test)] fixtures in production files as new gaps; then delete this entry and expect the existing tautology suite to clear without it."
+
+# #14945 perl-corpus train declaration seams: current RIPR receipt evidence
+# identifies only constants, the declared-parallel table/literals, and struct
+# field declarations in the new production owner. The 35-test sibling
+# #[path] module exercises those declarations and the parallel falsifiers, but
+# RIPR 0.10.x cannot connect that module to the declaration owners. The
+# path/classification matcher has no line or function selector; a future
+# executable no_static_path seam in this file would therefore also match and
+# must be reviewed rather than silently accepted.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-14945-perl-corpus-train-declaration-seams"
+kind = "declaration_line_no_static_path"
+paths = ["xtask/src/tasks/perl_corpus_train.rs"]
+classification = ["no_static_path"]
+owner = "proof-lane"
+issue = "#14945"
+reason = "The exact hosted RIPR receipt from run 34212428962 (artifact 10052033438, evaluated merge head 5ced00a41111593bc68c2e4348029a9b36627cc6) reports 32 no_static_path findings in this newly added owner: constants, the declared-parallel table/literals, and ProjectedNode/related struct field declarations at lines 40-112, 116-117, 242-246, 581, 583, 587, 1041, and 1042. The candidate's 35-test #[path] sibling module directly exercises the constants and declarations, including falsifier_5_same_authority_nodes_declared_parallel_fail, falsifier_11b_missing_declared_parallel_endpoint_after_repaired_mutation_fails, and canonical_loader_rejects_missing_declared_parallel_endpoints. This is the observed ripr#1429 declaration/sibling-test tracing limitation, not a claim that a future executable seam is covered; the current matcher has no line/function selector, so any future executable no_static_path finding in this file must trigger review and narrowing."
+created = "2026-09-08"
+review_after = "2026-09-15"
+expires = "2026-09-22"
+removal_criteria = "Remove when RIPR traces declaration owners through the sibling #[path] tests or a finer line/function selector or targeted mutation replaces this advisory path. Remove or narrow immediately if a future receipt reports an executable no_static_path seam in this file or any classification other than no_static_path."
+
+# -----------------------------------------------------------------------------
+# PR #15200 (#15156) adds cfg(all(test, feature = "workspace"))-gated scan
+# lifecycle observation to perl-lsp-rs: the new
+# src/runtime/scan_gate_observation.rs module (23 no_static_path probes), its
+# cfg(test) module registration in src/runtime/mod.rs (1), and the gated
+# indexing_scan_observation field in src/runtime/workspace.rs (1). The
+# surface is compiled only for workspace unit tests and is exercised by the
+# scan_gate_observation_reports_real_empty_scan_exit_with_sender_retained and
+# scan_gate_observation_is_consumed_only_when_a_queued_scan_is_admitted
+# lifecycle tests; ripr cannot trace same-file cfg(test) activation, so the
+# probes report reach:no on test-only instrumentation (ripr#1428/#1429
+# class). The wiring lines are inside #[cfg(all(test, ...))] items, so no
+# production seam is masked.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-scan-gate-observation-test-instrumentation"
+kind = "test_receipt_surface"
+paths = [
+  "crates/perl-lsp-rs/src/runtime/scan_gate_observation.rs",
+  "crates/perl-lsp-rs/src/runtime/mod.rs",
+  "crates/perl-lsp-rs/src/runtime/workspace.rs",
+]
+classification = ["no_static_path"]
+owner = "proof-lane"
+issue = "EffortlessMetrics/ripr#1429"
+reason = "PR #15200 (#15156): 25 no_static_path probes on cfg(all(test, feature = \"workspace\"))-gated scan lifecycle observation in perl-lsp-rs — a new test-only module plus its two gated wiring lines. The instrumentation is exercised by the workspace scan lifecycle unit tests that install it; ripr cannot trace same-file cfg(test) activation (ripr#1428/#1429 class). Path scope includes mod.rs and workspace.rs only for their cfg(test)-gated registration/field lines; both files' production seams remain gated as usual — remove or narrow immediately if a future receipt reports an executable no_static_path seam in those files outside the gated lines. Remove when ripr distinguishes cfg(test) instrumentation from production behavior."
+created = "2026-09-09"
+review_after = "2026-09-16"
+expires = "2026-09-23"
+removal_criteria = "Remove when ripr#1429 distinguishes cfg(test)-only modules from production seams, or narrow immediately if a future receipt reports an executable (non-test) no_static_path seam in mod.rs or workspace.rs."

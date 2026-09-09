@@ -229,7 +229,18 @@ impl DebugAdapter {
                     }
                 };
 
-                let response = self.dispatch_request(seq, &command, arguments);
+                // #9581 secondary-capability floor, ahead of the table-owned
+                // dispatch: a floored wire request is refused before any
+                // handler can run. The `initialized` notification below still
+                // keys off the (never-floored) initialize response.
+                let response = match self.secondary_capability_floor_response(
+                    seq,
+                    &command,
+                    arguments.as_ref(),
+                ) {
+                    Some(floored) => floored,
+                    None => self.dispatch_request(seq, &command, arguments),
+                };
                 let payload = serde_json::to_vec(&response).map_err(io::Error::other)?;
                 let notify_initialized = command == "initialize"
                     && Self::response_succeeded_for_command(&response, "initialize");

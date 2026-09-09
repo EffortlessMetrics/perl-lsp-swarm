@@ -16,6 +16,13 @@ import { workspaceSmokeLaunchArgs, workspaceSmokeTrustMode } from '../workspaceS
 
 const EXTENSION_ID = 'EffortlessMetrics.perl-lsp-rs';
 
+class CandidateBoundPlatformUnavailableError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'CandidateBoundPlatformUnavailableError';
+  }
+}
+
 type ExtensionSource = 'marketplace' | 'open-vsx' | 'vsix';
 
 function envValue(name: string): string {
@@ -57,10 +64,19 @@ export function assertCandidateBoundInstallSource({
   }
 }
 
-export function assertCandidateBoundPlatform(platform: string, candidateBound: boolean): void {
-  if (candidateBound && platform !== 'linux') {
-    throw new Error(
-      `Candidate-bound installed acceptance is restricted to Linux; refusing ${platform} bundled-server digest binding.`,
+export function assertCandidateBoundPlatform(
+  platform: string,
+  candidateBound: boolean,
+  completeCandidateIdentity = false,
+): void {
+  if (candidateBound && platform === 'win32' && !completeCandidateIdentity) {
+    throw new CandidateBoundPlatformUnavailableError(
+      'Candidate-bound Windows installed acceptance requires candidate ID, artifact-set ID, frozen product SHA, and artifact manifest before bundled-server digest binding.',
+    );
+  }
+  if (candidateBound && platform !== 'linux' && platform !== 'win32') {
+    throw new CandidateBoundPlatformUnavailableError(
+      `Candidate-bound installed acceptance is supported only on Linux and Windows; refusing ${platform} bundled-server digest binding.`,
     );
   }
 }
@@ -400,9 +416,16 @@ async function main(): Promise<void> {
     envValue('PERL_LSP_CURRENT_SOURCE_SHA') ||
     envValue('PERL_LSP_CANDIDATE_ARTIFACT_MANIFEST'),
   );
+  const completeCandidateIdentity = [
+    envValue('PERL_LSP_CANDIDATE_ID'),
+    envValue('PERL_LSP_ARTIFACT_SET_ID'),
+    envValue('PERL_LSP_CURRENT_SOURCE_SHA'),
+    envValue('PERL_LSP_CANDIDATE_ARTIFACT_MANIFEST'),
+  ].every(Boolean);
   assertCandidateBoundPlatform(
     process.platform === 'linux' ? 'linux' : process.platform,
     candidateBound,
+    completeCandidateIdentity,
   );
   assertCandidateBoundInstallSource({
     source,
@@ -473,7 +496,6 @@ async function main(): Promise<void> {
     const vsixSha256 = selectedVsixSha256(installTarget);
     const extensionTestsEnv: NodeJS.ProcessEnv = {
       ...process.env,
-      PERL_LSP_EXTENSION_TEST_SKIP_STARTUP: '1',
       PERL_LSP_PUBLISHED_EXTENSION_ID: envValue('PERL_LSP_PUBLISHED_EXTENSION_ID') || EXTENSION_ID,
       PERL_LSP_PUBLISHED_EXTENSION_SOURCE: source,
       PERL_LSP_SMOKE_RECEIPTS_DIR: receiptsRoot,
@@ -482,6 +504,11 @@ async function main(): Promise<void> {
       PERL_LSP_TOOLCHAIN_NPM_VERSION: toolchainNpmVersionValue,
       PERL_LSP_VSCODE_VERSION: vscodeVersion,
     };
+    if (process.env.PERL_LSP_TEST_EXPLORER_SMOKE !== '1') {
+      extensionTestsEnv.PERL_LSP_EXTENSION_TEST_SKIP_STARTUP = '1';
+    } else {
+      delete extensionTestsEnv.PERL_LSP_EXTENSION_TEST_SKIP_STARTUP;
+    }
     configureInstalledAcceptanceReceipt(extensionTestsEnv, receiptsRoot);
     if (vsixSha256 === undefined) {
       delete extensionTestsEnv.PERL_LSP_VSIX_SHA256;
@@ -529,6 +556,6 @@ if (require.main === module) {
   main().catch((error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);
     process.stderr.write(`${message}\n`);
-    process.exit(1);
+    process.exit(error instanceof CandidateBoundPlatformUnavailableError ? 2 : 1);
   });
 }
