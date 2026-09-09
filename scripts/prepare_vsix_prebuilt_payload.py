@@ -16,6 +16,7 @@ from release_archive_members import copy_selected_member, selected_member_digest
 from release_build_identity import load_json_object, validate_topology
 from release_terminal_manifest import (
     digest,
+    validate_identity,
     validate_package_evidence,
     validate_receipt,
 )
@@ -38,6 +39,7 @@ def build(args: argparse.Namespace) -> None:
         raise ValueError("release build receipt candidate differs from requested candidate")
     if identity.get("release_version") != args.release_version:
         raise ValueError("release build receipt version differs from requested release")
+    validate_identity(identity, args.source_sha, args.release_version)
     binaries = validate_receipt(receipt, identity)
     evidence = load_json_object(args.package_evidence, "release package evidence")
     archive = args.archive.resolve(strict=True)
