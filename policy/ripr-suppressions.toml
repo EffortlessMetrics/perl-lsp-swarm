@@ -2932,3 +2932,33 @@ created = "2026-09-08"
 review_after = "2026-09-15"
 expires = "2026-09-22"
 removal_criteria = "Remove when RIPR traces declaration owners through the sibling #[path] tests or a finer line/function selector or targeted mutation replaces this advisory path. Remove or narrow immediately if a future receipt reports an executable no_static_path seam in this file or any classification other than no_static_path."
+
+# -----------------------------------------------------------------------------
+# PR #15008 (#13374) adds crates/perl-semantic-facts/src/framework_adapters/
+# quickorm_api.rs: a 4712-line version-pinned QuickORM API return registry
+# that is explicitly reference data, not inference (module docs: "This
+# module is reference data, not inference ... changes no runtime behavior on
+# its own"). ripr 0.10.0 reports 1495 no_static_path probes on the row
+# declarations. The rows are exercised by the registry's inline tests and by
+# the deterministic matrix projection (cargo xtask generate-quickorm-api-
+# matrix --check against docs/specs/quickorm-api-return-matrix.md, itself a
+# generated-allowlist entry), and the file is not yet wired into any
+# production analyzer consumer — the same not-yet-wired substrate boundary
+# as the PLSP-ADR-0006 workspace-core entry, at declaration-line
+# ripr#1429 class.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-quickorm-api-reference-registry"
+kind = "declaration_line_no_static_path"
+paths = [
+  "crates/perl-semantic-facts/src/framework_adapters/quickorm_api.rs",
+  "xtask/src/tasks/quickorm_api_matrix.rs",
+]
+classification = ["no_static_path"]
+owner = "proof-lane"
+issue = "EffortlessMetrics/ripr#1429"
+reason = "PR #15008 (#13374): 1495 no_static_path probes on the version-pinned QuickORM API return registry, which is reviewed reference data with an upstream-commit authority boundary, not executable inference. Per-declaration probes cannot trace activation because the rows have no production consumer yet (not-yet-wired substrate, PLSP-ADR-0006 class); the rows are pinned by the registry's inline tests and the deterministic quickorm-api-matrix projection check (generated-allowlist id generated-quickorm-api-return-matrix). The xtask/src/tasks/quickorm_api_matrix.rs findings are the MATRIX_PATH const declaration for the projection (same const-data class). HONEST SCOPE NOTE: the matcher is path-scoped, so a future executable seam added to this file would be masked for this window — the file's own contract forbids behavior ('contains no parsing, no provider behavior, and no type inference'), so any such addition is itself a contract violation review must catch. Remove when ripr#1429 resolves declaration-line probes via constructor-call paths, when the registry gains its first production consumer (then re-scope to the consumer's findings), or when targeted mutation is scheduled per #1289."
+created = "2026-09-09"
+review_after = "2026-09-16"
+expires = "2026-09-23"
+removal_criteria = "Remove when the registry gains a production consumer (re-scope suppression to that consumer's seams) or when ripr#1429 resolves declaration-line probes for data rows; narrow immediately if any executable (non-declaration) code lands in this file."
