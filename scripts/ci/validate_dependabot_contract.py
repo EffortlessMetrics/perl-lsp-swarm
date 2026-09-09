@@ -628,6 +628,10 @@ def _inspect_config(doc: dict[str, object], path: str) -> list[Finding]:
                         f"found prefix={prefix!r} include={include!r}",
                     )
                 )
+        cooldown = _mapping_field(row, "cooldown")
+        if cooldown is None or _int_field(cooldown, "default-days") != 14:
+            findings.append(Finding("cooldown-drift", path,
+                f"{label} cooldown.default-days must be 14 (#15107)"))
         schedule = _mapping_field(row, "schedule")
         if schedule is None:
             findings.append(
