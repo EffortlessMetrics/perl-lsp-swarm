@@ -23,3 +23,22 @@ This route does not approve release baselines or publish artifacts. The existing
 inventory checker remains host-platform based, so cross-host and universal-managed
 acceptance remain outside this candidate's claim and require their owning package
 policy work.
+
+## Evidence adapter
+
+The upstream adapter consumes one passing build receipt, matching package-evidence
+record, target archive, release topology, projection input, source SHA, candidate ID,
+release version, extension ID, and accepted inventory SHA. It writes a fresh manifest
+and target-specific `bin/` payloads for the packaging workspace; it refuses existing
+outputs and removes its temporary staging directory on failure. The adapter invokes
+the existing TypeScript projection builder, so topology mode and required DAP status
+remain authoritative there.
+
+Run it with the repository's Node 26 and Python 3 toolchains, for example:
+
+```text
+python scripts/prepare_vsix_prebuilt_payload.py --receipt <receipt> --package-evidence <package-evidence> --archive <archive> --topology <topology> --projection <projection> --output vscode-extension --source-sha <40-hex-sha> --target <rust-target> --candidate-id <candidate> --release-version <version> --inventory-sha256 <64-hex-sha> --extension-id EffortlessMetrics.perl-lsp-rs
+```
+
+The emitted `vsix-candidate-payload.json` and staged members are inputs to
+`npm run package`; this adapter does not build Rust binaries or publish an artifact.

@@ -67,7 +67,15 @@ def build(args: argparse.Namespace) -> None:
     projection_row = next((item for item in projection.get("targets", []) if item.get("target") == args.target), None)
     if not isinstance(topology_row, dict) or not isinstance(projection_row, dict):
         raise ValueError("topology and projection omit the requested target")
-    if projection_row.get("archiveName") != topology_row.get("archive_name") or projection_row.get("requiredMembers") != topology_row.get("required_members"):
+    if any(
+        (
+            projection_row.get("archiveName") != topology_row.get("archive_name"),
+            projection_row.get("os") != topology_row.get("os"),
+            projection_row.get("architecture") != topology_row.get("architecture"),
+            projection_row.get("libc") != topology_row.get("libc"),
+            projection_row.get("requiredMembers") != topology_row.get("required_members"),
+        )
+    ):
         raise ValueError("projection target row differs from validated release topology")
     evidence_rows = {item["executable"]: item for item in evidence["binaries"]}
     payloads: list[dict[str, str]] = []
