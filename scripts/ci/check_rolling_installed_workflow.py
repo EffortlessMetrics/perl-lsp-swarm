@@ -329,8 +329,10 @@ def _require_candidate_exports_inside_windows_guard(run: Any) -> None:
         "PERL_LSP_ARTIFACT_SET_ID=",
     )
     for export in exports:
+        occurrences = [index for index, line in enumerate(lines) if export in line]
         _require(
-            any(export in lines[index] for index in range(guard_start + 1, guard_end)),
+            occurrences
+            and all(guard_start < index < guard_end for index in occurrences),
             f"candidate construction export {export} must remain inside the Windows guard",
         )
 
@@ -645,6 +647,17 @@ def expect_failure(text: str, mutation: str) -> None:
             )
         retained = [line for line in block.splitlines() if line not in exports]
         mutated = text[:start] + "\n".join(exports + retained) + "\n" + text[end:]
+    elif mutation == "duplicate_candidate_exports_outside_guard":
+        guard = '          if [ "$PLATFORM" = "windows" ]; then\n'
+        start = text.find(guard)
+        if start < 0:
+            raise WorkflowError(f"negative-control setup {mutation} found no Windows guard")
+        exports = [
+            "          printf 'PERL_LSP_CONSTRUCT_CANDIDATE_MANIFEST=1\\n' >> \"$GITHUB_ENV\"",
+            "          printf 'PERL_LSP_CANDIDATE_ID=outside\\n' >> \"$GITHUB_ENV\"",
+            "          printf 'PERL_LSP_ARTIFACT_SET_ID=outside\\n' >> \"$GITHUB_ENV\"",
+        ]
+        mutated = text[:start] + "\n".join(exports) + "\n" + text[start:]
     elif mutation == "drop_candidate_cli_identity":
         mutated = replace_once(
             text,
@@ -719,6 +732,7 @@ def main() -> int:
             "drop_server_identity",
             "drop_candidate_construction",
             "lift_candidate_exports",
+            "duplicate_candidate_exports_outside_guard",
             "drop_candidate_cli_identity",
             "drop_artifact_cli_identity",
             "needs_contract_drift",

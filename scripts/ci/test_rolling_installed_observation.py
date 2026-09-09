@@ -126,6 +126,8 @@ class ObservationTest(unittest.TestCase):
         verified_child_status: str = "not_proven",
         candidate_id: str | None = "",
         artifact_set_id: str | None = "",
+        verified_candidate_id: str | None = "",
+        verified_artifact_set_id: str | None = "",
     ) -> dict[str, object]:
         receipts = self.root / f"receipts-{row_id}"
         if receipt is not None:
@@ -179,9 +181,17 @@ class ObservationTest(unittest.TestCase):
                     {
                         "schema_version": "verified_child_receipt.v1",
                         "receipt_schema_version": "installed_acceptance.v1",
-                        "candidate_id": f"rolling-{SHA}-test",
+                        "candidate_id": (
+                            f"rolling-{SHA}-test"
+                            if verified_candidate_id == ""
+                            else verified_candidate_id
+                        ),
                         "frozen_product_sha": SHA,
-                        "artifact_set_id": "rolling-test-artifacts",
+                        "artifact_set_id": (
+                            "rolling-test-artifacts"
+                            if verified_artifact_set_id == ""
+                            else verified_artifact_set_id
+                        ),
                         "status": verified_child_status,
                         "source_receipt_sha256": MODULE.sha256(source_receipt_path),
                         "artifact_hashes": {
@@ -615,6 +625,24 @@ class ObservationTest(unittest.TestCase):
             vscode_version="stable",
             candidate_id=None,
             artifact_set_id=None,
+            verified_candidate_id=None,
+            verified_artifact_set_id=None,
+        )
+        row = json.loads((self.root / "windows-current.json").read_text(encoding="utf-8"))
+        self.assertEqual(row["cells"]["packaged_provider_edit_journey"], "not_proven")
+        self.assertTrue(any("non-empty candidate and artifact-set IDs" in finding for finding in row["findings"]))
+
+    def test_windows_empty_candidate_ids_cannot_match_empty_receipt_identity(self) -> None:
+        self.package("windows")
+        self.build_row(
+            receipt=self.windows_receipt({"status": "pass"}, candidate_bound=True),
+            row_id="windows-current",
+            platform="windows",
+            vscode_version="stable",
+            candidate_id="   ",
+            artifact_set_id="\t",
+            verified_candidate_id="   ",
+            verified_artifact_set_id="\t",
         )
         row = json.loads((self.root / "windows-current.json").read_text(encoding="utf-8"))
         self.assertEqual(row["cells"]["packaged_provider_edit_journey"], "not_proven")
