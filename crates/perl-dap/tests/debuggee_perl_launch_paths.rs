@@ -208,14 +208,21 @@ fn stop_on_entry_publishes_one_real_frame() -> Result<(), Box<dyn Error>> {
     let mut session = DapWorkflowSession::new_with_perl(workflow_timeout(), Some(&perl))?;
     session.launch_with_stop_on_entry(&script.to_string_lossy(), true)?;
     let stopped = session.wait_stopped_with_frame()?;
+    let expected_path = fs::canonicalize(&script)?;
+    let reported_path = fs::canonicalize(&stopped.source_path).map_err(|error| {
+        format!("stopOnEntry reported a non-canonical source path {}: {error}", stopped.source_path)
+    })?;
     if stopped.reason != "entry"
-        || stopped.source_path == "<unknown>"
-        || stopped.line == 0
+        || reported_path != expected_path
+        || stopped.line != 3
         || session.pending_stopped_events() != 0
     {
         return Err(format!(
-            "stopOnEntry must publish exactly one real entry frame; got reason={} path={} line={}",
-            stopped.reason, stopped.source_path, stopped.line
+            "stopOnEntry must publish exactly one real entry frame at {}: got reason={} path={} line={}",
+            expected_path.display(),
+            stopped.reason,
+            stopped.source_path,
+            stopped.line
         )
         .into());
     }
