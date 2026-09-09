@@ -2897,6 +2897,26 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn debugger_record_reader_rejects_bare_prompt_and_invalid_utf8() -> Result<(), String> {
+        use std::io::Cursor;
+
+        let mut bare = BufReader::new(Cursor::new(b"DB\n"));
+        let mut line = String::new();
+        read_debugger_record(&mut bare, &mut line)
+            .map_err(|error| format!("failed to read bare DB output: {error}"))?;
+        if line != "DB\n" {
+            return Err(format!("bare DB output was misclassified: {line:?}"));
+        }
+
+        let mut invalid = BufReader::new(Cursor::new(vec![0xff, b'\n']));
+        match read_debugger_record(&mut invalid, &mut line) {
+            Err(error) if error.kind() == std::io::ErrorKind::InvalidData => Ok(()),
+            Ok(_) => Err("invalid UTF-8 was accepted".into()),
+            Err(error) => Err(format!("invalid UTF-8 returned wrong error: {error}")),
+        }
+    }
+
     /// A diagnostic location can precede perl5db's first native context. It
     /// must not consume stopOnEntry or become the initial frame authority.
     #[cfg(unix)]
