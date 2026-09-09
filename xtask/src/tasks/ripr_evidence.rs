@@ -37,8 +37,12 @@ const PR_DIFF_RECEIPT: &str = "target/ripr/pr/committed-diff.json";
 const PR_RAW_CHECK_JSON: &str = "target/ripr/pr/raw-check.json";
 /// Filename prefix for the in-flight stdout file `run_ripr_streaming_to_file`
 /// publishes by rename. Distinctive so an abandoned one can be identified and
-/// swept without touching any other file in the artifact directory.
+/// swept without touching any other file in the staging directory.
 const RIPR_STDOUT_TEMP_PREFIX: &str = "raw-check.partial-";
+/// Same-filesystem staging directory for in-flight RIPR stdout. It is outside
+/// every uploaded evidence glob, so an interrupted run cannot publish a partial
+/// payload while still allowing the final artifact to use an atomic rename.
+const RIPR_STDOUT_STAGING_DIR: &str = "target/ripr/stdout-staging";
 /// Retained bytes of child stderr. The pipe is always drained in full — a
 /// child blocked writing to an unread pipe would never exit — but only this
 /// much is kept, so a noisy failure cannot reintroduce the unbounded buffer
@@ -764,7 +768,8 @@ fn write_pr_evidence(repo: &Path, options: &PrEvidenceOptions) -> Result<()> {
     let diff_receipt = resolve_committed_diff(repo, &options.base, &options.head)?;
     let changed_file_count = diff_receipt.entries.len();
     write_pr_diff(repo, &diff_receipt)?;
-    // Write raw check output for offline diagnostics (#1346): repo-exposure.json only contains
+    // Stream raw check output straight into the artifact path without buffering it in memory
+    // (#12860). For offline diagnostics (#1346), repo-exposure.json only contains
     // per-bucket counts; the findings[] array (which carries per-finding classification and path)
     // is required to diagnose suppression mismatches.  This file is included in the
     // ripr-pr-evidence artifact upload so it is available without re-running ripr.
@@ -861,9 +866,10 @@ fn check_pr_evidence(repo: &Path, options: &PrEvidenceOptions) -> Result<()> {
 ///
 /// RIPR check output is unbounded — a 2.1GB payload killed a 16GB CI runner
 /// (#12860) — so this transport never holds the whole document: the child
-/// writes to the same regular temporary file [`run_output`] uses to keep large
-/// stdout writes off a Windows pipe (#12569), then atomically publishes that
-/// file by rename once the child succeeds.
+/// writes to a regular temporary file in a staging directory outside the
+/// uploaded evidence globs, then atomically publishes that file by rename once
+/// the child succeeds. The staging directory remains on the same filesystem as
+/// the artifact for atomic publication (#12569).
 fn run_ripr_check(repo: &Path, options: &PrEvidenceOptions) -> Result<()> {
     let diff = repo.join(PR_DIFF).display().to_string();
     let root = command_root_arg(repo, &options.root)?;
@@ -878,16 +884,20 @@ fn run_ripr_check(repo: &Path, options: &PrEvidenceOptions) -> Result<()> {
             "json".to_string(),
         ],
         &repo.join(PR_RAW_CHECK_JSON),
+        &repo.join(RIPR_STDOUT_STAGING_DIR),
     )
 }
 
-/// Runs RIPR, streaming stdout into a same-directory temporary file and
-/// atomically publishing it at `out_path` after success. Stderr is captured in
-/// full (diagnostics are small); the stdout excerpt in a failure message is
-/// bounded because the payload itself is unbounded. Only one complete copy of
-/// the unbounded payload exists on disk, and any failure before the rename
-/// drops the temporary file without exposing a partial artifact at `out_path`.
-fn run_ripr_streaming_to_file(args: &[String], out_path: &Path) -> Result<()> {
+/// Runs RIPR, streaming stdout into a temporary file in `staging_dir` and
+/// atomically publishing it at `out_path` after success. The staging directory
+/// is outside uploaded evidence globs but on the same filesystem, so an
+/// interrupted run cannot leave a partial payload in the artifact tree while
+/// the final publication remains an atomic rename. Stderr is captured in full
+/// (diagnostics are small); the stdout excerpt in a failure message is bounded
+/// because the payload itself is unbounded. Only one complete copy of the
+/// unbounded payload exists on disk, and any failure before the rename drops
+/// the temporary file without exposing a partial artifact at `out_path`.
+fn run_ripr_streaming_to_file(args: &[String], out_path: &Path, staging_dir: &Path) -> Result<()> {
     let binary = ripr_binary()?;
     // A failed rerun must not leave an older raw artifact available to the
     // review-comments fallback. The artifact is published only after the child
@@ -905,6 +915,8 @@ fn run_ripr_streaming_to_file(args: &[String], out_path: &Path) -> Result<()> {
         _ => Path::new("."),
     };
     fs::create_dir_all(parent).with_context(|| format!("failed to create {}", parent.display()))?;
+    fs::create_dir_all(staging_dir)
+        .with_context(|| format!("failed to create {}", staging_dir.display()))?;
     // `NamedTempFile` unlinks on drop, but a killed process never runs drop.
     // This lane is killed routinely — OOM before this change, and external
     // run cancellation after it — each time stranding a partial payload that
@@ -912,10 +924,10 @@ fn run_ripr_streaming_to_file(args: &[String], out_path: &Path) -> Result<()> {
     // orphans accumulate on persistent self-hosted workspaces until the disk
     // filled, which is the same failure class this change exists to prevent
     // (#12569 review). Sweep them by prefix before writing a new one.
-    remove_orphaned_stdout_temps(parent);
+    remove_orphaned_stdout_temps(staging_dir);
     let stdout_file = tempfile::Builder::new()
         .prefix(RIPR_STDOUT_TEMP_PREFIX)
-        .tempfile_in(parent)
+        .tempfile_in(staging_dir)
         .context("failed to create RIPR stdout file")?;
     let mut child = Command::new(&binary)
         .args(args)
@@ -968,10 +980,10 @@ fn run_ripr_streaming_to_file(args: &[String], out_path: &Path) -> Result<()> {
 /// sweep failure must not block evidence generation. Removing a file a
 /// concurrent writer still holds open does not corrupt its stream — that
 /// writer keeps its descriptor and only its final `persist` fails — and this
-/// function already assumes a single writer per artifact directory, since it
+/// function already assumes a single writer per staging directory, since it
 /// unconditionally removes the published artifact above.
-fn remove_orphaned_stdout_temps(parent: &Path) {
-    let Ok(entries) = fs::read_dir(parent) else { return };
+fn remove_orphaned_stdout_temps(staging_dir: &Path) {
+    let Ok(entries) = fs::read_dir(staging_dir) else { return };
     for entry in entries.flatten() {
         if entry.file_name().to_string_lossy().starts_with(RIPR_STDOUT_TEMP_PREFIX) {
             let _ = fs::remove_file(entry.path());
@@ -4652,7 +4664,7 @@ mod tests {
                 .remove(key);
             cases.push((key, check, Some(key)));
         }
-        for malformed in [json!("3"), json!(-1), json!(1.5), json!(null)] {
+        for malformed in [json!("3"), json!(-1), json!(1.5), json!(null), json!({})] {
             let mut check = real.clone();
             check
                 .get_mut("summary")
@@ -9878,6 +9890,7 @@ esac
                 r#"{"classification":"exposed","probe":{"path":"archive/old.rs"}},"#,
                 r#"{"classification":"reachable_unrevealed","probe":{"path":"archive/old.rs"}}]}"#
             ),
+            r#"{"summary":{"weakly_exposed":2,"reachable_unrevealed":0,"no_static_path":0},"findings":["a-string",42,null,true,{"classification":"weakly_exposed","probe":{"path":"mixed.rs"}}]}"#,
             // Duplicate keys: DOM semantics keep the last occurrence.
             r#"{"summary":{"weakly_exposed":1},"summary":{"weakly_exposed":7,"reachable_unrevealed":0,"no_static_path":0},"findings":[],"findings":[]}"#,
             // A non-empty duplicate findings value must replace, not add to,
@@ -9892,6 +9905,49 @@ esac
         ];
         for payload in payloads {
             assert_streaming_receipt_matches_dom(payload, None, &no_suppressions())?;
+        }
+        Ok(())
+    }
+
+    /// Shapes the pre-#9113 DOM path counted are now refused by both paths.
+    /// Retained from the DOM/stream count-parity list: after the producer-envelope
+    /// contract they are instrument failures, and the parity claim is that the
+    /// streaming path refuses exactly what the DOM oracle refuses.
+    #[test]
+    fn streaming_ingestion_refuses_the_degenerate_shapes_the_dom_oracle_refuses() -> Result<()> {
+        let payloads = [
+            r#"{"summary":{"weakly_exposed":3,"reachable_unrevealed":0,"no_static_path":0}}"#,
+            r#"{"findings":[{"classification":"no_static_path","probe":{"path":"a.rs"}},{"classification":"unknown","probe":{"path":"b.rs"}}]}"#,
+            r#"{"tool":"ripr"}"#,
+            r#"{}"#,
+            r#"{"summary":"not-an-object","findings":null}"#,
+            r#"{"summary":{"weakly_exposed":2},"findings":5}"#,
+            r#"{"summary":{"weakly_exposed":2},"findings":{"a":1}}"#,
+            r#"{"summary":{"weakly_exposed":"3","reachable_unrevealed":-2,"no_static_path":1.5},"findings":[]}"#,
+            r#"[1,2,3]"#,
+            r#""just a string""#,
+            r#"42"#,
+            r#"-7"#,
+            r#"true"#,
+            r#"null"#,
+            "{}\n  ",
+        ];
+        for payload in payloads {
+            let dom = serde_json::from_str::<Value>(payload)?;
+            let dom_refusal = validate_check_envelope(&dom)
+                .err()
+                .ok_or_else(|| eyre!("DOM oracle unexpectedly accepted {payload}"))?;
+            let temp = tempfile::tempdir()?;
+            let raw_path = temp.path().join("raw-check.json");
+            fs::write(&raw_path, payload)?;
+            let streamed_refusal =
+                ripr_check_ingestion_from_file(&raw_path, &no_suppressions(), None, None, None)
+                    .err()
+                    .ok_or_else(|| eyre!("streamed ingestion unexpectedly accepted {payload}"))?;
+            color_eyre::eyre::ensure!(
+                streamed_refusal.to_string() == dom_refusal.to_string(),
+                "refusal mismatch for {payload}: streamed `{streamed_refusal}`, DOM `{dom_refusal}`"
+            );
         }
         Ok(())
     }
@@ -10019,6 +10075,94 @@ paths = ["archive/**"]
         Ok(())
     }
 
+    /// A killed run may leave staging residue, but no partial stdout may enter
+    /// the uploaded evidence tree before or after successful publication.
+    #[test]
+    fn run_ripr_check_stages_stdout_outside_the_uploaded_evidence_tree() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let repo = temp.path().join("repo");
+        let stubs = temp.path().join("stubs");
+        fs::create_dir_all(&repo)?;
+        fs::create_dir_all(&stubs)?;
+        let raw_path = repo.join(PR_RAW_CHECK_JSON);
+        let artifact_dir = raw_path.parent().ok_or_else(|| eyre!("raw path has no parent"))?;
+        let staging_dir = repo.join(RIPR_STDOUT_STAGING_DIR);
+        fs::create_dir_all(artifact_dir)?;
+        fs::create_dir_all(&staging_dir)?;
+        let orphan = staging_dir.join(format!("{RIPR_STDOUT_TEMP_PREFIX}deadbeef"));
+        fs::write(&orphan, "partial payload from a killed run")?;
+
+        let payload = r#"{"summary":{"findings":0},"findings":[]}"#;
+        let binary = write_ripr_stub(&stubs, "ripr-check-staging", payload, 0)?;
+        let _override = override_ripr_bin(&binary)?;
+        let options = PrEvidenceOptions {
+            root: ".".to_string(),
+            base: "origin/main".to_string(),
+            head: "HEAD".to_string(),
+            pr_head_sha: None,
+        };
+
+        run_ripr_check(&repo, &options)?;
+
+        assert_eq!(fs::read(&raw_path)?, payload.as_bytes());
+        let artifact_entries = fs::read_dir(artifact_dir)?
+            .map(|entry| entry.map(|entry| entry.file_name().to_string_lossy().into_owned()))
+            .collect::<std::io::Result<Vec<_>>>()?;
+        assert!(
+            !artifact_entries.iter().any(|name| name.starts_with(RIPR_STDOUT_TEMP_PREFIX)),
+            "uploaded evidence tree must never contain stdout temporaries: {artifact_entries:?}"
+        );
+        assert!(!orphan.exists(), "a pre-existing staging orphan must be swept before the run");
+        Ok(())
+    }
+
+    #[test]
+    fn ripr_stdout_staging_workflow_upload_globs_exclude_staging_dir() -> Result<()> {
+        let workflow = fs::read_to_string(repo_root()?.join(".github/workflows/ripr.yml"))?;
+        let yaml: serde_yaml_ng::Value = serde_yaml_ng::from_str(&workflow)?;
+        let jobs = yaml
+            .get("jobs")
+            .and_then(serde_yaml_ng::Value::as_mapping)
+            .context("RIPR workflow has no jobs map")?;
+        let mut upload_paths = Vec::new();
+        for job in jobs.values() {
+            let Some(steps) = job.get("steps").and_then(serde_yaml_ng::Value::as_sequence) else {
+                continue;
+            };
+            for step in steps {
+                if step.get("name").and_then(serde_yaml_ng::Value::as_str)
+                    != Some("Upload ripr PR evidence")
+                {
+                    continue;
+                }
+                let path = step
+                    .get("with")
+                    .and_then(|with| with.get("path"))
+                    .and_then(serde_yaml_ng::Value::as_str)
+                    .context("RIPR evidence upload step has no path")?;
+                upload_paths.extend(path.lines().map(str::trim).filter(|path| !path.is_empty()));
+            }
+        }
+        color_eyre::eyre::ensure!(
+            !upload_paths.is_empty(),
+            "RIPR workflow has no evidence upload paths"
+        );
+        color_eyre::eyre::ensure!(
+            upload_paths.iter().any(|path| *path == "target/ripr/pr/**"),
+            "RIPR evidence uploads must retain target/ripr/pr/**: {upload_paths:?}"
+        );
+        for path in &upload_paths {
+            let root = path.strip_suffix("/**").unwrap_or(path).trim_end_matches('/');
+            let matches_staging = RIPR_STDOUT_STAGING_DIR == root
+                || RIPR_STDOUT_STAGING_DIR.starts_with(&format!("{root}/"));
+            color_eyre::eyre::ensure!(
+                !matches_staging,
+                "upload glob `{path}` would include {RIPR_STDOUT_STAGING_DIR}"
+            );
+        }
+        Ok(())
+    }
+
     /// Falsifies a transport that leaves a killed run's partial payload behind.
     ///
     /// `NamedTempFile` unlinks on drop, so nothing reclaims the in-flight
@@ -10035,13 +10179,15 @@ paths = ["archive/**"]
         fs::create_dir_all(&stubs)?;
         let raw_path = repo.join(PR_RAW_CHECK_JSON);
         let artifact_dir = raw_path.parent().ok_or_else(|| eyre!("raw path has no parent"))?;
+        let staging_dir = repo.join(RIPR_STDOUT_STAGING_DIR);
         fs::create_dir_all(artifact_dir)?;
+        fs::create_dir_all(&staging_dir)?;
 
-        // What a killed prior run leaves: a prefixed temporary that drop never
-        // reclaimed, plus an unrelated neighbour that must survive the sweep.
-        let orphan = artifact_dir.join(format!("{RIPR_STDOUT_TEMP_PREFIX}deadbeef"));
+        // What a killed prior run leaves in staging: a prefixed temporary that
+        // drop never reclaimed, plus an unrelated neighbour that must survive.
+        let orphan = staging_dir.join(format!("{RIPR_STDOUT_TEMP_PREFIX}deadbeef"));
         fs::write(&orphan, "partial payload from a killed run")?;
-        let bystander = artifact_dir.join("committed-diff.json");
+        let bystander = staging_dir.join("committed-diff.json");
         fs::write(&bystander, "{}")?;
 
         let payload = r#"{"summary":{"findings":0},"findings":[]}"#;
@@ -10059,7 +10205,7 @@ paths = ["archive/**"]
         assert!(!orphan.exists(), "an abandoned stdout temporary must be swept");
         assert!(bystander.exists(), "the sweep must not touch unrelated artifact files");
         assert_eq!(fs::read(&raw_path)?, payload.as_bytes());
-        let leftovers = fs::read_dir(artifact_dir)?
+        let leftovers = fs::read_dir(&staging_dir)?
             .map(|entry| entry.map(|entry| entry.file_name().to_string_lossy().into_owned()))
             .collect::<std::io::Result<Vec<_>>>()?;
         assert!(
