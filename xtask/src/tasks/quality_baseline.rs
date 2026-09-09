@@ -316,7 +316,7 @@ fn is_cfg_test_attr(line: &str) -> bool {
 /// Strip lines that fall inside `#[cfg(test)]` blocks from a parsed
 /// `LcovSummary`.  Source files are resolved relative to `source_root`.
 ///
-/// Production Rust sources must be readable in the current source tree before
+/// Required production Rust source paths must resolve to readable text before
 /// their `cfg(test)` lines can be filtered. Explicitly excluded/non-production
 /// paths retain the raw LCOV counters because they are outside this filter's
 /// production-source contract.
@@ -407,7 +407,7 @@ fn is_required_production_source_path(lcov_path: &str, source_root: &Path) -> bo
             return is_patch_coverage_source_path(&normalized[index..]);
         }
     }
-    Path::new(lcov_path).is_absolute() && normalized.ends_with(".rs")
+    false
 }
 
 #[derive(Debug)]
@@ -445,6 +445,10 @@ struct LcovLine {
 
 pub fn run(args: CoverageBaselineArgs) -> Result<()> {
     let root = std::env::current_dir().context("resolving current directory")?;
+    run_from_root(&root, args)
+}
+
+fn run_from_root(root: &Path, args: CoverageBaselineArgs) -> Result<()> {
     let receipt = build_receipt(&root, &args)?;
     let rendered = render_json(&receipt)?;
 
@@ -2084,9 +2088,12 @@ mod tests {\n\
 
     #[test]
     fn strip_cfg_test_lines_preserves_explicit_excluded_source_behavior() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let foreign_path = temp.path().join("foreign/generated.rs").to_string_lossy().into_owned();
         for path in [
             "crates/perl-lsp-ux-tests/src/lib.rs",
             "C:/old-checkout/crates/perl-lsp-ux-tests/src/lib.rs",
+            foreign_path.as_str(),
         ] {
             let mut summary = LcovSummary {
                 line_hit: 0,
@@ -2111,17 +2118,18 @@ mod tests {\n\
     fn build_receipt_rejects_unresolved_production_source_after_valid_read() -> TestResult {
         for use_absolute_source_path in [false, true] {
             let temp = tempfile::tempdir()?;
-            let repo = temp.path();
+            let repo = temp.path().join("new-checkout");
+            fs::create_dir_all(&repo)?;
             let source = repo.join("crates/example/src/lib.rs");
             fs::create_dir_all(source.parent().ok_or("source has no parent")?)?;
             fs::write(
                 &source,
                 "pub fn production() -> bool { true }\n#[cfg(test)]\nmod tests {\n    fn test_only() {}\n}\n",
             )?;
-            run_git(repo, &["init"])?;
-            run_git(repo, &["add", "crates/example/src/lib.rs"])?;
+            run_git(&repo, &["init"])?;
+            run_git(&repo, &["add", "crates/example/src/lib.rs"])?;
             run_git(
-                repo,
+                &repo,
                 &[
                     "-c",
                     "user.name=test",
@@ -2141,9 +2149,9 @@ mod tests {\n\
             fs::write(&lcov, format!("SF:{source_ref}\nDA:1,0\nDA:4,1\nDA:5,1\nend_of_record\n"))?;
             let codecov = repo.join("codecov.yml");
             fs::write(&codecov, "coverage:\n  status: {}\n")?;
-            let mut lcov_path = lcov;
-            let mut receipt_path = repo.join("target/coverage-baseline.json");
-            let mut codecov_path = codecov;
+            let lcov_path = lcov;
+            let receipt_path = repo.join("target/coverage-baseline.json");
+            let codecov_path = codecov;
             let make_args = |lcov_path: &Path, receipt_path: &Path, codecov_path: &Path, check| {
                 CoverageBaselineArgs {
                     lcov: lcov_path.to_path_buf(),
@@ -2157,7 +2165,7 @@ mod tests {\n\
             };
 
             let readable =
-                build_receipt(repo, &make_args(&lcov_path, &receipt_path, &codecov_path, false))?;
+                build_receipt(&repo, &make_args(&lcov_path, &receipt_path, &codecov_path, false))?;
             let readable_coverage = readable
                 .pointer("/coverage/project")
                 .and_then(JsonValue::as_f64)
@@ -2167,9 +2175,7 @@ mod tests {\n\
                     "readable cfg(test) filtering should retain uncovered production lines".into(),
                 );
             }
-            let generated =
-                build_receipt(repo, &make_args(&lcov_path, &receipt_path, &codecov_path, false))?;
-            write_text(&receipt_path, &render_json(&generated)?)?;
+            run_from_root(&repo, make_args(&lcov_path, &receipt_path, &codecov_path, false))?;
             let previous_receipt = fs::read(&receipt_path)?;
             if use_absolute_source_path {
                 let old_checkout_source =
@@ -2184,9 +2190,9 @@ mod tests {\n\
             } else {
                 fs::remove_file(&source)?;
             }
-            let error = match build_receipt(
-                repo,
-                &make_args(&lcov_path, &receipt_path, &codecov_path, false),
+            let error = match run_from_root(
+                &repo,
+                make_args(&lcov_path, &receipt_path, &codecov_path, false),
             ) {
                 Ok(_) => return Err("missing production source must fail closed".into()),
                 Err(error) => error,
@@ -2197,9 +2203,9 @@ mod tests {\n\
             if fs::read(&receipt_path)? != previous_receipt {
                 return Err("failed generation must not overwrite the prior receipt".into());
             }
-            let check_error = match build_receipt(
-                repo,
-                &make_args(&lcov_path, &receipt_path, &codecov_path, true),
+            let check_error = match run_from_root(
+                &repo,
+                make_args(&lcov_path, &receipt_path, &codecov_path, true),
             ) {
                 Ok(_) => return Err("--check must fail when the source is unavailable".into()),
                 Err(error) => error,
