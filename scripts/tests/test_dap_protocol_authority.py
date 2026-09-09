@@ -1946,11 +1946,13 @@ class WorkflowCommandPairingTests(unittest.TestCase):
     def test_every_workflow_invocation_names_a_supported_command(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
         workflow = (repo_root / ".github" / "workflows" / "dap-protocol-authority.yml").read_text()
-        invoked = {
-            match
-            for match in re.findall(r"dap_protocol_authority\.py\s+([a-z][a-z-]*)", workflow)
-            if not match.startswith("-")
-        }
+        # The regex's lowercase start already excludes option spellings like
+        # --help. Scope note: this pairs the workflow and script in ONE tree
+        # (what push-to-main CI checks); a pull_request run evaluates the
+        # merge-ref workflow against the candidate checkout, and that
+        # mixed-revision pairing is covered by the runtime --help guard in
+        # the workflow step, which no single-tree test can observe.
+        invoked = set(re.findall(r"dap_protocol_authority\.py\s+([a-z][a-z-]*)", workflow))
         source = SCRIPT.read_text()
         supported = set(re.findall(r'add_parser\("([a-z][a-z-]*)"', source))
         supported.update(
