@@ -13,7 +13,6 @@ mod inventory;
 mod scan;
 
 use crate::utils::project_root;
-use chrono::{NaiveDate, Utc};
 use color_eyre::eyre::{Context, Result, bail};
 use disposition::DispositionLedger;
 use inventory::collect_rust_files;
@@ -51,8 +50,7 @@ pub fn run(args: CheckTautologyArgs) -> Result<()> {
         Some(root) => root,
         None => project_root()?,
     };
-    let as_of = Utc::now().date_naive();
-    let report = scan_root(&root, args.policy.as_deref(), as_of)?;
+    let report = scan_root(&root, args.policy.as_deref())?;
     print_report(&report);
 
     if let Some(receipt_path) = args.receipt.as_deref() {
@@ -76,8 +74,12 @@ pub fn run(args: CheckTautologyArgs) -> Result<()> {
     Ok(())
 }
 
-fn scan_root(root: &Path, policy: Option<&Path>, as_of: NaiveDate) -> Result<ScanReport> {
-    let ledger = load_ledger(root, policy, as_of)?;
+pub(crate) fn cadence_rows(path: &Path) -> Result<Vec<disposition::CadenceRow>> {
+    disposition::cadence_rows(path)
+}
+
+fn scan_root(root: &Path, policy: Option<&Path>) -> Result<ScanReport> {
+    let ledger = load_ledger(root, policy)?;
     let files = collect_rust_files(root)?;
     let mut report = ScanReport { files_scanned: files.len(), ..ScanReport::default() };
 
@@ -106,14 +108,14 @@ fn scan_root(root: &Path, policy: Option<&Path>, as_of: NaiveDate) -> Result<Sca
     Ok(report)
 }
 
-fn load_ledger(root: &Path, policy: Option<&Path>, as_of: NaiveDate) -> Result<DispositionLedger> {
+fn load_ledger(root: &Path, policy: Option<&Path>) -> Result<DispositionLedger> {
     let default_path = root.join("policy/tautology-dispositions.toml");
     let path = match policy {
         Some(path) => resolve_policy_path(root, path),
         None if default_path.is_file() => default_path,
         None => return Ok(DispositionLedger::empty()),
     };
-    DispositionLedger::load(&path, as_of)
+    DispositionLedger::load(&path)
 }
 
 fn resolve_policy_path(root: &Path, policy: &Path) -> PathBuf {
@@ -166,7 +168,6 @@ mod tests {
 
     use super::detect::RuleId;
     use super::{scan_file, scan_root};
-    use chrono::NaiveDate;
     use std::fs;
     use std::path::Path;
     use tempfile::TempDir;
@@ -192,10 +193,6 @@ mod tests {
             assert!(sanitize_completion_path_input("../foo").is_none());
         }
     "#;
-
-    fn as_of() -> NaiveDate {
-        NaiveDate::from_ymd_opt(2026, 8, 30).expect("date")
-    }
 
     fn write_rs(root: &std::path::Path, relative: &str, source: &str) {
         let path = root.join(relative);
@@ -301,7 +298,7 @@ mod tests {
             "crates/demo/tests/fixtures/hist.rs",
             "use Scalar::Util qw(looks_like_number);\nfn f(v: Option<u8>) { assert!(v.is_some() || v.is_none()); }\n",
         );
-        let report = scan_root(tmp.path(), None, as_of()).expect("scan");
+        let report = scan_root(tmp.path(), None).expect("scan");
         assert!(report.errors.is_empty(), "{:?}", report.errors);
         assert!(report.findings.is_empty(), "{:?}", report.findings);
     }
@@ -319,7 +316,7 @@ mod tests {
             "crates/demo/tests/fixtures/hist.rs",
             "use Scalar::Util qw(looks_like_number);\nfn f(v: Option<u8>) { assert!(v.is_some() || v.is_none()); }\n",
         );
-        let report = scan_root(tmp.path(), None, as_of()).expect("scan");
+        let report = scan_root(tmp.path(), None).expect("scan");
         assert!(report.errors.is_empty(), "{:?}", report.errors);
         assert_eq!(report.findings.len(), 1, "{:?}", report.findings);
         assert_eq!(report.findings[0].path, "crates/demo/src/lib.rs");
@@ -330,7 +327,7 @@ mod tests {
     fn unparsable_governed_file_is_instrument_failure() {
         let tmp = TempDir::new().expect("tempdir");
         write_rs(tmp.path(), "crates/demo/src/lib.rs", "fn broken( {");
-        let report = scan_root(tmp.path(), None, as_of()).expect("scan");
+        let report = scan_root(tmp.path(), None).expect("scan");
         assert!(report.findings.is_empty());
         assert_eq!(report.errors.len(), 1);
         assert!(report.errors[0].contains("unparsable"), "{:?}", report.errors);
@@ -345,7 +342,7 @@ mod tests {
     }
 
     #[test]
-    fn expired_disposition_fails_the_instrument() {
+    fn elapsed_disposition_stays_active_for_unchanged_subject() {
         let tmp = TempDir::new().expect("tempdir");
         write_rs(
             tmp.path(),
@@ -364,16 +361,44 @@ rule = "option-is-some-or-none"
 path = "crates/demo/src/lib.rs"
 owner = "parser-core"
 issue = "#14061"
-reason = "expired on purpose"
+reason = "elapsed lifecycle date on purpose"
 created = "2026-01-01"
 expires = "2026-01-02"
 "##,
         )
         .expect("ledger");
-        let error = scan_root(tmp.path(), Some(&tmp.path().join("policy/ledger.toml")), as_of())
-            .expect_err("expired ledger");
+        let report = scan_root(tmp.path(), Some(&tmp.path().join("policy/ledger.toml")))
+            .expect("elapsed lifecycle metadata remains valid");
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        assert!(report.findings.is_empty(), "{:?}", report.findings);
+    }
+
+    #[test]
+    fn malformed_expiry_fails_the_instrument() {
+        let tmp = TempDir::new().expect("tempdir");
+        write_rs(tmp.path(), "crates/demo/src/lib.rs", "fn probe() {}\n");
+        fs::create_dir_all(tmp.path().join("policy")).expect("policy dir");
+        fs::write(
+            tmp.path().join("policy/ledger.toml"),
+            r##"
+schema_version = 1
+policy = "tautology-dispositions"
+[[disposition]]
+id = "tautology-demo"
+rule = "option-is-some-or-none"
+path = "crates/demo/src/lib.rs"
+owner = "parser-core"
+issue = "#14061"
+reason = "invalid lifecycle syntax"
+created = "2026-01-01"
+expires = "not-a-date"
+"##,
+        )
+        .expect("ledger");
+        let error = scan_root(tmp.path(), Some(&tmp.path().join("policy/ledger.toml")))
+            .expect_err("malformed expiry");
         let display = format!("{error:#}");
-        assert!(display.contains("expired"), "{display}");
+        assert!(display.contains("invalid expires date"), "{display}");
     }
 
     #[test]
@@ -402,8 +427,7 @@ expires = "2026-11-30"
 "##,
         )
         .expect("ledger");
-        let report =
-            scan_root(tmp.path(), Some(Path::new("policy/rel.toml")), as_of()).expect("scan");
+        let report = scan_root(tmp.path(), Some(Path::new("policy/rel.toml"))).expect("scan");
         assert!(report.errors.is_empty(), "{:?}", report.errors);
         assert!(report.findings.is_empty(), "{:?}", report.findings);
     }
@@ -430,7 +454,7 @@ expires = "2026-11-30"
 "##,
         )
         .expect("ledger");
-        let error = scan_root(tmp.path(), Some(&tmp.path().join("policy/ledger.toml")), as_of())
+        let error = scan_root(tmp.path(), Some(&tmp.path().join("policy/ledger.toml")))
             .expect_err("ownerless ledger");
         let display = format!("{error:#}");
         assert!(display.contains("ownerless"), "{display}");
