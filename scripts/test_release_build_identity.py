@@ -171,12 +171,26 @@ class ReleaseBuildIdentityTests(unittest.TestCase):
                 }
             ],
         }
-        subject.validate_topology(
-            topology,
-            release_version=identity["release_version"],
-            source_revision=identity["source_revision"],
-            target=identity["target"],
-        )
+        for version in (1, 1.0, 2, 2.0):
+            with self.subTest(version=version):
+                topology["schema"] = version
+                subject.validate_topology(
+                    topology,
+                    release_version=identity["release_version"],
+                    source_revision=identity["source_revision"],
+                    target=identity["target"],
+                )
+        for version in (True, False, "1", "2", 1.5, 2.5, 3, None):
+            with self.subTest(invalid_version=version):
+                topology["schema"] = version
+                with self.assertRaisesRegex(subject.BuildIdentityError, "schema"):
+                    subject.validate_topology(
+                        topology,
+                        release_version=identity["release_version"],
+                        source_revision=identity["source_revision"],
+                        target=identity["target"],
+                    )
+        topology["schema"] = 2
         topology["binary_targets"][0]["required_members"].remove(
             "perl-dap"
         )

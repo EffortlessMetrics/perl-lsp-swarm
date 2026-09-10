@@ -109,7 +109,8 @@ def validate_topology_binding(catalog: dict[str, Any], topology_path: Path) -> N
     except json.JSONDecodeError as error:
         raise ValueError(f"parsing topology: {error}") from error
     _require(isinstance(topology, dict), "topology must be an object")
-    _require(topology.get("schema") == 1, "topology.schema must be 1")
+    version = topology.get("schema")
+    _require(type(version) in (int, float) and version in (1, 2), "topology.schema must be 1 or 2")
     _require(topology.get("release") == catalog["release"], "topology release does not match catalog")
     _require(topology.get("track") == catalog["track"], "topology track does not match catalog")
     _require(topology.get("frozen_product_sha") == catalog["subject_sha"], "topology subject does not match catalog")

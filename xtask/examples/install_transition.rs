@@ -332,8 +332,9 @@ fn verify_topology_binding(receipt: &Receipt, path: &Path) -> Result<()> {
     }
     let topology: serde_json::Value = serde_json::from_slice(&bytes)
         .with_context(|| format!("parsing release topology {}", path.display()))?;
-    if topology["schema"] != 1 || topology["track"] != "public-beta" {
-        bail!("release topology is not a public-beta schema v1 manifest");
+    let schema_version = topology.get("schema").and_then(serde_json::Value::as_f64);
+    if ![Some(1.0), Some(2.0)].contains(&schema_version) || topology["track"] != "public-beta" {
+        bail!("release topology is not a public-beta schema v1 or v2 manifest");
     }
     if topology["release"] != receipt.candidate.candidate_version {
         bail!("release topology version does not match candidate version");
@@ -694,6 +695,53 @@ mod tests {
         receipt.transition.outcome = super::TransitionOutcome::Completed;
         receipt.transition.artifact_verified = true;
         receipt.transition.artifact_sha256 = Some(sha256_bytes(bytes));
+    }
+
+    #[test]
+    fn topology_versions_preserve_install_identity_checks() -> Result<()> {
+        let mut receipt = fixture(include_str!(
+            "../../fixtures/experience/install_transition/clean_install.json"
+        ))?;
+        let directory = tempdir()?;
+        let path = directory.path().join("topology.json");
+        for (version, accepted) in [
+            (serde_json::json!(1), true),
+            (serde_json::json!(1.0), true),
+            (serde_json::json!(2), true),
+            (serde_json::json!(2.0), true),
+            (serde_json::json!(true), false),
+            (serde_json::json!("2"), false),
+            (serde_json::json!(1.5), false),
+            (serde_json::json!(2.5), false),
+            (serde_json::json!(3), false),
+            (serde_json::Value::Null, false),
+        ] {
+            let mut topology = topology_for(&receipt);
+            *topology
+                .get_mut("schema")
+                .ok_or_else(|| color_eyre::eyre::eyre!("fixture schema missing"))? =
+                version.clone();
+            let bytes = serde_json::to_vec(&topology)?;
+            fs::write(&path, &bytes)?;
+            receipt.candidate.release_topology_sha256 = sha256_bytes(&bytes);
+            let result = verify_topology_binding(&receipt, &path);
+            if result.is_ok() != accepted {
+                bail!("schema {version}: expected accepted={accepted}, observed {result:?}");
+            }
+            if accepted {
+                *topology
+                    .get_mut("frozen_product_sha")
+                    .ok_or_else(|| color_eyre::eyre::eyre!("fixture SHA missing"))? =
+                    serde_json::json!("f".repeat(40));
+                let wrong_subject = serde_json::to_vec(&topology)?;
+                fs::write(&path, &wrong_subject)?;
+                receipt.candidate.release_topology_sha256 = sha256_bytes(&wrong_subject);
+                if verify_topology_binding(&receipt, &path).is_ok() {
+                    bail!("schema {version} accepted a different frozen product");
+                }
+            }
+        }
+        Ok(())
     }
 
     #[test]

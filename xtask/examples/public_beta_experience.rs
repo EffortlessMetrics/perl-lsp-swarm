@@ -441,7 +441,9 @@ fn validate_child_receipts(receipt: &Receipt) -> Result<()> {
             "release_integrity" => ("release_integrity.v1", "#4145"),
             _ => bail!("unknown child receipt slot: {name}"),
         };
-        if child.schema_version != expected_schema {
+        let supported_topology_v2 =
+            name == "release_topology" && child.schema_version == "release_topology.v2";
+        if child.schema_version != expected_schema && !supported_topology_v2 {
             bail!("child_receipts.{name} must use schema {expected_schema}");
         }
         exact_hex(&child.sha256, 32, &format!("child_receipts.{name}.sha256"))?;
@@ -566,7 +568,7 @@ fn validate_source_receipt(
         "installed_acceptance.v1" => {
             validate_installed_acceptance_source(name, child, receipt, &source)?;
         }
-        "release_topology.v1" => {
+        "release_topology.v1" | "release_topology.v2" => {
             validate_release_topology_source(name, child, receipt, &source)?;
         }
         _ => validate_canonical_source_receipt(name, child, receipt, &source)?,
@@ -722,8 +724,15 @@ fn validate_release_topology_source(
     receipt: &Receipt,
     source: &serde_json::Value,
 ) -> Result<()> {
-    if source.get("schema").and_then(serde_json::Value::as_i64) != Some(1) {
-        bail!("child_receipts.{name} release-topology source must use schema 1");
+    let expected_version = match child.schema_version.as_str() {
+        "release_topology.v1" => 1.0,
+        "release_topology.v2" => 2.0,
+        _ => bail!("child_receipts.{name} has an unsupported release-topology schema"),
+    };
+    if source.get("schema").and_then(serde_json::Value::as_f64) != Some(expected_version) {
+        bail!(
+            "child_receipts.{name} release-topology source schema differs from its child envelope"
+        );
     }
     let frozen_product_sha =
         source.get("frozen_product_sha").and_then(serde_json::Value::as_str).ok_or_else(|| {
@@ -876,13 +885,86 @@ mod tests {
     use super::{
         CellDisposition, OverallStatus, Receipt, sha256_hex, validate, validate_child_artifacts,
     };
-    use color_eyre::eyre::Result;
+    use color_eyre::eyre::{Result, bail};
     use std::fs;
     use std::path::Path;
     use tempfile::tempdir;
 
     fn fixture(content: &str) -> Result<Receipt> {
         Ok(serde_json::from_str(content)?)
+    }
+
+    #[test]
+    fn topology_versions_reach_parent_and_source_fan_in() -> Result<()> {
+        let fixture_root =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixtures/experience/public_beta");
+        for (envelope, version, accepted) in [
+            ("release_topology.v1", serde_json::json!(1), true),
+            ("release_topology.v1", serde_json::json!(1.0), true),
+            ("release_topology.v2", serde_json::json!(2), true),
+            ("release_topology.v2", serde_json::json!(2.0), true),
+            ("release_topology.v1", serde_json::json!(2), false),
+            ("release_topology.v2", serde_json::json!(1), false),
+            ("release_topology.v2", serde_json::json!(true), false),
+            ("release_topology.v2", serde_json::json!("2"), false),
+            ("release_topology.v2", serde_json::json!(1.5), false),
+            ("release_topology.v2", serde_json::json!(2.5), false),
+            ("release_topology.v2", serde_json::Value::Null, false),
+            ("release_topology.v3", serde_json::json!(3), false),
+        ] {
+            let mut receipt =
+                fixture(include_str!("../../fixtures/experience/public_beta/ready.json"))?;
+            let directory = tempdir()?;
+            for (_, child) in receipt.child_receipts.iter() {
+                let target = directory.path().join(&child.artifact_path);
+                fs::create_dir_all(
+                    target
+                        .parent()
+                        .ok_or_else(|| color_eyre::eyre::eyre!("fixture parent missing"))?,
+                )?;
+                fs::copy(fixture_root.join(&child.artifact_path), target)?;
+            }
+            let source = serde_json::json!({
+                "schema": version,
+                "frozen_product_sha": receipt.candidate.frozen_product_sha,
+            });
+            let source_bytes = serde_json::to_vec(&source)?;
+            let source_digest = sha256_hex(&source_bytes);
+            fs::write(directory.path().join("topology-source.json"), &source_bytes)?;
+            let child = &mut receipt.child_receipts.release_topology;
+            child.schema_version = envelope.to_string();
+            child.source_artifact_path = Some("topology-source.json".into());
+            child.source_sha256 = Some(source_digest.clone());
+            let artifact_path = directory.path().join(&child.artifact_path);
+            let mut artifact: serde_json::Value =
+                serde_json::from_slice(&fs::read(&artifact_path)?)?;
+            *artifact
+                .get_mut("receipt_schema_version")
+                .ok_or_else(|| color_eyre::eyre::eyre!("fixture schema missing"))? =
+                serde_json::json!(envelope);
+            *artifact
+                .get_mut("source_receipt_sha256")
+                .ok_or_else(|| color_eyre::eyre::eyre!("fixture digest missing"))? =
+                serde_json::json!(source_digest);
+            let artifact_bytes = serde_json::to_vec(&artifact)?;
+            fs::write(&artifact_path, &artifact_bytes)?;
+            child.sha256 = sha256_hex(&artifact_bytes);
+            receipt.candidate.release_topology_sha256 = source_digest;
+            let result = validate(&receipt)
+                .and_then(|_| validate_child_artifacts(&receipt, directory.path()));
+            if result.is_ok() != accepted {
+                bail!(
+                    "{envelope} with source {version}: expected accepted={accepted}, observed {result:?}"
+                );
+            }
+            if accepted {
+                fs::write(directory.path().join("topology-source.json"), b"changed source bytes")?;
+                if validate_child_artifacts(&receipt, directory.path()).is_ok() {
+                    bail!("{envelope} accepted changed source bytes");
+                }
+            }
+        }
+        Ok(())
     }
 
     fn create_file_symlink(link: &Path, target: &Path) -> Result<()> {

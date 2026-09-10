@@ -535,8 +535,9 @@ def validate_topology(
     source_revision: str,
     target: str,
 ) -> None:
-    if topology.get("schema") != 1:
-        raise BuildIdentityError("release topology schema must be 1")
+    version = topology.get("schema")
+    if type(version) not in (int, float) or version not in (1, 2):
+        raise BuildIdentityError("release topology schema must be 1 or 2")
     if topology.get("release") != release_version:
         raise BuildIdentityError(
             "release topology version differs from build identity"

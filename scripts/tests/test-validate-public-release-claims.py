@@ -65,6 +65,28 @@ class PublicReleaseClaimsTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "does not match topology bytes"):
                 MODULE.validate_topology_binding(value, path)
 
+    def test_supported_topology_versions_preserve_identity_and_digest_checks(self) -> None:
+        value = catalog()
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "release-topology.json"
+            for version in (1, 1.0, 2, 2.0, True, False, "1", "2", 1.5, 2.5, 3, None):
+                with self.subTest(version=repr(version)):
+                    topology = {"schema": version, "release": "0.18.0", "track": "public-beta", "frozen_product_sha": "0" * 40}
+                    raw = json.dumps(topology).encode()
+                    path.write_bytes(raw)
+                    value["topology_digest"] = "sha256:" + hashlib.sha256(raw).hexdigest()
+                    if type(version) in (int, float) and version in (1, 2):
+                        MODULE.validate_topology_binding(value, path)
+                        changed = dict(topology, frozen_product_sha="f" * 40)
+                        wrong_raw = json.dumps(changed).encode()
+                        path.write_bytes(wrong_raw)
+                        value["topology_digest"] = "sha256:" + hashlib.sha256(wrong_raw).hexdigest()
+                        with self.assertRaisesRegex(ValueError, "subject"):
+                            MODULE.validate_topology_binding(value, path)
+                    else:
+                        with self.assertRaisesRegex(ValueError, "schema"):
+                            MODULE.validate_topology_binding(value, path)
+
     def assert_invalid(self, mutation, message: str) -> None:
         value = copy.deepcopy(catalog())
         mutation(value)
