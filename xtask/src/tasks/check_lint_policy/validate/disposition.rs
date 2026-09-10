@@ -195,7 +195,7 @@ fn validate_lint_entry(lint: &LintEntry) -> Result<()> {
     validate_lint_name(&lint.name)?;
     validate_level(&lint.name, &lint.level, true)?;
     if !matches!(lint.status.as_str(), "active" | "debt" | "tracked") {
-        bail!("lint {} must have status active, debt, or tracked", lint.name, lint.status);
+        bail!("lint {} must have status active, debt, or tracked", lint.name);
     }
     validate_nonempty(&lint.name, "class", &lint.class)?;
     validate_nonempty(&lint.name, "reason", &lint.reason)?;
