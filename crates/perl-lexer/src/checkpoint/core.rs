@@ -597,7 +597,9 @@ pub trait Checkpointable {
 
 #[cfg(test)]
 mod tests {
-    use super::transform_offset;
+    use super::{CheckpointContext, LexerCheckpoint, ReplayState, transform_offset};
+    use crate::{LexerConfig, LexerMode, Position};
+    use perl_source_identity::SourceGeneration;
 
     #[test]
     fn transform_offset_boundaries_and_overlap() {
@@ -611,5 +613,60 @@ mod tests {
         assert_eq!(transform_offset(5, 0, 0, 3), Some(8));
         assert_eq!(transform_offset(2, 0, 5, 0), None);
         assert_eq!(transform_offset(5, 0, 5, 0), Some(0));
+    }
+
+    #[test]
+    fn live_replay_state_is_an_exhaustive_named_projection() {
+        // Adding a ReplayState field without naming it here fails to compile.
+        // That is the #8090 completeness falsifier for the private replay
+        // snapshot; it is not a substitute for live capture/restore tests.
+        let replay = ReplayState {
+            position: 0,
+            mode: LexerMode::ExpectTerm,
+            delimiter_stack: Vec::new(),
+            in_prototype: false,
+            prototype_depth: 0,
+            after_sub: false,
+            after_arrow: false,
+            hash_brace_depth: 0,
+            after_var_subscript: false,
+            paren_depth: 0,
+            current_pos: Position::start(),
+            after_newline: false,
+            pending_heredocs: Vec::new(),
+            line_start_offset: 0,
+            current_quote_op: None,
+            eof_emitted: false,
+            context: CheckpointContext::Normal,
+        };
+        let identity = crate::LexerCheckpointIdentity::capture(
+            "",
+            &LexerConfig::default(),
+            false,
+            false,
+            None,
+            SourceGeneration::Unknown,
+        );
+        let checkpoint = LexerCheckpoint::from_live(identity, replay.clone());
+        assert_eq!(checkpoint.replay(), &replay);
+        assert!(!checkpoint.is_invalidated());
+        assert!(checkpoint.is_at_start());
+        assert_eq!(checkpoint.position(), 0);
+        assert_eq!(checkpoint.mode(), LexerMode::ExpectTerm);
+        assert!(checkpoint.delimiter_stack().is_empty());
+        assert!(!checkpoint.in_prototype());
+        assert_eq!(checkpoint.prototype_depth(), 0);
+        assert!(!checkpoint.after_sub());
+        assert!(!checkpoint.after_arrow());
+        assert_eq!(checkpoint.hash_brace_depth(), 0);
+        assert!(!checkpoint.after_var_subscript());
+        assert_eq!(checkpoint.paren_depth(), 0);
+        assert_eq!(checkpoint.current_pos(), Position::start());
+        assert!(!checkpoint.after_newline());
+        assert!(checkpoint.pending_heredocs().is_empty());
+        assert_eq!(checkpoint.line_start_offset(), 0);
+        assert!(checkpoint.current_quote_op().is_none());
+        assert!(!checkpoint.eof_emitted());
+        assert!(matches!(checkpoint.context(), CheckpointContext::Normal));
     }
 }
