@@ -1,6 +1,7 @@
 # Documentation Index
 
-This page is the documentation front door for the `perl-lsp` workspace.
+This page is a curated documentation index for the `perl-lsp` workspace.
+For a shorter task-oriented route map, start with [README.md](README.md).
 
 ## Diataxis Quick Guide
 
@@ -26,6 +27,7 @@ Choose the path that matches what you are trying to do:
 | I want to... | Read this first |
 |---|---|
 | Install the language server | [Installation Guide](how-to/INSTALLATION.md) |
+| Distinguish native `--check`, `--check-project`, and `perl -c` | [Checking Perl files](reference/CHECKING.md) |
 | Integrate perl-lsp into GitHub Actions | [GitHub Actions Integration](how-to/GITHUB_ACTIONS.md) |
 | Upgrade an existing installation | [Upgrading](how-to/UPGRADING.md) |
 | Promote a prepared swarm release into `perl-lsp` without losing history | [History-Preserving Publication Sync](how-to/PUBLICATION_SYNC.md) |
@@ -87,6 +89,7 @@ Task-focused instructions for common workflows (goal-oriented).
 Authoritative descriptions of commands, options, data, and feature contracts (information-oriented).
 
 - [Commands Reference](reference/COMMANDS_REFERENCE.md)
+- [Checking Perl files](reference/CHECKING.md)
 - [Configuration Reference](reference/CONFIG.md)
 - [Architecture Reference](reference/ARCHITECTURE.md)
 - [LSP Features](reference/LSP_FEATURES.md)
@@ -172,7 +175,12 @@ perllsp --version
 perllsp --health
 perllsp --info
 perllsp --check path/to/file.pl
+perllsp --check-project .
 perllsp --completion bash
 ```
+
+`--check` is a native listed-file parser check; `--check-project` is an 80%
+parsability report, not a strict all-clean check. See
+[Checking Perl files](reference/CHECKING.md).
 
 For the complete option list and behavior, see the [Commands Reference](reference/COMMANDS_REFERENCE.md).
