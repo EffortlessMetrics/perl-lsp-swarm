@@ -155,6 +155,7 @@ pub mod publish_closure;
 pub mod publish_manifest_check;
 pub mod publish_receipts;
 pub mod quality_baseline;
+#[path = "quality_gate_facade.rs"]
 pub mod quality_gate;
 pub mod queue_health;
 pub mod queue_snapshot;
