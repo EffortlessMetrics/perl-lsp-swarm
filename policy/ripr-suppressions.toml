@@ -2934,6 +2934,35 @@ expires = "2026-09-22"
 removal_criteria = "Remove when RIPR traces declaration owners through the sibling #[path] tests or a finer line/function selector or targeted mutation replaces this advisory path. Remove or narrow immediately if a future receipt reports an executable no_static_path seam in this file or any classification other than no_static_path."
 
 # -----------------------------------------------------------------------------
+# PR #15005 replaces sleep-driven UX harness synchronization with
+# event-driven waits. ripr 0.10.0 reports 46 reachable_unrevealed and 25
+# no_static_path probes, all inside crates/perl-lsp-ux-tests/src (client.rs,
+# observation.rs, diagnostics.rs) — the UX test harness's own source. The
+# repository's coverage gate already classifies this crate as test support
+# (TEST_SUPPORT_CRATE_PREFIXES in xtask/src/tasks/quality_baseline.rs), and
+# its tests/* tree is already suppressed under ripr-suppress-ux-receipt-
+# tests. The harness's new event-wait behavior is proven by
+# harness_timing_discipline.rs (disposition classes, suffixed-class
+# rejection) and by the UX journeys that drive it; the probes sit on
+# async/channel plumbing whose per-line infection ripr cannot trace from
+# those oracles (ripr#1428/#1429 class).
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-ux-harness-event-wait-plumbing"
+kind = "test_receipt_surface"
+paths = [
+  "crates/perl-lsp-ux-tests/src/client.rs",
+  "crates/perl-lsp-ux-tests/src/observation.rs",
+  "crates/perl-lsp-ux-tests/src/diagnostics.rs",
+]
+classification = ["no_static_path", "reachable_unrevealed"]
+owner = "proof-lane"
+issue = "EffortlessMetrics/ripr#1429"
+reason = "PR #15005: 71 probes inside the perl-lsp-ux-tests harness source (event-driven wait plumbing in client.rs/observation.rs/diagnostics.rs). The crate is classified as test support by the repository's own coverage gate (TEST_SUPPORT_CRATE_PREFIXES) and ships no production behavior; its tests/ tree is already suppressed as test_receipt_surface. The new synchronization behavior is proven by harness_timing_discipline.rs (including the suffixed timing disposition rejection) and the 17 UX scenario journeys that consume the harness. Per-line infection through the async/channel plumbing is untraceable from those oracles (ripr#1428/#1429 class). HONEST SCOPE NOTE: path-scoped, so future seams in these harness files are masked for this window; the harness is only ever executed by tests, so the masking cannot hide production behavior. Remove when ripr#1429 traces async plumbing or targeted mutation is scheduled per #1289."
+created = "2026-09-09"
+review_after = "2026-09-16"
+expires = "2026-09-23"
+removal_criteria = "Remove when ripr#1429 traces async/channel plumbing, or narrow immediately if a future receipt reports an executable seam used outside the test harness."
 # Exact-tree test panic-family denominator (#13397, PR #14904): RIPR reports
 # no_static_path on non-executable struct/const/field owners in the new
 # observation module. Same-file tests construct the public DTOs, call
