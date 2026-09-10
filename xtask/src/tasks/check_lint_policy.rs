@@ -87,7 +87,8 @@ pub fn run() -> Result<()> {
     let lint_ledger = read::load_lint_ledger(root)?;
     let debt_ledger: DebtLedger = read::read_toml_as(root.join(DEBT_LEDGER))?;
 
-    let configured_selector_count = validate::validate_all(root, &cargo, &lint_ledger, &debt_ledger)?;
+    let configured_selector_count =
+        validate::validate_all(root, &cargo, &lint_ledger, &debt_ledger)?;
 
     print!(
         "{}",
