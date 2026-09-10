@@ -23,8 +23,80 @@ fn project_root() -> Result<PathBuf> {
 
 static INVENTORY_OUTPUT_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
-fn inventory_output_lock() -> Result<MutexGuard<'static, ()>> {
-    INVENTORY_OUTPUT_LOCK.lock().map_err(|_| eyre!("inventory output lock poisoned"))
+// This unit-valued mutex protects output serialization, not mutable domain state.
+fn lock_or_recover(lock: &Mutex<()>) -> MutexGuard<'_, ()> {
+    match lock.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    }
+}
+
+fn inventory_output_lock() -> MutexGuard<'static, ()> {
+    lock_or_recover(&INVENTORY_OUTPUT_LOCK)
+}
+
+#[cfg(test)]
+mod lock_tests {
+    use super::lock_or_recover;
+    use color_eyre::eyre::{Result, ensure};
+    use std::sync::{Mutex, TryLockError};
+
+    #[test]
+    fn healthy_inventory_lock_retains_exclusion() -> Result<()> {
+        let lock = Mutex::new(());
+        let guard = lock_or_recover(&lock);
+        ensure!(
+            matches!(lock.try_lock(), Err(TryLockError::WouldBlock)),
+            "the returned guard must hold the supplied mutex"
+        );
+        ensure!(!lock.is_poisoned(), "normal acquisition must not poison the mutex");
+        drop(guard);
+        ensure!(lock.try_lock().is_ok(), "dropping the guard must release the mutex");
+        Ok(())
+    }
+
+    #[test]
+    #[expect(
+        clippy::panic,
+        reason = "policy:allow-inventory-lock-poison-lint: actual unwind is the test input"
+    )]
+    fn poisoned_inventory_lock_is_recovered() -> Result<()> {
+        let lock = Mutex::new(());
+        let join_result = std::thread::scope(|scope| {
+            scope
+                .spawn(|| {
+                    let _guard = match lock.lock() {
+                        Ok(guard) => guard,
+                        Err(poisoned) => poisoned.into_inner(),
+                    };
+                    // policy:allow-inventory-lock-poison-fixture: actual unwind is the test input.
+                    panic!("fixture failure must poison the lock for this regression");
+                })
+                .join()
+        });
+
+        ensure!(join_result.is_err(), "the fixture must terminate by unwinding");
+        ensure!(lock.is_poisoned(), "the fixture must actually poison the mutex");
+        let guard = lock_or_recover(&lock);
+        ensure!(lock.is_poisoned(), "recovery preserves the poison marker for later diagnostics");
+        ensure!(
+            matches!(lock.try_lock(), Err(TryLockError::WouldBlock)),
+            "recovery must still exclude another inventory writer"
+        );
+        drop(guard);
+        ensure!(
+            matches!(lock.try_lock(), Err(TryLockError::Poisoned(_))),
+            "dropping the recovered guard must release the mutex without clearing poison"
+        );
+
+        let _guard = lock_or_recover(&lock);
+        ensure!(
+            matches!(lock.try_lock(), Err(TryLockError::WouldBlock)),
+            "a later inventory writer must reacquire the same poisoned mutex"
+        );
+        ensure!(lock.is_poisoned(), "repeated recovery must not erase the original failure");
+        Ok(())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -126,7 +198,7 @@ fn exact_tree_schema_validation_delegates_to_canonical_allow_schema() -> Result<
 /// End-to-end test: runs on the actual repo and exits 0.
 #[test]
 fn non_rust_inventory_command_exits_zero() -> Result<()> {
-    let _guard = inventory_output_lock()?;
+    let _guard = inventory_output_lock();
     Command::cargo_bin("xtask")?
         .args(["non-rust", "inventory"])
         .current_dir(project_root()?)
@@ -138,7 +210,7 @@ fn non_rust_inventory_command_exits_zero() -> Result<()> {
 /// Read-only end-to-end check against the tracked-file inventory scan.
 #[test]
 fn non_rust_inventory_check_command_exits_zero() -> Result<()> {
-    let _guard = inventory_output_lock()?;
+    let _guard = inventory_output_lock();
     Command::cargo_bin("xtask")?
         .args(["non-rust", "inventory", "--check"])
         .current_dir(project_root()?)
@@ -153,7 +225,7 @@ fn non_rust_inventory_check_command_exits_zero() -> Result<()> {
 /// `target/policy/` only.
 #[test]
 fn non_rust_inventory_creates_output_files() -> Result<()> {
-    let _guard = inventory_output_lock()?;
+    let _guard = inventory_output_lock();
     Command::cargo_bin("xtask")?
         .args(["non-rust", "inventory"])
         .current_dir(project_root()?)
@@ -177,7 +249,7 @@ fn non_rust_inventory_creates_output_files() -> Result<()> {
 /// Verify that the JSON output is valid and contains expected fields.
 #[test]
 fn non_rust_inventory_json_is_valid() -> Result<()> {
-    let _guard = inventory_output_lock()?;
+    let _guard = inventory_output_lock();
     Command::cargo_bin("xtask")?
         .args(["non-rust", "inventory"])
         .current_dir(project_root()?)
@@ -206,7 +278,7 @@ fn non_rust_inventory_json_is_valid() -> Result<()> {
 /// Verify that the markdown output starts with the expected header.
 #[test]
 fn non_rust_inventory_markdown_has_header() -> Result<()> {
-    let _guard = inventory_output_lock()?;
+    let _guard = inventory_output_lock();
     Command::cargo_bin("xtask")?
         .args(["non-rust", "inventory"])
         .current_dir(project_root()?)

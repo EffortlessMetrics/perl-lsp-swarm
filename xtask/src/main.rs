@@ -442,14 +442,15 @@ enum Commands {
 
     /// Verify landing and content-survival proof without evaluating semantic completion.
     ///
-    /// Implements the landing-proof layer of CLOSE_PROOF_POLICY.md: runs
-    /// `git merge-base --is-ancestor <commit> <canonical-main>` and emits a
+    /// Implements the landing-proof layer of CLOSE_PROOF_POLICY.md: proves
+    /// ancestry through the shared `xtask::git_ancestry` authority and emits a
     /// structured `landing_proof.v1` receipt. Landing ancestry never
     /// authorizes an issue close; `semantic_completion` is always
     /// `not_evaluated`.
     ///
-    /// Exit 0 = landing proof passes, exit 2 = commit is not reachable,
-    /// exit 1 = error (git failed).
+    /// Exit 0 = landing proof passes, exit 2 = commit is provably not
+    /// reachable, exit 1 = error or not-proven (git failed, bad input, or a
+    /// shallow/partial checkout that cannot decide ancestry).
     #[command(name = "landing-proof")]
     PrCloseProof {
         /// Commit SHA to verify.
@@ -517,8 +518,9 @@ enum Commands {
         #[arg(long)]
         expected_base_sha: Option<String>,
 
-        /// GitHub repo (owner/name) for the writer-collision PR-ownership
-        /// check.
+        /// GitHub repo (owner/name) for the advisory candidate-presence
+        /// lookup: an open PR is surfaced as continuation evidence, never
+        /// as proof of a live writer or a collision.
         #[arg(long)]
         repo: Option<String>,
 
@@ -2698,6 +2700,12 @@ enum Commands {
         command: NonRustCommand,
     },
 
+    /// Exact-tree test panic-family debt denominator (#13397).
+    NoPanic {
+        #[command(subcommand)]
+        command: NoPanicCommand,
+    },
+
     /// Read-only policy obligation tooling.
     Policy {
         #[command(subcommand)]
@@ -2931,6 +2939,58 @@ enum VimEditorCompatCommand {
         /// Host run timeout in milliseconds (default 240000).
         #[arg(long, default_value_t = 240_000)]
         timeout_ms: u64,
+    },
+}
+
+#[derive(Subcommand)]
+enum NoPanicCommand {
+    /// Exact-tree test panic-family debt projection and checks.
+    Debt {
+        #[command(subcommand)]
+        command: NoPanicDebtCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum NoPanicDebtCommand {
+    /// Generate `test_panic_family_debt.v1` from current source.
+    Inventory {
+        /// Repository root. Defaults to the workspace enclosing the current directory.
+        #[arg(long)]
+        root: Option<PathBuf>,
+        /// Machine JSON path. Defaults to `target/policy/test_panic_family_debt.v1.json`.
+        #[arg(long)]
+        json: Option<PathBuf>,
+        /// Human Markdown path. Defaults to `target/policy/test_panic_family_debt.v1.md`.
+        #[arg(long)]
+        markdown: Option<PathBuf>,
+    },
+    /// Re-derive the denominator and fail on missing population, stale joins, or identity drift.
+    Check {
+        /// Repository root. Defaults to the workspace enclosing the current directory.
+        #[arg(long)]
+        root: Option<PathBuf>,
+        /// Previously generated artifact that must match current source.
+        #[arg(long)]
+        artifact: Option<PathBuf>,
+        /// Accepted artifact compared by identity, not by counts.
+        #[arg(long)]
+        baseline: Option<PathBuf>,
+        /// Optional Clippy observation JSON. Aborted/missing targets are `not_proven`.
+        #[arg(long)]
+        clippy_observation: Option<PathBuf>,
+        /// Optional owner-state JSON. Ordinary checks do not call GitHub.
+        #[arg(long)]
+        owner_state: Option<PathBuf>,
+    },
+    /// Print the human projection for the current tree.
+    Report {
+        /// Repository root. Defaults to the workspace enclosing the current directory.
+        #[arg(long)]
+        root: Option<PathBuf>,
+        /// Optional machine JSON path.
+        #[arg(long)]
+        json: Option<PathBuf>,
     },
 }
 
@@ -3206,9 +3266,9 @@ enum PerlCoreHarnessCommand {
         #[arg(long)]
         perl_tree: PathBuf,
 
-        /// Host Perl used to run upstream t/TEST or t/harness.
-        #[arg(long, default_value = "perl")]
-        host_perl: PathBuf,
+        /// Explicit override for the scheduler interpreter; defaults to the prepared tree's built perl ($TREE/perl).
+        #[arg(long)]
+        host_perl: Option<PathBuf>,
 
         /// Upstream scheduler to query.
         #[arg(long, value_enum, default_value_t = perl_core_harness::HarnessRunner::Test)]
@@ -3369,9 +3429,9 @@ enum PerlCoreHarnessCommand {
         #[arg(long)]
         perl_tree: PathBuf,
 
-        /// Host Perl used to run upstream t/TEST or t/harness.
-        #[arg(long, default_value = "perl")]
-        host_perl: PathBuf,
+        /// Explicit override for the scheduler interpreter; defaults to the prepared tree's built perl ($TREE/perl).
+        #[arg(long)]
+        host_perl: Option<PathBuf>,
 
         /// Upstream scheduler to run.
         #[arg(long, value_enum, default_value_t = perl_core_harness::HarnessRunner::Test)]
@@ -3470,9 +3530,9 @@ enum PerlCoreHarnessCommand {
         #[arg(long)]
         perl_tree: PathBuf,
 
-        /// Host Perl used to run upstream t/TEST or t/harness.
-        #[arg(long, default_value = "perl")]
-        host_perl: PathBuf,
+        /// Explicit override for the scheduler interpreter; defaults to the prepared tree's built perl ($TREE/perl).
+        #[arg(long)]
+        host_perl: Option<PathBuf>,
 
         /// Upstream scheduler to run.
         #[arg(long, value_enum, default_value_t = perl_core_harness::HarnessRunner::Test)]
@@ -6810,6 +6870,55 @@ fn run_cli(cli: Cli) -> Result<()> {
                 allow_manual_edits,
             } => generated_files::check(receipt, fixture, generator_receipt, allow_manual_edits),
         },
+        Commands::NoPanic { command } => match command {
+            NoPanicCommand::Debt { command } => match command {
+                NoPanicDebtCommand::Inventory { root, json, markdown } => {
+                    let root = match root {
+                        Some(path) => path,
+                        None => utils::project_root()?,
+                    };
+                    let summary = xtask::no_panic_debt::run_inventory(&root, json, markdown)?;
+                    println!("{summary}");
+                    Ok(())
+                }
+                NoPanicDebtCommand::Check {
+                    root,
+                    artifact,
+                    baseline,
+                    clippy_observation,
+                    owner_state,
+                } => {
+                    let root = match root {
+                        Some(path) => path,
+                        None => utils::project_root()?,
+                    };
+                    let result = xtask::no_panic_debt::run_check(
+                        &root,
+                        artifact,
+                        baseline,
+                        clippy_observation,
+                        owner_state,
+                    )?;
+                    println!("{}", xtask::no_panic_debt::format_check_result(&result));
+                    if result.ok {
+                        Ok(())
+                    } else {
+                        Err(eyre!(
+                            "test_panic_family_debt.v1 check failed with {} finding(s)",
+                            result.findings.len()
+                        ))
+                    }
+                }
+                NoPanicDebtCommand::Report { root, json } => {
+                    let root = match root {
+                        Some(path) => path,
+                        None => utils::project_root()?,
+                    };
+                    print!("{}", xtask::no_panic_debt::run_report(&root, json)?);
+                    Ok(())
+                }
+            },
+        },
         Commands::NonRust { command } => match command {
             NonRustCommand::ExactTree {
                 base_sha,
@@ -7224,7 +7333,7 @@ mod tests {
                 PerlCoreHarnessCommand::Run {
                     mode: perl_core_harness::HarnessMode::Execute,
                     perl_tree: PathBuf::from("unused"),
-                    host_perl: PathBuf::from("perl"),
+                    host_perl: None,
                     runner: perl_core_harness::HarnessRunner::Test,
                     profile: perl_core_harness::HarnessProfile::Base,
                     tests: Vec::new(),
@@ -7257,7 +7366,7 @@ mod tests {
             command: Commands::PerlCoreHarness {
                 command: PerlCoreHarnessCommand::Discover {
                     perl_tree: missing_tree,
-                    host_perl: PathBuf::from("perl"),
+                    host_perl: None,
                     runner: perl_core_harness::HarnessRunner::Test,
                     profile: perl_core_harness::HarnessProfile::Base,
                     output: None,

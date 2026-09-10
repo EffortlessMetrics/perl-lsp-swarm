@@ -221,6 +221,21 @@ enum SectionKind {
 struct Section {
     headings: Vec<String>,
     body: String,
+    occurrence_starts: Vec<usize>,
+    occurrence_headings: Vec<String>,
+}
+
+impl Section {
+    fn occurrences(&self) -> impl Iterator<Item = &str> {
+        self.occurrence_starts.iter().enumerate().flat_map(|(index, start)| {
+            let end = self.occurrence_starts.get(index + 1).copied().unwrap_or(self.body.len());
+            // Heading and body are separate units; neither can supply a missing
+            // subject or predicate to the other. Keep exact bounded source text.
+            [self.occurrence_headings.get(index).map(String::as_str), self.body.get(*start..end)]
+                .into_iter()
+                .flatten()
+        })
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -707,20 +722,27 @@ fn evaluate_relation(
         }
     }
 
-    let explicitly_unproven_text = exclusion_text_attributable_to_closed_issue(
-        &relation_scoped_section_text(
-            sections,
-            &[SectionKind::ClaimBoundary, SectionKind::NonGoals],
-            relation_count,
-            &relation.key,
-            &pull.repository,
-        ),
-        &relation.key,
-        &pull.repository,
-    );
+    // CP00-003 owns complete attribution units, including soft-wrapped predicates.
+    // Keep the phase rule's separate line-scoping semantics unchanged.
+    let explicitly_unproven_text = [SectionKind::ClaimBoundary, SectionKind::NonGoals]
+        .iter()
+        .filter_map(|kind| sections.get(kind))
+        .flat_map(Section::occurrences)
+        .map(|occurrence| {
+            exclusion_text_attributable_to_closed_issue(
+                occurrence,
+                &relation.key,
+                &pull.repository,
+                relation_count,
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n");
     if rules.enabled(RuleId::ExplicitlyNotProven)
-        && scoped_to_issue
-        && explicitly_not_proven_required_work(&explicitly_unproven_text)
+        && required_work_exclusion(
+            &explicitly_unproven_text,
+            Some((&relation.key, &pull.repository)),
+        )
     {
         return failed_row(
             &relation,
@@ -903,6 +925,8 @@ fn parse_sections(body: &str, max_body_bytes: usize) -> Result<BTreeMap<SectionK
         if let Some((kind, heading)) = classify_heading(trimmed) {
             let section = sections.entry(kind).or_default();
             section.headings.push(heading);
+            section.occurrence_starts.push(section.body.len());
+            section.occurrence_headings.push(trimmed.trim_start_matches('#').trim().to_string());
             current = Some(kind);
             current_level = markdown_heading_level(trimmed);
             continue;
@@ -1370,23 +1394,221 @@ fn contains_proof_level_term(text: &str, term: &str) -> bool {
     if term.contains(' ') { text.contains(term) } else { contains_word(&text, term) }
 }
 
-const REQUIRED_WORK_SCOPE_MARKERS: [&str; 10] = [
-    "full",
-    "complete",
-    "remaining",
-    "every",
-    "all",
-    "installed",
-    "public",
-    "packaged",
-    "acceptance",
-    "presentation",
+const REQUIRED_WORK_SUBJECTS: &[&str] = &[
+    "full acceptance criteria",
+    "complete acceptance criteria",
+    "remaining acceptance criteria",
+    "full acceptance",
+    "complete acceptance",
+    "remaining acceptance",
+    "full issue work",
+    "complete issue work",
+    "remaining issue work",
+    "full required work",
+    "complete required work",
+    "remaining required work",
+    "complete remaining work",
+    "remaining work",
+    "complete remaining call-site cohort",
 ];
 
+#[cfg(test)]
 fn explicitly_not_proven_required_work(text: &str) -> bool {
-    let text = text.to_ascii_lowercase();
-    contains_explicit_exclusion(&text)
-        && REQUIRED_WORK_SCOPE_MARKERS.iter().any(|marker| contains_word(&text, marker))
+    required_work_exclusion(text, None)
+}
+
+fn required_work_exclusion(text: &str, owner_context: Option<(&IssueKey, &str)>) -> bool {
+    attribution_units(text).iter().any(|unit| {
+        // Markdown emphasis and soft line wrapping do not change a subject.
+        // Keep paragraph/list/sentence boundaries before normalizing whitespace.
+        let unit = prose_without_inline_code(unit).to_ascii_lowercase();
+        let unit = unit.split_whitespace().collect::<Vec<_>>().join(" ");
+        let unit = without_supported_emphasis(&unit);
+        REQUIRED_WORK_SUBJECTS.iter().any(|subject| {
+            word_match_indices(&unit, subject).into_iter().any(|index| {
+                // A contained subject cannot bypass ownership attached to the
+                // complete supported subject, even when its start differs.
+                if REQUIRED_WORK_SUBJECTS.iter().any(|longer| {
+                    longer.len() > subject.len()
+                        && word_match_indices(&unit, longer).into_iter().any(|start| {
+                            start <= index && start + longer.len() >= index + subject.len()
+                        })
+                }) {
+                    return false;
+                }
+                let Some(before) = unit.get(..index) else { return false };
+                let Some(after) = unit.get(index + subject.len()..) else { return false };
+                let before = before.trim_end();
+                let before = if before == "the" {
+                    ""
+                } else {
+                    before.strip_suffix(" the").unwrap_or(before)
+                };
+                let (before, prefix_owner) = strip_issue_owner_suffix(before);
+                let (after, suffix_owner) = strip_issue_owner_prefix(after.trim_start());
+                if [prefix_owner, suffix_owner]
+                    .into_iter()
+                    .flatten()
+                    .any(|owner| !subject_owner_matches(owner, owner_context))
+                {
+                    return false;
+                }
+                let prefix_exclusion = [
+                    "does not prove",
+                    "does not establish",
+                    "does not claim",
+                    "not proved",
+                    "not proven",
+                    "not established",
+                    "not claimed",
+                    "explicitly out of scope",
+                ]
+                .iter()
+                .any(|exclusion| {
+                    let Some(introduction) =
+                        before.trim_end_matches(':').trim_end().strip_suffix(exclusion)
+                    else {
+                        return false;
+                    };
+                    if introduction
+                        .chars()
+                        .next_back()
+                        .is_some_and(|character| character.is_alphanumeric() || character == '_')
+                    {
+                        return false;
+                    }
+                    *exclusion != "explicitly out of scope"
+                        || !matches!(introduction.split_whitespace().last(), Some("not" | "never"))
+                });
+                let suffix_exclusion = ["is ", "are ", "remains "]
+                    .iter()
+                    .filter_map(|copula| after.strip_prefix(copula))
+                    .any(|predicate| {
+                        [
+                            "not proved",
+                            "not proven",
+                            "not established",
+                            "not claimed",
+                            "explicitly out of scope",
+                        ]
+                        .iter()
+                        .any(|exclusion| {
+                            predicate.strip_prefix(exclusion).is_some_and(|rest| {
+                                rest.chars().next().is_none_or(|ch| !ch.is_alphanumeric())
+                            })
+                        })
+                    });
+                prefix_exclusion || suffix_exclusion
+            })
+        })
+    })
+}
+
+fn strip_issue_owner_suffix(text: &str) -> (&str, Option<&str>) {
+    let (before, owner) = text.rsplit_once(' ').unwrap_or(("", text));
+    match owner.strip_suffix("'s") {
+        // Issue-looking tokens still pass the strict identity parser below;
+        // malformed owners are refused, never reinterpreted as ordinary prose.
+        Some(owner) if hash_issue_number_present(owner) => (before, Some(owner)),
+        _ => (text, None),
+    }
+}
+
+fn without_supported_emphasis(text: &str) -> String {
+    let mut normalized = text.to_string();
+    // These are complete supported subjects and exclusion labels/predicates,
+    // not arbitrary Markdown fragments or punctuation deletion.
+    for phrase in REQUIRED_WORK_SUBJECTS.iter().copied().chain([
+        "does not prove",
+        "does not establish",
+        "does not claim",
+        "not proved",
+        "not proven",
+        "not established",
+        "not claimed",
+        "explicitly out of scope",
+    ]) {
+        for phrase in [phrase.to_string(), format!("{phrase}:")] {
+            for (delimiter, marker) in [("**", '*'), ("*", '*'), ("__", '_'), ("_", '_')] {
+                let pattern = format!("{delimiter}{phrase}{delimiter}");
+                let starts: Vec<usize> = normalized
+                    .match_indices(&pattern)
+                    .filter_map(|(start, _)| {
+                        let end = start + pattern.len();
+                        let before = normalized.get(..start)?.chars().next_back();
+                        let after = normalized.get(end..)?.chars().next();
+                        // Escape parity is the same for emphasis and backticks.
+                        (!backtick_is_escaped(&normalized, start)
+                            && before != Some(marker)
+                            && after != Some(marker)
+                            && !before.is_some_and(|character| {
+                                character.is_alphanumeric() || character == '_'
+                            })
+                            && !after.is_some_and(|character| {
+                                character.is_alphanumeric() || character == '_'
+                            }))
+                        .then_some(start)
+                    })
+                    .collect();
+                for start in starts.into_iter().rev() {
+                    normalized.replace_range(start..start + pattern.len(), &phrase);
+                }
+            }
+        }
+    }
+    normalized
+}
+
+fn prose_without_inline_code(text: &str) -> String {
+    let mut prose = String::new();
+    let mut index = 0;
+    while let Some(tail) = text.get(index..) {
+        let Some(character) = tail.chars().next() else { break };
+        if character == '`' && !backtick_is_escaped(text, index) {
+            let run = tail.chars().take_while(|next| *next == '`').count();
+            if let Some(end) = matching_inline_code_span_end(text, index, run) {
+                // Preserve an opaque boundary: removing an example must not join
+                // separate prose fragments into a supported subject/template.
+                prose.push('\0');
+                index = end;
+                continue;
+            }
+            // An unmatched run is literal prose, not a shorter code opener.
+            prose.extend(std::iter::repeat_n('`', run));
+            index += run;
+            continue;
+        }
+        prose.push(character);
+        index += character.len_utf8();
+    }
+    prose
+}
+
+fn strip_issue_owner_prefix(text: &str) -> (&str, Option<&str>) {
+    let Some(owned) = text.strip_prefix("owned by ").or_else(|| text.strip_prefix("of ")) else {
+        return (text, None);
+    };
+    let (owner, after) = owned.split_once(' ').unwrap_or((owned, ""));
+    (after, Some(owner.trim_end_matches(['.', ';', ':', '!', '?'])))
+}
+
+fn subject_owner_matches(text: &str, context: Option<(&IssueKey, &str)>) -> bool {
+    let current_repository = context.map_or("example/repository", |(_, repository)| repository);
+    let Some(owner) = parse_issue_reference(text, current_repository) else { return false };
+    context.is_none_or(|(key, _)| owner == *key)
+}
+
+fn parse_issue_reference(text: &str, current_repository: &str) -> Option<IssueKey> {
+    let (repository, number) = text.rsplit_once('#')?;
+    if number.is_empty() || !number.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    let number = number.parse::<u64>().ok()?;
+    if number == 0 {
+        return None;
+    }
+    let repository = if repository.is_empty() { current_repository } else { repository };
+    Some(IssueKey { repository: canonical_repository(repository).ok()?, number })
 }
 
 fn contains_explicit_exclusion(text: &str) -> bool {
@@ -1463,21 +1685,33 @@ fn relation_scoped_section_text(
 /// is a neighboring-issue disclaimer. Unnumbered prose still counts: atomic
 /// closes often describe "the remaining work" without repeating `#N`, even
 /// when a later sentence names the issue that tracks that leftover.
+/// With multiple closing relations, retain only complete units naming this issue;
+/// a soft-wrapped predicate stays with its owner, while separate units do not borrow it.
 fn exclusion_text_attributable_to_closed_issue(
     text: &str,
     key: &IssueKey,
     current_repository: &str,
+    relation_count: usize,
 ) -> String {
     attribution_units(text)
         .into_iter()
-        .filter(|unit| !foreign_issue_disclaimer(unit, key, current_repository))
+        .filter(|unit| {
+            let prose = prose_without_inline_code(unit);
+            let references = exact_issue_references(&prose, current_repository);
+            if references.is_empty() {
+                relation_count == 1
+            } else {
+                references.iter().any(|reference| reference == key)
+            }
+        })
         .collect::<Vec<_>>()
-        .join(" ")
+        .join("\n\n")
 }
 
 fn attribution_units(text: &str) -> Vec<String> {
     markdown_paragraphs(text)
         .into_iter()
+        .flat_map(split_markdown_list_items)
         .flat_map(|paragraph| split_sentences(&paragraph))
         .filter(|unit| !unit.is_empty())
         .collect()
@@ -1579,12 +1813,50 @@ fn backtick_is_escaped(text: &str, index: usize) -> bool {
     backslashes % 2 == 1
 }
 
-fn foreign_issue_disclaimer(text: &str, key: &IssueKey, current_repository: &str) -> bool {
-    mentions_an_issue_subject(text) && !references_issue(text, key, current_repository)
-}
-
-fn mentions_an_issue_subject(text: &str) -> bool {
-    hash_issue_number_present(text) || github_issue_url_present(text)
+fn exact_issue_references(text: &str, current_repository: &str) -> Vec<IssueKey> {
+    let lower = text.to_ascii_lowercase();
+    let mut references: Vec<IssueKey> = lower
+        .split(|character: char| {
+            !character.is_alphanumeric() && !matches!(character, '_' | '-' | '.' | '/' | '#')
+        })
+        .filter_map(|token| parse_issue_reference(token.trim_end_matches('.'), current_repository))
+        .collect();
+    for (start, _) in lower.match_indices("https://github.com/") {
+        let enclosing_prefix = lower
+            .get(..start)
+            .unwrap_or_default()
+            .rsplit(|character: char| {
+                character.is_whitespace() || matches!(character, '<' | '(' | '[' | '"' | '\'')
+            })
+            .next()
+            .unwrap_or_default();
+        if enclosing_prefix.contains("://") {
+            continue;
+        }
+        if lower.get(..start).and_then(|prefix| prefix.chars().next_back()).is_some_and(
+            |character| {
+                character.is_alphanumeric()
+                    || matches!(character, '_' | '-' | '.' | '/' | ':' | '#' | '?')
+            },
+        ) {
+            continue;
+        }
+        let Some(tail) = lower.get(start + "https://github.com/".len()..) else { continue };
+        let path = tail
+            .split(|character: char| {
+                !character.is_alphanumeric() && !matches!(character, '_' | '-' | '.' | '/')
+            })
+            .next()
+            .unwrap_or_default()
+            .trim_end_matches('.');
+        let Some((repository, number)) = path.split_once("/issues/") else { continue };
+        if let Some(reference) =
+            parse_issue_reference(&format!("{repository}#{number}"), current_repository)
+        {
+            references.push(reference);
+        }
+    }
+    references
 }
 
 fn hash_issue_number_present(text: &str) -> bool {
@@ -1593,17 +1865,6 @@ fn hash_issue_number_present(text: &str) -> bool {
             .and_then(|tail| tail.chars().next())
             .is_some_and(|character| character.is_ascii_digit())
     })
-}
-
-fn github_issue_url_present(text: &str) -> bool {
-    let lower = text.to_ascii_lowercase();
-    let Some(index) = lower.find("/issues/") else {
-        return false;
-    };
-    lower
-        .get(index + "/issues/".len()..)
-        .and_then(|tail| tail.chars().next())
-        .is_some_and(|character| character.is_ascii_digit())
 }
 
 fn references_number(text: &str, number: u64) -> bool {
@@ -1733,7 +1994,35 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
-    const FIXTURES: [(&str, &str); 20] = [
+    const FIXTURES: [(&str, &str); 24] = [
+        (
+            "valid-explicit-subject-inventory-14633",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../.ci/semantic-close-containment/fixtures/valid-explicit-subject-inventory-14633.json"
+            )),
+        ),
+        (
+            "valid-explicit-subject-guard-14654",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../.ci/semantic-close-containment/fixtures/valid-explicit-subject-guard-14654.json"
+            )),
+        ),
+        (
+            "valid-explicit-subject-markdown-boundaries",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../.ci/semantic-close-containment/fixtures/valid-explicit-subject-markdown-boundaries.json"
+            )),
+        ),
+        (
+            "invalid-explicit-subject-full-acceptance",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../.ci/semantic-close-containment/fixtures/invalid-explicit-subject-full-acceptance.json"
+            )),
+        ),
         (
             "invalid-phase-terminal-5023-5001",
             include_str!(concat!(
@@ -2228,6 +2517,598 @@ mod tests {
     }
 
     #[test]
+    fn explicit_attribution_uses_exact_reference_identity_and_real_issue_owners() -> Result<()> {
+        let local = "effortlessmetrics/perl-lsp-swarm";
+        let multi =
+            "Closes #10\nCloses #11\nCloses #100\nCloses other/repo#10\nCloses other/repo#100";
+        let mut mismatches = Vec::new();
+        for (boundary, closes, owner) in [
+            ("C#'s full acceptance criteria are not established.", "Closes #10", Some((local, 10))),
+            (
+                "Full acceptance criteria are not established; example `#11`.",
+                "Closes #10",
+                Some((local, 10)),
+            ),
+            ("Full acceptance criteria are not established; see #11.", "Closes #10", None),
+            (
+                "For https://example.test/?next=https://github.com/other/repo/issues/10, full acceptance criteria are not established.",
+                multi,
+                None,
+            ),
+            (
+                "For reference=https://github.com/other/repo/issues/10, full acceptance criteria are not established.",
+                multi,
+                Some(("other/repo", 10)),
+            ),
+            (
+                "For [reference](https://github.com/other/repo/issues/10), full acceptance criteria are not established.",
+                multi,
+                Some(("other/repo", 10)),
+            ),
+            (
+                "This PR's full acceptance criteria are not established.",
+                "Closes #10",
+                Some((local, 10)),
+            ),
+            (
+                "#11's full acceptance criteria are not established; see #10.",
+                multi,
+                Some((local, 11)),
+            ),
+            (
+                "For other/repo#10, full acceptance criteria are not established.",
+                multi,
+                Some(("other/repo", 10)),
+            ),
+            (
+                "For other/repo#100, full acceptance criteria are not established.",
+                multi,
+                Some(("other/repo", 100)),
+            ),
+            ("For #10, full acceptance criteria are not established.", multi, Some((local, 10))),
+            ("For #100, full acceptance criteria are not established.", multi, Some((local, 100))),
+            (
+                "For https://github.com/other/repo/issues/10, full acceptance criteria are not established.",
+                multi,
+                Some(("other/repo", 10)),
+            ),
+            (
+                "For https://github.com/other/repo/issues/100, full acceptance criteria are not established.",
+                multi,
+                Some(("other/repo", 100)),
+            ),
+            ("For xother/repo#10, full acceptance criteria are not established.", multi, None),
+            ("For other/repo#100x, full acceptance criteria are not established.", multi, None),
+            (
+                "For xhttps://github.com/other/repo/issues/10, full acceptance criteria are not established.",
+                multi,
+                None,
+            ),
+            (
+                "For https://example.test/https://github.com/other/repo/issues/10, full acceptance criteria are not established.",
+                multi,
+                None,
+            ),
+            ("not-a-repo#11's full acceptance criteria are not established; see #10.", multi, None),
+        ] {
+            let pull = PullRequestSubject {
+                repository: local.into(),
+                number: 990108,
+                title: "fix: exact attribution controls".into(),
+                body: format!("## Claim Boundary\n{boundary}\n\n{closes}"),
+            };
+            let report = evaluate(&pull, |key| {
+                IssueEvidence::Available(IssueSubject {
+                    number: key.number,
+                    title: "Complete the named change".into(),
+                    body: "## Acceptance\nThe named change is established.".into(),
+                })
+            })?;
+            if report.rows.len() != closes.lines().count() {
+                bail!("missing relation row");
+            }
+            for row in report.rows {
+                let expected = if owner == Some((row.repository.as_str(), row.issue_number)) {
+                    ResultCode::FailExplicitUnprovenRequiredWork
+                } else {
+                    ResultCode::PassNoHighConfidenceContradiction
+                };
+                if row.code != expected {
+                    mismatches.push(format!(
+                        "{boundary}: {}#{} expected {expected:?}, observed {:?}",
+                        row.repository, row.issue_number, row.code
+                    ));
+                }
+            }
+        }
+        if !mismatches.is_empty() {
+            bail!("exact attribution mismatches: {mismatches:?}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn explicit_owner_class_retains_longest_subject_and_section_scope() -> Result<()> {
+        let mut cases = Vec::new();
+        for subject in [
+            "full acceptance",
+            "full acceptance criteria",
+            "complete acceptance",
+            "complete acceptance criteria",
+            "remaining acceptance",
+            "remaining acceptance criteria",
+            "complete remaining work",
+            "remaining work",
+        ] {
+            for (reference, expected_owner) in
+                [("#11", Some(11)), ("#11x", None), ("#0", None), ("#18446744073709551616", None)]
+            {
+                for owned in [
+                    format!("{reference}'s {subject}"),
+                    format!("{subject} of {reference}"),
+                    format!("{subject} owned by {reference}"),
+                ] {
+                    cases.push((
+                        format!("This PR does not prove {owned}; see #10."),
+                        true,
+                        expected_owner,
+                    ));
+                    cases.push((format!("Not claimed: {owned}; see #10."), true, expected_owner));
+                    cases.push((
+                        format!("{owned} are not established; see #10."),
+                        true,
+                        expected_owner,
+                    ));
+                }
+            }
+        }
+        cases.push((
+            "#11's complete remaining work is not established; see #10.".into(),
+            true,
+            Some(11),
+        ));
+        cases.push(("#11's complete remaining work is established; #10's remaining work is not established.".into(), true, Some(10)));
+        for token in [
+            "#10x",
+            "#0",
+            "#18446744073709551616",
+            "not-a-repo#10",
+            "https://github.com/other/repo/issues/10x",
+        ] {
+            cases.push((format!("Full acceptance criteria are not established; parser token {token} remains unchanged."), false, Some(10)));
+        }
+        for owned in [
+            "#10x's full acceptance criteria",
+            "full acceptance criteria of #10x",
+            "full acceptance criteria owned by #10x",
+        ] {
+            cases.push((format!("This PR does not prove the {owned}."), false, None));
+        }
+        cases.push(("#10's full acceptance criteria are not established.".into(), true, Some(10)));
+        cases.push(("Full acceptance criteria are not established.".into(), true, None));
+        let mut mismatches = Vec::new();
+        for section in ["Claim Boundary", "Non-goals"] {
+            for (boundary, multiple, owner) in &cases {
+                let closes = if *multiple { "Closes #10\nCloses #11" } else { "Closes #10" };
+                let pull = PullRequestSubject {
+                    repository: "effortlessmetrics/perl-lsp-swarm".into(),
+                    number: 990109,
+                    title: "fix: owned exclusion class".into(),
+                    body: format!("## {section}\n{boundary}\n\n{closes}"),
+                };
+                let report = evaluate(&pull, |key| {
+                    IssueEvidence::Available(IssueSubject {
+                        number: key.number,
+                        title: "Complete the named change".into(),
+                        body: "## Acceptance\nThe named change is established.".into(),
+                    })
+                })?;
+                if report.rows.len() != closes.lines().count() {
+                    bail!("missing owned exclusion class relation row");
+                }
+                for row in report.rows {
+                    let expected = if *owner == Some(row.issue_number) {
+                        ResultCode::FailExplicitUnprovenRequiredWork
+                    } else {
+                        ResultCode::PassNoHighConfidenceContradiction
+                    };
+                    if row.code != expected {
+                        mismatches.push(format!(
+                            "{section}: {boundary}: #{} expected {expected:?}, observed {:?}",
+                            row.issue_number, row.code
+                        ));
+                    }
+                }
+            }
+        }
+        if !mismatches.is_empty() {
+            bail!("owned exclusion class mismatches: {mismatches:?}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn explicit_heading_and_literal_star_controls_use_full_evaluator() -> Result<()> {
+        let mut mismatches = Vec::new();
+        for (body, contradictory) in [
+            ("## Claim Boundary: Full acceptance criteria are not established", true),
+            ("## Non-Goals: Full acceptance criteria are not established", true),
+            (
+                "## Claim Boundary\nComplete\n## Claim Boundary: Full acceptance criteria are not established",
+                true,
+            ),
+            ("## Claim Boundary: Full acceptance criteria\nare not established", false),
+            (
+                "## Claim Boundary: Full acceptance criteria\n## Claim Boundary: are not established",
+                false,
+            ),
+            ("## Claim Boundary\nFull accept*ance criteria are not established", false),
+            ("## Claim Boundary\nFull acceptance criteria are not estab*lished", false),
+            ("## Claim Boundary\n*Full acceptance criteria* are not established", true),
+            ("## Claim Boundary\n**Full acceptance criteria** are not established", true),
+            ("## Claim Boundary\n\\*Full acceptance criteria* are not established", false),
+            ("## Claim Boundary\n*Full acceptance criteria\\* are not established", false),
+            (
+                "## Claim Boundary\nFull accept*ance is an example; full acceptance criteria are not established",
+                true,
+            ),
+            ("## Claim Boundary\n**Not claimed:** the full acceptance criteria", true),
+            ("## Claim Boundary\nx**not claimed:** the full acceptance criteria", false),
+            ("## Claim Boundary\nxnot claimed: the full acceptance criteria", false),
+            ("## Claim Boundary\nNot claimedthe full acceptance criteria", false),
+            ("## Claim Boundary\nNot claimed: the full acceptance criteria", true),
+            ("## Claim Boundary\nFor this PR, not claimed: the full acceptance criteria", true),
+            ("## Claim Boundary\nidentifier_**not claimed:** the full acceptance criteria", false),
+            ("## Claim Boundary\n**Not cla*imed:** the full acceptance criteria", false),
+            ("## Claim Boundary\nFull acceptance criteria are **not established**", true),
+            ("## Claim Boundary\n`Full acceptance criteria are not established\\`.", false),
+            ("## Claim Boundary\n\\`Full acceptance criteria are not established\\`.", true),
+        ] {
+            let pull = PullRequestSubject {
+                repository: "effortlessmetrics/perl-lsp-swarm".into(),
+                number: 990107,
+                title: "fix: heading and literal delimiter controls".into(),
+                body: format!("{body}\n\nCloses #10"),
+            };
+            let report = evaluate(&pull, |key| {
+                IssueEvidence::Available(IssueSubject {
+                    number: key.number,
+                    title: "Complete the named change".into(),
+                    body: "## Acceptance\nThe named change is established.".into(),
+                })
+            })?;
+            let expected = if contradictory {
+                ResultCode::FailExplicitUnprovenRequiredWork
+            } else {
+                ResultCode::PassNoHighConfidenceContradiction
+            };
+            if report.rows.first().map(|row| row.code) != Some(expected) {
+                mismatches.push(format!("{body}: expected {expected:?}"));
+            }
+        }
+        if !mismatches.is_empty() {
+            bail!("heading/literal-star mismatches: {mismatches:?}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn explicit_owner_occurrence_and_scope_polarity_are_independent() -> Result<()> {
+        let local = "effortlessmetrics/perl-lsp-swarm";
+        let multi = "Closes #10\nCloses #11\nCloses #100\nCloses other/repo#10";
+        let mut mismatches = Vec::new();
+        for (boundary, closes, owner) in [
+            (
+                "#11's full acceptance criteria are not established; see #10.",
+                multi,
+                Some((local, 11)),
+            ),
+            (
+                "other/repo#10's full acceptance criteria are not established; see #10.",
+                multi,
+                Some(("other/repo", 10)),
+            ),
+            (
+                "Full acceptance criteria of #11\nare not established; see #10.",
+                multi,
+                Some((local, 11)),
+            ),
+            ("Not established: #11's remaining required work; see #10.", multi, Some((local, 11))),
+            (
+                "Remaining required work owned by #11 is not established; see #10.",
+                multi,
+                Some((local, 11)),
+            ),
+            (
+                "Remaining required work of other/repo#10 is not established; #10 is complete.",
+                multi,
+                Some(("other/repo", 10)),
+            ),
+            (
+                "Not established: other/repo#10's remaining required work; #10 is complete.",
+                multi,
+                Some(("other/repo", 10)),
+            ),
+            (
+                "Remaining required work owned by other/repo#10 is not established; #10 is complete.",
+                multi,
+                Some(("other/repo", 10)),
+            ),
+            (
+                "Remaining required work of #100 is not established; see #10.",
+                multi,
+                Some((local, 100)),
+            ),
+            (
+                "Full acceptance criteria of #10\n## Claim Boundary\nare not established",
+                multi,
+                None,
+            ),
+            (
+                "Full acceptance criteria of #10\n## Other heading\nExample\n## Claim Boundary\nare not established",
+                multi,
+                None,
+            ),
+            (
+                "Example café\n## Claim Boundary\n## Claim Boundary\nFull acceptance criteria of #10 are not established",
+                multi,
+                Some((local, 10)),
+            ),
+            ("Not explicitly out of scope: the remaining required work.", "Closes #10", None),
+            ("Never explicitly out of scope: the remaining required work.", "Closes #10", None),
+            (
+                "Explicitly out of scope: the remaining required work.",
+                "Closes #10",
+                Some((local, 10)),
+            ),
+            (
+                "Not explicitly out of scope: the remaining required work. Explicitly out of scope: the full acceptance criteria.",
+                "Closes #10",
+                Some((local, 10)),
+            ),
+        ] {
+            let pull = PullRequestSubject {
+                repository: local.into(),
+                number: 990106,
+                title: "fix: attribution class controls".into(),
+                body: format!("## Claim Boundary\n{boundary}\n\n{closes}"),
+            };
+            let report = evaluate(&pull, |key| {
+                IssueEvidence::Available(IssueSubject {
+                    number: key.number,
+                    title: "Complete the named change".into(),
+                    body: "## Acceptance\nThe named change is established.".into(),
+                })
+            })?;
+            if report.rows.len() != closes.lines().count() {
+                bail!("missing relation row");
+            }
+            for row in report.rows {
+                let expected = if owner == Some((row.repository.as_str(), row.issue_number)) {
+                    ResultCode::FailExplicitUnprovenRequiredWork
+                } else {
+                    ResultCode::PassNoHighConfidenceContradiction
+                };
+                if row.code != expected {
+                    mismatches.push(format!(
+                        "{boundary}: {}#{} expected {expected:?}, observed {:?}",
+                        row.repository, row.issue_number, row.code
+                    ));
+                }
+            }
+        }
+        if !mismatches.is_empty() {
+            bail!("attribution class mismatches: {mismatches:?}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn explicit_review_exclusions_preserve_wrapped_relation_ownership() -> Result<()> {
+        let mut mismatches = Vec::new();
+        for (boundary, failing_issue) in [
+            ("Explicitly out of scope: the remaining required work of #10.", Some(10)),
+            ("The remaining required work of #10 is explicitly out of scope.", Some(10)),
+            ("Full acceptance criteria of #10\nare not established.", Some(10)),
+            (
+                "- Full acceptance criteria of #11\n  are not established\n- Full acceptance criteria of #10 are established",
+                Some(11),
+            ),
+            (
+                "Full acceptance criteria of #10\nare established.\n\nThe guard is explicitly out of scope.",
+                None,
+            ),
+            ("Full acceptance criteria of #10\n\nare not established.", None),
+            ("Full acceptance criteria of #12\nare not established.", None),
+        ] {
+            let pull = PullRequestSubject {
+                repository: "effortlessmetrics/perl-lsp-swarm".into(),
+                number: 990105,
+                title: "fix: review exclusion controls".into(),
+                body: format!("## Claim Boundary\n{boundary}\n\nCloses #10\nCloses #11"),
+            };
+            let report = evaluate(&pull, |key| {
+                IssueEvidence::Available(IssueSubject {
+                    number: key.number,
+                    title: "Complete the named change".into(),
+                    body: "## Acceptance\nThe named change is established.".into(),
+                })
+            })?;
+            if report.rows.len() != 2 {
+                bail!("expected two relation rows");
+            }
+            for row in report.rows {
+                let expected = if Some(row.issue_number) == failing_issue {
+                    ResultCode::FailExplicitUnprovenRequiredWork
+                } else {
+                    ResultCode::PassNoHighConfidenceContradiction
+                };
+                if row.code != expected {
+                    mismatches.push(format!(
+                        "{boundary}: #{} expected {expected:?}, observed {:?}",
+                        row.issue_number, row.code
+                    ));
+                }
+            }
+        }
+        if !mismatches.is_empty() {
+            bail!("review exclusion mismatches: {mismatches:?}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn explicit_required_subject_families_retain_prefix_and_suffix_exclusions() -> Result<()> {
+        let mut mismatches = Vec::new();
+        for modifier in ["full", "complete", "remaining"] {
+            for work in ["acceptance criteria", "acceptance", "issue work", "required work"] {
+                let predicate = if work == "acceptance criteria" {
+                    "are not established"
+                } else {
+                    "is not proven"
+                };
+                for boundary in [
+                    format!("This PR does not prove the {modifier} {work}."),
+                    format!("The {modifier} {work} {predicate}."),
+                    format!("Explicitly out of scope: the {modifier} {work}."),
+                    format!("The {modifier} {work} is explicitly out of scope."),
+                ] {
+                    let pull = PullRequestSubject {
+                        repository: "effortlessmetrics/perl-lsp-swarm".into(),
+                        number: 990104,
+                        title: "fix: required subject family control".into(),
+                        body: format!("## Claim Boundary\n{boundary}\n\nCloses #10"),
+                    };
+                    let report = evaluate(&pull, |key| {
+                        IssueEvidence::Available(IssueSubject {
+                            number: key.number,
+                            title: "Complete the named change".into(),
+                            body: "## Acceptance\nThe named change is established.".into(),
+                        })
+                    })?;
+                    if report.rows.first().map(|row| row.code)
+                        != Some(ResultCode::FailExplicitUnprovenRequiredWork)
+                    {
+                        mismatches.push(boundary);
+                    }
+                }
+            }
+        }
+        if !mismatches.is_empty() {
+            bail!("required subject exclusions were lost: {mismatches:?}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn explicit_subject_inline_code_is_data_in_full_evaluator() -> Result<()> {
+        let mut mismatches = Vec::new();
+        for (boundary, contradictory) in [
+            (
+                "The guard rejects `full acceptance criteria are not established` as a contradiction. This is parser coverage, not a claim of general completeness.",
+                false,
+            ),
+            (
+                "The guard rejects ``full acceptance criteria are not established; `sample` `` as an example.",
+                false,
+            ),
+            ("Full acceptance criteria are not established for `some_value`.", true),
+            ("`Full acceptance criteria are not established.", true),
+            ("\\`Full acceptance criteria are not established\\`.", true),
+            ("Full `example` acceptance criteria are not established.", false),
+            ("Full acceptance criteria are satisfied; `not established` is an example.", false),
+        ] {
+            let pull = PullRequestSubject {
+                repository: "effortlessmetrics/perl-lsp-swarm".into(),
+                number: 990103,
+                title: "fix: inline example control".into(),
+                body: format!("## Claim Boundary\n{boundary}\n\nCloses #10"),
+            };
+            let report = evaluate(&pull, |key| {
+                IssueEvidence::Available(IssueSubject {
+                    number: key.number,
+                    title: "Complete the named change".into(),
+                    body: "## Acceptance\nThe named change is established.".into(),
+                })
+            })?;
+            let observed = report
+                .rows
+                .first()
+                .ok_or_else(|| color_eyre::eyre::eyre!("missing relation row"))?
+                .code;
+            let expected = if contradictory {
+                ResultCode::FailExplicitUnprovenRequiredWork
+            } else {
+                ResultCode::PassNoHighConfidenceContradiction
+            };
+            if observed != expected {
+                mismatches
+                    .push(format!("{boundary}: expected {expected:?}, observed {observed:?}"));
+            }
+        }
+        if !mismatches.is_empty() {
+            bail!("inline-code full evaluator mismatches: {mismatches:?}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn explicit_subject_ownership_and_emphasis_survive_attribution() -> Result<()> {
+        let key = IssueKey { repository: "effortlessmetrics/perl-lsp-swarm".into(), number: 10 };
+        let mut mismatches = Vec::new();
+        for (text, expected) in [
+            ("Full acceptance criteria of #10 are not established.", true),
+            ("Full acceptance criteria of #11 are not established.", false),
+            ("__Full acceptance criteria__ are not established.", true),
+            ("_Full acceptance criteria_ are not established.", true),
+            ("Full issue work remains not proven.", true),
+            ("prefix_full acceptance criteria_suffix are not established.", false),
+            ("Full_acceptance criteria are not established.", false),
+        ] {
+            let attributable =
+                exclusion_text_attributable_to_closed_issue(text, &key, &key.repository, 1);
+            if explicitly_not_proven_required_work(&attributable) != expected {
+                mismatches.push(format!("expected {expected}: {text}"));
+            }
+        }
+        if !mismatches.is_empty() {
+            bail!("owned rendered subject mismatches: {mismatches:?}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn explicit_subject_exclusion_is_bound_to_required_work() -> Result<()> {
+        for text in [
+            "Every row is classified. Activation is not claimed.",
+            "Not claimed: that this guard is now complete.",
+            "Full acceptance criteria are satisfied and this guard is not claimed complete.",
+            "Full acceptance criteria are satisfied; this guard is not claimed complete.",
+            "Full acceptance criteria\n\nare not established for this guard.",
+            "- Full acceptance criteria\n- are not established for this guard",
+            "Full acceptance criteria are satisfied. This guard is not claimed complete.",
+        ] {
+            if explicitly_not_proven_required_work(text) {
+                bail!("unrelated exclusion must not borrow the required-work subject: {text}");
+            }
+        }
+        for text in [
+            "This PR does not prove the full acceptance criteria.",
+            "Full acceptance criteria are not established.",
+            "Not claimed: the remaining required work.",
+            "The complete remaining work is not proven.",
+            "This PR does not establish #10's remaining required work.",
+            "The complete remaining call-site cohort is not established.",
+            "Full acceptance criteria are satisfied and remaining required work is not established.",
+        ] {
+            if !explicitly_not_proven_required_work(text) {
+                bail!("explicit required-work exclusion must remain blocking: {text}");
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
     fn explicitly_not_proven_required_work_uses_whole_word_scope_markers() {
         assert!(explicitly_not_proven_required_work(
             "this does not prove remaining work in all four families"
@@ -2245,8 +3126,8 @@ mod tests {
     fn neighbor_issue_disclaimer_is_not_attributable_unproven_required_work() {
         let key = IssueKey { repository: "effortlessmetrics/perl-lsp-swarm".into(), number: 10 };
         let current = "effortlessmetrics/perl-lsp-swarm";
-        let text = "This PR proves #10's claim in full.\n\nWork owned by #11 is not established.";
-        let attributable = exclusion_text_attributable_to_closed_issue(text, &key, current);
+        let text = "This PR proves #10's claim in full.\n\nRemaining required work owned by #11 is not established.";
+        let attributable = exclusion_text_attributable_to_closed_issue(text, &key, current, 1);
         assert!(
             !explicitly_not_proven_required_work(&attributable),
             "filtered text must drop the neighboring-issue exclusion: {attributable:?}"
@@ -2258,16 +3139,15 @@ mod tests {
 
         let named_closed = "This PR does not prove #10's remaining required work.\n\nWork owned by #11 is separately not established.";
         let attributable_named =
-            exclusion_text_attributable_to_closed_issue(named_closed, &key, current);
+            exclusion_text_attributable_to_closed_issue(named_closed, &key, current, 1);
         assert!(
             explicitly_not_proven_required_work(&attributable_named),
             "naming the closed issue must keep the exclusion: {attributable_named:?}"
         );
 
-        let spaced =
-            "This PR proves #10's claim in full.\n \t\nWork owned by #11 is not established.";
+        let spaced = "This PR proves #10's claim in full.\n \t\nRemaining required work owned by #11 is not established.";
         let attributable_spaced =
-            exclusion_text_attributable_to_closed_issue(spaced, &key, current);
+            exclusion_text_attributable_to_closed_issue(spaced, &key, current, 1);
         assert!(
             !explicitly_not_proven_required_work(&attributable_spaced),
             "whitespace-only blank lines must still drop the neighboring disclaimer: {attributable_spaced:?}"
@@ -2276,7 +3156,7 @@ mod tests {
         let tracked =
             "This PR does not prove the complete remaining work. That work is tracked by #11.";
         let attributable_tracked =
-            exclusion_text_attributable_to_closed_issue(tracked, &key, current);
+            exclusion_text_attributable_to_closed_issue(tracked, &key, current, 1);
         assert!(
             explicitly_not_proven_required_work(&attributable_tracked),
             "an unnumbered closed-issue exclusion must survive a later tracker sentence: {attributable_tracked:?}"
@@ -2287,7 +3167,7 @@ mod tests {
                 "This PR does not prove the complete remaining work{terminator} That work is tracked by #11."
             );
             let attributable_punctuated =
-                exclusion_text_attributable_to_closed_issue(&punctuated, &key, current);
+                exclusion_text_attributable_to_closed_issue(&punctuated, &key, current, 1);
             assert!(
                 explicitly_not_proven_required_work(&attributable_punctuated),
                 "sentence terminators other than '.' must still keep the exclusion: {attributable_punctuated:?}"
@@ -2295,9 +3175,9 @@ mod tests {
         }
 
         let inline_question =
-            "Complete behavior is not established for `$ready ? $new : $old`; see #11.";
+            "Remaining required work is not established for `$ready ? $new : $old`; see #11.";
         let attributable_inline_question =
-            exclusion_text_attributable_to_closed_issue(inline_question, &key, current);
+            exclusion_text_attributable_to_closed_issue(inline_question, &key, current, 1);
         assert!(
             !explicitly_not_proven_required_work(&attributable_inline_question),
             "a `?` inside an inline code span must not split off the neighbor reference: {attributable_inline_question:?}"
@@ -2307,9 +3187,10 @@ mod tests {
             "unfiltered inline-code neighbor text must still show why attribution is load-bearing"
         );
 
-        let inline_bang = "Complete behavior is not established for `die $msg! now`; see #11.";
+        let inline_bang =
+            "Remaining required work is not established for `die $msg! now`; see #11.";
         let attributable_inline_bang =
-            exclusion_text_attributable_to_closed_issue(inline_bang, &key, current);
+            exclusion_text_attributable_to_closed_issue(inline_bang, &key, current, 1);
         assert!(
             !explicitly_not_proven_required_work(&attributable_inline_bang),
             "a `!` inside an inline code span must not split off the neighbor reference: {attributable_inline_bang:?}"
@@ -2319,9 +3200,9 @@ mod tests {
             "unfiltered inline-bang neighbor text must still show why attribution is load-bearing"
         );
 
-        let inline_dot = "Complete behavior is not established for `$x. meth $y`; see #11.";
+        let inline_dot = "Remaining required work is not established for `$x. meth $y`; see #11.";
         let attributable_inline_dot =
-            exclusion_text_attributable_to_closed_issue(inline_dot, &key, current);
+            exclusion_text_attributable_to_closed_issue(inline_dot, &key, current, 1);
         assert!(
             !explicitly_not_proven_required_work(&attributable_inline_dot),
             "a `.` inside an inline code span must not split off the neighbor reference: {attributable_inline_dot:?}"
@@ -2329,7 +3210,7 @@ mod tests {
 
         let escaped = "This PR does not prove the complete remaining work for \\`foo? bar\\`. That work is tracked by #11.";
         let attributable_escaped =
-            exclusion_text_attributable_to_closed_issue(escaped, &key, current);
+            exclusion_text_attributable_to_closed_issue(escaped, &key, current, 1);
         assert!(
             explicitly_not_proven_required_work(&attributable_escaped),
             "escaped backticks must not hide an unnumbered closed-issue exclusion: {attributable_escaped:?}"
