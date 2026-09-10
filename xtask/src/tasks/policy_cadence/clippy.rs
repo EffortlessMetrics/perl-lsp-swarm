@@ -29,6 +29,7 @@ pub(super) fn obligations(root: &Path) -> Result<Vec<RawObligation>> {
 mod tests {
     use super::super::{CadenceState, classify, parse_date};
     use super::*;
+    use color_eyre::eyre::eyre;
     use std::fs;
     use tempfile::tempdir;
 
@@ -96,7 +97,7 @@ review_after = "2026-09-02"
         let debt = items
             .iter()
             .find(|item| item.source_kind == "clippy_debt")
-            .expect("debt row");
+            .ok_or_else(|| eyre!("missing Clippy debt cadence row"))?;
         assert_eq!(debt.state, CadenceState::ReviewOverdue);
         assert_eq!(debt.owner, "#6305");
         assert_eq!(debt.owner_issue.as_deref(), Some("#6305"));
@@ -106,7 +107,7 @@ review_after = "2026-09-02"
         let deferred = items
             .iter()
             .find(|item| item.source_kind == "clippy_deferred_due")
-            .expect("deferred row");
+            .ok_or_else(|| eyre!("missing Clippy deferred cadence row"))?;
         assert_eq!(deferred.state, CadenceState::ReviewOverdue);
         assert_eq!(deferred.owner, "#9869");
         assert_eq!(deferred.owner_issue.as_deref(), Some("#9869"));
