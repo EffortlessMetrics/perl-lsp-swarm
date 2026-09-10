@@ -11,7 +11,15 @@
     "zed_version": null,
     "extension_version": null,
     "fixture_id": null,
-    "asset_sha256": null
+    "asset_sha256": null,
+    "binary_sha256": null,
+    "zed_build": null,
+    "extension_candidate_commit": null,
+    "extension_wasm_sha256": null,
+    "fixture_sha256": null,
+    "version": null,
+    "target": null,
+    "installed_path": null
   },
   "selection": {
     "resolution_route": null,
@@ -29,9 +37,122 @@
     "normal_disable": null,
     "shutdown_no_orphan": null
   },
-  "recovery_observations": {},
+  "recovery_observations": {
+    "missing_asset": {
+      "result": "not_run",
+      "known_good_before_sha256": null,
+      "known_good_after_sha256": null,
+      "restored_subject_sha256": null,
+      "failed_candidate_identity": null,
+      "failed_candidate_selected": null,
+      "fallback_server_id": null,
+      "rejection_reason": null,
+      "restored_result": null,
+      "evidence": null
+    },
+    "duplicate_matching_asset": {
+      "result": "not_run",
+      "known_good_before_sha256": null,
+      "known_good_after_sha256": null,
+      "restored_subject_sha256": null,
+      "failed_candidate_identity": null,
+      "failed_candidate_selected": null,
+      "fallback_server_id": null,
+      "rejection_reason": null,
+      "restored_result": null,
+      "evidence": null
+    },
+    "wrong_target": {
+      "result": "not_run",
+      "known_good_before_sha256": null,
+      "known_good_after_sha256": null,
+      "restored_subject_sha256": null,
+      "failed_candidate_identity": null,
+      "failed_candidate_selected": null,
+      "fallback_server_id": null,
+      "rejection_reason": null,
+      "restored_result": null,
+      "evidence": null
+    },
+    "checksum_mismatch": {
+      "result": "not_run",
+      "known_good_before_sha256": null,
+      "known_good_after_sha256": null,
+      "restored_subject_sha256": null,
+      "failed_candidate_identity": null,
+      "failed_candidate_selected": null,
+      "fallback_server_id": null,
+      "rejection_reason": null,
+      "restored_result": null,
+      "evidence": null
+    },
+    "unsafe_archive_member": {
+      "result": "not_run",
+      "known_good_before_sha256": null,
+      "known_good_after_sha256": null,
+      "restored_subject_sha256": null,
+      "failed_candidate_identity": null,
+      "failed_candidate_selected": null,
+      "fallback_server_id": null,
+      "rejection_reason": null,
+      "restored_result": null,
+      "evidence": null
+    },
+    "missing_expected_executable": {
+      "result": "not_run",
+      "known_good_before_sha256": null,
+      "known_good_after_sha256": null,
+      "restored_subject_sha256": null,
+      "failed_candidate_identity": null,
+      "failed_candidate_selected": null,
+      "fallback_server_id": null,
+      "rejection_reason": null,
+      "restored_result": null,
+      "evidence": null
+    },
+    "partial_download": {
+      "result": "not_run",
+      "known_good_before_sha256": null,
+      "known_good_after_sha256": null,
+      "restored_subject_sha256": null,
+      "failed_candidate_identity": null,
+      "failed_candidate_selected": null,
+      "fallback_server_id": null,
+      "rejection_reason": null,
+      "restored_result": null,
+      "evidence": null
+    },
+    "extraction_failure": {
+      "result": "not_run",
+      "known_good_before_sha256": null,
+      "known_good_after_sha256": null,
+      "restored_subject_sha256": null,
+      "failed_candidate_identity": null,
+      "failed_candidate_selected": null,
+      "fallback_server_id": null,
+      "rejection_reason": null,
+      "restored_result": null,
+      "evidence": null
+    },
+    "launch_failure": {
+      "result": "not_run",
+      "known_good_before_sha256": null,
+      "known_good_after_sha256": null,
+      "restored_subject_sha256": null,
+      "failed_candidate_identity": null,
+      "failed_candidate_selected": null,
+      "fallback_server_id": null,
+      "rejection_reason": null,
+      "restored_result": null,
+      "evidence": null
+    }
+  },
   "claim_boundary": {
     "real_zed_managed_route": "not_proven",
     "official_registry": "not_proven"
+  },
+  "upstream": {
+    "asset_receipt_sha256": null,
+    "host_receipt_sha256": null
   }
 }

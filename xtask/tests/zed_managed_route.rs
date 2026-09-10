@@ -8,6 +8,9 @@
 #[path = "support/zed_managed_route.rs"]
 mod zed_managed_route;
 
+#[path = "support/zed_managed_cli_tests.rs"]
+mod cli_tests;
+
 use std::error::Error;
 use std::fs;
 use std::io;
@@ -77,6 +80,8 @@ fn pass_candidate_cannot_substitute_path_or_omit_known_good_recovery() -> Result
     assert!(zed_managed_route::validate_receipt(&receipt, &contract).is_err());
 
     let mut missing = receipt.clone();
+    missing["selection"]["resolution_route"] =
+        Value::String(zed_managed_route::MANAGED_PUBLIC_ARTIFACT.to_string());
     missing["recovery_observations"] = Value::Object(serde_json::Map::new());
     assert!(zed_managed_route::validate_receipt(&missing, &contract).is_err());
     Ok(())
@@ -86,10 +91,27 @@ fn valid_pass(receipt: &mut Value) -> Result<(), Box<dyn Error>> {
     receipt["result"] = Value::String("pass".to_string());
     receipt["observed_at"] = Value::String("2026-08-14T00:00:00Z".to_string());
     receipt["contract"]["sha256"] = Value::String(format!("sha256:{}", "0".repeat(64)));
-    for key in ["zed_version", "extension_version", "fixture_id"] {
+    for key in [
+        "zed_version",
+        "zed_build",
+        "extension_version",
+        "extension_candidate_commit",
+        "fixture_id",
+        "version",
+        "target",
+        "installed_path",
+    ] {
         receipt["subject"][key] = Value::String(format!("{key}-fixture"));
     }
     receipt["subject"]["asset_sha256"] = Value::String(format!("sha256:{}", "1".repeat(64)));
+    receipt["subject"]["binary_sha256"] = Value::String(format!("sha256:{}", "b".repeat(64)));
+    for key in ["extension_wasm_sha256", "fixture_sha256"] {
+        receipt["subject"][key] = Value::String(format!("sha256:{}", "a".repeat(64)));
+    }
+    receipt["upstream"] = serde_json::json!({
+        "asset_receipt_sha256": format!("sha256:{}", "2".repeat(64)),
+        "host_receipt_sha256": format!("sha256:{}", "3".repeat(64))
+    });
     receipt["claim_boundary"]["real_zed_managed_route"] =
         Value::String("proven_for_exact_subject".to_string());
     receipt["selection"]["resolution_route"] =
@@ -97,8 +119,8 @@ fn valid_pass(receipt: &mut Value) -> Result<(), Box<dyn Error>> {
     receipt["selection"]["selected_provider"] = Value::String("perllsp".to_string());
     receipt["selection"]["fallback_allowed"] = Value::Bool(false);
     receipt["selection"]["prior_managed_cache_absent"] = Value::Bool(true);
-    receipt["selection"]["selected_subject_sha256"] = receipt["subject"]["asset_sha256"].clone();
-    receipt["selection"]["restart_subject_sha256"] = receipt["subject"]["asset_sha256"].clone();
+    receipt["selection"]["selected_subject_sha256"] = receipt["subject"]["binary_sha256"].clone();
+    receipt["selection"]["restart_subject_sha256"] = receipt["subject"]["binary_sha256"].clone();
     receipt["selection"]["older_versions_preserved_until_launch"] = Value::Bool(true);
     for journey in zed_managed_route::REQUIRED_JOURNEYS {
         receipt["journeys"][journey] = Value::String("pass".to_string());
@@ -107,7 +129,21 @@ fn valid_pass(receipt: &mut Value) -> Result<(), Box<dyn Error>> {
         .as_object_mut()
         .ok_or_else(|| io::Error::other("template recovery observations must be an object"))?;
     for scenario in zed_managed_route::REQUIRED_RECOVERY_SCENARIOS {
-        observations.insert(scenario.to_string(), Value::String("pass".to_string()));
+        observations.insert(
+            scenario.to_string(),
+            serde_json::json!({
+                "result": "pass",
+                "known_good_before_sha256": format!("sha256:{}", "b".repeat(64)),
+                "known_good_after_sha256": format!("sha256:{}", "b".repeat(64)),
+                "restored_subject_sha256": format!("sha256:{}", "b".repeat(64)),
+                "failed_candidate_identity": format!("synthetic-attempt-{scenario}"),
+                "failed_candidate_selected": false,
+                "fallback_server_id": null,
+                "rejection_reason": format!("synthetic-{scenario}-rejection"),
+                "restored_result": "pass",
+                "evidence": "synthetic validator fixture only"
+            }),
+        );
     }
     Ok(())
 }
@@ -207,12 +243,116 @@ fn contract_and_receipt_authority_is_behaviorally_bound() -> Result<(), Box<dyn 
 }
 
 #[test]
-fn validator_cli_reuses_the_support_authority() -> Result<(), Box<dyn Error>> {
+fn authority_requires_all_nine_recovery_scenarios() -> Result<(), Box<dyn Error>> {
+    let contract = read_json(&repo_root()?, CONTRACT)?;
+    let rows = contract
+        .get("recovery_scenarios")
+        .and_then(Value::as_array)
+        .ok_or_else(|| io::Error::other("missing recovery rows"))?;
+    for required in ["extraction_failure", "launch_failure"] {
+        if !rows.iter().any(|row| row.as_str() == Some(required)) {
+            return Err(io::Error::other(format!("missing required scenario {required}")).into());
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn pass_requires_structured_recovery_evidence() -> Result<(), Box<dyn Error>> {
     let root = repo_root()?;
-    let source = fs::read_to_string(root.join("xtask/src/bin/validate-zed-managed-route.rs"))?;
-    assert!(source.contains("support/zed_managed_route.rs"));
-    assert!(source.contains("validate_contract"));
-    assert!(source.contains("validate_receipt"));
-    assert!(source.contains("contract digest mismatch"));
+    let contract = read_json(&root, CONTRACT)?;
+    let mut receipt = read_json(&root, TEMPLATE)?;
+    valid_pass(&mut receipt)?;
+    let observations = receipt
+        .get_mut("recovery_observations")
+        .and_then(Value::as_object_mut)
+        .ok_or_else(|| io::Error::other("missing recovery observations"))?;
+    for value in observations.values_mut() {
+        *value = Value::String("pass".to_string());
+    }
+    // A self-attested pass string proves none of the per-failure subject facts.
+    if zed_managed_route::validate_receipt(&receipt, &contract).is_ok() {
+        return Err(io::Error::other("unstructured recovery pass accepted").into());
+    }
+    Ok(())
+}
+
+#[test]
+fn every_recovery_fact_is_required_independently() -> Result<(), Box<dyn Error>> {
+    let root = repo_root()?;
+    let contract = read_json(&root, CONTRACT)?;
+    let mut baseline = read_json(&root, TEMPLATE)?;
+    valid_pass(&mut baseline)?;
+    zed_managed_route::validate_receipt(&baseline, &contract).map_err(io::Error::other)?;
+    for scenario in zed_managed_route::REQUIRED_RECOVERY_SCENARIOS {
+        for (field, replacement) in [
+            ("result", serde_json::json!("not_run")),
+            ("known_good_before_sha256", serde_json::json!(format!("sha256:{}", "f".repeat(64)))),
+            ("known_good_after_sha256", serde_json::json!(format!("sha256:{}", "f".repeat(64)))),
+            ("restored_subject_sha256", serde_json::json!(format!("sha256:{}", "f".repeat(64)))),
+            ("failed_candidate_identity", Value::Null),
+            ("failed_candidate_selected", Value::Bool(true)),
+            ("fallback_server_id", serde_json::json!("other-provider")),
+            ("rejection_reason", serde_json::json!("")),
+            ("restored_result", serde_json::json!("not_proven")),
+            ("evidence", Value::Null),
+        ] {
+            let mut mutated = baseline.clone();
+            mutated["recovery_observations"][scenario][field] = replacement;
+            if zed_managed_route::validate_receipt(&mutated, &contract).is_ok() {
+                return Err(
+                    io::Error::other(format!("accepted {scenario}.{field} mutation")).into()
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn template_cannot_claim_new_subject_or_upstream_observations() -> Result<(), Box<dyn Error>> {
+    let root = repo_root()?;
+    let contract = read_json(&root, CONTRACT)?;
+    let template = read_json(&root, TEMPLATE)?;
+    for pointer in [
+        "/subject/binary_sha256",
+        "/subject/target",
+        "/subject/fixture_sha256",
+        "/subject/extension_candidate_commit",
+        "/upstream/asset_receipt_sha256",
+        "/upstream/host_receipt_sha256",
+    ] {
+        let mut mutated = template.clone();
+        *mutated.pointer_mut(pointer).ok_or_else(|| io::Error::other(pointer.to_string()))? =
+            serde_json::json!("observed");
+        if zed_managed_route::validate_receipt(&mutated, &contract).is_ok() {
+            return Err(io::Error::other(format!("not_run accepted {pointer}")).into());
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn template_preserves_every_unobserved_recovery_slot() -> Result<(), Box<dyn Error>> {
+    let root = repo_root()?;
+    let contract = read_json(&root, CONTRACT)?;
+    let template = read_json(&root, TEMPLATE)?;
+    for scenario in zed_managed_route::REQUIRED_RECOVERY_SCENARIOS {
+        let mut missing = template.clone();
+        missing
+            .get_mut("recovery_observations")
+            .and_then(Value::as_object_mut)
+            .ok_or_else(|| io::Error::other("missing recovery slots"))?
+            .remove(scenario);
+        if zed_managed_route::validate_receipt(&missing, &contract).is_ok() {
+            return Err(io::Error::other(format!("template dropped {scenario}")).into());
+        }
+        let mut observed = template.clone();
+        observed["recovery_observations"][scenario]["evidence"] =
+            serde_json::json!("claimed observation");
+        if zed_managed_route::validate_receipt(&observed, &contract).is_ok() {
+            return Err(io::Error::other(format!("template claims {scenario} evidence")).into());
+        }
+    }
     Ok(())
 }

@@ -40,20 +40,29 @@ The contract owns exactly the known-good cache-recovery scenarios:
 | `unsafe_archive_member` | archive contains an unsafe path/member |
 | `missing_expected_executable` | archive lacks the expected `perllsp` binary |
 | `partial_download` | download ends before the full archive is present |
+| `extraction_failure` | extraction fails before a complete executable is available |
+| `launch_failure` | the attempted managed candidate fails to launch successfully |
 
 Each scenario must resolve back onto the managed route (fresh download or
 last known-good managed binary) without ever falling back to a PATH,
 worktree, or explicitly overridden binary.
 
-The upstream acceptance list also names `extraction_failure` and
-`launch_failure`. They are intentionally deferred from this infrastructure
-contract: the current extension fixture has no safe injection seam for
-forcing either failure without substituting a different implementation for
-the real Zed route. The evidence issue must add those two scenarios before
-claiming complete upstream recovery coverage; this document does not count
-the seven listed scenarios as nine. This follows #8753's stop condition:
-when safe injection of a real extension failure is unavailable, defer the
-scenario with a named follow-up rather than substituting a mock route.
+All nine scenarios remain in the denominator, including extraction and launch
+failure. If a real extension failure cannot be injected safely, the evidence
+issue must report `not_proven`; it cannot shrink the contract or substitute a
+mock route to obtain `pass`.
+
+Each recovery observation is an object with `result = "pass"`,
+`known_good_before_sha256`, `known_good_after_sha256`, and
+`restored_subject_sha256` matching the selected installed binary. It also
+records `failed_candidate_identity` (the attempted request or candidate, even
+when no downloadable bytes exist), `failed_candidate_selected = false`,
+`fallback_server_id = null`, `rejection_reason`, `restored_result = "pass"`,
+and a nonempty `evidence` reference. Selection means adoption as the working
+server; attempting to launch a candidate in the launch-failure case does not
+count as successful selection. Bare `"pass"` strings cannot establish these
+facts. The before/after hashes refer to retained known-good bytes, and the
+restored hash refers to the binary used after recovery.
 
 ## Journeys
 
@@ -73,7 +82,8 @@ A `pass` receipt records all four journeys:
 Template: `.ci/fixtures/zed-perl-upstream/receipts/managed-route-template.json`.
 
 - `result = "not_run"` — checked-in template; no `observed_at`, boundaries
-  `not_proven`.
+  `not_proven`. All nine recovery slots remain present with `result = "not_run"`
+  and null evidence fields; none may be omitted or claim an observation.
 - `result = "pass"` — requires `observed_at`, the contract `sha256` (verified
   against the file by the validator), the managed `resolution_route`, exact
   subject digests, all four journeys, and the claim boundary
@@ -92,11 +102,46 @@ cargo run -p xtask --bin validate-zed-managed-route -- \
   --receipt .ci/fixtures/zed-perl-upstream/receipts/managed-route-template.json
 ```
 
-The CLI recomputes the contract file digest and rejects any receipt that
-records a `contract digest mismatch`. The journey tests in
-`xtask/tests/zed_managed_route.rs` exercise the same authority, including
-mutations that must fail closed (path fallback, provider fallback allowed,
-dropped recovery scenario, `pass` candidate on a worktree route).
+Passing receipts additionally require explicit upstream evidence:
+
+```bash
+cargo run -p xtask --bin validate-zed-managed-route -- \
+  --receipt /path/to/managed-route.json \
+  --asset-receipt /path/to/managed-assets.json \
+  --host-receipt /path/to/exact-source-host.json \
+  --asset-contract .ci/fixtures/zed-perl-upstream/managed-downloads.v1.json \
+  --python python3
+```
+
+The CLI requires Python 3.11 or newer for a passing candidate (`python` on
+Windows, `python3` elsewhere by default). Missing interpreters or upstream
+validation failures reject the candidate. The `not_run` template requires no
+Python process or upstream files.
+
+The CLI reads each input once, hashes those bytes, and validates the captured
+documents. It invokes only `validate-receipt` in the existing
+`scripts/zed_public_asset_receipts.py` authority against temporary copies of
+the captured asset receipt and contract. This does not download assets or
+launch an editor/server. The host receipt must independently pass
+`zed_host_compat::validate_pass` for the exact-source development extension
+using `managed_download`, with absent prior managed cache.
+
+`upstream.asset_receipt_sha256` and `upstream.host_receipt_sha256` bind the
+exact upstream documents. The subject binds Zed version/build, extension
+version/candidate/WASM, workspace fixture identity/digest, release version,
+target, archive digest, installed path, and installed binary digest to those
+authorities. The selected archive row must match the checked public asset
+contract's release, target/platform, asset identity, and member. The host
+command must select that managed install path. `asset_sha256` hashes the
+downloaded archive; `binary_sha256`, selected/restart digests, and recovery
+digests hash the extracted executable. These are different subjects.
+
+The journey tests invoke the just-built CLI with synthetic positive receipts
+and independent mutations, including missing evidence, mismatched bytes or
+subjects, rejected upstream receipts, path fallback, and recovery gaps. They
+prove validator behavior only. Neither matching hashes nor synthetic tests
+establish that the recorded real-host observations occurred; the evidence
+issue remains responsible for collecting and reviewing those observations.
 
 ## Claim boundary
 

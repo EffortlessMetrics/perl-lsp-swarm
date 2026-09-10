@@ -32,7 +32,7 @@ pub const PRIOR_MANAGED_CACHE_ABSENT: &str = "prior_managed_cache_absent";
 pub const OLDER_VERSIONS_PRESERVED_UNTIL_LAUNCH: &str = "older_versions_preserved_until_launch";
 
 /// The complete set of known-good cache-recovery scenarios the contract owns.
-pub const REQUIRED_RECOVERY_SCENARIOS: [&str; 7] = [
+pub const REQUIRED_RECOVERY_SCENARIOS: [&str; 9] = [
     "missing_asset",
     "duplicate_matching_asset",
     "wrong_target",
@@ -40,11 +40,25 @@ pub const REQUIRED_RECOVERY_SCENARIOS: [&str; 7] = [
     "unsafe_archive_member",
     "missing_expected_executable",
     "partial_download",
+    "extraction_failure",
+    "launch_failure",
 ];
 
 /// Journeys a `pass` receipt must have observed.
 pub const REQUIRED_JOURNEYS: [&str; 4] =
     ["first_mile_install", "restart_cache_reuse", "normal_disable", "shutdown_no_orphan"];
+
+const RECOVERY_FACTS: [&str; 9] = [
+    "known_good_before_sha256",
+    "known_good_after_sha256",
+    "restored_subject_sha256",
+    "failed_candidate_identity",
+    "failed_candidate_selected",
+    "fallback_server_id",
+    "rejection_reason",
+    "restored_result",
+    "evidence",
+];
 
 const REQUIRED_FAILURE_INVARIANTS: [&str; 7] = [
     "provider_fallback_forbidden",
@@ -121,6 +135,16 @@ pub fn validate_contract(contract: &Value) -> Result<(), String> {
     if text(contract, "/claim/other_providers") != Some("disabled") {
         return Err("other providers must be `disabled`".to_string());
     }
+    for (pointer, authority) in
+        [("/claim/asset_subject_authority", "#7980"), ("/claim/host_subject_authority", "#7984")]
+    {
+        if text(contract, pointer) != Some(authority) {
+            return Err(format!("{pointer} must identify {authority}"));
+        }
+    }
+    if contract.get("required_journeys") != Some(&serde_json::json!(REQUIRED_JOURNEYS)) {
+        return Err("contract required_journeys must match the managed journey set".to_string());
+    }
     if text(contract, "/first_mile/prior_managed_cache") != Some(PRIOR_MANAGED_CACHE_ABSENT) {
         return Err("first mile requires `prior_managed_cache_absent`".to_string());
     }
@@ -175,7 +199,9 @@ pub fn validate_contract(contract: &Value) -> Result<(), String> {
 /// A `not_run` template must not claim any observation. A `pass` receipt must
 /// name the managed route (never a worktree/PATH fallback), record the exact
 /// subject digests for first mile and restart, carry every required journey,
-/// and keep the claim boundary honest about what was actually proven.
+/// and keep the claim boundary honest about what was actually proven. This is
+/// structural validation; the CLI additionally validates upstream authority and
+/// byte/subject bindings before accepting a passing candidate.
 pub fn validate_receipt(receipt: &Value, contract: &Value) -> Result<(), String> {
     validate_contract(contract)?;
     if text(receipt, "/receipt") != Some(RECEIPT_ID) {
@@ -209,6 +235,16 @@ pub fn validate_receipt(receipt: &Value, contract: &Value) -> Result<(), String>
             "/subject/extension_version",
             "/subject/fixture_id",
             "/subject/asset_sha256",
+            "/subject/binary_sha256",
+            "/subject/zed_build",
+            "/subject/extension_candidate_commit",
+            "/subject/extension_wasm_sha256",
+            "/subject/fixture_sha256",
+            "/subject/version",
+            "/subject/target",
+            "/subject/installed_path",
+            "/upstream/asset_receipt_sha256",
+            "/upstream/host_receipt_sha256",
             "/selection/resolution_route",
             "/selection/selected_provider",
             "/selection/fallback_server_id",
@@ -227,11 +263,26 @@ pub fn validate_receipt(receipt: &Value, contract: &Value) -> Result<(), String>
                 return Err(format!("a not_run receipt must not carry journey `{journey}`"));
             }
         }
-        if receipt
-            .pointer("/recovery_observations")
-            .is_some_and(|value| !value.as_object().is_some_and(|object| object.is_empty()))
-        {
-            return Err("a not_run receipt must not carry recovery observations".to_string());
+        let observations = receipt
+            .get("recovery_observations")
+            .and_then(Value::as_object)
+            .ok_or_else(|| "a not_run receipt must preserve all recovery slots".to_string())?;
+        if observations.len() != REQUIRED_RECOVERY_SCENARIOS.len() {
+            return Err("a not_run receipt must preserve all recovery slots".to_string());
+        }
+        for scenario in REQUIRED_RECOVERY_SCENARIOS {
+            let row = observations
+                .get(scenario)
+                .and_then(Value::as_object)
+                .ok_or_else(|| format!("missing structured not_run slot {scenario}"))?;
+            if row.len() != RECOVERY_FACTS.len() + 1
+                || row.get("result").and_then(Value::as_str) != Some("not_run")
+                || RECOVERY_FACTS.iter().any(|field| row.get(*field) != Some(&Value::Null))
+            {
+                return Err(format!(
+                    "not_run recovery slot {scenario} must have null evidence fields"
+                ));
+            }
         }
         if text(receipt, "/claim_boundary/real_zed_managed_route") != Some("not_proven") {
             return Err("real Zed route must stay not_proven on a not_run receipt".to_string());
@@ -258,11 +309,29 @@ pub fn validate_receipt(receipt: &Value, contract: &Value) -> Result<(), String>
         return Ok(());
     }
 
-    for pointer in ["/subject/zed_version", "/subject/extension_version", "/subject/fixture_id"] {
+    for pointer in [
+        "/subject/zed_version",
+        "/subject/extension_version",
+        "/subject/fixture_id",
+        "/subject/zed_build",
+        "/subject/extension_candidate_commit",
+        "/subject/version",
+        "/subject/target",
+        "/subject/installed_path",
+    ] {
         required_text(receipt, pointer)?;
     }
-    if !digest(receipt, "/subject/asset_sha256") {
-        return Err("receipt must record the exact subject asset digest".to_string());
+    for pointer in [
+        "/subject/asset_sha256",
+        "/subject/binary_sha256",
+        "/subject/extension_wasm_sha256",
+        "/subject/fixture_sha256",
+        "/upstream/asset_receipt_sha256",
+        "/upstream/host_receipt_sha256",
+    ] {
+        if !digest(receipt, pointer) {
+            return Err(format!("receipt must record exact digest {pointer}"));
+        }
     }
 
     let contract_route = text(contract, "/resolution_route").unwrap_or_default();
@@ -297,9 +366,9 @@ pub fn validate_receipt(receipt: &Value, contract: &Value) -> Result<(), String>
         return Err("receipt must record `restart_subject_sha256`".to_string());
     }
     if receipt.pointer("/selection/selected_subject_sha256")
-        != receipt.pointer("/subject/asset_sha256")
+        != receipt.pointer("/subject/binary_sha256")
     {
-        return Err("selected subject digest must equal the subject asset digest".to_string());
+        return Err("selected subject digest must equal the installed binary digest".to_string());
     }
     if receipt.pointer("/selection/restart_subject_sha256")
         != receipt.pointer("/selection/selected_subject_sha256")
@@ -323,9 +392,11 @@ pub fn validate_receipt(receipt: &Value, contract: &Value) -> Result<(), String>
         .and_then(Value::as_object)
         .ok_or_else(|| "receipt must carry recovery observations".to_string())?;
     for scenario in REQUIRED_RECOVERY_SCENARIOS {
-        if observations.get(scenario).and_then(Value::as_str) != Some("pass") {
-            return Err(format!("receipt must record successful recovery scenario `{scenario}`"));
-        }
+        let observation = observations
+            .get(scenario)
+            .ok_or_else(|| format!("missing recovery scenario `{scenario}`"))?;
+        validate_recovery(observation, receipt.pointer("/subject/binary_sha256"))
+            .map_err(|error| format!("recovery scenario `{scenario}`: {error}"))?;
     }
     if observations.len() != REQUIRED_RECOVERY_SCENARIOS.len() {
         return Err("recovery observations must be exactly the contract scenario set".to_string());
@@ -333,6 +404,31 @@ pub fn validate_receipt(receipt: &Value, contract: &Value) -> Result<(), String>
 
     if text(receipt, "/claim_boundary/real_zed_managed_route") != Some("proven_for_exact_subject") {
         return Err("a pass receipt must bound its claim to `proven_for_exact_subject`".to_string());
+    }
+    Ok(())
+}
+
+fn validate_recovery(observation: &Value, selected: Option<&Value>) -> Result<(), String> {
+    if observation.as_object().is_none_or(|row| row.len() != RECOVERY_FACTS.len() + 1)
+        || text(observation, "/result") != Some("pass")
+    {
+        return Err("requires a structured passing observation".to_string());
+    }
+    for pointer in
+        ["/known_good_before_sha256", "/known_good_after_sha256", "/restored_subject_sha256"]
+    {
+        if !digest(observation, pointer) || observation.pointer(pointer) != selected {
+            return Err(format!("{pointer} must match the known-good installed binary"));
+        }
+    }
+    if observation.get("failed_candidate_selected").and_then(Value::as_bool) != Some(false)
+        || observation.get("fallback_server_id") != Some(&Value::Null)
+        || text(observation, "/restored_result") != Some("pass")
+    {
+        return Err("failed candidate must remain unselected, without fallback, and managed recovery must pass".to_string());
+    }
+    for pointer in ["/failed_candidate_identity", "/rejection_reason", "/evidence"] {
+        required_text(observation, pointer)?;
     }
     Ok(())
 }

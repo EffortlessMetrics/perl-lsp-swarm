@@ -42,7 +42,9 @@
     "checksum_mismatch",
     "unsafe_archive_member",
     "missing_expected_executable",
-    "partial_download"
+    "partial_download",
+    "extraction_failure",
+    "launch_failure"
   ],
   "required_journeys": [
     "first_mile_install",
@@ -51,7 +53,9 @@
     "shutdown_no_orphan"
   ],
   "digests": {
-    "selected_subject_sha256": "sha256: recorded for the exact installed artifact",
-    "restart_subject_sha256": "sha256: recorded after restart for cache-reuse parity"
+    "selected_subject_sha256": "sha256: exact installed binary selected by the managed route",
+    "restart_subject_sha256": "sha256: recorded after restart for cache-reuse parity",
+    "asset_sha256": "sha256: downloaded archive bytes from the selected public asset",
+    "binary_sha256": "sha256: extracted executable bytes, independently bound to the host receipt"
   }
 }
