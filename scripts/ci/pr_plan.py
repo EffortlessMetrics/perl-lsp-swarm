@@ -375,7 +375,16 @@ def select_lanes(
     # Track origin: where the selection came from.
     origins: dict[str, list[str]] = {}
 
+    def is_schedule_manual_coverage_lane(lane_id: str) -> bool:
+        lane = lanes.get(lane_id, {})
+        return (
+            lane.get("workflow") == ".github/workflows/ci-nightly.yml"
+            and lane.get("job") == "test-coverage"
+        )
+
     def mark(lane_id: str, origin: str) -> None:
+        if is_schedule_manual_coverage_lane(lane_id):
+            return
         origins.setdefault(lane_id, []).append(origin)
 
     if docs_only(files):
@@ -411,6 +420,8 @@ def select_lanes(
         for pack_id in risk_pack_ids:
             pack = risk_packs.get(pack_id, {})
             for lane_id in pack.get("deep_lanes", []):
+                # Schedule/manual-only diagnostic lanes are rejected by
+                # mark() based on their authoritative workflow/job identity.
                 if lane_id in lanes:
                     mark(lane_id, "deep-lane:full-ci")
 
