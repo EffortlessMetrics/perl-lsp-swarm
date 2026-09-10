@@ -9,7 +9,9 @@
     "error": null
   },
   "shadow_refs": {
-    "refs": ["refs/heads/origin/main"],
+    "refs": [
+      "refs/heads/origin/main"
+    ],
     "error": null
   },
   "canonical_base": {
@@ -19,8 +21,14 @@
   },
   "worktree_mapping": {
     "entries": [
-      { "path": "/repo", "branch": "main" },
-      { "path": "/repo/.claude/worktrees/agent-1", "branch": "impl/1234-feature" }
+      {
+        "path": "/repo",
+        "branch": "main"
+      },
+      {
+        "path": "/repo/.claude/worktrees/agent-1",
+        "branch": "impl/1234-feature"
+      }
     ],
     "error": null
   },
@@ -39,5 +47,8 @@
     "status": "none",
     "pr_number": null,
     "error": null
+  },
+  "remote_branch": {
+    "observed": true
   }
 }

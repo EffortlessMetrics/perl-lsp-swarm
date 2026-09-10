@@ -316,7 +316,9 @@ fn read_only_shapes_pass_the_gate() {
     assert!(args_read_only("git", &["status", "--porcelain"]));
     assert!(args_read_only("git", &["for-each-ref", "refs/heads/"]));
     assert!(args_read_only("git", &["ls-remote", "origin", "refs/heads/*"]));
-    assert!(args_read_only("git", &["merge-base", "--is-ancestor", "a", "HEAD"]));
+    // No merge-base shape: ancestry resolves through the shared
+    // `xtask::git_ancestry` authority now, not through an observation spawn
+    // (#14557), so the read-only allowlist no longer carries it.
     assert!(args_read_only("git", &["worktree", "list", "--porcelain"]));
     assert!(args_read_only("git", &["remote", "get-url", "origin"]));
     assert!(args_read_only("gh", &["pr", "list", "--state", "open"]));
@@ -925,11 +927,11 @@ fn tracking_parser_recognizes_gone_and_mixed_forms() {
 }
 
 #[test]
-fn ancestry_probe_is_allowlist_gated_too() {
-    // The ancestry path is the one non-string adapter; it must reject any
-    // argument shape outside the read-only allowlist exactly like the choke
-    // point does (structural read-only law covers every spawn path). The
-    // hostile "oid" never reaches git: exit-1/0 would mean it spawned.
+fn ancestry_probe_rejects_hostile_oid_before_git() {
+    // The ancestry path resolves through the shared authority, but the oid
+    // shape gate stays in this module: the hostile "oid" never reaches any
+    // probe. A `ProbeFailed` carrying the refusal is the only acceptable
+    // outcome.
     match run_git_ancestry(Path::new("."), "abc; rm -rf /") {
         Ancestry::ProbeFailed(reason) => {
             assert!(

@@ -24,6 +24,7 @@ tracing.workspace = true
 # For better error handling
 thiserror.workspace = true
 perl-position-tracking = { workspace = true }
+perl-source-identity = { workspace = true }
 
 [dev-dependencies]
 criterion.workspace = true

@@ -38,6 +38,7 @@ use std::path::{Path, PathBuf};
 use color_eyre::eyre::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use xtask::git_ancestry::{AncestryDisposition, is_ancestor};
 
 use super::module_train::{
     LoadedManifest, NodeStaticFact, PROBED_FROM_A_DIFFERENT_TREE, RepoTreeSource, TreeSource,
@@ -69,15 +70,18 @@ pub const MAX_DIRTY_SAMPLE: usize = 50;
 pub const MAX_STORED_TITLE: usize = 160;
 
 // ---------------------------------------------------------------------------
-// Read-only subprocess choke point. Every external invocation in this module
-// routes through `run_observation` / `run_git_ancestry`; the allowlist below
-// is the single inventory of observation commands and is asserted read-only by
-// tests (issue shift-left falsifier 18).
+// Read-only subprocess choke point. Every external git/gh invocation in this
+// module routes through `run_observation`, except ancestry which resolves
+// through the shared `xtask::git_ancestry` authority via `run_git_ancestry`
+// below (a bare `merge-base --is-ancestor` exit 1 is not proof of
+// non-ancestry on a present-but-disconnected graft, #14557). The allowlist
+// below is the single inventory of observation commands and is asserted
+// read-only by tests (issue shift-left falsifier 18).
 // ---------------------------------------------------------------------------
 
 /// Allowed first words for `git` observation subcommands.
-const GIT_READ_ONLY_FIRST: [&str; 7] =
-    ["rev-parse", "status", "for-each-ref", "ls-remote", "merge-base", "worktree", "remote"];
+const GIT_READ_ONLY_FIRST: [&str; 6] =
+    ["rev-parse", "status", "for-each-ref", "ls-remote", "worktree", "remote"];
 
 /// Returns true when the exact git argument list is a read-only observation.
 fn git_args_read_only(args: &[&str]) -> bool {
@@ -90,9 +94,8 @@ fn git_args_read_only(args: &[&str]) -> bool {
     match *first {
         "worktree" => matches!(args.get(1), Some(&"list")),
         "remote" => matches!(args.get(1), Some(&"get-url")),
-        // rev-parse, status, for-each-ref, ls-remote and merge-base are
-        // read-only in every argument shape; status must never carry
-        // mutation flags (it has none) and merge-base never writes.
+        // rev-parse, status, for-each-ref and ls-remote are read-only in every
+        // argument shape; status must never carry mutation flags (it has none).
         _ => true,
     }
 }
@@ -184,9 +187,10 @@ fn run_observation(
     })
 }
 
-/// Tri-state result of `git merge-base --is-ancestor <a> HEAD`: exit 0 = yes,
-/// exit 1 = no, anything else = the probe failed (unknown commit, corrupt
-/// object store, …) and must never be read as a definite "no".
+/// Tri-state result of the ancestry probe for `<oid>` against HEAD: proved
+/// ancestry is yes, proved non-ancestry in a complete-enough graph is no, and
+/// anything the local checkout cannot decide (shallow, partial, missing
+/// object, …) is a probe failure that must never be read as a definite "no".
 #[derive(Debug)]
 enum Ancestry {
     Yes,
@@ -194,37 +198,29 @@ enum Ancestry {
     ProbeFailed(String),
 }
 
-/// Ancestry probe. This is the one place besides `run_observation` that
-/// spawns a subprocess (it needs exit-code-1 as data, which the string
-/// adapter treats as failure), so it validates its exact argument list against
-/// the same read-only allowlist and the probed oid's shape (git never
-/// shell-interprets arguments, but a malformed oid has no business reaching
-/// the object-store probe at all). No ungated command path exists here.
+/// Ancestry probe through the shared `xtask::git_ancestry` authority. A bare
+/// `git merge-base --is-ancestor` exit 1 is not proof of non-ancestry in a
+/// shallow or partial checkout holding a present-but-disconnected object
+/// (#14557), so the oid is resolved through the typed query: only proved
+/// ancestry is `Yes`, only proved non-ancestry is `No`, and every
+/// `not_proven_*` disposition is `ProbeFailed`. The probed oid's shape is
+/// still validated up front (a malformed oid has no business reaching the
+/// object-store probe at all). No ungated command path exists here.
 fn run_git_ancestry(root: &Path, oid: &str) -> Ancestry {
-    let args = ["merge-base", "--is-ancestor", oid, "HEAD"];
-    if !args_read_only("git", &args) {
-        return Ancestry::ProbeFailed(format!(
-            "rejected non-read-only ancestry candidate: git {}",
-            args.join(" ")
-        ));
-    }
     if oid.is_empty() || !oid.chars().all(|ch| ch.is_ascii_hexdigit()) {
         return Ancestry::ProbeFailed(format!(
-            "rejected non-hex ancestry oid (never spawned): {oid:?}"
+            "rejected non-hex ancestry oid (never probed): {oid:?}"
         ));
     }
-    let output = std::process::Command::new("git").args(args).current_dir(root).output();
-    match output {
-        Ok(output) if output.status.success() => Ancestry::Yes,
-        // Documented git contract: exit 1 is the definite "not an ancestor"
-        // answer for commits present in the object store.
-        Ok(output) if output.status.code() == Some(1) => Ancestry::No,
-        Ok(output) => Ancestry::ProbeFailed(format!(
-            "git merge-base --is-ancestor {oid} HEAD exited {:?}: {}",
-            output.status.code(),
-            String::from_utf8_lossy(&output.stderr).trim()
+    let receipt = is_ancestor(root, oid, "HEAD");
+    match &receipt.disposition {
+        AncestryDisposition::Ancestor => Ancestry::Yes,
+        AncestryDisposition::Diverged | AncestryDisposition::Unrelated => Ancestry::No,
+        _ => Ancestry::ProbeFailed(format!(
+            "ancestry of {oid} in HEAD is `{}` ({}); refusing a definite verdict from incomplete evidence",
+            receipt.disposition.as_str(),
+            receipt.reason
         )),
-        Err(error) => Ancestry::ProbeFailed(format!("failed to spawn git merge-base: {error}")),
     }
 }
 

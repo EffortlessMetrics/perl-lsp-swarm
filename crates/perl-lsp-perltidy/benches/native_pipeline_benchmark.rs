@@ -23,6 +23,7 @@
 //! these numbers.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::print_stderr)]
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 // The subject registry is a shared superset surface: the canary tests consume
 // the scaling/variant constructors while this bench consumes the enrolled

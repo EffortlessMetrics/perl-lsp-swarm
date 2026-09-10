@@ -20,6 +20,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, BinaryIO
 
+from release_archive_members import ArchiveMemberError, selected_member_digest
+
 SCHEMA = "perl_lsp.release_terminal_manifest.v1"
 IDENTITY_SCHEMA = "perl_lsp.release_build_identity.v1"
 RECEIPT_SCHEMA = "perl_lsp.release_build_identity_receipt.v1"
@@ -288,23 +290,10 @@ def digest_bytes(value: bytes) -> str:
 
 
 def archive_member_digest(archive: Path, member_path: str) -> str:
-    if archive.name.endswith(".zip"):
-        with zipfile.ZipFile(archive) as bundle:
-            try:
-                with bundle.open(member_path) as handle:
-                    return digest_stream(handle)
-            except KeyError as error:
-                raise ManifestError(f"archive member is missing: {member_path}") from error
-    with tarfile.open(archive, "r:gz") as bundle:
-        try:
-            member = bundle.getmember(member_path)
-        except KeyError as error:
-            raise ManifestError(f"archive member is missing: {member_path}") from error
-        handle = bundle.extractfile(member)
-        if handle is None:
-            raise ManifestError(f"archive member is not a regular file: {member_path}")
-        with handle:
-            return digest_stream(handle)
+    try:
+        return selected_member_digest(archive, member_path)
+    except ArchiveMemberError as error:
+        raise ManifestError(str(error)) from error
 
 
 def validate_package_evidence(
