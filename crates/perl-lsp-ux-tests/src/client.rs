@@ -475,8 +475,17 @@ impl UxClient {
 
     fn stderr_tail(&self) -> String {
         let lines = self.stderr_lines.lock().unwrap_or_else(|e| e.into_inner());
-        lines[lines.len().saturating_sub(STDERR_TAIL_LINES)..].join("\n")
+        format_stderr_tail(&lines)
     }
+}
+
+fn format_stderr_tail(lines: &[String]) -> String {
+    lines
+        .iter()
+        .skip(lines.len().saturating_sub(STDERR_TAIL_LINES))
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn validate_shutdown_response(response: &Value) -> Result<()> {
@@ -634,18 +643,20 @@ fn build_command(binary_path: &str, config: &ScenarioConfig) -> Result<Command> 
 
 #[cfg(test)]
 mod shutdown_response_tests {
-    use super::validate_shutdown_response;
+    use super::{format_stderr_tail, validate_shutdown_response};
+    use anyhow::{Result, ensure};
     use serde_json::json;
 
     #[test]
-    fn shutdown_response_requires_jsonrpc_null_result_and_no_error() {
-        assert!(
+    fn shutdown_response_requires_jsonrpc_null_result_and_no_error() -> Result<()> {
+        ensure!(
             validate_shutdown_response(&json!({
                 "jsonrpc": "2.0",
                 "id": 1,
                 "result": null
             }))
-            .is_ok()
+            .is_ok(),
+            "JSON-RPC 2.0 shutdown response with null result must be accepted"
         );
 
         for invalid in [
@@ -657,11 +668,35 @@ mod shutdown_response_tests {
                 "id": 1,
                 "error": {"code": -32603, "message": "failed"}
             }),
+            json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": null,
+                "error": {"code": -32603, "message": "failed"}
+            }),
         ] {
-            assert!(
+            ensure!(
                 validate_shutdown_response(&invalid).is_err(),
                 "invalid shutdown response was accepted: {invalid}"
             );
         }
+        Ok(())
+    }
+
+    #[test]
+    fn shutdown_stderr_tail_preserves_last_twenty_lines_in_order() -> Result<()> {
+        ensure!(format_stderr_tail(&[]).is_empty(), "empty stderr must have an empty tail");
+        let short = vec!["first".to_string(), "second".to_string(), "last".to_string()];
+        ensure!(
+            format_stderr_tail(&short) == "first\nsecond\nlast",
+            "short stderr must retain every line in order"
+        );
+        let long: Vec<String> = (0..25).map(|line| line.to_string()).collect();
+        ensure!(
+            format_stderr_tail(&long)
+                == "5\n6\n7\n8\n9\n10\n11\n12\n13\n14\n15\n16\n17\n18\n19\n20\n21\n22\n23\n24",
+            "long stderr must retain exactly the final twenty lines in order"
+        );
+        Ok(())
     }
 }
