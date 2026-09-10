@@ -1,8 +1,10 @@
 //! Exact owner-linked dispositions for unresolved tautology findings.
 //!
 //! Dispositions are smaller than the finding: exact path, exact rule, and an
-//! optional exact line. Missing owner, missing expiry, expiry in the past, or
-//! an unused row is an instrument failure.
+//! optional exact line. Missing ownership, malformed lifecycle metadata, or an
+//! unused row is an instrument failure. Elapsed review and expiry dates remain
+//! valid policy and are reported through the advisory policy-cadence surface;
+//! crossing midnight does not mutate an unchanged candidate verdict (#15267).
 
 use super::detect::RuleId;
 use super::scan::Finding;
@@ -31,11 +33,11 @@ struct DispositionRow {
     #[serde(default)]
     shape: Option<String>,
     #[serde(default)]
-    owner: Option<String>,
+    owner: String,
     #[serde(default)]
-    issue: Option<String>,
+    issue: String,
     #[serde(default)]
-    reason: Option<String>,
+    reason: String,
     created: String,
     #[serde(default)]
     review_after: Option<String>,
@@ -51,9 +53,32 @@ pub struct DispositionLedger {
 struct ValidatedDisposition {
     id: String,
     rule: RuleId,
+    rule_name: String,
     path: String,
     line: Option<u32>,
     shape: Option<String>,
+    owner: String,
+    issue: String,
+    reason: String,
+    created: String,
+    review_after: Option<String>,
+    expires: String,
+}
+
+/// One structurally valid lifecycle row exposed to `policy cadence`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CadenceRow {
+    pub(crate) id: String,
+    pub(crate) rule: String,
+    pub(crate) path: String,
+    pub(crate) line: Option<u32>,
+    pub(crate) shape: Option<String>,
+    pub(crate) owner: String,
+    pub(crate) issue: String,
+    pub(crate) reason: String,
+    pub(crate) created: String,
+    pub(crate) review_after: Option<String>,
+    pub(crate) expires: String,
 }
 
 impl DispositionLedger {
@@ -61,14 +86,14 @@ impl DispositionLedger {
         Self { rows: Vec::new() }
     }
 
-    pub fn load(path: &Path, as_of: NaiveDate) -> Result<Self> {
+    pub fn load(path: &Path) -> Result<Self> {
         let text = fs::read_to_string(path)
             .with_context(|| format!("failed to read disposition ledger {}", path.display()))?;
-        Self::parse(&text, as_of)
+        Self::parse(&text)
             .with_context(|| format!("invalid disposition ledger {}", path.display()))
     }
 
-    pub fn parse(text: &str, as_of: NaiveDate) -> Result<Self> {
+    pub fn parse(text: &str) -> Result<Self> {
         let parsed: DispositionFile =
             toml::from_str(text).context("disposition TOML parse failed")?;
         if parsed.schema_version != 1 {
@@ -81,7 +106,7 @@ impl DispositionLedger {
         let mut ids = BTreeSet::new();
         let mut rows = Vec::new();
         for row in parsed.disposition {
-            validate_row(&row, as_of, &mut ids)?;
+            validate_row(&row, &mut ids)?;
             let rule = RuleId::parse(&row.rule)
                 .ok_or_else(|| eyre!("disposition `{}` has unknown rule `{}`", row.id, row.rule))?;
             if row.path.contains('*') || row.path.contains('?') || row.path.ends_with('/') {
@@ -94,9 +119,16 @@ impl DispositionLedger {
             rows.push(ValidatedDisposition {
                 id: row.id,
                 rule,
+                rule_name: row.rule,
                 path: row.path,
                 line: row.line,
                 shape: row.shape,
+                owner: row.owner,
+                issue: row.issue,
+                reason: row.reason,
+                created: row.created,
+                review_after: row.review_after,
+                expires: row.expires,
             });
         }
         Ok(Self { rows })
@@ -125,32 +157,52 @@ impl DispositionLedger {
             .map(|row| row.id.clone())
             .collect()
     }
+
+    fn cadence_rows(&self) -> Vec<CadenceRow> {
+        self.rows
+            .iter()
+            .map(|row| CadenceRow {
+                id: row.id.clone(),
+                rule: row.rule_name.clone(),
+                path: row.path.clone(),
+                line: row.line,
+                shape: row.shape.clone(),
+                owner: row.owner.clone(),
+                issue: row.issue.clone(),
+                reason: row.reason.clone(),
+                created: row.created.clone(),
+                review_after: row.review_after.clone(),
+                expires: row.expires.clone(),
+            })
+            .collect()
+    }
 }
 
-fn validate_row(row: &DispositionRow, as_of: NaiveDate, ids: &mut BTreeSet<String>) -> Result<()> {
+pub(crate) fn cadence_rows(path: &Path) -> Result<Vec<CadenceRow>> {
+    Ok(DispositionLedger::load(path)?.cadence_rows())
+}
+
+fn validate_row(row: &DispositionRow, ids: &mut BTreeSet<String>) -> Result<()> {
     if row.id.trim().is_empty() {
         bail!("disposition id must be non-empty");
     }
     if !ids.insert(row.id.clone()) {
         bail!("duplicate disposition id `{}`", row.id);
     }
-    if row.owner.as_deref().is_none_or(str::is_empty) {
+    if row.owner.trim().is_empty() {
         bail!("disposition `{}` is ownerless", row.id);
     }
-    if row.reason.as_deref().is_none_or(str::is_empty) {
+    if row.reason.trim().is_empty() {
         bail!("disposition `{}` is missing a reason", row.id);
     }
-    if row.issue.as_deref().is_none_or(str::is_empty) {
+    if row.issue.trim().is_empty() {
         bail!("disposition `{}` is missing a controlling issue", row.id);
     }
     parse_date(&row.created, "created", &row.id)?;
     if let Some(review_after) = &row.review_after {
         parse_date(review_after, "review_after", &row.id)?;
     }
-    let expires = parse_date(&row.expires, "expires", &row.id)?;
-    if expires < as_of {
-        bail!("disposition `{}` expired on {expires} (as of {as_of})", row.id);
-    }
+    parse_date(&row.expires, "expires", &row.id)?;
     Ok(())
 }
 
@@ -166,11 +218,6 @@ mod tests {
     use super::super::detect::RuleId;
     use super::super::scan::Finding;
     use super::DispositionLedger;
-    use chrono::NaiveDate;
-
-    fn as_of() -> NaiveDate {
-        NaiveDate::from_ymd_opt(2026, 8, 30).expect("date")
-    }
 
     fn valid_row(expires: &str, owner: &str) -> String {
         format!(
@@ -204,27 +251,28 @@ expires = "{expires}"
 
     #[test]
     fn ownerless_disposition_is_an_error() {
-        let error =
-            DispositionLedger::parse(&valid_row("2026-11-30", ""), as_of()).expect_err("ownerless");
+        let error = DispositionLedger::parse(&valid_row("2026-11-30", ""))
+            .expect_err("ownerless");
         assert!(error.to_string().contains("ownerless"), "{error}");
     }
 
     #[test]
-    fn expired_disposition_is_an_error() {
-        let error = DispositionLedger::parse(&valid_row("2026-01-01", "parser-core"), as_of())
-            .expect_err("expired");
-        assert!(error.to_string().contains("expired"), "{error}");
+    fn elapsed_expiry_does_not_change_candidate_policy() {
+        let ledger = DispositionLedger::parse(&valid_row("2000-01-01", "parser-core"))
+            .expect("elapsed lifecycle date remains structurally valid");
+        assert!(ledger.suppress(&finding()));
     }
 
     #[test]
-    fn same_day_expiry_is_inclusive() {
-        DispositionLedger::parse(&valid_row("2026-08-30", "parser-core"), as_of())
-            .expect("expires on as_of remains active");
+    fn malformed_expiry_is_an_error() {
+        let error = DispositionLedger::parse(&valid_row("not-a-date", "parser-core"))
+            .expect_err("malformed expiry");
+        assert!(error.to_string().contains("invalid expires date"), "{error}");
     }
 
     #[test]
     fn exact_disposition_suppresses_only_the_named_finding() {
-        let ledger = DispositionLedger::parse(&valid_row("2026-11-30", "parser-core"), as_of())
+        let ledger = DispositionLedger::parse(&valid_row("2026-11-30", "parser-core"))
             .expect("valid ledger");
         assert!(ledger.suppress(&finding()));
         let mut other = finding();
