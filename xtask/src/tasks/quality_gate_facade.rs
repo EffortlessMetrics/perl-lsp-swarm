@@ -16,12 +16,13 @@ use chrono::NaiveDate;
 use color_eyre::eyre::{Context, Result, bail};
 use serde_json::Value as JsonValue;
 use std::{
+    collections::{BTreeMap, VecDeque},
     fs,
     io::ErrorKind,
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
-use toml::Value as TomlValue;
+use toml::{Table as TomlTable, Value as TomlValue};
 
 const LIFECYCLE_SENTINEL: &str = "9999-12-31";
 
@@ -76,9 +77,13 @@ impl Drop for TempWorkspace {
 }
 
 pub fn run(args: QualityGateArgs) -> Result<()> {
-    let raw_policy = fs::read_to_string(&args.exception_policy).with_context(|| {
-        format!("reading quality exception policy {}", args.exception_policy.display())
-    })?;
+    let raw_policy = match fs::read_to_string(&args.exception_policy) {
+        Ok(raw) => raw,
+        // The existing engine deliberately turns unreadable policy into a
+        // receipt-producing fail-closed result. Preserve that contract instead
+        // of letting the facade return before its diagnostics are written.
+        Err(_) => return implementation::run(args),
+    };
     let normalized = normalize_policy(&raw_policy)?;
     let temporary = TempWorkspace::new()?;
     let temporary_policy = temporary.policy();
@@ -190,6 +195,13 @@ fn normalize_policy(raw: &str) -> Result<NormalizedPolicy> {
             let Some(exception) = exception.as_table_mut() else {
                 continue;
             };
+            // Mirror the engine's required-field/kind boundary before
+            // normalizing. Rows the engine will reject must stay byte-semantic
+            // inputs to its structural diagnostics and must not disturb the
+            // duplicate-ID restoration queues for accepted rows.
+            if !candidate_exception_is_structurally_valid(exception) {
+                continue;
+            }
             let id = exception.get("id").and_then(TomlValue::as_str).map(str::to_string);
             let review_after =
                 exception.get("review_after").and_then(TomlValue::as_str).map(str::to_string);
@@ -219,6 +231,28 @@ fn normalize_policy(raw: &str) -> Result<NormalizedPolicy> {
     })
 }
 
+fn candidate_exception_is_structurally_valid(exception: &TomlTable) -> bool {
+    let required = [
+        "id",
+        "kind",
+        "scope",
+        "owner",
+        "reason",
+        "final_target",
+        "evidence",
+        "removal_criteria",
+        "created",
+        "review_after",
+        "expires",
+    ];
+    required.iter().all(|field| {
+        exception
+            .get(*field)
+            .and_then(TomlValue::as_str)
+            .is_some_and(|value| !value.trim().is_empty())
+    }) && exception.get("kind").and_then(TomlValue::as_str) == Some("temporary_burndown")
+}
+
 fn parse_date(value: &str) -> Option<NaiveDate> {
     NaiveDate::parse_from_str(value.trim(), "%Y-%m-%d").ok()
 }
@@ -233,6 +267,11 @@ fn restore_lifecycle_dates(receipt: &mut JsonValue, lifecycle: &[LifecycleDates]
     exceptions
         .insert("lifecycle_authority".to_string(), JsonValue::String("policy_cadence".to_string()));
 
+    let mut dates_by_id: BTreeMap<&str, VecDeque<&LifecycleDates>> = BTreeMap::new();
+    for dates in lifecycle {
+        dates_by_id.entry(&dates.id).or_default().push_back(dates);
+    }
+
     let Some(active) = exceptions.get_mut("active").and_then(JsonValue::as_array_mut) else {
         return;
     };
@@ -240,7 +279,7 @@ fn restore_lifecycle_dates(receipt: &mut JsonValue, lifecycle: &[LifecycleDates]
         let Some(id) = entry.get("id").and_then(JsonValue::as_str) else {
             continue;
         };
-        let Some(dates) = lifecycle.iter().find(|dates| dates.id == id) else {
+        let Some(dates) = dates_by_id.get_mut(id).and_then(VecDeque::pop_front) else {
             continue;
         };
         let Some(entry) = entry.as_object_mut() else {
@@ -383,18 +422,32 @@ expires = "{expires}"
         let mut receipt = json!({
             "temporary_exceptions": {
                 "due_review": "warn",
-                "active": [{
-                    "id": "fixture",
-                    "review_after": LIFECYCLE_SENTINEL,
-                    "expires": LIFECYCLE_SENTINEL
-                }]
+                "active": [
+                    {
+                        "id": "fixture",
+                        "review_after": LIFECYCLE_SENTINEL,
+                        "expires": LIFECYCLE_SENTINEL
+                    },
+                    {
+                        "id": "fixture",
+                        "review_after": LIFECYCLE_SENTINEL,
+                        "expires": LIFECYCLE_SENTINEL
+                    }
+                ]
             }
         });
-        let lifecycle = vec![LifecycleDates {
-            id: "fixture".to_string(),
-            review_after: "2026-09-16".to_string(),
-            expires: "2026-09-30".to_string(),
-        }];
+        let lifecycle = vec![
+            LifecycleDates {
+                id: "fixture".to_string(),
+                review_after: "2026-09-16".to_string(),
+                expires: "2026-09-30".to_string(),
+            },
+            LifecycleDates {
+                id: "fixture".to_string(),
+                review_after: "2026-10-16".to_string(),
+                expires: "2026-10-30".to_string(),
+            },
+        ];
 
         restore_lifecycle_dates(&mut receipt, &lifecycle);
 
@@ -417,6 +470,16 @@ expires = "{expires}"
         assert_eq!(
             receipt.pointer("/temporary_exceptions/active/0/expires").and_then(JsonValue::as_str),
             Some("2026-09-30")
+        );
+        assert_eq!(
+            receipt
+                .pointer("/temporary_exceptions/active/1/review_after")
+                .and_then(JsonValue::as_str),
+            Some("2026-10-16")
+        );
+        assert_eq!(
+            receipt.pointer("/temporary_exceptions/active/1/expires").and_then(JsonValue::as_str),
+            Some("2026-10-30")
         );
     }
 }
