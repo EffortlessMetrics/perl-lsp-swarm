@@ -1,0 +1,12 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: >-
+  Bind an unbracketed, unparenthesized qw list immediately after a lowercase
+  bareword list operator into one FunctionCall with flattened words, so
+  `has qw(a b)` is one call instead of a bare identifier plus an orphaned list.
+time: 2026-09-06T02:20:00Z
+custom:
+  PR: "14909"
+  Slug: bare-call-qw-list
+  Breaking: "no"

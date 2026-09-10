@@ -2,7 +2,11 @@ import { randomUUID } from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { isPotentiallyExpensiveRegex } from './gherkinRedosGuard';
+import {
+  createGherkinMatchBudget,
+  isSafeGherkinStepMatch,
+  normalizeGherkinRegexFlags,
+} from './gherkinRedosGuard';
 
 const CREATE_STEP_DEFINITION_COMMAND = 'perl-lsp.createGherkinStepDefinition';
 const GHERKIN_STEP_RE = /^\s*(Given|When|Then|And|But)\b\s*(.*)$/;
@@ -12,15 +16,19 @@ const OUTLINE_PLACEHOLDER_RE = /<[^>\r\n]+>/y;
 const DEFAULT_STEP_DEFINITION_GLOB = '**/*.pm';
 const DEFAULT_EXCLUDE_GLOB = '{**/node_modules/**,**/blib/**}';
 const MAX_STEP_DEFINITION_FILES = 500;
-const MAX_STEP_DEFINITION_FILE_BYTES = 512 * 1024;
-const MAX_STEP_DEFINITION_TOTAL_BYTES = 16 * 1024 * 1024;
-const MAX_MATCH_REGEX_LENGTH = 256;
-const MAX_MATCH_STEP_TEXT_LENGTH = 512;
+// Exported so the provider workspace scan (#9773) shares one envelope
+// authority instead of restating these bounds in a second module.
+export const MAX_STEP_DEFINITION_FILE_BYTES = 512 * 1024;
+export const MAX_STEP_DEFINITION_TOTAL_BYTES = 16 * 1024 * 1024;
+// The aggregate envelope bounds what the scan READS, not only what it keeps:
+// a candidate rejected by the per-file cap has already consumed up to
+// `MAX_STEP_DEFINITION_FILE_BYTES + 1` bytes of I/O, so attempted reads are
+// counted against this budget and the scan refuses before the next read.
+export const MAX_STEP_DEFINITION_TOTAL_READ_BYTES = 16 * 1024 * 1024;
 // Rejecting ReDoS-shaped patterns bounds the cost of any single match, not the
 // number of matches. An accepted 16 MiB workspace can still hold hundreds of
 // thousands of individually linear-time step definitions, so the population
 // itself gets a budget. Ordinary suites are three orders of magnitude below it.
-const MAX_MATCH_ATTEMPTS = 20_000;
 // Catastrophic backtracking (ReDoS) requires a *quantified group that itself
 // contains a quantifier, a backreference, a lookaround, or alternation. A
 // single character class
@@ -42,12 +50,22 @@ export interface GherkinStepLine {
 export interface ExtractedStepDefinition {
   keyword: StepKeyword;
   pattern: string;
+  flags: string;
 }
 
 export interface StepDefinitionScan {
   definitions: ExtractedStepDefinition[];
   ambiguous: boolean;
 }
+
+export interface WorkspaceStepDefinitionScan {
+  sources: string[];
+  complete: boolean;
+}
+
+export type BoundedFileRead =
+  | { bytes: Uint8Array; text: string; byteLength: number }
+  | { kind: 'over-file-cap' };
 
 interface CreateStepDefinitionArgs {
   featureUri: string;
@@ -216,15 +234,16 @@ export function scanStepDefinitions(source: string): StepDefinitionScan {
       continue;
     }
 
-    const pattern = extractSlashDelimitedPattern(trimmed, match[0].length - 1);
-    if (!pattern) {
+    const parsed = extractSlashDelimitedPattern(trimmed, match[0].length - 1);
+    if (!parsed) {
       ambiguous = true;
       continue;
     }
 
     definitions.push({
       keyword: match[1] as StepKeyword,
-      pattern,
+      pattern: parsed.pattern,
+      flags: parsed.flags,
     });
   }
 
@@ -236,22 +255,22 @@ export function classifyStepDefinitionStatus(
   sources: string[],
 ): StepDefinitionStatus {
   let ambiguous = false;
-  let attempts = 0;
+  const budget = createGherkinMatchBudget();
 
   for (const source of sources) {
     const scan = scanStepDefinitions(source);
     ambiguous = ambiguous || scan.ambiguous;
 
     for (const definition of scan.definitions) {
-      if (attempts >= MAX_MATCH_ATTEMPTS) {
+      // Count the full parsed population before filtering or matching so both
+      // Gherkin consumers enforce the same deterministic attempt envelope.
+      if (!budget.tryConsume()) {
         // The population was never fully tested, so "undefined" would be a
         // claim this scan cannot support. Report the uncertainty instead; the
         // ambiguous path declines to generate rather than writing a stub that
         // may duplicate an untested definition.
         return 'ambiguous';
       }
-      attempts += 1;
-
       const matches = testExtractedDefinition(definition, step.text);
       if (matches === true) {
         return 'defined';
@@ -279,8 +298,12 @@ async function provideGherkinStepDefinitionActions(
     return [];
   }
 
-  const sources = await collectWorkspaceStepDefinitionSources(workspaceFolder);
-  const status = classifyStepDefinitionStatus(step, sources);
+  const scan = await collectWorkspaceStepDefinitionSources(workspaceFolder);
+  if (!scan.complete) {
+    return [];
+  }
+
+  const status = classifyStepDefinitionStatus(step, scan.sources);
   if (status !== 'undefined') {
     return [];
   }
@@ -316,8 +339,15 @@ async function createStepDefinitionFromFeature(args: CreateStepDefinitionArgs): 
     return;
   }
 
-  const sources = await collectWorkspaceStepDefinitionSources(workspaceFolder);
-  const status = classifyStepDefinitionStatus(step, sources);
+  const scan = await collectWorkspaceStepDefinitionSources(workspaceFolder);
+  if (!scan.complete) {
+    void vscode.window.showWarningMessage(
+      'Step definition generation is unavailable because the workspace scan was incomplete.',
+    );
+    return;
+  }
+
+  const status = classifyStepDefinitionStatus(step, scan.sources);
   if (status === 'defined') {
     void vscode.window.showInformationMessage(
       `A matching step definition already exists for "${step.text}".`,
@@ -357,33 +387,73 @@ async function createStepDefinitionFromFeature(args: CreateStepDefinitionArgs): 
 // the code-action provider.
 export async function collectWorkspaceStepDefinitionSources(
   workspaceFolder: vscode.WorkspaceFolder,
-): Promise<string[]> {
-  const files = await vscode.workspace.findFiles(
-    DEFAULT_STEP_DEFINITION_GLOB,
-    DEFAULT_EXCLUDE_GLOB,
-    MAX_STEP_DEFINITION_FILES,
-  );
+  reader: typeof readBoundedFile = readBoundedFile,
+): Promise<WorkspaceStepDefinitionScan> {
+  let files: vscode.Uri[];
+  try {
+    files = await vscode.workspace.findFiles(
+      new vscode.RelativePattern(workspaceFolder, DEFAULT_STEP_DEFINITION_GLOB),
+      DEFAULT_EXCLUDE_GLOB,
+      MAX_STEP_DEFINITION_FILES + 1,
+    );
+  } catch {
+    return { sources: [], complete: false };
+  }
   const workspacePrefix = ensureTrailingSeparator(workspaceFolder.uri.fsPath);
   const candidateFiles = files.filter((uri) =>
     ensureTrailingSeparator(uri.fsPath).startsWith(workspacePrefix),
   );
+
+  // findFiles returns at most maxResults, so reaching the cap means that the
+  // workspace population may have been truncated. Treat the result as
+  // incomplete even if every returned file can be read; otherwise a missing
+  // definition in the unreturned tail could be misclassified as undefined.
+  let complete = files.length <= MAX_STEP_DEFINITION_FILES;
+  if (!complete) {
+    return { sources: [], complete: false };
+  }
 
   // Read sequentially under a global byte envelope. The previous concurrent
   // read had no per-file or aggregate bound, so a workspace could hold the
   // extension host open on arbitrarily large step-definition candidates.
   const sources: string[] = [];
   let acceptedBytes = 0;
+  let attemptedBytes = 0;
 
   for (const uri of candidateFiles) {
     if (acceptedBytes >= MAX_STEP_DEFINITION_TOTAL_BYTES) {
+      complete = false;
       break;
     }
 
-    const read = await readBoundedFile(uri.fsPath, MAX_STEP_DEFINITION_FILE_BYTES);
+    // A rejected candidate may consume the per-file limit plus one overflow
+    // byte before readBoundedFile can classify it. Refuse before the next
+    // attempt so this collector's read envelope covers attempted I/O too.
+    if (
+      attemptedBytes + MAX_STEP_DEFINITION_FILE_BYTES + 1 >
+      MAX_STEP_DEFINITION_TOTAL_READ_BYTES
+    ) {
+      complete = false;
+      break;
+    }
+
+    const read = await reader(uri.fsPath, MAX_STEP_DEFINITION_FILE_BYTES);
+    attemptedBytes +=
+      read && 'kind' in read
+        ? MAX_STEP_DEFINITION_FILE_BYTES + 1
+        : read
+          ? read.byteLength
+          : MAX_STEP_DEFINITION_FILE_BYTES + 1;
     if (!read) {
+      complete = false;
       continue;
     }
+    if ('kind' in read) {
+      complete = false;
+      break;
+    }
     if (acceptedBytes + read.byteLength > MAX_STEP_DEFINITION_TOTAL_BYTES) {
+      complete = false;
       break;
     }
 
@@ -399,7 +469,7 @@ export async function collectWorkspaceStepDefinitionSources(
     sources.push(read.text);
   }
 
-  return sources;
+  return { sources, complete };
 }
 
 /**
@@ -409,17 +479,37 @@ export async function collectWorkspaceStepDefinitionSources(
  * Deciding on `lstat().size` and then calling `readFile` does not bound the
  * read: a workspace process can grow or replace the file in between, and
  * `readFile` allocates whatever is actually there. The size is therefore taken
- * from the already-open descriptor and enforced by the read itself. Returns
- * `null` for anything that is not a readable regular file within the limit,
- * including a symlink, which `O_NOFOLLOW` rejects.
+ * from the already-open descriptor and enforced by the read itself, and the
+ * read window contains no path observation that a hostile process could race.
+ * Returns bounded raw bytes plus a UTF-8 compatibility view, `over-file-cap`
+ * when the bounded read proves the file exceeds the limit, or `null` for
+ * anything that is not a readable regular file. Consumers that must honor
+ * editor encoding should decode the bytes through
+ * `vscode.workspace.decode` with the source URI. A pre-open `lstat` avoids opening known directories, FIFOs, devices,
+ * and links; descriptor `stat` and a post-read path check remain the race
+ * boundary. `O_NOFOLLOW` and `O_NONBLOCK` are used where the platform defines
+ * them. On win32, which has neither flag, this is a stable-entry check rather
+ * than atomic exclusion or a universal I/O deadline. Parent-directory
+ * symlink exclusion is not established.
  */
-async function readBoundedFile(
+export async function readBoundedFile(
   filePath: string,
   limit: number,
-): Promise<{ text: string; byteLength: number } | null> {
+): Promise<BoundedFileRead | null> {
+  try {
+    const pathEntry = await fs.promises.lstat(filePath);
+    if (!pathEntry.isFile()) {
+      return null;
+    }
+  } catch {
+    return null;
+  }
+
   let handle: fs.promises.FileHandle;
   try {
-    handle = await fs.promises.open(filePath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+    const flags =
+      fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0);
+    handle = await fs.promises.open(filePath, flags);
   } catch {
     return null;
   }
@@ -443,10 +533,16 @@ async function readBoundedFile(
     }
 
     if (filled > limit) {
+      return { kind: 'over-file-cap' };
+    }
+
+    const pathEntry = await fs.promises.lstat(filePath);
+    if (!pathEntry.isFile()) {
       return null;
     }
 
-    return { text: buffer.subarray(0, filled).toString('utf8'), byteLength: filled };
+    const bytes = buffer.subarray(0, filled);
+    return { bytes, text: bytes.toString('utf8'), byteLength: filled };
   } catch {
     return null;
   } finally {
@@ -462,7 +558,10 @@ function escapeRegexLiteral(text: string): string {
   return text.replace(/[|\\{}()[\]^$+*?.]/g, '\\$&').replace(/\//g, '\\/');
 }
 
-function extractSlashDelimitedPattern(line: string, delimiterIndex: number): string | null {
+function extractSlashDelimitedPattern(
+  line: string,
+  delimiterIndex: number,
+): { pattern: string; flags: string } | null {
   let pattern = '';
   let escaped = false;
 
@@ -481,7 +580,11 @@ function extractSlashDelimitedPattern(line: string, delimiterIndex: number): str
     }
 
     if (char === '/') {
-      return pattern;
+      let flags = '';
+      for (let flagIndex = index + 1; /[A-Za-z]/.test(line[flagIndex] ?? ''); flagIndex += 1) {
+        flags += line[flagIndex];
+      }
+      return { pattern, flags };
     }
 
     pattern += char;
@@ -494,23 +597,16 @@ function testExtractedDefinition(
   definition: ExtractedStepDefinition,
   stepText: string,
 ): boolean | null {
-  if (!isSafeRegexForStepMatching(definition.pattern, stepText)) {
+  const flags = normalizeGherkinRegexFlags(definition.flags);
+  if (flags === null || !isSafeGherkinStepMatch(definition.pattern, stepText, flags)) {
     return null;
   }
 
   try {
-    return new RegExp(definition.pattern).test(stepText);
+    return new RegExp(definition.pattern, flags).test(stepText);
   } catch {
     return null;
   }
-}
-
-function isSafeRegexForStepMatching(source: string, stepText: string): boolean {
-  if (source.length > MAX_MATCH_REGEX_LENGTH || stepText.length > MAX_MATCH_STEP_TEXT_LENGTH) {
-    return false;
-  }
-
-  return !isPotentiallyExpensiveRegex(source);
 }
 
 /**

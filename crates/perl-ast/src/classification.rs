@@ -1280,7 +1280,12 @@ mod tests {
                 phase_span: None,
                 block: Box::new(block_node()),
             },
-            NodeKind::DataSection { marker: "__DATA__".to_string(), body: None },
+            NodeKind::DataSection {
+                marker: "__DATA__".to_string(),
+                marker_span: None,
+                body: None,
+                body_span: None,
+            },
             NodeKind::Class {
                 name: "Foo".to_string(),
                 name_span: None,
@@ -1856,7 +1861,12 @@ mod tests {
                 phase_span: None,
                 block: Box::new(block_node()),
             }),
-            n(NodeKind::DataSection { marker: "__DATA__".to_string(), body: None }),
+            n(NodeKind::DataSection {
+                marker: "__DATA__".to_string(),
+                marker_span: None,
+                body: None,
+                body_span: None,
+            }),
             n(NodeKind::Class {
                 name: "Foo".to_string(),
                 name_span: None,

@@ -39,7 +39,7 @@ pub(super) fn update_badge_in_content(content: &str, badge_url: &str) -> Result<
     }
 
     let replacement = format!(
-        "<!-- perl-lsp:vs-marketplace-installs-badge:start -->\n[![VS Marketplace Installs (manual)]({})](https://marketplace.visualstudio.com/items?itemName=EffortlessMetrics.perl-lsp-rs)\n<!-- perl-lsp:vs-marketplace-installs-badge:end -->",
+        "<!-- perl-lsp:vs-marketplace-installs-badge:start -->\n\n[![VS Marketplace Installs (manual)]({})](https://marketplace.visualstudio.com/items?itemName=EffortlessMetrics.perl-lsp-rs)\n<!-- perl-lsp:vs-marketplace-installs-badge:end -->",
         badge_url
     );
     Ok(VS_MARKETPLACE_INSTALLS_BADGE_BLOCK_RE.replace_all(content, replacement).into_owned())
