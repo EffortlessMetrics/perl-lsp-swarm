@@ -264,9 +264,20 @@ def verify_git_refs(data: dict[str, Any], repo_root: Path) -> tuple[list[str], l
             # evidence and reported as warnings, not drift. Unflagged rows
             # that fail to resolve remain drift errors.
             if raw.get("unresolvable") is True:
-                unresolvable.append(
-                    f"{name} ({expected[:12]}): audited orphaned lineage record"
-                )
+                # The flag vouches that the pinned commit is gone too; probe
+                # it so a locally reachable commit cannot hide behind the
+                # flag - that row is deleted-release-tag drift (#15263).
+                pinned = _git(repo_root, "cat-file", "-t", expected)
+                if pinned.returncode == 0 and pinned.stdout.strip() == "commit":
+                    drift_errors.append(
+                        f"{name} is flagged unresolvable, but pinned commit "
+                        f"{expected[:12]} is locally reachable: "
+                        "deleted-release-tag drift, not an orphan"
+                    )
+                else:
+                    unresolvable.append(
+                        f"{name} ({expected[:12]}): audited orphaned lineage record"
+                    )
             else:
                 drift_errors.append(
                     f"{name} cannot be resolved locally: {result.stderr.strip()}"

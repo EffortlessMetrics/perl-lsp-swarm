@@ -100,8 +100,8 @@ class GitAvailabilityTests(unittest.TestCase):
     @patch("check_release_tag_provenance.shutil.which", return_value=None)
     def test_missing_git_returns_actionable_error(self, _which: object) -> None:
         self.assertEqual(
-            (["git executable not found on PATH"], []),
-            verify_git_refs({"tag": []}, Path(".")),
+            ["git executable not found on PATH"],
+            verify_git_refs({"tag": []}, Path("."))[0],
         )
 
 
@@ -152,7 +152,7 @@ class GitVerificationTests(unittest.TestCase):
                     },
                 ]
             }
-            errors, _unresolvable = verify_git_refs(manifest, root)
+            errors = verify_git_refs(manifest, root)[0]
             self.assertTrue(any("v0.2.0 drifted" in error for error in errors))
             self.assertNotEqual(second, "f" * 40)
 
@@ -175,7 +175,7 @@ class GitVerificationTests(unittest.TestCase):
                     }
                 ]
             }
-            errors, _unresolvable = verify_git_refs(manifest, root)
+            errors = verify_git_refs(manifest, root)[0]
             self.assertTrue(
                 any("recorded_sha" in error and "claimed unreachable" in error for error in errors)
             )
@@ -200,10 +200,10 @@ class GitVerificationTests(unittest.TestCase):
                     }
                 ]
             }
-            self.assertEqual(([], []), verify_git_refs(manifest, root))
+            self.assertEqual([], verify_git_refs(manifest, root)[0])
 
             manifest["tag"][0]["recorded_reachable"] = True
-            errors, _unresolvable = verify_git_refs(manifest, root)
+            errors = verify_git_refs(manifest, root)[0]
             self.assertTrue(any("not a reachable commit object" in error for error in errors))
 
     def test_unlisted_local_release_tag_is_rejected(self) -> None:
@@ -232,7 +232,7 @@ class GitVerificationTests(unittest.TestCase):
                     },
                 ]
             }
-            errors, _unresolvable = verify_git_refs(manifest, root)
+            errors = verify_git_refs(manifest, root)[0]
             self.assertIn(
                 "local release tag is missing from manifest: v0.3.0",
                 errors,
@@ -268,53 +268,78 @@ class GitVerificationTests(unittest.TestCase):
                     },
                 ]
             }
-            self.assertEqual(([], []), verify_git_refs(manifest, root))
+            self.assertEqual([], verify_git_refs(manifest, root)[0])
 
+
+
+
+class OrphanClassificationTests(unittest.TestCase):
+    """#15263: typed classification of orphaned lineage records."""
+
+    def _git(self, repo, *args):
+        return subprocess.run(["git", "-C", repo, *args], capture_output=True, text=True)
+
+    def _init(self, repo):
+        subprocess.run(["git", "init", "-q", repo], check=True)
+        self._git(repo, "config", "user.name", "t")
+        self._git(repo, "config", "user.email", "t@x")
+        open(f"{repo}/f", "w").close()
+        self._git(repo, "add", "f")
+        self._git(repo, "commit", "-qm", "c")
+
+    def test_audited_orphan_is_warning_not_drift(self):
+        """Flagged row + commit object absent from the repo = typed warning.
+        The tag itself never resolves, so the rev-parse arm is bypassed via
+        the direct object probe in the classifier (#15263)."""
+        manifest = valid_manifest()
+        manifest["tag"] = manifest["tag"][:1]
+        manifest["tag"][0]["current_sha"] = "3" * 40
+        manifest["tag"][0]["unresolvable"] = True
+
+        with tempfile.TemporaryDirectory() as repo:
+            self._init(repo)
+            drift, unresolvable = verify_git_refs(manifest, repo)
+
+        self.assertEqual([], drift)
+        self.assertEqual(1, len(unresolvable))
+        self.assertIn("orphaned lineage record", unresolvable[0])
+
+    def test_unflagged_missing_stays_drift(self):
+        """Unflagged row + absent tag and commit = drift error."""
+        manifest = valid_manifest()
+        manifest["tag"].append({
+            "name": "v9.9.9",
+            "current_sha": "a" * 40,
+            "record_status": "stale",
+            "recorded_sha": "b" * 7,
+            "recorded_reachable": False,
+            "lineage": "root",
+        })
+        with tempfile.TemporaryDirectory() as repo:
+            self._init(repo)
+            drift, unresolvable = verify_git_refs(manifest, repo)
+        self.assertTrue(any("cannot be resolved locally" in e for e in drift), drift)
+        self.assertEqual([], unresolvable)
+
+    def test_flagged_tag_with_reachable_commit_is_deleted_tag_drift(self):
+        """A flagged row whose pinned commit IS locally reachable is
+        deleted-release-tag drift, not an orphan (#15029 review)."""
+        manifest = valid_manifest()
+        manifest["tag"] = manifest["tag"][:1]
+        manifest["tag"][0]["unresolvable"] = True
+        with tempfile.TemporaryDirectory() as repo:
+            self._init(repo)
+            tree = self._git(repo, "rev-parse", "HEAD^{tree}").stdout.strip()
+            parent = self._git(repo, "rev-parse", "HEAD").stdout.strip()
+            commit = self._git(
+                repo, "commit-tree", tree, "-p", parent, "-m", "pinned"
+            ).stdout.strip()
+            manifest["tag"][0]["current_sha"] = commit
+            drift, unresolvable = verify_git_refs(manifest, repo)
+        self.assertTrue(
+            any("deleted-release-tag drift" in e for e in drift), drift
+        )
+        self.assertEqual([], unresolvable)
 
 if __name__ == "__main__":
     unittest.main()
-
-
-def test_audited_orphaned_lineage_record_is_warning_not_drift():
-    """#15263: manifest rows flagged unresolvable are audited orphaned
-    lineage records - reported as warnings, never as drift errors."""
-    manifest = valid_manifest()
-    manifest["tag"][0]["unresolvable"] = True
-
-    with tempfile.TemporaryDirectory() as repo:
-        subprocess.run(["git", "init", "-q", repo], check=True)
-        subprocess.run(["git", "-C", repo, "config", "user.name", "t"], check=True)
-        subprocess.run(["git", "-C", repo, "config", "user.email", "t@x"], check=True)
-        open(f"{repo}/f", "w").close()
-        subprocess.run(["git", "-C", repo, "add", "f"], check=True)
-        subprocess.run(["git", "-C", repo, "commit", "-qm", "c"], check=True)
-
-        drift, unresolvable = verify_git_refs(manifest, repo)
-
-    assert drift == []
-    assert len(unresolvable) == 1
-    assert "orphaned lineage record" in unresolvable[0]
-
-
-def test_unflagged_missing_tag_remains_drift():
-    """An unflagged manifest row whose tag and commit are both absent stays
-    a drift error (#15263)."""
-    manifest = valid_manifest()
-    manifest["tag"].append({
-        "name": "v9.9.9",
-        "current_sha": "a" * 40,
-        "record_status": "stale",
-        "recorded_sha": "b" * 7,
-        "recorded_reachable": False,
-        "lineage": "root",
-    })
-
-    with tempfile.TemporaryDirectory() as repo:
-        subprocess.run(["git", "init", "-q", repo], check=True)
-        subprocess.run(["git", "-C", repo, "config", "user.name", "t"], check=True)
-        subprocess.run(["git", "-C", repo, "config", "user.email", "t@x"], check=True)
-
-        drift, unresolvable = verify_git_refs(manifest, repo)
-
-    assert any("v9.9.9 cannot be resolved locally" in e for e in drift), drift
-    assert unresolvable == []
