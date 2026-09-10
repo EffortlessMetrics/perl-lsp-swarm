@@ -27,15 +27,43 @@ const REQUIRED_DISPOSITIONS: &[(&str, Option<&str>, Option<&str>)] = &[
     ("clippy::let_underscore_lock", Some("deny"), Some("active")),
 ];
 
-pub(crate) fn validate_workspace_lints(cargo: &Value, ledger: &LintLedger) -> Result<()> {
+/// Validate the merged Clippy disposition model without consulting Cargo.toml.
+///
+/// This is the shared semantic boundary for candidate validation and cadence
+/// projection. Cadence must not call a weaker deserialization-only path that can
+/// present malformed policy as current owner work.
+pub(crate) fn validate_disposition_model(ledger: &LintLedger) -> Result<()> {
     validate_unique_dispositions(ledger)?;
 
-    let cargo_lints = collect_workspace_lints(cargo)?;
     let current_msrv = RustVersion::from_text(&ledger.msrv)?;
+    for lint in &ledger.lint {
+        validate_lint_entry(lint)?;
+    }
+    for planned in &ledger.planned {
+        validate_planned_lint(planned)?;
+        let activation = RustVersion::from_text(&planned.activate_when_msrv)?;
+        if activation <= current_msrv {
+            bail!(
+                "planned lint {} is due at MSRV {}; activate it or move it to deferred_due",
+                planned.name,
+                planned.activate_when_msrv
+            );
+        }
+    }
+    for deferred in &ledger.deferred_due {
+        validate_deferred_lint(deferred, current_msrv)?;
+    }
+
+    Ok(())
+}
+
+pub(crate) fn validate_workspace_lints(cargo: &Value, ledger: &LintLedger) -> Result<()> {
+    validate_disposition_model(ledger)?;
+
+    let cargo_lints = collect_workspace_lints(cargo)?;
     let mut lint_by_name = BTreeMap::new();
 
     for lint in &ledger.lint {
-        validate_lint_entry(lint)?;
         if lint_by_name.insert(lint.name.clone(), lint).is_some() {
             bail!("duplicate lint ledger entry for {}", lint.name);
         }
@@ -65,22 +93,12 @@ pub(crate) fn validate_workspace_lints(cargo: &Value, ledger: &LintLedger) -> Re
     }
 
     for planned in &ledger.planned {
-        validate_planned_lint(planned)?;
         if cargo_lints.contains_key(&planned.name) {
             bail!("future-planned lint {} is already active in Cargo.toml", planned.name);
-        }
-        let activation = RustVersion::from_text(&planned.activate_when_msrv)?;
-        if activation <= current_msrv {
-            bail!(
-                "planned lint {} is due at MSRV {}; activate it or move it to deferred_due",
-                planned.name,
-                planned.activate_when_msrv
-            );
         }
     }
 
     for deferred in &ledger.deferred_due {
-        validate_deferred_lint(deferred, current_msrv)?;
         if cargo_lints.contains_key(&deferred.name) {
             bail!("deferred_due lint {} is already active in Cargo.toml", deferred.name);
         }
