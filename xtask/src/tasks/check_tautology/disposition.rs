@@ -89,8 +89,7 @@ impl DispositionLedger {
     pub fn load(path: &Path) -> Result<Self> {
         let text = fs::read_to_string(path)
             .with_context(|| format!("failed to read disposition ledger {}", path.display()))?;
-        Self::parse(&text)
-            .with_context(|| format!("invalid disposition ledger {}", path.display()))
+        Self::parse(&text).with_context(|| format!("invalid disposition ledger {}", path.display()))
     }
 
     pub fn parse(text: &str) -> Result<Self> {
@@ -158,7 +157,7 @@ impl DispositionLedger {
             .collect()
     }
 
-    fn cadence_rows(&self) -> Vec<CadenceRow> {
+    pub(crate) fn cadence_rows(&self) -> Vec<CadenceRow> {
         self.rows
             .iter()
             .map(|row| CadenceRow {
@@ -198,11 +197,41 @@ fn validate_row(row: &DispositionRow, ids: &mut BTreeSet<String>) -> Result<()> 
     if row.issue.trim().is_empty() {
         bail!("disposition `{}` is missing a controlling issue", row.id);
     }
-    parse_date(&row.created, "created", &row.id)?;
-    if let Some(review_after) = &row.review_after {
-        parse_date(review_after, "review_after", &row.id)?;
+    let created = parse_date(&row.created, "created", &row.id)?;
+    let review_after = row
+        .review_after
+        .as_deref()
+        .map(|value| parse_date(value, "review_after", &row.id))
+        .transpose()?;
+    if let Some(review_after) = review_after
+        && review_after < created
+    {
+        bail!(
+            "disposition `{}` has review_after {} before created {}",
+            row.id,
+            row.review_after.as_deref().unwrap_or(""),
+            row.created
+        );
     }
-    parse_date(&row.expires, "expires", &row.id)?;
+    let expires = parse_date(&row.expires, "expires", &row.id)?;
+    if expires < created {
+        bail!(
+            "disposition `{}` has expires {} before created {}",
+            row.id,
+            row.expires,
+            row.created
+        );
+    }
+    if let Some(review_after) = review_after
+        && expires < review_after
+    {
+        bail!(
+            "disposition `{}` has expires {} before review_after {}",
+            row.id,
+            row.expires,
+            row.review_after.as_deref().unwrap_or("")
+        );
+    }
     Ok(())
 }
 
@@ -251,16 +280,38 @@ expires = "{expires}"
 
     #[test]
     fn ownerless_disposition_is_an_error() {
-        let error = DispositionLedger::parse(&valid_row("2026-11-30", ""))
-            .expect_err("ownerless");
+        let error = DispositionLedger::parse(&valid_row("2026-11-30", "")).expect_err("ownerless");
         assert!(error.to_string().contains("ownerless"), "{error}");
     }
 
     #[test]
     fn elapsed_expiry_does_not_change_candidate_policy() {
-        let ledger = DispositionLedger::parse(&valid_row("2000-01-01", "parser-core"))
+        // Ordered but past: expiry after review_after keeps the lifecycle
+        // contradiction-free while remaining elapsed at classification time.
+        let ledger = DispositionLedger::parse(&valid_row("2026-10-01", "parser-core"))
             .expect("elapsed lifecycle date remains structurally valid");
         assert!(ledger.suppress(&finding()));
+    }
+
+    #[test]
+    fn contradictory_lifecycle_dates_are_rejected() {
+        for (created, review_after, expires, fragment) in [
+            ("2026-08-30", Some("2026-08-01"), "2026-10-01", "before created"),
+            ("2026-08-30", Some("2026-09-30"), "2026-09-01", "before review_after"),
+            ("2026-08-30", None, "2026-08-01", "before created"),
+        ] {
+            let mut row = valid_row(expires, "parser-core");
+            row = row.replace("created = \"2026-08-30\"", &format!("created = \"{created}\""));
+            row = match review_after {
+                Some(review_after) => row.replace(
+                    "review_after = \"2026-09-30\"",
+                    &format!("review_after = \"{review_after}\""),
+                ),
+                None => row.replace("review_after = \"2026-09-30\"\n", ""),
+            };
+            let error = DispositionLedger::parse(&row).expect_err("contradictory lifecycle dates");
+            assert!(error.to_string().contains(fragment), "{error}");
+        }
     }
 
     #[test]

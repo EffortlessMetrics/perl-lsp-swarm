@@ -78,6 +78,66 @@ pub(crate) fn cadence_rows(path: &Path) -> Result<Vec<disposition::CadenceRow>> 
     disposition::cadence_rows(path)
 }
 
+/// Cadence rows annotated with scanner liveness.
+///
+/// Structural validation comes from the ledger, but a disposition matching no
+/// current scanner finding must not project as evidence-backed owner work:
+/// `check-tautology` rejects that row as unused. Such rows are returned with
+/// their unused reason so cadence reports them as `Invalid` instead of proof.
+/// Scan errors fail closed: an unreadable or unparsable governed source is not
+/// a zero-finding result.
+pub(crate) fn cadence_rows_with_liveness(
+    root: &Path,
+    path: &Path,
+) -> Result<Vec<(disposition::CadenceRow, Option<String>)>> {
+    let ledger = DispositionLedger::load(path)?;
+    // Walk the governed sources directly instead of reusing `scan_root`: the
+    // shared scan retains (removes) suppressed findings before returning, but
+    // liveness needs the pre-suppression finding set to tell matched rows
+    // apart from unused ones.
+    let mut findings = Vec::new();
+    let mut scan_errors = Vec::new();
+    for file in inventory::collect_rust_files(root)? {
+        let relative =
+            file.strip_prefix(root).unwrap_or(file.as_path()).to_string_lossy().replace('\\', "/");
+        match read_governed_source(&file) {
+            Ok(source) => match scan::scan_file(&relative, &source) {
+                Ok(found) => findings.extend(found),
+                Err(error) => {
+                    scan_errors.push(format!("{relative}: unparsable governed input: {error}"));
+                }
+            },
+            Err(error) => {
+                scan_errors.push(format!("{relative}: unreadable governed input: {error}"))
+            }
+        }
+    }
+    // Unused dispositions are the liveness signal this entry exists to
+    // project, not a scan failure: anything else fails closed instead of
+    // passing as zero findings.
+    if !scan_errors.is_empty() {
+        bail!(
+            "tautology liveness scan failed: {}; this is not a zero-finding result",
+            scan_errors.join("; ")
+        );
+    }
+    let unused_ids: std::collections::BTreeSet<String> =
+        ledger.unused_for(&findings).into_iter().collect();
+    Ok(ledger
+        .cadence_rows()
+        .into_iter()
+        .map(|row| {
+            let reason = unused_ids.contains(&row.id).then(|| {
+                format!(
+                    "tautology disposition `{}` matches no current scanner finding; check-tautology rejects it as unused",
+                    row.id
+                )
+            });
+            (row, reason)
+        })
+        .collect())
+}
+
 fn scan_root(root: &Path, policy: Option<&Path>) -> Result<ScanReport> {
     let ledger = load_ledger(root, policy)?;
     let files = collect_rust_files(root)?;

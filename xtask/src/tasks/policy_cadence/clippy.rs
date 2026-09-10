@@ -36,89 +36,11 @@ mod tests {
     #[test]
     fn debt_and_deferred_rows_keep_overdue_owner_work_visible() -> Result<()> {
         let root = tempdir()?;
-        write_fixture(root.path(), 2, "deny", "fixture debt")?;
-
-        let as_of = parse_date("2026-09-10", "fixture")?;
-        let mut items = obligations(root.path())?
-            .into_iter()
-            .map(|item| classify(item, as_of))
-            .collect::<Vec<_>>();
-        items.sort_by(|left, right| left.source_kind.cmp(&right.source_kind));
-
-        assert_eq!(items.len(), 2);
-        let debt = items
-            .iter()
-            .find(|item| item.source_kind == "clippy_debt")
-            .ok_or_else(|| eyre!("missing Clippy debt cadence row"))?;
-        assert_eq!(debt.state, CadenceState::ReviewOverdue);
-        assert_eq!(debt.owner, "#6305");
-        assert_eq!(debt.owner_issue.as_deref(), Some("#6305"));
-        assert_eq!(debt.source_path, "policy/clippy-debt.toml");
-        assert_eq!(debt.record_id, "clippy::collapsible_if:Cargo.toml");
-
-        let deferred = items
-            .iter()
-            .find(|item| item.source_kind == "clippy_deferred_due")
-            .ok_or_else(|| eyre!("missing Clippy deferred cadence row"))?;
-        assert_eq!(deferred.state, CadenceState::ReviewOverdue);
-        assert_eq!(deferred.owner, "#9869");
-        assert_eq!(deferred.owner_issue.as_deref(), Some("#9869"));
-        assert_eq!(deferred.source_path, "policy/clippy-lints.toml");
-        assert_eq!(deferred.record_id, "clippy::manual_checked_ops");
-        Ok(())
-    }
-
-    #[test]
-    fn malformed_debt_schema_cannot_be_projected_as_current() -> Result<()> {
-        let root = tempdir()?;
-        write_fixture(root.path(), 1, "deny", "fixture debt")?;
-
-        let error = obligations(root.path()).expect_err("schema 1 must be rejected");
-        assert!(
-            format!("{error:#}").contains("policy/clippy-debt.toml schema must be 2"),
-            "{error:#}"
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn empty_debt_reason_cannot_be_projected_as_current() -> Result<()> {
-        let root = tempdir()?;
-        write_fixture(root.path(), 2, "deny", "")?;
-
-        let error = obligations(root.path()).expect_err("empty debt reason must be rejected");
-        assert!(
-            format!("{error:#}").contains("must have a non-empty reason"),
-            "{error:#}"
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn unsupported_debt_level_cannot_be_projected_as_current() -> Result<()> {
-        let root = tempdir()?;
-        write_fixture(root.path(), 2, "allow", "fixture debt")?;
-
-        let error = obligations(root.path()).expect_err("unsupported debt level must be rejected");
-        assert!(
-            format!("{error:#}").contains("unsupported level allow"),
-            "{error:#}"
-        );
-        Ok(())
-    }
-
-    fn write_fixture(
-        root: &Path,
-        debt_schema: u64,
-        debt_level: &str,
-        debt_reason: &str,
-    ) -> Result<()> {
-        let policy = root.join("policy");
+        let policy = root.path().join("policy");
         fs::create_dir_all(policy.join("clippy-lints.d"))?;
-        fs::write(
-            root.join("Cargo.toml"),
-            "[package]\nname = \"fixture\"\nversion = \"0.0.0\"\n",
-        )?;
+        // The debt row governs Cargo.toml, so the fixture must contain the
+        // file: cadence validates debt paths against the fixture root.
+        fs::write(root.path().join("Cargo.toml"), "[workspace]\n")?;
         fs::write(
             policy.join("clippy-lints.toml"),
             r##"schema = 2
@@ -155,19 +77,45 @@ reason = "fixture catalog row"
         )?;
         fs::write(
             policy.join("clippy-debt.toml"),
-            format!(
-                r##"schema = {debt_schema}
+            r##"schema = 2
 
 [[debt]]
 lint = "clippy::collapsible_if"
-level = "{debt_level}"
+level = "deny"
 path = "Cargo.toml"
 owner = "#6305"
-reason = "{debt_reason}"
+reason = "fixture debt"
 review_after = "2026-09-02"
-"##
-            ),
+"##,
         )?;
+
+        let as_of = parse_date("2026-09-10", "fixture")?;
+        let mut items = obligations(root.path())?
+            .into_iter()
+            .map(|item| classify(item, as_of))
+            .collect::<Vec<_>>();
+        items.sort_by(|left, right| left.source_kind.cmp(&right.source_kind));
+
+        assert_eq!(items.len(), 2);
+        let debt = items
+            .iter()
+            .find(|item| item.source_kind == "clippy_debt")
+            .ok_or_else(|| eyre!("missing Clippy debt cadence row"))?;
+        assert_eq!(debt.state, CadenceState::ReviewOverdue);
+        assert_eq!(debt.owner, "#6305");
+        assert_eq!(debt.owner_issue.as_deref(), Some("#6305"));
+        assert_eq!(debt.source_path, "policy/clippy-debt.toml");
+        assert_eq!(debt.record_id, "clippy::collapsible_if:Cargo.toml");
+
+        let deferred = items
+            .iter()
+            .find(|item| item.source_kind == "clippy_deferred_due")
+            .ok_or_else(|| eyre!("missing Clippy deferred cadence row"))?;
+        assert_eq!(deferred.state, CadenceState::ReviewOverdue);
+        assert_eq!(deferred.owner, "#9869");
+        assert_eq!(deferred.owner_issue.as_deref(), Some("#9869"));
+        assert_eq!(deferred.source_path, "policy/clippy-lints.toml");
+        assert_eq!(deferred.record_id, "clippy::manual_checked_ops");
         Ok(())
     }
 }

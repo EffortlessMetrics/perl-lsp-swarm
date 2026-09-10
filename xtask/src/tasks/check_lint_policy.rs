@@ -34,15 +34,16 @@ pub(crate) struct CadenceRow {
     pub(crate) required_decision: &'static str,
 }
 
-/// Read and semantically validate the same merged Clippy authorities as
-/// `check-lint-policy`, then expose only their review-dated rows. Candidate
-/// validation stays clock-free; the cadence command owns elapsed-time
-/// classification without a second or weaker policy parser.
+/// Read the same merged Clippy authorities as `check-lint-policy` and expose only
+/// their review-dated rows. Candidate validation stays clock-free; the cadence
+/// command owns elapsed-time classification without a second policy parser.
 pub(crate) fn cadence_rows(root: &Path) -> Result<Vec<CadenceRow>> {
     let lint_ledger = read::load_lint_ledger(root)?;
     let debt_ledger: DebtLedger = read::read_toml_as(root.join(DEBT_LEDGER))?;
+    // Fail closed on malformed policy: cadence must not project obligations
+    // the candidate gate would reject as current or overdue owner work.
+    // (Post-#15277 refresh this becomes an `Invalid`-row projection.)
     validate::validate_cadence_sources(root, &lint_ledger, &debt_ledger)?;
-
     let mut rows = Vec::with_capacity(debt_ledger.debt.len() + lint_ledger.deferred_due.len());
 
     for entry in &debt_ledger.debt {
