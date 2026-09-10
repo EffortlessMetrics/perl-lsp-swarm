@@ -32,17 +32,23 @@ ownership may precede the subject as `#N's` or follow it as `owned by #N` or `of
 qualified `owner/repo#N` forms retain their repository identity. An explicit subject
 owner must equal the closing relation's repository and issue number; an unrelated
 mention of another issue cannot transfer that ownership. Neighboring-issue
-attribution still applies before classification. Paired Markdown
-underscore emphasis around supported subjects retains the same classification;
-underscores inside identifiers do not create subject phrases.
+attribution still applies before classification. One or two paired Markdown
+asterisks or underscores around a complete supported subject or exclusion phrase
+retain the same classification, including exact labels such as `**Not claimed:**`.
+Unmatched, escaped, and intraword delimiters remain literal; removing punctuation
+inside a word must not manufacture a supported subject or exclusion.
 Matched Markdown inline-code spans are example/data, not required-work claims;
 they cannot join surrounding prose into a subject. Real prose exclusions outside
-those spans still count. Unmatched or escaped backticks do not hide prose.
+those spans still count. Unmatched backticks and backticks escaped outside a code
+span do not hide prose. Inside a code span, backslashes are literal and do not escape
+a matching closer ([CommonMark 0.31.2, example 338](https://spec.commonmark.org/0.31.2/#example-338)).
 
 Paragraphs, Markdown list items, and sentences retain their boundaries. With multiple
 closes, an owner reference retains its soft-wrapped predicate within the same unit;
 separate units and sections cannot borrow that owner.
-Repeated headings also preserve distinct section occurrences. Immediate `not` or
+Recognized headings are evaluated as distinct claim units; headings cannot borrow
+a subject or predicate from their body. Repeated headings also preserve distinct
+section occurrences. Immediate `not` or
 `never` before `explicitly out of scope` denies that exclusion; it does not suppress
 a separate positive exclusion. A positive
 acceptance statement cannot lend its subject to an unrelated exclusion, including

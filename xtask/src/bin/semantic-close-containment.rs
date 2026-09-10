@@ -222,13 +222,18 @@ struct Section {
     headings: Vec<String>,
     body: String,
     occurrence_starts: Vec<usize>,
+    occurrence_headings: Vec<String>,
 }
 
 impl Section {
     fn occurrences(&self) -> impl Iterator<Item = &str> {
-        self.occurrence_starts.iter().enumerate().filter_map(|(index, start)| {
+        self.occurrence_starts.iter().enumerate().flat_map(|(index, start)| {
             let end = self.occurrence_starts.get(index + 1).copied().unwrap_or(self.body.len());
-            self.body.get(*start..end)
+            // Heading and body are separate units; neither can supply a missing
+            // subject or predicate to the other. Keep exact bounded source text.
+            [self.occurrence_headings.get(index).map(String::as_str), self.body.get(*start..end)]
+                .into_iter()
+                .flatten()
         })
     }
 }
@@ -922,6 +927,7 @@ fn parse_sections(body: &str, max_body_bytes: usize) -> Result<BTreeMap<SectionK
             let section = sections.entry(kind).or_default();
             section.headings.push(heading);
             section.occurrence_starts.push(section.body.len());
+            section.occurrence_headings.push(trimmed.trim_start_matches('#').trim().to_string());
             current = Some(kind);
             current_level = markdown_heading_level(trimmed);
             continue;
@@ -1416,15 +1422,9 @@ fn required_work_exclusion(text: &str, owner_context: Option<(&IssueKey, &str)>)
     attribution_units(text).iter().any(|unit| {
         // Markdown emphasis and soft line wrapping do not change a subject.
         // Keep paragraph/list/sentence boundaries before normalizing whitespace.
-        let unit = prose_without_inline_code(unit).replace('*', "").to_ascii_lowercase();
-        let mut unit = unit.split_whitespace().collect::<Vec<_>>().join(" ");
-        // Remove paired subject emphasis only; underscores within identifiers
-        // must not manufacture a required-work phrase.
-        for subject in REQUIRED_WORK_SUBJECTS {
-            for delimiter in ["__", "_"] {
-                unit = unit.replace(&format!("{delimiter}{subject}{delimiter}"), subject);
-            }
-        }
+        let unit = prose_without_inline_code(unit).to_ascii_lowercase();
+        let unit = unit.split_whitespace().collect::<Vec<_>>().join(" ");
+        let unit = without_supported_emphasis(&unit);
         REQUIRED_WORK_SUBJECTS.iter().any(|subject| {
             word_match_indices(&unit, subject).into_iter().any(|index| {
                 let Some(before) = unit.get(..index) else { return false };
@@ -1490,6 +1490,45 @@ fn strip_issue_owner_suffix(text: &str) -> (&str, Option<&str>) {
         Some(owner) => (before, Some(owner)),
         None => (text, None),
     }
+}
+
+fn without_supported_emphasis(text: &str) -> String {
+    let mut normalized = text.to_string();
+    // These are complete supported subjects and exclusion labels/predicates,
+    // not arbitrary Markdown fragments or punctuation deletion.
+    for phrase in REQUIRED_WORK_SUBJECTS.iter().copied().chain([
+        "does not prove",
+        "does not establish",
+        "does not claim",
+        "not proved",
+        "not proven",
+        "not established",
+        "not claimed",
+        "explicitly out of scope",
+    ]) {
+        for phrase in [phrase.to_string(), format!("{phrase}:")] {
+            for (delimiter, marker) in [("**", '*'), ("*", '*'), ("__", '_'), ("_", '_')] {
+                let pattern = format!("{delimiter}{phrase}{delimiter}");
+                let starts: Vec<usize> = normalized
+                    .match_indices(&pattern)
+                    .filter_map(|(start, _)| {
+                        let end = start + pattern.len();
+                        let before = normalized.get(..start)?.chars().next_back();
+                        let after = normalized.get(end..)?.chars().next();
+                        // Escape parity is the same for emphasis and backticks.
+                        (!backtick_is_escaped(&normalized, start)
+                            && before != Some(marker)
+                            && after != Some(marker))
+                        .then_some(start)
+                    })
+                    .collect();
+                for start in starts.into_iter().rev() {
+                    normalized.replace_range(start..start + pattern.len(), &phrase);
+                }
+            }
+        }
+    }
+    normalized
 }
 
 fn prose_without_inline_code(text: &str) -> String {
@@ -2408,6 +2447,65 @@ mod tests {
             "The public constructor remains unchanged and installed proof is required.",
             "installed"
         ));
+    }
+
+    #[test]
+    fn explicit_heading_and_literal_star_controls_use_full_evaluator() -> Result<()> {
+        let mut mismatches = Vec::new();
+        for (body, contradictory) in [
+            ("## Claim Boundary: Full acceptance criteria are not established", true),
+            ("## Non-Goals: Full acceptance criteria are not established", true),
+            (
+                "## Claim Boundary\nComplete\n## Claim Boundary: Full acceptance criteria are not established",
+                true,
+            ),
+            ("## Claim Boundary: Full acceptance criteria\nare not established", false),
+            (
+                "## Claim Boundary: Full acceptance criteria\n## Claim Boundary: are not established",
+                false,
+            ),
+            ("## Claim Boundary\nFull accept*ance criteria are not established", false),
+            ("## Claim Boundary\nFull acceptance criteria are not estab*lished", false),
+            ("## Claim Boundary\n*Full acceptance criteria* are not established", true),
+            ("## Claim Boundary\n**Full acceptance criteria** are not established", true),
+            ("## Claim Boundary\n\\*Full acceptance criteria* are not established", false),
+            ("## Claim Boundary\n*Full acceptance criteria\\* are not established", false),
+            (
+                "## Claim Boundary\nFull accept*ance is an example; full acceptance criteria are not established",
+                true,
+            ),
+            ("## Claim Boundary\n**Not claimed:** the full acceptance criteria", true),
+            ("## Claim Boundary\n**Not cla*imed:** the full acceptance criteria", false),
+            ("## Claim Boundary\nFull acceptance criteria are **not established**", true),
+            ("## Claim Boundary\n`Full acceptance criteria are not established\\`.", false),
+            ("## Claim Boundary\n\\`Full acceptance criteria are not established\\`.", true),
+        ] {
+            let pull = PullRequestSubject {
+                repository: "effortlessmetrics/perl-lsp-swarm".into(),
+                number: 990107,
+                title: "fix: heading and literal delimiter controls".into(),
+                body: format!("{body}\n\nCloses #10"),
+            };
+            let report = evaluate(&pull, |key| {
+                IssueEvidence::Available(IssueSubject {
+                    number: key.number,
+                    title: "Complete the named change".into(),
+                    body: "## Acceptance\nThe named change is established.".into(),
+                })
+            })?;
+            let expected = if contradictory {
+                ResultCode::FailExplicitUnprovenRequiredWork
+            } else {
+                ResultCode::PassNoHighConfidenceContradiction
+            };
+            if report.rows.first().map(|row| row.code) != Some(expected) {
+                mismatches.push(format!("{body}: expected {expected:?}"));
+            }
+        }
+        if !mismatches.is_empty() {
+            bail!("heading/literal-star mismatches: {mismatches:?}");
+        }
+        Ok(())
     }
 
     #[test]
