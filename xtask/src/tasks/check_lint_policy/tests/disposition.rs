@@ -139,17 +139,27 @@ fn future_planned_lint_remains_absent_from_cargo() -> Result<()> {
 }
 
 #[test]
-fn expired_deferred_lint_fails() -> Result<()> {
+fn overdue_deferred_lint_review_is_advisory_for_candidate_validation() -> Result<()> {
     let mut deferred = deferred_lint("clippy::manual_checked_ops", "1.95");
     deferred.review_after = "2026-08-14".to_owned();
     let mut ledger = ledger_with(Vec::new());
     ledger.deferred_due.push(deferred);
 
+    validate_workspace_lints(&empty_cargo()?, &ledger, test_date()?)
+}
+
+#[test]
+fn deferred_lint_still_rejects_malformed_review_date() -> Result<()> {
+    let mut deferred = deferred_lint("clippy::manual_checked_ops", "1.95");
+    deferred.review_after = "not-a-date".to_owned();
+    let mut ledger = ledger_with(Vec::new());
+    ledger.deferred_due.push(deferred);
+
     let result = validate_workspace_lints(&empty_cargo()?, &ledger, test_date()?);
     let Err(error) = result else {
-        bail!("expired deferral should fail");
+        bail!("malformed deferred review date should fail structural validation");
     };
-    assert!(error.to_string().contains("review date expired"));
+    assert!(error.to_string().contains("invalid review_after date"));
     Ok(())
 }
 
