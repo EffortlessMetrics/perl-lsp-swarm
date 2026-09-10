@@ -30,7 +30,13 @@ needs.route-rust-small.result == 'success' &&
 
 
 def normalize_expression(value: str) -> str:
-    return re.sub(r"\s+", "", value)
+    # GitHub expressions escape an apostrophe by doubling it. Only discard
+    # layout between tokens; whitespace inside a comparison value is semantic.
+    return re.sub(
+        r"'(?:[^']|'')*'|\s+",
+        lambda match: match.group(0) if match.group(0).startswith("'") else "",
+        value,
+    )
 
 
 def step_block(workflow: str, step_name: str) -> tuple[str, int]:
@@ -162,6 +168,10 @@ class RustSmallProbeGateTests(unittest.TestCase):
                 "needs.rust-small-github.result == 'success'",
                 "needs.rust-small-github.result == 'cancelled'",
             ),
+            "cx43 success literal changed": expression.replace(
+                "needs.rust-small-cx43.result == 'success'",
+                "needs.rust-small-cx43.result == 'success '",
+            ),
             "cx53 fallback dropped": expression.replace(
                 "needs.route-rust-small.outputs.target == 'cx53' && (needs.rust-small-cx53.result == 'success' || needs.rust-small-fallback.result == 'success')",
                 "needs.route-rust-small.outputs.target == 'cx53' && needs.rust-small-cx53.result == 'success'",
@@ -180,6 +190,12 @@ class RustSmallProbeGateTests(unittest.TestCase):
                 broken = replace_probe_expression(self.workflow, mutated_expression)
                 with self.assertRaises(AssertionError):
                     validate_probe_gate(broken)
+
+    def test_normalization_preserves_quoted_whitespace(self) -> None:
+        self.assertEqual(
+            normalize_expression("  value == 'it''s a label ' \n && other == ' ready' "),
+            "value=='it''s a label '&&other==' ready'",
+        )
 
 
 if __name__ == "__main__":

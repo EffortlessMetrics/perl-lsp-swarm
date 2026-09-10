@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "owner_issue": 14718,
-  "reason": "Corrects a stale size-only row. rolldown 1.2.6 (#14702) emits out/extension.js at 1636669 bytes where 1.2.5 emitted 1636125; the baseline landed in #14680 was measured against 1.2.5 and the two changes crossed. Measured twice from a clean npm ci at the current main. The 29-file package is unchanged: no file additions, removals, or permission loosening.",
-  "base_baseline_file_sha256": "ead549f99a68d55a78f83a3b94d6e95cfc860be529d79813b6bc6ff13e070a75",
-  "candidate_baseline_file_sha256": "a966dac61b30ed8f950dc9910b5dfaf354ff131cf797dcd7ea24f6b1fa756c2a",
-  "base_inventory_sha256": "a526f424818662c8ec573c84cd9360eccfff0e3ee7a56d7123c4df047fdc02df",
-  "candidate_inventory_sha256": "71c92a4b4282c160e4db6417312fa3622a9ba9a8266bce7fbe6172b9ad5004f1"
+  "owner_issue": 9933,
+  "reason": "The #9933 receipt-summary test entry changes the packaged extension package.json by 44 bytes; the exact candidate VSIX is measured against the merged current-main baseline.",
+  "base_baseline_file_sha256": "d95cf9327ba072657b6481b42fa3c3076d7774d4b5a03e7496b431518c765683",
+  "candidate_baseline_file_sha256": "d0f4bd2eaf0a74de3e8e74119e79ec070be3cdd3fb498188b68944f6e38f1d42",
+  "base_inventory_sha256": "695a05e2c3e7508d19ff0c35c30b5aedf5149e0953f31912d823c044f8a9e4d2",
+  "candidate_inventory_sha256": "f96e90df387423bb1b58aeed16ec63df14638bc35c37ce748e423333314856ce"
 }
