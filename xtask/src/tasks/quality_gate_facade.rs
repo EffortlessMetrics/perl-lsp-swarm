@@ -37,6 +37,7 @@ struct LifecycleDates {
 struct NormalizedPolicy {
     text: String,
     lifecycle: Vec<LifecycleDates>,
+    validation_error: Option<String>,
 }
 
 #[derive(Debug)]
@@ -134,6 +135,7 @@ pub fn run(args: QualityGateArgs) -> Result<()> {
 
     replace_json_strings(&mut receipt, &replacements);
     restore_lifecycle_dates(&mut receipt, &normalized.lifecycle);
+    restore_policy_validation_error(&mut receipt, normalized.validation_error.as_deref());
     let receipt_text = format!("{}\n", serde_json::to_string_pretty(&receipt)?);
 
     let mut summary = fs::read_to_string(&temporary_summary)
@@ -144,6 +146,9 @@ pub fn run(args: QualityGateArgs) -> Result<()> {
     summary.push_str(
         "\n## Policy Lifecycle\n\n- authority: `cargo xtask policy cadence`\n- candidate impact: `advisory_only`\n",
     );
+    if let Some(error) = normalized.validation_error.as_deref() {
+        summary.push_str(&format!("- validation error: `{error}`\n"));
+    }
 
     if args.check {
         assert_current(&args.receipt, &receipt_text, "quality gate JSON receipt")?;
@@ -173,18 +178,36 @@ pub fn run(args: QualityGateArgs) -> Result<()> {
 
 fn normalize_policy(raw: &str) -> Result<NormalizedPolicy> {
     let Ok(mut policy) = toml::from_str::<TomlValue>(raw) else {
-        return Ok(NormalizedPolicy { text: raw.to_string(), lifecycle: Vec::new() });
+        return Ok(NormalizedPolicy {
+            text: raw.to_string(),
+            lifecycle: Vec::new(),
+            validation_error: None,
+        });
     };
     let Some(table) = policy.as_table_mut() else {
-        return Ok(NormalizedPolicy { text: raw.to_string(), lifecycle: Vec::new() });
+        return Ok(NormalizedPolicy {
+            text: raw.to_string(),
+            lifecycle: Vec::new(),
+            validation_error: None,
+        });
     };
 
+    let mut validation_error = None;
     if let Some(due_review) = table.get("due_review") {
         let Some(due_review) = due_review.as_str() else {
-            return Ok(NormalizedPolicy { text: raw.to_string(), lifecycle: Vec::new() });
+            return Ok(NormalizedPolicy {
+                text: raw.to_string(),
+                lifecycle: Vec::new(),
+                validation_error: None,
+            });
         };
         if !matches!(due_review, "warn" | "fail") {
-            bail!("quality exception due_review must be warn or fail, found {due_review}");
+            validation_error = Some(format!(
+                "quality exception due_review must be warn or fail, found {due_review}"
+            ));
+            // Ask the existing engine to emit its normal fail-closed receipt and
+            // summary rather than returning before artifact publication.
+            table.insert("status".to_string(), TomlValue::String("invalid".to_string()));
         }
     }
     table.insert("due_review".to_string(), TomlValue::String("warn".to_string()));
@@ -195,7 +218,7 @@ fn normalize_policy(raw: &str) -> Result<NormalizedPolicy> {
             let Some(exception) = exception.as_table_mut() else {
                 continue;
             };
-            // Mirror the engine's required-field/kind boundary before
+            // Mirror the engine's required-field/kind/date boundary before
             // normalizing. Rows the engine will reject must stay byte-semantic
             // inputs to its structural diagnostics and must not disturb the
             // duplicate-ID restoration queues for accepted rows.
@@ -210,9 +233,6 @@ fn normalize_policy(raw: &str) -> Result<NormalizedPolicy> {
             let (Some(id), Some(review_after), Some(expires)) = (id, review_after, expires) else {
                 continue;
             };
-            if parse_date(&review_after).is_none() || parse_date(&expires).is_none() {
-                continue;
-            }
 
             lifecycle.push(LifecycleDates { id, review_after, expires });
             exception.insert(
@@ -228,6 +248,7 @@ fn normalize_policy(raw: &str) -> Result<NormalizedPolicy> {
         text: toml::to_string(&policy)
             .context("serializing clock-free quality exception policy")?,
         lifecycle,
+        validation_error,
     })
 }
 
@@ -245,12 +266,23 @@ fn candidate_exception_is_structurally_valid(exception: &TomlTable) -> bool {
         "review_after",
         "expires",
     ];
-    required.iter().all(|field| {
+    let required_fields_are_present = required.iter().all(|field| {
         exception
             .get(*field)
             .and_then(TomlValue::as_str)
             .is_some_and(|value| !value.trim().is_empty())
-    }) && exception.get("kind").and_then(TomlValue::as_str) == Some("temporary_burndown")
+    });
+    let lifecycle_dates_are_valid = ["created", "review_after", "expires"].iter().all(|field| {
+        exception
+            .get(*field)
+            .and_then(TomlValue::as_str)
+            .and_then(parse_date)
+            .is_some()
+    });
+
+    required_fields_are_present
+        && lifecycle_dates_are_valid
+        && exception.get("kind").and_then(TomlValue::as_str) == Some("temporary_burndown")
 }
 
 fn parse_date(value: &str) -> Option<NaiveDate> {
@@ -288,6 +320,33 @@ fn restore_lifecycle_dates(receipt: &mut JsonValue, lifecycle: &[LifecycleDates]
         entry.insert("review_after".to_string(), JsonValue::String(dates.review_after.clone()));
         entry.insert("expires".to_string(), JsonValue::String(dates.expires.clone()));
     }
+}
+
+fn restore_policy_validation_error(receipt: &mut JsonValue, error: Option<&str>) {
+    let Some(error) = error else {
+        return;
+    };
+
+    if let Some(exceptions) =
+        receipt.get_mut("temporary_exceptions").and_then(JsonValue::as_object_mut)
+    {
+        exceptions.insert("validation_error".to_string(), JsonValue::String(error.to_string()));
+    }
+
+    let Some(actions) = receipt.get_mut("next_actions").and_then(JsonValue::as_array_mut) else {
+        return;
+    };
+    let Some(action) = actions.iter_mut().find(|action| {
+        action.get("kind").and_then(JsonValue::as_str)
+            == Some("quality_exception_policy_not_current")
+    }) else {
+        return;
+    };
+    let Some(action) = action.as_object_mut() else {
+        return;
+    };
+    action.insert("reason".to_string(), JsonValue::String("invalid_due_review".to_string()));
+    action.insert("repair".to_string(), JsonValue::String(error.to_string()));
 }
 
 fn replace_json_strings(value: &mut JsonValue, replacements: &[(&str, &str)]) {
@@ -399,6 +458,7 @@ expires = "{expires}"
                 expires: "2000-01-02".to_string(),
             }]
         );
+        assert!(normalized.validation_error.is_none());
         Ok(())
     }
 
@@ -414,6 +474,73 @@ expires = "{expires}"
             .ok_or_else(|| color_eyre::eyre::eyre!("missing normalized exception"))?;
         assert_eq!(exception.get("expires").and_then(TomlValue::as_str), Some("not-a-date"));
         assert!(normalized.lifecycle.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn unsupported_due_review_is_routed_through_fail_closed_artifacts() -> Result<()> {
+        let source = policy("2099-01-01", "2099-12-31")
+            .replace("due_review = \"fail\"", "due_review = \"error\"");
+        let normalized = normalize_policy(&source)?;
+        let value: TomlValue = toml::from_str(&normalized.text)?;
+
+        assert_eq!(value.get("status").and_then(TomlValue::as_str), Some("invalid"));
+        assert_eq!(value.get("due_review").and_then(TomlValue::as_str), Some("warn"));
+        assert_eq!(
+            normalized.validation_error.as_deref(),
+            Some("quality exception due_review must be warn or fail, found error")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn malformed_created_row_does_not_shift_duplicate_id_restoration() -> Result<()> {
+        let source = r#"schema_version = 1
+policy = "quality-gate-exceptions"
+owner = "test"
+status = "active"
+updated = "2026-09-10"
+due_review = "fail"
+
+[requirements]
+required_active = ["fixture"]
+
+[[exception]]
+id = "fixture"
+kind = "temporary_burndown"
+scope = "project_coverage"
+owner = "proof"
+reason = "rejected"
+final_target = "fixture"
+evidence = "fixture"
+removal_criteria = "fixture"
+created = "not-a-date"
+review_after = "2026-09-16"
+expires = "2026-09-30"
+
+[[exception]]
+id = "fixture"
+kind = "temporary_burndown"
+scope = "project_coverage"
+owner = "proof"
+reason = "accepted"
+final_target = "fixture"
+evidence = "fixture"
+removal_criteria = "fixture"
+created = "2026-01-01"
+review_after = "2026-10-16"
+expires = "2026-10-30"
+"#;
+        let normalized = normalize_policy(source)?;
+
+        assert_eq!(
+            normalized.lifecycle,
+            vec![LifecycleDates {
+                id: "fixture".to_string(),
+                review_after: "2026-10-16".to_string(),
+                expires: "2026-10-30".to_string(),
+            }]
+        );
         Ok(())
     }
 
