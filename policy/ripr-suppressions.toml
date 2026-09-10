@@ -11,7 +11,7 @@ schema_version = 1
 policy = "ripr-suppressions"
 owner = "EffortlessMetrics"
 status = "advisory"
-updated = "2026-09-08"
+updated = "2026-09-10"
 
 # -----------------------------------------------------------------------------
 # Generated status docs: validated through status-generation checks, not
@@ -3117,3 +3117,60 @@ reason = "PR #13512 (#12569) replaces buffered stdout capture with file-backed s
 created = "2026-09-09"
 review_after = "2026-10-09"
 expires = "2026-11-09"
+
+# -----------------------------------------------------------------------------
+# Opaque LexerCheckpoint (#8090, PR #14896): hosted RIPR 0.10.0 on merge tree
+# ac17e230 (run 34418959457, artifact 10132869484) reports 101 new
+# no_static_path gaps after a complete producer (validate + gap enforcement +
+# upload). They are declaration/deletion probes, not unproven restore behavior:
+# deleted public LexerCheckpoint fields, private ReplayState / identity /
+# PerlLexer identity-binding fields, deprecated-note strings, and the
+# replaced parse_interpolation restore predicate. Same-crate tests already
+# construct LexerPolicyIdentity, capture/restore live checkpoints, and now
+# exhaustively name ReplayState in core.rs; RIPR still cannot attach a static
+# test path to those declaration lines (EffortlessMetrics/ripr#1429, same
+# class as #12049 / #14904 / #15149). Constructor-only theatre does not close
+# them. Classification is no_static_path only so a later reachable_unrevealed
+# gap still blocks.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-8090-opaque-checkpoint-declaration-seams"
+kind = "declaration_line_no_static_path"
+paths = [
+  "crates/perl-lexer/src/checkpoint/core.rs",
+  "crates/perl-lexer/src/checkpoint/identity.rs",
+  "crates/perl-lexer/src/checkpoint/mod.rs",
+  "crates/perl-lexer/src/checkpoint_impl.rs",
+  "crates/perl-lexer/src/lexer/state.rs",
+]
+classification = ["no_static_path"]
+owner = "proof-lane"
+issue = "#8090"
+reason = "PR #14896 (#8090) makes LexerCheckpoint opaque, complete, and fail-closed. Hosted RIPR run 34418959457 (producer job 102701703437, evaluated merge head ac17e23044d8c9b3d8580fcf1c721b83f98e7dc7, PR head a8ca3d7b01904e4906c81d15ba8aa82813259c35) reported 101 new no_static_path gaps (raw-check 104 before non-production filter): 62 in checkpoint/core.rs (deleted public field declarations plus pub(crate) ReplayState / private LexerCheckpoint field_construction and deprecation-note call_deletion), 18 in identity.rs (LexerPolicyIdentity / LexerCheckpointIdentity field_construction, matches_target (None, None) arm, Ok(())), 5 in checkpoint_impl.rs (deleted parse_interpolation restore predicate), 4 in lexer/state.rs (logical_source / generation field_construction), 1 ReplayState re-export. Discriminating proof already exists: crates/perl-lexer/tests/lexer_checkpoint_contract.rs, checkpoint_edit_validity.rs, src/checkpoint/tests.rs (including qw_recovery_enabled_is_part_of_policy_identity), and live_replay_state_is_an_exhaustive_named_projection. RIPR 0.10.0 cannot trace those tests to declaration-line owners (EffortlessMetrics/ripr#1429); the #6772 precedent covers only pub-primitive struct literals. HONEST SCOPE NOTE: path-scoped matchers mask future no_static_path probes in these files for this window; reachable_unrevealed in this receipt is 0. Do not treat this as a lexer behavior repair or as absorbing #8059/#9457/#2021."
+created = "2026-09-10"
+review_after = "2026-09-17"
+expires = "2026-09-30"
+removal_criteria = "Remove when ripr#1429 traces declaration-line field_construction / private-field owners to same-crate checkpoint tests, then expect live_replay_state_is_an_exhaustive_named_projection plus lexer_checkpoint_contract.rs to clear the seams without this entry. Narrow or delete immediately if a future receipt reports reachable_unrevealed or an executable no_static_path seam beyond these declaration/deletion probes."
+
+# -----------------------------------------------------------------------------
+# #8090 test-file RIPR#1428 residue on the same receipt: type alias, Result
+# conversion of restore(), CheckpointCache test Ok(()) / ? plumbing. These are
+# proof-harness lines, not production restore seams.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-8090-checkpoint-test-harness-plumbing"
+kind = "test_receipt_surface"
+paths = [
+  "crates/perl-lexer/src/checkpoint/tests.rs",
+  "crates/perl-lexer/tests/lexer_checkpoint_contract.rs",
+  "crates/perl-lexer/tests/prop_checkpoint_and_span_invariants.rs",
+]
+classification = ["no_static_path"]
+owner = "proof-lane"
+issue = "#8090"
+reason = "Same hosted RIPR receipt as ripr-suppress-8090-opaque-checkpoint-declaration-seams (run 34418959457): 11 no_static_path probes in src/checkpoint/tests.rs (at_position / apply_edit / Ok(()) / find_after ?), 1 type-alias call_deletion in tests/lexer_checkpoint_contract.rs, and 2 restore()/position() call_deletion probes in prop_checkpoint_and_span_invariants.rs after restore became fallible. These are test-harness plumbing (EffortlessMetrics/ripr#1428), not missing production restore proof. The production claim remains covered by the same contract tests. Classification is no_static_path only."
+created = "2026-09-10"
+review_after = "2026-09-17"
+expires = "2026-09-30"
+removal_criteria = "Remove when ripr#1428 stops classifying test Ok(()) / type aliases / fallible-restore adaptations as production no_static_path seams."
+
