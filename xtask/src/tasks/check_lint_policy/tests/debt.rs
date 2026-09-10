@@ -91,3 +91,30 @@ fn debt_rows_reject_absolute_path() -> Result<()> {
     assert!(error.to_string().contains("must be repository-relative"));
     Ok(())
 }
+
+#[test]
+fn overdue_debt_review_is_advisory_for_candidate_validation() -> Result<()> {
+    let ledger = ledger_with(vec![lint_entry("clippy::collapsible_if", "debt")]);
+    let mut entry = debt_entry("clippy::collapsible_if");
+    entry.review_after = "2026-08-14".to_owned();
+    let mut debt = empty_debt();
+    debt.debt.push(entry);
+
+    validate_debt_ledger(test_root(), &ledger, &debt, test_date()?)
+}
+
+#[test]
+fn debt_row_still_rejects_malformed_review_date() -> Result<()> {
+    let ledger = ledger_with(vec![lint_entry("clippy::collapsible_if", "debt")]);
+    let mut entry = debt_entry("clippy::collapsible_if");
+    entry.review_after = "not-a-date".to_owned();
+    let mut debt = empty_debt();
+    debt.debt.push(entry);
+
+    let result = validate_debt_ledger(test_root(), &ledger, &debt, test_date()?);
+    let Err(error) = result else {
+        bail!("malformed debt review date should fail structural validation");
+    };
+    assert!(error.to_string().contains("invalid review_after date"));
+    Ok(())
+}
