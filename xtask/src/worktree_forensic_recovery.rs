@@ -9,6 +9,22 @@
 //! the sampled read interval. Windows uses the repository's stable WinAPI
 //! `FileIdInfo` adapter when available; adapter failure remains `Unavailable`
 //! and cannot support a clean or race-detection claim.
+//!
+//! # Evidence format migration
+//!
+//! `worktree-recovery plan --json` now uses `worktree_forensic_evidence.v2`: observations
+//! use the shared typed `state` (`OBSERVED` or `NOT_PROVEN`), with absent optional
+//! fields omitted. v1 used `detail: "observed"` for successful observations and
+//! `value: null` for unavailable ones. There is no persisted-plan reader or replay
+//! operation in this module. Consumers of saved JSON must select their decoder by
+//! `schema_version`; retain v1 records as historical evidence or rerun inspection
+//! to obtain v2, rather than relabeling old records.
+//!
+//! The plan digest covers serialized evidence (including its schema), excluding
+//! the observation timestamp and digest itself. v1 and v2 digests therefore are
+//! different identities, not a claim that the inspected filesystem changed.
+//! Classification, read-only behavior, and human unavailable-detail text remain
+//! unchanged; even the human report's digest changes with the schema.
 
 use crate::worktree_cleanup::Observation;
 use chrono::{SecondsFormat, Utc};
@@ -28,7 +44,7 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
-pub const FORENSIC_SCHEMA_VERSION: &str = "worktree_forensic_evidence.v1";
+pub const FORENSIC_SCHEMA_VERSION: &str = "worktree_forensic_evidence.v2";
 pub const FORENSIC_POLICY_VERSION: &str = "2026-08-27";
 
 const MAX_MANIFEST_FILES: usize = 256;
@@ -477,6 +493,8 @@ pub fn inspect_with_limits_and_probe(
     finish_plan(evidence)
 }
 
+// These placeholders are NOT_PROVEN: inspection has not established the fact.
+// NOT_APPLICABLE would assert an applicability decision that has not been made.
 fn initial_evidence(repository_identity: Observation<RepositoryIdentity>) -> RecoveryEvidence {
     RecoveryEvidence {
         repository_identity,
@@ -1969,6 +1987,75 @@ mod tests {
             contradictions: Vec::new(),
             instrument_failures: Vec::new(),
         }
+    }
+
+    #[test]
+    fn forensic_json_v2_observation_contract() -> Result<()> {
+        let plan = finish_plan(positive_evidence())?;
+        let json: serde_json::Value = serde_json::from_str(&render(&plan, OutputFormat::Json)?)?;
+        ensure!(json["schema_version"] == "worktree_forensic_evidence.v2", "wrong wire version");
+        let observed = serde_json::json!({
+            "state": "OBSERVED",
+            "value": {
+                "requested_path": "candidate",
+                "canonical_path": "candidate",
+                "path_key": "candidate"
+            }
+        });
+        ensure!(json["candidate"] == observed, "observed JSON changed: {}", json["candidate"]);
+        ensure!(json["evidence"]["candidate_identity"] == observed, "nested observation diverged");
+        let decoded: RecoveryPlan = serde_json::from_value(json)?;
+        ensure!(decoded == plan, "v2 plan did not round trip");
+
+        let unavailable =
+            finish_plan(initial_evidence(Observation::not_proven("probe unavailable")))?;
+        let json: serde_json::Value =
+            serde_json::from_str(&render(&unavailable, OutputFormat::Json)?)?;
+        ensure!(
+            json["schema_version"] == "worktree_forensic_evidence.v2",
+            "unavailable version drift"
+        );
+        ensure!(
+            json["repository"]
+                == serde_json::json!({
+                    "state": "NOT_PROVEN", "detail": "probe unavailable"
+                }),
+            "unavailable observation shape changed"
+        );
+        ensure!(
+            json["candidate"]
+                == serde_json::json!({
+                    "state": "NOT_PROVEN", "detail": "candidate identity not observed"
+                }),
+            "uninspected candidate is not an applicability decision"
+        );
+        ensure!(
+            unavailable.classification != RecoveryClassification::CleanReconstructable,
+            "unavailable evidence became clean"
+        );
+        let decoded: RecoveryPlan = serde_json::from_value(json)?;
+        ensure!(decoded == unavailable, "unavailable v2 plan did not round trip");
+        ensure!(
+            render(&unavailable, OutputFormat::Human)?.contains("UNKNOWN (probe unavailable)"),
+            "human unavailable detail changed"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn forensic_digest_ignores_timestamp_but_binds_evidence_and_schema() -> Result<()> {
+        let mut plan = finish_plan(positive_evidence())?;
+        let original = plan.plan_digest.clone();
+        plan.observed_at = String::from("2099-01-01T00:00:00Z");
+        plan.plan_digest = String::from("prior digest is not an input");
+        ensure!(digest_plan(&plan)? == original, "timestamp or digest changed identity");
+        let mut changed = plan.clone();
+        changed.evidence.pointer = Observation::not_proven("pointer unavailable");
+        ensure!(digest_plan(&changed)? != original, "changed evidence retained identity");
+        changed = plan;
+        changed.schema_version = String::from("worktree_forensic_evidence.v1");
+        ensure!(digest_plan(&changed)? != original, "schema version is not digest-bound");
+        Ok(())
     }
 
     fn assert_same_size_change_rejected(result: StableRead, label: &str) -> Result<()> {
