@@ -5571,6 +5571,7 @@ fn run_cli(cli: Cli) -> Result<()> {
             receipt,
             summary,
             check,
+            quiet: false,
         }),
         Commands::RiprPr { root, base, head, pr_head, check } => {
             ripr_evidence::ripr_pr(&root, &base, &head, pr_head.as_deref(), check)
