@@ -9,7 +9,7 @@
 #![allow(clippy::print_stderr)]
 
 use crate::observation::{Inbox, StreamEnd, WaitEnd};
-use crate::{FakeWorkspace, ScenarioConfig};
+use crate::{ChildExit, FakeWorkspace, ScenarioConfig, poll_child_exit};
 use anyhow::{Context, Result, anyhow};
 use serde_json::{Value, json};
 use std::io::{BufRead, BufReader, Read, Write};
@@ -468,13 +468,13 @@ impl UxClient {
             .context("failed to send LSP exit notification after accepted shutdown")?;
         self.shutdown_state.store(SHUTDOWN_EXIT_SENT, Ordering::SeqCst);
 
+        // Await process exit, not stream end: the server may close its output
+        // before its final cleanup finishes, so stream end must never be
+        // mistaken for exit. The poll itself lives in the governed harness
+        // root, where its declared quantum keeps this substrate sleep-free.
         let deadline = Instant::now() + timeout;
-        loop {
-            let status = {
-                let mut child = self.child.lock().unwrap_or_else(|e| e.into_inner());
-                child.try_wait().context("failed to poll perl-lsp process exit")?
-            };
-            if let Some(status) = status {
+        match poll_child_exit(&self.child, deadline)? {
+            ChildExit::Exited(status) => {
                 self.shutdown_state.store(SHUTDOWN_COMPLETE, Ordering::SeqCst);
                 if !status.success() {
                     return Err(anyhow!(
@@ -482,31 +482,13 @@ impl UxClient {
                         self.stderr_tail()
                     ));
                 }
-                return Ok(UxGracefulShutdown { status });
+                Ok(UxGracefulShutdown { status })
             }
-            if Instant::now() >= deadline {
-                return Err(anyhow!(
-                    "perl-lsp did not exit within {}ms after accepted shutdown; stderr={}",
-                    timeout.as_millis(),
-                    self.stderr_tail()
-                ));
-            }
-            if self.inbox.stream_end().is_some() {
-                // The server closed its stream but is still alive: it will
-                // never produce more evidence, so neither spinning nor
-                // sleeping here can learn anything new. Report it as the
-                // server failure it is rather than burning the deadline.
-                // Destructor cleanup still reaps the child.
-                return Err(anyhow!(
-                    "perl-lsp closed its output without exiting after accepted shutdown; stderr={}",
-                    self.stderr_tail()
-                ));
-            }
-            // Rest on the observation, not a wall-clock sleep: wake the
-            // instant the server's stream ends, otherwise re-poll at the
-            // deadline bound. The wait substrate must stay sleep-free.
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            let _ = self.inbox.wait_for(remaining, |_| None::<()>);
+            ChildExit::TimedOut => Err(anyhow!(
+                "perl-lsp did not exit within {}ms after accepted shutdown; stderr={}",
+                timeout.as_millis(),
+                self.stderr_tail()
+            )),
         }
     }
 

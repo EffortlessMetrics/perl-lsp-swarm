@@ -85,8 +85,9 @@ use serde_json::map::Map;
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::path::Path;
+use std::process::{Child, ExitStatus};
 use std::sync::Mutex;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use url::Url;
 
 /// Canonical cursor position for editor-facing UX requests.
@@ -232,6 +233,39 @@ impl ScenarioConfig {
     ) -> Self {
         self.workspace_folders.push((relative_path.into(), name.into()));
         self
+    }
+}
+
+/// Outcome of [`poll_child_exit`].
+pub(crate) enum ChildExit {
+    /// The child exited; carries its observed status.
+    Exited(ExitStatus),
+    /// The deadline passed with the child still alive.
+    TimedOut,
+}
+
+/// Re-poll a spawned child for exit until `deadline`, then report the outcome.
+///
+/// Process exit has no push notification to wait on, so unlike the
+/// observation waits this polls `try_wait` on a bounded 10ms quantum. The
+/// quantum keeps detection latency flat while the deadline keeps every call
+/// bounded; destructor cleanup still reaps a hung child.
+pub(crate) fn poll_child_exit(child: &Mutex<Child>, deadline: Instant) -> Result<ChildExit> {
+    loop {
+        if let Some(status) = child
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .try_wait()
+            .context("failed to poll child process exit")?
+        {
+            return Ok(ChildExit::Exited(status));
+        }
+        if Instant::now() >= deadline {
+            return Ok(ChildExit::TimedOut);
+        }
+        // ux-timing: product-retry — process exit has no push notification to
+        // wait on; re-poll on a bounded quantum until the deadline above.
+        std::thread::sleep(Duration::from_millis(10));
     }
 }
 
