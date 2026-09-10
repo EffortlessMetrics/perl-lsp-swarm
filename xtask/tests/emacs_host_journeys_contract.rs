@@ -53,8 +53,8 @@ fn compiled_registry_validates_and_is_second_run_clean() -> Result<()> {
         ensure!(*count > 0, "a diagnostic cohort holds zero membership");
     }
     ensure!(
-        first.optional_cell_count >= 3,
-        "the #9413 optional documented-feature families must stay registered"
+        first.optional_cell_count == 1,
+        "only code-action optional depth has landed canonical truth"
     );
     Ok(())
 }
@@ -156,6 +156,32 @@ fn protocol_membership_rejects_host_visible_surface() -> Result<()> {
     ensure!(
         error.contains("must not expose host-visible surfaces"),
         "unexpected rejection for host-visible protocol surface: {error}"
+    );
+    Ok(())
+}
+
+#[test]
+fn host_visible_cell_rejects_a_mixed_protocol_surface() -> Result<()> {
+    // The mixed lie the protocol-only inverse cannot catch: a genuinely
+    // host-visible cell that also binds the protocol-only surface, so a
+    // protocol frame could supply evidence for a host-visible claim.
+    let mut cells = compiled()?;
+    let host_visible = "emacs.eldoc_hover_observation.hover_rendered";
+    let position = cells
+        .iter()
+        .position(|cell| cell.cell_id == host_visible)
+        .ok_or_else(|| anyhow::anyhow!("hover cell vanished from the registry"))?;
+    cells[position].host_surfaces.push(HostSurface::DiagnosticsPollProtocol);
+    // Confine it to the pull cohort so the pull-cohort law cannot be the
+    // rejecting law; only the evidence-partition law can fire here.
+    cells[position].cohorts = vec![DiagnosticCohort::StandaloneEglotPull];
+    let error = match emacs_host_journeys::validate_registry(&cells) {
+        Err(error) => error.to_string(),
+        Ok(_) => bail!("host-visible row accepted a protocol-only surface"),
+    };
+    ensure!(
+        error.contains("must not expose protocol-only surfaces"),
+        "unexpected rejection for mixed host-visible row: {error}"
     );
     Ok(())
 }
@@ -344,11 +370,11 @@ fn unregistered_free_form_cells_are_unrepresentable() -> Result<()> {
 #[test]
 fn optional_feature_depth_cannot_silently_become_core_required() -> Result<()> {
     let mut cells = compiled()?;
-    let opt_id = "emacs.opt_native_formatting.format_document_depth";
+    let opt_id = "emacs.opt_code_action_application.apply_or_refuse_depth";
     let position = cells
         .iter()
         .position(|cell| cell.cell_id == opt_id)
-        .ok_or_else(|| anyhow::anyhow!("optional formatting cell vanished"))?;
+        .ok_or_else(|| anyhow::anyhow!("optional code-action cell vanished"))?;
     cells[position].depth = DepthClass::Core;
     let error = match emacs_host_journeys::validate_registry(&cells) {
         Err(error) => error.to_string(),
@@ -359,27 +385,14 @@ fn optional_feature_depth_cannot_silently_become_core_required() -> Result<()> {
 }
 
 #[test]
-fn optional_classes_cannot_disappear_when_optional_depth_is_present() -> Result<()> {
-    let cells = compiled()?;
-    let optional_class = cells
-        .iter()
-        .find(|cell| cell.depth == DepthClass::Optional)
-        .map(|cell| cell.journey_class.clone())
-        .ok_or_else(|| anyhow::anyhow!("optional cell vanished from the registry"))?;
-    let mut incomplete = cells.clone();
-    incomplete.retain(|cell| cell.journey_class != optional_class);
-    let error = match emacs_host_journeys::validate_registry(&incomplete) {
-        Err(error) => error.to_string(),
-        Ok(_) => bail!("optional class {optional_class} disappeared without rejection"),
-    };
-    ensure!(
-        error.contains(&format!("optional class {optional_class}")),
-        "unexpected rejection for an uncovered optional class: {error}"
-    );
-
+fn core_only_registry_does_not_require_optional_depth() -> Result<()> {
     let core_only: Vec<_> =
-        cells.into_iter().filter(|cell| cell.depth == DepthClass::Core).collect();
-    emacs_host_journeys::validate_registry(&core_only)?;
+        compiled()?.into_iter().filter(|cell| cell.depth == DepthClass::Core).collect();
+    let summary = emacs_host_journeys::validate_registry(&core_only)?;
+    ensure!(
+        summary.optional_cell_count == 0 && summary.core_cell_count == 21,
+        "core-only registry must not require optional feature depth"
+    );
     Ok(())
 }
 
@@ -529,6 +542,92 @@ fn digests_cover_bindings_and_survive_row_ordering_only_changes() -> Result<()> 
         emacs_host_journeys::registry_digest(&removed)? != baseline,
         "registry digest ignored a removed row"
     );
+    Ok(())
+}
+
+#[test]
+fn cell_digest_moves_for_every_identity_bearing_field() -> Result<()> {
+    // The digest is the registry's identity. `cell_digest` builds a private
+    // view struct, so a future edit could drop a field from that view while
+    // leaving `JourneyCell` intact and no other test would go red. Mutate each
+    // field exactly once and require the digest to move.
+    type Mutator = fn(&mut JourneyCell);
+    let mutations: &[(&str, Mutator)] = &[
+        ("cell_id", |c| c.cell_id.insert_str(0, "altered.")),
+        ("cell_version", |c| c.cell_version += 1),
+        ("journey_class", |c| c.journey_class.insert_str(0, "altered_")),
+        ("depth", |c| {
+            c.depth = match c.depth {
+                DepthClass::Core => DepthClass::Optional,
+                DepthClass::Optional => DepthClass::Core,
+            }
+        }),
+        ("cohorts", |c| c.cohorts.clear()),
+        ("fixture_owners", |c| c.fixture_owners.push("altered_fixture".to_string())),
+        ("fixture_set_digest", |c| c.fixture_set_digest.push_str("altered")),
+        ("expectation_owner.set_id", |c| c.expectation_owner.set_id.push_str(".altered")),
+        ("expectation_owner.ids", |c| {
+            c.expectation_owner.ids.push("altered.expectation".to_string())
+        }),
+        ("expectation_owner.set_digest", |c| {
+            c.expectation_owner.set_digest.insert_str(0, "altered")
+        }),
+        ("root_reference", |c| {
+            c.root_reference = match c.root_reference.take() {
+                Some(_) => None,
+                None => Some(RootReference { role_token: ROOT_ROLE_TOKENS[0].to_string() }),
+            }
+        }),
+        ("dimensions", |c| c.dimensions.push("altered_dimension".to_string())),
+        ("host_surfaces", |c| c.host_surfaces.push(HostSurface::StaleResultRejection)),
+        ("evidence_kind", |c| {
+            c.evidence_kind = match c.evidence_kind {
+                EvidenceKind::HostVisibleObservation => EvidenceKind::ProtocolMembershipOnly,
+                EvidenceKind::ProtocolMembershipOnly => EvidenceKind::HostVisibleObservation,
+            }
+        }),
+        ("positive_discriminator", |c| c.positive_discriminator.insert_str(0, "altered ")),
+        ("false_subject_controls", |c| {
+            c.false_subject_controls.push("altered_control".to_string())
+        }),
+        ("coordinate_domains", |c| c.coordinate_domains.push("altered_domain".to_string())),
+        ("platform_applicability", |c| c.platform_applicability.insert_str(0, "altered_")),
+        ("allowed_limitations", |c| c.allowed_limitations.push("altered_limitation".to_string())),
+        ("max_stage", |c| {
+            c.max_stage = match c.max_stage {
+                EvidenceStage::PublicArtifact => EvidenceStage::ReleaseCandidate,
+                _ => EvidenceStage::PublicArtifact,
+            }
+        }),
+        ("claim_ceiling", |c| c.claim_ceiling.insert_str(0, "altered ")),
+        ("producer_mapping", |c| c.producer_mapping.insert_str(0, "altered_")),
+    ];
+
+    let cells = compiled()?;
+    let baseline_registry = emacs_host_journeys::registry_digest(&cells)?;
+    for (field, mutate) in mutations {
+        for index in 0..cells.len() {
+            let baseline_cell = emacs_host_journeys::cell_digest(&cells[index])?;
+            let mut edited = cells.clone();
+            mutate(&mut edited[index]);
+            if edited[index] == cells[index] {
+                // The mutation was a no-op on this row (an already-absent
+                // option, an identical stage); it proves nothing here.
+                continue;
+            }
+            ensure!(
+                emacs_host_journeys::cell_digest(&edited[index])? != baseline_cell,
+                "cell digest ignored a change to {field} on row {}",
+                cells[index].cell_id
+            );
+            ensure!(
+                emacs_host_journeys::registry_digest(&edited)? != baseline_registry,
+                "registry digest ignored a change to {field} on row {}",
+                cells[index].cell_id
+            );
+            break;
+        }
+    }
     Ok(())
 }
 
@@ -684,6 +783,28 @@ fn production_check_fails_closed_without_landed_subject_authority() -> Result<()
     Ok(())
 }
 
+#[test]
+fn cells_must_carry_a_positive_version() -> Result<()> {
+    // The `cell_version >= 1` law is otherwise unfalsified: every compiled row
+    // carries version 1, so a validator that dropped the check entirely would
+    // still satisfy the rest of this suite.
+    let mut cells = compiled()?;
+    cells[0].cell_version = 0;
+    let error = match emacs_host_journeys::validate_registry(&cells) {
+        Err(error) => error.to_string(),
+        Ok(_) => bail!("a cell carrying version 0 passed validation"),
+    };
+    ensure!(
+        error.contains("must carry a positive version") && error.contains(&cells[0].cell_id),
+        "unexpected rejection for a zero cell version: {error}"
+    );
+
+    let mut cells = compiled()?;
+    cells[0].cell_version = 1;
+    emacs_host_journeys::validate_registry(&cells)?;
+    Ok(())
+}
+
 /// The advertised CLI seam is a production path, not a convenience: `check`
 /// must route to the fail-closed validator, exit 0, emit the schema-tagged
 /// summary shape, and stay byte-stable across runs; `explain` must validate
@@ -748,5 +869,133 @@ fn journeys_cli_seam_routes_checks_and_fails_closed_on_unknown_subjects() -> Res
     let (ok, stdout, _) =
         run(&["integration", "emacs", "journeys", "explain", "emacs.not_a_registered_cell"])?;
     ensure!(!ok, "journeys explain accepted an unregistered subject: {stdout}");
+    Ok(())
+}
+
+#[test]
+fn optional_cells_require_feature_specific_canonical_truth() -> Result<()> {
+    let mut cells = compiled()?;
+    for surfaces in [
+        vec![HostSurface::DocumentFormattingApplication],
+        vec![HostSurface::InlayHintRequestRefresh],
+        vec![HostSurface::CodeActionApplicationRefusal, HostSurface::DocumentFormattingApplication],
+        vec![HostSurface::CodeActionApplicationRefusal, HostSurface::InlayHintRequestRefresh],
+    ] {
+        let description = format!("{surfaces:?}");
+        let mut substituted = cells.clone();
+        let cell = substituted
+            .iter_mut()
+            .find(|cell| cell.depth == DepthClass::Optional)
+            .ok_or_else(|| anyhow::anyhow!("code-action optional cell is absent"))?;
+        cell.host_surfaces = surfaces;
+        let error =
+            emacs_host_journeys::validate_registry(&substituted).err().ok_or_else(|| {
+                anyhow::anyhow!("code-action cell accepted unsupported surfaces {description}")
+            })?;
+        ensure!(
+            error.to_string().contains("feature-specific canonical surface"),
+            "unexpected rejection for {description}: {error}"
+        );
+    }
+    for unsupported in ["opt_native_formatting", "opt_inlay_hints"] {
+        ensure!(
+            emacs_host_journeys::lookup(&cells, unsupported).is_err(),
+            "unsupported optional class {unsupported} has no canonical truth"
+        );
+    }
+    let cell = cells
+        .iter_mut()
+        .find(|cell| cell.depth == DepthClass::Optional)
+        .ok_or_else(|| anyhow::anyhow!("code-action optional cell is absent"))?;
+    cell.expectation_owner.ids = vec!["hover.widget_name".to_string()];
+    let error = emacs_host_journeys::validate_registry(&cells)
+        .err()
+        .ok_or_else(|| anyhow::anyhow!("hover truth certified code-action behavior"))?;
+    ensure!(
+        error.to_string().contains("feature-specific canonical expectations"),
+        "wrong rejection: {error}"
+    );
+    Ok(())
+}
+
+#[test]
+fn cells_bind_the_declared_subject_authority() -> Result<()> {
+    let cells = compiled()?;
+    let mut changed = cells.clone();
+    let cell = changed.first_mut().ok_or_else(|| anyhow::anyhow!("empty registry"))?;
+    cell.fixture_set_digest = format!("sha256:{}", "a".repeat(64));
+    let error = emacs_host_journeys::validate_registry(&changed)
+        .err()
+        .ok_or_else(|| anyhow::anyhow!("foreign fixture authority was accepted"))?;
+    ensure!(
+        error.to_string().contains("declared subject-manifest digest"),
+        "wrong rejection: {error}"
+    );
+    ensure!(
+        emacs_host_journeys::registry_digest(&cells)?
+            != emacs_host_journeys::registry_digest(&changed)?,
+        "changed fixture identity did not move registry identity"
+    );
+    let mut wire =
+        serde_json::to_value(cells.first().ok_or_else(|| anyhow::anyhow!("empty registry"))?)?;
+    wire.as_object_mut()
+        .ok_or_else(|| anyhow::anyhow!("cell is not an object"))?
+        .remove("fixture_set_digest");
+    ensure!(
+        serde_json::from_value::<JourneyCell>(wire).is_err(),
+        "missing fixture identity deserialized"
+    );
+    Ok(())
+}
+
+#[test]
+fn production_check_binds_content_but_ignores_subject_presentation_order() -> Result<()> {
+    use xtask::emacs_host_journeys::validate_compiled_registry_against;
+    use xtask::emacs_subject_manifest::SubjectManifest;
+    let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("missing repository root"))?;
+    let mut manifest = SubjectManifest::load(repo)?;
+    let fixture = tempfile::tempdir()?;
+    let clients = fixture.path().join(".ci/editor-clients");
+    std::fs::create_dir_all(&clients)?;
+    let path = clients.join("emacs-subjects.v1.json");
+    manifest.subjects.reverse();
+    std::fs::write(&path, serde_json::to_vec(&manifest)?)?;
+    ensure!(
+        validate_compiled_registry_against(fixture.path())?
+            == emacs_host_journeys::validate_compiled_registry()?,
+        "presentation order or JSON formatting changed the declared identity"
+    );
+    // Preferred library form order carries meaning and must remain bound.
+    let mut reordered_forms = manifest.clone();
+    let subject = reordered_forms
+        .subjects
+        .iter_mut()
+        .find(|subject| subject.client_library_forms.len() > 1)
+        .ok_or_else(|| anyhow::anyhow!("no ordered library preference fixture"))?;
+    subject.client_library_forms.reverse();
+    std::fs::write(&path, serde_json::to_vec(&reordered_forms)?)?;
+    let error = validate_compiled_registry_against(fixture.path())
+        .err()
+        .ok_or_else(|| anyhow::anyhow!("changed library preference order was accepted"))?;
+    ensure!(error.to_string().contains("identity differs"), "wrong rejection: {error}");
+
+    let subject = manifest
+        .subjects
+        .iter_mut()
+        .find(|subject| subject.subject_id == "bundled_eglot_emacs_29_4")
+        .ok_or_else(|| anyhow::anyhow!("bundled authority fixture is missing"))?;
+    subject.client_source_sha256 = format!("sha256:{}", "a".repeat(64));
+    manifest
+        .validate()
+        .map_err(|error| anyhow::anyhow!("changed fixture must remain valid: {error}"))?;
+    xtask::emacs_subject_fan_in::validate_subject_lane_denominator(&manifest)
+        .map_err(|error| anyhow::anyhow!("changed fixture must retain denominator: {error}"))?;
+    std::fs::write(&path, serde_json::to_vec_pretty(&manifest)?)?;
+    let error = validate_compiled_registry_against(fixture.path())
+        .err()
+        .ok_or_else(|| anyhow::anyhow!("changed declared content was accepted"))?;
+    ensure!(error.to_string().contains("identity differs"), "wrong rejection: {error}");
     Ok(())
 }

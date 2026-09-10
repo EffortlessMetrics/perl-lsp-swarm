@@ -663,10 +663,18 @@ jobs:
             scripts/ci/test_rustfmt_required_workflow.py \
             scripts/ci/test_rust_small_route_contract.py \
             scripts/ci/test_hosted_formatter_producers.py \
+            scripts/ci/test_rust_small_probe_gate.py \
             scripts/ci/test_main_red_refusal.py
 
       - name: Probe main-red refusal
-        if: github.event_name != 'pull_request' || github.event.pull_request.draft != true
+        if: >-
+          (github.event_name != 'pull_request' || github.event.pull_request.draft != true) &&
+          needs.route-rust-small.result == 'success' &&
+          (
+            (needs.route-rust-small.outputs.target == 'cx53' && (needs.rust-small-cx53.result == 'success' || needs.rust-small-fallback.result == 'success')) ||
+            (needs.route-rust-small.outputs.target == 'cx43' && (needs.rust-small-cx43.result == 'success' || needs.rust-small-fallback.result == 'success')) ||
+            (needs.route-rust-small.outputs.target == 'github' && needs.rust-small-github.result == 'success')
+          )
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}

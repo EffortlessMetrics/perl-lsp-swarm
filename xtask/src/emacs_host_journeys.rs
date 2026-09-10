@@ -12,9 +12,9 @@
 //!   canonical truth blocks a cell instead of inviting an Emacs-local oracle.
 //! - `.ci/editor-clients/emacs-subjects.v1.json` (#11744 SUBJ_CORE) owns the
 //!   exact client/source subject rows; this manifest binds subject identity
-//!   only through cohort membership over that landed fixture authority, and
-//!   tests verify the fixture still exists so an absent authority fails
-//!   closed.
+//!   through a declared-content digest. This does not resolve cohort-to-subject
+//!   membership (#14830) or verify materialized client bytes. An absent or
+//!   changed declared authority fails closed.
 //! - #11366 remains the root-fixture authority: root-sensitive cells record a
 //!   `root_11366.<role>` reference token only. Root fixture bytes are never
 //!   copied here, and a manually prebound root can never be represented as
@@ -62,6 +62,7 @@ use crate::client_compat_fixture::{
     CANONICAL_EXPECTATION_IDS, CANONICAL_EXPECTATION_SET_ID, canonical_expectation_set_digest,
 };
 use crate::editor_client_compat::EvidenceStage;
+use crate::emacs_subject_manifest::SubjectManifest;
 
 /// Identity of this registration model.
 pub const MANIFEST_SCHEMA_VERSION: &str = "emacs_host_journeys.v1";
@@ -95,10 +96,10 @@ pub const BASELINE_CLASSES: &[&str] = &[
     "wrong_competing_selection",
 ];
 
-/// Optional documented-feature classes under #9413. Additive only: their
-/// existence never strengthens the bounded core profile.
-pub const OPTIONAL_CLASSES: &[&str] =
-    &["opt_native_formatting", "opt_code_action_application", "opt_inlay_hints"];
+/// Optional documented-feature classes with landed canonical semantic truth.
+/// Formatting and inlay hints remain deferred under #9413/#11768 until their
+/// feature-specific expectations land. Optional membership never strengthens core.
+pub const OPTIONAL_CLASSES: &[&str] = &["opt_code_action_application"];
 
 /// False-subject control vocabulary (#11768 "Required false subjects"). Each
 /// token names one independently selectable wrong-subject/wrong-state control
@@ -202,22 +203,41 @@ impl DiagnosticCohort {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum HostSurface {
+    /// Client registers and the exact server process identity is observed.
     ClientRegistrationExactProcess,
+    /// Major mode attaches and maps to the expected LSP language id.
     ModeAttachmentMajorModeLanguageId,
+    /// Workspace reaches readiness from a stock-discovered root.
     WorkspaceReadinessStockRoot,
+    /// Flymake diagnostics appear, update, and clear over their lifecycle.
     FlymakeDiagnosticLifecycle,
+    /// Pull-model diagnostic protocol frames are exchanged. Protocol membership
+    /// only: this is the one surface [`HostSurface::is_host_visible`] reports
+    /// false for.
     DiagnosticsPollProtocol,
+    /// `completion-at-point` yields candidates consistent with buffer state.
     CapfCompletionBufferState,
+    /// ElDoc surfaces hover content for the symbol at point.
     EldocHoverObservation,
+    /// Xref resolves definitions and references.
     XrefDefinitionReferences,
+    /// A rename applies a multi-file workspace edit.
     MultiFileRenameWorkspaceEdit,
+    /// Results from a superseded generation are rejected rather than applied.
     StaleResultRejection,
+    /// A configuration change produces its declared behavioral effect.
     ConfigurationBehaviorEffect,
+    /// Shutdown completes cleanly and leaves no server process behind.
     CleanShutdownProcessCleanup,
+    /// Newline-domain and Unicode position coordinates resolve correctly.
     CoordinateDiscriminators,
+    /// A competing client or server is not silently selected in place of the subject.
     WrongCompetingSelectionGuard,
+    /// Document formatting is applied to the buffer.
     DocumentFormattingApplication,
+    /// A code action is applied, or refused with a stated reason.
     CodeActionApplicationRefusal,
+    /// Inlay hints are requested and refreshed.
     InlayHintRequestRefresh,
 }
 
@@ -236,7 +256,10 @@ impl HostSurface {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EvidenceKind {
+    /// The cell admits a host-visible semantic observation.
     HostVisibleObservation,
+    /// The cell admits protocol-membership facts only; it can never carry a
+    /// host-visible semantic pass.
     ProtocolMembershipOnly,
 }
 
@@ -245,7 +268,9 @@ pub enum EvidenceKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DepthClass {
+    /// Bounded core profile depth.
     Core,
+    /// #9413 documented-feature depth: additive, never profile-strengthening.
     Optional,
 }
 
@@ -255,8 +280,13 @@ pub enum DepthClass {
 /// grow a private semantic oracle.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExpectationRef {
+    /// Canonical expectation package id (`perl-agent-client-v1`).
     pub set_id: String,
+    /// Digest of the canonical set the cell binds. Binding by version rather
+    /// than by name is what makes a revised canonical set fail closed instead of
+    /// silently re-resolving the same ids.
     pub set_digest: String,
+    /// Expectation ids referenced from that set. An id absent from the landed set fails closed.
     pub ids: Vec<String>,
 }
 
@@ -264,6 +294,8 @@ pub struct ExpectationRef {
 /// expressible; root bytes and root subsets stay owned by #11366.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RootReference {
+    /// `root_11366.<role>` token from the closed role vocabulary. Root bytes
+    /// and root subsets stay owned by #11366 and are unrepresentable here.
     pub role_token: String,
 }
 
@@ -273,6 +305,7 @@ pub struct RootReference {
 pub struct JourneyCell {
     /// Stable id: `emacs.<class>.<name>`, `<class>` equal to `journey_class`.
     pub cell_id: String,
+    /// Cell schema version within the manifest. Must be positive.
     pub cell_version: u32,
     /// Registered journey-class token (member of [`BASELINE_CLASSES`] or
     /// [`OPTIONAL_CLASSES`]).
@@ -284,6 +317,9 @@ pub struct JourneyCell {
     /// Subject-fixture authorities bound to this cell from the registry-wide
     /// [`SUBJECT_FIXTURE_SUBSTRATE`].
     pub fixture_owners: Vec<String>,
+    /// Semantic content identity of the declared subject manifest, not a
+    /// measurement of materialized client bytes or cohort membership.
+    pub fixture_set_digest: String,
     /// Canonical expectation owners referenced, not copied.
     pub expectation_owner: ExpectationRef,
     /// Root-authority role reference when the cell is root-sensitive.
@@ -318,13 +354,18 @@ pub struct JourneyCell {
 /// Validated summary of the whole compiled manifest.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct RegistrySummary {
+    /// Manifest schema version this summary was produced under.
     pub schema_version: &'static str,
+    /// Total registered cells.
     pub cell_count: usize,
+    /// Registered cells at core depth.
     pub core_cell_count: usize,
+    /// Registered cells at #9413 optional depth.
     pub optional_cell_count: usize,
     /// Per-cohort membership counts, proving cohort independence is explicit
     /// rather than inherited.
     pub cohort_membership: BTreeMap<String, usize>,
+    /// Order-insensitive digest over every binding field of every cell.
     pub digest: String,
 }
 
@@ -426,6 +467,7 @@ impl<'a> CellSpec<'a> {
             depth: self.depth,
             cohorts: self.cohorts.to_vec(),
             fixture_owners: SUBJECT_FIXTURE_SUBSTRATE.iter().map(|f| (*f).to_string()).collect(),
+            fixture_set_digest: canonical_subject_manifest_digest()?,
             expectation_owner: expect_ref(self.expectations)?,
             root_reference: self.root_role.and_then(root_ref),
             dimensions: self.dimensions.iter().map(|d| (*d).to_string()).collect(),
@@ -860,22 +902,6 @@ pub fn registry() -> Result<Vec<JourneyCell>> {
         .build()?,
         // -- #9413 optional documented-feature depth (additive only) --------------------
         CellSpec {
-            cell_id: "emacs.opt_native_formatting.format_document_depth",
-            class: "opt_native_formatting",
-            depth: DepthClass::Optional,
-            cohorts: &DiagnosticCohort::ALL,
-            expectations: &["rename_preview.greet"],
-            root_role: Some("stock_project"),
-            dimensions: &DIM_DOCUMENT_SESSION,
-            surfaces: &[DocumentFormattingApplication],
-            evidence_kind: HostVisible,
-            discriminator: "native formatting produced its documented buffer effect",
-            controls: &["action_without_semantic_observation", "prior_generation_stale_result"],
-            coordinates: &["lf"],
-            max_stage: EvidenceStage::ReleaseCandidate,
-        }
-        .build()?,
-        CellSpec {
             cell_id: "emacs.opt_code_action_application.apply_or_refuse_depth",
             class: "opt_code_action_application",
             depth: DepthClass::Optional,
@@ -887,25 +913,6 @@ pub fn registry() -> Result<Vec<JourneyCell>> {
             evidence_kind: HostVisible,
             discriminator: "code-action application or refusal matched the advertised action",
             controls: &["action_without_semantic_observation", "prior_generation_stale_result"],
-            coordinates: &["lf"],
-            max_stage: EvidenceStage::ReleaseCandidate,
-        }
-        .build()?,
-        CellSpec {
-            cell_id: "emacs.opt_inlay_hints.request_render_refresh_depth",
-            class: "opt_inlay_hints",
-            depth: DepthClass::Optional,
-            cohorts: &DiagnosticCohort::ALL,
-            expectations: &["hover.widget_name"],
-            root_role: Some("stock_project"),
-            dimensions: &DIM_DOCUMENT_SESSION,
-            surfaces: &[InlayHintRequestRefresh],
-            evidence_kind: HostVisible,
-            discriminator: "inlay hints requested, rendered, and refreshed as documented",
-            controls: &[
-                "action_without_semantic_observation",
-                "wrong_semantic_entity_same_spelling",
-            ],
             coordinates: &["lf"],
             max_stage: EvidenceStage::ReleaseCandidate,
         }
@@ -943,6 +950,10 @@ pub fn validate_compiled_registry_against(repo_root: &Path) -> Result<RegistrySu
     {
         bail!("emacs subject denominator does not certify the governed client set: {failure}");
     }
+    ensure!(
+        subject_manifest_digest(&manifest)? == canonical_subject_manifest_digest()?,
+        "checked Emacs subject-manifest identity differs from the compiled declared authority"
+    );
     for fixture in SUBJECT_FIXTURE_SUBSTRATE {
         let path = repo_root.join(".ci/editor-clients").join(format!("{fixture}.json"));
         ensure!(
@@ -1088,6 +1099,14 @@ fn validate_cell(cell: &JourneyCell, classes: &[&str]) -> Result<()> {
                 "host-visible cell {} requires at least one host-visible surface",
                 cell.cell_id
             );
+            // Exact partition, not mere presence: a host-visible cell that also
+            // bound a protocol-only surface would let a protocol frame supply
+            // evidence for a host-visible claim.
+            ensure!(
+                cell.host_surfaces.iter().all(|surface| surface.is_host_visible()),
+                "host-visible cell {} must not expose protocol-only surfaces",
+                cell.cell_id
+            );
             ensure!(
                 !cell
                     .allowed_limitations
@@ -1132,6 +1151,12 @@ fn validate_cell(cell: &JourneyCell, classes: &[&str]) -> Result<()> {
         );
     }
 
+    ensure!(
+        cell.fixture_set_digest == canonical_subject_manifest_digest()?,
+        "cell {} binds a stale or foreign declared subject-manifest digest",
+        cell.cell_id
+    );
+
     // Expectations: referenced canonical truth, never copied. Unknown ids or
     // sets fail closed so missing canonical truth blocks the cell instead of
     // manufacturing local truth.
@@ -1163,6 +1188,20 @@ fn validate_cell(cell: &JourneyCell, classes: &[&str]) -> Result<()> {
             CANONICAL_EXPECTATION_IDS.contains(&expectation.as_str()),
             "cell {} references unknown canonical expectation id {expectation}; missing \
              canonical truth blocks the cell",
+            cell.cell_id
+        );
+    }
+
+    if cell.depth == DepthClass::Optional {
+        ensure!(
+            cell.journey_class == "opt_code_action_application"
+                && expectations == BTreeSet::from(["code_action_preview.syntax"]),
+            "optional cell {} must bind its feature-specific canonical expectations",
+            cell.cell_id
+        );
+        ensure!(
+            matches!(cell.host_surfaces.as_slice(), [HostSurface::CodeActionApplicationRefusal]),
+            "optional cell {} must bind its feature-specific canonical surface",
             cell.cell_id
         );
     }
@@ -1350,6 +1389,7 @@ pub fn cell_digest(cell: &JourneyCell) -> Result<String> {
         depth: wire(&cell.depth)?,
         cohorts: sorted_wire(&cell.cohorts)?,
         fixture_owners: sorted(cell.fixture_owners.clone()),
+        fixture_set_digest: cell.fixture_set_digest.clone(),
         expectation_set: cell.expectation_owner.set_id.clone(),
         expectation_set_digest: cell.expectation_owner.set_digest.clone(),
         expectation_ids: sorted(cell.expectation_owner.ids.clone()),
@@ -1382,6 +1422,25 @@ pub fn registry_digest(cells: &[JourneyCell]) -> Result<String> {
     let canonical = serde_json::to_string(&(MANIFEST_SCHEMA_VERSION, digests))
         .context("serializing registry digest")?;
     digest_of(canonical.as_bytes())
+}
+
+/// The existing typed authority owns validation; this local composition only
+/// binds its declared content into journey identity. Row order is presentation,
+/// but nested lists such as preferred library forms retain their meaning.
+fn subject_manifest_digest(manifest: &SubjectManifest) -> Result<String> {
+    manifest.validate().map_err(|error| anyhow::anyhow!("invalid subject authority: {error}"))?;
+    let mut canonical = manifest.clone();
+    canonical.subjects.sort_by(|left, right| left.subject_id.cmp(&right.subject_id));
+    digest_of(&serde_json::to_vec(&canonical).context("serializing declared subject authority")?)
+}
+
+fn canonical_subject_manifest_digest() -> Result<String> {
+    let manifest: SubjectManifest = serde_json::from_slice(include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../.ci/editor-clients/emacs-subjects.v1.json"
+    )))
+    .context("embedded declared subject authority is malformed")?;
+    subject_manifest_digest(&manifest)
 }
 
 fn digest_of(bytes: &[u8]) -> Result<String> {
@@ -1431,6 +1490,7 @@ struct CellDigestView {
     depth: String,
     cohorts: Vec<String>,
     fixture_owners: Vec<String>,
+    fixture_set_digest: String,
     expectation_set: String,
     expectation_set_digest: String,
     expectation_ids: Vec<String>,
