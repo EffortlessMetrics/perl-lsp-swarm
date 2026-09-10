@@ -1687,9 +1687,10 @@ fn exclusion_text_attributable_to_closed_issue(
     attribution_units(text)
         .into_iter()
         .filter(|unit| {
-            let references = exact_issue_references(unit, current_repository);
+            let prose = prose_without_inline_code(unit);
+            let references = exact_issue_references(&prose, current_repository);
             if references.is_empty() {
-                relation_count == 1 && !mentions_an_issue_subject(unit)
+                relation_count == 1 && !mentions_an_issue_subject(&prose)
             } else {
                 references.iter().any(|reference| reference == key)
             }
@@ -1812,6 +1813,17 @@ fn exact_issue_references(text: &str, current_repository: &str) -> Vec<IssueKey>
         .filter_map(|token| parse_issue_reference(token.trim_end_matches('.'), current_repository))
         .collect();
     for (start, _) in lower.match_indices("https://github.com/") {
+        let enclosing_prefix = lower
+            .get(..start)
+            .unwrap_or_default()
+            .rsplit(|character: char| {
+                character.is_whitespace() || matches!(character, '<' | '(' | '[' | '"' | '\'')
+            })
+            .next()
+            .unwrap_or_default();
+        if enclosing_prefix.contains("://") {
+            continue;
+        }
         if lower.get(..start).and_then(|prefix| prefix.chars().next_back()).is_some_and(
             |character| {
                 character.is_alphanumeric()
@@ -2517,6 +2529,27 @@ mod tests {
             "Closes #10\nCloses #11\nCloses #100\nCloses other/repo#10\nCloses other/repo#100";
         let mut mismatches = Vec::new();
         for (boundary, closes, owner) in [
+            (
+                "Full acceptance criteria are not established; example `#11`.",
+                "Closes #10",
+                Some((local, 10)),
+            ),
+            ("Full acceptance criteria are not established; see #11.", "Closes #10", None),
+            (
+                "For https://example.test/?next=https://github.com/other/repo/issues/10, full acceptance criteria are not established.",
+                multi,
+                None,
+            ),
+            (
+                "For reference=https://github.com/other/repo/issues/10, full acceptance criteria are not established.",
+                multi,
+                Some(("other/repo", 10)),
+            ),
+            (
+                "For [reference](https://github.com/other/repo/issues/10), full acceptance criteria are not established.",
+                multi,
+                Some(("other/repo", 10)),
+            ),
             (
                 "This PR's full acceptance criteria are not established.",
                 "Closes #10",
