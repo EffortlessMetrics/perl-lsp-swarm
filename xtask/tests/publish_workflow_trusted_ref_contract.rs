@@ -77,11 +77,8 @@ fn docker_publish_credentials_are_bound_to_trusted_anchors() -> Result<()> {
         &workflow,
         &[
             "DOCKER_PASSWORD@publish-dockerhub",
-            "DOCKER_PASSWORD@publish-dockerhub-perl",
             "DOCKER_USERNAME@publish-dockerhub",
-            "DOCKER_USERNAME@publish-dockerhub-perl",
-            "GITHUB_TOKEN@build",
-            "GITHUB_TOKEN@build-perl-runtime",
+            "GITHUB_TOKEN@publish-ghcr",
         ],
     )?;
 
@@ -132,7 +129,19 @@ fn validate_anchor_contract(workflow: &Value) -> Result<()> {
         "gate run block must not inline expressions; inputs arrive through env"
     );
     let gate_steps = steps_of(gate)?;
-    let env = mapping_value(&gate_steps[0], "env")?;
+    // Locate the anchor-resolution step by content, not position: the gate
+    // job may prepend unrelated steps (e.g. an eligibility handoff), and the
+    // DEFAULT_BRANCH binding belongs to the step that performs the
+    // server-side anchor resolution and writes `approved_sha`.
+    let anchor_step = gate_steps
+        .iter()
+        .find(|step| {
+            mapping_value(step, "run")
+                .and_then(scalar_string)
+                .is_ok_and(|run| run.contains("approved_sha="))
+        })
+        .ok_or_else(|| anyhow!("gate job has no anchor-resolution step"))?;
+    let env = mapping_value(anchor_step, "env")?;
     ensure!(
         scalar_string(mapping_value(env, "DEFAULT_BRANCH")?)? == DEFAULT_BRANCH_EXPR,
         "gate must derive the default branch from the event payload, not from github.ref"
@@ -150,25 +159,63 @@ fn validate_anchor_contract(workflow: &Value) -> Result<()> {
         assert_job_needs_gate(&name, job)?;
 
         let steps = steps_of(job)?;
-        let checkout_idx = steps.iter().position(step_is_checkout).ok_or_else(|| {
-            anyhow!("credential-bearing job `{name}` has no actions/checkout step")
-        })?;
-        let checkout = mapping_value(&steps[checkout_idx], "with")
-            .with_context(|| format!("job `{name}` checkout lacks a with block"))?;
-        let with_ref = mapping_value(checkout, "ref").with_context(|| {
-            format!(
-                "job `{name}` checks out without pinning to `{APPROVED_REF_EXPR}`; \
-                 an operator-selected ref would run beside live credentials (#9595)"
-            )
-        })?;
-        ensure!(
-            scalar_string(with_ref)?.contains(APPROVED_REF_EXPR),
-            "job `{name}` must check out `{APPROVED_REF_EXPR}`, found `{with_ref:?}`"
-        );
-        ensure!(
-            scalar_flag_text(mapping_value(checkout, "persist-credentials")?)? == "false",
-            "job `{name}` must retain persist-credentials: false on its pinned checkout"
-        );
+        // Provenance proof, two acceptable forms:
+        //
+        // 1. a checkout pinned to the approved anchor before any secret use
+        //    (build-shaped jobs), or
+        // 2. for artifact-publisher jobs that deliberately never see a
+        //    checkout (#15089 keeps build configuration out of the
+        //    credentialed context), a gate-produced artifact whose digest is
+        //    verified against the builder's `needs` output before any secret
+        //    use. A digest match binds the published bytes to exactly what
+        //    the anchor-gated builder produced.
+        let checkout_idx = steps.iter().position(step_is_checkout);
+        let artifact_publisher = checkout_idx.is_none()
+            && steps.iter().any(|step| {
+                mapping_value(step, "uses")
+                    .and_then(scalar_string)
+                    .is_ok_and(|uses| uses.starts_with("actions/download-artifact@"))
+            })
+            && steps.iter().any(|step| {
+                mapping_value(step, "run")
+                    .and_then(scalar_string)
+                    .is_ok_and(|run| run.contains("sha256sum"))
+            });
+
+        let provenance_idx = if let Some(checkout_idx) = checkout_idx {
+            let checkout = mapping_value(&steps[checkout_idx], "with")
+                .with_context(|| format!("job `{name}` checkout lacks a with block"))?;
+            let with_ref = mapping_value(checkout, "ref").with_context(|| {
+                format!(
+                    "job `{name}` checks out without pinning to `{APPROVED_REF_EXPR}`; \
+                     an operator-selected ref would run beside live credentials (#9595)"
+                )
+            })?;
+            ensure!(
+                scalar_string(with_ref)?.contains(APPROVED_REF_EXPR),
+                "job `{name}` must check out `{APPROVED_REF_EXPR}`, found `{with_ref:?}`"
+            );
+            ensure!(
+                scalar_flag_text(mapping_value(checkout, "persist-credentials")?)? == "false",
+                "job `{name}` must retain persist-credentials: false on its pinned checkout"
+            );
+            checkout_idx
+        } else {
+            ensure!(
+                artifact_publisher,
+                "credential-bearing job `{name}` proves provenance neither by a pinned \
+                 checkout nor by verifying a gate-produced artifact digest before \
+                 touching secrets (#9595, #15089)"
+            );
+            steps
+                .iter()
+                .position(|step| {
+                    mapping_value(step, "run")
+                        .and_then(scalar_string)
+                        .is_ok_and(|run| run.contains("sha256sum"))
+                })
+                .expect("artifact_publisher checked the sha256sum step exists")
+        };
 
         let secrets_idx = steps
             .iter()
@@ -179,9 +226,8 @@ fn validate_anchor_contract(workflow: &Value) -> Result<()> {
             })
             .ok_or_else(|| anyhow!("job `{name}` references secrets outside any step"))?;
         ensure!(
-            checkout_idx < secrets_idx,
-            "job `{name}` must prove provenance by checking out the approved subject \
-             before its first step touches a secret"
+            provenance_idx < secrets_idx,
+            "job `{name}` must prove provenance before its first step touches a secret"
         );
     }
     Ok(())
