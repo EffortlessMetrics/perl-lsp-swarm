@@ -20,6 +20,11 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
+if __package__:
+    from .release_topology_json import load_topology_json
+else:
+    from release_topology_json import load_topology_json
+
 
 SCHEMA = 1
 SCHEMA_RELATIVE_PATH = "schemas/release_topology.v1.schema.json"
@@ -50,6 +55,18 @@ class TopologyError(ValueError):
     """A release topology input is missing, stale, or inconsistent."""
 
 
+def topology_schema_version(value: Any) -> int:
+    # JSON Schema accepts integral numbers such as 1.0. Preserve that v1
+    # behavior, while refusing Python's bool/int equality and unknown versions.
+    if type(value) not in (int, float) or value not in (1, 2):
+        raise TopologyError("release topology schema must be 1 or 2")
+    return int(value)
+
+
+def schema_relative_path(version: Any) -> str:
+    return f"schemas/release_topology.v{topology_schema_version(version)}.schema.json"
+
+
 def schema_validate(manifest: dict[str, Any], root: Path | None = None) -> None:
     """Validate the complete manifest against the checked-in JSON schema.
 
@@ -57,6 +74,7 @@ def schema_validate(manifest: dict[str, Any], root: Path | None = None) -> None:
     requirements before invoking this script.  Keeping the dependency
     explicit avoids silently falling back to a partial hand-written validator.
     """
+    relative = schema_relative_path(manifest.get("schema"))
     try:
         import jsonschema
     except ImportError as error:
@@ -65,7 +83,7 @@ def schema_validate(manifest: dict[str, Any], root: Path | None = None) -> None:
             "install scripts/requirements-release.txt"
         ) from error
     try:
-        schema_path = (root / SCHEMA_RELATIVE_PATH) if root is not None else SCHEMA_PATH
+        schema_path = (root or SCHEMA_PATH.parents[1]) / relative
         schema = json.loads(schema_path.read_text(encoding="utf-8"))
         validator_type = jsonschema.validators.validator_for(schema)
         validator_type.check_schema(schema)
@@ -85,12 +103,12 @@ def schema_validate(manifest: dict[str, Any], root: Path | None = None) -> None:
     if root is not None:
         sources = manifest.get("sources")
         source = (
-            sources.get(SCHEMA_RELATIVE_PATH, {})
+            sources.get(relative, {})
             if isinstance(sources, dict)
             else {}
         )
         if not isinstance(source, dict) or source.get("sha256") != sha256(
-            root / SCHEMA_RELATIVE_PATH
+            root / relative
         ):
             raise TopologyError("schema source hash is stale")
 
@@ -276,6 +294,154 @@ def derive_targets(release_text: str, release: str) -> list[dict[str, Any]]:
     return targets
 
 
+def checksum_candidate_steps(release_text: str) -> list[str]:
+    """Bind the recognized producer to its supported GitHub job environment.
+
+    This intentionally recognizes the checked-in mapping layout, not general
+    YAML, inherited run configuration, or conditional workflow execution.
+    """
+    lines = release_text.splitlines()
+    top_keys = [line.split(":", 1)[0] for line in lines if line and not line[0].isspace() and not line.startswith("#")]
+    if (
+        any(key not in {"name", "on", "concurrency", "permissions", "env", "jobs"} for key in top_keys)
+        or len(top_keys) != len(set(top_keys))
+        or lines.count("jobs:") != 1
+    ):
+        raise TopologyError("checksum producer has unsupported workflow execution context")
+    if "env" in top_keys:
+        if "env:" not in lines:
+            raise TopologyError("checksum producer has unsupported workflow environment")
+        env_start = lines.index("env:") + 1
+        env_end = next((index for index in range(env_start, len(lines)) if lines[index] and not lines[index][0].isspace() and not lines[index].startswith("#")), len(lines))
+        environment = [line for line in lines[env_start:env_end] if line.strip() and not line.lstrip().startswith("#")]
+        if sorted(environment) != ["  CARGO_TERM_COLOR: always", "  RUST_BACKTRACE: 1"]:
+            raise TopologyError("checksum producer has unsupported workflow environment")
+    jobs_start = lines.index("jobs:")
+    jobs_end = next((index for index in range(jobs_start + 1, len(lines)) if lines[index] and not lines[index][0].isspace() and not lines[index].startswith("#")), len(lines))
+    jobs = lines[jobs_start + 1:jobs_end]
+    starts = [index for index, line in enumerate(jobs) if line == "  candidate:"]
+    if len(starts) != 1:
+        raise TopologyError("checksum producer requires exactly one candidate job")
+    start = starts[0]
+    end = next((index for index in range(start + 1, len(jobs)) if jobs[index].strip() and len(jobs[index]) - len(jobs[index].lstrip()) <= 2), len(jobs))
+    candidate = jobs[start + 1:end]
+    fields = [line for line in candidate if line.strip() and not line.lstrip().startswith("#") and len(line) - len(line.lstrip()) == 4]
+    keys = [line.strip().split(":", 1)[0] for line in fields]
+    allowed = {"name", "needs", "runs-on", "timeout-minutes", "permissions", "steps"}
+    if len(keys) != len(set(keys)) or any(key not in allowed for key in keys):
+        raise TopologyError("checksum producer has unsupported candidate execution context")
+    if "    needs: [build, release-metadata]" not in fields or "    runs-on: ubuntu-24.04" not in fields or "    steps:" not in fields:
+        raise TopologyError("checksum producer requires candidate build dependencies, Linux runner and steps")
+    step_start = candidate.index("    steps:") + 1
+    step_end = next((index for index in range(step_start, len(candidate)) if candidate[index].strip() and len(candidate[index]) - len(candidate[index].lstrip()) <= 4), len(candidate))
+    steps = candidate[step_start:step_end]
+    producer_starts = [index for index, line in enumerate(steps) if line == "      - name: Generate consolidated SHA256SUMS"]
+    if len(producer_starts) != 1:
+        raise TopologyError("checksum producer requires exactly one candidate step")
+    # This complete ordered prelude owns the producer's inputs and environment.
+    # Any extra or changed command must be reviewed before v2 can describe it.
+    expected_prefix = '''      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # stable (master)
+        with:
+          toolchain: stable
+
+      - name: Download release archive artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: perllsp-*
+          path: artifacts
+
+      - name: Download exact build identity evidence
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: release-build-identity-*
+          path: candidate/evidence
+
+      - name: Display structure of downloaded files
+        run: ls -R artifacts
+
+'''
+    if [line for line in steps[:producer_starts[0]] if line.strip()] != [
+        line for line in expected_prefix.splitlines() if line.strip()
+    ]:
+        raise TopologyError("checksum producer candidate prefix is not recognized")
+    return steps
+
+
+def consolidated_checksum_producer(release_text: str) -> str:
+    """Recognize the bounded archive-copy/checksum producer, without executing it.
+
+    This is a closed source-shape contract, not a Bash interpreter. A changed
+    producer must be reviewed with its execution oracle before v2 can project it.
+    The duplicate-name guard, destination, coverage and hash pipeline all matter.
+    """
+    if sum(line.strip() == "- name: Generate consolidated SHA256SUMS" for line in release_text.splitlines()) != 1:
+        raise TopologyError("release workflow must contain exactly one consolidated checksum producer")
+    lines = checksum_candidate_steps(release_text)
+    starts = [
+        index for index, line in enumerate(lines)
+        if line == "      - name: Generate consolidated SHA256SUMS"
+    ]
+    if len(starts) != 1:
+        raise TopologyError("release workflow must contain exactly one consolidated checksum producer")
+    start = starts[0]
+    indent = len(lines[start]) - len(lines[start].lstrip())
+    step = []
+    for line in lines[start + 1:]:
+        if line.strip() and len(line) - len(line.lstrip()) <= indent:
+            break
+        if line.strip():
+            step.append(line)
+    if (
+        not step or step[0] != " " * (indent + 2) + "run: |"
+        or any(not line.startswith(" " * (indent + 4)) for line in step[1:])
+    ):
+        raise TopologyError("consolidated checksum producer has an unsupported step shape")
+    body = "\n".join(line[indent + 4:] for line in step[1:]) + "\n"
+    expected = r'''set -euo pipefail
+mkdir -p candidate/dist
+declare -A ARCHIVE_NAMES=()
+while IFS= read -r -d '' archive; do
+  name=$(basename "$archive")
+  if [ -n "${ARCHIVE_NAMES[$name]:-}" ]; then
+    printf '::error::Duplicate archive filename: %s\n' "$name"
+    exit 1
+  fi
+  ARCHIVE_NAMES[$name]=1
+  cp "$archive" candidate/dist/
+done < <(find artifacts -type f \( -name '*.tar.gz' -o -name '*.zip' \) -print0)
+cd candidate/dist
+find . -maxdepth 1 -type f \( -name '*.tar.gz' -o -name '*.zip' \) -print0 | \
+  sort -z | \
+  xargs -0 sha256sum | sed 's|  \./|  |' > SHA256SUMS
+cat SHA256SUMS
+'''
+    # Shell indentation carries no meaning here; compare every command,
+    # including loop bodies, rather than checking isolated token presence.
+    if [line.strip() for line in body.splitlines()] != [
+        line.strip() for line in expected.splitlines()
+    ]:
+        raise TopologyError("consolidated checksum producer command shape is not recognized")
+    return body
+
+
+def derive_checksum_assets(
+    release_text: str, targets: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    consolidated_checksum_producer(release_text)
+    return [{
+        "asset_name": "SHA256SUMS",
+        "algorithm": "sha256",
+        "channel": "github_release",
+        "archive_targets": sorted(target["target"] for target in targets),
+    }]
+
+
 def workspace_member_manifest_paths(
     metadata: dict[str, Any], root: Path
 ) -> list[str]:
@@ -306,9 +472,13 @@ def workspace_member_manifest_paths(
 
 
 def source_paths(
-    crates: list[dict[str, Any]], workspace_manifests: list[str] | None = None
+    crates: list[dict[str, Any]], workspace_manifests: list[str] | None = None,
+    schema_version: int = SCHEMA,
 ) -> list[str]:
-    paths = list(SOURCE_PATHS)
+    paths = [
+        schema_relative_path(schema_version) if path == SCHEMA_RELATIVE_PATH else path
+        for path in SOURCE_PATHS
+    ]
     manifests = workspace_manifests
     if manifests is None:
         manifests = []
@@ -396,8 +566,8 @@ def ensure_committed_topology_inputs(root: Path, paths: list[str]) -> None:
 
 def load_manifest(path: Path) -> dict[str, Any]:
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
+        value = load_topology_json(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
         raise TopologyError(f"cannot read frozen topology {path}: {error}") from error
     if not isinstance(value, dict):
         raise TopologyError("frozen topology must be a JSON object")
@@ -421,8 +591,8 @@ def load_frozen_authority(
             "frozen topology digest differs from --frozen-topology-sha256"
         )
     try:
-        value = json.loads(raw)
-    except json.JSONDecodeError as error:
+        value = load_topology_json(raw)
+    except ValueError as error:
         raise TopologyError(f"cannot parse frozen topology {path}: {error}") from error
     if not isinstance(value, dict):
         raise TopologyError("frozen topology must be a JSON object")
@@ -652,6 +822,10 @@ def validate_prepared_projection(
         raise TopologyError("frozen topology authority bytes do not match supplied baseline")
     schema_validate(frozen, frozen_root)
     schema_validate(prepared, prepared_root)
+    if topology_schema_version(frozen.get("schema")) != topology_schema_version(
+        prepared.get("schema")
+    ):
+        raise TopologyError("frozen/prepared topology schema versions must match")
     if frozen.get("prepared_swarm_sha") is not None:
         raise TopologyError("frozen topology must not already bind prepared_swarm_sha")
     if frozen.get("frozen_product_sha") != prepared.get("frozen_product_sha"):
@@ -714,7 +888,10 @@ def build_manifest(
     frozen_topology_digest: str | None = None,
     frozen_topology_path: Path | None = None,
     frozen_root: Path | None = None,
+    *,
+    schema_version: int = SCHEMA,
 ) -> dict[str, Any]:
+    schema_version = topology_schema_version(schema_version)
     if frozen_topology is not None:
         schema_validate(frozen_topology, frozen_root)
     if frozen_topology is not None and prepared_swarm_sha is None:
@@ -797,9 +974,11 @@ def build_manifest(
         entry["package_path"] = (
             Path(entry["package_path"]).resolve().relative_to(root.resolve()).as_posix()
         )
-    ensure_committed_topology_inputs(root, source_paths(crates, workspace_manifests))
+    ensure_committed_topology_inputs(
+        root, source_paths(crates, workspace_manifests, schema_version)
+    )
     manifest = {
-        "schema": SCHEMA,
+        "schema": schema_version,
         "release": release,
         "track": "public-beta",
         "frozen_product_sha": frozen_product_sha,
@@ -821,10 +1000,12 @@ def build_manifest(
         "sources": {
             relative: {"path": relative, "sha256": digest}
             for relative, digest in source_hashes_for_paths(
-                root, source_paths(crates, workspace_manifests)
+                root, source_paths(crates, workspace_manifests, schema_version)
             ).items()
         },
     }
+    if schema_version == 2:
+        manifest["checksum_assets"] = derive_checksum_assets(workflow, targets)
     if frozen_topology is not None:
         if frozen_topology_digest is None:
             raise TopologyError("frozen topology digest is missing")
@@ -856,8 +1037,7 @@ def validate_manifest(
         raise TopologyError(
             "frozen topology authority is only valid for prepared validation"
         )
-    if manifest.get("schema") != SCHEMA:
-        raise TopologyError("manifest schema must be 1")
+    schema_version = topology_schema_version(manifest.get("schema"))
     if expected_sha is not None and manifest.get("frozen_product_sha") != expected_sha:
         raise TopologyError(
             "manifest frozen_product_sha differs from the reviewed candidate SHA"
@@ -930,7 +1110,9 @@ def validate_manifest(
     crates = manifest.get("published_crates")
     if not isinstance(crates, list) or manifest.get("crate_count") != len(crates):
         raise TopologyError("crate_count must be derived from published_crates")
-    ensure_committed_topology_inputs(root, source_paths(crates, workspace_manifests))
+    ensure_committed_topology_inputs(
+        root, source_paths(crates, workspace_manifests, schema_version)
+    )
     if crates != expected_crates:
         raise TopologyError("published_crates does not match current Cargo metadata")
     orders = [entry.get("publish_order") for entry in crates]
@@ -963,6 +1145,10 @@ def validate_manifest(
     expected_targets = derive_targets(workflow, release)
     if targets != expected_targets:
         raise TopologyError("binary_targets does not match the release workflow")
+    if schema_version == 2 and manifest.get("checksum_assets") != derive_checksum_assets(
+        workflow, expected_targets
+    ):
+        raise TopologyError("checksum_assets does not match the public archive checksum inventory")
     downstream = json.loads(
         (root / "docs/reference/downstream-dap-integrations.json").read_text()
     )
@@ -1005,7 +1191,9 @@ def validate_manifest(
     sources = manifest.get("sources")
     if not isinstance(sources, dict):
         raise TopologyError("sources must be an object")
-    expected_source_paths = set(source_paths(expected_crates, workspace_manifests))
+    expected_source_paths = set(
+        source_paths(expected_crates, workspace_manifests, schema_version)
+    )
     manifest_source_paths = set(sources)
     if manifest_source_paths != expected_source_paths:
         raise TopologyError(
@@ -1027,6 +1215,10 @@ def validate_manifest(
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--schema-version", type=int, choices=(1, 2), default=SCHEMA,
+        help="topology contract to generate or check (default: 1; checksums require 2)",
+    )
     parser.add_argument(
         "--release", required=True, help="candidate version, e.g. 0.18.0"
     )
@@ -1067,6 +1259,8 @@ def main() -> int:
         if args.check:
             manifest = load_manifest(args.output)
             schema_validate(manifest, root)
+            if topology_schema_version(manifest.get("schema")) != args.schema_version:
+                raise TopologyError("manifest schema differs from --schema-version")
             frozen_topology = None
             frozen_digest = None
             if args.frozen_topology is not None:
@@ -1103,6 +1297,7 @@ def main() -> int:
                 frozen_digest,
                 args.frozen_topology,
                 args.frozen_root,
+                schema_version=args.schema_version,
             )
             validate_manifest(
                 manifest,
