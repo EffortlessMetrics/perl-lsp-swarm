@@ -1351,6 +1351,7 @@ jobs:
       - name: Evaluate routed result
         shell: bash
         env:
+          IS_DRAFT_PR: ${{ github.event_name == 'pull_request' && github.event.pull_request.draft == true }}
           ROUTE_RESULT: ${{ needs.route-ripr.result }}
           ROUTER_TARGET: ${{ needs.route-ripr.outputs.target }}
           ROUTER_REASON: ${{ needs.route-ripr.outputs.reason }}
@@ -1413,17 +1414,18 @@ jobs:
             echo "- fallback_result: \`${FALLBACK_RESULT:-}\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
-          # Draft PRs intentionally skip ripr: route-ripr has
-          #   if: github.event.pull_request.draft != true || ...
-          # which causes ROUTE_RESULT=skipped for draft PRs.  A skipped router
-          # is NOT a gate failure — ripr simply does not apply yet.  Report
-          # neutral/pass so agents see the true failure class (gate-names-must-
-          # match-failure-classes.md, #1492).  When the PR is converted to
-          # ready-for-review the workflow re-triggers and ripr runs for real.
+          # Draft routing saves work but produces no required-check proof.
+          # Preserve non-draft skipped routing (including RIPR cache seeding).
           if [ "$ROUTE_RESULT" = "skipped" ]; then
-            echo "::notice::ripr router was skipped (draft PR or non-applicable event) — ripr gate is neutral/pass."
+            if [ "${IS_DRAFT_PR:-false}" = "true" ]; then
+              echo "RIPR_GATE_VERDICT=draft-no-proof"
+              echo "::error::ripr draft route skipped: NOT_PROVEN; no analysis was executed."
+              echo "- verdict: draft-no-proof (NOT_PROVEN)" >> "$GITHUB_STEP_SUMMARY"
+              exit 1
+            fi
+            echo "::notice::ripr router was skipped (non-draft event) — ripr gate is neutral/pass."
             echo "RIPR_GATE_VERDICT=neutral-router-skipped"
-            echo "ripr+ New Gap Gate: neutral (router skipped — draft PR or non-applicable event)"
+            echo "ripr+ New Gap Gate: neutral (router skipped — non-draft event)"
             exit 0
           fi
 

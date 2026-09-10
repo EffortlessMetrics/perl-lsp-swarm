@@ -1256,7 +1256,9 @@ fn ripr_workflow_runs_on_ready_for_review_without_path_filter()
         "ripr.yml must not path-filter the ready-for-review proof run"
     );
     assert!(
-        workflow.contains("if: github.event.pull_request.draft != true"),
+        workflow.contains(
+            "(github.event.pull_request.draft != true || github.event_name != 'pull_request')"
+        ),
         "ripr.yml may skip draft PRs while they are still draft"
     );
     let gate_step = workflow_step(&workflow, "Enforce new RIPR gap quality gate")
@@ -2151,6 +2153,7 @@ fn ripr_infra_classifier_is_shared_tested_and_boundary_documented()
         "RIPR_GATE_VERDICT=ripr-failure",
         "RIPR_GATE_VERDICT=cancelled-no-verdict",
         "RIPR_GATE_VERDICT=neutral-router-skipped",
+        "RIPR_GATE_VERDICT=draft-no-proof",
         "RIPR_GATE_VERDICT=router-not-success",
         "RIPR_GATE_VERDICT=success",
     ] {
@@ -2533,4 +2536,16 @@ fn ripr_gate_retrieval_reaches_classifier_and_failed_fetch_fails_closed() -> Res
     }
 
     Ok(())
+}
+
+#[path = "support/draft_routed_result.rs"]
+mod draft_routed_result;
+
+#[test]
+fn ripr_draft_result_is_not_proof() -> Result<(), Box<dyn std::error::Error>> {
+    draft_routed_result::check_contract(
+        &project_root()?.join(".github/workflows/ripr.yml"),
+        "ripr",
+        "RIPR_GATE_VERDICT=draft-no-proof",
+    )
 }
