@@ -2,6 +2,24 @@
 use super::*;
 use serde_json::{Value, json};
 
+fn fixture_mut<'a>(
+    value: &'a mut Value,
+    pointer: &str,
+) -> Result<&'a mut Value, Box<dyn std::error::Error>> {
+    value
+        .pointer_mut(pointer)
+        .ok_or_else(|| format!("fixture is missing JSON pointer {pointer}").into())
+}
+
+fn fixture_object_mut<'a>(
+    value: &'a mut Value,
+    pointer: &str,
+) -> Result<&'a mut serde_json::Map<String, Value>, Box<dyn std::error::Error>> {
+    fixture_mut(value, pointer)?
+        .as_object_mut()
+        .ok_or_else(|| format!("fixture JSON pointer {pointer} is not an object").into())
+}
+
 fn require(condition: bool, message: &str) -> TestResult {
     if condition { Ok(()) } else { Err(message.to_string().into()) }
 }
@@ -95,7 +113,7 @@ fn malformed_environment_rule_is_not_observed() -> TestResult {
         json!({"type":"wait_timer","wait_timer":"ten"}),
     ] {
         let mut detail = environment_fixture();
-        detail["protection_rules"] = json!([row]);
+        *fixture_mut(&mut detail, "/protection_rules")? = json!([row]);
         let commands = healthy_repository(FakeCommands::default(), OWNER, NAME, "SECRET")
             .on(&format!("repos/{OWNER}/{NAME}/environments/release"), &detail.to_string());
         let environments = collect_environments(&commands, OWNER, NAME);
@@ -179,9 +197,9 @@ fn null_deployment_policy_round_trips_as_unrestricted_absence() -> TestResult {
 #[test]
 fn named_and_installed_deployment_controls_have_typed_metadata() -> TestResult {
     let mut detail = environment_fixture();
-    detail["deployment_branch_policy"] =
+    *fixture_mut(&mut detail, "/deployment_branch_policy")? =
         json!({"protected_branches":false,"custom_branch_policies":true});
-    detail["protection_rules"] = json!([{"id":11,"node_id":"PR_11","type":"required_reviewers","prevent_self_review":true,
+    *fixture_mut(&mut detail, "/protection_rules")? = json!([{"id":11,"node_id":"PR_11","type":"required_reviewers","prevent_self_review":true,
         "reviewers":[{"type":"Team","reviewer":{"id":42,"node_id":"T_42"}}]}]);
     let named = json!({"total_count":2,"branch_policies":[
         {"id":21,"node_id":"BP_21","name":"release/*","type":"branch"},
@@ -247,9 +265,15 @@ fn ref_matching_uses_pathname_semantics_and_rejects_unknown_syntax() -> TestResu
             &format!("pattern {pattern} must match Ruby pathname semantics"),
         )?;
     }
-    for pattern in
-        ["refs/heads/[abc", "refs/heads/[^a]", "refs/heads/a\\*", "refs/heads/{a,b}", "~FUTURE"]
-    {
+    for pattern in [
+        "refs/heads/[abc",
+        "refs/heads/[^a]",
+        "refs/heads/a\\*",
+        "refs/heads/{a,b}",
+        "refs/heads/[!]a]",
+        "refs/heads/[!]]",
+        "~FUTURE",
+    ] {
         let conditions = json!({"ref_name":{"include":[pattern],"exclude":[]}});
         require(
             ruleset_applies_to_branch(Some(&conditions), "main", Some("main")).state
@@ -347,16 +371,14 @@ fn ruleset_bindings_and_review_fields_are_retained_or_unknown() -> TestResult {
     )?;
     for binding in [Value::Null, json!("42"), json!(0), json!(-1)] {
         let mut bad = status.clone();
-        bad["parameters"]["required_status_checks"][0]["integration_id"] = binding;
+        *fixture_mut(&mut bad, "/parameters/required_status_checks/0/integration_id")? = binding;
         require(
             parse(bad)?.state == ObservationState::NotProven,
             "invalid integration identity is unknown",
         )?;
     }
     let mut omitted = status;
-    omitted["parameters"]["required_status_checks"][0]
-        .as_object_mut()
-        .ok_or("check fixture")?
+    fixture_object_mut(&mut omitted, "/parameters/required_status_checks/0")?
         .remove("integration_id");
     require(
         parse(omitted)?.state == ObservationState::NotProven,
@@ -381,14 +403,14 @@ fn ruleset_bindings_and_review_fields_are_retained_or_unknown() -> TestResult {
         "require_last_push_approval",
     ] {
         let mut bad = review.clone();
-        bad["parameters"].as_object_mut().ok_or("review fixture")?.remove(field);
+        fixture_object_mut(&mut bad, "/parameters")?.remove(field);
         require(
             parse(bad)?.state == ObservationState::NotProven,
             "omitted mandatory review field is unknown",
         )?;
     }
     let mut extra = review;
-    extra["parameters"]["required_reviewers"] = json!([]);
+    fixture_object_mut(&mut extra, "/parameters")?.insert("required_reviewers".into(), json!([]));
     require(
         parse(extra)?.state == ObservationState::NotProven,
         "unmodeled optional parameter is unknown",
@@ -457,7 +479,7 @@ fn immutable_settings_are_independent_and_fail_closed() -> TestResult {
 #[test]
 fn environment_identity_and_listing_counts_must_agree() -> TestResult {
     let mut mismatch = environment_fixture();
-    mismatch["id"] = json!(2);
+    *fixture_mut(&mut mismatch, "/id")? = json!(2);
     let row = environment_with(mismatch, None, None)?;
     require(
         row.protection_rules.state == ObservationState::NotProven
@@ -490,15 +512,14 @@ fn schema_instrument_and_snapshot_contract_agree() -> TestResult {
     ))?;
     let validator = jsonschema::validator_for(&schema)?;
     require(validator.is_valid(&value), "complete live control must satisfy schema")?;
-    value["instrument"].as_object_mut().ok_or("instrument fixture")?.remove("gh_version");
+    fixture_object_mut(&mut value, "/instrument")?.remove("gh_version");
     require(!validator.is_valid(&value), "observed instrument requires version")?;
-    value["instrument"]["state"] = json!("NOT_PROVEN");
-    value["instrument"]["gh_version"] = json!("gh version test");
+    *fixture_mut(&mut value, "/instrument/state")? = json!("NOT_PROVEN");
+    fixture_object_mut(&mut value, "/instrument")?
+        .insert("gh_version".into(), json!("gh version test"));
     require(!validator.is_valid(&value), "inconclusive instrument cannot carry version")?;
     let mut old = serde_json::to_value(&receipt)?;
-    old["repositories"][0]["release_posture"]
-        .as_object_mut()
-        .ok_or("posture fixture")?
+    fixture_object_mut(&mut old, "/repositories/0/release_posture")?
         .remove("immutable_releases_enforced_by_owner");
     require(
         !validator.is_valid(&old) && serde_json::from_value::<LiveControlsReceipt>(old).is_err(),
