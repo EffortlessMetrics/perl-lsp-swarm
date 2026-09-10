@@ -63,31 +63,120 @@ mod tests {
     use super::*;
     use crate::id::Digest;
 
+    fn test_file_id() -> FileId {
+        FileId::new("lib/App.pm", &Digest::of("x"))
+    }
+
+    fn alternate_file_id() -> FileId {
+        FileId::new("script.pl", &Digest::of("y"))
+    }
+
     #[test]
-    fn projects_pragma_state() {
+    fn projects_complete_pragma_state() {
         let state = perl_pragma::PragmaState {
             strict_vars: true,
             strict_subs: true,
             strict_refs: true,
             warnings: true,
-            features: vec!["say", "signatures"],
+            utf8: true,
+            unicode_strings: true,
+            features: vec!["signatures", "say"],
+            disabled_warning_categories: vec![
+                "uninitialized".to_string(),
+                "deprecated".to_string(),
+            ],
             ..Default::default()
         };
-        let file_id = FileId::new("lib/App.pm", &Digest::of("x"));
-        let facts =
-            CompileEffectFacts::from_pragma_state(file_id, &state, Some("v5.38".to_string()));
+        let file_id = test_file_id();
+        let facts = CompileEffectFacts::from_pragma_state(
+            file_id.clone(),
+            &state,
+            Some("v5.38".to_string()),
+        );
+
+        assert_eq!(facts.file_id, file_id);
         assert!(facts.strict);
         assert!(facts.warnings);
-        assert_eq!(facts.features, vec!["say", "signatures"]);
+        assert!(facts.utf8);
+        assert!(facts.unicode_strings);
+        assert_eq!(facts.features, vec!["signatures", "say"]);
+        assert_eq!(
+            facts.disabled_warnings,
+            vec!["uninitialized".to_string(), "deprecated".to_string()]
+        );
         assert_eq!(facts.perl_version.as_deref(), Some("v5.38"));
     }
 
     #[test]
-    fn partial_strict_is_not_full_strict() {
-        // only vars, not subs/refs
-        let state = perl_pragma::PragmaState { strict_vars: true, ..Default::default() };
-        let file_id = FileId::new("lib/App.pm", &Digest::of("x"));
-        let facts = CompileEffectFacts::from_pragma_state(file_id, &state, None);
-        assert!(!facts.strict, "partial strict must not report full strict");
+    fn empty_projected_inputs_do_not_fabricate_effects() {
+        let state = perl_pragma::PragmaState { features: Vec::new(), ..Default::default() };
+        let file_id = alternate_file_id();
+        let facts = CompileEffectFacts::from_pragma_state(file_id.clone(), &state, None);
+
+        assert_eq!(facts.file_id, file_id);
+        assert!(!facts.strict);
+        assert!(!facts.warnings);
+        assert!(!facts.utf8);
+        assert!(!facts.unicode_strings);
+        assert!(facts.features.is_empty());
+        assert!(facts.disabled_warnings.is_empty());
+        assert!(facts.perl_version.is_none());
+    }
+
+    #[test]
+    fn projects_boolean_effect_fields_independently() {
+        let cases = [
+            ("strict", true, false, false, false),
+            ("warnings", false, true, false, false),
+            ("utf8", false, false, true, false),
+            ("unicode_strings", false, false, false, true),
+        ];
+
+        for (enabled_field, strict, warnings, utf8, unicode_strings) in cases {
+            let state = perl_pragma::PragmaState {
+                strict_vars: strict,
+                strict_subs: strict,
+                strict_refs: strict,
+                warnings,
+                utf8,
+                unicode_strings,
+                features: Vec::new(),
+                ..Default::default()
+            };
+            let file_id = alternate_file_id();
+            let facts = CompileEffectFacts::from_pragma_state(
+                file_id.clone(),
+                &state,
+                Some("v5.42".to_string()),
+            );
+
+            assert_eq!(facts.file_id, file_id);
+            assert_eq!(
+                (facts.strict, facts.warnings, facts.utf8, facts.unicode_strings),
+                (strict, warnings, utf8, unicode_strings),
+                "{enabled_field} must remain attached to its own projection field"
+            );
+            assert_eq!(facts.perl_version.as_deref(), Some("v5.42"));
+        }
+    }
+
+    #[test]
+    fn strict_requires_every_strict_category() {
+        let cases =
+            [("vars", false, true, true), ("subs", true, false, true), ("refs", true, true, false)];
+
+        for (missing_category, strict_vars, strict_subs, strict_refs) in cases {
+            let state = perl_pragma::PragmaState {
+                strict_vars,
+                strict_subs,
+                strict_refs,
+                ..Default::default()
+            };
+            let facts = CompileEffectFacts::from_pragma_state(test_file_id(), &state, None);
+            assert!(
+                !facts.strict,
+                "strict must be false when the {missing_category} category is disabled"
+            );
+        }
     }
 }

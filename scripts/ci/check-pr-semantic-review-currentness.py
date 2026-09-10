@@ -30,6 +30,25 @@ REQUIRED_SECTIONS = (
     "## Residual risk / not proved",
     "## Substantive review result",
 )
+# The substantive review vocabulary owned by the `review-pr` skill. Only
+# REVIEW_CURRENT carries a subject-bound marker; the marker asserts that a review
+# reached that conclusion, so no other result may mint one.
+SUBSTANTIVE_REVIEW_RESULTS = (
+    "REVIEW_CURRENT",
+    "CHANGES_REQUIRED",
+    "NOT_PROVEN",
+    "BLOCKED_BY_PREREQUISITE",
+    "SUPERSEDED_OR_CLOSE",
+)
+MARKER_RESULT = "REVIEW_CURRENT"
+# The conclusion is a declaration, not a mention: exactly one result section
+# carrying exactly one result. `##` is matched at line start so a heading inside
+# a fenced block or a deeper `###` cannot pose as the declaration.
+RESULT_SECTION_RE = re.compile(
+    r"^[ \t]*##[ \t]+Substantive review result[ \t]*$", re.MULTILINE
+)
+ANY_SECTION_RE = re.compile(r"^[ \t]*##[ \t]", re.MULTILINE)
+RESULT_ITEM_RE = re.compile(r"^[ \t]*[-*][ \t]*([A-Z_]+)\b", re.MULTILINE)
 
 
 class Review(NamedTuple):
@@ -60,12 +79,32 @@ def _run(
     check: bool = True,
     text: bool = True,
 ) -> subprocess.CompletedProcess[Any]:
+    """Run a child process, decoding text output as UTF-8 regardless of host locale.
+
+    Text mode without an explicit encoding decodes through
+    `locale.getpreferredencoding(False)`, so the same command yields different results
+    on different hosts. Git emits UTF-8 paths and `gh` emits UTF-8 JSON, and review
+    bodies in this repository routinely carry non-ASCII prose, so the locale default
+    is wrong for every text call site here — in two ways. Under the C locale the ASCII
+    codec raises `UnicodeDecodeError` on the first non-ASCII byte. Under cp1252 a
+    Windows reviewer usually gets something worse: most bytes map to the wrong
+    characters silently, and only the five undefined ones (0x81, 0x8d, 0x8f, 0x90,
+    0x9d) raise. Pinning UTF-8 removes both.
+
+    `errors="strict"` keeps a genuine decode failure loud: it reaches `main` as an
+    instrument failure rather than replacing bytes that feed a digest or a path
+    comparison.
+    """
+    encoding = "utf-8" if text else None
+    errors = "strict" if text else None
     return subprocess.run(
         args,
         cwd=cwd,
         check=check,
         capture_output=True,
         text=text,
+        encoding=encoding,
+        errors=errors,
     )
 
 
@@ -130,15 +169,89 @@ def subject_digest(root: Path, merge_base: str, head: str) -> str:
     return hashlib.sha256(diff).hexdigest()
 
 
+def closes_fence(line: str, match: "re.Match[str]", opener: str) -> bool:
+    """Whether `line` closes a fence opened by `opener`.
+
+    CommonMark allows an info string only on the *opening* fence: a closing fence
+    is the fence characters and nothing else. So ```` ```text ```` inside a block is
+    content, not a closer. Accepting it ends the block early, and everything after
+    it — which GitHub still renders as code — reads as prose. For the result
+    declaration that means a *quoted* conclusion could validate a marker.
+
+    Shared by `outside_fences` and `fenced_blocks` so one rule governs both
+    readers; two nearly-identical fence parsers is how they drift apart.
+    """
+    closer = match.group(1)
+    if closer[0] != opener[0] or len(closer) < len(opener):
+        return False
+    return line[match.end() :].strip(" \t") == ""
+
+
+def outside_fences(text: str) -> str:
+    """Blank out fenced regions, keeping line structure so anchors still align.
+
+    Reviews quote the contract — this file's own review threads do — so a fenced
+    example of the result section must not be counted as a declaration. Uses the
+    same opener/closer rules as `fenced_blocks` so one fence definition governs
+    both readers. An unterminated fence blanks the remainder, which fails closed:
+    a malformed body yields no declaration rather than a guessed one.
+    """
+    lines: list[str] = []
+    opener = ""
+    inside = False
+    for line in text.splitlines():
+        match = FENCE_RE.match(line)
+        if not inside:
+            if match:
+                inside = True
+                opener = match.group(1)
+                lines.append("")
+                continue
+            lines.append(line)
+            continue
+        if match and closes_fence(line, match, opener):
+            inside = False
+        lines.append("")
+    return "\n".join(lines)
+
+
+def declared_review_result(body: str) -> Optional[str]:
+    """Return the one substantive result this body declares, else None.
+
+    None means absent *or ambiguous*, and ambiguity is the interesting case: a
+    body carrying two result sections, or one section listing several results —
+    an unedited template, say — declares no single conclusion. Searching for a
+    `REVIEW_CURRENT` token anywhere would accept both, letting a body whose real
+    conclusion is `CHANGES_REQUIRED` carry a current marker past the merge guard.
+
+    A result named in prose is a mention, not a declaration, so only list items
+    inside the single result section count. That keeps a review free to discuss
+    the other outcomes without disqualifying itself.
+    """
+    prose = outside_fences(body)
+    if len(RESULT_SECTION_RE.findall(prose)) != 1:
+        return None
+    match = RESULT_SECTION_RE.search(prose)
+    if match is None:
+        return None
+    following = ANY_SECTION_RE.search(prose, match.end())
+    section = prose[match.end() : following.start()] if following else prose[match.end() :]
+    declared = [
+        item
+        for item in RESULT_ITEM_RE.findall(section)
+        if item in SUBSTANTIVE_REVIEW_RESULTS
+    ]
+    if len(declared) != 1:
+        return None
+    return declared[0]
+
+
 def parse_marker(body: str, expected_pr: int, review_commit: str) -> Optional[Marker]:
     if not all(section in body for section in REQUIRED_SECTIONS):
         return None
     if "## Findings" not in body and "## No material findings" not in body:
         return None
-    if not re.search(
-        r"## Substantive review result\s*\n\s*-\s*REVIEW_CURRENT\b",
-        body,
-    ):
+    if declared_review_result(body) != MARKER_RESULT:
         return None
 
     matches = MARKER_RE.findall(body)
@@ -206,13 +319,10 @@ def fenced_blocks(text: str) -> list[str]:
                 body = []
                 opener = match.group(1)
             continue
-        if match:
-            closer = match.group(1)
-            # A closing fence uses the opener's character and is at least as long.
-            if closer[0] == opener[0] and len(closer) >= len(opener):
-                blocks.append("\n".join(body))
-                body = None
-                continue
+        if match and closes_fence(line, match, opener):
+            blocks.append("\n".join(body))
+            body = None
+            continue
         body.append(line)
     if body is not None:
         blocks.append("\n".join(body))
@@ -220,8 +330,23 @@ def fenced_blocks(text: str) -> list[str]:
 
 
 def blob_text(root: Path, rev: str, path: str) -> str:
+    """Decode one blob as UTF-8, failing closed on malformed bytes.
+
+    The result feeds `fenced_blocks`, whose equality decides whether a review
+    carries forward. Replacement decoding is unsafe for that comparison: two
+    different malformed byte sequences both collapse to U+FFFD, so a real change
+    inside an executable fence could compare equal and silently carry a stale
+    review over it. Refusing to decode surfaces as NOT_PROVEN, which is the
+    correct answer for evidence this instrument cannot read.
+    """
     raw = _run(["git", "show", f"{rev}:{path}"], cwd=root, text=False).stdout
-    return raw.decode("utf-8", errors="replace")
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise CurrentnessError(
+            f"{path} at {rev} is not valid UTF-8, so its reviewed content "
+            f"cannot be compared: {error}"
+        ) from error
 
 
 def neutral_followup(root: Path, reviewed_head: str, current_head: str) -> tuple[bool, str]:
@@ -398,7 +523,18 @@ def fetch_pr(repo: str, pr: int, root: Path) -> tuple[str, str, list[Review]]:
     return current_head, base_head, reviews
 
 
-def emit_marker(root: Path, repo: str, pr: int) -> str:
+class MarkerRefused(RuntimeError):
+    """The substantive review result does not carry a marker; not an instrument failure."""
+
+
+def emit_marker(root: Path, repo: str, pr: int, result: str) -> str:
+    if result not in SUBSTANTIVE_REVIEW_RESULTS:
+        raise CurrentnessError(f"unknown substantive review result: {result!r}")
+    if result != MARKER_RESULT:
+        raise MarkerRefused(
+            f"{result} does not carry a subject-bound marker; "
+            f"only {MARKER_RESULT} does"
+        )
     current_head, base_head, _ = fetch_pr(repo, pr, root)
     ensure_commit(root, current_head)
     ensure_commit(root, base_head)
@@ -408,7 +544,7 @@ def emit_marker(root: Path, repo: str, pr: int) -> str:
         "head": current_head,
         "merge_base": merge_base,
         "pr": pr,
-        "result": "REVIEW_CURRENT",
+        "result": result,
         "subject_sha256": digest,
     }
     return "<!-- semantic-review:v1 " + json.dumps(
@@ -423,14 +559,28 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--root", type=Path, default=Path("."))
     parser.add_argument("--fixture", type=Path)
     parser.add_argument("--emit-marker", action="store_true")
+    parser.add_argument(
+        "--result",
+        choices=SUBSTANTIVE_REVIEW_RESULTS,
+        default=None,
+        help=(
+            "the substantive review result this marker binds. Required with "
+            f"--emit-marker, with no default: only {MARKER_RESULT} emits a marker, "
+            "and every other result is refused. A default would let the legacy "
+            "invocation keep minting a REVIEW_CURRENT marker without the caller "
+            "ever stating their conclusion, which is the defect this flag closes."
+        ),
+    )
     args = parser.parse_args(argv)
+    if args.emit_marker and args.result is None:
+        parser.error("--emit-marker requires --result naming the substantive review result")
     root = args.root.resolve()
     fixture = args.fixture
     if fixture is None and os.environ.get("SEMANTIC_REVIEW_TEST_FIXTURE"):
         fixture = Path(os.environ["SEMANTIC_REVIEW_TEST_FIXTURE"])
     try:
         if args.emit_marker:
-            print(emit_marker(root, args.repo, args.pr))
+            print(emit_marker(root, args.repo, args.pr, args.result))
             return 0
         if fixture:
             raw = json.loads(fixture.read_text(encoding="utf-8"))
@@ -444,6 +594,22 @@ def main(argv: Optional[list[str]] = None) -> int:
             current_head=current_head,
             reviews=reviews,
         )
+    except MarkerRefused as refusal:
+        # A refusal is a correct outcome of a non-REVIEW_CURRENT review, not a broken
+        # instrument, so it stays distinguishable from both verdicts and failures.
+        print(
+            json.dumps(
+                {
+                    "classification": "MARKER_REFUSED",
+                    "reason": "result_does_not_carry_a_marker",
+                    "detail": str(refusal),
+                    "pr": args.pr,
+                    "result": args.result,
+                },
+                sort_keys=True,
+            )
+        )
+        return 3
     except (
         CurrentnessError,
         KeyError,

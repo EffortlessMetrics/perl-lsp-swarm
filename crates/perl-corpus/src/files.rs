@@ -4,7 +4,6 @@ pub use crate::api::root::CORPUS_ROOT_ENV;
 use crate::api::root::{CorpusRoot, CorpusRootError, CorpusRootSource};
 use std::env;
 use std::fs;
-use std::ops::Deref;
 use std::path::{Path, PathBuf};
 
 const TEST_EXTENSIONS: &[&str] = &["pl", "pm", "plx", "t", "psgi", "cgi"];
@@ -25,6 +24,45 @@ pub struct CorpusPaths {
 }
 
 /// Validated compatibility paths plus their retained root authority.
+///
+/// This type deliberately does not implement [`Deref`](std::ops::Deref) or any
+/// other implicit conversion into [`CorpusPaths`]. Downgrading validated paths
+/// to the unchecked compatibility shape is a decision a caller has to write
+/// down, either as the borrowed view [`Self::as_paths`] or the consuming
+/// [`Self::into_paths`].
+///
+/// The examples below are illustrative, not enforcement. This repository runs
+/// no `cargo test --doc` gate (see issue #13774), so a doctest here cannot fail
+/// CI. The boundary is actually held by `assert_does_not_implement!` in
+/// `tests/root_path_authority.rs`, which stops that test target from compiling
+/// if such an impl reappears.
+///
+/// A resolved value is not accepted where unchecked compatibility paths are
+/// expected:
+///
+/// ```compile_fail
+/// use perl_corpus::{CorpusPaths, ResolvedCorpusPaths};
+///
+/// fn compatibility_discovery(_paths: &CorpusPaths) {}
+///
+/// fn downgrade_without_saying_so(resolved: &ResolvedCorpusPaths) {
+///     // No `Deref` coercion exists, so this is a type error.
+///     compatibility_discovery(resolved);
+/// }
+/// ```
+///
+/// The same call site compiles once the downgrade is explicit, which is the
+/// opposite-direction control for the example above:
+///
+/// ```
+/// use perl_corpus::{CorpusPaths, ResolvedCorpusPaths};
+///
+/// fn compatibility_discovery(_paths: &CorpusPaths) {}
+///
+/// fn downgrade_explicitly(resolved: &ResolvedCorpusPaths) {
+///     compatibility_discovery(resolved.as_paths());
+/// }
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedCorpusPaths {
     root: CorpusRoot,
@@ -50,12 +88,39 @@ impl ResolvedCorpusPaths {
     }
 
     /// Borrow the derived compatibility paths.
+    ///
+    /// This is the intentional borrowed compatibility view. It is the only way
+    /// to reach `&CorpusPaths` from a retained resolution, and it is never
+    /// applied implicitly.
     #[must_use]
     pub const fn as_paths(&self) -> &CorpusPaths {
         &self.paths
     }
 
     /// Consume the value and explicitly downgrade to unchecked compatibility paths.
+    ///
+    /// Downgrading discards the retained root authority, so the resulting
+    /// [`CorpusPaths`] is no longer evidence that the root was validated.
+    ///
+    /// The example is illustrative rather than enforced proof: no gate in this
+    /// repository runs `cargo test --doc` (see issue #13774), so a false
+    /// assertion here would not fail CI. The executed regression lives in
+    /// `tests/root_path_authority.rs`.
+    ///
+    /// ```
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// use perl_corpus::CorpusPaths;
+    ///
+    /// let root = tempfile::tempdir()?;
+    /// let resolved = CorpusPaths::try_from_root(root.path())?;
+    /// let authority_root = resolved.root_authority().path().to_path_buf();
+    ///
+    /// let compatibility = resolved.into_paths();
+    /// assert_eq!(compatibility.root, authority_root);
+    /// assert_eq!(compatibility.test_corpus, authority_root.join("test_corpus"));
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// # }
+    /// ```
     #[must_use]
     pub fn into_paths(self) -> CorpusPaths {
         self.paths
@@ -64,14 +129,6 @@ impl ResolvedCorpusPaths {
     /// Require the repository's two checked-in top-level corpus layers.
     pub fn require_repository_layout(&self) -> Result<(), CorpusRootError> {
         self.root.require_repository_layout()
-    }
-}
-
-impl Deref for ResolvedCorpusPaths {
-    type Target = CorpusPaths;
-
-    fn deref(&self) -> &Self::Target {
-        &self.paths
     }
 }
 

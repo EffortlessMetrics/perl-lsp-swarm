@@ -14,16 +14,47 @@ pub struct LspClient {
     reader: BufReader<std::process::ChildStdout>,
     buf: Vec<Value>, // pending messages (notifications, etc)
     next_id: u64,
+    initialize_response: Value,
 }
 
 impl LspClient {
     /// Spawn a new LSP server process
     pub fn spawn(bin: &str) -> Result<Self> {
-        Self::spawn_with_env(bin, &[])
+        Self::spawn_with_initialize_params(
+            bin,
+            json!({
+                "capabilities": {
+                    "general": { "positionEncodings": ["utf-16"] },
+                    "textDocument": { "hover": { "contentFormat": ["markdown", "plaintext"] } }
+                }
+            }),
+        )
     }
 
     /// Spawn a new LSP server process with environment variables
     pub fn spawn_with_env(bin: &str, env_vars: &[(&str, &str)]) -> Result<Self> {
+        Self::spawn_with_env_and_initialize_params(
+            bin,
+            env_vars,
+            json!({
+                "capabilities": {
+                    "general": { "positionEncodings": ["utf-16"] },
+                    "textDocument": { "hover": { "contentFormat": ["markdown", "plaintext"] } }
+                }
+            }),
+        )
+    }
+
+    /// Spawn a new LSP server process with explicit initialize parameters.
+    pub fn spawn_with_initialize_params(bin: &str, params: Value) -> Result<Self> {
+        Self::spawn_with_env_and_initialize_params(bin, &[], params)
+    }
+
+    fn spawn_with_env_and_initialize_params(
+        bin: &str,
+        env_vars: &[(&str, &str)],
+        initialize_params: Value,
+    ) -> Result<Self> {
         let mut cmd = Command::new(bin);
         cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
 
@@ -41,9 +72,10 @@ impl LspClient {
             .ok_or_else(|| anyhow!("Failed to get stdout from LSP server process"))?;
         let reader = BufReader::new(stdout);
 
-        let mut client = Self { child, reader, buf: Vec::new(), next_id: 1 };
+        let mut client =
+            Self { child, reader, buf: Vec::new(), next_id: 1, initialize_response: Value::Null };
 
-        client.initialize()?;
+        client.initialize(initialize_params)?;
         Ok(client)
     }
 
@@ -144,23 +176,10 @@ impl LspClient {
     }
 
     /// Initialize the LSP connection
-    fn initialize(&mut self) -> Result<()> {
-        // Send initialize request with explicit UTF-16 position encoding
-        let response = self.request(
-            "initialize",
-            json!({
-                "capabilities": {
-                    "general": {
-                        "positionEncodings": ["utf-16"]
-                    },
-                    "textDocument": {
-                        "hover": {
-                            "contentFormat": ["markdown", "plaintext"]
-                        }
-                    }
-                }
-            }),
-        )?;
+    fn initialize(&mut self, params: Value) -> Result<()> {
+        let response = self.request("initialize", params)?;
+
+        self.initialize_response = response.clone();
 
         // Verify initialization succeeded
         if response.get("error").is_some() {
@@ -173,6 +192,11 @@ impl LspClient {
             "method": "initialized",
             "params": {}
         }))
+    }
+
+    /// Return the exact initialize response received from the spawned server.
+    pub fn initialize_response(&self) -> &Value {
+        &self.initialize_response
     }
 
     /// Open a document in the LSP server
