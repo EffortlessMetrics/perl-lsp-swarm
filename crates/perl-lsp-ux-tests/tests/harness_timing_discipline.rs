@@ -81,6 +81,38 @@ fn is_sleep(line: &str) -> bool {
     normalized.contains("thread::sleep")
 }
 
+/// The `//` comment tail of a line, if the comment opener sits outside any
+/// string literal. Markers only count there: a string literal (or ordinary
+/// code) mentioning the marker text must never waive a sleep.
+///
+/// Same spirit as [`is_sleep`]'s comment handling, but string-aware in the
+/// waive direction — missing a real marker fails closed as a reported
+/// violation, while a naive split could waive a sleep on a string literal.
+/// Known limits: char literals containing `"` or `/`, block comments, and
+/// multi-line strings can mislead the scan; the governed files use none of
+/// those shapes around markers.
+fn marker_comment(candidate: &str) -> Option<&str> {
+    let bytes = candidate.as_bytes();
+    let mut index = 0;
+    let mut in_string = false;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if in_string {
+            if byte == b'\\' {
+                index += 1;
+            } else if byte == b'"' {
+                in_string = false;
+            }
+        } else if byte == b'"' {
+            in_string = true;
+        } else if byte == b'/' && bytes.get(index + 1) == Some(&b'/') {
+            return Some(&candidate[index + 2..]);
+        }
+        index += 1;
+    }
+    None
+}
+
 /// Return the declared class on a marker line, if it declares one.
 fn declared_class(line: &str) -> Option<&'static str> {
     let rest = line.split_once(MARKER)?.1.trim();
@@ -119,7 +151,8 @@ fn unowned_sleeps(file: &str, contents: &str, sleep_free: bool) -> Vec<Violation
             .iter()
             .rev()
             .take_while(|candidate| !is_sleep(candidate))
-            .find(|candidate| candidate.contains(MARKER));
+            .filter_map(|candidate| marker_comment(candidate))
+            .find(|comment| comment.contains(MARKER));
         let reason = match marker {
             None => format!(
                 "no `{MARKER}` disposition within {MARKER_LOOKBACK} lines above; \
@@ -324,6 +357,27 @@ mod guard_controls {
         let source = "std::thread :: sleep(POLL);\n";
         let found = unowned_sleeps("src/x.rs", source, false);
         anyhow::ensure!(found.len() == 1, "spaced paths must still be caught: {found:?}");
+        Ok(())
+    }
+
+    #[test]
+    fn a_marker_in_a_string_literal_does_not_waive_a_sleep() -> anyhow::Result<()> {
+        let source = "let note = \"ux-timing: product-retry\";\n    std::thread::sleep(POLL);\n";
+        let found = unowned_sleeps("src/x.rs", source, false);
+        anyhow::ensure!(
+            found.len() == 1,
+            "a string-literal marker must not waive a sleep: {found:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_trailing_comment_marker_still_waives_a_sleep() -> anyhow::Result<()> {
+        let source = "let pause = backoff(); // ux-timing: product-retry — no push yet\n    std::thread::sleep(pause);\n";
+        anyhow::ensure!(
+            unowned_sleeps("src/x.rs", source, false).is_empty(),
+            "trailing comment marker must be accepted: {source:?}"
+        );
         Ok(())
     }
 
