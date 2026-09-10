@@ -213,16 +213,22 @@ def _git(repo_root: Path, *args: str) -> subprocess.CompletedProcess[str]:
     )
 
 
-def verify_git_refs(data: dict[str, Any], repo_root: Path) -> list[str]:
-    """Compare the manifest against refs in a local full-history checkout."""
+def verify_git_refs(data: dict[str, Any], repo_root: Path) -> tuple[list[str], list[str]]:
+    """Compare the manifest against refs in a local full-history checkout.
+
+    Returns (drift_errors, unresolvable_records): drift errors fail the
+    check; unresolvable records are orphaned lineage rows reported as
+    warnings (#15263).
+    """
 
     if shutil.which("git") is None:
-        return ["git executable not found on PATH"]
+        return (["git executable not found on PATH"], [])
 
-    errors: list[str] = []
+    drift_errors: list[str] = []
+    unresolvable: list[str] = []
     tags = data.get("tag", [])
     if not isinstance(tags, list):
-        return ["cannot verify git refs: tag records are not a list"]
+        return (["cannot verify git refs: tag records are not a list"], [])
 
     manifest_names = {
         raw["name"]
@@ -231,7 +237,7 @@ def verify_git_refs(data: dict[str, Any], repo_root: Path) -> list[str]:
     }
     list_result = _git(repo_root, "tag", "--list", "v*")
     if list_result.returncode != 0:
-        errors.append(f"cannot list local tags: {list_result.stderr.strip()}")
+        drift_errors.append(f"cannot list local tags: {list_result.stderr.strip()}")
     else:
         local_release_tags = {
             line.strip()
@@ -239,7 +245,7 @@ def verify_git_refs(data: dict[str, Any], repo_root: Path) -> list[str]:
             if TAG_RE.fullmatch(line.strip()) is not None
         }
         for extra_tag in sorted(local_release_tags - manifest_names):
-            errors.append(f"local release tag is missing from manifest: {extra_tag}")
+            drift_errors.append(f"local release tag is missing from manifest: {extra_tag}")
 
     resolved: dict[str, str] = {}
     for raw in tags:
@@ -252,12 +258,26 @@ def verify_git_refs(data: dict[str, Any], repo_root: Path) -> list[str]:
 
         result = _git(repo_root, "rev-parse", "--verify", f"{name}^{{commit}}")
         if result.returncode != 0:
-            errors.append(f"{name} cannot be resolved locally: {result.stderr.strip()}")
+            # Typed unresolvable (#15263): when the tag is absent locally AND
+            # the manifest's recorded commit object is itself absent from the
+            # repository, the row is an orphaned lineage record - evidence
+            # preserved in the manifest, reported separately from drift. An
+            # unexplained resolution failure remains drift.
+            sha_probe = _git(repo_root, "cat-file", "-t", expected)
+            if sha_probe.returncode != 0:
+                unresolvable.append(
+                    f"{name} ({expected[:12]}): tag absent and commit object "
+                    "unreachable - orphaned lineage record"
+                )
+            else:
+                drift_errors.append(
+                    f"{name} cannot be resolved locally: {result.stderr.strip()}"
+                )
             continue
         actual = result.stdout.strip().lower()
         resolved[name] = actual
         if actual != expected:
-            errors.append(f"{name} drifted: manifest={expected} local={actual}")
+            drift_errors.append(f"{name} drifted: manifest={expected} local={actual}")
 
         recorded_sha = raw.get("recorded_sha")
         recorded_reachable = raw.get("recorded_reachable")
@@ -278,7 +298,7 @@ def verify_git_refs(data: dict[str, Any], repo_root: Path) -> list[str]:
                     if actually_reachable
                     else "not a reachable commit object"
                 )
-                errors.append(
+                drift_errors.append(
                     f"{name} recorded_sha {recorded_sha} is claimed {claim}, "
                     f"but local git says it is {actual}"
                 )
@@ -299,14 +319,14 @@ def verify_git_refs(data: dict[str, Any], repo_root: Path) -> list[str]:
 
         forward = _git(repo_root, "merge-base", "--is-ancestor", predecessor, name)
         if forward.returncode not in (0, 1):
-            errors.append(
+            drift_errors.append(
                 f"git merge-base failed for {predecessor} and {name}: "
                 f"{forward.stderr.strip()}"
             )
             continue
         reverse = _git(repo_root, "merge-base", "--is-ancestor", name, predecessor)
         if reverse.returncode not in (0, 1):
-            errors.append(
+            drift_errors.append(
                 f"git merge-base failed for {name} and {predecessor}: "
                 f"{reverse.stderr.strip()}"
             )
@@ -316,15 +336,15 @@ def verify_git_refs(data: dict[str, Any], repo_root: Path) -> list[str]:
         tag_is_ancestor = reverse.returncode == 0
 
         if lineage == "linear" and not predecessor_is_ancestor:
-            errors.append(f"{name} is not linear from predecessor {predecessor}")
+            drift_errors.append(f"{name} is not linear from predecessor {predecessor}")
         elif lineage == "diverged" and (
             predecessor_is_ancestor or tag_is_ancestor
         ):
-            errors.append(
+            drift_errors.append(
                 f"{name} is marked diverged from {predecessor}, but one ref is ancestral"
             )
 
-    return errors
+    return drift_errors, unresolvable
 
 
 def parse_args() -> argparse.Namespace:
@@ -356,9 +376,11 @@ def main() -> int:
         print(f"release-tag provenance: ERROR: {exc}", file=sys.stderr)
         return 1
 
+    unresolvable: list[str] = []
     errors = validate_manifest(data)
     if args.verify_git and not errors:
-        errors.extend(verify_git_refs(data, args.repo_root))
+        drift, unresolvable = verify_git_refs(data, args.repo_root)
+        errors.extend(drift)
 
     if errors:
         print("release-tag provenance validation failed:", file=sys.stderr)
@@ -368,7 +390,15 @@ def main() -> int:
 
     tag_count = len(data.get("tag", []))
     mode = "manifest + local git" if args.verify_git else "manifest"
-    print(f"release-tag provenance OK: {tag_count} tags ({mode})")
+    unresolvable_note = ""
+    if unresolvable:
+        unresolvable_note = (
+            f"; {len(unresolvable)} orphaned lineage records unresolvable "
+            "(evidence preserved in manifest)"
+        )
+        for record in unresolvable:
+            print(f"WARN: release-tag provenance unresolvable: {record}", file=sys.stderr)
+    print(f"release-tag provenance OK: {tag_count} tags ({mode}){unresolvable_note}")
     return 0
 
 
