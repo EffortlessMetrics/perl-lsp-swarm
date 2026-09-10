@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -138,7 +139,10 @@ def build(args: argparse.Namespace) -> None:
         (output / "bin" / vscode_target).mkdir(parents=True, exist_ok=True)
         for source, destination in final_files:
             destination.parent.mkdir(parents=True, exist_ok=True)
-            source.replace(destination)
+            # The staging directory shares output.parent's filesystem, so a
+            # hard link publishes without replacing a competitor created
+            # after the destination precheck.
+            os.link(source, destination)
             created.append(destination)
     except Exception:
         for path in reversed(created):

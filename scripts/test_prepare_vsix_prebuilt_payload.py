@@ -256,6 +256,52 @@ class PrebuiltPayloadAdapterTests(unittest.TestCase):
                 module.copy_selected_member = original_copy
             self.assertEqual(list(root.glob(".prebuilt-payload-*")), [])
 
+    def test_competing_publication_after_precheck_is_rejected_without_overwrite(self) -> None:
+        for collided_name in ("perllsp", "vsix-candidate-payload.json"):
+            with self.subTest(collided_name=collided_name), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                paths = self.fixture(root)
+                module, args = self.namespace(paths)
+                original_mkdir = Path.mkdir
+                final_dir = paths["output"] / "bin" / "linux-x64"
+                injected = False
+
+                def competing_mkdir(
+                    self: Path,
+                    mode: int = 0o777,
+                    parents: bool = False,
+                    exist_ok: bool = False,
+                ) -> None:
+                    nonlocal injected
+                    original_mkdir(self, mode=mode, parents=parents, exist_ok=exist_ok)
+                    if self == final_dir and not injected:
+                        destination = (
+                            final_dir / collided_name
+                            if collided_name == "perllsp"
+                            else paths["output"] / collided_name
+                        )
+                        destination.write_bytes(b"COMPETITOR-SENTINEL")
+                        injected = True
+
+                Path.mkdir = competing_mkdir
+                try:
+                    with self.assertRaises(FileExistsError):
+                        module.build(args)
+                finally:
+                    Path.mkdir = original_mkdir
+
+                self.assertTrue(injected)
+                destination = (
+                    final_dir / collided_name
+                    if collided_name == "perllsp"
+                    else paths["output"] / collided_name
+                )
+                self.assertEqual(destination.read_bytes(), b"COMPETITOR-SENTINEL")
+                self.assertEqual(
+                    [path for path in paths["output"].rglob("*") if path.is_file()],
+                    [destination],
+                )
+                self.assertEqual(list(root.glob(".prebuilt-payload-*")), [])
 
 if __name__ == "__main__":
     unittest.main()
