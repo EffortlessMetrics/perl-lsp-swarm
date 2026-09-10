@@ -601,6 +601,11 @@ pub fn collect_release_posture(
 ///
 /// Sets `currency: Currency::Live`, since this is the one path that reads
 /// the real API. Nothing here mutates anything.
+///
+/// Callers supply valid repository subjects with nonempty owner, name, and
+/// branch fields, and an RFC 3339 observation timestamp. This low-level collector
+/// does not validate caller-constructed subjects or timestamps; [`super::run`]
+/// admits repository/branch strings before invoking it.
 pub fn observe(
     commands: &dyn ReadOnlyCommands,
     subjects: &[RepositorySubject],

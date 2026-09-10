@@ -25,6 +25,52 @@ fn require(condition: bool, message: &str) -> TestResult {
 }
 
 #[test]
+fn subject_branch_override_preserves_valid_names_and_rejects_empty_input() -> TestResult {
+    let root = tempfile::tempdir()?;
+    std::fs::create_dir(root.path().join("policy"))?;
+    std::fs::write(
+        root.path().join("policy/product-identity.toml"),
+        "[product]\ndevelopment_repository = 'owner/development'\npublic_repository = 'owner/public'\n",
+    )?;
+    for branch in ["main", "release/1.0"] {
+        let subjects = xtask::release_live_controls::subjects_from_product_identity(
+            root.path(),
+            Some(branch),
+        )?;
+        require(subjects.len() == 2, "both governed repositories must be retained")?;
+        require(
+            subjects.iter().all(|subject| subject.branch == branch),
+            "valid override must be preserved for both repositories",
+        )?;
+    }
+    require(
+        xtask::release_live_controls::subjects_from_product_identity(root.path(), Some(""))
+            .is_err(),
+        "empty branch must be rejected before it can enter a receipt",
+    )
+}
+
+#[test]
+fn empty_explicit_branch_preserves_existing_receipt() -> TestResult {
+    let root = tempfile::tempdir()?;
+    let output = root.path().join("receipt.json");
+    std::fs::write(&output, "existing receipt")?;
+    let result = xtask::release_live_controls::run(xtask::release_live_controls::ObserveOptions {
+        repo_root: root.path().to_path_buf(),
+        repositories: vec!["owner/repository".into()],
+        branch: Some(String::new()),
+        out: Some(output.clone()),
+        json: false,
+    });
+    let error = result.err().ok_or("empty explicit branch must fail admission")?;
+    require(error.to_string() == "branch must not be empty", "error must identify branch input")?;
+    require(
+        std::fs::read_to_string(output)? == "existing receipt",
+        "rejected input must not replace an existing receipt",
+    )
+}
+
+#[test]
 fn bracket_patterns_select_the_branch() -> TestResult {
     let conditions = json!({"ref_name":{"include":["refs/heads/release/[0-9]*"],"exclude":[]}});
     require(

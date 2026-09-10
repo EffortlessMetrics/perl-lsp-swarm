@@ -125,6 +125,9 @@ pub fn subjects_from_product_identity(
 }
 
 fn parse_subject(full_name: &str, branch: &str) -> Result<RepositorySubject> {
+    if branch.is_empty() {
+        bail!("branch must not be empty");
+    }
     let (owner, name) = full_name
         .split_once('/')
         .ok_or_else(|| eyre!("{full_name:?} is not an owner/name repository identity"))?;
