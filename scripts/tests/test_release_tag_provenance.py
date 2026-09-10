@@ -341,5 +341,38 @@ class OrphanClassificationTests(unittest.TestCase):
         )
         self.assertEqual([], unresolvable)
 
+    def test_flagged_row_with_surviving_tag_is_drift(self):
+        """A flagged row whose tag ref still exists locally is drift even
+        when the tag points at a non-commit object (#15263)."""
+        manifest = valid_manifest()
+        manifest["tag"] = manifest["tag"][:1]
+        manifest["tag"][0]["unresolvable"] = True
+        with tempfile.TemporaryDirectory() as repo:
+            self._init(repo)
+            tree = self._git(repo, "rev-parse", "HEAD^{tree}").stdout.strip()
+            self._git(repo, "update-ref", "refs/tags/v0.1.0", tree)
+            drift, unresolvable = verify_git_refs(manifest, repo)
+        self.assertTrue(any("the tag exists locally" in e for e in drift), drift)
+        self.assertEqual([], unresolvable)
+
+    def test_flagged_row_with_non_commit_pin_is_drift(self):
+        """A flagged row whose pinned sha resolves to a blob passes no more:
+        the pin must be absent for the orphan claim to hold (#15263)."""
+        manifest = valid_manifest()
+        manifest["tag"] = manifest["tag"][:1]
+        manifest["tag"][0]["unresolvable"] = True
+        with tempfile.TemporaryDirectory() as repo:
+            self._init(repo)
+            blob = subprocess.run(
+                ["git", "-C", repo, "hash-object", "-w", "--stdin"],
+                input="payload", capture_output=True, text=True, check=True,
+            ).stdout.strip()
+            manifest["tag"][0]["current_sha"] = blob
+            drift, unresolvable = verify_git_refs(manifest, repo)
+        self.assertTrue(
+            any("resolves to a local blob object" in e for e in drift), drift
+        )
+        self.assertEqual([], unresolvable)
+
 if __name__ == "__main__":
     unittest.main()

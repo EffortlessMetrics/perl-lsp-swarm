@@ -217,8 +217,11 @@ def verify_git_refs(data: dict[str, Any], repo_root: Path) -> tuple[list[str], l
     """Compare the manifest against refs in a local full-history checkout.
 
     Returns (drift_errors, unresolvable_records): drift errors fail the
-    check; unresolvable records are orphaned lineage rows reported as
-    warnings (#15263).
+    check; unresolvable records are manifest rows flagged
+    `unresolvable = true` whose tag and pinned object are BOTH absent
+    locally - audited orphaned lineage rows reported as warnings, not
+    drift (#15263). A flagged row whose tag or pinned object survives
+    locally is drift, so the flag cannot hide a deleted release tag.
     """
 
     if shutil.which("git") is None:
@@ -264,20 +267,39 @@ def verify_git_refs(data: dict[str, Any], repo_root: Path) -> tuple[list[str], l
             # evidence and reported as warnings, not drift. Unflagged rows
             # that fail to resolve remain drift errors.
             if raw.get("unresolvable") is True:
-                # The flag vouches that the pinned commit is gone too; probe
-                # it so a locally reachable commit cannot hide behind the
-                # flag - that row is deleted-release-tag drift (#15263).
-                pinned = _git(repo_root, "cat-file", "-t", expected)
-                if pinned.returncode == 0 and pinned.stdout.strip() == "commit":
+                # The flag vouches that BOTH the tag and the pinned object
+                # are gone. Probe each so a surviving tag or a locally
+                # reachable pin cannot hide behind the flag (#15263): any
+                # survivor is deleted-release-tag drift, not an orphan.
+                tag_probe = _git(
+                    repo_root, "rev-parse", "--verify", f"refs/tags/{name}"
+                )
+                if tag_probe.returncode == 0:
                     drift_errors.append(
-                        f"{name} is flagged unresolvable, but pinned commit "
-                        f"{expected[:12]} is locally reachable: "
-                        "deleted-release-tag drift, not an orphan"
+                        f"{name} is flagged unresolvable, but the tag exists "
+                        f"locally at {tag_probe.stdout.strip()[:12]}"
                     )
                 else:
-                    unresolvable.append(
-                        f"{name} ({expected[:12]}): audited orphaned lineage record"
-                    )
+                    pinned = _git(repo_root, "cat-file", "-t", expected)
+                    if pinned.returncode == 0:
+                        object_type = pinned.stdout.strip()
+                        if object_type == "commit":
+                            drift_errors.append(
+                                f"{name} is flagged unresolvable, but pinned "
+                                f"commit {expected[:12]} is locally reachable: "
+                                "deleted-release-tag drift, not an orphan"
+                            )
+                        else:
+                            drift_errors.append(
+                                f"{name} is flagged unresolvable, but pinned "
+                                f"sha {expected[:12]} resolves to a local "
+                                f"{object_type} object, not an absent commit"
+                            )
+                    else:
+                        unresolvable.append(
+                            f"{name} ({expected[:12]}): audited orphaned "
+                            "lineage record"
+                        )
             else:
                 drift_errors.append(
                     f"{name} cannot be resolved locally: {result.stderr.strip()}"
