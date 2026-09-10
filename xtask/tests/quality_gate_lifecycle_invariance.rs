@@ -80,9 +80,9 @@ fn candidate_verdict_is_invariant_across_review_and_expiry_dates() -> TestResult
                 actions
                     .iter()
                     .filter_map(|action| action.get("kind").and_then(Value::as_str))
-                    .filter(|kind| {
+                    .filter(|&kind| {
                         matches!(
-                            *kind,
+                            kind,
                             "quality_exception_review_due"
                                 | "quality_exception_expired"
                                 | "quality_exception_required_missing"
