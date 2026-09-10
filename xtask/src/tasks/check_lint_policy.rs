@@ -8,7 +8,7 @@ mod validate;
 #[cfg(test)]
 mod tests;
 
-use color_eyre::eyre::Result;
+use color_eyre::eyre::{Result, eyre};
 use model::DebtLedger;
 use std::path::Path;
 
@@ -32,6 +32,7 @@ pub(crate) struct CadenceRow {
     pub(crate) evidence_identity: String,
     pub(crate) expected_debt_class: String,
     pub(crate) required_decision: &'static str,
+    pub(crate) invalid_reason: Option<String>,
 }
 
 /// Read the same merged Clippy authorities as `check-lint-policy` and expose only
@@ -40,10 +41,12 @@ pub(crate) struct CadenceRow {
 pub(crate) fn cadence_rows(root: &Path) -> Result<Vec<CadenceRow>> {
     let lint_ledger = read::load_lint_ledger(root)?;
     let debt_ledger: DebtLedger = read::read_toml_as(root.join(DEBT_LEDGER))?;
-    // Fail closed on malformed policy: cadence must not project obligations
-    // the candidate gate would reject as current or overdue owner work.
-    // (Post-#15277 refresh this becomes an `Invalid`-row projection.)
-    validate::validate_cadence_sources(root, &lint_ledger, &debt_ledger)?;
+    // Malformed policy projects as `Invalid` rows (merged #15277 behavior):
+    // cadence reports obligations even when the candidate gate would reject
+    // the underlying policy, so owner work stays visible.
+    let validation_error = validate::validate_cadence_sources(root, &lint_ledger, &debt_ledger)
+        .err()
+        .map(|error| format!("{error:#}"));
     let mut rows = Vec::with_capacity(debt_ledger.debt.len() + lint_ledger.deferred_due.len());
 
     for entry in &debt_ledger.debt {
@@ -57,6 +60,7 @@ pub(crate) fn cadence_rows(root: &Path) -> Result<Vec<CadenceRow>> {
             evidence_identity: format!("{}@{}:{}", entry.lint, entry.path, entry.level),
             expected_debt_class: entry.lint.clone(),
             required_decision: "resolve, narrow, or re-justify the accepted lint debt",
+            invalid_reason: validation_error.clone(),
         });
     }
 
@@ -74,7 +78,16 @@ pub(crate) fn cadence_rows(root: &Path) -> Result<Vec<CadenceRow>> {
             ),
             expected_debt_class: entry.class.clone(),
             required_decision: "activate, move to exact debt, or re-justify the deferral",
+            invalid_reason: validation_error.clone(),
         });
+    }
+
+    if rows.is_empty()
+        && let Some(error) = validation_error
+    {
+        return Err(eyre!(
+            "Clippy cadence sources are invalid and contain no review-dated row to carry the diagnosis: {error}"
+        ));
     }
 
     Ok(rows)
