@@ -32,3 +32,21 @@ pub(super) fn validate_all(
     debt::validate_debt_ledger(root, lint_ledger, debt_ledger)?;
     Ok(configured_selector_count)
 }
+
+/// Validate the policy-owned Clippy model before cadence projection.
+///
+/// This deliberately excludes Cargo/toolchain/config wiring: those remain the
+/// candidate gate's integration responsibility. It includes the header, every
+/// disposition row, lifecycle syntax, the ledger-only `configuration_state`
+/// placement rules, debt paths and debt/disposition joins so cadence cannot
+/// report semantically malformed policy as current.
+pub(super) fn validate_cadence_sources(
+    root: &Path,
+    lint_ledger: &LintLedger,
+    debt_ledger: &DebtLedger,
+) -> Result<()> {
+    config::validate_policy_header(lint_ledger)?;
+    disposition::validate_disposition_model(lint_ledger)?;
+    config::validate_configuration_state_placement(lint_ledger)?;
+    debt::validate_debt_ledger(root, lint_ledger, debt_ledger)
+}
