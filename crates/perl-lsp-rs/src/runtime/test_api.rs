@@ -1381,6 +1381,9 @@ mod tests {
 
     #[test]
     fn test_notify_index_ready_wait_entered_forwards_to_readiness_observer() -> Result<()> {
+        // Same process-global wait-entered slot as the readiness contract
+        // tests (#15016). Serialize with every other notify-capable wait.
+        let _serial = crate::runtime::readiness::readiness_wait_path_test_lock();
         let server = LspServer::new();
         let coordinator = server
             .index_coordinator
@@ -1393,8 +1396,11 @@ mod tests {
         let (wait_entered_tx, wait_entered_rx) = std::sync::mpsc::channel();
         server.test_notify_index_ready_wait_entered(wait_entered_tx);
         let worker_coordinator = coordinator;
+        // Wide observer budget: under CI scheduling jitter a one-second
+        // recv can expire before the main thread reaches its wait, failing
+        // the join and flaking the contract test (same class as #15016).
         let worker = std::thread::spawn(move || -> Result<()> {
-            wait_entered_rx.recv_timeout(Duration::from_secs(1))?;
+            wait_entered_rx.recv_timeout(Duration::from_secs(30))?;
             worker_coordinator.transition_to_ready(0, 0);
             Ok(())
         });
