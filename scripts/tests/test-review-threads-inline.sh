@@ -28,6 +28,11 @@ INLINE="$SCRIPT_DIR/../reviews/inline"
 DISPOSITION="$SCRIPT_DIR/../reviews/disposition"
 PASS_COUNT=0
 FAIL_COUNT=0
+# Optional file supplied by the native Windows harness. Only its path crosses
+# the PowerShell/WSL boundary; its contents must reach the review unchanged.
+EXTERNAL_BODY="${1:-}"
+[[ $# -le 1 ]] || { echo 'usage: test-review-threads-inline.sh [literal-body-file]'; exit 2; }
+[[ -z "$EXTERNAL_BODY" || -f "$EXTERNAL_BODY" ]] || { echo 'literal body file not found'; exit 2; }
 
 pass() { printf 'PASS %s\n' "$1"; PASS_COUNT=$((PASS_COUNT + 1)); }
 fail() { printf 'FAIL %s\n' "$1"; FAIL_COUNT=$((FAIL_COUNT + 1)); }
@@ -696,6 +701,101 @@ test_inline_requires_body() {
     fi
 }
 
+test_inline_clean_literal_body() {
+    local body="$TMP_ROOT/review body.md" f
+    if [[ -n "$EXTERNAL_BODY" ]]; then
+        cp "$EXTERNAL_BODY" "$body"
+    else
+        cat > "$body" <<'BODY'
+-- leading dashes, "double", 'single', \path\ and café 日本語
+## No material findings
+`cargo sentinel` $(git sentinel) `sentinel` $(sentinel)
+```bash
+cargo test
+```
+BODY
+        printf '\r\nCRLF line\r\n\n\n' >> "$body"
+    fi
+    # Command-shaped review data must never invoke these tools. The helper has
+    # no reason to run cargo/git when an explicit repo/commit is supplied.
+    for command in cargo git sentinel; do
+        cat > "$STUB_BIN/$command" <<'STUB'
+#!/usr/bin/env bash
+printf 'unexpected command\n' >> "$GH_STUB_DIR/command-side-effect"
+exit 99
+STUB
+        chmod +x "$STUB_BIN/$command"
+    done
+    f="$(findings_file '[]')"
+    reset_stub
+    run_inline --pr 9999 --repo test-owner/test-repo --findings "$f" --body 'No material findings.'
+    if [[ "$RUN_EXIT" -eq 0 && "$(review_posts)" -eq 1 ]] \
+        && jq -e '.comments == [] and .body == "No material findings."' "$STUB_DIR/posted_payload.json" >/dev/null; then
+        pass 'inline: explicit empty findings also support the legacy body option'
+    else
+        fail "inline legacy clean review — exit=$RUN_EXIT out=$RUN_OUT"
+    fi
+    for event in COMMENT REQUEST_CHANGES APPROVE; do
+        reset_stub
+        run_inline --pr 9999 --repo test-owner/test-repo --findings "$f" \
+            --body-file "$body" --event "$event" --commit feedface
+        if [[ "$RUN_EXIT" -eq 0 && "$(review_posts)" -eq 1 ]] \
+            && jq -e --rawfile expected "$body" --arg event "$event" \
+                '.body == $expected and .comments == [] and .event == $event and .commit_id == "feedface"' \
+                "$STUB_DIR/posted_payload.json" >/dev/null \
+            && [[ ! -e "$STUB_DIR/command-side-effect" ]]; then
+            pass "inline: clean $event review preserves literal file bytes without executing body text"
+        else
+            fail "inline clean literal body — exit=$RUN_EXIT out=$RUN_OUT"
+        fi
+    done
+    reset_stub
+    run_inline --pr 9999 --repo test-owner/test-repo --findings "$f" --body-file "$body" --dry-run
+    if [[ "$RUN_EXIT" -eq 0 && "$(review_posts)" -eq 0 ]] \
+        && [[ "$RUN_OUT" == *'1 submitted review, 0 inline comment(s)'* ]] \
+        && printf '%s\n' "$RUN_OUT" | sed '1,/^--- POST /d' \
+            | jq -e --rawfile expected "$body" '.body == $expected and .comments == []' >/dev/null \
+        && [[ ! -e "$STUB_DIR/command-side-effect" ]]; then
+        pass 'inline: clean dry-run reports one review, zero comments, exact body, zero posts'
+    else
+        fail "inline clean dry-run — exit=$RUN_EXIT out=$RUN_OUT"
+    fi
+    rm -f "$STUB_BIN/cargo" "$STUB_BIN/git" "$STUB_BIN/sentinel"
+}
+
+test_inline_body_file_errors() {
+    local f body="$TMP_ROOT/empty-body.md"
+    f="$(findings_file '[]')"
+    : > "$body"
+    for invalid in "$body" "$TMP_ROOT/missing-body.md" "$TMP_ROOT"; do
+        reset_stub
+        run_inline --pr 9999 --repo test-owner/test-repo --findings "$f" --body-file "$invalid"
+        if [[ "$RUN_EXIT" -eq 2 && "$(review_posts)" -eq 0 && "$RUN_OUT" == *'readable, non-empty file'* ]]; then
+            pass 'inline: invalid body file fails before posting'
+        else
+            fail "inline invalid body file — exit=$RUN_EXIT out=$RUN_OUT"
+        fi
+    done
+    printf 'useful review\n' > "$body"
+    reset_stub
+    run_inline --pr 9999 --repo test-owner/test-repo --findings "$f" --body-file "$body" --body legacy
+    if [[ "$RUN_EXIT" -eq 2 && "$(review_posts)" -eq 0 && "$RUN_OUT" == *'use only one of --body and --body-file'* ]]; then
+        pass 'inline: conflicting body sources fail atomically'
+    else
+        fail "inline conflicting bodies — exit=$RUN_EXIT out=$RUN_OUT"
+    fi
+    for raw in '' $' \t\r\n ' '[] []' $'[]\n[]' 'null []' '{} []' '[] null' 'null' '{' '[false]'; do
+        reset_stub
+        f="$(findings_file "$raw")"
+        run_inline --pr 9999 --repo test-owner/test-repo --findings "$f" --body-file "$body"
+        if [[ "$RUN_EXIT" -eq 2 && "$(review_posts)" -eq 0 && "$RUN_OUT" == *findings* ]]; then
+            pass "inline: findings stream $(printf '%s' "$raw" | jq -Rs .) is refused before POST"
+        else
+            fail "inline malformed clean input — exit=$RUN_EXIT out=$RUN_OUT"
+        fi
+    done
+}
+
 # ═══ boundary: resolution stays in disposition ══════════════════════════════
 # Neither new script may carry the raw resolve mutation; scripts/reviews/
 # disposition is the only sanctioned resolve path (#3693 R1 FILE 3).
@@ -739,6 +839,8 @@ test_inline_rejects_unaddressable_start_line
 test_inline_dry_run_posts_nothing
 test_inline_surfaces_github_error
 test_inline_requires_body
+test_inline_clean_literal_body
+test_inline_body_file_errors
 test_no_raw_resolve_token
 echo ""
 echo "=== Results: $PASS_COUNT passed, $FAIL_COUNT failed ==="

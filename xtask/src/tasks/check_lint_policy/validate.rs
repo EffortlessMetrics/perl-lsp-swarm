@@ -13,7 +13,6 @@ pub(super) use debt::validate_debt_ledger;
 pub(super) use disposition::{validate_required_dispositions, validate_workspace_lints};
 
 use super::model::{DebtLedger, LintLedger};
-use chrono::NaiveDate;
 use color_eyre::eyre::Result;
 use std::path::Path;
 use toml::Value;
@@ -23,14 +22,31 @@ pub(super) fn validate_all(
     cargo: &Value,
     lint_ledger: &LintLedger,
     debt_ledger: &DebtLedger,
-    today: NaiveDate,
 ) -> Result<usize> {
     config::validate_policy_header(lint_ledger)?;
     config::validate_msrv_sources(root, cargo, lint_ledger)?;
-    disposition::validate_workspace_lints(cargo, lint_ledger, today)?;
+    disposition::validate_workspace_lints(cargo, lint_ledger)?;
     disposition::validate_required_dispositions(lint_ledger)?;
     config::validate_workspace_members_inherit_lints(root, cargo)?;
     let configured_selector_count = config::validate_clippy_config(root, lint_ledger)?;
-    debt::validate_debt_ledger(root, lint_ledger, debt_ledger, today)?;
+    debt::validate_debt_ledger(root, lint_ledger, debt_ledger)?;
     Ok(configured_selector_count)
+}
+
+/// Validate the policy-owned Clippy model before cadence projection.
+///
+/// This deliberately excludes Cargo/toolchain/config wiring: those remain the
+/// candidate gate's integration responsibility. It includes the header, every
+/// disposition row, lifecycle syntax, the ledger-only `configuration_state`
+/// placement rules, debt paths and debt/disposition joins so cadence cannot
+/// report semantically malformed policy as current.
+pub(super) fn validate_cadence_sources(
+    root: &Path,
+    lint_ledger: &LintLedger,
+    debt_ledger: &DebtLedger,
+) -> Result<()> {
+    config::validate_policy_header(lint_ledger)?;
+    disposition::validate_disposition_model(lint_ledger)?;
+    config::validate_configuration_state_placement(lint_ledger)?;
+    debt::validate_debt_ledger(root, lint_ledger, debt_ledger)
 }
