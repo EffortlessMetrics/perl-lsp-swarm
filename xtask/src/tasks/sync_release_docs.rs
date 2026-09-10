@@ -683,6 +683,18 @@ fn sync_status_index(content: &str, surface: &ReleaseSurface) -> Result<String> 
     Ok(restore_trailing_newline(content, &lines))
 }
 
+/// Standing first-RC authority is granted per release train, never inherited.
+///
+/// #13768 authorized v0.18.0's bounded first RC. A future train must establish
+/// its own controller; the synchronizer must not re-issue v0.18 authority
+/// under a new version number.
+fn first_rc_standing_authority(version: &str) -> Option<&'static str> {
+    match version {
+        "0.18.0" => Some("#13768"),
+        _ => None,
+    }
+}
+
 fn sync_release_notes(content: &str, surface: &ReleaseSurface) -> Result<String> {
     let mut train_seen = false;
     let mut workspace_seen = false;
@@ -725,6 +737,8 @@ fn sync_release_notes(content: &str, surface: &ReleaseSurface) -> Result<String>
                 ))
             || (line.starts_with("- Remaining work is operational: finish `v")
                 && line.contains(" bounded first RC proceeds under #13768 standing authorization"))
+            || (line.starts_with("- Remaining work is operational: finish `v")
+                && line.contains(" bounded first RC has no standing authorization yet"))
             || (line.starts_with("- Remaining work is operational: verify the existing `v")
                 && line.contains(" release receipt and close the remaining channel receipts"))
         {
@@ -744,9 +758,14 @@ fn sync_release_notes(content: &str, surface: &ReleaseSurface) -> Result<String>
                     "- Remaining work is operational: verify the existing `v{}` release receipt and close the remaining channel receipts; do not dispatch release orchestration for an already-shipped train.",
                     surface.version
                 )
+            } else if let Some(authority) = first_rc_standing_authority(&surface.version) {
+                format!(
+                    "- Remaining work is operational: finish `v{0}` prep verification; #12876 product-policy closure remains blocked, the bounded first RC proceeds under {authority} standing authorization through `rc_published_verified` with no second approval, and stable `v{0}` remains explicitly unauthorized.",
+                    surface.version
+                )
             } else {
                 format!(
-                    "- Remaining work is operational: finish `v{0}` prep verification; #12876 product-policy closure remains blocked, the bounded first RC proceeds under #13768 standing authorization through `rc_published_verified` with no second approval, and stable `v{0}` remains explicitly unauthorized.",
+                    "- Remaining work is operational: finish `v{0}` prep verification; #12876 product-policy closure remains blocked, the bounded first RC has no standing authorization yet and requires explicit human-established controller authority before proceeding, and stable `v{0}` remains explicitly unauthorized.",
                     surface.version
                 )
             });
@@ -1069,6 +1088,42 @@ This closeout remains historical.\n";
             if synced.contains(retired) {
                 bail!("migrated preparation sync kept retired controller wording: {retired}");
             }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn sync_release_notes_future_train_does_not_inherit_first_rc_authority() -> Result<()> {
+        let surface = ReleaseSurface {
+            version: "0.19.0".to_string(),
+            published_crate_count: 32,
+            shipped_date: None,
+            prior_version: Some("0.18.0".to_string()),
+            prior_shipped_date: None,
+            next_version: "0.20.0".to_string(),
+        };
+        let input = "**Current release train**: `v0.18.0` — release preparation; shipped release receipt pending\n\
+**Workspace version line**: `v0.18.0`\n\
+**Published crate surface**: 32 crates\n\
+## Active Blockers\n\
+- Remaining work is operational: finish `v0.18.0` prep verification; #12876 product-policy closure remains blocked, the bounded first RC proceeds under #13768 standing authorization through `rc_published_verified` with no second approval, and stable `v0.18.0` remains explicitly unauthorized.\n";
+        let synced = sync_release_notes(&input, &surface)?;
+        if synced.contains("#13768") {
+            bail!("future train inherited v0.18 first-RC authority");
+        }
+        for boundary in [
+            "finish `v0.19.0` prep verification",
+            "bounded first RC has no standing authorization yet",
+            "requires explicit human-established controller authority before proceeding",
+            "stable `v0.19.0` remains explicitly unauthorized",
+        ] {
+            if !synced.contains(boundary) {
+                bail!("future train sync omitted neutral authority boundary: {boundary}");
+            }
+        }
+        let second = sync_release_notes(&synced, &surface)?;
+        if second != synced {
+            bail!("neutral-authority preparation sync was not idempotent");
         }
         Ok(())
     }
