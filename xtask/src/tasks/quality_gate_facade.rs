@@ -99,18 +99,10 @@ pub fn run(args: QualityGateArgs) -> Result<()> {
         receipt: temporary_receipt.clone(),
         summary: temporary_summary.clone(),
         check: false,
+        // The engine's own success line would name workspace paths that vanish
+        // with the temporary directory; the facade prints the caller artifacts.
+        quiet: true,
     };
-
-    let engine_result = implementation::run(engine_args);
-    if !temporary_receipt.is_file() || !temporary_summary.is_file() {
-        return engine_result;
-    }
-
-    let mut receipt: JsonValue = serde_json::from_str(
-        &fs::read_to_string(&temporary_receipt)
-            .with_context(|| format!("reading {}", temporary_receipt.display()))?,
-    )
-    .context("parsing normalized quality-gate receipt")?;
 
     let temporary_policy_display = display_path(&temporary_policy);
     let temporary_receipt_display = display_path(&temporary_receipt);
@@ -124,6 +116,17 @@ pub fn run(args: QualityGateArgs) -> Result<()> {
         (temporary_summary_display.as_str(), original_summary_display.as_str()),
     ];
 
+    let engine_result = implementation::run(engine_args);
+    if !temporary_receipt.is_file() || !temporary_summary.is_file() {
+        return engine_result.map_err(|error| remapped_report(&error, &replacements));
+    }
+
+    let mut receipt: JsonValue = serde_json::from_str(
+        &fs::read_to_string(&temporary_receipt)
+            .with_context(|| format!("reading {}", temporary_receipt.display()))?,
+    )
+    .context("parsing normalized quality-gate receipt")?;
+
     replace_json_strings(&mut receipt, &replacements);
     restore_lifecycle_dates(&mut receipt, &normalized.lifecycle);
     restore_policy_validation_error(
@@ -133,10 +136,18 @@ pub fn run(args: QualityGateArgs) -> Result<()> {
     );
     let receipt_text = format!("{}\n", serde_json::to_string_pretty(&receipt)?);
 
-    let mut summary = fs::read_to_string(&temporary_summary)
-        .with_context(|| format!("reading {}", temporary_summary.display()))?;
-    for (from, to) in replacements {
-        summary = summary.replace(from, to);
+    // Render the summary from the repaired receipt so the Markdown next
+    // actions match the JSON receipt. The engine-rendered summary describes
+    // the synthetic injected failure (e.g. a stale `invalid_metadata` repair
+    // for an unsupported `due_review` the facade already repaired in JSON).
+    // Rendering with the caller args also keeps every path on the published
+    // artifacts; fail closed if a workspace path leaks through.
+    let mut summary = implementation::render_markdown(&receipt, &args)
+        .context("rendering repaired quality-gate summary")?;
+    for (from, _) in replacements {
+        if summary.contains(from) {
+            bail!("repaired summary still names temporary workspace path {from}");
+        }
     }
     summary.push_str(
         "\n## Policy Lifecycle\n\n- authority: `cargo xtask policy cadence`\n- candidate impact: `advisory_only`\n",
@@ -162,13 +173,31 @@ pub fn run(args: QualityGateArgs) -> Result<()> {
         );
     }
 
-    engine_result?;
-    println!(
-        "quality gate passed; receipt {} summary {}",
-        args.receipt.display(),
-        args.summary.display()
-    );
+    if let Err(error) = engine_result {
+        return Err(remapped_report(&error, &replacements));
+    }
+    if !args.quiet {
+        println!(
+            "quality gate passed; receipt {} summary {}",
+            args.receipt.display(),
+            args.summary.display()
+        );
+    }
     Ok(())
+}
+
+/// Rewrite temporary workspace paths in a propagated engine error so the
+/// reported artifacts are the published caller paths, which survive the
+/// workspace directory.
+fn remapped_report(
+    error: &color_eyre::eyre::Report,
+    replacements: &[(&str, &str)],
+) -> color_eyre::eyre::Report {
+    let mut message = format!("{error:#}");
+    for (from, to) in replacements {
+        message = message.replace(from, to);
+    }
+    color_eyre::eyre::eyre!("{message}")
 }
 
 fn normalize_policy(raw: &str) -> Result<NormalizedPolicy> {

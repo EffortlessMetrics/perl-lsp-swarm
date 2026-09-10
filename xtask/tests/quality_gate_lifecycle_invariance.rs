@@ -182,9 +182,59 @@ fn unsupported_due_review_still_emits_fail_closed_artifacts() -> TestResult {
         })
         .ok_or("missing quality_exception_policy_not_current action")?;
     assert_eq!(action.get("reason").and_then(Value::as_str), Some("invalid_due_review"));
+    let markdown = fs::read_to_string(&summary)?;
+    assert!(markdown.contains("quality exception due_review must be warn or fail, found error"));
+    // The Markdown next actions are rendered from the repaired receipt, so the
+    // synthetic injected failure must not survive as an operator repair action.
     assert!(
-        fs::read_to_string(summary)?
-            .contains("quality exception due_review must be warn or fail, found error")
+        markdown.contains("- reason: `invalid_due_review`"),
+        "repaired summary lost the invalid_due_review reason"
+    );
+    assert!(
+        !markdown.contains("- reason: `invalid_metadata`"),
+        "repaired summary still reports the synthetic invalid_metadata failure"
+    );
+    Ok(())
+}
+
+#[test]
+fn facade_success_output_names_only_caller_artifacts() -> TestResult {
+    let root = repo_root()?;
+    let dir = tempdir()?;
+    let coverage = dir.path().join("coverage.json");
+    let policy = dir.path().join("policy.toml");
+    let receipt = dir.path().join("receipt.json");
+    let summary = dir.path().join("summary.md");
+    write_json(
+        &coverage,
+        json!({
+            "schema_version": 1,
+            "kind": "coverage_baseline",
+            "head": current_head(&root)?,
+            "lcov": "target/lcov.info",
+            "coverage": { "patch": 97.1 },
+            "files_below_target": []
+        }),
+    )?;
+    fs::write(&policy, policy_text("2099-01-01", "2099-12-31"))?;
+
+    let output = patch_gate(&root, &coverage, &policy, &receipt, &summary)?.output()?;
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout)?;
+    // Exactly one success line, naming the published caller artifacts: the
+    // engine evaluates in a temporary workspace whose paths vanish on return.
+    assert_eq!(
+        stdout.matches("quality gate passed").count(),
+        1,
+        "expected a single facade success line, got: {stdout}"
+    );
+    assert!(
+        !stdout.contains("perl-lsp-quality-gate-"),
+        "success output names a deleted temporary workspace path: {stdout}"
+    );
+    assert!(
+        stdout.contains(&receipt.to_string_lossy().replace('\\', "/")),
+        "success output does not name the caller receipt: {stdout}"
     );
     Ok(())
 }
