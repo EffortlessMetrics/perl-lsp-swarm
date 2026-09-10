@@ -165,7 +165,7 @@ fn patch_gate(
 
 fn policy_text(review_after: &str, expires: &str) -> String {
     format!(
-        r#"schema_version = 1
+        r##"schema_version = 1
 policy = "quality-gate-exceptions"
 owner = "test"
 status = "active"
@@ -188,7 +188,7 @@ removal_criteria = "fixture removal"
 created = "2026-01-01"
 review_after = "{review_after}"
 expires = "{expires}"
-"#
+"##
     )
 }
 
