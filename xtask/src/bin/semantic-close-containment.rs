@@ -707,17 +707,21 @@ fn evaluate_relation(
         }
     }
 
-    let explicitly_unproven_text = exclusion_text_attributable_to_closed_issue(
-        &relation_scoped_section_text(
-            sections,
-            &[SectionKind::ClaimBoundary, SectionKind::NonGoals],
-            relation_count,
-            &relation.key,
-            &pull.repository,
-        ),
-        &relation.key,
-        &pull.repository,
-    );
+    // CP00-003 owns complete attribution units, including soft-wrapped predicates.
+    // Keep the phase rule's separate line-scoping semantics unchanged.
+    let explicitly_unproven_text = [SectionKind::ClaimBoundary, SectionKind::NonGoals]
+        .iter()
+        .filter_map(|kind| sections.get(kind))
+        .map(|section| {
+            exclusion_text_attributable_to_closed_issue(
+                &section.body,
+                &relation.key,
+                &pull.repository,
+                relation_count,
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n");
     if rules.enabled(RuleId::ExplicitlyNotProven)
         && scoped_to_issue
         && explicitly_not_proven_required_work(&explicitly_unproven_text)
@@ -1416,6 +1420,7 @@ fn explicitly_not_proven_required_work(text: &str) -> bool {
                     "not proven",
                     "not established",
                     "not claimed",
+                    "explicitly out of scope",
                 ]
                 .iter()
                 .any(|exclusion| before.trim_end_matches(':').trim_end().ends_with(exclusion));
@@ -1562,13 +1567,17 @@ fn relation_scoped_section_text(
 /// is a neighboring-issue disclaimer. Unnumbered prose still counts: atomic
 /// closes often describe "the remaining work" without repeating `#N`, even
 /// when a later sentence names the issue that tracks that leftover.
+/// With multiple closing relations, retain only complete units naming this issue;
+/// a soft-wrapped predicate stays with its owner, while separate units do not borrow it.
 fn exclusion_text_attributable_to_closed_issue(
     text: &str,
     key: &IssueKey,
     current_repository: &str,
+    relation_count: usize,
 ) -> String {
     attribution_units(text)
         .into_iter()
+        .filter(|unit| relation_count == 1 || references_issue(unit, key, current_repository))
         .filter(|unit| !foreign_issue_disclaimer(unit, key, current_repository))
         .collect::<Vec<_>>()
         .join("\n\n")
@@ -2356,6 +2365,60 @@ mod tests {
     }
 
     #[test]
+    fn explicit_review_exclusions_preserve_wrapped_relation_ownership() -> Result<()> {
+        let mut mismatches = Vec::new();
+        for (boundary, failing_issue) in [
+            ("Explicitly out of scope: the remaining required work of #10.", Some(10)),
+            ("The remaining required work of #10 is explicitly out of scope.", Some(10)),
+            ("Full acceptance criteria of #10\nare not established.", Some(10)),
+            (
+                "- Full acceptance criteria of #11\n  are not established\n- Full acceptance criteria of #10 are established",
+                Some(11),
+            ),
+            (
+                "Full acceptance criteria of #10\nare established.\n\nThe guard is explicitly out of scope.",
+                None,
+            ),
+            ("Full acceptance criteria of #10\n\nare not established.", None),
+            ("Full acceptance criteria of #12\nare not established.", None),
+        ] {
+            let pull = PullRequestSubject {
+                repository: "effortlessmetrics/perl-lsp-swarm".into(),
+                number: 990105,
+                title: "fix: review exclusion controls".into(),
+                body: format!("## Claim Boundary\n{boundary}\n\nCloses #10\nCloses #11"),
+            };
+            let report = evaluate(&pull, |key| {
+                IssueEvidence::Available(IssueSubject {
+                    number: key.number,
+                    title: "Complete the named change".into(),
+                    body: "## Acceptance\nThe named change is established.".into(),
+                })
+            })?;
+            if report.rows.len() != 2 {
+                bail!("expected two relation rows");
+            }
+            for row in report.rows {
+                let expected = if Some(row.issue_number) == failing_issue {
+                    ResultCode::FailExplicitUnprovenRequiredWork
+                } else {
+                    ResultCode::PassNoHighConfidenceContradiction
+                };
+                if row.code != expected {
+                    mismatches.push(format!(
+                        "{boundary}: #{} expected {expected:?}, observed {:?}",
+                        row.issue_number, row.code
+                    ));
+                }
+            }
+        }
+        if !mismatches.is_empty() {
+            bail!("review exclusion mismatches: {mismatches:?}");
+        }
+        Ok(())
+    }
+
+    #[test]
     fn explicit_required_subject_families_retain_prefix_and_suffix_exclusions() -> Result<()> {
         let mut mismatches = Vec::new();
         for modifier in ["full", "complete", "remaining"] {
@@ -2368,6 +2431,8 @@ mod tests {
                 for boundary in [
                     format!("This PR does not prove the {modifier} {work}."),
                     format!("The {modifier} {work} {predicate}."),
+                    format!("Explicitly out of scope: the {modifier} {work}."),
+                    format!("The {modifier} {work} is explicitly out of scope."),
                 ] {
                     let pull = PullRequestSubject {
                         repository: "effortlessmetrics/perl-lsp-swarm".into(),
@@ -2462,7 +2527,7 @@ mod tests {
             ("Full_acceptance criteria are not established.", false),
         ] {
             let attributable =
-                exclusion_text_attributable_to_closed_issue(text, &key, &key.repository);
+                exclusion_text_attributable_to_closed_issue(text, &key, &key.repository, 1);
             if explicitly_not_proven_required_work(&attributable) != expected {
                 mismatches.push(format!("expected {expected}: {text}"));
             }
@@ -2523,7 +2588,7 @@ mod tests {
         let key = IssueKey { repository: "effortlessmetrics/perl-lsp-swarm".into(), number: 10 };
         let current = "effortlessmetrics/perl-lsp-swarm";
         let text = "This PR proves #10's claim in full.\n\nRemaining required work owned by #11 is not established.";
-        let attributable = exclusion_text_attributable_to_closed_issue(text, &key, current);
+        let attributable = exclusion_text_attributable_to_closed_issue(text, &key, current, 1);
         assert!(
             !explicitly_not_proven_required_work(&attributable),
             "filtered text must drop the neighboring-issue exclusion: {attributable:?}"
@@ -2535,7 +2600,7 @@ mod tests {
 
         let named_closed = "This PR does not prove #10's remaining required work.\n\nWork owned by #11 is separately not established.";
         let attributable_named =
-            exclusion_text_attributable_to_closed_issue(named_closed, &key, current);
+            exclusion_text_attributable_to_closed_issue(named_closed, &key, current, 1);
         assert!(
             explicitly_not_proven_required_work(&attributable_named),
             "naming the closed issue must keep the exclusion: {attributable_named:?}"
@@ -2543,7 +2608,7 @@ mod tests {
 
         let spaced = "This PR proves #10's claim in full.\n \t\nRemaining required work owned by #11 is not established.";
         let attributable_spaced =
-            exclusion_text_attributable_to_closed_issue(spaced, &key, current);
+            exclusion_text_attributable_to_closed_issue(spaced, &key, current, 1);
         assert!(
             !explicitly_not_proven_required_work(&attributable_spaced),
             "whitespace-only blank lines must still drop the neighboring disclaimer: {attributable_spaced:?}"
@@ -2552,7 +2617,7 @@ mod tests {
         let tracked =
             "This PR does not prove the complete remaining work. That work is tracked by #11.";
         let attributable_tracked =
-            exclusion_text_attributable_to_closed_issue(tracked, &key, current);
+            exclusion_text_attributable_to_closed_issue(tracked, &key, current, 1);
         assert!(
             explicitly_not_proven_required_work(&attributable_tracked),
             "an unnumbered closed-issue exclusion must survive a later tracker sentence: {attributable_tracked:?}"
@@ -2563,7 +2628,7 @@ mod tests {
                 "This PR does not prove the complete remaining work{terminator} That work is tracked by #11."
             );
             let attributable_punctuated =
-                exclusion_text_attributable_to_closed_issue(&punctuated, &key, current);
+                exclusion_text_attributable_to_closed_issue(&punctuated, &key, current, 1);
             assert!(
                 explicitly_not_proven_required_work(&attributable_punctuated),
                 "sentence terminators other than '.' must still keep the exclusion: {attributable_punctuated:?}"
@@ -2573,7 +2638,7 @@ mod tests {
         let inline_question =
             "Remaining required work is not established for `$ready ? $new : $old`; see #11.";
         let attributable_inline_question =
-            exclusion_text_attributable_to_closed_issue(inline_question, &key, current);
+            exclusion_text_attributable_to_closed_issue(inline_question, &key, current, 1);
         assert!(
             !explicitly_not_proven_required_work(&attributable_inline_question),
             "a `?` inside an inline code span must not split off the neighbor reference: {attributable_inline_question:?}"
@@ -2586,7 +2651,7 @@ mod tests {
         let inline_bang =
             "Remaining required work is not established for `die $msg! now`; see #11.";
         let attributable_inline_bang =
-            exclusion_text_attributable_to_closed_issue(inline_bang, &key, current);
+            exclusion_text_attributable_to_closed_issue(inline_bang, &key, current, 1);
         assert!(
             !explicitly_not_proven_required_work(&attributable_inline_bang),
             "a `!` inside an inline code span must not split off the neighbor reference: {attributable_inline_bang:?}"
@@ -2598,7 +2663,7 @@ mod tests {
 
         let inline_dot = "Remaining required work is not established for `$x. meth $y`; see #11.";
         let attributable_inline_dot =
-            exclusion_text_attributable_to_closed_issue(inline_dot, &key, current);
+            exclusion_text_attributable_to_closed_issue(inline_dot, &key, current, 1);
         assert!(
             !explicitly_not_proven_required_work(&attributable_inline_dot),
             "a `.` inside an inline code span must not split off the neighbor reference: {attributable_inline_dot:?}"
@@ -2606,7 +2671,7 @@ mod tests {
 
         let escaped = "This PR does not prove the complete remaining work for \\`foo? bar\\`. That work is tracked by #11.";
         let attributable_escaped =
-            exclusion_text_attributable_to_closed_issue(escaped, &key, current);
+            exclusion_text_attributable_to_closed_issue(escaped, &key, current, 1);
         assert!(
             explicitly_not_proven_required_work(&attributable_escaped),
             "escaped backticks must not hide an unnumbered closed-issue exclusion: {attributable_escaped:?}"

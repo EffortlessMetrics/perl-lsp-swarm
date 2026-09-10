@@ -25,7 +25,9 @@ each of `full`, `complete`, and `remaining` may modify `acceptance criteria`,
 An exclusion must directly precede that
 subject (for example, `does not prove the full acceptance criteria` or
 `Not claimed: the remaining required work`) or follow it with `is`/`are`/`remains`
-(for example, `full acceptance criteria are not established`). Numeric issue
+(for example, `full acceptance criteria are not established`). Supported
+exclusions also retain `Explicitly out of scope: the remaining required work`
+and the corresponding subject-first `is explicitly out of scope` form. Numeric issue
 ownership may precede the subject as `#N's` or follow it as `owned by #N` or `of #N`;
 neighboring-issue attribution still applies before classification. Paired Markdown
 underscore emphasis around supported subjects retains the same classification;
@@ -34,7 +36,9 @@ Matched Markdown inline-code spans are example/data, not required-work claims;
 they cannot join surrounding prose into a subject. Real prose exclusions outside
 those spans still count. Unmatched or escaped backticks do not hide prose.
 
-Paragraphs, Markdown list items, and sentences retain their boundaries. A positive
+Paragraphs, Markdown list items, and sentences retain their boundaries. With multiple
+closes, an owner reference retains its soft-wrapped predicate within the same unit;
+separate units and sections cannot borrow that owner. A positive
 acceptance statement cannot lend its subject to an unrelated exclusion, including
 within one sentence: `Full acceptance criteria are satisfied and this guard is not
 claimed complete` contains no supported contradiction. Bare component completeness,
