@@ -112,10 +112,17 @@ Every temporary quality exception must name:
 - `review_after`
 - `expires`
 
-Expired exceptions fail the quality gate. Due-for-review exceptions follow the
-ledger's `due_review` policy. Active exceptions are reported as
-final-enforcement blockers until their removal criteria are satisfied and the
-exception is removed.
+Malformed policy, malformed lifecycle dates, missing required metadata, and
+missing required exception identities fail the candidate gate. Lifecycle dates
+create advisory owner work through `cargo xtask policy cadence`; crossing
+`review_after` or `expires` does not change an unchanged candidate verdict.
+The committed exception remains active until a reviewed policy change removes,
+replaces, narrows, or re-justifies it.
+
+Active exceptions are reported as final-enforcement blockers until their
+removal criteria are satisfied and the exception is removed. This split keeps
+repository debt visible without making unrelated pull requests responsible for
+an owner review date crossing midnight.
 
 ## Active Burn-Down Exceptions
 
