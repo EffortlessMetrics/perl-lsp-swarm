@@ -13,6 +13,11 @@ class _NumberToken(str):
     """Retain a JSON-owned numeric token without converting unrelated fields."""
 
 
+def _reject_non_json_constant(value: str) -> Any:
+    """Reject `NaN`/`Infinity` constants the default decoder would accept."""
+    raise ValueError(f"release topology forbids non-JSON constant {value}")
+
+
 def load_topology_json(raw: bytes | str) -> dict[str, Any]:
     """Preserve ordinary decoded values and original evidence bytes after admission.
 
@@ -20,7 +25,11 @@ def load_topology_json(raw: bytes | str) -> dict[str, Any]:
     escaping and nesting; unrelated fields retain the ordinary decoder behavior.
     """
     exact = json.loads(
-        raw, parse_int=_NumberToken, parse_float=_NumberToken, object_pairs_hook=_ObjectPairs
+        raw,
+        parse_int=_NumberToken,
+        parse_float=_NumberToken,
+        parse_constant=_reject_non_json_constant,
+        object_pairs_hook=_ObjectPairs,
     )
     if not isinstance(exact, _ObjectPairs):
         raise ValueError("release topology schema requires a JSON object")
@@ -33,4 +42,4 @@ def load_topology_json(raw: bytes | str) -> dict[str, Any]:
         raise ValueError("release topology schema has an unsupported numeric representation") from error
     if version not in (1, 2):
         raise ValueError("release topology schema must appear once and be exactly 1 or 2")
-    return json.loads(raw)
+    return json.loads(raw, parse_constant=_reject_non_json_constant)
