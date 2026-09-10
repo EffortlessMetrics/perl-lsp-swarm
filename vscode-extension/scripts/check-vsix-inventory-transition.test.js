@@ -6,7 +6,7 @@ const path = require('node:path');
 const zlib = require('node:zlib');
 const { spawnSync } = require('node:child_process');
 const { test } = require('node:test');
-const AdmZip = require('adm-zip');
+const JSZip = require('jszip');
 const {
   collectArchiveInventory,
   ensureDistinctBase,
@@ -29,6 +29,17 @@ function inventory(files, extra = {}) {
     files,
     ...extra,
   };
+}
+
+async function writeJsZip(destination, files) {
+  const zip = new JSZip();
+  for (const [name, contents] of Object.entries(files)) {
+    zip.file(name, contents);
+  }
+  fs.writeFileSync(
+    destination,
+    await zip.generateAsync({ type: 'nodebuffer', compression: 'STORE' }),
+  );
 }
 
 function document(files) {
@@ -472,7 +483,7 @@ void test('instrument failures produce a bounded not-proven receipt', () => {
   assert.equal(receipt.reason, 'git show failed with details');
 });
 
-void test('package inventory is measured from the archive, not the worktree projection', () => {
+void test('package inventory is measured from the archive, not the worktree projection', async () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-vsix-archive-'));
   try {
     // The worktree file and the archived entry deliberately disagree: only the
@@ -480,15 +491,15 @@ void test('package inventory is measured from the archive, not the worktree proj
     const worktreeFile = path.join(directory, 'extension.js');
     fs.writeFileSync(worktreeFile, 'x'.repeat(4096));
 
-    const zip = new AdmZip();
-    zip.addFile('extension/out/extension.js', Buffer.from('a'.repeat(11)));
-    zip.addFile('extension/package.json', Buffer.from('b'.repeat(7)));
-    zip.addFile('[Content_Types].xml', Buffer.from('<Types/>'));
-    zip.addFile('extension.vsixmanifest', Buffer.from('<PackageManifest/>'));
     const vsixPath = path.join(directory, 'candidate.vsix');
-    zip.writeZip(vsixPath);
+    await writeJsZip(vsixPath, {
+      'extension/out/extension.js': 'a'.repeat(11),
+      'extension/package.json': 'b'.repeat(7),
+      '[Content_Types].xml': '<Types/>',
+      'extension.vsixmanifest': '<PackageManifest/>',
+    });
 
-    const result = collectArchiveInventory(vsixPath);
+    const result = await collectArchiveInventory(vsixPath);
 
     assert.deepEqual(result.inventory.files, {
       'out/extension.js': 11,
@@ -506,21 +517,19 @@ void test('package inventory is measured from the archive, not the worktree proj
   }
 });
 
-void test('an archive with no extension payload cannot authorize a transition', () => {
+void test('an archive with no extension payload cannot authorize a transition', async () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-vsix-archive-'));
   try {
-    const zip = new AdmZip();
-    zip.addFile('[Content_Types].xml', Buffer.from('<Types/>'));
     const vsixPath = path.join(directory, 'empty.vsix');
-    zip.writeZip(vsixPath);
+    await writeJsZip(vsixPath, { '[Content_Types].xml': '<Types/>' });
 
-    assert.throws(() => collectArchiveInventory(vsixPath), /no extension\/ payload entries/);
+    await assert.rejects(collectArchiveInventory(vsixPath), /no extension\/ payload entries/);
   } finally {
     fs.rmSync(directory, { recursive: true, force: true });
   }
 });
 
-void test('rejects a payload corrupted without damaging the central directory', () => {
+void test('rejects a payload corrupted without damaging the central directory', async () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-vsix-archive-'));
   try {
     const entryName = 'extension/package.json';
@@ -533,8 +542,8 @@ void test('rejects a payload corrupted without damaging the central directory', 
     const vsixPath = path.join(directory, 'payload-corrupt.vsix');
     fs.writeFileSync(vsixPath, archive);
 
-    assert.throws(
-      () => collectArchiveInventory(vsixPath),
+    await assert.rejects(
+      collectArchiveInventory(vsixPath),
       /CRC mismatch|unable to read VSIX archive entry/,
     );
     const checker = spawnSync(
@@ -552,8 +561,8 @@ void test('rejects a payload corrupted without damaging the central directory', 
   }
 });
 
-// adm-zip normalizes traversal names when it writes, so a hostile archive has
-// to be assembled byte-wise to reach the canonical-path guard at all.
+// JSZip normalizes traversal names when it writes, so a hostile archive has to
+// be assembled byte-wise to reach the canonical-path guard at all.
 function storedZip(entries) {
   const locals = [];
   const central = [];
@@ -599,7 +608,7 @@ function storedZip(entries) {
   return Buffer.concat([...locals, centralBytes, end]);
 }
 
-void test('an archive entry escaping the package root is rejected', () => {
+void test('an archive entry escaping the package root is rejected', async () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-vsix-archive-'));
   try {
     const vsixPath = path.join(directory, 'escape.vsix');
@@ -611,13 +620,13 @@ void test('an archive entry escaping the package root is rejected', () => {
       ]),
     );
 
-    assert.throws(() => collectArchiveInventory(vsixPath), /canonical relative package path/);
+    await assert.rejects(collectArchiveInventory(vsixPath), /canonical relative package path/);
   } finally {
     fs.rmSync(directory, { recursive: true, force: true });
   }
 });
 
-void test('a duplicate archive entry name is rejected', () => {
+void test('a duplicate archive entry name is rejected', async () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-vsix-archive-'));
   try {
     const vsixPath = path.join(directory, 'duplicate.vsix');
@@ -629,19 +638,19 @@ void test('a duplicate archive entry name is rejected', () => {
       ]),
     );
 
-    assert.throws(() => collectArchiveInventory(vsixPath), /duplicate entry name/);
+    await assert.rejects(collectArchiveInventory(vsixPath), /duplicate entry name/);
   } finally {
     fs.rmSync(directory, { recursive: true, force: true });
   }
 });
 
-void test('an unreadable archive is an instrument failure, not a package verdict', () => {
+void test('an unreadable archive is an instrument failure, not a package verdict', async () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-vsix-archive-'));
   try {
     const vsixPath = path.join(directory, 'corrupt.vsix');
     fs.writeFileSync(vsixPath, 'this is not a zip archive');
 
-    assert.throws(() => collectArchiveInventory(vsixPath), /unable to read VSIX archive/);
+    await assert.rejects(collectArchiveInventory(vsixPath), /unable to read VSIX archive/);
   } finally {
     fs.rmSync(directory, { recursive: true, force: true });
   }

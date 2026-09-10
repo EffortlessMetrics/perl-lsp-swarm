@@ -5,7 +5,7 @@ const fs = require('fs');
 const path = require('path');
 const zlib = require('zlib');
 const { spawnSync } = require('child_process');
-const AdmZip = require('adm-zip');
+const yauzl = require('yauzl');
 const {
   bundleTargetForPackagedFile,
   classifyInventoryViolations,
@@ -227,18 +227,22 @@ const VSIX_PAYLOAD_PREFIX = 'extension/';
  * make the two disagree; only the archive is the artifact that ships.
  *
  * @param {string} vsixPath
- * @returns {{
+ * @returns {Promise<{
  *   inventory: { schema_version: number, total_files: number, total_bytes: number, files: Record<string, number> },
  *   archive_sha256: string,
  *   metadata_entries: string[],
- * }}
+ * }>}
  */
-function collectArchiveInventory(vsixPath) {
+async function collectArchiveInventory(vsixPath) {
   const archiveBytes = fs.readFileSync(vsixPath);
 
   let zip;
   try {
-    zip = new AdmZip(archiveBytes);
+    zip = await yauzl.fromBufferPromise(archiveBytes, {
+      lazyEntries: true,
+      decodeStrings: false,
+      validateEntrySizes: true,
+    });
   } catch (error) {
     throw new Error(
       `unable to read VSIX archive ${vsixPath}: ${error instanceof Error ? error.message : String(error)}`,
@@ -251,49 +255,56 @@ function collectArchiveInventory(vsixPath) {
   const metadataEntries = [];
   const seen = new Set();
 
-  for (const entry of zip.getEntries()) {
-    const rawName = String(entry.entryName);
-    if (seen.has(rawName)) {
-      throw new Error(`VSIX archive contains a duplicate entry name: ${JSON.stringify(rawName)}`);
-    }
-    seen.add(rawName);
-    if (entry.isDirectory) {
-      continue;
-    }
-    const declaredSize = entry.header.size;
-    assertNonNegativeSafeInteger(
-      declaredSize,
-      `VSIX archive entry ${JSON.stringify(rawName)} size`,
-    );
-    let payload;
-    try {
-      payload = entry.getData();
-    } catch (error) {
-      throw new Error(
-        `unable to read VSIX archive entry ${JSON.stringify(rawName)}: ${error instanceof Error ? error.message : String(error)}`,
+  try {
+    for await (const entry of zip.eachEntry()) {
+      const rawName = Buffer.from(entry.fileName).toString('utf8');
+      if (seen.has(rawName)) {
+        throw new Error(`VSIX archive contains a duplicate entry name: ${JSON.stringify(rawName)}`);
+      }
+      seen.add(rawName);
+      if (rawName.endsWith('/')) {
+        continue;
+      }
+      const declaredSize = entry.uncompressedSize;
+      assertNonNegativeSafeInteger(
+        declaredSize,
+        `VSIX archive entry ${JSON.stringify(rawName)} size`,
       );
+      let payload;
+      try {
+        const stream = await zip.openReadStreamPromise(entry);
+        const chunks = [];
+        for await (const chunk of stream) chunks.push(Buffer.from(chunk));
+        payload = Buffer.concat(chunks);
+      } catch (error) {
+        throw new Error(
+          `unable to read VSIX archive entry ${JSON.stringify(rawName)}: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+      if (payload.length !== declaredSize) {
+        throw new Error(
+          `VSIX archive entry ${JSON.stringify(rawName)} payload size ${payload.length} does not match header size ${declaredSize}`,
+        );
+      }
+      const payloadCrc = zlib.crc32(payload) >>> 0;
+      if (payloadCrc !== entry.crc32 >>> 0) {
+        throw new Error(
+          `VSIX archive entry ${JSON.stringify(rawName)} CRC mismatch: payload ${payloadCrc} versus header ${entry.crc32 >>> 0}`,
+        );
+      }
+      if (!rawName.startsWith(VSIX_PAYLOAD_PREFIX)) {
+        // `[Content_Types].xml` and `extension.vsixmanifest` are vsce packaging
+        // metadata; they are outside the inventory baseline's claim but are
+        // still named in the receipt and covered by the whole-archive digest.
+        metadataEntries.push(rawName);
+        continue;
+      }
+      const file = rawName.slice(VSIX_PAYLOAD_PREFIX.length);
+      assertCanonicalPackagePath(file);
+      entries.push({ file, bytes: declaredSize });
     }
-    if (payload.length !== declaredSize) {
-      throw new Error(
-        `VSIX archive entry ${JSON.stringify(rawName)} payload size ${payload.length} does not match header size ${declaredSize}`,
-      );
-    }
-    const payloadCrc = zlib.crc32(payload) >>> 0;
-    if (payloadCrc !== entry.header.crc >>> 0) {
-      throw new Error(
-        `VSIX archive entry ${JSON.stringify(rawName)} CRC mismatch: payload ${payloadCrc} versus header ${entry.header.crc >>> 0}`,
-      );
-    }
-    if (!rawName.startsWith(VSIX_PAYLOAD_PREFIX)) {
-      // `[Content_Types].xml` and `extension.vsixmanifest` are vsce packaging
-      // metadata; they are outside the inventory baseline's claim but are
-      // still named in the receipt and covered by the whole-archive digest.
-      metadataEntries.push(rawName);
-      continue;
-    }
-    const file = rawName.slice(VSIX_PAYLOAD_PREFIX.length);
-    assertCanonicalPackagePath(file);
-    entries.push({ file, bytes: declaredSize });
+  } finally {
+    zip.close();
   }
 
   if (entries.length === 0) {
@@ -648,7 +659,7 @@ function notProvenReceipt({ candidateSha = null, baseSha = null, reason }) {
   };
 }
 
-function main() {
+async function main() {
   let args = { base: '', receipt: '' };
   /** @type {string | null} */
   let candidateSha = null;
@@ -667,7 +678,7 @@ function main() {
         '--vsix must point to the exact package this candidate produced; the worktree projection cannot authorize a transition',
       );
     }
-    const archive = collectArchiveInventory(path.resolve(args.vsix));
+    const archive = await collectArchiveInventory(path.resolve(args.vsix));
     const actual = archive.inventory;
     const baseDocument = readBaselineAtRevision(baseSha);
     const candidateDocument = readCandidateBaseline();
@@ -727,7 +738,12 @@ function main() {
 }
 
 if (require.main === module) {
-  process.exit(main());
+  main()
+    .then((code) => process.exit(code))
+    .catch((error) => {
+      process.stderr.write(`${boundedError(error)}\n`);
+      process.exitCode = 2;
+    });
 }
 
 module.exports = {

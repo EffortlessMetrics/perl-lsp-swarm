@@ -97,6 +97,9 @@ async function main(): Promise<void> {
       PERL_LSP_SMOKE_SOURCE_LABEL: process.env.PERL_LSP_SMOKE_SOURCE_LABEL || 'integration',
       PERL_LSP_TOOLCHAIN_NODE_VERSION: toolchainNodeVersion,
       PERL_LSP_TOOLCHAIN_NPM_VERSION: toolchainNpmVersionValue,
+      // The real client settlement fixture launches its owned child with the
+      // same explicit Node executable that runs this integration harness.
+      PERL_LSP_NODE_PATH: process.env.PERL_LSP_NODE_PATH ?? process.execPath,
       PERL_LSP_VSCODE_VERSION: vscodeVersion,
       VSCODE_TEST_GREP: grep ?? '',
     };

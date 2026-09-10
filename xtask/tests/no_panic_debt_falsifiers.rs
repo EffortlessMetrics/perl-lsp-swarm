@@ -1,0 +1,2923 @@
+#![expect(clippy::expect_used, reason = "test fixture setup for the panic-family denominator")]
+
+#[path = "no_panic_debt/support.rs"]
+mod support;
+
+use std::fs;
+use support::{fixture_root, write_empty_registry, write_package, write_policy, write_registry};
+use xtask::no_panic_debt::{
+    ClippyObservation, ClippyTargetObservation, DebtStatus, InstrumentStatus, InventoryRequest,
+    OwnerState, build_inventory, canonical_json, check_inventory, semantic_delta,
+};
+
+fn inventory_at(root: &std::path::Path) -> xtask::no_panic_debt::Inventory {
+    build_inventory(InventoryRequest { root, ..InventoryRequest::default() }).expect("inventory")
+}
+
+#[test]
+fn new_integration_test_file_with_unwrap_cannot_be_omitted() {
+    let temp = fixture_root();
+    fs::write(
+        temp.path().join("crates/demo/tests/new_file.rs"),
+        "#[test]\nfn added() { let _ = Some(1).unwrap(); }\n",
+    )
+    .expect("write");
+    let inventory = inventory_at(temp.path());
+    assert!(
+        inventory.population.files.iter().any(|file| file.path.ends_with("tests/new_file.rs")),
+        "missing file in population: {:?}",
+        inventory.population.files
+    );
+    assert!(
+        inventory
+            .rows
+            .iter()
+            .any(|row| { row.path.ends_with("tests/new_file.rs") && row.site_family == "unwrap" }),
+        "unwrap site omitted: {:?}",
+        inventory.rows
+    );
+}
+
+#[test]
+fn new_test_function_in_registered_file_cannot_be_omitted() {
+    let temp = fixture_root();
+    fs::write(
+        temp.path().join("crates/demo/tests/known.rs"),
+        "#[test]\nfn known_panic() { panic!(\"known\"); }\n\n#[test]\nfn extra() { let _ = Some(1).unwrap(); }\n",
+    )
+    .expect("write");
+    let inventory = inventory_at(temp.path());
+    assert!(
+        inventory.population.entrypoints.iter().any(|entry| entry.name == "extra"),
+        "entrypoint omitted: {:?}",
+        inventory.population.entrypoints
+    );
+}
+
+#[test]
+fn module_wide_allowance_does_not_hide_a_direct_site() {
+    let temp = fixture_root();
+    fs::write(
+        temp.path().join("crates/demo/tests/hidden.rs"),
+        "#![allow(clippy::unwrap_used)]\n#[test]\nfn hidden() { let _ = Some(1).unwrap(); }\n",
+    )
+    .expect("write");
+    let inventory = inventory_at(temp.path());
+    assert!(
+        inventory
+            .rows
+            .iter()
+            .any(|row| row.site_family == "unwrap" && row.path.ends_with("hidden.rs")),
+        "site hidden by allowance: {:?}",
+        inventory.rows
+    );
+    assert!(
+        inventory
+            .rows
+            .iter()
+            .any(|row| row.kind == "declaration" && row.path.ends_with("hidden.rs")),
+        "declaration omitted: {:?}",
+        inventory.rows
+    );
+}
+
+#[test]
+fn moved_site_is_visible_when_counts_stay_equal() {
+    let temp = fixture_root();
+    fs::write(
+        temp.path().join("crates/demo/tests/known.rs"),
+        "#[test]\nfn known_panic() { let _ = Some(1).unwrap(); }\n",
+    )
+    .expect("first");
+    let first = inventory_at(temp.path());
+    fs::write(
+        temp.path().join("crates/demo/tests/moved.rs"),
+        "#[test]\nfn known_panic() { let _ = Some(1).unwrap(); }\n",
+    )
+    .expect("moved");
+    fs::write(temp.path().join("crates/demo/tests/known.rs"), "#[test]\nfn known_panic() {}\n")
+        .expect("old");
+    let second = inventory_at(temp.path());
+    let delta = semantic_delta(&first, &second);
+    assert!(!delta.added.is_empty() || !delta.removed.is_empty());
+    assert_eq!(
+        first.rows.iter().filter(|row| row.site_family == "unwrap").count(),
+        second.rows.iter().filter(|row| row.site_family == "unwrap").count()
+    );
+}
+
+#[test]
+fn landed_conversion_does_not_keep_an_active_source_row() {
+    let temp = fixture_root();
+    fs::write(temp.path().join("crates/demo/tests/known.rs"), "#[test]\nfn known_panic() {}\n")
+        .expect("converted");
+    write_registry(
+        temp.path(),
+        r#"{
+          "schema_version": 1,
+          "sites": [{
+            "path": "crates/demo/tests/known.rs",
+            "enclosing_test_or_function": "known_panic",
+            "macro_family": "panic!",
+            "normalized_snippet": "panic!",
+            "selector_identity": "invocation:dead:occurrence:1",
+            "accepted_reason": "Intentional test failure diagnostic.",
+            "state": "active"
+          }]
+        }"#,
+    );
+    let inventory = inventory_at(temp.path());
+    assert!(
+        inventory.rows.iter().any(|row| {
+            row.path.ends_with("tests/known.rs") && row.status == DebtStatus::StaleRegistry
+        }),
+        "active registry row without source was not stale: {:?}",
+        inventory.rows
+    );
+    assert!(!inventory.rows.iter().any(|row| {
+        row.path.ends_with("tests/known.rs") && row.kind == "site" && row.site_family == "panic!"
+    }));
+}
+
+#[test]
+fn registry_row_for_disappeared_or_changed_family_is_stale() {
+    let temp = fixture_root();
+    let first = inventory_at(temp.path());
+    let site = first
+        .rows
+        .iter()
+        .find(|row| row.kind == "site" && row.site_family == "panic!")
+        .expect("panic site");
+    write_registry(
+        temp.path(),
+        &serde_json::json!({
+            "schema_version": 1,
+            "sites": [{
+                "path": site.path,
+                "enclosing_test_or_function": site.entrypoint,
+                "macro_family": site.site_family,
+                "normalized_snippet": site.source_identity,
+                "selector_identity": site.selector_identity,
+                "accepted_reason": "Intentional test failure diagnostic.",
+                "state": "active"
+            }]
+        })
+        .to_string(),
+    );
+    fs::write(
+        temp.path().join("crates/demo/tests/known.rs"),
+        "#[test]\nfn known_panic() { let _ = Some(1).unwrap(); }\n",
+    )
+    .expect("family change");
+    let inventory = inventory_at(temp.path());
+    assert!(
+        inventory.rows.iter().any(|row| row.status == DebtStatus::StaleRegistry),
+        "changed family did not stale the registry: {:?}",
+        inventory.rows
+    );
+    assert!(
+        !inventory.rows.iter().any(|row| {
+            row.kind == "site"
+                && row.site_family == "unwrap"
+                && row.status == DebtStatus::IntentionalExactException
+        }),
+        "unwrap inherited panic! registry identity: {:?}",
+        inventory.rows
+    );
+    let result = check_inventory(xtask::no_panic_debt::CheckRequest {
+        root: temp.path(),
+        current: &inventory,
+        artifact: None,
+        baseline: None,
+    })
+    .expect("check");
+    assert!(!result.ok, "changed-family stale registry passed check: {:?}", result.findings);
+}
+
+#[test]
+fn source_disappearance_without_disposition_is_not_converted() {
+    let temp = fixture_root();
+    let first = inventory_at(temp.path());
+    let site = first
+        .rows
+        .iter()
+        .find(|row| row.kind == "site" && row.site_family == "panic!")
+        .expect("panic site");
+    write_registry(
+        temp.path(),
+        &serde_json::json!({
+            "schema_version": 1,
+            "sites": [{
+                "path": site.path,
+                "enclosing_test_or_function": site.entrypoint,
+                "macro_family": site.site_family,
+                "normalized_snippet": site.source_identity,
+                "selector_identity": site.selector_identity,
+                "accepted_reason": "Intentional test failure diagnostic.",
+                "state": "active"
+            }]
+        })
+        .to_string(),
+    );
+    fs::write(temp.path().join("crates/demo/tests/known.rs"), "#[test]\nfn known_panic() {}\n")
+        .expect("gone");
+    let inventory = inventory_at(temp.path());
+    assert!(
+        inventory.rows.iter().any(|row| row.status == DebtStatus::StaleRegistry),
+        "active disappearance was not stale: {:?}",
+        inventory.rows
+    );
+    assert!(
+        !inventory.rows.iter().any(|row| row.status == DebtStatus::ConvertedAbsent),
+        "active disappearance was treated as converted: {:?}",
+        inventory.rows
+    );
+    let result = check_inventory(xtask::no_panic_debt::CheckRequest {
+        root: temp.path(),
+        current: &inventory,
+        artifact: None,
+        baseline: None,
+    })
+    .expect("check");
+    assert!(
+        !result.ok,
+        "stale registry on successfully covered source passed check: {:?}",
+        result.findings
+    );
+    assert!(
+        result.findings.iter().any(|finding| {
+            finding.contains("stale registry identity on successfully covered source")
+        }),
+        "missing covered-source stale-registry finding: {:?}",
+        result.findings
+    );
+}
+
+#[test]
+fn closed_owner_does_not_remain_current_without_transition() {
+    let temp = fixture_root();
+    fs::write(
+        temp.path().join("crates/demo/tests/owned.rs"),
+        "#[expect(clippy::unwrap_used, reason = \"policy:#3021: leftover\")]\n#[test]\nfn leftover() { let _ = Some(1).unwrap(); }\n",
+    )
+    .expect("owned");
+    let mut owners = OwnerState::default();
+    owners.closed_or_missing.insert("#3021".to_string());
+    let inventory = build_inventory(InventoryRequest {
+        root: temp.path(),
+        owner_state: Some(&owners),
+        ..InventoryRequest::default()
+    })
+    .expect("inventory");
+    assert!(
+        inventory.rows.iter().any(|row| row.status == DebtStatus::StaleOwner),
+        "closed owner stayed current: {:?}",
+        inventory.rows
+    );
+}
+
+#[test]
+fn same_line_same_family_sites_keep_distinct_occurrences() {
+    let temp = fixture_root();
+    fs::write(
+        temp.path().join("crates/demo/tests/same_line.rs"),
+        "#[test]\nfn two() { let _ = (Some(1).unwrap(), Some(2).unwrap()); }\n",
+    )
+    .expect("same line");
+    let inventory = inventory_at(temp.path());
+    let sites: Vec<_> = inventory
+        .rows
+        .iter()
+        .filter(|row| {
+            row.kind == "site"
+                && row.site_family == "unwrap"
+                && row.path.ends_with("tests/same_line.rs")
+        })
+        .collect();
+    assert_eq!(sites.len(), 2, "same-line unwrap sites collapsed: {:?}", inventory.rows);
+    let selectors: std::collections::BTreeSet<_> =
+        sites.iter().map(|row| row.selector_identity.as_str()).collect();
+    assert_eq!(selectors.len(), 2, "occurrence selectors collided: {selectors:?}");
+    assert!(
+        sites.iter().any(|row| row.selector_identity.ends_with("occurrence:1"))
+            && sites.iter().any(|row| row.selector_identity.ends_with("occurrence:2")),
+        "expected occurrence 1 and 2, got {selectors:?}"
+    );
+}
+
+#[test]
+fn missing_registry_is_not_proven_and_fails_check() {
+    let temp = fixture_root();
+    fs::remove_file(temp.path().join("ci/panic_test_identities.json")).expect("remove registry");
+    let inventory = inventory_at(temp.path());
+    assert!(
+        inventory.instruments.iter().any(|instrument| {
+            instrument.kind == "panic_registry" && instrument.status == InstrumentStatus::NotProven
+        }),
+        "missing registry was treated as an empty join: {:?}",
+        inventory.instruments
+    );
+    assert!(inventory.counts.instrument_not_proven > 0);
+    let result = check_inventory(xtask::no_panic_debt::CheckRequest {
+        root: temp.path(),
+        current: &inventory,
+        artifact: None,
+        baseline: None,
+    })
+    .expect("check");
+    assert!(!result.ok, "missing registry check passed: {:?}", result.findings);
+    assert!(
+        result.findings.iter().any(|finding| finding.contains("panic registry is not_proven")),
+        "{:?}",
+        result.findings
+    );
+}
+
+#[test]
+fn aborted_clippy_target_is_not_proven_and_not_zero() {
+    let temp = fixture_root();
+    let observation = ClippyObservation {
+        targets: vec![ClippyTargetObservation {
+            package: "demo".to_string(),
+            target: "demo".to_string(),
+            status: xtask::no_panic_debt::ClippyTargetStatus::Aborted,
+        }],
+    };
+    let inventory = build_inventory(InventoryRequest {
+        root: temp.path(),
+        clippy_observation: Some(&observation),
+        ..InventoryRequest::default()
+    })
+    .expect("inventory");
+    assert!(inventory.instruments.iter().any(|instrument| instrument.kind == "clippy"
+        && instrument.status == InstrumentStatus::NotProven));
+    assert!(
+        !inventory.rows.is_empty() || !inventory.population.files.is_empty(),
+        "aborted clippy collapsed the denominator to zero"
+    );
+    assert!(inventory.counts.instrument_not_proven > 0);
+}
+
+#[test]
+fn feature_and_platform_tests_are_not_omitted_by_default_observation() {
+    let temp = fixture_root();
+    fs::write(
+        temp.path().join("crates/demo/tests/gated.rs"),
+        r#"
+#[cfg(feature = "extra")]
+#[test]
+fn feature_site() { let _ = Some(1).unwrap(); }
+
+#[cfg(windows)]
+#[test]
+fn platform_site() { panic!("win"); }
+"#,
+    )
+    .expect("gated");
+    let inventory = inventory_at(temp.path());
+    assert!(
+        inventory.population.entrypoints.iter().any(|entry| entry.name == "feature_site"),
+        "feature test omitted: {:?}",
+        inventory.population.entrypoints
+    );
+    assert!(
+        inventory.population.entrypoints.iter().any(|entry| entry.name == "platform_site"),
+        "platform test omitted: {:?}",
+        inventory.population.entrypoints
+    );
+}
+
+#[test]
+fn output_is_stable_across_host_path_and_file_write_order() {
+    let first = fixture_root();
+    let second = tempfile::tempdir().expect("second");
+    write_policy(second.path());
+    write_empty_registry(second.path());
+    write_package(
+        second.path(),
+        "demo",
+        &fs::read_to_string(first.path().join("crates/demo/src/lib.rs")).expect("lib"),
+        &[(
+            "known.rs",
+            &fs::read_to_string(first.path().join("crates/demo/tests/known.rs")).expect("known"),
+        )],
+    );
+    let left = build_inventory(InventoryRequest {
+        root: first.path(),
+        repository_commit: Some("fixture".to_string()),
+        ..InventoryRequest::default()
+    })
+    .expect("left");
+    let right = build_inventory(InventoryRequest {
+        root: second.path(),
+        repository_commit: Some("fixture".to_string()),
+        ..InventoryRequest::default()
+    })
+    .expect("right");
+    assert_eq!(
+        canonical_json(&left).expect("left json"),
+        canonical_json(&right).expect("right json")
+    );
+}
+
+#[test]
+fn hand_edited_counts_cannot_make_check_pass() {
+    let temp = fixture_root();
+    let inventory = inventory_at(temp.path());
+    let mut tampered = inventory.clone();
+    tampered.counts.rows = 0;
+    let path = temp.path().join("tampered.json");
+    fs::write(&path, canonical_json(&tampered).expect("json")).expect("write");
+    let result = check_inventory(xtask::no_panic_debt::CheckRequest {
+        root: temp.path(),
+        current: &inventory,
+        artifact: Some(&path),
+        baseline: None,
+    })
+    .expect("check");
+    assert!(!result.ok, "tampered counts passed: {:?}", result.findings);
+}
+
+#[test]
+fn regeneration_does_not_absorb_new_unowned_into_baseline() {
+    let temp = fixture_root();
+    let baseline_inv = inventory_at(temp.path());
+    let baseline_path = temp.path().join("baseline.json");
+    fs::write(&baseline_path, canonical_json(&baseline_inv).expect("json")).expect("baseline");
+    fs::write(
+        temp.path().join("crates/demo/tests/new_unowned.rs"),
+        "#[test]\nfn fresh() { let _ = Some(1).unwrap(); }\n",
+    )
+    .expect("new");
+    let current = inventory_at(temp.path());
+    let result = check_inventory(xtask::no_panic_debt::CheckRequest {
+        root: temp.path(),
+        current: &current,
+        artifact: None,
+        baseline: Some(&baseline_path),
+    })
+    .expect("check");
+    assert!(!result.ok, "new unowned site was absorbed: {:?}", result.findings);
+}
+
+#[test]
+fn owned_site_becoming_unowned_is_not_absorbed_into_baseline() {
+    let temp = tempfile::tempdir().expect("temp");
+    write_policy(temp.path());
+    write_empty_registry(temp.path());
+    write_package(
+        temp.path(),
+        "demo",
+        "pub fn ready() -> Option<u8> { Some(1) }\n",
+        &[(
+            "owned.rs",
+            r##"#[allow(clippy::unwrap_used, reason = "#13397")]
+#[test]
+fn owned() {
+    let _ = Some(1).unwrap();
+}
+"##,
+        )],
+    );
+    let baseline_inv = inventory_at(temp.path());
+    let owned = baseline_inv
+        .rows
+        .iter()
+        .find(|row| row.kind == "site" && row.entrypoint == "owned" && row.site_family == "unwrap")
+        .expect("owned unwrap");
+    assert_eq!(owned.status, DebtStatus::DirectDebt, "owned fixture: {owned:?}");
+    let identity = (
+        owned.kind.clone(),
+        owned.path.clone(),
+        owned.entrypoint.clone(),
+        owned.site_family.clone(),
+        owned.selector_identity.clone(),
+    );
+    let baseline_path = temp.path().join("baseline.json");
+    fs::write(&baseline_path, canonical_json(&baseline_inv).expect("json")).expect("baseline");
+    fs::write(
+        temp.path().join("crates/demo/tests/owned.rs"),
+        "#[test]\nfn owned() {\n    let _ = Some(1).unwrap();\n}\n",
+    )
+    .expect("drop owner");
+    let current = inventory_at(temp.path());
+    let unowned = current
+        .rows
+        .iter()
+        .find(|row| row.kind == "site" && row.entrypoint == "owned" && row.site_family == "unwrap")
+        .expect("unowned unwrap");
+    assert_eq!(unowned.status, DebtStatus::Unowned, "owner removal: {unowned:?}");
+    assert_eq!(
+        (
+            unowned.kind.clone(),
+            unowned.path.clone(),
+            unowned.entrypoint.clone(),
+            unowned.site_family.clone(),
+            unowned.selector_identity.clone(),
+        ),
+        identity,
+        "invocation identity drifted: {unowned:?}"
+    );
+    let result = check_inventory(xtask::no_panic_debt::CheckRequest {
+        root: temp.path(),
+        current: &current,
+        artifact: None,
+        baseline: Some(&baseline_path),
+    })
+    .expect("check");
+    assert!(!result.ok, "owned-to-unowned was absorbed: {:?}", result.findings);
+    assert!(
+        result.findings.iter().any(|finding| finding.contains("became unowned")),
+        "ownership-loss finding omitted: {:?}",
+        result.findings
+    );
+}
+
+#[test]
+fn issue_closure_does_not_convert_current_source_to_converted_absent() {
+    let temp = fixture_root();
+    fs::write(
+        temp.path().join("crates/demo/tests/owned.rs"),
+        "#[expect(clippy::unwrap_used, reason = \"#14020 leftover\")]\n#[test]\nfn leftover() { let _ = Some(1).unwrap(); }\n",
+    )
+    .expect("owned");
+    let first = inventory_at(temp.path());
+    let site = first
+        .rows
+        .iter()
+        .find(|row| {
+            row.kind == "site" && row.path.ends_with("owned.rs") && row.site_family == "unwrap"
+        })
+        .expect("owned unwrap");
+    write_registry(
+        temp.path(),
+        &serde_json::json!({
+            "schema_version": 1,
+            "sites": [{
+                "path": site.path,
+                "enclosing_test_or_function": site.entrypoint,
+                "macro_family": "panic!",
+                "normalized_snippet": site.source_identity,
+                "selector_identity": site.selector_identity,
+                "accepted_reason": "retired conversion.",
+                "state": "retired"
+            }]
+        })
+        .to_string(),
+    );
+    let mut owners = OwnerState::default();
+    owners.closed_or_missing.insert("#14020".to_string());
+    let inventory = build_inventory(InventoryRequest {
+        root: temp.path(),
+        owner_state: Some(&owners),
+        ..InventoryRequest::default()
+    })
+    .expect("inventory");
+    assert!(
+        inventory.rows.iter().any(|row| {
+            row.path.ends_with("owned.rs")
+                && row.kind == "site"
+                && row.status == DebtStatus::StaleOwner
+        }),
+        "closed owner on live source was not stale_owner: {:?}",
+        inventory.rows
+    );
+    assert!(!inventory.rows.iter().any(|row| {
+        row.kind == "site"
+            && row.path.ends_with("owned.rs")
+            && row.status == DebtStatus::ConvertedAbsent
+    }));
+}
+
+#[test]
+fn open_candidate_tree_is_not_landed_source() {
+    let landed = fixture_root();
+    let candidate = tempfile::tempdir().expect("candidate");
+    write_policy(candidate.path());
+    write_package(
+        candidate.path(),
+        "demo",
+        "pub fn ready() -> Option<u8> { Some(1) }\n",
+        &[("pr_only.rs", "#[test]\nfn only_on_pr() { let _ = Some(1).unwrap(); }\n")],
+    );
+    let landed_inv = inventory_at(landed.path());
+    assert!(
+        !landed_inv.population.files.iter().any(|file| file.path.ends_with("pr_only.rs")),
+        "open PR file leaked into landed tree"
+    );
+    let candidate_inv = inventory_at(candidate.path());
+    assert!(candidate_inv.population.files.iter().any(|file| file.path.ends_with("pr_only.rs")));
+}
+
+#[test]
+fn matching_registry_panic_is_intentional_exception() {
+    let temp = fixture_root();
+    let first = inventory_at(temp.path());
+    let site = first
+        .rows
+        .iter()
+        .find(|row| row.kind == "site" && row.site_family == "panic!")
+        .expect("panic site");
+    write_registry(
+        temp.path(),
+        &serde_json::json!({
+            "schema_version": 1,
+            "sites": [{
+                "path": site.path,
+                "enclosing_test_or_function": site.entrypoint,
+                "macro_family": site.site_family,
+                "normalized_snippet": site.source_identity,
+                "selector_identity": site.selector_identity,
+                "accepted_reason": "Intentional test failure diagnostic.",
+                "state": "active"
+            }]
+        })
+        .to_string(),
+    );
+    let joined = inventory_at(temp.path());
+    assert!(
+        joined.rows.iter().any(|row| {
+            row.kind == "site"
+                && row.site_family == "panic!"
+                && row.status == DebtStatus::IntentionalExactException
+                && row.registry_relation == "matched_active"
+        }),
+        "exact registry identity did not join: {:?}",
+        joined.rows
+    );
+}
+
+#[test]
+fn nested_path_attr_inside_inline_module_is_not_resolved_against_src() {
+    let temp = tempfile::tempdir().expect("temp");
+    write_policy(temp.path());
+    write_package(
+        temp.path(),
+        "demo",
+        r#"
+pub mod nested {
+    #[cfg(test)]
+    #[path = "tests.rs"]
+    mod tests;
+
+    #[cfg(test)]
+    #[path = "test_support.rs"]
+    mod test_support;
+}
+"#,
+        &[],
+    );
+    let nested = temp.path().join("crates/demo/src/nested");
+    fs::create_dir_all(&nested).expect("nested");
+    fs::write(nested.join("tests.rs"), "#[test]\nfn nested_test() { let _ = Some(1).unwrap(); }\n")
+        .expect("tests");
+    fs::write(nested.join("test_support.rs"), "pub fn helper() { let _ = Some(1).unwrap(); }\n")
+        .expect("support");
+
+    let inventory = inventory_at(temp.path());
+    assert!(
+        !inventory.instruments.iter().any(|instrument| {
+            instrument.status == InstrumentStatus::NotProven
+                && (instrument.subject.ends_with("src/tests.rs")
+                    || instrument.subject.ends_with("src/test_support.rs"))
+        }),
+        "phantom src-relative #[path] was not_proven: {:?}",
+        inventory.instruments
+    );
+    assert!(
+        inventory.rows.iter().any(|row| {
+            row.path.ends_with("src/nested/tests.rs") && row.site_family == "unwrap"
+        }),
+        "nested #[path] test site omitted: {:?}",
+        inventory.rows
+    );
+    assert!(
+        inventory.rows.iter().any(|row| {
+            row.path.ends_with("src/nested/test_support.rs") && row.site_family == "unwrap"
+        }),
+        "cfg(test) helper unwrap omitted: {:?}",
+        inventory.rows
+    );
+}
+
+#[test]
+fn parent_directory_path_attr_joins_the_cargo_identity() {
+    let temp = tempfile::tempdir().expect("temp");
+    write_policy(temp.path());
+    write_package(
+        temp.path(),
+        "demo",
+        r#"
+pub mod twin;
+
+pub fn prod() -> Option<u8> { Some(1) }
+"#,
+        &[("via_parent.rs", "#[path = \"../src/twin.rs\"]\nmod twin;\n")],
+    );
+    fs::write(
+        temp.path().join("crates/demo/src/twin.rs"),
+        "#[cfg(test)]\nmod tests {\n    #[test]\n    fn unit() { let _ = Some(1).unwrap(); }\n}\n",
+    )
+    .expect("twin");
+
+    let inventory = inventory_at(temp.path());
+    let twin_unwraps: Vec<_> = inventory
+        .rows
+        .iter()
+        .filter(|row| row.site_family == "unwrap" && row.path.contains("twin.rs"))
+        .collect();
+    assert_eq!(
+        twin_unwraps.len(),
+        1,
+        "#[path = \"../src/twin.rs\"] must not mint a second identity: {:?}",
+        twin_unwraps
+    );
+    assert_eq!(twin_unwraps[0].path, "crates/demo/src/twin.rs");
+    assert!(
+        inventory.population.files.iter().any(|file| file.path.ends_with("tests/via_parent.rs")),
+        "integration-test crate root omitted: {:?}",
+        inventory.population.files
+    );
+    assert!(
+        !inventory.instruments.iter().any(|instrument| {
+            instrument.subject.contains("tests/src/twin.rs")
+                || instrument.subject.contains("via_parent/../")
+        }),
+        "#[path] was resolved against the child-module directory: {:?}",
+        inventory.instruments
+    );
+    assert!(
+        !inventory.rows.iter().any(|row| row.path.contains("..")),
+        "row identity retained ..: {:?}",
+        inventory.rows
+    );
+    assert!(
+        !inventory.population.files.iter().any(|file| file.path.contains("..")),
+        "population retained ..: {:?}",
+        inventory.population.files
+    );
+}
+
+#[test]
+fn path_attr_escaping_the_repository_root_is_not_proven() {
+    let temp = tempfile::tempdir().expect("temp");
+    write_policy(temp.path());
+    write_package(
+        temp.path(),
+        "demo",
+        r#"
+#[cfg(test)]
+#[path = "../../../../../../../../../../outside.rs"]
+mod escaped;
+"#,
+        &[],
+    );
+    let inventory = inventory_at(temp.path());
+    assert!(
+        inventory.instruments.iter().any(|instrument| {
+            instrument.kind == "module_path" && instrument.status == InstrumentStatus::NotProven
+        }),
+        "escaping #[path] must be not_proven, not a ../ identity: {:?}",
+        inventory.instruments
+    );
+    assert!(
+        !inventory.rows.iter().any(|row| row.path.contains("..")),
+        "escaping #[path] minted a ../ row: {:?}",
+        inventory.rows
+    );
+}
+
+#[test]
+fn later_test_context_rescans_a_module_first_seen_as_production() {
+    let temp = tempfile::tempdir().expect("temp");
+    write_policy(temp.path());
+    write_package(
+        temp.path(),
+        "demo",
+        r#"
+pub mod aaa;
+"#,
+        &[("zzz.rs", "#[path = \"support/later.rs\"]\nmod later;\n")],
+    );
+    fs::write(temp.path().join("crates/demo/src/aaa.rs"), "#[path = \"shared.rs\"]\nmod shared;\n")
+        .expect("aaa");
+    fs::write(
+        temp.path().join("crates/demo/src/shared.rs"),
+        "pub fn helper() { let _ = Some(1).unwrap(); }\n",
+    )
+    .expect("shared");
+    fs::create_dir_all(temp.path().join("crates/demo/tests/support")).expect("support");
+    fs::write(
+        temp.path().join("crates/demo/tests/support/later.rs"),
+        "#[path = \"../../src/shared.rs\"]\nmod shared;\n",
+    )
+    .expect("later");
+
+    let inventory = inventory_at(temp.path());
+    assert!(
+        inventory
+            .rows
+            .iter()
+            .any(|row| { row.path.ends_with("src/shared.rs") && row.site_family == "unwrap" }),
+        "test-context unwrap on a production-first shared module was omitted: {:?}",
+        inventory.rows
+    );
+}
+
+#[test]
+fn retired_registry_row_for_a_missing_file_is_not_converted_absent() {
+    let temp = fixture_root();
+    write_registry(
+        temp.path(),
+        &serde_json::json!({
+            "schema_version": 1,
+            "sites": [{
+                "path": "crates/demo/tests/never_existed.rs",
+                "enclosing_test_or_function": "gone",
+                "macro_family": "panic!",
+                "normalized_snippet": "panic!(\"known\")",
+                "selector_identity": "invocation:missing:occurrence:1",
+                "accepted_reason": "retired conversion.",
+                "state": "retired"
+            }]
+        })
+        .to_string(),
+    );
+    let inventory = inventory_at(temp.path());
+    let row = inventory.rows.iter().find(|row| row.path.ends_with("tests/never_existed.rs"));
+    assert!(
+        row.is_some_and(|row| {
+            row.status == DebtStatus::InstrumentNotProven
+                && row.registry_relation == "retired_file_absent_uncovered"
+        }),
+        "missing-file retired row became converted_absent: {:?}",
+        inventory.rows
+    );
+    assert!(
+        !inventory.rows.iter().any(|row| {
+            row.path.ends_with("tests/never_existed.rs")
+                && row.status == DebtStatus::ConvertedAbsent
+        }),
+        "missing-file retired row claimed conversion: {:?}",
+        inventory.rows
+    );
+}
+
+#[test]
+fn cfg_attr_not_test_allow_does_not_cover_test_unwrap() {
+    let temp = tempfile::tempdir().expect("temp");
+    write_policy(temp.path());
+    write_empty_registry(temp.path());
+    write_package(
+        temp.path(),
+        "demo",
+        r##"
+#[cfg(test)]
+mod tests {
+    #[cfg_attr(not(test), allow(clippy::unwrap_used, reason = "#13397 inactive"))]
+    #[test]
+    fn still_debt() {
+        let _ = Some(1).unwrap();
+    }
+
+    #[cfg_attr(feature = "need-me", allow(clippy::unwrap_used, reason = "#13397 feature"))]
+    #[test]
+    fn feature_gated_allow() {
+        let _ = Some(2).unwrap();
+    }
+}
+"##,
+        &[("known.rs", "#[test]\nfn known() {}\n")],
+    );
+    let inventory = inventory_at(temp.path());
+    let still_debt = inventory
+        .rows
+        .iter()
+        .find(|row| {
+            row.kind == "site" && row.entrypoint == "still_debt" && row.site_family == "unwrap"
+        })
+        .expect("still_debt unwrap");
+    assert!(
+        still_debt.declaration_identity.is_empty(),
+        "cfg_attr(not(test), allow) covered a test unwrap: {:?}",
+        still_debt
+    );
+    assert_eq!(still_debt.status, DebtStatus::Unowned);
+    let feature_row = inventory
+        .rows
+        .iter()
+        .find(|row| {
+            row.kind == "site"
+                && row.entrypoint == "feature_gated_allow"
+                && row.site_family == "unwrap"
+        })
+        .expect("feature unwrap");
+    assert!(
+        feature_row.declaration_identity.is_empty(),
+        "cfg_attr(feature, allow) covered a test unwrap: {:?}",
+        feature_row
+    );
+    assert!(
+        inventory.instruments.iter().any(|instrument| {
+            instrument.kind == "cfg_attr_cover"
+                && instrument.status == InstrumentStatus::NotProven
+                && instrument.subject.ends_with("src/lib.rs")
+        }),
+        "feature-conditional cfg_attr covering was not not_proven: {:?}",
+        inventory.instruments
+    );
+}
+
+#[test]
+fn panic_in_result_fn_allow_does_not_cover_panic_macro() {
+    let temp = tempfile::tempdir().expect("temp");
+    write_policy(temp.path());
+    write_empty_registry(temp.path());
+    write_package(
+        temp.path(),
+        "demo",
+        r##"
+#[cfg(test)]
+mod tests {
+    #[allow(clippy::panic_in_result_fn, reason = "#13397 prefix")]
+    #[test]
+    fn unrelated_allow() {
+        panic!("still debt");
+    }
+
+    #[allow(clippy::panic, reason = "#13397 panic")]
+    #[test]
+    fn real_allow() {
+        panic!("owned");
+    }
+}
+"##,
+        &[("known.rs", "#[test]\nfn known() {}\n")],
+    );
+    let inventory = inventory_at(temp.path());
+    let unrelated = inventory
+        .rows
+        .iter()
+        .find(|row| {
+            row.kind == "site" && row.entrypoint == "unrelated_allow" && row.site_family == "panic!"
+        })
+        .expect("prefix panic");
+    assert!(
+        unrelated.declaration_identity.is_empty(),
+        "allow(clippy::panic_in_result_fn) covered panic!: {:?}",
+        unrelated
+    );
+    assert_eq!(unrelated.status, DebtStatus::Unowned);
+    let owned = inventory
+        .rows
+        .iter()
+        .find(|row| {
+            row.kind == "site" && row.entrypoint == "real_allow" && row.site_family == "panic!"
+        })
+        .expect("real panic allow");
+    assert!(
+        !owned.declaration_identity.is_empty(),
+        "allow(clippy::panic) did not cover panic!: {:?}",
+        owned
+    );
+    assert_eq!(owned.owner, "#13397");
+    assert_eq!(owned.status, DebtStatus::DirectDebt);
+}
+
+#[test]
+fn missing_cfg_test_path_module_is_not_proven() {
+    let temp = tempfile::tempdir().expect("temp");
+    write_policy(temp.path());
+    write_package(
+        temp.path(),
+        "demo",
+        r#"
+pub mod nested {
+    #[cfg(test)]
+    #[path = "missing_tests.rs"]
+    mod tests;
+}
+"#,
+        &[],
+    );
+    fs::create_dir_all(temp.path().join("crates/demo/src/nested")).expect("nested");
+    let inventory = inventory_at(temp.path());
+    assert!(
+        inventory.instruments.iter().any(|instrument| {
+            instrument.kind == "source_parse"
+                && instrument.status == InstrumentStatus::NotProven
+                && instrument.subject.ends_with("src/nested/missing_tests.rs")
+        }),
+        "missing #[path] module was not not_proven: {:?}",
+        inventory.instruments
+    );
+    assert!(inventory.counts.instrument_not_proven > 0);
+}
+
+#[test]
+fn production_unwrap_is_not_test_debt() {
+    let temp = tempfile::tempdir().expect("temp");
+    write_policy(temp.path());
+    write_package(
+        temp.path(),
+        "demo",
+        "pub fn ready() -> u8 { Some(1).unwrap() }\n",
+        &[("known.rs", "#[test]\nfn known() {}\n")],
+    );
+    let inventory = inventory_at(temp.path());
+    assert!(
+        !inventory.rows.iter().any(|row| {
+            row.kind == "site" && row.path.ends_with("src/lib.rs") && row.site_family == "unwrap"
+        }),
+        "production unwrap classified as test debt: {:?}",
+        inventory.rows
+    );
+}
+
+#[test]
+fn non_member_nested_workspace_is_not_proven_not_a_population_hole() {
+    let temp = tempfile::tempdir().expect("temp");
+    write_policy(temp.path());
+    write_empty_registry(temp.path());
+    write_package(
+        temp.path(),
+        "demo",
+        "pub fn ready() {}\n",
+        &[("known.rs", "#[test]\nfn known() {}\n")],
+    );
+    let fuzz = temp.path().join("tests/fuzz");
+    fs::create_dir_all(&fuzz).expect("fuzz");
+    fs::write(
+        fuzz.join("Cargo.toml"),
+        r#"[package]
+name = "fuzz-parser-robustness"
+version = "0.1.0"
+edition = "2021"
+
+[workspace]
+"#,
+    )
+    .expect("fuzz manifest");
+    fs::write(fuzz.join("quick_lsp_test.rs"), "fn main() { let _ = Some(1).unwrap(); }\n")
+        .expect("fuzz bin");
+
+    let inventory = inventory_at(temp.path());
+    assert!(
+        inventory.instruments.iter().any(|instrument| {
+            instrument.kind == "test_topology"
+                && instrument.status == InstrumentStatus::NotProven
+                && instrument.subject.ends_with("tests/fuzz/Cargo.toml")
+        }),
+        "unreachable nested workspace was a silent zero: {:?}",
+        inventory.instruments
+    );
+    assert!(
+        !inventory.rows.iter().any(|row| row.path.ends_with("quick_lsp_test.rs")),
+        "non-member fuzz bin was absorbed as workspace test debt: {:?}",
+        inventory.rows
+    );
+    let result = check_inventory(xtask::no_panic_debt::CheckRequest {
+        root: temp.path(),
+        current: &inventory,
+        artifact: None,
+        baseline: None,
+    })
+    .expect("check");
+    assert!(
+        result.ok,
+        "non-member tests/fuzz was treated as a missing population hole: {:?}",
+        result.findings
+    );
+}
+
+#[test]
+fn registry_is_not_the_discovery_denominator() {
+    let temp = fixture_root();
+    write_registry(temp.path(), r#"{"schema_version":1,"sites":[]}"#);
+    fs::write(
+        temp.path().join("crates/demo/tests/unregistered.rs"),
+        "#[test]\nfn fresh() { let _ = Some(1).unwrap(); }\n",
+    )
+    .expect("unregistered");
+    let inventory = inventory_at(temp.path());
+    assert!(
+        inventory
+            .rows
+            .iter()
+            .any(|row| { row.path.ends_with("unregistered.rs") && row.site_family == "unwrap" }),
+        "unregistered site escaped because registry was empty: {:?}",
+        inventory.rows
+    );
+}
+
+#[test]
+fn unreadable_source_is_not_proven_not_empty_success() {
+    let temp = fixture_root();
+    fs::write(temp.path().join("crates/demo/tests/broken.rs"), "fn not rust {{{").expect("broken");
+    let inventory = inventory_at(temp.path());
+    assert!(inventory.instruments.iter().any(|instrument| instrument.kind == "source_parse"
+        && instrument.status == InstrumentStatus::NotProven));
+    assert!(inventory.counts.instrument_not_proven > 0);
+}
+
+#[test]
+fn missing_vocabulary_is_not_a_clean_zero() {
+    let temp = tempfile::tempdir().expect("temp");
+    write_package(
+        temp.path(),
+        "demo",
+        "pub fn ready() {}\n",
+        &[("known.rs", "#[test]\nfn known() { let _ = Some(1).unwrap(); }\n")],
+    );
+    let inventory = inventory_at(temp.path());
+    assert!(
+        inventory
+            .instruments
+            .iter()
+            .any(|instrument| instrument.status == InstrumentStatus::NotProven)
+    );
+    let findings = xtask::no_panic_debt::check_inventory(xtask::no_panic_debt::CheckRequest {
+        root: temp.path(),
+        current: &inventory,
+        artifact: None,
+        baseline: None,
+    })
+    .expect("check");
+    assert!(!findings.ok, "missing vocabulary became a clean zero: {:?}", findings.findings);
+}
+
+#[test]
+fn failed_source_is_not_converted_absent() {
+    let temp = fixture_root();
+    fs::write(
+        temp.path().join("crates/demo/tests/sibling.rs"),
+        "#[test]\nfn sibling() { let _ = Some(1).unwrap(); }\n",
+    )
+    .expect("sibling");
+    let first = inventory_at(temp.path());
+    let site = first
+        .rows
+        .iter()
+        .find(|row| row.kind == "site" && row.site_family == "panic!")
+        .expect("panic site");
+    write_registry(
+        temp.path(),
+        &serde_json::json!({
+            "schema_version": 1,
+            "sites": [{
+                "path": site.path,
+                "enclosing_test_or_function": site.entrypoint,
+                "macro_family": site.site_family,
+                "normalized_snippet": site.source_identity,
+                "selector_identity": site.selector_identity,
+                "accepted_reason": "retired conversion.",
+                "state": "retired"
+            }]
+        })
+        .to_string(),
+    );
+    let matched = inventory_at(temp.path());
+    assert!(
+        matched.rows.iter().any(|row| {
+            row.kind == "site"
+                && row.path == site.path
+                && row.status == DebtStatus::StaleRegistry
+                && row.registry_relation == "matched_retired"
+        }),
+        "retired identity on live source was not stale_registry: {:?}",
+        matched.rows
+    );
+
+    fs::write(temp.path().join("crates/demo/tests/known.rs"), "fn not rust {{{").expect("broken");
+    let broken = inventory_at(temp.path());
+    assert!(
+        broken.instruments.iter().any(|instrument| {
+            instrument.kind == "source_parse"
+                && instrument.status == InstrumentStatus::NotProven
+                && instrument.subject.ends_with("tests/known.rs")
+        }),
+        "broken source was not source_parse not_proven: {:?}",
+        broken.instruments
+    );
+    assert!(
+        broken.rows.iter().any(|row| {
+            row.kind == "registry"
+                && row.path.ends_with("tests/known.rs")
+                && row.status == DebtStatus::InstrumentNotProven
+                && row.registry_relation == "source_not_proven"
+        }),
+        "failed source was treated as absence: {:?}",
+        broken.rows
+    );
+    assert!(
+        !broken.rows.iter().any(|row| {
+            row.path.ends_with("tests/known.rs") && row.status == DebtStatus::ConvertedAbsent
+        }),
+        "failed source became converted_absent: {:?}",
+        broken.rows
+    );
+    assert!(
+        broken.rows.iter().any(|row| {
+            row.kind == "site"
+                && row.path.ends_with("tests/sibling.rs")
+                && row.site_family == "unwrap"
+        }),
+        "unrelated parsed sibling lost its observed site: {:?}",
+        broken.rows
+    );
+    assert!(!broken.counts.observation_complete);
+    let result = check_inventory(xtask::no_panic_debt::CheckRequest {
+        root: temp.path(),
+        current: &broken,
+        artifact: None,
+        baseline: None,
+    })
+    .expect("check");
+    assert!(result.ok, "failed-source observation integrity should stay ok: {:?}", result.findings);
+}
+
+#[test]
+fn retired_parsed_removal_is_converted_absent() {
+    let temp = fixture_root();
+    let first = inventory_at(temp.path());
+    let site = first
+        .rows
+        .iter()
+        .find(|row| row.kind == "site" && row.site_family == "panic!")
+        .expect("panic site");
+    write_registry(
+        temp.path(),
+        &serde_json::json!({
+            "schema_version": 1,
+            "sites": [{
+                "path": site.path,
+                "enclosing_test_or_function": site.entrypoint,
+                "macro_family": site.site_family,
+                "normalized_snippet": site.source_identity,
+                "selector_identity": site.selector_identity,
+                "accepted_reason": "retired conversion.",
+                "state": "retired"
+            }]
+        })
+        .to_string(),
+    );
+    fs::write(temp.path().join("crates/demo/tests/known.rs"), "#[test]\nfn known_panic() {}\n")
+        .expect("removed site");
+    let inventory = inventory_at(temp.path());
+    assert!(
+        inventory.rows.iter().any(|row| {
+            row.kind == "registry"
+                && row.path.ends_with("tests/known.rs")
+                && row.status == DebtStatus::ConvertedAbsent
+                && row.registry_relation == "retired_absent_from_source"
+        }),
+        "parsed retired removal was not converted_absent: {:?}",
+        inventory.rows
+    );
+}
+
+#[test]
+fn workspace_root_package_is_in_population() {
+    let temp = tempfile::tempdir().expect("temp");
+    write_policy(temp.path());
+    write_empty_registry(temp.path());
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[workspace]
+members = ["crates/demo"]
+resolver = "2"
+
+[package]
+name = "root-tool"
+version = "0.1.0"
+edition = "2021"
+"#,
+    )
+    .expect("workspace+package");
+    let crate_root = temp.path().join("crates/demo");
+    fs::create_dir_all(crate_root.join("src")).expect("demo src");
+    fs::write(
+        crate_root.join("Cargo.toml"),
+        "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .expect("demo manifest");
+    fs::write(crate_root.join("src/lib.rs"), "pub fn ready() {}\n").expect("demo lib");
+    fs::create_dir_all(temp.path().join("src")).expect("root src");
+    fs::write(
+        temp.path().join("src/lib.rs"),
+        "#[cfg(test)]\nmod tests { #[test] fn root() { let _ = Some(1).unwrap(); } }\n",
+    )
+    .expect("root lib");
+    let inventory = inventory_at(temp.path());
+    assert!(
+        inventory.population.packages.iter().any(|package| package.name == "root-tool"),
+        "root [package] omitted: {:?}",
+        inventory.population.packages
+    );
+    assert!(
+        inventory.rows.iter().any(|row| {
+            row.path.ends_with("src/lib.rs")
+                && row.site_family == "unwrap"
+                && row.package == "root-tool"
+        }),
+        "root-package cfg(test) unwrap omitted: {:?}",
+        inventory.rows
+    );
+}
+
+#[test]
+fn excluded_member_is_not_population() {
+    let temp = tempfile::tempdir().expect("temp");
+    write_policy(temp.path());
+    write_empty_registry(temp.path());
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[workspace]
+members = ["crates/*"]
+exclude = ["crates/skipped"]
+resolver = "2"
+"#,
+    )
+    .expect("workspace");
+    for name in ["demo", "skipped"] {
+        let crate_root = temp.path().join("crates").join(name);
+        fs::create_dir_all(crate_root.join("src")).expect("src");
+        fs::create_dir_all(crate_root.join("tests")).expect("tests");
+        fs::write(
+            crate_root.join("Cargo.toml"),
+            format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n"),
+        )
+        .expect("manifest");
+        fs::write(crate_root.join("src/lib.rs"), "pub fn ready() {}\n").expect("lib");
+        fs::write(
+            crate_root.join("tests/debt.rs"),
+            "#[test]\nfn debt() { let _ = Some(1).unwrap(); }\n",
+        )
+        .expect("test");
+    }
+    let inventory = inventory_at(temp.path());
+    assert!(
+        inventory.population.packages.iter().any(|package| package.name == "demo"),
+        "included member missing: {:?}",
+        inventory.population.packages
+    );
+    assert!(
+        !inventory.population.packages.iter().any(|package| package.name == "skipped"),
+        "excluded member leaked into population: {:?}",
+        inventory.population.packages
+    );
+    assert!(
+        !inventory.rows.iter().any(|row| row.path.contains("crates/skipped")),
+        "excluded member sites leaked: {:?}",
+        inventory.rows
+    );
+}
+
+#[test]
+fn missing_member_manifest_is_not_proven() {
+    let temp = tempfile::tempdir().expect("temp");
+    write_policy(temp.path());
+    write_package(
+        temp.path(),
+        "demo",
+        "pub fn ready() {}\n",
+        &[("known.rs", "#[test]\nfn known() {}\n")],
+    );
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        "[workspace]\nmembers = [\"crates/demo\", \"crates/ghost\"]\nresolver = \"2\"\n",
+    )
+    .expect("members");
+    let inventory = inventory_at(temp.path());
+    assert!(
+        inventory.instruments.iter().any(|instrument| {
+            instrument.kind == "test_topology"
+                && instrument.status == InstrumentStatus::NotProven
+                && instrument.detail.contains("cargo metadata failed")
+                && (instrument.subject.ends_with("crates/ghost/Cargo.toml")
+                    || instrument.subject == "Cargo.toml")
+        }),
+        "missing member was a silent skip: {:?}",
+        inventory.instruments
+    );
+    assert!(
+        inventory.population.packages.is_empty(),
+        "failed cargo metadata still emitted packages: {:?}",
+        inventory.population.packages
+    );
+    assert!(!inventory.counts.observation_complete);
+}
+
+#[test]
+fn cargo_test_false_and_required_features_follow_cargo_not_handwritten_inference() {
+    // Handwritten autodiscovery would admit src/main.rs (default bin) and
+    // tests/disabled.rs (tests/*.rs) even with test=false, and would not record
+    // required-features on tests/gated.rs. The denominator must follow Cargo.
+    let temp = tempfile::tempdir().expect("temp");
+    write_policy(temp.path());
+    write_empty_registry(temp.path());
+    write_package(temp.path(), "alpha", "pub fn ok() {}\n", &[]);
+    fs::write(
+        temp.path().join("crates/alpha/Cargo.toml"),
+        r#"[package]
+name = "alpha"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+need-me = []
+
+[[bin]]
+name = "alpha-bin"
+path = "src/main.rs"
+test = false
+
+[[test]]
+name = "disabled"
+path = "tests/disabled.rs"
+test = false
+
+[[test]]
+name = "gated"
+path = "tests/gated.rs"
+required-features = ["need-me"]
+"#,
+    )
+    .expect("manifest");
+    fs::write(
+        temp.path().join("crates/alpha/src/main.rs"),
+        "fn main() { let _ = Some(1).unwrap(); }\n",
+    )
+    .expect("bin");
+    fs::write(
+        temp.path().join("crates/alpha/tests/disabled.rs"),
+        "#[test]\nfn disabled() { let _ = Some(1).unwrap(); }\n",
+    )
+    .expect("disabled");
+    fs::write(
+        temp.path().join("crates/alpha/tests/gated.rs"),
+        "#[test]\nfn gated() { let _ = Some(1).unwrap(); }\n",
+    )
+    .expect("gated");
+
+    let inventory = inventory_at(temp.path());
+    let handwritten_would_include = [
+        "crates/alpha/src/main.rs",
+        "crates/alpha/tests/disabled.rs",
+        "crates/alpha/tests/gated.rs",
+        "crates/alpha/src/lib.rs",
+    ];
+    let files: Vec<_> = inventory.population.files.iter().map(|file| file.path.as_str()).collect();
+    assert!(
+        handwritten_would_include.iter().any(|path| files.iter().any(|file| file.ends_with(*path))),
+        "fixture produced no Cargo-admitted files: {files:?}"
+    );
+    assert!(
+        !inventory.population.files.iter().any(|file| file.path.ends_with("src/main.rs")),
+        "test=false bin followed handwritten inference: {:?}",
+        inventory.population.files
+    );
+    assert!(
+        !inventory.rows.iter().any(|row| row.path.ends_with("src/main.rs")),
+        "test=false bin unwrap became debt: {:?}",
+        inventory.rows
+    );
+    assert!(
+        !inventory.population.files.iter().any(|file| file.path.ends_with("tests/disabled.rs")),
+        "test=false integration target followed handwritten autodiscovery: {:?}",
+        inventory.population.files
+    );
+    assert!(
+        !inventory.rows.iter().any(|row| row.path.ends_with("tests/disabled.rs")),
+        "test=false integration unwrap became debt: {:?}",
+        inventory.rows
+    );
+    let gated = inventory
+        .population
+        .files
+        .iter()
+        .find(|file| file.path.ends_with("tests/gated.rs"))
+        .expect("gated target missing from Cargo population");
+    assert_eq!(gated.required_features, vec!["need-me".to_string()]);
+    assert_eq!(gated.target_name, "gated");
+    assert!(
+        inventory
+            .rows
+            .iter()
+            .any(|row| row.path.ends_with("tests/gated.rs") && row.site_family == "unwrap"),
+        "required-features target unwrap omitted: {:?}",
+        inventory.rows
+    );
+    let result = check_inventory(xtask::no_panic_debt::CheckRequest {
+        root: temp.path(),
+        current: &inventory,
+        artifact: None,
+        baseline: None,
+    })
+    .expect("check");
+    assert!(
+        result.ok,
+        "Cargo-excluded test=false files were treated as missing population holes: {:?}",
+        result.findings
+    );
+}
+
+#[test]
+fn custom_test_target_helper_unwrap_is_debt() {
+    let temp = tempfile::tempdir().expect("temp");
+    write_policy(temp.path());
+    write_empty_registry(temp.path());
+    write_package(temp.path(), "demo", "pub fn ready() {}\n", &[]);
+    fs::write(
+        temp.path().join("crates/demo/Cargo.toml"),
+        r#"[package]
+name = "demo"
+version = "0.1.0"
+edition = "2021"
+
+[[test]]
+name = "custom"
+path = "checks/custom.rs"
+"#,
+    )
+    .expect("custom target");
+    fs::create_dir_all(temp.path().join("crates/demo/checks")).expect("checks");
+    fs::write(
+        temp.path().join("crates/demo/checks/custom.rs"),
+        "fn helper() { let _ = Some(1).unwrap(); }\n#[test]\nfn uses_helper() { helper(); }\n",
+    )
+    .expect("custom.rs");
+    let inventory = inventory_at(temp.path());
+    assert!(
+        inventory.population.files.iter().any(|file| {
+            file.path.ends_with("checks/custom.rs")
+                && file.target_kind == xtask::no_panic_debt::TargetKind::IntegrationTest
+        }),
+        "custom [[test]] path omitted or not a test target: {:?}",
+        inventory.population.files
+    );
+    assert!(
+        inventory
+            .rows
+            .iter()
+            .any(|row| { row.path.ends_with("checks/custom.rs") && row.site_family == "unwrap" }),
+        "helper unwrap outside #[test] in a custom test target was omitted: {:?}",
+        inventory.rows
+    );
+}
+
+#[test]
+fn named_test_target_without_path_is_still_a_test_crate() {
+    let temp = tempfile::tempdir().expect("temp");
+    write_policy(temp.path());
+    write_empty_registry(temp.path());
+    write_package(temp.path(), "demo", "pub fn ready() {}\n", &[]);
+    fs::write(
+        temp.path().join("crates/demo/Cargo.toml"),
+        r#"[package]
+name = "demo"
+version = "0.1.0"
+edition = "2021"
+autotests = false
+
+[[test]]
+name = "named"
+"#,
+    )
+    .expect("named target");
+    fs::write(
+        temp.path().join("crates/demo/tests/named.rs"),
+        "fn helper() { let _ = Some(1).unwrap(); }\n#[test]\nfn uses_helper() { helper(); }\n",
+    )
+    .expect("named.rs");
+    fs::write(
+        temp.path().join("crates/demo/tests/ignored.rs"),
+        "#[test]\nfn skipped() { let _ = Some(1).unwrap(); }\n",
+    )
+    .expect("ignored autodiscovery");
+    let inventory = inventory_at(temp.path());
+    assert!(
+        inventory
+            .rows
+            .iter()
+            .any(|row| { row.path.ends_with("tests/named.rs") && row.site_family == "unwrap" }),
+        "name-only [[test]] crate omitted: {:?}",
+        inventory.rows
+    );
+    assert!(
+        !inventory.population.files.iter().any(|file| file.path.ends_with("tests/ignored.rs")),
+        "autotests=false still absorbed tests/*.rs: {:?}",
+        inventory.population.files
+    );
+}
+
+#[test]
+fn detached_tests_fixture_is_not_executable_population() {
+    let temp = fixture_root();
+    fs::create_dir_all(temp.path().join("crates/demo/tests/fixtures")).expect("fixtures");
+    fs::write(
+        temp.path().join("crates/demo/tests/fixtures/orphan.rs"),
+        "fn not_a_target() { let _ = Some(1).unwrap(); }\n",
+    )
+    .expect("orphan");
+    let inventory = inventory_at(temp.path());
+    assert!(
+        !inventory
+            .population
+            .files
+            .iter()
+            .any(|file| file.path.ends_with("tests/fixtures/orphan.rs")),
+        "detached fixture counted as executable test population: {:?}",
+        inventory.population.files
+    );
+    assert!(
+        !inventory.rows.iter().any(|row| row.path.ends_with("tests/fixtures/orphan.rs")),
+        "detached fixture became test debt: {:?}",
+        inventory.rows
+    );
+    let result = check_inventory(xtask::no_panic_debt::CheckRequest {
+        root: temp.path(),
+        current: &inventory,
+        artifact: None,
+        baseline: None,
+    })
+    .expect("check");
+    assert!(result.ok, "detached fixture failed integrity: {:?}", result.findings);
+}
+
+#[test]
+fn duplicate_registry_identities_are_not_proven() {
+    let temp = fixture_root();
+    let first = inventory_at(temp.path());
+    let site = first
+        .rows
+        .iter()
+        .find(|row| row.kind == "site" && row.site_family == "panic!")
+        .expect("panic site");
+    let identity = serde_json::json!({
+        "path": site.path,
+        "enclosing_test_or_function": site.entrypoint,
+        "macro_family": site.site_family,
+        "normalized_snippet": site.source_identity,
+        "selector_identity": site.selector_identity,
+        "accepted_reason": "first owner",
+        "state": "active"
+    });
+    let mut retired = identity.clone();
+    retired["accepted_reason"] = serde_json::json!("second owner");
+    retired["state"] = serde_json::json!("retired");
+    write_registry(
+        temp.path(),
+        &serde_json::json!({
+            "schema_version": 1,
+            "sites": [identity, retired]
+        })
+        .to_string(),
+    );
+    let inventory = inventory_at(temp.path());
+    assert!(
+        inventory.instruments.iter().any(|instrument| {
+            instrument.kind == "panic_registry"
+                && instrument.status == InstrumentStatus::NotProven
+                && instrument.detail.contains("duplicates identity")
+        }),
+        "duplicate registry identities were collapsed by insert order: {:?}",
+        inventory.instruments
+    );
+    assert!(
+        !inventory.rows.iter().any(|row| {
+            row.path == site.path && row.status == DebtStatus::IntentionalExactException
+        }),
+        "file order chose an active join from a duplicate registry: {:?}",
+        inventory.rows
+    );
+    let result = check_inventory(xtask::no_panic_debt::CheckRequest {
+        root: temp.path(),
+        current: &inventory,
+        artifact: None,
+        baseline: None,
+    })
+    .expect("check");
+    assert!(!result.ok, "duplicate registry identities passed check: {:?}", result.findings);
+}
+
+#[test]
+fn proptest_generated_tests_are_not_silent_omissions() {
+    let temp = fixture_root();
+    fs::write(
+        temp.path().join("crates/demo/tests/proptest_shape.rs"),
+        r#"
+proptest! {
+    #[test]
+    fn case_insensitive_matching_is_equivalent(name in "[a-zA-Z]{1,24}", query in "[a-zA-Z]{0,12}") {
+        let _ = Some(1).unwrap();
+        let _ = (name, query);
+    }
+}
+
+#[test]
+fn ordinary() { let _ = Some(2).unwrap(); }
+"#,
+    )
+    .expect("proptest shape");
+    let inventory = inventory_at(temp.path());
+    assert!(
+        inventory.instruments.iter().any(|instrument| {
+            instrument.kind == "macro_test"
+                && instrument.status == InstrumentStatus::NotProven
+                && instrument.subject.ends_with("tests/proptest_shape.rs")
+                && instrument.detail.contains("proptest!")
+        }),
+        "proptest! was a silent zero: {:?}",
+        inventory.instruments
+    );
+    assert!(
+        inventory.rows.iter().any(|row| {
+            row.path.ends_with("tests/proptest_shape.rs")
+                && row.entrypoint == "ordinary"
+                && row.site_family == "unwrap"
+        }),
+        "ordinary sibling test in the same file was lost: {:?}",
+        inventory.rows
+    );
+    assert!(!inventory.counts.observation_complete);
+    let result = check_inventory(xtask::no_panic_debt::CheckRequest {
+        root: temp.path(),
+        current: &inventory,
+        artifact: None,
+        baseline: None,
+    })
+    .expect("check");
+    assert!(
+        result.ok,
+        "unexpanded proptest! should not fail observation integrity: {:?}",
+        result.findings
+    );
+}
+
+#[test]
+fn ordinary_lib_module_cfg_test_unwrap_is_debt_and_production_is_not() {
+    let temp = tempfile::tempdir().expect("temp");
+    write_policy(temp.path());
+    write_empty_registry(temp.path());
+    write_package(
+        temp.path(),
+        "demo",
+        "mod foo;\npub fn lib_prod() -> u8 { Some(0).unwrap() }\n",
+        &[("known.rs", "#[test]\nfn known() {}\n")],
+    );
+    fs::write(
+        temp.path().join("crates/demo/src/foo.rs"),
+        r#"
+pub fn prod() -> u8 { Some(1).unwrap() }
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn unit() { let _ = Some(1).unwrap(); }
+}
+
+#[cfg(test)]
+mod bar;
+"#,
+    )
+    .expect("foo.rs");
+    fs::create_dir_all(temp.path().join("crates/demo/src/foo")).expect("foo dir");
+    fs::write(
+        temp.path().join("crates/demo/src/foo/bar.rs"),
+        "fn helper() { let _ = Some(1).unwrap(); }\n",
+    )
+    .expect("foo/bar.rs");
+    let inventory = inventory_at(temp.path());
+    assert!(
+        inventory.rows.iter().any(|row| {
+            row.path.ends_with("src/foo.rs")
+                && row.site_family == "unwrap"
+                && row.entrypoint == "unit"
+        }),
+        "#[cfg(test)] unit unwrap under ordinary lib mod foo was omitted: {:?}",
+        inventory.rows
+    );
+    assert!(
+        inventory
+            .rows
+            .iter()
+            .any(|row| { row.path.ends_with("src/foo/bar.rs") && row.site_family == "unwrap" }),
+        "nested outline foo.rs -> foo/bar.rs unwrap was omitted: {:?}",
+        inventory.rows
+    );
+    assert!(
+        !inventory.rows.iter().any(|row| {
+            row.path.ends_with("src/foo.rs")
+                && row.entrypoint == "prod"
+                && row.site_family == "unwrap"
+        }),
+        "production unwrap in ordinary lib module became test debt: {:?}",
+        inventory.rows
+    );
+    assert!(
+        !inventory
+            .rows
+            .iter()
+            .any(|row| { row.path.ends_with("src/lib.rs") && row.site_family == "unwrap" }),
+        "lib.rs production unwrap became test debt: {:?}",
+        inventory.rows
+    );
+}
+
+#[test]
+fn cfg_all_test_is_required_test_and_cfg_any_is_not() {
+    let temp = tempfile::tempdir().expect("temp");
+    write_policy(temp.path());
+    write_empty_registry(temp.path());
+    write_package(
+        temp.path(),
+        "demo",
+        r#"
+#[cfg(all(test, feature = "need-me"))]
+mod gated {
+    fn gated_helper() { let _ = Some(1).unwrap(); }
+}
+
+#[cfg(all(not(unix), test))]
+mod not_unix {
+    fn not_unix_helper() { let _ = Some(1).unwrap(); }
+}
+
+#[cfg(any(test, feature = "prod"))]
+mod maybe {
+    fn maybe_helper() { let _ = Some(1).unwrap(); }
+}
+
+#[cfg(all(test, feature = "need-me"))]
+mod outline_gated;
+
+struct Parser;
+
+#[cfg(all(test, feature = "need-me"))]
+impl Parser {
+    fn impl_helper() { let _ = Some(1).unwrap(); }
+}
+"#,
+        &[("known.rs", "#[test]\nfn known() {}\n")],
+    );
+    fs::write(
+        temp.path().join("crates/demo/src/outline_gated.rs"),
+        "fn helper() { let _ = Some(1).unwrap(); }\n",
+    )
+    .expect("outline_gated.rs");
+    let inventory = inventory_at(temp.path());
+    assert!(
+        inventory.rows.iter().any(|row| {
+            row.path.ends_with("src/lib.rs")
+                && row.entrypoint == "gated_helper"
+                && row.site_family == "unwrap"
+                && row.limitations.iter().any(|limit| limit.starts_with("feature-gated"))
+        }),
+        "#[cfg(all(test, feature))] inline unwrap omitted: {:?}",
+        inventory.rows
+    );
+    assert!(
+        inventory.rows.iter().any(|row| {
+            row.path.ends_with("src/lib.rs")
+                && row.entrypoint == "not_unix_helper"
+                && row.site_family == "unwrap"
+                && row.limitations.iter().any(|limit| limit.starts_with("platform-gated"))
+        }),
+        "#[cfg(all(not(unix), test))] unwrap omitted: {:?}",
+        inventory.rows
+    );
+    assert!(
+        inventory.rows.iter().any(|row| {
+            row.path.ends_with("src/lib.rs")
+                && row.entrypoint == "impl_helper"
+                && row.site_family == "unwrap"
+                && row.limitations.iter().any(|limit| limit.starts_with("feature-gated"))
+        }),
+        "#[cfg(all(test, feature))] impl unwrap omitted: {:?}",
+        inventory.rows
+    );
+    assert!(
+        inventory.rows.iter().any(|row| {
+            row.path.ends_with("src/outline_gated.rs") && row.site_family == "unwrap"
+        }),
+        "outline #[cfg(all(test, feature))] unwrap omitted: {:?}",
+        inventory.rows
+    );
+    assert!(
+        !inventory.rows.iter().any(|row| row.entrypoint == "maybe_helper"),
+        "#[cfg(any(test, feature))] helper became required-test debt: {:?}",
+        inventory.rows
+    );
+}
+
+#[test]
+fn custom_expect_token_is_not_panic_expect() {
+    let temp = tempfile::tempdir().expect("temp");
+    write_policy(temp.path());
+    write_empty_registry(temp.path());
+    write_package(
+        temp.path(),
+        "demo",
+        r#"
+#[cfg(test)]
+mod tests {
+    struct ParserContext;
+    enum TokenType { Ident }
+    impl ParserContext {
+        fn expect(&mut self, _kind: TokenType) {}
+        fn unwrap(&self) {}
+    }
+
+    #[test]
+    fn parser_expect() {
+        let mut ctx = ParserContext;
+        ctx.expect(TokenType::Ident);
+        ParserContext::expect(&mut ctx, TokenType::Ident);
+        ctx.unwrap();
+        let _ = Some(1).expect("msg");
+        let _ = Some(1).unwrap();
+    }
+}
+"#,
+        &[("known.rs", "#[test]\nfn known() {}\n")],
+    );
+    let inventory = inventory_at(temp.path());
+    let expect_rows: Vec<_> = inventory
+        .rows
+        .iter()
+        .filter(|row| row.path.ends_with("src/lib.rs") && row.site_family == "expect")
+        .collect();
+    assert_eq!(
+        expect_rows.len(),
+        1,
+        "ParserContext::expect was classified as clippy::expect_used: {:?}",
+        inventory.rows
+    );
+    assert!(
+        expect_rows.iter().any(|row| row.source_identity.contains("expect(\"msg\")")
+            || row.source_identity.contains(".expect(")),
+        "real Some.expect(\"msg\") omitted: {:?}",
+        expect_rows
+    );
+    assert!(
+        inventory
+            .rows
+            .iter()
+            .any(|row| { row.path.ends_with("src/lib.rs") && row.site_family == "unwrap" }),
+        "Some.unwrap() omitted: {:?}",
+        inventory.rows
+    );
+}
+
+#[test]
+fn nonliteral_expect_message_is_still_expect_debt() {
+    let temp = tempfile::tempdir().expect("temp");
+    write_policy(temp.path());
+    write_empty_registry(temp.path());
+    write_package(
+        temp.path(),
+        "demo",
+        r#"
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn unit() {
+        let msg = "missing";
+        let _ = Some(1).expect(msg);
+        let _ = Err::<u8, &str>("e").expect_err(msg);
+    }
+}
+"#,
+        &[("known.rs", "#[test]\nfn known() {}\n")],
+    );
+    let inventory = inventory_at(temp.path());
+    let expect_site = inventory.rows.iter().find(|row| {
+        row.kind == "site"
+            && row.path.ends_with("src/lib.rs")
+            && row.entrypoint == "unit"
+            && row.site_family == "expect"
+    });
+    assert!(expect_site.is_some(), "variable-message expect omitted: {:?}", inventory.rows);
+    let expect_err_site = inventory.rows.iter().find(|row| {
+        row.kind == "site"
+            && row.path.ends_with("src/lib.rs")
+            && row.entrypoint == "unit"
+            && row.site_family == "expect_err"
+    });
+    assert!(expect_err_site.is_some(), "variable-message expect_err omitted: {:?}", inventory.rows);
+}
+
+#[test]
+fn same_item_deny_then_allow_covers_unwrap() {
+    let temp = tempfile::tempdir().expect("temp");
+    write_policy(temp.path());
+    write_empty_registry(temp.path());
+    write_package(
+        temp.path(),
+        "demo",
+        r##"
+#[cfg(test)]
+mod tests {
+    #[test]
+    #[deny(clippy::unwrap_used)]
+    #[allow(clippy::unwrap_used, reason = "#13397")]
+    fn unit() { let _ = Some(1).unwrap(); }
+}
+"##,
+        &[("known.rs", "#[test]\nfn known() {}\n")],
+    );
+    let inventory = inventory_at(temp.path());
+    let unwrap = inventory.rows.iter().find(|row| {
+        row.kind == "site"
+            && row.path.ends_with("src/lib.rs")
+            && row.entrypoint == "unit"
+            && row.site_family == "unwrap"
+    });
+    assert!(unwrap.is_some(), "unwrap omitted: {:?}", inventory.rows);
+    let unwrap = unwrap.expect("unwrap omitted");
+    assert_eq!(
+        unwrap.owner, "#13397",
+        "later same-item allow must override earlier deny: {unwrap:?}"
+    );
+}
+
+#[test]
+fn same_item_allow_then_deny_does_not_cover_unwrap() {
+    let temp = tempfile::tempdir().expect("temp");
+    write_policy(temp.path());
+    write_empty_registry(temp.path());
+    write_package(
+        temp.path(),
+        "demo",
+        r##"
+#[cfg(test)]
+mod tests {
+    #[test]
+    #[allow(clippy::unwrap_used, reason = "#13397")]
+    #[deny(clippy::unwrap_used)]
+    fn unit() { let _ = Some(1).unwrap(); }
+}
+"##,
+        &[("known.rs", "#[test]\nfn known() {}\n")],
+    );
+    let inventory = inventory_at(temp.path());
+    let unwrap = inventory.rows.iter().find(|row| {
+        row.kind == "site"
+            && row.path.ends_with("src/lib.rs")
+            && row.entrypoint == "unit"
+            && row.site_family == "unwrap"
+    });
+    assert!(unwrap.is_some(), "unwrap omitted: {:?}", inventory.rows);
+    let unwrap = unwrap.expect("unwrap omitted");
+    assert!(
+        unwrap.owner.is_empty() && unwrap.declaration_identity.is_empty(),
+        "later same-item deny must override earlier allow: {unwrap:?}"
+    );
+}
+
+#[test]
+fn same_item_forbid_then_allow_does_not_cover_unwrap() {
+    let temp = tempfile::tempdir().expect("temp");
+    write_policy(temp.path());
+    write_empty_registry(temp.path());
+    write_package(
+        temp.path(),
+        "demo",
+        r##"
+#[cfg(test)]
+mod tests {
+    #[test]
+    #[forbid(clippy::unwrap_used)]
+    #[allow(clippy::unwrap_used, reason = "#13397")]
+    fn unit() { let _ = Some(1).unwrap(); }
+}
+"##,
+        &[("known.rs", "#[test]\nfn known() {}\n")],
+    );
+    let inventory = inventory_at(temp.path());
+    let unwrap = inventory.rows.iter().find(|row| {
+        row.kind == "site"
+            && row.path.ends_with("src/lib.rs")
+            && row.entrypoint == "unit"
+            && row.site_family == "unwrap"
+    });
+    assert!(unwrap.is_some(), "forbidden unwrap omitted: {:?}", inventory.rows);
+    let unwrap = unwrap.expect("forbidden unwrap omitted");
+    assert!(
+        unwrap.owner.is_empty() && unwrap.declaration_identity.is_empty(),
+        "same-item allow must not lower forbid: {unwrap:?}"
+    );
+}
+
+#[test]
+fn feature_cfg_attr_deny_does_not_erase_established_allow() {
+    let temp = tempfile::tempdir().expect("temp");
+    write_policy(temp.path());
+    write_empty_registry(temp.path());
+    write_package(
+        temp.path(),
+        "demo",
+        r##"
+#![allow(clippy::unwrap_used, reason = "#13397")]
+#[cfg(test)]
+mod tests {
+    #[cfg_attr(feature = "need-me", deny(clippy::unwrap_used))]
+    #[test]
+    fn unit() { let _ = Some(1).unwrap(); }
+}
+"##,
+        &[("known.rs", "#[test]\nfn known() {}\n")],
+    );
+    let inventory = inventory_at(temp.path());
+    let unwrap = inventory.rows.iter().find(|row| {
+        row.kind == "site"
+            && row.path.ends_with("src/lib.rs")
+            && row.entrypoint == "unit"
+            && row.site_family == "unwrap"
+    });
+    assert!(unwrap.is_some(), "unwrap omitted: {:?}", inventory.rows);
+    let unwrap = unwrap.expect("unwrap omitted");
+    assert_eq!(
+        unwrap.owner, "#13397",
+        "unproven feature deny must not erase crate allow: {unwrap:?}"
+    );
+    assert!(
+        inventory.instruments.iter().any(|instrument| {
+            instrument.kind == "cfg_attr_cover"
+                && instrument.status == InstrumentStatus::NotProven
+                && instrument.subject.ends_with("src/lib.rs")
+        }),
+        "feature-conditional deny must stay not_proven: {:?}",
+        inventory.instruments
+    );
+}
+
+#[test]
+fn feature_cfg_attr_forbid_does_not_erase_established_allow() {
+    let temp = tempfile::tempdir().expect("temp");
+    write_policy(temp.path());
+    write_empty_registry(temp.path());
+    write_package(
+        temp.path(),
+        "demo",
+        r##"
+#![allow(clippy::unwrap_used, reason = "#13397")]
+#[cfg(test)]
+mod tests {
+    #[cfg_attr(feature = "need-me", forbid(clippy::unwrap_used))]
+    #[test]
+    fn unit() { let _ = Some(1).unwrap(); }
+}
+"##,
+        &[("known.rs", "#[test]\nfn known() {}\n")],
+    );
+    let inventory = inventory_at(temp.path());
+    let unwrap = inventory.rows.iter().find(|row| {
+        row.kind == "site"
+            && row.path.ends_with("src/lib.rs")
+            && row.entrypoint == "unit"
+            && row.site_family == "unwrap"
+    });
+    assert!(unwrap.is_some(), "unwrap omitted: {:?}", inventory.rows);
+    let unwrap = unwrap.expect("unwrap omitted");
+    assert_eq!(
+        unwrap.owner, "#13397",
+        "unproven feature forbid must not erase crate allow: {unwrap:?}"
+    );
+    assert!(
+        inventory.instruments.iter().any(|instrument| {
+            instrument.kind == "cfg_attr_cover"
+                && instrument.status == InstrumentStatus::NotProven
+                && instrument.subject.ends_with("src/lib.rs")
+        }),
+        "feature-conditional forbid must stay not_proven: {:?}",
+        inventory.instruments
+    );
+}
+
+#[test]
+fn cfg_attr_test_deny_still_masks_established_allow() {
+    let temp = tempfile::tempdir().expect("temp");
+    write_policy(temp.path());
+    write_empty_registry(temp.path());
+    write_package(
+        temp.path(),
+        "demo",
+        r##"
+#![allow(clippy::unwrap_used, reason = "#13397")]
+#[cfg(test)]
+mod tests {
+    #[cfg_attr(test, deny(clippy::unwrap_used))]
+    #[test]
+    fn unit() { let _ = Some(1).unwrap(); }
+}
+"##,
+        &[("known.rs", "#[test]\nfn known() {}\n")],
+    );
+    let inventory = inventory_at(temp.path());
+    let unwrap = inventory.rows.iter().find(|row| {
+        row.kind == "site"
+            && row.path.ends_with("src/lib.rs")
+            && row.entrypoint == "unit"
+            && row.site_family == "unwrap"
+    });
+    assert!(unwrap.is_some(), "unwrap omitted: {:?}", inventory.rows);
+    let unwrap = unwrap.expect("unwrap omitted");
+    assert!(
+        unwrap.owner.is_empty() && unwrap.declaration_identity.is_empty(),
+        "effective cfg_attr(test, deny) must still mask crate allow: {unwrap:?}"
+    );
+}
+
+#[test]
+fn crate_cfg_attr_test_allow_does_not_make_production_unwrap_debt() {
+    let temp = tempfile::tempdir().expect("temp");
+    write_policy(temp.path());
+    write_empty_registry(temp.path());
+    write_package(
+        temp.path(),
+        "demo",
+        r#"
+#![cfg_attr(test, allow(clippy::unwrap_used))]
+mod foo;
+pub fn lib_prod() -> u8 { Some(0).unwrap() }
+"#,
+        &[("known.rs", "#[test]\nfn known() {}\n")],
+    );
+    fs::write(
+        temp.path().join("crates/demo/src/foo.rs"),
+        r#"
+pub fn prod() -> u8 { Some(1).unwrap() }
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn unit() { let _ = Some(1).unwrap(); }
+}
+"#,
+    )
+    .expect("foo.rs");
+    let inventory = inventory_at(temp.path());
+    assert!(
+        inventory.rows.iter().any(|row| {
+            row.path.ends_with("src/foo.rs")
+                && row.entrypoint == "unit"
+                && row.site_family == "unwrap"
+        }),
+        "real #[cfg(test)] unwrap omitted: {:?}",
+        inventory.rows
+    );
+    assert!(
+        !inventory.rows.iter().any(|row| {
+            row.kind == "site"
+                && row.site_family == "unwrap"
+                && (row.entrypoint == "prod" || row.entrypoint == "lib_prod")
+        }),
+        "cfg_attr(test, allow) promoted production unwrap to test debt: {:?}",
+        inventory.rows
+    );
+    assert!(
+        inventory.rows.iter().any(|row| {
+            row.kind == "declaration"
+                && row.path.ends_with("src/lib.rs")
+                && row.declaration_scope == "crate"
+                && row.source_identity.contains("cfg_attr")
+        }),
+        "cfg_attr(test, allow) declaration was dropped: {:?}",
+        inventory.rows
+    );
+}
+
+#[test]
+fn cfg_attr_test_test_is_an_entrypoint() {
+    let temp = tempfile::tempdir().expect("temp");
+    write_policy(temp.path());
+    write_empty_registry(temp.path());
+    write_package(
+        temp.path(),
+        "demo",
+        r#"
+pub fn prod() -> u8 { Some(0).unwrap() }
+
+#[cfg_attr(test, test)]
+fn gated_unit() { let _ = Some(1).unwrap(); }
+
+#[cfg_attr(test, tokio::test)]
+fn gated_tokio() { let _ = Some(1).unwrap(); }
+
+#[cfg_attr(test, allow(clippy::unwrap_used))]
+fn still_prod() -> u8 { Some(2).unwrap() }
+"#,
+        &[("known.rs", "#[test]\nfn known() {}\n")],
+    );
+    let inventory = inventory_at(temp.path());
+    assert!(
+        inventory.population.entrypoints.iter().any(|entry| entry.name == "gated_unit"),
+        "#[cfg_attr(test, test)] was not an entrypoint: {:?}",
+        inventory.population.entrypoints
+    );
+    assert!(
+        inventory.population.entrypoints.iter().any(|entry| entry.name == "gated_tokio"),
+        "#[cfg_attr(test, tokio::test)] was not an entrypoint: {:?}",
+        inventory.population.entrypoints
+    );
+    assert!(
+        inventory.rows.iter().any(|row| {
+            row.path.ends_with("src/lib.rs")
+                && row.entrypoint == "gated_unit"
+                && row.site_family == "unwrap"
+        }),
+        "#[cfg_attr(test, test)] unwrap omitted: {:?}",
+        inventory.rows
+    );
+    assert!(
+        inventory.rows.iter().any(|row| {
+            row.path.ends_with("src/lib.rs")
+                && row.entrypoint == "gated_tokio"
+                && row.site_family == "unwrap"
+        }),
+        "#[cfg_attr(test, tokio::test)] unwrap omitted: {:?}",
+        inventory.rows
+    );
+    assert!(
+        !inventory.rows.iter().any(|row| {
+            row.kind == "site" && row.entrypoint == "still_prod" && row.site_family == "unwrap"
+        }),
+        "#[cfg_attr(test, allow)] promoted production unwrap: {:?}",
+        inventory.rows
+    );
+    assert!(
+        !inventory.rows.iter().any(|row| {
+            row.kind == "site" && row.entrypoint == "prod" && row.site_family == "unwrap"
+        }),
+        "plain production unwrap became test debt: {:?}",
+        inventory.rows
+    );
+}
+
+#[test]
+fn crate_level_allow_covers_outline_child_unwrap_and_not_panic() {
+    let temp = tempfile::tempdir().expect("temp");
+    write_policy(temp.path());
+    write_empty_registry(temp.path());
+    write_package(
+        temp.path(),
+        "demo",
+        r##"
+#![allow(clippy::unwrap_used, reason = "#13397")]
+mod foo;
+"##,
+        &[("known.rs", "#[test]\nfn known() {}\n")],
+    );
+    fs::write(
+        temp.path().join("crates/demo/src/foo.rs"),
+        r#"
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn unit() {
+        let _ = Some(1).unwrap();
+        panic!("still unowned");
+    }
+}
+"#,
+    )
+    .expect("foo.rs");
+    let inventory = inventory_at(temp.path());
+    let unwrap = inventory.rows.iter().find(|row| {
+        row.kind == "site"
+            && row.path.ends_with("src/foo.rs")
+            && row.entrypoint == "unit"
+            && row.site_family == "unwrap"
+    });
+    assert!(unwrap.is_some(), "outline unwrap omitted: {:?}", inventory.rows);
+    let unwrap = unwrap.expect("outline unwrap omitted");
+    assert_eq!(unwrap.owner, "#13397", "crate allow owner was not inherited: {unwrap:?}");
+    assert!(
+        unwrap.declaration_identity.contains("src/lib.rs")
+            && unwrap.declaration_identity.contains("allow"),
+        "covering identity must stay on the crate declaration, not the child file: {unwrap:?}"
+    );
+    assert_eq!(unwrap.declaration_scope, "crate");
+    let panic_site = inventory.rows.iter().find(|row| {
+        row.kind == "site"
+            && row.path.ends_with("src/foo.rs")
+            && row.entrypoint == "unit"
+            && row.site_family == "panic!"
+    });
+    assert!(panic_site.is_some(), "outline panic! omitted: {:?}", inventory.rows);
+    let panic_site = panic_site.expect("outline panic! omitted");
+    assert!(
+        panic_site.owner.is_empty() && panic_site.declaration_identity.is_empty(),
+        "unwrap crate allow must not cover panic! in the child: {panic_site:?}"
+    );
+}
+
+#[test]
+fn allow_on_outline_mod_covers_child_file_unwrap() {
+    let temp = tempfile::tempdir().expect("temp");
+    write_policy(temp.path());
+    write_empty_registry(temp.path());
+    write_package(
+        temp.path(),
+        "demo",
+        r##"
+#[allow(clippy::unwrap_used, reason = "#13397")]
+mod foo;
+"##,
+        &[("known.rs", "#[test]\nfn known() {}\n")],
+    );
+    fs::write(
+        temp.path().join("crates/demo/src/foo.rs"),
+        r#"
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn unit() { let _ = Some(1).unwrap(); }
+}
+"#,
+    )
+    .expect("foo.rs");
+    let inventory = inventory_at(temp.path());
+    let unwrap = inventory.rows.iter().find(|row| {
+        row.kind == "site"
+            && row.path.ends_with("src/foo.rs")
+            && row.entrypoint == "unit"
+            && row.site_family == "unwrap"
+    });
+    assert!(unwrap.is_some(), "outline unwrap omitted: {:?}", inventory.rows);
+    let unwrap = unwrap.expect("outline unwrap omitted");
+    assert_eq!(unwrap.owner, "#13397", "mod-item allow owner was not inherited: {unwrap:?}");
+    assert!(
+        unwrap.declaration_identity.contains("src/lib.rs")
+            && unwrap.declaration_identity.contains("allow"),
+        "covering identity must stay on the mod foo declaration: {unwrap:?}"
+    );
+    assert_eq!(unwrap.declaration_scope, "module");
+}
+
+#[test]
+fn shared_path_module_with_one_allow_edge_does_not_own_the_other() {
+    let temp = tempfile::tempdir().expect("temp");
+    write_policy(temp.path());
+    write_empty_registry(temp.path());
+    write_package(
+        temp.path(),
+        "demo",
+        r##"
+#[allow(clippy::unwrap_used, reason = "#13397")]
+#[path = "shared.rs"]
+mod covered;
+
+#[path = "shared.rs"]
+mod uncovered;
+"##,
+        &[("known.rs", "#[test]\nfn known() {}\n")],
+    );
+    fs::write(
+        temp.path().join("crates/demo/src/shared.rs"),
+        r#"
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn unit() { let _ = Some(1).unwrap(); }
+}
+"#,
+    )
+    .expect("shared.rs");
+    let inventory = inventory_at(temp.path());
+    let unwrap = inventory.rows.iter().find(|row| {
+        row.kind == "site"
+            && row.path.ends_with("src/shared.rs")
+            && row.entrypoint == "unit"
+            && row.site_family == "unwrap"
+    });
+    assert!(unwrap.is_some(), "shared unwrap omitted: {:?}", inventory.rows);
+    let unwrap = unwrap.expect("shared unwrap omitted");
+    assert!(
+        unwrap.owner.is_empty() && unwrap.declaration_identity.is_empty(),
+        "one outline edge's allow must not own the shared file for the other edge: {unwrap:?}"
+    );
+}
+
+#[test]
+fn child_inner_deny_masks_inherited_crate_allow() {
+    let temp = tempfile::tempdir().expect("temp");
+    write_policy(temp.path());
+    write_empty_registry(temp.path());
+    write_package(
+        temp.path(),
+        "demo",
+        r##"
+#![allow(clippy::unwrap_used, reason = "#13397")]
+mod foo;
+"##,
+        &[("known.rs", "#[test]\nfn known() {}\n")],
+    );
+    fs::write(
+        temp.path().join("crates/demo/src/foo.rs"),
+        r#"
+#![deny(clippy::unwrap_used)]
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn unit() { let _ = Some(1).unwrap(); }
+}
+"#,
+    )
+    .expect("foo.rs");
+    let inventory = inventory_at(temp.path());
+    let unwrap = inventory.rows.iter().find(|row| {
+        row.kind == "site"
+            && row.path.ends_with("src/foo.rs")
+            && row.entrypoint == "unit"
+            && row.site_family == "unwrap"
+    });
+    assert!(unwrap.is_some(), "denied unwrap omitted: {:?}", inventory.rows);
+    let unwrap = unwrap.expect("denied unwrap omitted");
+    assert!(
+        unwrap.owner.is_empty() && unwrap.declaration_identity.is_empty(),
+        "child deny must mask inherited crate allow: {unwrap:?}"
+    );
+}
+
+#[test]
+fn child_inner_forbid_masks_inherited_mod_allow() {
+    let temp = tempfile::tempdir().expect("temp");
+    write_policy(temp.path());
+    write_empty_registry(temp.path());
+    write_package(
+        temp.path(),
+        "demo",
+        r##"
+#[allow(clippy::unwrap_used, reason = "#13397")]
+mod foo;
+"##,
+        &[("known.rs", "#[test]\nfn known() {}\n")],
+    );
+    fs::write(
+        temp.path().join("crates/demo/src/foo.rs"),
+        r#"
+#![forbid(clippy::unwrap_used)]
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn unit() { let _ = Some(1).unwrap(); }
+}
+"#,
+    )
+    .expect("foo.rs");
+    let inventory = inventory_at(temp.path());
+    let unwrap = inventory.rows.iter().find(|row| {
+        row.kind == "site"
+            && row.path.ends_with("src/foo.rs")
+            && row.entrypoint == "unit"
+            && row.site_family == "unwrap"
+    });
+    assert!(unwrap.is_some(), "forbidden unwrap omitted: {:?}", inventory.rows);
+    let unwrap = unwrap.expect("forbidden unwrap omitted");
+    assert!(
+        unwrap.owner.is_empty() && unwrap.declaration_identity.is_empty(),
+        "child forbid must mask inherited mod allow: {unwrap:?}"
+    );
+}
+
+#[test]
+fn later_nested_edge_after_scan_does_not_keep_first_edges_allow() {
+    let temp = tempfile::tempdir().expect("temp");
+    write_policy(temp.path());
+    write_empty_registry(temp.path());
+    write_package(
+        temp.path(),
+        "demo",
+        "mod aaa;\nmod zzz;\n",
+        &[("known.rs", "#[test]\nfn known() {}\n")],
+    );
+    fs::write(
+        temp.path().join("crates/demo/src/aaa.rs"),
+        r##"
+#[cfg(test)]
+#[allow(clippy::unwrap_used, reason = "#13397")]
+#[path = "shared.rs"]
+mod shared;
+"##,
+    )
+    .expect("aaa.rs");
+    fs::write(
+        temp.path().join("crates/demo/src/zzz.rs"),
+        r#"
+#[cfg(test)]
+#[path = "shared.rs"]
+mod shared;
+"#,
+    )
+    .expect("zzz.rs");
+    fs::write(
+        temp.path().join("crates/demo/src/shared.rs"),
+        r#"
+#[test]
+fn unit() { let _ = Some(1).unwrap(); }
+"#,
+    )
+    .expect("shared.rs");
+    let inventory = inventory_at(temp.path());
+    let unwrap = inventory.rows.iter().find(|row| {
+        row.kind == "site"
+            && row.path.ends_with("src/shared.rs")
+            && row.entrypoint == "unit"
+            && row.site_family == "unwrap"
+    });
+    assert!(unwrap.is_some(), "shared unwrap omitted: {:?}", inventory.rows);
+    let unwrap = unwrap.expect("shared unwrap omitted");
+    assert!(
+        unwrap.owner.is_empty() && unwrap.declaration_identity.is_empty(),
+        "later nested edge after first scan must strip the earlier edge's allow: {unwrap:?}"
+    );
+}
+
+#[test]
+fn later_nested_edge_does_not_erase_shared_file_local_allow() {
+    let temp = tempfile::tempdir().expect("temp");
+    write_policy(temp.path());
+    write_empty_registry(temp.path());
+    write_package(
+        temp.path(),
+        "demo",
+        "mod aaa;\nmod zzz;\n",
+        &[("known.rs", "#[test]\nfn known() {}\n")],
+    );
+    fs::write(
+        temp.path().join("crates/demo/src/aaa.rs"),
+        r#"
+#[cfg(test)]
+#[path = "shared.rs"]
+mod shared;
+"#,
+    )
+    .expect("aaa.rs");
+    fs::write(
+        temp.path().join("crates/demo/src/zzz.rs"),
+        r#"
+#[cfg(test)]
+#[path = "shared.rs"]
+mod shared;
+"#,
+    )
+    .expect("zzz.rs");
+    fs::write(
+        temp.path().join("crates/demo/src/shared.rs"),
+        r##"
+#![allow(clippy::unwrap_used, reason = "#13397")]
+#[test]
+fn unit() { let _ = Some(1).unwrap(); }
+"##,
+    )
+    .expect("shared.rs");
+    let inventory = inventory_at(temp.path());
+    let unwrap = inventory.rows.iter().find(|row| {
+        row.kind == "site"
+            && row.path.ends_with("src/shared.rs")
+            && row.entrypoint == "unit"
+            && row.site_family == "unwrap"
+    });
+    assert!(unwrap.is_some(), "shared unwrap omitted: {:?}", inventory.rows);
+    let unwrap = unwrap.expect("shared unwrap omitted");
+    assert_eq!(
+        unwrap.owner, "#13397",
+        "local allow on the shared file must survive a later nested edge: {unwrap:?}"
+    );
+    assert!(
+        unwrap.declaration_identity.contains("src/shared.rs")
+            && unwrap.declaration_identity.contains("allow"),
+        "covering identity must stay on the shared file, not a parent edge: {unwrap:?}"
+    );
+}
+
+#[test]
+fn child_inner_allow_overrides_inherited_mod_deny() {
+    let temp = tempfile::tempdir().expect("temp");
+    write_policy(temp.path());
+    write_empty_registry(temp.path());
+    write_package(
+        temp.path(),
+        "demo",
+        r#"
+#[deny(clippy::unwrap_used)]
+mod foo;
+"#,
+        &[("known.rs", "#[test]\nfn known() {}\n")],
+    );
+    fs::write(
+        temp.path().join("crates/demo/src/foo.rs"),
+        r##"
+#![allow(clippy::unwrap_used, reason = "#13397")]
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn unit() { let _ = Some(1).unwrap(); }
+}
+"##,
+    )
+    .expect("foo.rs");
+    let inventory = inventory_at(temp.path());
+    let unwrap = inventory.rows.iter().find(|row| {
+        row.kind == "site"
+            && row.path.ends_with("src/foo.rs")
+            && row.entrypoint == "unit"
+            && row.site_family == "unwrap"
+    });
+    assert!(unwrap.is_some(), "unwrap omitted: {:?}", inventory.rows);
+    let unwrap = unwrap.expect("unwrap omitted");
+    assert_eq!(
+        unwrap.owner, "#13397",
+        "child-file allow must override parent-mod deny: {unwrap:?}"
+    );
+}
+
+#[test]
+fn child_inner_allow_does_not_override_inherited_mod_forbid() {
+    let temp = tempfile::tempdir().expect("temp");
+    write_policy(temp.path());
+    write_empty_registry(temp.path());
+    write_package(
+        temp.path(),
+        "demo",
+        r#"
+#[forbid(clippy::unwrap_used)]
+mod foo;
+"#,
+        &[("known.rs", "#[test]\nfn known() {}\n")],
+    );
+    fs::write(
+        temp.path().join("crates/demo/src/foo.rs"),
+        r##"
+#![allow(clippy::unwrap_used, reason = "#13397")]
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn unit() { let _ = Some(1).unwrap(); }
+}
+"##,
+    )
+    .expect("foo.rs");
+    let inventory = inventory_at(temp.path());
+    let unwrap = inventory.rows.iter().find(|row| {
+        row.kind == "site"
+            && row.path.ends_with("src/foo.rs")
+            && row.entrypoint == "unit"
+            && row.site_family == "unwrap"
+    });
+    assert!(unwrap.is_some(), "forbidden unwrap omitted: {:?}", inventory.rows);
+    let unwrap = unwrap.expect("forbidden unwrap omitted");
+    assert!(
+        unwrap.owner.is_empty() && unwrap.declaration_identity.is_empty(),
+        "child-file allow must not override parent-mod forbid: {unwrap:?}"
+    );
+}
+
+#[test]
+fn later_nested_deny_does_not_erase_shared_file_local_allow() {
+    let temp = tempfile::tempdir().expect("temp");
+    write_policy(temp.path());
+    write_empty_registry(temp.path());
+    write_package(
+        temp.path(),
+        "demo",
+        "mod aaa;\nmod zzz;\n",
+        &[("known.rs", "#[test]\nfn known() {}\n")],
+    );
+    fs::write(
+        temp.path().join("crates/demo/src/aaa.rs"),
+        r#"
+#[cfg(test)]
+#[path = "shared.rs"]
+mod shared;
+"#,
+    )
+    .expect("aaa.rs");
+    fs::write(
+        temp.path().join("crates/demo/src/zzz.rs"),
+        r#"
+#[cfg(test)]
+#[deny(clippy::unwrap_used)]
+#[path = "shared.rs"]
+mod shared;
+"#,
+    )
+    .expect("zzz.rs");
+    fs::write(
+        temp.path().join("crates/demo/src/shared.rs"),
+        r##"
+#![allow(clippy::unwrap_used, reason = "#13397")]
+#[test]
+fn unit() { let _ = Some(1).unwrap(); }
+"##,
+    )
+    .expect("shared.rs");
+    let inventory = inventory_at(temp.path());
+    let unwrap = inventory.rows.iter().find(|row| {
+        row.kind == "site"
+            && row.path.ends_with("src/shared.rs")
+            && row.entrypoint == "unit"
+            && row.site_family == "unwrap"
+    });
+    assert!(unwrap.is_some(), "shared unwrap omitted: {:?}", inventory.rows);
+    let unwrap = unwrap.expect("shared unwrap omitted");
+    assert_eq!(
+        unwrap.owner, "#13397",
+        "local allow on the shared file must survive a later nested deny: {unwrap:?}"
+    );
+}
+
+#[test]
+fn later_nested_forbid_erases_shared_file_local_allow() {
+    let temp = tempfile::tempdir().expect("temp");
+    write_policy(temp.path());
+    write_empty_registry(temp.path());
+    write_package(
+        temp.path(),
+        "demo",
+        "mod aaa;\nmod zzz;\n",
+        &[("known.rs", "#[test]\nfn known() {}\n")],
+    );
+    fs::write(
+        temp.path().join("crates/demo/src/aaa.rs"),
+        r#"
+#[cfg(test)]
+#[path = "shared.rs"]
+mod shared;
+"#,
+    )
+    .expect("aaa.rs");
+    fs::write(
+        temp.path().join("crates/demo/src/zzz.rs"),
+        r#"
+#[cfg(test)]
+#[forbid(clippy::unwrap_used)]
+#[path = "shared.rs"]
+mod shared;
+"#,
+    )
+    .expect("zzz.rs");
+    fs::write(
+        temp.path().join("crates/demo/src/shared.rs"),
+        r##"
+#![allow(clippy::unwrap_used, reason = "#13397")]
+#[test]
+fn unit() { let _ = Some(1).unwrap(); }
+"##,
+    )
+    .expect("shared.rs");
+    let inventory = inventory_at(temp.path());
+    let unwrap = inventory.rows.iter().find(|row| {
+        row.kind == "site"
+            && row.path.ends_with("src/shared.rs")
+            && row.entrypoint == "unit"
+            && row.site_family == "unwrap"
+    });
+    assert!(unwrap.is_some(), "shared unwrap omitted: {:?}", inventory.rows);
+    let unwrap = unwrap.expect("shared unwrap omitted");
+    assert!(
+        unwrap.owner.is_empty() && unwrap.declaration_identity.is_empty(),
+        "later nested forbid must strip the shared file's local allow: {unwrap:?}"
+    );
+}
+
+#[test]
+fn dot_component_root_still_scans_outline_child_sites() {
+    let temp = tempfile::tempdir().expect("temp");
+    write_policy(temp.path());
+    write_empty_registry(temp.path());
+    write_package(temp.path(), "demo", "mod foo;\n", &[("known.rs", "#[test]\nfn known() {}\n")]);
+    fs::write(
+        temp.path().join("crates/demo/src/foo.rs"),
+        r#"
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn unit() { let _ = Some(1).unwrap(); }
+}
+"#,
+    )
+    .expect("foo.rs");
+    let dotted = temp.path().join(".");
+    let inventory = inventory_at(&dotted);
+    assert!(
+        inventory.rows.iter().any(|row| {
+            row.kind == "site"
+                && row.path.ends_with("src/foo.rs")
+                && row.entrypoint == "unit"
+                && row.site_family == "unwrap"
+        }),
+        "outline child omitted when root retains a `.` component: {:?}",
+        inventory.rows
+    );
+    assert!(
+        !inventory.instruments.iter().any(|instrument| {
+            instrument.kind == "module_path" && instrument.status == InstrumentStatus::NotProven
+        }),
+        "`.` root turned child modules into module_path not_proven: {:?}",
+        inventory.instruments
+    );
+}
