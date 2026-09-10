@@ -29,6 +29,9 @@ ownership may precede the subject as `#N's` or follow it as `owned by #N` or `of
 neighboring-issue attribution still applies before classification. Paired Markdown
 underscore emphasis around supported subjects retains the same classification;
 underscores inside identifiers do not create subject phrases.
+Matched Markdown inline-code spans are example/data, not required-work claims;
+they cannot join surrounding prose into a subject. Real prose exclusions outside
+those spans still count. Unmatched or escaped backticks do not hide prose.
 
 Paragraphs, Markdown list items, and sentences retain their boundaries. A positive
 acceptance statement cannot lend its subject to an unrelated exclusion, including

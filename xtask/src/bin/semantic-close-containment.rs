@@ -1385,7 +1385,7 @@ fn explicitly_not_proven_required_work(text: &str) -> bool {
     attribution_units(text).iter().any(|unit| {
         // Markdown emphasis and soft line wrapping do not change a subject.
         // Keep paragraph/list/sentence boundaries before normalizing whitespace.
-        let unit = unit.replace('*', "").to_ascii_lowercase();
+        let unit = prose_without_inline_code(unit).replace('*', "").to_ascii_lowercase();
         let mut unit = unit.split_whitespace().collect::<Vec<_>>().join(" ");
         // Remove paired subject emphasis only; underscores within identifiers
         // must not manufacture a required-work phrase.
@@ -1440,6 +1440,31 @@ fn explicitly_not_proven_required_work(text: &str) -> bool {
 fn strip_issue_owner_suffix(text: &str) -> &str {
     let Some((before, owner)) = text.rsplit_once(' ') else { return text };
     if owner.strip_suffix("'s").is_some_and(is_issue_owner) { before } else { text }
+}
+
+fn prose_without_inline_code(text: &str) -> String {
+    let mut prose = String::new();
+    let mut index = 0;
+    while let Some(tail) = text.get(index..) {
+        let Some(character) = tail.chars().next() else { break };
+        if character == '`' && !backtick_is_escaped(text, index) {
+            let run = tail.chars().take_while(|next| *next == '`').count();
+            if let Some(end) = matching_inline_code_span_end(text, index, run) {
+                // Preserve an opaque boundary: removing an example must not join
+                // separate prose fragments into a supported subject/template.
+                prose.push('\0');
+                index = end;
+                continue;
+            }
+            // An unmatched run is literal prose, not a shorter code opener.
+            prose.extend(std::iter::repeat_n('`', run));
+            index += run;
+            continue;
+        }
+        prose.push(character);
+        index += character.len_utf8();
+    }
+    prose
 }
 
 fn strip_issue_owner_prefix(text: &str) -> &str {
@@ -2321,6 +2346,58 @@ mod tests {
             "The public constructor remains unchanged and installed proof is required.",
             "installed"
         ));
+    }
+
+    #[test]
+    fn explicit_subject_inline_code_is_data_in_full_evaluator() -> Result<()> {
+        let mut mismatches = Vec::new();
+        for (boundary, contradictory) in [
+            (
+                "The guard rejects `full acceptance criteria are not established` as a contradiction. This is parser coverage, not a claim of general completeness.",
+                false,
+            ),
+            (
+                "The guard rejects ``full acceptance criteria are not established; `sample` `` as an example.",
+                false,
+            ),
+            ("Full acceptance criteria are not established for `some_value`.", true),
+            ("`Full acceptance criteria are not established.", true),
+            ("\\`Full acceptance criteria are not established\\`.", true),
+            ("Full `example` acceptance criteria are not established.", false),
+            ("Full acceptance criteria are satisfied; `not established` is an example.", false),
+        ] {
+            let pull = PullRequestSubject {
+                repository: "effortlessmetrics/perl-lsp-swarm".into(),
+                number: 990103,
+                title: "fix: inline example control".into(),
+                body: format!("## Claim Boundary\n{boundary}\n\nCloses #10"),
+            };
+            let report = evaluate(&pull, |key| {
+                IssueEvidence::Available(IssueSubject {
+                    number: key.number,
+                    title: "Complete the named change".into(),
+                    body: "## Acceptance\nThe named change is established.".into(),
+                })
+            })?;
+            let observed = report
+                .rows
+                .first()
+                .ok_or_else(|| color_eyre::eyre::eyre!("missing relation row"))?
+                .code;
+            let expected = if contradictory {
+                ResultCode::FailExplicitUnprovenRequiredWork
+            } else {
+                ResultCode::PassNoHighConfidenceContradiction
+            };
+            if observed != expected {
+                mismatches
+                    .push(format!("{boundary}: expected {expected:?}, observed {observed:?}"));
+            }
+        }
+        if !mismatches.is_empty() {
+            bail!("inline-code full evaluator mismatches: {mismatches:?}");
+        }
+        Ok(())
     }
 
     #[test]
