@@ -1,7 +1,6 @@
 use super::super::model::{DebtEntry, DebtLedger, LintLedger};
 use super::common::{parse_review_date, validate_level, validate_lint_name, validate_nonempty};
 use super::disposition::validate_unique_dispositions;
-use chrono::NaiveDate;
 use color_eyre::eyre::{Result, bail};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -10,7 +9,6 @@ pub(crate) fn validate_debt_ledger(
     root: &Path,
     lint_ledger: &LintLedger,
     debt_ledger: &DebtLedger,
-    _today: NaiveDate,
 ) -> Result<()> {
     if debt_ledger.schema != 2 {
         bail!("policy/clippy-debt.toml schema must be 2");
@@ -44,8 +42,7 @@ pub(crate) fn validate_debt_ledger(
             bail!(
                 "debt entry for {} has level {}, but ledger has {}",
                 entry.lint,
-                entry.level,
-                lint.level
+                entry.level
             );
         }
         if !identities.insert((entry.lint.as_str(), entry.path.as_str())) {
