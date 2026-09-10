@@ -242,21 +242,30 @@ fn thin_adapter_and_driver_never_force_a_filetype_or_second_orchestration() -> R
 
 /// True when the Vimscript source actually spawns a process. Spawn needles
 /// are identifier-boundary-aware: `CaseInsensitiveFilesystem(` contains
-/// `system(` as a substring but spawns nothing (#15301), while
+/// `system` as a substring but spawns nothing (#15301), while
 /// `call system(..)`, `job_start(..)` and `term_start(..)` do.
+///
+/// Both boundaries are checked: Vim tolerates whitespace between the builtin
+/// name and `(` (`call system ('ls')` spawns), while `:` and `#` mark the
+/// call as user-defined — builtins cannot carry a scope (`s:system(`) or
+/// autoload (`plug#system(`) prefix.
 fn has_spawn_call(source: &str) -> bool {
     fn needle_present(source: &str, needle: &str) -> bool {
         source.match_indices(needle).any(|(index, _)| {
-            index == 0
-                || !source[..index]
-                    .chars()
-                    .next_back()
-                    .is_some_and(|preceding| preceding.is_ascii_alphanumeric() || preceding == '_')
+            let preceded_by_boundary = index == 0
+                || !source[..index].chars().next_back().is_some_and(|preceding| {
+                    preceding.is_ascii_alphanumeric() || matches!(preceding, '_' | ':' | '#')
+                });
+            let followed_by_open_paren = source[index + needle.len()..]
+                .chars()
+                .find(|next| !next.is_whitespace())
+                .is_some_and(|next| next == '(');
+            preceded_by_boundary && followed_by_open_paren
         })
     }
-    needle_present(source, "system(")
-        || needle_present(source, "job_start(")
-        || needle_present(source, "term_start(")
+    needle_present(source, "system")
+        || needle_present(source, "job_start")
+        || needle_present(source, "term_start")
 }
 
 #[test]
@@ -269,6 +278,14 @@ fn spawn_detector_ignores_identifiers_containing_needles() -> Result<()> {
         ),
         "identifier-boundary violation: `CaseInsensitiveFilesystem(` flagged as a spawn"
     );
+    // Builtins cannot carry a scope or autoload prefix: these are
+    // user-defined functions, not process spawns.
+    for source in ["call s:system('scoped')", "let job = plug#job_start(['vim'])"] {
+        ensure!(
+            !has_spawn_call(source),
+            "scope-boundary violation: user-defined `{source}` flagged as a spawn"
+        );
+    }
     Ok(())
 }
 
@@ -279,6 +296,8 @@ fn spawn_detector_still_rejects_real_spawn_calls() -> Result<()> {
         "let job = job_start(['vim'])",
         "call term_start('vim')",
         "  system('indented')",
+        "call system ('spaced')",
+        "let job = job_start (['vim'])",
     ] {
         ensure!(has_spawn_call(source), "detector missed a real spawn call: {source}");
     }
