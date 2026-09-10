@@ -781,17 +781,26 @@ impl LspServer {
                                 tracing::warn!(
                                     "Admitted full replacement for {uri} exceeds per-line buffer bound ({err}); last-good text was not mutated"
                                 );
-                                Err("admitted full replacement exceeds per-line buffer bound")
+                                Err((
+                                    "admitted full replacement exceeds per-line buffer bound",
+                                    None,
+                                    None,
+                                ))
                             }
                         }
                     }
                     super::v0_18_text_sync_envelope::FullDocumentAdmission::Violation {
                         reason,
-                    } => Err(reason),
+                        change_index,
+                    } => Err((
+                        reason,
+                        change_index,
+                        Some(super::v0_18_text_sync_envelope::INVALID_CONTENT_CHANGE),
+                    )),
                 };
                 let text = match admitted_or_unavailable {
                     Ok(text) => text,
-                    Err(reason) => {
+                    Err((reason, change_index, error_category)) => {
                         if !document_was_open {
                             tracing::warn!(
                                 "Ignoring unsupported didChange for unopened document {}: {reason}",
@@ -799,9 +808,25 @@ impl LspServer {
                             );
                             return Ok(());
                         }
-                        tracing::warn!(
-                            "Full-sync unavailable for {uri}: {reason}; last-good text was not mutated"
-                        );
+                        // Exact-process redaction (`lsp_text_sync_redaction`) requires
+                        // URI context plus a stable category and member index, and
+                        // forbids echoing member payloads in this event.
+                        match (change_index, error_category) {
+                            (Some(change_index), Some(error_category)) => tracing::warn!(
+                                uri = %uri,
+                                change_index,
+                                error_category,
+                                "{reason}; last-good text was not mutated"
+                            ),
+                            (None, Some(error_category)) => tracing::warn!(
+                                uri = %uri,
+                                error_category,
+                                "{reason}; last-good text was not mutated"
+                            ),
+                            (_, None) => tracing::warn!(
+                                "Full-sync unavailable for {uri}: {reason}; last-good text was not mutated"
+                            ),
+                        }
                         if let Some(observed) = incoming_version {
                             doc_state.observe_change_version(observed);
                         }

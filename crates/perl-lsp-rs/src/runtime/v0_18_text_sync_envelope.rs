@@ -76,13 +76,24 @@ pub(crate) fn classify_position_encoding_offer(
     }
 }
 
+/// Stable stderr category for Full-sync `contentChanges` protocol violations.
+///
+/// Exact-process redaction proof (`perllsp` `lsp_text_sync_redaction`) requires this
+/// field and a numeric `change_index` without echoing member payloads.
+pub(crate) const INVALID_CONTENT_CHANGE: &str = "invalid_content_change";
+
 /// Outcome of admitting one `textDocument/didChange` `contentChanges` array.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum FullDocumentAdmission {
     /// Every member is an unranged complete replacement. Apply in order; last text wins.
     Accepted { replacements: Vec<String> },
     /// A ranged, missing, empty, or malformed member. Commit nothing.
-    Violation { reason: &'static str },
+    Violation {
+        reason: &'static str,
+        /// Index of the first violating member when the outer array exists.
+        /// Empty/missing arrays have no member index.
+        change_index: Option<usize>,
+    },
 }
 
 /// Admit only complete replacements. Any ranged or malformed member is a violation.
@@ -90,11 +101,12 @@ pub(crate) fn admit_full_document_changes(changes: &[Value]) -> FullDocumentAdmi
     if changes.is_empty() {
         return FullDocumentAdmission::Violation {
             reason: "contentChanges must contain at least one full-document replacement",
+            change_index: None,
         };
     }
 
     let mut replacements = Vec::with_capacity(changes.len());
-    for change in changes {
+    for (change_index, change) in changes.iter().enumerate() {
         match serde_json::from_value::<TextDocumentContentChangeEvent>(change.clone()) {
             Ok(event) if event.range.is_none() => {
                 replacements.push(strip_utf8_bom(&event.text).to_string());
@@ -102,11 +114,13 @@ pub(crate) fn admit_full_document_changes(changes: &[Value]) -> FullDocumentAdmi
             Ok(_) => {
                 return FullDocumentAdmission::Violation {
                     reason: "ranged contentChanges are unsupported under advertised Full text sync",
+                    change_index: Some(change_index),
                 };
             }
             Err(_) => {
                 return FullDocumentAdmission::Violation {
                     reason: "malformed contentChanges member; no partial text was committed",
+                    change_index: Some(change_index),
                 };
             }
         }
@@ -208,7 +222,7 @@ mod tests {
                 assert_eq!(replacements, vec!["first\n".to_string(), "second\n".to_string()]);
                 assert_eq!(final_full_replacement_text(&replacements), Some("second\n"));
             }
-            FullDocumentAdmission::Violation { reason } => {
+            FullDocumentAdmission::Violation { reason, .. } => {
                 panic!("expected admission, got {reason}")
             }
         }
@@ -239,8 +253,18 @@ mod tests {
             }),
         ]);
         assert!(
-            matches!(mixed, FullDocumentAdmission::Violation { .. }),
+            matches!(mixed, FullDocumentAdmission::Violation { change_index: Some(1), .. }),
             "valid first member plus ranged second must not admit a partial array"
         );
+        assert!(matches!(
+            admit_full_document_changes(&[]),
+            FullDocumentAdmission::Violation { change_index: None, .. }
+        ));
+        assert!(matches!(
+            admit_full_document_changes(&[
+                json!({ "range": "INVALID_RANGE_CANARY", "text": "secret" })
+            ]),
+            FullDocumentAdmission::Violation { change_index: Some(0), .. }
+        ));
     }
 }
