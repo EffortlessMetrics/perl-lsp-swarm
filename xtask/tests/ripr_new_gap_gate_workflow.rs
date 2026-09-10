@@ -7,7 +7,7 @@ use std::{
     process::{Command, Stdio},
 };
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow, bail, ensure};
 use serde_json::Value as JsonValue;
 use serde_yaml_ng::Value;
 use zip::{ZipWriter, write::SimpleFileOptions};
@@ -111,6 +111,37 @@ fn workflow_step_value(job_name: &str, step_name: &str) -> Result<Value> {
         })
         .cloned()
         .ok_or_else(|| anyhow!("{job_name} step {step_name} is missing"))
+}
+
+fn require_single_canonical_container_installer(script: &str) -> Result<(), String> {
+    let installers: Vec<_> = script
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.starts_with("cargo install ripr"))
+        .collect();
+    let expected = r#"cargo install ripr --version "$RIPR_VERSION" --locked"#;
+    if installers.len() != 1 || installers.first().copied() != Some(expected) {
+        return Err(format!(
+            "normal hosted producer must have exactly one canonical container RIPR installer; \
+             found {installers:?}"
+        ));
+    }
+    Ok(())
+}
+
+#[test]
+fn container_installer_contract_rejects_extra_or_mismatched_installers()
+-> Result<(), Box<dyn std::error::Error>> {
+    let canonical = r#"cargo install ripr --version "$RIPR_VERSION" --locked"#;
+    require_single_canonical_container_installer(canonical)?;
+
+    for extra in [r#"cargo install ripr --version "0.9.0" --locked"#, "cargo install ripr"] {
+        let script = format!("{canonical}\n{extra}");
+        if require_single_canonical_container_installer(&script).is_ok() {
+            return Err(format!("accepted invalid container installer fixture: {extra}").into());
+        }
+    }
+    Ok(())
 }
 
 #[derive(Clone, Copy)]
@@ -797,6 +828,10 @@ fn run_fallback_path(quality_gate_fails: bool) -> Result<FallbackPathEvidence> {
     let summary = sandbox.path().join("summary.md");
     let quality_receipt = sandbox.path().join("target/receipts/quality/quality-gate-ripr.json");
     let quality_summary = sandbox.path().join("target/receipts/quality/quality-gate-ripr.md");
+    let freshness_handoff = sandbox.path().join("ripr-freshness");
+    let freshness_token = "fallback-test/1/producer";
+    fs::create_dir_all(&freshness_handoff)?;
+    fs::write(freshness_handoff.join("clear-succeeded"), format!("{freshness_token}\n"))?;
     let annotation = workflow_run_block("ripr-fallback", "Annotate failover reason")?
         .replace("${{ needs.route-ripr.outputs.target }}", "cx53");
     let normalize = workflow_run_block("ripr-fallback", "Normalize base ref")?;
@@ -917,6 +952,8 @@ checkout_action
         .env("RIPR_VERSION", "0.10.0")
         .env("GITHUB_ENV", &github_env)
         .env("GITHUB_STEP_SUMMARY", &summary)
+        .env("RIPR_FRESHNESS_HANDOFF", &freshness_handoff)
+        .env("RIPR_FRESHNESS_TOKEN", freshness_token)
         .env("FAKE_CALLS", &calls)
         .env("FAKE_CHECKOUT_MARKER", &checkout_marker)
         .env(
@@ -1219,7 +1256,9 @@ fn ripr_workflow_runs_on_ready_for_review_without_path_filter()
         "ripr.yml must not path-filter the ready-for-review proof run"
     );
     assert!(
-        workflow.contains("if: github.event.pull_request.draft != true"),
+        workflow.contains(
+            "(github.event.pull_request.draft != true || github.event_name != 'pull_request')"
+        ),
         "ripr.yml may skip draft PRs while they are still draft"
     );
     let gate_step = workflow_step(&workflow, "Enforce new RIPR gap quality gate")
@@ -1231,6 +1270,47 @@ fn ripr_workflow_runs_on_ready_for_review_without_path_filter()
     assert!(
         workflow.contains("cargo xtask ripr-pr --base") && workflow.contains("target/ripr/pr/**"),
         "ripr.yml must produce and upload diff-scoped RIPR PR receipts"
+    );
+    if workflow_run_block("ripr-github", "Install ripr")?.trim()
+        != r#"cargo install ripr --version "$RIPR_VERSION" --locked"#
+    {
+        return Err(anyhow!(
+            "normal hosted job must retain its pinned host-side ripr installer for downstream consumers"
+        )
+        .into());
+    }
+    let hosted_producer = workflow_run_block("ripr-github", "Generate PR evidence")?;
+    require_single_canonical_container_installer(&hosted_producer)?;
+    assert!(
+        hosted_producer.contains("docker run --rm")
+            && hosted_producer.contains("--memory=6g")
+            && hosted_producer.contains("--memory-swap=6g")
+            && hosted_producer.contains("timeout --signal=TERM --kill-after=30s 40m")
+            && hosted_producer.contains("timeout --signal=TERM --kill-after=30s 25m")
+            && hosted_producer.contains("-e RIPR_MAX_DIFF_INDEX_FILES=1000")
+            && hosted_producer.contains("-e RIPR_FRESHNESS_HANDOFF=/freshness")
+            && hosted_producer.contains("-v \"$RIPR_FRESHNESS_HANDOFF:/freshness\"")
+            && hosted_producer.contains("--name \"$container_name\"")
+            && hosted_producer.contains("trap cleanup_host_state EXIT")
+            && hosted_producer.contains("timeout --signal=TERM --kill-after=5s 15s docker ps -aq")
+            && hosted_producer.contains(
+                "timeout --signal=TERM --kill-after=5s 15s docker rm -f \"$container_name\""
+            )
+            && hosted_producer.contains("sudo -n chown -R \"$(id -u):$(id -g)\" target")
+            && hosted_producer.contains(
+                "cargo xtask ripr-pr --base \"$base_arg\" --head HEAD --pr-head \"$PR_HEAD_SHA\""
+            ),
+        "normal GitHub-hosted RIPR production must use the bounded Docker producer"
+    );
+    assert!(
+        !hosted_producer.contains("test -n \"$PR_HEAD_SHA\""),
+        "normal hosted producer must preserve empty PR_HEAD_SHA for merge-group and push events"
+    );
+    assert!(
+        !workflow.contains("ripr_hosted_measurement")
+            && !workflow.contains("measurement_head_sha")
+            && !workflow.contains("ripr-hosted-measurement"),
+        "capacity measurement must be part of the normal hosted producer, not a duplicate manual job"
     );
     assert!(
         workflow.contains("PR_HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || '' }}")
@@ -1285,13 +1365,254 @@ fn ripr_workflow_runs_on_ready_for_review_without_path_filter()
         upload_step.contains("if-no-files-found: error"),
         "RIPR proof artifacts are required after PR8"
     );
+    assert_eq!(
+        workflow.matches("Prepare RIPR freshness handoff").count(),
+        4,
+        "every producer job must create a distinct freshness handoff"
+    );
+    assert_eq!(
+        workflow.matches("steps.ripr-freshness-result.outputs.ready == 'true'").count(),
+        4,
+        "every producer upload must require its producer freshness handoff"
+    );
+    assert_eq!(
+        workflow.matches("RIPR freshness handoff unavailable; suppressing stale summary").count(),
+        4,
+        "every producer summary step must suppress stale output without its handoff"
+    );
+    for job in ["ripr-github", "ripr-fallback"] {
+        for step in ["Validate PR evidence contracts", "Enforce new RIPR gap quality gate"] {
+            let run = workflow_run_block(job, step)?;
+            assert!(
+                run.contains("marker=\"$RIPR_FRESHNESS_HANDOFF/clear-succeeded\"")
+                    && run.contains(
+                        "RIPR artifact invalidation did not complete for this producer invocation"
+                    ),
+                "{job} {step} must fail closed when its producer handoff is absent"
+            );
+        }
+    }
+    assert!(
+        workflow.contains("mktemp -d \"$RUNNER_TEMP/ripr-freshness.XXXXXX\"")
+            && workflow.contains("RIPR_FRESHNESS_TOKEN")
+            && workflow.contains("clear-succeeded"),
+        "RIPR producer jobs must bind uploads to a per-invocation clear-success marker"
+    );
     let summary_step =
         workflow_step(&workflow, "Append PR evidence summary").ok_or("missing summary step")?;
     assert!(
-        summary_step.contains("if: always()") && summary_step.contains("target/ripr/pr/summary.md"),
-        "RIPR summary step must publish PR evidence even when earlier receipt steps fail"
+        summary_step.contains("if: always()")
+            && summary_step.contains("target/ripr/pr/summary.md")
+            && summary_step.contains("RIPR freshness handoff unavailable"),
+        "RIPR summary step must publish only current evidence after a successful handoff"
     );
 
+    Ok(())
+}
+
+#[test]
+fn hosted_producer_cleanup_preserves_failure_and_restores_target_owner() -> Result<()> {
+    let hosted_producer = workflow_run_block("ripr-github", "Generate PR evidence")?;
+    let cleanup_body = hosted_producer
+        .split_once("cleanup_host_state() {")
+        .ok_or_else(|| anyhow!("hosted producer cleanup function is missing"))?
+        .1
+        .split_once("trap cleanup_host_state EXIT")
+        .ok_or_else(|| anyhow!("hosted producer cleanup trap is missing"))?
+        .0;
+    let sandbox = tempfile::tempdir()?;
+    let script = format!(
+        r#"set -u
+container_name='fixture-container'
+docker() {{ printf '%s' "$*" > "$DOCKER_MARKER"; if [ "$1" = ps ]; then printf 'fixture-id\n'; fi; return 0; }}
+sudo() {{ printf '%s' "$*" > "$CHOWN_MARKER"; if [ "${{FAIL_CHOWN:-0}}" = 1 ]; then return 1; fi; return 0; }}
+timeout() {{ printf '%s' "$*" > "$TIMEOUT_MARKER"; shift 3; "$@"; }}
+cleanup_host_state() {{{cleanup_body}
+trap cleanup_host_state EXIT
+exit 23
+"#
+    );
+    let mut child = Command::new(bash_executable())
+        .args(["--noprofile", "--norc", "-s"])
+        .current_dir(sandbox.path())
+        .env("DOCKER_MARKER", sandbox.path().join("docker.marker"))
+        .env("CHOWN_MARKER", sandbox.path().join("chown.marker"))
+        .env("TIMEOUT_MARKER", sandbox.path().join("timeout.marker"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    child
+        .stdin
+        .take()
+        .ok_or_else(|| anyhow!("cleanup fixture stdin unavailable"))?
+        .write_all(script.as_bytes())?;
+    let output = child.wait_with_output()?;
+    ensure!(
+        output.status.code() == Some(23),
+        "cleanup must preserve producer failure status: {output:?}"
+    );
+    ensure!(
+        fs::read_to_string(sandbox.path().join("docker.marker"))?.contains("fixture-container"),
+        "cleanup must attempt removal of the uniquely named container"
+    );
+    ensure!(
+        fs::read_to_string(sandbox.path().join("timeout.marker"))?.contains("docker"),
+        "cleanup must route container inspection/removal through bounded timeout"
+    );
+    ensure!(
+        fs::read_to_string(sandbox.path().join("chown.marker"))?.contains("target"),
+        "cleanup must restore host target ownership after producer failure"
+    );
+
+    let mut cleanup_failure = Command::new(bash_executable())
+        .args(["--noprofile", "--norc", "-s"])
+        .current_dir(sandbox.path())
+        .env("DOCKER_MARKER", sandbox.path().join("docker.failure.marker"))
+        .env("CHOWN_MARKER", sandbox.path().join("chown.failure.marker"))
+        .env("TIMEOUT_MARKER", sandbox.path().join("timeout.failure.marker"))
+        .env("FAIL_CHOWN", "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    cleanup_failure
+        .stdin
+        .take()
+        .ok_or_else(|| anyhow!("cleanup failure fixture stdin unavailable"))?
+        .write_all(script.replace("exit 23", "exit 0").as_bytes())?;
+    let cleanup_failure_output = cleanup_failure.wait_with_output()?;
+    ensure!(
+        cleanup_failure_output.status.code() == Some(1),
+        "cleanup failure must turn an otherwise successful producer into failure: {cleanup_failure_output:?}"
+    );
+    ensure!(
+        fs::read_to_string(sandbox.path().join("chown.failure.marker"))?.contains("target")
+            && fs::read_to_string(sandbox.path().join("timeout.failure.marker"))?
+                .contains("docker rm -f"),
+        "cleanup failure fixture must execute ownership restoration after bounded removal"
+    );
+    ensure!(
+        String::from_utf8_lossy(&cleanup_failure_output.stderr)
+            .contains("failed to restore hosted RIPR target ownership"),
+        "cleanup failure must report the ownership error"
+    );
+    Ok(())
+}
+
+#[test]
+fn ripr_append_summary_suppresses_stale_files_without_freshness_handoff() -> Result<()> {
+    let sandbox = tempfile::tempdir()?;
+    let summary = sandbox.path().join("summary.md");
+    let stale_summary = sandbox.path().join("target/ripr/pr/summary.md");
+    let stale_quality = sandbox.path().join("target/receipts/quality/quality-gate-ripr.md");
+    let stale_annotations = sandbox.path().join("target/ripr/review/annotations.txt");
+    for path in [&stale_summary, &stale_quality, &stale_annotations] {
+        fs::create_dir_all(path.parent().ok_or_else(|| anyhow!("stale parent missing"))?)?;
+        fs::write(path, "stale prior invocation\n")?;
+    }
+    let script = workflow_run_block("ripr-fallback", "Append PR evidence summary")?;
+    let mut child = Command::new(bash_executable())
+        .args(["--noprofile", "--norc", "-s"])
+        .current_dir(sandbox.path())
+        .env("GITHUB_STEP_SUMMARY", &summary)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    child
+        .stdin
+        .take()
+        .ok_or_else(|| anyhow!("append-summary bash stdin unavailable"))?
+        .write_all(script.as_bytes())?;
+    let output = child.wait_with_output()?;
+    ensure!(output.status.success(), "append step failed: {output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let summary_text = match fs::read_to_string(&summary) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(error) => return Err(error.into()),
+    };
+    ensure!(
+        !summary_text.contains("stale prior invocation")
+            && !stdout.contains("stale prior invocation"),
+        "append step must not publish stale files without a matching handoff"
+    );
+
+    let handoff = sandbox.path().join("freshness");
+    let token = "append-test/1/producer";
+    fs::create_dir_all(&handoff)?;
+    fs::write(handoff.join("clear-succeeded"), format!("{token}\n"))?;
+    let mut child = Command::new(bash_executable())
+        .args(["--noprofile", "--norc", "-s"])
+        .current_dir(sandbox.path())
+        .env("GITHUB_STEP_SUMMARY", &summary)
+        .env("RIPR_FRESHNESS_HANDOFF", &handoff)
+        .env("RIPR_FRESHNESS_TOKEN", token)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    child
+        .stdin
+        .take()
+        .ok_or_else(|| anyhow!("positive append-summary bash stdin unavailable"))?
+        .write_all(script.as_bytes())?;
+    let output = child.wait_with_output()?;
+    ensure!(output.status.success(), "positive append step failed: {output:?}");
+    let summary_text = fs::read_to_string(&summary)?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    ensure!(
+        summary_text.contains("stale prior invocation")
+            && stdout.contains("stale prior invocation"),
+        "matching handoff must permit current summary and annotation publication"
+    );
+    Ok(())
+}
+
+#[test]
+fn ripr_validation_requires_freshness_before_invoking_consumers() -> Result<()> {
+    let sandbox = tempfile::tempdir()?;
+    let calls = sandbox.path().join("cargo-calls");
+    let script = workflow_run_block("ripr-fallback", "Validate PR evidence contracts")?;
+    let fake_cargo =
+        format!("cargo() {{ printf '%s\\n' \"$*\" >> '{}' ; }}\n{}", calls.display(), script);
+    let run = |handoff: Option<(&PathBuf, &str)>| -> Result<std::process::Output> {
+        let mut command = Command::new(bash_executable());
+        command
+            .args(["--noprofile", "--norc", "-s"])
+            .current_dir(sandbox.path())
+            .env("BASE_REF", "main")
+            .env("PR_HEAD_SHA", "0123456789abcdef0123456789abcdef01234567")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        if let Some((path, token)) = handoff {
+            command.env("RIPR_FRESHNESS_HANDOFF", path).env("RIPR_FRESHNESS_TOKEN", token);
+        }
+        let mut child = command.spawn()?;
+        child
+            .stdin
+            .take()
+            .ok_or_else(|| anyhow!("validation bash stdin unavailable"))?
+            .write_all(fake_cargo.as_bytes())?;
+        Ok(child.wait_with_output()?)
+    };
+
+    let rejected = run(None)?;
+    ensure!(!rejected.status.success(), "validation must reject a missing handoff");
+    ensure!(!calls.exists(), "missing handoff must prevent Cargo consumer invocation");
+
+    let handoff = sandbox.path().join("validation-freshness");
+    let token = "validation-test/1/producer";
+    fs::create_dir_all(&handoff)?;
+    fs::write(handoff.join("clear-succeeded"), format!("{token}\n"))?;
+    let accepted = run(Some((&handoff, token)))?;
+    ensure!(accepted.status.success(), "matching handoff must admit validation");
+    ensure!(
+        fs::read_to_string(&calls)?.contains("ripr-pr --base"),
+        "matching handoff must invoke the Cargo consumers"
+    );
     Ok(())
 }
 
@@ -1832,6 +2153,7 @@ fn ripr_infra_classifier_is_shared_tested_and_boundary_documented()
         "RIPR_GATE_VERDICT=ripr-failure",
         "RIPR_GATE_VERDICT=cancelled-no-verdict",
         "RIPR_GATE_VERDICT=neutral-router-skipped",
+        "RIPR_GATE_VERDICT=draft-no-proof",
         "RIPR_GATE_VERDICT=router-not-success",
         "RIPR_GATE_VERDICT=success",
     ] {
@@ -2214,4 +2536,16 @@ fn ripr_gate_retrieval_reaches_classifier_and_failed_fetch_fails_closed() -> Res
     }
 
     Ok(())
+}
+
+#[path = "support/draft_routed_result.rs"]
+mod draft_routed_result;
+
+#[test]
+fn ripr_draft_result_is_not_proof() -> Result<(), Box<dyn std::error::Error>> {
+    draft_routed_result::check_contract(
+        &project_root()?.join(".github/workflows/ripr.yml"),
+        "ripr",
+        "RIPR_GATE_VERDICT=draft-no-proof",
+    )
 }

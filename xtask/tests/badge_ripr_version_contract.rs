@@ -151,7 +151,13 @@ fn badge_installer_matches_the_reviewed_ripr_workflow_release()
 
         let install_steps: Vec<_> = job_run_steps(job)
             .into_iter()
-            .filter(|run| run.contains("cargo install ripr --version"))
+            .filter(|run| {
+                if *job_name == "ripr-github" {
+                    run.trim() == VARIABLE_INSTALL_COMMAND
+                } else {
+                    run.contains("cargo install ripr --version")
+                }
+            })
             .collect();
         assert_eq!(
             install_steps.len(),

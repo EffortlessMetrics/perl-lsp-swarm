@@ -168,6 +168,19 @@ Keep claim frames and wake events in runtime memory only. Reconstruct them from 
 PRs, reviews, checks, merges, and repository artifacts after compaction or replacement.
 Do not poll unchanged remote state.
 
+A remote wait releases root attention. An exact wake event records the material
+condition that would justify reconstructing the claim later; it is not an instruction
+to keep the current root session alive until that condition changes. Do not create a
+timer, cron, scheduled reminder, recurring wake, or polling loop merely to revisit the
+same remote condition. In a multi-claim goal, release unnecessary live contexts and
+immediately advance another phase-eligible actionable claim. If no remaining
+required claim is actionable because each waits on a real external blocker or
+accountable owner decision, return `EXTERNAL_BLOCKER` with each claim's condition and
+wake event named, and let the bounded engineering session end rather than preserving
+the main thread as a watcher.
+Scheduled monitoring is a different user goal, not a continuation mechanism for
+ordinary engineering work.
+
 ## Useful GitHub handoffs
 
 Post or update GitHub only when information remains useful after the current context
@@ -219,6 +232,11 @@ truth, claim honesty, semantic authority/complexity, and risk/rollback.
 The construction context must not be the only detection surface supporting a
 substantive merge. Independence comes from changed evidence, oracle, method, threat
 model, environment, or attention—not identity alone.
+
+Read-only review is non-exclusive. Multiple sessions may inspect the same candidate and
+publish useful findings concurrently without writer allocation, a claim, or a wait.
+Exclusivity begins at mutation: a reviewer that wants to change the candidate must take
+the one writer role or leave the finding for the current writer.
 
 A clean review is valid. Do not manufacture findings or edits to demonstrate that the
 review happened.

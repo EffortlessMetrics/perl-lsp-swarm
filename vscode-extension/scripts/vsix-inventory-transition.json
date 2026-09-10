@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "owner_issue": 7862,
-  "reason": "The #7862 support-packet evidence repair changes the packaged support command; the exact VSIX archive is measured against the captured current-main baseline.",
-  "base_baseline_file_sha256": "f8601dbdd5a42982751b11ab973715d8e11f0986fe8354f54d431ff1e5aa7c0a",
-  "candidate_baseline_file_sha256": "949c75c589fe21743ad92ca29b7d9c7d27efed516a3b4633e2c00e5b06f8347d",
-  "base_inventory_sha256": "71e72d35bc3dd8071851823dbf78c8fb460b04004cd806f0a4c62df82d237488",
-  "candidate_inventory_sha256": "984fb74e54c9864533b3f6fd62e10c08f433c04bfb8099ce540721b183975888"
+  "owner_issue": 9933,
+  "reason": "The #9933 receipt-summary test entry changes the packaged extension package.json by 44 bytes; the exact candidate VSIX is measured against the merged current-main baseline.",
+  "base_baseline_file_sha256": "d95cf9327ba072657b6481b42fa3c3076d7774d4b5a03e7496b431518c765683",
+  "candidate_baseline_file_sha256": "d0f4bd2eaf0a74de3e8e74119e79ec070be3cdd3fb498188b68944f6e38f1d42",
+  "base_inventory_sha256": "695a05e2c3e7508d19ff0c35c30b5aedf5149e0953f31912d823c044f8a9e4d2",
+  "candidate_inventory_sha256": "f96e90df387423bb1b58aeed16ec63df14638bc35c37ce748e423333314856ce"
 }
