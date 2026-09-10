@@ -25,8 +25,12 @@
 //! different identities, not a claim that the inspected filesystem changed.
 //! Classification, read-only behavior, and human unavailable-detail text remain
 //! unchanged; even the human report's digest changes with the schema.
+//! Forensic field decoding and output admission enforce state/value coherence;
+//! directly constructed invalid observations cannot produce clean classification
+//! or a rendered report. See `docs/specs/WORKTREE_FORENSIC_EVIDENCE_V2.md` for the
+//! owning wire contract and shared-type change requirements.
 
-use crate::worktree_cleanup::Observation;
+use crate::worktree_cleanup::{Observation, ObservationState};
 use chrono::{SecondsFormat, Utc};
 use color_eyre::eyre::{Context, Result, bail, eyre};
 use serde::{Deserialize, Serialize};
@@ -195,10 +199,15 @@ impl ManifestEvidence {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RecoveryEvidence {
+    #[serde(deserialize_with = "deserialize_repository_identity")]
     pub repository_identity: Observation<RepositoryIdentity>,
+    #[serde(deserialize_with = "deserialize_candidate_identity")]
     pub candidate_identity: Observation<CandidateIdentity>,
+    #[serde(deserialize_with = "deserialize_pointer")]
     pub pointer: Observation<PointerEvidence>,
+    #[serde(deserialize_with = "deserialize_administrative_gitdir")]
     pub administrative_gitdir: Observation<PathBuf>,
+    #[serde(deserialize_with = "deserialize_administrative_commondir")]
     pub administrative_commondir: Observation<PathBuf>,
     pub administration: AdministrationState,
     pub head: HeadEvidence,
@@ -218,13 +227,121 @@ pub struct RecoveryPlan {
     pub schema_version: String,
     pub policy_version: String,
     pub observed_at: String,
+    #[serde(deserialize_with = "deserialize_repository")]
     pub repository: Observation<RepositoryIdentity>,
+    #[serde(deserialize_with = "deserialize_candidate")]
     pub candidate: Observation<CandidateIdentity>,
     pub evidence: RecoveryEvidence,
     pub classification: RecoveryClassification,
     pub reasons: Vec<String>,
     pub proposed_actions: Vec<String>,
     pub plan_digest: String,
+}
+
+// The shared cleanup type can represent more states than forensic v2 admits.
+// Keep the invariant here; cleanup's applicability semantics are unchanged.
+fn validate_observation<T>(field: &str, observation: &Observation<T>) -> Result<()> {
+    match (observation.state, observation.value.is_some()) {
+        (ObservationState::Observed, true) | (ObservationState::NotProven, false) => Ok(()),
+        _ => bail!(
+            "invalid forensic observation {field}: expected OBSERVED with value or NOT_PROVEN without value"
+        ),
+    }
+}
+
+fn deserialize_observation<'de, D, T>(
+    deserializer: D,
+    field: &str,
+) -> std::result::Result<Observation<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    let observation = Observation::<T>::deserialize(deserializer)
+        .map_err(|error| serde::de::Error::custom(format!("{field}: {error}")))?;
+    validate_observation(field, &observation).map_err(serde::de::Error::custom)?;
+    Ok(observation)
+}
+
+fn deserialize_repository_identity<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Observation<RepositoryIdentity>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    deserialize_observation(deserializer, "repository_identity")
+}
+
+fn deserialize_candidate_identity<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Observation<CandidateIdentity>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    deserialize_observation(deserializer, "candidate_identity")
+}
+
+fn deserialize_pointer<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Observation<PointerEvidence>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    deserialize_observation(deserializer, "pointer")
+}
+
+fn deserialize_administrative_gitdir<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Observation<PathBuf>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    deserialize_observation(deserializer, "administrative_gitdir")
+}
+
+fn deserialize_administrative_commondir<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Observation<PathBuf>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    deserialize_observation(deserializer, "administrative_commondir")
+}
+
+fn deserialize_repository<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Observation<RepositoryIdentity>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    deserialize_observation(deserializer, "repository")
+}
+
+fn deserialize_candidate<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Observation<CandidateIdentity>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    deserialize_observation(deserializer, "candidate")
+}
+
+impl RecoveryEvidence {
+    fn validate_observations(&self) -> Result<()> {
+        validate_observation("repository_identity", &self.repository_identity)?;
+        validate_observation("candidate_identity", &self.candidate_identity)?;
+        validate_observation("pointer", &self.pointer)?;
+        validate_observation("administrative_gitdir", &self.administrative_gitdir)?;
+        validate_observation("administrative_commondir", &self.administrative_commondir)
+    }
+}
+
+impl RecoveryPlan {
+    fn validate_observations(&self) -> Result<()> {
+        validate_observation("repository", &self.repository)?;
+        validate_observation("candidate", &self.candidate)?;
+        self.evidence.validate_observations()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -517,6 +634,9 @@ fn initial_evidence(repository_identity: Observation<RepositoryIdentity>) -> Rec
 }
 
 pub fn classify(evidence: &RecoveryEvidence) -> RecoveryClassification {
+    if evidence.validate_observations().is_err() {
+        return RecoveryClassification::NotProven;
+    }
     if !evidence.contradictions.is_empty() {
         return RecoveryClassification::IdentityConflict;
     }
@@ -582,10 +702,17 @@ pub fn classify(evidence: &RecoveryEvidence) -> RecoveryClassification {
 }
 
 pub fn exit_code(plan: &RecoveryPlan) -> i32 {
-    if plan.classification == RecoveryClassification::CleanReconstructable { 0 } else { 2 }
+    if plan.validate_observations().is_ok()
+        && plan.classification == RecoveryClassification::CleanReconstructable
+    {
+        0
+    } else {
+        2
+    }
 }
 
 pub fn render(plan: &RecoveryPlan, format: OutputFormat) -> Result<String> {
+    plan.validate_observations()?;
     match format {
         OutputFormat::Json => serde_json::to_string_pretty(plan)
             .map(|text| format!("{text}\n"))
@@ -608,6 +735,7 @@ pub fn render(plan: &RecoveryPlan, format: OutputFormat) -> Result<String> {
 }
 
 fn finish_plan(evidence: RecoveryEvidence) -> Result<RecoveryPlan> {
+    evidence.validate_observations()?;
     let classification = classify(&evidence);
     let mut reasons = Vec::new();
     reasons.extend(evidence.contradictions.iter().cloned());
@@ -1987,6 +2115,135 @@ mod tests {
             contradictions: Vec::new(),
             instrument_failures: Vec::new(),
         }
+    }
+
+    fn corrupt_observation<T>(observation: &mut Observation<T>, case: usize) {
+        use crate::worktree_cleanup::ObservationState;
+        observation.state = match case {
+            0 => ObservationState::Observed,
+            1 => ObservationState::NotProven,
+            _ => ObservationState::NotApplicable,
+        };
+        if case == 0 || case == 3 {
+            observation.value = None;
+        }
+    }
+
+    fn corrupt_evidence_observation(evidence: &mut RecoveryEvidence, field: &str, case: usize) {
+        match field {
+            "repository_identity" => corrupt_observation(&mut evidence.repository_identity, case),
+            "candidate_identity" => corrupt_observation(&mut evidence.candidate_identity, case),
+            "pointer" => corrupt_observation(&mut evidence.pointer, case),
+            "administrative_gitdir" => {
+                corrupt_observation(&mut evidence.administrative_gitdir, case)
+            }
+            _ => corrupt_observation(&mut evidence.administrative_commondir, case),
+        }
+    }
+
+    #[test]
+    fn forensic_observation_invariant_blocks_constructed_clean_evidence() -> Result<()> {
+        for field in [
+            "repository_identity",
+            "candidate_identity",
+            "pointer",
+            "administrative_gitdir",
+            "administrative_commondir",
+        ] {
+            for case in [1, 0, 2, 3] {
+                let mut evidence = positive_evidence();
+                corrupt_evidence_observation(&mut evidence, field, case);
+                ensure!(
+                    classify(&evidence) != RecoveryClassification::CleanReconstructable,
+                    "invalid {field} case {case} classified clean"
+                );
+                ensure!(finish_plan(evidence).is_err(), "invalid {field} reached plan output");
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn forensic_observation_invariant_blocks_human_and_json_projection() -> Result<()> {
+        for field in [
+            "repository",
+            "candidate",
+            "repository_identity",
+            "candidate_identity",
+            "pointer",
+            "administrative_gitdir",
+            "administrative_commondir",
+        ] {
+            for case in [1, 0, 2, 3] {
+                let mut plan = finish_plan(positive_evidence())?;
+                match field {
+                    "repository" => corrupt_observation(&mut plan.repository, case),
+                    "candidate" => corrupt_observation(&mut plan.candidate, case),
+                    _ => corrupt_evidence_observation(&mut plan.evidence, field, case),
+                }
+                for format in [OutputFormat::Human, OutputFormat::Json] {
+                    let error = render(&plan, format)
+                        .err()
+                        .ok_or_else(|| eyre!("invalid {field} case {case} rendered"))?;
+                    ensure!(
+                        error.to_string().contains(field),
+                        "render error omitted {field}: {error}"
+                    );
+                }
+                ensure!(exit_code(&plan) != 0, "invalid {field} returned success exit code");
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn forensic_observation_invariant_rejects_deserialized_fields() -> Result<()> {
+        for pointer in [
+            "/repository",
+            "/candidate",
+            "/evidence/repository_identity",
+            "/evidence/candidate_identity",
+            "/evidence/pointer",
+            "/evidence/administrative_gitdir",
+            "/evidence/administrative_commondir",
+        ] {
+            for case in [1, 0, 2, 3] {
+                let mut json = serde_json::to_value(finish_plan(positive_evidence())?)?;
+                let observation =
+                    json.pointer_mut(pointer).ok_or_else(|| eyre!("missing {pointer}"))?;
+                let observation =
+                    observation.as_object_mut().ok_or_else(|| eyre!("not an observation"))?;
+                observation.insert(
+                    "state".to_string(),
+                    serde_json::json!(match case {
+                        0 => "OBSERVED",
+                        1 => "NOT_PROVEN",
+                        _ => "NOT_APPLICABLE",
+                    }),
+                );
+                if case == 0 || case == 3 {
+                    observation.remove("value");
+                }
+                let error = serde_json::from_value::<RecoveryPlan>(json.clone())
+                    .err()
+                    .ok_or_else(|| eyre!("invalid {pointer} case {case} deserialized"))?;
+                let field = pointer.rsplit('/').next().ok_or_else(|| eyre!("missing field"))?;
+                ensure!(
+                    error.to_string().contains(field),
+                    "decoder error omitted {field}: {error}"
+                );
+                if pointer.starts_with("/evidence/") {
+                    ensure!(
+                        serde_json::from_value::<RecoveryEvidence>(
+                            json.get("evidence").ok_or_else(|| eyre!("missing evidence"))?.clone()
+                        )
+                        .is_err(),
+                        "standalone evidence admitted invalid {pointer}"
+                    );
+                }
+            }
+        }
+        Ok(())
     }
 
     #[test]
