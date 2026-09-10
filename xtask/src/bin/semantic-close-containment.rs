@@ -1430,7 +1430,11 @@ fn required_work_exclusion(text: &str, owner_context: Option<(&IssueKey, &str)>)
                 let Some(before) = unit.get(..index) else { return false };
                 let Some(after) = unit.get(index + subject.len()..) else { return false };
                 let before = before.trim_end();
-                let before = before.strip_suffix("the").unwrap_or(before).trim_end();
+                let before = if before == "the" {
+                    ""
+                } else {
+                    before.strip_suffix(" the").unwrap_or(before)
+                };
                 let (before, prefix_owner) = strip_issue_owner_suffix(before);
                 let (after, suffix_owner) = strip_issue_owner_prefix(after.trim_start());
                 if [prefix_owner, suffix_owner]
@@ -2490,6 +2494,8 @@ mod tests {
             ("## Claim Boundary\n**Not claimed:** the full acceptance criteria", true),
             ("## Claim Boundary\nx**not claimed:** the full acceptance criteria", false),
             ("## Claim Boundary\nxnot claimed: the full acceptance criteria", false),
+            ("## Claim Boundary\nNot claimedthe full acceptance criteria", false),
+            ("## Claim Boundary\nNot claimed: the full acceptance criteria", true),
             ("## Claim Boundary\nFor this PR, not claimed: the full acceptance criteria", true),
             ("## Claim Boundary\nidentifier_**not claimed:** the full acceptance criteria", false),
             ("## Claim Boundary\n**Not cla*imed:** the full acceptance criteria", false),
