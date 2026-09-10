@@ -1457,6 +1457,13 @@ fn required_work_exclusion(text: &str, owner_context: Option<(&IssueKey, &str)>)
                     else {
                         return false;
                     };
+                    if introduction
+                        .chars()
+                        .next_back()
+                        .is_some_and(|character| character.is_alphanumeric() || character == '_')
+                    {
+                        return false;
+                    }
                     *exclusion != "explicitly out of scope"
                         || !matches!(introduction.split_whitespace().last(), Some("not" | "never"))
                 });
@@ -1518,7 +1525,13 @@ fn without_supported_emphasis(text: &str) -> String {
                         // Escape parity is the same for emphasis and backticks.
                         (!backtick_is_escaped(&normalized, start)
                             && before != Some(marker)
-                            && after != Some(marker))
+                            && after != Some(marker)
+                            && !before.is_some_and(|character| {
+                                character.is_alphanumeric() || character == '_'
+                            })
+                            && !after.is_some_and(|character| {
+                                character.is_alphanumeric() || character == '_'
+                            }))
                         .then_some(start)
                     })
                     .collect();
@@ -2475,6 +2488,10 @@ mod tests {
                 true,
             ),
             ("## Claim Boundary\n**Not claimed:** the full acceptance criteria", true),
+            ("## Claim Boundary\nx**not claimed:** the full acceptance criteria", false),
+            ("## Claim Boundary\nxnot claimed: the full acceptance criteria", false),
+            ("## Claim Boundary\nFor this PR, not claimed: the full acceptance criteria", true),
+            ("## Claim Boundary\nidentifier_**not claimed:** the full acceptance criteria", false),
             ("## Claim Boundary\n**Not cla*imed:** the full acceptance criteria", false),
             ("## Claim Boundary\nFull acceptance criteria are **not established**", true),
             ("## Claim Boundary\n`Full acceptance criteria are not established\\`.", false),
