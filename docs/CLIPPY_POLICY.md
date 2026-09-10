@@ -20,7 +20,7 @@ Every governed lint has exactly one current state:
 - `debt`: the exact Cargo level exists and current debt rows own the bounded exceptions.
 - `tracked`: the lint is catalogued but absent from Cargo.
 - `planned`: the lint is unavailable before a future product MSRV.
-- `deferred_due`: the lint is already available, but an owner, reason, review date, and intended next state explicitly bound the remaining work.
+- `deferred_due`: the lint is already available, but an owner, reason, review date, and intended next state explicitly bind the remaining work.
 
 A lint cannot appear in two states. A Cargo lint without a ledger entry fails, as does an active ledger entry missing from Cargo. Due lints cannot remain ordinary planned work indefinitely.
 
@@ -112,7 +112,7 @@ fn generated_lookup(table: &[usize], index: usize) -> usize {
 }
 ```
 
-A temporary repository debt row records `lint`, `level`, `path`, `owner`, `reason`, and `review_after`. Empty, expired, unowned, pathless, level-inconsistent, or orphaned debt fails the policy check. An unchanged count cannot hide one finding replacing another.
+A temporary repository debt row records `lint`, `level`, `path`, `owner`, `reason`, and `review_after`. Empty, malformed, unowned, pathless, level-inconsistent, or orphaned debt fails the policy check. A passed `review_after` remains structurally valid candidate policy and appears as `ReviewOverdue` in `cargo xtask policy cadence`; crossing that date does not change `check-lint-policy`'s exit status. An unchanged count cannot hide one finding replacing another.
 
 ## Toolchain currentness
 
@@ -136,7 +136,7 @@ Run the policy check before changing Cargo lint levels, Clippy configuration, de
 cargo xtask check-lint-policy
 ```
 
-The command prints deterministic active, debt, tracked, configuration-empty-by-design, future-planned, and due-deferred populations. Unknown fields, malformed versions, duplicate identities, stale deferrals, reintroduced test carveouts, or missing policy inputs are non-success.
+The command prints deterministic active, debt, tracked, configuration-empty-by-design, future-planned, and due-deferred populations. Unknown fields, malformed versions or lifecycle dates, duplicate identities, reintroduced test carveouts, or missing policy inputs are non-success. Review-dated debt and deferrals also appear in `cargo xtask policy cadence --as-of <date>`; overdue state creates owner work there without making an unchanged candidate fail.
 
 ## Protected fields
 
