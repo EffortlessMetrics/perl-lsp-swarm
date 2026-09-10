@@ -49,7 +49,7 @@ fn compiled_registry_validates_and_is_second_run_clean() -> Result<()> {
         first
     );
     // Cohort independence is published explicitly rather than inherited.
-    for (_, count) in &first.cohort_membership {
+    for count in first.cohort_membership.values() {
         ensure!(*count > 0, "a diagnostic cohort holds zero membership");
     }
     ensure!(
