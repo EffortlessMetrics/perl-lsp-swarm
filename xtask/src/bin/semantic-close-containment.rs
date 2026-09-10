@@ -1372,9 +1372,16 @@ fn contains_proof_level_term(text: &str, term: &str) -> bool {
 
 const REQUIRED_WORK_SUBJECTS: &[&str] = &[
     "full acceptance criteria",
+    "complete acceptance criteria",
+    "remaining acceptance criteria",
     "full acceptance",
+    "complete acceptance",
+    "remaining acceptance",
     "full issue work",
     "complete issue work",
+    "remaining issue work",
+    "full required work",
+    "complete required work",
     "remaining required work",
     "complete remaining work",
     "remaining work",
@@ -2346,6 +2353,47 @@ mod tests {
             "The public constructor remains unchanged and installed proof is required.",
             "installed"
         ));
+    }
+
+    #[test]
+    fn explicit_required_subject_families_retain_prefix_and_suffix_exclusions() -> Result<()> {
+        let mut mismatches = Vec::new();
+        for modifier in ["full", "complete", "remaining"] {
+            for work in ["acceptance criteria", "acceptance", "issue work", "required work"] {
+                let predicate = if work == "acceptance criteria" {
+                    "are not established"
+                } else {
+                    "is not proven"
+                };
+                for boundary in [
+                    format!("This PR does not prove the {modifier} {work}."),
+                    format!("The {modifier} {work} {predicate}."),
+                ] {
+                    let pull = PullRequestSubject {
+                        repository: "effortlessmetrics/perl-lsp-swarm".into(),
+                        number: 990104,
+                        title: "fix: required subject family control".into(),
+                        body: format!("## Claim Boundary\n{boundary}\n\nCloses #10"),
+                    };
+                    let report = evaluate(&pull, |key| {
+                        IssueEvidence::Available(IssueSubject {
+                            number: key.number,
+                            title: "Complete the named change".into(),
+                            body: "## Acceptance\nThe named change is established.".into(),
+                        })
+                    })?;
+                    if report.rows.first().map(|row| row.code)
+                        != Some(ResultCode::FailExplicitUnprovenRequiredWork)
+                    {
+                        mismatches.push(boundary);
+                    }
+                }
+            }
+        }
+        if !mismatches.is_empty() {
+            bail!("required subject exclusions were lost: {mismatches:?}");
+        }
+        Ok(())
     }
 
     #[test]

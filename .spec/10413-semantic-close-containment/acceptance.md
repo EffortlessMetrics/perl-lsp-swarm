@@ -19,9 +19,10 @@ A terminal relation is rejected when the same issue's stable boundary says Phase
 A terminal relation is rejected when the stable claim boundary explicitly says full/complete/remaining issue work is not proved, established, or claimed.
 
 CP00-003 supports explicit subject templates, not arbitrary scope-word overlap:
-`full acceptance criteria`, `full acceptance`, `full issue work`, `complete issue work`,
-`remaining required work`, `complete remaining work`, `remaining work`, and
-`complete remaining call-site cohort`. An exclusion must directly precede that
+each of `full`, `complete`, and `remaining` may modify `acceptance criteria`,
+`acceptance`, `issue work`, or `required work`. The additional supported phrases are
+`complete remaining work`, `remaining work`, and `complete remaining call-site cohort`.
+An exclusion must directly precede that
 subject (for example, `does not prove the full acceptance criteria` or
 `Not claimed: the remaining required work`) or follow it with `is`/`are`/`remains`
 (for example, `full acceptance criteria are not established`). Numeric issue
