@@ -15,7 +15,7 @@ pub(super) fn route(
     id: Option<Value>,
     should_respond: bool,
 ) -> Option<RoutedResponse> {
-    if !server.initialize_requested.load(std::sync::atomic::Ordering::Acquire)
+    if !server.initialization_accepted.load(std::sync::atomic::Ordering::Acquire)
         || server.shutdown_received.load(std::sync::atomic::Ordering::Acquire)
     {
         return None;
@@ -69,7 +69,7 @@ mod tests {
             "formatting must not be intercepted before initialize"
         );
 
-        server.initialize_requested.store(true, std::sync::atomic::Ordering::Release);
+        server.test_mark_initialize_session_accepted();
         server.shutdown_received.store(true, std::sync::atomic::Ordering::Release);
         assert!(
             route(&server, &request, Some(id), true).is_none(),
@@ -90,7 +90,7 @@ mod tests {
         .enumerate()
         {
             let server = LspServer::new();
-            server.initialize_requested.store(true, std::sync::atomic::Ordering::Release);
+            server.test_mark_initialize_session_accepted();
             let id = JsonRpcId::Integer(70820 + offset as i64).to_value();
             let request = JsonRpcRequest {
                 _jsonrpc: "2.0".to_string(),

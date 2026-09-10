@@ -300,10 +300,27 @@ impl LspServer {
             let document =
                 self.get_document(&documents, &uri).ok_or_else(|| document_not_open(&uri))?;
             (
-                document.text_arc.to_string(),
+                document.text_for_user_answers().map(str::to_string),
                 document.version,
                 u64::from(document.current_generation()),
             )
+        };
+        let Some(text) = text else {
+            let snapshot = Snapshot {
+                surface,
+                uri_hash: digest(&uri),
+                uri,
+                text: String::new(),
+                version,
+                generation,
+                options: options(params)?,
+                config: self.effective_formatting_config()?,
+            };
+            return Err(self.stale_error(
+                &snapshot,
+                "full_sync_required",
+                "Document requires a full-document resync before formatting.",
+            ));
         };
         let snapshot = Snapshot {
             surface,

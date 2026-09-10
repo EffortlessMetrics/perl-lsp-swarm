@@ -312,7 +312,7 @@ fn test_initialize_contract_3_17() -> TestResult {
     if let Some(encoding) = capabilities.get("positionEncoding") {
         assert!(encoding.is_string());
         let enc = encoding.as_str().ok_or("encoding not a string")?;
-        assert!(["utf-8", "utf-16", "utf-32"].contains(&enc));
+        assert_eq!(enc, "utf-16", "v0.18 advertises UTF-16 only, got {enc}");
     }
 
     // Check server info
@@ -333,33 +333,16 @@ fn test_initialize_contract_3_17() -> TestResult {
 }
 
 #[test]
-fn test_position_encoding_advertised_is_clamped_to_utf16_pending_phase_2() -> TestResult {
-    // Phase 1 parses and stores the client's `general.positionEncodings`
-    // preference (see the `initialize_prefers_first_supported_position_encoding`
-    // family of unit tests in `runtime/lifecycle/capabilities.rs` for coverage
-    // of that internal negotiation). But `text_sync` and every feature
-    // provider (hover, definition, diagnostics, ...) still compute positions
-    // in UTF-16 code units — threading the negotiated encoding through those
-    // call sites is deferred to phase 2.
-    //
-    // Per the LSP 3.17 spec, client and server MUST agree on one encoding or
-    // offsets are misinterpreted. So regardless of what the client prefers,
-    // the *advertised* `capabilities.positionEncoding` MUST stay pinned to
-    // "utf-16" (the spec's mandatory default) until phase 2 lands — anything
-    // else would silently corrupt document sync and every position-bearing
-    // response for non-ASCII content on a client that prefers a different
-    // encoding.
+fn test_position_encoding_advertised_is_utf16_v0_18_envelope() -> TestResult {
+    // v0.18 (#8129) advertises and uses UTF-16 only. A client list that
+    // includes utf-16 still gets utf-16 even when utf-8 is preferred first.
+    // Well-formed lists that omit utf-16 accept via explicit mandatory fallback.
 
     // Scenario 1: client prefers UTF-8 first, then UTF-16 -- must still get utf-16.
     let mut harness = LspHarness::new();
     let result = harness.initialize(Some(json!({
-        "processId": 1234,
-        "clientInfo": { "name": "test-client" },
-        "rootUri": "file:///workspace",
-        "capabilities": {
-            "general": {
-                "positionEncodings": ["utf-8", "utf-16"]
-            }
+        "general": {
+            "positionEncodings": ["utf-8", "utf-16"]
         }
     })))?;
 
@@ -378,13 +361,8 @@ fn test_position_encoding_advertised_is_clamped_to_utf16_pending_phase_2() -> Te
     // Scenario 2: client prefers UTF-16 first, then UTF-8 -- utf-16 either way.
     let mut harness = LspHarness::new();
     let result = harness.initialize(Some(json!({
-        "processId": 1234,
-        "clientInfo": { "name": "test-client" },
-        "rootUri": "file:///workspace",
-        "capabilities": {
-            "general": {
-                "positionEncodings": ["utf-16", "utf-8"]
-            }
+        "general": {
+            "positionEncodings": ["utf-16", "utf-8"]
         }
     })))?;
 
@@ -399,10 +377,7 @@ fn test_position_encoding_advertised_is_clamped_to_utf16_pending_phase_2() -> Te
     // Scenario 3: client doesn't specify positionEncodings - default to utf-16.
     let mut harness = LspHarness::new();
     let result = harness.initialize(Some(json!({
-        "processId": 1234,
-        "clientInfo": { "name": "test-client" },
-        "rootUri": "file:///workspace",
-        "capabilities": {}
+        "textDocument": {}
     })))?;
 
     let capabilities = &result["capabilities"];
@@ -416,6 +391,27 @@ fn test_position_encoding_advertised_is_clamped_to_utf16_pending_phase_2() -> Te
         "server should default to utf-16 when client doesn't specify positionEncodings"
     );
 
+    Ok(())
+}
+
+#[test]
+fn utf8_only_position_encodings_accept_initialize_via_utf16_fallback() -> TestResult {
+    let mut harness = LspHarness::new();
+    let result = harness.initialize(Some(json!({
+        "general": {
+            "positionEncodings": ["utf-8"]
+        }
+    })))?;
+
+    let encoding = result
+        .get("capabilities")
+        .and_then(|v| v.get("positionEncoding"))
+        .and_then(|v| v.as_str())
+        .ok_or("positionEncoding not found or not string")?;
+    assert_eq!(
+        encoding, "utf-16",
+        "utf-8-only initialize must still advertise utf-16 via mandatory fallback"
+    );
     Ok(())
 }
 

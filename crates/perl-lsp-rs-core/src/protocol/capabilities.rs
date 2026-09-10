@@ -491,8 +491,8 @@ mod tests {
                 assert_eq!(
                     opts.change,
                     Some(TextDocumentSyncKind::FULL),
-                    "textDocumentSync.change must be FULL (1) — the server reparses the whole \
-                     document on every didChange; INCREMENTAL would be inaccurate"
+                    "textDocumentSync.change must be FULL (1) — v0.18 transfers complete \
+                     document text; INCREMENTAL would advertise ranged edits that are not applied"
                 );
                 assert_eq!(
                     opts.open_close,

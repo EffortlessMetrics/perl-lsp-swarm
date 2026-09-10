@@ -49,6 +49,7 @@ impl LspServer {
         Self {
             documents: Arc::new(Mutex::new(HashMap::new())),
             initialize_requested: AtomicBool::new(false),
+            initialization_accepted: AtomicBool::new(false),
             initialized: AtomicBool::new(false),
             shutdown_received: AtomicBool::new(false),
             pending_startup_log: Arc::new(Mutex::new(None)),
@@ -247,6 +248,7 @@ impl LspServer {
         Self {
             documents: Arc::new(Mutex::new(HashMap::new())),
             initialize_requested: AtomicBool::new(false),
+            initialization_accepted: AtomicBool::new(false),
             initialized: AtomicBool::new(false),
             shutdown_received: AtomicBool::new(false),
             pending_startup_log: Arc::new(Mutex::new(None)),
@@ -386,6 +388,7 @@ impl LspServer {
         Self {
             documents: Arc::new(Mutex::new(HashMap::new())),
             initialize_requested: AtomicBool::new(false),
+            initialization_accepted: AtomicBool::new(false),
             initialized: AtomicBool::new(false),
             shutdown_received: AtomicBool::new(false),
             pending_startup_log: Arc::new(Mutex::new(None)),
@@ -491,6 +494,18 @@ impl LspServer {
 impl Default for LspServer {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+impl LspServer {
+    /// Test helper: mark the initialize one-shot consumed *and* accepted.
+    ///
+    /// Setting [`Self::initialize_requested`] alone must not open serving.
+    pub(crate) fn test_mark_initialize_session_accepted(&self) {
+        use std::sync::atomic::Ordering;
+        self.initialize_requested.store(true, Ordering::Release);
+        self.initialization_accepted.store(true, Ordering::Release);
     }
 }
 

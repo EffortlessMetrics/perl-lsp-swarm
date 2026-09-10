@@ -137,7 +137,7 @@ fn test_complete_lsp_integration() {
     let response = server.handle_request(workspace_symbol_request);
     assert!(response.is_some());
 
-    // Step 4: Test incremental updates
+    // Step 4: Test full-document updates
     let change_request = JsonRpcRequest {
         _jsonrpc: "2.0".to_string(),
         id: None,
@@ -148,11 +148,7 @@ fn test_complete_lsp_integration() {
                 "version": 2
             },
             "contentChanges": [{
-                "range": {
-                    "start": { "line": 0, "character": 0 },
-                    "end": { "line": 0, "character": 0 }
-                },
-                "text": "# New comment\n"
+                "text": format!("# New comment\n{}", include_str!("fixtures/main.pl"))
             }]
         })),
     };

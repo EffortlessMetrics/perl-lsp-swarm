@@ -586,6 +586,12 @@ impl LspServer {
             Some(d) => d,
             None => return Ok(Some(json!([]))),
         };
+        // Full-sync unavailability is not an ordinary parse failure. The
+        // AST-less fallback below reads predecessor text and would emit
+        // edits/commands at obsolete positions.
+        if doc.full_sync_required() {
+            return Ok(Some(json!([])));
+        }
 
         let parsed = doc.current_parsed();
         let start_offset = self.pos16_to_offset(doc, start_line, start_char);
@@ -1189,6 +1195,9 @@ impl LspServer {
         {
             let documents = self.documents_guard();
             if let Some(doc) = documents.get(uri) {
+                if doc.full_sync_required() {
+                    return Ok(Some(json!([])));
+                }
                 let mut actions =
                     crate::code_actions_pragmas::missing_pragmas_actions(uri, &doc.text);
 
@@ -1219,7 +1228,10 @@ impl LspServer {
                     && let Some(uri) = data.get("uri").and_then(|u| u.as_str())
                 {
                     let documents = self.documents_guard();
-                    if self.get_document(&documents, uri).is_some() {
+                    if self
+                        .get_document(&documents, uri)
+                        .is_some_and(|doc| !doc.full_sync_required())
+                    {
                         // Example: Add "use strict;" at the beginning
                         if let Some(pragma) = data.get("pragma").and_then(|p| p.as_str()) {
                             let text = format!("{}\n", pragma);
@@ -3022,6 +3034,114 @@ my $x = 1 + 2;
         assert!(
             titles.iter().any(|title| title == "Convert globals to 'my' declarations"),
             "baseline proves this document reaches the branch under test: {titles:?}"
+        );
+        Ok(())
+    }
+
+    fn ranged_violation(uri: &str, version: i32) -> Value {
+        json!({
+            "textDocument": { "uri": uri, "version": version },
+            "contentChanges": [{
+                "range": {
+                    "start": { "line": 0, "character": 0 },
+                    "end": { "line": 0, "character": 1 }
+                },
+                "text": "x"
+            }]
+        })
+    }
+
+    fn json_contains_key(value: &Value, key: &str) -> bool {
+        match value {
+            Value::Object(map) => {
+                map.contains_key(key) || map.values().any(|child| json_contains_key(child, key))
+            }
+            Value::Array(items) => items.iter().any(|child| json_contains_key(child, key)),
+            _ => false,
+        }
+    }
+
+    #[test]
+    fn code_action_fails_closed_after_ranged_did_change_without_predecessor_edits()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        let uri = "file:///desync-code-action.pl";
+        let predecessor = "my $x = 1;\n";
+        open_test_document(&server, uri, predecessor);
+
+        let live = server
+            .handle_code_action(Some(json!({
+                "textDocument": { "uri": uri },
+                "range": {
+                    "start": { "line": 0, "character": 0 },
+                    "end": { "line": 0, "character": 0 }
+                },
+                "context": { "diagnostics": [] }
+            })))?
+            .ok_or("live codeAction must return a result")?;
+        assert!(
+            json_contains_key(&live, "edit") || json_contains_key(&live, "command"),
+            "predecessor document must offer an edit or command before desync: {live}"
+        );
+
+        server.handle_did_change(Some(ranged_violation(uri, 2)))?;
+        {
+            let documents = server.documents_guard();
+            let doc = server.get_document(&documents, uri).ok_or("desynchronized document")?;
+            assert!(doc.full_sync_required(), "ranged didChange must enter full-sync-required");
+            assert!(
+                doc.text.contains("my $x"),
+                "predecessor text remains stored and must not be reused for edits"
+            );
+        }
+
+        let desync = server
+            .handle_code_action(Some(json!({
+                "textDocument": { "uri": uri },
+                "range": {
+                    "start": { "line": 0, "character": 0 },
+                    "end": { "line": 0, "character": 0 }
+                },
+                "context": { "diagnostics": [] }
+            })))?
+            .ok_or("desync codeAction must return a result")?;
+        let desync_actions = desync.as_array().ok_or("codeAction must return an array")?;
+        assert!(
+            desync_actions.is_empty(),
+            "Full-sync unavailability must not emit actions: {desync}"
+        );
+        assert!(
+            !json_contains_key(&desync, "edit") && !json_contains_key(&desync, "command"),
+            "desync codeAction must not carry a predecessor-derived edit or command: {desync}"
+        );
+
+        let pragma_desync = server
+            .handle_code_actions_pragmas(Some(json!({ "textDocument": { "uri": uri } })))?
+            .ok_or("desync pragma helper must return a result")?;
+        assert_eq!(
+            pragma_desync.as_array().map(Vec::len),
+            Some(0),
+            "pragma helper must fail closed with the production route: {pragma_desync}"
+        );
+
+        let resolved = server
+            .handle_code_action_resolve(Some(json!({
+                "title": "Add use strict;",
+                "kind": "quickfix",
+                "data": { "uri": uri, "pragma": "use strict;" }
+            })))?
+            .ok_or("codeAction/resolve must return the action")?;
+        assert!(
+            resolved.get("edit").is_none(),
+            "resolve must not attach a predecessor pragma edit while Full-sync is required: {resolved}"
+        );
+
+        let pending_uri = "file:///synchronized-pending-parse.pl";
+        open_with_pending_parse(&server, pending_uri)?;
+        let pending_titles = code_action_titles(&server, pending_uri)?;
+        assert!(
+            pending_titles.iter().any(|title| title == "Convert globals to 'my' declarations"),
+            "synchronized AST-less fallback must still offer convert-globals: {pending_titles:?}"
         );
         Ok(())
     }

@@ -178,7 +178,7 @@ fn capability_rows() -> Vec<SurfaceRow> {
             "cap.textDocumentSync.change",
             "textDocumentSync.change",
             S_DOC_SYNC,
-            "textDocument/didChange (Full=1 reparse)",
+            "textDocument/didChange (Full=1 complete document transfer)",
             "features.toml#lsp.text_document_sync; lifecycle tests text_document_sync_advertises_full_sync_and_open_close",
         ),
         SurfaceRow {
@@ -635,13 +635,13 @@ fn mutation_rows() -> Vec<SurfaceRow> {
         SurfaceRow {
             additional_owned_pointers: super::NO_POINTERS,
             client_capability_inputs: &[
-                "general.positionEncodings (negotiated, stored, NOT advertised)",
+                "general.positionEncodings (classified; utf-16 selected or initialize fails)",
             ],
             ..mut_row(
                 "mut.handle_initialize.positionEncodingPin",
                 "positionEncoding",
                 &["general.positionEncodings"],
-                "position contract pinned utf-16 until negotiated encoding threads through providers; see compat.protocol.positionEncodingUtf16Pin",
+                "v0.18 UTF-16-only envelope (#8129); see compat.protocol.positionEncodingUtf16Pin",
             )
         },
         SurfaceRow {
@@ -1200,13 +1200,13 @@ fn compatibility_rows() -> Vec<SurfaceRow> {
         ),
         compat(
             "compat.protocol.positionEncodingUtf16Pin",
-            "positionEncoding always advertised utf-16 despite general.positionEncodings negotiation",
+            "positionEncoding always advertised utf-16; well-formed lists that omit utf-16 accept via mandatory UTF-16 fallback",
             RT_INIT,
             &["general.positionEncodings"],
-            "phase-comment block in handle_initialize; position authority #2298",
-            "every client negotiating a non-UTF-16 preferred encoding",
-            "providers still compute UTF-16 offsets; advertising anything else would corrupt positions, so the negotiated value is stored but not advertised",
-            "#8032 train stage threading the negotiated encoding through position/text contracts",
+            "v0.18 full-document UTF-16 envelope (#8129); initialize offer classification",
+            "every client that omits utf-16 from a nonempty general.positionEncodings list",
+            "v0.18 stores and advertises utf-16 only; UTF-8/UTF-32 wire support is not claimed",
+            "#1690/#9282 end-to-end encoding activation remains open and is not this envelope",
         ),
         compat(
             "compat.negotiated.clientInputsWithoutAdvertisementSeam",

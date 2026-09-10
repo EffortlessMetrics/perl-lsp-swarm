@@ -12,7 +12,7 @@ pub(super) fn is_perl_language_id(language_id: &str) -> bool {
     )
 }
 
-#[cfg(feature = "incremental")]
+#[cfg(all(feature = "incremental", test))]
 pub(super) fn build_incremental_edit_set(
     original_rope: &ropey::Rope,
     lsp_changes: &[lsp_types::TextDocumentContentChangeEvent],

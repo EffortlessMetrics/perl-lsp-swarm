@@ -301,7 +301,7 @@ pub enum CapabilityFamily {
     TypeHierarchy,
     /// `inlineCompletionProvider` (LSP 3.18; static/dynamic arbitration).
     InlineCompletion,
-    /// `positionEncoding` (pinned UTF-16 until the #9282 coordinate cutover).
+    /// `positionEncoding` (v0.18 UTF-16-only wire encoding).
     PositionEncoding,
     /// `textDocumentSync` (runtime-owned authoritative shape).
     TextDocumentSync,
