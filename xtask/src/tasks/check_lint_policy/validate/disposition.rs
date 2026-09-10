@@ -1,7 +1,6 @@
 use super::super::model::{DeferredLint, LintEntry, LintLedger, PlannedLint, RustVersion};
 use super::super::read::collect_workspace_lints;
 use super::common::{parse_review_date, validate_level, validate_lint_name, validate_nonempty};
-use chrono::NaiveDate;
 use color_eyre::eyre::{Result, bail, eyre};
 use std::collections::BTreeMap;
 use toml::Value;
@@ -28,11 +27,7 @@ const REQUIRED_DISPOSITIONS: &[(&str, Option<&str>, Option<&str>)] = &[
     ("clippy::let_underscore_lock", Some("deny"), Some("active")),
 ];
 
-pub(crate) fn validate_workspace_lints(
-    cargo: &Value,
-    ledger: &LintLedger,
-    _today: NaiveDate,
-) -> Result<()> {
+pub(crate) fn validate_workspace_lints(cargo: &Value, ledger: &LintLedger) -> Result<()> {
     validate_unique_dispositions(ledger)?;
 
     let cargo_lints = collect_workspace_lints(cargo)?;
