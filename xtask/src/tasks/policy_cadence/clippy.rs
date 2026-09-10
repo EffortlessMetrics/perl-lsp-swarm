@@ -40,7 +40,7 @@ mod tests {
         fs::create_dir_all(policy.join("clippy-lints.d"))?;
         fs::write(
             policy.join("clippy-lints.toml"),
-            r#"schema = 2
+            r##"schema = 2
 msrv = "1.95"
 
 [policy]
@@ -58,11 +58,11 @@ owner = "#9869"
 reason = "fixture deferral"
 review_after = "2026-09-01"
 next_status = "active"
-"#,
+"##,
         )?;
         fs::write(
             policy.join("clippy-lints.d/00-fixture.toml"),
-            r#"schema = 1
+            r##"schema = 1
 
 [[lint]]
 name = "clippy::collapsible_if"
@@ -70,11 +70,11 @@ level = "deny"
 status = "debt"
 class = "reviewability"
 reason = "fixture catalog row"
-"#,
+"##,
         )?;
         fs::write(
             policy.join("clippy-debt.toml"),
-            r#"schema = 2
+            r##"schema = 2
 
 [[debt]]
 lint = "clippy::collapsible_if"
@@ -83,7 +83,7 @@ path = "Cargo.toml"
 owner = "#6305"
 reason = "fixture debt"
 review_after = "2026-09-02"
-"#,
+"##,
         )?;
 
         let as_of = parse_date("2026-09-10", "fixture")?;
