@@ -3211,6 +3211,45 @@ created = "2026-09-10"
 review_after = "2026-09-17"
 expires = "2026-09-30"
 removal_criteria = "Remove when ripr#1429 traces integration-test coverage into module owners; narrow immediately if a future receipt reports an executable seam here outside the listed classes."
+# PR #13882 versioned rust-small receipt: analyzer-untraceable in-module
+# coverage plus declaration/static-limitation probes. Hosted RIPR run
+# 34463135706 reported 40 new gaps on xtask/src/tasks/rust_small_proof.rs
+# (the receipt feature; artifact_admission.rs probes ride the same file
+# selector in the receipt).
+#
+# Evidence breakdown from ripr/pr/raw-check.json probe findings:
+# - no_static_path field_construction on non-executable declarations
+#   (CENSUS_STEP/REPLAY_STEP/DIFF_HYGIENE_STEP consts and struct/field
+#   owners): ripr#1429 class.
+# - static_unknown on fn-signature and sole-closer lines: structural probes,
+#   no executable seam.
+# - weakly_exposed / infection_unknown / propagation_unknown on match arms,
+#   predicates, and returns exercised by the 60 green in-module tests
+#   (`cargo test -p xtask --bin xtask rust_small_proof`), which the analyzer
+#   cannot trace from same-file cfg(test) modules.
+# - reachable_unrevealed on reject_tracked/acquire_in seams
+#   (artifact_admission.rs:133/145/207): the covering tests (e.g.
+#   tracked_index_and_head_destinations_are_preserved,
+#   coherent_failed_older_candidate_is_replaceable) drive these paths and
+#   fail on any behavioral deviation via `?` propagation and exact-reason
+#   refusal assertions; `Ok(())` carries no observable value to assert
+#   beyond control-flow, which the tests already discriminate.
+# HONEST SCOPE NOTE: path-plus-class scoping masks future probes of these
+# classes in these files for this window. Narrow or delete immediately if a
+# future receipt reports an executable seam here outside these classes.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-13882-rust-small-receipt-seams"
+kind = "predicate_infection_untraceable"
+paths = ["xtask/src/tasks/rust_small_proof.rs", "xtask/src/tasks/rust_small_proof/artifact_admission.rs"]
+classification = ["no_static_path", "static_unknown", "reachable_unrevealed", "weakly_exposed", "infection_unknown", "propagation_unknown"]
+owner = "proof-lane"
+issue = "EffortlessMetrics/ripr#1429"
+reason = "PR #13882: 40 new gaps on the versioned-receipt feature are declaration probes (step-name consts, struct/field owners), structural fn-signature/closer probes, and analyzer-untraceable coverage from 60 green in-module tests (cargo test -p xtask --bin xtask rust_small_proof); the reachable_unrevealed reject_tracked/acquire_in seams are ?-observed by exact-reason refusal tests. Do not treat this as receipt-behavior proof."
+created = "2026-09-10"
+review_after = "2026-09-17"
+expires = "2026-09-30"
+removal_criteria = "Remove when ripr#1429 traces in-module cfg(test) coverage to same-file owners; narrow immediately if a future receipt reports an executable seam here outside the listed classes."
 # PR #13555 shutdown-harness client seams: analyzer-untraceable in-module
 # coverage plus declaration/static-limitation probes, with two documented
 # server-fault arms. Hosted RIPR run 34452194082 (evaluated merge
