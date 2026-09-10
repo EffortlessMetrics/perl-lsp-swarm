@@ -11,11 +11,11 @@ failure/recovery paths, production-composition gaps, and overbroad proof.
 
 ## Orchestration affordances
 
-### Lane-root decisions
+### Root decisions
 
-The lane root retains the accepted claim, proof-sufficiency judgment, which new paths
-are material, proof-cost tradeoffs, and whether a discovery changes the requirement or
-owner rather than merely strengthening tests.
+The main Claude thread retains the accepted claim, proof-sufficiency judgment, which new
+paths are material, proof-cost tradeoffs, and whether a discovery changes the
+requirement or owner rather than merely strengthening tests.
 
 ### Useful adversarial contexts
 

@@ -160,7 +160,11 @@ scanner. The lexer also enforces budget limits to prevent denial-of-service:
 - `MAX_REGEX_BYTES`: 64 KB per regex literal
 - `MAX_HEREDOC_BYTES`: 256 KB per heredoc
 - `MAX_DELIM_NEST`: 128 levels of delimiter nesting
-- `HEREDOC_TIMEOUT_MS`: 5-second timeout
+
+The parser (`perl-parser-core`) adds one deterministic budget of its own:
+
+- `ParseBudget::max_heredoc_scan_bytes`: 64 MiB of heredoc body collection
+  per parse, charged in source bytes rather than elapsed time
 
 The native parser achieves sub-millisecond performance on typical files (1–150us
 initial parse, 931ns incremental updates) while producing partial ASTs with typed

@@ -39,14 +39,86 @@ fn non_rust_inventory_subcommand_help_exits_zero() -> Result<()> {
 }
 
 #[test]
-fn non_rust_inventory_inventory_help_describes_fail_closed_snapshot_check() -> Result<()> {
+fn non_rust_inventory_inventory_help_describes_current_tree_check() -> Result<()> {
     let output = Command::cargo_bin("xtask")?.args(["non-rust", "inventory", "--help"]).output()?;
     assert!(output.status.success(), "non-rust inventory --help should exit 0");
     let help = String::from_utf8(output.stdout)?;
     ensure!(
-        help.contains("Require the generated Markdown snapshot")
-            && help.contains("after line-ending normalization"),
-        "inventory --help must describe the fail-closed normalized snapshot check"
+        help.contains("Validate the current tracked tree against the allowlist")
+            && help.contains("target/policy")
+            && help.contains("newly added unclassified paths"),
+        "inventory --help must describe current-tree evaluation and retained evidence"
+    );
+    ensure!(
+        !help.contains("generated Markdown snapshot")
+            && !help.contains("line-ending normalization")
+            && !help.contains("--write"),
+        "inventory --help must not restore tracked-snapshot authority or a publication writer"
+    );
+    Ok(())
+}
+
+#[test]
+fn non_rust_inventory_check_source_has_no_publication_authority() -> Result<()> {
+    let root = project_root()?;
+    let source = std::fs::read_to_string(root.join("xtask/src/tasks/file_policy.rs"))?;
+    let start = source
+        .find("fn non_rust_inventory_check_with_baseline")
+        .ok_or_else(|| eyre!("inventory check function missing"))?;
+    let end = source[start..]
+        .find("\nfn resolve_inventory_baseline")
+        .map(|offset| start + offset)
+        .ok_or_else(|| eyre!("inventory check boundary missing"))?;
+    let check = &source[start..end];
+
+    let policy = check
+        .find("validate_policy_table(")
+        .ok_or_else(|| eyre!("allowlist validation marker missing"))?;
+    let inventory = check
+        .find("let records = build_inventory(root)?;")
+        .ok_or_else(|| eyre!("current-tree inventory marker missing"))?;
+    let evidence = check
+        .find("write_inventory_outputs(root, &records)?;")
+        .ok_or_else(|| eyre!("evidence writer marker missing"))?;
+    let ratchet = check
+        .find("if let Some(baseline) = baseline")
+        .ok_or_else(|| eyre!("merge-base ratchet marker missing"))?;
+    ensure!(
+        policy < inventory && inventory < evidence && evidence < ratchet,
+        "validation, classification, evidence, and the new-path ratchet must stay ordered"
+    );
+    ensure!(
+        !check.contains("NON_RUST_INVENTORY.md")
+            && !check.contains("fs::read_to_string")
+            && !check.contains("normalize_line_endings")
+            && !check.contains("inventory_path_delta"),
+        "the branch check must not read or compare the published reference"
+    );
+    Ok(())
+}
+
+#[test]
+fn exact_tree_schema_validation_delegates_to_canonical_allow_schema() -> Result<()> {
+    let root = project_root()?;
+    let source = std::fs::read_to_string(root.join("xtask/src/tasks/file_policy.rs"))?;
+    let start = source
+        .find("fn validate_exact_policy_bytes")
+        .ok_or_else(|| eyre!("exact-tree byte validator missing"))?;
+    let end = source[start..]
+        .find("\n/// Match options for every allowlist glob.")
+        .map(|offset| start + offset)
+        .ok_or_else(|| eyre!("exact-tree byte validator boundary missing"))?;
+    let exact = &source[start..end];
+    ensure!(
+        exact.contains("validate_allow_document_entries("),
+        "exact-tree must reuse the canonical allow-array schema path"
+    );
+    ensure!(
+        !exact.contains("ALLOWED_ALLOW_FIELDS")
+            && !exact.contains("KNOWN_CLASSIFICATIONS")
+            && !exact.contains("COVERAGE_REQUIRING_CLASSIFICATIONS")
+            && !exact.contains("validate_allow_schema_entry("),
+        "exact-tree must not reimplement or bypass allowlist field schema checks"
     );
     Ok(())
 }
@@ -77,8 +149,8 @@ fn non_rust_inventory_check_command_exits_zero() -> Result<()> {
 
 /// Verify that the expected output files are created under `target/`.
 ///
-/// `non-rust inventory` (without `--write`) must not modify any tracked file;
-/// output goes to `target/policy/` only.
+/// `non-rust inventory` must not modify any tracked file; output goes to
+/// `target/policy/` only.
 #[test]
 fn non_rust_inventory_creates_output_files() -> Result<()> {
     let _guard = inventory_output_lock()?;
@@ -97,9 +169,8 @@ fn non_rust_inventory_creates_output_files() -> Result<()> {
         root.join("target/policy/non-rust-inventory.json").exists(),
         "target/policy/non-rust-inventory.json should exist after the command"
     );
-    // docs/policy/NON_RUST_INVENTORY.md must NOT be rewritten by the
-    // non-`--write` path; the committed snapshot is updated only by
-    // `cargo xtask non-rust inventory --write`.
+    // docs/policy/NON_RUST_INVENTORY.md is a frozen pointer and is never
+    // written by any inventory command (#14688).
     Ok(())
 }
 
@@ -157,53 +228,6 @@ fn non_rust_inventory_markdown_has_header() -> Result<()> {
     Ok(())
 }
 
-/// Assert that `docs/policy/NON_RUST_INVENTORY.md` matches what the current
-/// tree generates.
-///
-/// When this test fails, the committed snapshot is stale.  Refresh it with:
-///
-/// ```text
-/// cargo xtask non-rust inventory --write
-/// ```
-///
-/// then commit the updated file.  The test deliberately fails with a diff so
-/// that the stale content is visible without opening a separate file — compare
-/// the "left" (committed) with the "right" (generated) in the panic output.
-#[test]
-fn non_rust_inventory_docs_are_current() -> Result<()> {
-    let _guard = inventory_output_lock()?;
-    let root = project_root()?;
-
-    // Generate fresh output to target/ — no tracked file is touched.
-    Command::cargo_bin("xtask")?
-        .args(["non-rust", "inventory"])
-        .current_dir(&root)
-        .assert()
-        .success();
-
-    let generated_path = root.join("target/policy/non-rust-inventory.md");
-    let committed_path = root.join("docs/policy/NON_RUST_INVENTORY.md");
-
-    let generated = std::fs::read_to_string(&generated_path).map_err(|e| {
-        eyre!("could not read generated inventory at {}: {e}", generated_path.display())
-    })?;
-    let committed = std::fs::read_to_string(&committed_path).map_err(|e| {
-        eyre!("could not read committed inventory at {}: {e}", committed_path.display())
-    })?;
-
-    // Normalise line endings so CRLF/LF differences do not cause spurious failures.
-    let normalize = |s: &str| s.replace("\r\n", "\n");
-
-    assert_eq!(
-        normalize(&committed),
-        normalize(&generated),
-        "\n\ndocs/policy/NON_RUST_INVENTORY.md is stale.\n\
-         Run `cargo xtask non-rust inventory --write` and commit the result.\n"
-    );
-
-    Ok(())
-}
-
 /// The generated inventory check is only useful when the existing policy
 /// shard actually invokes it. Keep the source policy and workflow matrix
 /// wired to the same direct, read-only command.
@@ -227,9 +251,9 @@ fn non_rust_inventory_check_is_wired_to_policy_shard() -> Result<()> {
     ensure!(
         gate.get("description").and_then(Value::as_str)
             == Some(
-                "Scan and classify tracked non-Rust files and require the normalized committed snapshot to match"
+                "Classify the current tracked tree, emit retained inventory evidence, and reject newly added unclassified paths"
             ),
-        "the required gate description must promise exact normalized snapshot parity"
+        "the required gate description must promise current-tree evaluation and the new-path ratchet"
     );
     assert_eq!(
         gate.get("command").and_then(Value::as_str),
@@ -296,7 +320,207 @@ fn non_rust_inventory_check_is_wired_to_policy_shard() -> Result<()> {
          shard; an `if:` on it can drop the policy shard's gates entirely while \
          the check still reports success"
     );
+    let runner_script = runner
+        .get("run")
+        .and_then(Value::as_str)
+        .ok_or_else(|| eyre!("merge-gate shard runner has no script"))?;
+    ensure!(
+        runner_script.contains("target/policy/non-rust-inventory.md")
+            && runner_script.contains("target/policy/non-rust-inventory.json"),
+        "the shard must clear cache-restored inventory evidence before running"
+    );
 
+    let evidence_upload = job
+        .get("steps")
+        .and_then(Value::as_sequence)
+        .and_then(|steps| {
+            steps.iter().find(|step| {
+                step.get("name").and_then(Value::as_str)
+                    == Some("Upload non-Rust inventory evidence")
+            })
+        })
+        .ok_or_else(|| eyre!("policy shard no longer retains non-Rust inventory evidence"))?;
+    assert_eq!(
+        evidence_upload.get("if").and_then(Value::as_str),
+        Some(
+            "always() && matrix.name == 'policy' && steps.inventory-evidence.outputs.ready == 'true'"
+        )
+    );
+    let upload_with = evidence_upload
+        .get("with")
+        .ok_or_else(|| eyre!("inventory evidence upload has no configuration"))?;
+    let upload_paths = upload_with
+        .get("path")
+        .and_then(Value::as_str)
+        .ok_or_else(|| eyre!("inventory evidence upload has no paths"))?;
+    ensure!(
+        upload_paths.contains("target/policy/non-rust-inventory.md")
+            && upload_paths.contains("target/policy/non-rust-inventory.json")
+            && upload_paths.contains("target/policy/non-rust-inventory-subject.json"),
+        "the policy shard must retain both current-tree projections and their subject receipt"
+    );
+    assert_eq!(upload_with.get("if-no-files-found").and_then(Value::as_str), Some("error"));
+    assert_eq!(upload_with.get("retention-days").and_then(Value::as_u64), Some(7));
+
+    Ok(())
+}
+
+/// Execute the actual workflow scripts over a repository whose push ref moved.
+/// The immutable integration event SHA must match checkout, even if a moving
+/// ref advances. An early producer failure must not publish cached files.
+#[test]
+#[cfg(unix)]
+fn inventory_artifact_binds_checkout_and_rejects_cached_evidence() -> Result<()> {
+    let job = merge_gate_shards_job(&project_root()?)?;
+    let steps = job
+        .get("steps")
+        .and_then(Value::as_sequence)
+        .ok_or_else(|| eyre!("missing shard steps"))?;
+    let step = |name: &str| -> Result<&Value> {
+        steps
+            .iter()
+            .find(|step| step.get("name").and_then(Value::as_str) == Some(name))
+            .ok_or_else(|| eyre!("missing step {name}"))
+    };
+    let script = |name: &str| -> Result<&str> {
+        step(name)?.get("run").and_then(Value::as_str).ok_or_else(|| eyre!("missing script {name}"))
+    };
+    let immutable = "${{ github.sha }}";
+    ensure!(
+        steps
+            .first()
+            .and_then(|step| step.get("with"))
+            .and_then(|v| v.get("ref"))
+            .and_then(Value::as_str)
+            == Some(immutable),
+        "checkout must select immutable integration event SHA"
+    );
+    ensure!(
+        step("Bind shard integration source")?
+            .get("env")
+            .and_then(|v| v.get("EXPECTED_SOURCE_SHA"))
+            .and_then(Value::as_str)
+            == Some(immutable),
+        "source guard must require immutable integration event SHA"
+    );
+    ensure!(
+        step("Bind shard integration source")?.get("if").is_none(),
+        "source binding must run for every shard"
+    );
+    let position =
+        |name: &str| steps.iter().position(|s| s.get("name").and_then(Value::as_str) == Some(name));
+    ensure!(
+        position("Bind shard integration source").ok_or_else(|| eyre!("missing source binding"))?
+            < position("Warm xtask").ok_or_else(|| eyre!("missing build step"))?,
+        "source binding must precede builds"
+    );
+    ensure!(position("Cache cargo dependencies") < position("Clear restored inventory evidence"));
+    ensure!(position("Clear restored inventory evidence") < position("Warm xtask"));
+    ensure!(
+        step("Bind produced inventory evidence")?.get("if").and_then(Value::as_str)
+            == Some(
+                "always() && matrix.name == 'policy' && steps.inventory-source.outcome == 'success' && steps.inventory-clean.outcome == 'success'"
+            ),
+        "inventory binding must require source validation and cache clearance"
+    );
+    ensure!(
+        step("Upload non-Rust inventory evidence")?
+            .get("with")
+            .and_then(|v| v.get("name"))
+            .and_then(Value::as_str)
+            == Some("non-rust-inventory-${{ steps.inventory-source.outputs.sha }}"),
+        "inventory artifact name must use verified source output"
+    );
+
+    let temp = tempfile::tempdir()?;
+    let root = temp.path();
+    let git = |args: &[&str]| -> Result<String> {
+        let out = std::process::Command::new("git").args(args).current_dir(root).output()?;
+        ensure!(out.status.success(), "git failed: {}", String::from_utf8_lossy(&out.stderr));
+        Ok(String::from_utf8(out.stdout)?.trim().to_string())
+    };
+    git(&["init", "-q"])?;
+    git(&["config", "user.email", "test@example.com"])?;
+    git(&["config", "user.name", "test"])?;
+    git(&["commit", "--allow-empty", "-qm", "event"])?;
+    let event = git(&["rev-parse", "HEAD"])?;
+    git(&["commit", "--allow-empty", "-qm", "moved ref after integration event"])?;
+    let moved = git(&["rev-parse", "HEAD"])?;
+    ensure!(event != moved);
+    git(&["checkout", "--detach", &event])?;
+    let output = root.join("output");
+    let run = |name: &str, subject: &str| -> Result<std::process::Output> {
+        std::fs::write(&output, "")?;
+        Ok(std::process::Command::new("bash")
+            .args(["-e", "-c", script(name)?])
+            .current_dir(root)
+            .env("GITHUB_OUTPUT", &output)
+            .env("EXPECTED_SOURCE_SHA", subject)
+            .env("SOURCE_SHA", subject)
+            .output()?)
+    };
+    ensure!(run("Bind shard integration source", &event)?.status.success());
+    ensure!(
+        std::fs::read_to_string(&output)? == format!("sha={event}\n"),
+        "source guard must emit the verified integration SHA"
+    );
+    ensure!(
+        !run("Bind shard integration source", &moved)?.status.success(),
+        "a different subject cannot relabel the checked-out integration tree"
+    );
+    let policy = root.join("target/policy");
+    std::fs::create_dir_all(&policy)?;
+    for ext in ["md", "json", "subject.json"] {
+        let name = if ext == "subject.json" {
+            "non-rust-inventory-subject.json".to_string()
+        } else {
+            format!("non-rust-inventory.{ext}")
+        };
+        std::fs::write(policy.join(name), "cached evidence")?;
+    }
+    ensure!(run("Clear restored inventory evidence", &event)?.status.success());
+    ensure!(run("Bind produced inventory evidence", &event)?.status.success());
+    ensure!(std::fs::read_to_string(&output)?.is_empty(), "no producer output must mean no upload");
+    ensure!(!policy.join("non-rust-inventory-subject.json").exists());
+
+    // The inventory producer emits evidence before rejecting new debt. The
+    // binding step must retain that evidence despite the producer's exit code.
+    std::fs::write(policy.join("non-rust-inventory.md"), "# inventory\n")?;
+    ensure!(
+        !run("Bind produced inventory evidence", &event)?.status.success(),
+        "partial output is not a complete artifact"
+    );
+    std::fs::write(policy.join("non-rust-inventory.json"), "[]\n")?;
+    ensure!(run("Bind produced inventory evidence", &event)?.status.success());
+    ensure!(
+        std::fs::read_to_string(&output)? == "ready=true\n",
+        "complete inventory must enable upload"
+    );
+    let receipt: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(policy.join("non-rust-inventory-subject.json"))?)?;
+    ensure!(
+        receipt.get("source_sha").and_then(serde_json::Value::as_str) == Some(event.as_str()),
+        "receipt must bind the checked-out integration SHA"
+    );
+    use sha2::{Digest, Sha256};
+    for ext in ["md", "json"] {
+        let name = format!("non-rust-inventory.{ext}");
+        ensure!(
+            receipt
+                .get("sha256")
+                .and_then(|hashes| hashes.get(&name))
+                .and_then(serde_json::Value::as_str)
+                == Some(
+                    Sha256::digest(std::fs::read(policy.join(&name))?)
+                        .iter()
+                        .map(|byte| format!("{byte:02x}"))
+                        .collect::<String>()
+                        .as_str()
+                ),
+            "inventory hash must match produced file bytes"
+        );
+    }
+    ensure!(!run("Bind produced inventory evidence", &moved)?.status.success());
     Ok(())
 }
 

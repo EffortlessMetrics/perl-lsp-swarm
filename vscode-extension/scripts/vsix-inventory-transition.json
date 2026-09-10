@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "owner_issue": 14447,
-  "reason": "Makes VS Code resource configuration folder-owned and transport-coherent (#14447). The candidate adds src/configurationPull.ts (the workspace/configuration middleware) and src/configurationOwnership.ts (the checked setting ownership table), growing the bundled out/extension.js from 1605380 to 1615152 bytes. The measured 29-file package remains size-only: no file additions, removals, or permission loosening.",
-  "base_baseline_file_sha256": "c334509714d671bc93c27387a153089cc133eae98f5d516bcac2f4a77ae898fd",
-  "candidate_baseline_file_sha256": "c10baf7bd1d62390aeacebfb54510dddee90e4a6ddc1f538533b3b834537c56a",
-  "base_inventory_sha256": "b6001a5b7432633f4b24a36899243f507adc4492ff35a6877f6d5b2eb63e1874",
-  "candidate_inventory_sha256": "4ff8fc287eaa5524348eb4afa96f6a8923ba1c9cd183ff5d3094f1b962cac6a3"
+  "owner_issue": 9933,
+  "reason": "The #9933 receipt-summary test entry changes the packaged extension package.json by 44 bytes; the exact candidate VSIX is measured against the merged current-main baseline.",
+  "base_baseline_file_sha256": "d95cf9327ba072657b6481b42fa3c3076d7774d4b5a03e7496b431518c765683",
+  "candidate_baseline_file_sha256": "d0f4bd2eaf0a74de3e8e74119e79ec070be3cdd3fb498188b68944f6e38f1d42",
+  "base_inventory_sha256": "695a05e2c3e7508d19ff0c35c30b5aedf5149e0953f31912d823c044f8a9e4d2",
+  "candidate_inventory_sha256": "f96e90df387423bb1b58aeed16ec63df14638bc35c37ce748e423333314856ce"
 }

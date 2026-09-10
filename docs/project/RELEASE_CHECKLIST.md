@@ -140,7 +140,7 @@ Use [`docs/releases/RELEASE_CLOSEOUT_AUDIT.md`](../releases/RELEASE_CLOSEOUT_AUD
 - [ ] `cargo search perl-lsp-rs --limit 1` resolves `perl-lsp-rs = "NEW_VERSION"`.
 - [ ] `cargo search perllsp --limit 1` resolves `perllsp = "NEW_VERSION"`.
 - [ ] The VS Code Marketplace and Open VSX listings show `NEW_VERSION`.
-- [ ] `docker pull effortlessmetrics/perl-lsp:NEW_VERSION` and `docker pull ghcr.io/effortlessmetrics/perl-lsp:NEW_VERSION` succeed.
+- [ ] `docker pull effortlessmetrics/perl-lsp:NEW_VERSION-perl` and `docker pull ghcr.io/effortlessmetrics/perl-lsp-perl:NEW_VERSION` succeed. (The runtime is the only published image; the unsuffixed tags carried the retired Rust build toolchain — #8980.)
 - [ ] `brew update`, `brew upgrade perllsp`, `perllsp --version`, and `perl-dap --version` show `NEW_VERSION`.
 - [ ] `cargo install perllsp` installs the new release and `perllsp --version` prints `NEW_VERSION`.
 - [ ] The smoke tests in [RELEASE.md](../../RELEASE.md) pass for the current release artifacts.
