@@ -32,10 +32,40 @@
     "older_versions_preserved_until_launch": null
   },
   "journeys": {
-    "first_mile_install": null,
-    "restart_cache_reuse": null,
-    "normal_disable": null,
-    "shutdown_no_orphan": null
+    "first_mile_install": {
+      "result": "not_run",
+      "cache_identity": null,
+      "binary_sha256": null,
+      "command": null,
+      "arguments": null,
+      "running_perllsp_processes": null,
+      "cache_evidence": null,
+      "process_evidence": null
+    },
+    "restart_cache_reuse": {
+      "result": "not_run",
+      "cache_identity": null,
+      "binary_sha256": null,
+      "command": null,
+      "arguments": null,
+      "running_perllsp_processes": null,
+      "downloads": null,
+      "cache_evidence": null,
+      "download_evidence": null,
+      "process_evidence": null
+    },
+    "normal_disable": {
+      "result": "not_run",
+      "cache_identity": null,
+      "binary_sha256": null,
+      "cache_retained": null,
+      "cache_evidence": null
+    },
+    "shutdown_no_orphan": {
+      "result": "not_run",
+      "remaining_perllsp_processes": null,
+      "process_evidence": null
+    }
   },
   "recovery_observations": {
     "missing_asset": {
@@ -48,7 +78,9 @@
       "fallback_server_id": null,
       "rejection_reason": null,
       "restored_result": null,
-      "evidence": null
+      "evidence": null,
+      "failure_scenario": null,
+      "evidence_record": null
     },
     "duplicate_matching_asset": {
       "result": "not_run",
@@ -60,7 +92,9 @@
       "fallback_server_id": null,
       "rejection_reason": null,
       "restored_result": null,
-      "evidence": null
+      "evidence": null,
+      "failure_scenario": null,
+      "evidence_record": null
     },
     "wrong_target": {
       "result": "not_run",
@@ -72,7 +106,9 @@
       "fallback_server_id": null,
       "rejection_reason": null,
       "restored_result": null,
-      "evidence": null
+      "evidence": null,
+      "failure_scenario": null,
+      "evidence_record": null
     },
     "checksum_mismatch": {
       "result": "not_run",
@@ -84,7 +120,9 @@
       "fallback_server_id": null,
       "rejection_reason": null,
       "restored_result": null,
-      "evidence": null
+      "evidence": null,
+      "failure_scenario": null,
+      "evidence_record": null
     },
     "unsafe_archive_member": {
       "result": "not_run",
@@ -96,7 +134,9 @@
       "fallback_server_id": null,
       "rejection_reason": null,
       "restored_result": null,
-      "evidence": null
+      "evidence": null,
+      "failure_scenario": null,
+      "evidence_record": null
     },
     "missing_expected_executable": {
       "result": "not_run",
@@ -108,7 +148,9 @@
       "fallback_server_id": null,
       "rejection_reason": null,
       "restored_result": null,
-      "evidence": null
+      "evidence": null,
+      "failure_scenario": null,
+      "evidence_record": null
     },
     "partial_download": {
       "result": "not_run",
@@ -120,7 +162,9 @@
       "fallback_server_id": null,
       "rejection_reason": null,
       "restored_result": null,
-      "evidence": null
+      "evidence": null,
+      "failure_scenario": null,
+      "evidence_record": null
     },
     "extraction_failure": {
       "result": "not_run",
@@ -132,7 +176,9 @@
       "fallback_server_id": null,
       "rejection_reason": null,
       "restored_result": null,
-      "evidence": null
+      "evidence": null,
+      "failure_scenario": null,
+      "evidence_record": null
     },
     "launch_failure": {
       "result": "not_run",
@@ -144,7 +190,9 @@
       "fallback_server_id": null,
       "rejection_reason": null,
       "restored_result": null,
-      "evidence": null
+      "evidence": null,
+      "failure_scenario": null,
+      "evidence_record": null
     }
   },
   "claim_boundary": {

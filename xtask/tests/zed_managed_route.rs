@@ -122,9 +122,7 @@ fn valid_pass(receipt: &mut Value) -> Result<(), Box<dyn Error>> {
     receipt["selection"]["selected_subject_sha256"] = receipt["subject"]["binary_sha256"].clone();
     receipt["selection"]["restart_subject_sha256"] = receipt["subject"]["binary_sha256"].clone();
     receipt["selection"]["older_versions_preserved_until_launch"] = Value::Bool(true);
-    for journey in zed_managed_route::REQUIRED_JOURNEYS {
-        receipt["journeys"][journey] = Value::String("pass".to_string());
-    }
+    passing_journeys(receipt, "/synthetic-cache/perllsp");
     let observations = receipt["recovery_observations"]
         .as_object_mut()
         .ok_or_else(|| io::Error::other("template recovery observations must be an object"))?;
@@ -133,6 +131,7 @@ fn valid_pass(receipt: &mut Value) -> Result<(), Box<dyn Error>> {
             scenario.to_string(),
             serde_json::json!({
                 "result": "pass",
+                "failure_scenario": scenario,
                 "known_good_before_sha256": format!("sha256:{}", "b".repeat(64)),
                 "known_good_after_sha256": format!("sha256:{}", "b".repeat(64)),
                 "restored_subject_sha256": format!("sha256:{}", "b".repeat(64)),
@@ -141,11 +140,31 @@ fn valid_pass(receipt: &mut Value) -> Result<(), Box<dyn Error>> {
                 "fallback_server_id": null,
                 "rejection_reason": format!("synthetic-{scenario}-rejection"),
                 "restored_result": "pass",
-                "evidence": "synthetic validator fixture only"
+                "evidence": "synthetic/recovery.json",
+                "evidence_record": format!("/observations/{scenario}")
             }),
         );
     }
     Ok(())
+}
+
+fn passing_journeys(receipt: &mut Value, command: &str) {
+    let binary = receipt["subject"]["binary_sha256"].clone();
+    receipt["journeys"] = serde_json::json!({
+        "first_mile_install": {"result": "pass", "cache_identity": "synthetic-cache-entry",
+            "binary_sha256": binary, "command": command, "arguments": ["--stdio"],
+            "running_perllsp_processes": 1, "cache_evidence": "synthetic/cache.json#install",
+            "process_evidence": "synthetic/process.json#install"},
+        "restart_cache_reuse": {"result": "pass", "cache_identity": "synthetic-cache-entry",
+            "binary_sha256": binary, "command": command, "arguments": ["--stdio"],
+            "running_perllsp_processes": 1, "downloads": 0,
+            "cache_evidence": "synthetic/cache.json#restart", "download_evidence": "synthetic/download.json#restart",
+            "process_evidence": "synthetic/process.json#restart"},
+        "normal_disable": {"result": "pass", "cache_identity": "synthetic-cache-entry",
+            "binary_sha256": binary, "cache_retained": true, "cache_evidence": "synthetic/cache.json#disable"},
+        "shutdown_no_orphan": {"result": "pass", "remaining_perllsp_processes": 0,
+            "process_evidence": "synthetic/process.json#shutdown"}
+    });
 }
 
 #[test]
@@ -352,6 +371,167 @@ fn template_preserves_every_unobserved_recovery_slot() -> Result<(), Box<dyn Err
             serde_json::json!("claimed observation");
         if zed_managed_route::validate_receipt(&observed, &contract).is_ok() {
             return Err(io::Error::other(format!("template claims {scenario} evidence")).into());
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn contract_rejects_changed_missing_and_unknown_normative_fields() -> Result<(), Box<dyn Error>> {
+    let contract = read_json(&repo_root()?, CONTRACT)?;
+    for section in ["claim", "first_mile", "selection", "digests", "failure_invariants"] {
+        let fields = contract
+            .get(section)
+            .and_then(Value::as_object)
+            .ok_or_else(|| io::Error::other("contract section missing"))?;
+        for field in fields.keys() {
+            for remove in [false, true] {
+                let mut changed = contract.clone();
+                let object = changed
+                    .get_mut(section)
+                    .and_then(Value::as_object_mut)
+                    .ok_or_else(|| io::Error::other("contract section missing"))?;
+                if remove {
+                    object.remove(field);
+                } else {
+                    object.insert(field.clone(), serde_json::json!("weakened"));
+                }
+                if zed_managed_route::validate_contract(&changed).is_ok() {
+                    return Err(io::Error::other(format!(
+                        "accepted changed {section}.{field}, remove={remove}"
+                    ))
+                    .into());
+                }
+            }
+        }
+    }
+    for pointer in ["", "/claim", "/first_mile", "/selection", "/digests", "/failure_invariants"] {
+        let mut changed = contract.clone();
+        changed
+            .pointer_mut(pointer)
+            .and_then(Value::as_object_mut)
+            .ok_or_else(|| io::Error::other("missing contract object"))?
+            .insert("unknown_normative_field".to_string(), Value::Bool(true));
+        if zed_managed_route::validate_contract(&changed).is_ok() {
+            return Err(io::Error::other(format!("accepted unknown field at {pointer}")).into());
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn managed_journeys_require_cache_download_and_process_observations() -> Result<(), Box<dyn Error>>
+{
+    let root = repo_root()?;
+    let contract = read_json(&root, CONTRACT)?;
+    let mut baseline = read_json(&root, TEMPLATE)?;
+    valid_pass(&mut baseline)?;
+    zed_managed_route::validate_receipt(&baseline, &contract).map_err(io::Error::other)?;
+    for journey in zed_managed_route::REQUIRED_JOURNEYS {
+        let mut bare = baseline.clone();
+        bare["journeys"][journey] = serde_json::json!("pass");
+        if zed_managed_route::validate_receipt(&bare, &contract).is_ok() {
+            return Err(io::Error::other(format!("accepted bare journey {journey}")).into());
+        }
+        let row = baseline["journeys"][journey]
+            .as_object()
+            .ok_or_else(|| io::Error::other("missing journey object"))?;
+        for field in row.keys() {
+            let mut missing = baseline.clone();
+            missing["journeys"][journey]
+                .as_object_mut()
+                .ok_or_else(|| io::Error::other("missing journey object"))?
+                .remove(field);
+            if zed_managed_route::validate_receipt(&missing, &contract).is_ok() {
+                return Err(io::Error::other(format!("accepted missing {journey}.{field}")).into());
+            }
+        }
+    }
+    for (pointer, replacement) in [
+        ("/journeys/first_mile_install/running_perllsp_processes", serde_json::json!(2)),
+        ("/journeys/first_mile_install/arguments", serde_json::json!(["--other"])),
+        ("/journeys/restart_cache_reuse/downloads", serde_json::json!(1)),
+        ("/journeys/restart_cache_reuse/cache_identity", serde_json::json!("different-cache")),
+        ("/journeys/restart_cache_reuse/running_perllsp_processes", serde_json::json!(0)),
+        ("/journeys/restart_cache_reuse/download_evidence", serde_json::json!("")),
+        ("/journeys/normal_disable/cache_retained", Value::Bool(false)),
+        ("/journeys/normal_disable/cache_identity", serde_json::json!("replacement-cache")),
+        (
+            "/journeys/normal_disable/binary_sha256",
+            serde_json::json!(format!("sha256:{}", "f".repeat(64))),
+        ),
+        ("/journeys/shutdown_no_orphan/remaining_perllsp_processes", serde_json::json!(1)),
+    ] {
+        let mut changed = baseline.clone();
+        *changed.pointer_mut(pointer).ok_or_else(|| io::Error::other(pointer.to_string()))? =
+            replacement;
+        if zed_managed_route::validate_receipt(&changed, &contract).is_ok() {
+            return Err(io::Error::other(format!("accepted journey mutation {pointer}")).into());
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn recovery_rows_bind_scenarios_and_allow_distinct_records_in_shared_artifact()
+-> Result<(), Box<dyn Error>> {
+    let root = repo_root()?;
+    let contract = read_json(&root, CONTRACT)?;
+    let mut baseline = read_json(&root, TEMPLATE)?;
+    // All nine observations deliberately share one artifact, with scenario-specific records.
+    valid_pass(&mut baseline)?;
+    zed_managed_route::validate_receipt(&baseline, &contract).map_err(io::Error::other)?;
+    for target in ["launch_failure", "checksum_mismatch", "partial_download"] {
+        let mut copied = baseline.clone();
+        copied["recovery_observations"][target] =
+            baseline["recovery_observations"]["missing_asset"].clone();
+        if zed_managed_route::validate_receipt(&copied, &contract).is_ok() {
+            return Err(
+                io::Error::other(format!("accepted copied recovery row at {target}")).into()
+            );
+        }
+    }
+    let mut swapped = baseline.clone();
+    swapped["recovery_observations"]["extraction_failure"] =
+        baseline["recovery_observations"]["launch_failure"].clone();
+    swapped["recovery_observations"]["launch_failure"] =
+        baseline["recovery_observations"]["extraction_failure"].clone();
+    if zed_managed_route::validate_receipt(&swapped, &contract).is_ok() {
+        return Err(io::Error::other("accepted swapped recovery rows").into());
+    }
+    for field in ["failure_scenario", "evidence_record"] {
+        let mut missing = baseline.clone();
+        missing["recovery_observations"]["missing_asset"][field] = Value::Null;
+        if zed_managed_route::validate_receipt(&missing, &contract).is_ok() {
+            return Err(io::Error::other(format!("accepted missing {field}")).into());
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn template_preserves_unobserved_journey_records() -> Result<(), Box<dyn Error>> {
+    let root = repo_root()?;
+    let contract = read_json(&root, CONTRACT)?;
+    let template = read_json(&root, TEMPLATE)?;
+    for journey in zed_managed_route::REQUIRED_JOURNEYS {
+        let mut missing = template.clone();
+        missing["journeys"]
+            .as_object_mut()
+            .ok_or_else(|| io::Error::other("missing journeys"))?
+            .remove(journey);
+        if zed_managed_route::validate_receipt(&missing, &contract).is_ok() {
+            return Err(io::Error::other(format!("template dropped {journey}")).into());
+        }
+        let row = template["journeys"][journey]
+            .as_object()
+            .ok_or_else(|| io::Error::other("missing journey"))?;
+        for field in row.keys().filter(|field| field.as_str() != "result") {
+            let mut observed = template.clone();
+            observed["journeys"][journey][field] = Value::Bool(true);
+            if zed_managed_route::validate_receipt(&observed, &contract).is_ok() {
+                return Err(io::Error::other(format!("template observed {journey}.{field}")).into());
+            }
         }
     }
     Ok(())

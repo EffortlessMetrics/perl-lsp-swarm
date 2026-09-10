@@ -1,6 +1,6 @@
 //! Exercise the built executable, including both existing upstream authorities.
 
-use super::{CONTRACT, TEMPLATE, read_json, repo_root, valid_pass};
+use super::{CONTRACT, TEMPLATE, passing_journeys, read_json, repo_root, valid_pass};
 use serde_json::{Value, json};
 use std::{
     error::Error,
@@ -53,6 +53,12 @@ impl Inputs {
         managed["subject"]["target"] = asset_value["targets"][0]["target"].clone();
         managed["subject"]["installed_path"] = asset_value["targets"][0]["installed_path"].clone();
         managed["subject"]["asset_sha256"] = asset_value["targets"][0]["asset_digest"].clone();
+        passing_journeys(
+            &mut managed,
+            host.pointer("/perllsp/command")
+                .and_then(Value::as_str)
+                .ok_or_else(|| io::Error::other("host command missing"))?,
+        );
         // valid_pass uses the same synthetic installed digest as the upstream fixtures.
         let mut inputs = Self {
             directory: tempfile::Builder::new().prefix("zed managed inputs ").tempdir()?,
@@ -229,6 +235,56 @@ fn built_cli_rejects_rebound_subject_mismatches() -> Result<(), Box<dyn Error>> 
             .ok_or_else(|| io::Error::other(pointer.to_string()))? = replacement;
         inputs.bind_upstream()?;
         require(inputs.run(true, None)?, false, "subject mismatch")?;
+    }
+    Ok(())
+}
+
+#[test]
+fn built_cli_enforces_managed_observations_and_host_process_binding() -> Result<(), Box<dyn Error>>
+{
+    for (pointer, replacement) in [
+        ("/journeys/restart_cache_reuse", json!("pass")),
+        ("/journeys/restart_cache_reuse/downloads", json!(1)),
+        ("/journeys/normal_disable/cache_retained", json!(false)),
+        ("/journeys/shutdown_no_orphan/remaining_perllsp_processes", json!(1)),
+        ("/journeys/first_mile_install/command", json!("/different-cache/perllsp")),
+        ("/journeys/restart_cache_reuse/command", json!("/different-cache/perllsp")),
+        ("/recovery_observations/launch_failure/failure_scenario", json!("missing_asset")),
+    ] {
+        let mut inputs = Inputs::new()?;
+        *inputs
+            .managed
+            .pointer_mut(pointer)
+            .ok_or_else(|| io::Error::other(pointer.to_string()))? = replacement;
+        require(inputs.run(true, None)?, false, "")?;
+    }
+    Ok(())
+}
+
+#[test]
+fn built_cli_rejects_weakened_contract_even_with_recomputed_digest() -> Result<(), Box<dyn Error>> {
+    for section in ["claim", "first_mile", "selection", "digests"] {
+        let mut inputs = Inputs::new()?;
+        let mut contract: Value = serde_json::from_slice(&inputs.contract)?;
+        contract[section]["unknown_normative_field"] = json!(true);
+        inputs.contract = serde_json::to_vec(&contract)?;
+        inputs.managed["contract"]["sha256"] = json!(bindings::content_sha256(&inputs.contract));
+        require(inputs.run(true, None)?, false, "required fields")?;
+    }
+    for pointer in [
+        "/first_mile/first_mile_row",
+        "/selection/cache_reuse_after_restart",
+        "/selection/normal_disable",
+        "/selection/shutdown",
+        "/digests/binary_sha256",
+    ] {
+        let mut inputs = Inputs::new()?;
+        let mut contract: Value = serde_json::from_slice(&inputs.contract)?;
+        *contract.pointer_mut(pointer).ok_or_else(|| io::Error::other(pointer.to_string()))? =
+            json!("optional");
+        inputs.contract = serde_json::to_vec(&contract)?;
+        inputs.managed["contract"]["sha256"] = json!(bindings::content_sha256(&inputs.contract));
+        require(inputs.run(true, None)?, false, "must be")?;
     }
     Ok(())
 }

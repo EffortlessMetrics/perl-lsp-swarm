@@ -56,6 +56,16 @@ pub fn validate_bound_pass(
         return Err("managed route requires a passing asset receipt".to_string());
     }
     zed_host_compat::validate_pass(&host, None)?;
+    for journey in ["first_mile_install", "restart_cache_reuse"] {
+        for field in ["command", "arguments", "binary_sha256"] {
+            same(
+                receipt,
+                &format!("/journeys/{journey}/{field}"),
+                &host,
+                &format!("/perllsp/{field}"),
+            )?;
+        }
+    }
     if host.get("evidence_stage").and_then(Value::as_str) != Some("exact_source_dev_extension")
         || host.pointer("/perllsp/resolution_route").and_then(Value::as_str)
             != Some("managed_download")

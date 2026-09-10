@@ -48,7 +48,8 @@ pub const REQUIRED_RECOVERY_SCENARIOS: [&str; 9] = [
 pub const REQUIRED_JOURNEYS: [&str; 4] =
     ["first_mile_install", "restart_cache_reuse", "normal_disable", "shutdown_no_orphan"];
 
-const RECOVERY_FACTS: [&str; 9] = [
+const RECOVERY_FACTS: [&str; 11] = [
+    "failure_scenario",
     "known_good_before_sha256",
     "known_good_after_sha256",
     "restored_subject_sha256",
@@ -58,7 +59,57 @@ const RECOVERY_FACTS: [&str; 9] = [
     "rejection_reason",
     "restored_result",
     "evidence",
+    "evidence_record",
 ];
+
+fn journey_facts(journey: &str) -> &'static [&'static str] {
+    match journey {
+        "first_mile_install" => &[
+            "cache_identity",
+            "binary_sha256",
+            "command",
+            "arguments",
+            "running_perllsp_processes",
+            "cache_evidence",
+            "process_evidence",
+        ],
+        "restart_cache_reuse" => &[
+            "cache_identity",
+            "binary_sha256",
+            "command",
+            "arguments",
+            "running_perllsp_processes",
+            "downloads",
+            "cache_evidence",
+            "download_evidence",
+            "process_evidence",
+        ],
+        "normal_disable" => {
+            &["cache_identity", "binary_sha256", "cache_retained", "cache_evidence"]
+        }
+        "shutdown_no_orphan" => &["remaining_perllsp_processes", "process_evidence"],
+        _ => &[],
+    }
+}
+
+fn closed_object(value: &Value, fields: &[&str], label: &str) -> Result<(), String> {
+    let object = value.as_object().ok_or_else(|| format!("{label} must be an object"))?;
+    if object.len() != fields.len() || fields.iter().any(|field| !object.contains_key(*field)) {
+        return Err(format!("{label} must contain exactly its required fields"));
+    }
+    Ok(())
+}
+
+fn observation_shape(row: &Value, facts: &[&str], result: &str) -> Result<(), String> {
+    let fields: Vec<&str> = std::iter::once("result").chain(facts.iter().copied()).collect();
+    closed_object(row, &fields, "observation")?;
+    if text(row, "/result") != Some(result)
+        || (result == "not_run" && facts.iter().any(|field| row.get(*field) != Some(&Value::Null)))
+    {
+        return Err(format!("observation must be {result} with matching evidence fields"));
+    }
+    Ok(())
+}
 
 const REQUIRED_FAILURE_INVARIANTS: [&str; 7] = [
     "provider_fallback_forbidden",
@@ -103,6 +154,90 @@ fn required_flag(invariants: &Value, pointer: &str) -> Result<(), String> {
 
 /// Validate the managed-route contract document.
 pub fn validate_contract(contract: &Value) -> Result<(), String> {
+    closed_object(
+        contract,
+        &[
+            "contract",
+            "revision",
+            "claim",
+            "first_mile",
+            "resolution_route",
+            "selection",
+            "failure_invariants",
+            "recovery_scenarios",
+            "required_journeys",
+            "digests",
+        ],
+        "contract",
+    )?;
+    for (section, fields) in [
+        (
+            "claim",
+            &[
+                "route",
+                "explicit_binary_override",
+                "worktree_path_candidate",
+                "path_candidate",
+                "selected_provider",
+                "other_providers",
+                "server_command",
+                "asset_subject_authority",
+                "host_subject_authority",
+            ][..],
+        ),
+        ("first_mile", &["prior_managed_cache", "first_mile_row"][..]),
+        (
+            "selection",
+            &[
+                "selected",
+                "fallback_server_id",
+                "fallback_allowed",
+                "older_versions_preserved_until_launch",
+                "cache_reuse_after_restart",
+                "normal_disable",
+                "shutdown",
+            ][..],
+        ),
+        (
+            "digests",
+            &["selected_subject_sha256", "restart_subject_sha256", "asset_sha256", "binary_sha256"]
+                [..],
+        ),
+    ] {
+        closed_object(
+            contract.get(section).ok_or_else(|| format!("missing {section}"))?,
+            fields,
+            section,
+        )?;
+    }
+    for (pointer, expected) in [
+        ("/claim/route", "extension route = managed public artifact"),
+        ("/first_mile/first_mile_row", "cache-absent install through the managed route only"),
+        ("/selection/selected", "perllsp"),
+        ("/selection/cache_reuse_after_restart", "managed cache reused without re-download"),
+        ("/selection/normal_disable", "extension disabled without deleting managed cache"),
+        ("/selection/shutdown", "no orphan perllsp process after shutdown"),
+        (
+            "/digests/selected_subject_sha256",
+            "sha256: exact installed binary selected by the managed route",
+        ),
+        (
+            "/digests/restart_subject_sha256",
+            "sha256: recorded after restart for cache-reuse parity",
+        ),
+        (
+            "/digests/asset_sha256",
+            "sha256: downloaded archive bytes from the selected public asset",
+        ),
+        (
+            "/digests/binary_sha256",
+            "sha256: extracted executable bytes, independently bound to the host receipt",
+        ),
+    ] {
+        if text(contract, pointer) != Some(expected) {
+            return Err(format!("{pointer} must be `{expected}`"));
+        }
+    }
     if text(contract, "/contract") != Some(CONTRACT_ID) {
         return Err(format!("contract identity must be `{CONTRACT_ID}`"));
     }
@@ -258,11 +393,7 @@ pub fn validate_receipt(receipt: &Value, contract: &Value) -> Result<(), String>
                 return Err(format!("a not_run receipt must not carry `{pointer}`"));
             }
         }
-        for journey in REQUIRED_JOURNEYS {
-            if !null_or_missing(receipt, &format!("/journeys/{journey}")) {
-                return Err(format!("a not_run receipt must not carry journey `{journey}`"));
-            }
-        }
+        validate_journeys(receipt, "not_run")?;
         let observations = receipt
             .get("recovery_observations")
             .and_then(Value::as_object)
@@ -273,16 +404,9 @@ pub fn validate_receipt(receipt: &Value, contract: &Value) -> Result<(), String>
         for scenario in REQUIRED_RECOVERY_SCENARIOS {
             let row = observations
                 .get(scenario)
-                .and_then(Value::as_object)
                 .ok_or_else(|| format!("missing structured not_run slot {scenario}"))?;
-            if row.len() != RECOVERY_FACTS.len() + 1
-                || row.get("result").and_then(Value::as_str) != Some("not_run")
-                || RECOVERY_FACTS.iter().any(|field| row.get(*field) != Some(&Value::Null))
-            {
-                return Err(format!(
-                    "not_run recovery slot {scenario} must have null evidence fields"
-                ));
-            }
+            observation_shape(row, &RECOVERY_FACTS, "not_run")
+                .map_err(|error| format!("not_run recovery slot {scenario}: {error}"))?;
         }
         if text(receipt, "/claim_boundary/real_zed_managed_route") != Some("not_proven") {
             return Err("real Zed route must stay not_proven on a not_run receipt".to_string());
@@ -381,11 +505,7 @@ pub fn validate_receipt(receipt: &Value, contract: &Value) -> Result<(), String>
         return Err("receipt must record older versions preserved until launch".to_string());
     }
 
-    for journey in REQUIRED_JOURNEYS {
-        if text(receipt, &format!("/journeys/{journey}")) != Some("pass") {
-            return Err(format!("`{result}` receipt must record successful journey `{journey}`"));
-        }
-    }
+    validate_journeys(receipt, "pass")?;
 
     let observations = receipt
         .get("recovery_observations")
@@ -395,7 +515,7 @@ pub fn validate_receipt(receipt: &Value, contract: &Value) -> Result<(), String>
         let observation = observations
             .get(scenario)
             .ok_or_else(|| format!("missing recovery scenario `{scenario}`"))?;
-        validate_recovery(observation, receipt.pointer("/subject/binary_sha256"))
+        validate_recovery(observation, scenario, receipt.pointer("/subject/binary_sha256"))
             .map_err(|error| format!("recovery scenario `{scenario}`: {error}"))?;
     }
     if observations.len() != REQUIRED_RECOVERY_SCENARIOS.len() {
@@ -408,11 +528,63 @@ pub fn validate_receipt(receipt: &Value, contract: &Value) -> Result<(), String>
     Ok(())
 }
 
-fn validate_recovery(observation: &Value, selected: Option<&Value>) -> Result<(), String> {
-    if observation.as_object().is_none_or(|row| row.len() != RECOVERY_FACTS.len() + 1)
-        || text(observation, "/result") != Some("pass")
-    {
-        return Err("requires a structured passing observation".to_string());
+fn validate_journeys(receipt: &Value, result: &str) -> Result<(), String> {
+    let journeys = receipt.get("journeys").ok_or_else(|| "missing journeys".to_string())?;
+    closed_object(journeys, &REQUIRED_JOURNEYS, "journeys")?;
+    for journey in REQUIRED_JOURNEYS {
+        let row = journeys.get(journey).ok_or_else(|| format!("missing journey {journey}"))?;
+        let facts = journey_facts(journey);
+        observation_shape(row, facts, result)
+            .map_err(|error| format!("journey {journey}: {error}"))?;
+        if result == "not_run" {
+            continue;
+        }
+        for field in facts.iter().filter(|field| field.ends_with("_evidence")) {
+            required_text(row, &format!("/{field}"))?;
+        }
+        if journey == "shutdown_no_orphan" {
+            if row.get("remaining_perllsp_processes").and_then(Value::as_u64) != Some(0) {
+                return Err("shutdown must leave zero perllsp processes".to_string());
+            }
+            continue;
+        }
+        required_text(row, "/cache_identity")?;
+        if row.get("cache_identity") != journeys.pointer("/first_mile_install/cache_identity")
+            || row.get("binary_sha256") != receipt.pointer("/subject/binary_sha256")
+        {
+            return Err(format!("journey {journey} must preserve the selected cache and binary"));
+        }
+        if journey == "normal_disable" {
+            if row.get("cache_retained").and_then(Value::as_bool) != Some(true) {
+                return Err("normal disable must retain the managed cache".to_string());
+            }
+            continue;
+        }
+        required_text(row, "/command")?;
+        if row.get("arguments") != Some(&serde_json::json!(["--stdio"]))
+            || row.get("running_perllsp_processes").and_then(Value::as_u64) != Some(1)
+        {
+            return Err(format!(
+                "journey {journey} must observe exactly one perllsp --stdio process"
+            ));
+        }
+        if journey == "restart_cache_reuse"
+            && row.get("downloads").and_then(Value::as_u64) != Some(0)
+        {
+            return Err("restart must reuse the managed cache with zero downloads".to_string());
+        }
+    }
+    Ok(())
+}
+
+fn validate_recovery(
+    observation: &Value,
+    scenario: &str,
+    selected: Option<&Value>,
+) -> Result<(), String> {
+    observation_shape(observation, &RECOVERY_FACTS, "pass")?;
+    if text(observation, "/failure_scenario") != Some(scenario) {
+        return Err("failure_scenario must identify the containing recovery scenario".to_string());
     }
     for pointer in
         ["/known_good_before_sha256", "/known_good_after_sha256", "/restored_subject_sha256"]
@@ -427,7 +599,9 @@ fn validate_recovery(observation: &Value, selected: Option<&Value>) -> Result<()
     {
         return Err("failed candidate must remain unselected, without fallback, and managed recovery must pass".to_string());
     }
-    for pointer in ["/failed_candidate_identity", "/rejection_reason", "/evidence"] {
+    for pointer in
+        ["/failed_candidate_identity", "/rejection_reason", "/evidence", "/evidence_record"]
+    {
         required_text(observation, pointer)?;
     }
     Ok(())

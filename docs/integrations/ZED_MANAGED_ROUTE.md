@@ -27,6 +27,11 @@ stay `true`. A validator run against a contract with any invariant flipped,
 or with a `resolution_route` other than `managed_public_artifact`, is an
 error — never a degraded pass.
 
+The contract and its normative objects are closed: missing or unknown fields
+are errors. Claim, first-mile, selection, and digest meanings must retain the
+versioned values in the fixture. Recomputing a receipt's contract digest does
+not authorize weakening those requirements.
+
 ## Recovery authority
 
 The contract owns exactly the known-good cache-recovery scenarios:
@@ -58,7 +63,11 @@ Each recovery observation is an object with `result = "pass"`,
 records `failed_candidate_identity` (the attempted request or candidate, even
 when no downloadable bytes exist), `failed_candidate_selected = false`,
 `fallback_server_id = null`, `rejection_reason`, `restored_result = "pass"`,
-and a nonempty `evidence` reference. Selection means adoption as the working
+`failure_scenario` equal to the containing scenario key, a nonempty `evidence`
+artifact reference, and an `evidence_record` locator for that scenario's
+observation inside the artifact. Several scenarios may share one artifact;
+each record must identify its own failure and observations. Copying an unchanged
+row into a different scenario is rejected. Selection means adoption as the working
 server; attempting to launch a candidate in the launch-failure case does not
 count as successful selection. Bare `"pass"` strings cannot establish these
 facts. The before/after hashes refer to retained known-good bytes, and the
@@ -77,13 +86,31 @@ A `pass` receipt records all four journeys:
    `older_versions_preserved_until_launch` stays true.
 4. `shutdown_no_orphan` — shutdown leaves no orphan `perllsp` process.
 
+Each journey is a closed object with `result = "pass"` and observable facts:
+
+| Journey | Required observations |
+|---|---|
+| `first_mile_install` | Nonempty `cache_identity`, selected `binary_sha256`, host `command` and `arguments = ["--stdio"]`, `running_perllsp_processes = 1`, `cache_evidence`, and `process_evidence` |
+| `restart_cache_reuse` | The same cache identity and binary, host command/arguments, one running process, `downloads = 0`, and `cache_evidence`, `download_evidence`, and `process_evidence` |
+| `normal_disable` | The same cache identity and binary, `cache_retained = true`, and `cache_evidence` |
+| `shutdown_no_orphan` | `remaining_perllsp_processes = 0` and `process_evidence` |
+
+Evidence fields locate the captured cache inventory, download observations, and
+process inventory for the named stage. Count all `perllsp` processes in the
+isolated test profile, including unexpected instances; do not report only the
+expected PID. Cache identity names the observed managed entry consistently
+across install, restart, and disable. The CLI binds install/restart commands,
+arguments, and binary digests to the passing host receipt. Generic upstream
+restart or shutdown success does not replace these managed-route facts.
+
 ## Receipt lifecycle
 
 Template: `.ci/fixtures/zed-perl-upstream/receipts/managed-route-template.json`.
 
 - `result = "not_run"` — checked-in template; no `observed_at`, boundaries
-  `not_proven`. All nine recovery slots remain present with `result = "not_run"`
-  and null evidence fields; none may be omitted or claim an observation.
+  `not_proven`. All four journey and nine recovery slots remain present with
+  `result = "not_run"` and null fact/evidence fields; none may be omitted or
+  claim an observation.
 - `result = "pass"` — requires `observed_at`, the contract `sha256` (verified
   against the file by the validator), the managed `resolution_route`, exact
   subject digests, all four journeys, and the claim boundary
@@ -138,10 +165,15 @@ digests hash the extracted executable. These are different subjects.
 
 The journey tests invoke the just-built CLI with synthetic positive receipts
 and independent mutations, including missing evidence, mismatched bytes or
-subjects, rejected upstream receipts, path fallback, and recovery gaps. They
+subjects, rejected upstream receipts, path fallback, recovery gaps, copied
+scenario records, re-downloads, deleted caches, extra processes, and weakened
+contracts with recomputed digests. They
 prove validator behavior only. Neither matching hashes nor synthetic tests
 establish that the recorded real-host observations occurred; the evidence
 issue remains responsible for collecting and reviewing those observations.
+Record locators and evidence strings are not authenticated or dereferenced by
+this validator; reviewers must inspect the referenced records. Shared artifacts
+are allowed, and the validator does not infer authenticity from locator uniqueness.
 
 ## Claim boundary
 
