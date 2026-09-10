@@ -246,10 +246,10 @@ const MODULES: &[ModuleRow] = &[
     ),
     module_row!(
         "scan_gate_observation",
-        PerlApplication,
-        "perl-lsp-rs",
-        "retain as cfg(test) observation of the failed commit-gate scan lifecycle beside its subject",
-        "#15156"
+        TemporaryCoupling,
+        "effortless-lsp testkit + product tests",
+        "split generic scan observation from Perl fixtures",
+        "#7394"
     ),
     module_row!(
         "scheduler",
@@ -444,7 +444,7 @@ const DEPENDENCIES: &[DependencyRow] = &[
     dependency!("tracing", RetainGeneric, "#9291"),
     dependency!("tracing-appender", ProductOnly, "#9510"),
     dependency!("tracing-subscriber", ProductOnly, "#9510"),
-    dependency!("unicode-ident", MoveToPerlAdapter, "#13159"),
+    dependency!("unicode-ident", PerlTestOnly, "#13159"),
     dependency!("ureq", ProductOnly, "#8400"),
     dependency!("url", MoveToPerlAdapter, "#8617"),
     dependency!("uuid", RetainGeneric, "#9291"),
