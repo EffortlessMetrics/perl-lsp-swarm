@@ -22,7 +22,7 @@
 //!   before this command inside Docker lanes (ripr.yml-proven host-UID
 //!   boundary), because the diff-hygiene step below runs `git` there.
 //! - Typed step receipts and exact-subject artifact binding are the remaining
-//!   #8407 acceptance, delivered here: every run emits one versioned
+//!   #8407 acceptance, delivered here: an admitted, stable run emits a versioned
 //!   [`RustSmallProofReceipt`] binding the candidate SHA, toolchain, and
 //!   scorecard profile/feature identity to every selected step's typed
 //!   outcome. #8408 is the route-parity consumer that normalizes what each
@@ -32,7 +32,9 @@
 use color_eyre::eyre::{Result, WrapErr, bail, eyre};
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
+#[path = "rust_small_proof/artifact_admission.rs"]
+mod artifact_admission;
 use std::process::Command;
 
 /// A lane step: banner name plus exact cargo argv (no shell interpolation).
@@ -210,12 +212,9 @@ pub struct ProofSubject {
     /// different source, so a dirty receipt must not verify against the clean
     /// commit.
     ///
-    /// This is deliberately a boolean rather than a content digest. A digest
-    /// would claim to identify *which* tree was tested, and delivering that
-    /// honestly means handling C-quoted paths, symlinks-as-link-data, binary
-    /// deltas, file modes, and submodules — surface with no consumer, since
-    /// the only thing that verifies a receipt is a clean CI checkout. A claim
-    /// this narrow is one the implementation can actually keep.
+    /// This boolean is diagnostic, not a content digest. Exact candidate
+    /// production and verification require false; matching dirty values do
+    /// not establish which source tree was tested.
     /// Required, deliberately: defaulting a missing value to `false` would let
     /// a receipt that simply omits the field verify against a clean checkout,
     /// which is the exact check this field exists to make.
@@ -277,6 +276,11 @@ pub fn verify_receipt(
     receipt: &RustSmallProofReceipt,
     expected_subject: Option<&ProofSubject>,
 ) -> Result<()> {
+    if expected_subject.is_some_and(|subject| subject.worktree_dirty)
+        || (expected_subject.is_some() && receipt.subject.worktree_dirty)
+    {
+        bail!("exact candidate verification requires a clean checkout and a clean receipt subject");
+    }
     if receipt.schema_version != RECEIPT_SCHEMA_VERSION {
         bail!(
             "receipt schema '{}' is not '{RECEIPT_SCHEMA_VERSION}': malformed or stale receipt, \
@@ -589,34 +593,23 @@ fn capture_worktree_dirty(receipt_path: &Path) -> Result<bool> {
 /// input to the proof. Without this, a `--receipt` destination inside the
 /// repository and not gitignored would change the tree after subject capture,
 /// and the command's own verifier would reject the receipt it just wrote.
-fn lexically_normalize(path: &Path) -> PathBuf {
-    let mut normalized = PathBuf::new();
-    for component in path.components() {
-        match component {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                let _ = normalized.pop();
-            }
-            other => normalized.push(other.as_os_str()),
-        }
-    }
-    normalized
-}
-
 fn receipt_exclusions(receipt_path: &Path) -> Result<Vec<String>> {
     // `--receipt` is caller-relative, but `git status` reports
     // repository-root-relative paths. Resolving the exclusion against the
     // process cwd matches only when the command runs from the root; from a
     // subdirectory the receipt would look like ordinary drift and discard an
     // otherwise successful proof.
-    let cwd = std::env::current_dir().wrap_err("resolving the working directory")?;
-    let root = PathBuf::from(capture_stdout("git", &["rev-parse", "--show-toplevel"])?);
+    let receipt_path = artifact_admission::canonical_destination(receipt_path)?;
+    let root = fs::canonicalize(capture_stdout("git", &["rev-parse", "--show-toplevel"])?)?;
 
     let mut paths = Vec::new();
-    for candidate in [receipt_path.to_path_buf(), staging_path(receipt_path)] {
-        let absolute = if candidate.is_absolute() { candidate } else { cwd.join(&candidate) };
-        let normalized = lexically_normalize(&absolute);
-        if let Ok(relative) = normalized.strip_prefix(&root) {
+    for candidate in [
+        receipt_path.clone(),
+        staging_path(&receipt_path),
+        artifact_admission::lock_path(&receipt_path),
+    ] {
+        let canonical = artifact_admission::canonical_destination(&candidate)?;
+        if let Ok(relative) = canonical.strip_prefix(&root) {
             paths.push(relative.to_string_lossy().replace('\\', "/"));
         }
     }
@@ -624,11 +617,12 @@ fn receipt_exclusions(receipt_path: &Path) -> Result<Vec<String>> {
 }
 
 /// Staging sibling for the write-then-rename publish. The process id keeps
-/// concurrent runs that share a destination from truncating each other's
-/// staging file; the rename itself still makes the destination single-writer.
+/// concurrent runs from sharing staging names. The sibling lock establishes
+/// single-writer ownership through invalidation, execution, and publication.
 fn staging_path(receipt_path: &Path) -> PathBuf {
-    let suffix = format!("json.{}.partial", std::process::id());
-    receipt_path.with_extension(suffix)
+    let mut name = receipt_path.as_os_str().to_os_string();
+    name.push(format!(".{}.partial", std::process::id()));
+    PathBuf::from(name)
 }
 
 /// Remove a receipt left by an earlier run. A receipt that cannot be destroyed
@@ -647,6 +641,7 @@ fn invalidate_prior_receipt(path: &Path) -> Result<()> {
 }
 
 fn write_receipt(path: &Path, receipt: &RustSmallProofReceipt) -> Result<()> {
+    use std::io::Write;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
             .wrap_err_with(|| format!("creating receipt directory {}", parent.display()))?;
@@ -658,17 +653,39 @@ fn write_receipt(path: &Path, receipt: &RustSmallProofReceipt) -> Result<()> {
     // evidence. The temporary sits beside the destination so the rename stays
     // within one filesystem and is atomic.
     let staging = staging_path(path);
-    fs::write(&staging, json)
-        .wrap_err_with(|| format!("writing receipt staging file {}", staging.display()))?;
-    fs::rename(&staging, path).wrap_err_with(|| {
-        format!("publishing receipt {} from {}", path.display(), staging.display())
-    })
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&staging)
+        .wrap_err_with(|| format!("creating receipt staging file {}", staging.display()))?;
+    let publish = (|| -> Result<()> {
+        file.write_all(json.as_bytes())?;
+        file.sync_all()?;
+        drop(file);
+        match fs::symlink_metadata(path) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(error).wrap_err("checking receipt destination before publication");
+            }
+            Ok(_) => bail!("receipt destination appeared during the proof; refusing to replace it"),
+        }
+        fs::rename(&staging, path).wrap_err_with(|| {
+            format!("publishing receipt {} from {}", path.display(), staging.display())
+        })
+    })();
+    if publish.is_err() {
+        // Only this process's successfully create_new-owned staging file.
+        let _ = fs::remove_file(&staging);
+    }
+    publish
 }
 
 /// Read and validate a receipt against the current checkout. Runs no proof
 /// steps: this is the consumer seam (#8408 route parity) for asking "does this
 /// artifact actually certify this candidate?".
 fn run_verify(path: &Path) -> Result<()> {
+    let admitted = artifact_admission::preflight(path)?;
+    let path = admitted.path();
     let text =
         fs::read_to_string(path).wrap_err_with(|| format!("reading receipt {}", path.display()))?;
     let receipt: RustSmallProofReceipt = serde_json::from_str(&text).wrap_err_with(|| {
@@ -729,7 +746,10 @@ impl Recorder {
 }
 
 fn run_proof(receipt_path: &Path) -> Result<()> {
-    // Destroy any prior receipt before the first fallible step. `target/` is
+    let artifact = artifact_admission::acquire(receipt_path)?;
+    let receipt_path = artifact.path();
+    // After admission and ownership, destroy the recognized prior receipt.
+    // `target/` is
     // reused across runs, so a receipt left by an earlier *successful* run of
     // the same candidate and toolchain would still verify — and every failure
     // below either returns before writing (subject capture) or tolerates a
@@ -740,6 +760,11 @@ fn run_proof(receipt_path: &Path) -> Result<()> {
     // Bind the subject next: a candidate/toolchain identity problem should
     // fail in seconds, not after the lane has burned its full runtime.
     let subject = capture_subject(receipt_path)?;
+    if subject.worktree_dirty {
+        bail!(
+            "exact candidate proof requires a clean governed checkout; commit or remove source changes before running"
+        );
+    }
 
     let total = CARGO_STEPS.len() + 3;
     let mut done = 0usize;
@@ -1080,6 +1105,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn exact_candidate_certification_rejects_dirty_subjects() -> Result<()> {
+        let clean = success_receipt();
+        verify_receipt(&clean, Some(&sample_subject()))?;
+        let mut dirty = clean;
+        dirty.subject.worktree_dirty = true;
+        if verify_receipt(&dirty, Some(&dirty.subject)).is_ok() {
+            bail!("matching dirty booleans do not identify an exact candidate tree");
+        }
+        Ok(())
+    }
+
+    #[test]
     fn census_counts_only_trailing_test_markers() {
         // Third and fourth lines are the classic substring decoys that made
         // `grep -c -F ": test"` a different proof than the awk counter.
@@ -1286,7 +1323,7 @@ tests::gamma: test
         }
     }
 
-    fn success_receipt() -> RustSmallProofReceipt {
+    pub(super) fn success_receipt() -> RustSmallProofReceipt {
         let steps = expected_steps()
             .into_iter()
             .map(|(name, argv)| StepRecord {
@@ -1542,7 +1579,7 @@ tests::gamma: test
     }
 
     /// A receipt for a lane that failed at `fail_at` with `outcome`.
-    fn failure_receipt(
+    pub(super) fn failure_receipt(
         fail_at: usize,
         outcome: StepOutcome,
         result: ProofResult,
@@ -1743,41 +1780,42 @@ tests::gamma: test
 
         let clean_checkout = sample_subject();
         let text = rejection(&dirty, Some(&clean_checkout));
-        assert!(text.contains("does not match the verifying checkout"), "{text}");
+        assert!(text.contains("requires a clean checkout"), "{text}");
 
         // Symmetric: a clean receipt cannot pass as a dirty checkout either.
         let clean = success_receipt();
         let mut dirty_checkout = sample_subject();
         dirty_checkout.worktree_dirty = true;
-        assert!(rejection(&clean, Some(&dirty_checkout)).contains("does not match"));
+        assert!(rejection(&clean, Some(&dirty_checkout)).contains("requires a clean checkout"));
 
-        // The flag binds the state, it does not ban working in a dirty tree.
-        assert!(verify_receipt(&dirty, Some(&dirty_checkout)).is_ok());
+        // Matching dirty flags cannot identify an exact candidate.
+        assert!(verify_receipt(&dirty, Some(&dirty_checkout)).is_err());
     }
 
     #[test]
-    fn the_dirty_signal_reads_this_checkout_and_ignores_the_receipt_itself() {
+    fn the_dirty_signal_reads_this_checkout_and_ignores_the_receipt_itself() -> Result<()> {
         let _tree = lock_worktree();
         let receipt = PathBuf::from(DEFAULT_RECEIPT_PATH);
-        let Ok(before) = capture_worktree_dirty(&receipt) else {
-            panic!("dirty capture must succeed in a git checkout");
-        };
+        let before = capture_worktree_dirty(&receipt).wrap_err("initial dirty capture")?;
 
         // A genuinely untracked, non-ignored path with a C-quotable name:
         // the default porcelain format would render this as `?? "a\tb"`, so
         // reading it unquoted is what the NUL-delimited form avoids.
-        let Ok(root) = std::env::current_dir() else { panic!("cwd") };
-        let probe = root.join(format!("rsp probe\t{}.txt", std::process::id()));
-        let Ok(()) = fs::write(&probe, b"x") else { panic!("probe write") };
+        let root = std::env::current_dir().wrap_err("resolving fixture cwd")?;
+        let separator = if cfg!(windows) { " " } else { "\t" };
+        let probe = root.join(format!("rsp probe{separator}{}.txt", std::process::id()));
+        fs::write(&probe, b"x").wrap_err_with(|| format!("writing probe {}", probe.display()))?;
         let during = capture_worktree_dirty(&receipt);
-        let _ = fs::remove_file(&probe);
+        fs::remove_file(&probe).wrap_err("removing owned dirty-signal probe")?;
 
-        let Ok(during) = during else { panic!("dirty capture must succeed") };
-        assert!(during, "an untracked file must mark the tree dirty");
+        if !during.wrap_err("dirty capture with untracked probe")? {
+            bail!("an untracked file must mark the tree dirty");
+        }
         // No assertion on `before`: the checkout this test runs in is not
         // controlled (a developer tree is legitimately dirty), so only the
         // implication "untracked file present => dirty" is testable here.
         let _ = before;
+        Ok(())
     }
 
     #[test]
@@ -1808,22 +1846,12 @@ tests::gamma: test
     }
 
     #[test]
-    fn parent_components_are_normalized_before_matching_git_status_paths() {
+    fn parent_components_through_missing_directories_are_refused() -> Result<()> {
         let path = Path::new("evidence").join("nested").join("..").join("rust-small.json");
-        let Ok(excluded) = receipt_exclusions(&path) else {
-            panic!("exclusions must resolve inside a git checkout");
-        };
-        assert!(
-            excluded.iter().any(|item| item.ends_with("evidence/rust-small.json")),
-            "the normalized receipt path must be excluded: {excluded:?}"
-        );
-        assert!(
-            excluded
-                .iter()
-                .flat_map(|item| Path::new(item).components())
-                .all(|component| component != Component::ParentDir),
-            "git-status exclusions must not retain parent components: {excluded:?}"
-        );
+        if receipt_exclusions(&path).is_ok() {
+            bail!("ambiguous missing-parent path was accepted");
+        }
+        Ok(())
     }
 
     #[test]
@@ -1834,7 +1862,7 @@ tests::gamma: test
         };
         let probe_root =
             PathBuf::from(root).join(format!("rsp-receipt-probe-{}", std::process::id()));
-        let path = probe_root.join("nested").join("..").join("rust-small.json");
+        let path = probe_root.join("nested").join("rust-small.json");
 
         let Ok(before) = capture_worktree_dirty(&path) else {
             panic!("initial dirty capture");
@@ -1993,7 +2021,7 @@ tests::gamma: test
     }
 
     #[test]
-    fn the_failure_emission_path_writes_a_complete_verifiable_receipt() {
+    fn the_failure_emission_path_writes_a_complete_coherent_receipt() {
         let _tree = lock_worktree();
         // Emission itself was only covered end-to-end through the CLI. This
         // pins the same code path permanently: `fail_closed` must write a
@@ -2052,8 +2080,8 @@ tests::gamma: test
             "the unreached remainder must be recorded as not_run"
         );
         assert!(
-            verify_receipt(&receipt, Some(&live)).is_ok(),
-            "the receipt this command emits must pass its own verifier"
+            verify_receipt(&receipt, None).is_ok(),
+            "emitted failure must be internally coherent; this uncontrolled checkout does not prove clean candidate certification"
         );
 
         let _ = fs::remove_dir_all(&dir);

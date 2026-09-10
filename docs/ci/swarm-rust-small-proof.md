@@ -18,92 +18,84 @@ by the source repository until a separate deliberate migration.
 
 ## Lane receipt
 
-Every `cargo run -p xtask --locked -- rust-small-proof` run emits one versioned
-receipt (`rust_small_proof.v1`) to `target/receipts/rust-small-proof.json`, or
-to `--receipt <path>`. It binds the exact subject the proof ran against — the
-candidate SHA, `rustc`/`cargo` versions, and the scorecard profile/features
-read out of the pinned argv — to a typed outcome for every selected step
-(`ok`, `product_failure`, `not_completed`, `instrument_failure`, `not_run`).
+`cargo run -p xtask --locked -- rust-small-proof` produces a versioned receipt
+(`rust_small_proof.v1`) at `target/receipts/rust-small-proof.json`, or at
+`--receipt <path>`, after admitting the destination and establishing a clean
+candidate. The schema binds the candidate SHA, `rustc`/`cargo` versions, and
+scorecard profile/features from the pinned argv to all nine selected steps.
+Outcomes are `ok`, `product_failure`, `not_completed`, `instrument_failure`,
+and `not_run`.
 
-A lane that fails *after* subject capture still emits a complete receipt: the
-failing step keeps its classification and every step the lane never reached is
-recorded `not_run`, so an omitted step and an unreached step stay
-distinguishable.
+Exact candidate production and `--verify-receipt <path>` require a clean
+checkout. The required `worktree_dirty` field remains in the v1 schema for
+compatibility and diagnostic shape validation; matching dirty flags do not
+identify source content and cannot certify a candidate. No dirty-tree digest
+is claimed.
 
-A lane that fails *during* preflight — invalidation or subject capture — leaves
-no receipt at all, deliberately. There is no subject to bind at that point, and
-a receipt that named no candidate would be worse than none. Absence of a
-receipt is therefore itself a lane state: it means the run never established
-what it was proving.
+### Destination admission and ownership
 
-Any receipt left by an earlier run is destroyed before the first fallible step.
-`target/` is reused across runs, so without that a failed rerun of the same
-candidate could leave the previous run's green receipt in place, still
-verifying — an artifact describing a run that did not happen. Receipts are
-published by write-then-rename, so a cancelled lane cannot leave a truncated
-one behind.
+Before deleting or overwriting any file, the command resolves the destination
+and checks its receipt, lock, and staging paths. It rejects links (including
+Windows reparse points), ambiguous traversal through missing directories,
+paths tracked in either `HEAD` or the index (including staged deletions),
+unrelated existing files, and existing lock or staging sidecars. Existing
+parent-relative paths such as `../receipts/proof.json` are supported when the
+traversed directory exists. An existing destination must be a coherent v1
+receipt; an older-candidate or failed receipt is still a recognized prior
+artifact.
 
-A missing receipt does not distinguish its cause: preflight failed, or emission
-itself failed after the proof ran. `fail_closed` reports a publication problem
-on stderr but deliberately returns the original proof failure rather than
-replacing it, so the lane's exit reflects the proof and the absent receipt must
-be read as "no evidence", not as a particular failure mode.
+After nonmutating preflight, missing parent directories may be created. An
+atomic `create_new` sibling lock then establishes exclusive ownership, and
+admission is rechecked before invalidating the recognized prior receipt.
+The lock remains held through subject capture, execution, and publication.
+Contention fails closed; an old or uncertain lock is never automatically
+broken. Reconcile its owner before manually removing it. Empty directories
+created before contention or refusal may remain, because their ownership may
+be shared.
 
-The subject binds the working tree, not just `HEAD`. `git diff --check` only
-rejects whitespace and conflict-marker errors, so a well-formatted uncommitted
-edit passes the lane; binding the commit alone would certify `HEAD` while the
-cargo steps proved different source. A dirty tree contributes a
-`worktree_dirty` flag, so such a receipt cannot verify against the clean
-commit. A clean CI checkout is never dirty, so hosted lanes are unaffected.
+Preflight refusal preserves existing files and creates no new receipt evidence.
+After admission and ownership, the prior receipt is removed before capture or
+proof. A subsequent failed capture therefore leaves no prior green artifact.
+Publication creates a new staging file exclusively and renames it only after
+checking that the destination remains absent. The lock, rather than rename,
+serializes cooperating producers. Normal returns attempt to remove the owned
+lock and report cleanup errors. Cleanup failure or interruption can leave a
+lock or staging file requiring owner reconciliation.
+This protocol assumes a governed filesystem without another process replacing
+artifact names behind the owner; it does not claim hostile filesystem race
+protection.
 
-The signal is a boolean, not a content digest. A digest would claim to
-identify *which* tree was tested, and delivering that honestly means handling
-C-quoted paths, symlinks as link data, binary deltas, file modes, and
-submodules — surface with no consumer, since the only thing that verifies a
-receipt is a clean CI checkout. The narrower claim is one the implementation
-can actually keep. The receipt's own destination and staging file are excluded
-from the signal, so writing the artifact cannot flip the tree to dirty and make
-the command reject the receipt it just wrote.
+### Proof and consumption boundaries
 
-The subject is re-bound before any receipt is published, on both the success
-and failure paths. The steps run for many minutes; if the candidate or working
-tree moves underneath them, the run spanned more than one subject and no
-receipt can honestly name it, so none is written. A failing lane still reports
-its failure through the exit code and error; only the receipt is withheld.
+A lane failure after subject capture emits a coherent failure receipt when the
+subject remains unchanged and publication succeeds. The failing step retains
+its classification, and every unreached step is `not_run`. Publication errors
+are reported on stderr while the original proof failure remains the command's
+error. Absence means no receipt evidence; it does not identify whether capture,
+execution, interruption, or publication prevented the artifact.
 
-Receipt exclusions resolve against the Git repository root rather than the
-process working directory, because `git status` reports root-relative paths —
-otherwise a run started from a subdirectory would see its own receipt as
-ordinary drift and discard an otherwise good proof.
+Both success and failure paths recapture the subject before publication. Clean
+start/end observations require a governed checkout with no concurrent source
+writer. They do not prove continuous immutability or detect a source change
+that was restored between observations. Tool versions likewise assume the
+governed PATH and environment; they are not executable provenance.
 
-`--verify-receipt <path>` re-reads a receipt against the current checkout and
-runs no proof steps, so it is the cheap consumer seam for asking whether an
-artifact actually certifies this candidate. It exits nonzero on:
+Only the admitted receipt and its lock/staging paths are excluded from Git's
+dirty signal. Canonical paths are compared against the Git repository root,
+including when invoked from a subdirectory. Tracked source cannot become an
+artifact exclusion through the producer or verifier entry points.
 
-- a malformed or stale schema version, or any field this version does not
-  emit (the shape is strict: `deny_unknown_fields`);
-- a missing, extra, renamed, or reordered step, or argv that is not the pinned
-  lane argv;
-- a success claimed over a non-`ok` step, or over a zero/absent census;
-- a `scorecard_census` that disagrees with the census step: an `ok` census must
-  report a positive count, the zero-census gate failure must report exactly 0,
-  and a census that did not complete cannot carry a count at all;
-- a failure result over steps that all recorded `ok`, a terminal result that
-  contradicts the first failing step, any executed step after the one that
-  stopped the lane, a census count from a step that never ran, or an outcome
-  and exit code that cannot co-occur;
-- a subject that is not this candidate, working-tree state, toolchain, or
-  scorecard profile.
+`--verify-receipt <path>` runs no proof steps. It refuses malformed schemas or
+unknown fields; missing, extra, reordered, or renamed steps; argv drift;
+inconsistent census/outcome/exit-code combinations; execution after the first
+failure; and a subject differing from the clean candidate, toolchain, or
+scorecard profile. All nine steps and their typed failure rules remain the
+canonical lane contract.
 
-**Verification proves honesty, not success.** `--verify-receipt` exits zero for
-a coherent *failed* run — that is what makes an honest failure receipt usable
-evidence. A consumer deciding whether the lane passed must read the receipt's
-`result` field; treating a zero exit from the verifier as proof of a green lane
-would be wrong.
-
-**Trust boundary.** The receipt certifies its subject *as observed at capture
-time*. Subject capture is the trust root: the producer's self-check and
-`--verify-receipt` both call the same capture code, so a capture that reported
-the wrong identity would be agreed on by both sides. Detecting that would mean
-recording raw command output and re-executing it to byte-compare at
-verification time — a design change, not a tightening of the current check.
+**Verification checks consistency and candidate identity, not success.** A
+coherent failed receipt verifies successfully. A consumer deciding whether the
+lane passed must inspect `result`. Verification also does not establish
+latest-attempt freshness: a preflight refusal can preserve an older receipt
+for the same candidate. The #8408 route consumer owns attempt association and
+must not treat a preserved artifact as evidence that a refused invocation ran.
+This command does not change workflow routing or artifact consumption.
