@@ -192,6 +192,12 @@ impl LspServer {
                 let doc_info = {
                     let documents = self.documents_guard();
                     self.get_document(&documents, &normalized_uri).and_then(|d| {
+                        // A didSave without includeText cannot recover Full-sync.
+                        // Predecessor `text_str` stays evidence only; generation-only
+                        // index admission must not republish it as current.
+                        if d.full_sync_required() {
+                            return None;
+                        }
                         let doc_gen_val = NonZeroU32::new(d.current_generation())?;
                         let needs_commit = backing_transition.is_some()
                             || self.coordinator().is_some_and(|coordinator| {

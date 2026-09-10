@@ -2145,6 +2145,115 @@ fn test_did_save_identical_text_recovers_after_ranged_violation()
     Ok(())
 }
 
+/// A didSave without includeText cannot recover Full-sync. Generation-only
+/// index admission must not republish predecessor buffer text as current.
+#[test]
+fn test_did_save_without_text_does_not_republish_predecessor_after_ranged_violation()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = LspServer::new();
+    let uri = "file:///did-save-no-text-predecessor.pl";
+    let predecessor = "sub save_pred { 1 }\n";
+    let recovered = "sub save_recovered { 1 }\n";
+
+    server.did_open(json!({
+        "textDocument": {
+            "uri": uri,
+            "languageId": "perl",
+            "version": 1,
+            "text": predecessor
+        }
+    }))?;
+    server.test_index_live_file(uri, predecessor, 1).map_err(std::io::Error::other)?;
+    assert!(
+        !server.workspace_index_stale_for_document(uri),
+        "indexed didOpen must start with current workspace facts"
+    );
+    assert!(
+        matches!(
+            server.lookup_user_answer_text(uri),
+            crate::runtime::document_access::UserAnswerTextLookup::Current(_)
+        ),
+        "open document must have a current user-answer snapshot"
+    );
+
+    server.handle_did_change(Some(json!({
+        "textDocument": { "uri": uri, "version": 2 },
+        "contentChanges": [{
+            "range": {
+                "start": { "line": 0, "character": 0 },
+                "end": { "line": 0, "character": 1 }
+            },
+            "text": "x"
+        }]
+    })))?;
+    {
+        let documents = server.documents.lock();
+        let doc = documents.get(uri).ok_or("desynchronized document must remain stored")?;
+        assert_eq!(doc.text, predecessor);
+        assert!(doc.full_sync_required());
+    }
+    assert!(
+        server.workspace_index_stale_for_document(uri),
+        "Full-sync violation must stale workspace facts"
+    );
+    assert!(
+        matches!(
+            server.lookup_user_answer_text(uri),
+            crate::runtime::document_access::UserAnswerTextLookup::Unavailable
+        ),
+        "predecessor text must not remain a current user answer after a Full-sync violation"
+    );
+
+    server.handle_did_save(Some(json!({
+        "textDocument": { "uri": uri, "version": 2 }
+    })))?;
+    {
+        let documents = server.documents.lock();
+        let doc = documents.get(uri).ok_or("document must remain stored after textless didSave")?;
+        assert!(
+            doc.full_sync_required(),
+            "didSave without includeText must not recover Full-sync"
+        );
+        assert_eq!(doc.text, predecessor);
+    }
+    assert!(
+        matches!(
+            server.lookup_user_answer_text(uri),
+            crate::runtime::document_access::UserAnswerTextLookup::Unavailable
+        ),
+        "textless didSave must not restore current user-answer text from predecessor"
+    );
+    assert!(
+        server.workspace_index_stale_for_document(uri),
+        "generation-only didSave must not re-admit predecessor text into the workspace index"
+    );
+
+    server.handle_did_change(Some(json!({
+        "textDocument": { "uri": uri, "version": 3 },
+        "contentChanges": [{ "text": recovered }]
+    })))?;
+    let recovered_gen = {
+        let documents = server.documents.lock();
+        let doc = documents.get(uri).ok_or("recovered document")?;
+        assert!(!doc.full_sync_required());
+        assert_eq!(doc.text, recovered);
+        doc.current_generation()
+    };
+    server.test_index_live_file(uri, recovered, recovered_gen).map_err(std::io::Error::other)?;
+    assert!(
+        matches!(
+            server.lookup_user_answer_text(uri),
+            crate::runtime::document_access::UserAnswerTextLookup::Current(_)
+        ),
+        "accepted full replacement must restore current user-answer text"
+    );
+    assert!(
+        !server.workspace_index_stale_for_document(uri),
+        "full replacement plus index catch-up must restore current workspace facts"
+    );
+    Ok(())
+}
+
 /// A changed same-version didSave replacement must cancel streams that captured
 /// the previous buffer, including streams using the preserved client version.
 #[test]
