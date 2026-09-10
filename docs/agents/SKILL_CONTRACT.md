@@ -263,7 +263,7 @@ candidate.
 - a substantial claim does not require another orchestrator identity.
 
 Do not add orchestration metadata, executor DAGs, lane reservations, candidate
-frontiers, or persistent liveness state to skills or tracked files.
+frontiers, PR claim ceremony, or persistent liveness state to skills or tracked files.
 
 ## Brief and return contract
 
@@ -341,9 +341,10 @@ The provider-local skills must establish:
   filtering;
 - `finish-pr` routes substantive candidates without useful current review through
   `final-challenge`, `orchestrate-work`, and `review-pr` before integration;
-- `review-pr` reconstructs candidate/evidence, traces production reachability,
-  challenges proof/evidence, verifies external/semantic truth, checks authority,
-  complexity, risk, and rollback, and publishes findings or a useful clean conclusion;
+- `review-pr` admits concurrent read-only review, reconstructs candidate/evidence, traces
+  production reachability, challenges proof/evidence, verifies external/semantic truth,
+  checks authority, complexity, risk, and rollback, and publishes findings or a useful
+  clean conclusion without acquiring writer ownership;
 - `verify-live-ci` reads integration facts only after `REVIEW_CURRENT`;
 - accepted repair refreshes affected proof and review dimensions without exact-head
   ceremony;
