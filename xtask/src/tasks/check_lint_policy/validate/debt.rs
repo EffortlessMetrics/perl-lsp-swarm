@@ -42,7 +42,8 @@ pub(crate) fn validate_debt_ledger(
             bail!(
                 "debt entry for {} has level {}, but ledger has {}",
                 entry.lint,
-                entry.level
+                entry.level,
+                lint.level
             );
         }
         if !identities.insert((entry.lint.as_str(), entry.path.as_str())) {
