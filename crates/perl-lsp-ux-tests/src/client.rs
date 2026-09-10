@@ -491,7 +491,22 @@ impl UxClient {
                     self.stderr_tail()
                 ));
             }
-            std::thread::sleep(Duration::from_millis(10));
+            if self.inbox.stream_end().is_some() {
+                // The server closed its stream but is still alive: it will
+                // never produce more evidence, so neither spinning nor
+                // sleeping here can learn anything new. Report it as the
+                // server failure it is rather than burning the deadline.
+                // Destructor cleanup still reaps the child.
+                return Err(anyhow!(
+                    "perl-lsp closed its output without exiting after accepted shutdown; stderr={}",
+                    self.stderr_tail()
+                ));
+            }
+            // Rest on the observation, not a wall-clock sleep: wake the
+            // instant the server's stream ends, otherwise re-poll at the
+            // deadline bound. The wait substrate must stay sleep-free.
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            let _ = self.inbox.wait_for(remaining, |_| None::<()>);
         }
     }
 
