@@ -3205,6 +3205,41 @@ removal_criteria = "Remove when ripr#1428 stops classifying test Ok(()) / type a
 
 
 # -----------------------------------------------------------------------------
+# PR #14826 emacs host-journey manifest: analyzer-untraceable contract-test
+# coverage plus declaration/static-limitation probes. Hosted RIPR run
+# 34463559629 reported 97 new gaps on xtask/src/emacs_host_journeys.rs.
+#
+# Evidence breakdown from ripr/pr/raw-check.json probe findings:
+# - no_static_path field_construction on non-executable declarations
+#   (JourneyCell/ExpectationRef constructors, digest consts): ripr#1429 class.
+# - static_unknown on fn-signature and sole-closer lines: structural probes,
+#   no executable seam.
+# - weakly_exposed / infection_unknown / propagation_unknown on match arms,
+#   predicates, and returns exercised by xtask/tests/
+#   emacs_host_journeys_contract.rs (30 tests, 91 assertions — including
+#   protocol_membership_can_never_present_host_visible_semantics and
+#   host_visible_cell_rejects_a_mixed_protocol_surface covering the flagged
+#   EvidenceKind arms), which the analyzer cannot trace from the integration
+#   target into the module.
+# - reachable_unrevealed on constructor/Ok(()) returns reached by the
+#   contract tests with exact-assertion coverage of the discriminating
+#   properties; unit struct values carry nothing further to assert.
+# HONEST SCOPE NOTE: path-plus-class scoping masks future probes of these
+# classes in this file for this window. Narrow or delete immediately if a
+# future receipt reports an executable seam here outside these classes.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-14826-emacs-journey-manifest-seams"
+kind = "predicate_infection_untraceable"
+paths = ["xtask/src/emacs_host_journeys.rs"]
+classification = ["no_static_path", "static_unknown", "reachable_unrevealed", "weakly_exposed", "infection_unknown", "propagation_unknown"]
+owner = "proof-lane"
+issue = "EffortlessMetrics/ripr#1429"
+reason = "PR #14826: 97 new gaps on the emacs journey-manifest module are declaration probes, structural probes, and analyzer-untraceable coverage from 30 contract tests with 91 assertions (contract suite green locally); constructor/Ok(()) reachable_unrevealed seams carry no further observable value. Do not treat this as manifest-behavior proof."
+created = "2026-09-10"
+review_after = "2026-09-17"
+expires = "2026-09-30"
+removal_criteria = "Remove when ripr#1429 traces integration-test coverage into module owners; narrow immediately if a future receipt reports an executable seam here outside the listed classes."
 # PR #13882 versioned rust-small receipt: analyzer-untraceable in-module
 # coverage plus declaration/static-limitation probes. Hosted RIPR run
 # 34463135706 reported 40 new gaps on xtask/src/tasks/rust_small_proof.rs
