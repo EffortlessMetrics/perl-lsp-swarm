@@ -17,6 +17,16 @@ use color_eyre::eyre::Result;
 use std::path::Path;
 use toml::Value;
 
+pub(crate) fn validate_cadence_sources(
+    root: &Path,
+    lint_ledger: &LintLedger,
+    debt_ledger: &DebtLedger,
+) -> Result<()> {
+    config::validate_policy_header(lint_ledger)?;
+    disposition::validate_disposition_model(lint_ledger)?;
+    debt::validate_debt_ledger(root, lint_ledger, debt_ledger)
+}
+
 pub(super) fn validate_all(
     root: &Path,
     cargo: &Value,
