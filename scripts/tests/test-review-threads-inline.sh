@@ -784,12 +784,12 @@ test_inline_body_file_errors() {
     else
         fail "inline conflicting bodies — exit=$RUN_EXIT out=$RUN_OUT"
     fi
-    for raw in '' 'null' '{' '[false]'; do
+    for raw in '' $' \t\r\n ' '[] []' $'[]\n[]' 'null []' '{} []' '[] null' 'null' '{' '[false]'; do
         reset_stub
         f="$(findings_file "$raw")"
         run_inline --pr 9999 --repo test-owner/test-repo --findings "$f" --body-file "$body"
         if [[ "$RUN_EXIT" -eq 2 && "$(review_posts)" -eq 0 && "$RUN_OUT" == *findings* ]]; then
-            pass 'inline: empty/malformed findings are not a clean review'
+            pass "inline: findings stream $(printf '%s' "$raw" | jq -Rs .) is refused before POST"
         else
             fail "inline malformed clean input — exit=$RUN_EXIT out=$RUN_OUT"
         fi

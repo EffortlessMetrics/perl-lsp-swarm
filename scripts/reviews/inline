@@ -94,8 +94,11 @@ else
     RAW="$(cat)"
 fi
 
-jq -e . >/dev/null 2>&1 <<<"$RAW" || die_usage "findings are not valid JSON"
-jq -e 'type == "array"' >/dev/null <<<"$RAW" || die_usage "findings must be a JSON array of objects"
+# Validate the whole JSON stream: -e on individual values only reports the
+# final result. Slurp makes zero inputs and multiple inputs explicit without
+# relying on empty-stream exit semantics, before any GitHub request.
+jq -e -s 'length == 1 and (.[0] | type == "array")' >/dev/null 2>&1 <<<"$RAW" \
+    || die_usage "findings must contain exactly one JSON array of objects"
 # [] is deliberate: it still submits one useful cumulative review. Malformed
 # input and non-empty findings continue through the same atomic validators.
 
