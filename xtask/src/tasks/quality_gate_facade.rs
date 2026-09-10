@@ -20,8 +20,8 @@ use std::{
     fs,
     io::ErrorKind,
     path::{Path, PathBuf},
-    time::{SystemTime, UNIX_EPOCH},
 };
+use tempfile::TempDir;
 use toml::{Table as TomlTable, Value as TomlValue};
 
 const LIFECYCLE_SENTINEL: &str = "9999-12-31";
@@ -38,42 +38,33 @@ struct NormalizedPolicy {
     text: String,
     lifecycle: Vec<LifecycleDates>,
     validation_error: Option<String>,
+    synthetic_metadata_failure_only: bool,
 }
 
 #[derive(Debug)]
 struct TempWorkspace {
-    root: PathBuf,
+    root: TempDir,
 }
 
 impl TempWorkspace {
     fn new() -> Result<Self> {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .context("resolving quality-gate temporary workspace nonce")?
-            .as_nanos();
-        let root = std::env::temp_dir()
-            .join(format!("perl-lsp-quality-gate-{}-{nonce}", std::process::id()));
-        fs::create_dir(&root)
-            .with_context(|| format!("creating quality-gate workspace {}", root.display()))?;
+        let root = tempfile::Builder::new()
+            .prefix("perl-lsp-quality-gate-")
+            .tempdir()
+            .context("creating exclusive quality-gate workspace")?;
         Ok(Self { root })
     }
 
     fn policy(&self) -> PathBuf {
-        self.root.join("quality-gate-exceptions.toml")
+        self.root.path().join("quality-gate-exceptions.toml")
     }
 
     fn receipt(&self) -> PathBuf {
-        self.root.join("quality-gate.json")
+        self.root.path().join("quality-gate.json")
     }
 
     fn summary(&self) -> PathBuf {
-        self.root.join("quality-gate.md")
-    }
-}
-
-impl Drop for TempWorkspace {
-    fn drop(&mut self) {
-        let _cleanup_result = fs::remove_dir_all(&self.root);
+        self.root.path().join("quality-gate.md")
     }
 }
 
@@ -135,7 +126,11 @@ pub fn run(args: QualityGateArgs) -> Result<()> {
 
     replace_json_strings(&mut receipt, &replacements);
     restore_lifecycle_dates(&mut receipt, &normalized.lifecycle);
-    restore_policy_validation_error(&mut receipt, normalized.validation_error.as_deref());
+    restore_policy_validation_error(
+        &mut receipt,
+        normalized.validation_error.as_deref(),
+        normalized.synthetic_metadata_failure_only,
+    );
     let receipt_text = format!("{}\n", serde_json::to_string_pretty(&receipt)?);
 
     let mut summary = fs::read_to_string(&temporary_summary)
@@ -182,6 +177,7 @@ fn normalize_policy(raw: &str) -> Result<NormalizedPolicy> {
             text: raw.to_string(),
             lifecycle: Vec::new(),
             validation_error: None,
+            synthetic_metadata_failure_only: false,
         });
     };
     let Some(table) = policy.as_table_mut() else {
@@ -189,22 +185,27 @@ fn normalize_policy(raw: &str) -> Result<NormalizedPolicy> {
             text: raw.to_string(),
             lifecycle: Vec::new(),
             validation_error: None,
+            synthetic_metadata_failure_only: false,
         });
     };
 
+    let original_metadata_is_valid = policy_metadata_is_valid(table);
     let mut validation_error = None;
+    let mut synthetic_metadata_failure_only = false;
     if let Some(due_review) = table.get("due_review") {
         let Some(due_review) = due_review.as_str() else {
             return Ok(NormalizedPolicy {
                 text: raw.to_string(),
                 lifecycle: Vec::new(),
                 validation_error: None,
+                synthetic_metadata_failure_only: false,
             });
         };
         if !matches!(due_review, "warn" | "fail") {
             validation_error = Some(format!(
                 "quality exception due_review must be warn or fail, found {due_review}"
             ));
+            synthetic_metadata_failure_only = original_metadata_is_valid;
             // Ask the existing engine to emit its normal fail-closed receipt and
             // summary rather than returning before artifact publication.
             table.insert("status".to_string(), TomlValue::String("invalid".to_string()));
@@ -249,7 +250,20 @@ fn normalize_policy(raw: &str) -> Result<NormalizedPolicy> {
             .context("serializing clock-free quality exception policy")?,
         lifecycle,
         validation_error,
+        synthetic_metadata_failure_only,
     })
+}
+
+fn policy_metadata_is_valid(table: &TomlTable) -> bool {
+    table
+        .get("owner")
+        .and_then(TomlValue::as_str)
+        .is_some_and(|value| !value.trim().is_empty())
+        && table.get("status").and_then(TomlValue::as_str) == Some("active")
+        && table
+            .get("updated")
+            .and_then(TomlValue::as_str)
+            .is_some_and(|value| !value.trim().is_empty())
 }
 
 fn candidate_exception_is_structurally_valid(exception: &TomlTable) -> bool {
@@ -286,23 +300,40 @@ fn parse_date(value: &str) -> Option<NaiveDate> {
 }
 
 fn restore_lifecycle_dates(receipt: &mut JsonValue, lifecycle: &[LifecycleDates]) {
-    let Some(exceptions) =
+    if let Some(exceptions) =
         receipt.get_mut("temporary_exceptions").and_then(JsonValue::as_object_mut)
-    else {
+    {
+        exceptions.insert("due_review".to_string(), JsonValue::String("advisory".to_string()));
+        exceptions.insert(
+            "lifecycle_authority".to_string(),
+            JsonValue::String("policy_cadence".to_string()),
+        );
+        if let Some(active) = exceptions.get_mut("active").and_then(JsonValue::as_array_mut) {
+            restore_lifecycle_entries(active, lifecycle);
+        }
+    }
+
+    let Some(actions) = receipt.get_mut("next_actions").and_then(JsonValue::as_array_mut) else {
         return;
     };
-    exceptions.insert("due_review".to_string(), JsonValue::String("advisory".to_string()));
-    exceptions
-        .insert("lifecycle_authority".to_string(), JsonValue::String("policy_cadence".to_string()));
+    for action in actions {
+        let is_final_blocker = action.get("kind").and_then(JsonValue::as_str)
+            == Some("quality_exception_active_final_blocker");
+        if !is_final_blocker {
+            continue;
+        }
+        if let Some(active) = action.get_mut("active").and_then(JsonValue::as_array_mut) {
+            restore_lifecycle_entries(active, lifecycle);
+        }
+    }
+}
 
+fn restore_lifecycle_entries(active: &mut [JsonValue], lifecycle: &[LifecycleDates]) {
     let mut dates_by_id: BTreeMap<&str, VecDeque<&LifecycleDates>> = BTreeMap::new();
     for dates in lifecycle {
         dates_by_id.entry(&dates.id).or_default().push_back(dates);
     }
 
-    let Some(active) = exceptions.get_mut("active").and_then(JsonValue::as_array_mut) else {
-        return;
-    };
     for entry in active {
         let Some(id) = entry.get("id").and_then(JsonValue::as_str) else {
             continue;
@@ -318,7 +349,11 @@ fn restore_lifecycle_dates(receipt: &mut JsonValue, lifecycle: &[LifecycleDates]
     }
 }
 
-fn restore_policy_validation_error(receipt: &mut JsonValue, error: Option<&str>) {
+fn restore_policy_validation_error(
+    receipt: &mut JsonValue,
+    error: Option<&str>,
+    synthetic_metadata_failure_only: bool,
+) {
     let Some(error) = error else {
         return;
     };
@@ -332,17 +367,24 @@ fn restore_policy_validation_error(receipt: &mut JsonValue, error: Option<&str>)
     let Some(actions) = receipt.get_mut("next_actions").and_then(JsonValue::as_array_mut) else {
         return;
     };
-    let Some(action) = actions.iter_mut().find(|action| {
+    let Some(action_index) = actions.iter().position(|action| {
         action.get("kind").and_then(JsonValue::as_str)
             == Some("quality_exception_policy_not_current")
+            && action.get("reason").and_then(JsonValue::as_str) == Some("invalid_metadata")
     }) else {
         return;
     };
-    let Some(action) = action.as_object_mut() else {
+
+    let mut due_review_action = actions[action_index].clone();
+    if synthetic_metadata_failure_only {
+        actions.remove(action_index);
+    }
+    let Some(action) = due_review_action.as_object_mut() else {
         return;
     };
     action.insert("reason".to_string(), JsonValue::String("invalid_due_review".to_string()));
     action.insert("repair".to_string(), JsonValue::String(error.to_string()));
+    actions.push(due_review_action);
 }
 
 fn replace_json_strings(value: &mut JsonValue, replacements: &[(&str, &str)]) {
@@ -431,6 +473,14 @@ expires = "{expires}"
     }
 
     #[test]
+    fn temp_workspaces_are_exclusive() -> Result<()> {
+        let first = TempWorkspace::new()?;
+        let second = TempWorkspace::new()?;
+        assert_ne!(first.root.path(), second.root.path());
+        Ok(())
+    }
+
+    #[test]
     fn valid_lifecycle_dates_are_removed_from_candidate_evaluation() -> Result<()> {
         let normalized = normalize_policy(&policy("2000-01-01", "2000-01-02"))?;
         let value: TomlValue = toml::from_str(&normalized.text)?;
@@ -455,6 +505,7 @@ expires = "{expires}"
             }]
         );
         assert!(normalized.validation_error.is_none());
+        assert!(!normalized.synthetic_metadata_failure_only);
         Ok(())
     }
 
@@ -486,6 +537,7 @@ expires = "{expires}"
             normalized.validation_error.as_deref(),
             Some("quality exception due_review must be warn or fail, found error")
         );
+        assert!(normalized.synthetic_metadata_failure_only);
         Ok(())
     }
 
@@ -541,7 +593,7 @@ expires = "2026-10-30"
     }
 
     #[test]
-    fn receipt_restores_committed_dates_without_a_clock_input() {
+    fn receipt_restores_committed_dates_in_all_embedded_exception_arrays() {
         let mut receipt = json!({
             "temporary_exceptions": {
                 "due_review": "warn",
@@ -557,7 +609,22 @@ expires = "2026-10-30"
                         "expires": LIFECYCLE_SENTINEL
                     }
                 ]
-            }
+            },
+            "next_actions": [{
+                "kind": "quality_exception_active_final_blocker",
+                "active": [
+                    {
+                        "id": "fixture",
+                        "review_after": LIFECYCLE_SENTINEL,
+                        "expires": LIFECYCLE_SENTINEL
+                    },
+                    {
+                        "id": "fixture",
+                        "review_after": LIFECYCLE_SENTINEL,
+                        "expires": LIFECYCLE_SENTINEL
+                    }
+                ]
+            }]
         });
         let lifecycle = vec![
             LifecycleDates {
@@ -574,6 +641,35 @@ expires = "2026-10-30"
 
         restore_lifecycle_dates(&mut receipt, &lifecycle);
 
+        for prefix in [
+            "/temporary_exceptions/active",
+            "/next_actions/0/active",
+        ] {
+            assert_eq!(
+                receipt
+                    .pointer(&format!("{prefix}/0/review_after"))
+                    .and_then(JsonValue::as_str),
+                Some("2026-09-16")
+            );
+            assert_eq!(
+                receipt
+                    .pointer(&format!("{prefix}/0/expires"))
+                    .and_then(JsonValue::as_str),
+                Some("2026-09-30")
+            );
+            assert_eq!(
+                receipt
+                    .pointer(&format!("{prefix}/1/review_after"))
+                    .and_then(JsonValue::as_str),
+                Some("2026-10-16")
+            );
+            assert_eq!(
+                receipt
+                    .pointer(&format!("{prefix}/1/expires"))
+                    .and_then(JsonValue::as_str),
+                Some("2026-10-30")
+            );
+        }
         assert_eq!(
             receipt.pointer("/temporary_exceptions/due_review").and_then(JsonValue::as_str),
             Some("advisory")
@@ -584,25 +680,75 @@ expires = "2026-10-30"
                 .and_then(JsonValue::as_str),
             Some("policy_cadence")
         );
-        assert_eq!(
-            receipt
-                .pointer("/temporary_exceptions/active/0/review_after")
-                .and_then(JsonValue::as_str),
-            Some("2026-09-16")
+    }
+
+    #[test]
+    fn combined_header_and_due_review_errors_remain_distinct() {
+        let mut receipt = json!({
+            "temporary_exceptions": {},
+            "next_actions": [
+                {
+                    "kind": "quality_exception_policy_not_current",
+                    "reason": "invalid_header",
+                    "repair": "repair header",
+                    "verify": "verify header",
+                    "receipt": "receipt header"
+                },
+                {
+                    "kind": "quality_exception_policy_not_current",
+                    "reason": "invalid_metadata",
+                    "repair": "repair metadata",
+                    "verify": "verify metadata",
+                    "receipt": "receipt metadata"
+                }
+            ]
+        });
+
+        restore_policy_validation_error(
+            &mut receipt,
+            Some("quality exception due_review must be warn or fail, found error"),
+            false,
         );
+
+        let reasons = receipt
+            .get("next_actions")
+            .and_then(JsonValue::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|action| action.get("reason").and_then(JsonValue::as_str))
+            .collect::<Vec<_>>();
         assert_eq!(
-            receipt.pointer("/temporary_exceptions/active/0/expires").and_then(JsonValue::as_str),
-            Some("2026-09-30")
+            reasons,
+            vec!["invalid_header", "invalid_metadata", "invalid_due_review"]
         );
-        assert_eq!(
-            receipt
-                .pointer("/temporary_exceptions/active/1/review_after")
-                .and_then(JsonValue::as_str),
-            Some("2026-10-16")
+    }
+
+    #[test]
+    fn synthetic_metadata_failure_is_replaced_by_due_review_diagnosis() {
+        let mut receipt = json!({
+            "temporary_exceptions": {},
+            "next_actions": [{
+                "kind": "quality_exception_policy_not_current",
+                "reason": "invalid_metadata",
+                "repair": "repair metadata",
+                "verify": "verify metadata",
+                "receipt": "receipt metadata"
+            }]
+        });
+
+        restore_policy_validation_error(
+            &mut receipt,
+            Some("quality exception due_review must be warn or fail, found error"),
+            true,
         );
-        assert_eq!(
-            receipt.pointer("/temporary_exceptions/active/1/expires").and_then(JsonValue::as_str),
-            Some("2026-10-30")
-        );
+
+        let reasons = receipt
+            .get("next_actions")
+            .and_then(JsonValue::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|action| action.get("reason").and_then(JsonValue::as_str))
+            .collect::<Vec<_>>();
+        assert_eq!(reasons, vec!["invalid_due_review"]);
     }
 }
