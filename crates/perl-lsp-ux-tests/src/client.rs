@@ -669,10 +669,12 @@ enum FrameRead {
 ///
 /// `Content-Length` arrives from the child under test, so it is untrusted:
 /// without a bound, a live server that declares gigabytes and keeps its
-/// stream open would grow the reader's buffer without limit. Real LSP
-/// payloads (diagnostics batches included) are kilobytes; 8 MiB is headroom,
-/// not a target.
-const MAX_LSP_BODY_BYTES: usize = 8 * 1024 * 1024;
+/// stream open would grow the reader's buffer without limit. The bound is a
+/// fail-closed ceiling, not a protocol claim about legitimate payload sizes:
+/// 64 MiB exceeds any plausible single LSP frame (diagnostics batches and
+/// symbol payloads included) by orders of magnitude while keeping a corrupt
+/// or malicious declaration a prompt, bounded rejection.
+const MAX_LSP_BODY_BYTES: usize = 64 * 1024 * 1024;
 
 fn read_one_frame(reader: &mut impl BufRead) -> FrameRead {
     // Parse LSP Content-Length headers.
@@ -712,9 +714,8 @@ fn read_one_frame(reader: &mut impl BufRead) -> FrameRead {
     // `Content-Length` is untrusted input from the child: reject an absurd
     // declaration before reading a single body byte. Without this bound a
     // live server that keeps its stream open would grow `body` without limit
-    // (and block the reader until EOF) — the largest plausible LSP payloads
-    // are kilobytes, so 8 MiB leaves ample headroom while keeping a
-    // malicious or corrupt header fail-closed and prompt.
+    // (and block the reader until EOF) — the 64 MiB ceiling keeps that
+    // fail-closed and prompt without constraining legitimate frames.
     if len > MAX_LSP_BODY_BYTES {
         return FrameRead::Failed(format!(
             "LSP message declared {len} body bytes, above the {MAX_LSP_BODY_BYTES}-byte bound"
@@ -927,7 +928,7 @@ mod framing_tests {
         use std::time::{Duration, Instant};
 
         let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
-        tx.send(format!("Content-Length: {}\r\n\r\n", 64 * 1024 * 1024).into_bytes())
+        tx.send(format!("Content-Length: {}\r\n\r\n", 1024 * 1024 * 1024).into_bytes())
             .map_err(|_| anyhow::anyhow!("header send failed"))?;
         // Hold the stream open: a live server that never sends the body. The
         // parked thread dies with the test process; nothing here joins it.

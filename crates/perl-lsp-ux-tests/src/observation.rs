@@ -419,6 +419,7 @@ impl Inbox {
         mut select: impl FnMut(&V) -> Option<T>,
     ) -> Result<T, WaitEnd> {
         let deadline = Instant::now().checked_add(timeout).unwrap_or_else(Instant::now);
+        let mut post_terminal_reevaluated = false;
         loop {
             let (seq, view) = {
                 let state = self.lock();
@@ -436,6 +437,24 @@ impl Inbox {
             // The predicate above always runs first on the freshest snapshot,
             // so a match that genuinely arrived in time is still returned; and
             // a terminal stream state still outranks the deadline.
+            //
+            // A recorded end must also surface *promptly*: post-close traffic
+            // keeps `wait_past` below returning on sequence movement (and
+            // `close` deliberately does not move the sequence), so without
+            // this the waiter would learn the end only at its bound. Allow
+            // exactly one more full evaluation once the end is observed — the
+            // fresh view above plus this pass — then report the end no matter
+            // how much traffic follows. A match buffered alongside the close
+            // is still seen: it is evaluated on the fresh view of the pass
+            // that observes the end, before this flag can trip.
+            if post_terminal_reevaluated {
+                return Err(self
+                    .stream_end()
+                    .map_or(WaitEnd::Deadline { timeout }, WaitEnd::Ended));
+            }
+            if self.stream_end().is_some() {
+                post_terminal_reevaluated = true;
+            }
             if Instant::now() >= deadline {
                 // The view just evaluated may already be stale: an observation
                 // can land while the predicate runs outside the lock, and the
@@ -779,6 +798,47 @@ mod tests {
         anyhow::ensure!(
             matches!(matched, Err(WaitEnd::Deadline { .. })),
             "an expired bound over an unchanged inbox must report the deadline, got {matched:?}"
+        );
+        Ok(())
+    }
+
+    /// Post-close traffic must not defer the stream end to the deadline.
+    ///
+    /// `close` records the terminal state without moving the sequence, so a
+    /// waiter that only consulted the end via `wait_past` kept returning on
+    /// traffic and learned the end at its bound. The waiter now gets exactly
+    /// one more full evaluation after observing the end, then reports it —
+    /// this test proves the promptness, not just the classification. Traffic
+    /// comes from inside the predicate (like
+    /// `continuous_unrelated_traffic_cannot_outrun_the_deadline`), so no
+    /// thread coordination or sleeps are involved: every pass observes a
+    /// moved sequence by construction.
+    #[test]
+    fn post_close_traffic_does_not_defer_the_stream_end() -> anyhow::Result<()> {
+        let inbox = Inbox::new();
+        let publisher = inbox.clone();
+        let mut evaluations = 0_u32;
+
+        let started = Instant::now();
+        let matched = inbox.wait_for(Duration::from_secs(5), |_| {
+            evaluations += 1;
+            // Keep the sequence moving on every pass, and land the stream end
+            // mid-wait as a racing close would.
+            publisher.push_event(json!({"method": "window/logMessage"}));
+            if evaluations == 2 {
+                publisher.close(StreamEnd::ServerClosed);
+            }
+            None::<()>
+        });
+        let elapsed = started.elapsed();
+
+        anyhow::ensure!(
+            matches!(matched, Err(WaitEnd::Ended(StreamEnd::ServerClosed))),
+            "post-close traffic must not hide the stream end, got {matched:?}"
+        );
+        anyhow::ensure!(
+            elapsed < Duration::from_secs(4),
+            "the end must surface promptly, not at its 5s bound; took {elapsed:?}"
         );
         Ok(())
     }
