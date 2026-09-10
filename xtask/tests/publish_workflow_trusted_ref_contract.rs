@@ -18,13 +18,19 @@
 //! 2. a run is approved only when the dispatch-selected subject equals one of
 //!    those anchors; anything else fails closed before any credential-bearing
 //!    job is scheduled;
-//! 3. every job that mounts `secrets.*` depends on the gate, checks out only
-//!    the approved subject (`needs.resolve-trusted-anchor.outputs.approved_sha`,
-//!    with `persist-credentials: false` retained), and reaches its first secret
-//!    strictly after its checkout;
+//! 3. every job that mounts `secrets.*` depends on the gate and proves
+//!    subject provenance before its first secret, in one of two forms:
+//!    either it checks out only the approved subject
+//!    (`needs.resolve-trusted-anchor.outputs.approved_sha`, with
+//!    `persist-credentials: false` retained), or — for artifact-publisher
+//!    jobs that deliberately never see a checkout (#15089 keeps build
+//!    configuration out of the credentialed context) — it downloads a
+//!    gate-produced artifact whose builder-supplied digest it verifies
+//!    against the downloaded bytes before any secret is mounted;
 //! 4. negative fixtures prove each clause fails loudly when a mutation drops
-//!    the pin, removes the gate, reorders credentials ahead of provenance, or
-//!    turns the gate itself into a secrets consumer.
+//!    the pin, removes the gate, reorders credentials ahead of provenance,
+//!    drops the artifact digest verification, or turns the gate itself into
+//!    a secrets consumer.
 
 use std::path::PathBuf;
 
@@ -129,23 +135,40 @@ fn validate_anchor_contract(workflow: &Value) -> Result<()> {
         "gate run block must not inline expressions; inputs arrive through env"
     );
     let gate_steps = steps_of(gate)?;
-    // Locate the anchor-resolution step by content, not position: the gate
-    // job may prepend unrelated steps (e.g. an eligibility handoff), and the
-    // DEFAULT_BRANCH binding belongs to the step that performs the
-    // server-side anchor resolution and writes `approved_sha`.
-    let anchor_step = gate_steps
+    // Every step that writes `approved_sha` must derive the default branch
+    // from the event payload — checking all of them defeats decoy writers
+    // that would otherwise absorb the assertion while the real resolver
+    // keeps an untrusted source. At least one writer must also perform the
+    // server-side anchor resolution (`git ls-remote`), so a job whose only
+    // `approved_sha` writer never resolves anything cannot masquerade as
+    // the gate either.
+    let anchor_writers: Vec<&Value> = gate_steps
         .iter()
-        .find(|step| {
+        .filter(|step| {
             mapping_value(step, "run")
                 .and_then(scalar_string)
                 .is_ok_and(|run| run.contains("approved_sha="))
         })
-        .ok_or_else(|| anyhow!("gate job has no anchor-resolution step"))?;
-    let env = mapping_value(anchor_step, "env")?;
+        .collect();
+    ensure!(!anchor_writers.is_empty(), "gate job has no anchor-resolution step");
     ensure!(
-        scalar_string(mapping_value(env, "DEFAULT_BRANCH")?)? == DEFAULT_BRANCH_EXPR,
-        "gate must derive the default branch from the event payload, not from github.ref"
+        anchor_writers.iter().any(|step| {
+            mapping_value(step, "run")
+                .and_then(scalar_string)
+                .is_ok_and(|run| run.contains("git ls-remote"))
+        }),
+        "gate job never resolves anchors server-side via `git ls-remote`"
     );
+    for step in &anchor_writers {
+        let bound = mapping_value(step, "env")
+            .and_then(|env| mapping_value(env, "DEFAULT_BRANCH"))
+            .and_then(scalar_string)
+            .is_ok_and(|expr| expr == DEFAULT_BRANCH_EXPR);
+        ensure!(
+            bound,
+            "gate must derive the default branch from the event payload, not from github.ref"
+        );
+    }
 
     for (name, job) in jobs_mapping_iter(workflow)? {
         let mut blob = String::new();
@@ -170,17 +193,23 @@ fn validate_anchor_contract(workflow: &Value) -> Result<()> {
         //    use. A digest match binds the published bytes to exactly what
         //    the anchor-gated builder produced.
         let checkout_idx = steps.iter().position(step_is_checkout);
+        // Both halves of the artifact chain must be bound to the gate: the
+        // downloaded artifact name comes from a `needs.*.outputs.*` value
+        // (gate-gated builder, not an operator-chosen name), and the digest
+        // compared against the downloaded bytes comes from a `needs.*`
+        // output too — a literal or unrelated checksum would "verify"
+        // nothing.
         let artifact_publisher = checkout_idx.is_none()
             && steps.iter().any(|step| {
                 mapping_value(step, "uses")
                     .and_then(scalar_string)
                     .is_ok_and(|uses| uses.starts_with("actions/download-artifact@"))
+                    && mapping_value(step, "with")
+                        .and_then(|with| mapping_value(with, "name"))
+                        .and_then(scalar_string)
+                        .is_ok_and(|artifact_name| artifact_name.contains("needs."))
             })
-            && steps.iter().any(|step| {
-                mapping_value(step, "run")
-                    .and_then(scalar_string)
-                    .is_ok_and(|run| run.contains("sha256sum"))
-            });
+            && steps.iter().any(is_digest_verify_step);
 
         let provenance_idx = if let Some(checkout_idx) = checkout_idx {
             let checkout = mapping_value(&steps[checkout_idx], "with")
@@ -207,14 +236,9 @@ fn validate_anchor_contract(workflow: &Value) -> Result<()> {
                  checkout nor by verifying a gate-produced artifact digest before \
                  touching secrets (#9595, #15089)"
             );
-            steps
-                .iter()
-                .position(|step| {
-                    mapping_value(step, "run")
-                        .and_then(scalar_string)
-                        .is_ok_and(|run| run.contains("sha256sum"))
-                })
-                .expect("artifact_publisher checked the sha256sum step exists")
+            steps.iter().position(is_digest_verify_step).ok_or_else(|| {
+                anyhow!("job `{name}` has no digest verification bound to the builder output")
+            })?
         };
 
         let secrets_idx = steps
@@ -320,6 +344,69 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 "##;
 
+/// Positive fixture for the artifact-publisher provenance form: the
+/// credentialed job never checks out (#15089 publisher shape) and instead
+/// binds its published bytes to the gate-gated builder via digest
+/// verification before any secret use.
+const ARTIFACT_FIXTURE_YAML: &str = r##"
+name: Fixture Artifact Publish
+on:
+  workflow_dispatch:
+jobs:
+  resolve-trusted-anchor:
+    name: Resolve trusted publish anchor
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: none
+    outputs:
+      approved_sha: ${{ steps.anchor.outputs.approved_sha }}
+    steps:
+      - name: Resolve trusted anchors server-side
+        id: anchor
+        env:
+          REPO_URL: https://github.com/example/repo.git
+          SELECTED_SHA: ${{ github.sha }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          VERSION_INPUT_RAW: ${{ github.event.inputs.version }}
+        run: |
+          git ls-remote "$REPO_URL" "refs/heads/${DEFAULT_BRANCH}"
+          git ls-remote "$REPO_URL" "refs/tags/v${VERSION_INPUT_RAW}" "refs/tags/v${VERSION_INPUT_RAW}^{}"
+          echo '::error::Publishing requires a trusted anchor'
+          printf 'approved_sha=%s\n' "$SELECTED_SHA"
+  build-image:
+    name: Credential-free builder
+    runs-on: ubuntu-24.04
+    needs: [resolve-trusted-anchor]
+    outputs:
+      artifact_name: img
+      artifact_sha256: abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789
+    steps:
+      - name: Build
+        run: echo building
+  publish-image:
+    name: Publish
+    runs-on: ubuntu-24.04
+    needs: [resolve-trusted-anchor, build-image]
+    steps:
+      - name: Download runtime OCI artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ needs.build-image.outputs.artifact_name }}
+          path: artifact
+      - name: Verify artifact digest before any login
+        env:
+          RUNTIME_SHA256: ${{ needs.build-image.outputs.artifact_sha256 }}
+        run: |
+          set -euo pipefail
+          actual="$(sha256sum artifact/img.oci.tar | awk '{print $1}')"
+          test "$actual" = "$RUNTIME_SHA256"
+      - name: Log in to Container Registry
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          password: ${{ secrets.GITHUB_TOKEN }}
+"##;
+
 fn parse_fixture(yaml: &str) -> Result<Value> {
     serde_yaml_ng::from_str(yaml).map_err(|error| anyhow!("fixture must stay valid YAML: {error}"))
 }
@@ -337,6 +424,107 @@ fn rejection_of(yaml: &str) -> Result<String> {
 #[test]
 fn well_formed_fixture_satisfies_the_contract() -> Result<()> {
     validate_anchor_contract(&parse_fixture(FIXTURE_YAML)?)
+}
+
+#[test]
+fn artifact_publisher_fixture_satisfies_the_contract() -> Result<()> {
+    // Checkout-free publisher (#15089 shape) proving provenance via the
+    // gate-gated artifact digest chain.
+    validate_anchor_contract(&parse_fixture(ARTIFACT_FIXTURE_YAML)?)
+}
+
+#[test]
+fn artifact_publisher_without_digest_verification_fails_closed() -> Result<()> {
+    let verify_at = ARTIFACT_FIXTURE_YAML
+        .find("      - name: Verify artifact digest before any login")
+        .ok_or_else(|| anyhow!("fixture drifted"))?;
+    let login_at = ARTIFACT_FIXTURE_YAML
+        .find("      - name: Log in to Container Registry")
+        .ok_or_else(|| anyhow!("fixture drifted"))?;
+    assert!(verify_at < login_at, "fixture drifted: step order changed");
+    let stripped =
+        format!("{}{}", &ARTIFACT_FIXTURE_YAML[..verify_at], &ARTIFACT_FIXTURE_YAML[login_at..]);
+    let message = rejection_of(&stripped)?;
+    ensure!(
+        message.contains("proves provenance neither by a pinned checkout"),
+        "unexpected rejection: {message}"
+    );
+    Ok(())
+}
+
+#[test]
+fn artifact_publisher_with_unbound_checksum_fails_closed() -> Result<()> {
+    // A checksum step that does not take its expected digest from the
+    // gate-gated builder output verifies nothing; the digest chain must be
+    // bound to `needs.*` or the publisher falls back to the checkout form.
+    let unbound = ARTIFACT_FIXTURE_YAML.replace(
+        "RUNTIME_SHA256: ${{ needs.build-image.outputs.artifact_sha256 }}",
+        "RUNTIME_SHA256: deadbeef",
+    );
+    ensure!(unbound != ARTIFACT_FIXTURE_YAML, "fixture drifted: needle missing");
+    let message = rejection_of(&unbound)?;
+    ensure!(
+        message.contains("proves provenance neither by a pinned checkout"),
+        "unexpected rejection: {message}"
+    );
+    Ok(())
+}
+
+#[test]
+fn decoy_anchor_writer_without_default_branch_binding_fails_closed() -> Result<()> {
+    // A second step that also writes `approved_sha=` but keeps no
+    // DEFAULT_BRANCH binding must be caught: every approved-sha writer is
+    // checked, not just the first one found.
+    let writer_tail = "          printf 'approved_sha=%s\\n' \"$SELECTED_SHA\"\n";
+    let anchor_at = FIXTURE_YAML.find(writer_tail).ok_or_else(|| anyhow!("fixture drifted"))?;
+    let insert_at = anchor_at + writer_tail.len();
+    let decoy_step = r#"      - name: Decoy writer
+        run: |
+          printf 'approved_sha=%s\n' "deadbeef"
+"#;
+    let decoy =
+        format!("{}{}{}", &FIXTURE_YAML[..insert_at], decoy_step, &FIXTURE_YAML[insert_at..]);
+    let message = rejection_of(&decoy)?;
+    ensure!(
+        message.contains("gate must derive the default branch from the event payload"),
+        "unexpected rejection: {message}"
+    );
+    Ok(())
+}
+
+#[test]
+fn anchor_writer_without_server_side_resolution_fails_closed() -> Result<()> {
+    // Moving the server-side resolution out of the approved-sha writer into
+    // a sibling step satisfies the combined-script needles but must still
+    // fail: at least one approved-sha writer has to resolve anchors itself.
+    let writer = FIXTURE_YAML
+        .replace(
+            "          git ls-remote \"$REPO_URL\" \"refs/heads/${DEFAULT_BRANCH}\"\n",
+            "",
+        )
+        .replace(
+            "          git ls-remote \"$REPO_URL\" \"refs/tags/v${VERSION_INPUT_RAW}\" \"refs/tags/v${VERSION_INPUT_RAW}^{}\"\n",
+            "",
+        );
+    ensure!(writer != FIXTURE_YAML, "fixture drifted: needles missing");
+    // Positions must come from the stripped text: the splice target is the
+    // writer, whose own offsets moved once the ls-remote lines were removed.
+    let gate_step_at = writer
+        .find("      - name: Resolve trusted anchors server-side")
+        .ok_or_else(|| anyhow!("fixture drifted"))?;
+    let resolver_step = r#"      - name: Server-side resolution only
+        run: |
+          git ls-remote "$REPO_URL" "refs/heads/main"
+          git ls-remote "$REPO_URL" "refs/tags/v${VERSION_INPUT_RAW}" "refs/tags/v${VERSION_INPUT_RAW}^{}"
+"#;
+    let relocated =
+        format!("{}{}{}", &writer[..gate_step_at], resolver_step, &writer[gate_step_at..]);
+    let message = rejection_of(&relocated)?;
+    ensure!(
+        message.contains("never resolves anchors server-side"),
+        "unexpected rejection: {message}"
+    );
+    Ok(())
 }
 
 #[test]
@@ -493,6 +681,21 @@ fn step_is_checkout(step: &Value) -> bool {
     mapping_value(step, "uses")
         .and_then(scalar_string)
         .is_ok_and(|uses| uses.starts_with("actions/checkout@"))
+}
+
+/// A digest-verification step: runs `sha256sum` and takes its expected
+/// digest from a `needs.*` output — either inline in the run script or
+/// through the step env (the docker publishers bind
+/// `${{ needs.*.outputs.*_sha256 }}` there). A literal or unrelated
+/// checksum would verify nothing.
+fn is_digest_verify_step(step: &Value) -> bool {
+    let env_bound =
+        mapping_value(step, "env").ok().and_then(|env| env.as_mapping()).is_some_and(|map| {
+            map.values().any(|value| scalar_string(value).is_ok_and(|v| v.contains("needs.")))
+        });
+    mapping_value(step, "run")
+        .and_then(scalar_string)
+        .is_ok_and(|run| run.contains("sha256sum") && (run.contains("needs.") || env_bound))
 }
 
 fn combined_run_script(job: &Value) -> Result<String> {
