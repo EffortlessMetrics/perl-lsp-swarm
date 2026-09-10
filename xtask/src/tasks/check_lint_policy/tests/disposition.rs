@@ -1,5 +1,5 @@
 use super::super::validate::{validate_required_dispositions, validate_workspace_lints};
-use super::{deferred_lint, empty_cargo, ledger_with, lint_entry, planned_lint, test_date};
+use super::{deferred_lint, empty_cargo, ledger_with, lint_entry, planned_lint};
 use color_eyre::eyre::{Result, bail};
 use toml::Value;
 
@@ -34,7 +34,7 @@ fn required_ledger() -> super::super::model::LintLedger {
 fn lint_entry_accepts_tracked_status() -> Result<()> {
     let cargo = empty_cargo()?;
     let ledger = ledger_with(vec![lint_entry("clippy::indexing_slicing", "tracked")]);
-    validate_workspace_lints(&cargo, &ledger, test_date()?)
+    validate_workspace_lints(&cargo, &ledger)
 }
 
 #[test]
@@ -42,7 +42,7 @@ fn lint_entry_rejects_unknown_status() -> Result<()> {
     let cargo = empty_cargo()?;
     let ledger = ledger_with(vec![lint_entry("clippy::indexing_slicing", "candidate")]);
 
-    let result = validate_workspace_lints(&cargo, &ledger, test_date()?);
+    let result = validate_workspace_lints(&cargo, &ledger);
     let Err(error) = result else {
         bail!("candidate status should be rejected");
     };
@@ -60,7 +60,7 @@ fn cargo_lints_require_ledger_entries() -> Result<()> {
     )?;
     let ledger = ledger_with(Vec::new());
 
-    let result = validate_workspace_lints(&cargo, &ledger, test_date()?);
+    let result = validate_workspace_lints(&cargo, &ledger);
     let Err(error) = result else {
         bail!("unledgered Cargo lint should fail");
     };
@@ -78,7 +78,7 @@ fn active_lints_require_matching_cargo_levels() -> Result<()> {
     )?;
     let ledger = ledger_with(vec![lint_entry("clippy::manual_take", "active")]);
 
-    let result = validate_workspace_lints(&cargo, &ledger, test_date()?);
+    let result = validate_workspace_lints(&cargo, &ledger);
     let Err(error) = result else {
         bail!("level mismatch should fail");
     };
@@ -90,7 +90,7 @@ fn active_lints_require_matching_cargo_levels() -> Result<()> {
 fn active_lints_cannot_leave_cargo_unratcheted() -> Result<()> {
     let ledger = ledger_with(vec![lint_entry("clippy::collapsible_if", "active")]);
 
-    let result = validate_workspace_lints(&empty_cargo()?, &ledger, test_date()?);
+    let result = validate_workspace_lints(&empty_cargo()?, &ledger);
     let Err(error) = result else {
         bail!("active lint without a Cargo.toml activation should fail");
     };
@@ -110,7 +110,7 @@ fn duplicate_active_and_planned_dispositions_fail() -> Result<()> {
     let mut ledger = ledger_with(vec![lint_entry("clippy::manual_take", "active")]);
     ledger.planned.push(planned_lint("clippy::manual_take", "1.96"));
 
-    let result = validate_workspace_lints(&empty_cargo()?, &ledger, test_date()?);
+    let result = validate_workspace_lints(&empty_cargo()?, &ledger);
     let Err(error) = result else {
         bail!("duplicate disposition should fail");
     };
@@ -123,7 +123,7 @@ fn due_lint_cannot_remain_future_planned() -> Result<()> {
     let mut ledger = ledger_with(Vec::new());
     ledger.planned.push(planned_lint("clippy::manual_checked_ops", "1.95"));
 
-    let result = validate_workspace_lints(&empty_cargo()?, &ledger, test_date()?);
+    let result = validate_workspace_lints(&empty_cargo()?, &ledger);
     let Err(error) = result else {
         bail!("due planned lint should fail");
     };
@@ -135,17 +135,17 @@ fn due_lint_cannot_remain_future_planned() -> Result<()> {
 fn future_planned_lint_remains_absent_from_cargo() -> Result<()> {
     let mut ledger = ledger_with(Vec::new());
     ledger.planned.push(planned_lint("clippy::manual_pop_if", "1.96"));
-    validate_workspace_lints(&empty_cargo()?, &ledger, test_date()?)
+    validate_workspace_lints(&empty_cargo()?, &ledger)
 }
 
 #[test]
 fn overdue_deferred_lint_review_is_advisory_for_candidate_validation() -> Result<()> {
     let mut deferred = deferred_lint("clippy::manual_checked_ops", "1.95");
-    deferred.review_after = "2026-08-14".to_owned();
+    deferred.review_after = "2000-01-01".to_owned();
     let mut ledger = ledger_with(Vec::new());
     ledger.deferred_due.push(deferred);
 
-    validate_workspace_lints(&empty_cargo()?, &ledger, test_date()?)
+    validate_workspace_lints(&empty_cargo()?, &ledger)
 }
 
 #[test]
@@ -155,7 +155,7 @@ fn deferred_lint_still_rejects_malformed_review_date() -> Result<()> {
     let mut ledger = ledger_with(Vec::new());
     ledger.deferred_due.push(deferred);
 
-    let result = validate_workspace_lints(&empty_cargo()?, &ledger, test_date()?);
+    let result = validate_workspace_lints(&empty_cargo()?, &ledger);
     let Err(error) = result else {
         bail!("malformed deferred review date should fail structural validation");
     };
