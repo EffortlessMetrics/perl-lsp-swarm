@@ -49,10 +49,8 @@ impl TempWorkspace {
             .duration_since(UNIX_EPOCH)
             .context("resolving quality-gate temporary workspace nonce")?
             .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "perl-lsp-quality-gate-{}-{nonce}",
-            std::process::id()
-        ));
+        let root = std::env::temp_dir()
+            .join(format!("perl-lsp-quality-gate-{}-{nonce}", std::process::id()));
         fs::create_dir(&root)
             .with_context(|| format!("creating quality-gate workspace {}", root.display()))?;
         Ok(Self { root })
@@ -79,10 +77,7 @@ impl Drop for TempWorkspace {
 
 pub fn run(args: QualityGateArgs) -> Result<()> {
     let raw_policy = fs::read_to_string(&args.exception_policy).with_context(|| {
-        format!(
-            "reading quality exception policy {}",
-            args.exception_policy.display()
-        )
+        format!("reading quality exception policy {}", args.exception_policy.display())
     })?;
     let normalized = normalize_policy(&raw_policy)?;
     let temporary = TempWorkspace::new()?;
@@ -90,10 +85,7 @@ pub fn run(args: QualityGateArgs) -> Result<()> {
     let temporary_receipt = temporary.receipt();
     let temporary_summary = temporary.summary();
     fs::write(&temporary_policy, &normalized.text).with_context(|| {
-        format!(
-            "writing normalized quality exception policy {}",
-            temporary_policy.display()
-        )
+        format!("writing normalized quality exception policy {}", temporary_policy.display())
     })?;
 
     let engine_args = QualityGateArgs {
@@ -130,18 +122,9 @@ pub fn run(args: QualityGateArgs) -> Result<()> {
     let original_receipt_display = display_path(&args.receipt);
     let original_summary_display = display_path(&args.summary);
     let replacements = [
-        (
-            temporary_policy_display.as_str(),
-            original_policy_display.as_str(),
-        ),
-        (
-            temporary_receipt_display.as_str(),
-            original_receipt_display.as_str(),
-        ),
-        (
-            temporary_summary_display.as_str(),
-            original_summary_display.as_str(),
-        ),
+        (temporary_policy_display.as_str(), original_policy_display.as_str()),
+        (temporary_receipt_display.as_str(), original_receipt_display.as_str()),
+        (temporary_summary_display.as_str(), original_summary_display.as_str()),
     ];
 
     replace_json_strings(&mut receipt, &replacements);
@@ -185,33 +168,21 @@ pub fn run(args: QualityGateArgs) -> Result<()> {
 
 fn normalize_policy(raw: &str) -> Result<NormalizedPolicy> {
     let Ok(mut policy) = toml::from_str::<TomlValue>(raw) else {
-        return Ok(NormalizedPolicy {
-            text: raw.to_string(),
-            lifecycle: Vec::new(),
-        });
+        return Ok(NormalizedPolicy { text: raw.to_string(), lifecycle: Vec::new() });
     };
     let Some(table) = policy.as_table_mut() else {
-        return Ok(NormalizedPolicy {
-            text: raw.to_string(),
-            lifecycle: Vec::new(),
-        });
+        return Ok(NormalizedPolicy { text: raw.to_string(), lifecycle: Vec::new() });
     };
 
     if let Some(due_review) = table.get("due_review") {
         let Some(due_review) = due_review.as_str() else {
-            return Ok(NormalizedPolicy {
-                text: raw.to_string(),
-                lifecycle: Vec::new(),
-            });
+            return Ok(NormalizedPolicy { text: raw.to_string(), lifecycle: Vec::new() });
         };
         if !matches!(due_review, "warn" | "fail") {
             bail!("quality exception due_review must be warn or fail, found {due_review}");
         }
     }
-    table.insert(
-        "due_review".to_string(),
-        TomlValue::String("warn".to_string()),
-    );
+    table.insert("due_review".to_string(), TomlValue::String("warn".to_string()));
 
     let mut lifecycle = Vec::new();
     if let Some(exceptions) = table.get_mut("exception").and_then(TomlValue::as_array_mut) {
@@ -219,40 +190,25 @@ fn normalize_policy(raw: &str) -> Result<NormalizedPolicy> {
             let Some(exception) = exception.as_table_mut() else {
                 continue;
             };
-            let id = exception
-                .get("id")
-                .and_then(TomlValue::as_str)
-                .map(str::to_string);
-            let review_after = exception
-                .get("review_after")
-                .and_then(TomlValue::as_str)
-                .map(str::to_string);
-            let expires = exception
-                .get("expires")
-                .and_then(TomlValue::as_str)
-                .map(str::to_string);
+            let id = exception.get("id").and_then(TomlValue::as_str).map(str::to_string);
+            let review_after =
+                exception.get("review_after").and_then(TomlValue::as_str).map(str::to_string);
+            let expires = exception.get("expires").and_then(TomlValue::as_str).map(str::to_string);
 
-            let (Some(id), Some(review_after), Some(expires)) = (id, review_after, expires)
-            else {
+            let (Some(id), Some(review_after), Some(expires)) = (id, review_after, expires) else {
                 continue;
             };
             if parse_date(&review_after).is_none() || parse_date(&expires).is_none() {
                 continue;
             }
 
-            lifecycle.push(LifecycleDates {
-                id,
-                review_after,
-                expires,
-            });
+            lifecycle.push(LifecycleDates { id, review_after, expires });
             exception.insert(
                 "review_after".to_string(),
                 TomlValue::String(LIFECYCLE_SENTINEL.to_string()),
             );
-            exception.insert(
-                "expires".to_string(),
-                TomlValue::String(LIFECYCLE_SENTINEL.to_string()),
-            );
+            exception
+                .insert("expires".to_string(), TomlValue::String(LIFECYCLE_SENTINEL.to_string()));
         }
     }
 
@@ -268,20 +224,14 @@ fn parse_date(value: &str) -> Option<NaiveDate> {
 }
 
 fn restore_lifecycle_dates(receipt: &mut JsonValue, lifecycle: &[LifecycleDates]) {
-    let Some(exceptions) = receipt
-        .get_mut("temporary_exceptions")
-        .and_then(JsonValue::as_object_mut)
+    let Some(exceptions) =
+        receipt.get_mut("temporary_exceptions").and_then(JsonValue::as_object_mut)
     else {
         return;
     };
-    exceptions.insert(
-        "due_review".to_string(),
-        JsonValue::String("advisory".to_string()),
-    );
-    exceptions.insert(
-        "lifecycle_authority".to_string(),
-        JsonValue::String("policy_cadence".to_string()),
-    );
+    exceptions.insert("due_review".to_string(), JsonValue::String("advisory".to_string()));
+    exceptions
+        .insert("lifecycle_authority".to_string(), JsonValue::String("policy_cadence".to_string()));
 
     let Some(active) = exceptions.get_mut("active").and_then(JsonValue::as_array_mut) else {
         return;
@@ -296,14 +246,8 @@ fn restore_lifecycle_dates(receipt: &mut JsonValue, lifecycle: &[LifecycleDates]
         let Some(entry) = entry.as_object_mut() else {
             continue;
         };
-        entry.insert(
-            "review_after".to_string(),
-            JsonValue::String(dates.review_after.clone()),
-        );
-        entry.insert(
-            "expires".to_string(),
-            JsonValue::String(dates.expires.clone()),
-        );
+        entry.insert("review_after".to_string(), JsonValue::String(dates.review_after.clone()));
+        entry.insert("expires".to_string(), JsonValue::String(dates.expires.clone()));
     }
 }
 
@@ -407,10 +351,7 @@ expires = "{expires}"
             exception.get("review_after").and_then(TomlValue::as_str),
             Some(LIFECYCLE_SENTINEL)
         );
-        assert_eq!(
-            exception.get("expires").and_then(TomlValue::as_str),
-            Some(LIFECYCLE_SENTINEL)
-        );
+        assert_eq!(exception.get("expires").and_then(TomlValue::as_str), Some(LIFECYCLE_SENTINEL));
         assert_eq!(
             normalized.lifecycle,
             vec![LifecycleDates {
@@ -432,10 +373,7 @@ expires = "{expires}"
             .and_then(|entries| entries.first())
             .and_then(TomlValue::as_table)
             .ok_or_else(|| color_eyre::eyre::eyre!("missing normalized exception"))?;
-        assert_eq!(
-            exception.get("expires").and_then(TomlValue::as_str),
-            Some("not-a-date")
-        );
+        assert_eq!(exception.get("expires").and_then(TomlValue::as_str), Some("not-a-date"));
         assert!(normalized.lifecycle.is_empty());
         Ok(())
     }
@@ -477,9 +415,7 @@ expires = "{expires}"
             Some("2026-09-16")
         );
         assert_eq!(
-            receipt
-                .pointer("/temporary_exceptions/active/0/expires")
-                .and_then(JsonValue::as_str),
+            receipt.pointer("/temporary_exceptions/active/0/expires").and_then(JsonValue::as_str),
             Some("2026-09-30")
         );
     }
