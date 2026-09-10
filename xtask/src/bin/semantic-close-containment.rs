@@ -739,7 +739,6 @@ fn evaluate_relation(
         .collect::<Vec<_>>()
         .join("\n\n");
     if rules.enabled(RuleId::ExplicitlyNotProven)
-        && scoped_to_issue
         && required_work_exclusion(
             &explicitly_unproven_text,
             Some((&relation.key, &pull.repository)),
@@ -1427,6 +1426,16 @@ fn required_work_exclusion(text: &str, owner_context: Option<(&IssueKey, &str)>)
         let unit = without_supported_emphasis(&unit);
         REQUIRED_WORK_SUBJECTS.iter().any(|subject| {
             word_match_indices(&unit, subject).into_iter().any(|index| {
+                // A contained subject cannot bypass ownership attached to the
+                // complete supported subject, even when its start differs.
+                if REQUIRED_WORK_SUBJECTS.iter().any(|longer| {
+                    longer.len() > subject.len()
+                        && word_match_indices(&unit, longer).into_iter().any(|start| {
+                            start <= index && start + longer.len() >= index + subject.len()
+                        })
+                }) {
+                    return false;
+                }
                 let Some(before) = unit.get(..index) else { return false };
                 let Some(after) = unit.get(index + subject.len()..) else { return false };
                 let before = before.trim_end();
@@ -1690,7 +1699,7 @@ fn exclusion_text_attributable_to_closed_issue(
             let prose = prose_without_inline_code(unit);
             let references = exact_issue_references(&prose, current_repository);
             if references.is_empty() {
-                relation_count == 1 && !mentions_an_issue_subject(&prose)
+                relation_count == 1
             } else {
                 references.iter().any(|reference| reference == key)
             }
@@ -1850,27 +1859,12 @@ fn exact_issue_references(text: &str, current_repository: &str) -> Vec<IssueKey>
     references
 }
 
-fn mentions_an_issue_subject(text: &str) -> bool {
-    hash_issue_number_present(text) || github_issue_url_present(text)
-}
-
 fn hash_issue_number_present(text: &str) -> bool {
     text.match_indices('#').any(|(index, _)| {
         text.get(index + 1..)
             .and_then(|tail| tail.chars().next())
             .is_some_and(|character| character.is_ascii_digit())
     })
-}
-
-fn github_issue_url_present(text: &str) -> bool {
-    let lower = text.to_ascii_lowercase();
-    let Some(index) = lower.find("/issues/") else {
-        return false;
-    };
-    lower
-        .get(index + "/issues/".len()..)
-        .and_then(|tail| tail.chars().next())
-        .is_some_and(|character| character.is_ascii_digit())
 }
 
 fn references_number(text: &str, number: u64) -> bool {
@@ -2629,6 +2623,106 @@ mod tests {
         }
         if !mismatches.is_empty() {
             bail!("exact attribution mismatches: {mismatches:?}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn explicit_owner_class_retains_longest_subject_and_section_scope() -> Result<()> {
+        let mut cases = Vec::new();
+        for subject in [
+            "full acceptance",
+            "full acceptance criteria",
+            "complete acceptance",
+            "complete acceptance criteria",
+            "remaining acceptance",
+            "remaining acceptance criteria",
+            "complete remaining work",
+            "remaining work",
+        ] {
+            for (reference, expected_owner) in
+                [("#11", Some(11)), ("#11x", None), ("#0", None), ("#18446744073709551616", None)]
+            {
+                for owned in [
+                    format!("{reference}'s {subject}"),
+                    format!("{subject} of {reference}"),
+                    format!("{subject} owned by {reference}"),
+                ] {
+                    cases.push((
+                        format!("This PR does not prove {owned}; see #10."),
+                        true,
+                        expected_owner,
+                    ));
+                    cases.push((format!("Not claimed: {owned}; see #10."), true, expected_owner));
+                    cases.push((
+                        format!("{owned} are not established; see #10."),
+                        true,
+                        expected_owner,
+                    ));
+                }
+            }
+        }
+        cases.push((
+            "#11's complete remaining work is not established; see #10.".into(),
+            true,
+            Some(11),
+        ));
+        cases.push(("#11's complete remaining work is established; #10's remaining work is not established.".into(), true, Some(10)));
+        for token in [
+            "#10x",
+            "#0",
+            "#18446744073709551616",
+            "not-a-repo#10",
+            "https://github.com/other/repo/issues/10x",
+        ] {
+            cases.push((format!("Full acceptance criteria are not established; parser token {token} remains unchanged."), false, Some(10)));
+        }
+        for owned in [
+            "#10x's full acceptance criteria",
+            "full acceptance criteria of #10x",
+            "full acceptance criteria owned by #10x",
+        ] {
+            cases.push((format!("This PR does not prove the {owned}."), false, None));
+        }
+        cases.push(("#10's full acceptance criteria are not established.".into(), true, Some(10)));
+        cases.push(("Full acceptance criteria are not established.".into(), true, None));
+        let mut mismatches = Vec::new();
+        for section in ["Claim Boundary", "Non-goals"] {
+            for (boundary, multiple, owner) in &cases {
+                let closes = if *multiple { "Closes #10\nCloses #11" } else { "Closes #10" };
+                let pull = PullRequestSubject {
+                    repository: "effortlessmetrics/perl-lsp-swarm".into(),
+                    number: 990109,
+                    title: "fix: owned exclusion class".into(),
+                    body: format!("## {section}\n{boundary}\n\n{closes}"),
+                };
+                let report = evaluate(&pull, |key| {
+                    IssueEvidence::Available(IssueSubject {
+                        number: key.number,
+                        title: "Complete the named change".into(),
+                        body: "## Acceptance\nThe named change is established.".into(),
+                    })
+                })?;
+                if report.rows.len() != closes.lines().count() {
+                    bail!("missing owned exclusion class relation row");
+                }
+                for row in report.rows {
+                    let expected = if *owner == Some(row.issue_number) {
+                        ResultCode::FailExplicitUnprovenRequiredWork
+                    } else {
+                        ResultCode::PassNoHighConfidenceContradiction
+                    };
+                    if row.code != expected {
+                        mismatches.push(format!(
+                            "{section}: {boundary}: #{} expected {expected:?}, observed {:?}",
+                            row.issue_number, row.code
+                        ));
+                    }
+                }
+            }
+        }
+        if !mismatches.is_empty() {
+            bail!("owned exclusion class mismatches: {mismatches:?}");
         }
         Ok(())
     }

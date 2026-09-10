@@ -31,7 +31,9 @@ and the corresponding subject-first `is explicitly out of scope` form. Numeric i
 ownership may precede the subject as `#N's` or follow it as `owned by #N` or `of #N`;
 qualified `owner/repo#N` forms retain their repository identity. An explicit subject
 owner must equal the closing relation's repository and issue number; an unrelated
-mention of another issue cannot transfer that ownership. Neighboring-issue
+mention of another issue cannot transfer that ownership. The longest supported
+subject owns any shorter subject contained within it; a nested phrase cannot bypass
+that ownership. Separate subject occurrences remain independent. Neighboring-issue
 attribution uses exact `#N`, `owner/repo#N`, and GitHub `/issues/N` URL identities,
 not numeric or repository-name prefixes. Ordinary possessives such as `This PR's`
 do not declare an issue owner; an issue-looking owner still requires valid repository
@@ -49,6 +51,10 @@ a matching closer ([CommonMark 0.31.2, example 338](https://spec.commonmark.org/
 Paragraphs, Markdown list items, and sentences retain their boundaries. With multiple
 closes, an owner reference retains its soft-wrapped predicate within the same unit;
 separate units and sections cannot borrow that owner.
+Claim Boundary and Non-goals use this same attribution rule, including when an owner
+appears only in Non-goals. With one close, an incidental malformed reference such as
+`#10x` does not suppress an otherwise unowned exclusion; malformed explicit subject
+owners still cannot establish a contradiction.
 Recognized headings are evaluated as distinct claim units; headings cannot borrow
 a subject or predicate from their body. Repeated headings also preserve distinct
 section occurrences. Immediate `not` or
