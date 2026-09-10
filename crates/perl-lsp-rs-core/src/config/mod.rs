@@ -1535,6 +1535,36 @@ impl WorkspaceConfig {
             declared_dependencies_from_reads(reads, &self.declared_dependencies);
     }
 
+    /// Carry metadata facts and detector-owned include roots across an
+    /// effective-settings replacement.
+    ///
+    /// Configuration consumers release their folder lock before performing
+    /// captured metadata reads. Retaining the previous detector contribution
+    /// across that gap prevents concurrent resolution from observing a
+    /// transiently incomplete include-path set. Explicitly configured paths
+    /// remain unowned; the next metadata refresh commits marker additions and
+    /// removals (#15088).
+    pub fn preserve_metadata_state_from(&mut self, previous: &Self) {
+        self.declared_dependencies = previous.declared_dependencies.clone();
+        for detected_path in &previous.detected_dependency_include_paths {
+            let Some(previous_path) = previous.include_paths.iter().find(|path| {
+                normalize_include_path(path).as_deref() == Some(detected_path.as_str())
+            }) else {
+                continue;
+            };
+            let already_configured = self
+                .include_paths
+                .iter()
+                .filter_map(|path| normalize_include_path(path))
+                .any(|path| path == *detected_path);
+            if already_configured {
+                continue;
+            }
+            self.include_paths.push(previous_path.clone());
+            self.detected_dependency_include_paths.push(detected_path.clone());
+        }
+    }
+
     /// Reconcile marker-detected Carton/Carmel roots into module-resolution paths.
     ///
     /// Existing configured paths are preserved in order, and equivalent paths
@@ -4530,6 +4560,54 @@ profile = "recommended"
             config.include_paths.contains(&"local/lib/perl5".to_string()),
             "a user-configured path is never retired by marker detection"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn metadata_replacement_retains_detector_until_refresh() -> TestResult {
+        let workspace = tempfile::tempdir()?;
+        std::fs::write(workspace.path().join("cpanfile"), "requires 'JSON';\n")?;
+        let carton_lock = workspace.path().join("carton.lock");
+        std::fs::write(&carton_lock, "snapshot\n")?;
+
+        let mut current = WorkspaceConfig {
+            include_paths: vec!["lib".to_string()],
+            ..WorkspaceConfig::default()
+        };
+        current.refresh_dependency_include_paths(workspace.path());
+        let previous = current.clone();
+        let detected_root =
+            normalize_include_path("local/lib/perl5").ok_or("detected root should normalize")?;
+
+        let mut replacement = WorkspaceConfig {
+            include_paths: vec!["lib".to_string()],
+            ..WorkspaceConfig::default()
+        };
+        replacement.preserve_metadata_state_from(&previous);
+        if !replacement.include_paths.contains(&"local/lib/perl5".to_string())
+            || !replacement.detected_dependency_include_paths.contains(&detected_root)
+        {
+            return Err("detector-owned root disappeared during settings replacement".into());
+        }
+
+        std::fs::remove_file(carton_lock)?;
+        replacement.refresh_dependency_include_paths(workspace.path());
+        if replacement.include_paths.contains(&"local/lib/perl5".to_string()) {
+            return Err("missing marker did not retire the retained detector root".into());
+        }
+
+        let mut explicit = WorkspaceConfig {
+            include_paths: vec!["lib".to_string(), "local/lib/perl5".to_string()],
+            ..WorkspaceConfig::default()
+        };
+        explicit.preserve_metadata_state_from(&previous);
+        if explicit.detected_dependency_include_paths.contains(&detected_root) {
+            return Err("explicit user root was incorrectly claimed by the detector".into());
+        }
+        explicit.refresh_dependency_include_paths(workspace.path());
+        if !explicit.include_paths.contains(&"local/lib/perl5".to_string()) {
+            return Err("explicit user root was removed during marker reconciliation".into());
+        }
         Ok(())
     }
 

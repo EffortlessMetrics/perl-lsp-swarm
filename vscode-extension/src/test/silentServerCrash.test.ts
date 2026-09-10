@@ -45,6 +45,9 @@ import {
   _setUserInitiatedStopPendingForTest,
   _setLastStartupDiagnosisForTest,
   _watchdogFailureForTest,
+  _startWatchdogForTest,
+  _stopWatchdogForTest,
+  _setOutputChannelForTest,
   _spawnReplacementCrashGenerationForTest,
   _setLanguageClientLifecycleForTest,
   _handleLifecycleClientStateChangeForTest,
@@ -279,6 +282,7 @@ describe('mid-session silent server crash recovery (#4625)', () => {
     _setLastStartupDiagnosisForTest(undefined);
     _setExtensionContextForTest(makeContext());
     _setLanguageClientLifecycleForTest(undefined);
+    _setOutputChannelForTest({ warn: jest.fn(), info: jest.fn(), error: jest.fn() } as never);
     showErrorMessage.mockReset();
     showErrorMessage.mockResolvedValue(undefined);
     showWarningMessage.mockReset();
@@ -439,6 +443,76 @@ describe('mid-session silent server crash recovery (#4625)', () => {
     // Watchdog and process exit must not increment the budget twice.
     expect(_autoRestartAttemptsForTest()).toBe(1);
     expect(showErrorMessage).toHaveBeenCalledTimes(1);
+  });
+
+  test('stopping watchdog drops an in-flight timeout from the stopped generation', async () => {
+    jest.useFakeTimers();
+    const sendRequest = jest.fn(() => new Promise<never>(() => undefined));
+    _setLanguageClientLifecycleForTest({
+      snapshot: { state: 'running', generation: 0 },
+      client: { sendRequest },
+    } as never);
+    try {
+      _startWatchdogForTest();
+      await jest.advanceTimersByTimeAsync(30_000);
+      expect(sendRequest).toHaveBeenCalledWith('$/perl-lsp/watchdog');
+
+      _stopWatchdogForTest();
+      await jest.advanceTimersByTimeAsync(10_000);
+
+      expect(showErrorMessage).not.toHaveBeenCalled();
+      expect(_autoRestartAttemptsForTest()).toBe(0);
+    } finally {
+      _stopWatchdogForTest();
+      jest.useRealTimers();
+    }
+  });
+
+  test('a fresh watchdog timeout still starts one recovery episode', async () => {
+    jest.useFakeTimers();
+    const sendRequest = jest.fn(() => new Promise<never>(() => undefined));
+    _setLanguageClientLifecycleForTest({
+      snapshot: { state: 'running', generation: 0 },
+      client: { sendRequest },
+      restart: async () => undefined,
+    } as never);
+    try {
+      _startWatchdogForTest();
+      await jest.advanceTimersByTimeAsync(30_000);
+      await jest.advanceTimersByTimeAsync(10_000);
+
+      expect(sendRequest).toHaveBeenCalledWith('$/perl-lsp/watchdog');
+      expect(_autoRestartAttemptsForTest()).toBe(1);
+      expect(showErrorMessage).toHaveBeenCalledTimes(1);
+    } finally {
+      _stopWatchdogForTest();
+      jest.useRealTimers();
+    }
+  });
+
+  test('a restarted watchdog accepts the current timeout but suppresses the old one', async () => {
+    jest.useFakeTimers();
+    const sendRequest = jest.fn(() => new Promise<never>(() => undefined));
+    _setLanguageClientLifecycleForTest({
+      snapshot: { state: 'running', generation: 0 },
+      client: { sendRequest },
+      restart: async () => undefined,
+    } as never);
+    try {
+      _startWatchdogForTest();
+      await jest.advanceTimersByTimeAsync(30_000);
+      _stopWatchdogForTest();
+      _startWatchdogForTest();
+      await jest.advanceTimersByTimeAsync(10_000);
+      expect(_autoRestartAttemptsForTest()).toBe(0);
+
+      await jest.advanceTimersByTimeAsync(30_000);
+      expect(_autoRestartAttemptsForTest()).toBe(1);
+      expect(showErrorMessage).toHaveBeenCalledTimes(1);
+    } finally {
+      _stopWatchdogForTest();
+      jest.useRealTimers();
+    }
   });
 
   test('a process exit followed by an in-flight watchdog observation deduplicates', async () => {

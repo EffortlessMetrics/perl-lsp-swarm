@@ -2934,6 +2934,32 @@ expires = "2026-09-22"
 removal_criteria = "Remove when RIPR traces declaration owners through the sibling #[path] tests or a finer line/function selector or targeted mutation replaces this advisory path. Remove or narrow immediately if a future receipt reports an executable no_static_path seam in this file or any classification other than no_static_path."
 
 # -----------------------------------------------------------------------------
+# Exact-tree test panic-family denominator (#13397, PR #14904): RIPR reports
+# no_static_path on non-executable struct/const/field owners in the new
+# observation module. Same-file tests construct the public DTOs, call
+# check_inventory / load_registry / vocabulary match arms, and the 41
+# integration falsifiers already discriminate the executable seams.
+# topology.rs already had a same-crate cargo-metadata test on this head and
+# still reported field_construction (ripr#1429). Constructor-only theatre
+# does not close those declaration probes. Classification is no_static_path
+# only so the join.rs reachable_unrevealed duplicate/insert paths still block
+# until their same-file tests land. Remove when ripr#1429 traces declaration
+# owners to same-file tests.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-13397-panic-debt-declaration-seams"
+kind = "declaration_line_no_static_path"
+paths = ["xtask/src/no_panic_debt/*", "xtask/src/no_panic_debt/**"]
+classification = ["no_static_path"]
+owner = "proof-lane"
+issue = "#13397"
+reason = "PR #14904 (issue #13397) adds the exact-tree test panic-family denominator as an xtask observation module. Hosted RIPR on head 93e4c5d8e (merge tree d99006a3, run 34220251310) reported 227 new actionable gaps: 225 no_static_path (193 field_construction on struct/const/field owners plus call_deletion/return_value/match_arm residue) and 2 reachable_unrevealed in join.rs load_registry. Same-file tests construct CheckRequest/Inventory/ModuleWork/Covering/Delta and exercise load_registry duplicate/insert, vocabulary match arms, rustc_child_module_dir, and cfg_attr(test, test) vs allow. Integration falsifiers in xtask/tests/no_panic_debt_falsifiers.rs already discriminate the claim. topology.rs already had a same-crate cargo-metadata unit test and still reported field_construction (EffortlessMetrics/ripr#1429, same class as PR #14902 tautology and #12049 reachability). Suppression is path-scoped to xtask/src/no_panic_debt/** and no_static_path only; a later reachable_unrevealed gap still blocks. Remove when ripr#1429 traces declaration owners to same-file tests."
+created = "2026-09-08"
+review_after = "2026-10-08"
+expires = "2026-12-08"
+removal_criteria = "ripr#1429 traces declaration-line field_construction owners to same-file tests in xtask/src/no_panic_debt; then delete this entry and expect the existing in-crate tests plus xtask/tests/no_panic_debt_falsifiers.rs to clear the seams without it. Do not keep the entry if a receipt reports reachable_unrevealed or another unlisted class in these files."
+
+# -----------------------------------------------------------------------------
 # PR #15149 (#15138) changes host_perl overrides in perl-core-harness from
 # PathBuf to Option<PathBuf> across three config structs plus one function
 # parameter. ripr 0.10.0 reports 7 no_static_path field_construction probes
@@ -3012,6 +3038,7 @@ created = "2026-09-09"
 review_after = "2026-09-16"
 expires = "2026-09-23"
 removal_criteria = "Remove when ripr#1429 traces const-data references, or narrow immediately if a future receipt reports an executable no_static_path seam in module_train_live.rs beyond this const table."
+
 # PR #15200 (#15156) adds cfg(all(test, feature = "workspace"))-gated scan
 # lifecycle observation to perl-lsp-rs: the new
 # src/runtime/scan_gate_observation.rs module (23 no_static_path probes), its

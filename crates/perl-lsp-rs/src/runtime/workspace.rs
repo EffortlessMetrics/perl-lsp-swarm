@@ -45,7 +45,7 @@ use perl_semantic_facts::{
 use perl_workspace::folder::extract_workspace_folder_change;
 #[cfg(feature = "workspace")]
 use perl_workspace::ignore::is_skipped_dir_name;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 #[cfg(feature = "workspace")]
 use std::io::Read;
 
@@ -55,6 +55,7 @@ fn to_json_array<T: serde::Serialize>(values: &[T]) -> Value {
 }
 #[cfg(feature = "workspace")]
 use std::path::Path;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 #[cfg(feature = "workspace")]
@@ -540,7 +541,7 @@ impl LspServer {
         };
         let mut folders = self.workspace_folders.lock();
         let init_options_perl = self.initialization_options_perl_settings.lock();
-        configuration_response::apply_workspace_configuration_results(
+        let metadata_roots = configuration_response::apply_workspace_configuration_results(
             &mut folders,
             &pending.folder_uris,
             pending.includes_global_item,
@@ -548,6 +549,9 @@ impl LspServer {
             i64::from(id.as_i32()),
             init_options_perl.as_ref(),
         );
+        drop(init_options_perl);
+        drop(folders);
+        self.refresh_project_metadata_facts(&metadata_roots);
     }
 
     /// Handle workspace/symbol request (v2 implementation with lifecycle-aware dispatch)
@@ -1660,6 +1664,14 @@ impl LspServer {
                 // settings once the client responds, but we update now so the window between
                 // didChangeConfiguration arrival and the pull response doesn't leave folders
                 // with stale settings.
+                let metadata_roots: BTreeSet<PathBuf> = self
+                    .workspace_folders
+                    .lock()
+                    .iter()
+                    .filter_map(|folder| {
+                        folder.path.clone().or_else(|| uri_to_fs_path(&folder.uri))
+                    })
+                    .collect();
                 {
                     let mut folders = self.workspace_folders.lock();
                     let init_options_perl = self.initialization_options_perl_settings.lock();
@@ -1713,10 +1725,14 @@ impl LspServer {
                                 "rejected client includePaths entry"
                             );
                         }
-                        folder.effective_workspace_config = effective_config;
-                        folder.refresh_workspace_metadata();
+                        folder.replace_effective_workspace_config(effective_config);
                     }
                 }
+
+                // Configuration settings and metadata facts have separate
+                // owners. Refresh after releasing the folder lock so the
+                // current open-buffer snapshot can be captured safely (#15088).
+                self.refresh_project_metadata_facts(&metadata_roots);
 
                 // A configuration notification starts a new user-visible
                 // configuration session; do not let an old auth failure

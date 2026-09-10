@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "owner_issue": 15219,
-  "reason": "The #15219 yauzl migration changes the packaged extension dependency and bundle inventory; the exact candidate VSIX is measured against the pinned current-main baseline, with the reviewed inventory transition recorded from the produced archive.",
-  "base_baseline_file_sha256": "db728d1fdbd59cde136efbf4ca093000703165d7e200bd5468b0a04492e9adf1",
-  "candidate_baseline_file_sha256": "5bf37ec5a75fb3941643a60bc7679316d4a6cab554efa709b8f273dcdd7b9518",
-  "base_inventory_sha256": "6a0ba1d92936ed297b912d1c61722d9b1a4b0949804a2d9ece55b7543aff6201",
-  "candidate_inventory_sha256": "11e0261afd2e089da857c27861830820a1ece17c62acf455c041defd5c61c632"
+  "owner_issue": 9933,
+  "reason": "The #9933 receipt-summary test entry changes the packaged extension package.json by 44 bytes; the exact candidate VSIX is measured against the merged current-main baseline.",
+  "base_baseline_file_sha256": "d95cf9327ba072657b6481b42fa3c3076d7774d4b5a03e7496b431518c765683",
+  "candidate_baseline_file_sha256": "d0f4bd2eaf0a74de3e8e74119e79ec070be3cdd3fb498188b68944f6e38f1d42",
+  "base_inventory_sha256": "695a05e2c3e7508d19ff0c35c30b5aedf5149e0953f31912d823c044f8a9e4d2",
+  "candidate_inventory_sha256": "f96e90df387423bb1b58aeed16ec63df14638bc35c37ce748e423333314856ce"
 }
