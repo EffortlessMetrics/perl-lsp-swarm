@@ -224,6 +224,7 @@ pub struct RecoveryEvidence {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RecoveryPlan {
+    #[serde(deserialize_with = "deserialize_forensic_schema_version")]
     pub schema_version: String,
     pub policy_version: String,
     pub observed_at: String,
@@ -236,6 +237,22 @@ pub struct RecoveryPlan {
     pub reasons: Vec<String>,
     pub proposed_actions: Vec<String>,
     pub plan_digest: String,
+}
+
+fn deserialize_forensic_schema_version<'de, D>(
+    deserializer: D,
+) -> std::result::Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let version = String::deserialize(deserializer)
+        .map_err(|error| serde::de::Error::custom(format!("schema_version: {error}")))?;
+    if version != FORENSIC_SCHEMA_VERSION {
+        return Err(serde::de::Error::custom(format!(
+            "schema_version: expected {FORENSIC_SCHEMA_VERSION}, got {version:?}"
+        )));
+    }
+    Ok(version)
 }
 
 // The shared cleanup type can represent more states than forensic v2 admits.
@@ -2242,6 +2259,31 @@ mod tests {
                     );
                 }
             }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn forensic_plan_decoder_requires_current_schema_version() -> Result<()> {
+        let plan = finish_plan(positive_evidence())?;
+        let current = serde_json::to_value(&plan)?;
+        ensure!(
+            serde_json::from_value::<RecoveryPlan>(current.clone())? == plan,
+            "current schema did not round trip"
+        );
+        for version in ["worktree_forensic_evidence.v1", "worktree_forensic_evidence.v999", ""] {
+            let mut relabeled = current.clone();
+            relabeled
+                .as_object_mut()
+                .ok_or_else(|| eyre!("plan is not an object"))?
+                .insert("schema_version".to_string(), serde_json::json!(version));
+            let error = serde_json::from_value::<RecoveryPlan>(relabeled)
+                .err()
+                .ok_or_else(|| eyre!("decoder accepted schema {version:?}"))?;
+            ensure!(
+                error.to_string().contains("schema_version"),
+                "version rejection omitted field context: {error}"
+            );
         }
         Ok(())
     }

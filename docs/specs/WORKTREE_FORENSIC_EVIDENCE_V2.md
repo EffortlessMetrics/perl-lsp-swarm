@@ -45,7 +45,11 @@ serialization is not a forensic output-admission API.
 
 V1 used `detail: "observed"` on observed values and `value: null` on unavailable
 observations; v2 uses typed states. Consumers must choose a decoder using
-`schema_version`. Preserve saved v1 evidence under its original schema or rerun
+`schema_version`. The typed `RecoveryPlan` decoder also requires exact equality
+with `worktree_forensic_evidence.v2`; historical, unknown, and empty labels fail
+with `schema_version` context even when their observation objects have v2 shape.
+This is decoder admission, not authentication of directly constructed plans.
+Preserve saved v1 evidence under its original schema or rerun
 inspection to generate v2; do not relabel old JSON or infer a filesystem change
 from a changed digest. No backward decoder is added to the shared cleanup type.
 
