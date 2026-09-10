@@ -113,9 +113,9 @@ Every temporary quality exception must name:
 - `expires`
 
 Malformed policy, malformed lifecycle dates, missing required metadata, and
-missing required exception identities fail the candidate gate. Lifecycle dates
-create advisory owner work through `cargo xtask policy cadence`; crossing
-`review_after` or `expires` does not change an unchanged candidate verdict.
+missing required exception identities fail the candidate gate.
+Lifecycle dates create advisory owner work through `cargo xtask policy cadence`;
+crossing `review_after` or `expires` does not change an unchanged candidate verdict.
 The committed exception remains active until a reviewed policy change removes,
 replaces, narrows, or re-justifies it.
 
