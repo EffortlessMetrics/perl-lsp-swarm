@@ -1,4 +1,5 @@
 use assert_cmd::Command;
+use chrono::{Duration, Utc};
 use serde_json::{Value, json};
 use std::{
     error::Error,
@@ -27,11 +28,16 @@ fn candidate_verdict_is_invariant_across_review_and_expiry_dates() -> TestResult
         }),
     )?;
 
-    for (case, review_after, expires) in [
-        ("elapsed", "2000-01-01", "2000-01-02"),
-        ("boundary", "2026-09-10", "2026-09-10"),
-        ("future", "2099-01-01", "2099-12-31"),
-    ] {
+    let boundary = Utc::now().date_naive();
+    let elapsed = boundary - Duration::days(1);
+    let future = boundary + Duration::days(1);
+    let cases = [
+        ("elapsed", elapsed.to_string(), elapsed.to_string()),
+        ("boundary", boundary.to_string(), boundary.to_string()),
+        ("future", future.to_string(), future.to_string()),
+    ];
+
+    for (case, review_after, expires) in &cases {
         let policy = dir.path().join(format!("policy-{case}.toml"));
         let receipt = dir.path().join(format!("receipt-{case}.json"));
         let summary = dir.path().join(format!("summary-{case}.md"));
@@ -54,13 +60,13 @@ fn candidate_verdict_is_invariant_across_review_and_expiry_dates() -> TestResult
             payload
                 .pointer("/temporary_exceptions/active/0/review_after")
                 .and_then(Value::as_str),
-            Some(review_after)
+            Some(review_after.as_str())
         );
         assert_eq!(
             payload
                 .pointer("/temporary_exceptions/active/0/expires")
                 .and_then(Value::as_str),
-            Some(expires)
+            Some(expires.as_str())
         );
         assert_eq!(
             payload
@@ -104,6 +110,48 @@ fn candidate_verdict_is_invariant_across_review_and_expiry_dates() -> TestResult
         assert!(markdown.contains("candidate impact: `advisory_only`"));
     }
 
+    Ok(())
+}
+
+#[test]
+fn missing_policy_still_emits_fail_closed_artifacts() -> TestResult {
+    let root = repo_root()?;
+    let dir = tempdir()?;
+    let coverage = dir.path().join("coverage.json");
+    let policy = dir.path().join("missing-policy.toml");
+    let receipt = dir.path().join("receipt.json");
+    let summary = dir.path().join("summary.md");
+    write_json(
+        &coverage,
+        json!({
+            "schema_version": 1,
+            "kind": "coverage_baseline",
+            "head": current_head(&root)?,
+            "lcov": "target/lcov.info",
+            "coverage": { "patch": 97.1 },
+            "files_below_target": []
+        }),
+    )?;
+
+    patch_gate(&root, &coverage, &policy, &receipt, &summary)?.assert().failure();
+
+    let payload: Value = serde_json::from_str(&fs::read_to_string(&receipt)?)?;
+    assert_eq!(
+        payload
+            .pointer("/temporary_exceptions/status")
+            .and_then(Value::as_str),
+        Some("missing")
+    );
+    assert!(
+        payload
+            .get("next_actions")
+            .and_then(Value::as_array)
+            .is_some_and(|actions| actions.iter().any(|action| {
+                action.get("kind").and_then(Value::as_str)
+                    == Some("quality_exception_policy_not_current")
+            }))
+    );
+    assert!(fs::read_to_string(summary)?.contains("quality_exception_policy_not_current"));
     Ok(())
 }
 
