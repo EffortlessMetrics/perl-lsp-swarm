@@ -255,10 +255,7 @@ fn normalize_policy(raw: &str) -> Result<NormalizedPolicy> {
 }
 
 fn policy_metadata_is_valid(table: &TomlTable) -> bool {
-    table
-        .get("owner")
-        .and_then(TomlValue::as_str)
-        .is_some_and(|value| !value.trim().is_empty())
+    table.get("owner").and_then(TomlValue::as_str).is_some_and(|value| !value.trim().is_empty())
         && table.get("status").and_then(TomlValue::as_str) == Some("active")
         && table
             .get("updated")
@@ -641,32 +638,21 @@ expires = "2026-10-30"
 
         restore_lifecycle_dates(&mut receipt, &lifecycle);
 
-        for prefix in [
-            "/temporary_exceptions/active",
-            "/next_actions/0/active",
-        ] {
+        for prefix in ["/temporary_exceptions/active", "/next_actions/0/active"] {
             assert_eq!(
-                receipt
-                    .pointer(&format!("{prefix}/0/review_after"))
-                    .and_then(JsonValue::as_str),
+                receipt.pointer(&format!("{prefix}/0/review_after")).and_then(JsonValue::as_str),
                 Some("2026-09-16")
             );
             assert_eq!(
-                receipt
-                    .pointer(&format!("{prefix}/0/expires"))
-                    .and_then(JsonValue::as_str),
+                receipt.pointer(&format!("{prefix}/0/expires")).and_then(JsonValue::as_str),
                 Some("2026-09-30")
             );
             assert_eq!(
-                receipt
-                    .pointer(&format!("{prefix}/1/review_after"))
-                    .and_then(JsonValue::as_str),
+                receipt.pointer(&format!("{prefix}/1/review_after")).and_then(JsonValue::as_str),
                 Some("2026-10-16")
             );
             assert_eq!(
-                receipt
-                    .pointer(&format!("{prefix}/1/expires"))
-                    .and_then(JsonValue::as_str),
+                receipt.pointer(&format!("{prefix}/1/expires")).and_then(JsonValue::as_str),
                 Some("2026-10-30")
             );
         }
@@ -717,10 +703,7 @@ expires = "2026-10-30"
             .flatten()
             .filter_map(|action| action.get("reason").and_then(JsonValue::as_str))
             .collect::<Vec<_>>();
-        assert_eq!(
-            reasons,
-            vec!["invalid_header", "invalid_metadata", "invalid_due_review"]
-        );
+        assert_eq!(reasons, vec!["invalid_header", "invalid_metadata", "invalid_due_review"]);
     }
 
     #[test]
