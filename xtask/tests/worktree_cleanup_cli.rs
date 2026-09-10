@@ -301,7 +301,7 @@ fn spawn_xtask_cleanup(root: &Path, gh_bin: &Path) -> Result<std::process::Child
 /// `KEEP`.
 fn entry_block(output: &str, needle: &str) -> Result<String> {
     let mut lines =
-        output.lines().skip_while(|line| !(line.contains(needle) && !line.starts_with(' ')));
+        output.lines().skip_while(|line| !line.contains(needle) || line.starts_with(' '));
     let Some(header) = lines.next() else {
         bail!("no entry header line containing {needle:?} in:\n{output}");
     };

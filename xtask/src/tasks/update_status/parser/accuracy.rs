@@ -159,38 +159,153 @@ fn parser_accuracy_metric_summary(metrics: &[ParserAccuracyMetricSummary]) -> St
     }
 
     let mut parts = Vec::new();
-    let selected = SUMMARY_METRICS
+    let selected_metrics = SUMMARY_METRICS
         .iter()
         .filter_map(|name| metrics.iter().find(|metric| metric.name() == *name))
-        .map(|metric| match metric {
-            ParserAccuracyMetricSummary::Measured { metric, value, sample_count } => {
-                if metric == "whitespace_invariance_rate" {
-                    format!("{metric}={value:.1} (trailing whitespace; n={sample_count})")
-                } else {
-                    format!("{metric}={value:.1} (n={sample_count})")
-                }
-            }
-            ParserAccuracyMetricSummary::InsufficientData { metric, reason, sample_count } => {
-                format!("{metric}: insufficient_data ({reason}; n={sample_count})")
-            }
-        })
+        .collect::<Vec<_>>();
+    let selected = selected_metrics
+        .iter()
+        .map(|metric| render_parser_accuracy_metric(metric))
         .collect::<Vec<_>>();
     if !selected.is_empty() {
         parts.push(format!("selected {}", selected.join(", ")));
     }
 
-    let measured_count = metrics
+    let trusted_measured_count = metrics
         .iter()
-        .filter(|metric| matches!(metric, ParserAccuracyMetricSummary::Measured { .. }))
+        .filter(|metric| {
+            matches!(
+                metric,
+                ParserAccuracyMetricSummary::Measured { metric, .. }
+                    if !is_legacy_untrusted_metric(metric)
+            )
+        })
         .count();
-    let insufficient_count = metrics.len().saturating_sub(measured_count);
-    let summarized_count = selected.len();
-    let additional_measured = measured_count.saturating_sub(summarized_count);
+    let selected_trusted_measured_count = selected_metrics
+        .iter()
+        .filter(|metric| {
+            matches!(
+                metric,
+                ParserAccuracyMetricSummary::Measured { metric, .. }
+                    if !is_legacy_untrusted_metric(metric)
+            )
+        })
+        .count();
+    let investigation_count = metrics
+        .iter()
+        .filter(|metric| {
+            matches!(
+                metric,
+                ParserAccuracyMetricSummary::Measured { metric, .. }
+                    if is_legacy_untrusted_metric(metric)
+            )
+        })
+        .count();
+    let selected_investigation_count = selected_metrics
+        .iter()
+        .filter(|metric| {
+            matches!(
+                metric,
+                ParserAccuracyMetricSummary::Measured { metric, .. }
+                    if is_legacy_untrusted_metric(metric)
+            )
+        })
+        .count();
+    let insufficient_count = metrics
+        .iter()
+        .filter(|metric| matches!(metric, ParserAccuracyMetricSummary::InsufficientData { .. }))
+        .count();
+
+    let additional_measured =
+        trusted_measured_count.saturating_sub(selected_trusted_measured_count);
     if additional_measured > 0 {
         parts.push(format!("{additional_measured} additional measured rows"));
+    }
+    let additional_investigation = investigation_count.saturating_sub(selected_investigation_count);
+    if additional_investigation > 0 {
+        parts.push(format!("{additional_investigation} additional investigation_only rows"));
     }
     if insufficient_count > 0 {
         parts.push(format!("{insufficient_count} insufficient_data rows preserved"));
     }
     parts.join("; ")
+}
+
+fn render_parser_accuracy_metric(metric: &ParserAccuracyMetricSummary) -> String {
+    match metric {
+        ParserAccuracyMetricSummary::Measured { metric, value, sample_count }
+            if is_legacy_untrusted_metric(metric) =>
+        {
+            let transformation = match metric.as_str() {
+                "whitespace_invariance_rate" => "trailing whitespace",
+                "comment_invariance_rate" => "EOF comment",
+                "newline_style_invariance_rate" => "LF-to-CRLF",
+                _ => "legacy metamorphic transform",
+            };
+            format!(
+                "{metric}: investigation_only (legacy_oracle_untrusted; {transformation}; observed={value:.1}; n={sample_count})"
+            )
+        }
+        ParserAccuracyMetricSummary::Measured { metric, value, sample_count } => {
+            format!("{metric}={value:.1} (n={sample_count})")
+        }
+        ParserAccuracyMetricSummary::InsufficientData { metric, reason, sample_count } => {
+            format!("{metric}: insufficient_data ({reason}; n={sample_count})")
+        }
+    }
+}
+
+fn is_legacy_untrusted_metric(metric: &str) -> bool {
+    matches!(
+        metric,
+        "whitespace_invariance_rate" | "comment_invariance_rate" | "newline_style_invariance_rate"
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        ParserAccuracyMetricSummary, is_legacy_untrusted_metric, parser_accuracy_metric_summary,
+    };
+
+    #[test]
+    fn legacy_metamorphic_hash_rows_render_as_investigation_only() {
+        let summary = parser_accuracy_metric_summary(&[
+            ParserAccuracyMetricSummary::Measured {
+                metric: "line_construct_f1".to_string(),
+                value: 1.0,
+                sample_count: 125,
+            },
+            ParserAccuracyMetricSummary::Measured {
+                metric: "whitespace_invariance_rate".to_string(),
+                value: 0.4,
+                sample_count: 46,
+            },
+            ParserAccuracyMetricSummary::Measured {
+                metric: "comment_invariance_rate".to_string(),
+                value: 1.0,
+                sample_count: 46,
+            },
+        ]);
+
+        assert!(summary.contains("line_construct_f1=1.0 (n=125)"));
+        assert!(summary.contains(
+            "whitespace_invariance_rate: investigation_only (legacy_oracle_untrusted; trailing whitespace; observed=0.4; n=46)"
+        ));
+        assert!(summary.contains("1 additional investigation_only rows"));
+        assert!(!summary.contains("whitespace_invariance_rate=0.4"));
+    }
+
+    #[test]
+    fn legacy_metamorphic_metric_classifier_is_closed() {
+        for metric in [
+            "whitespace_invariance_rate",
+            "comment_invariance_rate",
+            "newline_style_invariance_rate",
+        ] {
+            assert!(is_legacy_untrusted_metric(metric));
+        }
+        assert!(!is_legacy_untrusted_metric("repeated_parse_stability_rate"));
+        assert!(!is_legacy_untrusted_metric("line_construct_f1"));
+    }
 }

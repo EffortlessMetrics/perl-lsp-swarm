@@ -103,7 +103,7 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}
 
       - name: Install cargo-audit
-        uses: taiki-e/install-action@82cd3e7658a6f96c86c0234aeeda1748937cb0a1  # v2.85.13
+        uses: taiki-e/install-action@5bf6ce016fd2e72eefc647cbca1e4213f65955b8  # v2.87.5
         with:
           tool: cargo-audit
 
@@ -157,7 +157,7 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}
 
       - name: Install cargo-deny
-        uses: taiki-e/install-action@82cd3e7658a6f96c86c0234aeeda1748937cb0a1  # v2.85.13
+        uses: taiki-e/install-action@5bf6ce016fd2e72eefc647cbca1e4213f65955b8  # v2.87.5
         with:
           tool: cargo-deny
 
@@ -200,7 +200,7 @@ jobs:
 
       - name: Upload Trivy results to GitHub Security tab
         if: always()
-        uses: github/codeql-action/upload-sarif@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd  # v4.37.7
+        uses: github/codeql-action/upload-sarif@cdf488f595d80d6e07e03d4674febd5ab45fa938  # v4.37.9
         with:
           sarif_file: 'trivy-results.sarif'
           category: 'trivy-repository'
@@ -226,8 +226,12 @@ jobs:
           path: trivy-results.sarif
           retention-days: 30
 
+  # Scans the Rust build toolchain image, not the shipped runtime. The local
+  # tag is deliberately `perl-lsp-ci`: `.docker/rust/Dockerfile` is retired
+  # from product publication (#8980) and the canonical `perl-lsp` product name
+  # must never denote the builder, not even for a scratch scan tag.
   trivy-docker-scan:
-    name: Trivy Docker Image Scan
+    name: Trivy Rust builder image scan
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     needs: preflight-latest-check
@@ -240,14 +244,16 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Build Docker image
+        env:
+          BUILDER_IMAGE_REF: perl-lsp-ci:${{ github.sha }}
         run: |
-          docker build -t perl-lsp:${{ github.sha }} -f .docker/rust/Dockerfile .
+          docker build -t "$BUILDER_IMAGE_REF" -f .docker/rust/Dockerfile .
 
       - name: Run Trivy vulnerability scanner (Docker image)
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
         with:
           scan-type: 'image'
-          image-ref: 'perl-lsp:${{ github.sha }}'
+          image-ref: 'perl-lsp-ci:${{ github.sha }}'
           format: 'sarif'
           output: 'trivy-docker-results.sarif'
           severity: 'CRITICAL,HIGH,MEDIUM'
@@ -258,7 +264,7 @@ jobs:
 
       - name: Upload Trivy Docker results to GitHub Security tab
         if: always()
-        uses: github/codeql-action/upload-sarif@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd  # v4.37.7
+        uses: github/codeql-action/upload-sarif@cdf488f595d80d6e07e03d4674febd5ab45fa938  # v4.37.9
         with:
           sarif_file: 'trivy-docker-results.sarif'
           category: 'trivy-docker'

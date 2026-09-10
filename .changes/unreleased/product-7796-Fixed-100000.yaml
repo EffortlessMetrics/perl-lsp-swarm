@@ -1,7 +1,7 @@
 project: product
 component: Language intelligence
 kind: Fixed
-body: "Emacs setup guidance now states that current lsp-mode 10.0.1 requires Emacs 29.1, keeps manual perllsp registration distinct from future built-in discovery, and directs wrong-server troubleshooting through explicit client selection instead of unbounded priority escalation."
+body: "Emacs setup guidance now distinguishes released lsp-mode 10.0.0 (Emacs 28.1+, with Emacs 28.0 outside that row) from the pinned upstream-source 10.0.1 subject with an unverified source minimum, qualifies stock-discovery wording against dated repository authority, keeps manual perllsp registration distinct, and directs wrong-server troubleshooting through explicit client selection instead of unbounded priority escalation."
 time: 2026-08-13T10:00:00Z
 custom:
   PR: "7796"

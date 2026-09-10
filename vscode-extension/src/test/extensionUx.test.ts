@@ -33,16 +33,16 @@ import {
   previewPackageRenameCommand,
   previewSafeDeleteCommand,
   runPerlCriticOnActiveFile,
+  settleFormattingProviderCall,
   setPerlCriticSeverity,
   syncPerlCriticConfiguration,
   workspaceTrustClientRuntimeState,
 } from '../extension';
 import {
   openDemoProjectCommand,
+  runDiscoveredIncludePathGuidance,
+  runIncludePathValidation,
   suggestAiCompletionIfSupported,
-  suggestDiscoveredIncludePaths,
-  validateIncludePaths,
-  warnAboutPerlExtensionConflicts,
 } from '../extensionWorkspaceGuidance';
 
 describe('formatting provider experience projection', () => {
@@ -71,6 +71,20 @@ describe('formatting provider experience projection', () => {
       action: 'Check the formatter configuration or run the Health Check.',
       reasonCode: 'range_formatting_error',
     });
+  });
+
+  test('formatting middleware preserves fallback for an unstringifiable rejection', async () => {
+    const error = {
+      toString() {
+        throw new Error('cannot stringify provider failure');
+      },
+    };
+
+    await expect(
+      settleFormattingProviderCall(async () => {
+        throw error;
+      }, null),
+    ).resolves.toBeNull();
   });
 });
 
@@ -120,6 +134,7 @@ interface MockContext {
     };
   };
   extensionPath?: string;
+  globalStorageUri?: vscode.Uri;
   globalState: MockMemento;
   workspaceState: MockMemento;
 }
@@ -248,12 +263,11 @@ describe('extension UX warnings', () => {
       },
     ];
 
-    await validateIncludePaths(asExtensionContext(context));
+    await runIncludePathValidation(asExtensionContext(context));
 
     expect(showWarningMessage).toHaveBeenCalledWith(
       expect.stringContaining('src/libx'),
       'Open Settings',
-      'Create Missing Directories',
     );
     expect(globalState.update).toHaveBeenCalledWith(
       expect.stringContaining('perl-lsp.includePathsWarning.'),
@@ -261,19 +275,18 @@ describe('extension UX warnings', () => {
     );
 
     showWarningMessage.mockClear();
-    await validateIncludePaths(asExtensionContext(context));
+    await runIncludePathValidation(asExtensionContext(context));
     expect(showWarningMessage).not.toHaveBeenCalled();
 
     includePaths = ['lib', 'vendorx'];
-    await validateIncludePaths(asExtensionContext(context));
+    await runIncludePathValidation(asExtensionContext(context));
     expect(showWarningMessage).toHaveBeenCalledWith(
       expect.stringContaining('vendorx'),
       'Open Settings',
-      'Create Missing Directories',
     );
   });
 
-  test('can create missing relative include paths directly from the warning', async () => {
+  test('does not create missing relative include paths from the warning', async () => {
     const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-ux-create-'));
     const context = makeContext();
     context.globalState = {
@@ -298,15 +311,13 @@ describe('extension UX warnings', () => {
     ];
 
     const showWarningMessage = vscode.window.showWarningMessage as jest.Mock;
-    showWarningMessage.mockResolvedValue('Create Missing Directories');
+    showWarningMessage.mockResolvedValue('Open Settings');
 
-    await validateIncludePaths(asExtensionContext(context));
+    await runIncludePathValidation(asExtensionContext(context));
 
-    expect(fs.existsSync(path.join(workspaceDir, 't/lib'))).toBe(true);
-    expect(fs.existsSync(path.join(workspaceDir, 'vendor/perl'))).toBe(true);
-    expect(vscode.window.showInformationMessage).toHaveBeenCalledWith(
-      expect.stringContaining('Created 2 include directories'),
-    );
+    expect(fs.existsSync(path.join(workspaceDir, 't/lib'))).toBe(false);
+    expect(fs.existsSync(path.join(workspaceDir, 'vendor/perl'))).toBe(false);
+    expect(vscode.window.showInformationMessage).not.toHaveBeenCalled();
   });
 
   test('does not offer directory creation when include path traverses a symlink outside workspace', async () => {
@@ -343,7 +354,7 @@ describe('extension UX warnings', () => {
     const showWarningMessage = vscode.window.showWarningMessage as jest.Mock;
     showWarningMessage.mockResolvedValue(undefined);
 
-    await validateIncludePaths(asExtensionContext(context));
+    await runIncludePathValidation(asExtensionContext(context));
 
     // The symlinked path must be excluded from creatablePaths so only 'Open Settings' is offered.
     expect(showWarningMessage).toHaveBeenCalledWith(
@@ -359,21 +370,20 @@ describe('extension UX warnings', () => {
     expect(fs.existsSync(path.join(outsideDir, 'created-from-warning'))).toBe(false);
   });
 
-  test('does not create directories outside workspace when user clicks Create Missing Directories with a symlinked include path', async () => {
-    // This test verifies the T2 re-check guard in the mkdir loop: even if creatablePaths
-    // somehow contains a symlinked path (e.g. due to a race between the T1 filter and the
-    // actual mkdir call), hasSafeExistingAncestor is re-evaluated before mkdirSync runs.
-    // We simulate this by injecting a mixed set of paths: one safe (inside workspace) and
-    // one that resolves through a symlink to outside.  We then verify only the safe one is
-    // created and nothing lands outside.
+  test('ignores retired directory-creation choice without creating paths', async () => {
+    // Directory creation was retired from this warning flow. Keep the old choice in the
+    // test as a regression input and prove that it cannot create any path, including one
+    // that resolves through a workspace symlink.
     const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-ux-symlink2-'));
     const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-ux-outside2-'));
     const symlinkPath = path.join(workspaceDir, 'linked2');
+    let symlinkCreated = false;
     try {
       fs.symlinkSync(outsideDir, symlinkPath, 'dir');
+      symlinkCreated = true;
     } catch {
-      // Symlink creation not supported on this platform/environment — skip.
-      return;
+      // Symlink creation is unavailable in some environments; the unconditional
+      // no-creation assertion below still exercises the retired choice on Windows.
     }
 
     const context = makeContext();
@@ -383,7 +393,8 @@ describe('extension UX warnings', () => {
     };
 
     const getConfiguration = vscode.workspace.getConfiguration as jest.Mock;
-    // 'safe-lib' is inside the workspace; 'linked2/escape' traverses the symlink outside.
+    // 'safe-lib' is inside the workspace; when available, 'linked2/escape' traverses
+    // the symlink outside.
     getConfiguration.mockImplementation(() => ({
       get: jest.fn(() => ['safe-lib', 'linked2/escape']),
     }));
@@ -402,57 +413,22 @@ describe('extension UX warnings', () => {
     // The user clicks 'Create Missing Directories'.
     showWarningMessage.mockResolvedValue('Create Missing Directories');
 
-    await validateIncludePaths(asExtensionContext(context));
+    await runIncludePathValidation(asExtensionContext(context));
 
-    // 'safe-lib' is safe: it should be created inside the workspace.
-    expect(fs.existsSync(path.join(workspaceDir, 'safe-lib'))).toBe(true);
-    // 'linked2/escape' resolves through a symlink outside: nothing should be created there.
-    expect(fs.existsSync(path.join(outsideDir, 'escape'))).toBe(false);
-  });
-
-  test('warns once per major version when conflicting Perl extensions are installed', async () => {
-    const context = makeContext('0.12.3');
-    let warnedMajor: string | undefined;
-    context.globalState = {
-      get: jest.fn(() => warnedMajor),
-      update: jest.fn(async (_key: string, value: string) => {
-        warnedMajor = value;
-      }),
-    };
-
-    const showWarningMessage = vscode.window.showWarningMessage as jest.Mock;
-    showWarningMessage.mockResolvedValue(undefined);
-
-    (vscode.extensions as unknown as { all: unknown[] }).all = [
-      {
-        id: 'EffortlessMetrics.perl-lsp-rs',
-        packageJSON: {
-          publisher: 'EffortlessMetrics',
-          name: 'perl-lsp-rs',
-          version: '0.12.3',
-        },
-      },
-      {
-        id: 'example.perl-navigator',
-        packageJSON: {
-          displayName: 'Perl Navigator',
-          version: '1.0.0',
-          contributes: {
-            languages: [{ id: 'perl' }],
-          },
-        },
-      },
-    ];
-
-    await warnAboutPerlExtensionConflicts(asExtensionContext(context));
+    // The warning still offers only the supported settings action; the retired choice
+    // is merely an injected response and must not become a production action.
     expect(showWarningMessage).toHaveBeenCalledWith(
-      expect.stringContaining('Perl Navigator'),
-      'Open Coexistence Guide',
+      expect.stringContaining('safe-lib'),
+      'Open Settings',
     );
-
-    showWarningMessage.mockClear();
-    await warnAboutPerlExtensionConflicts(asExtensionContext(context));
-    expect(showWarningMessage).not.toHaveBeenCalled();
+    // The retired choice cannot create even the safe candidate.
+    expect(fs.existsSync(path.join(workspaceDir, 'safe-lib'))).toBe(false);
+    // A symlinked candidate must remain untouched whenever the platform supports it.
+    if (symlinkCreated) {
+      expect(fs.existsSync(path.join(symlinkPath, 'escape'))).toBe(false);
+    }
+    // 'linked2/escape' resolves through a symlink outside when present.
+    expect(fs.existsSync(path.join(outsideDir, 'escape'))).toBe(false);
   });
 
   test('does not offer directory creation for absolute include paths', async () => {
@@ -481,7 +457,7 @@ describe('extension UX warnings', () => {
     const showWarningMessage = vscode.window.showWarningMessage as jest.Mock;
     showWarningMessage.mockResolvedValue(undefined);
 
-    await validateIncludePaths(asExtensionContext(context));
+    await runIncludePathValidation(asExtensionContext(context));
 
     expect(showWarningMessage).toHaveBeenCalledWith(
       expect.stringContaining('absolute path'),
@@ -515,7 +491,7 @@ describe('extension UX warnings', () => {
     const showWarningMessage = vscode.window.showWarningMessage as jest.Mock;
     showWarningMessage.mockResolvedValue('Create Missing Directories');
 
-    await validateIncludePaths(asExtensionContext(context));
+    await runIncludePathValidation(asExtensionContext(context));
 
     expect(showWarningMessage).toHaveBeenCalledWith(
       expect.stringContaining('../outside-lib'),
@@ -565,7 +541,7 @@ describe('extension UX warnings', () => {
     const showWarningMessage = vscode.window.showWarningMessage as jest.Mock;
     showWarningMessage.mockResolvedValue(undefined);
 
-    await validateIncludePaths(asExtensionContext(context));
+    await runIncludePathValidation(asExtensionContext(context));
 
     expect(showWarningMessage).not.toHaveBeenCalled();
   });
@@ -579,7 +555,7 @@ describe('extension UX warnings', () => {
     const showWarningMessage = vscode.window.showWarningMessage as jest.Mock;
     showWarningMessage.mockResolvedValue(undefined);
 
-    await validateIncludePaths(asExtensionContext(context));
+    await runIncludePathValidation(asExtensionContext(context));
 
     expect(showWarningMessage).not.toHaveBeenCalled();
   });
@@ -593,12 +569,11 @@ describe('extension UX warnings', () => {
     const showWarningMessage = vscode.window.showWarningMessage as jest.Mock;
     showWarningMessage.mockResolvedValue(undefined);
 
-    await validateIncludePaths(asExtensionContext(context));
+    await runIncludePathValidation(asExtensionContext(context));
 
     expect(showWarningMessage).toHaveBeenCalledWith(
       expect.stringContaining('vendor/lib'),
       'Open Settings',
-      'Create Missing Directories',
     );
   });
 
@@ -612,7 +587,7 @@ describe('extension UX warnings', () => {
     const showWarningMessage = vscode.window.showWarningMessage as jest.Mock;
     showWarningMessage.mockResolvedValue(undefined);
 
-    await validateIncludePaths(asExtensionContext(context));
+    await runIncludePathValidation(asExtensionContext(context));
 
     expect(showWarningMessage).toHaveBeenCalledTimes(1);
     const [message] = showWarningMessage.mock.calls[0];
@@ -631,19 +606,16 @@ describe('extension UX warnings', () => {
     const showWarningMessage = vscode.window.showWarningMessage as jest.Mock;
     showWarningMessage.mockResolvedValue('Create Missing Directories');
 
-    await validateIncludePaths(asExtensionContext(context));
+    await runIncludePathValidation(asExtensionContext(context));
 
     expect(showWarningMessage).toHaveBeenCalledWith(
       expect.stringContaining('vendor/lib'),
       'Open Settings',
-      'Create Missing Directories',
     );
-    expect(fs.existsSync(path.join(workspaceDir, 'vendor/lib'))).toBe(true);
+    expect(fs.existsSync(path.join(workspaceDir, 'vendor/lib'))).toBe(false);
     expect(fs.existsSync(path.join(workspaceDir, 'lib'))).toBe(false);
     expect(fs.existsSync(path.join(workspaceDir, 'local/lib/perl5'))).toBe(false);
-    expect(vscode.window.showInformationMessage).toHaveBeenCalledWith(
-      expect.stringContaining('Created 1 include directory: vendor/lib.'),
-    );
+    expect(vscode.window.showInformationMessage).not.toHaveBeenCalled();
   });
 
   test('existing_default_path_is_still_used', async () => {
@@ -656,7 +628,7 @@ describe('extension UX warnings', () => {
     const showWarningMessage = vscode.window.showWarningMessage as jest.Mock;
     showWarningMessage.mockResolvedValue(undefined);
 
-    await validateIncludePaths(asExtensionContext(context));
+    await runIncludePathValidation(asExtensionContext(context));
 
     // Present default path: no warning, and the directory is left untouched
     // so the server keeps resolving modules through it.
@@ -1464,11 +1436,11 @@ describe('suggestDiscoveredIncludePaths (#1633)', () => {
     mountWorkspace(dir, ['lib', 'local/lib/perl5']);
     (vscode.window.showInformationMessage as jest.Mock).mockResolvedValue('Dismiss');
 
-    await suggestDiscoveredIncludePaths(asExtensionContext(context));
+    await runDiscoveredIncludePathGuidance(asExtensionContext(context));
 
     expect(vscode.window.showInformationMessage).toHaveBeenCalledWith(
-      expect.stringContaining('"src"'),
-      'Add to Include Paths',
+      expect.stringContaining('src'),
+      'Add for These Folders',
       'Open Settings',
       'Dismiss',
     );
@@ -1488,9 +1460,9 @@ describe('suggestDiscoveredIncludePaths (#1633)', () => {
     mountWorkspace(dir, ['lib', 'local/lib/perl5']);
     (vscode.window.showInformationMessage as jest.Mock).mockResolvedValue('Dismiss');
 
-    await suggestDiscoveredIncludePaths(asExtensionContext(context));
+    await runDiscoveredIncludePathGuidance(asExtensionContext(context));
     (vscode.window.showInformationMessage as jest.Mock).mockClear();
-    await suggestDiscoveredIncludePaths(asExtensionContext(context));
+    await runDiscoveredIncludePathGuidance(asExtensionContext(context));
 
     expect(vscode.window.showInformationMessage).not.toHaveBeenCalled();
   });
@@ -1503,14 +1475,16 @@ describe('suggestDiscoveredIncludePaths (#1633)', () => {
     const context = makeContext();
     context.globalState = makeGlobalState();
     const update = mountWorkspace(dir, ['lib', 'local/lib/perl5']);
-    (vscode.window.showInformationMessage as jest.Mock).mockResolvedValue('Add to Include Paths');
+    (vscode.window.showInformationMessage as jest.Mock).mockResolvedValue('Add for These Folders');
 
-    await suggestDiscoveredIncludePaths(asExtensionContext(context));
+    await runDiscoveredIncludePathGuidance(asExtensionContext(context));
 
+    // Folder-owned resource setting, so the discovered path is written to the
+    // owning folder rather than published workspace-wide (#14447).
     expect(update).toHaveBeenCalledWith(
       'includePaths',
       expect.arrayContaining(['lib', 'local/lib/perl5', 'vendor']),
-      vscode.ConfigurationTarget.Workspace,
+      vscode.ConfigurationTarget.WorkspaceFolder,
     );
   });
 
@@ -1523,7 +1497,7 @@ describe('suggestDiscoveredIncludePaths (#1633)', () => {
     context.globalState = makeGlobalState();
     mountWorkspace(dir, ['lib', 'src']);
 
-    await suggestDiscoveredIncludePaths(asExtensionContext(context));
+    await runDiscoveredIncludePathGuidance(asExtensionContext(context));
 
     expect(vscode.window.showInformationMessage).not.toHaveBeenCalled();
   });
@@ -1532,7 +1506,7 @@ describe('suggestDiscoveredIncludePaths (#1633)', () => {
     const context = makeContext();
     context.globalState = makeGlobalState();
     (vscode.workspace as unknown as { workspaceFolders: unknown }).workspaceFolders = undefined;
-    await suggestDiscoveredIncludePaths(asExtensionContext(context));
+    await runDiscoveredIncludePathGuidance(asExtensionContext(context));
     expect(vscode.window.showInformationMessage).not.toHaveBeenCalled();
   });
 
@@ -1553,7 +1527,7 @@ describe('suggestDiscoveredIncludePaths (#1633)', () => {
     // local/lib/perl5 is already in includePaths — "local" should be suppressed
     mountWorkspace(dir, ['lib', 'local/lib/perl5']);
 
-    await suggestDiscoveredIncludePaths(asExtensionContext(context));
+    await runDiscoveredIncludePathGuidance(asExtensionContext(context));
 
     expect(vscode.window.showInformationMessage).not.toHaveBeenCalled();
   });

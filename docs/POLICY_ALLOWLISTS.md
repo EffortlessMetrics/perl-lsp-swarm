@@ -4,11 +4,9 @@ Policy allowlists are receipts for intentionally retained risk. They are not a
 shortcut around the default rule that Rust and `xtask` are the preferred
 implementation surfaces and that unchecked panic paths should be burned down.
 
-## Rust 1.95 rollout target
+## Current policy target
 
-The Rust 1.95 / 0.14.0 rollout map is
-[`docs/ci/perl-lsp-rust-1.95-rollout.md`](ci/perl-lsp-rust-1.95-rollout.md). The
-planned policy ledgers are staged so each PR tightens one concern at a time:
+The current policy ledgers are staged so each PR tightens one concern at a time:
 
 - Clippy lints and exceptions stay governed by
   [`policy/clippy-lints.toml`](../policy/clippy-lints.toml) and future exception

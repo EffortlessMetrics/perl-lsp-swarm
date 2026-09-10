@@ -1,0 +1,9 @@
+project: vscode
+component: Packaging and distribution
+kind: Security
+body: Managed binary archive downloads are bounded independently of timeout, and extraction inspects the archive then installs only the unique perllsp executable and optional perl-dap. Oversized, traversing, linked, or ambiguous archives are rejected and leave no partial candidate.
+time: 2026-08-26T21:30:00Z
+custom:
+  PR: 12808
+  Slug: vscode-managed-archive-safety
+  Breaking: "yes"

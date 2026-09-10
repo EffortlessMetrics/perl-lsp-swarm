@@ -30,6 +30,7 @@
   "command.previewPackageRename.title": "Preview Package Rename",
   "command.copyProviderDecisionReceipt.title": "Copy Provider Decision Receipt",
   "command.showWorkspaceTrustReport.title": "Show Workspace Trust Report",
+  "command.showCoexistenceStatus.title": "Show Coexistence Status",
   "command.explainMissingModuleLookup.title": "Explain Missing Module Lookup",
   "command.explainDiagnostic.title": "Explain This Diagnostic",
   "command.reportIssue.title": "Report Issue",

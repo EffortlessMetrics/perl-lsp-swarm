@@ -4,6 +4,10 @@
 
 use serde::Serialize;
 
+use perl_lsp_rs_core::providers::formatting::range_admission::{
+    RangePositionError, SourceGeometry, admit_wire_endpoints,
+};
+
 use super::super::{
     FormatContext, FormatDisposition, FormatTextEdit, FormattingDecision, JsonRpcError, JsonRpcId,
     LspServer, RequestCleanupGuard, Snapshot, Surface, Value, WirePosition, WireRange,
@@ -88,22 +92,9 @@ impl PlanError {
         Self { reason, message: message.into() }
     }
 
-    fn outside_document(line: u32) -> Self {
-        Self::new("invalid_position", format!("line {line} is outside the current document"))
-    }
-
-    fn surrogate_split(line: u32, character: u32) -> Self {
-        Self::new(
-            "invalid_position",
-            format!("UTF-16 character {character} on line {line} splits a surrogate pair"),
-        )
-    }
-
-    fn outside_line(line: u32, character: u32, length: usize) -> Self {
-        Self::new(
-            "invalid_position",
-            format!("UTF-16 character {character} is outside line {line} (length {length})"),
-        )
+    #[cfg(test)]
+    fn from_position_error(error: RangePositionError) -> Self {
+        Self::new(error.reason(), error.message())
     }
 
     fn reversed_range(label: impl std::fmt::Display) -> Self {
@@ -135,77 +126,6 @@ impl PlanError {
     }
 }
 
-struct SourceGeometry {
-    line_starts: Vec<usize>,
-}
-
-impl SourceGeometry {
-    fn new(source: &str) -> Self {
-        let mut line_starts = vec![0];
-        let bytes = source.as_bytes();
-        let mut i = 0;
-        while i < bytes.len() {
-            if bytes[i] == b'\n' {
-                line_starts.push(i + 1);
-            } else if bytes[i] == b'\r' {
-                if i + 1 < bytes.len() && bytes[i + 1] == b'\n' {
-                    line_starts.push(i + 2);
-                    i += 1;
-                } else {
-                    line_starts.push(i + 1);
-                }
-            }
-            i += 1;
-        }
-        Self { line_starts }
-    }
-
-    fn line_content_end(&self, source: &str, line_index: usize) -> usize {
-        let Some(&next) = self.line_starts.get(line_index + 1) else {
-            return source.len();
-        };
-        let bytes = source.as_bytes();
-        if next >= 2 && bytes.get(next - 2) == Some(&b'\r') && bytes.get(next - 1) == Some(&b'\n') {
-            next - 2
-        } else if next >= 1 && matches!(bytes.get(next - 1), Some(&b'\n') | Some(&b'\r')) {
-            next - 1
-        } else {
-            next
-        }
-    }
-
-    fn byte_offset(&self, source: &str, line: u32, character: u32) -> Result<usize, PlanError> {
-        let line_index = line as usize;
-        let start = self
-            .line_starts
-            .get(line_index)
-            .copied()
-            .ok_or_else(|| PlanError::outside_document(line))?;
-        let end = self.line_content_end(source, line_index);
-
-        let target = character as usize;
-        let mut units = 0usize;
-        for (relative, ch) in source[start..end].char_indices() {
-            if units == target {
-                return Ok(start + relative);
-            }
-            let next = units.saturating_add(ch.len_utf16());
-            if target < next {
-                return Err(PlanError::surrogate_split(line, character));
-            }
-            units = next;
-        }
-        if units == target { Ok(end) } else { Err(PlanError::outside_line(line, character, units)) }
-    }
-
-    fn line_byte_span(&self, source: &str, line: u32) -> Result<(usize, usize), PlanError> {
-        let line_index = line as usize;
-        let start =
-            *self.line_starts.get(line_index).ok_or_else(|| PlanError::outside_document(line))?;
-        Ok((start, self.line_content_end(source, line_index)))
-    }
-}
-
 fn admit_wire_range(
     geometry: &SourceGeometry,
     source: &str,
@@ -214,14 +134,21 @@ fn admit_wire_range(
 ) -> Result<NormalizedRange, PlanError> {
     let wire = parse_range(value, label)
         .map_err(|error| PlanError::new("invalid_range", error.message))?;
-    let start_byte = geometry.byte_offset(source, wire.start.line, wire.start.character)?;
-    let end_byte = geometry.byte_offset(source, wire.end.line, wire.end.character)?;
-    if end_byte < start_byte {
-        return Err(PlanError::reversed_range(label));
-    }
+    let admitted = admit_wire_endpoints(
+        geometry,
+        source,
+        (wire.start.line, wire.start.character),
+        (wire.end.line, wire.end.character),
+    )
+    .map_err(|error| match error {
+        perl_lsp_rs_core::providers::formatting::RangeAdmissionError::Reversed => {
+            PlanError::reversed_range(label)
+        }
+        error => PlanError::new(error.reason(), error.message()),
+    })?;
     Ok(NormalizedRange::between(
-        PositionRecord::at(wire.start.line, wire.start.character, start_byte),
-        PositionRecord::at(wire.end.line, wire.end.character, end_byte),
+        PositionRecord::at(wire.start.line, wire.start.character, admitted.start_byte),
+        PositionRecord::at(wire.end.line, wire.end.character, admitted.end_byte),
     ))
 }
 
@@ -326,11 +253,12 @@ fn compose_edits(
             // Formatter-emitted positions are instrument output, not client
             // request params. Remap byte_offset failures so the client sees
             // -32603 / formatting_outcome_contract instead of -32602.
-            let reclassify = |error: PlanError| {
+            let reclassify = |error: RangePositionError| {
                 PlanError::new(
                     "instrument_failure",
                     format!(
-                        "formatter edit for normalized range {owner} has an unresolvable position: {error}"
+                        "formatter edit for normalized range {owner} has an unresolvable position: {}",
+                        error.message()
                     ),
                 )
             };
@@ -346,27 +274,15 @@ fn compose_edits(
                     format!("formatter edit for normalized range {owner} is reversed"),
                 ));
             }
-            // Native range formatting is line-oriented: a partial-line request
-            // may legitimately produce an edit covering the touched lines. Keep
-            // the safety boundary at those lines while still rejecting edits
-            // that escape the admitted line set.
-            let (allowed_start, allowed_end) = if admitted.start.line == admitted.end.line
-                && admitted.end.character == admitted.start.character
-            {
-                (admitted.start.byte, admitted.end.byte)
-            } else if admitted.end.character == 0 {
-                let (start, _) = geometry.line_byte_span(source, admitted.start.line)?;
-                (start, admitted.end.byte)
-            } else {
-                let (start, _) = geometry.line_byte_span(source, admitted.start.line)?;
-                let (_, end) = geometry.line_byte_span(source, admitted.end.line)?;
-                (start, end)
-            };
+            // Every formatter edit must stay within the exact byte interval
+            // admitted for its owning request. A line-oriented formatter that
+            // widens a partial request is therefore downgraded, not clipped.
+            let (allowed_start, allowed_end) = (admitted.start.byte, admitted.end.byte);
             if start_byte < allowed_start || end_byte > allowed_end {
                 return Err(PlanError::new(
                     "edit_outside_range",
                     format!(
-                        "formatter edit {start_byte}..{end_byte} escapes admitted line span {allowed_start}..{allowed_end}"
+                        "formatter edit {start_byte}..{end_byte} escapes admitted range {allowed_start}..{allowed_end}"
                     ),
                 ));
             }
@@ -942,16 +858,24 @@ mod tests {
 
     #[test]
     fn plan_error_constructors_name_geometry_failures() {
-        assert_eq!(
-            PlanError::outside_document(9).message,
-            "line 9 is outside the current document"
-        );
+        let outside =
+            PlanError::from_position_error(RangePositionError::OutsideDocument { line: 9 });
+        assert_eq!(outside.message, "line 9 is outside the current document");
+        let surrogate = PlanError::from_position_error(RangePositionError::SurrogateSplit {
+            line: 0,
+            character: 2,
+        });
         assert!(
-            PlanError::surrogate_split(0, 2).message.contains("splits a surrogate pair"),
+            surrogate.message.contains("splits a surrogate pair"),
             "surrogate constructor must keep discriminant text"
         );
+        let past = PlanError::from_position_error(RangePositionError::PastLineEnd {
+            line: 0,
+            character: 99,
+            length: 4,
+        });
         assert!(
-            PlanError::outside_line(0, 99, 4).message.contains("outside line 0"),
+            past.message.contains("outside line 0"),
             "outside-line constructor must keep discriminant text"
         );
         assert_eq!(
@@ -971,25 +895,25 @@ mod tests {
             .byte_offset(source, 9, 0)
             .err()
             .ok_or("outside-document byte_offset succeeded")?;
-        assert_eq!(outside.reason, "invalid_position");
-        assert_eq!(outside.message, "line 9 is outside the current document");
+        assert_eq!(outside.reason(), "invalid_position");
+        assert_eq!(outside.message(), "line 9 is outside the current document");
         let surrogate = geometry
             .byte_offset(source, 0, 2)
             .err()
             .ok_or("surrogate-splitting byte_offset succeeded")?;
-        assert_eq!(surrogate.reason, "invalid_position");
+        assert_eq!(surrogate.reason(), "invalid_position");
         assert!(
-            surrogate.message.contains("splits a surrogate pair"),
+            surrogate.message().contains("splits a surrogate pair"),
             "surrogate byte offset must reject a split pair: {}",
-            surrogate.message
+            surrogate.message()
         );
         let past =
             geometry.byte_offset(source, 0, 99).err().ok_or("past-end byte_offset succeeded")?;
-        assert_eq!(past.reason, "invalid_position");
+        assert_eq!(past.reason(), "invalid_position");
         assert!(
-            past.message.contains("outside line 0"),
+            past.message().contains("outside line 0"),
             "byte offset must reject a character past line end: {}",
-            past.message
+            past.message()
         );
         assert_eq!(geometry.byte_offset(source, 0, 0)?, 0);
         assert_eq!(geometry.byte_offset(source, 0, 1)?, 1);

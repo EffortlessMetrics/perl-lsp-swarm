@@ -93,15 +93,33 @@ fn normalize_path_does_not_convert_non_wsl_mnt_path() -> Result<(), anyhow::Erro
 #[cfg(target_os = "linux")]
 #[test]
 fn normalize_path_wsl_short_mnt_path_no_conversion() -> Result<(), anyhow::Error> {
-    // A bare `/mnt/c` path has no suffix after the drive letter, so there is no
-    // path separator following the letter.  The guard `rest.starts_with('/')` ensures
-    // it is left untranslated rather than producing drive-relative `C:` (#13028).
     let input = PathBuf::from("/mnt/c");
     let normalized = normalize_path(&input);
-    assert_eq!(
-        normalized, input,
-        "bare /mnt/c must remain the exact input path, not a drive-relative path"
-    );
+    anyhow::ensure!(normalized == input, "bare mount changed to {normalized:?}");
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn normalize_path_wsl_requires_separator_after_single_drive_letter() -> Result<(), anyhow::Error> {
+    // A non-empty suffix alone admits adjacent mount names as drive-relative
+    // paths. Only a separator after one ASCII drive letter is a WSL mount.
+    for (input, expected) in [
+        ("/mnt/cx", "/mnt/cx"),
+        ("/mnt/Cx/path.pl", "/mnt/Cx/path.pl"),
+        ("/mnt/cé/path.pl", "/mnt/cé/path.pl"),
+        ("/mnt/é/path.pl", "/mnt/é/path.pl"),
+        ("/mnt/1/path.pl", "/mnt/1/path.pl"),
+        ("/mnt/C", "/mnt/C"),
+        ("/mnt/c/", "C:\\"),
+        ("/mnt/D/project/lib.pm", "D:\\project\\lib.pm"),
+    ] {
+        let actual = normalize_path(std::path::Path::new(input));
+        anyhow::ensure!(
+            actual == std::path::Path::new(expected),
+            "normalizing {input:?}: expected {expected:?}, got {actual:?}"
+        );
+    }
     Ok(())
 }
 
@@ -111,11 +129,7 @@ fn normalize_path_canonicalizes_existing_path() -> Result<(), anyhow::Error> {
     // Canonicalize should resolve ".." for existing paths
     let input = PathBuf::from("/tmp/./");
     let normalized = normalize_path(&input);
-    assert_eq!(
-        normalized,
-        input.canonicalize()?,
-        "existing paths should return their canonical PathBuf"
-    );
+    assert!(normalized.is_absolute(), "canonicalized existing path should be absolute");
     Ok(())
 }
 

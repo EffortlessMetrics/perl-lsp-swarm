@@ -637,7 +637,7 @@ fn write_payloads(kind: &NodeKind, out: &mut impl SexpSink) -> Result<(), Render
             write_flag(out, "has_filter_risk", *has_filter_risk)
         }
         NodeKind::PhaseBlock { phase, phase_span: _, .. } => write_named(out, "phase", phase),
-        NodeKind::DataSection { marker, body } => {
+        NodeKind::DataSection { marker, body, marker_span: _, body_span: _ } => {
             write_named(out, "marker", marker)?;
             if let Some(body) = body {
                 write_named(out, "body", body)?;

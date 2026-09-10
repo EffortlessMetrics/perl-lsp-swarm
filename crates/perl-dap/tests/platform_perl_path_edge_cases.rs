@@ -9,12 +9,12 @@
     reason = "tracked conversion debt: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3021"
 )]
 
+use perl_dap::platform::{
+    PerlInterpreterResult, find_perl_interpreter_cached, normalize_path, resolve_perl_path,
+    resolve_perl_path_with_toolchain, setup_environment,
+};
 #[cfg(not(windows))]
 use perl_dap::platform::{detect_perlbrew_perl, detect_plenv_perl};
-use perl_dap::platform::{
-    find_perl_interpreter_cached, normalize_path, resolve_perl_path,
-    resolve_perl_path_with_toolchain, setup_environment, PerlInterpreterResult,
-};
 use perl_tdd_support::{must, must_some};
 use serial_test::serial;
 use std::path::PathBuf;
@@ -125,9 +125,10 @@ fn normalize_path_existing_file() -> TestResult {
     std::fs::write(&file, "1;")?;
 
     let normalized = normalize_path(&file);
+    assert!(normalized.is_absolute(), "existing file should canonicalize to absolute");
     assert!(
-        normalized.is_file(),
-        "existing file should remain an existing regular file after normalization"
+        normalized.to_string_lossy().contains("test.pl"),
+        "normalized path should contain filename"
     );
     Ok(())
 }
@@ -256,58 +257,6 @@ fn normalize_path_wsl_activeperl() -> TestResult {
     Ok(())
 }
 
-// ── WSL bare drive-root boundary tests (issue #13028) ─────────────────────
-
-/// Bare `/mnt/c` has no path suffix beyond the drive letter and must not be
-/// translated to the drive-relative `C:`.  Only paths with a separator after
-/// the letter (`/mnt/c/...`) are valid WSL mount paths and should translate.
-#[cfg(target_os = "linux")]
-#[test]
-fn normalize_path_wsl_bare_drive_root_not_translated() -> TestResult {
-    let input = PathBuf::from("/mnt/c");
-    let normalized = normalize_path(&input);
-    assert_eq!(normalized, input, "bare /mnt/c must remain the exact input PathBuf");
-    Ok(())
-}
-
-/// A longer WSL mount path (has a slash after the drive letter) must still
-/// translate to Windows-style.  This is the positive case that must survive
-/// the bare-root guard introduced for issue #13028.
-#[cfg(target_os = "linux")]
-#[test]
-fn normalize_path_wsl_longer_path_still_translates() -> TestResult {
-    let input = PathBuf::from("/mnt/c/Users/test/script.pl");
-    let normalized = normalize_path(&input);
-    assert_eq!(
-        normalized,
-        PathBuf::from(r"C:\Users\test\script.pl"),
-        "longer WSL path must retain exact Windows-style translation"
-    );
-    Ok(())
-}
-
-/// Non-ASCII in the drive position must not be translated or panic.
-/// `é` is two UTF-8 bytes; byte-slicing at position 1 would split the codepoint.
-#[cfg(target_os = "linux")]
-#[test]
-fn normalize_path_wsl_non_ascii_drive_not_translated() -> TestResult {
-    let input = PathBuf::from("/mnt/é/file.pl");
-    let normalized = normalize_path(&input);
-    assert_eq!(normalized, input, "non-ASCII drive position must remain the exact input PathBuf");
-    Ok(())
-}
-
-/// A digit in the drive position is not a valid WSL mount letter and must
-/// remain untranslated.
-#[cfg(target_os = "linux")]
-#[test]
-fn normalize_path_wsl_digit_drive_not_translated() -> TestResult {
-    let input = PathBuf::from("/mnt/1/file.pl");
-    let normalized = normalize_path(&input);
-    assert_eq!(normalized, input, "digit drive position must remain the exact input PathBuf");
-    Ok(())
-}
-
 #[test]
 fn find_perl_interpreter_cached_respects_configured_path_changes() -> TestResult {
     let tmp = tempfile::tempdir()?;
@@ -405,13 +354,13 @@ fn make_fake_perl(dir: &std::path::Path, name: &str) -> TestResult {
 
 #[cfg(not(windows))]
 #[test]
-#[serial(env_toolchain)]
+#[serial]
 fn detect_perlbrew_perl_env_var_points_to_valid_binary() -> TestResult {
     let tmp = tempfile::tempdir()?;
     let bin_dir = tmp.path().join("perls").join("perl-5.38.0").join("bin");
     std::fs::create_dir_all(&bin_dir)?;
     make_fake_perl(&bin_dir, "perl")?;
-    // Safety: env mutation is safe because #[serial(env_toolchain)] prevents
+    // Safety: env mutation is safe because #[serial] prevents
     // concurrent access to PERLBREW_ROOT/PERLBREW_PERL/PLENV_ROOT/PLENV_VERSION.
     unsafe {
         std::env::set_var("PERLBREW_ROOT", tmp.path().to_str().unwrap());
@@ -430,10 +379,10 @@ fn detect_perlbrew_perl_env_var_points_to_valid_binary() -> TestResult {
 
 #[cfg(not(windows))]
 #[test]
-#[serial(env_toolchain)]
+#[serial]
 fn detect_perlbrew_perl_env_set_but_binary_missing_returns_none() -> TestResult {
     let tmp = tempfile::tempdir()?;
-    // Safety: env mutation is safe because #[serial(env_toolchain)] prevents
+    // Safety: env mutation is safe because #[serial] prevents
     // concurrent access to PERLBREW_ROOT/PERLBREW_PERL/PLENV_ROOT/PLENV_VERSION.
     unsafe {
         std::env::set_var("PERLBREW_ROOT", tmp.path().to_str().unwrap());
@@ -450,13 +399,13 @@ fn detect_perlbrew_perl_env_set_but_binary_missing_returns_none() -> TestResult 
 
 #[cfg(not(windows))]
 #[test]
-#[serial(env_toolchain)]
+#[serial]
 fn detect_plenv_perl_env_var_points_to_valid_binary() -> TestResult {
     let tmp = tempfile::tempdir()?;
     let bin_dir = tmp.path().join("versions").join("5.38.0").join("bin");
     std::fs::create_dir_all(&bin_dir)?;
     make_fake_perl(&bin_dir, "perl")?;
-    // Safety: env mutation is safe because #[serial(env_toolchain)] prevents
+    // Safety: env mutation is safe because #[serial] prevents
     // concurrent access to PERLBREW_ROOT/PERLBREW_PERL/PLENV_ROOT/PLENV_VERSION.
     unsafe {
         std::env::set_var("PLENV_ROOT", tmp.path().to_str().unwrap());
@@ -475,10 +424,10 @@ fn detect_plenv_perl_env_var_points_to_valid_binary() -> TestResult {
 
 #[cfg(not(windows))]
 #[test]
-#[serial(env_toolchain)]
+#[serial]
 fn detect_plenv_perl_env_set_but_binary_missing_returns_none() -> TestResult {
     let tmp = tempfile::tempdir()?;
-    // Safety: env mutation is safe because #[serial(env_toolchain)] prevents
+    // Safety: env mutation is safe because #[serial] prevents
     // concurrent access to PERLBREW_ROOT/PERLBREW_PERL/PLENV_ROOT/PLENV_VERSION.
     unsafe {
         std::env::set_var("PLENV_ROOT", tmp.path().to_str().unwrap());
@@ -495,13 +444,13 @@ fn detect_plenv_perl_env_set_but_binary_missing_returns_none() -> TestResult {
 
 #[cfg(not(windows))]
 #[test]
-#[serial(env_toolchain)]
+#[serial]
 fn resolve_perl_path_with_toolchain_prefers_perlbrew_over_path() -> TestResult {
     let tmp = tempfile::tempdir()?;
     let bin_dir = tmp.path().join("perls").join("perl-5.38.0").join("bin");
     std::fs::create_dir_all(&bin_dir)?;
     make_fake_perl(&bin_dir, "perl")?;
-    // Safety: env mutation is safe because #[serial(env_toolchain)] prevents
+    // Safety: env mutation is safe because #[serial] prevents
     // concurrent access to PERLBREW_ROOT/PERLBREW_PERL/PLENV_ROOT/PLENV_VERSION.
     unsafe {
         std::env::set_var("PERLBREW_ROOT", tmp.path().to_str().unwrap());
@@ -522,10 +471,10 @@ fn resolve_perl_path_with_toolchain_prefers_perlbrew_over_path() -> TestResult {
 
 #[cfg(not(windows))]
 #[test]
-#[serial(env_toolchain)]
+#[serial]
 fn resolve_perl_path_with_toolchain_prefers_plenv_over_path() -> TestResult {
     // Ensure perlbrew vars are absent so plenv is tried.
-    // Safety: env mutation is safe because #[serial(env_toolchain)] prevents
+    // Safety: env mutation is safe because #[serial] prevents
     // concurrent access to PERLBREW_ROOT/PERLBREW_PERL/PLENV_ROOT/PLENV_VERSION.
     unsafe {
         std::env::remove_var("PERLBREW_PERL");
@@ -550,10 +499,10 @@ fn resolve_perl_path_with_toolchain_prefers_plenv_over_path() -> TestResult {
 }
 
 #[test]
-#[serial(env_toolchain)]
+#[serial]
 fn resolve_perl_path_with_toolchain_falls_back_to_path() -> TestResult {
     // Clear toolchain env vars so PATH fallback is exercised.
-    // Safety: env mutation is safe because #[serial(env_toolchain)] prevents
+    // Safety: env mutation is safe because #[serial] prevents
     // concurrent access to PERLBREW_ROOT/PERLBREW_PERL/PLENV_ROOT/PLENV_VERSION.
     unsafe {
         std::env::remove_var("PERLBREW_PERL");

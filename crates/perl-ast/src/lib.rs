@@ -11,9 +11,12 @@
 //! # Modules
 //!
 //! - [`ast`] -- The primary AST used by the current recursive-descent parser.
+//! - [`geometry_policy`] -- Field-level registry of independent source-geometry payload fields.
 //! - [`invariant_policy`] -- Exhaustive range, child, payload, and recovery policy.
 //! - [`invariants`] -- Bounded structural validation shared by parser paths.
 //! - [`kind_schema`] -- Structural `NodeKind` registry, field-aware traversal, schema identity, and NodeKind inventory.
+//! - [`source_syntax`] -- Source-backed string and heredoc payload contract: raw
+//!   source, cooked value, and ordered segments as separate typed propositions.
 //! - [`v2`] -- Experimental second-generation AST re-exported from `perl-ast-v2`
 //!   for incremental parsing.
 //!
@@ -73,6 +76,15 @@
 pub mod ast;
 /// Static classification metadata for [`NodeKind`] variants: categories and flags.
 pub mod classification;
+/// Owner-neutral source syntax for declaration attributes.
+pub mod declaration;
+/// Field-level authority for independent source-geometry payload fields.
+///
+/// Registers which payload fields carry byte offsets of their own, what shape
+/// that geometry has, and how a coordinate-mapping consumer must transform it.
+/// Structural children remain owned by [`kind_schema`]; this is not a second
+/// child traversal.
+pub mod geometry_policy;
 /// Exhaustive invariant policy metadata for every [`NodeKind`] variant.
 pub mod invariant_policy;
 /// Bounded structural validation for parser-produced ASTs.
@@ -86,6 +98,13 @@ pub mod invariants;
 /// identity and generated NodeKind status are derived from the same registry
 /// and do not change parser or AST structure.
 pub mod kind_schema;
+/// Source-backed string and heredoc payload types: raw source, cooked value,
+/// and ordered segments as separate typed propositions.
+///
+/// This is a data contract only. It adds no [`NodeKind`] variant, changes no
+/// existing variant's child fields, and does not affect parser output,
+/// traversal, rendering, or the [`kind_schema`] registry.
+pub mod source_syntax;
 
 /// Incremental parsing AST types extracted into a dedicated microcrate.
 pub use perl_ast_v2 as v2;
@@ -100,6 +119,20 @@ pub use ast::{
     NativeDebugSexpInstrumentCause, NativeDebugSexpLimits, NativeDebugSexpOmitted,
     NativeDebugSexpResult, NativeDebugSexpTruncation, NativeDebugSexpWork, Node, NodeKind,
 };
+/// Owner-neutral declaration-attribute source contracts.
+pub use declaration::{
+    DeclarationAttributeArgumentDisposition, DeclarationAttributeArgumentSyntax,
+    DeclarationAttributeCompleteness, DeclarationAttributeDelimiter, DeclarationAttributeSeparator,
+    DeclarationAttributeSyntax, DeclarationAttributeSyntaxError,
+};
+/// Field-level source-geometry registry types, observation, and reconciliation.
+pub use geometry_policy::{
+    AST_GEOMETRY_SCHEMA_VERSION, AST_NODE_GEOMETRY_FIELDS, AstGeometryDisposition,
+    AstGeometryDrift, AstGeometryField, AstGeometryMapping, AstGeometryShape,
+    ObservedGeometryField, geometry_disposition_for_classification, geometry_disposition_for_role,
+    geometry_fields_for, geometry_shapes_in_use, observe_geometry_fields, reconcile_geometry_rows,
+    reconcile_node_geometry, validate_geometry_registry,
+};
 /// Exhaustive AST invariant policy types and registry.
 pub use invariant_policy::{
     AST_NODE_POLICIES, AST_NODE_POLICY_SCHEMA_VERSION, AstChildContainmentPolicy,
@@ -113,3 +146,9 @@ pub use invariants::{
 };
 /// Byte-offset span indicating where a node appears in source text.
 pub use perl_position_tracking::SourceLocation;
+/// Source-backed string and heredoc payload types.
+pub use source_syntax::{
+    CookedValue, HeredocDeclarationIdentity, HeredocForm, HeredocSyntax, NormalizationRule,
+    PayloadContradiction, PayloadTerminal, SegmentRecoveryCause, SourceSegment,
+    SourceSegmentPayload, SourceSegmentation, StringDelimiter, StringForm, StringSyntax,
+};

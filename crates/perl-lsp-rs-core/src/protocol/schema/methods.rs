@@ -1,6 +1,7 @@
 use super::payloads::{
-    cancel_params, initialize_params, initialize_result, null_or_empty_object, null_params,
-    null_result, show_message_request_params, show_message_request_result, window_message_params,
+    cancel_params, did_change_params, did_close_params, did_open_params, initialize_params,
+    initialize_result, null_or_empty_object, null_params, null_result, show_message_request_params,
+    show_message_request_result, window_message_params,
 };
 use super::{Direction, MessageKind, ProtocolVersion, SchemaError};
 use serde_json::Value;
@@ -42,14 +43,20 @@ macro_rules! notification {
     };
 }
 
-/// Lifecycle, cancellation, and the window-message family. Remaining method
-/// payloads stay on #10477 so each family stays within RIPR's review budget.
+/// Lifecycle, cancellation, the window-message family, and document sync.
+/// Remaining method payloads stay on #10477 so each family stays within
+/// RIPR's review budget.
 static METHOD_SCHEMAS: &[MethodSchema] = &[
     notification!("$/cancelRequest", ClientToServer, Lsp317, cancel_params),
     notification!("exit", ClientToServer, Lsp317, null_or_empty_object),
     request!("initialize", ClientToServer, Lsp317, initialize_params, initialize_result),
     notification!("initialized", ClientToServer, Lsp317, null_or_empty_object),
     request!("shutdown", ClientToServer, Lsp317, null_params, null_result),
+    // Document sync is client-to-server only; responses do not exist for
+    // these notifications and no server-initiated variant is registered.
+    notification!("textDocument/didChange", ClientToServer, Lsp317, did_change_params),
+    notification!("textDocument/didClose", ClientToServer, Lsp317, did_close_params),
+    notification!("textDocument/didOpen", ClientToServer, Lsp317, did_open_params),
     // The base protocol lets either party cancel a request it previously sent.
     notification!("$/cancelRequest", ServerToClient, Lsp317, cancel_params),
     notification!("window/logMessage", ServerToClient, Lsp317, window_message_params),

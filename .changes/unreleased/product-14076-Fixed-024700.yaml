@@ -1,0 +1,9 @@
+project: product
+component: Developer experience
+kind: Fixed
+body: Reject contradictory editor-UX operation timing evidence before it can affect compatibility scorecard metrics.
+time: 2026-08-30T02:47:00Z
+custom:
+  PR: "14076"
+  Slug: editor-ux-timing-state-integrity
+  Breaking: "no"

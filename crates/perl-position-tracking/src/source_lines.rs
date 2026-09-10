@@ -31,10 +31,21 @@
 //! # Relationship to the rest of this crate
 //!
 //! [`crate::LineStartsCache`], [`crate::LineIndex`], and [`crate::PositionMapper`]
-//! predate this contract and still expose Ropey-style row rules (bare CR, VT,
-//! FF, NEL, LS, PS also break rows). They are legacy surfaces; new exact-source
-//! consumers should build on this table instead. Reconciling those constructors
-//! is explicitly out of scope here (#4973 follow-up work).
+//! predate this contract and split into two distinct legacy row models, not one:
+//!
+//! ```text
+//! Ropey model (LF, CRLF, CR, VT, FF, NEL, LS, PS)
+//!   LineStartsCache::new_rope, PositionMapper   — Rope line APIs
+//!
+//! CR-aware model (LF, CRLF, CR)
+//!   LineStartsCache::new, LineIndex             — local scan
+//! ```
+//!
+//! So bare CR breaks a row on all of them, but VT/FF/NEL/LS/PS break a row only
+//! on the Rope-backed queries. They are legacy surfaces; new exact-source
+//! consumers should build on this table instead. The exact divergence is pinned
+//! in `tests/source_line_policy_authority.rs`. Reconciling these constructors is
+//! explicitly out of scope here (ADR-0048 / #4973 follow-up, owned by #8687).
 
 use crate::span::ByteSpan;
 use std::fmt;
@@ -451,10 +462,20 @@ impl Scanner {
             // rejection maps onto the overflow variant rather than panicking.
             let separator_end =
                 self.offset.checked_add(1).ok_or(SourceLineError::ArithmeticOverflow)?;
-            self.records.push(
+            // Per-site expectation: if this map_err site is ever removed, this
+            // exact expectation becomes unfulfilled and strict Clippy fails,
+            // keeping each exception individually ratcheted.
+            #[expect(
+                clippy::map_err_ignore,
+                reason = "CRLF site: cr_at < offset holds by construction (cr_at was recorded \
+                          before offset advanced past it), so LineRecord::new cannot reject; \
+                          the mapped ArithmeticOverflow class is the complete diagnostic — \
+                          LineRecordError carries no payload beyond the violated invariant."
+            )]
+            let crlf_record =
                 LineRecord::new(self.record_start, cr_at, separator_end, SeparatorKind::CrLf)
-                    .map_err(|_| SourceLineError::ArithmeticOverflow)?,
-            );
+                    .map_err(|_| SourceLineError::ArithmeticOverflow)?;
+            self.records.push(crlf_record);
             self.record_start = separator_end;
             self.offset = separator_end;
             return Ok(());
@@ -465,15 +486,24 @@ impl Scanner {
             LF => {
                 let separator_end =
                     self.offset.checked_add(1).ok_or(SourceLineError::ArithmeticOverflow)?;
-                self.records.push(
-                    LineRecord::new(
-                        self.record_start,
-                        self.offset,
-                        separator_end,
-                        SeparatorKind::Lf,
-                    )
-                    .map_err(|_| SourceLineError::ArithmeticOverflow)?,
-                );
+                // Per-site expectation: if this map_err site is ever removed,
+                // this exact expectation becomes unfulfilled and strict Clippy
+                // fails, keeping each exception individually ratcheted.
+                #[expect(
+                    clippy::map_err_ignore,
+                    reason = "LF site: record_start <= offset < separator_end hold by \
+                              construction (offset is the pending separator and separator_end \
+                              == offset + 1), so LineRecord::new cannot reject; the mapped \
+                              ArithmeticOverflow class is the complete diagnostic."
+                )]
+                let lf_record = LineRecord::new(
+                    self.record_start,
+                    self.offset,
+                    separator_end,
+                    SeparatorKind::Lf,
+                )
+                .map_err(|_| SourceLineError::ArithmeticOverflow)?;
+                self.records.push(lf_record);
                 self.record_start = separator_end;
                 self.offset = separator_end;
             }

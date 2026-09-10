@@ -54,5 +54,9 @@ periodically and after landing waves:
    before deletion (same rule as slot removal).
 
 The sweep composes with the per-slot safety rules above rather than replacing them.
+A tree holding unpushed commits whose lane was not explicitly abandoned is salvage
+input, not sweep residue: route it through `$orchestrate-work`'s Salvage revive
+survey — push the WIP to a named salvage PR before treating the slot as removable.
+
 Durable tooling for verified orphan reaping and checkout/capacity integrity is owned
 by issues #11606 and #3957; this skill carries only the guidance.

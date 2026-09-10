@@ -24,8 +24,8 @@
 
 use crate::framework::AdapterDetectionResult;
 use crate::framework_adapters::dancer2::{
-    DANCER2_ADAPTER_ID, DANCER2_DSL_CONTRACT_VERSION, DANCER2_FRAMEWORK_NAME,
-    Dancer2ActivationFacts, Dancer2KeywordState,
+    DANCER2_ADAPTER_ID, DANCER2_FRAMEWORK_NAME, Dancer2ActivationFacts, Dancer2KeywordImportFact,
+    Dancer2KeywordState,
 };
 use crate::route::{
     RouteDeclaration, RouteEffectivePattern, RouteFact, RouteHandler, RouteHandlerContextFact,
@@ -121,6 +121,41 @@ pub struct Dancer2RouteFacts {
     pub parameters: Vec<RouteParameterFact>,
     /// Inline handler-context facts.
     pub handler_contexts: Vec<RouteHandlerContextFact>,
+    /// Which Dancer2 contract minted these facts: bundles from different
+    /// contracts never merge, and the marker keeps the provenance durable
+    /// instead of letting consumers guess from the version alone (#14989).
+    pub contract: RouteFactsContract,
+}
+
+/// Which Dancer2 contract a route-family bundle belongs to (#14989).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RouteFactsContract {
+    /// The registry-backed 1.x contract (production adapter).
+    #[default]
+    OneX,
+    /// The pinned 2.x contract (shadow adapter; comparison-only).
+    TwoX,
+}
+
+/// Keyword-state view the shared route-family minting core needs. Both the
+/// 1.x and the 2.x activation facts implement it, so the core minting
+/// logic exists exactly once (#14989).
+pub trait RouteFamilyKeywordView {
+    /// Whether the activation is exact (anything else mints nothing).
+    fn is_exact(&self) -> bool;
+    /// The adapter identity every minted leaf carries — 2.x facts must
+    /// attribute to the 2.x adapter, never the 1.x one (#15006 review).
+    fn adapter_id(&self) -> crate::framework::AdapterId;
+    fn application_name(&self) -> Option<&str>;
+    fn framework_version(&self) -> Option<&str>;
+    fn source_generation(&self) -> Option<&SourceGeneration>;
+    /// State of one DSL keyword under this activation.
+    fn keyword_state(&self, keyword: &str) -> Option<Dancer2KeywordState>;
+    /// Whether `prefix` was actually imported (composed projections are
+    /// only proven then).
+    fn prefix_keyword_imported(&self) -> bool {
+        self.keyword_state("prefix") == Some(Dancer2KeywordState::Imported)
+    }
 }
 
 /// Normalize one method name from a route method list.
@@ -199,9 +234,8 @@ pub fn dancer2_route_family_facts(
     declarations: &[Dancer2RouteDeclaration],
     prefix_declarations: &[Dancer2PrefixDeclaration],
 ) -> Dancer2RouteFacts {
-    let mut facts = Dancer2RouteFacts::default();
     if !detection.is_detected() || !activation.is_exact() {
-        return facts;
+        return Dancer2RouteFacts::default();
     }
     let Dancer2ActivationFacts { state, keywords, .. } = activation;
     let crate::framework_adapters::dancer2::Dancer2ActivationState::Exact {
@@ -210,9 +244,75 @@ pub fn dancer2_route_family_facts(
         source_generation,
     } = state
     else {
+        return Dancer2RouteFacts::default();
+    };
+    let view = OneXKeywordView { application_name, framework_version, source_generation, keywords };
+    route_family_facts_from_view(
+        detection.is_detected(),
+        &view,
+        package,
+        declarations,
+        prefix_declarations,
+        RouteFactsContract::OneX,
+        activation.dsl_contract_version,
+    )
+}
+
+/// 1.x keyword view over the activation facts.
+struct OneXKeywordView<'a> {
+    application_name: &'a str,
+    framework_version: &'a str,
+    source_generation: &'a SourceGeneration,
+    keywords: &'a [Dancer2KeywordImportFact],
+}
+
+impl RouteFamilyKeywordView for OneXKeywordView<'_> {
+    fn is_exact(&self) -> bool {
+        true
+    }
+    fn adapter_id(&self) -> crate::framework::AdapterId {
+        DANCER2_ADAPTER_ID
+    }
+    fn application_name(&self) -> Option<&str> {
+        Some(self.application_name)
+    }
+    fn framework_version(&self) -> Option<&str> {
+        Some(self.framework_version)
+    }
+    fn source_generation(&self) -> Option<&SourceGeneration> {
+        Some(self.source_generation)
+    }
+    fn keyword_state(&self, keyword: &str) -> Option<Dancer2KeywordState> {
+        self.keywords.iter().find(|fact| fact.keyword == keyword).map(|fact| fact.state)
+    }
+}
+
+/// Shared minting core: keyword states come from the view, so the 1.x and
+/// 2.x contracts run the identical route-family logic (#14989).
+pub(crate) fn route_family_facts_from_view(
+    detected: bool,
+    view: &dyn RouteFamilyKeywordView,
+    package: Option<&str>,
+    declarations: &[Dancer2RouteDeclaration],
+    prefix_declarations: &[Dancer2PrefixDeclaration],
+    contract: RouteFactsContract,
+    dsl_contract_version: &str,
+) -> Dancer2RouteFacts {
+    let mut facts = Dancer2RouteFacts { contract, ..Dancer2RouteFacts::default() };
+    if !detected || !view.is_exact() {
+        return facts;
+    }
+    let Some(application_name) = view.application_name() else {
+        return facts;
+    };
+    let Some(framework_version) = view.framework_version() else {
+        return facts;
+    };
+    let Some(source_generation) = view.source_generation() else {
         return facts;
     };
 
+    let adapter_id = view.adapter_id();
     let mut route_facts = Vec::new();
     let mut parameter_facts = Vec::new();
     let mut handler_context_facts = Vec::new();
@@ -221,18 +321,13 @@ pub fn dancer2_route_family_facts(
     // it) the keyword was never established, so a `prefix` call cannot
     // contribute an exact application prefix and routes composed against it
     // degrade to a boundary instead of retaining the composed value.
-    let prefix_keyword_imported = keywords
-        .iter()
-        .any(|fact| fact.keyword == "prefix" && fact.state == Dancer2KeywordState::Imported);
+    let prefix_keyword_imported = view.prefix_keyword_imported();
     for declaration in declarations {
         if declaration.package.as_deref() != package {
             continue;
         }
         let keyword = declaration.route.keyword.as_str();
-        let Some(keyword_fact) = keywords.iter().find(|fact| fact.keyword == keyword) else {
-            continue;
-        };
-        if keyword_fact.state == Dancer2KeywordState::Excluded {
+        if view.keyword_state(keyword) == Some(Dancer2KeywordState::Excluded) {
             // `!keyword` at the activating import: the route keyword was never
             // imported, so this declaration is not a route of this activation.
             continue;
@@ -252,13 +347,19 @@ pub fn dancer2_route_family_facts(
         } else {
             declaration
         };
-        let route_fact =
-            mint_route_fact(declaration, application_name, framework_version, source_generation);
+        let route_fact = mint_route_fact(
+            declaration,
+            adapter_id,
+            application_name,
+            framework_version,
+            source_generation,
+        );
         // Parameter facts exist only for minted routes: route-local keys of an
         // excluded or foreign-package route are never published.
         for (parameter_index, segment) in declaration.parameters.iter().enumerate() {
             parameter_facts.push(mint_parameter_fact(
                 declaration,
+                adapter_id,
                 segment,
                 parameter_index as u32,
                 application_name,
@@ -276,9 +377,11 @@ pub fn dancer2_route_family_facts(
         {
             handler_context_facts.push(mint_handler_context_fact(
                 declaration,
+                adapter_id,
                 application_name,
                 framework_version,
                 source_generation,
+                dsl_contract_version,
             ));
         }
         route_facts.push(route_fact);
@@ -289,14 +392,12 @@ pub fn dancer2_route_family_facts(
         if prefix_declaration.package.as_deref() != package {
             continue;
         }
-        let Some(keyword_fact) = keywords.iter().find(|fact| fact.keyword == "prefix") else {
-            continue;
-        };
-        if keyword_fact.state == Dancer2KeywordState::Excluded {
+        if view.keyword_state("prefix") == Some(Dancer2KeywordState::Excluded) {
             continue;
         }
         prefix_facts.push(mint_prefix_fact(
             prefix_declaration,
+            adapter_id,
             application_name,
             framework_version,
             source_generation,
@@ -312,6 +413,7 @@ pub fn dancer2_route_family_facts(
 
 fn mint_route_fact(
     declaration: &Dancer2RouteDeclaration,
+    adapter_id: crate::framework::AdapterId,
     application_name: &str,
     framework_version: &str,
     generation: &SourceGeneration,
@@ -361,7 +463,7 @@ fn mint_route_fact(
     RouteFact::new(
         envelope,
         DANCER2_FRAMEWORK_NAME,
-        DANCER2_ADAPTER_ID,
+        adapter_id,
         framework_version,
         application_name,
         declaration.route.clone(),
@@ -370,6 +472,7 @@ fn mint_route_fact(
 
 fn mint_prefix_fact(
     declaration: &Dancer2PrefixDeclaration,
+    adapter_id: crate::framework::AdapterId,
     application_name: &str,
     framework_version: &str,
     generation: &SourceGeneration,
@@ -407,7 +510,7 @@ fn mint_prefix_fact(
     RoutePrefixFact::new(
         envelope,
         DANCER2_FRAMEWORK_NAME,
-        DANCER2_ADAPTER_ID,
+        adapter_id,
         framework_version,
         application_name,
         declaration.prefix.clone(),
@@ -416,6 +519,7 @@ fn mint_prefix_fact(
 
 fn mint_parameter_fact(
     declaration: &Dancer2RouteDeclaration,
+    adapter_id: crate::framework::AdapterId,
     segment: &RouteParameterSegment,
     parameter_index: u32,
     application_name: &str,
@@ -450,7 +554,7 @@ fn mint_parameter_fact(
     RouteParameterFact::new(
         envelope,
         DANCER2_FRAMEWORK_NAME,
-        DANCER2_ADAPTER_ID,
+        adapter_id,
         framework_version,
         application_name,
         declaration.route.declaration_index,
@@ -460,9 +564,11 @@ fn mint_parameter_fact(
 
 fn mint_handler_context_fact(
     declaration: &Dancer2RouteDeclaration,
+    adapter_id: crate::framework::AdapterId,
     application_name: &str,
     framework_version: &str,
     generation: &SourceGeneration,
+    dsl_contract_version: &str,
 ) -> RouteHandlerContextFact {
     let (fact_id, entity_id) = route_handler_context_identity(
         declaration.file_id,
@@ -504,11 +610,11 @@ fn mint_handler_context_fact(
     RouteHandlerContextFact::new(
         envelope,
         DANCER2_FRAMEWORK_NAME,
-        DANCER2_ADAPTER_ID,
+        adapter_id,
         framework_version,
         application_name,
         declaration.route.declaration_index,
-        DANCER2_DSL_CONTRACT_VERSION,
+        dsl_contract_version,
     )
 }
 
@@ -1022,7 +1128,7 @@ mod tests {
         let context = &family.handler_contexts[0];
         assert_eq!(context.envelope.entity_id, Some(route_entity));
         assert_eq!(context.envelope.kind, crate::SemanticFactKind::RouteHandlerContext);
-        assert_eq!(context.dsl_contract_version, DANCER2_DSL_CONTRACT_VERSION);
+        assert_eq!(context.dsl_contract_version, activation.dsl_contract_version);
         assert_eq!(context.status(), crate::SemanticFactStatus::Exact);
 
         // A bounded handler mints no handler context.

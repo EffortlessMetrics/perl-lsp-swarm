@@ -6,7 +6,7 @@
 [![crates.io downloads](https://img.shields.io/crates/d/perl-lsp-rs.svg?label=crates.io%20downloads)](https://crates.io/crates/perl-lsp-rs)
 <!-- perl-lsp:vs-marketplace-installs-badge:start -->
 
-[![VS Marketplace installs](https://img.shields.io/badge/VS%20Marketplace-656%20installs-0078D4)](https://marketplace.visualstudio.com/items?itemName=EffortlessMetrics.perl-lsp-rs)
+[![VS Marketplace Installs (manual)](https://img.shields.io/badge/VS%20Marketplace-681%20installs-0078D4)](https://marketplace.visualstudio.com/items?itemName=EffortlessMetrics.perl-lsp-rs)
 <!-- perl-lsp:vs-marketplace-installs-badge:end -->
 
 [![Open VSX downloads](https://img.shields.io/open-vsx/dt/EffortlessMetrics/perl-lsp-rs?label=Open%20VSX%20downloads)](https://open-vsx.org/extension/EffortlessMetrics/perl-lsp-rs)
@@ -261,6 +261,12 @@ Open the command palette (`Ctrl+Shift+P` / `Cmd+Shift+P`) and search for
 | **Perl: Show Perl Workspace Status**   | Show the current server, workspace, and diagnostic state   |
 | **Perl: Report Issue**                 | Open a pre-filled issue report                             |
 
+Run Health Check reports binary presence separately from language-server runtime
+health. If the configured executable exists but startup or initialization fails,
+the runtime check remains an error. When cleanup cannot be confirmed, restart is
+blocked and the notification directs you to reload the VS Code window before
+trying again; this avoids launching a second server over an unknown process.
+
 ### Editing and refactoring
 
 | Command                            | Description                                 |
@@ -283,7 +289,7 @@ Open the command palette (`Ctrl+Shift+P` / `Cmd+Shift+P`) and search for
 
 | Command                       | Description                                                                                                        |
 | ----------------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| **Perl: Check Syntax**        | Run a `perl -c` syntax check on the active file                                                                    |
+| **Perl: Check Syntax**        | Run PATH `perl -c` on the saved active file (executes compile-phase code; not a native `perllsp --check`)          |
 | **Perl: Run Critic**          | Run the critic over the active file — native by default                                                            |
 | **Perl: Set Critic Severity** | Choose the minimum critic severity to report — `5` reports only the most severe violations, `1` reports everything |
 
@@ -304,6 +310,7 @@ Open the command palette (`Ctrl+Shift+P` / `Cmd+Shift+P`) and search for
 | **Perl: Explain Provider Decision**      | Show why the last provider acted, fell back, or refused                                  |
 | **Perl: Copy Provider Decision Receipt** | Copy a structured local receipt for issue reports                                        |
 | **Perl: Show Workspace Trust Report**    | Show workspace roots, module resolution, index state, support tiers, and boundary policy |
+| **Perl: Show Coexistence Status**        | Explain detected competing Perl tooling providers; advisory only, nothing is changed     |
 | **Perl: Explain This Diagnostic**        | Explain PL701/PL109 diagnostics in the output channel when a receipt is available        |
 | **Perl: Explain Missing Module Lookup**  | Show the current missing-module `@INC` lookup state and setup boundary                   |
 | **Perl: Preview Safe Delete**            | Preview whether symbol deletion is allowed, blocked, or refused before editing           |

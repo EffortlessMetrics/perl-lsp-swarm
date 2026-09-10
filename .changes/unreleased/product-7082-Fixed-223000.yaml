@@ -1,0 +1,25 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: >-
+  Route every single-range formatting request through one exact admitted-range
+  contract shared with the atomic multi-range planner (#7082). Both requested
+  UTF-16 endpoints now map through the same strict source geometry (LF, CRLF
+  one-separator, supported bare CR, non-BMP two code units, terminal separator
+  yielding a final empty line) before any formatter runs, so out-of-document
+  end lines, past-line-end characters, mid-surrogate splits, and reversed
+  ranges refuse as one typed unsafe-range outcome instead of being clamped or
+  executed by a permissive engine validator. Applied range edits are contained
+  against the admitted bytes plus canonical complete-line widening and any
+  escape downgrades the projection to one typed not-proven result with no
+  edits. The legacy line-slicing whitespace fallback is replaced by whitespace
+  options applied strictly inside the admitted interval — character endpoints
+  and end exclusivity are honored, final-newline options act only when the
+  admitted target reaches true EOF, and nothing runs after refusal, failure,
+  stale state, or ambiguous geometry. Single-range and one-element multi-range
+  requests now admit or refuse identical geometry rows.
+time: 2026-08-23T05:30:00Z
+custom:
+  PR: "7082"
+  Slug: one-admitted-range-contract-for-formatting-requests
+  Breaking: "no"

@@ -127,6 +127,25 @@ Do not rewrite their historical observations merely to make the past look consis
 Do not route current work from their fixed stages, label taxonomies, receipt rules,
 permanent coordinators, or branch-refresh examples.
 
+## Retired Rust and Clippy rollout graph
+
+Five old operational queues are superseded and remain available through exact links to
+their retained `main@4dc745fd3513d1a345cd1d6258bb96a13e284ae2` versions:
+
+| Superseded path | Current authority |
+| --- | --- |
+| `docs/development/RUST_1_95_ROLLOUT.md` | `docs/CLIPPY_POLICY.md`; product programme #9850; broader Rust hygiene #10008/#8153 |
+| `docs/development/STRONG_CLIPPY_LINTS_ROLLOUT.md` | `docs/CLIPPY_POLICY.md`; #9850/#11335/#11337/#11404 |
+| `docs/development/RUST_1_95_PROACTIVE_GUARDS.md` | `docs/agents/DEVELOPMENT_METHOD.md`; #9850/#10008/#8153/#3949 |
+| `docs/ci/perl-lsp-rust-1.95-rollout.md` | `docs/CLIPPY_POLICY.md`; #9850 |
+| `docs/project/RAILS_INDEX.md` | `docs/agents/DEVELOPMENT_METHOD.md`; #3949 and issue-owned current work |
+
+The old strong-Clippy document’s #8590 reference is a concrete collision: current #8590
+owns CPANTS/kwalitee oracle work, not the Clippy programme. Its exact historical wording
+remains available from the redirect, but cannot select current work. #9850 is the sole
+product-Clippy controller; #10008 and #8153 keep their distinct broader Rust-hygiene
+scope.
+
 ## Surviving principles
 
 Supersession does not mean every idea in the old graph was rejected. The current method
