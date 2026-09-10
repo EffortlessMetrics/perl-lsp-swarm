@@ -29,7 +29,10 @@ subject (for example, `does not prove the full acceptance criteria` or
 exclusions also retain `Explicitly out of scope: the remaining required work`
 and the corresponding subject-first `is explicitly out of scope` form. Numeric issue
 ownership may precede the subject as `#N's` or follow it as `owned by #N` or `of #N`;
-neighboring-issue attribution still applies before classification. Paired Markdown
+qualified `owner/repo#N` forms retain their repository identity. An explicit subject
+owner must equal the closing relation's repository and issue number; an unrelated
+mention of another issue cannot transfer that ownership. Neighboring-issue
+attribution still applies before classification. Paired Markdown
 underscore emphasis around supported subjects retains the same classification;
 underscores inside identifiers do not create subject phrases.
 Matched Markdown inline-code spans are example/data, not required-work claims;
@@ -38,7 +41,10 @@ those spans still count. Unmatched or escaped backticks do not hide prose.
 
 Paragraphs, Markdown list items, and sentences retain their boundaries. With multiple
 closes, an owner reference retains its soft-wrapped predicate within the same unit;
-separate units and sections cannot borrow that owner. A positive
+separate units and sections cannot borrow that owner.
+Repeated headings also preserve distinct section occurrences. Immediate `not` or
+`never` before `explicitly out of scope` denies that exclusion; it does not suppress
+a separate positive exclusion. A positive
 acceptance statement cannot lend its subject to an unrelated exclusion, including
 within one sentence: `Full acceptance criteria are satisfied and this guard is not
 claimed complete` contains no supported contradiction. Bare component completeness,
