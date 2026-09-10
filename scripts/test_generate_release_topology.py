@@ -19,6 +19,7 @@ from unittest.mock import patch
 
 
 MODULE_PATH = Path(__file__).with_name("generate_release_topology.py")
+sys.path.insert(0, str(MODULE_PATH.parent))
 SPEC = importlib.util.spec_from_file_location("release_topology", MODULE_PATH)
 assert SPEC and SPEC.loader
 MODULE = importlib.util.module_from_spec(SPEC)
@@ -196,6 +197,45 @@ class ReleaseTopologyTests(unittest.TestCase):
             with self.assertRaises(MODULE.TopologyError):
                 MODULE.schema_validate(manifest)
 
+    def test_raw_schema_admission_at_both_manifest_file_boundaries(self):
+        cases = [
+            ('"schema":1.0', True), ('"schema":2.00', True),
+            ('"schema":2e0', True), ('"schema":20e-1', True),
+            ('"schema":0.2e1', True), ('"schema":200.0e-2', True),
+            ('"schema":2.00000000000000000000', True),
+            ('"schema":2e9999999999999999999999999', False),
+            ('"schema":1.0000000000000001', False),
+            ('"schema":0.99999999999999999', False),
+            ('"schema":2.0000000000000001', False),
+            ('"schema":1.99999999999999999', False),
+            ('"schema":true', False), ('"schema":"2"', False),
+            ('"schema":3', False), ('"schema":1,"schema":2', False),
+            ('"schema":1,"sche\\u006da":2', False),
+            ('"decoy":{"schema":3},"sche\\u006da":2e0', True),
+            ('"schema":2,"unrelated":1e9999999999999999999999999', True),
+        ]
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "topology.json"
+            for fields, accepted in cases:
+                raw = ("{" + fields + "}").encode()
+                path.write_bytes(raw)
+                digest = hashlib.sha256(raw).hexdigest()
+                for load in (lambda: MODULE.load_manifest(path), lambda: MODULE.load_frozen_authority(path, digest)[0]):
+                    with self.subTest(fields=fields, load=load):
+                        if accepted:
+                            self.assertEqual(load(), json.loads(raw))
+                            self.assertEqual(path.read_bytes(), raw)
+                        else:
+                            with self.assertRaisesRegex(MODULE.TopologyError, "schema"):
+                                load()
+
+    def test_manifest_reader_preserves_utf8_only_input(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "topology.json"
+            path.write_bytes('{"schema":2}'.encode("utf-16"))
+            with self.assertRaises(MODULE.TopologyError):
+                MODULE.load_manifest(path)
+
     def test_schema_version_rejects_nonintegral_or_unsupported_identities(self):
         with self.valid_manifest_fixture() as (_, manifest, _):
             manifest["schema"] = 1.0
@@ -294,6 +334,13 @@ class ReleaseTopologyTests(unittest.TestCase):
             "inline global env": "env: {PATH: /unsupported-tools}\n" + workflow,
             "commented jobs": workflow.replace("jobs:\n", "jobs: # unsupported layout\n"),
             "inline jobs": workflow.replace("jobs:\n", "jobs: {}\n"),
+            "archive deletion in listing": workflow.replace("run: ls -R artifacts", "run: rm -rf artifacts"),
+            "extra intervening step": workflow.replace(producer, "      - name: Alter archive inputs\n        run: rm -rf artifacts\n\n" + producer),
+            "missing listing": workflow.replace("      - name: Display structure of downloaded files\n        run: ls -R artifacts\n", ""),
+            "changed checkout": workflow.replace("persist-credentials: false", "persist-credentials: true"),
+            "changed toolchain": workflow.replace("toolchain: stable", "toolchain: nightly"),
+            "changed identity download": workflow.replace("pattern: release-build-identity-*", "pattern: other-identity-*"),
+            "reordered prelude": workflow.replace(download, "").replace("      - name: Checkout", download + "      - name: Checkout", 1),
         }
         with self.valid_manifest_fixture(schema_version=2) as (root, manifest, frozen_sha):
             workflow_path = root / ".github/workflows/release.yml"

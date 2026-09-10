@@ -20,6 +20,11 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
+if __package__:
+    from .release_topology_json import load_topology_json
+else:
+    from release_topology_json import load_topology_json
+
 
 SCHEMA = 1
 SCHEMA_RELATIVE_PATH = "schemas/release_topology.v1.schema.json"
@@ -331,18 +336,40 @@ def checksum_candidate_steps(release_text: str) -> list[str]:
     step_end = next((index for index in range(step_start, len(candidate)) if candidate[index].strip() and len(candidate[index]) - len(candidate[index].lstrip()) <= 4), len(candidate))
     steps = candidate[step_start:step_end]
     producer_starts = [index for index, line in enumerate(steps) if line == "      - name: Generate consolidated SHA256SUMS"]
-    download_starts = [index for index, line in enumerate(steps) if line == "      - name: Download release archive artifacts"]
-    if len(producer_starts) != 1 or len(download_starts) != 1 or download_starts[0] >= producer_starts[0]:
-        raise TopologyError("checksum producer requires one earlier archive download in candidate steps")
-    download_start = download_starts[0]
-    download_end = next((index for index in range(download_start + 1, len(steps)) if steps[index].strip() and len(steps[index]) - len(steps[index].lstrip()) <= 6), len(steps))
-    download = [line for line in steps[download_start + 1:download_end] if line.strip()]
-    if (
-        len(download) != 4
-        or re.fullmatch(r"        uses: actions/download-artifact@[0-9a-f]{40}(?: +#.*)?", download[0]) is None
-        or download[1:] != ["        with:", "          pattern: perllsp-*", "          path: artifacts"]
-    ):
-        raise TopologyError("checksum producer archive download inputs or execution shape are not recognized")
+    if len(producer_starts) != 1:
+        raise TopologyError("checksum producer requires exactly one candidate step")
+    # This complete ordered prelude owns the producer's inputs and environment.
+    # Any extra or changed command must be reviewed before v2 can describe it.
+    expected_prefix = '''      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # stable (master)
+        with:
+          toolchain: stable
+
+      - name: Download release archive artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: perllsp-*
+          path: artifacts
+
+      - name: Download exact build identity evidence
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: release-build-identity-*
+          path: candidate/evidence
+
+      - name: Display structure of downloaded files
+        run: ls -R artifacts
+
+'''
+    if [line for line in steps[:producer_starts[0]] if line.strip()] != [
+        line for line in expected_prefix.splitlines() if line.strip()
+    ]:
+        raise TopologyError("checksum producer candidate prefix is not recognized")
     return steps
 
 
@@ -539,8 +566,8 @@ def ensure_committed_topology_inputs(root: Path, paths: list[str]) -> None:
 
 def load_manifest(path: Path) -> dict[str, Any]:
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
+        value = load_topology_json(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
         raise TopologyError(f"cannot read frozen topology {path}: {error}") from error
     if not isinstance(value, dict):
         raise TopologyError("frozen topology must be a JSON object")
@@ -564,8 +591,8 @@ def load_frozen_authority(
             "frozen topology digest differs from --frozen-topology-sha256"
         )
     try:
-        value = json.loads(raw)
-    except json.JSONDecodeError as error:
+        value = load_topology_json(raw)
+    except ValueError as error:
         raise TopologyError(f"cannot parse frozen topology {path}: {error}") from error
     if not isinstance(value, dict):
         raise TopologyError("frozen topology must be a JSON object")

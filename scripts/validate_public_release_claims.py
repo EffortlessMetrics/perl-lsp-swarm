@@ -11,6 +11,11 @@ import sys
 from pathlib import Path
 from typing import Any
 
+if __package__:
+    from .release_topology_json import load_topology_json
+else:
+    from release_topology_json import load_topology_json
+
 
 SCHEMA_VERSION = "public_release_claims.v1"
 SHA40 = re.compile(r"^[0-9a-f]{40}$")
@@ -105,7 +110,7 @@ def validate_topology_binding(catalog: dict[str, Any], topology_path: Path) -> N
     expected_digest = catalog["topology_digest"].removeprefix("sha256:")
     _require(actual_digest == expected_digest, "topology_digest does not match topology bytes")
     try:
-        topology = json.loads(topology_bytes)
+        topology = load_topology_json(topology_bytes)
     except json.JSONDecodeError as error:
         raise ValueError(f"parsing topology: {error}") from error
     _require(isinstance(topology, dict), "topology must be an object")

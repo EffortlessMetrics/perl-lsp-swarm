@@ -8,6 +8,9 @@
 
 #![allow(clippy::print_stdout)]
 
+#[path = "../src/release_topology_json.rs"]
+mod release_topology_json;
+
 use clap::Parser;
 use color_eyre::eyre::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
@@ -330,7 +333,7 @@ fn verify_topology_binding(receipt: &Receipt, path: &Path) -> Result<()> {
             receipt.candidate.release_topology_sha256
         );
     }
-    let topology: serde_json::Value = serde_json::from_slice(&bytes)
+    let topology = release_topology_json::load_topology_json(&bytes)
         .with_context(|| format!("parsing release topology {}", path.display()))?;
     let schema_version = topology.get("schema").and_then(serde_json::Value::as_f64);
     if ![Some(1.0), Some(2.0)].contains(&schema_version) || topology["track"] != "public-beta" {
@@ -739,6 +742,45 @@ mod tests {
                 if verify_topology_binding(&receipt, &path).is_ok() {
                     bail!("schema {version} accepted a different frozen product");
                 }
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn topology_file_schema_is_exact_before_float_decoding() -> Result<()> {
+        let mut receipt = fixture(include_str!(
+            "../../fixtures/experience/install_transition/clean_install.json"
+        ))?;
+        let directory = tempdir()?;
+        let path = directory.path().join("topology.json");
+        let original = serde_json::to_string(&topology_for(&receipt))?;
+        for (fields, accepted) in [
+            (r#""schema":1.0"#, true),
+            (r#""schema":2.00"#, true),
+            (r#""schema":2e0"#, true),
+            (r#""schema":20e-1"#, true),
+            (r#""schema":0.2e1"#, true),
+            (r#""schema":200.0e-2"#, true),
+            (r#""schema":2.00000000000000000000000"#, true),
+            (r#""schema":1.0000000000000001"#, false),
+            (r#""schema":0.99999999999999999"#, false),
+            (r#""schema":2.0000000000000001"#, false),
+            (r#""schema":1.99999999999999999"#, false),
+            (r#""schema":2e9999999999999999999999999"#, false),
+            (r#""schema":true"#, false),
+            (r#""schema":"2""#, false),
+            (r#""schema":3"#, false),
+            (r#""schema":1,"schema":2"#, false),
+            (r#""schema":1,"sche\u006da":2"#, false),
+            (r#""decoy":{"schema":3},"sche\u006da":2e0"#, true),
+        ] {
+            let raw = original.replace(r#""schema":1"#, fields);
+            fs::write(&path, raw.as_bytes())?;
+            receipt.candidate.release_topology_sha256 = sha256_bytes(raw.as_bytes());
+            let result = verify_topology_binding(&receipt, &path);
+            if result.is_ok() != accepted {
+                bail!("{fields}: expected accepted={accepted}, observed {result:?}");
             }
         }
         Ok(())

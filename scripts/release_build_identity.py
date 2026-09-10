@@ -27,6 +27,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+if __package__:
+    from .release_topology_json import load_topology_json
+else:
+    from release_topology_json import load_topology_json
+
 INPUT_SCHEMA = "perl_lsp.release_build_identity.v1"
 RECEIPT_SCHEMA = "perl_lsp.release_build_identity_receipt.v1"
 PACKET_SCHEMA = "perl_lsp.binary_identity.v1"
@@ -593,7 +598,10 @@ def prepare_identity(args: argparse.Namespace) -> ReleaseBuildIdentity:
             "declared source revision differs from the exact checkout"
         )
     tree_digest = canonical_tree_digest(root, observed_revision)
-    topology = load_json_object(topology_path, "release topology")
+    try:
+        topology = load_topology_json(topology_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        raise BuildIdentityError(f"release topology schema or JSON is invalid: {error}") from error
     validate_topology(
         topology,
         release_version=args.release_version,

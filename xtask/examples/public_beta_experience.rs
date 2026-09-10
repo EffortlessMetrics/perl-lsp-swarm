@@ -7,6 +7,9 @@
 
 #![allow(clippy::print_stdout)]
 
+#[path = "../src/release_topology_json.rs"]
+mod release_topology_json;
+
 use clap::Parser;
 use color_eyre::eyre::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
@@ -562,7 +565,12 @@ fn validate_source_receipt(
     if digest != *source_sha256 {
         bail!("child_receipts.{name} source digest does not match artifact bytes");
     }
-    let source: serde_json::Value = serde_json::from_slice(&bytes)
+    let source =
+        if matches!(child.schema_version.as_str(), "release_topology.v1" | "release_topology.v2") {
+            release_topology_json::load_topology_json(&bytes)
+        } else {
+            serde_json::from_slice(&bytes).map_err(Into::into)
+        }
         .with_context(|| format!("parsing source receipt {name}: {}", path.display()))?;
     match child.schema_version.as_str() {
         "installed_acceptance.v1" => {
@@ -899,18 +907,31 @@ mod tests {
         let fixture_root =
             Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixtures/experience/public_beta");
         for (envelope, version, accepted) in [
-            ("release_topology.v1", serde_json::json!(1), true),
-            ("release_topology.v1", serde_json::json!(1.0), true),
-            ("release_topology.v2", serde_json::json!(2), true),
-            ("release_topology.v2", serde_json::json!(2.0), true),
-            ("release_topology.v1", serde_json::json!(2), false),
-            ("release_topology.v2", serde_json::json!(1), false),
-            ("release_topology.v2", serde_json::json!(true), false),
-            ("release_topology.v2", serde_json::json!("2"), false),
-            ("release_topology.v2", serde_json::json!(1.5), false),
-            ("release_topology.v2", serde_json::json!(2.5), false),
-            ("release_topology.v2", serde_json::Value::Null, false),
-            ("release_topology.v3", serde_json::json!(3), false),
+            ("release_topology.v1", "1", true),
+            ("release_topology.v1", "1.0", true),
+            ("release_topology.v2", "2", true),
+            ("release_topology.v2", "2.00", true),
+            ("release_topology.v2", "2e0", true),
+            ("release_topology.v2", "20e-1", true),
+            ("release_topology.v2", "0.2e1", true),
+            ("release_topology.v2", "200.0e-2", true),
+            ("release_topology.v2", "2.000000000000000000000", true),
+            ("release_topology.v1", "2", false),
+            ("release_topology.v2", "1", false),
+            ("release_topology.v1", "1.0000000000000001", false),
+            ("release_topology.v1", "0.99999999999999999", false),
+            ("release_topology.v2", "2.0000000000000001", false),
+            ("release_topology.v2", "1.99999999999999999", false),
+            ("release_topology.v2", "2e9999999999999999999999999", false),
+            ("release_topology.v2", "true", false),
+            ("release_topology.v2", r#""2""#, false),
+            ("release_topology.v2", "1.5", false),
+            ("release_topology.v2", "2.5", false),
+            ("release_topology.v2", "null", false),
+            ("release_topology.v3", "3", false),
+            ("release_topology.v2", r#"1,"schema":2"#, false),
+            ("release_topology.v2", r#"1,"sche\u006da":2"#, false),
+            ("release_topology.v2", r#"2e0,"decoy":{"schema":3}"#, true),
         ] {
             let mut receipt =
                 fixture(include_str!("../../fixtures/experience/public_beta/ready.json"))?;
@@ -925,10 +946,12 @@ mod tests {
                 fs::copy(fixture_root.join(&child.artifact_path), target)?;
             }
             let source = serde_json::json!({
-                "schema": version,
+                "schema": 2,
                 "frozen_product_sha": receipt.candidate.frozen_product_sha,
             });
-            let source_bytes = serde_json::to_vec(&source)?;
+            let source_bytes = serde_json::to_string(&source)?
+                .replace(r#""schema":2"#, &format!(r#""schema":{version}"#))
+                .into_bytes();
             let source_digest = sha256_hex(&source_bytes);
             fs::write(directory.path().join("topology-source.json"), &source_bytes)?;
             let child = &mut receipt.child_receipts.release_topology;
