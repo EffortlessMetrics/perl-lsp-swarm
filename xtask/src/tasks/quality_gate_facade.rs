@@ -273,11 +273,7 @@ fn candidate_exception_is_structurally_valid(exception: &TomlTable) -> bool {
             .is_some_and(|value| !value.trim().is_empty())
     });
     let lifecycle_dates_are_valid = ["created", "review_after", "expires"].iter().all(|field| {
-        exception
-            .get(*field)
-            .and_then(TomlValue::as_str)
-            .and_then(parse_date)
-            .is_some()
+        exception.get(*field).and_then(TomlValue::as_str).and_then(parse_date).is_some()
     });
 
     required_fields_are_present
