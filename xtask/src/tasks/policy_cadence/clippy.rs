@@ -87,7 +87,10 @@ mod tests {
         write_fixture(root.path(), 2, "deny", "")?;
 
         let error = obligations(root.path()).expect_err("empty debt reason must be rejected");
-        assert!(format!("{error:#}").contains("reason must be non-empty"), "{error:#}");
+        assert!(
+            format!("{error:#}").contains("must have a non-empty reason"),
+            "{error:#}"
+        );
         Ok(())
     }
 
@@ -97,14 +100,25 @@ mod tests {
         write_fixture(root.path(), 2, "allow", "fixture debt")?;
 
         let error = obligations(root.path()).expect_err("unsupported debt level must be rejected");
-        assert!(format!("{error:#}").contains("unsupported level allow"), "{error:#}");
+        assert!(
+            format!("{error:#}").contains("unsupported level allow"),
+            "{error:#}"
+        );
         Ok(())
     }
 
-    fn write_fixture(root: &Path, debt_schema: u64, debt_level: &str, debt_reason: &str) -> Result<()> {
+    fn write_fixture(
+        root: &Path,
+        debt_schema: u64,
+        debt_level: &str,
+        debt_reason: &str,
+    ) -> Result<()> {
         let policy = root.join("policy");
         fs::create_dir_all(policy.join("clippy-lints.d"))?;
-        fs::write(root.join("Cargo.toml"), "[package]\nname = \"fixture\"\nversion = \"0.0.0\"\n")?;
+        fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname = \"fixture\"\nversion = \"0.0.0\"\n",
+        )?;
         fs::write(
             policy.join("clippy-lints.toml"),
             r##"schema = 2
