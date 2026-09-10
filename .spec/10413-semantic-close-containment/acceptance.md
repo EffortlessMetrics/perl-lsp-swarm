@@ -18,6 +18,25 @@ A terminal relation is rejected when the same issue's stable boundary says Phase
 
 A terminal relation is rejected when the stable claim boundary explicitly says full/complete/remaining issue work is not proved, established, or claimed.
 
+CP00-003 supports explicit subject templates, not arbitrary scope-word overlap:
+`full acceptance criteria`, `full acceptance`, `full issue work`, `complete issue work`,
+`remaining required work`, `complete remaining work`, `remaining work`, and
+`complete remaining call-site cohort`. An exclusion must directly precede that
+subject (for example, `does not prove the full acceptance criteria` or
+`Not claimed: the remaining required work`) or follow it with `is`/`are`/`remains`
+(for example, `full acceptance criteria are not established`). Numeric issue
+ownership may precede the subject as `#N's` or follow it as `owned by #N` or `of #N`;
+neighboring-issue attribution still applies before classification. Paired Markdown
+underscore emphasis around supported subjects retains the same classification;
+underscores inside identifiers do not create subject phrases.
+
+Paragraphs, Markdown list items, and sentences retain their boundaries. A positive
+acceptance statement cannot lend its subject to an unrelated exclusion, including
+within one sentence: `Full acceptance criteria are satisfied and this guard is not
+claimed complete` contains no supported contradiction. Bare component completeness,
+`every`, or `public` disclaimers are insufficient. Unsupported or ambiguous prose
+remains `PASS_NO_HIGH_CONFIDENCE_CONTRADICTION`, never proof of semantic completion.
+
 ### CP00-004 — remaining work names the same issue
 
 A terminal relation is rejected when `Remaining work` or a recognized stable remaining-work heading points to the same issue.
