@@ -40,7 +40,10 @@ fn candidate_verdict_is_invariant_across_review_and_expiry_dates() -> TestResult
         patch_gate(&root, &coverage, &policy, &receipt, &summary)?.assert().success();
 
         let payload: Value = serde_json::from_str(&fs::read_to_string(&receipt)?)?;
-        assert_eq!(payload.pointer("/decision").and_then(Value::as_str), Some("pass"));
+        assert_eq!(
+            payload.pointer("/decision").and_then(Value::as_str),
+            Some("pass")
+        );
         assert_eq!(
             payload
                 .pointer("/temporary_exceptions/active_count")
@@ -128,7 +131,10 @@ fn malformed_lifecycle_date_still_fails_structural_validation() -> TestResult {
     patch_gate(&root, &coverage, &policy, &receipt, &summary)?.assert().failure();
 
     let payload: Value = serde_json::from_str(&fs::read_to_string(&receipt)?)?;
-    assert_eq!(payload.pointer("/decision").and_then(Value::as_str), Some("fail"));
+    assert_eq!(
+        payload.pointer("/decision").and_then(Value::as_str),
+        Some("fail")
+    );
     assert!(
         payload
             .get("next_actions")
@@ -193,7 +199,10 @@ expires = "{expires}"
 }
 
 fn current_head(root: &Path) -> TestResult<String> {
-    let output = StdCommand::new("git").args(["rev-parse", "HEAD"]).current_dir(root).output()?;
+    let output = StdCommand::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(root)
+        .output()?;
     if !output.status.success() {
         return Err(format!("git rev-parse HEAD failed with {}", output.status).into());
     }
