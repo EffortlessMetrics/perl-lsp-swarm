@@ -43,37 +43,24 @@ fn candidate_verdict_is_invariant_across_review_and_expiry_dates() -> TestResult
         let summary = dir.path().join(format!("summary-{case}.md"));
         fs::write(&policy, policy_text(review_after, expires))?;
 
-        patch_gate(&root, &coverage, &policy, &receipt, &summary)?
-            .assert()
-            .success();
+        patch_gate(&root, &coverage, &policy, &receipt, &summary)?.assert().success();
 
         let payload: Value = serde_json::from_str(&fs::read_to_string(&receipt)?)?;
+        assert_eq!(payload.pointer("/decision").and_then(Value::as_str), Some("pass"));
         assert_eq!(
-            payload.pointer("/decision").and_then(Value::as_str),
-            Some("pass")
-        );
-        assert_eq!(
-            payload
-                .pointer("/temporary_exceptions/active_count")
-                .and_then(Value::as_u64),
+            payload.pointer("/temporary_exceptions/active_count").and_then(Value::as_u64),
             Some(1)
         );
         assert_eq!(
-            payload
-                .pointer("/temporary_exceptions/active/0/review_after")
-                .and_then(Value::as_str),
+            payload.pointer("/temporary_exceptions/active/0/review_after").and_then(Value::as_str),
             Some(review_after.as_str())
         );
         assert_eq!(
-            payload
-                .pointer("/temporary_exceptions/active/0/expires")
-                .and_then(Value::as_str),
+            payload.pointer("/temporary_exceptions/active/0/expires").and_then(Value::as_str),
             Some(expires.as_str())
         );
         assert_eq!(
-            payload
-                .pointer("/temporary_exceptions/lifecycle_authority")
-                .and_then(Value::as_str),
+            payload.pointer("/temporary_exceptions/lifecycle_authority").and_then(Value::as_str),
             Some("policy_cadence")
         );
         assert_eq!(
@@ -135,26 +122,19 @@ fn missing_policy_still_emits_fail_closed_artifacts() -> TestResult {
         }),
     )?;
 
-    patch_gate(&root, &coverage, &policy, &receipt, &summary)?
-        .assert()
-        .failure();
+    patch_gate(&root, &coverage, &policy, &receipt, &summary)?.assert().failure();
 
     let payload: Value = serde_json::from_str(&fs::read_to_string(&receipt)?)?;
     assert_eq!(
-        payload
-            .pointer("/temporary_exceptions/status")
-            .and_then(Value::as_str),
+        payload.pointer("/temporary_exceptions/status").and_then(Value::as_str),
         Some("missing")
     );
-    assert!(
-        payload
-            .get("next_actions")
-            .and_then(Value::as_array)
-            .is_some_and(|actions| actions.iter().any(|action| {
-                action.get("kind").and_then(Value::as_str)
-                    == Some("quality_exception_policy_not_current")
-            }))
-    );
+    assert!(payload.get("next_actions").and_then(Value::as_array).is_some_and(|actions| {
+        actions.iter().any(|action| {
+            action.get("kind").and_then(Value::as_str)
+                == Some("quality_exception_policy_not_current")
+        })
+    }));
     assert!(fs::read_to_string(summary)?.contains("quality_exception_policy_not_current"));
     Ok(())
 }
@@ -184,15 +164,11 @@ fn unsupported_due_review_still_emits_fail_closed_artifacts() -> TestResult {
             .replace("due_review = \"fail\"", "due_review = \"error\""),
     )?;
 
-    patch_gate(&root, &coverage, &policy, &receipt, &summary)?
-        .assert()
-        .failure();
+    patch_gate(&root, &coverage, &policy, &receipt, &summary)?.assert().failure();
 
     let payload: Value = serde_json::from_str(&fs::read_to_string(&receipt)?)?;
     assert_eq!(
-        payload
-            .pointer("/temporary_exceptions/validation_error")
-            .and_then(Value::as_str),
+        payload.pointer("/temporary_exceptions/validation_error").and_then(Value::as_str),
         Some("quality exception due_review must be warn or fail, found error")
     );
     let action = payload
@@ -205,10 +181,7 @@ fn unsupported_due_review_still_emits_fail_closed_artifacts() -> TestResult {
             })
         })
         .ok_or("missing quality_exception_policy_not_current action")?;
-    assert_eq!(
-        action.get("reason").and_then(Value::as_str),
-        Some("invalid_due_review")
-    );
+    assert_eq!(action.get("reason").and_then(Value::as_str), Some("invalid_due_review"));
     assert!(
         fs::read_to_string(summary)?
             .contains("quality exception due_review must be warn or fail, found error")
@@ -237,23 +210,15 @@ fn malformed_lifecycle_date_still_fails_structural_validation() -> TestResult {
     )?;
     fs::write(&policy, policy_text("2026-09-10", "not-a-date"))?;
 
-    patch_gate(&root, &coverage, &policy, &receipt, &summary)?
-        .assert()
-        .failure();
+    patch_gate(&root, &coverage, &policy, &receipt, &summary)?.assert().failure();
 
     let payload: Value = serde_json::from_str(&fs::read_to_string(&receipt)?)?;
-    assert_eq!(
-        payload.pointer("/decision").and_then(Value::as_str),
-        Some("fail")
-    );
-    assert!(
-        payload
-            .get("next_actions")
-            .and_then(Value::as_array)
-            .is_some_and(|actions| actions.iter().any(|action| {
-                action.get("kind").and_then(Value::as_str) == Some("quality_exception_invalid")
-            }))
-    );
+    assert_eq!(payload.pointer("/decision").and_then(Value::as_str), Some("fail"));
+    assert!(payload.get("next_actions").and_then(Value::as_array).is_some_and(|actions| {
+        actions.iter().any(|action| {
+            action.get("kind").and_then(Value::as_str) == Some("quality_exception_invalid")
+        })
+    }));
     Ok(())
 }
 
@@ -278,31 +243,22 @@ fn rejected_duplicate_id_row_cannot_corrupt_active_lifecycle_dates() -> TestResu
     )?;
     fs::write(&policy, malformed_created_duplicate_policy())?;
 
-    patch_gate(&root, &coverage, &policy, &receipt, &summary)?
-        .assert()
-        .failure();
+    patch_gate(&root, &coverage, &policy, &receipt, &summary)?.assert().failure();
 
     let payload: Value = serde_json::from_str(&fs::read_to_string(&receipt)?)?;
     assert_eq!(
-        payload
-            .pointer("/temporary_exceptions/active/0/review_after")
-            .and_then(Value::as_str),
+        payload.pointer("/temporary_exceptions/active/0/review_after").and_then(Value::as_str),
         Some("2026-10-16")
     );
     assert_eq!(
-        payload
-            .pointer("/temporary_exceptions/active/0/expires")
-            .and_then(Value::as_str),
+        payload.pointer("/temporary_exceptions/active/0/expires").and_then(Value::as_str),
         Some("2026-10-30")
     );
-    assert!(
-        payload
-            .get("next_actions")
-            .and_then(Value::as_array)
-            .is_some_and(|actions| actions.iter().any(|action| {
-                action.get("kind").and_then(Value::as_str) == Some("quality_exception_invalid")
-            }))
-    );
+    assert!(payload.get("next_actions").and_then(Value::as_array).is_some_and(|actions| {
+        actions.iter().any(|action| {
+            action.get("kind").and_then(Value::as_str) == Some("quality_exception_invalid")
+        })
+    }));
     Ok(())
 }
 
@@ -400,10 +356,7 @@ expires = "2026-10-30"
 }
 
 fn current_head(root: &Path) -> TestResult<String> {
-    let output = StdCommand::new("git")
-        .args(["rev-parse", "HEAD"])
-        .current_dir(root)
-        .output()?;
+    let output = StdCommand::new("git").args(["rev-parse", "HEAD"]).current_dir(root).output()?;
     if !output.status.success() {
         return Err(format!("git rev-parse HEAD failed with {}", output.status).into());
     }
