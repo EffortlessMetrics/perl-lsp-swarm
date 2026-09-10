@@ -57,3 +57,9 @@ Publication requires hard-link support between the staging directory and its out
 filesystem. A destination collision during publication fails without replacing the
 competing file; if hard-linking is unsupported, the adapter fails closed rather than
 falling back to overwrite-based publication.
+
+During an adapter invocation, other processes may create competing destination
+files but must not remove or replace existing output entries or their parent
+directories. Rollback relies on those paths retaining their identity until
+completion. Protection against concurrent replacement is separate work under
+#15258; the creation-collision guarantee does not establish that protection.
