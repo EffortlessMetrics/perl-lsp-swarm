@@ -32,7 +32,10 @@ ownership may precede the subject as `#N's` or follow it as `owned by #N` or `of
 qualified `owner/repo#N` forms retain their repository identity. An explicit subject
 owner must equal the closing relation's repository and issue number; an unrelated
 mention of another issue cannot transfer that ownership. Neighboring-issue
-attribution still applies before classification. One or two paired Markdown
+attribution uses exact `#N`, `owner/repo#N`, and GitHub `/issues/N` URL identities,
+not numeric or repository-name prefixes. Ordinary possessives such as `This PR's`
+do not declare an issue owner; an issue-looking owner still requires valid repository
+and decimal issue-number syntax. One or two paired Markdown
 asterisks or underscores around a complete supported subject or exclusion phrase
 retain the same classification, including exact labels such as `**Not claimed:**`.
 Unmatched, escaped, and intraword delimiters remain literal; removing punctuation

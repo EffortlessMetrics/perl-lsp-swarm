@@ -1498,8 +1498,10 @@ fn required_work_exclusion(text: &str, owner_context: Option<(&IssueKey, &str)>)
 fn strip_issue_owner_suffix(text: &str) -> (&str, Option<&str>) {
     let (before, owner) = text.rsplit_once(' ').unwrap_or(("", text));
     match owner.strip_suffix("'s") {
-        Some(owner) => (before, Some(owner)),
-        None => (text, None),
+        // Issue-looking tokens still pass the strict identity parser below;
+        // malformed owners are refused, never reinterpreted as ordinary prose.
+        Some(owner) if owner.contains('#') => (before, Some(owner)),
+        _ => (text, None),
     }
 }
 
@@ -1582,17 +1584,22 @@ fn strip_issue_owner_prefix(text: &str) -> (&str, Option<&str>) {
 }
 
 fn subject_owner_matches(text: &str, context: Option<(&IssueKey, &str)>) -> bool {
-    let Some((repository, number)) = text.rsplit_once('#') else { return false };
+    let current_repository = context.map_or("example/repository", |(_, repository)| repository);
+    let Some(owner) = parse_issue_reference(text, current_repository) else { return false };
+    context.is_none_or(|(key, _)| owner == *key)
+}
+
+fn parse_issue_reference(text: &str, current_repository: &str) -> Option<IssueKey> {
+    let (repository, number) = text.rsplit_once('#')?;
     if number.is_empty() || !number.bytes().all(|byte| byte.is_ascii_digit()) {
-        return false;
+        return None;
     }
-    let Ok(number) = number.parse::<u64>() else { return false };
+    let number = number.parse::<u64>().ok()?;
     if number == 0 {
-        return false;
+        return None;
     }
-    let Some((key, current_repository)) = context else { return true };
     let repository = if repository.is_empty() { current_repository } else { repository };
-    canonical_repository(repository).is_ok_and(|repository| IssueKey { repository, number } == *key)
+    Some(IssueKey { repository: canonical_repository(repository).ok()?, number })
 }
 
 fn contains_explicit_exclusion(text: &str) -> bool {
@@ -1679,8 +1686,14 @@ fn exclusion_text_attributable_to_closed_issue(
 ) -> String {
     attribution_units(text)
         .into_iter()
-        .filter(|unit| relation_count == 1 || references_issue(unit, key, current_repository))
-        .filter(|unit| !foreign_issue_disclaimer(unit, key, current_repository))
+        .filter(|unit| {
+            let references = exact_issue_references(unit, current_repository);
+            if references.is_empty() {
+                relation_count == 1 && !mentions_an_issue_subject(unit)
+            } else {
+                references.iter().any(|reference| reference == key)
+            }
+        })
         .collect::<Vec<_>>()
         .join("\n\n")
 }
@@ -1790,8 +1803,39 @@ fn backtick_is_escaped(text: &str, index: usize) -> bool {
     backslashes % 2 == 1
 }
 
-fn foreign_issue_disclaimer(text: &str, key: &IssueKey, current_repository: &str) -> bool {
-    mentions_an_issue_subject(text) && !references_issue(text, key, current_repository)
+fn exact_issue_references(text: &str, current_repository: &str) -> Vec<IssueKey> {
+    let lower = text.to_ascii_lowercase();
+    let mut references: Vec<IssueKey> = lower
+        .split(|character: char| {
+            !character.is_alphanumeric() && !matches!(character, '_' | '-' | '.' | '/' | '#')
+        })
+        .filter_map(|token| parse_issue_reference(token.trim_end_matches('.'), current_repository))
+        .collect();
+    for (start, _) in lower.match_indices("https://github.com/") {
+        if lower.get(..start).and_then(|prefix| prefix.chars().next_back()).is_some_and(
+            |character| {
+                character.is_alphanumeric()
+                    || matches!(character, '_' | '-' | '.' | '/' | ':' | '#' | '?')
+            },
+        ) {
+            continue;
+        }
+        let Some(tail) = lower.get(start + "https://github.com/".len()..) else { continue };
+        let path = tail
+            .split(|character: char| {
+                !character.is_alphanumeric() && !matches!(character, '_' | '-' | '.' | '/')
+            })
+            .next()
+            .unwrap_or_default()
+            .trim_end_matches('.');
+        let Some((repository, number)) = path.split_once("/issues/") else { continue };
+        if let Some(reference) =
+            parse_issue_reference(&format!("{repository}#{number}"), current_repository)
+        {
+            references.push(reference);
+        }
+    }
+    references
 }
 
 fn mentions_an_issue_subject(text: &str) -> bool {
@@ -2464,6 +2508,95 @@ mod tests {
             "The public constructor remains unchanged and installed proof is required.",
             "installed"
         ));
+    }
+
+    #[test]
+    fn explicit_attribution_uses_exact_reference_identity_and_real_issue_owners() -> Result<()> {
+        let local = "effortlessmetrics/perl-lsp-swarm";
+        let multi =
+            "Closes #10\nCloses #11\nCloses #100\nCloses other/repo#10\nCloses other/repo#100";
+        let mut mismatches = Vec::new();
+        for (boundary, closes, owner) in [
+            (
+                "This PR's full acceptance criteria are not established.",
+                "Closes #10",
+                Some((local, 10)),
+            ),
+            (
+                "#11's full acceptance criteria are not established; see #10.",
+                multi,
+                Some((local, 11)),
+            ),
+            (
+                "For other/repo#10, full acceptance criteria are not established.",
+                multi,
+                Some(("other/repo", 10)),
+            ),
+            (
+                "For other/repo#100, full acceptance criteria are not established.",
+                multi,
+                Some(("other/repo", 100)),
+            ),
+            ("For #10, full acceptance criteria are not established.", multi, Some((local, 10))),
+            ("For #100, full acceptance criteria are not established.", multi, Some((local, 100))),
+            (
+                "For https://github.com/other/repo/issues/10, full acceptance criteria are not established.",
+                multi,
+                Some(("other/repo", 10)),
+            ),
+            (
+                "For https://github.com/other/repo/issues/100, full acceptance criteria are not established.",
+                multi,
+                Some(("other/repo", 100)),
+            ),
+            ("For xother/repo#10, full acceptance criteria are not established.", multi, None),
+            ("For other/repo#100x, full acceptance criteria are not established.", multi, None),
+            (
+                "For xhttps://github.com/other/repo/issues/10, full acceptance criteria are not established.",
+                multi,
+                None,
+            ),
+            (
+                "For https://example.test/https://github.com/other/repo/issues/10, full acceptance criteria are not established.",
+                multi,
+                None,
+            ),
+            ("not-a-repo#11's full acceptance criteria are not established; see #10.", multi, None),
+        ] {
+            let pull = PullRequestSubject {
+                repository: local.into(),
+                number: 990108,
+                title: "fix: exact attribution controls".into(),
+                body: format!("## Claim Boundary\n{boundary}\n\n{closes}"),
+            };
+            let report = evaluate(&pull, |key| {
+                IssueEvidence::Available(IssueSubject {
+                    number: key.number,
+                    title: "Complete the named change".into(),
+                    body: "## Acceptance\nThe named change is established.".into(),
+                })
+            })?;
+            if report.rows.len() != closes.lines().count() {
+                bail!("missing relation row");
+            }
+            for row in report.rows {
+                let expected = if owner == Some((row.repository.as_str(), row.issue_number)) {
+                    ResultCode::FailExplicitUnprovenRequiredWork
+                } else {
+                    ResultCode::PassNoHighConfidenceContradiction
+                };
+                if row.code != expected {
+                    mismatches.push(format!(
+                        "{boundary}: {}#{} expected {expected:?}, observed {:?}",
+                        row.repository, row.issue_number, row.code
+                    ));
+                }
+            }
+        }
+        if !mismatches.is_empty() {
+            bail!("exact attribution mismatches: {mismatches:?}");
+        }
+        Ok(())
     }
 
     #[test]
