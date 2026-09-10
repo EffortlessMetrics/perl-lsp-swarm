@@ -3211,3 +3211,47 @@ created = "2026-09-10"
 review_after = "2026-09-17"
 expires = "2026-09-30"
 removal_criteria = "Remove when ripr#1429 traces integration-test coverage into module owners; narrow immediately if a future receipt reports an executable seam here outside the listed classes."
+# PR #13555 shutdown-harness client seams: analyzer-untraceable in-module
+# coverage plus declaration/static-limitation probes, with two documented
+# server-fault arms. Hosted RIPR run 34452194082 (evaluated merge
+# 34024130 = e3137fe1 into 26bef7645a) reported 25 new gaps on
+# crates/perl-lsp-ux-tests/src/client.rs.
+#
+# Evidence breakdown from ripr/pr/raw-check.json probe findings on the
+# PR's changed hunks:
+# - no_static_path field_construction on non-executable declarations
+#   (SHUTDOWN_* consts :22-26, UxGracefulShutdown.status :53,
+#   UxClient.shutdown_state :67): ripr#1429 class, same as the #8090
+#   declaration-seam precedent on this policy file.
+# - static_unknown on fn-signature and sole-closer lines (shutdown_and_exit
+#   :368, loop/brace closers): structural probes, no executable seam.
+# - reachable_unrevealed / weakly_exposed / infection_unknown on arms the
+#   analyzer cannot trace to their covering tests: validate_shutdown_response
+#   all four error arms plus the accept path are covered by in-module
+#   shutdown_response_requires_jsonrpc_null_result_and_no_error; the
+#   duplicate-call lifecycle guard is covered by integration
+#   explicit_shutdown_waits_for_response_then_zero_exit asserting the exact
+#   "already started or completed" variant; request/notify/context happy
+#   paths are covered by the same integration test (92 lib tests green).
+# - Two genuinely server-fault-dependent arms have no deterministic harness
+#   coverage: non-zero exit after legal shutdown (:397-401) and the
+#   exit-deadline timeout (:405-410) both require an LSP-speaking child that
+#   misbehaves post-exit, which UxHarness cannot currently inject (a zero or
+#   millisecond timeout would be racy in both directions: the same timeout
+#   governs the shutdown request round-trip and the exit wait).
+# HONEST SCOPE NOTE: path-plus-class scoping masks future probes of these
+# classes in client.rs for this window. Narrow or delete immediately if a
+# future receipt reports an executable seam here outside these classes.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-13555-shutdown-harness-client-seams"
+kind = "predicate_infection_untraceable"
+paths = ["crates/perl-lsp-ux-tests/src/client.rs"]
+classification = ["no_static_path", "static_unknown", "reachable_unrevealed", "weakly_exposed", "infection_unknown", "propagation_unknown"]
+owner = "proof-lane"
+issue = "EffortlessMetrics/ripr#1429"
+reason = "Hosted RIPR run 34452194082 (merge 34024130) reported 25 new gaps on the PR's changed hunks in client.rs: non-executable declaration probes (SHUTDOWN_* consts, status/shutdown_state fields), structural fn-signature/closer probes, and analyzer-untraceable coverage of validate_shutdown_response (all arms covered by in-module shutdown_response_requires_jsonrpc_null_result_and_no_error), format_stderr_tail (covered by shutdown_stderr_tail_preserves_last_twenty_lines_in_order), and the duplicate-call guard plus request/notify happy paths (covered by integration explicit_shutdown_waits_for_response_then_zero_exit; 92 lib tests green). The non-zero-exit (:397) and exit-deadline (:406) arms are documented-uncoverable without an LSP-speaking fault-injection fixture. Do not treat this as shutdown-behavior proof."
+created = "2026-09-10"
+review_after = "2026-09-17"
+expires = "2026-09-30"
+removal_criteria = "Remove when ripr#1429 traces in-module cfg(test) coverage to same-file owners, or when UxHarness gains a fault-injection fixture covering the :397/:406 server-fault arms with deterministic tests; narrow immediately if a future receipt reports an executable seam here outside the listed classes."
