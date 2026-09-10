@@ -100,7 +100,7 @@ class GitAvailabilityTests(unittest.TestCase):
     @patch("check_release_tag_provenance.shutil.which", return_value=None)
     def test_missing_git_returns_actionable_error(self, _which: object) -> None:
         self.assertEqual(
-            ["git executable not found on PATH"],
+            (["git executable not found on PATH"], []),
             verify_git_refs({"tag": []}, Path(".")),
         )
 
@@ -152,7 +152,7 @@ class GitVerificationTests(unittest.TestCase):
                     },
                 ]
             }
-            errors = verify_git_refs(manifest, root)
+            errors, _unresolvable = verify_git_refs(manifest, root)
             self.assertTrue(any("v0.2.0 drifted" in error for error in errors))
             self.assertNotEqual(second, "f" * 40)
 
@@ -175,7 +175,7 @@ class GitVerificationTests(unittest.TestCase):
                     }
                 ]
             }
-            errors = verify_git_refs(manifest, root)
+            errors, _unresolvable = verify_git_refs(manifest, root)
             self.assertTrue(
                 any("recorded_sha" in error and "claimed unreachable" in error for error in errors)
             )
@@ -200,10 +200,10 @@ class GitVerificationTests(unittest.TestCase):
                     }
                 ]
             }
-            self.assertEqual([], verify_git_refs(manifest, root))
+            self.assertEqual(([], []), verify_git_refs(manifest, root))
 
             manifest["tag"][0]["recorded_reachable"] = True
-            errors = verify_git_refs(manifest, root)
+            errors, _unresolvable = verify_git_refs(manifest, root)
             self.assertTrue(any("not a reachable commit object" in error for error in errors))
 
     def test_unlisted_local_release_tag_is_rejected(self) -> None:
@@ -232,7 +232,7 @@ class GitVerificationTests(unittest.TestCase):
                     },
                 ]
             }
-            errors = verify_git_refs(manifest, root)
+            errors, _unresolvable = verify_git_refs(manifest, root)
             self.assertIn(
                 "local release tag is missing from manifest: v0.3.0",
                 errors,
@@ -268,8 +268,53 @@ class GitVerificationTests(unittest.TestCase):
                     },
                 ]
             }
-            self.assertEqual([], verify_git_refs(manifest, root))
+            self.assertEqual(([], []), verify_git_refs(manifest, root))
 
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_audited_orphaned_lineage_record_is_warning_not_drift():
+    """#15263: manifest rows flagged unresolvable are audited orphaned
+    lineage records - reported as warnings, never as drift errors."""
+    manifest = valid_manifest()
+    manifest["tag"][0]["unresolvable"] = True
+
+    with tempfile.TemporaryDirectory() as repo:
+        subprocess.run(["git", "init", "-q", repo], check=True)
+        subprocess.run(["git", "-C", repo, "config", "user.name", "t"], check=True)
+        subprocess.run(["git", "-C", repo, "config", "user.email", "t@x"], check=True)
+        open(f"{repo}/f", "w").close()
+        subprocess.run(["git", "-C", repo, "add", "f"], check=True)
+        subprocess.run(["git", "-C", repo, "commit", "-qm", "c"], check=True)
+
+        drift, unresolvable = verify_git_refs(manifest, repo)
+
+    assert drift == []
+    assert len(unresolvable) == 1
+    assert "orphaned lineage record" in unresolvable[0]
+
+
+def test_unflagged_missing_tag_remains_drift():
+    """An unflagged manifest row whose tag and commit are both absent stays
+    a drift error (#15263)."""
+    manifest = valid_manifest()
+    manifest["tag"].append({
+        "name": "v9.9.9",
+        "current_sha": "a" * 40,
+        "record_status": "stale",
+        "recorded_sha": "b" * 7,
+        "recorded_reachable": False,
+        "lineage": "root",
+    })
+
+    with tempfile.TemporaryDirectory() as repo:
+        subprocess.run(["git", "init", "-q", repo], check=True)
+        subprocess.run(["git", "-C", repo, "config", "user.name", "t"], check=True)
+        subprocess.run(["git", "-C", repo, "config", "user.email", "t@x"], check=True)
+
+        drift, unresolvable = verify_git_refs(manifest, repo)
+
+    assert any("v9.9.9 cannot be resolved locally" in e for e in drift), drift
+    assert unresolvable == []

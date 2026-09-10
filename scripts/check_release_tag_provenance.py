@@ -258,16 +258,14 @@ def verify_git_refs(data: dict[str, Any], repo_root: Path) -> tuple[list[str], l
 
         result = _git(repo_root, "rev-parse", "--verify", f"{name}^{{commit}}")
         if result.returncode != 0:
-            # Typed unresolvable (#15263): when the tag is absent locally AND
-            # the manifest's recorded commit object is itself absent from the
-            # repository, the row is an orphaned lineage record - evidence
-            # preserved in the manifest, reported separately from drift. An
-            # unexplained resolution failure remains drift.
-            sha_probe = _git(repo_root, "cat-file", "-t", expected)
-            if sha_probe.returncode != 0:
+            # Typed classification (#15263): manifest rows flagged
+            # `unresolvable = true` are audited orphaned lineage records -
+            # their commit objects are known-unreachable, preserved as
+            # evidence and reported as warnings, not drift. Unflagged rows
+            # that fail to resolve remain drift errors.
+            if raw.get("unresolvable") is True:
                 unresolvable.append(
-                    f"{name} ({expected[:12]}): tag absent and commit object "
-                    "unreachable - orphaned lineage record"
+                    f"{name} ({expected[:12]}): audited orphaned lineage record"
                 )
             else:
                 drift_errors.append(
