@@ -46,6 +46,21 @@ created = "2026-08-15"
 review_after = "2026-11-15"
 
 [[allow]]
+id = "non-rust-changelog-product-12815-fixture"
+path = "xtask/tests/fixtures/product-12815-Fixed-221500.yaml"
+kind = "test_fixture"
+language = "yaml"
+surface = "fixtures"
+classification = "test"
+owner = "tooling/changelog"
+reason = "Permanent Changie fragment fixture preserving the product-12815 folded-body regression after release batching removes unreleased entries."
+covered_by = [
+  "cargo test -p xtask --bin xtask tasks::changelog::tests::repaired_product_12815_fragment_is_schema_valid -- --exact --nocapture",
+]
+created = "2026-09-02"
+review_after = "2027-03-02"
+
+[[allow]]
 id = "non-rust-generated-badge-endpoints"
 glob = "badges/*.json"
 kind = "generated_badge_endpoint"
@@ -196,6 +211,21 @@ covered_by = [
 ]
 created = "2026-08-24"
 review_after = "2026-11-24"
+
+[[allow]]
+id = "non-rust-ripr-010-consumer-fixtures"
+glob = "xtask/tests/fixtures/ripr-0.10/*.json"
+kind = "test_fixture"
+language = "json"
+surface = "fixtures"
+classification = "test"
+owner = "ci/ripr-consumer"
+reason = "Captured `ripr check --format json` output from the published 0.9.0 and 0.10.0 releases over one identical diff, pinning the producer output schema across the #9113 consumer migration. The repository has a recorded regression where a RIPR version bump changed JSON fields and the consumer silently stopped matching them (docs/learnings/2026-06-ripr-output-schema-break.md); hand-authored JSON cannot catch that class because it encodes the assumption under test. Regenerating them by hand would defeat their purpose — they change only when a reviewed producer release is intended. Provenance is in the sibling README.md."
+covered_by = [
+  "cargo test -p xtask --bin xtask ripr_evidence --locked",
+]
+created = "2026-09-07"
+review_after = "2027-03-07"
 
 [[allow]]
 id = "non-rust-lsp-318-changelog-fixture"
@@ -437,6 +467,22 @@ covered_by = [
 ]
 created = "2026-08-16"
 review_after = "2026-11-16"
+
+[[allow]]
+id = "non-rust-worked-lane-corpus-test"
+path = "tests/test_worked_lane_corpus.py"
+kind = "control_plane_contract_test"
+language = "python"
+surface = "ci"
+classification = "test"
+owner = "release/ci"
+reason = "Binds the worked-lane category ledger to the corpus it accounts for, so an added, renamed, or deleted example cannot leave the accounting stale and a category cannot borrow a lane or receipt that demonstrates something else. Standard-library `unittest` and `re` only, so it needs no Rust build and no Python dependency install."
+covered_by = [
+  "python3 -m unittest tests/test_worked_lane_corpus.py",
+  ".github/workflows/worked-lane-corpus.yml",
+]
+created = "2026-08-29"
+review_after = "2026-11-29"
 
 [[allow]]
 id = "non-rust-legacy-authority-banner-migrator"
@@ -1321,6 +1367,39 @@ created = "2026-08-08"
 review_after = "2026-11-08"
 
 [[allow]]
+id = "non-rust-release-topology-json-admission"
+path = "scripts/release_topology_json.py"
+kind = "release_contract"
+language = "python"
+surface = "release"
+classification = "production"
+owner = "release/ci"
+reason = "Shared standard-library admission of exact release-topology schema numbers at the canonical and bounded consumer JSON file boundaries; preserves original evidence bytes."
+covered_by = [
+  "python -m unittest scripts.test_generate_release_topology scripts.test_release_build_identity",
+  "python scripts/tests/test-validate-public-release-claims.py",
+  "cargo xtask check-file-policy",
+]
+created = "2026-09-10"
+review_after = "2026-12-10"
+
+[[allow]]
+id = "non-rust-release-topology-v2-schema"
+path = "schemas/release_topology.v2.schema.json"
+kind = "release_contract"
+language = "json"
+surface = "release"
+classification = "config"
+owner = "release/ci"
+reason = "Closed opt-in release topology checksum inventory contract for #6067; preserves the historical v1 schema and exact frozen/prepared authority."
+covered_by = [
+  "python -m unittest scripts.test_generate_release_topology",
+  "cargo xtask check-file-policy",
+]
+created = "2026-09-10"
+review_after = "2026-12-10"
+
+[[allow]]
 id = "non-rust-release-trust-invariants-schema"
 path = "schemas/release_trust_invariants.v1.schema.json"
 kind = "release_contract"
@@ -1999,6 +2078,19 @@ covered_by = [
 ]
 created = "2026-08-16"
 review_after = "2026-11-16"
+
+[[allow]]
+id = "non-rust-perl-corpus-train-schema"
+path = "schemas/perl_corpus_train.v1.schema.json"
+kind = "release_metadata"
+language = "json"
+surface = "tooling"
+classification = "documentation"
+owner = "perl-corpus-train"
+reason = "Closed JSON Schema for the stable perl-corpus authority train manifest (#10980); applied by cargo xtask perl-corpus-train check."
+covered_by = ["cargo xtask perl-corpus-train check"]
+created = "2026-09-06"
+review_after = "2026-12-06"
 
 [[allow]]
 id = "non-rust-native-neovim-train-schema"
@@ -4788,3 +4880,30 @@ covered_by = [
 created = "2026-09-07"
 review_after = "2026-12-07"
 broad_glob_reason = "bulk classification of the #14861 unclassified-file census: the directory class is the reviewed unit because the files are data/fixtures/manifests whose per-file identity carries no policy information"
+
+[[allow]]
+id = "non-rust-standalone-source-build-schema"
+path = "schemas/standalone_source_build.v1.schema.json"
+kind = "install_contract"
+language = "json"
+surface = "release"
+classification = "config"
+owner = "install/release"
+reason = "Closed machine-readable plan schema for exact registry-source build identity and trust boundaries (#11514)."
+covered_by = ["cargo test -p xtask --test standalone_source_build_contract --locked", "cargo xtask check-file-policy"]
+created = "2026-08-29"
+review_after = "2027-02-28"
+
+[[allow]]
+id = "non-rust-standalone-source-build-fixtures"
+glob = "fixtures/experience/standalone_source_build/*.json"
+kind = "install_contract_fixture"
+language = "json"
+surface = "release"
+classification = "test"
+owner = "install/release"
+reason = "Positive and negative deterministic vectors for the standalone source-build contract (#11514)."
+covered_by = ["cargo test -p xtask --test standalone_source_build_contract --locked", "cargo xtask check-file-policy"]
+broad_glob_reason = "One positive packet and single-field mutation vectors are materialized by the focused contract test, then checked against the plan/evidence schema and semantic bindings; per-vector rows would not add policy precision."
+created = "2026-08-29"
+review_after = "2027-02-28"

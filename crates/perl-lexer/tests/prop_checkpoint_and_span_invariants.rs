@@ -57,7 +57,7 @@ fn assert_restored_checkpoint_replays_identical_suffix(
     let max_tokens = input.len().max(1) * 3 + 32;
 
     let first_pass = collect_signatures_until_eof(&mut lexer, max_tokens)?;
-    lexer.restore(&checkpoint);
+    prop_assert!(lexer.restore(&checkpoint).is_ok());
     let replay = collect_signatures_until_eof(&mut lexer, max_tokens)?;
 
     prop_assert_eq!(replay, first_pass);
@@ -124,7 +124,7 @@ proptest! {
         }
 
         let checkpoint = lexer.checkpoint();
-        let checkpoint_pos = checkpoint.position;
+        let checkpoint_pos = checkpoint.position();
 
         let max_tokens = input.len().max(1) * 3 + 32;
         for _ in 0..max_tokens {
@@ -136,7 +136,7 @@ proptest! {
             }
         }
 
-        lexer.restore(&checkpoint);
+        prop_assert!(lexer.restore(&checkpoint).is_ok());
 
         for _ in 0..max_tokens {
             let Some(token) = lexer.next_token() else {
