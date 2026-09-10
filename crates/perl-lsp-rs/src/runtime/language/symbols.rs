@@ -1212,7 +1212,8 @@ mod tests {
         server.handle_did_change(Some(ranged_violation(ranged_uri, 2)))?;
         {
             let documents = server.documents_guard();
-            let doc = server.get_document(&documents, ranged_uri).ok_or("desynchronized document")?;
+            let doc =
+                server.get_document(&documents, ranged_uri).ok_or("desynchronized document")?;
             assert!(doc.full_sync_required());
             assert!(
                 doc.text.contains("pred_symbol"),
@@ -1284,10 +1285,7 @@ mod tests {
             .handle_folding_range(Some(json!({ "textDocument": { "uri": uri } })))?
             .ok_or("live foldingRange must return a result")?;
         let live_ranges = live.as_array().ok_or("live foldingRange must return an array")?;
-        assert!(
-            !live_ranges.is_empty(),
-            "live foldingRange must publish current folds: {live}"
-        );
+        assert!(!live_ranges.is_empty(), "live foldingRange must publish current folds: {live}");
 
         server.handle_did_change(Some(ranged_violation(uri, 2)))?;
         {
@@ -1312,7 +1310,8 @@ mod tests {
         let restored = server
             .handle_folding_range(Some(json!({ "textDocument": { "uri": uri } })))?
             .ok_or("recovered foldingRange must return a result")?;
-        let restored_ranges = restored.as_array().ok_or("recovered foldingRange must return an array")?;
+        let restored_ranges =
+            restored.as_array().ok_or("recovered foldingRange must return an array")?;
         assert!(
             !restored_ranges.is_empty(),
             "accepted full replacement must restore current foldingRange: {restored}"

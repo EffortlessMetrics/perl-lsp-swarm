@@ -2210,10 +2210,7 @@ fn test_did_save_without_text_does_not_republish_predecessor_after_ranged_violat
     {
         let documents = server.documents.lock();
         let doc = documents.get(uri).ok_or("document must remain stored after textless didSave")?;
-        assert!(
-            doc.full_sync_required(),
-            "didSave without includeText must not recover Full-sync"
-        );
+        assert!(doc.full_sync_required(), "didSave without includeText must not recover Full-sync");
         assert_eq!(doc.text, predecessor);
     }
     assert!(
