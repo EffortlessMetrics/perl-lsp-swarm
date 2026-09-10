@@ -1206,6 +1206,26 @@ fn validate_cell(cell: &JourneyCell, classes: &[&str]) -> Result<()> {
         );
     }
 
+    // Deferred-schema surfaces cannot enter core coverage: formatting and
+    // inlay hints have host-surface variants but no registered class or
+    // canonical expectations, so a core row binding them would certify a
+    // surface the schema explicitly defers. The generic host-visible checks
+    // accept both variants, and the feature-specific guard above runs only
+    // for optional depth, so core rows need their own boundary.
+    if cell.depth != DepthClass::Optional {
+        for surface in &cell.host_surfaces {
+            ensure!(
+                !matches!(
+                    surface,
+                    HostSurface::DocumentFormattingApplication
+                        | HostSurface::InlayHintRequestRefresh
+                ),
+                "core cell {} binds deferred-schema surface {surface:?} with no registered class",
+                cell.cell_id
+            );
+        }
+    }
+
     // Root sensitivity: reference-only tokens, never material duplication.
     // A cell whose receipts require a discovery-generation distinction must
     // bind the `root_11366.<role>` it claims, so dropping the reference can

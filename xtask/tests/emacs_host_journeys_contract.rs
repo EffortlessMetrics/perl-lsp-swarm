@@ -187,6 +187,30 @@ fn host_visible_cell_rejects_a_mixed_protocol_surface() -> Result<()> {
 }
 
 #[test]
+fn core_cell_rejects_deferred_schema_surfaces() -> Result<()> {
+    // Formatting and inlay hints have host-surface variants but no registered
+    // class: the generic host-visible checks accept them, and the
+    // feature-specific surface guard runs only for optional depth. A core row
+    // binding one would certify a surface the schema explicitly defers.
+    let mut cells = compiled()?;
+    let host_visible = "emacs.eldoc_hover_observation.hover_rendered";
+    let position = cells
+        .iter()
+        .position(|cell| cell.cell_id == host_visible)
+        .ok_or_else(|| anyhow::anyhow!("hover cell vanished from the registry"))?;
+    cells[position].host_surfaces = vec![HostSurface::DocumentFormattingApplication];
+    let error = match emacs_host_journeys::validate_registry(&cells) {
+        Err(error) => error.to_string(),
+        Ok(_) => bail!("core row accepted a deferred-schema surface"),
+    };
+    ensure!(
+        error.contains("deferred-schema"),
+        "unexpected rejection for deferred-schema surface on a core row: {error}"
+    );
+    Ok(())
+}
+
+#[test]
 fn platform_applicability_uses_a_closed_vocabulary() -> Result<()> {
     ensure!(
         PLATFORM_APPLICABILITY_TOKENS == ["all"],
