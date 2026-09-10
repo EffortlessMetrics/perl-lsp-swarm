@@ -532,9 +532,23 @@ fn environment_identity_and_listing_counts_must_agree() -> TestResult {
             && row.deployment_branch_policy.state == ObservationState::NotProven,
         "wrong environment detail identity cannot prove controls",
     )?;
-    for listing in [
-        json!({"total_count":0,"environments":[{"id":1,"node_id":"E_release","name":"release"}]}),
-        json!({"total_count":2,"environments":[{"id":1,"node_id":"E_release","name":"release"},{"id":1,"node_id":"E_release","name":"release"}]}),
+    for (listing, reason) in [
+        (
+            json!({"total_count":0,"environments":[{"id":1,"node_id":"E_release","name":"release"}]}),
+            "a listing with more rows than total_count must be unknown",
+        ),
+        (
+            json!({"total_count":2,"environments":[{"id":1,"node_id":"E_release","name":"release"},{"id":1,"node_id":"E_release","name":"release"}]}),
+            "a repeated environment identity and name must be unknown",
+        ),
+        (
+            json!({"total_count":2,"environments":[{"id":1,"node_id":"E_release","name":"release"},{"id":1,"node_id":"E_staging","name":"staging"}]}),
+            "duplicate database IDs must be rejected even when environment names are distinct",
+        ),
+        (
+            json!({"total_count":2,"environments":[{"id":1,"node_id":"E_release","name":"release"},{"id":2,"node_id":"E_other","name":"RELEASE"}]}),
+            "case-folded duplicate names must be rejected even when database IDs are distinct",
+        ),
     ] {
         let commands = healthy_repository(FakeCommands::default(), OWNER, NAME, "SECRET").on(
             &format!("repos/{OWNER}/{NAME}/environments?per_page=100&page=1"),
@@ -542,7 +556,7 @@ fn environment_identity_and_listing_counts_must_agree() -> TestResult {
         );
         require(
             collect_environments(&commands, OWNER, NAME).state == ObservationState::NotProven,
-            "over-counted/duplicate environment listing is unknown",
+            reason,
         )?;
     }
     Ok(())
