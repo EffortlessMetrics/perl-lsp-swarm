@@ -112,6 +112,40 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn misplaced_configuration_state_marker_cannot_appear_current_in_cadence() -> Result<()> {
+        let root = tempdir()?;
+        write_fixture(root.path(), 2, "deny")?;
+        fs::write(
+            root.path().join("policy/clippy-lints.d/00-fixture.toml"),
+            r##"schema = 1
+
+[[lint]]
+name = "clippy::collapsible_if"
+level = "deny"
+status = "debt"
+class = "reviewability"
+reason = "fixture catalog row"
+configuration_state = "empty-by-design"
+"##,
+        )?;
+
+        let as_of = parse_date("2026-08-01", "fixture")?;
+        let items = obligations(root.path())?
+            .into_iter()
+            .map(|item| classify(item, as_of))
+            .collect::<Vec<_>>();
+
+        assert_eq!(items.len(), 2);
+        assert!(items.iter().all(|item| item.state == CadenceState::Invalid));
+        assert!(items.iter().all(|item| {
+            item.not_proven_reason.as_deref().is_some_and(|reason| {
+                reason.contains("sets configuration_state, but only config-backed lints may do so")
+            })
+        }));
+        Ok(())
+    }
+
     fn write_fixture(root: &Path, lint_schema: u64, debt_level: &str) -> Result<()> {
         let policy = root.join("policy");
         fs::create_dir_all(policy.join("clippy-lints.d"))?;
