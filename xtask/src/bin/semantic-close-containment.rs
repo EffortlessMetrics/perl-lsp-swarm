@@ -1500,7 +1500,7 @@ fn strip_issue_owner_suffix(text: &str) -> (&str, Option<&str>) {
     match owner.strip_suffix("'s") {
         // Issue-looking tokens still pass the strict identity parser below;
         // malformed owners are refused, never reinterpreted as ordinary prose.
-        Some(owner) if owner.contains('#') => (before, Some(owner)),
+        Some(owner) if hash_issue_number_present(owner) => (before, Some(owner)),
         _ => (text, None),
     }
 }
@@ -2529,6 +2529,7 @@ mod tests {
             "Closes #10\nCloses #11\nCloses #100\nCloses other/repo#10\nCloses other/repo#100";
         let mut mismatches = Vec::new();
         for (boundary, closes, owner) in [
+            ("C#'s full acceptance criteria are not established.", "Closes #10", Some((local, 10))),
             (
                 "Full acceptance criteria are not established; example `#11`.",
                 "Closes #10",
