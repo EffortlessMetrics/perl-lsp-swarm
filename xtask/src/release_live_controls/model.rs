@@ -217,10 +217,13 @@ pub struct BypassActor {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RulesetRule {
     pub rule_type: String,
-    pub required_contexts: Vec<String>,
+    pub required_contexts: Vec<RequiredContextRow>,
     pub required_approving_review_count: Option<u32>,
     pub required_review_thread_resolution: Option<bool>,
     pub dismiss_stale_reviews_on_push: Option<bool>,
+    pub require_code_owner_review: Option<bool>,
+    pub require_last_push_approval: Option<bool>,
+    pub strict_required_status_checks_policy: Option<bool>,
 }
 
 /// One ruleset, targeting either `branch` or `tag` refs.
@@ -265,12 +268,48 @@ impl Ruleset {
     }
 }
 
+/// A reviewer identity; secret metadata is never recorded.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeploymentReviewer {
+    pub reviewer_type: String,
+    pub id: u64,
+    pub node_id: String,
+}
+
+/// One named branch or tag admitted by a custom deployment policy.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NamedDeploymentPolicy {
+    pub id: u64,
+    pub node_id: String,
+    pub name: String,
+    pub policy_type: String,
+}
+
+/// Identity of an installed deployment-protection GitHub App.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeploymentProtectionApp {
+    pub id: u64,
+    pub node_id: String,
+    pub slug: String,
+}
+
+/// An enabled, installed custom deployment protection rule.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CustomDeploymentProtectionRule {
+    pub id: u64,
+    pub node_id: String,
+    pub enabled: bool,
+    pub app: DeploymentProtectionApp,
+}
+
 /// One deployment-environment protection rule.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EnvironmentProtectionRule {
+    pub id: u64,
+    pub node_id: String,
     pub rule_type: String,
     pub wait_timer: Option<u64>,
-    pub reviewer_count: Option<usize>,
+    pub reviewers: Option<Vec<DeploymentReviewer>>,
     pub prevent_self_review: Option<bool>,
 }
 
@@ -288,9 +327,13 @@ pub struct DeploymentBranchPolicy {
 /// [`Self::secret_count`] is ever carried.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Environment {
+    pub id: u64,
+    pub node_id: String,
     pub name: String,
     pub protection_rules: Observed<Vec<EnvironmentProtectionRule>>,
-    pub deployment_branch_policy: Observed<Option<DeploymentBranchPolicy>>,
+    pub deployment_branch_policy: Observed<DeploymentBranchPolicy>,
+    pub deployment_branch_policies: Observed<Vec<NamedDeploymentPolicy>>,
+    pub custom_deployment_protection_rules: Observed<Vec<CustomDeploymentProtectionRule>>,
     pub secret_count: Observed<usize>,
 }
 
@@ -301,6 +344,14 @@ impl Environment {
             .or_else(|| {
                 self.deployment_branch_policy
                     .structural_problem(&format!("{label}.deployment_branch_policy"))
+            })
+            .or_else(|| {
+                self.deployment_branch_policies
+                    .structural_problem(&format!("{label}.deployment_branch_policies"))
+            })
+            .or_else(|| {
+                self.custom_deployment_protection_rules
+                    .structural_problem(&format!("{label}.custom_deployment_protection_rules"))
             })
             .or_else(|| self.secret_count.structural_problem(&format!("{label}.secret_count")))
     }
@@ -315,17 +366,22 @@ impl Environment {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReleasePosture {
     pub immutable_releases: Observed<bool>,
+    pub immutable_releases_enforced_by_owner: Observed<bool>,
     pub tag_rulesets_present: Observed<bool>,
 }
 
 impl ReleasePosture {
     fn structural_problem(&self, label: &str) -> Option<String> {
-        self.immutable_releases.structural_problem(&format!("{label}.immutable_releases")).or_else(
-            || {
+        self.immutable_releases
+            .structural_problem(&format!("{label}.immutable_releases"))
+            .or_else(|| {
+                self.immutable_releases_enforced_by_owner
+                    .structural_problem(&format!("{label}.immutable_releases_enforced_by_owner"))
+            })
+            .or_else(|| {
                 self.tag_rulesets_present
                     .structural_problem(&format!("{label}.tag_rulesets_present"))
-            },
-        )
+            })
     }
 }
 

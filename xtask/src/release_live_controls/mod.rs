@@ -26,9 +26,14 @@
 //!    protection, ruleset, environment, or release setting is ever created,
 //!    edited, or deleted from this crate.
 
+mod api_value;
+mod classic;
+mod environment;
 mod evaluate;
 mod live;
 mod model;
+mod ref_pattern;
+mod rules;
 
 pub use evaluate::{
     identity_match, limitations, receipt_limitations, receipt_verdict, required_contexts_union,
@@ -40,11 +45,13 @@ pub use live::{
     parse_http_status, ruleset_applies_to_branch,
 };
 pub use model::{
-    BypassActor, ClassicProtection, Currency, DeploymentBranchPolicy, Environment,
-    EnvironmentProtectionRule, IdentityMatch, Instrument, LiveControlsReceipt, ObservationState,
-    Observed, PullRequestReviewRule, RELEASE_LIVE_CONTROLS_SCHEMA_VERSION, ReleasePosture,
-    RepositoryControls, RepositoryIdentity, RepositorySubject, RequiredContextRow,
-    RequiredContextsUnion, RequiredStatusChecks, Ruleset, RulesetRule, UnionContext, Verdict,
+    BypassActor, ClassicProtection, Currency, CustomDeploymentProtectionRule,
+    DeploymentBranchPolicy, DeploymentProtectionApp, DeploymentReviewer, Environment,
+    EnvironmentProtectionRule, IdentityMatch, Instrument, LiveControlsReceipt,
+    NamedDeploymentPolicy, ObservationState, Observed, PullRequestReviewRule,
+    RELEASE_LIVE_CONTROLS_SCHEMA_VERSION, ReleasePosture, RepositoryControls, RepositoryIdentity,
+    RepositorySubject, RequiredContextRow, RequiredContextsUnion, RequiredStatusChecks, Ruleset,
+    RulesetRule, UnionContext, Verdict,
 };
 
 use color_eyre::eyre::{Context, Result, bail, eyre};
@@ -186,6 +193,9 @@ pub fn run(options: ObserveOptions) -> Result<Verdict> {
         for repository in &receipt.repositories {
             write_out(&format!("{}\n", render_repository_summary(repository)))?;
         }
+        for limitation in &receipt.limitations {
+            write_out(&format!("limitation: {limitation}\n"))?;
+        }
         write_out(&format!(
             "verdict: {}\n",
             match receipt.verdict {
@@ -209,6 +219,7 @@ fn render_repository_summary(repository: &RepositoryControls) -> String {
         observation_label(repository.tag_rulesets.state),
         observation_label(repository.environments.state),
         if repository.release_posture.immutable_releases.is_conclusive()
+            && repository.release_posture.immutable_releases_enforced_by_owner.is_conclusive()
             && repository.release_posture.tag_rulesets_present.is_conclusive()
         {
             "CONCLUSIVE"

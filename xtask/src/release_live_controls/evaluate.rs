@@ -106,13 +106,14 @@ fn collect_ruleset_contexts(
     contributed: &mut Vec<(String, String)>,
     missing: &mut Vec<String>,
 ) {
-    // A ruleset GitHub is not enforcing (`evaluate`/`disabled`) or whose
-    // ref conditions do not select this branch must not inflate the union.
-    // Whether it selects the branch must itself be conclusive: an unreadable
-    // condition set is a gap, not an exclusion.
-    // Applicability first: an unrecognised enforcement value is recorded as
-    // NOT_PROVEN applicability by collection, and must block rather than be
-    // skipped as "not active".
+    match ruleset.enforcement.as_str() {
+        "disabled" | "evaluate" => return,
+        "active" => {}
+        _ => {
+            missing.push(format!("branch_rulesets[{}].enforcement", ruleset.id));
+            return;
+        }
+    }
     match ruleset.applies_to_branch.value() {
         Some(true) => {}
         Some(false) => return,
@@ -121,9 +122,6 @@ fn collect_ruleset_contexts(
             return;
         }
     }
-    if ruleset.enforcement != "active" {
-        return;
-    }
     match ruleset.rules.state {
         ObservationState::Absent => {}
         ObservationState::Observed => match ruleset.rules.value() {
@@ -131,7 +129,8 @@ fn collect_ruleset_contexts(
                 for rule in rules {
                     if rule.rule_type == "required_status_checks" {
                         for context in &rule.required_contexts {
-                            contributed.push((context.clone(), format!("ruleset:{}", ruleset.id)));
+                            contributed
+                                .push((context.context.clone(), format!("ruleset:{}", ruleset.id)));
                         }
                     }
                 }
@@ -231,6 +230,8 @@ fn ruleset_list_conclusive(observed: &Observed<Vec<Ruleset>>) -> bool {
 fn environment_row_conclusive(environment: &Environment) -> bool {
     environment.protection_rules.is_conclusive()
         && environment.deployment_branch_policy.is_conclusive()
+        && environment.deployment_branch_policies.is_conclusive()
+        && environment.custom_deployment_protection_rules.is_conclusive()
         && environment.secret_count.is_conclusive()
 }
 
@@ -265,6 +266,7 @@ pub fn verdict(repositories: &[RepositoryControls]) -> Verdict {
             && ruleset_list_conclusive(&repository.tag_rulesets)
             && environment_list_conclusive(&repository.environments)
             && repository.release_posture.immutable_releases.is_conclusive()
+            && repository.release_posture.immutable_releases_enforced_by_owner.is_conclusive()
             && repository.release_posture.tag_rulesets_present.is_conclusive()
             && repository.required_contexts_union.state == ObservationState::Observed
     });
@@ -323,6 +325,7 @@ pub fn limitations(repositories: &[RepositoryControls]) -> Vec<String> {
             lines.push(format!("{label}: environments is not conclusive"));
         }
         if !repository.release_posture.immutable_releases.is_conclusive()
+            || !repository.release_posture.immutable_releases_enforced_by_owner.is_conclusive()
             || !repository.release_posture.tag_rulesets_present.is_conclusive()
         {
             lines.push(format!("{label}: release_posture is not conclusive"));

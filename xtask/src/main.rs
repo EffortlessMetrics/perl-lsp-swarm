@@ -1517,7 +1517,8 @@ enum Commands {
         #[arg(long = "repository")]
         repositories: Vec<String>,
 
-        /// Branch to observe for each repository. Defaults to `main`.
+        /// Branch override. Product defaults use contributor topology branches;
+        /// explicit --repository subjects default to main.
         #[arg(long)]
         branch: Option<String>,
 

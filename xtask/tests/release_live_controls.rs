@@ -94,11 +94,12 @@ fn healthy_repository(
     let repo_body = format!(
         r#"{{"full_name":"{owner}/{name}","node_id":"R_kg{name}","id":42,"default_branch":"{BRANCH}","immutable_releases":true}}"#
     );
-    let branch_body = r#"{"protected":true}"#.to_string();
+    let branch_body = r#"{"name":"main","protected":true}"#.to_string();
     let protection_body = format!(
         r#"{{
             "required_status_checks": {{
                 "strict": true,
+                "contexts": ["{SHARED_CONTEXT}"],
                 "checks": [{{"context": "{SHARED_CONTEXT}", "app_id": 15368}}]
             }},
             "enforce_admins": {{"enabled": true}},
@@ -119,22 +120,24 @@ fn healthy_repository(
     .to_string();
     let branch_ruleset_detail = format!(
         r#"{{
-            "enforcement": "active",
+            "id": 1, "name": "main-guard", "target": "branch", "enforcement": "active",
             "conditions": {{"ref_name": {{"include": ["~DEFAULT_BRANCH"], "exclude": []}}}},
             "bypass_actors": [],
             "rules": [
-                {{"type": "required_status_checks", "parameters": {{"required_status_checks": [
-                    {{"context": "{SHARED_CONTEXT}"}},
-                    {{"context": "ruleset-only-check"}}
+                {{"type": "required_status_checks", "parameters": {{"strict_required_status_checks_policy": true, "required_status_checks": [
+                    {{"context": "{SHARED_CONTEXT}", "integration_id":15368}},
+                    {{"context": "ruleset-only-check", "integration_id":15368}}
                 ]}}}}
             ]
         }}"#
     );
-    let tag_ruleset_detail = r#"{"bypass_actors": [], "rules": []}"#.to_string();
+    let tag_ruleset_detail = r#"{"id":2,"name":"tag-guard","target":"tag","enforcement":"active","bypass_actors": [], "rules": []}"#.to_string();
     let environments_list =
-        r#"{"total_count": 1, "environments": [{"name": "release"}]}"#.to_string();
+        r#"{"total_count": 1, "environments": [{"id":1,"node_id":"E_release","name": "release"}]}"#
+            .to_string();
     let environment_detail = r#"{
-        "protection_rules": [{"type": "required_reviewers", "reviewers": [{"type":"User","id":1}], "wait_timer": 0, "prevent_self_review": true}],
+        "id":1,"node_id":"E_release","name":"release",
+        "protection_rules": [{"id":11,"node_id":"PR_11","type": "required_reviewers", "reviewers": [{"type":"User","reviewer":{"id":1,"node_id":"U_1"}}], "prevent_self_review": true}],
         "deployment_branch_policy": {"protected_branches": true, "custom_branch_policies": false}
     }"#
     .to_string();
@@ -144,6 +147,14 @@ fn healthy_repository(
 
     commands
         .on(&format!("repos/{owner}/{name}"), &repo_body)
+        .on(
+            &format!("repos/{owner}/{name}/immutable-releases"),
+            r#"{"enabled":true,"enforced_by_owner":false}"#,
+        )
+        .on(
+            &format!("repos/{owner}/{name}/environments/release/deployment_protection_rules"),
+            r#"{"total_count":0,"custom_deployment_protection_rules":[]}"#,
+        )
         .on(&format!("repos/{owner}/{name}/branches/{BRANCH}"), &branch_body)
         .on(&format!("repos/{owner}/{name}/branches/{BRANCH}/protection"), &protection_body)
         .on(
@@ -189,6 +200,7 @@ fn conclusive_classic() -> Observed<ClassicProtection> {
 fn conclusive_release_posture() -> ReleasePosture {
     ReleasePosture {
         immutable_releases: Observed::observed(true),
+        immutable_releases_enforced_by_owner: Observed::observed(false),
         tag_rulesets_present: Observed::observed(false),
     }
 }
@@ -267,10 +279,16 @@ fn rulesets_alone_cannot_claim_complete_enforcement() -> TestResult {
         bypass_actors: Observed::observed(Vec::new()),
         rules: Observed::observed(vec![RulesetRule {
             rule_type: "required_status_checks".to_string(),
-            required_contexts: vec![SHARED_CONTEXT.to_string()],
+            required_contexts: vec![RequiredContextRow {
+                context: SHARED_CONTEXT.to_string(),
+                app_id: None,
+            }],
             required_approving_review_count: None,
             required_review_thread_resolution: None,
             dismiss_stale_reviews_on_push: None,
+            require_code_owner_review: None,
+            require_last_push_approval: None,
+            strict_required_status_checks_policy: None,
         }]),
     }]);
 
@@ -472,7 +490,10 @@ fn a_fully_observed_pair_of_repositories_reaches_observed() -> TestResult {
 #[test]
 fn inaccessible_protection_api_does_not_become_an_empty_pass() {
     let commands = FakeCommands::default()
-        .on(&format!("repos/{OWNER}/{NAME}/branches/{BRANCH}"), r#"{"protected":true}"#)
+        .on(
+            &format!("repos/{OWNER}/{NAME}/branches/{BRANCH}"),
+            r#"{"name":"main","protected":true}"#,
+        )
         .failing(
             &format!("repos/{OWNER}/{NAME}/branches/{BRANCH}/protection"),
             Some(403),
@@ -498,7 +519,10 @@ fn inaccessible_protection_api_does_not_become_an_empty_pass() {
 #[test]
 fn protection_404_with_branch_reporting_protected_is_not_proven() {
     let commands = FakeCommands::default()
-        .on(&format!("repos/{OWNER}/{NAME}/branches/{BRANCH}"), r#"{"protected":true}"#)
+        .on(
+            &format!("repos/{OWNER}/{NAME}/branches/{BRANCH}"),
+            r#"{"name":"main","protected":true}"#,
+        )
         .failing(
             &format!("repos/{OWNER}/{NAME}/branches/{BRANCH}/protection"),
             Some(404),
@@ -516,7 +540,10 @@ fn protection_404_with_branch_reporting_protected_is_not_proven() {
 #[test]
 fn protection_404_with_unprotected_branch_is_a_corroborated_absence() {
     let commands = FakeCommands::default()
-        .on(&format!("repos/{OWNER}/{NAME}/branches/{BRANCH}"), r#"{"protected":false}"#)
+        .on(
+            &format!("repos/{OWNER}/{NAME}/branches/{BRANCH}"),
+            r#"{"name":"main","protected":false}"#,
+        )
         .failing(
             &format!("repos/{OWNER}/{NAME}/branches/{BRANCH}/protection"),
             Some(404),
@@ -548,7 +575,7 @@ fn ruleset_without_a_bypass_actors_field_is_not_proven() -> TestResult {
         )
         .on(
             &format!("repos/{OWNER}/{NAME}/rulesets/1"),
-            r#"{"conditions": {"ref_name": {"include": ["~ALL"]}}, "rules": []}"#,
+            r#"{"id":1,"name":"guard","target":"branch","enforcement":"active","conditions": {"ref_name": {"include": ["~ALL"],"exclude":[]}}, "rules": []}"#,
         );
 
     let (branch_rulesets, _tag_rulesets) =
@@ -579,7 +606,7 @@ fn an_explicit_empty_bypass_actors_array_is_observed() -> TestResult {
         )
         .on(
             &format!("repos/{OWNER}/{NAME}/rulesets/1"),
-            r#"{"conditions": {"ref_name": {"include": ["~ALL"]}}, "bypass_actors": [], "rules": []}"#,
+            r#"{"id":1,"name":"guard","target":"branch","enforcement":"active","conditions": {"ref_name": {"include": ["~ALL"],"exclude":[]}}, "bypass_actors": [], "rules": []}"#,
         );
 
     let (branch_rulesets, _tag_rulesets) =
@@ -607,7 +634,7 @@ fn an_unrecognised_ruleset_target_makes_both_buckets_not_proven() {
         )
         .on(
             &format!("repos/{OWNER}/{NAME}/rulesets/1"),
-            r#"{"conditions": {"ref_name": {"include": ["~ALL"]}}, "bypass_actors": [], "rules": []}"#,
+            r#"{"id":1,"name":"guard","target":"branch","enforcement":"active","conditions": {"ref_name": {"include": ["~ALL"],"exclude":[]}}, "bypass_actors": [], "rules": []}"#,
         );
 
     let (branch_rulesets, tag_rulesets) =
@@ -681,22 +708,32 @@ fn observed_absent_and_not_proven_round_trip_distinctly() -> TestResult {
 #[test]
 fn environment_model_carries_only_counts_types_and_names() -> TestResult {
     let environment = Environment {
+        id: 1,
+        node_id: "E_1".into(),
+        deployment_branch_policies: Observed::absent("custom policies disabled"),
+        custom_deployment_protection_rules: Observed::observed(vec![]),
         name: "production".to_string(),
         protection_rules: Observed::observed(vec![EnvironmentProtectionRule {
+            id: 11,
+            node_id: "PR_11".into(),
             rule_type: "required_reviewers".to_string(),
             wait_timer: Some(0),
-            reviewer_count: Some(2),
+            reviewers: Some(vec![xtask::release_live_controls::DeploymentReviewer {
+                reviewer_type: "User".into(),
+                id: 1,
+                node_id: "U_1".into(),
+            }]),
             prevent_self_review: Some(true),
         }]),
-        deployment_branch_policy: Observed::observed(Some(DeploymentBranchPolicy {
+        deployment_branch_policy: Observed::observed(DeploymentBranchPolicy {
             protected_branches: true,
             custom_branch_policies: false,
-        })),
+        }),
         secret_count: Observed::observed(3usize),
     };
     let json = serde_json::to_string(&environment)?;
     assert!(json.contains("\"secret_count\""));
-    assert!(json.contains("\"reviewer_count\":2"));
+    assert!(json.contains("\"reviewer_type\":\"User\""));
     Ok(())
 }
 
@@ -755,6 +792,7 @@ fn an_unreadable_classic_context_row_is_not_proven_rather_than_dropped() -> Test
         r#"{{
             "required_status_checks": {{
                 "strict": true,
+                "contexts": ["{SHARED_CONTEXT}"],
                 "checks": [
                     {{"context": "{SHARED_CONTEXT}", "app_id": 15368}},
                     {{"app_id": 99}}
@@ -767,7 +805,10 @@ fn an_unreadable_classic_context_row_is_not_proven_rather_than_dropped() -> Test
         }}"#
     );
     let commands = FakeCommands::default()
-        .on(&format!("repos/{OWNER}/{NAME}/branches/{BRANCH}"), r#"{"protected":true}"#)
+        .on(
+            &format!("repos/{OWNER}/{NAME}/branches/{BRANCH}"),
+            r#"{"name":"main","protected":true}"#,
+        )
         .on(&format!("repos/{OWNER}/{NAME}/branches/{BRANCH}/protection"), &protection_body);
 
     let classic = collect_classic_protection(&commands, OWNER, NAME, BRANCH);
@@ -786,33 +827,31 @@ fn an_unreadable_classic_context_row_is_not_proven_rather_than_dropped() -> Test
     Ok(())
 }
 
-/// The opposite-direction control: a well-formed `contexts` array (the older
-/// non-`checks` shape) still reaches `OBSERVED`, so the guard above rejects
-/// malformed rows rather than every row.
+/// Both arrays belong to the selected current GET contract; an omitted
+/// checks array cannot establish the source binding for a context.
 #[test]
-fn well_formed_legacy_contexts_array_still_reaches_observed() -> TestResult {
-    let protection_body = format!(
-        r#"{{
-            "required_status_checks": {{"strict": false, "contexts": ["{SHARED_CONTEXT}"]}},
-            "enforce_admins": {{"enabled": true}},
-            "required_pull_request_reviews": null,
-            "required_conversation_resolution": {{"enabled": true}},
-            "restrictions": null
-        }}"#
-    );
-    let commands = FakeCommands::default()
-        .on(&format!("repos/{OWNER}/{NAME}/branches/{BRANCH}"), r#"{"protected":true}"#)
-        .on(&format!("repos/{OWNER}/{NAME}/branches/{BRANCH}/protection"), &protection_body);
-
-    let classic = collect_classic_protection(&commands, OWNER, NAME, BRANCH);
-    let protection = classic.value().ok_or("protection payload should be observed")?;
+fn missing_classic_status_array_is_not_proven() -> TestResult {
+    let path = format!("repos/{OWNER}/{NAME}/branches/{BRANCH}/protection");
+    let healthy = healthy_repository(FakeCommands::default(), OWNER, NAME, "SECRET");
+    let baseline = collect_classic_protection(&healthy, OWNER, NAME, BRANCH);
+    let protection = baseline.value().ok_or("healthy protection missing")?;
     assert_eq!(protection.required_status_checks.state, ObservationState::Observed);
-    let checks = protection
-        .required_status_checks
-        .value()
-        .ok_or("observed required_status_checks must carry a value")?;
-    assert_eq!(checks.contexts.len(), 1);
-    assert_eq!(checks.contexts[0].context, SHARED_CONTEXT);
+    for key in ["contexts", "checks"] {
+        let mut body: serde_json::Value = serde_json::from_str(
+            healthy
+                .responses
+                .get(&path)
+                .ok_or("fixture missing")?
+                .as_ref()
+                .map_err(|_| "fixture error")?,
+        )?;
+        body["required_status_checks"].as_object_mut().ok_or("status fixture")?.remove(key);
+        let commands = healthy_repository(FakeCommands::default(), OWNER, NAME, "SECRET")
+            .on(&path, &body.to_string());
+        let observed = collect_classic_protection(&commands, OWNER, NAME, BRANCH);
+        let protection = observed.value().ok_or("protection missing")?;
+        assert_eq!(protection.required_status_checks.state, ObservationState::NotProven);
+    }
     Ok(())
 }
 
@@ -820,7 +859,10 @@ fn well_formed_legacy_contexts_array_still_reaches_observed() -> TestResult {
 fn malformed_present_classic_status_fields_are_not_observed_as_empty() -> TestResult {
     let observe_protection = |protection: &str| {
         FakeCommands::default()
-            .on(&format!("repos/{OWNER}/{NAME}/branches/{BRANCH}"), r#"{"protected":true}"#)
+            .on(
+                &format!("repos/{OWNER}/{NAME}/branches/{BRANCH}"),
+                r#"{"name":"main","protected":true}"#,
+            )
             .on(&format!("repos/{OWNER}/{NAME}/branches/{BRANCH}/protection"), protection)
     };
 
@@ -869,11 +911,12 @@ fn malformed_present_classic_status_fields_are_not_observed_as_empty() -> TestRe
 #[test]
 fn an_unreadable_ruleset_context_row_is_not_proven_rather_than_dropped() -> TestResult {
     let detail = r#"{
-        "conditions": {"ref_name": {"include": ["~ALL"]}},
+        "id":1,"name":"main-guard","target":"branch","enforcement":"active",
+        "conditions": {"ref_name": {"include": ["~ALL"], "exclude": []}},
         "bypass_actors": [],
         "rules": [
-            {"type": "required_status_checks", "parameters": {"required_status_checks": [
-                {"context": "readable-check"},
+            {"type": "required_status_checks", "parameters": {"strict_required_status_checks_policy":true,"required_status_checks": [
+                {"context": "readable-check","integration_id":7},
                 {"integration_id": 7}
             ]}}
         ]
@@ -917,6 +960,7 @@ fn an_unreadable_ruleset_context_row_is_not_proven_rather_than_dropped() -> Test
         environments: Observed::observed(Vec::new()),
         release_posture: ReleasePosture {
             immutable_releases: Observed::observed(true),
+            immutable_releases_enforced_by_owner: Observed::observed(false),
             tag_rulesets_present: Observed::observed(false),
         },
         required_contexts_union: union,
@@ -936,8 +980,7 @@ fn ruleset_list_item(id: u64, target: &str, enforcement: &str) -> String {
     )
 }
 
-const ALL_BRANCHES_DETAIL: &str =
-    r#"{"conditions": {"ref_name": {"include": ["~ALL"]}}, "bypass_actors": [], "rules": []}"#;
+const ALL_BRANCHES_DETAIL: &str = r#"{"id":1,"name":"guard","target":"branch","enforcement":"active","conditions": {"ref_name": {"include": ["~ALL"],"exclude":[]}}, "bypass_actors": [], "rules": []}"#;
 
 /// A full first page must not be mistaken for the whole collection: the
 /// second page is read, and a ruleset that only appears there is observed.
@@ -995,11 +1038,11 @@ fn environments_are_read_until_total_count_is_reached() -> TestResult {
     let commands = healthy_repository(FakeCommands::default(), OWNER, NAME, "TOKEN")
         .on(
             &format!("repos/{OWNER}/{NAME}/environments?per_page=100&page=1"),
-            r#"{"total_count": 2, "environments": [{"name": "release"}]}"#,
+            r#"{"total_count": 2, "environments": [{"id":1,"node_id":"E_release","name": "release"}]}"#,
         )
         .on(
             &format!("repos/{OWNER}/{NAME}/environments?per_page=100&page=2"),
-            r#"{"total_count": 2, "environments": [{"name": "staging"}]}"#,
+            r#"{"total_count": 2, "environments": [{"id":2,"node_id":"E_staging","name": "staging"}]}"#,
         )
         .on(
             &format!("repos/{OWNER}/{NAME}/environments/staging"),
@@ -1016,7 +1059,7 @@ fn environments_are_read_until_total_count_is_reached() -> TestResult {
     // And a listing that ends short of its own total_count is NOT_PROVEN.
     let truncated = FakeCommands::default().on(
         &format!("repos/{OWNER}/{NAME}/environments?per_page=100&page=1"),
-        r#"{"total_count": 2, "environments": [{"name": "release"}]}"#,
+        r#"{"total_count": 2, "environments": [{"id":1,"node_id":"E_release","name": "release"}]}"#,
     );
     let environments = collect_environments(&truncated, OWNER, NAME);
     assert_eq!(environments.state, ObservationState::NotProven);
@@ -1028,7 +1071,8 @@ fn environments_are_read_until_total_count_is_reached() -> TestResult {
 #[test]
 fn a_disabled_ruleset_does_not_inflate_the_required_set() -> TestResult {
     let detail = r#"{
-        "conditions": {"ref_name": {"include": ["~ALL"]}},
+        "id":1,"name":"rs-1","target":"branch","enforcement":"active",
+        "conditions": {"ref_name": {"include": ["~ALL"], "exclude": []}},
         "bypass_actors": [],
         "rules": [{"type": "required_status_checks", "parameters": {"required_status_checks": [
             {"context": "disabled-only-check"}
@@ -1076,7 +1120,7 @@ fn ruleset_ref_conditions_select_the_requested_branch() -> TestResult {
         "a single star must not cross a path separator"
     );
 
-    let deep = value(r#"{"ref_name": {"include": ["refs/heads/release/**"], "exclude": []}}"#);
+    let deep = value(r#"{"ref_name": {"include": ["refs/heads/release/**/*"], "exclude": []}}"#);
     assert_eq!(
         ruleset_applies_to_branch(Some(&deep), "release/1.0/hotfix", Some("main")).value(),
         Some(&true)
@@ -1088,7 +1132,7 @@ fn ruleset_ref_conditions_select_the_requested_branch() -> TestResult {
         Some(&false)
     );
 
-    let default = value(r#"{"ref_name": {"include": ["~DEFAULT_BRANCH"]}}"#);
+    let default = value(r#"{"ref_name": {"include": ["~DEFAULT_BRANCH"], "exclude": []}}"#);
     assert_eq!(
         ruleset_applies_to_branch(Some(&default), "main", Some("main")).value(),
         Some(&true)
@@ -1172,7 +1216,10 @@ fn an_unobserved_instrument_makes_the_verdict_not_proven() {
 fn branch_names_are_percent_encoded_in_api_paths() -> TestResult {
     let branch = "release/1.0";
     let commands = FakeCommands::default()
-        .on(&format!("repos/{OWNER}/{NAME}/branches/release%2F1.0"), r#"{"protected": false}"#)
+        .on(
+            &format!("repos/{OWNER}/{NAME}/branches/release%2F1.0"),
+            r#"{"name":"release/1.0","protected": false}"#,
+        )
         .failing(
             &format!("repos/{OWNER}/{NAME}/branches/release%2F1.0/protection"),
             Some(404),
@@ -1275,7 +1322,8 @@ fn an_unrecognised_enforcement_value_is_not_proven() -> TestResult {
 #[test]
 fn an_incomplete_bypass_actor_row_is_not_proven() -> TestResult {
     let detail = r#"{
-        "conditions": {"ref_name": {"include": ["~ALL"]}},
+        "id":1,"name":"rs-1","target":"branch","enforcement":"active",
+        "conditions": {"ref_name": {"include": ["~ALL"], "exclude": []}},
         "bypass_actors": [{"actor_id": 5, "actor_type": "Team"}],
         "rules": []
     }"#;
@@ -1293,3 +1341,6 @@ fn an_incomplete_bypass_actor_row_is_not_proven() -> TestResult {
     assert!(detail.contains("bypass_actors[0]"), "{detail}");
     Ok(())
 }
+
+#[path = "support/release_live_controls_hardening.rs"]
+mod hardening;
