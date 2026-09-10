@@ -116,6 +116,9 @@ Template: `.ci/fixtures/zed-perl-upstream/receipts/managed-route-template.json`.
   subject digests, all four journeys, and the claim boundary
   `real_zed_managed_route = "proven_for_exact_subject"`.
 - `mismatch` / `unsupported` / `not_proven` — bounded non-pass outcomes.
+  Selection, journey, recovery, and upstream payloads may retain partial
+  diagnostics; the validator does not validate those fields for these outcomes,
+  and they establish no successful subclaim.
 
 Receipts must never claim the official registry; that boundary stays
 `not_proven` for this infrastructure lane.
@@ -152,6 +155,13 @@ the captured asset receipt and contract. This does not download assets or
 launch an editor/server. The host receipt must independently pass
 `zed_host_compat::validate_pass` for the exact-source development extension
 using `managed_download`, with absent prior managed cache.
+
+The existing `scripts/zed_host/prepare.py` driver accepts only `binary_override`
+and `worktree_path`; its finalizer emits a redacted `<perllsp>` command and
+explicitly excludes managed-download proof. It cannot currently produce the
+managed host receipt required here. The managed driver extension in #8753 remains
+unfinished infrastructure tracked in #15256, required before #8772 can collect real evidence.
+Relabeling an existing host receipt does not establish managed-route execution.
 
 `upstream.asset_receipt_sha256` and `upstream.host_receipt_sha256` bind the
 exact upstream documents. The subject binds Zed version/build, extension
