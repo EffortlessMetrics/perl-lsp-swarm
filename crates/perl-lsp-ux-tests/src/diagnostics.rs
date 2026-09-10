@@ -50,7 +50,10 @@ impl DiagnosticsTracker {
     }
 
     /// Wait until diagnostics for `uri` satisfy `predicate`, returning the
-    /// matching payload. Returns `None` on timeout.
+    /// matching payload. Returns `None` on timeout — and also when the
+    /// stream ends first: a closed transport and an expired bound are
+    /// indistinguishable here. Callers that must tell them apart should use
+    /// `wait_for_events` and keep the [`WaitEnd`](crate::observation::WaitEnd).
     ///
     /// `events` is the observation source to block on — normally the scenario's
     /// `UxClient`. Events are never consumed by the wait, so a later waiter

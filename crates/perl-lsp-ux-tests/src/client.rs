@@ -665,6 +665,15 @@ enum FrameRead {
     Failed(String),
 }
 
+/// Largest LSP body this harness will buffer for one frame.
+///
+/// `Content-Length` arrives from the child under test, so it is untrusted:
+/// without a bound, a live server that declares gigabytes and keeps its
+/// stream open would grow the reader's buffer without limit. Real LSP
+/// payloads (diagnostics batches included) are kilobytes; 8 MiB is headroom,
+/// not a target.
+const MAX_LSP_BODY_BYTES: usize = 8 * 1024 * 1024;
+
 fn read_one_frame(reader: &mut impl BufRead) -> FrameRead {
     // Parse LSP Content-Length headers.
     let mut content_length: Option<usize> = None;
@@ -700,6 +709,17 @@ fn read_one_frame(reader: &mut impl BufRead) -> FrameRead {
             "LSP message header block carried no usable Content-Length".to_string(),
         );
     };
+    // `Content-Length` is untrusted input from the child: reject an absurd
+    // declaration before reading a single body byte. Without this bound a
+    // live server that keeps its stream open would grow `body` without limit
+    // (and block the reader until EOF) — the largest plausible LSP payloads
+    // are kilobytes, so 8 MiB leaves ample headroom while keeping a
+    // malicious or corrupt header fail-closed and prompt.
+    if len > MAX_LSP_BODY_BYTES {
+        return FrameRead::Failed(format!(
+            "LSP message declared {len} body bytes, above the {MAX_LSP_BODY_BYTES}-byte bound"
+        ));
+    }
     // Read the body incrementally rather than pre-allocating `len` bytes.
     // `Content-Length` is untrusted input: a corrupted header near `usize::MAX`
     // would make `vec![0u8; len]` panic on capacity overflow, and a merely huge
@@ -871,6 +891,63 @@ mod framing_tests {
         anyhow::ensure!(
             matches!(inbox.stream_end(), Some(StreamEnd::ServerClosed)),
             "the honest reason must survive the drop fallback"
+        );
+        Ok(())
+    }
+
+    /// A stream held open by a writer that never delivers the declared body.
+    ///
+    /// `recv` blocks while the writer lives, so without the body-size bound
+    /// this read would block until EOF (forever, here). The bound must fail
+    /// the frame before a single body byte is awaited.
+    struct LiveWriter {
+        rx: std::sync::mpsc::Receiver<Vec<u8>>,
+        buf: Vec<u8>,
+        pos: usize,
+    }
+
+    impl std::io::Read for LiveWriter {
+        fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+            while self.pos >= self.buf.len() {
+                match self.rx.recv() {
+                    Ok(chunk) => self.buf.extend_from_slice(&chunk),
+                    Err(_) => return Ok(0),
+                }
+            }
+            let end = (self.pos + out.len()).min(self.buf.len());
+            out[..end - self.pos].copy_from_slice(&self.buf[self.pos..end]);
+            let advanced = end - self.pos;
+            self.pos = end;
+            Ok(advanced)
+        }
+    }
+
+    #[test]
+    fn a_huge_declared_length_fails_without_waiting_for_the_body() -> anyhow::Result<()> {
+        use std::time::{Duration, Instant};
+
+        let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
+        tx.send(format!("Content-Length: {}\r\n\r\n", 64 * 1024 * 1024).into_bytes())
+            .map_err(|_| anyhow::anyhow!("header send failed"))?;
+        // Hold the stream open: a live server that never sends the body. The
+        // parked thread dies with the test process; nothing here joins it.
+        std::thread::spawn(move || {
+            let _held = tx;
+            std::thread::park();
+        });
+
+        let start = Instant::now();
+        let outcome =
+            read_one_frame(&mut BufReader::new(LiveWriter { rx, buf: Vec::new(), pos: 0 }));
+        let elapsed = start.elapsed();
+
+        let FrameRead::Failed(detail) = outcome else {
+            anyhow::bail!("an over-bound declaration must fail the frame, got {outcome:?}");
+        };
+        anyhow::ensure!(detail.contains("above the"), "the failure must name the bound: {detail}");
+        anyhow::ensure!(
+            elapsed < Duration::from_secs(10),
+            "the bound must fail before any body wait, took {elapsed:?}"
         );
         Ok(())
     }

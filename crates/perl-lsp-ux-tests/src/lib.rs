@@ -712,6 +712,10 @@ impl UxHarness {
     /// Returns an empty vec if the deadline expires with no diagnostics published.
     /// To get the most recently published diagnostics instead, use
     /// [`UxHarness::wait_for_latest_diagnostics`].
+    // Intentional stderr use: a wait that ends without a match must say why in
+    // the test output, or a dead server masquerades as clean diagnostics.
+    // `tracing` has no subscriber in scenario runs, so it would stay silent.
+    #[allow(clippy::print_stderr)]
     pub fn wait_for_diagnostics(
         &self,
         relative_path: &str,
@@ -729,16 +733,24 @@ impl UxHarness {
                     _ => None,
                 })
             })
-            .unwrap_or_default()
+            .unwrap_or_else(|end| {
+                // An empty vec hides why the wait ended: log the reason so a
+                // dead server never masquerades as clean diagnostics.
+                eprintln!("wait_for_diagnostics ended without a match: {}", end.describe());
+                Vec::new()
+            })
     }
 
     /// Wait up to `timeout` for a `textDocument/publishDiagnostics` notification
     /// for the given file, then return the most recently published diagnostics
     /// for the URI, ignoring earlier buffered publications.
     ///
-    /// Returns an empty vec if the deadline expires with no diagnostics published.
+    /// Returns an empty vec if the deadline expires with no diagnostics published —
+    /// and also when the stream ends first (see [`UxHarness::wait_for_diagnostics`]).
     /// Use this when you need the latest server state after an edit; for the
     /// initial (first published) diagnostics use [`UxHarness::wait_for_diagnostics`].
+    // Same intentional stderr use as `wait_for_diagnostics` above.
+    #[allow(clippy::print_stderr)]
     pub fn wait_for_latest_diagnostics(
         &self,
         relative_path: &str,
@@ -756,7 +768,12 @@ impl UxHarness {
                     _ => None,
                 })
             })
-            .unwrap_or_default()
+            .unwrap_or_else(|end| {
+                // Same visibility rule as `wait_for_diagnostics` above: never
+                // let an empty vec silently stand in for a dead server.
+                eprintln!("wait_for_latest_diagnostics ended without a match: {}", end.describe());
+                Vec::new()
+            })
     }
 
     /// Count diagnostics notifications already observed for a file.

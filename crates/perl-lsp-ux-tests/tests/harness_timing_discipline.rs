@@ -113,7 +113,13 @@ fn unowned_sleeps(file: &str, contents: &str, sleep_free: bool) -> Vec<Violation
         }
 
         let lookback = index.saturating_sub(MARKER_LOOKBACK);
-        let marker = lines[lookback..index].iter().find(|candidate| candidate.contains(MARKER));
+        // Nearest marker wins, and an intervening sleep ends the search so one
+        // marker cannot waive a second sleep below it.
+        let marker = lines[lookback..index]
+            .iter()
+            .rev()
+            .take_while(|candidate| !is_sleep(candidate))
+            .find(|candidate| candidate.contains(MARKER));
         let reason = match marker {
             None => format!(
                 "no `{MARKER}` disposition within {MARKER_LOOKBACK} lines above; \
@@ -250,6 +256,20 @@ mod guard_controls {
         anyhow::ensure!(
             found.first().ok_or_else(|| anyhow::anyhow!("missing violation"))?.line == 7,
             "expected uncovered sleep on line 7, got {found:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn one_marker_does_not_waive_two_adjacent_sleeps() -> anyhow::Result<()> {
+        let source = "// ux-timing: product-retry — legitimate\n\
+                      std::thread::sleep(pause);\n\
+                      std::thread::sleep(POLL);\n";
+        let found = unowned_sleeps("src/x.rs", source, false);
+        anyhow::ensure!(found.len() == 1, "the second sleep must be reported: {found:?}");
+        anyhow::ensure!(
+            found.first().ok_or_else(|| anyhow::anyhow!("missing violation"))?.line == 3,
+            "expected uncovered sleep on line 3, got {found:?}"
         );
         Ok(())
     }
