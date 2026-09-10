@@ -359,7 +359,7 @@ expires = "{expires}"
 }
 
 fn malformed_created_duplicate_policy() -> &'static str {
-    r#"schema_version = 1
+    r##"schema_version = 1
 policy = "quality-gate-exceptions"
 owner = "test"
 status = "active"
@@ -396,7 +396,7 @@ removal_criteria = "fixture removal"
 created = "2026-01-01"
 review_after = "2026-10-16"
 expires = "2026-10-30"
-"#
+"##
 }
 
 fn current_head(root: &Path) -> TestResult<String> {
