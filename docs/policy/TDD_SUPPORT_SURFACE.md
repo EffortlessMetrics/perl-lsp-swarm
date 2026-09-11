@@ -614,11 +614,10 @@ Edge classification is the input #8605 consumes when it migrates `must*` imports
 | `perl-parser` | dependencies | mixed | `must`, `must_err`, `must_err_with`, `must_some`, `tdd` |
 | `perl-parser-comparison` | dev-dependencies | declared_unused | — |
 | `perl-parser-core` | dev-dependencies | must_only | `must`, `must_some`, `must_some_with`, `must_with` |
-| `perl-parser-pest` | dev-dependencies | must_only | `must`, `must_err` |
 | `perl-position-tracking` | dev-dependencies | must_only | `must_some` |
 | `perl-release-readiness` | dev-dependencies | declared_unused | — |
 | `perl-ripr-facts` | dev-dependencies | must_only | `must`, `must_some` |
-| `perl-semantic-analyzer` | dev-dependencies | must_only | `must`, `must_some` |
+| `perl-semantic-analyzer` | dev-dependencies | must_only | `must`, `must_some`, `must_some_with` |
 | `perl-subprocess-runtime` | dev-dependencies | must_only | `must` |
 | `perl-symbol` | dev-dependencies | must_only | `must_some` |
 | `perl-uri` | dev-dependencies | must_only | `must`, `must_some` |
@@ -630,5 +629,5 @@ Edge classification is the input #8605 consumes when it migrates `must*` imports
 | --- | ---: |
 | declared_unused | 2 |
 | mixed | 5 |
-| must_only | 16 |
-| **total** | **23** |
+| must_only | 15 |
+| **total** | **22** |
