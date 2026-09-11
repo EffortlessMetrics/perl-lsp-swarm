@@ -601,7 +601,24 @@ mod source_boundary_tests {
         #[cfg(unix)]
         std::os::unix::fs::symlink(&source, &alias)?;
         #[cfg(windows)]
-        std::os::windows::fs::symlink_file(&source, &alias)?;
+        {
+            // Symlink creation on Windows needs SeCreateSymbolicLinkPrivilege
+            // (admin or Developer Mode). The correlation control below depends
+            // on true symlink resolution — a hard link would collapse the
+            // alias/target distinction this test exists to prove — so an
+            // unprivileged host skips with a typed note instead of failing
+            // (#15403). Privileged hosts and Unix always exercise the law.
+            if let Err(error) = std::os::windows::fs::symlink_file(&source, &alias) {
+                if error.raw_os_error() == Some(1314) {
+                    eprintln!(
+                        "skipped: Windows symlink privilege unavailable — \
+                         alias-correlation semantics untested on this host"
+                    );
+                    return Ok(());
+                }
+                return Err(error.into());
+            }
+        }
         let mut adapter = bounded_adapter(root.path())?;
         let body =
             successful_body(request(&mut adapter, source_text(&alias)?, json!([{ "line": 1 }])))?;
