@@ -43,10 +43,11 @@ pub struct LinkedEditingSpan {
 
 /// Selects the timing policy used by [`LspHarness::wait_for_symbol`].
 ///
-/// `Fast` is a harness-only *timing* policy: it uses fewer attempts and shorter
-/// per-request timeouts, but never weakens the symbol-name or URI oracle. It
-/// does not enable the server's process-global `LSP_TEST_FALLBACKS` test-only
-/// dispatch handlers; workspace/symbol does not use those handlers.
+/// `Fast` is a harness-only *timing* policy: it uses shorter per-request
+/// timeouts and shorter backoff, but never weakens the symbol-name or URI
+/// oracle. Every mode polls until the caller-supplied budget, and no mode
+/// enables the server's process-global `LSP_TEST_FALLBACKS` test-only dispatch
+/// handlers; workspace/symbol does not use those handlers.
 ///
 /// `PERL_LSP_PERFORMANCE_TEST` or `LSP_TEST_FALLBACKS` in the environment
 /// selects `Fast` in [`LspHarness::wait_for_symbol`], matching the documented
@@ -115,6 +116,30 @@ pub(crate) fn workspace_symbol_response_contains(
                 })
         })
     })
+}
+
+/// Bounded description of a `workspace/symbol` response for failure reporting.
+///
+/// A workspace can return thousands of symbols, so readiness failures report the
+/// observed count plus a capped sample rather than the entire response.
+pub(crate) fn describe_workspace_symbol_response(response: &Value) -> String {
+    const SAMPLE_LIMIT: usize = 3;
+
+    let Some(symbols) = response.as_array() else {
+        return "non-array workspace/symbol payload".to_string();
+    };
+
+    let sample: Vec<String> = symbols
+        .iter()
+        .take(SAMPLE_LIMIT)
+        .map(|symbol| {
+            let name = symbol.get("name").and_then(Value::as_str).unwrap_or("<no name>");
+            let uri = symbol.pointer("/location/uri").and_then(Value::as_str).unwrap_or("<no uri>");
+            format!("{name} @ {uri}")
+        })
+        .collect();
+
+    format!("{} symbol(s); first {}: [{}]", symbols.len(), sample.len(), sample.join(", "))
 }
 
 impl LspHarness {
@@ -684,17 +709,17 @@ impl LspHarness {
 
         // Adaptive parameters based on environment
         let is_windows = cfg!(windows);
-        let (max_attempts, initial_timeout, max_sleep) = match mode {
+        let (timeout_ramp_steps, initial_timeout, max_sleep) = match mode {
             WaitForSymbolMode::Fast => {
-                (3, 100, 50) // Explicit fast policy remains isolated from environment state.
+                (3, 100, 50) // Fast: shorter timeout and backoff.
             }
             WaitForSymbolMode::Default if is_ci => {
-                (8, 300, 200) // CI: more attempts, longer timeouts
+                (8, 300, 200) // CI: conservative timeout and backoff.
             }
             WaitForSymbolMode::Default if is_windows => {
-                (8, 300, 150) // Windows local runs are slower than Linux/macOS.
+                (8, 300, 150) // Windows: conservative timeout and backoff.
             }
-            WaitForSymbolMode::Default => (5, 200, 100), // Local: balanced approach
+            WaitForSymbolMode::Default => (5, 200, 100), // Local: balanced timeout and backoff.
         };
 
         let start = Instant::now();
@@ -705,8 +730,9 @@ impl LspHarness {
             attempt += 1;
 
             // Progressive timeout increase for reliability
-            let timeout =
-                Duration::from_millis(initial_timeout + (attempt.min(max_attempts) * 50).min(200));
+            let timeout = Duration::from_millis(
+                initial_timeout + (attempt.min(timeout_ramp_steps) * 50).min(200),
+            );
             let remaining = budget.saturating_sub(start.elapsed());
             if remaining.is_zero() {
                 break;
@@ -723,7 +749,8 @@ impl LspHarness {
                     if workspace_symbol_response_contains(&value, query, want_uri) {
                         return Ok(());
                     }
-                    last_observation = format!("last response: {value}");
+                    last_observation =
+                        format!("last response: {}", describe_workspace_symbol_response(&value));
                 }
                 Err(error) => {
                     last_observation = format!("last error: {error}");

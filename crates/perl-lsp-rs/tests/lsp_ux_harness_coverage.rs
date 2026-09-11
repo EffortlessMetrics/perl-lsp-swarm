@@ -6,9 +6,12 @@
 #[path = "support/mod.rs"]
 mod support;
 
-use serde_json::json;
+use serde_json::{Value, json};
 use std::time::{Duration, Instant};
-use support::lsp_harness::{LspHarness, WaitForSymbolMode, workspace_symbol_response_contains};
+use support::lsp_harness::{
+    LspHarness, WaitForSymbolMode, describe_workspace_symbol_response,
+    workspace_symbol_response_contains,
+};
 
 #[test]
 fn harness_supports_edit_save_diagnostics_workflow() -> Result<(), String> {
@@ -137,6 +140,43 @@ fn workspace_symbol_match_requires_name_and_uri() {
     assert!(
         workspace_symbol_response_contains(&sigiled_name, "target", Some(target_uri)),
         "Perl variable sigils should not prevent a matching symbol from satisfying readiness"
+    );
+}
+
+#[test]
+fn workspace_symbol_failure_observation_is_bounded() {
+    let response = Value::Array(
+        (0..500)
+            .map(|index| {
+                json!({
+                    "name": format!("symbol_{index}"),
+                    "location": { "uri": format!("file:///workspace/lib/File{index}.pm") }
+                })
+            })
+            .collect(),
+    );
+
+    let description = describe_workspace_symbol_response(&response);
+    assert!(
+        description.starts_with("500 symbol(s); first 3: ["),
+        "the observed symbol count must be reported: {description}"
+    );
+    assert!(
+        description.contains("symbol_0 @ file:///workspace/lib/File0.pm"),
+        "a sample of the observed symbols must be reported: {description}"
+    );
+    assert!(
+        !description.contains("symbol_3"),
+        "the sample must stay capped and must not serialize the whole response: {description}"
+    );
+    assert!(
+        description.len() < 400,
+        "the failure observation must stay bounded, got {} chars: {description}",
+        description.len()
+    );
+    assert_eq!(
+        describe_workspace_symbol_response(&json!({ "error": "nope" })),
+        "non-array workspace/symbol payload"
     );
 }
 
