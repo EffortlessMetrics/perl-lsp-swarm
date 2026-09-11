@@ -16,11 +16,12 @@
 //!
 //! ## Deadlock analysis
 //!
-//! `try_send` is non-blocking — it never waits on the consumer. The writer thread
-//! holds the `output` lock (for `spawn_writer_shared`) only while performing the
-//! actual write, and it reads from the channel via `blocking_recv`/`try_recv` with
-//! no other lock held. No producer holds a lock when calling `try_send`. Therefore
-//! there is no circular lock+channel dependency and deadlock is impossible.
+//! `try_send` is non-blocking — it never waits on the consumer. Producers take
+//! the short admission-gate lock only to snapshot the shared sender and perform
+//! `try_send`; the writer thread never takes that gate. The writer thread holds
+//! the `output` lock (for `spawn_writer_shared`) only while performing the actual
+//! write, and it reads from the channel via `blocking_recv`/`try_recv` with no
+//! other lock held. Therefore there is no circular lock+channel dependency.
 
 #[cfg(test)]
 use crate::protocol::JsonRpcId;
@@ -29,7 +30,9 @@ use crate::runtime::types::ServerRequestId;
 use crate::transport::frame;
 use serde_json::{Value, json};
 use std::io::{self, Write};
+use std::sync::Arc;
 use std::thread;
+use std::time::Duration;
 
 /// Capacity of the bounded outbound message channel.
 ///
@@ -124,7 +127,31 @@ impl OutboundSink for RecordingSink {
 /// all messages are serialized by the single writer thread.
 #[derive(Clone)]
 pub(crate) struct OutboundSender {
-    tx: tokio::sync::mpsc::Sender<OutboundMessage>,
+    /// The only sender admitted to the writer channel. Clones share this gate
+    /// so shutdown can close admission for every producer at once.
+    gate: Arc<parking_lot::Mutex<Option<tokio::sync::mpsc::Sender<OutboundMessage>>>>,
+    completion: Arc<WriterCompletion>,
+}
+
+#[derive(Default)]
+struct WriterCompletion {
+    outcome: parking_lot::Mutex<Option<WriterTerminalOutcome>>,
+    ready: parking_lot::Condvar,
+}
+
+impl WriterCompletion {
+    fn publish(&self, outcome: WriterTerminalOutcome) {
+        *self.outcome.lock() = Some(outcome);
+        self.ready.notify_all();
+    }
+
+    fn wait(&self, timeout: Duration) -> Option<WriterTerminalOutcome> {
+        let mut outcome = self.outcome.lock();
+        if outcome.is_none() {
+            self.ready.wait_for(&mut outcome, timeout);
+        }
+        outcome.clone()
+    }
 }
 
 /// Map a [`tokio::sync::mpsc::error::TrySendError`] to an [`io::Error`].
@@ -145,9 +172,37 @@ fn map_try_send_error<T>(e: tokio::sync::mpsc::error::TrySendError<T>) -> io::Er
 }
 
 impl OutboundSender {
+    fn from_parts(
+        tx: tokio::sync::mpsc::Sender<OutboundMessage>,
+        completion: Arc<WriterCompletion>,
+    ) -> Self {
+        Self { gate: Arc::new(parking_lot::Mutex::new(Some(tx))), completion }
+    }
+
+    #[cfg(test)]
+    fn from_tx(tx: tokio::sync::mpsc::Sender<OutboundMessage>) -> Self {
+        Self::from_parts(tx, Arc::new(WriterCompletion::default()))
+    }
+
+    fn try_send(&self, message: OutboundMessage) -> io::Result<()> {
+        let gate = self.gate.lock();
+        let tx = gate
+            .as_ref()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::BrokenPipe, "outbound channel closed"))?;
+        tx.try_send(message).map_err(map_try_send_error)
+    }
+
+    /// Close admission for every clone and wait briefly for admitted output.
+    /// A timeout is deliberately unsettled: callers must not report successful
+    /// output settlement when the sink is still blocked.
+    pub(crate) fn close_and_wait(&self, timeout: Duration) -> Option<WriterTerminalOutcome> {
+        self.gate.lock().take();
+        self.completion.wait(timeout)
+    }
+
     /// Send a JSON-RPC response.
     pub fn send_response(&self, response: JsonRpcResponse) -> io::Result<()> {
-        self.tx.try_send(OutboundMessage::Response(response)).map_err(map_try_send_error)
+        self.try_send(OutboundMessage::Response(response))
     }
 
     /// Send a JSON-RPC notification.
@@ -162,9 +217,7 @@ impl OutboundSender {
                 format!("outbound notification `{method}` {reason}"),
             ));
         }
-        self.tx
-            .try_send(OutboundMessage::Notification { method: method.to_string(), params })
-            .map_err(map_try_send_error)
+        self.try_send(OutboundMessage::Notification { method: method.to_string(), params })
     }
 
     /// Send a server→client JSON-RPC request.
@@ -182,9 +235,7 @@ impl OutboundSender {
                 format!("outbound request `{method}` {reason}"),
             ));
         }
-        self.tx
-            .try_send(OutboundMessage::Request { id, method: method.to_string(), params })
-            .map_err(map_try_send_error)
+        self.try_send(OutboundMessage::Request { id, method: method.to_string(), params })
     }
 }
 
@@ -212,8 +263,14 @@ pub(crate) fn spawn_writer(
     output: Box<dyn Write + Send>,
 ) -> (OutboundSender, thread::JoinHandle<WriterTerminalOutcome>) {
     let (tx, rx) = tokio::sync::mpsc::channel(OUTBOUND_CAPACITY);
-    let handle = thread::spawn(move || writer_loop_batched(rx, output));
-    (OutboundSender { tx }, handle)
+    let completion = Arc::new(WriterCompletion::default());
+    let thread_completion = Arc::clone(&completion);
+    let handle = thread::spawn(move || {
+        let outcome = writer_loop_batched(rx, output);
+        thread_completion.publish(outcome.clone());
+        outcome
+    });
+    (OutboundSender::from_parts(tx, completion), handle)
 }
 
 /// Create an `OutboundSender` backed by a shared `Arc<Mutex<Box<dyn Write + Send>>>`.
@@ -223,15 +280,21 @@ pub(crate) fn spawn_writer_shared(
     output: std::sync::Arc<parking_lot::Mutex<Box<dyn Write + Send>>>,
 ) -> (OutboundSender, thread::JoinHandle<WriterTerminalOutcome>) {
     let (tx, rx) = tokio::sync::mpsc::channel(OUTBOUND_CAPACITY);
-    let handle = thread::spawn(move || writer_loop_batched_shared(rx, output));
-    (OutboundSender { tx }, handle)
+    let completion = Arc::new(WriterCompletion::default());
+    let thread_completion = Arc::clone(&completion);
+    let handle = thread::spawn(move || {
+        let outcome = writer_loop_batched_shared(rx, output);
+        thread_completion.publish(outcome.clone());
+        outcome
+    });
+    (OutboundSender::from_parts(tx, completion), handle)
 }
 
 /// Create an already-closed sender for shutdown replacement paths.
 pub(crate) fn closed_sender() -> OutboundSender {
     let (tx, rx) = tokio::sync::mpsc::channel(1);
     drop(rx);
-    OutboundSender { tx }
+    OutboundSender::from_parts(tx, Arc::new(WriterCompletion::default()))
 }
 
 /// Terminal outcome of the outbound writer thread (#8402).
@@ -591,6 +654,88 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn closing_one_sender_rejects_all_clones_after_admission_closes() -> Result<(), Box<dyn Error>>
+    {
+        let (sender, handle) = spawn_writer(Box::new(std::io::sink()));
+        let clone = sender.clone();
+        sender.send_notification("window/logMessage", json!({"before": true}))?;
+        let outcome = sender
+            .close_and_wait(Duration::from_secs(1))
+            .ok_or("writer should publish a terminal outcome")?;
+        assert_eq!(outcome, WriterTerminalOutcome::NormalClose);
+        let error = clone
+            .send_notification("window/logMessage", json!({"after": true}))
+            .err()
+            .ok_or("clone send after close must fail")?;
+        assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
+        drop(clone);
+        drop(sender);
+        assert_eq!(handle.join().map_err(|_| "writer thread panicked")?, outcome);
+        Ok(())
+    }
+
+    #[test]
+    fn blocked_writer_wait_is_bounded_and_releases_cleanly() -> Result<(), Box<dyn Error>> {
+        struct GatedSink {
+            entered: Arc<std::sync::atomic::AtomicBool>,
+            release: Arc<(parking_lot::Mutex<bool>, parking_lot::Condvar)>,
+        }
+
+        impl Write for GatedSink {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                self.entered.store(true, std::sync::atomic::Ordering::SeqCst);
+                let (lock, cvar) = &*self.release;
+                let mut released = lock.lock();
+                while !*released {
+                    cvar.wait(&mut released);
+                }
+                Ok(bytes.len())
+            }
+
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let entered = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let release = Arc::new((parking_lot::Mutex::new(false), parking_lot::Condvar::new()));
+        let (sender, handle) = spawn_writer(Box::new(GatedSink {
+            entered: Arc::clone(&entered),
+            release: Arc::clone(&release),
+        }));
+        let send_result = sender.send_notification("window/logMessage", json!({"blocked": true}));
+        let deadline = std::time::Instant::now() + Duration::from_secs(1);
+        let reached_gate = loop {
+            if entered.load(std::sync::atomic::Ordering::SeqCst) {
+                break true;
+            }
+            if std::time::Instant::now() >= deadline {
+                break false;
+            }
+            std::thread::yield_now();
+        };
+
+        let wait_started = std::time::Instant::now();
+        let unsettled = sender.close_and_wait(Duration::from_millis(20));
+        let wait_elapsed = wait_started.elapsed();
+        {
+            let (lock, cvar) = &*release;
+            *lock.lock() = true;
+            cvar.notify_all();
+        }
+        let outcome = handle.join().map_err(|_| "writer thread panicked")?;
+        send_result?;
+        assert!(reached_gate, "writer did not reach its releasable gate");
+        assert!(unsettled.is_none(), "a blocked writer must remain unsettled after a bounded wait");
+        assert!(
+            wait_elapsed < Duration::from_secs(1),
+            "bounded wait took too long: {wait_elapsed:?}"
+        );
+        assert_eq!(outcome, WriterTerminalOutcome::NormalClose);
+        Ok(())
+    }
+
+    #[test]
     fn spawn_writer_serializes_response_notification_and_request() -> Result<(), Box<dyn Error>> {
         let buffer = SharedBuffer::new();
         let (sender, handle) = spawn_writer(Box::new(buffer.clone()));
@@ -735,9 +880,11 @@ pub(crate) mod tests {
         // Keep a probe alive so the channel-closed surface can be exercised
         // after the writer has settled.
         let probe = sender.clone();
-        drop(sender);
-
+        let settled = sender
+            .close_and_wait(Duration::from_secs(1))
+            .ok_or("write-failure writer did not publish a terminal outcome")?;
         let outcome = handle.join().map_err(|_| "writer thread panicked")?;
+        assert_eq!(settled, outcome, "close_and_wait must observe the same write failure");
 
         // After writer death the receiver is gone: later producer observations
         // are Closed→BrokenPipe, never the causal sink error, and they cannot
@@ -788,9 +935,11 @@ pub(crate) mod tests {
         }));
 
         sender.send_notification("telemetry/event", json!({"x": 1}))?;
-        drop(sender);
-
+        let settled = sender
+            .close_and_wait(Duration::from_secs(1))
+            .ok_or("flush-failure writer did not publish a terminal outcome")?;
         let outcome = handle.join().map_err(|_| "writer thread panicked")?;
+        assert_eq!(settled, outcome, "close_and_wait must observe the same flush failure");
         match &outcome {
             WriterTerminalOutcome::FlushFailed { kind, batch_bytes, .. } => {
                 assert_eq!(*kind, sink_kind, "flush failure class must be preserved");
@@ -946,7 +1095,7 @@ pub(crate) mod tests {
     fn outbound_sender_returns_would_block_when_channel_is_full() -> Result<(), Box<dyn Error>> {
         // Use a tiny capacity so we don't have to send 64 messages.
         let (tx, _rx) = tokio::sync::mpsc::channel::<OutboundMessage>(2);
-        let sender = OutboundSender { tx };
+        let sender = OutboundSender::from_tx(tx);
 
         // Fill both slots.
         sender.send_notification("slot/one", json!({}))?;
@@ -1040,7 +1189,7 @@ pub(crate) mod tests {
     #[test]
     fn outbound_admission_refuses_client_to_server_methods() -> Result<(), Box<dyn Error>> {
         let (tx, _rx) = tokio::sync::mpsc::channel::<OutboundMessage>(4);
-        let sender = OutboundSender { tx };
+        let sender = OutboundSender::from_tx(tx);
         let request_id = ServerRequestId::new(1).ok_or("valid id")?;
 
         for method in ["initialize", "textDocument/hover", "textDocument/didOpen"] {
@@ -1072,7 +1221,7 @@ pub(crate) mod tests {
     #[test]
     fn outbound_admission_allows_server_to_client_methods() -> Result<(), Box<dyn Error>> {
         let (tx, mut rx) = tokio::sync::mpsc::channel::<OutboundMessage>(4);
-        let sender = OutboundSender { tx };
+        let sender = OutboundSender::from_tx(tx);
         let request_id = ServerRequestId::new(7).ok_or("valid id")?;
 
         sender.send_request(request_id, "workspace/configuration", json!({"items": []}))?;

@@ -322,3 +322,35 @@ docs_url = "docs/how-to/BENCHMARKING.md"
 cost_tier = "high"
 failure_impact = "informational"
 baseline_path = ".ci/metrics/real_project_latency.json"
+
+[[gate]]
+id = "pending-parse-freshness"
+name = "Pending Parse Provider Freshness"
+type = "correctness"
+blocking = true
+timeout_seconds = 300
+command = "env RUST_TEST_THREADS=2 cargo test -p perl-lsp-rs --locked --features workspace,expose_lsp_test_api --test pending_parse_provider_freshness_tests --test post_edit_index_staleness_tests --test navigation_same_document_toctou_regression_tests -- --test-threads=2"
+evidence_pattern = "test result: ok"
+threshold = { type = "exit_code", pass = 0 }
+
+[gate.metadata]
+description = "Compiles and runs the pending-parse gap suites behind workspace+expose_lsp_test_api so they cannot rot silently; per-suite provider coverage, not five provider families across all three (#11933)"
+docs_url = "crates/perl-lsp-rs/tests/pending_parse_provider_freshness_tests.rs"
+cost_tier = "medium"
+failure_impact = "high"
+
+[[gate]]
+id = "pull-diagnostics-freshness"
+name = "Pull Diagnostics Compile/Panic Coverage"
+type = "correctness"
+blocking = true
+timeout_seconds = 240
+command = "env RUST_TEST_THREADS=2 cargo test -p perl-lsp-rs --locked --features expose_lsp_test_api --test pull_diagnostics_freshness_tests -- --test-threads=2"
+evidence_pattern = "test result: ok"
+threshold = { type = "exit_code", pass = 0 }
+
+[gate.metadata]
+description = "Panic/compile regression coverage for the pull-diagnostic path behind expose_lsp_test_api; NOT a stale-snapshot rejection proof — the concurrent cells are sleep-synchronised and assert only a well-formed result (#11933, discriminating proof tracked under #13346)"
+docs_url = "crates/perl-lsp-rs/tests/pull_diagnostics_freshness_tests.rs"
+cost_tier = "medium"
+failure_impact = "high"

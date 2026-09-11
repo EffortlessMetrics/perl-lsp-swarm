@@ -336,14 +336,18 @@ gh workflow run vscode-published-extension-smoke.yml \
 
 ### 5. Docker images
 
+The runtime image carries the `-perl` suffix. The unsuffixed tags used to
+publish the Rust build toolchain, which ships no `perllsp`; that image is
+retired from product publication (#8980), so verify the runtime tag only.
+
 ```bash
-docker pull "effortlessmetrics/perl-lsp:${VERSION}"
-docker run --rm "effortlessmetrics/perl-lsp:${VERSION}" perllsp --version
+docker pull "effortlessmetrics/perl-lsp:${VERSION}-perl"
+docker run --rm "effortlessmetrics/perl-lsp:${VERSION}-perl" --version
 # Expected: perllsp X.Y.Z
 ```
 
 ```bash
-docker pull "ghcr.io/effortlessmetrics/perl-lsp:${VERSION}"
+docker pull "ghcr.io/effortlessmetrics/perl-lsp-perl:${VERSION}"
 ```
 
 ### 6. Homebrew auto-bump
