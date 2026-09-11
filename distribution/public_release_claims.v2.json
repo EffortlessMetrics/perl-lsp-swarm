@@ -4,14 +4,7 @@
       "claim_id": "C101",
       "drift_status": "volatile_number",
       "finding_refs": [
-        "FND-1",
-        "FND-2",
-        "FND-3",
-        "FND-4",
-        "FND-5",
-        "FND-6",
-        "FND-8",
-        "FND-9"
+        "FND-8"
       ],
       "identity_anti_claims": [],
       "location": "README.md:20-22",
@@ -24,16 +17,7 @@
     {
       "claim_id": "C102",
       "drift_status": "current",
-      "finding_refs": [
-        "FND-1",
-        "FND-2",
-        "FND-3",
-        "FND-4",
-        "FND-5",
-        "FND-6",
-        "FND-8",
-        "FND-9"
-      ],
+      "finding_refs": [],
       "identity_anti_claims": [],
       "location": "README.md:68-74",
       "notes": "Matches S02/S12",
@@ -45,16 +29,7 @@
     {
       "claim_id": "C103",
       "drift_status": "pending",
-      "finding_refs": [
-        "FND-1",
-        "FND-2",
-        "FND-3",
-        "FND-4",
-        "FND-5",
-        "FND-6",
-        "FND-8",
-        "FND-9"
-      ],
+      "finding_refs": [],
       "identity_anti_claims": [],
       "location": "README.md:76-90",
       "notes": "Gate: release packet publication (#4348 chain); matches S02 L54-82",
@@ -66,16 +41,7 @@
     {
       "claim_id": "C104",
       "drift_status": "current",
-      "finding_refs": [
-        "FND-1",
-        "FND-2",
-        "FND-3",
-        "FND-4",
-        "FND-5",
-        "FND-6",
-        "FND-8",
-        "FND-9"
-      ],
+      "finding_refs": [],
       "identity_anti_claims": [],
       "location": "README.md:92-96",
       "notes": "Tap version independently versioned per same lines",
@@ -88,13 +54,6 @@
       "claim_id": "C105",
       "drift_status": "pending",
       "finding_refs": [
-        "FND-1",
-        "FND-2",
-        "FND-3",
-        "FND-4",
-        "FND-5",
-        "FND-6",
-        "FND-8",
         "FND-9"
       ],
       "identity_anti_claims": [],
@@ -108,16 +67,7 @@
     {
       "claim_id": "C106",
       "drift_status": "current",
-      "finding_refs": [
-        "FND-1",
-        "FND-2",
-        "FND-3",
-        "FND-4",
-        "FND-5",
-        "FND-6",
-        "FND-8",
-        "FND-9"
-      ],
+      "finding_refs": [],
       "identity_anti_claims": [],
       "location": "README.md:110-128",
       "notes": "Matches S02 L282-299, S09 L11-13",
@@ -129,16 +79,7 @@
     {
       "claim_id": "C107",
       "drift_status": "current",
-      "finding_refs": [
-        "FND-1",
-        "FND-2",
-        "FND-3",
-        "FND-4",
-        "FND-5",
-        "FND-6",
-        "FND-8",
-        "FND-9"
-      ],
+      "finding_refs": [],
       "identity_anti_claims": [],
       "location": "README.md:130-134",
       "notes": "Product-unit support boundary claim",
@@ -150,16 +91,7 @@
     {
       "claim_id": "C108",
       "drift_status": "current",
-      "finding_refs": [
-        "FND-1",
-        "FND-2",
-        "FND-3",
-        "FND-4",
-        "FND-5",
-        "FND-6",
-        "FND-8",
-        "FND-9"
-      ],
+      "finding_refs": [],
       "identity_anti_claims": [],
       "location": "README.md:136-138",
       "notes": "Non-install dependency boundary",
@@ -171,14 +103,7 @@
     {
       "claim_id": "C201",
       "drift_status": "current",
-      "finding_refs": [
-        "FND-2",
-        "FND-4",
-        "FND-7",
-        "FND-9",
-        "FND-10",
-        "FND-11"
-      ],
+      "finding_refs": [],
       "identity_anti_claims": [],
       "location": "INSTALLATION.md:13-15",
       "notes": "Channel-independence frame used across surfaces",
@@ -191,12 +116,7 @@
       "claim_id": "C202",
       "drift_status": "current",
       "finding_refs": [
-        "FND-2",
-        "FND-4",
-        "FND-7",
-        "FND-9",
-        "FND-10",
-        "FND-11"
+        "FND-9"
       ],
       "identity_anti_claims": [],
       "location": "INSTALLATION.md:19-25",
@@ -209,14 +129,7 @@
     {
       "claim_id": "C203",
       "drift_status": "current",
-      "finding_refs": [
-        "FND-2",
-        "FND-4",
-        "FND-7",
-        "FND-9",
-        "FND-10",
-        "FND-11"
-      ],
+      "finding_refs": [],
       "identity_anti_claims": [
         {
           "disposition": "do_not_install",
@@ -235,14 +148,7 @@
     {
       "claim_id": "C204",
       "drift_status": "current",
-      "finding_refs": [
-        "FND-2",
-        "FND-4",
-        "FND-7",
-        "FND-9",
-        "FND-10",
-        "FND-11"
-      ],
+      "finding_refs": [],
       "identity_anti_claims": [],
       "location": "INSTALLATION.md:39-66",
       "notes": "Fail-closed identity bootstrap contract",
@@ -255,12 +161,7 @@
       "claim_id": "C205",
       "drift_status": "future_example",
       "finding_refs": [
-        "FND-2",
-        "FND-4",
-        "FND-7",
-        "FND-9",
-        "FND-10",
-        "FND-11"
+        "FND-2"
       ],
       "identity_anti_claims": [],
       "location": "INSTALLATION.md:68-94",
@@ -273,14 +174,7 @@
     {
       "claim_id": "C206",
       "drift_status": "current",
-      "finding_refs": [
-        "FND-2",
-        "FND-4",
-        "FND-7",
-        "FND-9",
-        "FND-10",
-        "FND-11"
-      ],
+      "finding_refs": [],
       "identity_anti_claims": [],
       "location": "INSTALLATION.md:96-97",
       "notes": "Matches prebuilt table C213",
@@ -298,12 +192,7 @@
       },
       "drift_status": "current",
       "finding_refs": [
-        "FND-2",
-        "FND-4",
-        "FND-7",
-        "FND-9",
-        "FND-10",
-        "FND-11"
+        "FND-7"
       ],
       "identity_anti_claims": [],
       "location": "INSTALLATION.md:99-114",
@@ -327,14 +216,7 @@
         }
       },
       "drift_status": "current",
-      "finding_refs": [
-        "FND-2",
-        "FND-4",
-        "FND-7",
-        "FND-9",
-        "FND-10",
-        "FND-11"
-      ],
+      "finding_refs": [],
       "identity_anti_claims": [],
       "location": "INSTALLATION.md:116-122",
       "notes": "Product-unit dimension join risk for #11549",
@@ -356,11 +238,8 @@
       },
       "drift_status": "pending",
       "finding_refs": [
-        "FND-2",
         "FND-4",
-        "FND-7",
         "FND-9",
-        "FND-10",
         "FND-11"
       ],
       "identity_anti_claims": [],
@@ -395,11 +274,7 @@
       },
       "drift_status": "source_drift",
       "finding_refs": [
-        "FND-2",
         "FND-4",
-        "FND-7",
-        "FND-9",
-        "FND-10",
         "FND-11"
       ],
       "identity_anti_claims": [],
@@ -414,12 +289,7 @@
       "claim_id": "C211",
       "drift_status": "mutable_pin",
       "finding_refs": [
-        "FND-2",
-        "FND-4",
-        "FND-7",
-        "FND-9",
-        "FND-10",
-        "FND-11"
+        "FND-10"
       ],
       "identity_anti_claims": [],
       "location": "INSTALLATION.md:169-179",
@@ -432,14 +302,7 @@
     {
       "claim_id": "C212",
       "drift_status": "current",
-      "finding_refs": [
-        "FND-2",
-        "FND-4",
-        "FND-7",
-        "FND-9",
-        "FND-10",
-        "FND-11"
-      ],
+      "finding_refs": [],
       "identity_anti_claims": [],
       "location": "INSTALLATION.md:189-213",
       "notes": "Honest unsupported-channel annotation",
@@ -451,14 +314,7 @@
     {
       "claim_id": "C213",
       "drift_status": "current",
-      "finding_refs": [
-        "FND-2",
-        "FND-4",
-        "FND-7",
-        "FND-9",
-        "FND-10",
-        "FND-11"
-      ],
+      "finding_refs": [],
       "identity_anti_claims": [],
       "location": "INSTALLATION.md:215-240",
       "notes": "Platform breadth L232 matches C206",
@@ -470,14 +326,7 @@
     {
       "claim_id": "C214",
       "drift_status": "current",
-      "finding_refs": [
-        "FND-2",
-        "FND-4",
-        "FND-7",
-        "FND-9",
-        "FND-10",
-        "FND-11"
-      ],
+      "finding_refs": [],
       "identity_anti_claims": [
         {
           "disposition": "do_not_install",
@@ -496,14 +345,7 @@
     {
       "claim_id": "C215",
       "drift_status": "current",
-      "finding_refs": [
-        "FND-2",
-        "FND-4",
-        "FND-7",
-        "FND-9",
-        "FND-10",
-        "FND-11"
-      ],
+      "finding_refs": [],
       "identity_anti_claims": [],
       "location": "INSTALLATION.md:261-280",
       "notes": "Canonical platform matrix",
@@ -515,14 +357,7 @@
     {
       "claim_id": "C216",
       "drift_status": "current",
-      "finding_refs": [
-        "FND-2",
-        "FND-4",
-        "FND-7",
-        "FND-9",
-        "FND-10",
-        "FND-11"
-      ],
+      "finding_refs": [],
       "identity_anti_claims": [],
       "location": "INSTALLATION.md:282-299",
       "notes": "Mirrors C106",
@@ -536,8 +371,7 @@
       "drift_status": "mutable_pin",
       "finding_refs": [
         "FND-1",
-        "FND-2",
-        "FND-3"
+        "FND-2"
       ],
       "identity_anti_claims": [],
       "location": "GITHUB_ACTIONS.md:6-13",
@@ -555,11 +389,7 @@
         }
       },
       "drift_status": "current",
-      "finding_refs": [
-        "FND-1",
-        "FND-2",
-        "FND-3"
-      ],
+      "finding_refs": [],
       "identity_anti_claims": [],
       "location": "GITHUB_ACTIONS.md:15-23",
       "notes": "Behavior verified against S04 resolve/download steps",
@@ -572,8 +402,6 @@
       "claim_id": "C303",
       "drift_status": "mutable_pin",
       "finding_refs": [
-        "FND-1",
-        "FND-2",
         "FND-3"
       ],
       "identity_anti_claims": [],
@@ -589,9 +417,7 @@
       "drift_status": "mutable_pin",
       "finding_refs": [
         "FND-1",
-        "FND-2",
-        "FND-3",
-        "FND-4"
+        "FND-2"
       ],
       "identity_anti_claims": [],
       "location": "action.yml:1-5",
@@ -605,10 +431,7 @@
       "claim_id": "C402",
       "drift_status": "mutable_pin",
       "finding_refs": [
-        "FND-1",
-        "FND-2",
-        "FND-3",
-        "FND-4"
+        "FND-3"
       ],
       "identity_anti_claims": [],
       "location": "action.yml:12-16",
@@ -621,12 +444,7 @@
     {
       "claim_id": "C403",
       "drift_status": "current",
-      "finding_refs": [
-        "FND-1",
-        "FND-2",
-        "FND-3",
-        "FND-4"
-      ],
+      "finding_refs": [],
       "identity_anti_claims": [],
       "location": "action.yml:17-24",
       "notes": "",
@@ -638,12 +456,7 @@
     {
       "claim_id": "C404",
       "drift_status": "current",
-      "finding_refs": [
-        "FND-1",
-        "FND-2",
-        "FND-3",
-        "FND-4"
-      ],
+      "finding_refs": [],
       "identity_anti_claims": [],
       "location": "action.yml:25-28",
       "notes": "",
@@ -666,9 +479,6 @@
       },
       "drift_status": "current",
       "finding_refs": [
-        "FND-1",
-        "FND-2",
-        "FND-3",
         "FND-4"
       ],
       "identity_anti_claims": [],
@@ -687,12 +497,7 @@
         }
       },
       "drift_status": "current",
-      "finding_refs": [
-        "FND-1",
-        "FND-2",
-        "FND-3",
-        "FND-4"
-      ],
+      "finding_refs": [],
       "identity_anti_claims": [],
       "location": "action.yml:183-190",
       "notes": "Matches C302/C207 strength",
@@ -715,14 +520,7 @@
       },
       "drift_status": "source_drift",
       "finding_refs": [
-        "FND-1",
-        "FND-2",
-        "FND-3",
-        "FND-4",
-        "FND-5",
-        "FND-6",
-        "FND-8",
-        "FND-9"
+        "FND-4"
       ],
       "identity_anti_claims": [],
       "location": "actions/README.md:30-35",
@@ -737,13 +535,7 @@
       "drift_status": "mutable_pin",
       "finding_refs": [
         "FND-1",
-        "FND-2",
-        "FND-3",
-        "FND-4",
-        "FND-5",
-        "FND-6",
-        "FND-8",
-        "FND-9"
+        "FND-2"
       ],
       "identity_anti_claims": [],
       "location": "actions/README.md:36-41",
@@ -756,16 +548,7 @@
     {
       "claim_id": "C503",
       "drift_status": "mutable_pin",
-      "finding_refs": [
-        "FND-1",
-        "FND-2",
-        "FND-3",
-        "FND-4",
-        "FND-5",
-        "FND-6",
-        "FND-8",
-        "FND-9"
-      ],
+      "finding_refs": [],
       "identity_anti_claims": [],
       "location": "actions/README.md:43-45",
       "notes": "FND-3",
@@ -878,10 +661,7 @@
     {
       "claim_id": "C1001",
       "drift_status": "current",
-      "finding_refs": [
-        "FND-3",
-        "FND-7"
-      ],
+      "finding_refs": [],
       "identity_anti_claims": [],
       "location": "GETTING_STARTED.md:14-15",
       "notes": "",
@@ -893,10 +673,7 @@
     {
       "claim_id": "C1002",
       "drift_status": "current",
-      "finding_refs": [
-        "FND-3",
-        "FND-7"
-      ],
+      "finding_refs": [],
       "identity_anti_claims": [],
       "location": "GETTING_STARTED.md:24",
       "notes": "Parser-embedded posture claim",
@@ -908,10 +685,7 @@
     {
       "claim_id": "C1003",
       "drift_status": "current",
-      "finding_refs": [
-        "FND-3",
-        "FND-7"
-      ],
+      "finding_refs": [],
       "identity_anti_claims": [],
       "location": "GETTING_STARTED.md:38-41",
       "notes": "Condensed duplicate of C102",
@@ -923,10 +697,7 @@
     {
       "claim_id": "C1004",
       "drift_status": "current",
-      "finding_refs": [
-        "FND-3",
-        "FND-7"
-      ],
+      "finding_refs": [],
       "identity_anti_claims": [],
       "location": "GETTING_STARTED.md:47-53",
       "notes": "Third restatement of bootstrap (annotation-dedup candidate)",
@@ -947,7 +718,6 @@
       },
       "drift_status": "cross_surface_drift",
       "finding_refs": [
-        "FND-3",
         "FND-7"
       ],
       "identity_anti_claims": [],
@@ -962,8 +732,7 @@
       "claim_id": "C1006",
       "drift_status": "mutable_pin",
       "finding_refs": [
-        "FND-3",
-        "FND-7"
+        "FND-3"
       ],
       "identity_anti_claims": [],
       "location": "GETTING_STARTED.md:68-79",
@@ -976,10 +745,7 @@
     {
       "claim_id": "C1007",
       "drift_status": "current",
-      "finding_refs": [
-        "FND-3",
-        "FND-7"
-      ],
+      "finding_refs": [],
       "identity_anti_claims": [],
       "location": "GETTING_STARTED.md:86",
       "notes": "",
@@ -991,10 +757,7 @@
     {
       "claim_id": "C1008",
       "drift_status": "current",
-      "finding_refs": [
-        "FND-3",
-        "FND-7"
-      ],
+      "finding_refs": [],
       "identity_anti_claims": [],
       "location": "GETTING_STARTED.md:93-103",
       "notes": "",
@@ -1038,14 +801,7 @@
       "claim_id": "C1201",
       "drift_status": "volatile_number",
       "finding_refs": [
-        "FND-1",
-        "FND-2",
-        "FND-3",
-        "FND-4",
-        "FND-5",
-        "FND-6",
-        "FND-8",
-        "FND-9"
+        "FND-8"
       ],
       "identity_anti_claims": [],
       "location": "README.md:7-10",
@@ -1058,16 +814,7 @@
     {
       "claim_id": "C1202",
       "drift_status": "current",
-      "finding_refs": [
-        "FND-1",
-        "FND-2",
-        "FND-3",
-        "FND-4",
-        "FND-5",
-        "FND-6",
-        "FND-8",
-        "FND-9"
-      ],
+      "finding_refs": [],
       "identity_anti_claims": [],
       "location": "README.md:118-137",
       "notes": "Marketplace-facing command set",
@@ -1080,14 +827,7 @@
       "claim_id": "C1203",
       "drift_status": "mutable_pin",
       "finding_refs": [
-        "FND-1",
-        "FND-2",
-        "FND-3",
-        "FND-4",
-        "FND-5",
-        "FND-6",
-        "FND-8",
-        "FND-9"
+        "FND-3"
       ],
       "identity_anti_claims": [],
       "location": "README.md:137,190-192",
@@ -1112,14 +852,7 @@
       },
       "drift_status": "source_drift",
       "finding_refs": [
-        "FND-1",
-        "FND-2",
-        "FND-3",
         "FND-4",
-        "FND-5",
-        "FND-6",
-        "FND-8",
-        "FND-9",
         "FND-11"
       ],
       "identity_anti_claims": [],
@@ -1134,14 +867,7 @@
       "claim_id": "C1205",
       "drift_status": "mutable_pin",
       "finding_refs": [
-        "FND-1",
-        "FND-2",
-        "FND-3",
-        "FND-4",
-        "FND-5",
-        "FND-6",
-        "FND-8",
-        "FND-9"
+        "FND-5"
       ],
       "identity_anti_claims": [],
       "location": "README.md:157,208",
@@ -1154,16 +880,7 @@
     {
       "claim_id": "C1206",
       "drift_status": "current",
-      "finding_refs": [
-        "FND-1",
-        "FND-2",
-        "FND-3",
-        "FND-4",
-        "FND-5",
-        "FND-6",
-        "FND-8",
-        "FND-9"
-      ],
+      "finding_refs": [],
       "identity_anti_claims": [],
       "location": "README.md:163-176",
       "notes": "Fourth restatement of bootstrap",
@@ -1176,14 +893,7 @@
       "claim_id": "C1207",
       "drift_status": "mutable_pin",
       "finding_refs": [
-        "FND-1",
-        "FND-2",
-        "FND-3",
-        "FND-4",
-        "FND-5",
-        "FND-6",
-        "FND-8",
-        "FND-9"
+        "FND-6"
       ],
       "identity_anti_claims": [],
       "location": "README.md:179",
@@ -1196,16 +906,7 @@
     {
       "claim_id": "C1208",
       "drift_status": "current",
-      "finding_refs": [
-        "FND-1",
-        "FND-2",
-        "FND-3",
-        "FND-4",
-        "FND-5",
-        "FND-6",
-        "FND-8",
-        "FND-9"
-      ],
+      "finding_refs": [],
       "identity_anti_claims": [],
       "location": "README.md:383",
       "notes": "Matches Distribution Matrix channel row",
@@ -1217,9 +918,7 @@
     {
       "claim_id": "C1301",
       "drift_status": "current",
-      "finding_refs": [
-        "FND-12"
-      ],
+      "finding_refs": [],
       "identity_anti_claims": [],
       "location": "VS_CODE_SETUP.md:41,107",
       "notes": "Duplicate of C102 route inside editor guide",
@@ -1231,9 +930,7 @@
     {
       "claim_id": "C1302",
       "drift_status": "current",
-      "finding_refs": [
-        "FND-12"
-      ],
+      "finding_refs": [],
       "identity_anti_claims": [
         {
           "disposition": "do_not_install",
@@ -1378,101 +1075,36 @@
   "findings": [
     {
       "cited_files": [
-        "GITHUB_ACTIONS.md",
-        "README.md",
-        "action.yml",
-        "setup-perl-lsp-consumer.yml"
+        ".github/actions/README.md",
+        ".github/actions/setup-perl-lsp/action.yml",
+        "docs/examples/github-actions/setup-perl-lsp-consumer.yml",
+        "docs/how-to/GITHUB_ACTIONS.md"
       ],
       "finding_id": "FND-1",
       "owner_route": "none_recorded",
       "related_claims": [
-        "C101",
-        "C102",
-        "C103",
-        "C104",
-        "C105",
-        "C106",
-        "C107",
-        "C108",
         "C301",
-        "C302",
-        "C303",
         "C401",
-        "C402",
-        "C403",
-        "C404",
-        "C405",
-        "C406",
-        "C501",
         "C502",
-        "C503",
-        "C601",
-        "C1201",
-        "C1202",
-        "C1203",
-        "C1204",
-        "C1205",
-        "C1206",
-        "C1207",
-        "C1208"
+        "C601"
       ],
       "title": "`@master` literal action pins (consumer-facing)"
     },
     {
       "cited_files": [
+        ".github/actions/README.md",
         "GITHUB_ACTIONS.md",
         "INSTALLATION.md",
-        "README.md",
         "action.yml",
-        "install.sh"
+        "scripts/install.sh"
       ],
       "finding_id": "FND-2",
       "owner_route": "none_recorded",
       "related_claims": [
-        "C101",
-        "C102",
-        "C103",
-        "C104",
-        "C105",
-        "C106",
-        "C107",
-        "C108",
-        "C201",
-        "C202",
-        "C203",
-        "C204",
         "C205",
-        "C206",
-        "C207",
-        "C208",
-        "C209",
-        "C210",
-        "C211",
-        "C212",
-        "C213",
-        "C214",
-        "C215",
-        "C216",
         "C301",
-        "C302",
-        "C303",
         "C401",
-        "C402",
-        "C403",
-        "C404",
-        "C405",
-        "C406",
-        "C501",
-        "C502",
-        "C503",
-        "C1201",
-        "C1202",
-        "C1203",
-        "C1204",
-        "C1205",
-        "C1206",
-        "C1207",
-        "C1208"
+        "C502"
       ],
       "title": "stale example versions behind the release line"
     },
@@ -1480,162 +1112,59 @@
       "cited_files": [
         "GETTING_STARTED.md",
         "GITHUB_ACTIONS.md",
-        "README.md",
         "action.yml",
-        "setup-perl-lsp-consumer.yml"
+        "setup-perl-lsp-consumer.yml",
+        "vscode-extension/README.md"
       ],
       "finding_id": "FND-3",
       "owner_route": "none_recorded",
       "related_claims": [
-        "C101",
-        "C102",
-        "C103",
-        "C104",
-        "C105",
-        "C106",
-        "C107",
-        "C108",
-        "C301",
-        "C302",
         "C303",
-        "C401",
         "C402",
-        "C403",
-        "C404",
-        "C405",
-        "C406",
-        "C501",
-        "C502",
-        "C503",
         "C601",
-        "C1001",
-        "C1002",
-        "C1003",
-        "C1004",
-        "C1005",
         "C1006",
-        "C1007",
-        "C1008",
-        "C1201",
-        "C1202",
-        "C1203",
-        "C1204",
-        "C1205",
-        "C1206",
-        "C1207",
-        "C1208"
+        "C1203"
       ],
       "title": "`latest` mutable defaults endorsed in prose"
     },
     {
       "cited_files": [
+        ".github/actions/README.md",
         "INSTALLATION.md",
-        "README.md",
         "action.yml",
-        "release.yml"
+        "release.yml",
+        "vscode-extension/README.md"
       ],
       "finding_id": "FND-4",
       "owner_route": "#11549-classifier",
       "related_claims": [
-        "C101",
-        "C102",
-        "C103",
-        "C104",
-        "C105",
-        "C106",
-        "C107",
-        "C108",
-        "C201",
-        "C202",
-        "C203",
-        "C204",
-        "C205",
-        "C206",
-        "C207",
-        "C208",
         "C209",
         "C210",
-        "C211",
-        "C212",
-        "C213",
-        "C214",
-        "C215",
-        "C216",
-        "C401",
-        "C402",
-        "C403",
-        "C404",
         "C405",
-        "C406",
         "C501",
-        "C502",
-        "C503",
-        "C1201",
-        "C1202",
-        "C1203",
-        "C1204",
-        "C1205",
-        "C1206",
-        "C1207",
-        "C1208"
+        "C1204"
       ],
       "title": "Windows ARM64 three-way split across source, prose, and published assets"
     },
     {
       "cited_files": [
-        "README.md"
+        "vscode-extension/README.md"
       ],
       "finding_id": "FND-5",
       "owner_route": "none_recorded",
       "related_claims": [
-        "C101",
-        "C102",
-        "C103",
-        "C104",
-        "C105",
-        "C106",
-        "C107",
-        "C108",
-        "C501",
-        "C502",
-        "C503",
-        "C1201",
-        "C1202",
-        "C1203",
-        "C1204",
-        "C1205",
-        "C1206",
-        "C1207",
-        "C1208"
+        "C1205"
       ],
       "title": "in-tree file advertised through mutable `blob/master` URL"
     },
     {
       "cited_files": [
-        "README.md"
+        "vscode-extension/README.md"
       ],
       "finding_id": "FND-6",
       "owner_route": "none_recorded",
       "related_claims": [
-        "C101",
-        "C102",
-        "C103",
-        "C104",
-        "C105",
-        "C106",
-        "C107",
-        "C108",
-        "C501",
-        "C502",
-        "C503",
-        "C1201",
-        "C1202",
-        "C1203",
-        "C1204",
-        "C1205",
-        "C1206",
-        "C1207",
-        "C1208"
+        "C1207"
       ],
       "title": "unpinned git-source install"
     },
@@ -1647,59 +1176,21 @@
       "finding_id": "FND-7",
       "owner_route": "none_recorded",
       "related_claims": [
-        "C201",
-        "C202",
-        "C203",
-        "C204",
-        "C205",
-        "C206",
         "C207",
-        "C208",
-        "C209",
-        "C210",
-        "C211",
-        "C212",
-        "C213",
-        "C214",
-        "C215",
-        "C216",
-        "C1001",
-        "C1002",
-        "C1003",
-        "C1004",
-        "C1005",
-        "C1006",
-        "C1007",
-        "C1008"
+        "C1005"
       ],
       "title": "checksum-semantics drift between siblings"
     },
     {
       "cited_files": [
-        "README.md"
+        "README.md",
+        "vscode-extension/README.md"
       ],
       "finding_id": "FND-8",
       "owner_route": "none_recorded",
       "related_claims": [
         "C101",
-        "C102",
-        "C103",
-        "C104",
-        "C105",
-        "C106",
-        "C107",
-        "C108",
-        "C501",
-        "C502",
-        "C503",
-        "C1201",
-        "C1202",
-        "C1203",
-        "C1204",
-        "C1205",
-        "C1206",
-        "C1207",
-        "C1208"
+        "C1201"
       ],
       "title": "volatile numeric counts in tracked source"
     },
@@ -1711,41 +1202,9 @@
       "finding_id": "FND-9",
       "owner_route": "none_recorded",
       "related_claims": [
-        "C101",
-        "C102",
-        "C103",
-        "C104",
         "C105",
-        "C106",
-        "C107",
-        "C108",
-        "C201",
         "C202",
-        "C203",
-        "C204",
-        "C205",
-        "C206",
-        "C207",
-        "C208",
-        "C209",
-        "C210",
-        "C211",
-        "C212",
-        "C213",
-        "C214",
-        "C215",
-        "C216",
-        "C501",
-        "C502",
-        "C503",
-        "C1201",
-        "C1202",
-        "C1203",
-        "C1204",
-        "C1205",
-        "C1206",
-        "C1207",
-        "C1208"
+        "C209"
       ],
       "title": "PowerShell-breakage annotation spread across four sites with split issue references"
     },
@@ -1756,22 +1215,7 @@
       "finding_id": "FND-10",
       "owner_route": "#10342-ci-cutover",
       "related_claims": [
-        "C201",
-        "C202",
-        "C203",
-        "C204",
-        "C205",
-        "C206",
-        "C207",
-        "C208",
-        "C209",
-        "C210",
-        "C211",
-        "C212",
-        "C213",
-        "C214",
-        "C215",
-        "C216"
+        "C211"
       ],
       "title": "intentional do-not-use exhibits contain literal mutable URLs"
     },
@@ -1784,22 +1228,8 @@
       "finding_id": "FND-11",
       "owner_route": "distribution-docs-sync",
       "related_claims": [
-        "C201",
-        "C202",
-        "C203",
-        "C204",
-        "C205",
-        "C206",
-        "C207",
-        "C208",
         "C209",
-        "C210",
-        "C211",
-        "C212",
-        "C213",
-        "C214",
-        "C215",
-        "C216"
+        "C210"
       ],
       "title": "installer prose behind tracked installer/workflow source"
     },
@@ -1810,8 +1240,6 @@
       "finding_id": "FND-12",
       "owner_route": "none_recorded",
       "related_claims": [
-        "C1301",
-        "C1302",
         "C1303"
       ],
       "title": "unpinned release-archive download outside S02"

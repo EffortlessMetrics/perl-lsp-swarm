@@ -63,7 +63,8 @@ ANTI_CLAIM = {
 }
 CITATION_EXTENSIONS = ("md", "yml", "yaml", "sh", "ps1", "json", "toml")
 CITATION_RE = re.compile(
-    r"([A-Za-z0-9_][A-Za-z0-9_./-]*\.(?:md|yml|yaml|sh|ps1|json|toml)):\d"
+    r"(?<![A-Za-z0-9_])([A-Za-z0-9_./-]*\.(?:md|yml|yaml|sh|ps1|json|toml)):"
+    r"(\d+(?:-\d+)?(?:,\d+(?:-\d+)?)*)"
 )
 CLAIM_REF_RE = re.compile(r"(?<![A-Za-z0-9_])(C\d{3,4})")
 
@@ -231,19 +232,63 @@ def derive_anti_claim_ids(claims: list[dict[str, Any]]) -> list[str]:
 # D4: cited-file join
 # ---------------------------------------------------------------------------
 
-def location_file(location: str) -> str:
-    file_part = location.split(":", 1)[0]
-    return file_part.rsplit("/", 1)[-1]
+def parse_line_spans(spec: str) -> list[tuple[int, int]]:
+    spans: list[tuple[int, int]] = []
+    for item in spec.split(","):
+        parts = item.split("-", 1)
+        start, end = (parts[0], parts[-1])
+        if not start.isascii() or not start.isdigit() or not end.isascii() or not end.isdigit():
+            raise ValidationError(f"{DOC_PATH}: malformed line span `{spec}`")
+        span = (int(start), int(end))
+        if span[0] > span[1]:
+            raise ValidationError(f"{DOC_PATH}: malformed line span `{spec}`")
+        spans.append(span)
+    return spans
 
 
-def extract_cited_files(body: str) -> list[str]:
-    files: list[str] = []
-    for token in CITATION_RE.findall(body):
-        base = token.rsplit("/", 1)[-1]
-        extension = base.rsplit(".", 1)[-1]
-        if extension in CITATION_EXTENSIONS and base not in files:
-            files.append(base)
-    return sorted(files)
+def parse_location(location: str) -> tuple[str, list[tuple[int, int]]]:
+    path, separator, spec = location.strip().partition(":")
+    if not path:
+        raise ValidationError(f"{DOC_PATH}: malformed location `{location}`")
+    return path, parse_line_spans(spec) if separator else []
+
+
+def path_suffix_compatible(left: str, right: str) -> bool:
+    left_parts = left.split("/")
+    right_parts = right.split("/")
+    shorter, longer = (
+        (left_parts, right_parts) if len(left_parts) <= len(right_parts)
+        else (right_parts, left_parts)
+    )
+    return longer[-len(shorter):] == shorter
+
+
+def locations_match(
+    finding: tuple[str, list[tuple[int, int]]],
+    claim: tuple[str, list[tuple[int, int]]],
+) -> bool:
+    finding_path, finding_spans = finding
+    claim_path, claim_spans = claim
+    if not path_suffix_compatible(finding_path, claim_path):
+        return False
+    return not claim_spans or any(
+        claim_start <= finding_end and finding_start <= claim_end
+        for finding_start, finding_end in finding_spans
+        for claim_start, claim_end in claim_spans
+    )
+
+
+def extract_cited_locations(body: str) -> list[tuple[str, list[tuple[int, int]]]]:
+    locations: list[tuple[str, list[tuple[int, int]]]] = []
+    for path, spec in CITATION_RE.findall(body):
+        location = (path, parse_line_spans(spec))
+        if location not in locations:
+            locations.append(location)
+    return sorted(locations, key=lambda location: (location[0], location[1]))
+
+
+def extract_cited_files(locations: list[tuple[str, list[tuple[int, int]]]]) -> list[str]:
+    return sorted({path for path, _ in locations})
 
 
 def derive_relations(claims: list[dict[str, Any]], findings: list[dict[str, Any]]) -> dict[str, list[str]]:
@@ -252,11 +297,79 @@ def derive_relations(claims: list[dict[str, Any]], findings: list[dict[str, Any]
         related = [
             claim["claim_id"]
             for claim in claims
-            if location_file(claim["location"]) in finding["cited_files"]
+            if any(
+                not (
+                    claim["surface_id"] == "S01"
+                    and claim["parsed_location"][0] == "README.md"
+                    and cited[0] != "README.md"
+                )
+                and locations_match(cited, claim["parsed_location"])
+                for cited in finding["cited_locations"]
+            )
         ]
         related.sort(key=claim_sort_key)
         relations[finding["finding_id"]] = related
     return relations
+
+
+def assert_derivation_probes(inventory: dict[str, Any]) -> None:
+    expected = {
+        "FND-1": ["C301", "C401", "C502", "C601"],
+        "FND-2": ["C205", "C301", "C401", "C502"],
+        "FND-3": ["C303", "C402", "C601", "C1006", "C1203"],
+        "FND-4": ["C209", "C210", "C405", "C501", "C1204"],
+        "FND-5": ["C1205"],
+        "FND-6": ["C1207"],
+        "FND-7": ["C207", "C1005"],
+        "FND-8": ["C101", "C1201"],
+        "FND-9": ["C105", "C202", "C209"],
+        "FND-10": ["C211"],
+        "FND-11": ["C209", "C210"],
+        "FND-12": ["C1303"],
+    }
+    relations = derive_relations(inventory["claims"], inventory["findings"])
+    for finding_id, claim_ids in expected.items():
+        if relations.get(finding_id) != claim_ids:
+            raise ValidationError(
+                f"{DOC_PATH}: D4 relation set for {finding_id} changed: "
+                f"expected {claim_ids}, found {relations.get(finding_id)}"
+            )
+
+    def claim(claim_id: str, location: str) -> dict[str, Any]:
+        return {
+            "claim_id": claim_id,
+            "surface_id": "S01" if claim_id == "ROOT" else "probe",
+            "location": location,
+            "parsed_location": parse_location(location),
+        }
+
+    scoped = {
+        "finding_id": "probe",
+        "cited_locations": extract_cited_locations(".github/actions/README.md:37"),
+    }
+    if derive_relations([claim("ROOT", "README.md:37")], [scoped])["probe"]:
+        raise ValidationError(f"{DOC_PATH}: D4 root README path probe unexpectedly matched")
+
+    action = {
+        "finding_id": "action",
+        "cited_locations": extract_cited_locations("action.yml:3"),
+    }
+    action_relations = derive_relations(inventory["claims"], [action])["action"]
+    if action_relations != ["C401"]:
+        raise ValidationError(
+            f"{DOC_PATH}: D4 action.yml:3 probe expected ['C401'], found {action_relations}"
+        )
+
+    vscode = {
+        "finding_id": "vscode",
+        "cited_locations": extract_cited_locations("VS_CODE_SETUP.md:61-69"),
+    }
+    vscode_relations = derive_relations(inventory["claims"], [vscode])["vscode"]
+    if vscode_relations != ["C1303"]:
+        raise ValidationError(
+            f"{DOC_PATH}: D4 VS_CODE_SETUP.md:61-69 probe expected ['C1303'], "
+            f"found {vscode_relations}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -308,11 +421,13 @@ def parse_findings(doc: str) -> list[dict[str, Any]]:
         next_section = joined.find("## ", after_title)
         bounds = [b for b in (next_bullet, next_section) if b >= 0]
         body_end = min(bounds) if bounds else len(joined)
+        cited_locations = extract_cited_locations(joined[after_title:body_end])
         findings.append(
             {
                 "finding_id": f"FND-{number}",
                 "title": title,
-                "cited_files": extract_cited_files(joined[after_title:body_end]),
+                "cited_files": extract_cited_files(cited_locations),
+                "cited_locations": cited_locations,
             }
         )
     for finding_id in FINDING_IDS:
@@ -373,11 +488,13 @@ def parse_inventory(doc: str) -> dict[str, Any]:
                     f"{DOC_PATH}: claim row {claim_id} appeared before any `### Sxx` heading"
                 )
             notes_cell = cells[4] if len(cells) > 4 else ""
+            parsed_location = parse_location(cells[1])
             claims.append(
                 {
                     "claim_id": claim_id,
                     "surface_id": current_section,
                     "location": cells[1],
+                    "parsed_location": parsed_location,
                     "summary": extract_cell_text(cells[2], f"{claim_id}.summary"),
                     "drift_status": extract_cell_text(cells[3], f"{claim_id}.drift_status"),
                     "notes": extract_cell_text(notes_cell, f"{claim_id}.notes"),
@@ -740,7 +857,7 @@ def compare_catalog(artifact: dict[str, Any], inventory: dict[str, Any], manifes
                     raise ValidationError(
                         f"catalog.claims[{claim_id}].dimensions.{family}.{field}: "
                         f"expected {expected_value!r}, found {actual_value!r}"
-                    )
+                )
             if family == "windows_arm64":
                 receipt_value = actual_family.get("published_receipt_v0_17_0")
                 derived = derive_windows_arm64_receipt(manifest)
@@ -1024,6 +1141,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         artifact = load_json_bytes(artifact_raw)
         inventory = parse_inventory(doc.decode("utf-8"))
+        assert_derivation_probes(inventory)
         manifest = parse_receipt_manifest(manifest_raw)
         stats = compare_catalog(artifact, inventory, manifest)
         check_input_digests(artifact, doc, schema, manifest_raw)

@@ -22,9 +22,9 @@
 //!   route must carry it.
 //! - D3: code-span delimiters are trimmed symmetrically (one matched boundary
 //!   pair, else verbatim) and unbalanced delimiters are rejected.
-//! - D4: finding-claim relations derive from the inventory-cited file:line to
-//!   claim-location join (same-cited-file mapping), not from literal `FND-n`
-//!   token scans; the regression assertion is FND-1 relates C401.
+//! - D4: finding-claim relations derive from the inventory-cited path:line to
+//!   claim-location join (path suffix and line overlap), not from literal
+//!   `FND-n` token scans; the regression assertion is FND-1 relates C401.
 //! - D5: the Python oracle (`scripts/validate_public_release_claims_v2.py`)
 //!   re-derives every row from the inventory source and probes tampering per
 //!   row; this module keeps the byte-canonical regeneration gate on the Rust
@@ -136,10 +136,17 @@ struct ParsedClaim {
     claim_id: String,
     surface_id: String,
     location: String,
+    parsed_location: ParsedLocation,
     summary: String,
     drift_status: String,
     notes: String,
     raw_row: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ParsedLocation {
+    path: String,
+    spans: Vec<(u32, u32)>,
 }
 
 #[derive(Debug)]
@@ -147,6 +154,7 @@ struct ParsedFinding {
     finding_id: String,
     title: String,
     cited_files: Vec<String>,
+    cited_locations: Vec<ParsedLocation>,
 }
 
 #[derive(Debug)]
@@ -357,20 +365,71 @@ pub fn derive_anti_claim_ids(doc: &str) -> Result<Vec<String>, CatalogError> {
 // D4: cited-file join for finding-claim relations
 // ---------------------------------------------------------------------------
 
-fn location_file(location: &str) -> String {
-    let file = location.split(':').next().unwrap_or(location);
-    file.rsplit('/').next().unwrap_or(file).to_string()
+fn parse_line_spans(spec: &str) -> Option<Vec<(u32, u32)>> {
+    if spec.is_empty() {
+        return None;
+    }
+    let mut spans = Vec::new();
+    for item in spec.split(',') {
+        let (start, end) = item.split_once('-').map_or((item, item), |(start, end)| (start, end));
+        let start = start.parse::<u32>().ok()?;
+        let end = end.parse::<u32>().ok()?;
+        if start > end {
+            return None;
+        }
+        spans.push((start, end));
+    }
+    Some(spans)
+}
+
+fn parse_location(location: &str) -> Result<ParsedLocation, CatalogError> {
+    let trimmed = location.trim();
+    let (path, spans) = if let Some((path, spec)) = trimmed.split_once(':') {
+        let spans = parse_line_spans(spec).ok_or_else(|| {
+            CatalogError::new(format!("{DOC_PATH}: malformed location `{location}`"))
+        })?;
+        (path, spans)
+    } else {
+        (trimmed, Vec::new())
+    };
+    if path.is_empty() {
+        return Err(CatalogError::new(format!("{DOC_PATH}: malformed location `{location}`")));
+    }
+    Ok(ParsedLocation { path: path.to_string(), spans })
+}
+
+fn path_suffix_compatible(left: &str, right: &str) -> bool {
+    let left_parts: Vec<&str> = left.split('/').collect();
+    let right_parts: Vec<&str> = right.split('/').collect();
+    let (shorter, longer) = if left_parts.len() <= right_parts.len() {
+        (&left_parts, &right_parts)
+    } else {
+        (&right_parts, &left_parts)
+    };
+    longer[longer.len() - shorter.len()..] == shorter[..]
+}
+
+fn locations_match(finding: &ParsedLocation, claim: &ParsedLocation) -> bool {
+    if !path_suffix_compatible(&finding.path, &claim.path) {
+        return false;
+    }
+    claim.spans.is_empty()
+        || finding.spans.iter().any(|(finding_start, finding_end)| {
+            claim.spans.iter().any(|(claim_start, claim_end)| {
+                claim_start <= finding_end && finding_start <= claim_end
+            })
+        })
 }
 
 /// Extract `file.ext:line` citation tokens from finding prose. A citation
 /// needs an explicit line reference (`:digit`) so prose mentions like
 /// "the install.ps1 header" stay uncited.
-fn extract_cited_files(body: &str) -> Vec<String> {
+fn extract_cited_locations(body: &str) -> Vec<ParsedLocation> {
     let bytes = body.as_bytes();
-    let mut files: Vec<String> = Vec::new();
+    let mut locations = Vec::new();
     let mut index = 0usize;
     while index < bytes.len() {
-        if !bytes[index].is_ascii_alphanumeric() && bytes[index] != b'_' {
+        if !bytes[index].is_ascii_alphanumeric() && !matches!(bytes[index], b'_' | b'.') {
             index += 1;
             continue;
         }
@@ -400,19 +459,35 @@ fn extract_cited_files(body: &str) -> Vec<String> {
         if !first_line_digit.is_ascii_digit() {
             continue;
         }
-        let base = token.rsplit('/').next().unwrap_or(token).to_string();
-        if !files.contains(&base) {
-            files.push(base);
+        let mut spec_end = end + 2;
+        while spec_end < bytes.len()
+            && (bytes[spec_end].is_ascii_digit() || matches!(bytes[spec_end], b',' | b'-'))
+        {
+            spec_end += 1;
+        }
+        let Some(spans) = parse_line_spans(&body[end + 1..spec_end]) else {
+            continue;
+        };
+        let location = ParsedLocation { path: token.to_string(), spans };
+        if !locations.contains(&location) {
+            locations.push(location);
         }
     }
+    locations.sort_by(|left, right| {
+        left.path.cmp(&right.path).then_with(|| left.spans.cmp(&right.spans))
+    });
+    locations
+}
+
+fn extract_cited_files(locations: &[ParsedLocation]) -> Vec<String> {
+    let mut files: Vec<String> = locations.iter().map(|location| location.path.clone()).collect();
     files.sort();
     files.dedup();
     files
 }
 
-/// Same-cited-file mapping: a finding relates to every claim row whose
-/// Location cell cites a file the finding also cites (basename granularity,
-/// deterministic superset).
+/// A finding relates to a claim when a cited path is a component-wise suffix
+/// of the claim path and at least one cited line span overlaps.
 fn derive_relations(
     claims: &[ParsedClaim],
     findings: &[ParsedFinding],
@@ -421,8 +496,15 @@ fn derive_relations(
     for finding in findings {
         let mut related: Vec<String> = Vec::new();
         for claim in claims {
-            let claim_file = location_file(&claim.location);
-            if finding.cited_files.contains(&claim_file) {
+            if finding.cited_locations.iter().any(|finding_location| {
+                if claim.surface_id == "S01"
+                    && claim.parsed_location.path == "README.md"
+                    && finding_location.path != "README.md"
+                {
+                    return false;
+                }
+                locations_match(finding_location, &claim.parsed_location)
+            }) {
                 related.push(claim.claim_id.clone());
             }
         }
@@ -544,13 +626,24 @@ fn parse_findings(doc: &str) -> Result<Vec<ParsedFinding>, CatalogError> {
             .flatten()
             .min()
             .map_or(joined.len(), |offset| after_title + offset);
-        let cited_files = extract_cited_files(&joined[after_title..body_end]);
-        findings.push(ParsedFinding { finding_id: format!("FND-{number}"), title, cited_files });
+        let cited_locations = extract_cited_locations(&joined[after_title..body_end]);
+        let cited_files = extract_cited_files(&cited_locations);
+        findings.push(ParsedFinding {
+            finding_id: format!("FND-{number}"),
+            title,
+            cited_files,
+            cited_locations,
+        });
     }
     Ok(findings)
 }
 
 fn parse_audited_anchor(line: &str) -> Option<(String, String)> {
+    let marker = line.find("**Audited against:**")?;
+    let region = &line[marker..];
+    let region_end =
+        region.char_indices().nth(400).map_or(line.len(), |(offset, _)| marker + offset);
+    let line = &line[marker..region_end];
     let mut commit = None;
     let mut date = None;
     let bytes = line.as_bytes();
@@ -678,6 +771,7 @@ fn parse_claim_row(row: &str, section: Option<&str>) -> Result<Option<ParsedClai
         })?
         .to_string();
     let notes_cell = cells.get(4).cloned().unwrap_or_default();
+    let parsed_location = parse_location(&cells[1])?;
     let summary = extract_cell_text(&cells[2], &format!("{claim_id}.summary"))?;
     let drift_status = extract_cell_text(&cells[3], &format!("{claim_id}.drift_status"))?;
     let notes = extract_cell_text(&notes_cell, &format!("{claim_id}.notes"))?;
@@ -685,6 +779,7 @@ fn parse_claim_row(row: &str, section: Option<&str>) -> Result<Option<ParsedClai
         claim_id,
         surface_id,
         location: cells[1].clone(),
+        parsed_location,
         summary,
         drift_status,
         notes,
@@ -1639,6 +1734,22 @@ pub fn validate_repository_catalog(root: &Path) -> Result<CatalogStats, CatalogE
         )));
     }
 
+    validate_repository_catalog_bytes(root, &actual)
+}
+
+/// Full in-repo gate against supplied artifact bytes. The source inputs are
+/// still read from `root`, but the artifact need not be persisted first.
+pub fn validate_repository_catalog_with_artifact(
+    root: &Path,
+    artifact: &[u8],
+) -> Result<CatalogStats, CatalogError> {
+    validate_repository_catalog_bytes(root, artifact)
+}
+
+fn validate_repository_catalog_bytes(
+    root: &Path,
+    actual: &[u8],
+) -> Result<CatalogStats, CatalogError> {
     let stats = validate_artifact_bytes(&actual)?;
 
     let schema_text = fs::read_to_string(root.join(SCHEMA_PATH))
@@ -2021,7 +2132,7 @@ mod tests {
         assert!(format!("{error}").contains("unbalanced"));
     }
 
-    /// D4: FND-1 relates C401 through the cited-file join.
+    /// D4: FND-1 relates C401 through the cited path-and-span join.
     #[test]
     fn d4_fnd1_relates_c401() {
         let catalog = committed_catalog();
@@ -2039,7 +2150,11 @@ mod tests {
             .and_then(Value::as_array)
             .cloned()
             .unwrap_or_default();
-        assert!(cited.iter().any(|file| file.as_str() == Some("action.yml")));
+        assert!(
+            cited
+                .iter()
+                .any(|file| file.as_str() == Some(".github/actions/setup-perl-lsp/action.yml"))
+        );
     }
 
     /// D4: committed relations are exactly the cited-file join (no token
@@ -2088,6 +2203,85 @@ mod tests {
                 .unwrap_or_default();
             assert_eq!(expected, actual, "D4: inverted join for {id}");
         }
+    }
+
+    #[test]
+    fn d4_path_and_line_overlap_probes() {
+        let inventory = parse_inventory(&committed_doc()).expect("inventory parses");
+        let relations = derive_relations(&inventory.claims, &inventory.findings);
+        let expected = [
+            ("FND-1", &["C301", "C401", "C502", "C601"][..]),
+            ("FND-2", &["C205", "C301", "C401", "C502"][..]),
+            ("FND-3", &["C303", "C402", "C601", "C1006", "C1203"][..]),
+            ("FND-4", &["C209", "C210", "C405", "C501", "C1204"][..]),
+            ("FND-5", &["C1205"][..]),
+            ("FND-6", &["C1207"][..]),
+            ("FND-7", &["C207", "C1005"][..]),
+            ("FND-8", &["C101", "C1201"][..]),
+            ("FND-9", &["C105", "C202", "C209"][..]),
+            ("FND-10", &["C211"][..]),
+            ("FND-11", &["C209", "C210"][..]),
+            ("FND-12", &["C1303"][..]),
+        ];
+        for (finding_id, claim_ids) in expected {
+            let expected_claims: Vec<String> =
+                claim_ids.iter().map(|claim_id| (*claim_id).to_string()).collect();
+            assert_eq!(
+                relations.get(finding_id).map(Vec::as_slice),
+                Some(expected_claims.as_slice()),
+                "D4 relation set for {finding_id}"
+            );
+        }
+        assert_eq!(
+            relations.get("FND-1").expect("FND-1 relation set").as_slice(),
+            ["C301", "C401", "C502", "C601"]
+        );
+        let scoped = ParsedFinding {
+            finding_id: "probe".to_string(),
+            title: "probe".to_string(),
+            cited_files: vec![".github/actions/README.md".to_string()],
+            cited_locations: extract_cited_locations(".github/actions/README.md:37"),
+        };
+        let root_readme = ParsedClaim {
+            claim_id: "ROOT".to_string(),
+            surface_id: "S01".to_string(),
+            location: "README.md:37".to_string(),
+            parsed_location: parse_location("README.md:37").expect("root location"),
+            summary: String::new(),
+            drift_status: "current".to_string(),
+            notes: String::new(),
+            raw_row: String::new(),
+        };
+        assert!(
+            derive_relations(&[root_readme], &[scoped]).get("probe").is_some_and(Vec::is_empty)
+        );
+        let action_finding = ParsedFinding {
+            finding_id: "action".to_string(),
+            title: "probe".to_string(),
+            cited_files: vec!["action.yml".to_string()],
+            cited_locations: extract_cited_locations("action.yml:3"),
+        };
+        let action_relations = derive_relations(&inventory.claims, &[action_finding]);
+        assert_eq!(action_relations["action"], ["C401"]);
+        let vscode_finding = ParsedFinding {
+            finding_id: "vscode".to_string(),
+            title: "probe".to_string(),
+            cited_files: vec!["VS_CODE_SETUP.md".to_string()],
+            cited_locations: extract_cited_locations("VS_CODE_SETUP.md:61-69"),
+        };
+        let vscode_relations = derive_relations(&inventory.claims, &[vscode_finding]);
+        assert_eq!(vscode_relations["vscode"], ["C1303"]);
+    }
+
+    #[test]
+    fn audited_anchor_ignores_pre_anchor_decoys() {
+        let doc = committed_doc();
+        let marker = "**Audited against:**";
+        let offset = doc.find(marker).expect("audit marker");
+        let doctored = format!("Prior audit `deadbee` (2025-01-01).\n{}", &doc[offset..]);
+        let original = parse_audited_anchor(&doc.replace('\n', " ")).expect("original anchor");
+        let parsed = parse_audited_anchor(&doctored.replace('\n', " ")).expect("doctored anchor");
+        assert_eq!(parsed, original);
     }
 
     /// D6: the committed schema is fully closed.

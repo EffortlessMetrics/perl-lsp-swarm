@@ -86,12 +86,22 @@ pub fn run_build(write: bool) -> Result<claims::CatalogStats> {
     let root = project_root()?;
     let bytes =
         claims::generate_artifact_bytes(&root).wrap_err("generating public_release_claims.v2")?;
+    let stats = claims::validate_repository_catalog_with_artifact(&root, &bytes)
+        .wrap_err("validating public_release_claims.v2")?;
     let target = root.join(claims::ARTIFACT_PATH);
     if write {
         if fs::read(&target).ok().as_deref() == Some(bytes.as_slice()) {
             println!("{} already canonical; nothing written", claims::ARTIFACT_PATH);
         } else {
-            fs::write(&target, &bytes).with_context(|| format!("writing {}", target.display()))?;
+            let temporary = target.with_file_name(format!(
+                ".{}.tmp-{}",
+                target.file_name().and_then(|name| name.to_str()).unwrap_or("catalog"),
+                std::process::id()
+            ));
+            fs::write(&temporary, &bytes)
+                .with_context(|| format!("writing {}", target.display()))?;
+            fs::rename(&temporary, &target)
+                .with_context(|| format!("writing {}", target.display()))?;
             println!("wrote {}", target.display());
         }
     } else {
@@ -109,7 +119,7 @@ pub fn run_build(write: bool) -> Result<claims::CatalogStats> {
         }
         println!("{} matches regeneration", claims::ARTIFACT_PATH);
     }
-    claims::validate_repository_catalog(&root).wrap_err("validating public_release_claims.v2")
+    Ok(stats)
 }
 
 /// Validate the committed artifact against live sources without writing.
