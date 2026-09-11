@@ -1,0 +1,148 @@
+{
+  "schema_version": "vim_first_class_profile.v1",
+  "profile": "vim_first_class_exact_source",
+  "artifact_role": "deterministic fan-in of the exact-subject baseline receipt and matching specialized subset receipts into one first-class Vim/vim-lsp evidence profile disposition (#11408)",
+  "claim_boundary": "evidence composition only. This object claims no host behavior, no support tier, no maintained row, no public artifact, and no docs projection. A not_proven cell here does not invalidate the narrower #10962 core profile, and a first-class promotion requires every required cell to be exact-source current.",
+  "generated_from": {
+    "subject_manifest": ".ci/editor-clients/vim-vim-lsp-subject.v1.json",
+    "subject_content_sha256": "sha256:baef7d7f3eab914fe8a568be8d53181f31d0f7c4ba124ef88cc1168e4e674a3f",
+    "profile_rule_authority": "#11376",
+    "fan_in_claim": "#11408",
+    "receipt_dialect": "editor_client_compat.v1"
+  },
+  "disposition_vocabulary": [
+    "pass",
+    "pass_with_explicit_limitations",
+    "partial",
+    "not_proven",
+    "fail"
+  ],
+  "cell_result_vocabulary": [
+    "pass",
+    "fail",
+    "partial",
+    "not_proven",
+    "unsupported"
+  ],
+  "inputs": {
+    "baseline_core": {
+      "required": true,
+      "authority_issue": 10962,
+      "state": "producer_open",
+      "stage": "exact_source_local",
+      "note": "#10962 remains the only source for the bounded core profile; baseline cells are never reconstructed from specialized receipts."
+    },
+    "freshness": {
+      "required": true,
+      "authority_issue": 11390,
+      "catalog_issue": 11381,
+      "state": "producer_open",
+      "stage": "exact_source_local",
+      "note": "External source and configuration freshness cells are consumed exactly as registered by #11381."
+    },
+    "save": {
+      "required": true,
+      "authority_issue": 11396,
+      "catalog_issue": 11384,
+      "state": "producer_open",
+      "stage": "exact_source_local",
+      "note": "Ordinary save-triggered formatting only; manual explicit format cannot fill these cells."
+    },
+    "recovery": {
+      "required": true,
+      "authority_issue": 11398,
+      "catalog_issue": 11386,
+      "state": "producer_open",
+      "stage": "exact_source_local",
+      "note": "Server-generation restart/crash recovery, replay/currentness, old-generation rejection."
+    },
+    "host_lifecycle": {
+      "required": true,
+      "authority_issue": 11401,
+      "catalog_issue": 11387,
+      "state": "producer_open",
+      "stage": "exact_source_local",
+      "note": "Full host reopen and repeated sessions; server restart cannot cross-fill these cells."
+    },
+    "expanded_activation": {
+      "required": true,
+      "authority_issue": 11403,
+      "catalog_issue": 11388,
+      "state": "producer_open",
+      "stage": "exact_source_local",
+      "note": "Expanded native/override/exact-name/shebang activation over its finite denominator."
+    },
+    "workspace_folders": {
+      "required": false,
+      "consumption_policy": "consumes_if_available",
+      "authority_issue": 10960,
+      "catalog_issue": 11405,
+      "state": "producer_open",
+      "stage": "exact_source_local",
+      "note": "Optional workspace-folder interoperability; missing/unsupported/mismatch affects first-class only per #11376 policy and can never downgrade core."
+    }
+  },
+  "cells": {
+    "baseline_core": {
+      "result": "not_proven",
+      "observed": false,
+      "limitation": "#10962 baseline core receipt is not yet registered; the bounded core profile is open work, so this fan-in cell stays honestly not_proven instead of inheriting specialized evidence.",
+      "receipt_references": []
+    },
+    "freshness": {
+      "result": "not_proven",
+      "observed": false,
+      "limitation": "#11390 freshness proof has not run; #11381 has registered no freshness cells in the generic receipt catalog.",
+      "receipt_references": []
+    },
+    "save": {
+      "result": "not_proven",
+      "observed": false,
+      "limitation": "#11396 format-on-save proof has not run; #11384 has registered no save cells in the generic receipt catalog.",
+      "receipt_references": []
+    },
+    "recovery": {
+      "result": "not_proven",
+      "observed": false,
+      "limitation": "#11398 recovery proof has not run; #11386 has registered no recovery cells in the generic receipt catalog.",
+      "receipt_references": []
+    },
+    "host_lifecycle": {
+      "result": "not_proven",
+      "observed": false,
+      "limitation": "#11401 host-lifecycle proof has not run; #11387 has registered no host-reopen cells in the generic receipt catalog.",
+      "receipt_references": []
+    },
+    "expanded_activation": {
+      "result": "not_proven",
+      "observed": false,
+      "limitation": "#11403 expanded-activation proof has not run; #11388 has registered no activation cells in the generic receipt catalog.",
+      "receipt_references": []
+    },
+    "workspace_folders": {
+      "result": "not_proven",
+      "observed": false,
+      "limitation": "#10960 workspace-folder proof has not run; #11405 has registered no workspace-folder cells. Optional under consumes_if_available, so this absence blocks first-class promotion without downgrading core.",
+      "receipt_references": []
+    }
+  },
+  "aggregate_disposition": "not_proven",
+  "aggregate_limitations": [
+    "No editor_client_compat.v1 receipt exists yet for any required vim/vim-lsp family: core #10962, freshness #11390, save #11396, recovery #11398, host lifecycle #11401, and expanded activation #11403 are all open producers, so the first-class profile composes to not_proven end to end.",
+    "The narrower #10962 bounded core profile remains independently claimable and is unaffected by this aggregate."
+  ],
+  "allowed_limitations_retained": [],
+  "subject_equality_required_fields": [
+    "vim_lsp_selected_commit",
+    "vim_lsp_tree_digest",
+    "platform_os",
+    "platform_arch",
+    "perllsp_build_revision",
+    "perllsp_artifact_sha256",
+    "candidate_sha",
+    "workspace_fixture_id",
+    "workspace_fixture_digest",
+    "expectation_set_id",
+    "expectation_set_digest"
+  ]
+}
