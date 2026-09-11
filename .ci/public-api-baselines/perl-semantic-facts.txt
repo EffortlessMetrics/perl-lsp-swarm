@@ -1104,6 +1104,7 @@ pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmTypeParamEffe
 pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmTypeParamEffect::ErasedToPlainData
 pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmTypeParamEffect::NotApplicable
 pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmTypeParamEffect::PreservedFromReceiver
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmTypeParamEffect::SourcePreservedBoundRow
 pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmTypeParamEffect::SourcePreservedRowFromArgument
 pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmTypeParamEffect::SourcePreservedRowUnbound
 pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmTypeParamEffect::TransformedToJoinRow
