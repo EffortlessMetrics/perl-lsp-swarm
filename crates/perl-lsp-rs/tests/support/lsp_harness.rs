@@ -41,6 +41,23 @@ pub struct LinkedEditingSpan {
     pub end_character: u64,
 }
 
+/// Selects the timing policy used by [`LspHarness::wait_for_symbol`].
+///
+/// `Fast` is a harness-only *timing* policy: it uses fewer attempts and shorter
+/// per-request timeouts, but never weakens the symbol-name or URI oracle. It
+/// does not enable the server's process-global `LSP_TEST_FALLBACKS` test-only
+/// dispatch handlers; workspace/symbol does not use those handlers.
+///
+/// `PERL_LSP_PERFORMANCE_TEST` or `LSP_TEST_FALLBACKS` in the environment
+/// selects `Fast` in [`LspHarness::wait_for_symbol`], matching the documented
+/// local fast-mode route in `docs/reference/TEST_INFRASTRUCTURE_GUIDE.md`.
+/// The caller-supplied budget is respected in every mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WaitForSymbolMode {
+    Default,
+    Fast,
+}
+
 pub struct LspHarness {
     sender: mpsc::Sender<Vec<u8>>,
     output_buffer: Arc<Mutex<Vec<u8>>>,
@@ -63,6 +80,41 @@ fn uri_matches(expected: &str, actual: &str) -> bool {
     }
 
     false
+}
+
+fn workspace_symbol_name_matches(query: &str, actual: &str) -> bool {
+    if actual == query {
+        return true;
+    }
+
+    let leaf = actual.rsplit("::").next().map_or(actual, |leaf| leaf);
+    if leaf == query {
+        return true;
+    }
+
+    leaf.chars().next().is_some_and(|sigil| matches!(sigil, '$' | '@' | '%' | '&' | '*'))
+        && leaf.get(1..) == Some(query)
+}
+
+pub(crate) fn workspace_symbol_response_contains(
+    response: &Value,
+    query: &str,
+    want_uri: Option<&str>,
+) -> bool {
+    response.as_array().is_some_and(|symbols| {
+        symbols.iter().any(|symbol| {
+            symbol
+                .get("name")
+                .and_then(Value::as_str)
+                .is_some_and(|actual| workspace_symbol_name_matches(query, actual))
+                && want_uri.is_none_or(|expected| {
+                    symbol
+                        .pointer("/location/uri")
+                        .and_then(Value::as_str)
+                        .is_some_and(|actual| uri_matches(expected, actual))
+                })
+        })
+    })
 }
 
 impl LspHarness {
@@ -592,81 +644,89 @@ impl LspHarness {
         }
     }
 
-    /// Poll workspace/symbol until query appears with enhanced reliability and CI optimization
+    /// Poll workspace/symbol until a response contains the requested identity.
+    ///
+    /// Workspace symbols do not carry a document version, so this proves only that
+    /// the requested name and URI were observed in a response. Callers that need
+    /// current-document freshness must establish that separately.
     pub fn wait_for_symbol(
         &mut self,
         query: &str,
         want_uri: Option<&str>,
         budget: Duration,
     ) -> Result<(), String> {
-        // Detect environment characteristics for optimization
-        let is_ci = std::env::var("CI").is_ok() || std::env::var("GITHUB_ACTIONS").is_ok();
-        let is_performance_test = std::env::var("PERL_LSP_PERFORMANCE_TEST").is_ok();
-        let use_fallbacks = std::env::var("LSP_TEST_FALLBACKS").is_ok();
+        let mode = if std::env::var("PERL_LSP_PERFORMANCE_TEST").is_ok()
+            || std::env::var("LSP_TEST_FALLBACKS").is_ok()
+        {
+            WaitForSymbolMode::Fast
+        } else {
+            WaitForSymbolMode::Default
+        };
+        self.wait_for_symbol_with_mode(query, want_uri, budget, mode)
+    }
 
-        // Fast path for performance tests or fallback mode
-        if use_fallbacks || is_performance_test {
-            let timeout = if is_performance_test { 50 } else { 100 };
-            let res = self.request_with_timeout(
-                "workspace/symbol",
-                serde_json::json!({ "query": query }),
-                Duration::from_millis(timeout),
-            );
-            if res.is_ok() {
-                return Ok(()); // Symbol indexing is working
-            }
-            if use_fallbacks {
-                eprintln!("Warning: symbol '{}' not indexed, proceeding anyway", query);
-                return Ok(());
-            }
-        }
+    /// Poll workspace/symbol with an explicit, isolated timing policy.
+    ///
+    /// The explicit mode is intentionally separate from environment discovery:
+    /// tests can exercise fast timing without changing process-global variables
+    /// while sibling tests are running.
+    pub fn wait_for_symbol_with_mode(
+        &mut self,
+        query: &str,
+        want_uri: Option<&str>,
+        budget: Duration,
+        mode: WaitForSymbolMode,
+    ) -> Result<(), String> {
+        // Detect environment characteristics for timeout and backoff tuning only.
+        // Fast configuration may shorten the wait, but it must not weaken the
+        // symbol-name and URI oracle.
+        let is_ci = std::env::var("CI").is_ok() || std::env::var("GITHUB_ACTIONS").is_ok();
 
         // Adaptive parameters based on environment
         let is_windows = cfg!(windows);
-        let (max_attempts, initial_timeout, max_sleep) = if is_ci {
-            (8, 300, 200) // CI: more attempts, longer timeouts
-        } else if is_windows {
-            (8, 300, 150) // Windows local runs are slower than Linux/macOS for temp workspace indexing
-        } else if is_performance_test {
-            (3, 100, 50) // Performance: fewer attempts, faster timeouts
-        } else {
-            (5, 200, 100) // Local: balanced approach
+        let (max_attempts, initial_timeout, max_sleep) = match mode {
+            WaitForSymbolMode::Fast => {
+                (3, 100, 50) // Explicit fast policy remains isolated from environment state.
+            }
+            WaitForSymbolMode::Default if is_ci => {
+                (8, 300, 200) // CI: more attempts, longer timeouts
+            }
+            WaitForSymbolMode::Default if is_windows => {
+                (8, 300, 150) // Windows local runs are slower than Linux/macOS.
+            }
+            WaitForSymbolMode::Default => (5, 200, 100), // Local: balanced approach
         };
 
         let start = Instant::now();
         let mut attempt = 0;
-        let mut last_error = None;
+        let mut last_observation = "no workspace/symbol response received".to_string();
 
-        while start.elapsed() < budget && attempt < max_attempts {
+        while start.elapsed() < budget {
             attempt += 1;
 
             // Progressive timeout increase for reliability
-            let timeout = Duration::from_millis(initial_timeout + (attempt * 50).min(200));
+            let timeout =
+                Duration::from_millis(initial_timeout + (attempt.min(max_attempts) * 50).min(200));
+            let remaining = budget.saturating_sub(start.elapsed());
+            if remaining.is_zero() {
+                break;
+            }
 
             let res = self.request_with_timeout(
                 "workspace/symbol",
                 serde_json::json!({ "query": query }),
-                timeout,
+                timeout.min(remaining),
             );
 
             match res {
-                Ok(v) => {
-                    if let Some(arr) = v.as_array() {
-                        let found = arr.iter().any(|s| {
-                            let uri = s.pointer("/location/uri").and_then(|u| u.as_str());
-                            want_uri.is_none_or(|expect| {
-                                uri.is_some_and(|actual| uri_matches(expect, actual))
-                            })
-                        });
-                        if found {
-                            return Ok(());
-                        }
-                        // Symbol search succeeded but didn't find target - continue
+                Ok(value) => {
+                    if workspace_symbol_response_contains(&value, query, want_uri) {
+                        return Ok(());
                     }
+                    last_observation = format!("last response: {value}");
                 }
-                Err(e) => {
-                    last_error = Some(e);
-                    // Request failed - might be server not ready, continue with backoff
+                Err(error) => {
+                    last_observation = format!("last error: {error}");
                 }
             }
 
@@ -678,24 +738,24 @@ impl LspHarness {
                 // Local/Performance: Faster backoff
                 (10 * attempt).min(max_sleep)
             };
-            thread::sleep(Duration::from_millis(sleep_ms));
+            let remaining = budget.saturating_sub(start.elapsed());
+            if remaining.is_zero() {
+                break;
+            }
+            thread::sleep(Duration::from_millis(sleep_ms).min(remaining));
 
             // Give server more time between attempts in CI
             if is_ci && attempt > 3 {
-                thread::sleep(Duration::from_millis(50));
+                let remaining = budget.saturating_sub(start.elapsed());
+                if remaining.is_zero() {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(50).min(remaining));
             }
         }
 
-        // Enhanced error reporting
-        let error_context = if let Some(err) = last_error {
-            format!("Last error: {}", err)
-        } else {
-            "Symbol search succeeded but target not found".to_string()
-        };
-
         Err(format!(
-            "symbol '{}' not ready within {:?} after {} attempts. {} (CI: {}, Perf: {})",
-            query, budget, attempt, error_context, is_ci, is_performance_test
+            "symbol '{query}' not ready within {budget:?} after {attempt} attempts. {last_observation} (CI: {is_ci}, mode: {mode:?})"
         ))
     }
 

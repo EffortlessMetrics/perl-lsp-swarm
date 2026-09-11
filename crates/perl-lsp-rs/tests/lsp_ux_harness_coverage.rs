@@ -7,8 +7,8 @@
 mod support;
 
 use serde_json::json;
-use std::time::Duration;
-use support::lsp_harness::LspHarness;
+use std::time::{Duration, Instant};
+use support::lsp_harness::{LspHarness, WaitForSymbolMode, workspace_symbol_response_contains};
 
 #[test]
 fn harness_supports_edit_save_diagnostics_workflow() -> Result<(), String> {
@@ -61,6 +61,169 @@ fn harness_supports_edit_save_diagnostics_workflow() -> Result<(), String> {
 }
 
 #[test]
+fn workspace_symbol_match_requires_name_and_uri() {
+    let target_uri = "file:///workspace/lib/Target.pm";
+
+    let same_file_decoy = json!([{
+        "name": "same_file_decoy",
+        "location": {
+            "uri": target_uri,
+            "range": {
+                "start": { "line": 0, "character": 0 },
+                "end": { "line": 0, "character": 16 }
+            }
+        }
+    }]);
+    assert!(
+        !workspace_symbol_response_contains(&same_file_decoy, "target", Some(target_uri)),
+        "an unrelated symbol from the target file must not satisfy readiness"
+    );
+
+    let wrong_uri = json!([{
+        "name": "target",
+        "location": {
+            "uri": "file:///workspace/lib/Other.pm",
+            "range": {
+                "start": { "line": 0, "character": 0 },
+                "end": { "line": 0, "character": 6 }
+            }
+        }
+    }]);
+    assert!(
+        !workspace_symbol_response_contains(&wrong_uri, "target", Some(target_uri)),
+        "the requested name from another file must not satisfy a URI-bound wait"
+    );
+
+    let exact_package_name = json!([{
+        "name": "MyApp::Target",
+        "location": {
+            "uri": target_uri,
+            "range": {
+                "start": { "line": 1, "character": 0 },
+                "end": { "line": 1, "character": 13 }
+            }
+        }
+    }]);
+    assert!(
+        workspace_symbol_response_contains(&exact_package_name, "MyApp::Target", Some(target_uri)),
+        "an exact qualified package name should satisfy readiness"
+    );
+
+    let qualified_name = json!([{
+        "name": "MyApp::target",
+        "location": {
+            "uri": target_uri,
+            "range": {
+                "start": { "line": 2, "character": 4 },
+                "end": { "line": 2, "character": 10 }
+            }
+        }
+    }]);
+    assert!(
+        workspace_symbol_response_contains(&qualified_name, "target", Some(target_uri)),
+        "a qualified symbol whose leaf name matches should satisfy readiness"
+    );
+
+    let sigiled_name = json!([{
+        "name": "$target",
+        "location": {
+            "uri": target_uri,
+            "range": {
+                "start": { "line": 3, "character": 3 },
+                "end": { "line": 3, "character": 10 }
+            }
+        }
+    }]);
+    assert!(
+        workspace_symbol_response_contains(&sigiled_name, "target", Some(target_uri)),
+        "Perl variable sigils should not prevent a matching symbol from satisfying readiness"
+    );
+}
+
+#[test]
+fn wait_for_symbol_rejects_same_file_decoy() -> Result<(), String> {
+    let (mut harness, workspace) = LspHarness::with_workspace(&[(
+        "lib/Target.pm",
+        "package Decoy;\nsub target_helper { 1 }\n1;\n",
+    )])?;
+    let target_uri = workspace.uri("lib/Target.pm");
+    harness.open(&target_uri, "package Decoy;\nsub target_helper { 1 }\n1;\n")?;
+    harness.wait_for_idle(Duration::from_millis(200));
+
+    let response = harness.request("workspace/symbol", json!({ "query": "target" }))?;
+    let saw_decoy = response.as_array().is_some_and(|symbols| {
+        symbols.iter().any(|symbol| {
+            symbol.get("name").and_then(|name| name.as_str()) == Some("target_helper")
+                && symbol
+                    .pointer("/location/uri")
+                    .and_then(|uri| uri.as_str())
+                    .is_some_and(|uri| uri == target_uri.as_str())
+        })
+    });
+    if !saw_decoy {
+        return Err(format!("workspace/symbol did not return the decoy response: {response}"));
+    }
+
+    for mode in [WaitForSymbolMode::Default, WaitForSymbolMode::Fast] {
+        let result = harness.wait_for_symbol_with_mode(
+            "target",
+            Some(&target_uri),
+            Duration::from_secs(2),
+            mode,
+        );
+        if result.is_ok() {
+            return Err(format!("same-file decoy must not satisfy wait_for_symbol in {mode:?}"));
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn wait_for_symbol_rejects_matching_name_from_wrong_uri() -> Result<(), String> {
+    let (mut harness, workspace) = LspHarness::with_workspace(&[
+        ("lib/Expected.pm", "package Expected;\nsub target { 1 }\n1;\n"),
+        ("lib/Other.pm", "package Other;\n1;\n"),
+    ])?;
+    let expected_uri = workspace.uri("lib/Expected.pm");
+    let other_uri = workspace.uri("lib/Other.pm");
+    harness.open(&expected_uri, "package Expected;\nsub target { 1 }\n1;\n")?;
+    harness.open(&other_uri, "package Other;\n1;\n")?;
+    harness.wait_for_idle(Duration::from_millis(200));
+
+    let response = harness.request("workspace/symbol", json!({ "query": "target" }))?;
+    let saw_expected = response.as_array().is_some_and(|symbols| {
+        symbols.iter().any(|symbol| {
+            symbol.get("name").and_then(|name| name.as_str()) == Some("target")
+                && symbol
+                    .pointer("/location/uri")
+                    .and_then(|uri| uri.as_str())
+                    .is_some_and(|uri| uri == expected_uri.as_str())
+        })
+    });
+    if !saw_expected {
+        return Err(format!("workspace/symbol did not return the expected response: {response}"));
+    }
+
+    for mode in [WaitForSymbolMode::Default, WaitForSymbolMode::Fast] {
+        let budget = Duration::from_secs(2);
+        let started = Instant::now();
+        let result = harness.wait_for_symbol_with_mode("target", Some(&other_uri), budget, mode);
+        if result.is_ok() {
+            return Err(format!(
+                "matching name from another URI must not satisfy wait_for_symbol in {mode:?}"
+            ));
+        }
+        let elapsed = started.elapsed();
+        if elapsed < budget.saturating_sub(Duration::from_millis(250)) {
+            return Err(format!(
+                "matching name from another URI returned too early in {mode:?}: elapsed {elapsed:?}"
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn harness_with_workspace_and_wait_for_symbol_matches_file_uri() -> Result<(), String> {
     let (mut harness, workspace) = LspHarness::with_workspace(&[
         (
@@ -80,14 +243,10 @@ fn harness_with_workspace_and_wait_for_symbol_matches_file_uri() -> Result<(), S
         }),
     )?;
 
-    let found = symbols.as_array().is_some_and(|arr| {
-        arr.iter().any(|s| {
-            s.pointer("/location/uri").and_then(|u| u.as_str()) == Some(target_uri.as_str())
-        })
-    });
-
-    if !found {
-        return Err(format!("Expected workspace/symbol to include {target_uri}"));
+    if !workspace_symbol_response_contains(&symbols, "greet", Some(&target_uri)) {
+        return Err(format!(
+            "Expected workspace/symbol to include greet from {target_uri}; got {symbols}"
+        ));
     }
 
     Ok(())
