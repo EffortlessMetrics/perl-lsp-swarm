@@ -3429,7 +3429,25 @@ impl<'a> BodyBuilder2<'a> {
 
             NodeKind::StatementModifier { statement, modifier, condition } => {
                 let verb = statement_modifier_kind(modifier);
-                let (postfix_loop_region, postfix_label) = (None, None);
+                // #13249 body-model contract: an unlabelled loop-form
+                // postfix modifier owns a stable loop region; branch-form
+                // modifiers never do. A `LABEL:` prefix is absorbed by the
+                // labelled-statement wrapper (tracked as a NonLoop frame on
+                // the enclosing stack), so a labelled postfix mints no
+                // region of its own. The region is identity only: a postfix
+                // modifier is not an enclosing loop, so nothing is pushed
+                // and transfers inside keep resolving outward.
+                let loop_form = matches!(
+                    verb,
+                    StatementModifierKind::While
+                        | StatementModifierKind::Until
+                        | StatementModifierKind::Foreach
+                );
+                let labelled =
+                    matches!(self.enclosing_label_stack.last(), Some(EnclosingLabel::NonLoop(_)));
+                let postfix_loop_region =
+                    if loop_form && !labelled { Some(self.alloc_loop_region()) } else { None };
+                let postfix_label = None;
                 let statement_id = self.lower_statement(statement);
                 let condition_id = self.lower_expr(condition);
                 self.alloc_stmt(
