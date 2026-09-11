@@ -1765,6 +1765,20 @@ fn validate_repository_catalog_bytes(
     let manifest = parse_receipt_manifest(&manifest_bytes)?;
     let catalog: Value = serde_json::from_slice(actual)
         .map_err(|error| CatalogError::new(format!("{}: invalid JSON: {error}", ARTIFACT_PATH)))?;
+    let validator = jsonschema::validator_for(&schema)
+        .map_err(|error| CatalogError::new(format!("{SCHEMA_PATH}: invalid schema: {error}")))?;
+    let mut schema_errors: Vec<String> = validator
+        .iter_errors(&catalog)
+        .map(|error| format!("{}: {error}", error.instance_path()))
+        .collect();
+    if !schema_errors.is_empty() {
+        schema_errors.sort();
+        schema_errors.truncate(5);
+        return Err(CatalogError::new(format!(
+            "{ARTIFACT_PATH}: schema validation failed: {}",
+            schema_errors.join("; ")
+        )));
+    }
     validate_receipt_binding(&catalog, &manifest)?;
 
     // D2: the committed anti-claim set must equal the derivation from the
@@ -2860,5 +2874,51 @@ no anchors here",
         let schema: Value = serde_json::from_slice(&schema_bytes).expect("schema parses");
         let closed = validate_schema_closure(&schema).expect("closure walk");
         assert!(closed >= 13, "walked {closed} objects");
+    }
+
+    #[test]
+    fn schema_validation_accepts_committed_artifact() {
+        let stats = validate_repository_catalog_bytes(&repo_root(), &committed_artifact())
+            .expect("committed artifact validates against schema");
+        assert_eq!(stats.claims, 70);
+    }
+
+    #[test]
+    fn schema_validation_rejects_const_violation() {
+        let mut catalog = committed_catalog();
+        catalog["status"] = json!("hand_edited");
+        let bytes = canonical_bytes(&catalog).expect("mutated catalog serializes");
+        let error = validate_repository_catalog_bytes(&repo_root(), &bytes)
+            .expect_err("schema const violation must fail");
+        let message = format!("{error}");
+        assert!(
+            message
+                .contains("distribution/public_release_claims.v2.json: schema validation failed")
+        );
+        assert!(message.contains("/status"), "{message}");
+    }
+
+    #[test]
+    fn schema_validation_rejects_missing_required_property() {
+        let mut catalog = committed_catalog();
+        catalog["claims"][0].as_object_mut().expect("first claim is an object").remove("summary");
+        let bytes = canonical_bytes(&catalog).expect("mutated catalog serializes");
+        let error = validate_repository_catalog_bytes(&repo_root(), &bytes)
+            .expect_err("schema required property violation must fail");
+        let message = format!("{error}");
+        assert!(message.contains("schema validation failed"));
+        assert!(message.contains("/claims/0"), "{message}");
+    }
+
+    #[test]
+    fn schema_validation_rejects_wrong_field_type() {
+        let mut catalog = committed_catalog();
+        catalog["claims"][0]["summary"] = json!(42);
+        let bytes = canonical_bytes(&catalog).expect("mutated catalog serializes");
+        let error = validate_repository_catalog_bytes(&repo_root(), &bytes)
+            .expect_err("schema type violation must fail");
+        let message = format!("{error}");
+        assert!(message.contains("schema validation failed"));
+        assert!(message.contains("/claims/0/summary"), "{message}");
     }
 }

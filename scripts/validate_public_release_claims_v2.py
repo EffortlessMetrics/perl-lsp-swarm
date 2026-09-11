@@ -12,6 +12,10 @@ crates.io anti-claim identity set (D2), the release-receipt binding (D1), and
 the closed key sets (D6). Editing any single row value must fail validation
 naming that row; `--prove-tamper` demonstrates this per row.
 
+Full JSON Schema conformance of the artifact is enforced by the Rust validator
+(`cargo xtask public-release-claims-v2 check`); this stdlib-only oracle proves
+row-level re-derivation and schema closure.
+
 Stdlib only; no external dependencies.
 """
 
@@ -1162,7 +1166,12 @@ def run_tamper_probes(
 # ---------------------------------------------------------------------------
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser = argparse.ArgumentParser(
+        description=(
+            "Row-level public_release_claims.v2 oracle; full JSON Schema conformance "
+            "is enforced by `cargo xtask public-release-claims-v2 check`."
+        )
+    )
     parser.add_argument("artifact", nargs="?", default="distribution/public_release_claims.v2.json")
     parser.add_argument("--root", default=None, help="repository root (default: parent of this script)")
     parser.add_argument(
