@@ -369,7 +369,11 @@ impl NormalizationMap {
                 shift += (edit.output_end - edit.output_start) as isize
                     - (edit.input_end - edit.input_start) as isize;
             }
-            usize::try_from(offset as isize - shift).unwrap_or(0)
+            // Edits processed here all end at or before `offset`, so the net
+            // shift can never exceed it: the result is non-negative by
+            // construction. Saturate rather than fall back to a misleading
+            // source-start offset.
+            (offset as isize - shift).max(0) as usize
         })
     }
 }
