@@ -42,7 +42,6 @@ fn normalize_canonical(path: PathBuf) -> PathBuf {
     path
 }
 
-
 // ===========================================================================
 // 1. Path traversal -- classic patterns via DAP validate_path
 // ===========================================================================
