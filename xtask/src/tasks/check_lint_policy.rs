@@ -41,6 +41,9 @@ pub(crate) struct CadenceRow {
 pub(crate) fn cadence_rows(root: &Path) -> Result<Vec<CadenceRow>> {
     let lint_ledger = read::load_lint_ledger(root)?;
     let debt_ledger: DebtLedger = read::read_toml_as(root.join(DEBT_LEDGER))?;
+    // Malformed policy projects as `Invalid` rows (merged #15277 behavior):
+    // cadence reports obligations even when the candidate gate would reject
+    // the underlying policy, so owner work stays visible.
     let validation_error = validate::validate_cadence_sources(root, &lint_ledger, &debt_ledger)
         .err()
         .map(|error| format!("{error:#}"));

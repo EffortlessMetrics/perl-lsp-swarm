@@ -48,5 +48,6 @@ pub(super) fn validate_cadence_sources(
     config::validate_policy_header(lint_ledger)?;
     disposition::validate_disposition_model(lint_ledger)?;
     config::validate_configuration_state_placement(lint_ledger)?;
+    disposition::validate_required_dispositions(lint_ledger)?;
     debt::validate_debt_ledger(root, lint_ledger, debt_ledger)
 }

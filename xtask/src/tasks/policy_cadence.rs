@@ -5,6 +5,7 @@
 //! governing validator changes state.
 
 mod clippy;
+mod tautology;
 
 use crate::tasks::file_policy;
 use chrono::{NaiveDate, Utc};
@@ -203,6 +204,7 @@ fn build_receipt(root: &Path, as_of: NaiveDate) -> Result<CadenceReceipt> {
     raw.extend(scenario_obligations(root)?);
     raw.extend(non_rust_obligations(root)?);
     raw.extend(clippy::obligations(root)?);
+    raw.extend(tautology::obligations(root)?);
     raw.extend(registered_obligations(root)?);
     let mut obligations = raw.into_iter().map(|item| classify(item, as_of)).collect::<Vec<_>>();
     obligations.sort_by(|left, right| {

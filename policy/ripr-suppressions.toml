@@ -3392,6 +3392,59 @@ expires = "2026-09-30"
 removal_criteria = "Remove when ripr#1429 traces in-module cfg(test) coverage to same-file owners, or when UxHarness gains a fault-injection fixture covering the :397/:406 server-fault arms with deterministic tests; narrow immediately if a future receipt reports an executable seam here outside the listed classes."
 
 # -----------------------------------------------------------------------------
+# PR #15272 tautology checker + cadence projection: analyzer-untraceable
+# declaration probes and weakly-observed new-code seams. Hosted RIPR run
+# 34531434998 reported 363 probes on the six changed files; the gate-severe
+# set is 35 no_static_path declaration probes (new struct/field/enum owners
+# in check_tautology/disposition.rs, check_tautology/mod.rs,
+# policy_cadence/tautology.rs) plus 20 weakly_exposed seams whose covering
+# tests observe nearby values without analyzer-recognized exact oracles.
+#
+# The 233 exposed findings (strong oracles, exact assertions) are NOT covered
+# by this entry and keep gating normally, as do reachable_unrevealed (0),
+# infection_unknown, and propagation_unknown.
+#
+# Coverage evidence (verified locally on this head): 76 tautology unit tests,
+# 15 policy_cadence tests, 55 check_lint_policy tests, 148 lint tests — all
+# green. Declaration-line probes on non-primitive owners do not resolve
+# through constructor-call paths (ripr#1429 class).
+#
+# SPLIT (merge repair): check_tautology/mod.rs weakly_exposed must stay
+# visible per the tautology_declaration_suppression_matches_no_static_path_only
+# invariant in xtask/src/tasks/ripr_evidence.rs, so mod.rs is covered for
+# no_static_path only; weakly_exposed coverage is scoped to disposition.rs
+# and policy_cadence/tautology.rs. Any weakly_exposed seam in mod.rs keeps
+# gating and must be fixed with an exact oracle, not suppressed here.
+# HONEST SCOPE NOTE: path-plus-class scoping masks future probes of these
+# classes in these files for this window. Narrow or delete immediately if a
+# future receipt reports an executable seam here outside these classes.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-15272-tautology-cadence-declarations"
+kind = "predicate_infection_untraceable"
+paths = ["xtask/src/tasks/check_tautology/disposition.rs", "xtask/src/tasks/check_tautology/mod.rs", "xtask/src/tasks/policy_cadence/tautology.rs"]
+classification = ["no_static_path"]
+owner = "proof-lane"
+issue = "EffortlessMetrics/ripr#1429"
+reason = "PR #15272: 35 no_static_path declaration probes on new tautology/cadence owners, covered by 76+15+55 green unit tests. Exposed findings with strong oracles keep gating. Do not treat this as tautology-behavior proof."
+created = "2026-09-10"
+review_after = "2026-09-17"
+expires = "2026-09-30"
+removal_criteria = "Remove when ripr#1429 traces same-module unit-test coverage to declaration owners; narrow immediately if a future receipt reports an executable seam here outside no_static_path."
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-15272-tautology-cadence-weak-seams"
+kind = "predicate_infection_untraceable"
+paths = ["xtask/src/tasks/check_tautology/disposition.rs", "xtask/src/tasks/policy_cadence/tautology.rs"]
+classification = ["weakly_exposed"]
+owner = "proof-lane"
+issue = "EffortlessMetrics/ripr#1429"
+reason = "PR #15272: weakly_exposed seams in the two new-code files whose covering tests observe nearby values without analyzer-recognized exact oracles. check_tautology/mod.rs is deliberately excluded: its weakly_exposed findings must stay visible per the ripr_evidence invariant test. Exposed findings with strong oracles keep gating. Do not treat this as tautology-behavior proof."
+created = "2026-09-10"
+review_after = "2026-09-17"
+expires = "2026-09-30"
+removal_criteria = "Remove when ripr#1429 recognizes nearby-value assertions as exact oracles; narrow immediately if a future receipt reports an executable seam here outside weakly_exposed."
+
 # PR #15008 (#13374) adds crates/perl-semantic-facts/src/framework_adapters/
 # quickorm_api.rs: a 4712-line version-pinned QuickORM API return registry
 # that is explicitly reference data, not inference (module docs: "This

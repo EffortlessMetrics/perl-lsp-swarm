@@ -29,7 +29,6 @@ const REQUIRED_DISPOSITIONS: &[(&str, Option<&str>, Option<&str>)] = &[
 
 pub(crate) fn validate_workspace_lints(cargo: &Value, ledger: &LintLedger) -> Result<()> {
     validate_disposition_model(ledger)?;
-
     let cargo_lints = collect_workspace_lints(cargo)?;
     let mut lint_by_name = BTreeMap::new();
 
