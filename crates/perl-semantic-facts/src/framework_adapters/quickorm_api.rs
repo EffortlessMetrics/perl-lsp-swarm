@@ -449,6 +449,20 @@ pub enum QuickOrmTypeParamEffect {
     /// (Handle.pm:908-912). Later terminals still carry a row type; it is
     /// derived from the retained source rather than from a bound row.
     SourcePreservedRowUnbound,
+    /// The receiver's source is carried through, and the returned row object
+    /// is the receiver's currently-bound row — whose class need not match the
+    /// receiver's source row class.
+    ///
+    /// Zero-argument `Handle::row()` returns the bound object, if any
+    /// (Handle.pm:1308). `_check_row` admits a bound row whenever the
+    /// connection matches and the two sources share a `source_orm_name`; it
+    /// does **not** require the bound row's class to match the receiver's
+    /// (Handle.pm:291-304), and `Handle::row($r)` explicitly permits binding
+    /// a row of a different class (recorded as
+    /// [`Self::SourcePreservedRowFromArgument`]). A consumer must derive the
+    /// result from the receiver's bound-row parameter, not from its source
+    /// row class.
+    SourcePreservedBoundRow,
     /// The source becomes a join and the row becomes a join row.
     TransformedToJoinRow,
     /// The source is taken from an argument rather than the receiver.
@@ -469,6 +483,7 @@ impl QuickOrmTypeParamEffect {
             Self::PreservedFromReceiver => "preserved_from_receiver",
             Self::SourcePreservedRowFromArgument => "source_preserved_row_from_argument",
             Self::SourcePreservedRowUnbound => "source_preserved_row_unbound",
+            Self::SourcePreservedBoundRow => "source_preserved_bound_row",
             Self::TransformedToJoinRow => "transformed_to_join_row",
             Self::DerivedFromArgumentSource => "derived_from_argument_source",
             Self::ErasedToPlainData => "erased_to_plain_data",
@@ -1413,13 +1428,13 @@ pub const QUICKORM_API_CASES: &[QuickOrmApiCase] = &[
         receiver_constraints: NO_CONSTRAINTS,
         arguments: A::ZeroArgGetter,
         return_class: C::MetadataOrScalar,
-        multiplicity: N::ZeroOrOne,
+        multiplicity: N::One,
         type_params: T::NotApplicable,
         mode: M::SyncAsyncAsideForked,
         void_context: V::Croaks,
         boundary: B::Exact,
         evidence: QuickOrmEvidence { file: HANDLE, line: 1315 },
-        notes: "Zero-argument form returns the stored field selection.",
+        notes: "Zero-argument form returns the stored field selection, which is always populated: every construction path ends in `init` (Handle.pm:958), which repopulates the slot from the source's `fields_to_fetch` whenever absent (Handle.pm:268). `fields(undef)` deletes the slot only before constructing a clone, whose `init` repopulates it — so the getter cannot observe undef at the pinned revision.",
     },
     QuickOrmApiCase {
         api_case_id: "handle.fields.set",
@@ -2009,12 +2024,12 @@ pub const QUICKORM_API_CASES: &[QuickOrmApiCase] = &[
         arguments: A::ZeroArgGetter,
         return_class: C::SingleOptionalRow,
         multiplicity: N::ZeroOrOne,
-        type_params: T::PreservedFromReceiver,
+        type_params: T::SourcePreservedBoundRow,
         mode: M::SyncAsyncAsideForked,
         void_context: V::Croaks,
         boundary: B::Exact,
         evidence: QuickOrmEvidence { file: HANDLE, line: 1308 },
-        notes: "Zero-argument form returns the bound row object, if any. `_check_row` admits a bound row only when its source shares the handle's `source_orm_name` (Handle.pm:291-304), so the returned row's class is the receiver's source row class rather than an untyped scalar.",
+        notes: "Zero-argument form returns the currently-bound row object, if any (Handle.pm:1308). `_check_row` admits any row on a matching connection whose source shares a `source_orm_name` and does not require a matching row class (Handle.pm:291-304), and `row($r)` explicitly permits a class-mismatched bind — so the returned object's class is the bound row's class, which may differ from the receiver's source row class. A consumer must derive the result from the receiver's bound-row parameter.",
     },
     QuickOrmApiCase {
         api_case_id: "handle.row.set",
@@ -4188,18 +4203,20 @@ mod tests {
             "clearing the binding passes no row, so it has no row precondition"
         );
 
-        // The reading form returns the bound row object, if any — a
+        // The reading form returns the currently-bound row object, if any — a
         // row-carrying return, not metadata. `_check_row` only admits rows
         // whose source shares the handle's source_orm_name
-        // (Handle.pm:291-304), so the row's class is the receiver's source
-        // row class and stays parameterized by the receiver.
+        // (Handle.pm:291-304) without requiring a matching row class, and
+        // `row($r)` explicitly permits a class-mismatched bind, so the
+        // result is parameterized by the receiver's bound-row slot, not by
+        // its source row class.
         let row_get = case_by_id("handle.row.get");
         assert!(
             row_get.return_class.may_carry_row_identity(),
             "bound-row getter must keep row identity, got {:?}",
             row_get.return_class
         );
-        assert_eq!(row_get.type_params, QuickOrmTypeParamEffect::PreservedFromReceiver);
+        assert_eq!(row_get.type_params, QuickOrmTypeParamEffect::SourcePreservedBoundRow);
     }
 
     /// A call that returns nothing cannot carry a type parameter. `iterate`
