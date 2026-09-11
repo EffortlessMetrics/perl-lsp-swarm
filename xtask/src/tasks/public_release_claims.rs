@@ -101,7 +101,11 @@ pub fn run_build(write: bool) -> Result<claims::CatalogStats> {
             fs::write(&temporary, &bytes)
                 .with_context(|| format!("writing {}", target.display()))?;
             fs::rename(&temporary, &target)
-                .with_context(|| format!("writing {}", target.display()))?;
+                .with_context(|| format!("writing {}", target.display()))
+                .map_err(|error| {
+                    let _ = fs::remove_file(&temporary);
+                    error
+                })?;
             println!("wrote {}", target.display());
         }
     } else {

@@ -135,6 +135,7 @@ struct ParsedSurface {
 struct ParsedClaim {
     claim_id: String,
     surface_id: String,
+    surface_path: String,
     location: String,
     parsed_location: ParsedLocation,
     summary: String,
@@ -398,15 +399,11 @@ fn parse_location(location: &str) -> Result<ParsedLocation, CatalogError> {
     Ok(ParsedLocation { path: path.to_string(), spans })
 }
 
-fn path_suffix_compatible(left: &str, right: &str) -> bool {
-    let left_parts: Vec<&str> = left.split('/').collect();
-    let right_parts: Vec<&str> = right.split('/').collect();
-    let (shorter, longer) = if left_parts.len() <= right_parts.len() {
-        (&left_parts, &right_parts)
-    } else {
-        (&right_parts, &left_parts)
-    };
-    longer[longer.len() - shorter.len()..] == shorter[..]
+fn path_suffix_compatible(cited_path: &str, claim_path: &str) -> bool {
+    let cited_parts: Vec<&str> = cited_path.split('/').collect();
+    let claim_parts: Vec<&str> = claim_path.split('/').collect();
+    claim_parts.len() >= cited_parts.len()
+        && claim_parts[claim_parts.len() - cited_parts.len()..] == cited_parts[..]
 }
 
 fn locations_match(finding: &ParsedLocation, claim: &ParsedLocation) -> bool {
@@ -496,15 +493,11 @@ fn derive_relations(
     for finding in findings {
         let mut related: Vec<String> = Vec::new();
         for claim in claims {
-            if finding.cited_locations.iter().any(|finding_location| {
-                if claim.surface_id == "S01"
-                    && claim.parsed_location.path == "README.md"
-                    && finding_location.path != "README.md"
-                {
-                    return false;
-                }
-                locations_match(finding_location, &claim.parsed_location)
-            }) {
+            if finding
+                .cited_locations
+                .iter()
+                .any(|finding_location| locations_match(finding_location, &claim.parsed_location))
+            {
                 related.push(claim.claim_id.clone());
             }
         }
@@ -579,6 +572,18 @@ pub fn parse_inventory(doc: &str) -> Result<ParsedInventory, CatalogError> {
     claims.sort_by(|left, right| {
         numeric_claim_key(&left.claim_id).cmp(&numeric_claim_key(&right.claim_id))
     });
+    for claim in &mut claims {
+        if let Some(surface) =
+            surfaces.iter().find(|surface| surface.surface_id == claim.surface_id)
+        {
+            claim.surface_path = surface.path.clone();
+            if !surface.path.contains('*')
+                && path_suffix_compatible(&claim.parsed_location.path, &surface.path)
+            {
+                claim.parsed_location.path = surface.path.clone();
+            }
+        }
+    }
 
     let findings = parse_findings(doc)?;
     for finding_id in FINDING_IDS {
@@ -778,6 +783,7 @@ fn parse_claim_row(row: &str, section: Option<&str>) -> Result<Option<ParsedClai
     Ok(Some(ParsedClaim {
         claim_id,
         surface_id,
+        surface_path: String::new(),
         location: cells[1].clone(),
         parsed_location,
         summary,
@@ -901,11 +907,10 @@ fn valid_date_shape(date: &str) -> bool {
 /// not about prose. `present` only when the release actually shipped a
 /// Windows ARM64 archive.
 fn derive_windows_arm64_receipt(manifest: &ParsedReceiptManifest) -> &'static str {
-    if manifest.asset_names.iter().any(|name| name.contains("aarch64-pc-windows-msvc")) {
-        "present"
-    } else {
-        "absent"
-    }
+    let version =
+        manifest.release.strip_prefix('v').map_or(manifest.release.as_str(), |value| value);
+    let expected = format!("perllsp-{version}-aarch64-pc-windows-msvc.zip");
+    if manifest.asset_names.iter().any(|name| name == &expected) { "present" } else { "absent" }
 }
 
 // ---------------------------------------------------------------------------
@@ -1920,24 +1925,29 @@ mod tests {
 
         let doc = committed_doc();
         let inventory = parse_inventory(&doc).expect("inventory parses");
-        let without_arm64 =
-            parse_receipt_manifest(br#"{"release":"v0.17.0","source":"https://example.invalid/v0.17.0","verified_date":"2026-08-28","assets":[{"name":"SHA256SUMS"},{"name":"perllsp-0.17.0-x86_64-pc-windows-msvc.zip"}]}"#)
+        let committed_manifest = parse_receipt_manifest(
+            &read_repo_bytes(&repo_root(), RECEIPT_MANIFEST_PATH).expect("manifest readable"),
+        )
+        .expect("manifest parses");
+        assert_eq!(derive_windows_arm64_receipt(&committed_manifest), "absent");
+        let metadata_only =
+            parse_receipt_manifest(br#"{"release":"v0.17.0","source":"https://example.invalid/v0.17.0","verified_date":"2026-08-28","assets":[{"name":"perllsp-0.17.0-aarch64-pc-windows-msvc.zip.sha256"},{"name":"sbom-aarch64-pc-windows-msvc.json"}]}"#)
                 .expect("synthetic manifest parses");
-        let with_arm64 =
-            parse_receipt_manifest(br#"{"release":"v0.18.0","source":"https://example.invalid/v0.18.0","verified_date":"2026-08-28","assets":[{"name":"SHA256SUMS"},{"name":"perllsp-0.18.0-aarch64-pc-windows-msvc.zip"}]}"#)
+        let exact_arm64 =
+            parse_receipt_manifest(br#"{"release":"v0.17.0","source":"https://example.invalid/v0.17.0","verified_date":"2026-08-28","assets":[{"name":"perllsp-0.17.0-aarch64-pc-windows-msvc.zip"}]}"#)
                 .expect("synthetic manifest parses");
-        assert_eq!(derive_windows_arm64_receipt(&without_arm64), "absent");
-        assert_eq!(derive_windows_arm64_receipt(&with_arm64), "present");
+        assert_eq!(derive_windows_arm64_receipt(&metadata_only), "absent");
+        assert_eq!(derive_windows_arm64_receipt(&exact_arm64), "present");
 
-        let without = build_catalog_value(&inventory, &without_arm64);
-        let with = build_catalog_value(&inventory, &with_arm64);
-        let c210 = claim_row(&without, "C210");
+        let metadata_catalog = build_catalog_value(&inventory, &metadata_only);
+        let exact_catalog = build_catalog_value(&inventory, &exact_arm64);
+        let c210 = claim_row(&metadata_catalog, "C210");
         assert_eq!(
             c210.pointer("/dimensions/windows_arm64/published_receipt_v0_17_0")
                 .and_then(Value::as_str),
             Some("absent")
         );
-        let c210_with = claim_row(&with, "C210");
+        let c210_with = claim_row(&exact_catalog, "C210");
         assert_eq!(
             c210_with
                 .pointer("/dimensions/windows_arm64/published_receipt_v0_17_0")
@@ -2244,7 +2254,8 @@ mod tests {
         };
         let root_readme = ParsedClaim {
             claim_id: "ROOT".to_string(),
-            surface_id: "S01".to_string(),
+            surface_id: "probe".to_string(),
+            surface_path: "README.md".to_string(),
             location: "README.md:37".to_string(),
             parsed_location: parse_location("README.md:37").expect("root location"),
             summary: String::new(),

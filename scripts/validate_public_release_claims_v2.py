@@ -253,14 +253,10 @@ def parse_location(location: str) -> tuple[str, list[tuple[int, int]]]:
     return path, parse_line_spans(spec) if separator else []
 
 
-def path_suffix_compatible(left: str, right: str) -> bool:
-    left_parts = left.split("/")
-    right_parts = right.split("/")
-    shorter, longer = (
-        (left_parts, right_parts) if len(left_parts) <= len(right_parts)
-        else (right_parts, left_parts)
-    )
-    return longer[-len(shorter):] == shorter
+def path_suffix_compatible(cited_path: str, claim_path: str) -> bool:
+    cited_parts = cited_path.split("/")
+    claim_parts = claim_path.split("/")
+    return len(claim_parts) >= len(cited_parts) and claim_parts[-len(cited_parts):] == cited_parts
 
 
 def locations_match(
@@ -298,12 +294,7 @@ def derive_relations(claims: list[dict[str, Any]], findings: list[dict[str, Any]
             claim["claim_id"]
             for claim in claims
             if any(
-                not (
-                    claim["surface_id"] == "S01"
-                    and claim["parsed_location"][0] == "README.md"
-                    and cited[0] != "README.md"
-                )
-                and locations_match(cited, claim["parsed_location"])
+                locations_match(cited, claim["parsed_location"])
                 for cited in finding["cited_locations"]
             )
         ]
@@ -338,7 +329,8 @@ def assert_derivation_probes(inventory: dict[str, Any]) -> None:
     def claim(claim_id: str, location: str) -> dict[str, Any]:
         return {
             "claim_id": claim_id,
-            "surface_id": "S01" if claim_id == "ROOT" else "probe",
+            "surface_id": "probe",
+            "surface_path": "README.md",
             "location": location,
             "parsed_location": parse_location(location),
         }
@@ -370,6 +362,26 @@ def assert_derivation_probes(inventory: dict[str, Any]) -> None:
             f"{DOC_PATH}: D4 VS_CODE_SETUP.md:61-69 probe expected ['C1303'], "
             f"found {vscode_relations}"
         )
+
+    def arm64_manifest(asset_names: list[str]) -> dict[str, Any]:
+        return {
+            "release": "v0.17.0",
+            "source": "https://example.invalid/v0.17.0",
+            "verified_date": "2026-08-28",
+            "asset_names": asset_names,
+        }
+
+    if derive_windows_arm64_receipt(
+        arm64_manifest([
+            "perllsp-0.17.0-aarch64-pc-windows-msvc.zip.sha256",
+            "sbom-aarch64-pc-windows-msvc.json",
+        ])
+    ) != "absent":
+        raise ValidationError(f"{DOC_PATH}: ARM64 metadata-only probe unexpectedly matched")
+    if derive_windows_arm64_receipt(
+        arm64_manifest(["perllsp-0.17.0-aarch64-pc-windows-msvc.zip"])
+    ) != "present":
+        raise ValidationError(f"{DOC_PATH}: ARM64 exact archive probe did not match")
 
 
 # ---------------------------------------------------------------------------
@@ -493,6 +505,7 @@ def parse_inventory(doc: str) -> dict[str, Any]:
                 {
                     "claim_id": claim_id,
                     "surface_id": current_section,
+                    "surface_path": "",
                     "location": cells[1],
                     "parsed_location": parsed_location,
                     "summary": extract_cell_text(cells[2], f"{claim_id}.summary"),
@@ -504,6 +517,14 @@ def parse_inventory(doc: str) -> dict[str, Any]:
 
     surfaces.sort(key=lambda surface: surface["surface_id"])
     claims.sort(key=lambda claim: claim_sort_key(claim["claim_id"]))
+    surface_paths = {surface["surface_id"]: surface["path"] for surface in surfaces}
+    for claim in claims:
+        surface_path = surface_paths.get(claim["surface_id"], "")
+        claim["surface_path"] = surface_path
+        if surface_path and "*" not in surface_path:
+            claim_path, spans = claim["parsed_location"]
+            if path_suffix_compatible(claim_path, surface_path):
+                claim["parsed_location"] = (surface_path, spans)
 
     for expected in EXPECTED_SURFACES:
         if not any(surface["surface_id"] == expected for surface in surfaces):
@@ -605,7 +626,12 @@ def parse_receipt_manifest(raw: bytes) -> dict[str, Any]:
 
 
 def derive_windows_arm64_receipt(manifest: dict[str, Any]) -> str:
-    shipped = any("aarch64-pc-windows-msvc" in name for name in manifest["asset_names"])
+    release = manifest.get("release")
+    if not isinstance(release, str) or not release:
+        raise ValidationError(f"{RECEIPT_MANIFEST_PATH}: release: missing")
+    version = release[1:] if release.startswith("v") else release
+    expected = f"perllsp-{version}-aarch64-pc-windows-msvc.zip"
+    shipped = expected in manifest["asset_names"]
     return "present" if shipped else "absent"
 
 
@@ -1088,6 +1114,28 @@ def run_tamper_probes(
                    lambda copy: mutate(copy, ["release"], "0.17.0"))
     manifest_probe("d1:manifest_verified_date_malformed",
                    lambda copy: mutate(copy, ["verified_date"], "2026/08/28"))
+
+    def metadata_only_receipt_probe(copy: dict[str, Any]) -> None:
+        copy["assets"] = [
+            {"name": "perllsp-0.17.0-aarch64-pc-windows-msvc.zip.sha256"},
+            {"name": "sbom-aarch64-pc-windows-msvc.json"},
+        ]
+        metadata_manifest = parse_receipt_manifest(json.dumps(copy).encode())
+        tampered = json.loads(json.dumps(artifact))
+        for row in tampered["claims"]:
+            dimensions = row.get("dimensions") or {}
+            if "windows_arm64" in dimensions:
+                dimensions["windows_arm64"]["published_receipt_v0_17_0"] = "present"
+        compare_catalog(tampered, inventory, metadata_manifest)
+
+    try:
+        metadata_only_receipt_probe(json.loads(manifest_raw))
+    except ValidationError as error:
+        results.append(("d1:arm64_metadata_only", True, str(error)))
+    else:
+        results.append(("d1:arm64_metadata_only", False,
+                        "metadata/checksum assets incorrectly derived an ARM64 receipt"))
+        all_caught = False
 
     row_probes = [r for r in results if r[0].startswith("row:")]
     d1_probes = [r for r in results if r[0].startswith("d1:")]
