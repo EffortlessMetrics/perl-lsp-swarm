@@ -260,10 +260,9 @@ fn validate_source_backed_generated_class(
         violations
             .push(format!("{key} is SourceBackedGenerated but requires_ready_index is false"));
     }
-    if !class.requires_high_confidence {
-        violations
-            .push(format!("{key} is SourceBackedGenerated but requires_high_confidence is false"));
-    }
+    // The generated-label pilot admits only the bounded Medium-confidence
+    // claim. `low_confidence` remains a mandatory blocker below, so Low-
+    // confidence and dynamic candidates stay excluded from the live surface.
     if !class.requires_source_anchor {
         violations
             .push(format!("{key} is SourceBackedGenerated but requires_source_anchor is false"));
@@ -408,7 +407,7 @@ mod tests {
             live: true,
             requires_non_empty_query: true,
             requires_ready_index: true,
-            requires_high_confidence: true,
+            requires_high_confidence: false,
             requires_source_anchor: true,
             requires_generated_label: true,
             label: Some(REQUIRED_GENERATED_LABEL.to_string()),
@@ -454,6 +453,37 @@ mod tests {
         assert!(
             violations.iter().any(|violation| violation.contains("requires_source_anchor")),
             "generated live class without source anchor should be rejected: {violations:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn accepts_bounded_medium_generated_confidence_band() -> TestResult {
+        let policy = policy();
+        let class = live_generated_class();
+        let mut violations = Vec::new();
+
+        validate_source_backed_generated_class(&class, "test", &policy, &mut violations);
+
+        assert!(
+            violations.is_empty(),
+            "Medium generated pilot with low_confidence blocked should pass: {violations:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn generated_medium_band_still_requires_low_confidence_blocker() -> TestResult {
+        let policy = policy();
+        let mut class = live_generated_class();
+        class.blocks.retain(|blocker| blocker != "low_confidence");
+        let mut violations = Vec::new();
+
+        validate_source_backed_generated_class(&class, "test", &policy, &mut violations);
+
+        assert!(
+            violations.iter().any(|violation| violation.contains("low_confidence")),
+            "Medium admission without the low_confidence blocker must fail: {violations:?}"
         );
         Ok(())
     }
