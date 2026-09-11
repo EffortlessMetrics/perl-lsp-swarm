@@ -1,14 +1,26 @@
 use super::RawObligation;
 use crate::tasks::check_tautology;
-use color_eyre::eyre::Result;
+use color_eyre::eyre::{Result, eyre};
+use std::fs;
 use std::path::Path;
 
 const SOURCE_PATH: &str = "policy/tautology-dispositions.toml";
 
 pub(super) fn obligations(root: &Path) -> Result<Vec<RawObligation>> {
     let path = root.join(SOURCE_PATH);
-    if !path.is_file() {
-        return Ok(Vec::new());
+    match fs::metadata(&path) {
+        Ok(metadata) if metadata.is_file() => {}
+        Ok(_) => {
+            return Err(eyre!(
+                "{SOURCE_PATH} must be a regular file, so a directory or special file cannot project an empty cadence receipt"
+            ));
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(Vec::new());
+        }
+        Err(error) => {
+            return Err(error.into());
+        }
     }
 
     // Liveness comes from the scanner, not the ledger alone: a disposition
@@ -49,7 +61,7 @@ pub(super) fn obligations(root: &Path) -> Result<Vec<RawObligation>> {
 mod tests {
     use super::super::{CadenceState, classify, parse_date};
     use super::*;
-    use color_eyre::eyre::eyre;
+    use color_eyre::eyre::{bail, eyre};
     use std::fs;
     use tempfile::tempdir;
 
@@ -111,6 +123,27 @@ expires = "2026-09-02"
                 .as_deref()
                 .is_some_and(|identity| identity.contains("crates/demo/src/lib.rs:4"))
         );
+        Ok(())
+    }
+
+    #[test]
+    fn missing_ledger_projects_an_empty_receipt() -> Result<()> {
+        let root = tempdir()?;
+        let raw = obligations(root.path())?;
+        assert!(raw.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn directory_ledger_cannot_project_an_empty_receipt() -> Result<()> {
+        let root = tempdir()?;
+        fs::create_dir_all(root.path().join("policy/tautology-dispositions.toml"))?;
+
+        let result = obligations(root.path());
+        let Err(error) = result else {
+            bail!("a directory at the ledger path should fail closed, not project empty");
+        };
+        assert!(error.to_string().contains("must be a regular file"));
         Ok(())
     }
 

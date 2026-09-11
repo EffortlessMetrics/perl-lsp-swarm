@@ -1,5 +1,8 @@
-use super::super::validate::{validate_required_dispositions, validate_workspace_lints};
+use super::super::validate::{
+    validate_cadence_sources, validate_required_dispositions, validate_workspace_lints,
+};
 use super::{deferred_lint, empty_cargo, ledger_with, lint_entry, planned_lint};
+use super::{empty_debt, test_root};
 use color_eyre::eyre::{Result, bail};
 use toml::Value;
 
@@ -181,6 +184,23 @@ fn required_lint_identity_cannot_be_deleted_from_the_merged_model() -> Result<()
 fn disallowed_fields_phase1_does_not_depend_on_required_dispositions() -> Result<()> {
     let ledger = required_ledger();
     validate_required_dispositions(&ledger)
+}
+
+#[test]
+fn cadence_sources_reject_a_ledger_missing_a_required_disposition() -> Result<()> {
+    // validate_cadence_sources must enforce the same required-disposition pin
+    // as validate_all: a ledger that drops a required lint projects its rows
+    // as Invalid owner work instead of passing silently into cadence_rows.
+    let mut ledger = required_ledger();
+    ledger.planned.retain(|lint| lint.name != REQUIRED[3]);
+
+    let result = validate_cadence_sources(test_root(), &ledger, &empty_debt());
+    let Err(error) = result else {
+        bail!("cadence sources missing a required disposition should fail closed");
+    };
+    assert!(error.to_string().contains(REQUIRED[3]));
+    assert!(error.to_string().contains("exactly once"));
+    Ok(())
 }
 
 #[test]
