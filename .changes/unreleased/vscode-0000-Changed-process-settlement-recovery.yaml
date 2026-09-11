@@ -1,0 +1,9 @@
+project: vscode
+component: Performance and reliability
+kind: Changed
+body: "The VS Code language-client lifecycle retains a completed cleanup episode's exact process subject and permits an explicit restart only after that subject is observed terminal; failed client cleanup, unknown observation, and timed-out startup remain blocked and request reload remediation (#14486)."
+time: 2026-09-08T00:00:00Z
+custom:
+  PR: "0000"
+  Slug: process-settlement-recovery-14486
+  Breaking: "no"

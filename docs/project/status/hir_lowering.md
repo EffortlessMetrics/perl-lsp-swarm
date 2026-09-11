@@ -10,9 +10,9 @@ This status tracks parser AST construct coverage for the crate-local HIR baselin
 | Status | Count | Meaning |
 | --- | ---: | --- |
 | `lowered` | 38 | Emits one or more HIR items today. |
-| `dynamic_boundary` | 3 | Emits an explicit dynamic-boundary HIR item for unsupported static truth. |
+| `dynamic_boundary` | 5 | Emits an explicit dynamic-boundary HIR item for unsupported static truth. |
 | `intentionally_skipped` | 20 | Traversal, metadata, or recovery placeholder; no standalone HIR item expected. |
-| `not_yet_modeled` | 15 | Parser AST construct exists, but HIR has no shell yet. |
+| `not_yet_modeled` | 13 | Parser AST construct exists, but HIR has no shell yet. |
 
 AST kinds tracked: `76`. HIR construct kinds tracked: `29`.
 
@@ -55,8 +55,8 @@ AST kinds tracked: `76`. HIR construct kinds tracked: `29`.
 | `If` | `lowered` | `BranchShell` | `if`/`unless` block form lowered as a branch shell with condition anchor and arm counts. |
 | `LabeledStatement` | `intentionally_skipped` | - | Label metadata is threaded into the loop it wraps; no standalone HIR item. |
 | `While` | `lowered` | `LoopShell` | `while`/`until` lowered as a loop shell with condition and continue-block facts. |
-| `Tie` | `not_yet_modeled` | - | No first-slice HIR shell yet. |
-| `Untie` | `not_yet_modeled` | - | No first-slice HIR shell yet. |
+| `Tie` | `dynamic_boundary` | `DynamicBoundary` | `tie` emits `DynamicBoundary`; the tie class expression and constructor arguments traverse. |
+| `Untie` | `dynamic_boundary` | `DynamicBoundary` | `untie` emits `DynamicBoundary`; the target place expression traverses. |
 | `For` | `lowered` | `LoopShell` | C-style `for` lowered as a loop shell with optional-condition and iterator facts. |
 | `Foreach` | `lowered` | `LoopShell` | `foreach` lowered as a loop shell with iterator-declaration and continue-block facts. |
 | `Given` | `not_yet_modeled` | - | No first-slice HIR shell yet. |
@@ -89,7 +89,7 @@ AST kinds tracked: `76`. HIR construct kinds tracked: `29`.
 | `DataSection` | `lowered` | `DataSectionDecl` | Explicitly handled: emits a DataSectionDecl shell with exact marker and payload ranges; payload is an opaque source region and is never lowered as Perl. |
 | `Class` | `lowered` | `ClassDecl` | Lowered as class-declaration shell; class body is traversed. No dedicated scope frame or stash slot yet. |
 | `Format` | `intentionally_skipped` | - | Explicitly handled: records a ScopeGraph format frame and stash slot; no HIR item yet. |
-| `Identifier` | `lowered` | `BarewordExpr` | Lowered as bareword expression shell; records bareword fact. |
+| `Identifier` | `lowered` | `BarewordExpr` | Lowered as bareword expression shell; records bareword fact. A sigil-prefixed name cannot be a bareword, so the parser-synthesized implicit topic emits neither item nor fact. |
 | `Error` | `intentionally_skipped` | - | Recovered partials are traversed; raw error nodes emit no HIR. |
 | `MissingExpression` | `intentionally_skipped` | - | Parser recovery placeholder, intentionally no HIR item. |
 | `MissingStatement` | `intentionally_skipped` | - | Parser recovery placeholder, intentionally no HIR item. |
