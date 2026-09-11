@@ -1,19 +1,19 @@
 //! Live-collection falsifiers for branch-deletion admission (#12885).
 //!
-//! The adapter is driven through a fake command surface, so every case is
-//! hermetic: no network, no `gh`, no real repository, and nothing mutated.
-//! What is under test is that live collection is *fail-closed* — an
-//! unreadable, unparseable, or truncated read must not become a permissive
-//! default.
+//! The collection adapter is driven through a fake command surface, so its
+//! cases are hermetic: no network and no `gh`. The dedicated local-ref route
+//! tests also execute its generated argv in a temporary Git repository.
 
 use std::collections::HashMap;
 
 use std::cell::RefCell;
+use std::process::Command;
 
 use xtask::branch_deletion_admission::{
     DeletionAdmission, DeletionExecutor, ParentTerminality, ReadOnlyCommands, RecheckGate,
-    RemoteIdentity, branch_deletion_command, collect_request, evaluate, execute_admitted_deletion,
-    parse_remote_identity, recheck_gate, repository_from_remote_url, verify_remote_identity,
+    RemoteIdentity, branch_deletion_command, collect_request, collect_request_for_local_alias,
+    evaluate, execute_admitted_deletion, parse_remote_identity, recheck_gate,
+    repository_from_remote_url, verify_remote_identity,
 };
 
 const BRANCH: &str = "agent/vim-activation-root-7762";
@@ -131,6 +131,225 @@ fn a_fully_read_unencumbered_subject_is_admitted() -> Result<(), Box<dyn std::er
     assert_eq!(outcome.repository, "EffortlessMetrics/perl-lsp-swarm");
     assert_eq!(outcome.admitted_sha.as_deref(), Some(HEAD_SHA));
     assert!(branch_deletion_command(&outcome).is_some());
+    Ok(())
+}
+
+#[test]
+fn a_local_alias_is_collected_from_the_local_tip_and_never_remote_deleted()
+-> Result<(), Box<dyn std::error::Error>> {
+    const ALIAS: &str = "codex/13178-dancer2-v1-integrated";
+    let commands = healthy()
+        .on("git check-ref-format refs/heads", ALIAS)
+        .on(
+            "git for-each-ref --format=%(refname)%00%(symref) refs/heads",
+            &format!("refs/heads/{ALIAS}\0\n"),
+        )
+        .on("git rev-parse --verify --quiet refs/heads", &format!("{HEAD_SHA}\n"))
+        .on("git worktree list", "worktree /repo\nHEAD abc\nbranch refs/heads/main\n");
+
+    let collected = collect_request_for_local_alias(&commands, 7799, "origin", ALIAS)?;
+    let outcome = evaluate(&collected.request);
+    if outcome.admission != DeletionAdmission::SafeToDelete {
+        return Err(format!("local alias retained: {}", outcome.detail).into());
+    }
+    let command = branch_deletion_command(&outcome).ok_or("local alias emitted no argv")?;
+    if command.first().map(String::as_str) != Some("git")
+        || !command.contains(&"update-ref".to_string())
+        || !command.contains(&"--no-deref".to_string())
+        || command.contains(&"--delete".to_string())
+        || command.contains(&"origin".to_string())
+    {
+        return Err(format!("unexpected local deletion argv: {command:?}").into());
+    }
+    Ok(())
+}
+
+#[test]
+fn a_symbolic_local_alias_is_not_admitted() -> Result<(), Box<dyn std::error::Error>> {
+    const ALIAS: &str = "codex/symbolic-alias";
+    let commands = healthy()
+        .on("git check-ref-format refs/heads", ALIAS)
+        .on(
+            "git for-each-ref --format=%(refname)%00%(symref) refs/heads",
+            &format!("refs/heads/{ALIAS}\0refs/remotes/origin/other\n"),
+        )
+        .on("git worktree list", "worktree /repo\nHEAD abc\nbranch refs/heads/main\n");
+
+    let collected = collect_request_for_local_alias(&commands, 7799, "origin", ALIAS)?;
+    let outcome = evaluate(&collected.request);
+    if outcome.admission != DeletionAdmission::RetainBranchMoved {
+        return Err(format!("symbolic alias was not retained: {:?}", outcome.admission).into());
+    }
+    if branch_deletion_command(&outcome).is_some() {
+        return Err("symbolic alias emitted a deletion command".into());
+    }
+    Ok(())
+}
+
+#[test]
+fn a_local_alias_checked_out_in_a_worktree_is_not_admitted()
+-> Result<(), Box<dyn std::error::Error>> {
+    const ALIAS: &str = "codex/checked-out-alias";
+    let commands = healthy()
+        .on("git check-ref-format refs/heads", ALIAS)
+        .on(
+            "git for-each-ref --format=%(refname)%00%(symref) refs/heads",
+            &format!("refs/heads/{ALIAS}\0\n"),
+        )
+        .on("git rev-parse --verify --quiet refs/heads", &format!("{HEAD_SHA}\n"))
+        .on("git worktree list", &format!("worktree /repo\nHEAD abc\nbranch refs/heads/{ALIAS}\n"));
+
+    let collected = collect_request_for_local_alias(&commands, 7799, "origin", ALIAS)?;
+    let outcome = evaluate(&collected.request);
+    if outcome.admission != DeletionAdmission::RetainGraphNotProven {
+        return Err(format!("checked-out alias was not retained: {:?}", outcome.admission).into());
+    }
+    if branch_deletion_command(&outcome).is_some() {
+        return Err("checked-out alias emitted a deletion command".into());
+    }
+    Ok(())
+}
+
+#[test]
+fn a_local_alias_metadata_read_error_is_not_treated_as_direct_ref()
+-> Result<(), Box<dyn std::error::Error>> {
+    const ALIAS: &str = "codex/unreadable-alias";
+    let commands = healthy().on("git check-ref-format refs/heads", ALIAS).failing(
+        "git for-each-ref --format=%(refname)%00%(symref) refs/heads",
+        "permission denied",
+    );
+
+    let collected = collect_request_for_local_alias(&commands, 7799, "origin", ALIAS)?;
+    let outcome = evaluate(&collected.request);
+    if outcome.admission != DeletionAdmission::RetainBranchMoved {
+        return Err(format!("unreadable alias was not retained: {:?}", outcome.admission).into());
+    }
+    if branch_deletion_command(&outcome).is_some() {
+        return Err("unreadable alias emitted a deletion command".into());
+    }
+    Ok(())
+}
+
+fn run_git(
+    repo: &std::path::Path,
+    args: &[&str],
+) -> Result<std::process::Output, Box<dyn std::error::Error>> {
+    Ok(Command::new("git").args(args).current_dir(repo).output()?)
+}
+
+fn require_success(
+    label: &str,
+    output: &std::process::Output,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if output.status.success() { Ok(()) } else { Err(format!("{label} failed: {output:?}").into()) }
+}
+
+#[test]
+fn a_local_alias_argv_deletes_only_the_admitted_temp_repo_ref()
+-> Result<(), Box<dyn std::error::Error>> {
+    let repo = tempfile::tempdir()?;
+    let init = run_git(repo.path(), &["init", "--quiet"])?;
+    require_success("git init", &init)?;
+    std::fs::write(repo.path().join("payload"), b"alias proof")?;
+    let add = run_git(repo.path(), &["add", "payload"])?;
+    require_success("git add", &add)?;
+    let commit = run_git(
+        repo.path(),
+        &[
+            "-c",
+            "user.name=proof",
+            "-c",
+            "user.email=proof@example.invalid",
+            "commit",
+            "--quiet",
+            "-m",
+            "proof",
+        ],
+    )?;
+    require_success("git commit", &commit)?;
+    let head = run_git(repo.path(), &["rev-parse", "HEAD"])?;
+    require_success("git rev-parse", &head)?;
+    let sha = String::from_utf8(head.stdout)?.trim().to_string();
+    let alias = "refs/heads/codex/local-alias";
+    let update = run_git(repo.path(), &["update-ref", alias, &sha])?;
+    require_success("git update-ref", &update)?;
+
+    let mut request = collect_request(&healthy(), 7799, "origin")?.request;
+    request.parent.reviewed_head_sha = sha.clone();
+    request.branch.current_sha = Some(sha.clone());
+    request.branch.local_ref = Some(
+        alias
+            .strip_prefix("refs/heads/")
+            .ok_or("test ref did not have refs/heads prefix")?
+            .to_string(),
+    );
+    let outcome = evaluate(&request);
+    if outcome.admission != DeletionAdmission::SafeToDelete {
+        return Err(format!("local admission retained: {:?}", outcome.admission).into());
+    }
+    let argv = branch_deletion_command(&outcome).ok_or("local admission did not emit argv")?;
+    let (program, args) = argv.split_first().ok_or("local admission emitted an empty argv")?;
+    let mutation = Command::new(program).args(args).current_dir(repo.path()).output()?;
+    require_success("local deletion", &mutation)?;
+    let remains = run_git(repo.path(), &["show-ref", "--verify", alias])?;
+    if remains.status.success() {
+        return Err(format!("local alias survived: {remains:?}").into());
+    }
+    Ok(())
+}
+
+#[test]
+fn a_symbolic_switch_after_admission_cannot_delete_the_target_ref()
+-> Result<(), Box<dyn std::error::Error>> {
+    let repo = tempfile::tempdir()?;
+    let init = run_git(repo.path(), &["init", "--quiet"])?;
+    require_success("git init", &init)?;
+    std::fs::write(repo.path().join("payload"), b"alias race")?;
+    let add = run_git(repo.path(), &["add", "payload"])?;
+    require_success("git add", &add)?;
+    let commit = run_git(
+        repo.path(),
+        &[
+            "-c",
+            "user.name=proof",
+            "-c",
+            "user.email=proof@example.invalid",
+            "commit",
+            "--quiet",
+            "-m",
+            "proof",
+        ],
+    )?;
+    require_success("git commit", &commit)?;
+    let head = run_git(repo.path(), &["rev-parse", "HEAD"])?;
+    require_success("git rev-parse", &head)?;
+    let sha = String::from_utf8(head.stdout)?.trim().to_string();
+    let update = run_git(repo.path(), &["update-ref", "refs/heads/codex/local-alias", &sha])?;
+    require_success("git update-ref", &update)?;
+    let target = run_git(repo.path(), &["update-ref", "refs/heads/target", &sha])?;
+    require_success("target setup", &target)?;
+
+    let mut request = collect_request(&healthy(), 7799, "origin")?.request;
+    request.parent.reviewed_head_sha = sha.clone();
+    request.branch.current_sha = Some(sha);
+    request.branch.local_ref = Some("codex/local-alias".to_string());
+    let outcome = evaluate(&request);
+    let argv = branch_deletion_command(&outcome).ok_or("local admission did not emit argv")?;
+    let switched = run_git(
+        repo.path(),
+        &["symbolic-ref", "refs/heads/codex/local-alias", "refs/heads/target"],
+    )?;
+    require_success("symbolic switch", &switched)?;
+    let (program, args) = argv.split_first().ok_or("local admission emitted an empty argv")?;
+    let mutation = Command::new(program).args(args).current_dir(repo.path()).output()?;
+    require_success("symbolic alias deletion", &mutation)?;
+    let alias_remains =
+        run_git(repo.path(), &["show-ref", "--verify", "refs/heads/codex/local-alias"])?;
+    if alias_remains.status.success() {
+        return Err(format!("symbolic local alias survived: {alias_remains:?}").into());
+    }
+    let target_remains = run_git(repo.path(), &["show-ref", "--verify", "refs/heads/target"])?;
+    require_success("symbolic target remains", &target_remains)?;
     Ok(())
 }
 

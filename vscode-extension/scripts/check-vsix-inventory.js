@@ -2,7 +2,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { vsixName } = require('./package-vsix');
+const { validateProjectionManifest, vsixName } = require('./package-vsix');
 
 const EXTENSION_ROOT = path.resolve(__dirname, '..');
 const BASELINE_PATH = path.join(__dirname, 'vsix-inventory-baseline.json');
@@ -148,23 +148,56 @@ function parseArgs(argv) {
   return { updateBaseline, vsixPath };
 }
 
-function main() {
+async function main() {
   const { updateBaseline, vsixPath: requestedVsixPath } = parseArgs(process.argv.slice(2));
   const baseline =
     updateBaseline && !fs.existsSync(BASELINE_PATH)
       ? null
       : JSON.parse(fs.readFileSync(BASELINE_PATH, 'utf8'));
   const vsixPath = requestedVsixPath || path.join(EXTENSION_ROOT, vsixName);
-  const actual = require('./check-vsix-inventory-transition').collectArchiveInventory(
-    vsixPath,
-  ).inventory;
+  const transition = require('./check-vsix-inventory-transition');
+  const actual = (await transition.collectArchiveInventory(vsixPath)).inventory;
   if (updateBaseline) {
     fs.writeFileSync(BASELINE_PATH, `${JSON.stringify(actual, null, 2)}\n`);
     process.stdout.write(`Updated ${BASELINE_PATH}\n`);
     return;
   }
-  const allowedFiles =
-    process.env.PERL_LSP_CURRENT_SOURCE_SMOKE === '1' ? [currentSourceBundleFile()] : [];
+  const manifestPath = (process.env.PERL_LSP_CANDIDATE_PAYLOAD_MANIFEST || '').trim();
+  const allowedFiles = [];
+  if (!manifestPath && process.env.PERL_LSP_CURRENT_SOURCE_SMOKE === '1') {
+    allowedFiles.push(currentSourceBundleFile());
+  }
+  if (manifestPath) {
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+    const projectionPath = (process.env.PERL_LSP_VSIX_PROJECTION_INPUT || '').trim();
+    if (!projectionPath) {
+      throw new Error('candidate payload manifest requires a projection input');
+    }
+    const projection = JSON.parse(fs.readFileSync(projectionPath, 'utf8'));
+    const target = (
+      process.env.PERL_LSP_VSCODE_TARGET ||
+      manifest?.package?.vscodeTargetId ||
+      ''
+    ).trim();
+    const validatedManifest = validateProjectionManifest(manifest, projection, target);
+    const inventorySha = validatedManifest.package.inventorySha256;
+    if (transition.semanticInventorySha256(actual) !== inventorySha) {
+      throw new Error('candidate payload manifest inventory SHA does not match the produced VSIX');
+    }
+    const members = [
+      validatedManifest.server?.member,
+      validatedManifest.dap?.payload?.member,
+    ].filter((member) => typeof member === 'string');
+    for (const member of members) {
+      const packagedFile = `bin/${target}/${member}`;
+      if (!Object.hasOwn(actual.files, packagedFile)) {
+        throw new Error(
+          `candidate payload member is missing from the produced VSIX: ${packagedFile}`,
+        );
+      }
+      allowedFiles.push(packagedFile);
+    }
+  }
   const violations = compareInventory(actual, baseline, process.platform, {
     allowedFiles,
     arch: process.arch,
@@ -200,10 +233,8 @@ module.exports = {
 };
 
 if (require.main === module) {
-  try {
-    main();
-  } catch (error) {
+  main().catch((error) => {
     process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
     process.exitCode = 1;
-  }
+  });
 }

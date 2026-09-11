@@ -1,6 +1,8 @@
 //! Real-process proof for a response that is still being written when `exit`
 //! is received without a preceding `shutdown`.
 
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
+
 use anyhow::{Context, Result, bail, ensure};
 use serde_json::{Value, json};
 use std::collections::{BTreeSet, VecDeque};
@@ -142,14 +144,14 @@ impl ProcessGuard {
         );
         self.stdout_requests.take();
         if let Some(thread) = self.stdout_thread.take() {
-            thread.join().map_err(|_| anyhow::anyhow!("stdout reader panicked"))?;
+            thread.join().map_err(|e| anyhow::anyhow!("stdout reader panicked: {e:?}"))?;
         }
         let stderr = self
             .stderr_thread
             .take()
             .context("stderr reader already joined")?
             .join()
-            .map_err(|_| anyhow::anyhow!("stderr reader panicked"))?;
+            .map_err(|e| anyhow::anyhow!("stderr reader panicked: {e:?}"))?;
         ensure!(stderr.len() <= 32 * 1024, "stderr exceeded bounded capture");
         Ok(())
     }

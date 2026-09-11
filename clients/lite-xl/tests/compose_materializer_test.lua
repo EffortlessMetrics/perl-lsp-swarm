@@ -160,7 +160,10 @@ end
 -- ---------------------------------------------------------------------------
 
 local scratch_root = (os.getenv("TEMP") or ".") .. "/compose_materializer_scratch"
-os.execute('mkdir "' .. scratch_root .. '" 2>nul')
+local IS_WINDOWS = package.config:sub(1, 1) == "\\"
+os.execute(IS_WINDOWS
+  and ('mkdir "' .. scratch_root .. '" 2>nul')
+  or ('mkdir -p "' .. scratch_root .. '" 2>/dev/null'))
 
 -- Directory creation is deferred and flushed as ONE chained command:
 -- process spawns dominate runtime on this host.
@@ -180,10 +183,24 @@ local function flush_dirs()
   if #PENDING == 0 then return end
   local parts = {}
   for _, d in ipairs(PENDING) do
-    parts[#parts + 1] = 'mkdir "' .. d .. '" 2>nul'
+    parts[#parts + 1] = IS_WINDOWS
+      and ('mkdir "' .. d .. '" 2>nul')
+      or ('mkdir -p "' .. d .. '" 2>/dev/null')
   end
   PENDING = {}
-  os.execute(table.concat(parts, " & "))
+  os.execute(table.concat(parts, IS_WINDOWS and " & " or " && "))
+end
+
+-- Absolute repo-rooted path for symlink targets: a relative link target
+-- resolves against the link's own directory and dangles.
+local function abs_repo_path(path)
+  if path:match("^%a:/") or path:sub(1, 1) == "/" then return path end
+  local probe = IS_WINDOWS and io.popen("cd") or io.popen("pwd")
+  if not probe then return nil end
+  local cwd = probe:read("*l")
+  probe:close()
+  if not cwd or #cwd == 0 then return nil end
+  return cwd:gsub("[/\\]+$", "") .. "/" .. path
 end
 
 local function write_file(path, bytes)
@@ -594,6 +611,917 @@ do
     tree_dir = tree_dir2, inventory = res2.inventory, adapter = ad,
   })
   ok(okv, "F16 regenerated tree verifies clean")
+end
+
+-- ---------------------------------------------------------------------------
+-- Pending composition fixtures: immutable base/source projections and raw
+-- M/A/D deltas are checked before any source bytes are admitted.
+-- ---------------------------------------------------------------------------
+
+do
+  local pending_root = sandbox("pending")
+  local bytes = {
+    ["init.lua"] = "return { pending = 'base' }\n",
+    ["json.lua"] = "return { pending = 'json' }\n",
+    ["util.lua"] = "return { pending = 'util' }\n",
+    ["capability_manifest.lua"] = "return { pending = 'cap' }\n",
+  }
+  local source_bytes = {}
+  for path, value in pairs(bytes) do source_bytes[path] = value end
+  source_bytes["init.lua"] = "return { pending = 'source' }\n"
+  local base_blobs, source_blobs = {}, {}
+  for path, value in pairs(bytes) do
+    base_blobs[path] = fnv_hex(value)
+    source_blobs[path] = fnv_hex(source_bytes[path])
+  end
+  local base_dir = sandbox("pending-base")
+  for path, value in pairs(bytes) do write_file(base_dir .. "/" .. path, value) end
+  local pending_manifest = manifest({}, { prof("empty", {}) }, base_blobs)
+  local function pending_adapter(spec)
+    return {
+      component_exists = function(sha)
+        return spec.components and spec.components[sha] ~= nil or false
+      end,
+      touched_upstream_paths = function(sha)
+        local component = spec.components and spec.components[sha]
+        local out = {}
+        for path in pairs(component and component.paths or {}) do
+          out[#out + 1] = path
+        end
+        table.sort(out)
+        return out
+      end,
+      snapshot = function(sha, path, dest)
+        local component = spec.components and spec.components[sha]
+        local bytes = component and component.paths[path]
+        if not bytes then error("missing pending component snapshot") end
+        write_file(dest, bytes)
+        return true
+      end,
+      tree_inventory = function(ref, prefix)
+        local root = prefix:find("upstream") and "upstream"
+          or prefix:find("tests") and "tests" or "fallback"
+        local tree = spec.trees[ref] and spec.trees[ref][root] or {}
+        local out = {}
+        for path, blob in pairs(tree) do out[path] = blob end
+        return out
+      end,
+      diff_entries = function() return spec.diff end,
+      is_ancestor = function(a, b) return spec.ancestors[a .. ">" .. b] == true end,
+      snapshot_path = function(ref, repo_path, dest)
+        if repo_path:find("/tests/") then
+          local suite = repo_path:match("/tests/([^/]+)$")
+          write_file(dest, spec.test_bytes[ref][suite])
+          return
+        end
+        local path = repo_path:match("/upstream/(.+)$")
+          or repo_path:match("/([^/]+)$")
+        local value = spec.bytes[ref][path]
+        if not value then error("missing pending fixture snapshot") end
+        write_file(dest, value)
+      end,
+      hash_file = function(path) return fnv_hex(read_file(path)) end,
+      digest_text = function(text) return fnv_hex(text) end,
+    }
+  end
+  local refs = {
+    base = "1111111111111111111111111111111111111111",
+    source = "2222222222222222222222222222222222222222",
+    wrong = "3333333333333333333333333333333333333333",
+  }
+  local function fixture()
+    local base_tree, source_tree = {}, {}
+    for path, blob in pairs(base_blobs) do base_tree[path] = blob end
+    for path, blob in pairs(source_blobs) do source_tree[path] = blob end
+    local base_snapshot, source_snapshot = {}, {}
+    for path, value in pairs(bytes) do base_snapshot[path] = value end
+    for path, value in pairs(source_bytes) do source_snapshot[path] = value end
+    local proof_source = "local f = io.open(arg[1], 'rb')\n"
+      .. "if not f then os.exit(1) end\nf:close()\n"
+    local proof_blob = fnv_hex(proof_source)
+    local spec = {
+      trees = {
+        [refs.base] = { upstream = base_tree, fallback = {} },
+        [refs.source] = { upstream = source_tree, fallback = {} },
+      },
+      bytes = { [refs.base] = base_snapshot, [refs.source] = source_snapshot },
+      test_bytes = { [refs.base] = { ["pending_test.lua"] = proof_source },
+        [refs.source] = { ["pending_test.lua"] = proof_source } },
+      pending_test_blob = proof_blob,
+      ancestors = { [refs.base .. ">" .. refs.source] = true },
+      diff = { { status = "M", path = "upstream/init.lua" } },
+    }
+    return spec, pending_adapter(spec)
+  end
+  local function pending_run(spec, ad, tag, delta, base_ref, suite_specs)
+    return compose.materialize_pending({
+      manifest = pending_manifest, adapter = ad, profile = "empty",
+      base_dir = base_dir, out_dir = pending_root .. "/" .. tag .. "/upstream",
+      receipt_path = pending_root .. "/" .. tag .. "/receipt.json",
+      base_ref = base_ref or refs.base, source_ref = refs.source,
+      required_modules = { "init.lua", "json.lua", "util.lua", "capability_manifest.lua" },
+      declared_delta = delta or {
+        { status = "M", path = "upstream/init.lua",
+          base_blob = base_blobs["init.lua"], source_blob = source_blobs["init.lua"] },
+      },
+      suite_specs = suite_specs or {
+        { path = "tests/pending_test.lua", source_blob = spec.pending_test_blob,
+          module = "init.lua" },
+      },
+    })
+  end
+  local spec, ad = fixture()
+  local accepted = pending_run(spec, ad, "accepted")
+  ok(accepted.tree["init.lua"] == source_blobs["init.lua"],
+    "P1 fixture applies the immutable source snapshot")
+  local repeated = pending_run(spec, ad, "accepted-again")
+  ok(accepted.receipt_json == repeated.receipt_json,
+    "P1 fixture regeneration is byte-identical")
+
+  -- P1 cleanup transitions must handle both directory-to-file and
+  -- file-to-directory changes without recursive deletion.  The second run
+  -- must remove the old leaf and its now-empty parent before writing the
+  -- replacement file; the third run exercises the reverse transition.
+  local transition_spec, transition_ad = fixture()
+  local leaf_bytes = "return { nested = 'leaf' }\n"
+  local leaf_blob = fnv_hex(leaf_bytes)
+  transition_spec.trees[refs.source].upstream["nested.lua/leaf.lua"] = leaf_blob
+  transition_spec.bytes[refs.source]["nested.lua/leaf.lua"] = leaf_bytes
+  transition_spec.diff = {
+    { status = "A", path = "upstream/nested.lua/leaf.lua" },
+    { status = "M", path = "upstream/init.lua" },
+  }
+  local transition_suite = function(module)
+    return { { path = "tests/pending_test.lua",
+      source_blob = transition_spec.pending_test_blob, modules = { "init.lua", module } } }
+  end
+  local first_transition = pending_run(transition_spec, transition_ad,
+    "cleanup-transition", {
+      { status = "M", path = "upstream/init.lua",
+        base_blob = base_blobs["init.lua"], source_blob = source_blobs["init.lua"] },
+      { status = "A", path = "upstream/nested.lua/leaf.lua", source_blob = leaf_blob },
+    }, nil, transition_suite("nested.lua/leaf.lua"))
+  ok(first_transition.tree["nested.lua/leaf.lua"] == leaf_blob,
+    "P1 cleanup starts with a nested source file")
+
+  transition_spec.trees[refs.source].upstream["nested.lua/leaf.lua"] = nil
+  transition_spec.bytes[refs.source]["nested.lua/leaf.lua"] = nil
+  local file_bytes = "return { nested = 'file' }\n"
+  local file_blob = fnv_hex(file_bytes)
+  transition_spec.trees[refs.source].upstream["nested.lua"] = file_blob
+  transition_spec.bytes[refs.source]["nested.lua"] = file_bytes
+  transition_spec.diff = {
+    { status = "A", path = "upstream/nested.lua" },
+    { status = "M", path = "upstream/init.lua" },
+  }
+  local second_transition = pending_run(transition_spec, transition_ad,
+    "cleanup-transition", {
+      { status = "M", path = "upstream/init.lua",
+        base_blob = base_blobs["init.lua"], source_blob = source_blobs["init.lua"] },
+      { status = "A", path = "upstream/nested.lua", source_blob = file_blob },
+    }, nil, transition_suite("nested.lua"))
+  ok(second_transition.tree["nested.lua"] == file_blob
+    and read_file(second_transition.tree_dir .. "/nested.lua/leaf.lua") == nil,
+    "P1 cleanup transitions nested directory to file")
+
+  transition_spec.trees[refs.source].upstream["nested.lua"] = nil
+  transition_spec.bytes[refs.source]["nested.lua"] = nil
+  transition_spec.trees[refs.source].upstream["nested.lua/leaf.lua"] = leaf_blob
+  transition_spec.bytes[refs.source]["nested.lua/leaf.lua"] = leaf_bytes
+  transition_spec.diff = {
+    { status = "A", path = "upstream/nested.lua/leaf.lua" },
+    { status = "M", path = "upstream/init.lua" },
+  }
+  local third_transition = pending_run(transition_spec, transition_ad,
+    "cleanup-transition", {
+      { status = "M", path = "upstream/init.lua",
+        base_blob = base_blobs["init.lua"], source_blob = source_blobs["init.lua"] },
+      { status = "A", path = "upstream/nested.lua/leaf.lua", source_blob = leaf_blob },
+    }, nil, transition_suite("nested.lua/leaf.lua"))
+  ok(third_transition.tree["nested.lua/leaf.lua"] == leaf_blob
+    and read_file(third_transition.tree_dir .. "/nested.lua") == nil,
+    "P1 cleanup transitions file to nested directory")
+
+  local cleanup_failure_spec, cleanup_failure_ad = fixture()
+  local cleanup_failure = pending_run(cleanup_failure_spec, cleanup_failure_ad,
+    "cleanup-failure")
+  local stale_output = cleanup_failure.tree_dir .. "/stale.lua"
+  write_file(stale_output, "return 'stale'\n")
+  local original_remove_for_cleanup = os.remove
+  os.remove = function(path)
+    if path == stale_output then return nil, "injected cleanup failure" end
+    return original_remove_for_cleanup(path)
+  end
+  local cleanup_error = expect_error("pending_cleanup", function()
+    pending_run(cleanup_failure_spec, cleanup_failure_ad, "cleanup-failure")
+  end, "P1 output-file removal failure is typed")
+  os.remove = original_remove_for_cleanup
+  ok(cleanup_error and cleanup_error.path == stale_output
+    and cleanup_error.cause == "injected cleanup failure",
+    "P1 output-file cleanup preserves its original cause")
+  ok(read_file(cleanup_failure.receipt_path) == nil,
+    "P1 cleanup failure cannot leave an accepted prior receipt")
+
+  local enumeration_spec, enumeration_ad = fixture()
+  local enumeration_prior = pending_run(enumeration_spec, enumeration_ad,
+    "cleanup-enumeration-failure")
+  local original_popen_for_cleanup = io.popen
+  local enumeration_calls = 0
+  io.popen = function(command)
+    if command:find("$items=Get-ChildItem", 1, true)
+      or (command:find("find -P ", 1, true) == 1
+        and command:find(" -type f", 1, true)) then
+      enumeration_calls = enumeration_calls + 1
+      return {
+        lines = function() return function() return nil end end,
+        close = function() return nil, "exit", 17 end,
+      }
+    end
+    return original_popen_for_cleanup(command)
+  end
+  local enumeration_error = expect_error("pending_cleanup", function()
+    pending_run(enumeration_spec, enumeration_ad, "cleanup-enumeration-failure")
+  end, "P1 output enumeration failure is typed")
+  io.popen = original_popen_for_cleanup
+  ok(enumeration_calls == 1 and enumeration_error and enumeration_error.status == 17,
+    "P1 cleanup enumeration preserves its process status")
+  ok(read_file(enumeration_prior.receipt_path) == nil,
+    "P1 enumeration failure cannot leave an accepted prior receipt")
+
+  local directory_calls = 0
+  io.popen = function(command)
+    if command:find("rmdir ", 1, true) == 1 then
+      directory_calls = directory_calls + 1
+      return {
+        lines = function() return function() return nil end end,
+        close = function() return nil, "exit", 19 end,
+      }
+    end
+    return original_popen_for_cleanup(command)
+  end
+  local directory_error = expect_error("pending_cleanup", function()
+    pending_run(transition_spec, transition_ad, "cleanup-transition", {
+      { status = "M", path = "upstream/init.lua",
+        base_blob = base_blobs["init.lua"], source_blob = source_blobs["init.lua"] },
+      { status = "A", path = "upstream/nested.lua/leaf.lua", source_blob = leaf_blob },
+    }, nil, transition_suite("nested.lua/leaf.lua"))
+  end, "P1 empty-directory removal failure is typed")
+  io.popen = original_popen_for_cleanup
+  ok(directory_calls == 1 and directory_error and directory_error.status == 19
+    and directory_error.operation == "remove_directory",
+    "P1 directory cleanup preserves its process status and operation")
+  ok(read_file(third_transition.receipt_path) == nil,
+    "P1 directory cleanup failure cannot leave an accepted prior receipt")
+
+  local inherited_spec, inherited_ad = fixture()
+  local inherited_manifest = manifest({}, { prof("empty", {}) }, base_blobs)
+  inherited_manifest.proof_matrix = {
+    ["added.lua"] = {
+      { suite = "inherited_added_profile_test.lua", modules = { "added.lua" } },
+    },
+    ["init.lua"] = { { suite = "inherited_profile_test.lua",
+      modules = { "init.lua" } } },
+    ["missing-key.lua"] = {
+      { suite = "inherited_keyless_profile_test.lua", modules = { "init.lua" } },
+      { suite = "inherited_unavailable_profile_test.lua",
+        modules = { "missing-key.lua" } },
+    },
+  }
+  local inherited_source = "local f = io.open(arg[1], 'rb')\n"
+    .. "if not f then os.exit(1) end\nf:close()\n"
+  local inherited_blob = fnv_hex(inherited_source)
+  local added_source = "return { inherited_add = true }\n"
+  local added_blob = fnv_hex(added_source)
+  inherited_spec.trees[refs.source].upstream["added.lua"] = added_blob
+  inherited_spec.bytes[refs.source]["added.lua"] = added_source
+  inherited_spec.trees[refs.base].tests = {}
+  inherited_spec.trees[refs.source].tests = {
+    ["inherited_added_profile_test.lua"] = inherited_blob,
+    ["inherited_keyless_profile_test.lua"] = inherited_blob,
+    ["inherited_profile_test.lua"] = inherited_blob,
+    ["explicit_added_profile_test.lua"] = inherited_blob,
+  }
+  inherited_spec.test_bytes = {
+    [refs.base] = {}, [refs.source] = {
+      ["inherited_added_profile_test.lua"] = inherited_source,
+      ["inherited_keyless_profile_test.lua"] = inherited_source,
+      ["inherited_profile_test.lua"] = inherited_source,
+      ["explicit_added_profile_test.lua"] = inherited_source,
+    },
+  }
+  inherited_spec.diff = {
+    { status = "A", path = "upstream/added.lua" },
+    { status = "M", path = "upstream/init.lua" },
+  }
+  local inherited = compose.materialize_pending({
+    manifest = inherited_manifest, adapter = inherited_ad, profile = "empty",
+    base_dir = base_dir, out_dir = pending_root .. "/inherited/upstream",
+    receipt_path = pending_root .. "/inherited/receipt.json",
+    base_ref = refs.base, source_ref = refs.source,
+    declared_delta = {
+      { status = "M", path = "upstream/init.lua",
+        base_blob = base_blobs["init.lua"], source_blob = source_blobs["init.lua"] },
+      { status = "A", path = "upstream/added.lua",
+        source_blob = added_blob },
+    }, suite_specs = {
+      { path = "tests/explicit_added_profile_test.lua", source_blob = inherited_blob,
+        module = "added.lua" },
+    },
+  })
+  local inherited_suites = {}
+  for _, suite in ipairs(inherited.suites) do inherited_suites[suite.suite] = suite end
+  ok(inherited_suites["inherited_added_profile_test.lua"]
+    and inherited_suites["inherited_added_profile_test.lua"].exit_code == 0,
+    "P1 source-added module enables its inherited profile row")
+  ok(inherited_suites["inherited_profile_test.lua"]
+    and inherited_suites["inherited_profile_test.lua"].exit_code == 0
+    and inherited_suites["inherited_keyless_profile_test.lua"]
+    and inherited_suites["inherited_keyless_profile_test.lua"].exit_code == 0
+    and not inherited_suites["inherited_unavailable_profile_test.lua"],
+    "P1 inherited availability is decided per row from final source modules")
+
+  local stale_spec, stale_ad = fixture()
+  stale_spec.trees[refs.base].tests = {}
+  stale_spec.trees[refs.source].tests = {}
+  stale_spec.test_bytes = { [refs.base] = {}, [refs.source] = {} }
+  stale_spec.trees[refs.source].upstream["added.lua"] = added_blob
+  stale_spec.bytes[refs.source]["added.lua"] = added_source
+  stale_spec.diff = {
+    { status = "A", path = "upstream/added.lua" },
+    { status = "M", path = "upstream/init.lua" },
+  }
+  expect_error("pending_suite", function()
+    compose.materialize_pending({
+      manifest = inherited_manifest, adapter = stale_ad, profile = "empty",
+      base_dir = base_dir, out_dir = pending_root .. "/stale-suite/upstream",
+      receipt_path = pending_root .. "/stale-suite/receipt.json",
+      base_ref = refs.base, source_ref = refs.source,
+      declared_delta = {
+        { status = "M", path = "upstream/init.lua",
+          base_blob = base_blobs["init.lua"], source_blob = source_blobs["init.lua"] },
+        { status = "A", path = "upstream/added.lua", source_blob = added_blob },
+      }, suite_specs = {},
+    })
+  end, "P1 inherited proof rejects a stale source suite inventory")
+
+  local helper_spec, helper_ad = fixture()
+  local helper_suite_dir = pending_root .. "/stale-helper/tests"
+  write_file(helper_suite_dir .. "/harness.lua", "return true\n")
+  -- The suite root is composer-cleared before staging, so a pre-seeded stale
+  -- helper can never reach the exact-inventory check: it is wiped and the
+  -- run succeeds with only the declared suites staged.
+  local helper_run = compose.materialize_pending({
+    manifest = pending_manifest, adapter = helper_ad, profile = "empty",
+    base_dir = base_dir, out_dir = pending_root .. "/stale-helper/upstream",
+    receipt_path = pending_root .. "/stale-helper/receipt.json",
+    base_ref = refs.base, source_ref = refs.source,
+    declared_delta = {
+      { status = "M", path = "upstream/init.lua",
+        base_blob = base_blobs["init.lua"], source_blob = source_blobs["init.lua"] },
+    }, suite_specs = {
+      { path = "tests/pending_test.lua", source_blob = helper_spec.pending_test_blob,
+        module = "init.lua" },
+    },
+  })
+  ok(helper_run.tree["init.lua"] == source_blobs["init.lua"]
+    and read_file(helper_suite_dir .. "/harness.lua") == nil,
+    "P1 composer-cleared suite root drops a pre-seeded stale helper file")
+
+  local invalid_spec, invalid_ad = fixture()
+  local invalid_source = "this is not valid lua\n"
+  local invalid_blob = fnv_hex(invalid_source)
+  invalid_spec.trees[refs.source].upstream["init.lua"] = invalid_blob
+  invalid_spec.bytes[refs.source]["init.lua"] = invalid_source
+  expect_error("pending_proof", function()
+    compose.materialize_pending({
+      manifest = pending_manifest, adapter = invalid_ad, profile = "empty",
+      base_dir = base_dir, out_dir = pending_root .. "/invalid-lua/upstream",
+      receipt_path = pending_root .. "/invalid-lua/receipt.json",
+      base_ref = refs.base, source_ref = refs.source,
+      declared_delta = {
+        { status = "M", path = "upstream/init.lua",
+          base_blob = base_blobs["init.lua"], source_blob = invalid_blob },
+      }, suite_specs = {
+        { path = "tests/pending_test.lua", source_blob = invalid_spec.pending_test_blob,
+          module = "init.lua" },
+      },
+    })
+  end, "P1 correct source blob still rejects invalid generated Lua")
+
+  local receipt_spec, receipt_ad = fixture()
+  local receipt_first = pending_run(receipt_spec, receipt_ad, "receipt-reuse")
+  ok(read_file(receipt_first.receipt_path) ~= nil,
+    "P1 successful pending composition writes its receipt")
+  local original_remove = os.remove
+  local original_open = io.open
+  os.remove = function(path)
+    if path == receipt_first.receipt_path then return nil end
+    return original_remove(path)
+  end
+  io.open = function(path, mode)
+    if path == receipt_first.receipt_path and mode == "rb" then return nil end
+    return original_open(path, mode)
+  end
+  expect_error("pending_receipt", function()
+    pending_run(receipt_spec, receipt_ad, "receipt-reuse")
+  end, "P1 existing receipt removal failure blocks recomposition")
+  os.remove = original_remove
+  io.open = original_open
+  ok(read_file(receipt_first.receipt_path) ~= nil,
+    "P1 removal failure preserves the prior receipt for diagnosis")
+  local receipt_invalid = "this source is invalid lua\n"
+  local receipt_invalid_blob = fnv_hex(receipt_invalid)
+  receipt_spec.trees[refs.source].upstream["init.lua"] = receipt_invalid_blob
+  receipt_spec.bytes[refs.source]["init.lua"] = receipt_invalid
+  expect_error("pending_proof", function()
+    compose.materialize_pending({
+      manifest = pending_manifest, adapter = receipt_ad, profile = "empty",
+      base_dir = base_dir, out_dir = receipt_first.tree_dir,
+      receipt_path = receipt_first.receipt_path,
+      base_ref = refs.base, source_ref = refs.source,
+      declared_delta = {
+        { status = "M", path = "upstream/init.lua",
+          base_blob = base_blobs["init.lua"], source_blob = receipt_invalid_blob },
+      }, suite_specs = {
+        { path = "tests/pending_test.lua", source_blob = receipt_spec.pending_test_blob,
+          module = "init.lua" },
+      },
+    })
+  end, "P1 failed recomposition invalidates the prior receipt")
+  ok(read_file(receipt_first.receipt_path) == nil,
+    "P1 failed recomposition leaves no stale receipt")
+
+  local omitted_manifest = manifest({}, { prof("empty", {}) }, base_blobs)
+  local omitted_spec, omitted_ad = fixture()
+  expect_error("pending_proof", function()
+    compose.materialize_pending({
+      manifest = omitted_manifest, adapter = omitted_ad, profile = "empty",
+      base_dir = base_dir, out_dir = pending_root .. "/omitted-proof/upstream",
+      receipt_path = pending_root .. "/omitted-proof/receipt.json",
+      base_ref = refs.base, source_ref = refs.source,
+      declared_delta = {
+        { status = "M", path = "upstream/init.lua",
+          base_blob = base_blobs["init.lua"], source_blob = source_blobs["init.lua"] },
+      }, suite_specs = {},
+    })
+  end, "P1 modified module requires a profile proof row")
+
+  local deleted_spec, deleted_ad = fixture()
+  deleted_spec.trees[refs.base].tests = {}
+  deleted_spec.trees[refs.source].tests = { ["inherited_profile_test.lua"] = inherited_blob }
+  deleted_spec.test_bytes = spec.test_bytes
+  deleted_spec.trees[refs.source].upstream["init.lua"] = nil
+  deleted_spec.bytes[refs.source]["init.lua"] = nil
+  deleted_spec.diff = { { status = "D", path = "upstream/init.lua" } }
+  expect_error("pending_required_module", function()
+    compose.materialize_pending({
+      manifest = inherited_manifest, adapter = deleted_ad, profile = "empty",
+      base_dir = base_dir, out_dir = pending_root .. "/inherited-delete/upstream",
+      receipt_path = pending_root .. "/inherited-delete/receipt.json",
+      base_ref = refs.base, source_ref = refs.source,
+      declared_delta = {
+        { status = "D", path = "upstream/init.lua",
+          base_blob = base_blobs["init.lua"] },
+      }, suite_specs = {},
+    })
+  end, "P1 inherited proof obligation blocks required deletion")
+
+  local wrong_base, wrong_ad = fixture()
+  wrong_base.trees[refs.wrong] = { upstream = {}, fallback = {} }
+  wrong_base.ancestors[refs.wrong .. ">" .. refs.source] = true
+  local err = expect_error("pending_base_mismatch", function()
+    compose.materialize_pending({ manifest = pending_manifest, adapter = wrong_ad,
+      profile = "empty", base_dir = base_dir,
+      out_dir = pending_root .. "/wrong-base/upstream",
+      receipt_path = pending_root .. "/wrong-base/receipt.json",
+      base_ref = refs.wrong, source_ref = refs.source,
+      required_modules = { "init.lua", "json.lua", "util.lua", "capability_manifest.lua" },
+      declared_delta = {}, suite_specs = {} })
+  end, "P1 wrong base")
+  ok(err ~= nil, "P1 wrong base refuses inherited landed coverage")
+
+  local shadow_spec, shadow_ad = fixture()
+  local shadow_source = "return { pending = 'shadow' }\n"
+  local shadow_blob = fnv_hex(shadow_source)
+  shadow_spec.trees[refs.source].upstream["init.lua"] = base_blobs["init.lua"]
+  shadow_spec.bytes[refs.source]["init.lua"] = bytes["init.lua"]
+  shadow_spec.trees[refs.source].fallback = { ["init.lua"] = shadow_blob }
+  shadow_spec.diff = { { status = "M", path = "leaves/base/init.lua" } }
+  expect_error("pending_proof", function()
+    compose.materialize_pending({
+      manifest = pending_manifest, adapter = shadow_ad, profile = "empty",
+      base_dir = base_dir, out_dir = pending_root .. "/shadowed-fallback/upstream",
+      receipt_path = pending_root .. "/shadowed-fallback/receipt.json",
+      base_ref = refs.base, source_ref = refs.source,
+      declared_delta = {
+        { status = "M", path = "leaves/base/init.lua",
+          source_blob = shadow_blob },
+      }, suite_specs = {
+        { path = "tests/pending_test.lua", source_blob = shadow_spec.pending_test_blob,
+          module = "init.lua" },
+      },
+    })
+  end, "P1 shadowed fallback change receives no generated-tree proof")
+
+  local _, ancestry_ad = fixture()
+  local ancestry_spec = fixture()
+  ancestry_spec.ancestors = {}
+  ancestry_ad = pending_adapter(ancestry_spec)
+  expect_error("pending_source_ancestry", function()
+    pending_run(ancestry_spec, ancestry_ad, "wrong-ancestry")
+  end, "P1 unrelated source")
+
+  expect_error("pending_identity", function()
+    pending_run(spec, ad, "mutable-ref", {
+      { status = "M", path = "upstream/init.lua",
+        base_blob = base_blobs["init.lua"], source_blob = source_blobs["init.lua"] },
+    }, "main")
+  end, "P1 non-immutable ref")
+
+  expect_error("pending_path_collision", function()
+    compose.materialize_pending({ manifest = pending_manifest, adapter = ad,
+      profile = "empty", base_dir = base_dir,
+      out_dir = pending_root .. "/collision/upstream",
+      receipt_path = pending_root .. "/collision/receipt.json",
+      temp_dir = pending_root .. "/collision/upstream",
+      base_ref = refs.base, source_ref = refs.source,
+      required_modules = { "init.lua", "json.lua", "util.lua", "capability_manifest.lua" },
+      declared_delta = {
+        { status = "M", path = "upstream/init.lua",
+          base_blob = base_blobs["init.lua"], source_blob = source_blobs["init.lua"] },
+      }, suite_specs = {}, })
+  end, "P1 output/temp collision")
+
+  expect_error("pending_path_collision", function()
+    compose.materialize_pending({ manifest = pending_manifest, adapter = ad,
+      profile = "empty", base_dir = base_dir, out_dir = base_dir,
+      receipt_path = pending_root .. "/base-collision/receipt.json",
+      base_ref = refs.base, source_ref = refs.source,
+      required_modules = { "init.lua", "json.lua", "util.lua", "capability_manifest.lua" },
+      declared_delta = {
+        { status = "M", path = "upstream/init.lua",
+          base_blob = base_blobs["init.lua"], source_blob = source_blobs["init.lua"] },
+      }, suite_specs = {}, })
+  end, "P1 base/output collision")
+
+  expect_error("pending_path_collision", function()
+    compose.materialize_pending({ manifest = pending_manifest, adapter = ad,
+      profile = "empty", base_dir = base_dir, out_dir = base_dir .. "/./",
+      receipt_path = pending_root .. "/base-alias-collision/receipt.json",
+      base_ref = refs.base, source_ref = refs.source,
+      required_modules = { "init.lua", "json.lua", "util.lua", "capability_manifest.lua" },
+      declared_delta = {
+        { status = "M", path = "upstream/init.lua",
+          base_blob = base_blobs["init.lua"], source_blob = source_blobs["init.lua"] },
+      }, suite_specs = {}, })
+  end, "P1 base/output dot alias collision")
+
+  expect_error("pending_path_layout", function()
+    compose.materialize_pending({ manifest = pending_manifest, adapter = ad,
+      profile = "empty", base_dir = base_dir,
+      out_dir = pending_root .. "/layout/upstream",
+      suite_dir = pending_root .. "/other/tests",
+      receipt_path = pending_root .. "/layout/receipt.json",
+      base_ref = refs.base, source_ref = refs.source,
+      required_modules = { "init.lua", "json.lua", "util.lua", "capability_manifest.lua" },
+      declared_delta = {
+        { status = "M", path = "upstream/init.lua",
+          base_blob = base_blobs["init.lua"], source_blob = source_blobs["init.lua"] },
+      }, suite_specs = {}, })
+  end, "P1 suite/output sibling layout")
+
+  local alias_dir = pending_root .. "/base-alias"
+  local alias_created
+  if IS_WINDOWS then
+    alias_created = os.execute('cmd /c mklink /J "' .. alias_dir
+      .. '" "' .. base_dir .. '" >nul 2>&1')
+  else
+    alias_created = os.execute('ln -s "' .. base_dir .. '" "' .. alias_dir
+      .. '" 2>/dev/null')
+  end
+  if alias_created == true or alias_created == 0 then
+    expect_error("pending_path_alias", function()
+      compose.materialize_pending({ manifest = pending_manifest, adapter = ad,
+        profile = "empty", base_dir = alias_dir,
+        out_dir = pending_root .. "/alias-check/upstream",
+        receipt_path = pending_root .. "/alias-check/receipt.json",
+        base_ref = refs.base, source_ref = refs.source,
+        required_modules = { "init.lua", "json.lua", "util.lua",
+          "capability_manifest.lua" },
+        declared_delta = {
+          { status = "M", path = "upstream/init.lua",
+            base_blob = base_blobs["init.lua"],
+            source_blob = source_blobs["init.lua"] },
+        }, suite_specs = {}, })
+    end, "P1 existing directory alias is rejected before mutation")
+  else
+    print("P1 directory alias probe: NOT RUN (alias creation unavailable)")
+  end
+
+  -- `..` in an inspected-only path: base_dir is read, never written, so a
+  -- dotdot spelling is unambiguous here. The rewound sibling must not be
+  -- alias-probed: with the old prefix list the decoy symlink below fails
+  -- the run with pending_path_alias although nothing is created there.
+  -- The decoy sits at the rewound position (never in the final path): it
+  -- points at the base-read child itself, so `decoy-dir/..` physically
+  -- coincides with pending/ and the dotted base spells the real root.
+  for path, value in pairs(bytes) do
+    write_file(pending_root .. "/base-read/" .. path, value)
+  end
+  local decoy_dir = pending_root .. "/decoy-dir"
+  os.remove(decoy_dir)
+  local abs_read = abs_repo_path(pending_root .. "/base-read")
+  local decoy_created
+  if abs_read == nil then
+    decoy_created = nil
+  elseif IS_WINDOWS then
+    decoy_created = os.execute('cmd /c mklink /J "' .. decoy_dir
+      .. '" "' .. abs_read .. '" >nul 2>&1')
+  else
+    decoy_created = os.execute('ln -s "' .. abs_read .. '" "' .. decoy_dir
+      .. '" 2>/dev/null')
+  end
+  if decoy_created == true or decoy_created == 0 then
+    local dotted_spec, dotted_ad = fixture()
+    local dotted_run = compose.materialize_pending({
+      manifest = pending_manifest, adapter = dotted_ad, profile = "empty",
+      base_dir = pending_root .. "/decoy-dir/../base-read",
+      out_dir = pending_root .. "/prefix-clean/upstream",
+      receipt_path = pending_root .. "/prefix-clean/receipt.json",
+      base_ref = refs.base, source_ref = refs.source,
+      declared_delta = {
+        { status = "M", path = "upstream/init.lua",
+          base_blob = base_blobs["init.lua"], source_blob = source_blobs["init.lua"] },
+      }, suite_specs = {
+        { path = "tests/pending_test.lua", source_blob = dotted_spec.pending_test_blob,
+          module = "init.lua" },
+      },
+    })
+    ok(dotted_run.tree["init.lua"] == source_blobs["init.lua"],
+      "P1 dotdot base path does not probe the rewound sibling")
+  else
+    print("P1 dotdot sibling probe: NOT RUN (alias creation unavailable)")
+  end
+
+  local dotted_out_spec, dotted_out_ad = fixture()
+  expect_error("pending_path_alias", function()
+    compose.materialize_pending({
+      manifest = pending_manifest, adapter = dotted_out_ad, profile = "empty",
+      base_dir = base_dir,
+      out_dir = pending_root .. "/dotdot/../dotdot-out/upstream",
+      receipt_path = pending_root .. "/dotdot-out/receipt.json",
+      base_ref = refs.base, source_ref = refs.source,
+      declared_delta = {
+        { status = "M", path = "upstream/init.lua",
+          base_blob = base_blobs["init.lua"], source_blob = source_blobs["init.lua"] },
+      }, suite_specs = {
+        { path = "tests/pending_test.lua", source_blob = dotted_out_spec.pending_test_blob,
+          module = "init.lua" },
+      },
+    })
+  end, "P1 writable dotdot output path is rejected before alias inspection")
+
+  local unsupported_spec, unsupported_ad = fixture()
+  unsupported_spec.diff = { { status = "R", path = "upstream/init.lua" } }
+  expect_error("pending_delta_mismatch", function()
+    pending_run(unsupported_spec, unsupported_ad, "unsupported-status")
+  end, "P1 unsupported diff status")
+
+  expect_error("pending_suite", function()
+    compose.materialize_pending({ manifest = pending_manifest, adapter = ad,
+      profile = "empty", base_dir = base_dir,
+      out_dir = pending_root .. "/suite-traversal/upstream",
+      receipt_path = pending_root .. "/suite-traversal/receipt.json",
+      base_ref = refs.base, source_ref = refs.source,
+      required_modules = { "init.lua", "json.lua", "util.lua", "capability_manifest.lua" },
+      declared_delta = {
+        { status = "M", path = "upstream/init.lua",
+          base_blob = base_blobs["init.lua"], source_blob = source_blobs["init.lua"] },
+      }, suite_specs = {
+        { path = "../tests/bad.lua", source_blob = source_blobs["init.lua"] },
+      }, })
+  end, "P1 suite traversal")
+
+  expect_error("pending_required_module", function()
+    compose.materialize_pending({ manifest = pending_manifest, adapter = ad,
+      profile = "empty", base_dir = base_dir,
+      out_dir = pending_root .. "/suite-module/upstream",
+      receipt_path = pending_root .. "/suite-module/receipt.json",
+      base_ref = refs.base, source_ref = refs.source,
+      required_modules = { "init.lua", "json.lua", "util.lua", "capability_manifest.lua" },
+      declared_delta = {
+        { status = "M", path = "upstream/init.lua",
+          base_blob = base_blobs["init.lua"], source_blob = source_blobs["init.lua"] },
+      }, suite_specs = {
+        { path = "tests/missing.lua", source_blob = source_blobs["init.lua"], module = "missing.lua" },
+      }, })
+  end, "P1 suite module missing from tree")
+
+  local _, blob_ad = fixture()
+  expect_error("pending_delta_mismatch", function()
+    pending_run(spec, blob_ad, "wrong-blob", {
+      { status = "M", path = "upstream/init.lua",
+        base_blob = "00000000", source_blob = source_blobs["init.lua"] },
+    })
+  end, "P1 wrong blob")
+
+  local extra_spec, extra_ad = fixture()
+  extra_spec.trees[refs.source].upstream["extra.lua"] = fnv_hex("extra\n")
+  extra_spec.bytes[refs.source]["extra.lua"] = "extra\n"
+  extra_spec.diff[#extra_spec.diff + 1] = { status = "A", path = "upstream/extra.lua" }
+  expect_error("pending_delta_mismatch", function()
+    pending_run(extra_spec, extra_ad, "extra-path")
+  end, "P1 undeclared extra path")
+
+  local missing_spec, missing_ad = fixture()
+  missing_spec.trees[refs.source].upstream["capability_manifest.lua"] = nil
+  missing_spec.bytes[refs.source]["capability_manifest.lua"] = nil
+  missing_spec.diff[#missing_spec.diff + 1] =
+    { status = "D", path = "upstream/capability_manifest.lua" }
+  expect_error("pending_required_module", function()
+    pending_run(missing_spec, missing_ad, "missing-required", {
+      { status = "M", path = "upstream/init.lua",
+        base_blob = base_blobs["init.lua"], source_blob = source_blobs["init.lua"] },
+      { status = "D", path = "upstream/capability_manifest.lua",
+        base_blob = base_blobs["capability_manifest.lua"] },
+    })
+  end, "P1 missing required inherited module")
+
+  -- A source rename is deliberately represented as a delete plus an add;
+  -- neither Git's rename heuristic nor a modify-only shortcut may hide it.
+  local rename_spec, rename_ad = fixture()
+  local rename_bytes = {}
+  for path, value in pairs(bytes) do rename_bytes[path] = value end
+  rename_bytes["obsolete.lua"] = "return { obsolete = true }\n"
+  local renamed_source = {}
+  for path, value in pairs(source_bytes) do renamed_source[path] = value end
+  renamed_source["renamed.lua"] = "return { renamed = true }\n"
+  local rename_base_blobs, rename_source_blobs = {}, {}
+  for path, value in pairs(rename_bytes) do
+    rename_base_blobs[path] = fnv_hex(value)
+  end
+  for path, value in pairs(renamed_source) do
+    rename_source_blobs[path] = fnv_hex(value)
+  end
+  write_file(base_dir .. "/obsolete.lua", rename_bytes["obsolete.lua"])
+  rename_spec.trees[refs.base].upstream["obsolete.lua"] = rename_base_blobs["obsolete.lua"]
+  rename_spec.trees[refs.source].upstream["renamed.lua"] = rename_source_blobs["renamed.lua"]
+  rename_spec.bytes[refs.base] = rename_bytes
+  rename_spec.bytes[refs.source] = renamed_source
+  local optional_sha = "3333333333333333333333333333333333333333"
+  rename_spec.components = { [optional_sha] = { paths = {
+    ["obsolete.lua"] = rename_bytes["obsolete.lua"],
+  } } }
+  rename_spec.diff = {
+    { status = "A", path = "upstream/renamed.lua" },
+    { status = "D", path = "upstream/obsolete.lua" },
+    { status = "M", path = "upstream/init.lua" },
+  }
+  local rename_base_files = {}
+  for path, blob in pairs(base_blobs) do rename_base_files[path] = blob end
+  local rename_manifest = manifest({
+    comp("optional", optional_sha, { "obsolete.lua" },
+      { ["obsolete.lua"] = rename_bytes["obsolete.lua"] }),
+  }, { prof("empty", { "optional" }) }, rename_base_files)
+  local rename_result = compose.materialize_pending({
+    manifest = rename_manifest, adapter = rename_ad, profile = "empty",
+    base_dir = base_dir, out_dir = pending_root .. "/rename/upstream",
+    receipt_path = pending_root .. "/rename/receipt.json",
+    base_ref = refs.base, source_ref = refs.source,
+    required_modules = { "init.lua", "json.lua", "util.lua", "capability_manifest.lua" },
+    declared_delta = {
+      { status = "A", path = "upstream/renamed.lua",
+        source_blob = rename_source_blobs["renamed.lua"] },
+      { status = "D", path = "upstream/obsolete.lua",
+        base_blob = rename_base_blobs["obsolete.lua"] },
+      { status = "M", path = "upstream/init.lua",
+        base_blob = rename_base_blobs["init.lua"],
+        source_blob = rename_source_blobs["init.lua"] },
+    },
+    suite_specs = {
+      { path = "tests/pending_test.lua", source_blob = rename_spec.pending_test_blob,
+        modules = { "init.lua", "renamed.lua" } },
+    },
+  })
+  ok(rename_result.tree["renamed.lua"] == rename_source_blobs["renamed.lua"],
+    "P1 rename-as-add installs the new source path")
+  ok(rename_result.tree["obsolete.lua"] == nil,
+    "P1 optional component delete removes its effective module")
+
+  local runtime_spec, runtime_ad = fixture()
+  local runtime_bytes = "return { runtime = true }\n"
+  local runtime_blob = fnv_hex(runtime_bytes)
+  local runtime_base_blobs = {}
+  for path, blob in pairs(base_blobs) do runtime_base_blobs[path] = blob end
+  runtime_base_blobs["listbox.lua"] = runtime_blob
+  write_file(base_dir .. "/listbox.lua", runtime_bytes)
+  runtime_spec.trees[refs.base].upstream["listbox.lua"] = runtime_blob
+  runtime_spec.trees[refs.source].upstream["listbox.lua"] = nil
+  runtime_spec.bytes[refs.base]["listbox.lua"] = runtime_bytes
+  runtime_spec.bytes[refs.source]["listbox.lua"] = nil
+  runtime_spec.diff = { { status = "D", path = "upstream/listbox.lua",
+    base_blob = runtime_blob } }
+  local runtime_manifest = manifest({}, { prof("empty", {}) }, runtime_base_blobs)
+  expect_error("pending_required_module", function()
+    compose.materialize_pending({
+      manifest = runtime_manifest, adapter = runtime_ad, profile = "empty",
+      base_dir = base_dir, out_dir = pending_root .. "/runtime-delete/upstream",
+      receipt_path = pending_root .. "/runtime-delete/receipt.json",
+      base_ref = refs.base, source_ref = refs.source,
+      declared_delta = { { status = "D", path = "upstream/listbox.lua",
+        base_blob = runtime_blob } }, suite_specs = {},
+    })
+  end, "P1 pristine runtime module deletion requires projected retention")
+
+  local function fake_popen(lines, close_result)
+    local handle = {}
+    function handle:lines()
+      local index = 0
+      return function()
+        index = index + 1
+        return lines[index]
+      end
+    end
+    function handle:close()
+      return table.unpack(close_result)
+    end
+    return handle
+  end
+  local function with_fake_popen(lines, close_result, fn, on_open)
+    local original = io.popen
+    io.popen = function(command)
+      if on_open then on_open(command) end
+      return fake_popen(lines, close_result)
+    end
+    local ran, result = pcall(fn)
+    io.popen = original
+    if not ran then error(result, 0) end
+    return result
+  end
+  local empty_git = compose.git_adapter({ repo_root = scratch_root })
+  local empty_inventory = with_fake_popen({}, { true }, function()
+    return empty_git.tree_inventory(refs.source, "clients/lite-xl/tests")
+  end)
+  local empty_delta = with_fake_popen({}, { true }, function()
+    return empty_git.diff_entries(refs.base, refs.source,
+      { "clients/lite-xl/upstream" })
+  end)
+  ok(next(empty_inventory) == nil and next(empty_delta) == nil,
+    "P1 proof Git reads preserve successful empty output")
+
+  local failed_git = compose.git_adapter({ repo_root = scratch_root })
+  expect_error("pending_tree_inventory", function()
+    with_fake_popen({}, { nil, "exit", 1 }, function()
+      return failed_git.tree_inventory(refs.source, "clients/lite-xl/tests")
+    end)
+  end, "P1 failed tree read cannot become an empty inventory")
+  expect_error("pending_diff", function()
+    with_fake_popen({}, { nil, "exit", 1 }, function()
+      return failed_git.diff_entries(refs.base, refs.source,
+        { "clients/lite-xl/upstream" })
+    end)
+  end, "P1 failed diff read cannot become an empty delta")
+
+  local abnormal_git = compose.git_adapter({ repo_root = scratch_root })
+  expect_error("pending_tree_inventory", function()
+    with_fake_popen({}, { nil, "signal", 9 }, function()
+      return abnormal_git.tree_inventory(refs.source, "clients/lite-xl/tests")
+    end)
+  end, "P1 abnormal tree read fails closed")
+  expect_error("pending_diff", function()
+    with_fake_popen({}, { nil, "signal", 9 }, function()
+      return abnormal_git.diff_entries(refs.base, refs.source,
+        { "clients/lite-xl/upstream" })
+    end)
+  end, "P1 abnormal diff read fails closed")
+
+  local shell_calls = 0
+  local shell_git = compose.git_adapter({ repo_root = scratch_root })
+  with_fake_popen({}, { true }, function()
+    expect_error("unsafe_shell_path", function()
+      shell_git.tree_inventory(refs.source, "clients/lite-xl/tests/evil&name")
+    end, "P1 shell-active tree path is rejected before execution")
+  end, function() shell_calls = shell_calls + 1 end)
+  ok(shell_calls == 0, "P1 denied shell path does not reach the process")
+  local allowed_inventory = with_fake_popen({}, { true }, function()
+    return shell_git.tree_inventory(refs.source,
+      "clients/lite-xl/tests/allowed name.lua")
+  end, function() shell_calls = shell_calls + 1 end)
+  ok(next(allowed_inventory) == nil and shell_calls == 1,
+    "P1 safe tree path reaches the mocked process")
+
+  local clean_tree = pending_root .. "/accepted-again/upstream"
+  write_file(clean_tree .. "/hand-edit.lua", "return true\n")
+  expect_error("unowned_diff", function()
+    compose.verify_tree({ tree_dir = clean_tree,
+      inventory = accepted.inventory, adapter = ad })
+  end, "P1 extra generated file")
+  os.remove(clean_tree .. "/hand-edit.lua")
+  write_file(clean_tree .. "/init.lua", "return { mutated = true }\n")
+  expect_error("unowned_diff", function()
+    compose.verify_tree({ tree_dir = clean_tree,
+      inventory = accepted.inventory, adapter = ad })
+  end, "P1 mutated generated file")
 end
 
 print(string.format("compose_materializer_test: %d passed, %d failed", passed, failed))
