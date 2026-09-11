@@ -2,7 +2,7 @@
 
 pub mod pull;
 pub mod report_identity;
-pub use pull::{PullDiagnosticsContext, PullDiagnosticsProvider};
+pub use pull::{AcceptedStateCurrentness, PullDiagnosticsContext, PullDiagnosticsProvider};
 pub use report_identity::{
     DiagnosticProjectionFragment, NotReusable, PullPositionEncoding, PullReportResultId,
     PullReportSubject,

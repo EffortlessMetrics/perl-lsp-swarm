@@ -28,7 +28,7 @@ mod project_metadata;
 pub mod toolchain_profile;
 
 pub(crate) use critic_state::CriticSettingsCandidate;
-pub use critic_state::{EffectiveCriticState, EffectiveNativeCriticConfig};
+pub use critic_state::{AcceptedCriticSnapshot, EffectiveCriticState, EffectiveNativeCriticConfig};
 pub use dependency_detection::{
     detect_dependency_include_paths, detect_dependency_include_paths_with_declaration,
 };

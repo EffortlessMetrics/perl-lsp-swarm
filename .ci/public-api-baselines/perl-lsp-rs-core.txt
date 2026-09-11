@@ -160,6 +160,16 @@ pub fn perl_lsp_rs_core::config::UnauthorizedExternalIncludePathSource::label(se
 pub fn perl_lsp_rs_core::config::UnauthorizedExternalIncludePathSource::clone(&self) -> perl_lsp_rs_core::config::UnauthorizedExternalIncludePathSource
 pub fn perl_lsp_rs_core::config::UnauthorizedExternalIncludePathSource::eq(&self, other: &perl_lsp_rs_core::config::UnauthorizedExternalIncludePathSource) -> bool
 pub fn perl_lsp_rs_core::config::UnauthorizedExternalIncludePathSource::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_lsp_rs_core::config::AcceptedCriticSnapshot
+pub fn perl_lsp_rs_core::config::AcceptedCriticSnapshot::capture(config: &perl_lsp_rs_core::config::ServerConfig, owning_root: core::option::Option<&str>) -> Self
+pub fn perl_lsp_rs_core::config::AcceptedCriticSnapshot::fingerprint(&self) -> alloc::string::String
+pub fn perl_lsp_rs_core::config::AcceptedCriticSnapshot::is_current(&self, config: &perl_lsp_rs_core::config::ServerConfig) -> bool
+pub fn perl_lsp_rs_core::config::AcceptedCriticSnapshot::owning_root(&self) -> core::option::Option<&str>
+pub fn perl_lsp_rs_core::config::AcceptedCriticSnapshot::result_identity_fingerprint(&self) -> perl_source_identity::digest::ContentDigest
+pub const fn perl_lsp_rs_core::config::AcceptedCriticSnapshot::state(&self) -> &perl_lsp_rs_core::config::EffectiveCriticState
+pub fn perl_lsp_rs_core::config::AcceptedCriticSnapshot::clone(&self) -> perl_lsp_rs_core::config::AcceptedCriticSnapshot
+pub fn perl_lsp_rs_core::config::AcceptedCriticSnapshot::eq(&self, other: &perl_lsp_rs_core::config::AcceptedCriticSnapshot) -> bool
+pub fn perl_lsp_rs_core::config::AcceptedCriticSnapshot::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_lsp_rs_core::config::AiCompletionConfig
 pub perl_lsp_rs_core::config::AiCompletionConfig::activation_authority: perl_lsp_rs_core::config::AiActivationAuthority
 pub perl_lsp_rs_core::config::AiCompletionConfig::api_key_env: alloc::string::String
@@ -3445,6 +3455,7 @@ pub fn perl_lsp_rs_core::providers::RelatedInformation::clone(&self) -> perl_lsp
 pub fn perl_lsp_rs_core::providers::RelatedInformation::eq(&self, other: &perl_lsp_rs_core::providers::RelatedInformation) -> bool
 pub fn perl_lsp_rs_core::providers::RelatedInformation::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_lsp_rs_core::providers::diagnostics::build_parse_error_hint(error: &perl_parser_core::syntax::error::ParseError, base_message: &str) -> core::option::Option<alloc::string::String>
+pub fn perl_lsp_rs_core::providers::diagnostics::critic_overlap_observations(diagnostics: &[perl_lsp_rs_core::providers::Diagnostic]) -> alloc::vec::Vec<perl_lsp_rs_core::tooling::perl_critic::BuiltInCriticObservation>
 pub fn perl_lsp_rs_core::providers::diagnostics::detect_dead_code(workspace_index: &perl_workspace::workspace::workspace_index::WorkspaceIndex, document_uri: &str, source_text: &str, line_index: &perl_position_tracking::line_index::LineStartsCache) -> alloc::vec::Vec<perl_lsp_rs_core::providers::Diagnostic>
 pub fn perl_lsp_rs_core::providers::diagnostics::detect_heredoc_antipatterns(source: &str) -> alloc::vec::Vec<perl_lsp_rs_core::providers::Diagnostic>
 pub fn perl_lsp_rs_core::providers::diagnostics::parse_error_code(error: &perl_parser_core::syntax::error::ParseError) -> perl_diagnostics::codes::DiagnosticCode
@@ -8826,6 +8837,7 @@ pub fn perl_lsp_rs_core::providers::compute_links(uri: &str, text: &str, _roots:
 pub fn perl_lsp_rs_core::providers::compute_on_type_decision(text: &str, line: u32, _col: u32, ch: char, indent_step: usize) -> perl_lsp_rs_core::providers::OnTypeEditDecision
 pub fn perl_lsp_rs_core::providers::compute_on_type_edit(text: &str, line: u32, col: u32, ch: char, indent_step: usize) -> core::option::Option<alloc::vec::Vec<serde_json::value::Value>>
 pub fn perl_lsp_rs_core::providers::credential_may_attach(approved: &perl_lsp_rs_core::providers::destination::ApprovedDestination, request_url: &str) -> bool
+pub fn perl_lsp_rs_core::providers::critic_overlap_observations(diagnostics: &[perl_lsp_rs_core::providers::Diagnostic]) -> alloc::vec::Vec<perl_lsp_rs_core::tooling::perl_critic::BuiltInCriticObservation>
 pub fn perl_lsp_rs_core::providers::deduplicate_and_sort(completions: alloc::vec::Vec<perl_lsp_rs_core::providers::CompletionItem>) -> alloc::vec::Vec<perl_lsp_rs_core::providers::CompletionItem>
 pub fn perl_lsp_rs_core::providers::detect_colors(text: &str) -> alloc::vec::Vec<perl_lsp_rs_core::providers::ColorInformation>
 pub fn perl_lsp_rs_core::providers::detect_dead_code(workspace_index: &perl_workspace::workspace::workspace_index::WorkspaceIndex, document_uri: &str, source_text: &str, line_index: &perl_position_tracking::line_index::LineStartsCache) -> alloc::vec::Vec<perl_lsp_rs_core::providers::Diagnostic>
@@ -10610,6 +10622,12 @@ pub fn perl_lsp_rs_core::tooling::perl_critic::CriticPolicyIdentityError::clone(
 pub fn perl_lsp_rs_core::tooling::perl_critic::CriticPolicyIdentityError::eq(&self, other: &perl_lsp_rs_core::tooling::perl_critic::CriticPolicyIdentityError) -> bool
 pub fn perl_lsp_rs_core::tooling::perl_critic::CriticPolicyIdentityError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_lsp_rs_core::tooling::perl_critic::CriticPolicyIdentityError::fmt(&self, __formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_lsp_rs_core::tooling::perl_critic::CriticPolicyRetention
+pub perl_lsp_rs_core::tooling::perl_critic::CriticPolicyRetention::Admitted
+pub perl_lsp_rs_core::tooling::perl_critic::CriticPolicyRetention::StripCritic
+pub fn perl_lsp_rs_core::tooling::perl_critic::CriticPolicyRetention::clone(&self) -> perl_lsp_rs_core::tooling::perl_critic::CriticPolicyRetention
+pub fn perl_lsp_rs_core::tooling::perl_critic::CriticPolicyRetention::eq(&self, other: &perl_lsp_rs_core::tooling::perl_critic::CriticPolicyRetention) -> bool
+pub fn perl_lsp_rs_core::tooling::perl_critic::CriticPolicyRetention::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub enum perl_lsp_rs_core::tooling::perl_critic::CriticRemediationClass
 pub perl_lsp_rs_core::tooling::perl_critic::CriticRemediationClass::Automatic
 pub perl_lsp_rs_core::tooling::perl_critic::CriticRemediationClass::Manual
@@ -10675,6 +10693,20 @@ pub type perl_lsp_rs_core::tooling::perl_critic::NativeCriticProfile::Err = perl
 pub fn perl_lsp_rs_core::tooling::perl_critic::NativeCriticProfile::from_str(raw: &str) -> core::result::Result<Self, Self::Err>
 pub fn perl_lsp_rs_core::tooling::perl_critic::NativeCriticProfile::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
 pub fn perl_lsp_rs_core::tooling::perl_critic::NativeCriticProfile::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+pub enum perl_lsp_rs_core::tooling::perl_critic::NativeCriticRunCompleteness
+pub perl_lsp_rs_core::tooling::perl_critic::NativeCriticRunCompleteness::Cancelled
+pub perl_lsp_rs_core::tooling::perl_critic::NativeCriticRunCompleteness::Complete
+pub perl_lsp_rs_core::tooling::perl_critic::NativeCriticRunCompleteness::Disabled
+pub perl_lsp_rs_core::tooling::perl_critic::NativeCriticRunCompleteness::InstrumentFailure
+pub perl_lsp_rs_core::tooling::perl_critic::NativeCriticRunCompleteness::NotReady
+pub perl_lsp_rs_core::tooling::perl_critic::NativeCriticRunCompleteness::Partial
+pub perl_lsp_rs_core::tooling::perl_critic::NativeCriticRunCompleteness::Partial::unresolved_producer_identities: usize
+pub perl_lsp_rs_core::tooling::perl_critic::NativeCriticRunCompleteness::Stale
+pub const fn perl_lsp_rs_core::tooling::perl_critic::NativeCriticRunCompleteness::is_publishable(&self) -> bool
+pub fn perl_lsp_rs_core::tooling::perl_critic::NativeCriticRunCompleteness::settle(current: bool, unresolved_producer_identities: usize) -> Self
+pub fn perl_lsp_rs_core::tooling::perl_critic::NativeCriticRunCompleteness::clone(&self) -> perl_lsp_rs_core::tooling::perl_critic::NativeCriticRunCompleteness
+pub fn perl_lsp_rs_core::tooling::perl_critic::NativeCriticRunCompleteness::eq(&self, other: &perl_lsp_rs_core::tooling::perl_critic::NativeCriticRunCompleteness) -> bool
+pub fn perl_lsp_rs_core::tooling::perl_critic::NativeCriticRunCompleteness::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub enum perl_lsp_rs_core::tooling::perl_critic::Severity
 pub perl_lsp_rs_core::tooling::perl_critic::Severity::Brutal = 1
 pub perl_lsp_rs_core::tooling::perl_critic::Severity::Cruel = 2
@@ -10688,6 +10720,11 @@ pub fn perl_lsp_rs_core::tooling::perl_critic::Severity::eq(&self, other: &perl_
 pub fn perl_lsp_rs_core::tooling::perl_critic::Severity::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_lsp_rs_core::tooling::perl_critic::Severity::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 pub fn perl_lsp_rs_core::tooling::perl_critic::Severity::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_lsp_rs_core::tooling::perl_critic::AcceptedCriticPolicyIdentity
+pub fn perl_lsp_rs_core::tooling::perl_critic::AcceptedCriticPolicyIdentity::new(configuration_authority: perl_source_identity::ids::WorkspaceRootId, accepted_state_fingerprint: impl core::convert::Into<alloc::string::String>) -> Self
+pub fn perl_lsp_rs_core::tooling::perl_critic::AcceptedCriticPolicyIdentity::clone(&self) -> perl_lsp_rs_core::tooling::perl_critic::AcceptedCriticPolicyIdentity
+pub fn perl_lsp_rs_core::tooling::perl_critic::AcceptedCriticPolicyIdentity::eq(&self, other: &perl_lsp_rs_core::tooling::perl_critic::AcceptedCriticPolicyIdentity) -> bool
+pub fn perl_lsp_rs_core::tooling::perl_critic::AcceptedCriticPolicyIdentity::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_lsp_rs_core::tooling::perl_critic::AssignmentInConditionRule
 pub fn perl_lsp_rs_core::tooling::perl_critic::AssignmentInConditionRule::category(&self) -> perl_lsp_rs_core::tooling::perl_critic::CriticCategory
 pub fn perl_lsp_rs_core::tooling::perl_critic::AssignmentInConditionRule::check(&self, ctx: &perl_lsp_rs_core::tooling::perl_critic::CriticContext<'_>, out: &mut alloc::vec::Vec<perl_lsp_rs_core::tooling::perl_critic::CriticFinding>)
@@ -10938,7 +10975,7 @@ pub fn perl_lsp_rs_core::tooling::perl_critic::DiagnosticResultIdentity::fmt(&se
 pub fn perl_lsp_rs_core::tooling::perl_critic::DiagnosticResultIdentity::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
 pub struct perl_lsp_rs_core::tooling::perl_critic::DiagnosticResultIdentityInput
 pub fn perl_lsp_rs_core::tooling::perl_critic::DiagnosticResultIdentityInput::compose(&self) -> perl_lsp_rs_core::tooling::perl_critic::DiagnosticResultIdentity
-pub const fn perl_lsp_rs_core::tooling::perl_critic::DiagnosticResultIdentityInput::new(source: perl_lsp_rs_core::tooling::perl_critic::DiagnosticSourceIdentity, policy: perl_lsp_rs_core::tooling::perl_critic::CriticPolicyIdentity, facts: perl_lsp_rs_core::tooling::perl_critic::DiagnosticFactIdentity, schemas: perl_lsp_rs_core::tooling::perl_critic::DiagnosticResultSchemaVersions) -> Self
+pub const fn perl_lsp_rs_core::tooling::perl_critic::DiagnosticResultIdentityInput::new(source: perl_lsp_rs_core::tooling::perl_critic::DiagnosticSourceIdentity, policy: perl_lsp_rs_core::tooling::perl_critic::AcceptedCriticPolicyIdentity, facts: perl_lsp_rs_core::tooling::perl_critic::DiagnosticFactIdentity, schemas: perl_lsp_rs_core::tooling::perl_critic::DiagnosticResultSchemaVersions) -> Self
 pub fn perl_lsp_rs_core::tooling::perl_critic::DiagnosticResultIdentityInput::clone(&self) -> perl_lsp_rs_core::tooling::perl_critic::DiagnosticResultIdentityInput
 pub fn perl_lsp_rs_core::tooling::perl_critic::DiagnosticResultIdentityInput::eq(&self, other: &perl_lsp_rs_core::tooling::perl_critic::DiagnosticResultIdentityInput) -> bool
 pub fn perl_lsp_rs_core::tooling::perl_critic::DiagnosticResultIdentityInput::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -10992,9 +11029,31 @@ pub fn perl_lsp_rs_core::tooling::perl_critic::NativeCriticRegistry::recommended
 pub fn perl_lsp_rs_core::tooling::perl_critic::NativeCriticRegistry::rule_ids(&self) -> alloc::vec::Vec<&'static str>
 pub fn perl_lsp_rs_core::tooling::perl_critic::NativeCriticRegistry::with_rules(rules: alloc::vec::Vec<alloc::boxed::Box<dyn perl_lsp_rs_core::tooling::perl_critic::CriticRule>>) -> Self
 pub fn perl_lsp_rs_core::tooling::perl_critic::NativeCriticRegistry::default() -> perl_lsp_rs_core::tooling::perl_critic::NativeCriticRegistry
+pub struct perl_lsp_rs_core::tooling::perl_critic::NativeCriticRun
+pub fn perl_lsp_rs_core::tooling::perl_critic::NativeCriticRun::completeness(&self) -> &perl_lsp_rs_core::tooling::perl_critic::NativeCriticRunCompleteness
+pub fn perl_lsp_rs_core::tooling::perl_critic::NativeCriticRun::findings(&self) -> &[perl_lsp_rs_core::tooling::perl_critic::NormalizedCriticFinding]
+pub fn perl_lsp_rs_core::tooling::perl_critic::NativeCriticRun::is_publishable(&self) -> bool
+pub fn perl_lsp_rs_core::tooling::perl_critic::NativeCriticRun::owning_root(&self) -> core::option::Option<&str>
+pub fn perl_lsp_rs_core::tooling::perl_critic::NativeCriticRun::producer_findings(&self) -> &[perl_lsp_rs_core::tooling::perl_critic::CriticFinding]
+pub const fn perl_lsp_rs_core::tooling::perl_critic::NativeCriticRun::source_digest(&self) -> &perl_source_identity::digest::ContentDigest
+pub const fn perl_lsp_rs_core::tooling::perl_critic::NativeCriticRun::source_identity(&self) -> &perl_lsp_rs_core::tooling::perl_critic::CriticSourceIdentity
+pub fn perl_lsp_rs_core::tooling::perl_critic::NativeCriticRun::state_fingerprint(&self) -> &str
+pub fn perl_lsp_rs_core::tooling::perl_critic::NativeCriticRun::superseded_overlap_carriers(&self) -> bool
+pub const fn perl_lsp_rs_core::tooling::perl_critic::NativeCriticRun::work(&self) -> perl_lsp_rs_core::tooling::perl_critic::NativeCriticWorkReceipt
+pub fn perl_lsp_rs_core::tooling::perl_critic::NativeCriticRun::clone(&self) -> perl_lsp_rs_core::tooling::perl_critic::NativeCriticRun
+pub fn perl_lsp_rs_core::tooling::perl_critic::NativeCriticRun::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_lsp_rs_core::tooling::perl_critic::NativeCriticService
+pub fn perl_lsp_rs_core::tooling::perl_critic::NativeCriticService::analyze(subject: perl_lsp_rs_core::tooling::perl_critic::NativeCriticSubject<'_>) -> perl_lsp_rs_core::tooling::perl_critic::NativeCriticRun
+pub struct perl_lsp_rs_core::tooling::perl_critic::NativeCriticSubject<'a>
+pub fn perl_lsp_rs_core::tooling::perl_critic::NativeCriticSubject<'a>::accepted(label: &'a str, source_identity: perl_lsp_rs_core::tooling::perl_critic::CriticSourceIdentity, ast: &'a perl_ast::ast::Node, source: &'a str, accepted_state: perl_lsp_rs_core::config::EffectiveCriticState, overlap_observations: alloc::vec::Vec<perl_lsp_rs_core::tooling::perl_critic::BuiltInCriticObservation>, cancellation: perl_lsp_rs_core::tooling::perl_critic::RunGate<'a>, currentness: perl_lsp_rs_core::tooling::perl_critic::RunGate<'a>) -> Self
+pub fn perl_lsp_rs_core::tooling::perl_critic::NativeCriticSubject<'_>::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_lsp_rs_core::tooling::perl_critic::NativeCriticWorkReceipt
+pub perl_lsp_rs_core::tooling::perl_critic::NativeCriticWorkReceipt::findings_after_policy: usize
+pub perl_lsp_rs_core::tooling::perl_critic::NativeCriticWorkReceipt::native_findings_collected: usize
+pub perl_lsp_rs_core::tooling::perl_critic::NativeCriticWorkReceipt::observation_candidates_collected: usize
 pub perl_lsp_rs_core::tooling::perl_critic::NativeCriticWorkReceipt::producer_evaluation_entered: usize
 pub perl_lsp_rs_core::tooling::perl_critic::NativeCriticWorkReceipt::rules_registered: usize
+pub perl_lsp_rs_core::tooling::perl_critic::NativeCriticWorkReceipt::unresolved_producer_identities: usize
 pub fn perl_lsp_rs_core::tooling::perl_critic::NativeCriticWorkReceipt::planned(registry: &perl_lsp_rs_core::tooling::perl_critic::NativeCriticRegistry, config: &perl_lsp_rs_core::tooling::perl_critic::CriticConfig) -> Self
 pub const fn perl_lsp_rs_core::tooling::perl_critic::NativeCriticWorkReceipt::record_evaluation_entered(self) -> Self
 pub const fn perl_lsp_rs_core::tooling::perl_critic::NativeCriticWorkReceipt::skipped() -> Self
@@ -11015,9 +11074,11 @@ pub fn perl_lsp_rs_core::tooling::perl_critic::NormalizedCriticFinding::public_c
 pub const fn perl_lsp_rs_core::tooling::perl_critic::NormalizedCriticFinding::range(&self) -> perl_position_tracking::position::Range
 pub fn perl_lsp_rs_core::tooling::perl_critic::NormalizedCriticFinding::remediation_related_information(&self) -> &[perl_lsp_rs_core::tooling::perl_critic::CriticRelatedInformation]
 pub fn perl_lsp_rs_core::tooling::perl_critic::NormalizedCriticFinding::remediation_suggestion(&self) -> core::option::Option<&str>
+pub fn perl_lsp_rs_core::tooling::perl_critic::NormalizedCriticFinding::retained_under_critic_policy(self, retention: perl_lsp_rs_core::tooling::perl_critic::CriticPolicyRetention) -> core::option::Option<Self>
 pub const fn perl_lsp_rs_core::tooling::perl_critic::NormalizedCriticFinding::severity(&self) -> perl_lsp_rs_core::tooling::perl_critic::Severity
 pub const fn perl_lsp_rs_core::tooling::perl_critic::NormalizedCriticFinding::source_generation(&self) -> u64
 pub const fn perl_lsp_rs_core::tooling::perl_critic::NormalizedCriticFinding::source_identity(&self) -> perl_lsp_rs_core::tooling::perl_critic::CriticSourceIdentity
+pub fn perl_lsp_rs_core::tooling::perl_critic::NormalizedCriticFinding::user_visible_message(&self) -> alloc::string::String
 pub fn perl_lsp_rs_core::tooling::perl_critic::NormalizedCriticFinding::clone(&self) -> perl_lsp_rs_core::tooling::perl_critic::NormalizedCriticFinding
 pub fn perl_lsp_rs_core::tooling::perl_critic::NormalizedCriticFinding::eq(&self, other: &perl_lsp_rs_core::tooling::perl_critic::NormalizedCriticFinding) -> bool
 pub fn perl_lsp_rs_core::tooling::perl_critic::NormalizedCriticFinding::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -11064,6 +11125,11 @@ pub fn perl_lsp_rs_core::tooling::perl_critic::RequireUseWarningsRule::category(
 pub fn perl_lsp_rs_core::tooling::perl_critic::RequireUseWarningsRule::check(&self, ctx: &perl_lsp_rs_core::tooling::perl_critic::CriticContext<'_>, out: &mut alloc::vec::Vec<perl_lsp_rs_core::tooling::perl_critic::CriticFinding>)
 pub fn perl_lsp_rs_core::tooling::perl_critic::RequireUseWarningsRule::default_severity(&self) -> perl_lsp_rs_core::tooling::perl_critic::Severity
 pub fn perl_lsp_rs_core::tooling::perl_critic::RequireUseWarningsRule::id(&self) -> &'static str
+pub struct perl_lsp_rs_core::tooling::perl_critic::RunGate<'a>
+pub fn perl_lsp_rs_core::tooling::perl_critic::RunGate<'a>::holds(&self) -> bool
+pub const fn perl_lsp_rs_core::tooling::perl_critic::RunGate<'a>::new(check: &'a dyn core::ops::function::Fn() -> bool) -> Self
+pub const fn perl_lsp_rs_core::tooling::perl_critic::RunGate<'a>::open() -> Self
+pub fn perl_lsp_rs_core::tooling::perl_critic::RunGate<'a>::clone(&self) -> perl_lsp_rs_core::tooling::perl_critic::RunGate<'a>
 pub struct perl_lsp_rs_core::tooling::perl_critic::ShadowedLexicalVariableRule
 pub fn perl_lsp_rs_core::tooling::perl_critic::ShadowedLexicalVariableRule::category(&self) -> perl_lsp_rs_core::tooling::perl_critic::CriticCategory
 pub fn perl_lsp_rs_core::tooling::perl_critic::ShadowedLexicalVariableRule::check(&self, ctx: &perl_lsp_rs_core::tooling::perl_critic::CriticContext<'_>, out: &mut alloc::vec::Vec<perl_lsp_rs_core::tooling::perl_critic::CriticFinding>)

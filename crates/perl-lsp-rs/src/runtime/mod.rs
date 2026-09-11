@@ -84,12 +84,17 @@ pub use crate::protocol::{JsonRpcError, JsonRpcId, JsonRpcRequest, JsonRpcRespon
 pub use window::{MessageType, ShowDocumentOptions};
 
 use perl_lsp_rs_core::tooling::performance::SymbolIndex;
-use perl_lsp_rs_core::tooling::perl_critic::BuiltInAnalyzer;
 use perl_parser::{
     Parser,
     ast::{Node, NodeKind},
     declaration::ParentMap,
 };
+
+#[cfg(any(test, feature = "expose_lsp_test_api"))]
+pub(crate) struct WorkspaceTopologyTransitionGate {
+    pub(crate) started: std::sync::mpsc::Sender<()>,
+    pub(crate) release: std::sync::mpsc::Receiver<()>,
+}
 use perl_tdd_support::{
     tdd_basic::TestGenerator,
     test_runner::{TestKind, TestRunner},
@@ -219,6 +224,10 @@ pub struct LspServer {
     /// workspaces with per-folder configuration. The old string-based approach
     /// is maintained via `workspace_folder_uris()` for backward compatibility.
     workspace_folders: Arc<Mutex<Vec<WorkspaceFolderState>>>,
+    /// Monotonic workspace-topology generation for folder transitions.
+    pub(crate) workspace_topology_generation: Arc<AtomicU32>,
+    /// False while folder membership and matching configuration are published.
+    pub(crate) workspace_topology_stable: Arc<AtomicBool>,
     /// Monotonic configuration/ownership generation for diagnostic snapshots.
     pub(crate) workspace_identity_generation: Arc<AtomicU64>,
     /// Monotonic generation for dependency and environment facts derived from
@@ -407,8 +416,11 @@ pub struct LspServer {
     #[cfg(feature = "workspace")]
     indexing_rescan_pending: Arc<AtomicBool>,
     /// Serializes the active/pending indexing handoff at scan completion.
-    #[cfg(feature = "workspace")]
     indexing_transition_lock: Arc<Mutex<()>>,
+    /// One-shot barrier used only by the workspace-transition race proof.
+    #[cfg(any(test, feature = "expose_lsp_test_api"))]
+    pub(crate) workspace_transition_test_gate:
+        Arc<std::sync::Mutex<Option<WorkspaceTopologyTransitionGate>>>,
     /// Test-only gate fired inside the startup scan's per-file commit
     /// critical section, after `indexing_transition_lock` is acquired
     /// (#13308).
@@ -435,49 +447,10 @@ pub struct LspServer {
     /// process-level `Once`) so that each `LspServer` instance tracks its own
     /// session independently.
     pub(crate) root_undetected_shown: Arc<AtomicBool>,
-    /// Shared Perl::Critic analyzer for the diagnostic pipeline.
-    ///
-    /// Lazily initialized on first use and reused across diagnostic cycles so
-    /// the per-instance violation cache survives between `textDocument/didChange`
-    /// events.  `invalidate_cache` is called on `didChange`; the whole entry is
-    /// reset to `None` when `perlcritic_enabled`, `perlcritic_severity`, or
-    /// `perlcritic_profile` changes via `didChangeConfiguration`.
-    ///
-    /// Only present on non-WASM targets (subprocess execution is unavailable
-    /// on WASM).
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) critic_analyzer: Mutex<Option<crate::perl_critic::CriticAnalyzer>>,
-    /// Subprocess runtime override for the `CriticAnalyzer`.
-    ///
-    /// When `Some`, the lazy-init path in `collect_external_perlcritic_diagnostics`
-    /// uses this runtime instead of `OsSubprocessRuntime`.  Always `None` in
-    /// production; set to a `MockSubprocessRuntime` by the test helper
-    /// `LspServer::test_install_mock_critic_runtime` so that tests can exercise
-    /// the full diagnostic pipeline without spawning a real `perlcritic` process.
-    ///
-    /// Using a separate runtime override (rather than pre-building the analyzer)
-    /// ensures that config-sensitive values such as the auto-discovered
-    /// `.perlcriticrc` profile path are still resolved at analysis time.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) critic_runtime_override:
-        Mutex<Option<std::sync::Arc<dyn perl_subprocess_runtime::SubprocessRuntime>>>,
     /// Test-only subprocess runtime override for formatter construction.
     #[cfg(any(test, feature = "expose_lsp_test_api"))]
     pub(crate) formatter_runtime_override:
         Mutex<Option<std::sync::Arc<dyn perl_subprocess_runtime::SubprocessRuntime>>>,
-    /// When `true`, skip the `command_exists("perlcritic")` guard during
-    /// diagnostic collection.  Always present on non-WASM targets but only
-    /// settable to `true` through the test API exposed via
-    /// `#[cfg(any(test, feature = "expose_lsp_test_api"))]`.
-    ///
-    /// Initialized to `false`; only the test helper methods flip this.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) skip_perlcritic_command_check: AtomicBool,
-    /// When `true`, force the perlcritic availability check to report that the
-    /// binary is missing.  Always `false` in production; only the test API can
-    /// set this flag so unavailable-binary tests do not depend on PATH.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) force_perlcritic_command_unavailable: AtomicBool,
     /// Typed, bounded dedup state for user-facing session warnings (#9769).
     ///
     /// Governs whether a repeated Perl::Critic, invalid-client-setting, or AI
@@ -1007,9 +980,6 @@ impl LspServer {
         for key in &uri_keys {
             if let Some(path) = source_path_from_uri(key) {
                 self.pod_cache.lock().remove(&path);
-
-                #[cfg(not(target_arch = "wasm32"))]
-                self.pull_diagnostics_orchestrator.invalidate_file_cache(&path);
             }
         }
     }
@@ -1043,9 +1013,6 @@ impl LspServer {
             for key in &uri_keys {
                 if let Some(path) = source_path_from_uri(key) {
                     self.pod_cache.lock().remove(&path);
-
-                    #[cfg(not(target_arch = "wasm32"))]
-                    self.pull_diagnostics_orchestrator.invalidate_file_cache(&path);
                 }
             }
             tracing::debug!(
