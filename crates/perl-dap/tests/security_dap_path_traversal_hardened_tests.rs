@@ -36,7 +36,7 @@ fn normalize_canonical(path: PathBuf) -> PathBuf {
             return PathBuf::from(format!(r"\\{}", stripped));
         }
         if let Some(stripped) = path.to_str().and_then(|s| s.strip_prefix(r"\\?\")) {
-            return PathBuf::from(stripped.to_string());
+            return PathBuf::from(stripped);
         }
     }
     path
