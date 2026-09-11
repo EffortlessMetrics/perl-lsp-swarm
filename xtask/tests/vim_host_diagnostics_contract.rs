@@ -936,7 +936,10 @@ fn has_process_call(source: &str, needles: &[&str]) -> bool {
                 });
             let followed_by_open_paren = source[index + needle.len()..]
                 .chars()
-                .find(|next| !next.is_whitespace())
+                // Vim line continuations (`system \` + newline + `(...)`)
+                // put a backslash between the name and its argument list;
+                // skipping them only widens detection, never narrows it.
+                .find(|next| !next.is_whitespace() && *next != '\\')
                 .is_some_and(|next| next == '(');
             preceded_by_boundary && followed_by_open_paren
         })
@@ -970,6 +973,7 @@ fn spawn_detector_still_rejects_real_process_calls() -> Result<()> {
         (&["system", "job_start", "term_start"][..], "let job = job_start(['vim'])"),
         (&["system", "job_start", "term_start"][..], "  system('indented')"),
         (&["system", "job_start", "term_start"][..], "call system ('spaced paren')"),
+        (&["system", "job_start", "term_start"][..], "call system \\\n  ('ls')"),
         (&["writefile", "json_encode"][..], "call writefile([], 'f')"),
     ] {
         ensure!(has_process_call(source, needles), "detector missed a real process call: {source}");
