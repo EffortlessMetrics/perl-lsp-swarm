@@ -87,6 +87,7 @@ Run in order for a release. See [CONTRIBUTING.md](../CONTRIBUTING.md#release-wor
 | `check_release_history.sh` | Check release history for consistency |
 | `validate-release-scope.py` | Validate the release-admission schema and cross-field invariants |
 | `validate_public_release_claims.py` | Validate candidate-bound public-beta claim status, authority, context, and limitations |
+| `validate_public_release_claims_v2.py` | Row-level oracle for the public_release_claims.v2 inventory derivative: re-derives every row from the #11575 inventory source and fails any tampered value (`--prove-tamper` sweeps one probe per row) |
 | `generate-badges.sh` | Regenerate README status badges |
 | `render-docs.sh` | Build the documentation site |
 | `verify-docs-rs.sh` | Verify docs.rs links are valid |
