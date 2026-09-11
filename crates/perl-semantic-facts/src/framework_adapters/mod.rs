@@ -21,3 +21,6 @@ pub mod mojo_base;
 
 /// Mojolicious application/controller identity adapter (#9688).
 pub mod mojolicious;
+
+/// Version-bound DBIx::QuickORM API return and preserving-method contract (#13374).
+pub mod quickorm_api;

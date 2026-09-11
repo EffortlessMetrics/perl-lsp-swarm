@@ -2934,6 +2934,35 @@ expires = "2026-09-22"
 removal_criteria = "Remove when RIPR traces declaration owners through the sibling #[path] tests or a finer line/function selector or targeted mutation replaces this advisory path. Remove or narrow immediately if a future receipt reports an executable no_static_path seam in this file or any classification other than no_static_path."
 
 # -----------------------------------------------------------------------------
+# PR #15005 replaces sleep-driven UX harness synchronization with
+# event-driven waits. ripr 0.10.0 reports 46 reachable_unrevealed and 25
+# no_static_path probes, all inside crates/perl-lsp-ux-tests/src (client.rs,
+# observation.rs, diagnostics.rs) — the UX test harness's own source. The
+# repository's coverage gate already classifies this crate as test support
+# (TEST_SUPPORT_CRATE_PREFIXES in xtask/src/tasks/quality_baseline.rs), and
+# its tests/* tree is already suppressed under ripr-suppress-ux-receipt-
+# tests. The harness's new event-wait behavior is proven by
+# harness_timing_discipline.rs (disposition classes, suffixed-class
+# rejection) and by the UX journeys that drive it; the probes sit on
+# async/channel plumbing whose per-line infection ripr cannot trace from
+# those oracles (ripr#1428/#1429 class).
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-ux-harness-event-wait-plumbing"
+kind = "test_receipt_surface"
+paths = [
+  "crates/perl-lsp-ux-tests/src/client.rs",
+  "crates/perl-lsp-ux-tests/src/observation.rs",
+  "crates/perl-lsp-ux-tests/src/diagnostics.rs",
+]
+classification = ["no_static_path", "reachable_unrevealed"]
+owner = "proof-lane"
+issue = "EffortlessMetrics/ripr#1429"
+reason = "PR #15005: 71 probes inside the perl-lsp-ux-tests harness source (event-driven wait plumbing in client.rs/observation.rs/diagnostics.rs). The crate is classified as test support by the repository's own coverage gate (TEST_SUPPORT_CRATE_PREFIXES) and ships no production behavior; its tests/ tree is already suppressed as test_receipt_surface. The new synchronization behavior is proven by harness_timing_discipline.rs (including the suffixed timing disposition rejection) and the 17 UX scenario journeys that consume the harness. Per-line infection through the async/channel plumbing is untraceable from those oracles (ripr#1428/#1429 class). HONEST SCOPE NOTE: path-scoped, so future seams in these harness files are masked for this window; the harness is only ever executed by tests, so the masking cannot hide production behavior. Remove when ripr#1429 traces async plumbing or targeted mutation is scheduled per #1289."
+created = "2026-09-09"
+review_after = "2026-09-16"
+expires = "2026-09-23"
+removal_criteria = "Remove when ripr#1429 traces async/channel plumbing, or narrow immediately if a future receipt reports an executable seam used outside the test harness."
 # Exact-tree test panic-family denominator (#13397, PR #14904): RIPR reports
 # no_static_path on non-executable struct/const/field owners in the new
 # observation module. Same-file tests construct the public DTOs, call
@@ -3176,6 +3205,41 @@ removal_criteria = "Remove when ripr#1428 stops classifying test Ok(()) / type a
 
 
 # -----------------------------------------------------------------------------
+# PR #14826 emacs host-journey manifest: analyzer-untraceable contract-test
+# coverage plus declaration/static-limitation probes. Hosted RIPR run
+# 34463559629 reported 97 new gaps on xtask/src/emacs_host_journeys.rs.
+#
+# Evidence breakdown from ripr/pr/raw-check.json probe findings:
+# - no_static_path field_construction on non-executable declarations
+#   (JourneyCell/ExpectationRef constructors, digest consts): ripr#1429 class.
+# - static_unknown on fn-signature and sole-closer lines: structural probes,
+#   no executable seam.
+# - weakly_exposed / infection_unknown / propagation_unknown on match arms,
+#   predicates, and returns exercised by xtask/tests/
+#   emacs_host_journeys_contract.rs (30 tests, 91 assertions — including
+#   protocol_membership_can_never_present_host_visible_semantics and
+#   host_visible_cell_rejects_a_mixed_protocol_surface covering the flagged
+#   EvidenceKind arms), which the analyzer cannot trace from the integration
+#   target into the module.
+# - reachable_unrevealed on constructor/Ok(()) returns reached by the
+#   contract tests with exact-assertion coverage of the discriminating
+#   properties; unit struct values carry nothing further to assert.
+# HONEST SCOPE NOTE: path-plus-class scoping masks future probes of these
+# classes in this file for this window. Narrow or delete immediately if a
+# future receipt reports an executable seam here outside these classes.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-14826-emacs-journey-manifest-seams"
+kind = "predicate_infection_untraceable"
+paths = ["xtask/src/emacs_host_journeys.rs"]
+classification = ["no_static_path", "static_unknown", "reachable_unrevealed", "weakly_exposed", "infection_unknown", "propagation_unknown"]
+owner = "proof-lane"
+issue = "EffortlessMetrics/ripr#1429"
+reason = "PR #14826: 97 new gaps on the emacs journey-manifest module are declaration probes, structural probes, and analyzer-untraceable coverage from 30 contract tests with 91 assertions (contract suite green locally); constructor/Ok(()) reachable_unrevealed seams carry no further observable value. Do not treat this as manifest-behavior proof."
+created = "2026-09-10"
+review_after = "2026-09-17"
+expires = "2026-09-30"
+removal_criteria = "Remove when ripr#1429 traces integration-test coverage into module owners; narrow immediately if a future receipt reports an executable seam here outside the listed classes."
 # PR #13882 versioned rust-small receipt: analyzer-untraceable in-module
 # coverage plus declaration/static-limitation probes. Hosted RIPR run
 # 34463135706 reported 40 new gaps on xtask/src/tasks/rust_small_proof.rs
@@ -3277,19 +3341,68 @@ removal_criteria = "Remove when ripr#1429 traces in-module cfg(test) coverage to
 # 15 policy_cadence tests, 55 check_lint_policy tests, 148 lint tests — all
 # green. Declaration-line probes on non-primitive owners do not resolve
 # through constructor-call paths (ripr#1429 class).
-# HONEST SCOPE NOTE: path-plus-class scoping masks future probes of these two
-# classes in these three files for this window. Narrow or delete immediately
-# if a future receipt reports an executable seam here outside these classes.
+#
+# SPLIT (merge repair): check_tautology/mod.rs weakly_exposed must stay
+# visible per the tautology_declaration_suppression_matches_no_static_path_only
+# invariant in xtask/src/tasks/ripr_evidence.rs, so mod.rs is covered for
+# no_static_path only; weakly_exposed coverage is scoped to disposition.rs
+# and policy_cadence/tautology.rs. Any weakly_exposed seam in mod.rs keeps
+# gating and must be fixed with an exact oracle, not suppressed here.
+# HONEST SCOPE NOTE: path-plus-class scoping masks future probes of these
+# classes in these files for this window. Narrow or delete immediately if a
+# future receipt reports an executable seam here outside these classes.
 # -----------------------------------------------------------------------------
 [[suppress]]
-id = "ripr-suppress-15272-tautology-cadence-new-seams"
+id = "ripr-suppress-15272-tautology-cadence-declarations"
 kind = "predicate_infection_untraceable"
 paths = ["xtask/src/tasks/check_tautology/disposition.rs", "xtask/src/tasks/check_tautology/mod.rs", "xtask/src/tasks/policy_cadence/tautology.rs"]
-classification = ["no_static_path", "weakly_exposed"]
+classification = ["no_static_path"]
 owner = "proof-lane"
 issue = "EffortlessMetrics/ripr#1429"
-reason = "PR #15272: gate-severe set is 35 no_static_path declaration probes on new tautology/cadence owners plus 20 weakly_exposed seams covered by 76+15+55 green unit tests with nearby-value assertions the analyzer does not recognize as exact oracles. Exposed findings with strong oracles keep gating. Do not treat this as tautology-behavior proof."
+reason = "PR #15272: 35 no_static_path declaration probes on new tautology/cadence owners, covered by 76+15+55 green unit tests. Exposed findings with strong oracles keep gating. Do not treat this as tautology-behavior proof."
 created = "2026-09-10"
 review_after = "2026-09-17"
 expires = "2026-09-30"
-removal_criteria = "Remove when ripr#1429 traces same-module unit-test coverage to declaration owners or recognizes nearby-value assertions; narrow immediately if a future receipt reports an executable seam here outside the listed classes."
+removal_criteria = "Remove when ripr#1429 traces same-module unit-test coverage to declaration owners; narrow immediately if a future receipt reports an executable seam here outside no_static_path."
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-15272-tautology-cadence-weak-seams"
+kind = "predicate_infection_untraceable"
+paths = ["xtask/src/tasks/check_tautology/disposition.rs", "xtask/src/tasks/policy_cadence/tautology.rs"]
+classification = ["weakly_exposed"]
+owner = "proof-lane"
+issue = "EffortlessMetrics/ripr#1429"
+reason = "PR #15272: weakly_exposed seams in the two new-code files whose covering tests observe nearby values without analyzer-recognized exact oracles. check_tautology/mod.rs is deliberately excluded: its weakly_exposed findings must stay visible per the ripr_evidence invariant test. Exposed findings with strong oracles keep gating. Do not treat this as tautology-behavior proof."
+created = "2026-09-10"
+review_after = "2026-09-17"
+expires = "2026-09-30"
+removal_criteria = "Remove when ripr#1429 recognizes nearby-value assertions as exact oracles; narrow immediately if a future receipt reports an executable seam here outside weakly_exposed."
+
+# PR #15008 (#13374) adds crates/perl-semantic-facts/src/framework_adapters/
+# quickorm_api.rs: a 4712-line version-pinned QuickORM API return registry
+# that is explicitly reference data, not inference (module docs: "This
+# module is reference data, not inference ... changes no runtime behavior on
+# its own"). ripr 0.10.0 reports 1495 no_static_path probes on the row
+# declarations. The rows are exercised by the registry's inline tests and by
+# the deterministic matrix projection (cargo xtask generate-quickorm-api-
+# matrix --check against docs/specs/quickorm-api-return-matrix.md, itself a
+# generated-allowlist entry), and the file is not yet wired into any
+# production analyzer consumer — the same not-yet-wired substrate boundary
+# as the PLSP-ADR-0006 workspace-core entry, at declaration-line
+# ripr#1429 class.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-quickorm-api-reference-registry"
+kind = "declaration_line_no_static_path"
+paths = [
+  "crates/perl-semantic-facts/src/framework_adapters/quickorm_api.rs",
+  "xtask/src/tasks/quickorm_api_matrix.rs",
+]
+classification = ["no_static_path"]
+owner = "proof-lane"
+issue = "EffortlessMetrics/ripr#1429"
+reason = "PR #15008 (#13374): 1495 no_static_path probes on the version-pinned QuickORM API return registry, which is reviewed reference data with an upstream-commit authority boundary, not executable inference. Per-declaration probes cannot trace activation because the rows have no production consumer yet (not-yet-wired substrate, PLSP-ADR-0006 class); the rows are pinned by the registry's inline tests and the deterministic quickorm-api-matrix projection check (generated-allowlist id generated-quickorm-api-return-matrix). The xtask/src/tasks/quickorm_api_matrix.rs findings are the MATRIX_PATH const declaration for the projection (same const-data class). HONEST SCOPE NOTE: the matcher is path-scoped, so a future executable seam added to this file would be masked for this window — the file's own contract forbids behavior ('contains no parsing, no provider behavior, and no type inference'), so any such addition is itself a contract violation review must catch. Remove when ripr#1429 resolves declaration-line probes via constructor-call paths, when the registry gains its first production consumer (then re-scope to the consumer's findings), or when targeted mutation is scheduled per #1289."
+created = "2026-09-09"
+review_after = "2026-09-16"
+expires = "2026-09-23"
+removal_criteria = "Remove when the registry gains a production consumer (re-scope suppression to that consumer's seams) or when ripr#1429 resolves declaration-line probes for data rows; narrow immediately if any executable (non-declaration) code lands in this file."

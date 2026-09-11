@@ -996,6 +996,183 @@ pub fn perl_semantic_facts::framework_adapters::mojolicious::mojolicious_lite_de
 pub fn perl_semantic_facts::framework_adapters::mojolicious::mojolicious_lite_import_evidence(args: &[alloc::string::String], explicit_empty_import: bool, version: &perl_semantic_facts::framework_adapters::mojolicious::MojoliciousLiteVersionRequirement) -> perl_semantic_facts::framework_adapters::mojolicious::MojoliciousLiteImportEvidence
 pub fn perl_semantic_facts::framework_adapters::mojolicious::mojolicious_role_facts_from_mojo_base(mojo_base: &perl_semantic_facts::framework_adapters::mojo_base::MojoBaseActivationFacts) -> perl_semantic_facts::framework_adapters::mojolicious::MojoliciousActivationFacts
 pub fn perl_semantic_facts::framework_adapters::mojolicious::parse_mojolicious_lite_import_args(args: &[alloc::string::String]) -> perl_semantic_facts::framework_adapters::mojolicious::MojoliciousLiteImportEvidence
+pub mod perl_semantic_facts::framework_adapters::quickorm_api
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmArgumentCohort::ExplicitUndefClearing
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmArgumentCohort::NoSourceArgument
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmArgumentCohort::None
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmArgumentCohort::Optional
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmArgumentCohort::Required
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmArgumentCohort::SourceOrRowRebinding
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmArgumentCohort::TrailingCoderef
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmArgumentCohort::TrailingDataHashref
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmArgumentCohort::ValueSetter
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmArgumentCohort::ZeroArgGetter
+pub const fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmArgumentCohort::as_str(self) -> &'static str
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmArgumentCohort::clone(&self) -> perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmArgumentCohort
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmArgumentCohort::cmp(&self, other: &perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmArgumentCohort) -> core::cmp::Ordering
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmArgumentCohort::eq(&self, other: &perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmArgumentCohort) -> bool
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmArgumentCohort::partial_cmp(&self, other: &perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmArgumentCohort) -> core::option::Option<core::cmp::Ordering>
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmArgumentCohort::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmArgumentCohort::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmArgumentCohort::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmArgumentCohort::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmBoundary::Exact
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmBoundary::RuntimeResolved
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmBoundary::UnsupportedAtPinnedVersion
+pub const fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmBoundary::as_str(self) -> &'static str
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmBoundary::clone(&self) -> perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmBoundary
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmBoundary::cmp(&self, other: &perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmBoundary) -> core::cmp::Ordering
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmBoundary::eq(&self, other: &perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmBoundary) -> bool
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmBoundary::partial_cmp(&self, other: &perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmBoundary) -> core::option::Option<core::cmp::Ordering>
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmBoundary::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmBoundary::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmBoundary::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmBoundary::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmModeSupport::ConditionalNonSync
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmModeSupport::NotApplicable
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmModeSupport::SyncAsyncAsideForked
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmModeSupport::SyncAsyncAsideOnly
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmModeSupport::SyncOnly
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmModeSupport::SyncWithAsyncRowResult
+pub const fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmModeSupport::as_str(self) -> &'static str
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmModeSupport::clone(&self) -> perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmModeSupport
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmModeSupport::cmp(&self, other: &perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmModeSupport) -> core::cmp::Ordering
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmModeSupport::eq(&self, other: &perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmModeSupport) -> bool
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmModeSupport::partial_cmp(&self, other: &perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmModeSupport) -> core::option::Option<core::cmp::Ordering>
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmModeSupport::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmModeSupport::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmModeSupport::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmModeSupport::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmMultiplicity::ArrayRefOfOptionalPerArgument
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmMultiplicity::ArrayRefOfZeroOrMore
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmMultiplicity::Hash
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmMultiplicity::IteratorOfZeroOrMore
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmMultiplicity::KeyValueSequence
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmMultiplicity::ListOfZeroOrMore
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmMultiplicity::Nothing
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmMultiplicity::One
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmMultiplicity::OptionalHash
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmMultiplicity::ZeroOrOne
+pub const fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmMultiplicity::as_str(self) -> &'static str
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmMultiplicity::clone(&self) -> perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmMultiplicity
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmMultiplicity::cmp(&self, other: &perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmMultiplicity) -> core::cmp::Ordering
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmMultiplicity::eq(&self, other: &perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmMultiplicity) -> bool
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmMultiplicity::partial_cmp(&self, other: &perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmMultiplicity) -> core::option::Option<core::cmp::Ordering>
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmMultiplicity::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmMultiplicity::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmMultiplicity::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmMultiplicity::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmReceiver::Connection
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmReceiver::GeneratedTablePackage
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmReceiver::Handle
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmReceiver::HandleAsDerivedSource
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmReceiver::Iterator
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmReceiver::Orm
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmReceiver::Row
+pub const fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmReceiver::as_str(self) -> &'static str
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmReceiver::clone(&self) -> perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmReceiver
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmReceiver::cmp(&self, other: &perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmReceiver) -> core::cmp::Ordering
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmReceiver::eq(&self, other: &perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmReceiver) -> bool
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmReceiver::partial_cmp(&self, other: &perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmReceiver) -> core::option::Option<core::cmp::Ordering>
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmReceiver::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmReceiver::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmReceiver::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmReceiver::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmReturnClass::BooleanOrCount
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmReturnClass::DataOnlyTransition
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmReturnClass::IteratorOfRows
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmReturnClass::MetadataOrScalar
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmReturnClass::MultipleRows
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmReturnClass::MutationOrSideEffectResult
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmReturnClass::OpenHashOrHashSequence
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmReturnClass::PreserveHandleSourceRow
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmReturnClass::SingleOptionalRow
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmReturnClass::TransformHandleSourceRow
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmReturnClass::UnsupportedDynamicVariant
+pub const fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmReturnClass::as_str(self) -> &'static str
+pub const fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmReturnClass::may_carry_row_identity(self) -> bool
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmReturnClass::clone(&self) -> perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmReturnClass
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmReturnClass::cmp(&self, other: &perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmReturnClass) -> core::cmp::Ordering
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmReturnClass::eq(&self, other: &perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmReturnClass) -> bool
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmReturnClass::partial_cmp(&self, other: &perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmReturnClass) -> core::option::Option<core::cmp::Ordering>
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmReturnClass::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmReturnClass::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmReturnClass::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmReturnClass::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmTypeParamEffect::DerivedFromArgumentSource
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmTypeParamEffect::DeterminedByArgumentValue
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmTypeParamEffect::ErasedToPlainData
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmTypeParamEffect::NotApplicable
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmTypeParamEffect::PreservedFromReceiver
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmTypeParamEffect::SourcePreservedRowFromArgument
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmTypeParamEffect::SourcePreservedRowUnbound
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmTypeParamEffect::TransformedToJoinRow
+pub const fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmTypeParamEffect::as_str(self) -> &'static str
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmTypeParamEffect::clone(&self) -> perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmTypeParamEffect
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmTypeParamEffect::cmp(&self, other: &perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmTypeParamEffect) -> core::cmp::Ordering
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmTypeParamEffect::eq(&self, other: &perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmTypeParamEffect) -> bool
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmTypeParamEffect::partial_cmp(&self, other: &perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmTypeParamEffect) -> core::option::Option<core::cmp::Ordering>
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmTypeParamEffect::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmTypeParamEffect::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmTypeParamEffect::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmTypeParamEffect::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmVoidContext::Croaks
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmVoidContext::Permitted
+pub const fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmVoidContext::as_str(self) -> &'static str
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmVoidContext::clone(&self) -> perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmVoidContext
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmVoidContext::cmp(&self, other: &perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmVoidContext) -> core::cmp::Ordering
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmVoidContext::eq(&self, other: &perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmVoidContext) -> bool
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmVoidContext::partial_cmp(&self, other: &perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmVoidContext) -> core::option::Option<core::cmp::Ordering>
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmVoidContext::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmVoidContext::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmVoidContext::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmVoidContext::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmApiCase::api_case_id: &'static str
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmApiCase::arguments: perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmArgumentCohort
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmApiCase::boundary: perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmBoundary
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmApiCase::evidence: perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmEvidence
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmApiCase::method: &'static str
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmApiCase::mode: perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmModeSupport
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmApiCase::multiplicity: perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmMultiplicity
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmApiCase::notes: &'static str
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmApiCase::package: &'static str
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmApiCase::receiver: perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmReceiver
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmApiCase::receiver_constraints: &'static [&'static str]
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmApiCase::return_class: perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmReturnClass
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmApiCase::type_params: perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmTypeParamEffect
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmApiCase::void_context: perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmVoidContext
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmApiCase::clone(&self) -> perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmApiCase
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmApiCase::eq(&self, other: &perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmApiCase) -> bool
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmApiCase::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmApiCase::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub struct perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmEvidence
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmEvidence::file: &'static str
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmEvidence::line: u32
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmEvidence::clone(&self) -> perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmEvidence
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmEvidence::eq(&self, other: &perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmEvidence) -> bool
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmEvidence::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmEvidence::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmUncoveredMethod::evidence: perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmEvidence
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmUncoveredMethod::method: &'static str
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmUncoveredMethod::package: &'static str
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmUncoveredMethod::reason: &'static str
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmUncoveredMethod::clone(&self) -> perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmUncoveredMethod
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmUncoveredMethod::eq(&self, other: &perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmUncoveredMethod) -> bool
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmUncoveredMethod::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmUncoveredMethod::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub const perl_semantic_facts::framework_adapters::quickorm_api::QUICKORM_API_CASES: &[perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmApiCase]
+pub const perl_semantic_facts::framework_adapters::quickorm_api::QUICKORM_API_RETURN_REGISTRY_VERSION: &str
+pub const perl_semantic_facts::framework_adapters::quickorm_api::QUICKORM_EVIDENCE_FILES: &[&str]
+pub const perl_semantic_facts::framework_adapters::quickorm_api::QUICKORM_FRAMEWORK_NAME: &str
+pub const perl_semantic_facts::framework_adapters::quickorm_api::QUICKORM_UNCOVERED_METHODS: &[perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmUncoveredMethod]
+pub const perl_semantic_facts::framework_adapters::quickorm_api::QUICKORM_UPSTREAM_COMMIT: &str
+pub const perl_semantic_facts::framework_adapters::quickorm_api::QUICKORM_UPSTREAM_REPOSITORY: &str
+pub const perl_semantic_facts::framework_adapters::quickorm_api::QUICKORM_UPSTREAM_VERSION: &str
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::quickorm_api_case(api_case_id: &str) -> core::option::Option<&'static perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmApiCase>
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::quickorm_api_cases() -> &'static [perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmApiCase]
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::quickorm_api_cases_for_method<'a>(package: &'a str, method: &'a str) -> impl core::iter::traits::iterator::Iterator<Item = &'static perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmApiCase> + 'a
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::quickorm_api_cases_for_receiver(receiver: perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmReceiver) -> impl core::iter::traits::iterator::Iterator<Item = &'static perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmApiCase>
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::quickorm_uncovered_methods() -> &'static [perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmUncoveredMethod]
 pub mod perl_semantic_facts::handler
 pub perl_semantic_facts::handler::FrameworkHandler::Bounded
 pub perl_semantic_facts::handler::FrameworkHandler::Bounded::anchor: core::option::Option<perl_semantic_facts::SourceAnchor>
