@@ -17,6 +17,15 @@ const PERL_LSP_REPO: &str = "tree-sitter-perl/perl-tree-sitter-lsp";
 const PERLLSP_SERVER_ID: &str = "perllsp";
 const PERLLSP_REPO: &str = "EffortlessMetrics/perl-lsp";
 
+// Versioned projection of the canonical `perllsp` LSP launch contract,
+// checked against the live clap surface of
+// `perl_lsp_rs_core::runtime::launcher::LspArgs` by
+// `crates/perl-lsp-rs-core/tests/zed_launch_contract_currentness.rs`.
+// Command construction consumes this projection instead of a hand-copied
+// allow/deny list (#11304).
+const LAUNCH_CONTRACT_SCHEMA_VERSION: &str = "zed_perllsp_launch_contract.v1";
+const LAUNCH_CONTRACT_JSON: &str = include_str!("../../launch-contract.v1.json");
+
 // EffortlessMetrics' DAP debug adapter. This identity is deliberately
 // independent from every language-server ID above: `perl-dap` never aliases
 // `perllsp`, `perl-lsp`, or `perlnavigator-server`, and no language-server
@@ -1150,56 +1159,153 @@ fn perllsp_command_settings(worktree: &zed::Worktree) -> Result<PerllspCommandSe
     })
 }
 
+#[derive(Debug, PartialEq, Eq)]
+struct AdmittedArgument {
+    flag: String,
+    takes_value: bool,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct LaunchContract {
+    required_transport_flag: String,
+    admitted: Vec<AdmittedArgument>,
+}
+
+/// Parse the checked launch-contract projection. Any structural defect is a
+/// fail-closed instrument failure, never a permissive fallback.
+fn parse_launch_contract(text: &str) -> Result<LaunchContract, String> {
+    use zed::serde_json::Value;
+
+    let value: Value = zed::serde_json::from_str(text)
+        .map_err(|error| format!("bundled perllsp launch contract is not valid JSON: {error}"))?;
+
+    if value.get("schema_version").and_then(Value::as_str) != Some(LAUNCH_CONTRACT_SCHEMA_VERSION) {
+        return Err("bundled perllsp launch contract has an unsupported schema_version".to_string());
+    }
+
+    if value.get("fail_closed_default").and_then(Value::as_bool) != Some(true) {
+        return Err("bundled perllsp launch contract must fail closed by default".to_string());
+    }
+
+    let required_transport_flag = value
+        .get("required_transport_flag")
+        .and_then(Value::as_str)
+        .filter(|flag| flag.starts_with("--"))
+        .ok_or_else(|| {
+            "bundled perllsp launch contract lacks a `--` required transport flag".to_string()
+        })?
+        .to_string();
+
+    let rows = value
+        .get("admitted_arguments")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "bundled perllsp launch contract lacks admitted_arguments".to_string())?;
+
+    let mut admitted = Vec::with_capacity(rows.len());
+    for row in rows {
+        let flag = row
+            .get("flag")
+            .and_then(Value::as_str)
+            .filter(|flag| flag.starts_with("--"))
+            .ok_or_else(|| "admitted launch-contract row lacks a `--` flag".to_string())?
+            .to_string();
+        let takes_value = row
+            .get("value")
+            .and_then(Value::as_bool)
+            .ok_or_else(|| format!("admitted launch-contract row `{flag}` lacks its value kind"))?;
+        admitted.push(AdmittedArgument { flag, takes_value });
+    }
+
+    Ok(LaunchContract { required_transport_flag, admitted })
+}
+
+fn launch_contract() -> Result<LaunchContract, String> {
+    parse_launch_contract(LAUNCH_CONTRACT_JSON)
+}
+
 fn normalize_perllsp_args(arguments: Vec<String>) -> Result<Vec<String>> {
+    let contract = launch_contract().map_err(|error| {
+        format!("perllsp launch projection unusable; refusing to construct a command: {error}")
+    })?;
+    normalize_with_contract(arguments, &contract)
+}
+
+fn normalize_with_contract(
+    arguments: Vec<String>,
+    contract: &LaunchContract,
+) -> Result<Vec<String>> {
     let mut normalized = Vec::with_capacity(arguments.len() + 1);
-    let mut saw_stdio = false;
+    let mut pending_value_flag: Option<String> = None;
 
     for argument in arguments {
-        // `--mcp` / `mcp` are documented launcher aliases for stdio transport.
-        if argument == "--stdio" || argument == "--mcp" || argument == "mcp" {
-            if !saw_stdio {
-                normalized.push("--stdio".to_string());
-                saw_stdio = true;
-            }
+        if pending_value_flag.is_some() {
+            // The previous token was an admitted value-bearing flag, so this
+            // token is its value and must never be classified as a selector.
+            normalized.push(argument);
+            pending_value_flag = None;
             continue;
         }
 
-        if is_non_lsp_argument(&argument) {
+        if argument == contract.required_transport_flag {
+            // The canonical contract treats repeated boolean switches as
+            // idempotent, and Zed owns transport selection: transport tokens
+            // are consumed wherever they appear, never appended, so the
+            // constructed command always reads exactly
+            // `perllsp --stdio [admitted tuning...]` (review 3848275689).
+            continue;
+        }
+
+        // Product contract: `--mcp` is a retired alias and `mcp` selects the
+        // separate MCP route (`perllsp mcp --stdio`). Neither may become LSP.
+        if argument == "--mcp" || argument.starts_with("--mcp=") || argument == "mcp" {
             return Err(format!(
-                "Zed must launch the LSP stdio route; unsupported perllsp argument `{argument}`"
+                "Zed launches LSP over stdio; `{argument}` selects the MCP route rather than the LSP stdio transport"
             ));
         }
 
-        normalized.push(argument);
+        let (key, inline_value) = match argument.split_once('=') {
+            Some((key, value)) => (key, Some(value)),
+            None => (argument.as_str(), None),
+        };
+
+        match contract.admitted.iter().find(|admitted| admitted.flag == key) {
+            Some(admitted) if admitted.takes_value => {
+                if inline_value.is_some() {
+                    normalized.push(argument);
+                } else {
+                    normalized.push(key.to_string());
+                    pending_value_flag = Some(key.to_string());
+                }
+            }
+            Some(_) => {
+                if inline_value.is_some() {
+                    return Err(format!(
+                        "Zed must launch the LSP stdio route; perllsp argument `{argument}` does not take a value"
+                    ));
+                }
+                normalized.push(argument);
+            }
+            None => {
+                return Err(format!(
+                    "Zed must launch the LSP stdio route; unsupported perllsp argument `{argument}`"
+                ));
+            }
+        }
     }
 
-    if !saw_stdio {
-        normalized.push("--stdio".to_string());
+    if let Some(flag) = pending_value_flag {
+        return Err(format!(
+            "Zed must launch the LSP stdio route; perllsp argument `{flag}` is missing its value"
+        ));
     }
+
+    // Zed owns transport selection; the constructed command always reads
+    // exactly `perllsp --stdio [admitted tuning...]`, so exactly one
+    // canonical transport is inserted at the leading slot regardless of
+    // whether (or how many times) the caller supplied one.
+    normalized.insert(0, contract.required_transport_flag.clone());
 
     Ok(normalized)
-}
-
-fn is_non_lsp_argument(argument: &str) -> bool {
-    // Reject `--mcp=...` forms; bare `mcp` / `--mcp` are stdio aliases above.
-    if argument.starts_with("--mcp=") {
-        return true;
-    }
-    let flag = argument.split_once('=').map_or(argument, |(key, _)| key);
-    matches!(
-        flag,
-        "--socket"
-            | "--port"
-            | "--health"
-            | "--info"
-            | "--version"
-            | "--doctor"
-            | "--check"
-            | "--check-project"
-            | "--help"
-            | "-h"
-            | "-V"
-    )
 }
 
 /// Whether a settings-supplied environment override key could load code into
@@ -1571,47 +1677,193 @@ mod tests {
             normalize_perllsp_args(vec![
                 "--stdio".to_string(),
                 "--stdio".to_string(),
-                "--log-level=debug".to_string(),
+                "--log".to_string(),
             ])
             .ok(),
-            Some(vec!["--stdio".to_string(), "--log-level=debug".to_string(),])
+            Some(vec!["--stdio".to_string(), "--log".to_string(),])
+        );
+        assert_eq!(
+            normalize_perllsp_args(vec!["--stdio".to_string(), "--stdio".to_string()]).ok(),
+            Some(vec!["--stdio".to_string()])
+        );
+        // Review 3848275689 falsifiers: the caller's transport position is
+        // never preserved — the canonical transport owns the leading slot.
+        assert_eq!(
+            normalize_perllsp_args(vec!["--log".to_string(), "--stdio".to_string()]).ok(),
+            Some(vec!["--stdio".to_string(), "--log".to_string()]),
+            "reversed-order transport must still normalize to leading --stdio"
+        );
+        assert_eq!(
+            normalize_perllsp_args(vec![
+                "--stdio".to_string(),
+                "--log".to_string(),
+                "--stdio".to_string(),
+                "--feature-profile".to_string(),
+                "full".to_string(),
+                "--stdio".to_string(),
+            ])
+            .ok(),
+            Some(vec![
+                "--stdio".to_string(),
+                "--log".to_string(),
+                "--feature-profile".to_string(),
+                "full".to_string(),
+            ]),
+            "interleaved duplicate transport tokens collapse to exactly one leading --stdio"
         );
     }
 
     #[test]
-    fn mcp_alias_normalizes_to_stdio() {
-        assert_eq!(
-            normalize_perllsp_args(vec!["--mcp".to_string()]).ok(),
-            Some(vec!["--stdio".to_string()])
-        );
-        assert_eq!(
-            normalize_perllsp_args(vec!["mcp".to_string(), "--log-level=debug".to_string()]).ok(),
-            Some(vec!["--stdio".to_string(), "--log-level=debug".to_string()])
-        );
-        assert_eq!(
-            normalize_perllsp_args(vec!["--mcp".to_string(), "--stdio".to_string()]).ok(),
-            Some(vec!["--stdio".to_string()])
-        );
+    fn mcp_routes_fail_closed_and_are_never_flattened_into_lsp() {
+        for arguments in [
+            vec!["--mcp".to_string()],
+            vec!["mcp".to_string()],
+            vec!["--mcp=stdio".to_string()],
+            vec!["mcp".to_string(), "--stdio".to_string()],
+            vec!["--stdio".to_string(), "mcp".to_string()],
+        ] {
+            let outcome = normalize_perllsp_args(arguments.clone());
+            assert!(outcome.is_err(), "MCP route {arguments:?} must not be launched as LSP stdio");
+            assert!(
+                outcome.err().is_some_and(|error| error.contains("MCP route")),
+                "rejection of {arguments:?} must name the MCP boundary"
+            );
+        }
     }
 
     #[test]
     fn non_lsp_modes_fail_closed() {
         for argument in [
-            "--mcp=stdio",
             "--socket",
             "--socket=127.0.0.1:9257",
             "--port",
             "--port=9257",
             "--health",
             "--health=1",
+            "--info",
             "--version",
+            "-V",
+            "--help",
+            "-h",
             "--doctor",
+            "--doctor=.",
+            "--check",
+            "--check=lib/a.pm",
+            "--check-project",
+            "--json",
+            "--completion=bash",
+            "--features-json",
+            "--ripr-facts",
+            "--ripr-schema=ripr-perl-facts-v1",
+            "--perltidy-compat-report=.perltidyrc",
+            "--perlcritic-compat-report=.perlcriticrc",
+            // Unknown future protocol/mode selectors and bare positionals must
+            // default to rejection, not to safe.
+            "--future-transport=tcp",
+            "serve",
         ] {
             assert!(
                 normalize_perllsp_args(vec![argument.to_string()]).is_err(),
                 "argument `{argument}` must not start a non-LSP route"
             );
         }
+    }
+
+    #[test]
+    fn admitted_tuning_flags_survive_with_their_values() {
+        assert_eq!(
+            normalize_perllsp_args(vec!["--log".to_string()]).ok(),
+            Some(vec!["--stdio".to_string(), "--log".to_string()])
+        );
+        assert_eq!(
+            normalize_perllsp_args(vec!["--feature-profile".to_string(), "full".to_string()]).ok(),
+            Some(vec!["--stdio".to_string(), "--feature-profile".to_string(), "full".to_string()])
+        );
+        assert_eq!(
+            normalize_perllsp_args(vec!["--runtime-mode=e2e".to_string()]).ok(),
+            Some(vec!["--stdio".to_string(), "--runtime-mode=e2e".to_string()])
+        );
+        assert_eq!(
+            normalize_perllsp_args(vec![
+                "--diagnostic-debounce-ms".to_string(),
+                "0".to_string(),
+                "--eager-workspace-indexing=false".to_string(),
+                "--file-watchers".to_string(),
+                "true".to_string(),
+            ])
+            .ok(),
+            Some(vec![
+                "--stdio".to_string(),
+                "--diagnostic-debounce-ms".to_string(),
+                "0".to_string(),
+                "--eager-workspace-indexing=false".to_string(),
+                "--file-watchers".to_string(),
+                "true".to_string(),
+            ])
+        );
+    }
+
+    #[test]
+    fn value_tokens_are_consumed_verbatim_not_classified_as_selectors() {
+        // A value token is bound to its admitted flag; whether the VALUE itself
+        // is meaningful (e.g. a valid profile) belongs to the product parser,
+        // not to Zed command construction.
+        assert_eq!(
+            normalize_perllsp_args(vec!["--feature-profile".to_string(), "mcp".to_string()]).ok(),
+            Some(vec!["--stdio".to_string(), "--feature-profile".to_string(), "mcp".to_string()])
+        );
+    }
+
+    #[test]
+    fn admitted_flag_without_required_value_fails_closed() {
+        assert!(normalize_perllsp_args(vec!["--feature-profile".to_string()]).is_err());
+    }
+
+    #[test]
+    fn mutated_launch_contract_bundles_fail_closed() {
+        assert!(parse_launch_contract("not json").is_err());
+        assert!(parse_launch_contract("{}").is_err());
+        let wrong_version = LAUNCH_CONTRACT_JSON
+            .replace(LAUNCH_CONTRACT_SCHEMA_VERSION, "zed_perllsp_launch_contract.v0");
+        assert!(parse_launch_contract(&wrong_version).is_err());
+        let permissive = LAUNCH_CONTRACT_JSON
+            .replace("\"fail_closed_default\": true", "\"fail_closed_default\": false");
+        assert!(parse_launch_contract(&permissive).is_err());
+        let bare_transport = LAUNCH_CONTRACT_JSON.replace("--stdio", "stdio");
+        assert!(parse_launch_contract(&bare_transport).is_err());
+        let missing_value_kind =
+            LAUNCH_CONTRACT_JSON.replace("{ \"flag\": \"--log\", \"value\": false },", "");
+        assert!(parse_launch_contract(&missing_value_kind).is_ok());
+        let bad_row = LAUNCH_CONTRACT_JSON
+            .replace("{ \"flag\": \"--log\", \"value\": false },", "{ \"flag\": \"--log\" },");
+        assert!(parse_launch_contract(&bad_row).is_err());
+    }
+
+    #[test]
+    fn bundled_projection_admits_exactly_the_reviewed_lsp_tuning_set() {
+        let contract = parse_launch_contract(LAUNCH_CONTRACT_JSON);
+        assert_eq!(
+            contract.ok().map(|contract| (
+                contract.required_transport_flag,
+                contract
+                    .admitted
+                    .into_iter()
+                    .map(|admitted| (admitted.flag, admitted.takes_value))
+                    .collect::<Vec<_>>()
+            )),
+            Some((
+                "--stdio".to_string(),
+                vec![
+                    ("--log".to_string(), false),
+                    ("--feature-profile".to_string(), true),
+                    ("--runtime-mode".to_string(), true),
+                    ("--diagnostic-mode".to_string(), true),
+                    ("--diagnostic-debounce-ms".to_string(), true),
+                    ("--eager-workspace-indexing".to_string(), true),
+                    ("--file-watchers".to_string(), true),
+                ]
+            ))
+        );
     }
 
     #[test]
