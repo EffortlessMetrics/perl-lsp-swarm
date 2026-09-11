@@ -418,6 +418,17 @@ def assert_derivation_probes(inventory: dict[str, Any]) -> None:
     if trim_code_span_pair("``a``") != "`a`":
         raise ValidationError(f"{DOC_PATH}: D3 repeated-boundary probe trimmed more than one pair")
 
+    try:
+        validate_schema_closure({
+            "type": "object",
+            "additionalProperties": False,
+            "anyOf": [{"type": "object", "properties": {}}],
+        })
+    except ValidationError:
+        pass
+    else:
+        raise ValidationError(f"{DOC_PATH}: D6 open anyOf schema node was not rejected")
+
     expected_anti = [
         "C203", "C214", "C701", "C702", "C1101", "C1302", "C1304", "C1305",
         "C1306", "C1307", "C1308",
