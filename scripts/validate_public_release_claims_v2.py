@@ -890,6 +890,22 @@ def compare_catalog(artifact: dict[str, Any], inventory: dict[str, Any], manifes
     # Per-claim rows (the D5 core: every derived field, every row).
     artifact_claims = artifact.get("claims") or []
     expected_claims = build_expected_claims(inventory, manifest)
+    expected_claim_ids = [row["claim_id"] for row in expected_claims]
+    actual_claim_ids = [
+        row.get("claim_id") if isinstance(row, dict) else None
+        for row in artifact_claims
+    ]
+    for index, (actual_id, expected_id) in enumerate(zip(actual_claim_ids, expected_claim_ids)):
+        if actual_id != expected_id:
+            raise ValidationError(
+                f"catalog.claims[{index}].claim_id: expected `{expected_id}`, found `{actual_id}` "
+                "(canonical order)"
+            )
+    if len(actual_claim_ids) != len(expected_claim_ids):
+        raise ValidationError(
+            f"catalog.claims: {len(actual_claim_ids)} row(s) but the inventory holds "
+            f"{len(expected_claim_ids)} (canonical order)"
+        )
     by_id = {row.get("claim_id"): row for row in artifact_claims if isinstance(row, dict)}
     if len(by_id) != len(artifact_claims):
         raise ValidationError("catalog.claims: duplicate route authority")
@@ -962,6 +978,17 @@ def compare_catalog(artifact: dict[str, Any], inventory: dict[str, Any], manifes
         raise ValidationError(
             f"catalog.findings: {len(artifact_findings)} row(s) but the inventory holds {len(expected_findings)}"
         )
+    expected_finding_ids = [row["finding_id"] for row in expected_findings]
+    actual_finding_ids = [
+        row.get("finding_id") if isinstance(row, dict) else None
+        for row in artifact_findings
+    ]
+    for index, (actual_id, expected_id) in enumerate(zip(actual_finding_ids, expected_finding_ids)):
+        if actual_id != expected_id:
+            raise ValidationError(
+                f"catalog.findings[{index}].finding_id: expected `{expected_id}`, found `{actual_id}` "
+                "(canonical order)"
+            )
     by_finding_id = {row.get("finding_id"): row for row in artifact_findings if isinstance(row, dict)}
     for expected_row in expected_findings:
         finding_id = expected_row["finding_id"]
@@ -1056,6 +1083,11 @@ def run_tamper_probes(
 
     claims = artifact.get("claims") or []
     claim_index = {row["claim_id"]: index for index, row in enumerate(claims)}
+
+    def swap_claim_rows(copy: dict[str, Any]) -> None:
+        copy["claims"][0], copy["claims"][1] = copy["claims"][1], copy["claims"][0]
+
+    probe("d5:claim_order", swap_claim_rows)
 
     # Per-row probes: editing any one row must fail naming that row (D5).
     drift_alternates = {"current": "pending", "pending": "current", "mutable_pin": "current",
