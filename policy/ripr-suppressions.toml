@@ -3125,6 +3125,44 @@ expires = "2026-09-23"
 removal_criteria = "Remove when ripr treats mechanical extractions as non-actionable, or narrow immediately if a future receipt reports an executable seam in lib.rs or baseline.rs beyond the moved lines."
 
 # -----------------------------------------------------------------------------
+# PR #15224 manual-clock notification seam: analyzer-untraceable #[cfg(test)]
+# coverage plus declaration/static-limitation probes. Hosted RIPR run
+# 34339885449 reported 19 new gaps on
+# crates/perl-lsp-rs/src/runtime/file_watcher_debounce.rs, all on the
+# #[cfg(test)] ManualClock struct/hook (lines 146-178: struct declaration,
+# constructor, advance_millis observer take-and-run, now_millis, wait_until
+# predicate) and the test Harness::advance lock serialization (line 948).
+#
+# Evidence breakdown from ripr/pr/raw-check.json probe findings:
+# - no_static_path field_construction on the struct/field declarations
+#   (ManualClock, millis, after_advance): ripr#1429 class.
+# - static_unknown on struct/fn-signature and sole-closer lines: structural
+#   probes, no executable seam.
+# - infection_unknown on the observer-take and wait predicates: exercised by
+#   the new manual_clock_advance_holds_waiter_state_lock regression test,
+#   which asserts observer execution and lock ownership exactly.
+# - exposed on the constructor/advance/now/wait seams: reached by the 21
+#   green in-module tests (`cargo test -p perl-lsp-rs --lib
+#   file_watcher_debounce`), which the analyzer cannot trace from same-file
+#   cfg(test) modules; `Ok(())`-shaped returns carry no further observable
+#   value beyond the asserted observer/lock behavior.
+# HONEST SCOPE NOTE: path-plus-class scoping masks future probes of these
+# classes in this file for this window. Narrow or delete immediately if a
+# future receipt reports an executable seam here outside these classes or
+# outside #[cfg(test)] code.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-15224-manual-clock-test-seams"
+kind = "predicate_infection_untraceable"
+paths = ["crates/perl-lsp-rs/src/runtime/file_watcher_debounce.rs"]
+classification = ["exposed", "no_static_path", "static_unknown", "infection_unknown"]
+owner = "proof-lane"
+issue = "EffortlessMetrics/ripr#1429"
+reason = "PR #15224: 19 new gaps on the manual-clock notification seam are declaration probes (ManualClock struct/fields), structural fn-signature/closer probes, and analyzer-untraceable coverage from 21 green in-module tests including the new advance-holds-lock regression with exact observer/lock assertions. Do not treat this as watcher-behavior proof."
+created = "2026-09-10"
+review_after = "2026-09-17"
+expires = "2026-09-30"
+removal_criteria = "Remove when ripr#1429 traces in-module cfg(test) coverage to same-file owners; narrow immediately if a future receipt reports an executable seam here outside the listed classes or outside cfg(test) code."
 # Streaming RIPR evidence ingestion (#12569, PR #13512): diff-scoped RIPR reports
 # 51 no_static_path probes on declaration lines and inline #[cfg(test)] fixture
 # lines of the streaming transport, not on any executable behavior the suite
