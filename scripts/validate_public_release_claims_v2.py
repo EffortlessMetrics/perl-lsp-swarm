@@ -1204,7 +1204,7 @@ def main(argv: list[str] | None = None) -> int:
             raise ValidationError(
                 f"schema: closure walk covered only {closed_objects} object nodes (D6)"
             )
-    except (ValidationError, json.JSONDecodeError) as error:
+    except (ValidationError, UnicodeDecodeError, json.JSONDecodeError) as error:
         print(f"FAIL: {error}")
         return 1
 
