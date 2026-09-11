@@ -886,9 +886,7 @@ fn diagnostics_driver_and_adapter_stay_thin_and_native() -> Result<()> {
             );
         }
         ensure!(
-            !source.contains("system(")
-                && !source.contains("job_start")
-                && !source.contains("term_start"),
+            !has_process_call(source, &["system", "job_start", "term_start"]),
             "{label} must not spawn processes; the Rust supervisor owns supervision"
         );
         ensure!(
@@ -897,7 +895,7 @@ fn diagnostics_driver_and_adapter_stay_thin_and_native() -> Result<()> {
         );
     }
     ensure!(
-        !adapter.contains("writefile(") && !adapter.contains("json_encode("),
+        !has_process_call(&adapter, &["writefile", "json_encode"]),
         "adapter must not write artifacts; the Rust supervisor owns receipts"
     );
     // The diagnostics state observation must ride the classified public
@@ -920,5 +918,61 @@ fn diagnostics_driver_and_adapter_stay_thin_and_native() -> Result<()> {
         driver.contains("VimLspHostSetLineAndFlush"),
         "the governed fix edit must ride the adapter's real buffer-edit path"
     );
+    Ok(())
+}
+
+/// True when the Vimscript source calls any of `needles` as a process or
+/// builtin invocation. Needles are identifier-boundary aware and tolerate
+/// whitespace before the open paren, mirroring the runner contract's
+/// detector (#15301, #15396): `CaseInsensitiveFilesystem(` contains `system`
+/// but spawns nothing, while `call system ('ls')` does; `s:system(` and
+/// `plug#job_start(` are user-defined or autoload names, not builtins.
+fn has_process_call(source: &str, needles: &[&str]) -> bool {
+    needles.iter().any(|needle| {
+        source.match_indices(needle).any(|(index, _)| {
+            let preceded_by_boundary = index == 0
+                || !source[..index].chars().next_back().is_some_and(|preceding| {
+                    preceding.is_ascii_alphanumeric() || matches!(preceding, '_' | ':' | '#')
+                });
+            let followed_by_open_paren = source[index + needle.len()..]
+                .chars()
+                .find(|next| !next.is_whitespace())
+                .is_some_and(|next| next == '(');
+            preceded_by_boundary && followed_by_open_paren
+        })
+    })
+}
+
+#[test]
+fn spawn_detector_ignores_identifiers_containing_needles() -> Result<()> {
+    // #15396: a helper named `CaseInsensitiveFilesystem(` contains `system`
+    // but spawns nothing; the same must hold for the write-artifact needles.
+    let driver_helper =
+        "function! s:CaseInsensitiveFilesystem() abort\n  return has('win32')\nendfunction";
+    ensure!(
+        !has_process_call(driver_helper, &["system", "job_start", "term_start"]),
+        "identifier-boundary violation: `CaseInsensitiveFilesystem(` flagged as a spawn"
+    );
+    ensure!(
+        !has_process_call(
+            "function! s:WritefileCache() abort\nendfunction",
+            &["writefile", "json_encode"]
+        ),
+        "identifier-boundary violation: `WritefileCache(` flagged as a write"
+    );
+    Ok(())
+}
+
+#[test]
+fn spawn_detector_still_rejects_real_process_calls() -> Result<()> {
+    for (needles, source) in [
+        (&["system", "job_start", "term_start"][..], "call system('ls')"),
+        (&["system", "job_start", "term_start"][..], "let job = job_start(['vim'])"),
+        (&["system", "job_start", "term_start"][..], "  system('indented')"),
+        (&["system", "job_start", "term_start"][..], "call system ('spaced paren')"),
+        (&["writefile", "json_encode"][..], "call writefile([], 'f')"),
+    ] {
+        ensure!(has_process_call(source, needles), "detector missed a real process call: {source}");
+    }
     Ok(())
 }
