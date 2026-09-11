@@ -1010,6 +1010,47 @@ fn test_object_pad_constructor_param_completion_quotes_literal_keys() {
     }
 }
 
+/// The `=>` auto-quote discriminator: only a leading `_`/ASCII letter
+/// followed by `_`/ASCII-alphanumeric characters keeps the bare form.
+///
+/// Each boundary the analyzer cannot trace needs a named input: a leading
+/// underscore, a full alphanumeric run, and underscores inside the tail.
+/// Anything else (empty, leading digit, hyphens, spaces, sigils, colons,
+/// non-ASCII) must take the quoted form.
+#[test]
+fn test_is_bareword_constructor_key_discriminates_identifier_boundaries() {
+    for (key, expected) in [
+        // Leading-underscore boundary (`first == '_'`).
+        ("_", true),
+        ("_foo", true),
+        ("_9lives", true),
+        // Full alphanumeric-run boundary.
+        ("a", true),
+        ("plain", true),
+        ("abc123", true),
+        ("Z", true),
+        // Underscore inside the tail (`character == '_'`).
+        ("a_b", true),
+        ("foo__bar", true),
+        ("_a_b9", true),
+        // Non-identifier keys take the quoted form.
+        ("", false),
+        ("9abc", false),
+        ("foo-bar", false),
+        ("foo bar", false),
+        ("$dyn", false),
+        ("Foo::bar", false),
+        ("it's", false),
+        ("café", false),
+    ] {
+        assert_eq!(
+            super::is_bareword_constructor_key(key),
+            expected,
+            "`{key}` bareword classification must be `{expected}`"
+        );
+    }
+}
+
 /// Sigils, spaces, apostrophes, and backslashes survive quoting intact.
 ///
 /// These keys cannot reach the provider through the current parser, which
