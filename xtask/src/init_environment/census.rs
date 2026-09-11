@@ -1,0 +1,1107 @@
+//! Bounded source-reachability census for the LSP `initialize` path (#10040).
+//!
+//! The ledger in [`super::rows`] *declares* what each initialize-reachable
+//! operation does. This module *derives* the same facts independently from the
+//! current source, so a row cannot be validated by the prose that produced it.
+//!
+//! # Resolution discipline
+//!
+//! xtask has no compiler frontend and must not grow one, so call edges are
+//! resolved by name. Bare name matching is not good enough: `handle_initialize`
+//! names both the LSP request handler and an unrelated DAP handler, and names
+//! like `new` or `var` collide workspace-wide. Following those edges would
+//! attribute DAP TCP validation to the LSP initialize path.
+//!
+//! An edge is therefore followed only when the call site resolves it
+//! unambiguously, narrowing by call syntax first, then locality:
+//!
+//! 1. a single definition of that name exists in the scanned crates; or
+//! 2. exactly one definition sits in the calling file; or
+//! 3. for a *path* call only, exactly one definition sits in the calling crate.
+//!
+//! A method call stops at the calling file. Its receiver's type is unknown, so a
+//! crate-wide fallback invents edges for receivers this census does not index —
+//! `params.get("capabilities")` on a `serde_json::Value` otherwise resolved to
+//! whichever single `get` method the crate defined.
+//!
+//! Resolution is per call site, so a name with several definitions is not
+//! automatically dropped: see [`Census::colliding_names`]. That makes the census
+//! an under-approximation of edges, and a deliberately precise one.
+//!
+//! Lock acquisition is intentionally *not* derived. Interior-mutability locks
+//! appear on essentially every server method, so a derived lock signal would be
+//! true everywhere and discriminate nothing.
+
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::path::Path;
+
+use syn::visit::Visit;
+
+/// Crates whose sources participate in the census.
+pub const SCANNED_CRATES: &[&str] =
+    &["perl-lsp-rs", "perl-lsp-rs-core", "perl-workspace", "perl-workspace-core", "perl-dap"];
+
+/// Maximum call-graph depth walked from a census root.
+///
+/// This is a termination safety valve for a cyclic graph, not a coverage
+/// decision: every root's reachable set closes by depth 10 today, and
+/// [`Census::truncation_witnesses`] makes the checker fail if the bound ever
+/// actually binds. A cap that silently truncated would let coverage pass
+/// against a reachable set the walk never finished.
+pub const MAX_DEPTH: usize = 16;
+
+/// Maximum number of distinct functions expanded during one traversal.
+pub const MAX_VISITED: usize = 20_000;
+
+/// A blocking or ambient-state exposure derived from source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Exposure {
+    /// Reads or stats the filesystem.
+    Filesystem,
+    /// Resolves an executable through `PATH`.
+    PathLookup,
+    /// Spawns a child process.
+    ProcessSpawn,
+    /// Performs network I/O.
+    Network,
+    /// Reads process environment variables.
+    EnvRead,
+}
+
+impl Exposure {
+    /// Stable lowercase identifier used in ledger rows and error text.
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Filesystem => "filesystem",
+            Self::PathLookup => "path_lookup",
+            Self::ProcessSpawn => "process_spawn",
+            Self::Network => "network",
+            Self::EnvRead => "env_read",
+        }
+    }
+
+    /// Every derived exposure, in stable order.
+    pub const fn all() -> [Self; 5] {
+        [Self::Filesystem, Self::PathLookup, Self::ProcessSpawn, Self::Network, Self::EnvRead]
+    }
+}
+
+/// One function discovered in the scanned sources.
+#[derive(Debug, Clone)]
+pub struct FunctionRecord {
+    /// Function name as written.
+    pub name: String,
+    /// Repository-relative file it was found in.
+    pub file: String,
+    /// Whether the function takes a `self` receiver.
+    ///
+    /// This separates the two `command_exists` definitions that share one file:
+    /// a `&self` method and a free function. `detect_tool` reaches the free one
+    /// through a path call, and without the distinction that edge is ambiguous
+    /// and the perltidy/perlcritic PATH lookup disappears from the census.
+    pub is_method: bool,
+    /// Names reached through method-call syntax.
+    pub method_calls: BTreeSet<String>,
+    /// Names reached through path-call syntax or function-reference arguments.
+    pub path_calls: BTreeSet<String>,
+    /// Exposures detected directly in the body, not through callees.
+    pub exposures: BTreeSet<Exposure>,
+    /// `(callee, first string-literal argument, call kind)` seen at call sites.
+    ///
+    /// Two ledger rows can legitimately cite one shared helper —
+    /// `detect_tool("perltidy")` and `detect_tool("perlcritic")` — and without a
+    /// call-site discriminator neither row goes stale when its own call is
+    /// deleted. The call kind is retained so the checker can resolve the site
+    /// through the same edge resolver the reachability walk uses; a name plus
+    /// literal alone would let an unrelated same-named call keep a stale row
+    /// alive.
+    pub call_arguments: BTreeSet<(String, String, CallKind)>,
+    /// Protocol method names that appear as string literals inside this body.
+    ///
+    /// A `side_effects` claim is checked against the cited operation and its
+    /// closure rather than against the whole workspace, so a notification some
+    /// unrelated module happens to mention cannot validate a row that never
+    /// reaches a sender.
+    pub sent_methods: BTreeSet<String>,
+}
+
+impl FunctionRecord {
+    /// Every callee name, regardless of call syntax.
+    pub fn all_calls(&self) -> impl Iterator<Item = (&String, CallKind)> {
+        self.method_calls
+            .iter()
+            .map(|name| (name, CallKind::Method))
+            .chain(self.path_calls.iter().map(|name| (name, CallKind::Path)))
+    }
+}
+
+/// How a callee was referenced at the call site.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum CallKind {
+    /// `receiver.name(..)`
+    Method,
+    /// `path::name(..)` or `name` passed as a function reference.
+    Path,
+}
+
+/// How an exposure was reached from a census root.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExposureWitness {
+    /// The exposure that was reached.
+    pub exposure: Exposure,
+    /// Call chain from the root to the function carrying the exposure.
+    pub chain: Vec<String>,
+}
+
+impl ExposureWitness {
+    /// Render the witness chain for error messages.
+    pub fn render(&self) -> String {
+        format!("{} via {}", self.exposure.label(), self.chain.join(" -> "))
+    }
+}
+
+/// Failure while building the census.
+#[derive(Debug)]
+pub struct CensusError {
+    /// Human-readable cause.
+    pub message: String,
+}
+
+impl std::fmt::Display for CensusError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for CensusError {}
+
+/// A qualified, name-resolved view of the scanned sources.
+#[derive(Debug, Clone, Default)]
+pub struct Census {
+    funcs: Vec<FunctionRecord>,
+    by_name: BTreeMap<String, Vec<usize>>,
+    ambiguous: BTreeSet<String>,
+    unparsable: Vec<(String, String)>,
+}
+
+impl Census {
+    /// Build a census from `(repo_relative_path, source_text)` pairs.
+    ///
+    /// This is the seam the falsifier tests drive: a synthetic codebase can
+    /// place a process spawn several hops beneath a root and assert the checker
+    /// still attributes it.
+    pub fn from_sources(sources: &[(String, String)]) -> Self {
+        let mut funcs: Vec<FunctionRecord> = Vec::new();
+        let mut unparsable: Vec<(String, String)> = Vec::new();
+        let mut test_only_modules: BTreeSet<String> = BTreeSet::new();
+
+        for (path, text) in sources {
+            let parsed = match syn::parse_file(text) {
+                Ok(parsed) => parsed,
+                Err(error) => {
+                    // A source this census cannot read is a shrunken
+                    // denominator, not an absent one. Recording it lets the
+                    // checker fail closed instead of passing on a partial view.
+                    unparsable.push((path.clone(), error.to_string()));
+                    continue;
+                }
+            };
+            collect_test_only_modules(path, &parsed, &mut test_only_modules);
+            let mut collector = FnCollector { file: path.clone(), found: Vec::new() };
+            collector.visit_file(&parsed);
+            funcs.extend(collector.found);
+        }
+
+        // A file reached only through a `#[cfg(test)] mod name;` declaration is
+        // test-only even though it parses as an ordinary module of its own.
+        // Keeping it would let a test helper's name suppress or redirect a real
+        // production edge.
+        funcs.retain(|record| !is_test_only_file(&record.file, &test_only_modules));
+        funcs.sort_by(|left, right| (&left.file, &left.name).cmp(&(&right.file, &right.name)));
+
+        let mut by_name: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+        for (index, record) in funcs.iter().enumerate() {
+            by_name.entry(record.name.clone()).or_default().push(index);
+        }
+        let ambiguous = by_name
+            .iter()
+            .filter(|(_, indices)| indices.len() > 1)
+            .map(|(name, _)| name.clone())
+            .collect();
+
+        Self { funcs, by_name, ambiguous, unparsable }
+    }
+
+    /// Build a census by reading the allowlisted crates under `workspace_root`.
+    pub fn from_workspace(workspace_root: &Path) -> Result<Self, CensusError> {
+        let mut sources = Vec::new();
+        for krate in SCANNED_CRATES {
+            let src = workspace_root.join("crates").join(krate).join("src");
+            if !src.is_dir() {
+                return Err(CensusError {
+                    message: format!("census crate source directory is missing: {}", src.display()),
+                });
+            }
+            collect_rust_sources(&src, workspace_root, &mut sources)?;
+        }
+        if sources.is_empty() {
+            return Err(CensusError { message: "census found no Rust sources".to_string() });
+        }
+        sources.sort();
+        Ok(Self::from_sources(&sources))
+    }
+
+    /// Names carrying more than one definition in the scanned set.
+    ///
+    /// This is a raw definition-collision count, **not** a count of dropped
+    /// edges. [`Census::resolve_edge`] never consults this set: it narrows each
+    /// call site independently by call kind, then by file, then (for path calls)
+    /// by crate, so a colliding name is often still resolved. `command_exists`
+    /// has two definitions in one file and appears here, yet `detect_tool`
+    /// resolves to the free function and its PATH lookup is attributed.
+    /// Reporting this as "edges not traversed" would overstate the blind spot.
+    pub fn colliding_names(&self) -> &BTreeSet<String> {
+        &self.ambiguous
+    }
+
+    /// Total functions indexed.
+    pub fn len(&self) -> usize {
+        self.funcs.len()
+    }
+
+    /// Whether the census indexed no functions at all.
+    pub fn is_empty(&self) -> bool {
+        self.funcs.is_empty()
+    }
+
+    /// Resolve an exact `(file, name)` citation.
+    ///
+    /// Returns `None` when the pair matches more than one definition. One file
+    /// can hold both a `&self` method and a free function of the same name —
+    /// `command_exists` does — and silently binding a row to whichever came
+    /// first would let it validate against, and derive exposure from, the wrong
+    /// definition.
+    pub fn resolve(&self, file: &str, name: &str) -> Option<usize> {
+        let matches: Vec<usize> = self
+            .by_name
+            .get(name)?
+            .iter()
+            .copied()
+            .filter(|index| self.funcs.get(*index).is_some_and(|record| record.file == file))
+            .collect();
+        match matches.as_slice() {
+            [only] => Some(*only),
+            _ => None,
+        }
+    }
+
+    /// How many definitions a `(file, name)` citation matches.
+    pub fn citation_arity(&self, file: &str, name: &str) -> usize {
+        self.by_name
+            .get(name)
+            .map(|indices| {
+                indices
+                    .iter()
+                    .filter(|index| {
+                        self.funcs.get(**index).is_some_and(|record| record.file == file)
+                    })
+                    .count()
+            })
+            .unwrap_or(0)
+    }
+
+    /// Whether any function in `within` calls the exact function `target` with
+    /// `argument` as its first string literal.
+    ///
+    /// A call site counts only when the census's own edge resolver binds it to
+    /// `target` — the same resolution the reachability walk uses. Matching on
+    /// the callee's final name plus a literal alone would let an unrelated
+    /// same-named call in a sibling module keep an obsolete row alive.
+    pub fn calls_resolving_to(
+        &self,
+        within: &BTreeSet<usize>,
+        target: usize,
+        argument: &str,
+    ) -> bool {
+        within.iter().any(|&index| {
+            let Some(record) = self.funcs.get(index) else {
+                return false;
+            };
+            record.call_arguments.iter().any(|(callee, literal, kind)| {
+                literal == argument && self.resolve_edge(index, callee, *kind) == Some(target)
+            })
+        })
+    }
+
+    /// Sources the census could not parse, as `(path, parse error)`.
+    ///
+    /// Never empty-and-ignored: [`super::ledger_errors`] turns each entry into a
+    /// finding, so a file that becomes unreadable shrinks the denominator
+    /// loudly rather than silently.
+    pub fn unparsable_sources(&self) -> &[(String, String)] {
+        &self.unparsable
+    }
+
+    /// Whether the operation at `index`, or anything in its transitive closure,
+    /// carries `method` as a string literal in its own body.
+    ///
+    /// Side-effect claims are bound to the cited operation: a literal that only
+    /// exists in some unrelated module cannot validate a row whose function
+    /// never reaches a sender. `None` citations are the citation checker's
+    /// finding, so a missing index simply answers `false`.
+    pub fn closure_sends_method(&self, index: usize, method: &str) -> bool {
+        let reaches = self
+            .funcs
+            .get(index)
+            .is_some_and(|record| record.sent_methods.contains(method))
+            || self.reachable_from(index, MAX_DEPTH).into_keys().any(|reached| {
+                self.funcs.get(reached).is_some_and(|record| record.sent_methods.contains(method))
+            });
+        reaches
+    }
+
+    /// Files a name was found in, sorted.
+    pub fn files_for(&self, name: &str) -> Vec<String> {
+        let mut files: Vec<String> = self
+            .by_name
+            .get(name)
+            .map(|indices| {
+                indices
+                    .iter()
+                    .filter_map(|index| self.funcs.get(*index))
+                    .map(|record| record.file.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        files.sort();
+        files.dedup();
+        files
+    }
+
+    /// The record behind an index.
+    pub fn record(&self, index: usize) -> Option<&FunctionRecord> {
+        self.funcs.get(index)
+    }
+
+    /// A stable `file::name` label used in witnesses and findings.
+    pub fn qualified(&self, index: usize) -> String {
+        self.funcs
+            .get(index)
+            .map(|record| format!("{}::{}", record.file, record.name))
+            .unwrap_or_else(|| format!("<unknown #{index}>"))
+    }
+
+    /// Resolve one call edge from `from` to a callee name, or `None` when the
+    /// name is ambiguous, unknown, or the call site cannot resolve it within
+    /// the receiver-locality policy.
+    fn resolve_edge(&self, from: usize, callee: &str, kind: CallKind) -> Option<usize> {
+        // A call whose callee names the calling function itself is
+        // self-recursion: it adds no reachability, and excluding the caller
+        // from the candidate set must not let a same-named definition elsewhere
+        // absorb the edge. `server.auto_initialize_for_compat(..)` keeps its
+        // legitimate edge because a method call can only reach a method, so the
+        // free function containing the call was never a candidate.
+        let caller = self.funcs.get(from);
+        let self_is_callee = caller.is_some_and(|record| {
+            record.name == callee && record.is_method == (kind == CallKind::Method)
+        });
+        if self_is_callee {
+            return None;
+        }
+
+        let mut candidates: Vec<usize> =
+            self.by_name.get(callee)?.iter().copied().filter(|index| *index != from).collect();
+        if candidates.is_empty() {
+            return None;
+        }
+
+        // Call syntax narrows the candidate set before locality does.
+        let wants_method = kind == CallKind::Method;
+        let by_kind: Vec<usize> = candidates
+            .iter()
+            .copied()
+            .filter(|index| {
+                self.funcs.get(*index).is_some_and(|record| record.is_method == wants_method)
+            })
+            .collect();
+        if by_kind.is_empty() {
+            // Method syntax can only reach a method. Keeping wrong-kind
+            // candidates here would let `x.foo()` inherit an unrelated free
+            // function's blocking work.
+            if kind == CallKind::Method {
+                return None;
+            }
+            // A path call may legitimately name a method through UFCS
+            // (`Type::method(receiver)`), so the candidate set is kept.
+        } else {
+            candidates = by_kind;
+        }
+
+        // Call-syntax narrowing decides the uniqueness shortcut. A unique
+        // candidate binds for either call kind: this is resolution rule 1 of
+        // the module's documented discipline, and the direction of a rare
+        // mistake is deliberate — a mis-bound edge can only produce a spurious
+        // finding, never hide reachable work. Dropping unique cross-file
+        // method edges instead would silently shrink the denominator: every
+        // `self.helper()` call into another file would go unresolved.
+        if candidates.len() == 1 {
+            return candidates.first().copied();
+        }
+        let origin = self.funcs.get(from)?;
+
+        let same_file: Vec<usize> = candidates
+            .iter()
+            .copied()
+            .filter(|index| self.funcs.get(*index).is_some_and(|record| record.file == origin.file))
+            .collect();
+        if same_file.len() == 1 {
+            return same_file.first().copied();
+        }
+
+        // A method call resolves no further than the calling file. The
+        // receiver's type is unknown, so a crate-wide fallback invents an edge
+        // whenever the real receiver belongs to a type this census does not
+        // index. `handle_initialize` calls `params.get("capabilities")` on a
+        // `serde_json::Value`; with a crate-wide fallback that resolved to
+        // whichever single `get` method the crate happened to define, and
+        // manufactured a path from initialize into per-request document work
+        // that initialize never performs.
+        if kind == CallKind::Method {
+            return None;
+        }
+
+        let origin_crate = crate_of(&origin.file);
+        let same_crate: Vec<usize> = candidates
+            .iter()
+            .copied()
+            .filter(|index| {
+                self.funcs.get(*index).is_some_and(|record| crate_of(&record.file) == origin_crate)
+            })
+            .collect();
+        if same_crate.len() == 1 {
+            return same_crate.first().copied();
+        }
+        None
+    }
+
+    /// Whether an edge may be followed at all.
+    ///
+    /// A method call's receiver type is unknowable from a name, so a short
+    /// generic name like `value` or `item` can otherwise resolve to whatever
+    /// single definition happens to exist elsewhere in the workspace. Requiring
+    /// method edges to stay inside the calling crate removes that whole class of
+    /// invented cross-crate chains. Path calls keep module qualification at the
+    /// call site, so they may cross crates.
+    fn edge_is_admissible(&self, from: usize, to: usize, kind: CallKind) -> bool {
+        if kind == CallKind::Path {
+            return true;
+        }
+        let (Some(origin), Some(target)) = (self.funcs.get(from), self.funcs.get(to)) else {
+            return false;
+        };
+        crate_of(&origin.file) == crate_of(&target.file)
+    }
+
+    /// Function indices transitively reachable from `root`, with first-reach
+    /// depth.
+    pub fn reachable_from(&self, root: usize, max_depth: usize) -> BTreeMap<usize, usize> {
+        let mut seen: BTreeMap<usize, usize> = BTreeMap::new();
+        let mut queue: VecDeque<(usize, usize)> = VecDeque::new();
+        seen.insert(root, 0);
+        queue.push_back((root, 0));
+
+        while let Some((index, depth)) = queue.pop_front() {
+            if depth >= max_depth || seen.len() >= MAX_VISITED {
+                continue;
+            }
+            let Some(record) = self.funcs.get(index) else {
+                continue;
+            };
+            for (callee, kind) in record.all_calls() {
+                let Some(next) = self.resolve_edge(index, callee, kind) else {
+                    continue;
+                };
+                if !self.edge_is_admissible(index, next, kind) {
+                    continue;
+                }
+                if let std::collections::btree_map::Entry::Vacant(slot) = seen.entry(next) {
+                    slot.insert(depth + 1);
+                    queue.push_back((next, depth + 1));
+                }
+            }
+        }
+        seen
+    }
+
+    /// Frontier nodes where the bounded traversal from `root` was cut short.
+    ///
+    /// [`MAX_DEPTH`] and [`MAX_VISITED`] keep the walk terminating on a cyclic
+    /// graph, but a cap that truncates silently would let coverage pass against
+    /// a reachable set the census never finished building — an instrument
+    /// failure reported as a clean result. Reporting the frontier lets the
+    /// caller fail closed, the same way an unparsable source does.
+    ///
+    /// An edge to an already-reached function is not truncation: nothing is
+    /// lost, only a longer path to a node the walk already owns.
+    pub fn truncation_witnesses(&self, root: usize, max_depth: usize) -> Vec<String> {
+        let reached = self.reachable_from(root, max_depth);
+        if reached.len() >= MAX_VISITED {
+            return vec![format!("visit cap of {MAX_VISITED} functions reached")];
+        }
+
+        let mut witnesses = Vec::new();
+        for (&index, &depth) in &reached {
+            if depth < max_depth {
+                continue;
+            }
+            let Some(record) = self.funcs.get(index) else {
+                continue;
+            };
+            for (callee, kind) in record.all_calls() {
+                let Some(next) = self.resolve_edge(index, callee, kind) else {
+                    continue;
+                };
+                if !self.edge_is_admissible(index, next, kind) || reached.contains_key(&next) {
+                    continue;
+                }
+                witnesses.push(format!(
+                    "depth cap of {max_depth} reached at {} -> {}",
+                    self.qualified(index),
+                    self.qualified(next)
+                ));
+                break;
+            }
+        }
+        witnesses
+    }
+
+    /// Exposures transitively reachable from `root`, each with one shortest
+    /// witness chain.
+    ///
+    /// The witness names the helper that carries the exposure, not merely the
+    /// operation that owns it, which is what makes a finding actionable.
+    pub fn transitive_exposures(
+        &self,
+        root: usize,
+        max_depth: usize,
+    ) -> BTreeMap<Exposure, ExposureWitness> {
+        let mut witnesses: BTreeMap<Exposure, ExposureWitness> = BTreeMap::new();
+        let mut seen: BTreeSet<usize> = BTreeSet::new();
+        let mut queue: VecDeque<Vec<usize>> = VecDeque::new();
+
+        seen.insert(root);
+        queue.push_back(vec![root]);
+
+        while let Some(chain) = queue.pop_front() {
+            let Some(index) = chain.last().copied() else {
+                continue;
+            };
+            let Some(record) = self.funcs.get(index) else {
+                continue;
+            };
+            for exposure in &record.exposures {
+                witnesses.entry(*exposure).or_insert_with(|| ExposureWitness {
+                    exposure: *exposure,
+                    chain: chain.iter().map(|step| self.qualified(*step)).collect(),
+                });
+            }
+            if chain.len() > max_depth || seen.len() >= MAX_VISITED {
+                continue;
+            }
+            for (callee, kind) in record.all_calls() {
+                let Some(next) = self.resolve_edge(index, callee, kind) else {
+                    continue;
+                };
+                if !self.edge_is_admissible(index, next, kind) {
+                    continue;
+                }
+                if seen.contains(&next) {
+                    continue;
+                }
+                seen.insert(next);
+                let mut extended = chain.clone();
+                extended.push(next);
+                queue.push_back(extended);
+            }
+        }
+        witnesses
+    }
+
+    /// Exposures written directly in one function body.
+    pub fn direct_exposures(&self, index: usize) -> BTreeSet<Exposure> {
+        self.funcs.get(index).map(|record| record.exposures.clone()).unwrap_or_default()
+    }
+}
+
+fn crate_of(file: &str) -> &str {
+    file.strip_prefix("crates/").and_then(|rest| rest.split('/').next()).unwrap_or("")
+}
+
+fn collect_rust_sources(
+    dir: &Path,
+    workspace_root: &Path,
+    out: &mut Vec<(String, String)>,
+) -> Result<(), CensusError> {
+    for entry in walkdir::WalkDir::new(dir) {
+        let entry = entry.map_err(|error| CensusError {
+            message: format!("failed to walk {}: {error}", dir.display()),
+        })?;
+        let path = entry.path();
+        if !path.is_file() || path.extension().is_none_or(|ext| ext != "rs") {
+            continue;
+        }
+        let text = std::fs::read_to_string(path).map_err(|error| CensusError {
+            message: format!("failed to read {}: {error}", path.display()),
+        })?;
+        let rel = path.strip_prefix(workspace_root).unwrap_or(path);
+        out.push((rel.to_string_lossy().replace('\\', "/"), text));
+    }
+    Ok(())
+}
+
+struct FnCollector {
+    file: String,
+    found: Vec<FunctionRecord>,
+}
+
+/// Whether an item's `cfg` attributes make it unreachable in every non-test
+/// build.
+///
+/// Test-only items are excluded: the census describes production reachability,
+/// and a test helper that shells out must not be attributed to the initialize
+/// path. The predicate must be exactly "cannot compile without `test`", not
+/// "mentions `test`" — `#[cfg(any(test, feature = "expose_lsp_test_api"))]`
+/// ships whenever that feature is enabled, and `#[cfg(not(test))]` is
+/// production-*only*. Treating either as test-only silently removes production
+/// work from the denominator, which is the direction that matters.
+///
+/// Every `cfg` attribute on one item is conjunctive, so the item is excluded
+/// when any single attribute is unsatisfiable with `test` false.
+fn is_cfg_test(attrs: &[syn::Attribute]) -> bool {
+    attrs.iter().any(|attr| {
+        if !attr.path().is_ident("cfg") {
+            return false;
+        }
+        match attr.parse_args::<syn::Meta>() {
+            // Unsatisfiable without `test` — the item exists only under test.
+            Ok(meta) => !cfg_can_hold_without_test(&meta),
+            // An unparsable `cfg` is not evidence of a test gate. Keeping the
+            // item indexed keeps the denominator wide, which fails towards a
+            // finding rather than towards a silent omission.
+            Err(_) => false,
+        }
+    })
+}
+
+/// Whether the `cfg` predicate can be true in a build where `test` is false.
+///
+/// Predicates other than `test` are free: any single one may be either way, so
+/// the answer over-approximates satisfiability. That direction is deliberate —
+/// an over-approximation keeps an item in the census, and a superfluous
+/// production function can only ever produce a finding, never hide one.
+fn cfg_can_hold_without_test(meta: &syn::Meta) -> bool {
+    cfg_satisfiable(meta, true)
+}
+
+/// `cfg_satisfiable(meta, want)` — can `meta` evaluate to `want` with `test`
+/// false?
+fn cfg_satisfiable(meta: &syn::Meta, want: bool) -> bool {
+    let syn::Meta::List(list) = meta else {
+        // `test` is pinned false; `feature = "…"`, `unix`, and every other leaf
+        // is free and can take either value.
+        return if meta.path().is_ident("test") { !want } else { true };
+    };
+
+    let Ok(nested) = list.parse_args_with(
+        syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated,
+    ) else {
+        // Unparsable operands: assume the item can ship.
+        return true;
+    };
+
+    if list.path.is_ident("not") {
+        return nested.iter().all(|inner| cfg_satisfiable(inner, !want));
+    }
+    if list.path.is_ident("all") {
+        return match want {
+            true => nested.iter().all(|inner| cfg_satisfiable(inner, true)),
+            false => nested.iter().any(|inner| cfg_satisfiable(inner, false)),
+        };
+    }
+    if list.path.is_ident("any") {
+        return match want {
+            true => nested.iter().any(|inner| cfg_satisfiable(inner, true)),
+            false => nested.iter().all(|inner| cfg_satisfiable(inner, false)),
+        };
+    }
+    // Some other list-shaped predicate (`target_has_atomic(…)` and friends).
+    true
+}
+
+impl<'ast> Visit<'ast> for FnCollector {
+    fn visit_item_mod(&mut self, node: &'ast syn::ItemMod) {
+        if is_cfg_test(&node.attrs) {
+            return;
+        }
+        syn::visit::visit_item_mod(self, node);
+    }
+
+    fn visit_item_impl(&mut self, node: &'ast syn::ItemImpl) {
+        // A `#[cfg(test)]` gate on a whole `impl` never reaches the method
+        // items: each `ImplItemFn` carries no attribute of its own, so without
+        // this stop its methods enter the production census and can redirect a
+        // same-name edge or fabricate a side-effect claim.
+        if is_cfg_test(&node.attrs) {
+            return;
+        }
+        syn::visit::visit_item_impl(self, node);
+    }
+
+    fn visit_item_fn(&mut self, node: &'ast syn::ItemFn) {
+        if is_cfg_test(&node.attrs) {
+            return;
+        }
+        self.found.push(summarize(&self.file, node.sig.ident.to_string(), false, &node.block));
+        syn::visit::visit_item_fn(self, node);
+    }
+
+    fn visit_impl_item_fn(&mut self, node: &'ast syn::ImplItemFn) {
+        if is_cfg_test(&node.attrs) {
+            return;
+        }
+        let is_method = node.sig.receiver().is_some();
+        self.found.push(summarize(&self.file, node.sig.ident.to_string(), is_method, &node.block));
+        syn::visit::visit_impl_item_fn(self, node);
+    }
+}
+
+fn summarize(file: &str, name: String, is_method: bool, block: &syn::Block) -> FunctionRecord {
+    let mut body = BodyVisitor {
+        method_calls: BTreeSet::new(),
+        path_calls: BTreeSet::new(),
+        call_arguments: BTreeSet::new(),
+        exposures: BTreeSet::new(),
+        sent_methods: BTreeSet::new(),
+        saw_command_type: false,
+        deferred_process_methods: false,
+    };
+    body.visit_block(block);
+
+    let mut exposures = body.exposures;
+    // `.spawn()`, `.output()` and `.status()` count as process work only when
+    // the same body also names a `Command` type. Without that guard these
+    // method names collide with unrelated APIs and the signal becomes noise.
+    if body.saw_command_type && body.deferred_process_methods {
+        exposures.insert(Exposure::ProcessSpawn);
+    }
+
+    FunctionRecord {
+        name,
+        file: file.to_string(),
+        is_method,
+        method_calls: body.method_calls,
+        path_calls: body.path_calls,
+        exposures,
+        call_arguments: body.call_arguments,
+        sent_methods: body.sent_methods,
+    }
+}
+
+struct BodyVisitor {
+    method_calls: BTreeSet<String>,
+    path_calls: BTreeSet<String>,
+    call_arguments: BTreeSet<(String, String, CallKind)>,
+    exposures: BTreeSet<Exposure>,
+    sent_methods: BTreeSet<String>,
+    saw_command_type: bool,
+    deferred_process_methods: bool,
+}
+
+const FS_FREE_FUNCTIONS: &[&str] = &[
+    "read",
+    "read_to_string",
+    "write",
+    "copy",
+    "rename",
+    "remove_file",
+    "remove_dir_all",
+    "create_dir_all",
+    "canonicalize",
+    "read_dir",
+    "metadata",
+    "symlink_metadata",
+];
+
+const FS_METHODS: &[&str] =
+    &["exists", "is_file", "is_dir", "canonicalize", "read_dir", "symlink_metadata"];
+
+const PROCESS_METHODS: &[&str] = &["spawn", "output", "status"];
+
+const NETWORK_MARKERS: &[&str] = &["TcpStream", "UdpSocket", "TcpListener", "reqwest", "ureq"];
+
+impl<'ast> Visit<'ast> for BodyVisitor {
+    fn visit_lit_str(&mut self, node: &'ast syn::LitStr) {
+        let value = node.value();
+        if looks_like_protocol_method(&value) {
+            self.sent_methods.insert(value);
+        }
+        syn::visit::visit_lit_str(self, node);
+    }
+
+    fn visit_expr_method_call(&mut self, node: &'ast syn::ExprMethodCall) {
+        let method = node.method.to_string();
+        if FS_METHODS.contains(&method.as_str()) {
+            self.exposures.insert(Exposure::Filesystem);
+        }
+        if PROCESS_METHODS.contains(&method.as_str()) {
+            self.deferred_process_methods = true;
+        }
+        if let Some(literal) = first_string_literal(&node.args) {
+            self.call_arguments.insert((method.clone(), literal, CallKind::Method));
+        }
+        self.method_calls.insert(method);
+        self.record_function_reference_args(&node.args);
+        syn::visit::visit_expr_method_call(self, node);
+    }
+
+    fn visit_expr_call(&mut self, node: &'ast syn::ExprCall) {
+        if let syn::Expr::Path(path) = node.func.as_ref() {
+            let segments: Vec<String> =
+                path.path.segments.iter().map(|seg| seg.ident.to_string()).collect();
+            self.classify_path(&segments, node);
+            if let Some(last) = segments.last() {
+                if let Some(literal) = first_string_literal(&node.args) {
+                    self.call_arguments.insert((last.clone(), literal, CallKind::Path));
+                }
+                self.path_calls.insert(last.clone());
+            }
+        }
+        self.record_function_reference_args(&node.args);
+        syn::visit::visit_expr_call(self, node);
+    }
+
+    fn visit_path(&mut self, node: &'ast syn::Path) {
+        for segment in &node.segments {
+            let ident = segment.ident.to_string();
+            if ident == "Command" {
+                self.saw_command_type = true;
+            }
+            if NETWORK_MARKERS.contains(&ident.as_str()) {
+                self.exposures.insert(Exposure::Network);
+            }
+        }
+        syn::visit::visit_path(self, node);
+    }
+}
+
+impl BodyVisitor {
+    /// Record functions passed by reference as call edges.
+    ///
+    /// `set_root_uri` reaches `.perltidyrc` discovery only as
+    /// `and_then(discover_perltidy_profile)`. Treating argument-position paths
+    /// as edges captures that without turning every type or constant mention in
+    /// a body into a spurious edge.
+    fn record_function_reference_args(
+        &mut self,
+        args: &syn::punctuated::Punctuated<syn::Expr, syn::Token![,]>,
+    ) {
+        for arg in args {
+            if let syn::Expr::Path(path) = arg
+                && let Some(last) = path.path.segments.last()
+            {
+                self.path_calls.insert(last.ident.to_string());
+            }
+        }
+    }
+
+    fn classify_path(&mut self, segments: &[String], node: &syn::ExprCall) {
+        let Some(last) = segments.last() else {
+            return;
+        };
+        let joined = segments.join("::");
+
+        // `Command::new` only constructs a builder; no process exists until
+        // `spawn`, `output`, or `status` executes it, so construction is not an
+        // exposure here. The execution methods carry the signal (see
+        // `summarize`), which also keeps builder-only helpers from fabricating
+        // spawn exposure while still crediting a builder built in one statement
+        // and executed in another within the same body. The `Command` type name
+        // itself is recorded by `visit_path` for that guard.
+        if joined == "which" || joined.starts_with("which::") {
+            self.exposures.insert(Exposure::PathLookup);
+        }
+        if segments.iter().any(|seg| seg == "fs") && FS_FREE_FUNCTIONS.contains(&last.as_str()) {
+            self.exposures.insert(Exposure::Filesystem);
+        }
+        if segments.iter().any(|seg| seg == "File") && (last == "open" || last == "create") {
+            self.exposures.insert(Exposure::Filesystem);
+        }
+        // `OpenOptions::new().append(true).open(path)` never names `File`, so
+        // the builder idiom needs its own marker.
+        if segments.iter().any(|seg| seg == "OpenOptions") {
+            self.exposures.insert(Exposure::Filesystem);
+        }
+        if segments.iter().any(|seg| seg == "env") && last == "current_dir" {
+            self.exposures.insert(Exposure::EnvRead);
+        }
+        if segments.iter().any(|seg| seg == "env") && (last == "var" || last == "var_os") {
+            // A `PATH` read is executable discovery, not ordinary configuration.
+            if call_mentions_path_env(node) {
+                self.exposures.insert(Exposure::PathLookup);
+            } else {
+                self.exposures.insert(Exposure::EnvRead);
+            }
+        }
+    }
+}
+
+fn call_mentions_path_env(node: &syn::ExprCall) -> bool {
+    node.args.iter().any(|arg| {
+        matches!(
+            arg,
+            syn::Expr::Lit(syn::ExprLit { lit: syn::Lit::Str(text), .. })
+                if text.value() == "PATH"
+        )
+    })
+}
+
+/// Whether a string literal looks like a protocol method name.
+///
+/// Recognized shapes: the two-segment LSP core form (`window/showMessage`,
+/// `perl-lsp/index-ready`), the `$`-prefixed standard form (`$/progress`,
+/// `$/cancelRequest`), and multi-segment extension methods
+/// (`perl/lsp/indexReady`). Anything else is left unvalidated rather than
+/// guessed at, but the recognized set must cover every shape this repository's
+/// ledger actually claims, or a stale claim evades the check by spelling.
+pub fn looks_like_protocol_method(value: &str) -> bool {
+    let segments: Vec<&str> = value.split('/').collect();
+    if segments.len() < 2 {
+        return false;
+    }
+    let segment_ok = |segment: &str| {
+        !segment.is_empty()
+            && segment.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+            && segment.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
+    };
+    // The standard `$/` family is the only shape whose first segment starts
+    // with a symbol; the leading `$` belongs to the protocol namespace, not to
+    // the segment spelling.
+    let first = segments[0];
+    let head_ok = segment_ok(first)
+        || (first == "$" && segments[1].chars().next().is_some_and(|c| c.is_ascii_alphabetic()));
+    if !head_ok {
+        return false;
+    }
+    if first == "$" {
+        segments.len() >= 2 && segments[1..].iter().all(|segment| segment_ok(segment))
+    } else {
+        segments[1..].iter().all(|segment| segment_ok(segment))
+    }
+}
+
+/// Collect the exact files declared as `#[cfg(test)] mod name;` without a body.
+///
+/// Resolved to full paths rather than bare module names: one `mod tests;`
+/// anywhere would otherwise exclude every `tests.rs` in every scanned crate and
+/// silently drop unrelated production definitions.
+fn collect_test_only_modules(declaring_file: &str, file: &syn::File, out: &mut BTreeSet<String>) {
+    for item in &file.items {
+        if let syn::Item::Mod(item_mod) = item
+            && item_mod.content.is_none()
+            && is_cfg_test(&item_mod.attrs)
+        {
+            // `#[path = "…"]` overrides the conventional lookup entirely, so a
+            // test module pointed elsewhere would otherwise stay in the
+            // production census under its real filename. Rust resolves a path
+            // attribute relative to the directory containing the *declaring
+            // file* — not the child-module directory that conventional
+            // `mod name;` lookup uses — so `src/foo.rs` declaring
+            // `#[path = "foo_tests.rs"]` names `src/foo_tests.rs`.
+            if let Some(path) = module_path_attribute(&item_mod.attrs) {
+                if let Some(dir) = declaring_dir_of(declaring_file) {
+                    out.insert(normalize_module_path(&dir, &path));
+                }
+                continue;
+            }
+            let Some(dir) = module_dir_of(declaring_file) else {
+                continue;
+            };
+            let name = item_mod.ident.to_string();
+            out.insert(format!("{dir}/{name}.rs"));
+            out.insert(format!("{dir}/{name}/mod.rs"));
+        }
+    }
+}
+
+/// The directory containing the declaring source file.
+fn declaring_dir_of(file: &str) -> Option<String> {
+    file.rsplit_once('/').map(|(dir, _)| dir.to_string())
+}
+
+/// The literal of a `#[path = "…"]` attribute, if the item carries one.
+fn module_path_attribute(attrs: &[syn::Attribute]) -> Option<String> {
+    attrs.iter().find_map(|attr| {
+        if !attr.path().is_ident("path") {
+            return None;
+        }
+        match &attr.meta {
+            syn::Meta::NameValue(syn::MetaNameValue {
+                value: syn::Expr::Lit(syn::ExprLit { lit: syn::Lit::Str(text), .. }),
+                ..
+            }) => Some(text.value()),
+            _ => None,
+        }
+    })
+}
+
+/// Resolve a `#[path]` literal against the declaring module's directory.
+///
+/// The literal is relative to that directory and may climb out of it, so `.`
+/// and `..` segments are folded rather than left in the key — census file names
+/// are workspace-relative and compared literally.
+fn normalize_module_path(dir: &str, declared: &str) -> String {
+    let mut segments: Vec<&str> = dir.split('/').filter(|part| !part.is_empty()).collect();
+    for part in declared.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => {
+                segments.pop();
+            }
+            other => segments.push(other),
+        }
+    }
+    segments.join("/")
+}
+
+/// The directory a file's child modules resolve against.
+///
+/// `foo/mod.rs`, `lib.rs` and `main.rs` own their containing directory; any
+/// other `foo.rs` owns the sibling `foo/` directory.
+fn module_dir_of(file: &str) -> Option<String> {
+    let (dir, name) = file.rsplit_once('/')?;
+    let stem = name.strip_suffix(".rs")?;
+    if matches!(stem, "mod" | "lib" | "main") {
+        Some(dir.to_string())
+    } else {
+        Some(format!("{dir}/{stem}"))
+    }
+}
+
+/// Whether a file is reached only through a `#[cfg(test)] mod name;` declaration.
+fn is_test_only_file(file: &str, test_only_modules: &BTreeSet<String>) -> bool {
+    test_only_modules.contains(file)
+}
+
+/// The first argument at a call site, when it is a string literal.
+///
+/// Only `args.first()` counts. Scanning every argument would let an unrelated
+/// later string keep a row's call-site discriminator alive after the
+/// identifying first argument was deleted or changed.
+fn first_string_literal(
+    args: &syn::punctuated::Punctuated<syn::Expr, syn::Token![,]>,
+) -> Option<String> {
+    match args.first() {
+        Some(syn::Expr::Lit(syn::ExprLit { lit: syn::Lit::Str(text), .. })) => Some(text.value()),
+        _ => None,
+    }
+}

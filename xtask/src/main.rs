@@ -46,11 +46,11 @@ use tasks::{
     doc_claims, e2e_validate, edge_cases, emacs_train_context, emacs_train_specs, features,
     finalize_check, fix_forward, fmt, forbid_fatal_constructs, forensics, gate_receipts, gates,
     generated_files, github, github_preflight, github_review, goals, hardening, hook_checks,
-    ignored_tests, incremental_proof, inject_sha_assets, inline_completion_quality,
-    inline_completion_smoke, install_surface_check, integration_proof, intent_diff_gate,
-    issue_plan, layer_check, lsp_318_claims, lsp_318_matrix, lsp_ux_smoke, memory_trends,
-    merge_ready, methodology_gate, metrics, module_train, module_train_live, native_critic,
-    native_format, native_neovim_train, native_product_surface, native_tooling,
+    ignored_tests, incremental_proof, init_environment, inject_sha_assets,
+    inline_completion_quality, inline_completion_smoke, install_surface_check, integration_proof,
+    intent_diff_gate, issue_plan, layer_check, lsp_318_claims, lsp_318_matrix, lsp_ux_smoke,
+    memory_trends, merge_ready, methodology_gate, metrics, module_train, module_train_live,
+    native_critic, native_format, native_neovim_train, native_product_surface, native_tooling,
     oneliner_capability_matrix, oracle_fixture_manifest, oracle_receipt_schema, oracle_runner,
     parse_rust, parser_corpus_sweep, parser_matrix, parser_ratchet, perl_core_harness,
     perl_corpus_train, perl_kwalitee, populate_book, pre_push_plan, prep_crates_io_launch,
@@ -2260,6 +2260,12 @@ enum Commands {
     /// Enforce crate layer-dependency constraints.
     LayerCheck,
 
+    /// Initialize-operation phase and owner ledger (#10040).
+    InitEnvironment {
+        #[command(subcommand)]
+        command: InitEnvironmentCommand,
+    },
+
     /// Scan for built-but-not-wired crates.
     UnwiredScan {
         #[command(flatten)]
@@ -2853,6 +2859,18 @@ enum CheckFilePolicyCliMode {
     Advisory,
     BlockingAllowlist,
     BlockingStrict,
+}
+
+#[derive(Subcommand)]
+enum InitEnvironmentCommand {
+    /// Validate the ledger against a census derived from current source.
+    Check,
+    /// Render the ledger as deterministic JSON.
+    Render,
+    /// List rows grouped by phase disposition and migration wave.
+    List,
+    /// Dump derived reachability and blocking exposure for the census roots.
+    Census,
 }
 
 #[derive(Subcommand)]
@@ -6633,6 +6651,12 @@ fn run_cli(cli: Cli) -> Result<()> {
         },
         Commands::SrpMicrocrates { args } => srp_microcrates::run(args.output),
         Commands::LayerCheck => layer_check::run(),
+        Commands::InitEnvironment { command } => match command {
+            InitEnvironmentCommand::Check => init_environment::run_check(),
+            InitEnvironmentCommand::Render => init_environment::run_render(),
+            InitEnvironmentCommand::List => init_environment::run_list(),
+            InitEnvironmentCommand::Census => init_environment::run_census(),
+        },
         Commands::UnwiredScan { args } => unwired_scan::run(UnwiredScanConfig {
             lsp_crate: args.lsp_crate,
             json: args.json,

@@ -28,6 +28,7 @@ pub mod emacs_subject_manifest;
 pub mod file_identity;
 pub mod git_ancestry;
 pub mod import_cleanup_train_manifest;
+pub mod init_environment;
 pub mod lsp_runtime_train_manifest;
 pub mod main_history_event;
 pub mod native_helix_actions;
