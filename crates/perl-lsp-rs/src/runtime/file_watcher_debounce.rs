@@ -548,8 +548,11 @@ impl FileWatcherDebouncer {
         }
 
         let shared = &self.shared;
-        let now = shared.clock.now_millis();
+        // Read the clock under the state lock: a manual-clock advance between
+        // the read and the lock would schedule against a stale `now`. This
+        // keeps the established state-then-clock lock order.
         let mut guard = shared.state.lock();
+        let now = shared.clock.now_millis();
 
         if guard.shutting_down {
             shared.stats.rejected_after_shutdown_total.fetch_add(1, Ordering::Relaxed);
