@@ -184,6 +184,65 @@ level = "deny"
 status = "debt"
 class = "reviewability"
 reason = "fixture catalog row"
+
+# Required-disposition pins (validate_cadence_sources enforces the same
+# pin as validate_all): every required lint appears exactly once.
+# clippy::manual_checked_ops is already present once in deferred_due.
+[[lint]]
+name = "rust::const_item_interior_mutations"
+level = "deny"
+status = "active"
+class = "restriction"
+reason = "fixture required pin"
+
+[[lint]]
+name = "rust::function_casts_as_integer"
+level = "deny"
+status = "active"
+class = "restriction"
+reason = "fixture required pin"
+
+[[lint]]
+name = "clippy::same_length_and_capacity"
+level = "deny"
+status = "active"
+class = "restriction"
+reason = "fixture required pin"
+
+[[lint]]
+name = "clippy::manual_ilog2"
+level = "deny"
+status = "active"
+class = "numeric"
+reason = "fixture required pin"
+
+[[lint]]
+name = "clippy::manual_take"
+level = "deny"
+status = "active"
+class = "restriction"
+reason = "fixture required pin"
+
+[[lint]]
+name = "clippy::manual_pop_if"
+level = "deny"
+status = "active"
+class = "restriction"
+reason = "fixture required pin"
+
+[[lint]]
+name = "rust::let_underscore_lock"
+level = "deny"
+status = "active"
+class = "restriction"
+reason = "fixture required pin"
+
+[[lint]]
+name = "clippy::let_underscore_lock"
+level = "deny"
+status = "active"
+class = "restriction"
+reason = "fixture required pin"
 "##,
         )?;
         fs::write(
