@@ -82,6 +82,8 @@ on:
       - 'distribution/release_receipts/**'
       - 'schemas/public_release_claims.v2.schema.json'
       - 'scripts/validate_public_release_claims_v2.py'
+      - 'xtask/src/public_release_claims.rs'
+      - 'xtask/src/tasks/public_release_claims.rs'
       - '.github/workflows/policy-validators.yml'
   workflow_dispatch: {}
 

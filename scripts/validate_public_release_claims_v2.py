@@ -175,11 +175,22 @@ def backticks_balanced(text: str) -> bool:
 def trim_code_span_pair(text: str) -> str:
     """Drop boundary backticks only as one matched whole-cell code span."""
     trimmed = text.strip()
-    if len(trimmed) >= 2 and trimmed.startswith("`") and trimmed.endswith("`"):
-        inner = trimmed[1:]
-        second = inner.find("`")
-        if second + 1 == len(inner):
-            return inner[:second]
+    opening = len(trimmed) - len(trimmed.lstrip("`"))
+    closing = len(trimmed) - len(trimmed.rstrip("`"))
+    if opening > 0 and opening == closing:
+        content = trimmed[opening:-closing]
+        index = 0
+        while index < len(content):
+            if content[index] == "`":
+                end = index
+                while end < len(content) and content[end] == "`":
+                    end += 1
+                if end - index == opening:
+                    return trimmed
+                index = end
+            else:
+                index += 1
+        return trimmed[1:-1]
     return trimmed
 
 
@@ -345,6 +356,20 @@ def assert_derivation_probes(inventory: dict[str, Any]) -> None:
     if derive_relations([claim("ROOT", "README.md:37")], [scoped])["probe"]:
         raise ValidationError(f"{DOC_PATH}: D4 root README path probe unexpectedly matched")
 
+    component = {
+        "finding_id": "component",
+        "cited_locations": extract_cited_locations("actions/README.md:37"),
+    }
+    if derive_relations([claim("BOUNDARY", "notactions/README.md:37")], [component])["component"]:
+        raise ValidationError(f"{DOC_PATH}: D4 component-boundary path probe unexpectedly matched")
+
+    path_only = {
+        "finding_id": "path-only",
+        "cited_locations": extract_cited_locations("actions/README.md:37"),
+    }
+    if derive_relations([claim("PATH_ONLY", "actions/README.md")], [path_only])["path-only"] != ["PATH_ONLY"]:
+        raise ValidationError(f"{DOC_PATH}: D4 path-only claim probe did not match")
+
     action = {
         "finding_id": "action",
         "cited_locations": extract_cited_locations("action.yml:3"),
@@ -385,6 +410,27 @@ def assert_derivation_probes(inventory: dict[str, Any]) -> None:
         arm64_manifest(["perllsp-0.17.0-aarch64-pc-windows-msvc.zip"])
     ) != "present":
         raise ValidationError(f"{DOC_PATH}: ARM64 exact archive probe did not match")
+    if derive_windows_arm64_receipt(
+        arm64_manifest(["nested/perllsp-0.17.0-aarch64-pc-windows-msvc.zip"])
+    ) != "absent":
+        raise ValidationError(f"{DOC_PATH}: ARM64 nested-path probe unexpectedly matched")
+
+    if trim_code_span_pair("``a``") != "`a`":
+        raise ValidationError(f"{DOC_PATH}: D3 repeated-boundary probe trimmed more than one pair")
+
+    expected_anti = [
+        "C203", "C214", "C701", "C702", "C1101", "C1302", "C1304", "C1305",
+        "C1306", "C1307", "C1308",
+    ]
+    derived_anti = derive_anti_claim_ids(inventory["claims"])
+    if derived_anti != expected_anti:
+        raise ValidationError(
+            f"{DOC_PATH}: D2 anti-claim denominator changed: expected {expected_anti}, "
+            f"found {derived_anti}"
+        )
+    local_only = [{"claim_id": "LOCAL", "raw_row": "`cargo install --path crates/perllsp`"}]
+    if derive_anti_claim_ids(local_only):
+        raise ValidationError(f"{DOC_PATH}: D2 local --path install became an anti-claim")
 
 
 # ---------------------------------------------------------------------------
@@ -728,6 +774,9 @@ def validate_schema_closure(schema: dict[str, Any]) -> int:
     stack = [schema]
     while stack:
         node = stack.pop()
+        if isinstance(node, list):
+            stack.extend(node)
+            continue
         if not isinstance(node, dict):
             continue
         is_object_schema = node.get("type") == "object" or "properties" in node

@@ -219,13 +219,26 @@ fn resolve_link_label(text: &str) -> String {
 /// delimiters are never touched, so markdown structure cannot re-pair.
 fn trim_code_span_pair(text: &str) -> String {
     let trimmed = text.trim();
-    if trimmed.len() >= 2 && trimmed.starts_with('`') && trimmed.ends_with('`') {
-        let inner = &trimmed[1..];
-        if let Some(second) = inner.find('`')
-            && second + 1 == inner.len()
-        {
-            return inner[..second].to_string();
+    let bytes = trimmed.as_bytes();
+    let opening = bytes.iter().take_while(|byte| **byte == b'`').count();
+    let closing = bytes.iter().rev().take_while(|byte| **byte == b'`').count();
+    if opening > 0 && opening == closing {
+        let content_end = bytes.len() - closing;
+        let mut index = opening;
+        while index < content_end {
+            if bytes[index] == b'`' {
+                let start = index;
+                while index < content_end && bytes[index] == b'`' {
+                    index += 1;
+                }
+                if index - start == opening {
+                    return trimmed.to_string();
+                }
+            } else {
+                index += 1;
+            }
         }
+        return trimmed[1..trimmed.len() - 1].to_string();
     }
     trimmed.to_string()
 }
@@ -1683,6 +1696,10 @@ pub fn validate_schema_closure(schema: &Value) -> Result<usize, CatalogError> {
     let mut closed_objects = 0usize;
     let mut stack = vec![schema];
     while let Some(node) = stack.pop() {
+        if let Some(array) = node.as_array() {
+            stack.extend(array);
+            continue;
+        }
         let Some(object) = node.as_object() else {
             continue;
         };
@@ -1698,20 +1715,6 @@ pub fn validate_schema_closure(schema: &Value) -> Result<usize, CatalogError> {
         }
         for child in object.values() {
             stack.push(child);
-        }
-        // Array items inside JSON arrays (e.g. enum lists) carry no schemas.
-        if let Some(items) = object.get("items") {
-            stack.push(items);
-        }
-        if let Some(defs) = object.get("$defs").and_then(Value::as_object) {
-            for def in defs.values() {
-                stack.push(def);
-            }
-        }
-        if let Some(properties) = object.get("properties").and_then(Value::as_object) {
-            for property in properties.values() {
-                stack.push(property);
-            }
         }
     }
     Ok(closed_objects)
@@ -2081,7 +2084,27 @@ mod tests {
             );
         }
         let derived = derive_anti_claim_ids(&committed_doc()).expect("derivation");
-        assert_eq!(anti_claimed, derived);
+        let expected = vec![
+            "C203", "C214", "C701", "C702", "C1101", "C1302", "C1304", "C1305", "C1306", "C1307",
+            "C1308",
+        ];
+        assert_eq!(anti_claimed, expected);
+        assert_eq!(derived, expected);
+
+        let local_only = ParsedClaim {
+            claim_id: "LOCAL".to_string(),
+            surface_id: "probe".to_string(),
+            location: "README.md".to_string(),
+            parsed_location: parse_location("README.md").expect("path-only location"),
+            summary: String::new(),
+            drift_status: "current".to_string(),
+            notes: String::new(),
+            raw_row: "| `cargo install --path crates/perllsp` |".to_string(),
+        };
+        assert!(
+            derive_anti_claim_ids_from_claims(&[local_only]).is_empty(),
+            "D2: local --path install must not be an anti-claim"
+        );
 
         // The anti-claim is not an omission caveat anywhere.
         for claim in catalog.get("claims").and_then(Value::as_array).expect("claims") {
@@ -2277,6 +2300,48 @@ mod tests {
         assert!(
             derive_relations(&[root_readme], &[scoped]).get("probe").is_some_and(Vec::is_empty)
         );
+        let component_finding = ParsedFinding {
+            finding_id: "component".to_string(),
+            title: "probe".to_string(),
+            cited_files: vec!["actions/README.md".to_string()],
+            cited_locations: extract_cited_locations("actions/README.md:37"),
+        };
+        let component_claim = ParsedClaim {
+            claim_id: "BOUNDARY".to_string(),
+            surface_id: "probe".to_string(),
+            location: "notactions/README.md:37".to_string(),
+            parsed_location: parse_location("notactions/README.md:37").expect("boundary location"),
+            summary: String::new(),
+            drift_status: "current".to_string(),
+            notes: String::new(),
+            raw_row: String::new(),
+        };
+        assert!(
+            derive_relations(&[component_claim], &[component_finding])
+                .get("component")
+                .is_some_and(Vec::is_empty),
+            "D4: path suffixes must respect component boundaries"
+        );
+        let path_only_finding = ParsedFinding {
+            finding_id: "path-only".to_string(),
+            title: "probe".to_string(),
+            cited_files: vec!["actions/README.md".to_string()],
+            cited_locations: extract_cited_locations("actions/README.md:37"),
+        };
+        let path_only_claim = ParsedClaim {
+            claim_id: "PATH_ONLY".to_string(),
+            surface_id: "probe".to_string(),
+            location: "actions/README.md".to_string(),
+            parsed_location: parse_location("actions/README.md").expect("path-only location"),
+            summary: String::new(),
+            drift_status: "current".to_string(),
+            notes: String::new(),
+            raw_row: String::new(),
+        };
+        assert_eq!(
+            derive_relations(&[path_only_claim], &[path_only_finding])["path-only"],
+            ["PATH_ONLY"]
+        );
         let action_finding = ParsedFinding {
             finding_id: "action".to_string(),
             title: "probe".to_string(),
@@ -2402,6 +2467,7 @@ mod tests {
         assert_eq!(trim_code_span_pair("close`"), "close`");
         assert_eq!(trim_code_span_pair("plain"), "plain");
         assert_eq!(trim_code_span_pair("``"), "");
+        assert_eq!(trim_code_span_pair("``a``"), "`a`");
     }
 
     /// Seam: resolve_link_label keeps display labels and plain text verbatim.
@@ -2873,7 +2939,21 @@ no anchors here",
         let schema_bytes = read_repo_bytes(&repo_root(), SCHEMA_PATH).expect("schema readable");
         let schema: Value = serde_json::from_slice(&schema_bytes).expect("schema parses");
         let closed = validate_schema_closure(&schema).expect("closure walk");
-        assert!(closed >= 13, "walked {closed} objects");
+        assert_eq!(closed, 13, "walked {closed} objects");
+    }
+
+    #[test]
+    fn schema_closure_rejects_open_node_inside_any_of() {
+        let schema = json!({
+            "type": "object",
+            "additionalProperties": false,
+            "anyOf": [{
+                "type": "object",
+                "properties": {}
+            }]
+        });
+        let error = validate_schema_closure(&schema).expect_err("open anyOf node must fail");
+        assert!(format!("{error}").contains("closure violation"));
     }
 
     #[test]
@@ -2920,5 +3000,50 @@ no anchors here",
         let message = format!("{error}");
         assert!(message.contains("schema validation failed"));
         assert!(message.contains("/claims/0/summary"), "{message}");
+    }
+
+    #[test]
+    fn schema_validation_rejects_pattern_violation() {
+        let mut catalog = committed_catalog();
+        catalog["source_inventory"]["audited_date"] = json!("2026-8-1");
+        let bytes = canonical_bytes(&catalog).expect("mutated catalog serializes");
+        let error = validate_repository_catalog_bytes(&repo_root(), &bytes)
+            .expect_err("schema pattern violation must fail");
+        let message = format!("{error}");
+        assert!(message.contains("schema validation failed"));
+        assert!(message.contains("/source_inventory/audited_date"), "{message}");
+    }
+
+    #[test]
+    fn schema_validation_rejects_min_items_violation() {
+        let mut catalog = committed_catalog();
+        catalog["release_receipts"][0]["assets"] = json!([]);
+        let bytes = canonical_bytes(&catalog).expect("mutated catalog serializes");
+        let error = validate_repository_catalog_bytes(&repo_root(), &bytes)
+            .expect_err("schema minItems violation must fail");
+        let message = format!("{error}");
+        assert!(message.contains("schema validation failed"));
+        assert!(message.contains("/release_receipts/0/assets"), "{message}");
+    }
+
+    #[test]
+    fn schema_validation_rejects_nested_enum_violation() {
+        let mut catalog = committed_catalog();
+        let index = catalog["claims"]
+            .as_array()
+            .expect("claims array")
+            .iter()
+            .position(|claim| claim.pointer("/dimensions/windows_arm64").is_some())
+            .expect("windows_arm64 claim");
+        catalog["claims"][index]["dimensions"]["windows_arm64"]["user_prose"] = json!("invalid");
+        let bytes = canonical_bytes(&catalog).expect("mutated catalog serializes");
+        let error = validate_repository_catalog_bytes(&repo_root(), &bytes)
+            .expect_err("schema enum violation must fail");
+        let message = format!("{error}");
+        assert!(message.contains("schema validation failed"));
+        assert!(
+            message.contains(&format!("/claims/{index}/dimensions/windows_arm64/user_prose")),
+            "{message}"
+        );
     }
 }
