@@ -57,7 +57,7 @@ use tasks::{
     product_health_rail_contract, product_health_status, protocol_type_substrate_matrix,
     provider_confidence_matrix, provider_promotion_ledger, publication_facts, publish,
     publish_closure, publish_manifest_check, publish_receipts, quality_baseline, quality_gate,
-    queue_health, queue_snapshot, receipts, release, release_artifact_check,
+    queue_health, queue_snapshot, quickorm_api_matrix, receipts, release, release_artifact_check,
     release_candidate_artifacts, release_evidence, release_notes, release_trust_invariants,
     release_turnkey, repo_hygiene, repository_topology, ripr_evidence, rust_small_proof, seam_diff,
     semantic_inline_next_edit, semantic_inline_receipts, semantic_scorecard,
@@ -331,6 +331,17 @@ enum Commands {
     /// Generate or check the selected LSP 3.18 conformance matrix.
     #[command(name = "generate-lsp-318-matrix")]
     GenerateLsp318Matrix {
+        /// Check that the checked-in matrix matches generated content.
+        #[arg(long)]
+        check: bool,
+    },
+
+    /// Generate or check the DBIx::QuickORM API return matrix.
+    ///
+    /// The matrix is a projection of the reviewed registry in
+    /// `perl-semantic-facts`; edit the registry, not the generated document.
+    #[command(name = "generate-quickorm-api-matrix")]
+    GenerateQuickormApiMatrix {
         /// Check that the checked-in matrix matches generated content.
         #[arg(long)]
         check: bool,
@@ -5424,6 +5435,7 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::CheckSemanticTokenClasses => semantic_token_classes::run(),
         Commands::CheckLsp318Claims => lsp_318_claims::run(),
         Commands::GenerateLsp318Matrix { check } => lsp_318_matrix::run(check),
+        Commands::GenerateQuickormApiMatrix { check } => quickorm_api_matrix::run(check),
         Commands::OnelinerCapabilityMatrix { check } => oneliner_capability_matrix::run(check),
         Commands::RepoTopology { check } => repository_topology::run(check),
         Commands::CompatInventory { check } => compat_inventory::run(check),

@@ -159,6 +159,7 @@ pub mod quality_baseline;
 pub mod quality_gate;
 pub mod queue_health;
 pub mod queue_snapshot;
+pub mod quickorm_api_matrix;
 pub mod receipts;
 pub mod release;
 pub mod release_artifact_check;
