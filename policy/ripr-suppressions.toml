@@ -2879,6 +2879,35 @@ review_after = "2026-09-23"
 expires = "2026-10-24"
 
 # -----------------------------------------------------------------------------
+# PR #15094 (#11626) adds the semantic current-tree probe registry
+# (module_train_probes.rs, 639 lines) and the TreeProbe struct it executes
+# through. ripr 0.10.0 reports 87 no_static_path probes, 75 of them
+# field_construction declarations in the registry and 3 the TreeProbe field
+# declarations in module_train_live.rs. The registry is exercised by the 45
+# module_train_live bin tests — including no_selector_targets_the_registry_
+# that_declares_it, the falsifier-2 consumer/dispatch probes, and the
+# cross-tree validation falsifiers — but declaration-line probes on
+# non-primitive fields do not resolve through constructor-call paths
+# (declaration_line_no_static_path ripr#1429 class, the reachability-
+# contract precedent).
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-module-train-probe-registry-declarations"
+kind = "declaration_line_no_static_path"
+paths = [
+  "xtask/src/tasks/module_train_probes.rs",
+  "xtask/src/tasks/module_train_live.rs",
+  "xtask/src/tasks/module_train.rs",
+]
+classification = ["no_static_path"]
+owner = "proof-lane"
+issue = "EffortlessMetrics/ripr#1429"
+reason = "PR #15094 (#11626): 87 no_static_path probes on the semantic current-tree probe registry declarations and the TreeProbe fields they execute through. The two module_train.rs seams are this PR's project_states dispatch and the C01 self-validation predicate, covered by the same suite (the older sibling entry for this file covers only reachable_unrevealed and the diff-scoped gate matcher enforces classification lists; repo-wide triage matching does not — see TRIAGE COARSENESS below). The registry's every selector and component is exercised by the 45 module_train_live bin tests (registry self-targeting guard, falsifier-2 consumer/dispatch assertions, cross-tree stored-state and marker-uniformity falsifiers); ripr cannot resolve declaration-line probes for non-primitive fields through those constructor-call paths (declaration_line_no_static_path ripr#1429 class). HONEST SCOPE NOTE: module_train_live.rs is path-scoped whole-file for this window; its executable seams are covered by the named test suite and review, and reachable_unrevealed is 0 in this diff. TRIAGE COARSENESS (FC1 adjudication): repo-wide triage matching (suppression_matches_seam) is path-only and ignores this entry's no_static_path list, so while the entry is active ALL seam classes on the three listed paths (module_train_probes.rs, module_train_live.rs, module_train.rs) are masked from top_active_files / recommended_first_clusters; the classification scoping holds only for the diff-scoped gate path. The matcher-side fix is tracked in #15306. Remove when ripr#1429 resolves declaration probes via constructor-call paths or targeted mutation is scheduled per #1289."
+created = "2026-09-09"
+review_after = "2026-09-16"
+expires = "2026-09-23"
+removal_criteria = "Remove when ripr#1429 resolves declaration-line probes via constructor-call paths, or narrow immediately if a future receipt reports an executable no_static_path seam in either file beyond the registry/TreeProbe declarations."
+
 # Tautology checker type/env declarations (#14058 TP1, PR #14902): RIPR reports
 # no_static_path on non-executable enum/struct/field owners and on #[cfg(test)]
 # path-security fixture bytes inside the production module file.
