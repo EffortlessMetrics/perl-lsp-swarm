@@ -973,7 +973,7 @@ fn spawn_detector_still_rejects_real_process_calls() -> Result<()> {
         (&["system", "job_start", "term_start"][..], "let job = job_start(['vim'])"),
         (&["system", "job_start", "term_start"][..], "  system('indented')"),
         (&["system", "job_start", "term_start"][..], "call system ('spaced paren')"),
-        (&["system", "job_start", "term_start"][..], "call system \\\n  ('ls')"),
+        (&["system", "job_start", "term_start"][..], "call system\n  \\ ('ls')"),
         (&["writefile", "json_encode"][..], "call writefile([], 'f')"),
     ] {
         ensure!(has_process_call(source, needles), "detector missed a real process call: {source}");
