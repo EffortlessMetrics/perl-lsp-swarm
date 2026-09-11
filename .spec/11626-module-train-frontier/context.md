@@ -14,6 +14,9 @@ This PR lands **slice one** of the C02 acceptance:
 
 - `cargo xtask module-train status --tree HEAD` — every node projected into the typed current-tree state vocabulary, with implementation presence kept independent from frontier state, and typed reason codes (blocking and visibility-only) per node.
 - `cargo xtask module-train next --tree HEAD` — the safe offline parallel frontier: all and only hard-ready, role-valid, conflict-recorded leaves, with writer classes shown as ceilings (never quotas) and evidence/external limitations kept visible.
+- Both commands bind the commit and then read its immutable tree object. Dirty
+  worktree state remains diagnostic metadata; these projections do not claim to
+  inspect uncommitted source bytes.
 - A fail-closed loader: strict schema (unknown keys rejected), C01's structural laws (successor/reverse-edge identity, title fingerprints, uniqueness, role/buildable law, hard/evidence acyclicity, import-relation class agreement, wording laws), and a pinned canonical digest.
 
 On the current tree (`112bc2cb2` at authoring) the derived frontier is `C02, E00A, M01, M07A`: C02's only hard dep (C01) is landed; E00A's only hard dep is the EVID controller (topology-satisfied); M01 and M07A carry no hard node deps (M01's E00A/E00B edges are evidence-class: visible limitations, not blockers). C03 is `blocked_hard` on C02; M00S carries the structurally-pending case/work-packet binding as a typed reason; L09G is hard-blocked on all six admitted cutovers.

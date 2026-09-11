@@ -4,6 +4,9 @@
 //! shallow, partial, or missing one of the requested commit objects. This module
 //! keeps those evidence states distinct so callers cannot turn an incomplete
 //! local graph into branch replay, closure, or history-recovery authority.
+//! Absence proofs are guarded, but a relation whose witnesses are entirely
+//! local — a merge base identical to one of the requested commits — is proved
+//! even in a shallow or partial checkout.
 
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -60,6 +63,57 @@ impl AncestryDisposition {
                 3
             }
             Self::InvalidInput | Self::InstrumentFailure => 4,
+        }
+    }
+}
+
+/// A checkout-completeness guard only vetoes *absence* proofs: a relation
+/// whose witnesses are entirely local (a merge base identical to one of the
+/// requested commits) is proved even in a shallow or partial checkout.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Guard {
+    Shallow,
+    Partial,
+}
+
+impl Guard {
+    fn disposition(self) -> AncestryDisposition {
+        match self {
+            Self::Shallow => AncestryDisposition::NotProvenShallow,
+            Self::Partial => AncestryDisposition::NotProvenPartialClone,
+        }
+    }
+
+    fn guidance(self) -> &'static str {
+        match self {
+            Self::Shallow => {
+                "deepen the checkout before making ancestry-based replay or closure decisions, for example `git fetch --unshallow` or `git fetch --deepen=<n>`"
+            }
+            Self::Partial => {
+                "materialize the required commit graph in a complete clone before making ancestry-based replay or closure decisions"
+            }
+        }
+    }
+
+    fn limitation(self) -> &'static str {
+        match self {
+            Self::Shallow => {
+                "the local shallow boundary can hide a real merge base and make an interior commit appear to be a root"
+            }
+            Self::Partial => {
+                "promisor/partial-clone configuration allows required ancestry objects to be absent locally"
+            }
+        }
+    }
+
+    fn reason(self) -> &'static str {
+        match self {
+            Self::Shallow => {
+                "the checkout is shallow; local absence is not proof of unrelated history"
+            }
+            Self::Partial => {
+                "the checkout is partial; local absence is not proof of unrelated history"
+            }
         }
     }
 }
@@ -139,6 +193,16 @@ impl AncestryReceipt {
         self.disposition = disposition;
         self.reason = reason.into();
         self
+    }
+
+    /// Finish with a checkout-completeness guard's not-proven disposition,
+    /// attaching the guard's remediation guidance and evidence limitation plus
+    /// the case-specific detail.
+    fn guarded_finish(mut self, guard: Guard, detail: impl Into<String>) -> Self {
+        self.guidance.push(guard.guidance().to_string());
+        self.limitations.push(guard.limitation().to_string());
+        self.limitations.push(detail.into());
+        self.finish(guard.disposition(), guard.reason())
     }
 
     /// Stable human projection of the same receipt used for JSON output.
@@ -267,35 +331,18 @@ pub fn classify_ancestry(repository: &Path, base: &str, head: &str) -> AncestryR
     };
     receipt.is_partial_clone = Some(partial);
 
-    if shallow {
-        receipt.guidance.push(
-            "deepen the checkout before making ancestry-based replay or closure decisions, for example `git fetch --unshallow` or `git fetch --deepen=<n>`"
-                .to_string(),
-        );
-        receipt.limitations.push(
-            "the local shallow boundary can hide a real merge base and make an interior commit appear to be a root"
-                .to_string(),
-        );
-        return receipt.finish(
-            AncestryDisposition::NotProvenShallow,
-            "the checkout is shallow; local absence is not proof of unrelated history",
-        );
-    }
-
-    if partial {
-        receipt.guidance.push(
-            "materialize the required commit graph in a complete clone before making ancestry-based replay or closure decisions"
-                .to_string(),
-        );
-        receipt.limitations.push(
-            "promisor/partial-clone configuration allows required ancestry objects to be absent locally"
-                .to_string(),
-        );
-        return receipt.finish(
-            AncestryDisposition::NotProvenPartialClone,
-            "the checkout is partial; local absence is not proof of unrelated history",
-        );
-    }
+    // A shallow or partial checkout cannot prove the *absence* of ancestry,
+    // but a relation whose witnesses are entirely local is still sound: the
+    // local graph is a subset of the true graph, so a merge base identical to
+    // one of the requested commits proves that direction of the relation.
+    // Only the negative outcomes stay guarded below.
+    let guard = if shallow {
+        Some(Guard::Shallow)
+    } else if partial {
+        Some(Guard::Partial)
+    } else {
+        None
+    };
 
     receipt.base_sha = resolve_commit(repository, base);
     receipt.head_sha = resolve_commit(repository, head);
@@ -309,12 +356,18 @@ pub fn classify_ancestry(repository: &Path, base: &str, head: &str) -> AncestryR
             (true, false) => "the head commit object is unavailable",
             (true, true) => "a required commit object is unavailable",
         };
-        receipt.guidance.push(
-            "fetch or otherwise materialize the exact missing commit objects, then rerun the classifier"
-                .to_string(),
-        );
         receipt.limitations.push(
             "an unresolved revision cannot distinguish a bad ref from locally missing retained history"
+                .to_string(),
+        );
+        if let Some(guard) = guard {
+            // Under a shallow/partial boundary an unresolved revision may be
+            // hidden rather than absent, so the guard disposition is the
+            // honest one.
+            return receipt.guarded_finish(guard, missing);
+        }
+        receipt.guidance.push(
+            "fetch or otherwise materialize the exact missing commit objects, then rerun the classifier"
                 .to_string(),
         );
         return receipt.finish(AncestryDisposition::NotProvenMissingObject, missing);
@@ -353,6 +406,10 @@ pub fn classify_ancestry(repository: &Path, base: &str, head: &str) -> AncestryR
     };
 
     let Some(merge_base) = merge_base else {
+        if let Some(guard) = guard {
+            return receipt
+                .guarded_finish(guard, "no local merge base exists, and the checkout boundary hides whether one exists in the full history");
+        }
         return receipt.finish(
             AncestryDisposition::Unrelated,
             "both commit objects are present in a non-shallow, non-partial graph and no merge base exists",
@@ -364,24 +421,91 @@ pub fn classify_ancestry(repository: &Path, base: &str, head: &str) -> AncestryR
     let base_is_ancestor = merge_base == base_sha;
     let head_is_ancestor = merge_base == head_sha;
     receipt.merge_base = Some(merge_base);
-    receipt.base_is_ancestor_of_head = Some(base_is_ancestor);
-    receipt.head_is_ancestor_of_base = Some(head_is_ancestor);
 
     if base_is_ancestor {
+        // Sound even under a shallow/partial guard: the local graph is a
+        // subset of the true graph, so the witnessed path base..head exists in
+        // the full history as well.
+        receipt.base_is_ancestor_of_head = Some(true);
+        receipt.head_is_ancestor_of_base = Some(head_is_ancestor);
         receipt.finish(
             AncestryDisposition::Ancestor,
             "the requested base is an ancestor of the requested head",
         )
     } else if head_is_ancestor {
+        // Sound for the same reason: the witnessed path head..base with
+        // distinct commit identities proves base is not an ancestor of head.
+        receipt.base_is_ancestor_of_head = Some(false);
+        receipt.head_is_ancestor_of_base = Some(true);
         receipt.finish(
             AncestryDisposition::Diverged,
             "the histories are related, but the requested head is behind the requested base",
         )
+    } else if let Some(guard) = guard {
+        // An interior local merge base does not prove divergence here: the
+        // checkout boundary can hide the path that would make base an
+        // ancestor of head, so the local relation stays not proven and the
+        // ancestor flags stay unrecorded.
+        receipt.limitations.push(
+            "the local merge base may be an artifact of the checkout boundary rather than the true closest common ancestor"
+                .to_string(),
+        );
+        receipt.guarded_finish(
+            guard,
+            "the local graph relates the commits, but the checkout boundary hides the true relation",
+        )
     } else {
+        receipt.base_is_ancestor_of_head = Some(false);
+        receipt.head_is_ancestor_of_base = Some(false);
         receipt.finish(
             AncestryDisposition::Diverged,
             "the histories share a merge base but neither requested commit contains the other",
         )
+    }
+}
+
+/// Typed `is-ancestor` query over the classifier's completeness guards.
+///
+/// This is the sound replacement for interpreting a bare
+/// `git merge-base --is-ancestor` exit code: a shallow checkout holding a
+/// commit object that is present but disconnected by the shallow boundary
+/// reports exit 1 where a complete clone reports exit 0 (#14557), so exit 1
+/// alone is never rendered as [`AncestryDisposition::Diverged`] or
+/// [`AncestryDisposition::Unrelated`] here. The guards are
+/// [`classify_ancestry`]'s own — shallow and partial checkouts veto absence
+/// proofs but still admit relations whose witnesses are entirely local, and
+/// unresolvable revisions stay guarded or `not_proven_missing_object` —
+/// so there is exactly one classifier, not two. No fetch, deepen, or other
+/// repository mutation is performed.
+///
+/// Interpretation contract for callers:
+/// - [`AncestryDisposition::Ancestor`] — `base` is an ancestor of `head`.
+/// - [`AncestryDisposition::Diverged`] or [`AncestryDisposition::Unrelated`] —
+///   a complete-enough local graph proves `base` is not an ancestor of `head`.
+/// - anything else — the relation is not proven; fail closed and never render
+///   it as either verdict. See [`is_ancestor_verdict`].
+#[must_use]
+pub fn is_ancestor(repository: &Path, base: &str, head: &str) -> AncestryReceipt {
+    classify_ancestry(repository, base, head)
+}
+
+/// Project one ancestry receipt onto the `Option<bool>` shape of the legacy
+/// `--is-ancestor` callers: `Some(true)` for proved ancestry, `Some(false)`
+/// for proved non-ancestry in a complete-enough graph, and `None` whenever the
+/// local evidence cannot decide (shallow, partial, missing object, invalid
+/// input, or instrument failure). `None` must fail closed at the call site —
+/// advisory gates degrade to "not confirmed", hard gates error — and must
+/// never be read as either ancestry verdict.
+#[must_use]
+pub fn is_ancestor_verdict(receipt: &AncestryReceipt) -> Option<bool> {
+    match receipt.disposition {
+        AncestryDisposition::Ancestor => Some(true),
+        AncestryDisposition::Diverged | AncestryDisposition::Unrelated => Some(false),
+        AncestryDisposition::NotProvenShallow
+        | AncestryDisposition::NotProvenPartialClone
+        | AncestryDisposition::NotProvenMissingObject
+        | AncestryDisposition::InvalidInput
+        | AncestryDisposition::InstrumentFailure => None,
     }
 }
 
@@ -415,17 +539,56 @@ fn normalize_git_path(repository: &Path, value: &str) -> String {
 }
 
 fn partial_clone_observation(repository: &Path) -> Result<bool, String> {
-    // No `--local`: promisor configuration can also live in worktree-specific
-    // config when `extensions.worktreeConfig` is enabled, and missing it would
-    // let a partial clone be misclassified as complete.
-    let output = run_git(repository, &["config", "--get-regexp", r"^remote\..*\.promisor$"])?;
-    if output.succeeded() {
-        return Ok(!output.stdout.trim().is_empty());
+    // `extensions.partialClone` is the canonical marker: it names the promisor
+    // remote for this repository. A repository can carry it without any
+    // `remote.<name>.promisor` key (legacy or hand-written config), and
+    // treating such a repository as complete could turn omitted history into
+    // false non-ancestry verdicts. Any successfully read value marks the
+    // repository partial; a failed observation fails closed below.
+    //
+    // Neither probe is scope-limited: Git honors this configuration from
+    // every scope it resolves — including worktree-specific config when
+    // `extensions.worktreeConfig` is enabled — so the observation must read
+    // the same effective value Git does. A worktree-only marker otherwise
+    // slips past the guard and lets an incomplete graph produce false
+    // verdicts, which is worse than the fail-closed cost of a pathological
+    // global marker.
+    let extension = run_git(repository, &["config", "--get", "extensions.partialclone"])?;
+    if extension.succeeded() {
+        return Ok(true);
     }
+    if !extension.no_match() {
+        return Err(format!("partial-clone extension probe failed: {}", extension.diagnostic()));
+    }
+    let output = run_git(repository, &["config", "--get-regexp", r"^remote\..*\.promisor$"])?;
     if output.no_match() {
         return Ok(false);
     }
-    Err(format!("partial-clone probe failed: {}", output.diagnostic()))
+    if !output.succeeded() {
+        return Err(format!("partial-clone probe failed: {}", output.diagnostic()));
+    }
+    // `--get-regexp` matches keys, not values: an explicit `promisor = false`
+    // still matches the pattern, so each matched key's value must be parsed
+    // with Git's own boolean semantics before the repository is classified as
+    // partial. Only a key Git reads as true enables the guard.
+    for line in output.stdout.lines() {
+        let key = line.split_whitespace().next().unwrap_or("");
+        if key.is_empty() {
+            continue;
+        }
+        match run_git(repository, &["config", "--get", "--bool", key]) {
+            Ok(value) if value.succeeded() => {
+                if parse_git_bool(&value.stdout) == Some(true) {
+                    return Ok(true);
+                }
+            }
+            // A valueless key is true under Git boolean semantics, and an
+            // unparseable value cannot be shown to disable the guard; fail
+            // closed in both cases.
+            _ => return Ok(true),
+        }
+    }
+    Ok(false)
 }
 
 fn resolve_commit(repository: &Path, revision: &str) -> Option<String> {
@@ -439,10 +602,24 @@ fn resolve_commit(repository: &Path, revision: &str) -> Option<String> {
     }
 }
 
-fn run_git(repository: &Path, arguments: &[&str]) -> Result<GitOutput, String> {
-    let output = Command::new("git")
+fn git_command(repository: &Path, arguments: &[&str]) -> Command {
+    let mut command = Command::new("git");
+    command
         .args(arguments)
         .current_dir(repository)
+        // The classifier is read-only and offline: in a partial (promisor)
+        // clone, Git would otherwise lazily fetch missing objects from the
+        // promisor remote, causing network access and object-store writes.
+        // With lazy fetch disabled, a missing object fails the query and the
+        // existing fail-closed paths report it instead. GIT_NO_LAZY_FETCH
+        // requires Git >= 2.45; older Git ignores the unknown variable, and
+        // the fail-closed paths remain the honesty boundary there.
+        .env("GIT_NO_LAZY_FETCH", "1");
+    command
+}
+
+fn run_git(repository: &Path, arguments: &[&str]) -> Result<GitOutput, String> {
+    let output = git_command(repository, arguments)
         .output()
         .map_err(|error| format!("failed to execute git {}: {error}", arguments.join(" ")))?;
     Ok(GitOutput {
@@ -576,14 +753,193 @@ mod tests {
     }
 
     #[test]
-    fn promisor_configuration_is_not_proven() -> Result<()> {
+    fn disconnected_graft_is_not_proven_not_ancestor() -> Result<()> {
+        // #14557: a shallow checkout holding a commit object that is present
+        // but disconnected by the shallow boundary must not yield a "not an
+        // ancestor" verdict. The fixture mirrors the issue reproduction:
+        // origin holds four linear commits, and the shallow clone fetches the
+        // oldest object without the graph that connects it to HEAD.
+        let origin = initialized_repository()?;
+        for (path, contents, message) in [
+            ("second.txt", "second\n", "second"),
+            ("third.txt", "third\n", "third"),
+            ("fourth.txt", "fourth\n", "fourth"),
+        ] {
+            commit_file(&origin, path, contents, message)?;
+        }
+        git(&origin, &["config", "uploadpack.allowAnySHA1InWant", "true"])?;
+        let old = git(&origin, &["rev-parse", "HEAD~3"])?;
+
+        let parent = tempfile::tempdir()?;
+        let clone = parent.path().join("shallow");
+        // The path already carries the leading separator, so a `file://`
+        // prefix (not `file:///`) avoids an implementation-defined double
+        // slash in the URL's path component.
+        let origin_url = format!("file://{}", origin.path().to_string_lossy().replace('\\', "/"));
+        git_at(
+            parent.path(),
+            &[
+                "-c",
+                "protocol.file.allow=always",
+                "clone",
+                "--depth",
+                "1",
+                &origin_url,
+                &clone.to_string_lossy(),
+            ],
+        )?;
+        git_at(
+            &clone,
+            &["-c", "protocol.file.allow=always", "fetch", "--depth", "1", "origin", &old],
+        )?;
+
+        // Preconditions proving the fixture is the issue's trap rather than a
+        // degenerate setup: the object is present, the checkout is shallow,
+        // and bare `merge-base --is-ancestor` answers exit 1 here ...
+        assert!(object_exists(&clone, &old)?, "the fetched object must be present");
+        assert_eq!(
+            git_at(&clone, &["rev-parse", "--is-shallow-repository"])?,
+            "true",
+            "the clone must stay shallow after the object fetch"
+        );
+        assert_eq!(
+            git_status_at(&clone, &["merge-base", "--is-ancestor", &old, "HEAD"])?,
+            Some(1),
+            "bare --is-ancestor must report the trap exit code in the grafted clone"
+        );
+        // ... while the complete origin answers exit 0 for the same pair.
+        assert_eq!(
+            git_status_at(origin.path(), &["merge-base", "--is-ancestor", &old, "HEAD"])?,
+            Some(0),
+            "the complete clone must confirm the ancestry the graft hides"
+        );
+
+        // The typed query refuses the false verdict and keeps the genuine one.
+        let grafted = is_ancestor(&clone, &old, "HEAD");
+        assert_eq!(grafted.disposition, AncestryDisposition::NotProvenShallow);
+        assert_eq!(is_ancestor_verdict(&grafted), None);
+
+        let complete = is_ancestor(origin.path(), &old, "HEAD");
+        assert_eq!(complete.disposition, AncestryDisposition::Ancestor);
+        assert_eq!(is_ancestor_verdict(&complete), Some(true));
+
+        // Genuine non-ancestry in the complete graph still decides.
+        let reversed = is_ancestor(origin.path(), "HEAD", &old);
+        assert_eq!(reversed.disposition, AncestryDisposition::Diverged);
+        assert_eq!(is_ancestor_verdict(&reversed), Some(false));
+        Ok(())
+    }
+
+    #[test]
+    fn promisor_configuration_keeps_unprovable_relation_not_proven() -> Result<()> {
         let repository = initialized_repository()?;
         git(&repository, &["config", "remote.origin.promisor", "true"])?;
 
-        let receipt = classify_ancestry(repository.path(), "HEAD", "HEAD");
+        let receipt = classify_ancestry(
+            repository.path(),
+            "1111111111111111111111111111111111111111",
+            "HEAD",
+        );
 
         assert_eq!(receipt.disposition, AncestryDisposition::NotProvenPartialClone);
         assert_eq!(receipt.is_partial_clone, Some(true));
+        assert!(receipt.reason.contains("not proof of unrelated history"));
+        Ok(())
+    }
+
+    #[test]
+    fn partial_clone_extension_keeps_unprovable_relation_not_proven() -> Result<()> {
+        // Devin review, PR #15171: extensions.partialClone is the canonical
+        // partial-clone marker and must guard even without any promisor key.
+        let repository = initialized_repository()?;
+        git(&repository, &["config", "extensions.partialClone", "origin"])?;
+
+        let receipt = classify_ancestry(
+            repository.path(),
+            "1111111111111111111111111111111111111111",
+            "HEAD",
+        );
+
+        assert_eq!(receipt.disposition, AncestryDisposition::NotProvenPartialClone);
+        assert_eq!(receipt.is_partial_clone, Some(true));
+        Ok(())
+    }
+
+    #[test]
+    fn partial_clone_extension_guards_orphan_relation() -> Result<()> {
+        // Without the marker this pair classifies as unrelated; the marker
+        // must turn the absence proof into not_proven_partial_clone.
+        let repository = initialized_repository()?;
+        let base = git(&repository, &["rev-parse", "HEAD"])?;
+        git(&repository, &["switch", "--orphan", "orphan"])?;
+        commit_file(&repository, "orphan.txt", "orphan\n", "orphan")?;
+        git(&repository, &["config", "extensions.partialClone", "origin"])?;
+
+        let receipt = classify_ancestry(repository.path(), &base, "HEAD");
+
+        assert_eq!(receipt.disposition, AncestryDisposition::NotProvenPartialClone);
+        Ok(())
+    }
+
+    #[test]
+    fn promisor_clone_still_proves_locally_witnessed_relation() -> Result<()> {
+        let repository = initialized_repository()?;
+        git(&repository, &["config", "remote.origin.promisor", "true"])?;
+
+        let identical = classify_ancestry(repository.path(), "HEAD", "HEAD");
+
+        // Identical requested revisions are witnessed entirely locally, so the
+        // partial-clone guard must not hide the proven relation.
+        assert_eq!(identical.disposition, AncestryDisposition::Ancestor);
+        assert_eq!(identical.is_partial_clone, Some(true));
+        assert_eq!(is_ancestor_verdict(&identical), Some(true));
+        Ok(())
+    }
+
+    #[test]
+    fn false_promisor_value_does_not_disable_ancestry() -> Result<()> {
+        // #15171 review: `--get-regexp` matches promisor keys regardless of
+        // value, so an explicit `promisor = false` must not arm the
+        // partial-clone guard in a complete repository.
+        let repository = initialized_repository()?;
+        commit_file(&repository, "second.txt", "second\n", "second")?;
+        git(&repository, &["config", "remote.origin.promisor", "false"])?;
+
+        let receipt = classify_ancestry(repository.path(), "HEAD~1", "HEAD");
+
+        assert_eq!(receipt.disposition, AncestryDisposition::Ancestor);
+        assert_eq!(receipt.is_partial_clone, Some(false));
+        assert_eq!(is_ancestor_verdict(&receipt), Some(true));
+        Ok(())
+    }
+
+    #[test]
+    fn shallow_clone_proves_relation_witnessed_inside_the_boundary() -> Result<()> {
+        // #15171 review: a shallow checkout cannot prove the absence of
+        // ancestry, but a merge base identical to a requested commit is a
+        // fully local witness and must still decide.
+        let source = initialized_repository()?;
+        commit_file(&source, "second.txt", "second\n", "second")?;
+        commit_file(&source, "third.txt", "third\n", "third")?;
+        let clone_parent = tempfile::tempdir()?;
+        let clone = clone_parent.path().join("repository");
+        let source_arg = source.path().to_string_lossy().into_owned();
+        let clone_arg = clone.to_string_lossy().into_owned();
+        git_at(
+            clone_parent.path(),
+            &["clone", "--depth", "2", "--no-local", &source_arg, &clone_arg],
+        )?;
+
+        let forward = classify_ancestry(&clone, "HEAD~1", "HEAD");
+        assert_eq!(forward.disposition, AncestryDisposition::Ancestor);
+        assert_eq!(forward.is_shallow_repository, Some(true));
+        assert_eq!(forward.base_is_ancestor_of_head, Some(true));
+
+        let reversed = classify_ancestry(&clone, "HEAD", "HEAD~1");
+        assert_eq!(reversed.disposition, AncestryDisposition::Diverged);
+        assert_eq!(reversed.base_is_ancestor_of_head, Some(false));
+        assert_eq!(reversed.head_is_ancestor_of_base, Some(true));
+        assert_eq!(is_ancestor_verdict(&reversed), Some(false));
         Ok(())
     }
 
@@ -697,7 +1053,52 @@ mod tests {
         let receipt = classify_ancestry(&clone, "HEAD", "HEAD");
 
         let listing_after = git_dir_listing(&clone.join(".git"))?;
-        assert_eq!(receipt.disposition, AncestryDisposition::NotProvenShallow);
+        // HEAD vs HEAD is witnessed entirely locally, so the shallow guard
+        // admits the proven relation; the invariant this test pins is that
+        // classification never fetches or deepens to reach it.
+        assert_eq!(receipt.disposition, AncestryDisposition::Ancestor);
+        assert_eq!(listing_before, listing_after);
+        Ok(())
+    }
+
+    #[test]
+    fn git_commands_disable_lazy_fetch() {
+        // Falsifier for the offline contract in promisor clones: if the env
+        // guard is dropped, Git may answer object queries with network
+        // fetches and object-store writes instead of failing closed.
+        let command = git_command(Path::new("."), &["status"]);
+        let lazy_fetch = command
+            .get_envs()
+            .find(|(key, _)| *key == "GIT_NO_LAZY_FETCH")
+            .and_then(|(_, value)| value);
+        assert_eq!(lazy_fetch, Some(std::ffi::OsStr::new("1")));
+    }
+
+    #[test]
+    fn classification_of_partial_clone_never_fetches() -> Result<()> {
+        let source = initialized_repository()?;
+        commit_file(&source, "second.txt", "second\n", "second")?;
+        let clone_parent = tempfile::tempdir()?;
+        let clone = clone_parent.path().join("repository");
+        let source_arg = source.path().to_string_lossy().into_owned();
+        let clone_arg = clone.to_string_lossy().into_owned();
+        git_at(
+            clone_parent.path(),
+            &["clone", "--filter=blob:none", "--no-local", &source_arg, &clone_arg],
+        )?;
+        // Any lazy fetch must fail loudly rather than succeed: the promisor
+        // remote is made unreachable before classification.
+        git_at(&clone, &["remote", "set-url", "origin", "/definitely/unreachable"])?;
+        let listing_before = git_dir_listing(&clone.join(".git"))?;
+
+        let receipt = classify_ancestry(&clone, "HEAD", "HEAD");
+
+        let listing_after = git_dir_listing(&clone.join(".git"))?;
+        // HEAD vs HEAD is witnessed entirely locally, so the partial-clone
+        // guard admits the proven relation; the invariant this test pins is
+        // that classification reaches it without fetching from the promisor.
+        assert_eq!(receipt.disposition, AncestryDisposition::Ancestor);
+        assert_eq!(receipt.is_partial_clone, Some(true));
         assert_eq!(listing_before, listing_after);
         Ok(())
     }
@@ -783,5 +1184,16 @@ mod tests {
         String::from_utf8(output.stdout)
             .context("git command returned non-UTF-8 output")
             .map(|value| value.trim().to_string())
+    }
+
+    fn git_status_at(repository: &Path, arguments: &[&str]) -> Result<Option<i32>> {
+        let output = Command::new("git").args(arguments).current_dir(repository).output()?;
+        Ok(output.status.code())
+    }
+
+    fn object_exists(repository: &Path, sha: &str) -> Result<bool> {
+        let output =
+            Command::new("git").args(["cat-file", "-e", sha]).current_dir(repository).output()?;
+        Ok(output.status.success())
     }
 }

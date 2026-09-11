@@ -15,6 +15,7 @@ from unittest import mock
 
 MODULE_PATH = Path(__file__).with_name("release_build_identity.py")
 REPO_ROOT = MODULE_PATH.parent.parent
+sys.path.insert(0, str(MODULE_PATH.parent))
 SPEC = importlib.util.spec_from_file_location(
     "release_build_identity", MODULE_PATH
 )
@@ -171,12 +172,26 @@ class ReleaseBuildIdentityTests(unittest.TestCase):
                 }
             ],
         }
-        subject.validate_topology(
-            topology,
-            release_version=identity["release_version"],
-            source_revision=identity["source_revision"],
-            target=identity["target"],
-        )
+        for version in (1, 1.0, 2, 2.0):
+            with self.subTest(version=version):
+                topology["schema"] = version
+                subject.validate_topology(
+                    topology,
+                    release_version=identity["release_version"],
+                    source_revision=identity["source_revision"],
+                    target=identity["target"],
+                )
+        for version in (True, False, "1", "2", 1.5, 2.5, 3, None):
+            with self.subTest(invalid_version=version):
+                topology["schema"] = version
+                with self.assertRaisesRegex(subject.BuildIdentityError, "schema"):
+                    subject.validate_topology(
+                        topology,
+                        release_version=identity["release_version"],
+                        source_revision=identity["source_revision"],
+                        target=identity["target"],
+                    )
+        topology["schema"] = 2
         topology["binary_targets"][0]["required_members"].remove(
             "perl-dap"
         )
@@ -292,6 +307,29 @@ development_repository = "EffortlessMetrics/perl-lsp-swarm"
                 first_bytes = output.read_bytes()
                 second = subject.prepare_identity(args)
                 second_bytes = output.read_bytes()
+                original_topology = topology.read_text(encoding="utf-8")
+                for raw_schema, accepted in [
+                    ('1.0', True), ('2.00', True), ('2e0', True), ('20e-1', True),
+                    ('0.2e1', True), ('200.0e-2', True), ('2.00000000000000000000', True),
+                    ('2e9999999999999999999999999', False),
+                    ('2e0, "decoy": {"schema":3}', True),
+                    ('1.0000000000000001', False), ('0.99999999999999999', False),
+                    ('2.0000000000000001', False), ('1.99999999999999999', False),
+                    ('true', False), ('"2"', False), ('3', False),
+                    ('1, "schema": 2', False), ('1, "sche\\u006da": 2', False),
+                ]:
+                    with self.subTest(raw_schema=raw_schema):
+                        raw = original_topology.replace('"schema": 1', '"schema": ' + raw_schema).encode()
+                        topology.write_bytes(raw)
+                        if accepted:
+                            current = subject.prepare_identity(args)
+                            self.assertEqual(current.release_topology_digest, subject.sha256_bytes(raw))
+                        else:
+                            with self.assertRaisesRegex(subject.BuildIdentityError, "schema"):
+                                subject.prepare_identity(args)
+                topology.write_bytes(original_topology.encode("utf-16"))
+                with self.assertRaises(subject.BuildIdentityError):
+                    subject.prepare_identity(args)
             self.assertEqual(first, second)
             self.assertEqual(first_bytes, second_bytes)
             self.assertEqual(json.loads(first_bytes), first.as_dict())

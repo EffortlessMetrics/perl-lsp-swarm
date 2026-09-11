@@ -107,3 +107,18 @@ covered_by = [
 ]
 created = "2026-09-06"
 review_after = "2026-12-06"
+
+[[allow]]
+id = "generated-quickorm-api-return-matrix"
+path = "docs/specs/quickorm-api-return-matrix.md"
+kind = "spec_matrix"
+generated_by = "cargo xtask generate-quickorm-api-matrix"
+regenerate = "cargo xtask generate-quickorm-api-matrix"
+owner = "compiler/semantic-facts"
+reason = "Deterministic Markdown projection of the reviewed DBIx::QuickORM API return registry in perl-semantic-facts (#13374). The registry is the only authority; this document must never be hand-edited."
+covered_by = [
+  "cargo xtask generate-quickorm-api-matrix --check",
+  "cargo test -p perl-semantic-facts --lib framework_adapters::quickorm_api",
+]
+created = "2026-09-07"
+review_after = "2026-12-07"
