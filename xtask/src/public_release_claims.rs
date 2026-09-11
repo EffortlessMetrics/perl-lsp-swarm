@@ -135,7 +135,6 @@ struct ParsedSurface {
 struct ParsedClaim {
     claim_id: String,
     surface_id: String,
-    surface_path: String,
     location: String,
     parsed_location: ParsedLocation,
     summary: String,
@@ -573,15 +572,15 @@ pub fn parse_inventory(doc: &str) -> Result<ParsedInventory, CatalogError> {
         numeric_claim_key(&left.claim_id).cmp(&numeric_claim_key(&right.claim_id))
     });
     for claim in &mut claims {
-        if let Some(surface) =
-            surfaces.iter().find(|surface| surface.surface_id == claim.surface_id)
+        if let Some(surface) = surfaces
+            .iter()
+            .find(|surface| surface.surface_id == claim.surface_id)
+            .filter(|surface| {
+                !surface.path.contains('*')
+                    && path_suffix_compatible(&claim.parsed_location.path, &surface.path)
+            })
         {
-            claim.surface_path = surface.path.clone();
-            if !surface.path.contains('*')
-                && path_suffix_compatible(&claim.parsed_location.path, &surface.path)
-            {
-                claim.parsed_location.path = surface.path.clone();
-            }
+            claim.parsed_location.path = surface.path.clone();
         }
     }
 
@@ -783,7 +782,6 @@ fn parse_claim_row(row: &str, section: Option<&str>) -> Result<Option<ParsedClai
     Ok(Some(ParsedClaim {
         claim_id,
         surface_id,
-        surface_path: String::new(),
         location: cells[1].clone(),
         parsed_location,
         summary,
@@ -1755,7 +1753,7 @@ fn validate_repository_catalog_bytes(
     root: &Path,
     actual: &[u8],
 ) -> Result<CatalogStats, CatalogError> {
-    let stats = validate_artifact_bytes(&actual)?;
+    let stats = validate_artifact_bytes(actual)?;
 
     let schema_text = fs::read_to_string(root.join(SCHEMA_PATH))
         .map_err(|error| CatalogError::new(format!("{SCHEMA_PATH}: cannot read: {error}")))?;
@@ -1765,7 +1763,7 @@ fn validate_repository_catalog_bytes(
 
     let manifest_bytes = read_repo_bytes(root, RECEIPT_MANIFEST_PATH)?;
     let manifest = parse_receipt_manifest(&manifest_bytes)?;
-    let catalog: Value = serde_json::from_slice(&actual)
+    let catalog: Value = serde_json::from_slice(actual)
         .map_err(|error| CatalogError::new(format!("{}: invalid JSON: {error}", ARTIFACT_PATH)))?;
     validate_receipt_binding(&catalog, &manifest)?;
 
@@ -2255,7 +2253,6 @@ mod tests {
         let root_readme = ParsedClaim {
             claim_id: "ROOT".to_string(),
             surface_id: "probe".to_string(),
-            surface_path: "README.md".to_string(),
             location: "README.md:37".to_string(),
             parsed_location: parse_location("README.md:37").expect("root location"),
             summary: String::new(),

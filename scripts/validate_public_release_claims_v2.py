@@ -330,7 +330,6 @@ def assert_derivation_probes(inventory: dict[str, Any]) -> None:
         return {
             "claim_id": claim_id,
             "surface_id": "probe",
-            "surface_path": "README.md",
             "location": location,
             "parsed_location": parse_location(location),
         }
@@ -505,7 +504,6 @@ def parse_inventory(doc: str) -> dict[str, Any]:
                 {
                     "claim_id": claim_id,
                     "surface_id": current_section,
-                    "surface_path": "",
                     "location": cells[1],
                     "parsed_location": parsed_location,
                     "summary": extract_cell_text(cells[2], f"{claim_id}.summary"),
@@ -520,7 +518,6 @@ def parse_inventory(doc: str) -> dict[str, Any]:
     surface_paths = {surface["surface_id"]: surface["path"] for surface in surfaces}
     for claim in claims:
         surface_path = surface_paths.get(claim["surface_id"], "")
-        claim["surface_path"] = surface_path
         if surface_path and "*" not in surface_path:
             claim_path, spans = claim["parsed_location"]
             if path_suffix_compatible(claim_path, surface_path):
