@@ -241,9 +241,12 @@ class ReleaseBuildIdentityTests(unittest.TestCase):
 
     def test_packet_requires_exact_external_digest_limitation(self) -> None:
         identity = subject.ReleaseBuildIdentity.from_mapping(valid_mapping())
-        for limitations in ([], ["artifact_role_not_proven"], ["artifact_digest_not_externally_bound", "extra"]):
+        for limitations in (None, [], ["artifact_role_not_proven"], ["artifact_digest_not_externally_bound", "extra"]):
             packet = valid_packet("perllsp", "perllsp", "server")
-            packet["limitations"] = limitations
+            if limitations is None:
+                packet.pop("limitations")
+            else:
+                packet["limitations"] = limitations
             with self.subTest(limitations=limitations), self.assertRaisesRegex(
                 subject.BuildIdentityError, "retained limitations"
             ):
