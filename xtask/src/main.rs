@@ -51,20 +51,20 @@ use tasks::{
     issue_plan, layer_check, lsp_318_claims, lsp_318_matrix, lsp_ux_smoke, memory_trends,
     merge_ready, methodology_gate, metrics, module_train, module_train_live, native_critic,
     native_format, native_neovim_train, native_product_surface, native_tooling,
-    oneliner_capability_matrix, oracle_fixture_manifest, oracle_receipt_schema, oracle_runner,
-    parse_rust, parser_corpus_sweep, parser_matrix, parser_ratchet, perl_core_harness,
-    perl_corpus_train, perl_kwalitee, populate_book, pre_push_plan, prep_crates_io_launch,
-    product_health_rail_contract, product_health_status, protocol_type_substrate_matrix,
-    provider_confidence_matrix, provider_promotion_ledger, publication_facts, publish,
-    publish_closure, publish_manifest_check, publish_receipts, quality_baseline, quality_gate,
-    queue_health, queue_snapshot, quickorm_api_matrix, receipts, release, release_artifact_check,
-    release_candidate_artifacts, release_evidence, release_notes, release_trust_invariants,
-    release_turnkey, repo_hygiene, repository_topology, ripr_evidence, rust_small_proof, seam_diff,
-    semantic_inline_next_edit, semantic_inline_receipts, semantic_scorecard,
-    semantic_shadow_compare, semantic_token_classes, session_receipt, shadow_parity,
-    srp_microcrates, supported_editor_inline_smoke, swarm_agent_roster, swarm_summary,
-    sync_release_docs, targeted_checks, test, test_lsp, train_edge_contract, unwired_scan,
-    update_homebrew, update_status, ux_regression_receipt, ux_scorecard,
+    no_publish_side_effects, oneliner_capability_matrix, oracle_fixture_manifest,
+    oracle_receipt_schema, oracle_runner, parse_rust, parser_corpus_sweep, parser_matrix,
+    parser_ratchet, perl_core_harness, perl_corpus_train, perl_kwalitee, populate_book,
+    pre_push_plan, prep_crates_io_launch, product_health_rail_contract, product_health_status,
+    protocol_type_substrate_matrix, provider_confidence_matrix, provider_promotion_ledger,
+    publication_facts, publish, publish_closure, publish_manifest_check, publish_receipts,
+    quality_baseline, quality_gate, queue_health, queue_snapshot, quickorm_api_matrix, receipts,
+    release, release_artifact_check, release_candidate_artifacts, release_evidence, release_notes,
+    release_trust_invariants, release_turnkey, repo_hygiene, repository_topology, ripr_evidence,
+    rust_small_proof, seam_diff, semantic_inline_next_edit, semantic_inline_receipts,
+    semantic_scorecard, semantic_shadow_compare, semantic_token_classes, session_receipt,
+    shadow_parity, srp_microcrates, supported_editor_inline_smoke, swarm_agent_roster,
+    swarm_summary, sync_release_docs, targeted_checks, test, test_lsp, train_edge_contract,
+    unwired_scan, update_homebrew, update_status, ux_regression_receipt, ux_scorecard,
     validate_workspace_exclusions, workflow_authority_inventory, workflow_policy_lint,
     workflow_trigger_lint, workspace_symbol_classes, worktree_allocator, worktrees,
     writer_admission,
@@ -364,6 +364,18 @@ enum Commands {
         /// Validate only, and require the checked-in projection to be current.
         #[arg(long)]
         check: bool,
+    },
+
+    /// Validate a `no_publish_side_effects.v1` surface inventory against the
+    /// canonical release topology (#9414).
+    #[command(name = "no-publish-side-effects")]
+    NoPublishSideEffects {
+        /// Path to the inventory JSON document.
+        #[arg(long)]
+        inventory: std::path::PathBuf,
+        /// Path to the canonical release-topology.json artifact.
+        #[arg(long)]
+        topology: std::path::PathBuf,
     },
 
     /// Reconcile `policy/tree-sitter-compat-inventory.toml` against the real
@@ -5438,6 +5450,9 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::GenerateQuickormApiMatrix { check } => quickorm_api_matrix::run(check),
         Commands::OnelinerCapabilityMatrix { check } => oneliner_capability_matrix::run(check),
         Commands::RepoTopology { check } => repository_topology::run(check),
+        Commands::NoPublishSideEffects { inventory, topology } => {
+            no_publish_side_effects::run(inventory, topology)
+        }
         Commands::CompatInventory { check } => compat_inventory::run(check),
         Commands::GenerateProtocolTypeSubstrateMatrix { check } => {
             protocol_type_substrate_matrix::run(check)
