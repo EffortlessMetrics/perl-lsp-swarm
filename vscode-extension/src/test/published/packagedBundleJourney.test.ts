@@ -900,8 +900,17 @@ suite('Packaged VSIX bundled-server journey', function () {
                 }
               },
               onError: (error: Error) => {
-                adapterError = error.message;
                 protocolTrace.push({ direction: 'error', message: error.message });
+                // VS Code 1.125's extension-host transport reports the
+                // expected stream close as a generic "read error".  It is
+                // harmless only after this session's disconnect response has
+                // been correlated; every earlier or different error remains
+                // a failure.  The adapter exit is checked below before this
+                // marker can affect the journey verdict.
+                if (error.message === 'read error' && successfulStopResponses.has('disconnect')) {
+                  return;
+                }
+                adapterError = error.message;
               },
               onExit: (code: number | undefined, signal: string | undefined) => {
                 adapterExit = {

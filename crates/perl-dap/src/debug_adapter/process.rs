@@ -596,6 +596,14 @@ impl DebugAdapter {
         let mut cmd = oracle.into_command();
         cmd.arg("-d");
 
+        // Strawberry Perl's Windows debugger selects its console transport when
+        // EMACS is absent, even when all three stdio handles are pipes.  Mark
+        // this owned pipe launch explicitly; the variable is scoped to the
+        // child and does not change the adapter's process environment or the
+        // user's argv/launch configuration.
+        #[cfg(windows)]
+        cmd.env("EMACS", "1");
+
         // Perl debugger stops on the first line by default
         let _ = stop_on_entry; // currently unused
 
