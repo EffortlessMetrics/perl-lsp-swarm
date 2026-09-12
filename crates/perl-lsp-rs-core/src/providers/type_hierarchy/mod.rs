@@ -323,13 +323,46 @@ impl TypeHierarchyProvider {
         arg: &str,
         is_cancelled: &dyn Fn() -> bool,
     ) -> Result<Vec<String>, TypeHierarchyCancelled> {
+        let arg = arg.trim();
         let mut result = Vec::new();
-        for parent in self.normalize_parent_arg(arg) {
+        let mut add = |parent: &str| {
             if is_cancelled() {
                 return Err(TypeHierarchyCancelled);
             }
-            result.push(parent);
+            result.push(parent.to_string());
+            Ok(())
+        };
+        if (arg.starts_with("qw(") && arg.ends_with(')'))
+            || (arg.starts_with("qw{") && arg.ends_with('}'))
+            || (arg.starts_with("qw[") && arg.ends_with(']'))
+            || (arg.starts_with("qw<") && arg.ends_with('>'))
+        {
+            let content = &arg[3..arg.len() - 1];
+            for parent in content.split_whitespace() {
+                add(parent)?;
+            }
+            return Ok(result);
         }
+        if arg.starts_with("qw") && arg.len() > 2 {
+            let delim_start = arg.chars().nth(2).unwrap_or(' ');
+            let delim_end = match delim_start {
+                '(' => ')',
+                '{' => '}',
+                '[' => ']',
+                '<' => '>',
+                _ => delim_start,
+            };
+            if let Some(start) = arg.find(delim_start)
+                && let Some(end) = arg.rfind(delim_end)
+            {
+                for parent in arg[start + 1..end].split_whitespace() {
+                    add(parent)?;
+                }
+                return Ok(result);
+            }
+        }
+        let clean = arg.trim_matches('"').trim_matches('\'').trim_matches('`');
+        add(clean)?;
         Ok(result)
     }
 
@@ -351,12 +384,7 @@ impl TypeHierarchyProvider {
             if is_cancelled() {
                 return Err(TypeHierarchyCancelled);
             }
-            for name in Self::collect_symbol_names(arg) {
-                if is_cancelled() {
-                    return Err(TypeHierarchyCancelled);
-                }
-                result.push(name);
-            }
+            result.extend(self.collect_symbol_names_with_cancellation(arg, is_cancelled)?);
         }
         Ok(result)
     }
@@ -376,6 +404,36 @@ impl TypeHierarchyProvider {
                 elements.iter().flat_map(Self::collect_symbol_names).collect()
             }
             _ => Vec::new(),
+        }
+    }
+
+    fn collect_symbol_names_with_cancellation(
+        &self,
+        node: &Node,
+        is_cancelled: &dyn Fn() -> bool,
+    ) -> Result<Vec<String>, TypeHierarchyCancelled> {
+        if is_cancelled() {
+            return Err(TypeHierarchyCancelled);
+        }
+        match &node.kind {
+            NodeKind::String { value, .. } => {
+                let trimmed = value.trim().trim_matches('\'').trim_matches('"').trim();
+                Ok(trimmed.is_empty().then(Vec::new).unwrap_or_else(|| vec![trimmed.to_string()]))
+            }
+            NodeKind::Identifier { name } => {
+                let trimmed = name.trim();
+                Ok(trimmed.is_empty().then(Vec::new).unwrap_or_else(|| vec![trimmed.to_string()]))
+            }
+            NodeKind::ArrayLiteral { elements } => {
+                let mut result = Vec::new();
+                for element in elements {
+                    result.extend(
+                        self.collect_symbol_names_with_cancellation(element, is_cancelled)?,
+                    );
+                }
+                Ok(result)
+            }
+            _ => Ok(Vec::new()),
         }
     }
 
@@ -421,11 +479,26 @@ impl TypeHierarchyProvider {
         is_cancelled: &dyn Fn() -> bool,
     ) -> Result<Vec<String>, TypeHierarchyCancelled> {
         let mut parents = Vec::new();
-        for parent in self.extract_isa_parents(node) {
-            if is_cancelled() {
-                return Err(TypeHierarchyCancelled);
+        match &node.kind {
+            NodeKind::ArrayLiteral { elements } => {
+                for elem in elements {
+                    if is_cancelled() {
+                        return Err(TypeHierarchyCancelled);
+                    }
+                    match &elem.kind {
+                        NodeKind::String { value, .. } => parents.extend(
+                            self.normalize_parent_arg_with_cancellation(value, is_cancelled)?,
+                        ),
+                        NodeKind::Identifier { name } => parents.push(name.clone()),
+                        _ => {}
+                    }
+                }
             }
-            parents.push(parent);
+            NodeKind::String { value, .. } => {
+                parents.extend(self.normalize_parent_arg_with_cancellation(value, is_cancelled)?)
+            }
+            NodeKind::Identifier { name } => parents.push(name.clone()),
+            _ => {}
         }
         Ok(parents)
     }
@@ -800,17 +873,29 @@ impl TypeHierarchyProvider {
         node: &'a Node,
         is_cancelled: &dyn Fn() -> bool,
     ) -> Result<Option<Vec<&'a Node>>, TypeHierarchyCancelled> {
-        let Some(children) = self.get_children(node) else {
+        let mut children = Vec::new();
+        match &node.kind {
+            NodeKind::Program { statements } | NodeKind::Block { statements } => {
+                for child in statements {
+                    if is_cancelled() {
+                        return Err(TypeHierarchyCancelled);
+                    }
+                    children.push(child);
+                }
+                return Ok(Some(children));
+            }
+            _ => {}
+        }
+        let Some(existing) = self.get_children(node) else {
             return Ok(None);
         };
-        let mut result = Vec::with_capacity(children.len());
-        for child in children {
+        for child in existing {
             if is_cancelled() {
                 return Err(TypeHierarchyCancelled);
             }
-            result.push(child);
+            children.push(child);
         }
-        Ok(Some(result))
+        Ok(Some(children))
     }
 
     fn is_package_identifier(&self, _ast: &Node, _offset: usize, _name: &str) -> bool {
@@ -930,6 +1015,24 @@ mod tests {
         let subtype_cancelled = || subtype_polls.fetch_add(1, Ordering::Relaxed) >= 3;
         ensure!(matches!(
             provider.find_subtypes_with_cancellation(&ast, &item, &subtype_cancelled),
+            Err(TypeHierarchyCancelled)
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn cancellation_interrupts_parent_argument_collection_before_completion() -> Result<()> {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let provider = TypeHierarchyProvider::new();
+        let argument = format!(
+            "qw({})",
+            (0..64).map(|index| format!("Parent{index}")).collect::<Vec<_>>().join(" ")
+        );
+        let polls = AtomicUsize::new(0);
+        let is_cancelled = || polls.fetch_add(1, Ordering::Relaxed) >= 3;
+        ensure!(matches!(
+            provider.normalize_parent_arg_with_cancellation(&argument, &is_cancelled),
             Err(TypeHierarchyCancelled)
         ));
         Ok(())
