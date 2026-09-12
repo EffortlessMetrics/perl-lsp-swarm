@@ -50,7 +50,6 @@ function makeContext(
   return {
     globalStorageUri: { fsPath: dir } as vscode.Uri,
     extensionPath: extensionPath ?? dir,
-    configuration: linuxLibc ? { get: () => linuxLibc } : undefined,
     subscriptions: [],
   } as unknown as vscode.ExtensionContext;
 }
@@ -335,15 +334,24 @@ describe('PerlDebugAdapterDescriptorFactory', () => {
     fs.writeFileSync(gnuPath, 'gnu packaged dap');
     fs.chmodSync(alpinePath, 0o755);
     fs.chmodSync(gnuPath, 0o755);
+    let linuxLibcForTest = 'gnu';
+    let previousConfiguration: (() => unknown) | undefined;
     try {
       Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
       Object.defineProperty(process, 'arch', { value: 'x64', configurable: true });
+      const vscodeApi = require('vscode') as typeof import('vscode');
+      const getConfiguration = vscodeApi.workspace.getConfiguration as jest.Mock;
+      previousConfiguration = getConfiguration.getMockImplementation();
+      getConfiguration.mockImplementation(() => ({
+        get: (_key: string, defaultValue?: unknown) =>
+          linuxLibcForTest ?? defaultValue,
+      }));
       fs.writeFileSync(
         path.join(extensionDir, 'package.json'),
         JSON.stringify({ __metadata: { targetPlatform: 'alpine-x64' } }),
       );
       const factory = new PerlDebugAdapterDescriptorFactory(
-        makeContext(tmpDir, extensionDir, 'gnu'),
+        makeContext(tmpDir, extensionDir),
       );
       const alpineResult = factory.createDebugAdapterDescriptor(
         {} as unknown as vscode.DebugSession,
@@ -351,12 +359,13 @@ describe('PerlDebugAdapterDescriptorFactory', () => {
       ) as vscode.DebugAdapterExecutable;
       expect(alpineResult.command).toBe(alpinePath);
       expect(alpineResult.command).not.toBe(gnuPath);
+      linuxLibcForTest = 'musl';
       fs.writeFileSync(
         path.join(extensionDir, 'package.json'),
         JSON.stringify({ __metadata: { targetPlatform: 'linux-x64' } }),
       );
       const gnuFactory = new PerlDebugAdapterDescriptorFactory(
-        makeContext(tmpDir, extensionDir, 'musl'),
+        makeContext(tmpDir, extensionDir),
       );
       const gnuResult = gnuFactory.createDebugAdapterDescriptor(
         {} as unknown as vscode.DebugSession,
@@ -365,6 +374,9 @@ describe('PerlDebugAdapterDescriptorFactory', () => {
       expect(gnuResult.command).toBe(gnuPath);
       expect(gnuResult.command).not.toBe(alpinePath);
     } finally {
+      const vscodeApi = require('vscode') as typeof import('vscode');
+      const getConfiguration = vscodeApi.workspace.getConfiguration as jest.Mock;
+      if (previousConfiguration) getConfiguration.mockImplementation(previousConfiguration);
       if (originalPlatform) Object.defineProperty(process, 'platform', originalPlatform);
       if (originalArch) Object.defineProperty(process, 'arch', originalArch);
     }
