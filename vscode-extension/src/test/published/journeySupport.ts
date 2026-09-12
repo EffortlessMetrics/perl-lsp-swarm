@@ -383,8 +383,21 @@ export async function scanBundledDapProcessIdentities(
   return result.stdout
     .split(/\r?\n/)
     .map((line) => /^(\d+)\t(.+)\t(\d+)$/.exec(line.trim()))
-    .filter((match): match is RegExpExecArray => match !== null)
-    .map((match) => ({ pid: Number.parseInt(match[1], 10), path: match[2], creationTimeFileTime: match[3] }))
+    .map((match) => {
+      const pidText = match?.[1];
+      const executable = match?.[2];
+      const creationTimeFileTime = match?.[3];
+      if (!pidText || !executable || !creationTimeFileTime) return null;
+      return {
+        pid: Number.parseInt(pidText, 10),
+        path: executable,
+        creationTimeFileTime,
+      };
+    })
+    .filter(
+      (entry): entry is { pid: number; path: string; creationTimeFileTime: string } =>
+        entry !== null,
+    )
     .filter((entry) => entry.path.toLowerCase().startsWith(needle));
 }
 

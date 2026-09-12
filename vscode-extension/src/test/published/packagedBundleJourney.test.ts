@@ -195,6 +195,53 @@ function writeVerifiedChildArtifact(receipt: ReceiptValue, sourceReceiptPath: st
   fs.writeFileSync(outputPath, JSON.stringify(artifact, null, 2));
 }
 
+function recordPackagedDapEvidence(
+  extensionPath: string,
+  dapPath: string,
+  session: vscode.DebugSession,
+  exit: { code?: number; signal?: string },
+): void {
+  const receiptPath = path.join(receiptsDir(), 'packaged_bundle_journey_receipt.json');
+  if (!fs.existsSync(receiptPath)) return;
+  const receipt = JSON.parse(fs.readFileSync(receiptPath, 'utf8')) as ReceiptValue;
+  const hashes =
+    receipt.artifact_hashes && typeof receipt.artifact_hashes === 'object'
+      ? (receipt.artifact_hashes as Record<string, unknown>)
+      : {};
+  hashes.dap_sha256 = sha256(dapPath);
+  hashes.vsix_sha256 ||= process.env.PERL_LSP_VSIX_SHA256 ?? null;
+  receipt.artifact_hashes = hashes;
+  receipt.dap_startup = {
+    extension_path: extensionPath,
+    adapter_path: dapPath,
+    session_id: session.id,
+    initialize_then_launch: true,
+    exit,
+    candidate_id: process.env.PERL_LSP_CANDIDATE_ID ?? null,
+    frozen_product_sha: process.env.PERL_LSP_CURRENT_SOURCE_SHA ?? null,
+    artifact_set_id: process.env.PERL_LSP_ARTIFACT_SET_ID ?? null,
+  };
+  fs.writeFileSync(receiptPath, JSON.stringify(receipt, null, 2));
+}
+
+async function waitForNewPackagedDap(
+  directory: string,
+  baseline: Set<string>,
+  expectedPath: string,
+): Promise<{ pid: number; path: string; creationTimeFileTime?: string }> {
+  const deadline = Date.now() + 30_000;
+  while (Date.now() < deadline) {
+    const processes = await scanBundledDapProcessIdentities(directory);
+    const match = processes.find((entry) => {
+      const key = `${entry.pid}:${entry.creationTimeFileTime ?? ''}:${entry.path.toLowerCase()}`;
+      return !baseline.has(key) && pathsEquivalent(entry.path, expectedPath);
+    });
+    if (match) return match;
+    await new Promise<void>((resolve) => setTimeout(resolve, 250));
+  }
+  throw new Error('packaged DAP process was not observed within 30 seconds');
+}
+
 suite('Packaged VSIX bundled-server journey', function () {
   this.timeout(240_000);
 
@@ -647,23 +694,37 @@ suite('Packaged VSIX bundled-server journey', function () {
     const dapPath = bundledDapPath(extensionPath);
     assert.ok(fs.existsSync(dapPath), `packaged DAP is missing: ${dapPath}`);
     const expectedDapSha256 = sha256(dapPath);
+    const dapDirectory = path.dirname(dapPath);
+    const beforeProcesses = await scanBundledDapProcessIdentities(dapDirectory);
+    const beforeKeys = new Set(
+      beforeProcesses.map(
+        (entry) => `${entry.pid}:${entry.creationTimeFileTime ?? ''}:${entry.path.toLowerCase()}`,
+      ),
+    );
     const workspacePath = workspaceFolder.uri.fsPath;
     const program = path.join(workspacePath, 'packaged_dap_startup.pl');
-    fs.writeFileSync(program, "use strict;\nuse warnings;\nprint qq{dap-started\\n};\n");
+    fs.writeFileSync(program, 'use strict;\nuse warnings;\nprint qq{dap-started\\n};\nsleep 20;\n');
 
     let startedSession: vscode.DebugSession | undefined;
-    let initialized = false;
-    let launched = false;
+    const responseOrder: string[] = [];
     let adapterError: string | undefined;
     let adapterExit: { code?: number; signal?: string } | undefined;
     let terminated = false;
     let resolveStarted: ((session: vscode.DebugSession) => void) | undefined;
     let resolveTerminated: (() => void) | undefined;
+    let resolveResponses: (() => void) | undefined;
+    let resolveExit: ((exit: { code?: number; signal?: string }) => void) | undefined;
     const started = new Promise<vscode.DebugSession>((resolve) => {
       resolveStarted = resolve;
     });
     const termination = new Promise<void>((resolve) => {
       resolveTerminated = resolve;
+    });
+    const responses = new Promise<void>((resolve) => {
+      resolveResponses = resolve;
+    });
+    const exitEvent = new Promise<{ code?: number; signal?: string }>((resolve) => {
+      resolveExit = resolve;
     });
     const startedSubscription = vscode.debug.onDidStartDebugSession((session) => {
       if (session.type === 'perl') {
@@ -687,14 +748,20 @@ suite('Packaged VSIX bundled-server journey', function () {
             if (!message || typeof message !== 'object') return;
             const record = message as { type?: unknown; command?: unknown; success?: unknown };
             if (record.type !== 'response' || record.success !== true) return;
-            if (record.command === 'initialize') initialized = true;
-            if (record.command === 'launch') launched = true;
+            if (record.command === 'initialize' || record.command === 'launch') {
+              responseOrder.push(record.command);
+              if (responseOrder.length >= 2) resolveResponses?.();
+            }
           },
           onError: (error: Error) => {
             adapterError = error.message;
           },
           onExit: (code: number | undefined, signal: string | undefined) => {
-            adapterExit = { code, signal };
+            adapterExit = {
+              ...(code === undefined ? {} : { code }),
+              ...(signal === undefined ? {} : { signal }),
+            };
+            resolveExit?.(adapterExit);
           },
         };
       },
@@ -714,29 +781,54 @@ suite('Packaged VSIX bundled-server journey', function () {
       );
       assert.equal(startResult, true, 'VS Code did not start the packaged DAP session');
       const session = await withTimeout('packaged DAP session start', started, 30_000);
-      const processes = await scanBundledDapProcessIdentities(path.dirname(dapPath));
-      const matchingProcess = processes.find((process) => pathsEquivalent(process.path, dapPath));
-      assert.ok(matchingProcess, `packaged DAP process was not observed: ${JSON.stringify(processes)}`);
-      assert.equal(sha256(matchingProcess.path), expectedDapSha256, 'running DAP hash differs from package');
-      await withTimeout('packaged DAP initialize/launch', new Promise<void>((resolve, reject) => {
-        const deadline = setTimeout(() => reject(new Error('DAP initialize/launch responses timed out')), 30_000);
-        const check = (): void => {
-          if (initialized && launched) {
-            clearTimeout(deadline);
-            resolve();
-          } else setTimeout(check, 50);
-        };
-        check();
-      }), 31_000);
+      const matchingProcess = await waitForNewPackagedDap(dapDirectory, beforeKeys, dapPath);
+      assert.ok(matchingProcess.creationTimeFileTime, 'packaged DAP creation time is required');
+      assert.equal(
+        sha256(matchingProcess.path),
+        expectedDapSha256,
+        'running DAP hash differs from package',
+      );
+      await withTimeout('packaged DAP initialize/launch', responses, 30_000);
+      assert.deepEqual(responseOrder.slice(0, 2), ['initialize', 'launch']);
       await withTimeout('packaged DAP stopDebugging', vscode.debug.stopDebugging(session), 30_000);
       await withTimeout('packaged DAP termination event', termination, 30_000);
-      assert.equal(adapterError, undefined, adapterError);
-      assert.ok(adapterExit, 'packaged DAP did not report adapter exit');
+      assert.equal(adapterError, undefined, adapterError ?? 'packaged DAP adapter error');
+      const observedExit = await withTimeout('packaged DAP adapter exit', exitEvent, 30_000);
+      adapterExit = observedExit;
+      const adapterExitCode = observedExit.code;
+      assert.equal(
+        adapterExitCode,
+        0,
+        `packaged DAP exit was not clean: ${JSON.stringify(adapterExit)}`,
+      );
+      assert.equal(
+        adapterExit.signal,
+        undefined,
+        `packaged DAP was signaled: ${JSON.stringify(adapterExit)}`,
+      );
       assert.equal(terminated, true);
-      assert.equal((await scanBundledDapProcessIdentities(path.dirname(dapPath))).length, 0);
+      recordPackagedDapEvidence(extensionPath, dapPath, session, adapterExit);
+      const remainingProcesses = await scanBundledDapProcessIdentities(dapDirectory);
+      assert.equal(
+        remainingProcesses.filter(
+          (process) =>
+            !beforeKeys.has(
+              `${process.pid}:${process.creationTimeFileTime ?? ''}:${process.path.toLowerCase()}`,
+            ),
+        ).length,
+        0,
+        `packaged DAP process leaked: ${JSON.stringify(remainingProcesses)}`,
+      );
     } finally {
       if (startedSession && !terminated) {
-        await vscode.debug.stopDebugging(startedSession).catch(() => undefined);
+        await withTimeout(
+          'packaged DAP failure cleanup',
+          vscode.debug.stopDebugging(startedSession),
+          30_000,
+        ).catch(() => undefined);
+        await withTimeout('packaged DAP failure termination', termination, 30_000).catch(
+          () => undefined,
+        );
       }
       trackerSubscription.dispose();
       startedSubscription.dispose();
