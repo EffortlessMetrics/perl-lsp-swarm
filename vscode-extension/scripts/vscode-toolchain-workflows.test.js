@@ -11,6 +11,7 @@ const extensionWorkflows = [
   'vscode-current-source-linux-smoke.yml',
   'vscode-managed-binary-smoke.yml',
   'vscode-published-extension-smoke.yml',
+  'vscode-prebuilt-payload-adapter.yml',
   'ux-regression-gate.yml',
   'publish-extension.yml',
 ];
@@ -42,6 +43,25 @@ void test('the setup action verifies the authority before npm ci', () => {
   assert.ok(verifyIndex < installIndex);
   assert.match(source, /node-version: ['"]26\.5\.0['"]/);
   assert.match(source, /npm install --global npm@11\.18\.0/);
+  const installStepStart = source.lastIndexOf('- name:', installIndex);
+  const installStepEnd = source.indexOf('\n    - name:', installIndex + 1);
+  const installStep = source.slice(installStepStart, installStepEnd === -1 ? source.length : installStepEnd);
+  assert.match(installStep, /\n      if: inputs\.install-dependencies == ['"]true['"]/);
+  const doctorIndex = source.indexOf('- name: Verify Node and npm authority before install');
+  const doctorStepStart = source.lastIndexOf('- name:', doctorIndex);
+  const doctorStepEnd = source.indexOf('\n    - name:', doctorIndex + 1);
+  const doctorStep = source.slice(doctorStepStart, doctorStepEnd === -1 ? source.length : doctorStepEnd);
+  assert.doesNotMatch(doctorStep, /\n      if:/);
+  const inputs = source.slice(0, source.indexOf('\nruns:'));
+  assert.match(inputs, /install-dependencies:[\s\S]*default: ['"]true['"]/);
+});
+
+void test('the dependency-free adapter opts out only of npm ci', () => {
+  const source = readWorkflow('vscode-prebuilt-payload-adapter.yml');
+  assert.match(source, /uses: \.\/\.github\/actions\/setup-vscode-toolchain/);
+  assert.match(source, /install-dependencies: ['"]false['"]/);
+  assert.doesNotMatch(source, /actions\/setup-node@/);
+  assert.match(source, /python3 -m unittest scripts\.test_prepare_vsix_prebuilt_payload -v/);
 });
 
 void test('current-source smoke does not reinstall dependencies after setup', () => {
