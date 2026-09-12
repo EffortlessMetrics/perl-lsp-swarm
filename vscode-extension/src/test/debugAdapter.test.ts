@@ -377,7 +377,10 @@ describe('PerlDebugAdapterDescriptorFactory', () => {
 
       fs.rmSync(gnuPath);
       linuxLibcForTest = 'gnu';
-      fs.writeFileSync(path.join(extensionDir, 'package.json'), JSON.stringify({}));
+      fs.writeFileSync(
+        path.join(extensionDir, 'package.json'),
+        JSON.stringify({ __metadata: { targetPlatform: 'undefined' } }),
+      );
       const localVsixFactory = new PerlDebugAdapterDescriptorFactory(
         makeContext(tmpDir, extensionDir),
       );

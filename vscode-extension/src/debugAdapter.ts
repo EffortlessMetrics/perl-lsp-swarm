@@ -31,6 +31,7 @@ export function packagedDapTargetDirectory(target: string): string | undefined {
 
 function packagedDapTargetDirectoryForContext(
   context: vscode.ExtensionContext,
+  isExecutable: (filePath: string) => boolean,
 ): string | undefined {
   let packagedTarget: unknown;
   try {
@@ -39,9 +40,9 @@ function packagedDapTargetDirectoryForContext(
     ) as { __metadata?: { targetPlatform?: unknown } };
     packagedTarget = packageJson.__metadata?.targetPlatform;
     if (typeof packagedTarget === 'string') {
-      return /^(?:linux|alpine|darwin|win32)-(?:x64|arm64)$/.test(packagedTarget)
-        ? packagedTarget
-        : undefined;
+      if (/^(?:linux|alpine|darwin|win32)-(?:x64|arm64)$/.test(packagedTarget)) {
+        return packagedTarget;
+      }
     }
   } catch {
     // Development test fixtures may omit package.json; inspect known payloads.
@@ -58,12 +59,12 @@ function packagedDapTargetDirectoryForContext(
           : [];
   const dapName = process.platform === 'win32' ? 'perl-dap.exe' : 'perl-dap';
   const packagedCandidates = hostTargets.filter((target) =>
-    fs.existsSync(path.join(context.extensionPath, 'bin', target, dapName)),
+    isExecutable(path.join(context.extensionPath, 'bin', target, dapName)),
   );
   if (packagedCandidates.length === 1) {
     return packagedCandidates[0];
   }
-  return packagedDapTargetDirectory(resolvePlatformTarget(() => {}));
+  return undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -769,7 +770,10 @@ export class PerlDebugAdapterDescriptorFactory implements vscode.DebugAdapterDes
     // Prefer the adapter shipped by this extension. This keeps a clean
     // installed profile bound to the package it just loaded instead of an
     // unrelated adapter found in managed storage or PATH.
-    const targetDirectory = packagedDapTargetDirectoryForContext(this.context);
+    const targetDirectory = packagedDapTargetDirectoryForContext(
+      this.context,
+      (candidate) => this.isExecutable(candidate),
+    );
     if (targetDirectory) {
       const bundledDap = path.join(this.context.extensionPath, 'bin', targetDirectory, binary);
       if (this.isExecutable(bundledDap)) {
