@@ -42,7 +42,9 @@ fn write_event_payloads<W: Write>(
     payloads: &[Vec<u8>],
     consecutive_write_failures: &mut usize,
     transport_broken: &AtomicBool,
+    flushed: &mut bool,
 ) -> bool {
+    *flushed = false;
     let mut write_failed = false;
     let mut transport_marked_broken = false;
     for payload in payloads {
@@ -61,6 +63,7 @@ fn write_event_payloads<W: Write>(
                 record_event_write_failure(consecutive_write_failures, transport_broken);
         } else {
             record_event_write_success(consecutive_write_failures);
+            *flushed = true;
         }
     }
     transport_marked_broken
@@ -140,11 +143,13 @@ impl DebugAdapter {
                 }
 
                 let mut writer = lock_or_recover(&event_writer, "event_writer");
+                let mut event_flushed = false;
                 if write_event_payloads(
                     &mut *writer,
                     &payloads,
                     &mut consecutive_write_failures,
                     &transport_broken,
+                    &mut event_flushed,
                 ) {
                     tracing::error!(
                         failure_count = consecutive_write_failures,
@@ -154,7 +159,7 @@ impl DebugAdapter {
                     break;
                 }
 
-                if has_terminal_event {
+                if has_terminal_event && event_flushed {
                     if let Ok(mut flushed) = terminal_event_flushed.0.lock() {
                         *flushed = true;
                     }
@@ -718,12 +723,19 @@ mod tests {
         let transport_broken = AtomicBool::new(false);
         let mut consecutive = WRITE_FAILURE_THRESHOLD - 1;
         let payloads = vec![b"{}".to_vec()];
+        let mut flushed = false;
 
-        let threshold_hit =
-            write_event_payloads(&mut writer, &payloads, &mut consecutive, &transport_broken);
+        let threshold_hit = write_event_payloads(
+            &mut writer,
+            &payloads,
+            &mut consecutive,
+            &transport_broken,
+            &mut flushed,
+        );
 
         assert!(!threshold_hit, "successful event write must not mark the transport broken");
         assert_eq!(consecutive, 0, "successful flush must reset failure count");
+        assert!(flushed, "successful flush must report delivery");
         assert!(
             !transport_broken.load(AOrdering::Acquire),
             "transport_broken must remain false after successful flush"
@@ -778,12 +790,19 @@ mod tests {
         let transport_broken = AtomicBool::new(false);
         let mut consecutive = WRITE_FAILURE_THRESHOLD - 1;
         let payloads = vec![b"{}".to_vec()];
+        let mut flushed = false;
 
-        let threshold_hit =
-            write_event_payloads(&mut writer, &payloads, &mut consecutive, &transport_broken);
+        let threshold_hit = write_event_payloads(
+            &mut writer,
+            &payloads,
+            &mut consecutive,
+            &transport_broken,
+            &mut flushed,
+        );
 
         assert!(threshold_hit, "flush failure at threshold must mark the transport broken");
         assert_eq!(consecutive, WRITE_FAILURE_THRESHOLD);
+        assert!(!flushed, "failed flush must not report delivery");
         assert!(
             transport_broken.load(AOrdering::Acquire),
             "transport_broken must be set after threshold flush failure"
