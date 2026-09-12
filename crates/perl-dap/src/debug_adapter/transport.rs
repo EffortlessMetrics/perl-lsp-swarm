@@ -100,30 +100,25 @@ impl DebugAdapter {
         thread::spawn(move || {
             let mut consecutive_write_failures = 0;
             let mut drain_requested = false;
-            let mut drain_channel_closed = false;
             let mut event_delivery_failed = false;
 
             loop {
                 match drain_request_rx.try_recv() {
                     Ok(()) => drain_requested = true,
-                    Err(TryRecvError::Disconnected) => {
-                        drain_requested = true;
-                        drain_channel_closed = true;
-                    }
+                    Err(TryRecvError::Disconnected) => drain_requested = true,
                     Err(TryRecvError::Empty) => {}
                 }
 
                 let first_msg = match rx.recv_timeout(Duration::from_millis(10)) {
                     Ok(message) => message,
                     Err(RecvTimeoutError::Timeout) => {
-                        if drain_requested
-                            && !event_delivery_failed
-                            && !transport_broken.load(Ordering::Acquire)
-                            && drain_ack_tx.send(()).is_ok()
-                        {
-                            break;
-                        }
-                        if drain_channel_closed {
+                        if drain_requested {
+                            if !event_delivery_failed && !transport_broken.load(Ordering::Acquire) {
+                                let _ = drain_ack_tx.send(());
+                            }
+                            // Failed delivery closes the acknowledgment channel
+                            // immediately; the caller receives BrokenPipe rather
+                            // than waiting for the drain watchdog to expire.
                             break;
                         }
                         continue;
@@ -1162,7 +1157,7 @@ mod framing_tests {
         adapter.seed_attached_pid_for_test(4242);
         let result = adapter.run_with_io(input, TerminatedEventFlushFailingWriter::default());
         match result {
-            Err(error) if error.kind() == io::ErrorKind::TimedOut => Ok(()),
+            Err(error) if error.kind() == io::ErrorKind::BrokenPipe => Ok(()),
             Err(error) => Err(io::Error::new(
                 error.kind(),
                 format!("failed terminated-event flush returned wrong error: {error}"),
