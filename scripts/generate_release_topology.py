@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import re
 import subprocess
@@ -44,6 +45,7 @@ SOURCE_PATHS = [
     "docs/reference/downstream-dap-integrations.json",
     "vscode-extension/src/downloader.ts",
     "scripts/inject-sha-assets.sh",
+    "scripts/publish-topo.py",
 ]
 TARGET_RE = re.compile(
     r"(?ms)^\s*- target:\s*(?P<target>[A-Za-z0-9_-]+)\s*$"
@@ -53,6 +55,21 @@ TARGET_RE = re.compile(
 
 class TopologyError(ValueError):
     """A release topology input is missing, stale, or inconsistent."""
+
+
+def publish_dependency_graph(
+    packages: list[dict[str, Any]], root: Path | None = None
+) -> dict[str, set[str]]:
+    """Use the shared publication graph policy rather than a second SCC implementation."""
+    helper_path = (
+        root or Path(__file__).resolve().parents[1]
+    ) / "scripts" / "publish-topo.py"
+    spec = importlib.util.spec_from_file_location("publish_topo", helper_path)
+    if spec is None or spec.loader is None:
+        raise TopologyError(f"cannot load publish graph helper: {helper_path}")
+    helper = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(helper)
+    return helper.build_publish_dependency_graph(packages)
 
 
 def topology_schema_version(value: Any) -> int:
@@ -152,7 +169,7 @@ def cargo_metadata(root: Path) -> dict[str, Any]:
     return value
 
 
-def derive_crates(metadata: dict[str, Any]) -> list[dict[str, Any]]:
+def derive_crates(metadata: dict[str, Any], root: Path | None = None) -> list[dict[str, Any]]:
     packages = {package["id"]: package for package in metadata.get("packages", [])}
     member_ids = metadata.get("workspace_members", [])
     members = [packages[member_id] for member_id in member_ids if member_id in packages]
@@ -182,14 +199,11 @@ def derive_crates(metadata: dict[str, Any]) -> list[dict[str, Any]]:
             f"missing={sorted(publishable - allowed)}, extra={sorted(allowed - publishable)}"
         )
 
-    dependencies: dict[str, set[str]] = {}
-    for name in allowed:
-        package = by_name[name]
-        dependencies[name] = {
-            dependency["name"]
-            for dependency in package.get("dependencies", [])
-            if dependency.get("name") in allowed and dependency.get("source") is None
-        }
+    dependencies = publish_dependency_graph(list(by_name.values()), root)
+    dependencies = {
+        name: deps & allowed for name, deps in dependencies.items() if name in allowed
+    }
+    publish_dependencies = {name: set(deps) for name, deps in dependencies.items()}
     ready = sorted(name for name, deps in dependencies.items() if not deps)
     order: list[str] = []
     while ready:
@@ -219,14 +233,7 @@ def derive_crates(metadata: dict[str, Any]) -> list[dict[str, Any]]:
                 "package_path": package_path,
                 "version": package["version"],
                 "publish_order": publish_order[name],
-                "internal_dependencies": sorted(
-                    dependency
-                    for dependency in (
-                        item["name"]
-                        for item in package.get("dependencies", [])
-                        if item.get("name") in allowed and item.get("source") is None
-                    )
-                ),
+                "internal_dependencies": sorted(publish_dependencies[name]),
             }
         )
     return entries
@@ -973,7 +980,7 @@ def build_manifest(
         raise TopologyError(
             f"VSIX version {package.get('version')} does not match {release}"
         )
-    crates = derive_crates(metadata)
+    crates = derive_crates(metadata, root)
     workspace_manifests = workspace_member_manifest_paths(metadata, root)
     for entry in crates:
         entry["package_path"] = (
@@ -1106,7 +1113,7 @@ def validate_manifest(
     if not isinstance(release, str):
         raise TopologyError("manifest release is missing")
     metadata = cargo_metadata(root)
-    expected_crates = derive_crates(metadata)
+    expected_crates = derive_crates(metadata, root)
     workspace_manifests = workspace_member_manifest_paths(metadata, root)
     for entry in expected_crates:
         entry["package_path"] = (
