@@ -252,6 +252,15 @@ impl DebugAdapter {
                     self.event_sender.as_ref(),
                     &self.seq,
                 )?;
+                // A successful disconnect closes this DAP conversation.  Do
+                // not read the editor pipe again: VS Code closes it after the
+                // response, and treating that expected EOF as a transport
+                // failure turns an orderly shutdown into exit code 1.
+                if command == "disconnect"
+                    && matches!(response, DapMessage::Response { success: true, .. })
+                {
+                    return Ok(());
+                }
             }
         }
     }
@@ -795,6 +804,26 @@ mod framing_tests {
     #[derive(Clone, Default)]
     struct SharedBuf(Arc<Mutex<Vec<u8>>>);
 
+    struct DisconnectThenReadError {
+        input: Vec<u8>,
+        consumed: bool,
+    }
+
+    impl io::Read for DisconnectThenReadError {
+        fn read(&mut self, target: &mut [u8]) -> io::Result<usize> {
+            if self.consumed {
+                return Err(io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "read after orderly disconnect",
+                ));
+            }
+            self.consumed = true;
+            let amount = self.input.len().min(target.len());
+            target[..amount].copy_from_slice(&self.input[..amount]);
+            Ok(amount)
+        }
+    }
+
     impl SharedBuf {
         fn new() -> Self {
             Self(Arc::new(Mutex::new(Vec::new())))
@@ -947,6 +976,21 @@ mod framing_tests {
             "expected at least one framed response in output, got {} bytes",
             written.len()
         );
+        Ok(())
+    }
+
+    #[test]
+    fn test_transport_disconnect_stops_before_post_disconnect_read_error() -> io::Result<()> {
+        let input = DisconnectThenReadError {
+            input: framed_request(1, "disconnect", None),
+            consumed: false,
+        };
+        let output = SharedBuf::new();
+        let mut adapter = DebugAdapter::new();
+        adapter.run_with_io(input, output.clone())?;
+        let written_bytes = output.bytes_snapshot();
+        let written = String::from_utf8_lossy(&written_bytes);
+        assert!(written.contains("\"command\":\"disconnect\""));
         Ok(())
     }
 

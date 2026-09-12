@@ -2129,7 +2129,14 @@ impl DebugAdapter {
         // Settle broker waiters before terminating the child so EOF cannot
         // win the race and replace the client-requested disconnect reason.
         self.operation_broker.settle_all("disconnect");
-        if let Some(ref sender) = self.event_sender {
+        // `terminate` closes the active session and already reserves the
+        // terminal event.  VS Code commonly follows it with `disconnect`; do
+        // not emit a second event for that already-closed session.  A plain
+        // disconnect of an active session still owns the terminal event.
+        let has_active_session = lock_or_recover(&self.session, "debug_adapter.session").is_some()
+            || lock_or_recover(&self.attached_pid, "debug_adapter.attached_pid").is_some()
+            || lock_or_recover(&self.tcp_session, "debug_adapter.tcp_session").is_some();
+        if has_active_session && let Some(ref sender) = self.event_sender {
             emit_terminated_event(sender, &self.seq, &self.termination_state, None, None);
         }
         self.clear_active_session_state();

@@ -719,6 +719,7 @@ suite('Packaged VSIX bundled-server journey', function () {
 
     let startedSession: vscode.DebugSession | undefined;
     const responseOrder: string[] = [];
+    const protocolTrace: Array<Record<string, unknown>> = [];
     let adapterError: string | undefined;
     let adapterExit: { code?: number; signal?: string } | undefined;
     let terminated = false;
@@ -764,6 +765,7 @@ suite('Packaged VSIX bundled-server journey', function () {
         }
         return {
           onDidSendMessage: (message: unknown) => {
+            protocolTrace.push({ direction: 'out', message });
             if (!message || typeof message !== 'object') return;
             const record = message as { type?: unknown; command?: unknown; success?: unknown };
             if (record.type !== 'response' || record.success !== true) return;
@@ -774,13 +776,18 @@ suite('Packaged VSIX bundled-server journey', function () {
           },
           onError: (error: Error) => {
             adapterError = error.message;
+            protocolTrace.push({ direction: 'error', message: error.message });
           },
           onExit: (code: number | undefined, signal: string | undefined) => {
             adapterExit = {
               ...(code === undefined ? {} : { code }),
               ...(signal === undefined ? {} : { signal }),
             };
+            protocolTrace.push({ direction: 'exit', ...adapterExit });
             resolveExit?.(adapterExit);
+          },
+          onWillReceiveMessage: (message: unknown) => {
+            protocolTrace.push({ direction: 'in', message });
           },
         };
       },
@@ -853,6 +860,11 @@ suite('Packaged VSIX bundled-server journey', function () {
       startedSubscription.dispose();
       terminatedSubscription.dispose();
       fs.rmSync(program, { force: true });
+      fs.mkdirSync(receiptsDir(), { recursive: true });
+      fs.writeFileSync(
+        path.join(receiptsDir(), 'packaged_dap_protocol_trace.json'),
+        JSON.stringify(protocolTrace, null, 2),
+      );
     }
   });
 });
