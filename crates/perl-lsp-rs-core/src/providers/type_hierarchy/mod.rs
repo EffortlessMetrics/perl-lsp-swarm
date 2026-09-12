@@ -103,6 +103,10 @@ impl HierarchyIndex {
 /// Provider for type hierarchy (inheritance) information
 pub struct TypeHierarchyProvider;
 
+/// Indicates that a type-hierarchy traversal was stopped by its request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TypeHierarchyCancelled;
+
 impl Default for TypeHierarchyProvider {
     fn default() -> Self {
         Self::new()
@@ -117,13 +121,21 @@ impl TypeHierarchyProvider {
 
     /// Build a hierarchy index from the AST
     fn build_hierarchy_index(&self, ast: &Node) -> HierarchyIndex {
+        self.build_hierarchy_index_with_cancellation(ast, &|| false).unwrap_or_default()
+    }
+
+    fn build_hierarchy_index_with_cancellation(
+        &self,
+        ast: &Node,
+        is_cancelled: &dyn Fn() -> bool,
+    ) -> Result<HierarchyIndex, TypeHierarchyCancelled> {
         let mut index = HierarchyIndex::default();
         let mut current_package = "main".to_string();
 
         // Walk the AST in order, tracking package scope
-        self.index_hierarchy_recursive(ast, &mut index, &mut current_package);
+        self.index_hierarchy_recursive(ast, &mut index, &mut current_package, is_cancelled)?;
 
-        index
+        Ok(index)
     }
 
     fn index_hierarchy_recursive(
@@ -131,7 +143,11 @@ impl TypeHierarchyProvider {
         node: &Node,
         index: &mut HierarchyIndex,
         current_package: &mut String,
-    ) {
+        is_cancelled: &dyn Fn() -> bool,
+    ) -> Result<(), TypeHierarchyCancelled> {
+        if is_cancelled() {
+            return Err(TypeHierarchyCancelled);
+        }
         match &node.kind {
             NodeKind::Package { name, block, name_span: _ } => {
                 if block.is_some() {
@@ -140,7 +156,7 @@ impl TypeHierarchyProvider {
                     let saved_package = current_package.clone();
                     *current_package = name.clone();
                     if let Some(blk) = block {
-                        self.index_hierarchy_recursive(blk, index, current_package);
+                        self.index_hierarchy_recursive(blk, index, current_package, is_cancelled)?;
                     }
                     *current_package = saved_package;
                 } else {
@@ -152,6 +168,9 @@ impl TypeHierarchyProvider {
             NodeKind::Use { module, args, .. } => {
                 if module == "parent" || module == "base" {
                     for arg in args {
+                        if is_cancelled() {
+                            return Err(TypeHierarchyCancelled);
+                        }
                         for parent in self.normalize_parent_arg(arg) {
                             index.add_inheritance(current_package, &parent);
                         }
@@ -166,6 +185,9 @@ impl TypeHierarchyProvider {
                     && let Some(init) = initializer
                 {
                     for parent in self.extract_isa_parents(init) {
+                        if is_cancelled() {
+                            return Err(TypeHierarchyCancelled);
+                        }
                         index.add_inheritance(current_package, &parent);
                     }
                 }
@@ -174,12 +196,18 @@ impl TypeHierarchyProvider {
                 if declarator == "our" {
                     // Check if any variable is @ISA
                     for var in variables {
+                        if is_cancelled() {
+                            return Err(TypeHierarchyCancelled);
+                        }
                         if let NodeKind::Variable { sigil, name: var_name } = &var.kind
                             && sigil == "@"
                             && var_name == "ISA"
                             && let Some(init) = initializer
                         {
                             for parent in self.extract_isa_parents(init) {
+                                if is_cancelled() {
+                                    return Err(TypeHierarchyCancelled);
+                                }
                                 index.add_inheritance(current_package, &parent);
                             }
                         }
@@ -192,11 +220,17 @@ impl TypeHierarchyProvider {
                     match name.as_str() {
                         "extends" => {
                             for parent in Self::extract_names_from_args(args) {
+                                if is_cancelled() {
+                                    return Err(TypeHierarchyCancelled);
+                                }
                                 index.add_inheritance(current_package, &parent);
                             }
                         }
                         "with" => {
                             for role in Self::extract_names_from_args(args) {
+                                if is_cancelled() {
+                                    return Err(TypeHierarchyCancelled);
+                                }
                                 index.add_role(current_package, &role);
                             }
                         }
@@ -206,7 +240,7 @@ impl TypeHierarchyProvider {
             }
             NodeKind::Program { statements } | NodeKind::Block { statements } => {
                 for stmt in statements {
-                    self.index_hierarchy_recursive(stmt, index, current_package);
+                    self.index_hierarchy_recursive(stmt, index, current_package, is_cancelled)?;
                 }
             }
 
@@ -217,9 +251,12 @@ impl TypeHierarchyProvider {
                 let saved_package = current_package.clone();
                 *current_package = name.clone();
                 for parent in parents {
+                    if is_cancelled() {
+                        return Err(TypeHierarchyCancelled);
+                    }
                     index.add_inheritance(name, parent);
                 }
-                self.index_hierarchy_recursive(body, index, current_package);
+                self.index_hierarchy_recursive(body, index, current_package, is_cancelled)?;
                 *current_package = saved_package;
             }
 
@@ -227,11 +264,17 @@ impl TypeHierarchyProvider {
                 // Recurse into other nodes
                 if let Some(children) = self.get_children(node) {
                     for child in children {
-                        self.index_hierarchy_recursive(child, index, current_package);
+                        self.index_hierarchy_recursive(
+                            child,
+                            index,
+                            current_package,
+                            is_cancelled,
+                        )?;
                     }
                 }
             }
         }
+        Ok(())
     }
 
     /// Normalize parent argument (handle quotes, qw(), etc.)
@@ -331,9 +374,27 @@ impl TypeHierarchyProvider {
 
     /// Prepare type hierarchy at position
     pub fn prepare(&self, ast: &Node, code: &str, offset: usize) -> Option<Vec<TypeHierarchyItem>> {
+        self.prepare_with_cancellation(ast, code, offset, &|| false).ok().flatten()
+    }
+
+    /// Prepare type hierarchy while observing the owning request's cancellation state.
+    pub fn prepare_with_cancellation(
+        &self,
+        ast: &Node,
+        code: &str,
+        offset: usize,
+        is_cancelled: &dyn Fn() -> bool,
+    ) -> Result<Option<Vec<TypeHierarchyItem>>, TypeHierarchyCancelled> {
+        if is_cancelled() {
+            return Err(TypeHierarchyCancelled);
+        }
         let position_mapper = PositionMapper::new(code);
         // Find the node at the position
-        let target_node = self.find_node_at_offset(ast, offset)?;
+        let target_node =
+            match self.find_node_at_offset_with_cancellation(ast, offset, is_cancelled)? {
+                Some(node) => node,
+                None => return Ok(None),
+            };
 
         // Check if it's a package or class declaration
         match &target_node.kind {
@@ -344,7 +405,7 @@ impl TypeHierarchyProvider {
                     &position_mapper,
                     TypeHierarchySymbolKind::Class,
                 );
-                Some(vec![item])
+                Ok(Some(vec![item]))
             }
             NodeKind::Class { name, .. } => {
                 let item = self.create_type_item(
@@ -353,7 +414,7 @@ impl TypeHierarchyProvider {
                     &position_mapper,
                     TypeHierarchySymbolKind::Class,
                 );
-                Some(vec![item])
+                Ok(Some(vec![item]))
             }
             NodeKind::Identifier { name } => {
                 // Check if this identifier is part of a package or ISA relationship
@@ -367,18 +428,31 @@ impl TypeHierarchyProvider {
                         detail: Some("Perl Package".to_string()),
                         data: None,
                     };
-                    Some(vec![item])
+                    Ok(Some(vec![item]))
                 } else {
-                    None
+                    Ok(None)
                 }
             }
-            _ => None,
+            _ => Ok(None),
         }
     }
 
     /// Find supertypes (parent classes and composed roles)
     pub fn find_supertypes(&self, ast: &Node, item: &TypeHierarchyItem) -> Vec<TypeHierarchyItem> {
-        let index = self.build_hierarchy_index(ast);
+        self.find_supertypes_with_cancellation(ast, item, &|| false).unwrap_or_default()
+    }
+
+    /// Find supertypes while observing the owning request's cancellation state.
+    pub fn find_supertypes_with_cancellation(
+        &self,
+        ast: &Node,
+        item: &TypeHierarchyItem,
+        is_cancelled: &dyn Fn() -> bool,
+    ) -> Result<Vec<TypeHierarchyItem>, TypeHierarchyCancelled> {
+        if is_cancelled() {
+            return Err(TypeHierarchyCancelled);
+        }
+        let index = self.build_hierarchy_index_with_cancellation(ast, is_cancelled)?;
         let parents = index.get_parents(&item.name);
         let roles = index.get_roles(&item.name);
 
@@ -387,7 +461,13 @@ impl TypeHierarchyProvider {
         let mut all_ancestors: Vec<String> = Vec::new();
         let mut visited = std::collections::BTreeSet::new();
         visited.insert(item.name.clone());
-        self.collect_all_ancestors(&item.name, &index, &mut all_ancestors, &mut visited);
+        self.collect_all_ancestors(
+            &item.name,
+            &index,
+            &mut all_ancestors,
+            &mut visited,
+            is_cancelled,
+        )?;
 
         // Direct parents get "Parent Class" detail, deeper ancestors get "Ancestor"
         let parent_names: std::collections::HashSet<String> = parents.iter().cloned().collect();
@@ -427,7 +507,14 @@ impl TypeHierarchyProvider {
                 data: None,
             });
 
-        parent_items.chain(role_items).chain(ancestor_items).collect()
+        let mut result = Vec::new();
+        for candidate in parent_items.chain(role_items).chain(ancestor_items) {
+            if is_cancelled() {
+                return Err(TypeHierarchyCancelled);
+            }
+            result.push(candidate);
+        }
+        Ok(result)
     }
 
     /// Recursively collect all ancestor packages (parents of parents, etc.). (#5083)
@@ -437,19 +524,30 @@ impl TypeHierarchyProvider {
         index: &HierarchyIndex,
         ancestors: &mut Vec<String>,
         visited: &mut std::collections::BTreeSet<String>,
-    ) {
+        is_cancelled: &dyn Fn() -> bool,
+    ) -> Result<(), TypeHierarchyCancelled> {
+        if is_cancelled() {
+            return Err(TypeHierarchyCancelled);
+        }
         for parent in index.get_parents(package) {
+            if is_cancelled() {
+                return Err(TypeHierarchyCancelled);
+            }
             if visited.insert(parent.clone()) {
                 ancestors.push(parent.clone());
-                self.collect_all_ancestors(&parent, index, ancestors, visited);
+                self.collect_all_ancestors(&parent, index, ancestors, visited, is_cancelled)?;
             }
         }
         for role in index.get_roles(package) {
+            if is_cancelled() {
+                return Err(TypeHierarchyCancelled);
+            }
             if visited.insert(role.clone()) {
                 ancestors.push(role.clone());
-                self.collect_all_ancestors(&role, index, ancestors, visited);
+                self.collect_all_ancestors(&role, index, ancestors, visited, is_cancelled)?;
             }
         }
+        Ok(())
     }
 
     /// Compute the C3 Method Resolution Order (MRO) for a package.
@@ -543,12 +641,28 @@ impl TypeHierarchyProvider {
 
     /// Find subtypes (child classes) that inherit from this class
     pub fn find_subtypes(&self, ast: &Node, item: &TypeHierarchyItem) -> Vec<TypeHierarchyItem> {
-        let index = self.build_hierarchy_index(ast);
+        self.find_subtypes_with_cancellation(ast, item, &|| false).unwrap_or_default()
+    }
+
+    /// Find subtypes while observing the owning request's cancellation state.
+    pub fn find_subtypes_with_cancellation(
+        &self,
+        ast: &Node,
+        item: &TypeHierarchyItem,
+        is_cancelled: &dyn Fn() -> bool,
+    ) -> Result<Vec<TypeHierarchyItem>, TypeHierarchyCancelled> {
+        if is_cancelled() {
+            return Err(TypeHierarchyCancelled);
+        }
+        let index = self.build_hierarchy_index_with_cancellation(ast, is_cancelled)?;
         let children = index.get_children(&item.name);
 
-        children
-            .into_iter()
-            .map(|name| TypeHierarchyItem {
+        let mut result = Vec::new();
+        for name in children {
+            if is_cancelled() {
+                return Err(TypeHierarchyCancelled);
+            }
+            result.push(TypeHierarchyItem {
                 name,
                 kind: TypeHierarchySymbolKind::Class,
                 uri: "file:///current".to_string(),
@@ -556,13 +670,22 @@ impl TypeHierarchyProvider {
                 selection_range: WireRange::default(),
                 detail: Some("Subclass".to_string()),
                 data: None,
-            })
-            .collect()
+            });
+        }
+        Ok(result)
     }
 
     // Helper methods
 
-    fn find_node_at_offset<'a>(&self, node: &'a Node, offset: usize) -> Option<&'a Node> {
+    fn find_node_at_offset_with_cancellation<'a>(
+        &self,
+        node: &'a Node,
+        offset: usize,
+        is_cancelled: &dyn Fn() -> bool,
+    ) -> Result<Option<&'a Node>, TypeHierarchyCancelled> {
+        if is_cancelled() {
+            return Err(TypeHierarchyCancelled);
+        }
         // Inclusive end: a caret resting at the trailing edge of a node (the
         // position right after typing its last character, e.g. `package Foo`
         // with the caret just after "o") must still be treated as on-node,
@@ -572,15 +695,17 @@ impl TypeHierarchyProvider {
             // First check children
             if let Some(children) = self.get_children(node) {
                 for child in children {
-                    if let Some(found) = self.find_node_at_offset(child, offset) {
-                        return Some(found);
+                    if let Some(found) =
+                        self.find_node_at_offset_with_cancellation(child, offset, is_cancelled)?
+                    {
+                        return Ok(Some(found));
                     }
                 }
             }
             // Return this node if no child contains the offset
-            Some(node)
+            Ok(Some(node))
         } else {
-            None
+            Ok(None)
         }
     }
 
@@ -661,6 +786,88 @@ mod tests {
     use super::*;
     use perl_parser_core::parser::Parser;
     use perl_tdd_support::{must, must_some};
+
+    #[test]
+    fn cancellation_is_explicit_for_all_hierarchy_queries() {
+        let code = "package Child; use parent 'Base'; package Leaf; use parent 'Child';";
+        let mut parser = Parser::new(code);
+        let ast = must(parser.parse());
+        let provider = TypeHierarchyProvider::new();
+        let item = TypeHierarchyItem {
+            name: "Child".to_string(),
+            kind: TypeHierarchySymbolKind::Class,
+            uri: "file:///test".to_string(),
+            range: WireRange::default(),
+            selection_range: WireRange::default(),
+            detail: None,
+            data: None,
+        };
+        let cancelled = || true;
+
+        assert!(matches!(
+            provider.prepare_with_cancellation(&ast, code, 8, &cancelled),
+            Err(TypeHierarchyCancelled)
+        ));
+        assert!(matches!(
+            provider.find_supertypes_with_cancellation(&ast, &item, &cancelled),
+            Err(TypeHierarchyCancelled)
+        ));
+        assert!(matches!(
+            provider.find_subtypes_with_cancellation(&ast, &item, &cancelled),
+            Err(TypeHierarchyCancelled)
+        ));
+    }
+
+    #[test]
+    fn cancellation_during_index_walk_is_not_an_empty_success() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let code = (0..64)
+            .map(|index| format!("package P{index}; use parent 'P{}';\n", index + 1))
+            .collect::<String>();
+        let mut parser = Parser::new(&code);
+        let ast = must(parser.parse());
+        let provider = TypeHierarchyProvider::new();
+        let item = TypeHierarchyItem {
+            name: "Missing".to_string(),
+            kind: TypeHierarchySymbolKind::Class,
+            uri: "file:///test".to_string(),
+            range: WireRange::default(),
+            selection_range: WireRange::default(),
+            detail: None,
+            data: None,
+        };
+        let polls = AtomicUsize::new(0);
+        let is_cancelled = || polls.fetch_add(1, Ordering::Relaxed) >= 3;
+
+        assert!(matches!(
+            provider.find_supertypes_with_cancellation(&ast, &item, &is_cancelled),
+            Err(TypeHierarchyCancelled)
+        ));
+        let subtype_polls = AtomicUsize::new(0);
+        let subtype_cancelled = || subtype_polls.fetch_add(1, Ordering::Relaxed) >= 3;
+        assert!(matches!(
+            provider.find_subtypes_with_cancellation(&ast, &item, &subtype_cancelled),
+            Err(TypeHierarchyCancelled)
+        ));
+    }
+
+    #[test]
+    fn prepare_cancellation_during_child_scan_is_not_a_parent_result() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let code = "package Outer { package Inner; }";
+        let mut parser = Parser::new(code);
+        let ast = must(parser.parse());
+        let provider = TypeHierarchyProvider::new();
+        let polls = AtomicUsize::new(0);
+        let is_cancelled = || polls.fetch_add(1, Ordering::Relaxed) >= 2;
+
+        assert!(matches!(
+            provider.prepare_with_cancellation(&ast, code, 9, &is_cancelled),
+            Err(TypeHierarchyCancelled)
+        ));
+    }
 
     #[test]
     fn test_type_hierarchy_for_package() {
