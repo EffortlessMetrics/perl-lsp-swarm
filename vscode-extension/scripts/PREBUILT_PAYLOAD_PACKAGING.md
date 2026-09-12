@@ -59,7 +59,8 @@ competing file; if hard-linking is unsupported, the adapter fails closed rather 
 falling back to overwrite-based publication.
 
 During an adapter invocation, other processes may create competing destination
-files but must not remove or replace existing output entries or their parent
-directories. Rollback relies on those paths retaining their identity until
-completion. Protection against concurrent replacement is separate work under
-#15258; the creation-collision guarantee does not establish that protection.
+files. Rollback records each staged source and removes a published path only if
+that path still names the same staged file and is not a symlink, so a replacement
+cannot be removed as if it were ours. Callers should still use a fresh output
+directory and must not replace output parent directories during the invocation;
+this does not establish a universal concurrent-directory transaction.

@@ -303,5 +303,37 @@ class PrebuiltPayloadAdapterTests(unittest.TestCase):
                 )
                 self.assertEqual(list(root.glob(".prebuilt-payload-*")), [])
 
+    def test_rollback_preserves_replaced_publication(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            paths = self.fixture(root)
+            module, args = self.namespace(paths)
+            original_link = module.os.link
+            calls = 0
+            destination = paths["output"] / "bin" / "linux-x64" / "perllsp"
+            injected = False
+
+            def replacing_link(source: Path, target: Path) -> None:
+                nonlocal calls, injected
+                calls += 1
+                if calls == 1:
+                    original_link(source, target)
+                    target.unlink()
+                    target.write_bytes(b"COMPETITOR-SENTINEL")
+                    injected = True
+                    return
+                raise OSError("injected second publication failure")
+
+            module.os.link = replacing_link
+            try:
+                with self.assertRaisesRegex(OSError, "injected second publication failure"):
+                    module.build(args)
+            finally:
+                module.os.link = original_link
+
+            self.assertTrue(injected)
+            self.assertEqual(destination.read_bytes(), b"COMPETITOR-SENTINEL")
+            self.assertEqual(list(root.glob(".prebuilt-payload-*")), [])
+
 if __name__ == "__main__":
     unittest.main()
