@@ -7,6 +7,7 @@ use super::{
 };
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::TryRecvError;
+use std::time::Duration;
 
 const EVENT_WRITE_BATCH_MAX: usize = 64;
 const WRITE_FAILURE_THRESHOLD: usize = 3;
@@ -88,6 +89,7 @@ impl DebugAdapter {
 
         // Clone transport_broken flag to pass to the event handler thread.
         let transport_broken = Arc::clone(&self.transport_broken);
+        let terminal_event_flushed = Arc::clone(&self.terminal_event_flushed);
 
         thread::spawn(move || {
             let mut consecutive_write_failures = 0;
@@ -113,6 +115,9 @@ impl DebugAdapter {
                     }
                 }
 
+                let has_terminal_event = batch.iter().any(|message| {
+                    matches!(message, DapMessage::Event { event, .. } if event == "terminated")
+                });
                 let mut payloads = Vec::with_capacity(batch.len());
                 for msg in batch {
                     match serde_json::to_vec(&msg) {
@@ -147,6 +152,13 @@ impl DebugAdapter {
                         "Event handler detected persistent write failure; marking transport broken"
                     );
                     break;
+                }
+
+                if has_terminal_event {
+                    if let Ok(mut flushed) = terminal_event_flushed.0.lock() {
+                        *flushed = true;
+                    }
+                    terminal_event_flushed.1.notify_all();
                 }
 
                 if disconnected {
@@ -261,9 +273,25 @@ impl DebugAdapter {
                 // response, and treating that expected EOF as a transport
                 // failure turns an orderly shutdown into exit code 1.
                 if command == "disconnect"
-                    && !had_active_session
                     && matches!(response, DapMessage::Response { success: true, .. })
                 {
+                    if had_active_session {
+                        let (flushed, wake) = &*self.terminal_event_flushed;
+                        let guard = flushed.lock().map_err(|_| {
+                            io::Error::other("terminal event flush state mutex poisoned")
+                        })?;
+                        let result = wake
+                            .wait_timeout_while(guard, Duration::from_secs(5), |done| !*done)
+                            .map_err(|_| {
+                                io::Error::other("terminal event flush state mutex poisoned")
+                            })?;
+                        if !*result.0 {
+                            return Err(io::Error::new(
+                                io::ErrorKind::TimedOut,
+                                "terminal DAP event was not flushed before disconnect",
+                            ));
+                        }
+                    }
                     return Ok(());
                 }
             }
@@ -991,11 +1019,13 @@ mod framing_tests {
         let input = DisconnectThenReadError { input: disconnect, consumed: false };
         let output = SharedBuf::new();
         let mut adapter = DebugAdapter::new();
+        adapter.seed_attached_pid_for_test(4242);
         adapter.run_with_io(input, output.clone())?;
         let written_bytes = output.bytes_snapshot();
         let written = String::from_utf8_lossy(&written_bytes);
         assert!(written.contains("\"command\":\"disconnect\""));
         assert!(!written.contains("\"command\":\"initialize\""));
+        assert_eq!(written.matches("\"event\":\"terminated\"").count(), 1);
         Ok(())
     }
 
