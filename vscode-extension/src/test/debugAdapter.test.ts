@@ -21,7 +21,6 @@ import {
   VSCODE_RUN_TEST_COMMAND,
   packagedDapTargetDirectory,
 } from '../debugAdapter';
-import * as downloader from '../downloader';
 import { hostManagedCompatibilityKeys, resolvePlatformTarget } from '../downloader';
 import { managedNamespaceDir } from '../managedStorageIdentity';
 
@@ -42,16 +41,11 @@ interface LaunchJson {
   configurations: LaunchConfiguration[];
 }
 
-function makeContext(
-  storagePath?: string,
-  extensionPath?: string,
-  targetPlatform?: string,
-): vscode.ExtensionContext {
+function makeContext(storagePath?: string, extensionPath?: string): vscode.ExtensionContext {
   const dir = storagePath ?? fs.mkdtempSync(path.join(os.tmpdir(), 'dap-test-'));
   return {
     globalStorageUri: { fsPath: dir } as vscode.Uri,
     extensionPath: extensionPath ?? dir,
-    extension: targetPlatform ? { packageJSON: { __metadata: { targetPlatform } } } : undefined,
     subscriptions: [],
   } as unknown as vscode.ExtensionContext;
 }
@@ -339,18 +333,22 @@ describe('PerlDebugAdapterDescriptorFactory', () => {
     Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
     Object.defineProperty(process, 'arch', { value: 'x64', configurable: true });
     try {
-      const factory = new PerlDebugAdapterDescriptorFactory(
-        makeContext(tmpDir, extensionDir, 'alpine-x64'),
+      fs.writeFileSync(
+        path.join(extensionDir, 'package.json'),
+        JSON.stringify({ __metadata: { targetPlatform: 'alpine-x64' } }),
       );
+      const factory = new PerlDebugAdapterDescriptorFactory(makeContext(tmpDir, extensionDir));
       const alpineResult = factory.createDebugAdapterDescriptor(
         {} as unknown as vscode.DebugSession,
         undefined,
       ) as vscode.DebugAdapterExecutable;
       expect(alpineResult.command).toBe(alpinePath);
       expect(alpineResult.command).not.toBe(gnuPath);
-      const gnuFactory = new PerlDebugAdapterDescriptorFactory(
-        makeContext(tmpDir, extensionDir, 'linux-x64'),
+      fs.writeFileSync(
+        path.join(extensionDir, 'package.json'),
+        JSON.stringify({ __metadata: { targetPlatform: 'linux-x64' } }),
       );
+      const gnuFactory = new PerlDebugAdapterDescriptorFactory(makeContext(tmpDir, extensionDir));
       const gnuResult = gnuFactory.createDebugAdapterDescriptor(
         {} as unknown as vscode.DebugSession,
         undefined,

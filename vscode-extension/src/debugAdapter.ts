@@ -32,18 +32,18 @@ export function packagedDapTargetDirectory(target: string): string | undefined {
 function packagedDapTargetDirectoryForContext(
   context: vscode.ExtensionContext,
 ): string | undefined {
-  const metadata = context.extension?.packageJSON as
-    | { __metadata?: { targetPlatform?: unknown } }
-    | undefined;
-  const packagedTarget = metadata?.__metadata?.targetPlatform;
-  if (
-    typeof packagedTarget === 'string' &&
-    /^(?:linux|alpine|darwin|win32)-(?:x64|arm64)$/.test(packagedTarget)
-  ) {
-    return packagedTarget;
-  }
-  if (metadata?.__metadata && 'targetPlatform' in metadata.__metadata) {
-    return undefined;
+  try {
+    const packageJson = JSON.parse(
+      fs.readFileSync(path.join(context.extensionPath, 'package.json'), 'utf8'),
+    ) as { __metadata?: { targetPlatform?: unknown } };
+    const packagedTarget = packageJson.__metadata?.targetPlatform;
+    if (typeof packagedTarget === 'string') {
+      return /^(?:linux|alpine|darwin|win32)-(?:x64|arm64)$/.test(packagedTarget)
+        ? packagedTarget
+        : undefined;
+    }
+  } catch {
+    // Development test fixtures may omit package.json; retain runtime fallback.
   }
   return packagedDapTargetDirectory(resolvePlatformTarget(() => {}));
 }
