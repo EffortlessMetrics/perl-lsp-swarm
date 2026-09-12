@@ -59,6 +59,31 @@ Starting is not publishing, and the four differ in what they leave behind:
 Run from the publishing repo (`EffortlessMetrics/perl-lsp`) checkout.
 Replace `vX.Y.Z` with the actual tag.
 
+### Reading a stale public listing
+
+Scoop, Chocolatey and Winget need an explicit maintainer submission that this
+repository cannot perform, so a stale public listing is ambiguous on its own.
+It shows only that no *accepted publication* has propagated — never whether
+something was filed. Each of those three sections links here rather than
+restating the procedure.
+
+**The submission receipt is the primary evidence.** When you file upstream,
+record the submission URL in the populated audit for that release. With a
+receipt, the state is known and nothing below is needed.
+
+Without one, search for an upstream submission before filing, and match the
+result:
+
+| Result | Meaning | Action |
+|---|---|---|
+| Merged | Accepted upstream; the public listing is still propagating | Record the URL as the receipt. Wait. Do not refile. |
+| Open | Filed, awaiting upstream review or moderation | Wait. Do not refile. |
+| Closed unmerged | Rejected or superseded | Read the thread before refiling. |
+| Nothing found | No *evidence* of a submission — not proof there is none | Confirm with whoever ran the release, then file. A search can miss a differently-titled submission, and moderation queues are not always public. |
+
+Never close a channel on the absence of a search result alone, and never refile
+without establishing that the last attempt is genuinely gone.
+
 ### 1. GitHub Release
 
 ```bash
@@ -199,11 +224,8 @@ If the repo-local PR merged but `scoop info` is stale, the channel is
 gh pr list -R ScoopInstaller/Main --search "perl-lsp X.Y.Z" --state all --limit 5
 ```
 
-- **No such PR** — nothing was filed. File it.
-- **PR open** — filed and awaiting upstream review. Wait; do not file a
-  duplicate.
-- **PR closed unmerged** — rejected or superseded. Read the thread before
-  refiling.
+Match the result against
+[Reading a stale public listing](#reading-a-stale-public-listing).
 
 ### 8. Chocolatey
 
@@ -236,14 +258,15 @@ gh run list --workflow=chocolatey-bump.yml --limit 10 \
    metadata in this repository is still on the prior version.
 
 3. **Workflow succeeded, PR merged, `choco search` still stale** — unresolved.
-   Establish whether a submission exists before doing anything: check the
-   package's version history on
-   `https://community.chocolatey.org/packages/perl-lsp`. A submitted version
-   appears there as pending moderation; if no such version is listed, nothing
-   was filed.
+   Check the package's version history at
+   `https://community.chocolatey.org/packages/perl-lsp`, then match against
+   [Reading a stale public listing](#reading-a-stale-public-listing).
 
-   - **Listed as pending** — in moderation. Wait; do not resubmit.
-   - **Not listed** — file the submission.
+   Chocolatey deserves particular care here: moderation state is not reliably
+   public, so a version missing from that history is **not** proof nothing was
+   submitted. Use the recorded receipt, or ask whoever ran the release, before
+   filing again — a duplicate submission in a moderation queue is worse than a
+   delayed one.
 
 A green workflow is *not* evidence of a queued submission, and a stale
 `choco search` is *not* evidence that none exists. Moderation can queue for
@@ -275,8 +298,10 @@ gh pr list -R microsoft/winget-pkgs \
   --search "EffortlessMetrics.perl-lsp X.Y.Z" --state all --limit 5
 ```
 
-Same three outcomes as Scoop: absent means file it, open means wait, closed
-unmerged means read the thread first.
+Match the result against
+[Reading a stale public listing](#reading-a-stale-public-listing). A merged
+`winget-pkgs` PR with a stale `winget show` is propagation delay, not a missing
+submission.
 
 ### 10. End-to-end smoke
 
@@ -329,9 +354,11 @@ notes file so `notes_status` can flip from `pending` to `closed`.
   `winget show --id EffortlessMetrics.perl-lsp --exact` — or a recorded
   upstream submission receipt. A merged repo-local metadata PR does not satisfy
   either. Note the package ids differ from the `perllsp` binary name.
-- A stale public listing means **unresolved**, not unsubmitted. Before filing,
-  look for an existing upstream submission; a filed one can sit in review or
-  moderation for days, and resubmitting on top of it creates duplicates.
+- A stale public listing means **unresolved**, not unsubmitted, and an absent
+  search result is not proof either. Follow
+  [Reading a stale public listing](#reading-a-stale-public-listing): record a
+  submission receipt when you file, and never refile without establishing that
+  the last attempt is genuinely gone.
 
 ## Related
 
