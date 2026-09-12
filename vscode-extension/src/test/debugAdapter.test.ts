@@ -42,11 +42,16 @@ interface LaunchJson {
   configurations: LaunchConfiguration[];
 }
 
-function makeContext(storagePath?: string, extensionPath?: string): vscode.ExtensionContext {
+function makeContext(
+  storagePath?: string,
+  extensionPath?: string,
+  targetPlatform?: string,
+): vscode.ExtensionContext {
   const dir = storagePath ?? fs.mkdtempSync(path.join(os.tmpdir(), 'dap-test-'));
   return {
     globalStorageUri: { fsPath: dir } as vscode.Uri,
     extensionPath: extensionPath ?? dir,
+    extension: targetPlatform ? { packageJSON: { __metadata: { targetPlatform } } } : undefined,
     subscriptions: [],
   } as unknown as vscode.ExtensionContext;
 }
@@ -320,7 +325,6 @@ describe('PerlDebugAdapterDescriptorFactory', () => {
   test('factory selects Alpine DAP on a simulated musl Linux host', () => {
     const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
     const originalArch = Object.getOwnPropertyDescriptor(process, 'arch');
-    const originalTarget = jest.spyOn(downloader, 'resolvePlatformTarget');
     const extensionDir = fs.mkdtempSync(path.join(tmpDir, 'extension-'));
     const alpineDir = path.join(extensionDir, 'bin', 'alpine-x64');
     const gnuDir = path.join(extensionDir, 'bin', 'linux-x64');
@@ -335,23 +339,25 @@ describe('PerlDebugAdapterDescriptorFactory', () => {
     Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
     Object.defineProperty(process, 'arch', { value: 'x64', configurable: true });
     try {
-      const factory = new PerlDebugAdapterDescriptorFactory(makeContext(tmpDir, extensionDir));
-      originalTarget.mockReturnValueOnce('x86_64-unknown-linux-musl');
+      const factory = new PerlDebugAdapterDescriptorFactory(
+        makeContext(tmpDir, extensionDir, 'alpine-x64'),
+      );
       const alpineResult = factory.createDebugAdapterDescriptor(
         {} as unknown as vscode.DebugSession,
         undefined,
       ) as vscode.DebugAdapterExecutable;
       expect(alpineResult.command).toBe(alpinePath);
       expect(alpineResult.command).not.toBe(gnuPath);
-      originalTarget.mockReturnValueOnce('x86_64-unknown-linux-gnu');
-      const gnuResult = factory.createDebugAdapterDescriptor(
+      const gnuFactory = new PerlDebugAdapterDescriptorFactory(
+        makeContext(tmpDir, extensionDir, 'linux-x64'),
+      );
+      const gnuResult = gnuFactory.createDebugAdapterDescriptor(
         {} as unknown as vscode.DebugSession,
         undefined,
       ) as vscode.DebugAdapterExecutable;
       expect(gnuResult.command).toBe(gnuPath);
       expect(gnuResult.command).not.toBe(alpinePath);
     } finally {
-      originalTarget.mockRestore();
       if (originalPlatform) Object.defineProperty(process, 'platform', originalPlatform);
       if (originalArch) Object.defineProperty(process, 'arch', originalArch);
     }

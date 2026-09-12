@@ -29,6 +29,25 @@ export function packagedDapTargetDirectory(target: string): string | undefined {
   return undefined;
 }
 
+function packagedDapTargetDirectoryForContext(
+  context: vscode.ExtensionContext,
+): string | undefined {
+  const metadata = context.extension?.packageJSON as
+    | { __metadata?: { targetPlatform?: unknown } }
+    | undefined;
+  const packagedTarget = metadata?.__metadata?.targetPlatform;
+  if (
+    typeof packagedTarget === 'string' &&
+    /^(?:linux|alpine|darwin|win32)-(?:x64|arm64)$/.test(packagedTarget)
+  ) {
+    return packagedTarget;
+  }
+  if (metadata?.__metadata && 'targetPlatform' in metadata.__metadata) {
+    return undefined;
+  }
+  return packagedDapTargetDirectory(resolvePlatformTarget(() => {}));
+}
+
 // ---------------------------------------------------------------------------
 // Debug configuration wizard helpers (exported for unit testing)
 // ---------------------------------------------------------------------------
@@ -732,7 +751,7 @@ export class PerlDebugAdapterDescriptorFactory implements vscode.DebugAdapterDes
     // Prefer the adapter shipped by this extension. This keeps a clean
     // installed profile bound to the package it just loaded instead of an
     // unrelated adapter found in managed storage or PATH.
-    const targetDirectory = packagedDapTargetDirectory(resolvePlatformTarget(() => {}));
+    const targetDirectory = packagedDapTargetDirectoryForContext(this.context);
     if (targetDirectory) {
       const bundledDap = path.join(this.context.extensionPath, 'bin', targetDirectory, binary);
       if (this.isExecutable(bundledDap)) {
