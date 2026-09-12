@@ -258,7 +258,7 @@ async function observeDebuggee(pid: number): Promise<OwnedDebuggee | null> {
       '-NoProfile',
       '-NonInteractive',
       '-Command',
-      `$observed = Get-Process -Id ${pid} -ErrorAction SilentlyContinue; if ($observed) { $observed.StartTime.ToFileTimeUtc().ToString() }`,
+      `try { $observed = Get-Process -Id ${pid} -ErrorAction Stop; $observed.StartTime.ToFileTimeUtc().ToString(); exit 0 } catch { if ($_.FullyQualifiedErrorId -eq 'NoProcessFoundForGivenId,Microsoft.PowerShell.Commands.GetProcessCommand') { exit 0 }; Write-Error $_; exit 1 }`,
     ],
     {
       shell: false,
