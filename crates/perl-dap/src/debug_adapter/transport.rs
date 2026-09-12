@@ -233,6 +233,10 @@ impl DebugAdapter {
                 // dispatch: a floored wire request is refused before any
                 // handler can run. The `initialized` notification below still
                 // keys off the (never-floored) initialize response.
+                let had_active_session = lock_or_recover(&self.session, "debug_adapter.session")
+                    .is_some()
+                    || lock_or_recover(&self.attached_pid, "debug_adapter.attached_pid").is_some()
+                    || lock_or_recover(&self.tcp_session, "debug_adapter.tcp_session").is_some();
                 let response = match self.secondary_capability_floor_response(
                     seq,
                     &command,
@@ -257,6 +261,7 @@ impl DebugAdapter {
                 // response, and treating that expected EOF as a transport
                 // failure turns an orderly shutdown into exit code 1.
                 if command == "disconnect"
+                    && !had_active_session
                     && matches!(response, DapMessage::Response { success: true, .. })
                 {
                     return Ok(());
@@ -981,16 +986,16 @@ mod framing_tests {
 
     #[test]
     fn test_transport_disconnect_stops_before_post_disconnect_read_error() -> io::Result<()> {
-        let input = DisconnectThenReadError {
-            input: framed_request(1, "disconnect", None),
-            consumed: false,
-        };
+        let mut disconnect = framed_request(1, "disconnect", None);
+        disconnect.extend(framed_request(2, "initialize", Some(json!({"adapterID": "perl"}))));
+        let input = DisconnectThenReadError { input: disconnect, consumed: false };
         let output = SharedBuf::new();
         let mut adapter = DebugAdapter::new();
         adapter.run_with_io(input, output.clone())?;
         let written_bytes = output.bytes_snapshot();
         let written = String::from_utf8_lossy(&written_bytes);
         assert!(written.contains("\"command\":\"disconnect\""));
+        assert!(!written.contains("\"command\":\"initialize\""));
         Ok(())
     }
 
