@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "owner_issue": 15443,
-  "reason": "The #15443 canonical Linux DAP target-selection change grows the exact binaryless Windows candidate extension bundle by 794 bytes; the generated candidate baseline records the measured package.",
+  "owner_issue": 6694,
+  "reason": "Issue #6694 records the #15443 canonical Linux DAP target-selection change; the exact binaryless Windows candidate extension bundle grows by 794 bytes, so the generated candidate baseline records the measured package.",
   "base_baseline_file_sha256": "d0f4bd2eaf0a74de3e8e74119e79ec070be3cdd3fb498188b68944f6e38f1d42",
   "candidate_baseline_file_sha256": "73e26feae5c31a14b513747d949fa4243e29516816dec73c3f39c63a2fecb6e1",
   "base_inventory_sha256": "f96e90df387423bb1b58aeed16ec63df14638bc35c37ce748e423333314856ce",
