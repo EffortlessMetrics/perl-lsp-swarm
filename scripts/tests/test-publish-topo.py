@@ -76,11 +76,15 @@ def _pkg(
     return pkg
 
 
-def _dep(name: str, kind: str | None = None) -> dict:
+def _dep(
+    name: str, kind: str | None = None, source: str | None = None
+) -> dict:
     """Build a minimal cargo-metadata dependency entry."""
     d: dict = {"name": name}
     if kind is not None:
         d["kind"] = kind
+    if source is not None:
+        d["source"] = source
     return d
 
 
@@ -123,6 +127,20 @@ class TestLinearChain(unittest.TestCase):
         meta = _meta(packages, ["a", "b", "c"])
         result = compute_publish_order(meta)
         self.assertEqual(len(result), 3)
+
+
+class TestRegistryDependency(unittest.TestCase):
+    """Registry packages sharing a workspace name are not local edges."""
+
+    def test_registry_dependency_does_not_create_local_cycle(self) -> None:
+        packages = [
+            _pkg("a", deps=[_dep("b", source="registry+https://example.invalid")]),
+            _pkg("b", deps=[_dep("a")]),
+        ]
+        meta = _meta(packages, ["a", "b"])
+        result = compute_publish_order(meta)
+        names = [row["name"] for row in result]
+        self.assertLess(names.index("a"), names.index("b"))
 
 
 class TestDevDepCrossingSccBoundary(unittest.TestCase):
