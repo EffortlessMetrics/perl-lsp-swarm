@@ -349,10 +349,10 @@ impl LspServer {
 
         let result = match method.as_str() {
             "textDocument/prepareTypeHierarchy" | "typeHierarchy/prepare" => {
-                self.handle_prepare_type_hierarchy_dispatch(params)
+                self.handle_prepare_type_hierarchy_dispatch(params, id.as_ref())
             }
-            "typeHierarchy/supertypes" => self.handle_type_hierarchy_supertypes_dispatch(params),
-            "typeHierarchy/subtypes" => self.handle_type_hierarchy_subtypes_dispatch(params),
+            "typeHierarchy/supertypes" => self.handle_type_hierarchy_supertypes_dispatch(params, id.as_ref()),
+            "typeHierarchy/subtypes" => self.handle_type_hierarchy_subtypes_dispatch(params, id.as_ref()),
             _ => Err(enhanced_error(
                 METHOD_NOT_FOUND,
                 &format!("Method '{}' not found or not supported", method),
