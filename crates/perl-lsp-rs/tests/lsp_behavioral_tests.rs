@@ -6,7 +6,7 @@
 /// Behavioral tests for LSP functionality
 /// These tests verify actual functionality, not just response shapes
 /// They ensure the wired infrastructure produces real results
-use serde_json::json;
+use serde_json::{Value, json};
 use std::path::Path;
 use std::process::{Command, Output};
 use std::time::Duration;
@@ -67,6 +67,123 @@ fn uri_matches(expected: &str, actual: &str) -> bool {
     }
 
     false
+}
+
+fn workspace_edit_has_text_edits(edit: &Value, target_uri: &str) -> bool {
+    fn valid_text_edit(edit: &Value) -> bool {
+        let Some(range) = edit.get("range") else {
+            return false;
+        };
+        let position = |position: &Value| {
+            Some((
+                position.get("line").and_then(Value::as_u64)?,
+                position.get("character").and_then(Value::as_u64)?,
+            ))
+        };
+        let Some(start) = range.get("start").and_then(position) else {
+            return false;
+        };
+        let Some(end) = range.get("end").and_then(position) else {
+            return false;
+        };
+
+        start <= end && edit.get("newText").and_then(Value::as_str).is_some()
+    }
+
+    if edit.get("changes").and_then(Value::as_object).is_some_and(|changes| {
+        changes.iter().any(|(uri, edits)| {
+            uri_matches(target_uri, uri)
+                && edits.as_array().is_some_and(|edits| edits.iter().any(valid_text_edit))
+        })
+    }) {
+        return true;
+    }
+
+    edit.get("documentChanges").and_then(Value::as_array).is_some_and(|document_changes| {
+        document_changes.iter().any(|change| {
+            let Some(text_document) = change.get("textDocument") else {
+                return false;
+            };
+            let valid_version = text_document
+                .get("version")
+                .is_some_and(|version| version.is_null() || version.is_i64() || version.is_u64());
+            change
+                .pointer("/textDocument/uri")
+                .and_then(Value::as_str)
+                .is_some_and(|uri| uri_matches(target_uri, uri))
+                && valid_version
+                && change
+                    .get("edits")
+                    .and_then(Value::as_array)
+                    .is_some_and(|edits| edits.iter().any(valid_text_edit))
+        })
+    })
+}
+
+#[test]
+fn workspace_edit_requires_well_formed_text_edits() {
+    let target_uri = "file:///workspace/script.pl";
+    let range = json!({
+        "start": { "line": 0, "character": 0 },
+        "end": { "line": 0, "character": 4 }
+    });
+    let valid = json!({
+        "changes": {
+            (target_uri): [{ "range": range.clone(), "newText": "my $x" }]
+        }
+    });
+    assert!(workspace_edit_has_text_edits(&valid, target_uri));
+    let valid_document_changes = json!({
+        "documentChanges": [{
+            "textDocument": { "uri": target_uri, "version": null },
+            "edits": [{ "range": range.clone(), "newText": "my $x" }]
+        }]
+    });
+    assert!(workspace_edit_has_text_edits(&valid_document_changes, target_uri));
+
+    for malformed in [
+        json!({ "changes": { (target_uri): [null] } }),
+        json!({ "changes": { (target_uri): [{}] } }),
+        json!({
+            "changes": {
+                (target_uri): [{ "range": range.clone(), "newText": 42 }]
+            }
+        }),
+        json!({
+            "changes": {
+                (target_uri): [{
+                    "range": {
+                        "start": { "line": 2, "character": 0 },
+                        "end": { "line": 1, "character": 0 }
+                    },
+                    "newText": "my $x"
+                }]
+            }
+        }),
+        json!({
+            "documentChanges": [{
+                "textDocument": { "uri": target_uri },
+                "edits": [null]
+            }]
+        }),
+        json!({
+            "documentChanges": [{
+                "textDocument": { "uri": target_uri, "version": "1" },
+                "edits": [{ "range": range.clone(), "newText": "my $x" }]
+            }]
+        }),
+        json!({
+            "documentChanges": [{
+                "textDocument": { "uri": target_uri, "version": 1.5 },
+                "edits": [{ "range": range.clone(), "newText": "my $x" }]
+            }]
+        }),
+    ] {
+        assert!(
+            !workspace_edit_has_text_edits(&malformed, target_uri),
+            "malformed workspace edit must not satisfy the behavioral oracle: {malformed}"
+        );
+    }
 }
 
 mod test_fixtures {
@@ -270,14 +387,14 @@ fn test_extract_variable_returns_edits() -> TestResult {
             .iter()
             .find(|action| action["title"].as_str().is_some_and(|title| title.contains("Extract")))
         {
-            let changes = extract_action
+            let edit = extract_action
                 .get("edit")
-                .and_then(|edit| edit.get("changes"))
-                .ok_or("Should have workspace edit changes")?;
-            let edits = changes[workspace.uri("script.pl").as_str()]
-                .as_array()
-                .ok_or("Should have edits array")?;
-            assert!(!edits.is_empty(), "Should have actual text edits");
+                .ok_or("Extract variable action should include a workspace edit")?;
+            let file_uri = workspace.uri("script.pl");
+            assert!(
+                workspace_edit_has_text_edits(edit, &file_uri),
+                "Extract variable action should include at least one well-formed text edit for {file_uri}; got {edit}"
+            );
         }
         println!("{FALLBACK_CHILD_MARKER}={SELECTOR}");
         return Ok(());
