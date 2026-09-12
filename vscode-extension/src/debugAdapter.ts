@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
-import { BinaryDownloader } from './downloader';
+import { BinaryDownloader, detectMusl } from './downloader';
 
 const SERVER_DEBUG_TEST_COMMAND = 'perl.debugTest';
 export const VSCODE_DEBUG_TEST_COMMAND = 'perl-lsp.debugTest';
@@ -12,6 +12,44 @@ export interface DebugTestLaunchTarget {
   label: string;
   program: string;
   args: string[];
+}
+
+function packagedDapTargetDirectoryForContext(
+  context: vscode.ExtensionContext,
+  isExecutable: (filePath: string) => boolean,
+): string | undefined {
+  let packagedTarget: unknown;
+  try {
+    const packageJson = JSON.parse(
+      fs.readFileSync(path.join(context.extensionPath, 'package.json'), 'utf8'),
+    ) as { __metadata?: { targetPlatform?: unknown } };
+    packagedTarget = packageJson.__metadata?.targetPlatform;
+    if (typeof packagedTarget === 'string') {
+      if (/^(?:linux|alpine|darwin|win32)-(?:x64|arm64)$/.test(packagedTarget)) {
+        return packagedTarget;
+      }
+    }
+  } catch {
+    // Development test fixtures may omit package.json; inspect known payloads.
+  }
+
+  const arch = process.arch === 'arm64' ? 'arm64' : process.arch === 'x64' ? 'x64' : undefined;
+  const hostTargets =
+    process.platform === 'linux' && arch
+      ? [`${detectMusl() ? 'alpine' : 'linux'}-${arch}`]
+      : process.platform === 'darwin' && arch
+        ? [`darwin-${arch}`]
+        : process.platform === 'win32' && arch
+          ? [`win32-${arch}`]
+          : [];
+  const dapName = process.platform === 'win32' ? 'perl-dap.exe' : 'perl-dap';
+  const packagedCandidates = hostTargets.filter((target) =>
+    isExecutable(path.join(context.extensionPath, 'bin', target, dapName)),
+  );
+  if (packagedCandidates.length === 1) {
+    return packagedCandidates[0];
+  }
+  return undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -712,7 +750,22 @@ export class PerlDebugAdapterDescriptorFactory implements vscode.DebugAdapterDes
   }
 
   private findDebugAdapter(): string | undefined {
-    // First, check the auto-download directory (ships with perl-lsp)
+    const binary = process.platform === 'win32' ? 'perl-dap.exe' : 'perl-dap';
+
+    // Prefer the adapter shipped by this extension. This keeps a clean
+    // installed profile bound to the package it just loaded instead of an
+    // unrelated adapter found in managed storage or PATH.
+    const targetDirectory = packagedDapTargetDirectoryForContext(this.context, (candidate) =>
+      this.isExecutable(candidate),
+    );
+    if (targetDirectory) {
+      const bundledDap = path.join(this.context.extensionPath, 'bin', targetDirectory, binary);
+      if (this.isExecutable(bundledDap)) {
+        return bundledDap;
+      }
+    }
+
+    // Next, check the auto-download directory (ships with perl-lsp)
     const downloadedDap = BinaryDownloader.getLocalDapPath(this.context);
     if (this.isExecutable(downloadedDap)) {
       return downloadedDap;
@@ -725,7 +778,6 @@ export class PerlDebugAdapterDescriptorFactory implements vscode.DebugAdapterDes
     }
 
     // Otherwise, check common installation locations
-    const binary = process.platform === 'win32' ? 'perl-dap.exe' : 'perl-dap';
     const possiblePaths: string[] = [
       path.join(process.env.HOME || '', '.cargo', 'bin', binary),
       path.join(process.env.CARGO_HOME || '', 'bin', binary),
