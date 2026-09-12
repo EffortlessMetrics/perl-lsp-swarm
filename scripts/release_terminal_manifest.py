@@ -233,7 +233,11 @@ def validate_binary_row(
         "identity_state": "exact",
     }:
         raise ManifestError("build receipt binary packet source mismatch")
-    if artifact != {"role": "archive", "digest": None, "candidate_identity": identity["candidate_identity"]}:
+    if set(artifact) - {"role", "digest", "candidate_identity"}:
+        raise ManifestError("build receipt binary packet artifact contains unknown fields")
+    if artifact.get("role") != "archive" or artifact.get("candidate_identity") != identity["candidate_identity"]:
+        raise ManifestError("build receipt binary packet artifact identity mismatch")
+    if artifact.get("digest") is not None:
         raise ManifestError("build receipt binary packet artifact mismatch")
     if packet.get("product") != {
         "name": "perl-lsp",
