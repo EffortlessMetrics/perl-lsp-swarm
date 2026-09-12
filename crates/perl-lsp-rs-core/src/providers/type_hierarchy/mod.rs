@@ -171,7 +171,9 @@ impl TypeHierarchyProvider {
                         if is_cancelled() {
                             return Err(TypeHierarchyCancelled);
                         }
-                        for parent in self.normalize_parent_arg(arg) {
+                        for parent in
+                            self.normalize_parent_arg_with_cancellation(arg, is_cancelled)?
+                        {
                             index.add_inheritance(current_package, &parent);
                         }
                     }
@@ -184,7 +186,7 @@ impl TypeHierarchyProvider {
                     && var_name == "ISA"
                     && let Some(init) = initializer
                 {
-                    for parent in self.extract_isa_parents(init) {
+                    for parent in self.extract_isa_parents_with_cancellation(init, is_cancelled)? {
                         if is_cancelled() {
                             return Err(TypeHierarchyCancelled);
                         }
@@ -204,7 +206,9 @@ impl TypeHierarchyProvider {
                             && var_name == "ISA"
                             && let Some(init) = initializer
                         {
-                            for parent in self.extract_isa_parents(init) {
+                            for parent in
+                                self.extract_isa_parents_with_cancellation(init, is_cancelled)?
+                            {
                                 if is_cancelled() {
                                     return Err(TypeHierarchyCancelled);
                                 }
@@ -219,7 +223,9 @@ impl TypeHierarchyProvider {
                 if let NodeKind::FunctionCall { name, args } = &expression.kind {
                     match name.as_str() {
                         "extends" => {
-                            for parent in Self::extract_names_from_args(args) {
+                            for parent in
+                                self.extract_names_from_args_with_cancellation(args, is_cancelled)?
+                            {
                                 if is_cancelled() {
                                     return Err(TypeHierarchyCancelled);
                                 }
@@ -227,7 +233,9 @@ impl TypeHierarchyProvider {
                             }
                         }
                         "with" => {
-                            for role in Self::extract_names_from_args(args) {
+                            for role in
+                                self.extract_names_from_args_with_cancellation(args, is_cancelled)?
+                            {
                                 if is_cancelled() {
                                     return Err(TypeHierarchyCancelled);
                                 }
@@ -262,7 +270,7 @@ impl TypeHierarchyProvider {
 
             _ => {
                 // Recurse into other nodes
-                if let Some(children) = self.get_children(node) {
+                if let Some(children) = self.get_children_with_cancellation(node, is_cancelled)? {
                     for child in children {
                         self.index_hierarchy_recursive(
                             child,
@@ -310,12 +318,47 @@ impl TypeHierarchyProvider {
         vec![clean.to_string()]
     }
 
+    fn normalize_parent_arg_with_cancellation(
+        &self,
+        arg: &str,
+        is_cancelled: &dyn Fn() -> bool,
+    ) -> Result<Vec<String>, TypeHierarchyCancelled> {
+        let mut result = Vec::new();
+        for parent in self.normalize_parent_arg(arg) {
+            if is_cancelled() {
+                return Err(TypeHierarchyCancelled);
+            }
+            result.push(parent);
+        }
+        Ok(result)
+    }
+
     /// Extract package/role names from function call arguments (e.g., `extends 'A', 'B'`).
     ///
     /// Handles `String`, `Identifier`, and `ArrayLiteral` nodes. Hash literal
     /// arguments (e.g., `{ -version => 0.01 }`) are harmlessly skipped.
     fn extract_names_from_args(args: &[Node]) -> Vec<String> {
         args.iter().flat_map(Self::collect_symbol_names).collect()
+    }
+
+    fn extract_names_from_args_with_cancellation(
+        &self,
+        args: &[Node],
+        is_cancelled: &dyn Fn() -> bool,
+    ) -> Result<Vec<String>, TypeHierarchyCancelled> {
+        let mut result = Vec::new();
+        for arg in args {
+            if is_cancelled() {
+                return Err(TypeHierarchyCancelled);
+            }
+            for name in Self::collect_symbol_names(arg) {
+                if is_cancelled() {
+                    return Err(TypeHierarchyCancelled);
+                }
+                result.push(name);
+            }
+        }
+        Ok(result)
     }
 
     /// Collect symbol names from a single AST node (String, Identifier, or ArrayLiteral).
@@ -370,6 +413,21 @@ impl TypeHierarchyProvider {
         }
 
         parents
+    }
+
+    fn extract_isa_parents_with_cancellation(
+        &self,
+        node: &Node,
+        is_cancelled: &dyn Fn() -> bool,
+    ) -> Result<Vec<String>, TypeHierarchyCancelled> {
+        let mut parents = Vec::new();
+        for parent in self.extract_isa_parents(node) {
+            if is_cancelled() {
+                return Err(TypeHierarchyCancelled);
+            }
+            parents.push(parent);
+        }
+        Ok(parents)
     }
 
     /// Prepare type hierarchy at position
@@ -697,7 +755,7 @@ impl TypeHierarchyProvider {
         // and references providers for the same half-open-bound class of bug.
         if offset >= node.location.start && offset <= node.location.end {
             // First check children
-            if let Some(children) = self.get_children(node) {
+            if let Some(children) = self.get_children_with_cancellation(node, is_cancelled)? {
                 for child in children {
                     if let Some(found) =
                         self.find_node_at_offset_with_cancellation(child, offset, is_cancelled)?
@@ -735,6 +793,24 @@ impl TypeHierarchyProvider {
             NodeKind::ExpressionStatement { expression } => Some(vec![expression.as_ref()]),
             _ => None,
         }
+    }
+
+    fn get_children_with_cancellation<'a>(
+        &self,
+        node: &'a Node,
+        is_cancelled: &dyn Fn() -> bool,
+    ) -> Result<Option<Vec<&'a Node>>, TypeHierarchyCancelled> {
+        let Some(children) = self.get_children(node) else {
+            return Ok(None);
+        };
+        let mut result = Vec::with_capacity(children.len());
+        for child in children {
+            if is_cancelled() {
+                return Err(TypeHierarchyCancelled);
+            }
+            result.push(child);
+        }
+        Ok(Some(result))
     }
 
     fn is_package_identifier(&self, _ast: &Node, _offset: usize, _name: &str) -> bool {
