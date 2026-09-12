@@ -1641,11 +1641,16 @@ class ReleaseTopologyTests(unittest.TestCase):
             root = Path(temporary)
             helper = root / "scripts/publish-topo.py"
             helper.parent.mkdir()
-            helper.write_text(
+            source_a = (
                 "def build_publish_dependency_graph(packages):\n"
-                "    return {package['name']: {'b'} if package['name'] == 'a' else {'a'} for package in packages}\n",
-                encoding="utf-8",
+                "    return {package['name']: {'b'} if package['name'] == 'a' else {'a'} for package in packages}\n"
             )
+            source_b = (
+                "def build_publish_dependency_graph(packages):\n"
+                "    return {package['name']: set() for package in packages}\n"
+            ).ljust(len(source_a))
+            self.assertEqual(len(source_a), len(source_b))
+            helper.write_text(source_a, encoding="utf-8")
             self.assertNotEqual(
                 MODULE.sha256(helper),
                 MODULE.sha256(MODULE_PATH.parent / "publish-topo.py"),
@@ -1653,6 +1658,12 @@ class ReleaseTopologyTests(unittest.TestCase):
             self.assertEqual(len(MODULE.derive_crates(metadata)), 2)
             with self.assertRaisesRegex(MODULE.TopologyError, "cycle"):
                 MODULE.derive_crates(metadata, root)
+            original_stat = helper.stat()
+            helper.write_text(source_b, encoding="utf-8")
+            os.utime(helper, ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns))
+            self.assertEqual(
+                [crate["name"] for crate in MODULE.derive_crates(metadata, root)], ["a", "b"]
+            )
 
     def test_publish_graph_rejects_normal_and_build_cycles(self):
         metadata = {
@@ -1763,6 +1774,52 @@ class ReleaseTopologyTests(unittest.TestCase):
         workflow_targets = {"x86_64-pc-windows-msvc"}
         self.assertEqual(MODULE.derive_downloader_targets(unused, workflow_targets), set())
         self.assertEqual(MODULE.derive_downloader_targets(wrong, workflow_targets), set())
+
+    def test_downloader_target_derivation_ignores_comments_and_strings(self):
+        workflow_targets = {"x86_64-pc-windows-msvc"}
+        commented = """
+        const WINDOWS_X64_TARGET = 'x86_64-pc-windows-msvc';
+        // return WINDOWS_X64_TARGET;
+        """
+        string_literal = """
+        const WINDOWS_X64_TARGET = 'x86_64-pc-windows-msvc';
+        const documentation = 'return WINDOWS_X64_TARGET';
+        """
+        quoted_literal = "// return 'x86_64-pc-windows-msvc';"
+        block_comment = """
+        const WINDOWS_X64_TARGET = 'x86_64-pc-windows-msvc';
+        /* return WINDOWS_X64_TARGET; */
+        """
+        template_literal = "const WINDOWS_X64_TARGET = 'x86_64-pc-windows-msvc'; const documentation = `return WINDOWS_X64_TARGET`;"
+        self.assertEqual(
+            MODULE.derive_downloader_targets(commented, workflow_targets), set()
+        )
+        self.assertEqual(
+            MODULE.derive_downloader_targets(string_literal, workflow_targets), set()
+        )
+        self.assertEqual(
+            MODULE.derive_downloader_targets(quoted_literal, workflow_targets), set()
+        )
+        self.assertEqual(
+            MODULE.derive_downloader_targets(block_comment, workflow_targets), set()
+        )
+        self.assertEqual(
+            MODULE.derive_downloader_targets(template_literal, workflow_targets), set()
+        )
+        commented_declaration = """
+        // const WINDOWS_X64_TARGET = 'x86_64-pc-windows-msvc';
+        return WINDOWS_X64_TARGET;
+        """
+        commented_return = """
+        const WINDOWS_X64_TARGET = 'x86_64-pc-windows-msvc';
+        // return WINDOWS_X64_TARGET;
+        """
+        self.assertEqual(
+            MODULE.derive_downloader_targets(commented_declaration, workflow_targets), set()
+        )
+        self.assertEqual(
+            MODULE.derive_downloader_targets(commented_return, workflow_targets), set()
+        )
 
     def test_manifest_mutations_fail_closed(self):
         with self.valid_manifest_fixture() as (root, manifest, frozen_sha):

@@ -119,6 +119,8 @@ def build_publish_dependency_graph(packages: list[dict]) -> dict[str, set[str]]:
     for package in packages:
         name = package["name"]
         for dependency in package.get("dependencies", []):
+            if dependency.get("source") is not None:
+                continue
             if dependency["name"] not in package_names:
                 continue
             if dependency.get("kind") == "dev":

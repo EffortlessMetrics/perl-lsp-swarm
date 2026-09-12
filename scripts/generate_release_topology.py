@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import importlib.util
 import json
 import re
 import subprocess
@@ -64,12 +63,20 @@ def publish_dependency_graph(
     helper_path = (
         root or Path(__file__).resolve().parents[1]
     ) / "scripts" / "publish-topo.py"
-    spec = importlib.util.spec_from_file_location("publish_topo", helper_path)
-    if spec is None or spec.loader is None:
-        raise TopologyError(f"cannot load publish graph helper: {helper_path}")
-    helper = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(helper)
-    return helper.build_publish_dependency_graph(packages)
+    try:
+        source = helper_path.read_bytes()
+    except OSError as error:
+        raise TopologyError(f"cannot read publish graph helper: {helper_path}: {error}") from error
+    try:
+        code = compile(source, str(helper_path), "exec")
+    except (SyntaxError, UnicodeError) as error:
+        raise TopologyError(f"cannot compile publish graph helper: {helper_path}: {error}") from error
+    namespace: dict[str, Any] = {"__name__": "publish_topo", "__file__": str(helper_path)}
+    exec(code, namespace)
+    builder = namespace.get("build_publish_dependency_graph")
+    if not callable(builder):
+        raise TopologyError(f"publish graph helper has no callable builder: {helper_path}")
+    return builder(packages)
 
 
 def topology_schema_version(value: Any) -> int:
@@ -849,6 +856,20 @@ def validate_prepared_projection(
         )
 
 
+_TYPESCRIPT_NON_CODE = re.compile(
+    r"//[^\r\n]*|/\*.*?\*/|'(?:\\.|[^'\\])*'|\"(?:\\.|[^\"\\])*\"|`(?:\\.|[^`\\])*`",
+    re.DOTALL,
+)
+
+
+def _mask_typescript_non_code(source: str) -> str:
+    """Blank TypeScript comments and literals while preserving line positions."""
+    return _TYPESCRIPT_NON_CODE.sub(
+        lambda match: "".join("\n" if char == "\n" else " " for char in match.group()),
+        source,
+    )
+
+
 def derive_downloader_targets(source: str, workflow_targets: set[str]) -> set[str]:
     """Derive the release targets reachable through the managed downloader.
 
@@ -859,6 +880,7 @@ def derive_downloader_targets(source: str, workflow_targets: set[str]) -> set[st
     architecture/libc construction.
     """
     managed: set[str] = set()
+    executable_source = _mask_typescript_non_code(source)
 
     if "aarch64-apple-darwin" in source:
         managed.add("aarch64-apple-darwin")
@@ -868,9 +890,19 @@ def derive_downloader_targets(source: str, workflow_targets: set[str]) -> set[st
         ("WINDOWS_X64_TARGET", "x86_64-pc-windows-msvc"),
         ("WINDOWS_ARM64_TARGET", "aarch64-pc-windows-msvc"),
     ):
-        literal_return = f"return '{target}'" in source
-        constant_return = re.search(rf"return\s+{constant}\b", source) is not None
-        declared_target = f"{constant} = '{target}'" in source
+        literal_return = False
+        for match in re.finditer(rf"return\s+(['\"]){re.escape(target)}\1", source):
+            if executable_source[match.start() : match.start() + len("return")] == "return":
+                literal_return = True
+                break
+        constant_return = re.search(rf"return\s+{constant}\b", executable_source) is not None
+        declared_target = False
+        for match in re.finditer(
+            rf"\b{constant}\s*=\s*(['\"]){re.escape(target)}\1", source
+        ):
+            if executable_source[match.start() : match.start() + len(constant)] == constant:
+                declared_target = True
+                break
         if literal_return or (declared_target and constant_return):
             managed.add(target)
 
