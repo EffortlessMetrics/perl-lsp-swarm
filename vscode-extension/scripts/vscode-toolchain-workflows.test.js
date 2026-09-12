@@ -77,8 +77,9 @@ void test('current-source Linux smoke enables the candidate-bound Test Explorer 
   const subjectSha = 'a'.repeat(40);
   const workflowValue = (name) => {
     const match = smokeStep.match(new RegExp(`^\\s+${name}: (.+)$`, 'm'));
-    assert.notEqual(match, null, `${name} must be present in the smoke environment`);
-    return match[1].trim().replace(/^['"]|['"]$/g, '');
+    const value = match?.[1];
+    assert.ok(value, `${name} must be present in the smoke environment`);
+    return value.trim().replace(/^['"]|['"]$/g, '');
   };
   const resolveWorkflowValue = (value) =>
     value
