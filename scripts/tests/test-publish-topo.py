@@ -187,7 +187,7 @@ class TestPublishWorkflowStep(unittest.TestCase):
                     result.stdout = output_file.read()
             return result
         finally:
-            shutil.rmtree(temporary_root, ignore_errors=True)
+            shutil.rmtree(temporary_root)
 
     def test_workflow_step_uses_shared_helper_for_registry_edges(self) -> None:
         metadata = _meta(
