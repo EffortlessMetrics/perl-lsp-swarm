@@ -262,6 +262,9 @@ describe('PerlDebugAdapterDescriptorFactory', () => {
     fs.mkdirSync(bundledDir, { recursive: true });
     fs.writeFileSync(bundledPath, 'bundled dap');
     fs.writeFileSync(path.join(ambientDir, dapName), 'stale ambient dap');
+    const managedDir = managedNamespaceDir(tmpDir, hostManagedCompatibilityKeys()[0]!)!;
+    fs.mkdirSync(managedDir, { recursive: true });
+    fs.writeFileSync(path.join(managedDir, dapName), 'stale managed dap');
     if (process.platform !== 'win32') {
       fs.chmodSync(bundledPath, 0o755);
       fs.chmodSync(path.join(ambientDir, dapName), 0o755);
@@ -269,7 +272,6 @@ describe('PerlDebugAdapterDescriptorFactory', () => {
 
     const ctx = makeContext(tmpDir, extensionDir);
     const factory = new PerlDebugAdapterDescriptorFactory(ctx);
-    const vscode = require('vscode');
     const originalPath = process.env.PATH;
     const originalHome = process.env.HOME;
     const originalCargo = process.env.CARGO_HOME;
@@ -284,9 +286,58 @@ describe('PerlDebugAdapterDescriptorFactory', () => {
       expect(result).toBeDefined();
       expect(result.command).toBe(bundledPath);
     } finally {
-      process.env.PATH = originalPath;
-      process.env.HOME = originalHome;
-      process.env.CARGO_HOME = originalCargo;
+      for (const [name, value] of [
+        ['PATH', originalPath],
+        ['HOME', originalHome],
+        ['CARGO_HOME', originalCargo],
+      ] as const) {
+        if (value === undefined) {
+          delete process.env[name];
+        } else {
+          process.env[name] = value;
+        }
+      }
+    }
+  });
+
+  test('finds the packaged perl-dap with no ambient search path', () => {
+    const extensionDir = fs.mkdtempSync(path.join(tmpDir, 'extension-'));
+    const bundledDir = path.join(extensionDir, 'bin', `${process.platform}-${process.arch}`);
+    const dapName = process.platform === 'win32' ? 'perl-dap.exe' : 'perl-dap';
+    const bundledPath = path.join(bundledDir, dapName);
+    fs.mkdirSync(bundledDir, { recursive: true });
+    fs.writeFileSync(bundledPath, 'bundled dap');
+    if (process.platform !== 'win32') {
+      fs.chmodSync(bundledPath, 0o755);
+    }
+
+    const ctx = makeContext(tmpDir, extensionDir);
+    const factory = new PerlDebugAdapterDescriptorFactory(ctx);
+    const originalPath = process.env.PATH;
+    const originalHome = process.env.HOME;
+    const originalCargo = process.env.CARGO_HOME;
+    process.env.PATH = '';
+    process.env.HOME = tmpDir;
+    process.env.CARGO_HOME = tmpDir;
+    try {
+      const result = factory.createDebugAdapterDescriptor(
+        {} as unknown as vscode.DebugSession,
+        undefined,
+      ) as vscode.DebugAdapterExecutable;
+      expect(result).toBeDefined();
+      expect(result.command).toBe(bundledPath);
+    } finally {
+      for (const [name, value] of [
+        ['PATH', originalPath],
+        ['HOME', originalHome],
+        ['CARGO_HOME', originalCargo],
+      ] as const) {
+        if (value === undefined) {
+          delete process.env[name];
+        } else {
+          process.env[name] = value;
+        }
+      }
     }
   });
 
