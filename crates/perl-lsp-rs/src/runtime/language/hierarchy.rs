@@ -941,7 +941,11 @@ mod tests {
     -> anyhow::Result<()> {
         let server = LspServer::new();
         let uri = "file:///handler-cancellation.pl";
-        open_doc(&server, uri, "package Base;\npackage Child;\nuse parent 'Base';\n");
+        server.test_apply_did_open(
+            uri,
+            "package Base;\npackage Child;\nuse parent 'Base';\n",
+            1,
+        )?;
         let item = json!({
             "name": "Child",
             "kind": 5,
@@ -977,11 +981,16 @@ mod tests {
             anyhow::ensure!(error.code == crate::protocol::REQUEST_CANCELLED);
         }
 
-        server.cancel_clear(&cancelled_id);
         let unrelated_id = JsonRpcId::Integer(71002);
         let result =
             server.handle_prepare_type_hierarchy(Some(params()), Some(&unrelated_id.to_value()))?;
-        anyhow::ensure!(result.is_some(), "an unrelated request ID must not cancel the handler");
+        let values =
+            result.ok_or_else(|| anyhow::anyhow!("unrelated handler returned no result"))?;
+        anyhow::ensure!(
+            values.as_array().is_some_and(|items| items.iter().any(|item| item["name"] == "Child")),
+            "an unrelated request ID must not cancel the handler"
+        );
+        server.cancel_clear(&cancelled_id);
         Ok(())
     }
 
