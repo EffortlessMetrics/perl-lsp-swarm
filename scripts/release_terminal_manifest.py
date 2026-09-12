@@ -269,7 +269,11 @@ def validate_receipt(
         raise ManifestError("release build receipt input differs from identity")
     if value.get("input_sha256") != digest_bytes(canonical(identity)):
         raise ManifestError("release build receipt input hash mismatch")
-    accepted_executions = allowed_build_executions or {"external_release_workflow"}
+    accepted_executions = (
+        {"external_release_workflow"}
+        if allowed_build_executions is None
+        else allowed_build_executions
+    )
     if value.get("runner") not in {"cargo", "cross"} or value.get("build_execution") not in accepted_executions:
         raise ManifestError("release build receipt execution authority is invalid")
     if not isinstance(value.get("claim_boundary"), str) or not value["claim_boundary"].strip():
