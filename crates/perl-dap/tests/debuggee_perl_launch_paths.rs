@@ -169,7 +169,10 @@ fn all_convenience_launch_paths_reach_the_pinned_interpreter() -> Result<(), Box
 fn windows_pipe_launch_configures_perl_debugger_transport() -> Result<(), Box<dyn Error>> {
     let locator = Command::new("where.exe").arg("perl").output()?;
     if !locator.status.success() {
-        eprintln!("SKIP windows_pipe_launch_configures_perl_debugger_transport: Perl unavailable");
+        std::io::Write::write_all(
+            &mut std::io::stderr(),
+            b"SKIP windows_pipe_launch_configures_perl_debugger_transport: Perl unavailable\n",
+        )?;
         return Ok(());
     }
     let perl = String::from_utf8_lossy(&locator.stdout)
