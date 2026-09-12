@@ -361,6 +361,34 @@ describe('PerlDebugAdapterDescriptorFactory', () => {
       musl: false,
       metadata: 'win32-arm64',
       expected: 'win32-arm64',
+      windowsSupport: 'windows-11-or-newer',
+    },
+    {
+      name: 'Windows arm64 selects emulated x64 on Windows 11',
+      platform: 'win32',
+      arch: 'arm64',
+      musl: false,
+      metadata: 'win32-x64',
+      expected: 'win32-x64',
+      windowsSupport: 'windows-11-or-newer',
+    },
+    {
+      name: 'Windows arm64 rejects emulated x64 on Windows 10',
+      platform: 'win32',
+      arch: 'arm64',
+      musl: false,
+      metadata: 'win32-x64',
+      expected: undefined,
+      windowsSupport: 'windows-10-or-earlier',
+    },
+    {
+      name: 'Windows arm64 rejects emulated x64 on unknown build',
+      platform: 'win32',
+      arch: 'arm64',
+      musl: false,
+      metadata: 'win32-x64',
+      expected: undefined,
+      windowsSupport: 'unknown',
     },
     {
       name: 'Darwin x64',
@@ -453,6 +481,25 @@ describe('PerlDebugAdapterDescriptorFactory', () => {
       expected: 'alpine-x64',
     },
     {
+      name: 'Windows 11 arm64 missing metadata prefers native payload',
+      platform: 'win32',
+      arch: 'arm64',
+      musl: false,
+      metadata: undefined,
+      expected: 'win32-arm64',
+      windowsSupport: 'windows-11-or-newer',
+    },
+    {
+      name: 'Windows arm64 missing native metadata falls back to emulated payload',
+      platform: 'win32',
+      arch: 'arm64',
+      musl: false,
+      metadata: undefined,
+      expected: 'win32-x64',
+      windowsSupport: 'windows-11-or-newer',
+      removeTargets: ['win32-arm64'],
+    },
+    {
       name: 'malformed package JSON uses host payload',
       platform: 'linux',
       arch: 'x64',
@@ -495,8 +542,10 @@ describe('PerlDebugAdapterDescriptorFactory', () => {
     for (const target of targets) {
       const file = payloadPath(target);
       fs.mkdirSync(path.dirname(file), { recursive: true });
-      fs.writeFileSync(file, `${target} packaged adapter`);
-      fs.chmodSync(file, 0o755);
+      if (!row.removeTargets?.includes(target)) {
+        fs.writeFileSync(file, `${target} packaged adapter`);
+        fs.chmodSync(file, 0o755);
+      }
     }
     fs.writeFileSync(
       path.join(extensionDir, 'package.json'),
@@ -514,6 +563,9 @@ describe('PerlDebugAdapterDescriptorFactory', () => {
       .spyOn(downloader.BinaryDownloader, 'getLocalDapPath')
       .mockReturnValue(managedPath);
     const muslSpy = jest.spyOn(downloader, 'detectMusl').mockReturnValue(row.musl);
+    const windowsSupportSpy = jest
+      .spyOn(downloader, 'classifyWindowsArm64Support')
+      .mockReturnValue((row.windowsSupport ?? 'not-applicable') as downloader.WindowsArm64Support);
     const androidSpy = jest
       .spyOn(downloader, 'isAndroidEnvironment')
       .mockReturnValue(row.environment === 'android');
@@ -525,8 +577,10 @@ describe('PerlDebugAdapterDescriptorFactory', () => {
     const previousConfiguration = getConfiguration.getMockImplementation();
     // A conflicting managed-download override must not select a packaged ABI.
     getConfiguration.mockImplementation(() => ({
-      get: (key: string, fallback?: unknown) =>
-        key === 'linuxLibc' ? (row.musl ? 'gnu' : 'musl') : fallback,
+      get: (key: string) => {
+        if (key !== 'linuxLibc') throw new Error(`Unexpected configuration key: ${key}`);
+        return row.musl ? 'gnu' : 'musl';
+      },
     }));
     try {
       Object.defineProperty(process, 'platform', { value: row.platform, configurable: true });
@@ -544,6 +598,7 @@ describe('PerlDebugAdapterDescriptorFactory', () => {
       Object.defineProperty(process, 'arch', originalArch);
       managedSpy.mockRestore();
       muslSpy.mockRestore();
+      windowsSupportSpy.mockRestore();
       androidSpy.mockRestore();
       termuxSpy.mockRestore();
       if (previousConfiguration) getConfiguration.mockImplementation(previousConfiguration);

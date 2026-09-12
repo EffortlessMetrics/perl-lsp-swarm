@@ -3,6 +3,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import {
   BinaryDownloader,
+  classifyWindowsArm64Support,
   detectMusl,
   isAndroidEnvironment,
   isTermuxEnvironment,
@@ -30,7 +31,12 @@ function packagedDapTargetDirectoryForContext(
       : process.platform === 'darwin' && arch
         ? [`darwin-${arch}`]
         : process.platform === 'win32' && arch
-          ? [`win32-${arch}`]
+          ? arch === 'arm64'
+            ? [
+                'win32-arm64',
+                ...(classifyWindowsArm64Support() === 'windows-11-or-newer' ? ['win32-x64'] : []),
+              ]
+            : ['win32-x64']
           : [];
   const dapName = process.platform === 'win32' ? 'perl-dap.exe' : 'perl-dap';
 
@@ -50,13 +56,9 @@ function packagedDapTargetDirectoryForContext(
     // Development test fixtures may omit package.json; inspect known payloads.
   }
 
-  const packagedCandidates = hostTargets.filter((target) =>
+  return hostTargets.find((target) =>
     isExecutable(path.join(context.extensionPath, 'bin', target, dapName)),
   );
-  if (packagedCandidates.length === 1) {
-    return packagedCandidates[0];
-  }
-  return undefined;
 }
 
 // ---------------------------------------------------------------------------
