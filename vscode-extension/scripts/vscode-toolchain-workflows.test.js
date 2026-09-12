@@ -50,7 +50,8 @@ void test('the setup action verifies the authority before npm ci', () => {
     installStepEnd === -1 ? source.length : installStepEnd,
   );
   assert.match(installStep, /\n      if: inputs\.install-dependencies == ['"]true['"]/);
-  const doctorIndex = source.indexOf('- name: Verify Node and npm authority before install');
+  const doctorIndex = source.indexOf('run: npm run doctor');
+  assert.notEqual(doctorIndex, -1);
   const doctorStepStart = source.lastIndexOf('- name:', doctorIndex);
   const doctorStepEnd = source.indexOf('\n    - name:', doctorIndex + 1);
   const doctorStep = source.slice(
