@@ -886,14 +886,37 @@ impl TypeHierarchyProvider {
             }
             _ => {}
         }
-        let Some(existing) = self.get_children(node) else {
-            return Ok(None);
-        };
-        for child in existing {
+        let mut push = |child: &'a Node| {
             if is_cancelled() {
                 return Err(TypeHierarchyCancelled);
             }
             children.push(child);
+            Ok(())
+        };
+        match &node.kind {
+            NodeKind::If { condition, then_branch, elsif_branches, else_branch, .. } => {
+                push(condition)?;
+                push(then_branch)?;
+                for branch in elsif_branches {
+                    push(&branch.0)?;
+                    push(&branch.1)?;
+                }
+                if let Some(branch) = else_branch {
+                    push(branch)?;
+                }
+            }
+            NodeKind::Package { block, .. } => {
+                if let Some(block) = block {
+                    push(block)?;
+                }
+            }
+            NodeKind::Class { body, .. } | NodeKind::Subroutine { body, .. } => push(body)?,
+            NodeKind::Assignment { lhs, rhs, .. } => {
+                push(lhs)?;
+                push(rhs)?;
+            }
+            NodeKind::ExpressionStatement { expression } => push(expression)?,
+            _ => return Ok(None),
         }
         Ok(Some(children))
     }
