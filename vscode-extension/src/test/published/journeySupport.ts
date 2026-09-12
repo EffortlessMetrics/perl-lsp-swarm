@@ -223,6 +223,12 @@ export function bundledBinaryPath(extensionPath: string): string {
   return binary;
 }
 
+/** Resolve the adapter shipped beside the installed extension. */
+export function bundledDapPath(extensionPath: string): string {
+  const binary = process.platform === 'win32' ? 'perl-dap.exe' : 'perl-dap';
+  return path.join(extensionPath, 'bin', `${process.platform}-${process.arch}`, binary);
+}
+
 export function pathsEquivalent(left: unknown, right: string): boolean {
   if (typeof left !== 'string' || left.length === 0) {
     return false;
@@ -339,6 +345,47 @@ export interface BundledServerProcessIdentity {
   pid: number;
   path: string;
   creationTimeFileTime?: string;
+}
+
+/** Enumerate perl-dap children rooted in the installed bundled-adapter directory. */
+export async function scanBundledDapProcessIdentities(
+  directory: string,
+): Promise<BundledServerProcessIdentity[]> {
+  if (process.platform !== 'win32') {
+    return [];
+  }
+  const resolved = path.resolve(directory);
+  const result = await runBoundedProcess(
+    'powershell.exe',
+    [
+      '-NoProfile',
+      '-NonInteractive',
+      '-Command',
+      '(Get-Process -Name perl-dap -ErrorAction SilentlyContinue) | ' +
+        'ForEach-Object { if ($_.Path) { "$($_.Id)`t$($_.Path)`t$($_.StartTime.ToFileTimeUtc())" } }',
+    ],
+    {
+      shell: false,
+      timeoutMs: PROCESS_SCAN_TIMEOUT_MS,
+      maxOutputBytes: PROCESS_SCAN_OUTPUT_MAX_BYTES,
+      terminationGraceMs: 1_000,
+      terminationWatchdogMs: 5_000,
+      windowsHide: true,
+    },
+  );
+  if (result.outcome !== 'completed' || result.exitCode !== 0) {
+    throw new Error(
+      `bundled DAP pid scan failed (${result.outcome}, exit ${String(result.exitCode)}): ${(result.stderr || result.diagnostic || '').slice(0, 300)}`,
+    );
+  }
+  const prefix = resolved.endsWith(path.sep) ? resolved : resolved + path.sep;
+  const needle = prefix.toLowerCase();
+  return result.stdout
+    .split(/\r?\n/)
+    .map((line) => /^(\d+)\t(.+)\t(\d+)$/.exec(line.trim()))
+    .filter((match): match is RegExpExecArray => match !== null)
+    .map((match) => ({ pid: Number.parseInt(match[1], 10), path: match[2], creationTimeFileTime: match[3] }))
+    .filter((entry) => entry.path.toLowerCase().startsWith(needle));
 }
 
 /**
