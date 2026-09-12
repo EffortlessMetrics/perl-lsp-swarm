@@ -367,6 +367,34 @@ describe('PerlDebugAdapterDescriptorFactory', () => {
       expect(gnuResult.command).toBe(gnuPath);
       expect(gnuResult.command).not.toBe(alpinePath);
 
+      const managedDir = managedNamespaceDir(tmpDir, hostManagedCompatibilityKeys()[0]!);
+      if (!managedDir) throw new Error('Missing managed test directory');
+      fs.mkdirSync(managedDir, { recursive: true });
+      const managedPath = path.join(managedDir, 'perl-dap');
+      fs.writeFileSync(managedPath, 'managed dap');
+      fs.chmodSync(managedPath, 0o755);
+      const originalPath = process.env.PATH;
+      const originalHome = process.env.HOME;
+      const originalCargo = process.env.CARGO_HOME;
+      process.env.PATH = '';
+      process.env.HOME = tmpDir;
+      process.env.CARGO_HOME = tmpDir;
+      fs.writeFileSync(path.join(extensionDir, 'package.json'), JSON.stringify({}));
+      const ambiguousFactory = new PerlDebugAdapterDescriptorFactory(
+        makeContext(tmpDir, extensionDir),
+      );
+      const ambiguousResult = ambiguousFactory.createDebugAdapterDescriptor(
+        {} as unknown as vscode.DebugSession,
+        undefined,
+      ) as vscode.DebugAdapterExecutable;
+      expect(ambiguousResult.command).toBe(managedPath);
+      if (originalPath === undefined) delete process.env.PATH;
+      else process.env.PATH = originalPath;
+      if (originalHome === undefined) delete process.env.HOME;
+      else process.env.HOME = originalHome;
+      if (originalCargo === undefined) delete process.env.CARGO_HOME;
+      else process.env.CARGO_HOME = originalCargo;
+
       fs.rmSync(gnuPath);
       linuxLibcForTest = 'gnu';
       fs.writeFileSync(
