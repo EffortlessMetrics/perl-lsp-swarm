@@ -186,18 +186,30 @@ Re-dispatch if absent: `gh workflow run scoop-bump.yml -f tag=vX.Y.Z`.
 
 ```bash
 # 2. Public bucket actually carries the version
-scoop info perllsp
+#    The package name is the manifest filename: perl-lsp, not the perllsp binary.
+scoop info perl-lsp
 ```
 
-If the repo-local PR merged but `scoop info` is stale, **nothing has been
-submitted** — the upstream submission to `ScoopInstaller/Main` is an explicit
-maintainer action, because this repository's `GITHUB_TOKEN` cannot write there.
-Waiting will not change it.
+If the repo-local PR merged but `scoop info` is stale, the channel is
+**unresolved, not necessarily unsubmitted**. Upstream submission to
+`ScoopInstaller/Main` is an explicit maintainer action — this repository's
+`GITHUB_TOKEN` cannot write there — so check for one before filing:
+
+```bash
+gh pr list -R ScoopInstaller/Main --search "perl-lsp X.Y.Z" --state all --limit 5
+```
+
+- **No such PR** — nothing was filed. File it.
+- **PR open** — filed and awaiting upstream review. Wait; do not file a
+  duplicate.
+- **PR closed unmerged** — rejected or superseded. Read the thread before
+  refiling.
 
 ### 8. Chocolatey
 
 ```bash
-choco search perllsp --exact
+# The package id is perl-lsp (nuspec <id>), not the perllsp binary name.
+choco search perl-lsp --exact
 ```
 
 `chocolatey-bump.yml` refreshes `distribution/chocolatey/**` in this repository
@@ -223,13 +235,19 @@ gh run list --workflow=chocolatey-bump.yml --limit 10 \
 2. **Workflow succeeded, repo-local PR not merged** — merge it. The package
    metadata in this repository is still on the prior version.
 
-3. **Workflow succeeded, PR merged, `choco search` still stale** — the upstream
-   submission has not been made. Make it. A green workflow is *not* evidence of
-   a queued submission.
+3. **Workflow succeeded, PR merged, `choco search` still stale** — unresolved.
+   Establish whether a submission exists before doing anything: check the
+   package's version history on
+   `https://community.chocolatey.org/packages/perl-lsp`. A submitted version
+   appears there as pending moderation; if no such version is listed, nothing
+   was filed.
 
-Only once a submission exists does Chocolatey moderation apply, and that can
-queue for hours or days. Do not read a stale `choco search` as moderation
-latency without first confirming a submission was actually filed.
+   - **Listed as pending** — in moderation. Wait; do not resubmit.
+   - **Not listed** — file the submission.
+
+A green workflow is *not* evidence of a queued submission, and a stale
+`choco search` is *not* evidence that none exists. Moderation can queue for
+hours or days, but only once something has actually been filed.
 
 ### 9. Winget
 
@@ -242,13 +260,23 @@ gh pr list -R EffortlessMetrics/perl-lsp-swarm \
   --search "head:automation/winget-X.Y.Z" --state all --limit 5
 
 # 2. Public manifest carries the version
-winget show perllsp
+#    Winget keys on PackageIdentifier, not the perllsp binary name.
+winget show --id EffortlessMetrics.perl-lsp --exact
 ```
 
 Re-dispatch if absent: `gh workflow run winget-bump.yml -f tag=vX.Y.Z`.
 
-As with Scoop and Chocolatey, a merged repo-local PR and a stale `winget show`
-mean the upstream submission has not been made, not that it is pending.
+As with Scoop and Chocolatey, a merged repo-local PR plus a stale `winget show`
+leaves the channel unresolved rather than proven unsubmitted. Check for an
+existing submission before filing:
+
+```bash
+gh pr list -R microsoft/winget-pkgs \
+  --search "EffortlessMetrics.perl-lsp X.Y.Z" --state all --limit 5
+```
+
+Same three outcomes as Scoop: absent means file it, open means wait, closed
+unmerged means read the thread first.
 
 ### 10. End-to-end smoke
 
@@ -297,10 +325,13 @@ notes file so `notes_status` can flip from `pending` to `closed`.
   owned tap and must merge; the Scoop, Chocolatey and Winget PRs land **in this
   repository** and merging one changes nothing a user installs.
 - For Scoop, Chocolatey and Winget, closure requires evidence from the public
-  channel itself (`scoop info`, `choco search`, `winget show`) or an upstream
-  submission receipt. A merged repo-local metadata PR does not satisfy this,
-  and a stale public listing after one means the submission was never filed —
-  not that it is pending.
+  channel itself — `scoop info perl-lsp`, `choco search perl-lsp --exact`,
+  `winget show --id EffortlessMetrics.perl-lsp --exact` — or a recorded
+  upstream submission receipt. A merged repo-local metadata PR does not satisfy
+  either. Note the package ids differ from the `perllsp` binary name.
+- A stale public listing means **unresolved**, not unsubmitted. Before filing,
+  look for an existing upstream submission; a filed one can sit in review or
+  moderation for days, and resubmitting on top of it creates duplicates.
 
 ## Related
 
