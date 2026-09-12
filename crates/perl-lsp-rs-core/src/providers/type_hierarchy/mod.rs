@@ -317,6 +317,11 @@ impl TypeHierarchyProvider {
             let Some((_, delim_start)) = arg.char_indices().nth(2) else {
                 return Ok(result);
             };
+            if delim_start.is_alphanumeric() || delim_start == '_' {
+                let clean = arg.trim_matches('"').trim_matches('\'').trim_matches('`');
+                add(clean)?;
+                return Ok(result);
+            }
             let delim_end = match delim_start {
                 '(' => ')',
                 '{' => '}',
@@ -958,10 +963,12 @@ mod tests {
         let provider = TypeHierarchyProvider::new();
         let never_cancelled = || false;
         for (input, expected) in [
-            ("qwéFooé", vec!["Foo"]),
+            ("qwéFooé", vec!["qwéFooé"]),
             ("qwéFoo", vec!["qwéFoo"]),
             ("qwxFoo", vec!["qwxFoo"]),
-            ("qwqFooq", vec!["Foo"]),
+            ("qwqFooq", vec!["qwqFooq"]),
+            ("qw!Foo!", vec!["Foo"]),
+            ("qw§Foo§", vec!["Foo"]),
             ("qw(Foo", vec!["qw(Foo"]),
         ] {
             let actual = provider
@@ -969,6 +976,24 @@ mod tests {
                 .map_err(|_| anyhow::anyhow!("unexpected cancellation"))?;
             ensure!(actual == expected.into_iter().map(String::from).collect::<Vec<_>>());
         }
+        Ok(())
+    }
+
+    #[test]
+    fn bare_qw_package_name_remains_distinct_from_qw_list() -> Result<()> {
+        let code = "package Child;\nuse parent qwqFooq;\nuse parent qw(Foo);\n";
+        let mut parser = Parser::new(code);
+        let ast = parser.parse()?;
+        let provider = TypeHierarchyProvider::new();
+        let items = provider
+            .prepare(&ast, code, 8)
+            .ok_or_else(|| anyhow::anyhow!("Child package was not found"))?;
+        let child = items.first().ok_or_else(|| anyhow::anyhow!("Child package item was empty"))?;
+        let parents = provider.find_supertypes(&ast, child);
+        let names: Vec<_> = parents.iter().map(|item| item.name.as_str()).collect();
+        ensure!(names.contains(&"qwqFooq"));
+        ensure!(names.contains(&"Foo"));
+        ensure!(!names.contains(&"oo"));
         Ok(())
     }
 
