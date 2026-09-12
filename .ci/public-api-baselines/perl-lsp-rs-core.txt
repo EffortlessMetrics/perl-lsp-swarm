@@ -3852,6 +3852,18 @@ pub perl_lsp_rs_core::providers::htmx::HtmxAttributeSpec::name: &'static str
 pub fn perl_lsp_rs_core::providers::HtmxAttributeSpec::clone(&self) -> perl_lsp_rs_core::providers::HtmxAttributeSpec
 pub fn perl_lsp_rs_core::providers::HtmxAttributeSpec::eq(&self, other: &perl_lsp_rs_core::providers::HtmxAttributeSpec) -> bool
 pub fn perl_lsp_rs_core::providers::HtmxAttributeSpec::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_lsp_rs_core::providers::htmx::HtmxCatalogProvenance
+pub perl_lsp_rs_core::providers::htmx::HtmxCatalogProvenance::catalog_event_handler_name: &'static str
+pub perl_lsp_rs_core::providers::htmx::HtmxCatalogProvenance::contract_major: u32
+pub perl_lsp_rs_core::providers::htmx::HtmxCatalogProvenance::contract_minor: u32
+pub perl_lsp_rs_core::providers::htmx::HtmxCatalogProvenance::htmx_version: &'static str
+pub perl_lsp_rs_core::providers::htmx::HtmxCatalogProvenance::reference_commit: &'static str
+pub perl_lsp_rs_core::providers::htmx::HtmxCatalogProvenance::reference_url: &'static str
+pub perl_lsp_rs_core::providers::htmx::HtmxCatalogProvenance::reviewed_on: &'static str
+pub perl_lsp_rs_core::providers::htmx::HtmxCatalogProvenance::upstream_event_handler_name: &'static str
+pub fn perl_lsp_rs_core::providers::HtmxCatalogProvenance::clone(&self) -> perl_lsp_rs_core::providers::HtmxCatalogProvenance
+pub fn perl_lsp_rs_core::providers::HtmxCatalogProvenance::eq(&self, other: &perl_lsp_rs_core::providers::HtmxCatalogProvenance) -> bool
+pub fn perl_lsp_rs_core::providers::HtmxCatalogProvenance::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_lsp_rs_core::providers::htmx::HtmxHeaderSpec
 pub perl_lsp_rs_core::providers::htmx::HtmxHeaderSpec::direction: perl_lsp_rs_core::providers::HtmxHeaderDirection
 pub perl_lsp_rs_core::providers::htmx::HtmxHeaderSpec::documentation: &'static str
@@ -3860,6 +3872,7 @@ pub fn perl_lsp_rs_core::providers::HtmxHeaderSpec::clone(&self) -> perl_lsp_rs_
 pub fn perl_lsp_rs_core::providers::HtmxHeaderSpec::eq(&self, other: &perl_lsp_rs_core::providers::HtmxHeaderSpec) -> bool
 pub fn perl_lsp_rs_core::providers::HtmxHeaderSpec::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub const perl_lsp_rs_core::providers::htmx::HTMX_ATTRIBUTES: &[perl_lsp_rs_core::providers::HtmxAttributeSpec]
+pub const perl_lsp_rs_core::providers::htmx::HTMX_CATALOG_PROVENANCE: perl_lsp_rs_core::providers::HtmxCatalogProvenance
 pub const perl_lsp_rs_core::providers::htmx::HTMX_HEADERS: &[perl_lsp_rs_core::providers::HtmxHeaderSpec]
 pub const perl_lsp_rs_core::providers::htmx::MAX_MARKUP_SCAN_BYTES: usize
 pub fn perl_lsp_rs_core::providers::htmx::complete_attribute_names(source: &str, position: usize) -> core::option::Option<alloc::vec::Vec<perl_lsp_rs_core::providers::CompletionItem>>
@@ -8056,6 +8069,18 @@ pub perl_lsp_rs_core::providers::HtmxAttributeSpec::name: &'static str
 pub fn perl_lsp_rs_core::providers::HtmxAttributeSpec::clone(&self) -> perl_lsp_rs_core::providers::HtmxAttributeSpec
 pub fn perl_lsp_rs_core::providers::HtmxAttributeSpec::eq(&self, other: &perl_lsp_rs_core::providers::HtmxAttributeSpec) -> bool
 pub fn perl_lsp_rs_core::providers::HtmxAttributeSpec::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_lsp_rs_core::providers::HtmxCatalogProvenance
+pub perl_lsp_rs_core::providers::HtmxCatalogProvenance::catalog_event_handler_name: &'static str
+pub perl_lsp_rs_core::providers::HtmxCatalogProvenance::contract_major: u32
+pub perl_lsp_rs_core::providers::HtmxCatalogProvenance::contract_minor: u32
+pub perl_lsp_rs_core::providers::HtmxCatalogProvenance::htmx_version: &'static str
+pub perl_lsp_rs_core::providers::HtmxCatalogProvenance::reference_commit: &'static str
+pub perl_lsp_rs_core::providers::HtmxCatalogProvenance::reference_url: &'static str
+pub perl_lsp_rs_core::providers::HtmxCatalogProvenance::reviewed_on: &'static str
+pub perl_lsp_rs_core::providers::HtmxCatalogProvenance::upstream_event_handler_name: &'static str
+pub fn perl_lsp_rs_core::providers::HtmxCatalogProvenance::clone(&self) -> perl_lsp_rs_core::providers::HtmxCatalogProvenance
+pub fn perl_lsp_rs_core::providers::HtmxCatalogProvenance::eq(&self, other: &perl_lsp_rs_core::providers::HtmxCatalogProvenance) -> bool
+pub fn perl_lsp_rs_core::providers::HtmxCatalogProvenance::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_lsp_rs_core::providers::HtmxHeaderSpec
 pub perl_lsp_rs_core::providers::HtmxHeaderSpec::direction: perl_lsp_rs_core::providers::HtmxHeaderDirection
 pub perl_lsp_rs_core::providers::HtmxHeaderSpec::documentation: &'static str
@@ -8791,6 +8816,7 @@ pub fn perl_lsp_rs_core::providers::WorkspaceSymbolsProvider::default() -> Self
 pub const perl_lsp_rs_core::providers::DEFAULT_PROMOTION_MODE: perl_lsp_rs_core::providers::references_pir_shadow::PromotionMode
 pub const perl_lsp_rs_core::providers::FUNDAMENTAL_CONSTRUCT_LABELS: &[&str]
 pub const perl_lsp_rs_core::providers::HTMX_ATTRIBUTES: &[perl_lsp_rs_core::providers::HtmxAttributeSpec]
+pub const perl_lsp_rs_core::providers::HTMX_CATALOG_PROVENANCE: perl_lsp_rs_core::providers::HtmxCatalogProvenance
 pub const perl_lsp_rs_core::providers::HTMX_HEADERS: &[perl_lsp_rs_core::providers::HtmxHeaderSpec]
 pub const perl_lsp_rs_core::providers::MAX_MARKUP_SCAN_BYTES: usize
 pub const perl_lsp_rs_core::providers::PROVIDER_DECISION_COPYABLE_PAYLOAD_VERSION: &str
