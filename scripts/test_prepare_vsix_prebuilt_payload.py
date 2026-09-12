@@ -285,6 +285,7 @@ class PrebuiltPayloadAdapterTests(unittest.TestCase):
             result = subprocess.run(self.command(paths), cwd=Path(__file__).parents[1], capture_output=True, text=True, check=False)
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("refusing to overwrite", result.stderr)
+            self.assertIn("do not consume", result.stderr)
 
             evidence = json.loads(Path(paths["evidence"]).read_text(encoding="utf-8"))
             evidence["archive"]["sha256"] = digest(Path(paths["archive"]).read_bytes())
@@ -418,11 +419,52 @@ class PrebuiltPayloadAdapterTests(unittest.TestCase):
                     else paths["output"] / collided_name
                 )
                 self.assertEqual(destination.read_bytes(), b"COMPETITOR-SENTINEL")
-                self.assertEqual(
-                    [path for path in paths["output"].rglob("*") if path.is_file()],
-                    [destination],
-                )
+                if collided_name == "perllsp":
+                    self.assertEqual(
+                        [path for path in paths["output"].rglob("*") if path.is_file()],
+                        [destination],
+                    )
+                else:
+                    self.assertEqual(
+                        (final_dir / "perllsp").read_bytes(), b"server"
+                    )
+                    self.assertEqual(
+                        (final_dir / "perl-dap").read_bytes(), b"dap"
+                    )
                 self.assertEqual(list(root.glob(".prebuilt-payload-*")), [])
+
+    def test_failure_cleanup_preserves_replaced_publication(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            paths = self.fixture(root)
+            module, args = self.namespace(paths)
+            original_link = module.os.link
+            calls = 0
+            destination = paths["output"] / "bin" / "linux-x64" / "perllsp"
+            injected = False
+
+            def replacing_link(source: Path, target: Path) -> None:
+                nonlocal calls, injected
+                calls += 1
+                if calls == 1:
+                    original_link(source, target)
+                    target.unlink()
+                    target.write_bytes(b"COMPETITOR-SENTINEL")
+                    injected = True
+                    return
+                raise OSError("injected second publication failure")
+
+            module.os.link = replacing_link
+            try:
+                with self.assertRaisesRegex(OSError, "injected second publication failure"):
+                    module.build(args)
+            finally:
+                module.os.link = original_link
+
+            self.assertTrue(injected)
+            self.assertEqual(destination.read_bytes(), b"COMPETITOR-SENTINEL")
+            self.assertFalse((paths["output"] / "vsix-candidate-payload.json").exists())
+            self.assertEqual(list(root.glob(".prebuilt-payload-*")), [])
 
 if __name__ == "__main__":
     unittest.main()
