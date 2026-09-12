@@ -972,7 +972,7 @@ suite('Packaged VSIX bundled-server journey', function () {
           name: 'Packaged DAP startup',
           program,
           args: [pidFile, releaseFile, environmentFile],
-          env: { PERL_RL: 'Perl', PERLDB_OPTS: 'CommandSet=580' },
+          env: { PERL_RL: 'Perl', perldb_opts: 'CommandSet=580 ReadLine=1' },
           cwd: workspacePath,
           stopOnEntry: false,
         }),
@@ -997,7 +997,7 @@ suite('Packaged VSIX bundled-server journey', function () {
       debuggee = await waitForDebuggee(pidFile);
       const childEnvironment = fs.readFileSync(environmentFile, 'utf8');
       assert.match(childEnvironment, /^PERL_RL=Perl$/m);
-      assert.match(childEnvironment, /^PERLDB_OPTS=CommandSet=580 ReadLine=0$/m);
+      assert.match(childEnvironment, /^PERLDB_OPTS=CommandSet=580 ReadLine=1 ReadLine=0$/m);
       stopRequested = true;
       await withTimeout('packaged DAP stopDebugging', vscode.debug.stopDebugging(session), 30_000);
       await withTimeout('packaged DAP termination event', termination, 30_000);

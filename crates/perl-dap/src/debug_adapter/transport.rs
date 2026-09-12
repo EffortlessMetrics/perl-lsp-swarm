@@ -1,12 +1,14 @@
 //! Transport layer: run (stdin/stdout) and run_with_io.
 
+use super::sync_utils::EventSender;
+#[cfg(test)]
+use super::sync_utils::dispatch_event;
 use super::{
     Arc, AtomicBool, BufReader, ContentLengthFramer, DapMessage, DebugAdapter,
-    EVENT_QUEUE_CAPACITY, Mutex, Read, Write, dispatch_event, io, lock_or_recover, sync_channel,
-    thread,
+    EVENT_QUEUE_CAPACITY, Mutex, Read, Write, io, lock_or_recover, sync_channel, thread,
 };
 use std::sync::atomic::Ordering;
-use std::sync::mpsc::{RecvTimeoutError, TryRecvError};
+use std::sync::mpsc::TryRecvError;
 use std::time::Duration;
 
 const EVENT_WRITE_BATCH_MAX: usize = 64;
@@ -88,44 +90,19 @@ impl DebugAdapter {
 
         // Create bounded channel for asynchronous events.
         let (tx, rx) = sync_channel::<DapMessage>(EVENT_QUEUE_CAPACITY);
-        self.event_sender = Some(tx.clone());
+        let event_sender = EventSender::new(tx);
+        self.event_sender = Some(event_sender.clone());
+        let (writer_done_tx, writer_done_rx) = sync_channel::<bool>(1);
 
         // Clone transport_broken flag to pass to the event handler thread.
         let transport_broken = Arc::clone(&self.transport_broken);
         // This handshake is local to this transport run.  It cannot be
         // satisfied by a terminal event from a previous session.
-        let (drain_request_tx, drain_request_rx) = sync_channel::<()>(1);
-        let (drain_ack_tx, drain_ack_rx) = sync_channel::<()>(1);
-
         thread::spawn(move || {
             let mut consecutive_write_failures = 0;
-            let mut drain_requested = false;
             let mut event_delivery_failed = false;
 
-            loop {
-                match drain_request_rx.try_recv() {
-                    Ok(()) => drain_requested = true,
-                    Err(TryRecvError::Disconnected) => drain_requested = true,
-                    Err(TryRecvError::Empty) => {}
-                }
-
-                let first_msg = match rx.recv_timeout(Duration::from_millis(10)) {
-                    Ok(message) => message,
-                    Err(RecvTimeoutError::Timeout) => {
-                        if drain_requested {
-                            if !event_delivery_failed && !transport_broken.load(Ordering::Acquire) {
-                                let _ = drain_ack_tx.send(());
-                            }
-                            // Failed delivery closes the acknowledgment channel
-                            // immediately; the caller receives BrokenPipe rather
-                            // than waiting for the drain watchdog to expire.
-                            break;
-                        }
-                        continue;
-                    }
-                    Err(RecvTimeoutError::Disconnected) => break,
-                };
-
+            while let Ok(first_msg) = rx.recv() {
                 // Check if transport is already marked broken
                 if transport_broken.load(Ordering::Acquire) {
                     break;
@@ -191,7 +168,17 @@ impl DebugAdapter {
                 }
             }
             tracing::debug!("Event handler thread terminating");
+            let _ = writer_done_tx
+                .send(!event_delivery_failed && !transport_broken.load(Ordering::Acquire));
         });
+
+        struct EventSenderCloseGuard(EventSender);
+        impl Drop for EventSenderCloseGuard {
+            fn drop(&mut self) {
+                self.0.close();
+            }
+        }
+        let _close_guard = EventSenderCloseGuard(event_sender.clone());
 
         let mut reader = BufReader::new(input);
         let mut framer = ContentLengthFramer::new();
@@ -296,24 +283,29 @@ impl DebugAdapter {
                 if command == "disconnect"
                     && matches!(response, DapMessage::Response { success: true, .. })
                 {
-                    drain_request_tx.send(()).map_err(|_| {
-                        io::Error::new(
+                    // Close admission only after the response has been flushed. Every
+                    // producer already admitted before this point must finish before
+                    // the receiver observes channel disconnection.
+                    event_sender.close();
+                    let drained =
+                        writer_done_rx.recv_timeout(Duration::from_secs(5)).map_err(|error| {
+                            match error {
+                                std::sync::mpsc::RecvTimeoutError::Timeout => io::Error::new(
+                                    io::ErrorKind::TimedOut,
+                                    "DAP event queue was not drained before disconnect",
+                                ),
+                                std::sync::mpsc::RecvTimeoutError::Disconnected => io::Error::new(
+                                    io::ErrorKind::BrokenPipe,
+                                    "event writer stopped before disconnect drain",
+                                ),
+                            }
+                        })?;
+                    if !drained {
+                        return Err(io::Error::new(
                             io::ErrorKind::BrokenPipe,
-                            "event writer stopped before disconnect drain",
-                        )
-                    })?;
-                    drain_ack_rx.recv_timeout(Duration::from_secs(5)).map_err(
-                        |error| match error {
-                            std::sync::mpsc::RecvTimeoutError::Timeout => io::Error::new(
-                                io::ErrorKind::TimedOut,
-                                "DAP event queue was not drained before disconnect",
-                            ),
-                            std::sync::mpsc::RecvTimeoutError::Disconnected => io::Error::new(
-                                io::ErrorKind::BrokenPipe,
-                                "event writer stopped before disconnect drain",
-                            ),
-                        },
-                    )?;
+                            "DAP event delivery failed during disconnect",
+                        ));
+                    }
                     return Ok(());
                 }
             }
@@ -338,7 +330,7 @@ fn write_response_then_notify_initialized<W: Write>(
     shared_writer: &Mutex<W>,
     payload: &[u8],
     notify_initialized: bool,
-    event_sender: Option<&std::sync::mpsc::SyncSender<DapMessage>>,
+    event_sender: Option<&EventSender>,
     seq: &Mutex<i64>,
 ) -> io::Result<()> {
     {
@@ -348,7 +340,7 @@ fn write_response_then_notify_initialized<W: Write>(
     }
 
     if notify_initialized && let Some(sender) = event_sender {
-        let _ = dispatch_event(sender, seq, "initialized", None);
+        let _ = sender.dispatch(seq, "initialized", None);
     }
     Ok(())
 }
@@ -542,7 +534,7 @@ mod tests {
                 &producer_writer,
                 b"response-payload",
                 true,
-                Some(&tx),
+                Some(&EventSender::new(tx.clone())),
                 &producer_seq,
             )
         });

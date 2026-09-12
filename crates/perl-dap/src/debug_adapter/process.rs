@@ -4,11 +4,10 @@ use super::logpoint::{DrainStep, LogpointDrain, LogpointStep, PendingLogpoint};
 use super::{
     Arc, BreakpointHitOutcome, BufRead, BufReader, Child, DEBUG_SESSION_TERMINATE_WAIT_MS,
     DapEvent, DapMessage, DebugAdapter, DebugSession, DebugState, DisconnectArguments, Duration,
-    Instant, Mutex, Read, RestartArguments, ResumeMode, Source, StackFrame, Stdio, SyncSender,
-    TcpAttachConfig, TcpAttachSession, TerminateArguments, TerminationState, Value, Write,
-    ansi_escape_re, catalog_has_feature, context_re, die_suffix_re, emit_event_safe, error_re,
-    exception_re, json, lock_or_recover, module_path_to_name, prompt_re, security, stack_frame_re,
-    thread, warning_re,
+    Instant, Mutex, Read, RestartArguments, ResumeMode, Source, StackFrame, Stdio, TcpAttachConfig,
+    TcpAttachSession, TerminateArguments, TerminationState, Value, Write, ansi_escape_re,
+    catalog_has_feature, context_re, die_suffix_re, error_re, exception_re, json, lock_or_recover,
+    module_path_to_name, prompt_re, security, stack_frame_re, thread, warning_re,
 };
 #[cfg(unix)]
 use nix::sys::signal::{self, Signal};
@@ -22,7 +21,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::sync_channel;
 
-use super::sync_utils::{GuardedDispatchResult, dispatch_event_generation_guarded};
+use super::sync_utils::{EventSender, GuardedDispatchResult};
 use super::tcp_attach_forwarder::{TCP_ATTACH_EVENT_CAPACITY, spawn_tcp_attach_event_forwarder};
 
 mod perl_info;
@@ -31,6 +30,15 @@ mod perl_spawn;
 use super::variable_cache::VariableCache;
 use perl_info::detect_perl_info;
 use perl_spawn::{format_perl_spawn_error, is_valid_perl_interpreter};
+
+fn emit_event_safe(
+    sender: &EventSender,
+    seq: &Mutex<i64>,
+    event: &str,
+    body: Option<Value>,
+) -> bool {
+    sender.dispatch(seq, event, body) != super::sync_utils::EventDispatchResult::Disconnected
+}
 
 const SCOPE_FRAME_ID_MAX: u64 = 99_999;
 
@@ -606,10 +614,21 @@ impl DebugAdapter {
         #[cfg(windows)]
         {
             cmd.env("EMACS", "1");
-            let perl_db_opts = env_overrides.get("PERLDB_OPTS").map_or_else(
-                || "ReadLine=0".to_string(),
-                |value| append_debugger_readline_option(value),
-            );
+            // Read the effective child environment, including Windows' case-
+            // insensitive variable names, rather than replacing user options.
+            // perl5db parses options left-to-right: the final debugger-only
+            // ReadLine switch wins without changing the program's PERL_RL.
+            let mut perl_db_opts = cmd
+                .get_envs()
+                .find_map(|(key, value)| {
+                    key.to_str()
+                        .is_some_and(|key| key.eq_ignore_ascii_case("PERLDB_OPTS"))
+                        .then_some(value)
+                        .flatten()
+                })
+                .unwrap_or_default()
+                .to_os_string();
+            perl_db_opts.push(" ReadLine=0");
             cmd.env("PERLDB_OPTS", perl_db_opts);
         }
 
@@ -2487,21 +2506,6 @@ impl DebugAdapter {
     }
 }
 
-/// Append the debugger-owned readline switch without replacing user options.
-///
-/// Strawberry's `perl5db.pl` parses `PERLDB_OPTS` left-to-right, so the final
-/// `ReadLine=0` wins over an earlier value while unrelated options remain
-/// available to the child. This is deliberately string-preserving; malformed
-/// user options retain their existing debugger behavior.
-#[cfg(any(windows, test))]
-fn append_debugger_readline_option(existing: &str) -> String {
-    if existing.trim().is_empty() {
-        "ReadLine=0".to_string()
-    } else {
-        format!("{existing} ReadLine=0")
-    }
-}
-
 /// Atomically claim the single `terminated` emission for this session generation.
 ///
 /// Returns `true` if this caller now owns emission (and must deliver the event),
@@ -2544,17 +2548,12 @@ fn terminated_delivery_is_current(
 }
 
 /// Emit interpolated logpoint text on the debug console.
-fn emit_logpoint_messages(
-    sender: Option<&SyncSender<DapMessage>>,
-    seq: &Mutex<i64>,
-    messages: Vec<String>,
-) {
+fn emit_logpoint_messages(sender: Option<&EventSender>, seq: &Mutex<i64>, messages: Vec<String>) {
     let Some(sender) = sender else {
         return;
     };
     for message in messages {
-        emit_event_safe(
-            sender,
+        let _ = sender.dispatch(
             seq,
             "output",
             Some(json!({
@@ -2566,7 +2565,7 @@ fn emit_logpoint_messages(
 }
 
 pub(super) fn emit_terminated_event(
-    sender: &SyncSender<DapMessage>,
+    sender: &EventSender,
     seq: &Mutex<i64>,
     termination_state: &Mutex<TerminationState>,
     expected_generation: Option<u64>,
@@ -2592,7 +2591,7 @@ pub(super) fn emit_terminated_event(
 /// event instead of an unbounded blocking send publishing it into the
 /// replacement's conversation after validation passed.
 pub(super) fn emit_terminated_event_guarded(
-    sender: &SyncSender<DapMessage>,
+    sender: &EventSender,
     seq: &Mutex<i64>,
     termination_state: &Mutex<TerminationState>,
     expected_generation: Option<u64>,
@@ -2609,13 +2608,14 @@ pub(super) fn emit_terminated_event_guarded(
         return false;
     }
     !matches!(
-        dispatch_event_generation_guarded(sender, seq, "terminated", body, stale),
+        sender.dispatch_generation_guarded(seq, "terminated", body, stale),
         GuardedDispatchResult::Disconnected
     )
 }
 
 #[cfg(test)]
 mod tests {
+    use super::super::sync_utils::EventSender;
     use super::{
         DebugAdapter, DebugState, current_stopped_frame_id, detect_perl_info,
         emit_terminated_event, format_perl_spawn_error, is_valid_perl_interpreter,
@@ -2805,7 +2805,7 @@ mod tests {
         let seq = Arc::new(Mutex::new(0));
         let termination_state =
             Arc::new(Mutex::new(super::TerminationState { generation: 1, emitted: false }));
-        let first_sender = sender.clone();
+        let first_sender = EventSender::new(sender.clone());
         let first_seq = seq.clone();
         let first_guard = termination_state.clone();
         let first = std::thread::spawn(move || {
@@ -2817,7 +2817,8 @@ mod tests {
                 Some(serde_json::json!({"reason": "debugger_eof"})),
             )
         });
-        let second = emit_terminated_event(&sender, &seq, &termination_state, None, None);
+        let second_sender = EventSender::new(sender.clone());
+        let second = emit_terminated_event(&second_sender, &seq, &termination_state, None, None);
         let first = first.join().map_err(|_| "termination worker panicked".to_string())?;
         if first == second {
             return Err(format!(
@@ -2854,7 +2855,7 @@ mod tests {
             Mutex::new(super::TerminationState { generation: 2, emitted: false });
 
         if emit_terminated_event(
-            &sender,
+            &EventSender::new(sender.clone()),
             &seq,
             &termination_state,
             Some(1),
@@ -2867,7 +2868,7 @@ mod tests {
         }
 
         if !emit_terminated_event(
-            &sender,
+            &EventSender::new(sender.clone()),
             &seq,
             &termination_state,
             Some(2),
@@ -2911,7 +2912,7 @@ mod tests {
 
         // A delivery under the now-current generation is still acknowledged.
         if !emit_terminated_event(
-            &sender,
+            &EventSender::new(sender.clone()),
             &seq,
             &termination_state,
             Some(4),
@@ -3736,18 +3737,5 @@ mod tests {
             }
             other => Err(format!("expected Response from handle_launch; got {other:?}")),
         }
-    }
-
-    #[test]
-    fn debugger_readline_option_preserves_child_options() -> Result<(), String> {
-        let retained = super::append_debugger_readline_option("CommandSet=580 ReadLine=1");
-        if retained != "CommandSet=580 ReadLine=1 ReadLine=0" {
-            return Err(format!("unexpected debugger options: {retained:?}"));
-        }
-        let defaulted = super::append_debugger_readline_option("  ");
-        if defaulted != "ReadLine=0" {
-            return Err(format!("unexpected empty debugger options: {defaulted:?}"));
-        }
-        Ok(())
     }
 }

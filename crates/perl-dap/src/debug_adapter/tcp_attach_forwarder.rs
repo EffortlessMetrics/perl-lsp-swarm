@@ -24,14 +24,16 @@
 //!   operations) and exits when the reader side disappears or the session
 //!   generation is replaced.
 
+#[cfg(test)]
+use super::DapMessage;
 use super::process::emit_terminated_event_guarded;
-use super::sync_utils::{
-    GuardedDispatchResult, dispatch_event_generation_guarded, lock_or_recover,
-};
-use super::{DapMessage, DebugAdapter, TerminationState};
+use super::sync_utils::{EventSender, GuardedDispatchResult, lock_or_recover};
+use super::{DebugAdapter, TerminationState};
 use crate::tcp_attach::DapEvent;
 use serde_json::json;
-use std::sync::mpsc::{Receiver, SyncSender};
+use std::sync::mpsc::Receiver;
+#[cfg(test)]
+use std::sync::mpsc::SyncSender;
 use std::sync::{Arc, Mutex};
 use std::thread;
 
@@ -51,7 +53,7 @@ pub(super) const TCP_ATTACH_EVENT_CAPACITY: usize = 128;
 /// dropped before publication.
 pub(super) fn spawn_tcp_attach_event_forwarder(
     rx: Receiver<DapEvent>,
-    event_sender: Option<SyncSender<DapMessage>>,
+    event_sender: Option<EventSender>,
     seq_counter: Arc<Mutex<i64>>,
     termination_state: Arc<Mutex<TerminationState>>,
     session_generation: u64,
@@ -117,13 +119,8 @@ pub(super) fn spawn_tcp_attach_event_forwarder(
                         // re-validates the generation before every commit
                         // attempt, so the replacement retires the stale event
                         // instead (#9521 review).
-                        if dispatch_event_generation_guarded(
-                            sender,
-                            &seq_counter,
-                            name,
-                            body,
-                            &stale,
-                        ) == GuardedDispatchResult::Stale
+                        if sender.dispatch_generation_guarded(&seq_counter, name, body, &stale)
+                            == GuardedDispatchResult::Stale
                         {
                             break;
                         }
@@ -161,7 +158,7 @@ mod tests {
 
         let handle = spawn_tcp_attach_event_forwarder(
             rx,
-            Some(out_tx),
+            Some(EventSender::new(out_tx)),
             Arc::new(Mutex::new(0)),
             Arc::clone(&state),
             1,
@@ -199,7 +196,7 @@ mod tests {
 
         let handle = spawn_tcp_attach_event_forwarder(
             rx,
-            Some(out_tx),
+            Some(EventSender::new(out_tx)),
             Arc::new(Mutex::new(0)),
             Arc::clone(&state),
             1,
@@ -242,7 +239,7 @@ mod tests {
 
         let handle = spawn_tcp_attach_event_forwarder(
             rx,
-            Some(out_tx),
+            Some(EventSender::new(out_tx)),
             Arc::new(Mutex::new(0)),
             Arc::clone(&state),
             1,
@@ -298,7 +295,7 @@ mod tests {
 
         let handle = spawn_tcp_attach_event_forwarder(
             rx,
-            Some(out_tx),
+            Some(EventSender::new(out_tx)),
             Arc::new(Mutex::new(0)),
             Arc::clone(&state),
             1,
@@ -352,7 +349,7 @@ mod tests {
 
         let handle = spawn_tcp_attach_event_forwarder(
             rx,
-            Some(out_tx),
+            Some(EventSender::new(out_tx)),
             Arc::new(Mutex::new(0)),
             Arc::clone(&state),
             1,
