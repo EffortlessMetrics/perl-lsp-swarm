@@ -1641,11 +1641,16 @@ class ReleaseTopologyTests(unittest.TestCase):
             root = Path(temporary)
             helper = root / "scripts/publish-topo.py"
             helper.parent.mkdir()
-            helper.write_text(
+            source_a = (
                 "def build_publish_dependency_graph(packages):\n"
-                "    return {package['name']: {'b'} if package['name'] == 'a' else {'a'} for package in packages}\n",
-                encoding="utf-8",
+                "    return {package['name']: {'b'} if package['name'] == 'a' else {'a'} for package in packages}\n"
             )
+            source_b = (
+                "def build_publish_dependency_graph(packages):\n"
+                "    return {package['name']: set() for package in packages}\n"
+            ).ljust(len(source_a))
+            self.assertEqual(len(source_a), len(source_b))
+            helper.write_text(source_a, encoding="utf-8")
             self.assertNotEqual(
                 MODULE.sha256(helper),
                 MODULE.sha256(MODULE_PATH.parent / "publish-topo.py"),
@@ -1653,6 +1658,12 @@ class ReleaseTopologyTests(unittest.TestCase):
             self.assertEqual(len(MODULE.derive_crates(metadata)), 2)
             with self.assertRaisesRegex(MODULE.TopologyError, "cycle"):
                 MODULE.derive_crates(metadata, root)
+            original_stat = helper.stat()
+            helper.write_text(source_b, encoding="utf-8")
+            os.utime(helper, ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns))
+            self.assertEqual(
+                [crate["name"] for crate in MODULE.derive_crates(metadata, root)], ["a", "b"]
+            )
 
     def test_publish_graph_rejects_normal_and_build_cycles(self):
         metadata = {
