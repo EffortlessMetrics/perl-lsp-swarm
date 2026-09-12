@@ -264,10 +264,12 @@ describe('PerlDebugAdapterDescriptorFactory', () => {
     fs.writeFileSync(path.join(ambientDir, dapName), 'stale ambient dap');
     const managedDir = managedNamespaceDir(tmpDir, hostManagedCompatibilityKeys()[0]!)!;
     fs.mkdirSync(managedDir, { recursive: true });
-    fs.writeFileSync(path.join(managedDir, dapName), 'stale managed dap');
+    const managedPath = path.join(managedDir, dapName);
+    fs.writeFileSync(managedPath, 'stale managed dap');
     if (process.platform !== 'win32') {
       fs.chmodSync(bundledPath, 0o755);
       fs.chmodSync(path.join(ambientDir, dapName), 0o755);
+      fs.chmodSync(managedPath, 0o755);
     }
 
     const ctx = makeContext(tmpDir, extensionDir);
