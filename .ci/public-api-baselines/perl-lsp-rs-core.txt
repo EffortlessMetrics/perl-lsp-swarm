@@ -5134,9 +5134,12 @@ pub fn perl_lsp_rs_core::providers::TypeHierarchyItem::deserialize<__D>(__deseri
 pub struct perl_lsp_rs_core::providers::navigation::TypeHierarchyProvider
 pub fn perl_lsp_rs_core::providers::TypeHierarchyProvider::c3_mro(&self, ast: &perl_ast::ast::Node, package: &str) -> alloc::vec::Vec<alloc::string::String>
 pub fn perl_lsp_rs_core::providers::TypeHierarchyProvider::find_subtypes(&self, ast: &perl_ast::ast::Node, item: &perl_lsp_rs_core::providers::TypeHierarchyItem) -> alloc::vec::Vec<perl_lsp_rs_core::providers::TypeHierarchyItem>
+pub fn perl_lsp_rs_core::providers::TypeHierarchyProvider::find_subtypes_with_cancellation(&self, ast: &perl_ast::ast::Node, item: &perl_lsp_rs_core::providers::TypeHierarchyItem, is_cancelled: &dyn core::ops::function::Fn() -> bool) -> core::result::Result<alloc::vec::Vec<perl_lsp_rs_core::providers::TypeHierarchyItem>, perl_lsp_rs_core::providers::TypeHierarchyCancelled>
 pub fn perl_lsp_rs_core::providers::TypeHierarchyProvider::find_supertypes(&self, ast: &perl_ast::ast::Node, item: &perl_lsp_rs_core::providers::TypeHierarchyItem) -> alloc::vec::Vec<perl_lsp_rs_core::providers::TypeHierarchyItem>
+pub fn perl_lsp_rs_core::providers::TypeHierarchyProvider::find_supertypes_with_cancellation(&self, ast: &perl_ast::ast::Node, item: &perl_lsp_rs_core::providers::TypeHierarchyItem, is_cancelled: &dyn core::ops::function::Fn() -> bool) -> core::result::Result<alloc::vec::Vec<perl_lsp_rs_core::providers::TypeHierarchyItem>, perl_lsp_rs_core::providers::TypeHierarchyCancelled>
 pub fn perl_lsp_rs_core::providers::TypeHierarchyProvider::new() -> Self
 pub fn perl_lsp_rs_core::providers::TypeHierarchyProvider::prepare(&self, ast: &perl_ast::ast::Node, code: &str, offset: usize) -> core::option::Option<alloc::vec::Vec<perl_lsp_rs_core::providers::TypeHierarchyItem>>
+pub fn perl_lsp_rs_core::providers::TypeHierarchyProvider::prepare_with_cancellation(&self, ast: &perl_ast::ast::Node, code: &str, offset: usize, is_cancelled: &dyn core::ops::function::Fn() -> bool) -> core::result::Result<core::option::Option<alloc::vec::Vec<perl_lsp_rs_core::providers::TypeHierarchyItem>>, perl_lsp_rs_core::providers::TypeHierarchyCancelled>
 pub fn perl_lsp_rs_core::providers::TypeHierarchyProvider::default() -> Self
 pub struct perl_lsp_rs_core::providers::navigation::WorkspaceSymbol
 pub perl_lsp_rs_core::providers::navigation::WorkspaceSymbol::container_name: core::option::Option<alloc::string::String>
@@ -6683,6 +6686,10 @@ pub fn perl_lsp_rs_core::providers::TypeHierarchySymbolKind::clone(&self) -> per
 pub fn perl_lsp_rs_core::providers::TypeHierarchySymbolKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_lsp_rs_core::providers::TypeHierarchySymbolKind::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 pub fn perl_lsp_rs_core::providers::TypeHierarchySymbolKind::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_lsp_rs_core::providers::type_hierarchy::TypeHierarchyCancelled
+pub fn perl_lsp_rs_core::providers::TypeHierarchyCancelled::clone(&self) -> perl_lsp_rs_core::providers::TypeHierarchyCancelled
+pub fn perl_lsp_rs_core::providers::TypeHierarchyCancelled::eq(&self, other: &perl_lsp_rs_core::providers::TypeHierarchyCancelled) -> bool
+pub fn perl_lsp_rs_core::providers::TypeHierarchyCancelled::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_lsp_rs_core::providers::type_hierarchy::TypeHierarchyItem
 pub perl_lsp_rs_core::providers::type_hierarchy::TypeHierarchyItem::data: core::option::Option<serde_json::value::Value>
 pub perl_lsp_rs_core::providers::type_hierarchy::TypeHierarchyItem::detail: core::option::Option<alloc::string::String>
@@ -6698,9 +6705,12 @@ pub fn perl_lsp_rs_core::providers::TypeHierarchyItem::deserialize<__D>(__deseri
 pub struct perl_lsp_rs_core::providers::type_hierarchy::TypeHierarchyProvider
 pub fn perl_lsp_rs_core::providers::TypeHierarchyProvider::c3_mro(&self, ast: &perl_ast::ast::Node, package: &str) -> alloc::vec::Vec<alloc::string::String>
 pub fn perl_lsp_rs_core::providers::TypeHierarchyProvider::find_subtypes(&self, ast: &perl_ast::ast::Node, item: &perl_lsp_rs_core::providers::TypeHierarchyItem) -> alloc::vec::Vec<perl_lsp_rs_core::providers::TypeHierarchyItem>
+pub fn perl_lsp_rs_core::providers::TypeHierarchyProvider::find_subtypes_with_cancellation(&self, ast: &perl_ast::ast::Node, item: &perl_lsp_rs_core::providers::TypeHierarchyItem, is_cancelled: &dyn core::ops::function::Fn() -> bool) -> core::result::Result<alloc::vec::Vec<perl_lsp_rs_core::providers::TypeHierarchyItem>, perl_lsp_rs_core::providers::TypeHierarchyCancelled>
 pub fn perl_lsp_rs_core::providers::TypeHierarchyProvider::find_supertypes(&self, ast: &perl_ast::ast::Node, item: &perl_lsp_rs_core::providers::TypeHierarchyItem) -> alloc::vec::Vec<perl_lsp_rs_core::providers::TypeHierarchyItem>
+pub fn perl_lsp_rs_core::providers::TypeHierarchyProvider::find_supertypes_with_cancellation(&self, ast: &perl_ast::ast::Node, item: &perl_lsp_rs_core::providers::TypeHierarchyItem, is_cancelled: &dyn core::ops::function::Fn() -> bool) -> core::result::Result<alloc::vec::Vec<perl_lsp_rs_core::providers::TypeHierarchyItem>, perl_lsp_rs_core::providers::TypeHierarchyCancelled>
 pub fn perl_lsp_rs_core::providers::TypeHierarchyProvider::new() -> Self
 pub fn perl_lsp_rs_core::providers::TypeHierarchyProvider::prepare(&self, ast: &perl_ast::ast::Node, code: &str, offset: usize) -> core::option::Option<alloc::vec::Vec<perl_lsp_rs_core::providers::TypeHierarchyItem>>
+pub fn perl_lsp_rs_core::providers::TypeHierarchyProvider::prepare_with_cancellation(&self, ast: &perl_ast::ast::Node, code: &str, offset: usize, is_cancelled: &dyn core::ops::function::Fn() -> bool) -> core::result::Result<core::option::Option<alloc::vec::Vec<perl_lsp_rs_core::providers::TypeHierarchyItem>>, perl_lsp_rs_core::providers::TypeHierarchyCancelled>
 pub fn perl_lsp_rs_core::providers::TypeHierarchyProvider::default() -> Self
 pub mod perl_lsp_rs_core::providers::unreachable_code
 pub fn perl_lsp_rs_core::providers::unreachable_code::check_unreachable_code(root: &perl_ast::ast::Node, diagnostics: &mut alloc::vec::Vec<perl_lsp_rs_core::providers::Diagnostic>)
@@ -8698,6 +8708,10 @@ pub perl_lsp_rs_core::providers::TokensLegend::token_types: alloc::vec::Vec<allo
 pub struct perl_lsp_rs_core::providers::TypeDefinitionProvider
 pub fn perl_lsp_rs_core::providers::TypeDefinitionProvider::new() -> Self
 pub fn perl_lsp_rs_core::providers::TypeDefinitionProvider::default() -> Self
+pub struct perl_lsp_rs_core::providers::TypeHierarchyCancelled
+pub fn perl_lsp_rs_core::providers::TypeHierarchyCancelled::clone(&self) -> perl_lsp_rs_core::providers::TypeHierarchyCancelled
+pub fn perl_lsp_rs_core::providers::TypeHierarchyCancelled::eq(&self, other: &perl_lsp_rs_core::providers::TypeHierarchyCancelled) -> bool
+pub fn perl_lsp_rs_core::providers::TypeHierarchyCancelled::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_lsp_rs_core::providers::TypeHierarchyItem
 pub struct perl_lsp_rs_core::providers::TypeHierarchyItem
 pub perl_lsp_rs_core::providers::TypeHierarchyItem::data: core::option::Option<serde_json::value::Value>
@@ -8728,12 +8742,18 @@ pub fn perl_lsp_rs_core::providers::TypeHierarchyProvider::c3_mro(&self, ast: &p
 pub fn perl_lsp_rs_core::providers::TypeHierarchyProvider::c3_mro(&self, ast: &perl_ast::ast::Node, package: &str) -> alloc::vec::Vec<alloc::string::String>
 pub fn perl_lsp_rs_core::providers::TypeHierarchyProvider::find_subtypes(&self, ast: &perl_ast::ast::Node, item: &perl_lsp_rs_core::providers::TypeHierarchyItem) -> alloc::vec::Vec<perl_lsp_rs_core::providers::TypeHierarchyItem>
 pub fn perl_lsp_rs_core::providers::TypeHierarchyProvider::find_subtypes(&self, ast: &perl_ast::ast::Node, item: &perl_lsp_rs_core::providers::TypeHierarchyItem) -> alloc::vec::Vec<perl_lsp_rs_core::providers::TypeHierarchyItem>
+pub fn perl_lsp_rs_core::providers::TypeHierarchyProvider::find_subtypes_with_cancellation(&self, ast: &perl_ast::ast::Node, item: &perl_lsp_rs_core::providers::TypeHierarchyItem, is_cancelled: &dyn core::ops::function::Fn() -> bool) -> core::result::Result<alloc::vec::Vec<perl_lsp_rs_core::providers::TypeHierarchyItem>, perl_lsp_rs_core::providers::TypeHierarchyCancelled>
+pub fn perl_lsp_rs_core::providers::TypeHierarchyProvider::find_subtypes_with_cancellation(&self, ast: &perl_ast::ast::Node, item: &perl_lsp_rs_core::providers::TypeHierarchyItem, is_cancelled: &dyn core::ops::function::Fn() -> bool) -> core::result::Result<alloc::vec::Vec<perl_lsp_rs_core::providers::TypeHierarchyItem>, perl_lsp_rs_core::providers::TypeHierarchyCancelled>
 pub fn perl_lsp_rs_core::providers::TypeHierarchyProvider::find_supertypes(&self, ast: &perl_ast::ast::Node, item: &perl_lsp_rs_core::providers::TypeHierarchyItem) -> alloc::vec::Vec<perl_lsp_rs_core::providers::TypeHierarchyItem>
 pub fn perl_lsp_rs_core::providers::TypeHierarchyProvider::find_supertypes(&self, ast: &perl_ast::ast::Node, item: &perl_lsp_rs_core::providers::TypeHierarchyItem) -> alloc::vec::Vec<perl_lsp_rs_core::providers::TypeHierarchyItem>
+pub fn perl_lsp_rs_core::providers::TypeHierarchyProvider::find_supertypes_with_cancellation(&self, ast: &perl_ast::ast::Node, item: &perl_lsp_rs_core::providers::TypeHierarchyItem, is_cancelled: &dyn core::ops::function::Fn() -> bool) -> core::result::Result<alloc::vec::Vec<perl_lsp_rs_core::providers::TypeHierarchyItem>, perl_lsp_rs_core::providers::TypeHierarchyCancelled>
+pub fn perl_lsp_rs_core::providers::TypeHierarchyProvider::find_supertypes_with_cancellation(&self, ast: &perl_ast::ast::Node, item: &perl_lsp_rs_core::providers::TypeHierarchyItem, is_cancelled: &dyn core::ops::function::Fn() -> bool) -> core::result::Result<alloc::vec::Vec<perl_lsp_rs_core::providers::TypeHierarchyItem>, perl_lsp_rs_core::providers::TypeHierarchyCancelled>
 pub fn perl_lsp_rs_core::providers::TypeHierarchyProvider::new() -> Self
 pub fn perl_lsp_rs_core::providers::TypeHierarchyProvider::new() -> Self
 pub fn perl_lsp_rs_core::providers::TypeHierarchyProvider::prepare(&self, ast: &perl_ast::ast::Node, code: &str, offset: usize) -> core::option::Option<alloc::vec::Vec<perl_lsp_rs_core::providers::TypeHierarchyItem>>
 pub fn perl_lsp_rs_core::providers::TypeHierarchyProvider::prepare(&self, ast: &perl_ast::ast::Node, code: &str, offset: usize) -> core::option::Option<alloc::vec::Vec<perl_lsp_rs_core::providers::TypeHierarchyItem>>
+pub fn perl_lsp_rs_core::providers::TypeHierarchyProvider::prepare_with_cancellation(&self, ast: &perl_ast::ast::Node, code: &str, offset: usize, is_cancelled: &dyn core::ops::function::Fn() -> bool) -> core::result::Result<core::option::Option<alloc::vec::Vec<perl_lsp_rs_core::providers::TypeHierarchyItem>>, perl_lsp_rs_core::providers::TypeHierarchyCancelled>
+pub fn perl_lsp_rs_core::providers::TypeHierarchyProvider::prepare_with_cancellation(&self, ast: &perl_ast::ast::Node, code: &str, offset: usize, is_cancelled: &dyn core::ops::function::Fn() -> bool) -> core::result::Result<core::option::Option<alloc::vec::Vec<perl_lsp_rs_core::providers::TypeHierarchyItem>>, perl_lsp_rs_core::providers::TypeHierarchyCancelled>
 pub fn perl_lsp_rs_core::providers::TypeHierarchyProvider::default() -> Self
 pub fn perl_lsp_rs_core::providers::TypeHierarchyProvider::default() -> Self
 pub struct perl_lsp_rs_core::providers::WorkspaceSymbol
