@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
-import { BinaryDownloader } from './downloader';
+import { BinaryDownloader, detectMusl } from './downloader';
 
 const SERVER_DEBUG_TEST_COMMAND = 'perl.debugTest';
 export const VSCODE_DEBUG_TEST_COMMAND = 'perl-lsp.debugTest';
@@ -36,7 +36,7 @@ function packagedDapTargetDirectoryForContext(
   const arch = process.arch === 'arm64' ? 'arm64' : process.arch === 'x64' ? 'x64' : undefined;
   const hostTargets =
     process.platform === 'linux' && arch
-      ? [`linux-${arch}`, `alpine-${arch}`]
+      ? [`${detectMusl() ? 'alpine' : 'linux'}-${arch}`]
       : process.platform === 'darwin' && arch
         ? [`darwin-${arch}`]
         : process.platform === 'win32' && arch
