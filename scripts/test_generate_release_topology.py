@@ -1620,6 +1620,40 @@ class ReleaseTopologyTests(unittest.TestCase):
         self.assertEqual(crates[0]["internal_dependencies"], [])
         self.assertEqual(crates[1]["internal_dependencies"], ["b"])
 
+    def test_publish_graph_loads_helper_from_selected_root(self):
+        metadata = {
+            "metadata": {"publish": {"allow": ["a", "b"]}},
+            "workspace_members": ["a-id", "b-id"],
+            "packages": [
+                {
+                    "id": "a-id", "name": "a", "version": "0.18.0",
+                    "manifest_path": "/a/Cargo.toml", "publish": None,
+                    "dependencies": [{"name": "b", "source": None}],
+                },
+                {
+                    "id": "b-id", "name": "b", "version": "0.18.0",
+                    "manifest_path": "/b/Cargo.toml", "publish": None,
+                    "dependencies": [{"name": "a", "kind": "dev", "source": None}],
+                },
+            ],
+        }
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            helper = root / "scripts/publish-topo.py"
+            helper.parent.mkdir()
+            helper.write_text(
+                "def build_publish_dependency_graph(packages):\n"
+                "    return {package['name']: {'b'} if package['name'] == 'a' else {'a'} for package in packages}\n",
+                encoding="utf-8",
+            )
+            self.assertNotEqual(
+                MODULE.sha256(helper),
+                MODULE.sha256(MODULE_PATH.parent / "publish-topo.py"),
+            )
+            self.assertEqual(len(MODULE.derive_crates(metadata)), 2)
+            with self.assertRaisesRegex(MODULE.TopologyError, "cycle"):
+                MODULE.derive_crates(metadata, root)
+
     def test_publish_graph_rejects_normal_and_build_cycles(self):
         metadata = {
             "metadata": {"publish": {"allow": ["a", "b"]}},
