@@ -129,6 +129,7 @@ def valid_packet(
             "expected_product_identity_version": 1,
             "dap_posture": "preview",
         },
+        "limitations": ["artifact_digest_not_externally_bound"],
     }
 
 
@@ -237,6 +238,22 @@ class ReleaseBuildIdentityTests(unittest.TestCase):
                 package="perl-dap",
                 role="dap",
             )
+
+    def test_packet_requires_exact_external_digest_limitation(self) -> None:
+        identity = subject.ReleaseBuildIdentity.from_mapping(valid_mapping())
+        for limitations in ([], ["artifact_role_not_proven"], ["artifact_digest_not_externally_bound", "extra"]):
+            packet = valid_packet("perllsp", "perllsp", "server")
+            packet["limitations"] = limitations
+            with self.subTest(limitations=limitations), self.assertRaisesRegex(
+                subject.BuildIdentityError, "retained limitations"
+            ):
+                subject.validate_packet(
+                    packet,
+                    identity=identity,
+                    executable="perllsp",
+                    package="perllsp",
+                    role="server",
+                )
 
     def test_prepare_binds_authorities_and_is_deterministic(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
