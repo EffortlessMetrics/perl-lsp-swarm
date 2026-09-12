@@ -281,10 +281,6 @@
           },
           "attach": {
             "properties": {
-              "processId": {
-                "type": "number",
-                "description": "Attach to an existing Perl process by PID"
-              },
               "host": {
                 "type": "string",
                 "description": "Host for TCP attach mode",

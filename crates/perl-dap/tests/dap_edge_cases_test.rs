@@ -483,11 +483,13 @@ fn test_dap_malformed_requests() -> TestResult {
 }
 
 #[test]
-fn test_dap_attach_process_id_mode() -> TestResult {
+fn test_dap_attach_process_id_mode_is_refused() -> TestResult {
     let mut adapter = DebugAdapter::new();
 
-    // PID attach should succeed in signal-control mode.
-    // #4638: use current process PID so verify_attach_target succeeds.
+    // #8109: PID attach must be refused fail-closed. Verifying process
+    // existence plus signal control never established a debugger transport or
+    // observed a stop transition, so the adapter must not report a successful
+    // attach or emit synthetic stopped events.
     let pid = std::process::id();
     let attach_args = json!({
         "processId": pid
@@ -496,12 +498,22 @@ fn test_dap_attach_process_id_mode() -> TestResult {
     let response = adapter.handle_request(1, "attach", Some(attach_args));
     match response {
         DapMessage::Response { success, command, body, message, .. } => {
-            assert_eq!(command, "attach");
-            assert!(success, "PID attach should succeed");
-            let body = body.ok_or("Expected attach body")?;
-            assert_eq!(body.get("processId").and_then(|v| v.as_u64()), Some(pid as u64));
-            let msg = message.ok_or("Expected attach message")?;
-            assert!(msg.contains("signal-control mode"));
+            if command != "attach" {
+                return Err(format!("expected attach response command, got {command}").into());
+            }
+            if success {
+                return Err("PID attach must be refused (#8109)".into());
+            }
+            if body.is_some() {
+                return Err("refusal must not carry an attach body".into());
+            }
+            let msg = message.ok_or("Expected refusal message")?;
+            if !msg.contains("not supported") {
+                return Err(format!("refusal must name the disposition: {msg}").into());
+            }
+            if !msg.contains("8109") {
+                return Err(format!("refusal must cite the owning issue: {msg}").into());
+            }
         }
         _ => return Err("Expected attach response".into()),
     }

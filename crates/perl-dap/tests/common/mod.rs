@@ -221,11 +221,11 @@ impl DapWorkflowSession {
         Ok(self.perl_path.clone())
     }
 
-    /// Attach to a running process with optional stopOnEntry.
+    /// Request native PID attach with optional stopOnEntry.
     ///
-    /// Callers must call `set_breakpoints` and `configuration_done` before
-    /// `wait_stopped` to follow the DAP ordering requirement (though attach
-    /// emits a stopped event immediately).
+    /// Native PID attach is currently unsupported (#8109), so refusal tests
+    /// use the returned error as their observable contract. A future real
+    /// transport must update this helper and its proof together.
     pub fn attach(&mut self, process_id: u32, stop_on_entry: bool) -> Result<(), String> {
         let args = json!({
             "processId": process_id,

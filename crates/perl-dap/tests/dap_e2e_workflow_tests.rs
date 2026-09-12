@@ -284,81 +284,37 @@ fn test_e2e_step_over_changes_execution() -> TestResult {
     Ok(())
 }
 
-// ─── Test 4: attach workflow with stopOnEntry=false ────────────────────────────
+// ─── Test 4: native PID attach refusal ─────────────────────────────────────────
 
-/// Validates the attach workflow:
-/// initialize → attach(pid, stopOnEntry=false) → wait for stopped(reason=attach) →
-/// set breakpoints → disconnect.
+/// Validates that a syntactically valid native PID is rejected without a
+/// synthetic stopped event or a process-backed workflow.
 #[test]
 fn test_e2e_attach_workflow_stopped_event() -> TestResult {
-    let timeout = workflow_timeout();
-    let mut session = DapWorkflowSession::new(timeout)?;
-
-    // Use the current process PID — the adapter validates that the PID exists
-    // (#5553), so a hardcoded non-existent PID like 12345 now fails.
-    let test_pid = std::process::id();
-
-    // Attach without stopOnEntry — should emit stopped(reason=attach)
-    session.attach(test_pid, false)?;
-
-    // Wait for the attach stopped event
-    let attached = session.wait_stopped()?;
-    assert_eq!(
-        attached.reason, "attach",
-        "stopped reason after attach must be `attach`, got `{}`",
-        attached.reason
-    );
-
-    let _thread_id = attached.thread_id;
-
-    // After attach, we can set breakpoints (the adapter accepts them).
-    // Use set_breakpoints_checked to assert verified=true for all entries.
-    let workspace = tempdir()?;
-    let script = workspace.path().join("dummy.pl");
-    write(&script, workflow_script_content())?;
-    let script_str = script.to_str().ok_or("script path is not valid UTF-8")?.to_string();
-
-    let resolved = session.set_breakpoints_checked(&script_str, &[BP_LINE_2])?;
-    assert!(
-        !resolved.is_empty(),
-        "setBreakpoints after attach must return at least one verified breakpoint"
-    );
-
-    session.disconnect()?;
-
+    let mut session = DapWorkflowSession::new(workflow_timeout())?;
+    let error = match session.attach(std::process::id(), false) {
+        Ok(()) => return Err("native PID attach unexpectedly succeeded".into()),
+        Err(error) => error,
+    };
+    if !error.contains("not supported") {
+        return Err(format!("unexpected refusal: {error}").into());
+    }
     Ok(())
 }
 
-// ─── Test 5: attach workflow with stopOnEntry=true ──────────────────────────────
+// ─── Test 5: native PID attach refusal is independent of stopOnEntry ───────────
 
-/// Validates attach with stopOnEntry=true:
-/// attach(pid, stopOnEntry=true) should emit both "attach" and "entry" stopped events.
+/// `stopOnEntry` cannot turn an unsupported PID request into a debugger
+/// session or cause a synthetic entry event.
 #[test]
 fn test_e2e_attach_workflow_stop_on_entry() -> TestResult {
-    let timeout = workflow_timeout();
-    let mut session = DapWorkflowSession::new(timeout)?;
-
-    let test_pid = std::process::id();
-
-    // Attach with stopOnEntry=true
-    session.attach(test_pid, true)?;
-
-    // Should receive "attach" stopped event first
-    let first_stop = session.wait_stopped()?;
-    assert_eq!(
-        first_stop.reason, "attach",
-        "first stopped event after attach(stopOnEntry=true) must be reason=attach"
-    );
-
-    // Then should receive "entry" stopped event
-    let entry_stop = session.wait_stopped()?;
-    assert_eq!(
-        entry_stop.reason, "entry",
-        "second stopped event after attach(stopOnEntry=true) must be reason=entry"
-    );
-
-    session.disconnect()?;
-
+    let mut session = DapWorkflowSession::new(workflow_timeout())?;
+    let error = match session.attach(std::process::id(), true) {
+        Ok(()) => return Err("native PID attach unexpectedly succeeded".into()),
+        Err(error) => error,
+    };
+    if !error.contains("not supported") {
+        return Err(format!("unexpected refusal: {error}").into());
+    }
     Ok(())
 }
 

@@ -25,17 +25,5 @@
       "}"
     ],
     "description": "Attach to a running Perl debugger over TCP"
-  },
-  "Perl: Attach by PID": {
-    "prefix": "perl-attach-pid",
-    "body": [
-      "{",
-      "    \"type\": \"perl\",",
-      "    \"request\": \"attach\",",
-      "    \"name\": \"Perl: Attach by PID\",",
-      "    \"processId\": ${1:12345}",
-      "}"
-    ],
-    "description": "Attach to a running Perl process by PID (signal-control mode)"
   }
 }

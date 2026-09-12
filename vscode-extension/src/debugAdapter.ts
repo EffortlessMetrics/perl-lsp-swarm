@@ -863,8 +863,14 @@ export class PerlDebugConfigurationProvider implements vscode.DebugConfiguration
     }
 
     if (config.request === 'attach') {
-      // Attach supports either processId or host/port. External-peer fields are
-      // validated separately by the descriptor factory.
+      // TCP host/port is the only supported attach mode: the adapter refuses
+      // processId attach fail-closed (#8109), so no template, snippet, or
+      // schema here advertises it. External-peer fields are validated
+      // separately by the descriptor factory.
+      // Preserve an explicit legacy processId unchanged when forwarding an
+      // existing configuration for adapter diagnostics; never default it into
+      // the TCP host/port path. The adapter owns the deterministic #8109
+      // refusal for that compatibility input.
       if (config.processId === undefined || config.processId === null) {
         if (!config.host) {
           config.host = 'localhost';
@@ -916,12 +922,6 @@ export class PerlDebugConfigurationProvider implements vscode.DebugConfiguration
         host: 'localhost',
         port: 13603,
         timeout: 5000,
-      },
-      {
-        type: 'perl',
-        request: 'attach',
-        name: 'Attach by Process ID',
-        processId: 12345,
       },
     ];
   }
