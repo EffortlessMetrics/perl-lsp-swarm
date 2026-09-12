@@ -919,6 +919,35 @@ mod framing_tests {
         }
     }
 
+    /// The response is writable, but flushing a terminated event fails.  This
+    /// exercises the real queue-drain acknowledgment path rather than only the
+    /// write-failure counter helper.
+    #[derive(Default)]
+    struct TerminatedEventFlushFailingWriter {
+        bytes: Vec<u8>,
+    }
+
+    impl io::Write for TerminatedEventFlushFailingWriter {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.bytes.extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            if self
+                .bytes
+                .windows(b"\"event\":\"terminated\"".len())
+                .any(|window| window == b"\"event\":\"terminated\"")
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "mock terminated-event flush failure",
+                ));
+            }
+            Ok(())
+        }
+    }
+
     // ── helpers ────────────────────────────────────────────────────────────────
 
     /// Build a well-formed Content-Length framed DAP request.
@@ -1064,10 +1093,46 @@ mod framing_tests {
         adapter.run_with_io(input, output.clone())?;
         let written_bytes = output.bytes_snapshot();
         let written = String::from_utf8_lossy(&written_bytes);
-        assert!(written.contains("\"command\":\"disconnect\""));
-        assert!(!written.contains("\"command\":\"initialize\""));
-        assert_eq!(written.matches("\"event\":\"terminated\"").count(), 1);
+        if !written.contains("\"command\":\"disconnect\"")
+            || !written.contains("\"request_seq\":1")
+            || !written.contains("\"success\":true")
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("disconnect response missing expected fields: {written}"),
+            ));
+        }
+        if written.contains("\"command\":\"initialize\"") {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "transport processed a request after disconnect",
+            ));
+        }
+        if written.matches("\"event\":\"terminated\"").count() != 1 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("expected exactly one terminated event: {written}"),
+            ));
+        }
         Ok(())
+    }
+
+    #[test]
+    fn test_disconnect_does_not_ack_failed_terminated_event_flush() -> io::Result<()> {
+        let input = Cursor::new(framed_request(1, "disconnect", None));
+        let mut adapter = DebugAdapter::new();
+        adapter.seed_attached_pid_for_test(4242);
+        let result = adapter.run_with_io(input, TerminatedEventFlushFailingWriter::default());
+        match result {
+            Err(error) if error.kind() == io::ErrorKind::TimedOut => Ok(()),
+            Err(error) => Err(io::Error::new(
+                error.kind(),
+                format!("failed terminated-event flush returned wrong error: {error}"),
+            )),
+            Ok(()) => Err(io::Error::other(
+                "disconnect returned Ok despite failed terminated-event flush",
+            )),
+        }
     }
 
     // ── 6. EOF mid-header ──────────────────────────────────────────────────────
