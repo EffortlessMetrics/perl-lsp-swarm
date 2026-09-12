@@ -19,10 +19,8 @@ import {
   rewriteTestLensCommand,
   VSCODE_DEBUG_TEST_COMMAND,
   VSCODE_RUN_TEST_COMMAND,
-  packagedDapTargetDirectory,
 } from '../debugAdapter';
-import * as downloader from '../downloader';
-import { hostManagedCompatibilityKeys, resolvePlatformTarget } from '../downloader';
+import { hostManagedCompatibilityKeys } from '../downloader';
 import { managedNamespaceDir } from '../managedStorageIdentity';
 
 // ---------------------------------------------------------------------------
@@ -61,17 +59,15 @@ function buildDapExecutableArgs(value: unknown): string[] {
   );
 }
 
-function required<T>(value: T | undefined, label: string): T {
-  if (value === undefined) {
+function required<T>(value: T | undefined | null, label: string): T {
+  if (value === undefined || value === null) {
     throw new Error(`Missing ${label}`);
   }
   return value;
 }
 
 function currentBundledDapDirectory(extensionDir: string): string {
-  const target = resolvePlatformTarget(() => {});
-  const directory = packagedDapTargetDirectory(target);
-  return path.join(extensionDir, 'bin', directory ?? `${process.platform}-${process.arch}`);
+  return path.join(extensionDir, 'bin', `${process.platform}-${process.arch}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -310,17 +306,12 @@ describe('PerlDebugAdapterDescriptorFactory', () => {
     }
   });
 
-  test('maps musl and GNU Linux hosts to distinct packaged DAP payloads', () => {
-    expect(packagedDapTargetDirectory('x86_64-unknown-linux-musl')).toBe('alpine-x64');
-    expect(packagedDapTargetDirectory('aarch64-unknown-linux-musl')).toBe('alpine-arm64');
-    expect(packagedDapTargetDirectory('x86_64-unknown-linux-gnu')).toBe('linux-x64');
-    expect(packagedDapTargetDirectory('aarch64-unknown-linux-gnu')).toBe('linux-arm64');
-  });
-
   test('factory selects Alpine DAP on a simulated musl Linux host', () => {
     const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
     const originalArch = Object.getOwnPropertyDescriptor(process, 'arch');
-    const originalTarget = jest.spyOn(downloader, 'resolvePlatformTarget');
+    const originalPath = process.env.PATH;
+    const originalHome = process.env.HOME;
+    const originalCargo = process.env.CARGO_HOME;
     const extensionDir = fs.mkdtempSync(path.join(tmpDir, 'extension-'));
     const alpineDir = path.join(extensionDir, 'bin', 'alpine-x64');
     const gnuDir = path.join(extensionDir, 'bin', 'linux-x64');
@@ -332,26 +323,89 @@ describe('PerlDebugAdapterDescriptorFactory', () => {
     fs.writeFileSync(gnuPath, 'gnu packaged dap');
     fs.chmodSync(alpinePath, 0o755);
     fs.chmodSync(gnuPath, 0o755);
-    Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
-    Object.defineProperty(process, 'arch', { value: 'x64', configurable: true });
+    let linuxLibcForTest = 'gnu';
+    let previousConfiguration: (() => unknown) | undefined;
     try {
+      Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
+      Object.defineProperty(process, 'arch', { value: 'x64', configurable: true });
+      const vscodeApi = require('vscode') as {
+        workspace: { getConfiguration: jest.Mock };
+      };
+      const getConfiguration = vscodeApi.workspace.getConfiguration as jest.Mock;
+      previousConfiguration = getConfiguration.getMockImplementation();
+      getConfiguration.mockImplementation(() => ({
+        get: (_key: string, defaultValue?: unknown) => linuxLibcForTest ?? defaultValue,
+      }));
+      fs.writeFileSync(
+        path.join(extensionDir, 'package.json'),
+        JSON.stringify({ __metadata: { targetPlatform: 'alpine-x64' } }),
+      );
       const factory = new PerlDebugAdapterDescriptorFactory(makeContext(tmpDir, extensionDir));
-      originalTarget.mockReturnValueOnce('x86_64-unknown-linux-musl');
       const alpineResult = factory.createDebugAdapterDescriptor(
         {} as unknown as vscode.DebugSession,
         undefined,
       ) as vscode.DebugAdapterExecutable;
       expect(alpineResult.command).toBe(alpinePath);
       expect(alpineResult.command).not.toBe(gnuPath);
-      originalTarget.mockReturnValueOnce('x86_64-unknown-linux-gnu');
-      const gnuResult = factory.createDebugAdapterDescriptor(
+      linuxLibcForTest = 'musl';
+      fs.writeFileSync(
+        path.join(extensionDir, 'package.json'),
+        JSON.stringify({ __metadata: { targetPlatform: 'linux-x64' } }),
+      );
+      const gnuFactory = new PerlDebugAdapterDescriptorFactory(makeContext(tmpDir, extensionDir));
+      const gnuResult = gnuFactory.createDebugAdapterDescriptor(
         {} as unknown as vscode.DebugSession,
         undefined,
       ) as vscode.DebugAdapterExecutable;
       expect(gnuResult.command).toBe(gnuPath);
       expect(gnuResult.command).not.toBe(alpinePath);
+
+      const managedDir = required(
+        managedNamespaceDir(tmpDir, required(hostManagedCompatibilityKeys()[0], 'host key')),
+        'managed test directory',
+      );
+      fs.mkdirSync(managedDir, { recursive: true });
+      const managedPath = path.join(managedDir, 'perl-dap');
+      fs.writeFileSync(managedPath, 'managed dap');
+      fs.chmodSync(managedPath, 0o755);
+      process.env.PATH = '';
+      process.env.HOME = tmpDir;
+      process.env.CARGO_HOME = tmpDir;
+      fs.writeFileSync(path.join(extensionDir, 'package.json'), JSON.stringify({}));
+      const ambiguousFactory = new PerlDebugAdapterDescriptorFactory(
+        makeContext(tmpDir, extensionDir),
+      );
+      const ambiguousResult = ambiguousFactory.createDebugAdapterDescriptor(
+        {} as unknown as vscode.DebugSession,
+        undefined,
+      ) as vscode.DebugAdapterExecutable;
+      expect(ambiguousResult.command).toBe(managedPath);
+      fs.rmSync(gnuPath);
+      linuxLibcForTest = 'gnu';
+      fs.writeFileSync(
+        path.join(extensionDir, 'package.json'),
+        JSON.stringify({ __metadata: { targetPlatform: 'undefined' } }),
+      );
+      const localVsixFactory = new PerlDebugAdapterDescriptorFactory(
+        makeContext(tmpDir, extensionDir),
+      );
+      const localVsixResult = localVsixFactory.createDebugAdapterDescriptor(
+        {} as unknown as vscode.DebugSession,
+        undefined,
+      ) as vscode.DebugAdapterExecutable;
+      expect(localVsixResult.command).toBe(alpinePath);
     } finally {
-      originalTarget.mockRestore();
+      const vscodeApi = require('vscode') as {
+        workspace: { getConfiguration: jest.Mock };
+      };
+      const getConfiguration = vscodeApi.workspace.getConfiguration as jest.Mock;
+      if (previousConfiguration) getConfiguration.mockImplementation(previousConfiguration);
+      if (originalPath === undefined) delete process.env.PATH;
+      else process.env.PATH = originalPath;
+      if (originalHome === undefined) delete process.env.HOME;
+      else process.env.HOME = originalHome;
+      if (originalCargo === undefined) delete process.env.CARGO_HOME;
+      else process.env.CARGO_HOME = originalCargo;
       if (originalPlatform) Object.defineProperty(process, 'platform', originalPlatform);
       if (originalArch) Object.defineProperty(process, 'arch', originalArch);
     }

@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
-import { BinaryDownloader, resolvePlatformTarget } from './downloader';
+import { BinaryDownloader } from './downloader';
 
 const SERVER_DEBUG_TEST_COMMAND = 'perl.debugTest';
 export const VSCODE_DEBUG_TEST_COMMAND = 'perl-lsp.debugTest';
@@ -14,18 +14,41 @@ export interface DebugTestLaunchTarget {
   args: string[];
 }
 
-/** Map the downloader's canonical cargo target to the VSIX payload directory. */
-export function packagedDapTargetDirectory(target: string): string | undefined {
-  const arch = target.startsWith('x86_64-')
-    ? 'x64'
-    : target.startsWith('aarch64-')
-      ? 'arm64'
-      : undefined;
-  if (!arch) return undefined;
-  if (target.endsWith('-unknown-linux-musl')) return `alpine-${arch}`;
-  if (target.endsWith('-unknown-linux-gnu')) return `linux-${arch}`;
-  if (target.endsWith('-apple-darwin')) return `darwin-${arch}`;
-  if (target.endsWith('-pc-windows-msvc')) return `win32-${arch}`;
+function packagedDapTargetDirectoryForContext(
+  context: vscode.ExtensionContext,
+  isExecutable: (filePath: string) => boolean,
+): string | undefined {
+  let packagedTarget: unknown;
+  try {
+    const packageJson = JSON.parse(
+      fs.readFileSync(path.join(context.extensionPath, 'package.json'), 'utf8'),
+    ) as { __metadata?: { targetPlatform?: unknown } };
+    packagedTarget = packageJson.__metadata?.targetPlatform;
+    if (typeof packagedTarget === 'string') {
+      if (/^(?:linux|alpine|darwin|win32)-(?:x64|arm64)$/.test(packagedTarget)) {
+        return packagedTarget;
+      }
+    }
+  } catch {
+    // Development test fixtures may omit package.json; inspect known payloads.
+  }
+
+  const arch = process.arch === 'arm64' ? 'arm64' : process.arch === 'x64' ? 'x64' : undefined;
+  const hostTargets =
+    process.platform === 'linux' && arch
+      ? [`linux-${arch}`, `alpine-${arch}`]
+      : process.platform === 'darwin' && arch
+        ? [`darwin-${arch}`]
+        : process.platform === 'win32' && arch
+          ? [`win32-${arch}`]
+          : [];
+  const dapName = process.platform === 'win32' ? 'perl-dap.exe' : 'perl-dap';
+  const packagedCandidates = hostTargets.filter((target) =>
+    isExecutable(path.join(context.extensionPath, 'bin', target, dapName)),
+  );
+  if (packagedCandidates.length === 1) {
+    return packagedCandidates[0];
+  }
   return undefined;
 }
 
@@ -732,7 +755,9 @@ export class PerlDebugAdapterDescriptorFactory implements vscode.DebugAdapterDes
     // Prefer the adapter shipped by this extension. This keeps a clean
     // installed profile bound to the package it just loaded instead of an
     // unrelated adapter found in managed storage or PATH.
-    const targetDirectory = packagedDapTargetDirectory(resolvePlatformTarget(() => {}));
+    const targetDirectory = packagedDapTargetDirectoryForContext(this.context, (candidate) =>
+      this.isExecutable(candidate),
+    );
     if (targetDirectory) {
       const bundledDap = path.join(this.context.extensionPath, 'bin', targetDirectory, binary);
       if (this.isExecutable(bundledDap)) {
