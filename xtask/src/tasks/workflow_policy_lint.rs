@@ -1810,20 +1810,17 @@ fn dispatched_workflows(release: &Value) -> Vec<String> {
 /// Every `run:` script in the workflow, comment lines dropped so prose naming a
 /// workflow file cannot widen the governed set.
 fn run_scripts(workflow: &Value) -> Vec<String> {
-    let Some(jobs) = workflow.get(Value::String("jobs".to_string())).and_then(Value::as_mapping)
-    else {
+    let Some(jobs) = workflow.get("jobs").and_then(Value::as_mapping) else {
         return Vec::new();
     };
 
     let mut scripts = Vec::new();
     for job in jobs.values() {
-        let Some(steps) = job.get(Value::String("steps".to_string())).and_then(Value::as_sequence)
-        else {
+        let Some(steps) = job.get("steps").and_then(Value::as_sequence) else {
             continue;
         };
         for step in steps {
-            let Some(run) = step.get(Value::String("run".to_string())).and_then(Value::as_str)
-            else {
+            let Some(run) = step.get("run").and_then(Value::as_str) else {
                 continue;
             };
             scripts.push(
