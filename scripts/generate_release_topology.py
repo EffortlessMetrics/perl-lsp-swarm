@@ -857,10 +857,15 @@ def derive_downloader_targets(source: str, workflow_targets: set[str]) -> set[st
         managed.add("aarch64-apple-darwin")
     if "x86_64-apple-darwin" in source:
         managed.add("x86_64-apple-darwin")
-    if "return 'x86_64-pc-windows-msvc'" in source:
-        managed.add("x86_64-pc-windows-msvc")
-    if "return 'aarch64-pc-windows-msvc'" in source:
-        managed.add("aarch64-pc-windows-msvc")
+    for constant, target in (
+        ("WINDOWS_X64_TARGET", "x86_64-pc-windows-msvc"),
+        ("WINDOWS_ARM64_TARGET", "aarch64-pc-windows-msvc"),
+    ):
+        literal_return = f"return '{target}'" in source
+        constant_return = re.search(rf"return\s+{constant}\b", source) is not None
+        declared_target = f"{constant} = '{target}'" in source
+        if literal_return or (declared_target and constant_return):
+            managed.add(target)
 
     constructs_linux_targets = (
         "return `${archPrefix}-unknown-linux-${libc}`" in source
