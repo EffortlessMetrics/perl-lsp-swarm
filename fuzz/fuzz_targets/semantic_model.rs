@@ -1,7 +1,8 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use perl_parser::{Parser, SemanticModel, SourceLocation};
+use perl_parser::{Parser, SourceLocation};
+use perl_semantic_analyzer::semantic::SemanticModel;
 
 const MAX_INPUT_BYTES: usize = 2048;
 const MAX_QUERY_POSITIONS: usize = 64;

@@ -247,7 +247,8 @@ fn analyze_node(&mut self, node: tree_sitter::Node, source: &str) {
 ```rust
 // File: /crates/perl-parser/tests/semantic_use_statement_tests.rs
 
-use perl_parser::semantic::{SemanticAnalyzer, SymbolKind};
+use perl_semantic_analyzer::analysis::semantic::SemanticAnalyzer;
+use perl_semantic_analyzer::symbol::SymbolKind;
 
 #[test]
 fn test_use_statement_imports_symbols() {

@@ -53,6 +53,7 @@ perl-lsp-rs-core = { workspace = true, features = ["lsp-compat", "ai-provider"] 
 # perl-lsp-performance absorbed into perl-lsp-rs-core::performance (Wave G3 step 5)
 perl-lsp-perltidy = { workspace = true }
 perl-position-tracking = { workspace = true, features = ["lsp-compat"] }
+perl-semantic-analyzer = { workspace = true }
 perl-semantic-facts = { workspace = true }
 perl-symbol = { workspace = true }
 perl-module = { workspace = true }
