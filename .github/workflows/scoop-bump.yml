@@ -5,9 +5,13 @@ name: Scoop Manifest Refresh
 # write to ScoopInstaller/Main.
 # Cost: ~$0.02 per refresh
 
+# Started only by `release.yml`'s downstream package refresh dispatch, or by a
+# maintainer re-running a channel by hand. The `release: published` trigger was
+# removed in #15454: `release.yml` publishes a non-draft Release and then
+# dispatches this workflow, so keeping both entry points started one release cut
+# twice — concurrently, because the two entry points carry different
+# `github.ref` values and this workflow keys `concurrency.group` on it.
 on:
-  release:
-    types: [published]
   workflow_dispatch:
     inputs:
       tag:

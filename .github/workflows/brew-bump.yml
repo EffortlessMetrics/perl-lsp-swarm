@@ -4,9 +4,12 @@ name: Homebrew Auto-Bump
 # authority. A separate minimal job receives one bounded formula artifact and
 # opens the external tap PR with the dedicated token.
 
+# Started only by `release.yml`'s downstream package refresh dispatch, or by a
+# maintainer re-running a channel by hand. The `release: published` trigger was
+# removed in #15454: `release.yml` publishes a non-draft Release and then
+# dispatches this workflow, so keeping both entry points started one release cut
+# twice.
 on:
-  release:
-    types: [published]
   workflow_dispatch:
     inputs:
       tag:

@@ -1,0 +1,27 @@
+# Negative control for RELEASE_DISPATCH_SET_UNREADABLE (#15454).
+#
+# The dispatch is built from an interpolated variable, so no workflow filename
+# can be derived. The governed set collapses to empty, which must fail loudly
+# rather than making every downstream clause vacuously true.
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  dispatch-publishers:
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: write
+    steps:
+      - name: Dispatch downstream package refresh workflows
+        run: |
+          set -euo pipefail
+          gh workflow run "$PUBLISHER_WORKFLOW" --ref main --field "tag=$TAG"

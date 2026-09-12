@@ -1,0 +1,40 @@
+# Positive fixture for RELEASE_EVENT_FEEDBACK_PATH (#15454).
+#
+# Exercises both dispatch shapes the guard derives its governed set from: a
+# `gh workflow run` shell array and a `/actions/workflows/<file>/dispatches`
+# REST path. Both targets carry `workflow_dispatch` only, so this root is clean.
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  dispatch-publishers:
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: write
+    steps:
+      - name: Dispatch primary publisher
+        run: |
+          set -euo pipefail
+          gh api -X POST \
+            /repos/$REPOSITORY/actions/workflows/demo-publish.yml/dispatches \
+            -f ref="$TAG"
+
+      - name: Dispatch downstream package refresh workflows
+        run: |
+          set -euo pipefail
+          # demo-retired.yml is named in a comment only and must not be governed.
+          workflows=(
+            demo-bump.yml
+          )
+          for workflow in "${workflows[@]}"; do
+            gh workflow run "$workflow" --ref main --field "tag=$TAG"
+          done

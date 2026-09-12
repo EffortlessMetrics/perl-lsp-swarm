@@ -1,0 +1,20 @@
+name: Demo Bump
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  bump:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Bump
+        run: echo "bump ${{ github.event.inputs.tag }}"

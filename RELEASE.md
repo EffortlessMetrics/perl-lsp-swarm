@@ -262,14 +262,22 @@ gh workflow run release-orchestration.yml \
 | `publish-crates.yml` | Orchestration dispatch | ~60–90 min | Publishes all crates to crates.io in topological dependency order with 3-attempt retry and index wait per crate |
 | `publish-extension.yml` | Orchestration dispatch | ~10–30 min | Builds VSIX, publishes to VS Code Marketplace and Open VSX Registry, then runs published-package smokes |
 | `docker-publish.yml` | Orchestration dispatch | ~20–30 min | Builds multi-arch images (amd64, arm64) for GHCR and Docker Hub |
-| `brew-bump.yml` | GitHub release published event | ~5–10 min | Updates `EffortlessMetrics/homebrew-tap` formula with new version and checksums |
-| `scoop-bump.yml` | GitHub release published event | ~3–5 min | Updates Scoop manifest |
-| `chocolatey-bump.yml` | GitHub release published event | ~3–5 min | Updates Chocolatey package |
-| `winget-bump.yml` | GitHub release published event | ~3–5 min | Refreshes the repo-local winget manifest |
+| `brew-bump.yml` | `release.yml` package refresh dispatch | ~5–10 min | Updates `EffortlessMetrics/homebrew-tap` formula with new version and checksums |
+| `scoop-bump.yml` | `release.yml` package refresh dispatch | ~3–5 min | Updates Scoop manifest |
+| `chocolatey-bump.yml` | `release.yml` package refresh dispatch | ~3–5 min | Updates Chocolatey package |
+| `winget-bump.yml` | `release.yml` package refresh dispatch | ~3–5 min | Refreshes the repo-local winget manifest |
 
 **Total expected wall time for a full release: ~50–90 minutes.**
 
 The build, crates, extension, and Docker workflows run in parallel after the tag is created.
+
+The four package-channel refreshes are started only by `release.yml`'s
+`Dispatch downstream package refresh workflows` step, which runs after the
+GitHub Release is published and is skipped for prereleases. They no longer carry
+a `release: published` trigger: keeping both entry points started each of them
+twice per cut (#15454). Publishing a GitHub Release outside `release.yml`
+therefore refreshes no package channel — re-run the specific workflow by hand
+with its `tag` input when that is what you want.
 
 ---
 
