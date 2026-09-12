@@ -3,7 +3,9 @@
 //! Handles prepareTypeHierarchy, typeHierarchy/supertypes, typeHierarchy/subtypes,
 //! prepareCallHierarchy, callHierarchy/incomingCalls, and callHierarchy/outgoingCalls.
 
-use super::super::{CallHierarchyProvider, JsonRpcError, JsonRpcId, LspServer, TypeHierarchyProvider, Value, json};
+use super::super::{
+    CallHierarchyProvider, JsonRpcError, JsonRpcId, LspServer, TypeHierarchyProvider, Value, json,
+};
 use crate::protocol::{req_position, req_uri};
 
 /// Serialize a slice of typed values to a JSON array (#4995).
@@ -250,7 +252,10 @@ impl LspServer {
                     let provider = TypeHierarchyProvider::new();
 
                     // Prepare type hierarchy at the position
-                    if let Some(items) = provider.prepare_with_cancellation(ast, &doc.text, offset, &is_cancelled).map_err(|_| crate::protocol::request_cancelled_error())? {
+                    if let Some(items) = provider
+                        .prepare_with_cancellation(ast, &doc.text, offset, &is_cancelled)
+                        .map_err(|_| crate::protocol::request_cancelled_error())?
+                    {
                         let lsp_items: Vec<Value> = items
                             .iter()
                             .map(|item| {
@@ -302,7 +307,9 @@ impl LspServer {
                 // Find all subs and packages with their positions
                 let mut exact_sub: Option<(String, usize, usize)> = None;
                 for cap in sub_regex.captures_iter(&doc.text) {
-                    if is_cancelled() { return Err(crate::protocol::request_cancelled_error()); }
+                    if is_cancelled() {
+                        return Err(crate::protocol::request_cancelled_error());
+                    }
                     if let (Some(m), Some(name)) = (cap.get(0), cap.get(1))
                         && offset >= m.start()
                         && offset <= m.end()
@@ -336,7 +343,9 @@ impl LspServer {
                 // Check packages
                 let mut exact_pkg: Option<(String, usize, usize)> = None;
                 for cap in package_regex.captures_iter(&doc.text) {
-                    if is_cancelled() { return Err(crate::protocol::request_cancelled_error()); }
+                    if is_cancelled() {
+                        return Err(crate::protocol::request_cancelled_error());
+                    }
                     if let (Some(m), Some(name)) = (cap.get(0), cap.get(1))
                         && offset >= m.start()
                         && offset <= m.end()
@@ -391,7 +400,7 @@ impl LspServer {
                     // Create type hierarchy provider
                     let provider = TypeHierarchyProvider::new();
                     let typed_id = request_id.and_then(JsonRpcId::from_value);
-            let is_cancelled = || typed_id.as_ref().is_some_and(|id| self.is_cancelled(id));
+                    let is_cancelled = || typed_id.as_ref().is_some_and(|id| self.is_cancelled(id));
 
                     // Extract range from request item (LSP uses camelCase)
                     let type_item = crate::type_hierarchy::TypeHierarchyItem {
@@ -426,7 +435,9 @@ impl LspServer {
                     };
 
                     // Find supertypes
-                    let supertypes = provider.find_supertypes_with_cancellation(ast, &type_item, &is_cancelled).map_err(|_| crate::protocol::request_cancelled_error())?;
+                    let supertypes = provider
+                        .find_supertypes_with_cancellation(ast, &type_item, &is_cancelled)
+                        .map_err(|_| crate::protocol::request_cancelled_error())?;
 
                     let lsp_items: Vec<Value> = supertypes
                         .iter()
@@ -491,7 +502,7 @@ impl LspServer {
                     // Create type hierarchy provider
                     let provider = TypeHierarchyProvider::new();
                     let typed_id = request_id.and_then(JsonRpcId::from_value);
-            let is_cancelled = || typed_id.as_ref().is_some_and(|id| self.is_cancelled(id));
+                    let is_cancelled = || typed_id.as_ref().is_some_and(|id| self.is_cancelled(id));
 
                     // Extract range from request item (LSP uses camelCase)
                     let type_item = crate::type_hierarchy::TypeHierarchyItem {
@@ -526,7 +537,9 @@ impl LspServer {
                     };
 
                     // Find subtypes
-                    let subtypes = provider.find_subtypes_with_cancellation(ast, &type_item, &is_cancelled).map_err(|_| crate::protocol::request_cancelled_error())?;
+                    let subtypes = provider
+                        .find_subtypes_with_cancellation(ast, &type_item, &is_cancelled)
+                        .map_err(|_| crate::protocol::request_cancelled_error())?;
 
                     let lsp_items: Vec<Value> = subtypes
                         .iter()
