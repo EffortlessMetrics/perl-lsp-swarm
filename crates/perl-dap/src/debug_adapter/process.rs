@@ -2493,6 +2493,7 @@ impl DebugAdapter {
 /// `ReadLine=0` wins over an earlier value while unrelated options remain
 /// available to the child. This is deliberately string-preserving; malformed
 /// user options retain their existing debugger behavior.
+#[cfg(any(windows, test))]
 fn append_debugger_readline_option(existing: &str) -> String {
     if existing.trim().is_empty() {
         "ReadLine=0".to_string()
@@ -3739,8 +3740,8 @@ mod tests {
 
     #[test]
     fn debugger_readline_option_preserves_child_options() -> Result<(), String> {
-        let retained = super::append_debugger_readline_option("CommandSet=580 PERL_RL=Perl");
-        if retained != "CommandSet=580 PERL_RL=Perl ReadLine=0" {
+        let retained = super::append_debugger_readline_option("CommandSet=580 ReadLine=1");
+        if retained != "CommandSet=580 ReadLine=1 ReadLine=0" {
             return Err(format!("unexpected debugger options: {retained:?}"));
         }
         let defaulted = super::append_debugger_readline_option("  ");

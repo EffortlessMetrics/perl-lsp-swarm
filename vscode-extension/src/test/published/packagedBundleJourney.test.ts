@@ -832,7 +832,7 @@ suite('Packaged VSIX bundled-server journey', function () {
           'use warnings;',
           'my ($pid_file, $release_file, $environment_file) = @ARGV;',
           'open my $environment, q{>}, $environment_file or die "environment file: $!";',
-          'print {$environment} "PERL_RL=$ENV{PERL_RL}\\nPERLDB_OPTS=$ENV{PERLDB_OPTS}\\n"; close $environment or die "environment close: $!";',
+          'print {$environment} "PERL_RL=$ENV{PERL_RL}\nPERLDB_OPTS=$ENV{PERLDB_OPTS}\n"; close $environment or die "environment close: $!";',
           'open my $pid, q{>}, $pid_file or die "pid file: $!";',
           'print {$pid} $$; close $pid or die "pid close: $!";',
           'my $deadline = time + 120;',
@@ -1075,7 +1075,13 @@ suite('Packaged VSIX bundled-server journey', function () {
       }
       if (debuggee)
         await waitForDebuggeeExit(debuggee).catch((error: unknown) => cleanupErrors.push(error));
-      for (const subscription of subscriptions) subscription.dispose();
+      for (const subscription of subscriptions) {
+        try {
+          subscription.dispose();
+        } catch (error) {
+          cleanupErrors.push(error);
+        }
+      }
       for (const file of [program, pidFile, releaseFile, environmentFile]) {
         try {
           fs.rmSync(file, { force: true });
@@ -1084,11 +1090,15 @@ suite('Packaged VSIX bundled-server journey', function () {
         }
       }
       protocolTrace.push({ direction: 'cleanup', errors: cleanupErrors.map(String) });
-      fs.mkdirSync(receiptsDir(), { recursive: true });
-      fs.writeFileSync(
-        path.join(receiptsDir(), 'packaged_dap_protocol_trace.json'),
-        JSON.stringify(protocolTrace, null, 2),
-      );
+      try {
+        fs.mkdirSync(receiptsDir(), { recursive: true });
+        fs.writeFileSync(
+          path.join(receiptsDir(), 'packaged_dap_protocol_trace.json'),
+          JSON.stringify(protocolTrace, null, 2),
+        );
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
       if (cleanupErrors.length) {
         cleanupFailure = new AggregateError(cleanupErrors, 'packaged DAP cleanup failed');
       }
