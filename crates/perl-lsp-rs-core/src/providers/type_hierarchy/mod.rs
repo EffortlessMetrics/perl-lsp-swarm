@@ -287,35 +287,7 @@ impl TypeHierarchyProvider {
 
     /// Normalize parent argument (handle quotes, qw(), etc.)
     fn normalize_parent_arg(&self, arg: &str) -> Vec<String> {
-        let arg = arg.trim();
-
-        // Handle qw(Base Other)
-        if arg.starts_with("qw(") && arg.ends_with(')') {
-            let content = &arg[3..arg.len() - 1];
-            return content.split_whitespace().map(|s| s.to_string()).collect();
-        }
-
-        // Handle qw{Base Other}, qw[Base Other], etc.
-        if arg.starts_with("qw") && arg.len() > 2 {
-            let delim_start = arg.chars().nth(2).unwrap_or(' ');
-            let delim_end = match delim_start {
-                '(' => ')',
-                '{' => '}',
-                '[' => ']',
-                '<' => '>',
-                _ => delim_start,
-            };
-            if let Some(start) = arg.find(delim_start)
-                && let Some(end) = arg.rfind(delim_end)
-            {
-                let content = &arg[start + 1..end];
-                return content.split_whitespace().map(|s| s.to_string()).collect();
-            }
-        }
-
-        // Remove quotes
-        let clean = arg.trim_matches('"').trim_matches('\'').trim_matches('`');
-        vec![clean.to_string()]
+        self.normalize_parent_arg_with_cancellation(arg, &|| false).unwrap_or_default()
     }
 
     fn normalize_parent_arg_with_cancellation(
@@ -352,10 +324,14 @@ impl TypeHierarchyProvider {
                 '<' => '>',
                 _ => delim_start,
             };
-            if let Some(start) = arg.find(delim_start)
-                && let Some(end) = arg.rfind(delim_end)
+            if let Some((start, _)) = arg.char_indices().find(|(_, ch)| *ch == delim_start)
+                && let Some((end, _)) = arg.char_indices().rev().find(|(_, ch)| *ch == delim_end)
             {
-                for parent in arg[start + 1..end].split_whitespace() {
+                let content_start = start + delim_start.len_utf8();
+                if end < content_start {
+                    return Ok(result);
+                }
+                for parent in arg[content_start..end].split_whitespace() {
                     add(parent)?;
                 }
                 return Ok(result);
@@ -1058,6 +1034,21 @@ mod tests {
             provider.normalize_parent_arg_with_cancellation(&argument, &is_cancelled),
             Err(TypeHierarchyCancelled)
         ));
+        Ok(())
+    }
+
+    #[test]
+    fn malformed_qw_delimiters_remain_fallible_with_unicode_input() -> Result<()> {
+        let provider = TypeHierarchyProvider::new();
+        let never_cancelled = || false;
+        let unicode = provider
+            .normalize_parent_arg_with_cancellation("qwéFooé", &never_cancelled)
+            .map_err(|_| anyhow::anyhow!("unexpected cancellation"))?;
+        ensure!(unicode == vec!["Foo".to_string()]);
+        let unclosed = provider
+            .normalize_parent_arg_with_cancellation("qw(Foo", &never_cancelled)
+            .map_err(|_| anyhow::anyhow!("unexpected cancellation"))?;
+        ensure!(unclosed == vec!["qw(Foo".to_string()]);
         Ok(())
     }
 
