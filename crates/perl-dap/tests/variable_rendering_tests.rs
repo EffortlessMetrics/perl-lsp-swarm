@@ -253,11 +253,12 @@ fn test_lazy_expansion_references() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
-// AC8.3: session-less scopes are empty. Note the expensive flag itself is
-// emitted false by every production scopes path today (frames.rs); no
-// production path classifies a scope as expensive, so there is no positive
-// classification to exercise here - the wire shape is covered by the serde
-// round-trip test in dap_coverage_audit_tests.
+// AC8.3: session-less scopes are empty. Expensive-flag note: the DAP-native
+// backend emits false for every scope it builds (frames.rs), while the
+// external-peer backend forwards the peer's flag verbatim
+// (external_peer.rs scopes) - so a true value can only originate from a
+// peer. The wire shape for that path is covered by the serde round-trip
+// test in dap_coverage_audit_tests.
 fn test_scope_expensive_flags() -> Result<(), Box<dyn std::error::Error>> {
     let mut adapter = create_test_adapter();
     let args = json!({ "frameId": 1 });
