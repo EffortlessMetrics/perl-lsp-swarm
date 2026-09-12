@@ -7,6 +7,7 @@ on:
       - 'scripts/prepare_vsix_prebuilt_payload.py'
       - 'scripts/release_archive_members.py'
       - 'scripts/release_build_identity.py'
+      - 'scripts/release_package_evidence.py'
       - 'scripts/release_terminal_manifest.py'
       - 'scripts/test_prepare_vsix_prebuilt_payload.py'
       - 'vscode-extension/package.json'
