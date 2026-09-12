@@ -45,12 +45,18 @@ void test('the setup action verifies the authority before npm ci', () => {
   assert.match(source, /npm install --global npm@11\.18\.0/);
   const installStepStart = source.lastIndexOf('- name:', installIndex);
   const installStepEnd = source.indexOf('\n    - name:', installIndex + 1);
-  const installStep = source.slice(installStepStart, installStepEnd === -1 ? source.length : installStepEnd);
+  const installStep = source.slice(
+    installStepStart,
+    installStepEnd === -1 ? source.length : installStepEnd,
+  );
   assert.match(installStep, /\n      if: inputs\.install-dependencies == ['"]true['"]/);
   const doctorIndex = source.indexOf('- name: Verify Node and npm authority before install');
   const doctorStepStart = source.lastIndexOf('- name:', doctorIndex);
   const doctorStepEnd = source.indexOf('\n    - name:', doctorIndex + 1);
-  const doctorStep = source.slice(doctorStepStart, doctorStepEnd === -1 ? source.length : doctorStepEnd);
+  const doctorStep = source.slice(
+    doctorStepStart,
+    doctorStepEnd === -1 ? source.length : doctorStepEnd,
+  );
   assert.doesNotMatch(doctorStep, /\n      if:/);
   const inputs = source.slice(0, source.indexOf('\nruns:'));
   assert.match(inputs, /install-dependencies:[\s\S]*default: ['"]true['"]/);
