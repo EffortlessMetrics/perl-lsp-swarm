@@ -26,6 +26,7 @@ use tasks::dependency_hygiene::{DependencyHygieneConfig, DependencyHygieneMode};
 use tasks::emacs_train_specs::{LeafSpecDisposition, SpecsOutputFormat};
 use tasks::gate_policy::GatePolicyProfile;
 use tasks::gates::{GateTier, OutputFormat as GatesOutputFormat};
+use tasks::issue_controllers::IssueControllersCommand;
 use tasks::issue_plan::IssuePlanOutputFormat;
 use tasks::methodology_gate::MethodologyOutputFormat;
 use tasks::targeted_checks::CheckMode;
@@ -48,9 +49,9 @@ use tasks::{
     generated_files, github, github_preflight, github_review, goals, hardening, hook_checks,
     ignored_tests, incremental_proof, inject_sha_assets, inline_completion_quality,
     inline_completion_smoke, install_surface_check, integration_proof, intent_diff_gate,
-    issue_plan, layer_check, lsp_318_claims, lsp_318_matrix, lsp_ux_smoke, memory_trends,
-    merge_ready, methodology_gate, metrics, module_train, module_train_live, native_critic,
-    native_format, native_neovim_train, native_product_surface, native_tooling,
+    issue_controllers, issue_plan, layer_check, lsp_318_claims, lsp_318_matrix, lsp_ux_smoke,
+    memory_trends, merge_ready, methodology_gate, metrics, module_train, module_train_live,
+    native_critic, native_format, native_neovim_train, native_product_surface, native_tooling,
     oneliner_capability_matrix, oracle_fixture_manifest, oracle_receipt_schema, oracle_runner,
     parse_rust, parser_corpus_sweep, parser_matrix, parser_ratchet, perl_core_harness,
     perl_corpus_train, perl_kwalitee, populate_book, pre_push_plan, prep_crates_io_launch,
@@ -505,6 +506,15 @@ enum Commands {
     Integration {
         #[command(subcommand)]
         command: IntegrationCommand,
+    },
+
+    /// Issue-controller train tooling: independent static validation of the
+    /// stable `issue_controller_train.v1` manifest and its checked human
+    /// projection (#11765). Deterministic and offline only.
+    #[command(name = "issue-controllers")]
+    IssueControllers {
+        #[command(subcommand)]
+        command: IssueControllersCommand,
     },
 
     /// Writer admission — read-only pre-admission diagnostic (#3957 W1).
@@ -6888,6 +6898,7 @@ fn run_cli(cli: Cli) -> Result<()> {
                 })
             }
         },
+        Commands::IssueControllers { command } => issue_controllers::run(command),
         Commands::WriterAdmission {
             branch,
             base,
