@@ -2137,10 +2137,7 @@ impl DebugAdapter {
             || lock_or_recover(&self.attached_pid, "debug_adapter.attached_pid").is_some()
             || lock_or_recover(&self.tcp_session, "debug_adapter.tcp_session").is_some();
         if has_active_session && let Some(ref sender) = self.event_sender {
-            if let Ok(mut flushed) = self.terminal_event_flushed.0.lock() {
-                *flushed = false;
-            }
-            let _ = emit_terminated_event(sender, &self.seq, &self.termination_state, None, None);
+            emit_terminated_event(sender, &self.seq, &self.termination_state, None, None);
         }
         self.clear_active_session_state();
         self.close_terminal_session_generation("disconnect");

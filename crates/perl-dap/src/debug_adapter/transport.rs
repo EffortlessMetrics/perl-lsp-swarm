@@ -6,7 +6,7 @@ use super::{
     thread,
 };
 use std::sync::atomic::Ordering;
-use std::sync::mpsc::TryRecvError;
+use std::sync::mpsc::{RecvTimeoutError, TryRecvError};
 use std::time::Duration;
 
 const EVENT_WRITE_BATCH_MAX: usize = 64;
@@ -92,12 +92,45 @@ impl DebugAdapter {
 
         // Clone transport_broken flag to pass to the event handler thread.
         let transport_broken = Arc::clone(&self.transport_broken);
-        let terminal_event_flushed = Arc::clone(&self.terminal_event_flushed);
+        // This handshake is local to this transport run.  It cannot be
+        // satisfied by a terminal event from a previous session.
+        let (drain_request_tx, drain_request_rx) = sync_channel::<()>(1);
+        let (drain_ack_tx, drain_ack_rx) = sync_channel::<()>(1);
 
         thread::spawn(move || {
             let mut consecutive_write_failures = 0;
+            let mut drain_requested = false;
+            let mut drain_channel_closed = false;
+            let mut event_delivery_failed = false;
 
-            while let Ok(first_msg) = rx.recv() {
+            loop {
+                match drain_request_rx.try_recv() {
+                    Ok(()) => drain_requested = true,
+                    Err(TryRecvError::Disconnected) => {
+                        drain_requested = true;
+                        drain_channel_closed = true;
+                    }
+                    Err(TryRecvError::Empty) => {}
+                }
+
+                let first_msg = match rx.recv_timeout(Duration::from_millis(10)) {
+                    Ok(message) => message,
+                    Err(RecvTimeoutError::Timeout) => {
+                        if drain_requested
+                            && !event_delivery_failed
+                            && !transport_broken.load(Ordering::Acquire)
+                            && drain_ack_tx.send(()).is_ok()
+                        {
+                            break;
+                        }
+                        if drain_channel_closed {
+                            break;
+                        }
+                        continue;
+                    }
+                    Err(RecvTimeoutError::Disconnected) => break,
+                };
+
                 // Check if transport is already marked broken
                 if transport_broken.load(Ordering::Acquire) {
                     break;
@@ -118,14 +151,12 @@ impl DebugAdapter {
                     }
                 }
 
-                let has_terminal_event = batch.iter().any(|message| {
-                    matches!(message, DapMessage::Event { event, .. } if event == "terminated")
-                });
                 let mut payloads = Vec::with_capacity(batch.len());
                 for msg in batch {
                     match serde_json::to_vec(&msg) {
                         Ok(payload) => payloads.push(payload),
                         Err(e) => {
+                            event_delivery_failed = true;
                             tracing::error!(
                                 error = %e,
                                 message = ?msg,
@@ -158,13 +189,7 @@ impl DebugAdapter {
                     );
                     break;
                 }
-
-                if has_terminal_event && event_flushed {
-                    if let Ok(mut flushed) = terminal_event_flushed.0.lock() {
-                        *flushed = true;
-                    }
-                    terminal_event_flushed.1.notify_all();
-                }
+                event_delivery_failed |= !event_flushed;
 
                 if disconnected {
                     break;
@@ -250,10 +275,6 @@ impl DebugAdapter {
                 // dispatch: a floored wire request is refused before any
                 // handler can run. The `initialized` notification below still
                 // keys off the (never-floored) initialize response.
-                let had_active_session = lock_or_recover(&self.session, "debug_adapter.session")
-                    .is_some()
-                    || lock_or_recover(&self.attached_pid, "debug_adapter.attached_pid").is_some()
-                    || lock_or_recover(&self.tcp_session, "debug_adapter.tcp_session").is_some();
                 let response = match self.secondary_capability_floor_response(
                     seq,
                     &command,
@@ -280,23 +301,24 @@ impl DebugAdapter {
                 if command == "disconnect"
                     && matches!(response, DapMessage::Response { success: true, .. })
                 {
-                    if had_active_session {
-                        let (flushed, wake) = &*self.terminal_event_flushed;
-                        let guard = flushed.lock().map_err(|_| {
-                            io::Error::other("terminal event flush state mutex poisoned")
-                        })?;
-                        let result = wake
-                            .wait_timeout_while(guard, Duration::from_secs(5), |done| !*done)
-                            .map_err(|_| {
-                                io::Error::other("terminal event flush state mutex poisoned")
-                            })?;
-                        if !*result.0 {
-                            return Err(io::Error::new(
+                    drain_request_tx.send(()).map_err(|_| {
+                        io::Error::new(
+                            io::ErrorKind::BrokenPipe,
+                            "event writer stopped before disconnect drain",
+                        )
+                    })?;
+                    drain_ack_rx.recv_timeout(Duration::from_secs(5)).map_err(
+                        |error| match error {
+                            std::sync::mpsc::RecvTimeoutError::Timeout => io::Error::new(
                                 io::ErrorKind::TimedOut,
-                                "terminal DAP event was not flushed before disconnect",
-                            ));
-                        }
-                    }
+                                "DAP event queue was not drained before disconnect",
+                            ),
+                            std::sync::mpsc::RecvTimeoutError::Disconnected => io::Error::new(
+                                io::ErrorKind::BrokenPipe,
+                                "event writer stopped before disconnect drain",
+                            ),
+                        },
+                    )?;
                     return Ok(());
                 }
             }

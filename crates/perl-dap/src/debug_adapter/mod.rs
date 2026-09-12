@@ -69,7 +69,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 use std::sync::mpsc::{SyncSender, sync_channel};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -147,8 +147,6 @@ pub struct DebugAdapter {
     event_sender: Option<SyncSender<DapMessage>>,
     /// Ensures competing session shutdown paths emit one terminal event per session.
     termination_state: Arc<Mutex<TerminationState>>,
-    /// Signals that a queued terminal event reached the DAP writer.
-    terminal_event_flushed: Arc<(Mutex<bool>, Condvar)>,
     /// Bounded history of debugger output for stack/variable/evaluate parsing
     recent_output: Arc<Mutex<RecentOutputBuffer>>,
     /// Function breakpoints (`setFunctionBreakpoints`) stored with REPLACE semantics
@@ -263,7 +261,6 @@ impl DebugAdapter {
             thread_counter: Arc::new(AtomicI32::new(0)),
             event_sender: None,
             termination_state: Arc::new(Mutex::new(TerminationState::default())),
-            terminal_event_flushed: Arc::new((Mutex::new(true), Condvar::new())),
             recent_output: Arc::new(Mutex::new(RecentOutputBuffer::new())),
             function_breakpoints: Arc::new(Mutex::new(Vec::new())),
             next_function_breakpoint_id: Arc::new(Mutex::new(1)),
