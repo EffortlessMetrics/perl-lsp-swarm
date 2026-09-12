@@ -172,13 +172,27 @@ re-dispatch with `gh workflow run brew-bump.yml -f tag=vX.Y.Z`.
 
 ### 7. Scoop bucket
 
-Same pattern as Homebrew:
+**Not the same pattern as Homebrew.** `scoop-bump.yml` opens a *repo-local* PR
+refreshing `distribution/scoop/perl-lsp.json` in this repository; it does not
+touch `ScoopInstaller/Main`. Two separate things to confirm:
 
 ```bash
-gh pr list -R EffortlessMetrics/scoop-perllsp --state all --limit 5
+# 1. Repo-local refresh PR exists and merged
+gh pr list -R EffortlessMetrics/perl-lsp-swarm \
+  --search "head:automation/scoop-X.Y.Z" --state all --limit 5
 ```
 
-Re-dispatch: `gh workflow run scoop-bump.yml -f tag=vX.Y.Z`.
+Re-dispatch if absent: `gh workflow run scoop-bump.yml -f tag=vX.Y.Z`.
+
+```bash
+# 2. Public bucket actually carries the version
+scoop info perllsp
+```
+
+If the repo-local PR merged but `scoop info` is stale, **nothing has been
+submitted** — the upstream submission to `ScoopInstaller/Main` is an explicit
+maintainer action, because this repository's `GITHUB_TOKEN` cannot write there.
+Waiting will not change it.
 
 ### 8. Chocolatey
 
@@ -186,9 +200,13 @@ Re-dispatch: `gh workflow run scoop-bump.yml -f tag=vX.Y.Z`.
 choco search perllsp --exact
 ```
 
-Chocolatey moderation can queue submissions for hours/days. If
-`choco search` returns a stale version, distinguish between "workflow
-never fired" and "submitted but queued in moderation":
+`chocolatey-bump.yml` refreshes `distribution/chocolatey/**` in this repository
+through a repo-local PR. **It does not submit to
+`chocolatey-community/chocolatey-coreteampackages`** — this repository's
+`GITHUB_TOKEN` cannot write there, so submission is an explicit maintainer
+action.
+
+That makes three states, not two:
 
 ```bash
 # Did the bump workflow run at all for this version?
@@ -196,16 +214,43 @@ gh run list --workflow=chocolatey-bump.yml --limit 10 \
   | grep -E "vX\.Y\.Z|completed"
 ```
 
-If the workflow never ran, dispatch it:
+1. **Workflow never ran** — dispatch it:
+
+   ```bash
+   gh workflow run chocolatey-bump.yml -f tag=vX.Y.Z
+   ```
+
+2. **Workflow succeeded, repo-local PR not merged** — merge it. The package
+   metadata in this repository is still on the prior version.
+
+3. **Workflow succeeded, PR merged, `choco search` still stale** — the upstream
+   submission has not been made. Make it. A green workflow is *not* evidence of
+   a queued submission.
+
+Only once a submission exists does Chocolatey moderation apply, and that can
+queue for hours or days. Do not read a stale `choco search` as moderation
+latency without first confirming a submission was actually filed.
+
+### 9. Winget
+
+`winget-bump.yml` refreshes `distribution/winget/perl-lsp.yaml` through a
+repo-local PR and does not submit to `microsoft/winget-pkgs`.
 
 ```bash
-gh workflow run chocolatey-bump.yml -f tag=vX.Y.Z
+# 1. Repo-local refresh PR exists and merged
+gh pr list -R EffortlessMetrics/perl-lsp-swarm \
+  --search "head:automation/winget-X.Y.Z" --state all --limit 5
+
+# 2. Public manifest carries the version
+winget show perllsp
 ```
 
-If the workflow ran successfully but `choco search` is still stale, the
-submission is in moderation - nothing to do but wait.
+Re-dispatch if absent: `gh workflow run winget-bump.yml -f tag=vX.Y.Z`.
 
-### 9. End-to-end smoke
+As with Scoop and Chocolatey, a merged repo-local PR and a stale `winget show`
+mean the upstream submission has not been made, not that it is pending.
+
+### 10. End-to-end smoke
 
 After the channels above resolve, confirm a fresh install on each
 platform works:
@@ -248,8 +293,14 @@ notes file so `notes_status` can flip from `pending` to `closed`.
   It cannot: the Release is published with `GITHUB_TOKEN`. Docker, VS Code
   Marketplace, and Open VSX are dispatch-only; the package channels are
   dispatched by `release.yml`.
-- A Homebrew/Scoop/Chocolatey bump that opens a tap-repo PR is not
-  the same as a user-facing publish. The PR must merge.
+- A bump workflow finishing green is not a publish. Homebrew's PR lands on the
+  owned tap and must merge; the Scoop, Chocolatey and Winget PRs land **in this
+  repository** and merging one changes nothing a user installs.
+- For Scoop, Chocolatey and Winget, closure requires evidence from the public
+  channel itself (`scoop info`, `choco search`, `winget show`) or an upstream
+  submission receipt. A merged repo-local metadata PR does not satisfy this,
+  and a stale public listing after one means the submission was never filed —
+  not that it is pending.
 
 ## Related
 
