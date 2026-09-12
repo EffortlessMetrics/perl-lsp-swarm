@@ -27,10 +27,10 @@ GitHub App (#15454).
 |---|---|---|
 | GitHub Release (binaries) | `release.yml` on tag push | Yes |
 | crates.io | `publish-crates.yml` from `release.yml` | Yes (with new-crate burst cap) |
-| Homebrew tap | `brew-bump.yml` dispatched from `release.yml` | Yes (tap-repo PR still needs merge) |
-| Scoop bucket | `scoop-bump.yml` dispatched from `release.yml` | Yes (bucket-repo PR still needs merge) |
-| Chocolatey | `chocolatey-bump.yml` dispatched from `release.yml` | Yes (package submission may queue) |
-| Winget (repo-local) | `winget-bump.yml` dispatched from `release.yml` | Yes (upstream submission still manual) |
+| Homebrew tap | `brew-bump.yml` dispatched from `release.yml` | Starts automatically; opens a PR on the owned tap that still needs merge |
+| Scoop bucket | `scoop-bump.yml` dispatched from `release.yml` | Starts automatically; opens a repo-local manifest PR — `ScoopInstaller/Main` submission stays manual |
+| Chocolatey | `chocolatey-bump.yml` dispatched from `release.yml` | Starts automatically; opens a repo-local package PR — community-repo submission stays manual |
+| Winget | `winget-bump.yml` dispatched from `release.yml` | Starts automatically; opens a repo-local manifest PR — `winget-pkgs` submission stays manual |
 | VS Code Marketplace | `publish-extension.yml` | **No - `workflow_dispatch` only** |
 | Open VSX | `publish-extension.yml` | **No - `workflow_dispatch` only** |
 | Docker (Hub + GHCR) | `docker-publish.yml` | **No - `workflow_dispatch` only** |
@@ -38,9 +38,21 @@ GitHub App (#15454).
 **Three channels (Docker, VS Code Marketplace, Open VSX) require a manual
 `workflow_dispatch` by the operator.** They are the most common 0.14.0-style
 "still pending" channels. Brew/Scoop/Chocolatey/Winget are also
-`workflow_dispatch` workflows, but `release.yml` dispatches them for you — so
-they need no operator action to start, and each opens a downstream package-repo
-PR that must merge before users see the bump.
+`workflow_dispatch` workflows, but `release.yml` dispatches them for you, so
+they need no operator action to *start*.
+
+Starting is not publishing, and the four differ in what they leave behind:
+
+- `brew-bump.yml` opens a PR against the owned tap
+  `EffortlessMetrics/homebrew-tap` using `HOMEBREW_TAP_TOKEN`. Merging that PR
+  is what users see.
+- `scoop-bump.yml`, `chocolatey-bump.yml` and `winget-bump.yml` open
+  **repo-local** PRs that refresh `distribution/**` metadata in this
+  repository. Merging one updates the repository's own manifest and nothing
+  else; submission to `ScoopInstaller/Main`,
+  `chocolatey-community/chocolatey-coreteampackages`, and
+  `microsoft/winget-pkgs` stays an explicit maintainer action, because this
+  repository's `GITHUB_TOKEN` cannot write to those repositories.
 
 ## Per-channel verification
 
@@ -148,11 +160,11 @@ brew info --json perllsp | jq '.[0].versions.stable'
 ```
 
 If still on prior version: `brew-bump.yml` is dispatched by `release.yml` on an
-orchestrated cut and opens a PR against `EffortlessMetrics/homebrew-perllsp`.
-Check that PR was merged:
+orchestrated cut and opens a PR against `EffortlessMetrics/homebrew-tap`, the
+tap named by its own `HOMEBREW_TAP_REPOSITORY`. Check that PR was merged:
 
 ```bash
-gh pr list -R EffortlessMetrics/homebrew-perllsp --state all --limit 5
+gh pr list -R EffortlessMetrics/homebrew-tap --state all --limit 5
 ```
 
 If the PR is open: review and merge it. If the PR doesn't exist:
