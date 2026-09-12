@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const { test } = require('node:test');
+const { constructCandidateArtifactManifest } = require('./run-local-vsix-smoke.js');
 
 const extensionRoot = path.resolve(__dirname, '..');
 const repositoryRoot = path.resolve(extensionRoot, '..');
@@ -87,6 +88,80 @@ void test('current-source Linux smoke enables the candidate-bound Test Explorer 
     nextStepIndex === -1 ? source.length : smokeIndex + 1 + nextStepIndex,
   );
   assert.match(smokeStep, /PERL_LSP_TEST_EXPLORER_JOURNEY: '1'/);
+  assert.match(smokeStep, /PERL_LSP_CONSTRUCT_CANDIDATE_MANIFEST: '1'/);
+  assert.match(
+    smokeStep,
+    /PERL_LSP_CURRENT_SOURCE_SHA: \$\{\{ env\.PERL_LSP_SMOKE_SUBJECT_SHA \}\}/,
+  );
+  assert.match(
+    smokeStep,
+    /PERL_LSP_CANDIDATE_ID: current-source-\$\{\{ env\.PERL_LSP_SMOKE_SUBJECT_SHA \}\}/,
+  );
+  assert.match(
+    smokeStep,
+    /PERL_LSP_ARTIFACT_SET_ID: current-source-linux-\$\{\{ matrix\.vscode_version \}\}-\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}/,
+  );
+  const subjectSha = 'a'.repeat(40);
+  const workflowValue = (name) => {
+    const match = smokeStep.match(new RegExp(`^\\s+${name}: (.+)$`, 'm'));
+    const value = match?.[1];
+    assert.ok(value, `${name} must be present in the smoke environment`);
+    return value.trim().replace(/^['"]|['"]$/g, '');
+  };
+  const resolveWorkflowValue = (value, runAttempt) =>
+    value
+      .replaceAll('${{ env.PERL_LSP_SMOKE_SUBJECT_SHA }}', subjectSha)
+      .replaceAll('${{ matrix.vscode_version }}', '1.125.0')
+      .replaceAll('${{ github.run_id }}', '123')
+      .replaceAll('${{ github.run_attempt }}', runAttempt);
+  const manifestForAttempt = (runAttempt) => {
+    const smokeEnv = Object.fromEntries(
+      [
+        'PERL_LSP_CONSTRUCT_CANDIDATE_MANIFEST',
+        'PERL_LSP_CANDIDATE_ID',
+        'PERL_LSP_ARTIFACT_SET_ID',
+        'PERL_LSP_CURRENT_SOURCE_SHA',
+      ].map((name) => [name, resolveWorkflowValue(workflowValue(name), runAttempt)]),
+    );
+    return JSON.parse(
+      String(
+        constructCandidateArtifactManifest(
+          smokeEnv,
+          subjectSha,
+          'linux',
+          'b'.repeat(64),
+          'c'.repeat(64),
+        ),
+      ),
+    );
+  };
+  const manifest = manifestForAttempt('1');
+  const rerunManifest = manifestForAttempt('2');
+  assert.equal(manifest.candidate_id, `current-source-${subjectSha}`);
+  assert.equal(manifest.frozen_product_sha, subjectSha);
+  assert.equal(manifest.artifact_set_id, 'current-source-linux-1.125.0-123-1');
+  assert.equal(rerunManifest.artifact_set_id, 'current-source-linux-1.125.0-123-2');
+  assert.notEqual(manifest.artifact_set_id, rerunManifest.artifact_set_id);
+  const missingSourceEnv = Object.fromEntries(
+    [
+      'PERL_LSP_CONSTRUCT_CANDIDATE_MANIFEST',
+      'PERL_LSP_CANDIDATE_ID',
+      'PERL_LSP_ARTIFACT_SET_ID',
+      'PERL_LSP_CURRENT_SOURCE_SHA',
+    ].map((name) => [name, resolveWorkflowValue(workflowValue(name), '1')]),
+  );
+  delete missingSourceEnv.PERL_LSP_CURRENT_SOURCE_SHA;
+  assert.throws(
+    () =>
+      constructCandidateArtifactManifest(
+        missingSourceEnv,
+        subjectSha,
+        'linux',
+        'b'.repeat(64),
+        'c'.repeat(64),
+      ),
+    /missing frozenProductSha/,
+  );
   assert.match(smokeStep, /run: xvfb-run -a npm run test:published:local/);
   assert.match(
     smokeStep,

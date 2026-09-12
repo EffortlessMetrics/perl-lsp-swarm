@@ -1630,6 +1630,32 @@ class ReleaseTopologyTests(unittest.TestCase):
             workflow_targets,
         )
 
+    def test_downloader_target_derivation_accepts_windows_target_constants(self):
+        source = """
+        const WINDOWS_X64_TARGET = 'x86_64-pc-windows-msvc';
+        const WINDOWS_ARM64_TARGET = 'aarch64-pc-windows-msvc';
+        if (arch === 'arm64') return WINDOWS_ARM64_TARGET;
+        return WINDOWS_X64_TARGET;
+        """
+        workflow_targets = {
+            "x86_64-pc-windows-msvc",
+            "aarch64-pc-windows-msvc",
+        }
+        self.assertEqual(
+            MODULE.derive_downloader_targets(source, workflow_targets),
+            workflow_targets,
+        )
+
+    def test_downloader_target_derivation_rejects_unused_or_wrong_constants(self):
+        unused = "const WINDOWS_X64_TARGET = 'x86_64-pc-windows-msvc';"
+        wrong = """
+        const WINDOWS_X64_TARGET = 'other-target';
+        return WINDOWS_X64_TARGET;
+        """
+        workflow_targets = {"x86_64-pc-windows-msvc"}
+        self.assertEqual(MODULE.derive_downloader_targets(unused, workflow_targets), set())
+        self.assertEqual(MODULE.derive_downloader_targets(wrong, workflow_targets), set())
+
     def test_manifest_mutations_fail_closed(self):
         with self.valid_manifest_fixture() as (root, manifest, frozen_sha):
             MODULE.validate_manifest(manifest, root, frozen_sha)
