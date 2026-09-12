@@ -59,7 +59,8 @@ competing file; if hard-linking is unsupported, the adapter fails closed rather 
 falling back to overwrite-based publication. The caller must provide a fresh private
 output directory and discard that directory after a failed invocation; partial final
 files are intentionally retained so rollback never deletes a pathname that may have
-been replaced by another writer.
+been replaced by another writer. Discard partial output only after verifying that
+the caller exclusively owns the output directory.
 
 During an adapter invocation, other processes must not share or replace the private
 output directory. Creation-collision refusal protects a competing file before

@@ -164,6 +164,7 @@ class PrebuiltPayloadAdapterTests(unittest.TestCase):
             result = subprocess.run(self.command(paths), cwd=Path(__file__).parents[1], capture_output=True, text=True, check=False)
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("refusing to overwrite", result.stderr)
+            self.assertIn("do not consume", result.stderr)
 
             evidence = json.loads(Path(paths["evidence"]).read_text(encoding="utf-8"))
             evidence["archive"]["sha256"] = digest(Path(paths["archive"]).read_bytes())
@@ -311,7 +312,7 @@ class PrebuiltPayloadAdapterTests(unittest.TestCase):
                     )
                 self.assertEqual(list(root.glob(".prebuilt-payload-*")), [])
 
-    def test_rollback_preserves_replaced_publication(self) -> None:
+    def test_failure_cleanup_preserves_replaced_publication(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             paths = self.fixture(root)
