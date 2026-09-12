@@ -376,6 +376,7 @@ describe('PerlDebugAdapterDescriptorFactory', () => {
       expect(gnuResult.command).not.toBe(alpinePath);
 
       fs.rmSync(gnuPath);
+      linuxLibcForTest = 'gnu';
       fs.writeFileSync(path.join(extensionDir, 'package.json'), JSON.stringify({}));
       const localVsixFactory = new PerlDebugAdapterDescriptorFactory(
         makeContext(tmpDir, extensionDir),
