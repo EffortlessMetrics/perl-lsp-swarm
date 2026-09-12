@@ -59,8 +59,8 @@ function buildDapExecutableArgs(value: unknown): string[] {
   );
 }
 
-function required<T>(value: T | undefined, label: string): T {
-  if (value === undefined) {
+function required<T>(value: T | undefined | null, label: string): T {
+  if (value === undefined || value === null) {
     throw new Error(`Missing ${label}`);
   }
   return value;
@@ -309,6 +309,9 @@ describe('PerlDebugAdapterDescriptorFactory', () => {
   test('factory selects Alpine DAP on a simulated musl Linux host', () => {
     const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
     const originalArch = Object.getOwnPropertyDescriptor(process, 'arch');
+    const originalPath = process.env.PATH;
+    const originalHome = process.env.HOME;
+    const originalCargo = process.env.CARGO_HOME;
     const extensionDir = fs.mkdtempSync(path.join(tmpDir, 'extension-'));
     const alpineDir = path.join(extensionDir, 'bin', 'alpine-x64');
     const gnuDir = path.join(extensionDir, 'bin', 'linux-x64');
@@ -357,15 +360,14 @@ describe('PerlDebugAdapterDescriptorFactory', () => {
       expect(gnuResult.command).toBe(gnuPath);
       expect(gnuResult.command).not.toBe(alpinePath);
 
-      const managedDir = managedNamespaceDir(tmpDir, hostManagedCompatibilityKeys()[0]!);
-      if (!managedDir) throw new Error('Missing managed test directory');
+      const managedDir = required(
+        managedNamespaceDir(tmpDir, required(hostManagedCompatibilityKeys()[0], 'host key')),
+        'managed test directory',
+      );
       fs.mkdirSync(managedDir, { recursive: true });
       const managedPath = path.join(managedDir, 'perl-dap');
       fs.writeFileSync(managedPath, 'managed dap');
       fs.chmodSync(managedPath, 0o755);
-      const originalPath = process.env.PATH;
-      const originalHome = process.env.HOME;
-      const originalCargo = process.env.CARGO_HOME;
       process.env.PATH = '';
       process.env.HOME = tmpDir;
       process.env.CARGO_HOME = tmpDir;
@@ -378,13 +380,6 @@ describe('PerlDebugAdapterDescriptorFactory', () => {
         undefined,
       ) as vscode.DebugAdapterExecutable;
       expect(ambiguousResult.command).toBe(managedPath);
-      if (originalPath === undefined) delete process.env.PATH;
-      else process.env.PATH = originalPath;
-      if (originalHome === undefined) delete process.env.HOME;
-      else process.env.HOME = originalHome;
-      if (originalCargo === undefined) delete process.env.CARGO_HOME;
-      else process.env.CARGO_HOME = originalCargo;
-
       fs.rmSync(gnuPath);
       linuxLibcForTest = 'gnu';
       fs.writeFileSync(
@@ -405,6 +400,12 @@ describe('PerlDebugAdapterDescriptorFactory', () => {
       };
       const getConfiguration = vscodeApi.workspace.getConfiguration as jest.Mock;
       if (previousConfiguration) getConfiguration.mockImplementation(previousConfiguration);
+      if (originalPath === undefined) delete process.env.PATH;
+      else process.env.PATH = originalPath;
+      if (originalHome === undefined) delete process.env.HOME;
+      else process.env.HOME = originalHome;
+      if (originalCargo === undefined) delete process.env.CARGO_HOME;
+      else process.env.CARGO_HOME = originalCargo;
       if (originalPlatform) Object.defineProperty(process, 'platform', originalPlatform);
       if (originalArch) Object.defineProperty(process, 'arch', originalArch);
     }
