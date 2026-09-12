@@ -396,6 +396,10 @@ impl TypeHierarchyProvider {
                 None => return Ok(None),
             };
 
+        if is_cancelled() {
+            return Err(TypeHierarchyCancelled);
+        }
+
         // Check if it's a package or class declaration
         match &target_node.kind {
             NodeKind::Package { name, .. } => {
@@ -784,14 +788,15 @@ impl TypeHierarchyProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use anyhow::{Result, ensure};
     use perl_parser_core::parser::Parser;
     use perl_tdd_support::{must, must_some};
 
     #[test]
-    fn cancellation_is_explicit_for_all_hierarchy_queries() {
+    fn cancellation_is_explicit_for_all_hierarchy_queries() -> Result<()> {
         let code = "package Child; use parent 'Base'; package Leaf; use parent 'Child';";
         let mut parser = Parser::new(code);
-        let ast = must(parser.parse());
+        let ast = parser.parse()?;
         let provider = TypeHierarchyProvider::new();
         let item = TypeHierarchyItem {
             name: "Child".to_string(),
@@ -804,29 +809,30 @@ mod tests {
         };
         let cancelled = || true;
 
-        assert!(matches!(
+        ensure!(matches!(
             provider.prepare_with_cancellation(&ast, code, 8, &cancelled),
             Err(TypeHierarchyCancelled)
         ));
-        assert!(matches!(
+        ensure!(matches!(
             provider.find_supertypes_with_cancellation(&ast, &item, &cancelled),
             Err(TypeHierarchyCancelled)
         ));
-        assert!(matches!(
+        ensure!(matches!(
             provider.find_subtypes_with_cancellation(&ast, &item, &cancelled),
             Err(TypeHierarchyCancelled)
         ));
+        Ok(())
     }
 
     #[test]
-    fn cancellation_during_index_walk_is_not_an_empty_success() {
+    fn cancellation_during_index_walk_is_not_an_empty_success() -> Result<()> {
         use std::sync::atomic::{AtomicUsize, Ordering};
 
         let code = (0..64)
             .map(|index| format!("package P{index}; use parent 'P{}';\n", index + 1))
             .collect::<String>();
         let mut parser = Parser::new(&code);
-        let ast = must(parser.parse());
+        let ast = parser.parse()?;
         let provider = TypeHierarchyProvider::new();
         let item = TypeHierarchyItem {
             name: "Missing".to_string(),
@@ -840,33 +846,35 @@ mod tests {
         let polls = AtomicUsize::new(0);
         let is_cancelled = || polls.fetch_add(1, Ordering::Relaxed) >= 3;
 
-        assert!(matches!(
+        ensure!(matches!(
             provider.find_supertypes_with_cancellation(&ast, &item, &is_cancelled),
             Err(TypeHierarchyCancelled)
         ));
         let subtype_polls = AtomicUsize::new(0);
         let subtype_cancelled = || subtype_polls.fetch_add(1, Ordering::Relaxed) >= 3;
-        assert!(matches!(
+        ensure!(matches!(
             provider.find_subtypes_with_cancellation(&ast, &item, &subtype_cancelled),
             Err(TypeHierarchyCancelled)
         ));
+        Ok(())
     }
 
     #[test]
-    fn prepare_cancellation_during_child_scan_is_not_a_parent_result() {
+    fn prepare_cancellation_during_child_scan_is_not_a_parent_result() -> Result<()> {
         use std::sync::atomic::{AtomicUsize, Ordering};
 
         let code = "package Outer { package Inner; }";
         let mut parser = Parser::new(code);
-        let ast = must(parser.parse());
+        let ast = parser.parse()?;
         let provider = TypeHierarchyProvider::new();
         let polls = AtomicUsize::new(0);
         let is_cancelled = || polls.fetch_add(1, Ordering::Relaxed) >= 2;
 
-        assert!(matches!(
+        ensure!(matches!(
             provider.prepare_with_cancellation(&ast, code, 9, &is_cancelled),
             Err(TypeHierarchyCancelled)
         ));
+        Ok(())
     }
 
     #[test]
