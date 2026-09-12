@@ -27,7 +27,10 @@ import unittest
 import os
 import json
 import shlex
+import shutil
 import subprocess
+import tempfile
+import textwrap
 
 # Ensure the scripts directory is on the path so we can import publish-topo.
 scripts_dir = os.path.join(os.path.dirname(__file__), "..")
@@ -149,19 +152,25 @@ class TestRegistryDependency(unittest.TestCase):
 class TestPublishWorkflowStep(unittest.TestCase):
     """The publication workflow executes the shared graph authority."""
 
-    def _run_workflow_topology_command(self, metadata: dict) -> subprocess.CompletedProcess[str]:
+    def _run_workflow_topology_command(
+        self, metadata: dict, cargo_status: int = 0
+    ) -> subprocess.CompletedProcess[str]:
         repository = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
         workflow_path = os.path.join(repository, ".github", "workflows", "publish-crates.yml")
         with open(workflow_path, encoding="utf-8") as workflow_file:
             workflow = workflow_file.read()
         step_start = workflow.index("      - name: Compute topological order")
-        command_start = workflow.index("          cargo metadata", step_start)
+        command_start = workflow.index("          set -euo pipefail", step_start)
         command_end = workflow.index("\n\n          printf", command_start)
-        command = " ".join(line.strip() for line in workflow[command_start:command_end].splitlines())
-        output_name = "publish-workflow-test-crates.json"
+        command = textwrap.dedent(workflow[command_start:command_end]).strip()
+        temporary_root = tempfile.mkdtemp(prefix="publish-workflow-test-", dir=repository)
+        output_name = os.path.relpath(
+            os.path.join(temporary_root, "crates.json"), repository
+        ).replace(os.sep, "/")
         command = command.replace("/tmp/crates.json", output_name)
-        stub_cargo = "cargo() { printf '%%s\\n' %s; }; %s" % (
+        stub_cargo = "cargo() { printf '%%s\\n' %s; return %d; }; %s" % (
             shlex.quote(json.dumps(metadata)),
+            cargo_status,
             command,
         )
         try:
@@ -172,16 +181,13 @@ class TestPublishWorkflowStep(unittest.TestCase):
                 capture_output=True,
                 text=True,
             )
-            output_path = os.path.join(repository, output_name)
+            output_path = os.path.join(repository, output_name.replace("/", os.sep))
             if os.path.exists(output_path):
                 with open(output_path, encoding="utf-8") as output_file:
                     result.stdout = output_file.read()
             return result
         finally:
-            try:
-                os.remove(os.path.join(repository, output_name))
-            except FileNotFoundError:
-                pass
+            shutil.rmtree(temporary_root, ignore_errors=True)
 
     def test_workflow_step_uses_shared_helper_for_registry_edges(self) -> None:
         metadata = _meta(
@@ -197,6 +203,11 @@ class TestPublishWorkflowStep(unittest.TestCase):
 
     def test_workflow_step_fails_closed_on_malformed_metadata(self) -> None:
         result = self._run_workflow_topology_command({"not": "cargo metadata"})
+        self.assertNotEqual(result.returncode, 0)
+
+    def test_workflow_step_propagates_cargo_failure_with_valid_json(self) -> None:
+        metadata = _meta([_pkg("a")], ["a"])
+        result = self._run_workflow_topology_command(metadata, cargo_status=7)
         self.assertNotEqual(result.returncode, 0)
 
 
