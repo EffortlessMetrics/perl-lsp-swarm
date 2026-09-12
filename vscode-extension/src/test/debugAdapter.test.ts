@@ -41,10 +41,7 @@ interface LaunchJson {
   configurations: LaunchConfiguration[];
 }
 
-function makeContext(
-  storagePath?: string,
-  extensionPath?: string,
-): vscode.ExtensionContext {
+function makeContext(storagePath?: string, extensionPath?: string): vscode.ExtensionContext {
   const dir = storagePath ?? fs.mkdtempSync(path.join(os.tmpdir(), 'dap-test-'));
   return {
     globalStorageUri: { fsPath: dir } as vscode.Uri,
@@ -344,16 +341,13 @@ describe('PerlDebugAdapterDescriptorFactory', () => {
       const getConfiguration = vscodeApi.workspace.getConfiguration as jest.Mock;
       previousConfiguration = getConfiguration.getMockImplementation();
       getConfiguration.mockImplementation(() => ({
-        get: (_key: string, defaultValue?: unknown) =>
-          linuxLibcForTest ?? defaultValue,
+        get: (_key: string, defaultValue?: unknown) => linuxLibcForTest ?? defaultValue,
       }));
       fs.writeFileSync(
         path.join(extensionDir, 'package.json'),
         JSON.stringify({ __metadata: { targetPlatform: 'alpine-x64' } }),
       );
-      const factory = new PerlDebugAdapterDescriptorFactory(
-        makeContext(tmpDir, extensionDir),
-      );
+      const factory = new PerlDebugAdapterDescriptorFactory(makeContext(tmpDir, extensionDir));
       const alpineResult = factory.createDebugAdapterDescriptor(
         {} as unknown as vscode.DebugSession,
         undefined,
@@ -365,9 +359,7 @@ describe('PerlDebugAdapterDescriptorFactory', () => {
         path.join(extensionDir, 'package.json'),
         JSON.stringify({ __metadata: { targetPlatform: 'linux-x64' } }),
       );
-      const gnuFactory = new PerlDebugAdapterDescriptorFactory(
-        makeContext(tmpDir, extensionDir),
-      );
+      const gnuFactory = new PerlDebugAdapterDescriptorFactory(makeContext(tmpDir, extensionDir));
       const gnuResult = gnuFactory.createDebugAdapterDescriptor(
         {} as unknown as vscode.DebugSession,
         undefined,

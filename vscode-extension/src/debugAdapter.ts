@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
-import { BinaryDownloader, resolvePlatformTarget } from './downloader';
+import { BinaryDownloader } from './downloader';
 
 const SERVER_DEBUG_TEST_COMMAND = 'perl.debugTest';
 export const VSCODE_DEBUG_TEST_COMMAND = 'perl-lsp.debugTest';
@@ -770,9 +770,8 @@ export class PerlDebugAdapterDescriptorFactory implements vscode.DebugAdapterDes
     // Prefer the adapter shipped by this extension. This keeps a clean
     // installed profile bound to the package it just loaded instead of an
     // unrelated adapter found in managed storage or PATH.
-    const targetDirectory = packagedDapTargetDirectoryForContext(
-      this.context,
-      (candidate) => this.isExecutable(candidate),
+    const targetDirectory = packagedDapTargetDirectoryForContext(this.context, (candidate) =>
+      this.isExecutable(candidate),
     );
     if (targetDirectory) {
       const bundledDap = path.join(this.context.extensionPath, 'bin', targetDirectory, binary);
