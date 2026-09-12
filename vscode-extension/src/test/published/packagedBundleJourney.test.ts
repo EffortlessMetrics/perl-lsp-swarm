@@ -1,7 +1,9 @@
 import * as assert from 'assert';
 import * as fs from 'fs';
 import * as path from 'path';
+import { randomUUID } from 'crypto';
 import * as vscode from 'vscode';
+import { runBoundedProcess } from '../../testAdapter';
 import {
   assertProviderSucceeded,
   bundledBinaryPath,
@@ -200,23 +202,32 @@ function recordPackagedDapEvidence(
   dapPath: string,
   session: vscode.DebugSession,
   exit: { code?: number; signal?: string },
+  debuggee: OwnedDebuggee,
 ): void {
   const receiptPath = path.join(receiptsDir(), 'packaged_bundle_journey_receipt.json');
   if (!fs.existsSync(receiptPath)) {
     throw new Error('packaged DAP evidence requires the bundled journey receipt');
   }
   const receipt = JSON.parse(fs.readFileSync(receiptPath, 'utf8')) as ReceiptValue;
+  assert.match(process.env.PERL_LSP_CURRENT_SOURCE_SHA ?? '', /^[0-9a-f]{40}$/);
+  assert.ok(process.env.PERL_LSP_CANDIDATE_ID);
+  assert.ok(process.env.PERL_LSP_ARTIFACT_SET_ID);
   const hashes =
     receipt.artifact_hashes && typeof receipt.artifact_hashes === 'object'
       ? (receipt.artifact_hashes as Record<string, unknown>)
       : {};
   hashes.dap_sha256 = sha256(dapPath);
   hashes.vsix_sha256 ||= process.env.PERL_LSP_VSIX_SHA256 ?? null;
+  assert.match(String(hashes.vsix_sha256 ?? ''), /^[0-9a-f]{64}$/);
   receipt.artifact_hashes = hashes;
   if (Array.isArray(receipt.known_limitations)) {
-    receipt.known_limitations = receipt.known_limitations.filter(
+    const limitations = receipt.known_limitations.filter(
       (limitation) => limitation !== 'DAP preview is not exercised by this slice.',
     );
+    limitations.push(
+      'DAP startup and ordinary Stop are exercised; breakpoint, stepping, variables and evaluation semantics remain not proven.',
+    );
+    receipt.known_limitations = limitations;
   }
   receipt.dap_startup = {
     extension_path: extensionPath,
@@ -224,12 +235,72 @@ function recordPackagedDapEvidence(
     session_id: session.id,
     initialize_then_launch: true,
     exit,
+    debuggee,
+    owned_process_cleanup: 'pass',
     candidate_id: process.env.PERL_LSP_CANDIDATE_ID ?? null,
     frozen_product_sha: process.env.PERL_LSP_CURRENT_SOURCE_SHA ?? null,
     artifact_set_id: process.env.PERL_LSP_ARTIFACT_SET_ID ?? null,
   };
   fs.writeFileSync(receiptPath, JSON.stringify(receipt, null, 2));
   writeVerifiedChildArtifact(receipt, receiptPath);
+}
+
+interface OwnedDebuggee {
+  pid: number;
+  creationTimeFileTime: string;
+}
+
+async function observeDebuggee(pid: number): Promise<OwnedDebuggee | null> {
+  assert.ok(Number.isSafeInteger(pid) && pid > 0, 'invalid owned debuggee PID');
+  const result = await runBoundedProcess(
+    'powershell.exe',
+    [
+      '-NoProfile',
+      '-NonInteractive',
+      '-Command',
+      `$observed = Get-Process -Id ${pid} -ErrorAction SilentlyContinue; if ($observed) { $observed.StartTime.ToFileTimeUtc().ToString() }`,
+    ],
+    {
+      shell: false,
+      windowsHide: true,
+      timeoutMs: 5000,
+      maxOutputBytes: 4096,
+      terminationGraceMs: 1000,
+      terminationWatchdogMs: 5000,
+    },
+  );
+  if (result.outcome !== 'completed' || result.exitCode !== 0) {
+    throw new Error(`owned debuggee scan failed: ${result.outcome}, ${result.exitCode}`);
+  }
+  const creationTimeFileTime = result.stdout.trim();
+  if (!creationTimeFileTime) return null;
+  assert.match(creationTimeFileTime, /^\d+$/, 'invalid process creation time');
+  return { pid, creationTimeFileTime };
+}
+
+async function waitForDebuggee(pidFile: string): Promise<OwnedDebuggee> {
+  const deadline = Date.now() + 30_000;
+  while (Date.now() < deadline) {
+    if (fs.existsSync(pidFile)) {
+      const raw = fs.readFileSync(pidFile, 'utf8').trim();
+      if (/^\d+$/.test(raw)) {
+        const observed = await observeDebuggee(Number(raw));
+        if (observed) return observed;
+      }
+    }
+    await new Promise<void>((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error('debuggee did not publish a live process identity');
+}
+
+async function waitForDebuggeeExit(debuggee: OwnedDebuggee): Promise<void> {
+  const deadline = Date.now() + 30_000;
+  while (Date.now() < deadline) {
+    const observed = await observeDebuggee(debuggee.pid);
+    if (!observed || observed.creationTimeFileTime !== debuggee.creationTimeFileTime) return;
+    await new Promise<void>((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error(`owned debuggee survived Stop: ${debuggee.pid}`);
 }
 
 async function waitForNewPackagedDap(
@@ -245,7 +316,9 @@ async function waitForNewPackagedDap(
       return !baseline.has(key) && pathsEquivalent(entry.path, expectedPath);
     });
     if (matches.length > 1) {
-      throw new Error(`multiple new packaged DAP processes were observed: ${JSON.stringify(matches)}`);
+      throw new Error(
+        `multiple new packaged DAP processes were observed: ${JSON.stringify(matches)}`,
+      );
     }
     const match = matches[0];
     if (match) return match;
@@ -714,11 +787,18 @@ suite('Packaged VSIX bundled-server journey', function () {
       ),
     );
     const workspacePath = workspaceFolder.uri.fsPath;
-    const program = path.join(workspacePath, 'packaged_dap_startup.pl');
-    fs.writeFileSync(program, 'use strict;\nuse warnings;\nprint qq{dap-started\\n};\nsleep 20;\n');
+    const runId = randomUUID();
+    const program = path.join(workspacePath, `packaged_dap_${runId}.pl`);
+    const pidFile = path.join(workspacePath, `packaged_dap_${runId}.pid`);
+    const releaseFile = path.join(workspacePath, `packaged_dap_${runId}.release`);
+    let debuggee: OwnedDebuggee | undefined;
+    const subscriptions: vscode.Disposable[] = [];
 
     let startedSession: vscode.DebugSession | undefined;
     const responseOrder: string[] = [];
+    const requestCommands = new Map<number, string>();
+    const successfulStopResponses = new Set<string>();
+    let stopRequested = false;
     const protocolTrace: Array<Record<string, unknown>> = [];
     let adapterError: string | undefined;
     let adapterExit: { code?: number; signal?: string } | undefined;
@@ -739,60 +819,113 @@ suite('Packaged VSIX bundled-server journey', function () {
     const exitEvent = new Promise<{ code?: number; signal?: string }>((resolve) => {
       resolveExit = resolve;
     });
-    const startedSubscription = vscode.debug.onDidStartDebugSession((session) => {
-      if (
-        session.type === 'perl' &&
-        session.configuration.program === program &&
-        session.configuration.request === 'launch'
-      ) {
-        startedSession = session;
-        resolveStarted?.(session);
-      }
-    });
-    const terminatedSubscription = vscode.debug.onDidTerminateDebugSession((session) => {
-      if (session === startedSession) {
-        terminated = true;
-        resolveTerminated?.();
-      }
-    });
-    const trackerSubscription = vscode.debug.registerDebugAdapterTrackerFactory('perl', {
-      createDebugAdapterTracker: (session) => {
-        if (
-          session.configuration.program !== program ||
-          session.configuration.request !== 'launch'
-        ) {
-          return undefined;
-        }
-        return {
-          onDidSendMessage: (message: unknown) => {
-            protocolTrace.push({ direction: 'out', message });
-            if (!message || typeof message !== 'object') return;
-            const record = message as { type?: unknown; command?: unknown; success?: unknown };
-            if (record.type !== 'response' || record.success !== true) return;
-            if (record.command === 'initialize' || record.command === 'launch') {
-              responseOrder.push(record.command);
-              if (responseOrder.length >= 2) resolveResponses?.();
-            }
-          },
-          onError: (error: Error) => {
-            adapterError = error.message;
-            protocolTrace.push({ direction: 'error', message: error.message });
-          },
-          onExit: (code: number | undefined, signal: string | undefined) => {
-            adapterExit = {
-              ...(code === undefined ? {} : { code }),
-              ...(signal === undefined ? {} : { signal }),
-            };
-            protocolTrace.push({ direction: 'exit', ...adapterExit });
-            resolveExit?.(adapterExit);
-          },
-          onWillReceiveMessage: (message: unknown) => {
-            protocolTrace.push({ direction: 'in', message });
-          },
-        };
-      },
-    });
     try {
+      fs.writeFileSync(
+        program,
+        [
+          'use strict;',
+          'use warnings;',
+          'my ($pid_file, $release_file) = @ARGV;',
+          'open my $pid, q{>}, $pid_file or die "pid file: $!";',
+          'print {$pid} $$; close $pid or die "pid close: $!";',
+          'my $deadline = time + 120;',
+          'while (!-e $release_file && time < $deadline) { select undef, undef, undef, 0.1; }',
+          '',
+        ].join('\n'),
+        { flag: 'wx' },
+      );
+      subscriptions.push(
+        vscode.debug.onDidStartDebugSession((session) => {
+          if (
+            session.type === 'perl' &&
+            session.configuration.program === program &&
+            session.configuration.request === 'launch'
+          ) {
+            startedSession = session;
+            resolveStarted?.(session);
+          }
+        }),
+      );
+      subscriptions.push(
+        vscode.debug.onDidTerminateDebugSession((session) => {
+          if (session === startedSession) {
+            terminated = true;
+            resolveTerminated?.();
+          }
+        }),
+      );
+      subscriptions.push(
+        vscode.debug.registerDebugAdapterTrackerFactory('perl', {
+          createDebugAdapterTracker: (session) => {
+            if (
+              session.configuration.program !== program ||
+              session.configuration.request !== 'launch'
+            ) {
+              return undefined;
+            }
+            startedSession = session;
+            return {
+              onDidSendMessage: (message: unknown) => {
+                protocolTrace.push({ direction: 'out', message });
+                if (!message || typeof message !== 'object') return;
+                const record = message as {
+                  type?: unknown;
+                  command?: unknown;
+                  success?: unknown;
+                  request_seq?: unknown;
+                };
+                if (record.type !== 'response' || record.success !== true) return;
+                if (
+                  record.command === 'initialize' ||
+                  record.command === 'launch' ||
+                  record.command === 'terminate' ||
+                  record.command === 'disconnect'
+                ) {
+                  if (
+                    typeof record.request_seq !== 'number' ||
+                    requestCommands.get(record.request_seq) !== record.command
+                  ) {
+                    adapterError = 'DAP response did not match its live request';
+                    resolveResponses?.();
+                    return;
+                  }
+                  if (record.command === 'initialize' || record.command === 'launch') {
+                    responseOrder.push(record.command);
+                    if (responseOrder.length >= 2) resolveResponses?.();
+                  } else if (stopRequested) {
+                    successfulStopResponses.add(record.command);
+                  }
+                }
+              },
+              onError: (error: Error) => {
+                adapterError = error.message;
+                protocolTrace.push({ direction: 'error', message: error.message });
+              },
+              onExit: (code: number | undefined, signal: string | undefined) => {
+                adapterExit = {
+                  ...(code === undefined ? {} : { code }),
+                  ...(signal === undefined ? {} : { signal }),
+                };
+                protocolTrace.push({ direction: 'exit', ...adapterExit });
+                resolveExit?.(adapterExit);
+              },
+              onWillReceiveMessage: (message: unknown) => {
+                protocolTrace.push({ direction: 'in', message });
+                if (message && typeof message === 'object') {
+                  const request = message as { type?: unknown; seq?: unknown; command?: unknown };
+                  if (
+                    request.type === 'request' &&
+                    typeof request.seq === 'number' &&
+                    typeof request.command === 'string'
+                  ) {
+                    requestCommands.set(request.seq, request.command);
+                  }
+                }
+              },
+            };
+          },
+        }),
+      );
       const startResult = await withTimeout(
         'packaged DAP startDebugging',
         vscode.debug.startDebugging(workspaceFolder, {
@@ -800,6 +933,7 @@ suite('Packaged VSIX bundled-server journey', function () {
           request: 'launch',
           name: 'Packaged DAP startup',
           program,
+          args: [pidFile, releaseFile],
           cwd: workspacePath,
           stopOnEntry: false,
         }),
@@ -816,11 +950,18 @@ suite('Packaged VSIX bundled-server journey', function () {
       );
       await withTimeout('packaged DAP initialize/launch', responses, 30_000);
       assert.deepEqual(responseOrder.slice(0, 2), ['initialize', 'launch']);
+      debuggee = await waitForDebuggee(pidFile);
+      stopRequested = true;
       await withTimeout('packaged DAP stopDebugging', vscode.debug.stopDebugging(session), 30_000);
       await withTimeout('packaged DAP termination event', termination, 30_000);
       assert.equal(adapterError, undefined, adapterError ?? 'packaged DAP adapter error');
       const observedExit = await withTimeout('packaged DAP adapter exit', exitEvent, 30_000);
       adapterExit = observedExit;
+      assert.equal(adapterError, undefined, adapterError ?? 'packaged DAP adapter error');
+      assert.ok(
+        successfulStopResponses.has('disconnect'),
+        'ordinary Stop did not complete a correlated disconnect',
+      );
       const adapterExitCode = observedExit.code;
       assert.equal(
         adapterExitCode,
@@ -833,6 +974,14 @@ suite('Packaged VSIX bundled-server journey', function () {
         `packaged DAP was signaled: ${JSON.stringify(adapterExit)}`,
       );
       assert.equal(terminated, true);
+      await waitForDebuggeeExit(debuggee);
+      const terminalEvents = protocolTrace.filter((entry) => {
+        const message = entry.message as { type?: string; event?: string } | undefined;
+        return (
+          entry.direction === 'out' && message?.type === 'event' && message.event === 'terminated'
+        );
+      });
+      assert.equal(terminalEvents.length, 1, 'expected one terminal event');
       const remainingProcesses = await scanBundledDapProcessIdentities(dapDirectory);
       assert.equal(
         remainingProcesses.filter(
@@ -844,27 +993,48 @@ suite('Packaged VSIX bundled-server journey', function () {
         0,
         `packaged DAP process leaked: ${JSON.stringify(remainingProcesses)}`,
       );
-      recordPackagedDapEvidence(extensionPath, dapPath, session, adapterExit);
+    } catch (error) {
+      protocolTrace.push({ direction: 'failure', message: String(error) });
+      throw error;
     } finally {
+      const cleanupErrors: unknown[] = [];
+      if (fs.existsSync(program)) {
+        try {
+          fs.writeFileSync(releaseFile, 'release', { flag: 'wx' });
+        } catch (error) {
+          cleanupErrors.push(error);
+        }
+      }
       if (startedSession && !terminated) {
         await withTimeout(
           'packaged DAP failure cleanup',
           vscode.debug.stopDebugging(startedSession),
           30_000,
-        ).catch(() => undefined);
+        ).catch((error: unknown) => cleanupErrors.push(error));
         await withTimeout('packaged DAP failure termination', termination, 30_000).catch(
-          () => undefined,
+          (error: unknown) => cleanupErrors.push(error),
         );
       }
-      trackerSubscription.dispose();
-      startedSubscription.dispose();
-      terminatedSubscription.dispose();
-      fs.rmSync(program, { force: true });
+      if (debuggee)
+        await waitForDebuggeeExit(debuggee).catch((error: unknown) => cleanupErrors.push(error));
+      for (const subscription of subscriptions) subscription.dispose();
+      for (const file of [program, pidFile, releaseFile]) {
+        try {
+          fs.rmSync(file, { force: true });
+        } catch (error) {
+          cleanupErrors.push(error);
+        }
+      }
+      protocolTrace.push({ direction: 'cleanup', errors: cleanupErrors.map(String) });
       fs.mkdirSync(receiptsDir(), { recursive: true });
       fs.writeFileSync(
         path.join(receiptsDir(), 'packaged_dap_protocol_trace.json'),
         JSON.stringify(protocolTrace, null, 2),
       );
+      if (cleanupErrors.length)
+        throw new AggregateError(cleanupErrors, 'packaged DAP cleanup failed');
     }
+    assert.ok(startedSession && adapterExit && debuggee);
+    recordPackagedDapEvidence(extensionPath, dapPath, startedSession, adapterExit, debuggee);
   });
 });
