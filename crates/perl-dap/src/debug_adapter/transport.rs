@@ -934,8 +934,8 @@ mod framing_tests {
         }
 
         fn flush(&mut self) -> io::Result<()> {
-            if self
-                .bytes
+            let pending = std::mem::take(&mut self.bytes);
+            if pending
                 .windows(b"\"event\":\"terminated\"".len())
                 .any(|window| window == b"\"event\":\"terminated\"")
             {
@@ -1092,26 +1092,64 @@ mod framing_tests {
         adapter.seed_attached_pid_for_test(4242);
         adapter.run_with_io(input, output.clone())?;
         let written_bytes = output.bytes_snapshot();
-        let written = String::from_utf8_lossy(&written_bytes);
-        if !written.contains("\"command\":\"disconnect\"")
-            || !written.contains("\"request_seq\":1")
-            || !written.contains("\"success\":true")
+        let mut framer = ContentLengthFramer::new();
+        framer.push(&written_bytes);
+        let mut messages = Vec::new();
+        loop {
+            match framer.try_next() {
+                Ok(Some(body)) => messages.push(
+                    serde_json::from_slice::<serde_json::Value>(&body).map_err(|error| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!("invalid output frame: {error}"),
+                        )
+                    })?,
+                ),
+                Ok(None) => break,
+                Err(error) => {
+                    return Err(io::Error::new(io::ErrorKind::InvalidData, error.to_string()));
+                }
+            }
+        }
+        let disconnect = messages
+            .iter()
+            .find(|message| {
+                message.get("type").and_then(serde_json::Value::as_str) == Some("response")
+                    && message.get("command").and_then(serde_json::Value::as_str)
+                        == Some("disconnect")
+            })
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "disconnect response frame missing")
+            })?;
+        if disconnect.get("request_seq").and_then(serde_json::Value::as_i64) != Some(1)
+            || disconnect.get("success").and_then(serde_json::Value::as_bool) != Some(true)
         {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("disconnect response missing expected fields: {written}"),
+                "disconnect response fields incorrect",
             ));
         }
-        if written.contains("\"command\":\"initialize\"") {
+        if messages.iter().any(|message| {
+            message.get("type").and_then(serde_json::Value::as_str) == Some("response")
+                && message.get("command").and_then(serde_json::Value::as_str) == Some("initialize")
+        }) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                "transport processed a request after disconnect",
+                "request after disconnect was processed",
             ));
         }
-        if written.matches("\"event\":\"terminated\"").count() != 1 {
+        let terminated_count = messages
+            .iter()
+            .filter(|message| {
+                message.get("type").and_then(serde_json::Value::as_str) == Some("event")
+                    && message.get("event").and_then(serde_json::Value::as_str)
+                        == Some("terminated")
+            })
+            .count();
+        if terminated_count != 1 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("expected exactly one terminated event: {written}"),
+                format!("expected one terminated event, got {terminated_count}"),
             ));
         }
         Ok(())
