@@ -712,7 +712,22 @@ export class PerlDebugAdapterDescriptorFactory implements vscode.DebugAdapterDes
   }
 
   private findDebugAdapter(): string | undefined {
-    // First, check the auto-download directory (ships with perl-lsp)
+    const binary = process.platform === 'win32' ? 'perl-dap.exe' : 'perl-dap';
+
+    // Prefer the adapter shipped by this extension. This keeps a clean
+    // installed profile bound to the package it just loaded instead of an
+    // unrelated adapter found in managed storage or PATH.
+    const bundledDap = path.join(
+      this.context.extensionPath,
+      'bin',
+      `${process.platform}-${process.arch}`,
+      binary,
+    );
+    if (this.isExecutable(bundledDap)) {
+      return bundledDap;
+    }
+
+    // Next, check the auto-download directory (ships with perl-lsp)
     const downloadedDap = BinaryDownloader.getLocalDapPath(this.context);
     if (this.isExecutable(downloadedDap)) {
       return downloadedDap;
@@ -725,7 +740,6 @@ export class PerlDebugAdapterDescriptorFactory implements vscode.DebugAdapterDes
     }
 
     // Otherwise, check common installation locations
-    const binary = process.platform === 'win32' ? 'perl-dap.exe' : 'perl-dap';
     const possiblePaths: string[] = [
       path.join(process.env.HOME || '', '.cargo', 'bin', binary),
       path.join(process.env.CARGO_HOME || '', 'bin', binary),

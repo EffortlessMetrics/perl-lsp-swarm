@@ -40,11 +40,11 @@ interface LaunchJson {
   configurations: LaunchConfiguration[];
 }
 
-function makeContext(storagePath?: string): vscode.ExtensionContext {
+function makeContext(storagePath?: string, extensionPath?: string): vscode.ExtensionContext {
   const dir = storagePath ?? fs.mkdtempSync(path.join(os.tmpdir(), 'dap-test-'));
   return {
     globalStorageUri: { fsPath: dir } as vscode.Uri,
-    extensionPath: dir,
+    extensionPath: extensionPath ?? dir,
     subscriptions: [],
   } as unknown as vscode.ExtensionContext;
 }
@@ -251,6 +251,43 @@ describe('PerlDebugAdapterDescriptorFactory', () => {
 
     expect(result).toBeDefined();
     expect(result.command).toBe(dapPath);
+  });
+
+  test('prefers the packaged perl-dap over a stale ambient adapter', () => {
+    const extensionDir = fs.mkdtempSync(path.join(tmpDir, 'extension-'));
+    const bundledDir = path.join(extensionDir, 'bin', `${process.platform}-${process.arch}`);
+    const ambientDir = fs.mkdtempSync(path.join(tmpDir, 'ambient-'));
+    const dapName = process.platform === 'win32' ? 'perl-dap.exe' : 'perl-dap';
+    const bundledPath = path.join(bundledDir, dapName);
+    fs.mkdirSync(bundledDir, { recursive: true });
+    fs.writeFileSync(bundledPath, 'bundled dap');
+    fs.writeFileSync(path.join(ambientDir, dapName), 'stale ambient dap');
+    if (process.platform !== 'win32') {
+      fs.chmodSync(bundledPath, 0o755);
+      fs.chmodSync(path.join(ambientDir, dapName), 0o755);
+    }
+
+    const ctx = makeContext(tmpDir, extensionDir);
+    const factory = new PerlDebugAdapterDescriptorFactory(ctx);
+    const vscode = require('vscode');
+    const originalPath = process.env.PATH;
+    const originalHome = process.env.HOME;
+    const originalCargo = process.env.CARGO_HOME;
+    process.env.PATH = ambientDir;
+    process.env.HOME = tmpDir;
+    process.env.CARGO_HOME = tmpDir;
+    try {
+      const result = factory.createDebugAdapterDescriptor(
+        {} as unknown as vscode.DebugSession,
+        undefined,
+      ) as vscode.DebugAdapterExecutable;
+      expect(result).toBeDefined();
+      expect(result.command).toBe(bundledPath);
+    } finally {
+      process.env.PATH = originalPath;
+      process.env.HOME = originalHome;
+      process.env.CARGO_HOME = originalCargo;
+    }
   });
 
   test('descriptor includes RUST_LOG=debug environment variable', () => {
