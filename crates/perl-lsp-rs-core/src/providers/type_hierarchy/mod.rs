@@ -30,8 +30,18 @@
 use perl_parser_core::PositionMapper;
 use perl_parser_core::ast::{Node, NodeKind};
 use perl_position_tracking::{WirePosition, WireRange};
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::LazyLock;
+
+static WORD_CHAR_RE: LazyLock<Option<Regex>> = LazyLock::new(|| Regex::new(r"^\w$").ok());
+
+fn is_word_character(character: char) -> bool {
+    let value = character.to_string();
+    WORD_CHAR_RE.as_ref().is_some_and(|regex| regex.is_match(&value))
+        || (WORD_CHAR_RE.is_none() && (character.is_alphanumeric() || character == '_'))
+}
 
 /// Represents a type in the hierarchy
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -317,7 +327,7 @@ impl TypeHierarchyProvider {
             let Some((_, delim_start)) = arg.char_indices().nth(2) else {
                 return Ok(result);
             };
-            if delim_start.is_alphanumeric() || delim_start == '_' {
+            if is_word_character(delim_start) {
                 let clean = arg.trim_matches('"').trim_matches('\'').trim_matches('`');
                 add(clean)?;
                 return Ok(result);
@@ -964,6 +974,8 @@ mod tests {
         let never_cancelled = || false;
         for (input, expected) in [
             ("qwéFooé", vec!["qwéFooé"]),
+            ("qw\u{0301}Foo\u{0301}", vec!["qw\u{0301}Foo\u{0301}"]),
+            ("qw‿Foo‿", vec!["qw‿Foo‿"]),
             ("qwéFoo", vec!["qwéFoo"]),
             ("qwxFoo", vec!["qwxFoo"]),
             ("qwqFooq", vec!["qwqFooq"]),
