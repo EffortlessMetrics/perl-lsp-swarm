@@ -936,6 +936,55 @@ mod tests {
         assert!(result.is_ok(), "didOpen failed: {result:?}");
     }
 
+    #[test]
+    fn hierarchy_handlers_observe_owned_cancellation_without_cross_request_effects()
+    -> anyhow::Result<()> {
+        let server = LspServer::new();
+        let uri = "file:///handler-cancellation.pl";
+        open_doc(&server, uri, "package Base;\npackage Child;\nuse parent 'Base';\n");
+        let item = json!({
+            "name": "Child",
+            "kind": 5,
+            "uri": uri,
+            "range": { "start": { "line": 1, "character": 0 }, "end": { "line": 1, "character": 13 } },
+            "selectionRange": { "start": { "line": 1, "character": 8 }, "end": { "line": 1, "character": 13 } },
+            "data": { "uri": uri, "name": "Child" }
+        });
+        let params = || {
+            json!({
+                "textDocument": { "uri": uri },
+                "position": { "line": 1, "character": 8 }
+            })
+        };
+        let cancelled_id = JsonRpcId::Integer(71001);
+        server.cancel_mark(&cancelled_id);
+
+        for result in [
+            server.handle_prepare_type_hierarchy(Some(params()), Some(&cancelled_id.to_value())),
+            server.handle_type_hierarchy_supertypes(
+                Some(json!({ "item": item.clone() })),
+                Some(&cancelled_id.to_value()),
+            ),
+            server.handle_type_hierarchy_subtypes(
+                Some(json!({ "item": item })),
+                Some(&cancelled_id.to_value()),
+            ),
+        ] {
+            let error = match result {
+                Ok(_) => anyhow::bail!("cancelled handler returned a fallback result"),
+                Err(error) => error,
+            };
+            anyhow::ensure!(error.code == crate::protocol::REQUEST_CANCELLED);
+        }
+
+        server.cancel_clear(&cancelled_id);
+        let unrelated_id = JsonRpcId::Integer(71002);
+        let result =
+            server.handle_prepare_type_hierarchy(Some(params()), Some(&unrelated_id.to_value()))?;
+        anyhow::ensure!(result.is_some(), "an unrelated request ID must not cancel the handler");
+        Ok(())
+    }
+
     /// Verifies that `handle_prepare_call_hierarchy` executes the workspace
     /// index-readiness wait when indexing is in progress (#3095).
     ///
