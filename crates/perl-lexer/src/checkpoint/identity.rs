@@ -7,6 +7,8 @@
 //! declared name set so same-table restore can succeed and a different or
 //! absent table fails closed.
 
+#[cfg(test)]
+use std::cell::Cell;
 use std::collections::BTreeSet;
 
 use perl_source_identity::{ContentDigest, LogicalSourceId, SourceGeneration};
@@ -99,9 +101,35 @@ pub struct LexerCheckpointIdentity {
     newline_policy: CheckpointNewlinePolicy,
 }
 
+pub(crate) fn compute_content_digest(source: &str) -> ContentDigest {
+    #[cfg(test)]
+    {
+        DIAGNOSTIC_DIGEST_BYTES.with(|bytes| bytes.set(bytes.get().saturating_add(source.len())));
+        DIAGNOSTIC_DIGEST_CALLS.with(|calls| calls.set(calls.get().saturating_add(1)));
+    }
+    ContentDigest::of_bytes(source.as_bytes())
+}
+
+#[cfg(test)]
+thread_local! {
+    static DIAGNOSTIC_DIGEST_BYTES: Cell<usize> = const { Cell::new(0) };
+    static DIAGNOSTIC_DIGEST_CALLS: Cell<usize> = const { Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn reset_diagnostic_digest_counter() {
+    DIAGNOSTIC_DIGEST_BYTES.with(|bytes| bytes.set(0));
+    DIAGNOSTIC_DIGEST_CALLS.with(|calls| calls.set(0));
+}
+
+#[cfg(test)]
+pub(crate) fn diagnostic_digest_counter() -> (usize, usize) {
+    (DIAGNOSTIC_DIGEST_BYTES.with(Cell::get), DIAGNOSTIC_DIGEST_CALLS.with(Cell::get))
+}
+
 impl LexerCheckpointIdentity {
     pub(crate) fn capture(
-        source: &str,
+        content: &ContentDigest,
         config: &LexerConfig,
         qw_recovery_enabled: bool,
         emit_heredoc_body_tokens: bool,
@@ -110,7 +138,7 @@ impl LexerCheckpointIdentity {
     ) -> Self {
         Self {
             schema: CHECKPOINT_SCHEMA_VERSION,
-            content: ContentDigest::of_bytes(source.as_bytes()),
+            content: content.clone(),
             logical_source,
             generation,
             policy: LexerPolicyIdentity::from_construction(
