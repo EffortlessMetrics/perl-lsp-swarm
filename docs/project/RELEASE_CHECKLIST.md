@@ -129,7 +129,7 @@ for crate_name in allow:
 - [ ] Dispatch `release-orchestration.yml` with `version=NEW_VERSION`, `prerelease=false`, `skip_crates=false`, `skip_extension=false`, and `skip_docker=false`.
 - [ ] If a downstream publish stage fails, re-run orchestration with the relevant `skip_*` flags instead of tagging manually.
 - [ ] Let `release.yml`, `publish-crates.yml`, `publish-extension.yml`, and `docker-publish.yml` finish.
-- [ ] Confirm the release-published triggers for `brew-bump.yml`, `scoop-bump.yml`, and `chocolatey-bump.yml` fired as expected.
+- [ ] Confirm `release.yml`'s `Dispatch downstream package refresh workflows` step started `brew-bump.yml`, `scoop-bump.yml`, `chocolatey-bump.yml`, and `winget-bump.yml`. These are `workflow_dispatch` runs, not `release:published` runs — the orchestrated Release is published with `GITHUB_TOKEN`, which cannot start workflow runs (#15454). The step is skipped for prereleases.
 - [ ] After `brew-bump.yml` finishes, confirm the owned tap is updated or reported already current.
 
 ## Post-Release Verification

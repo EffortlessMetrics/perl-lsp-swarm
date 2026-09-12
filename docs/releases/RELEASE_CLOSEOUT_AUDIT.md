@@ -10,19 +10,27 @@ recurring in future releases.
 
 ## Why the gap exists
 
-Different channels use different trigger mechanisms. Some fire
-automatically on `release:published`; others require explicit
-`workflow_dispatch`. If you only tag and assume "the workflow
-orchestrator handles the rest," the dispatch-only channels silently stay
-on the prior version.
+Different channels are started in different ways. `release.yml` dispatches some
+of them for you; others require an explicit `workflow_dispatch` you run
+yourself. If you only tag and assume "the workflow orchestrator handles the
+rest," the dispatch-only channels silently stay on the prior version.
+
+Note that on an orchestrated cut nothing is started by `release:published`. The
+Release is created by `release.yml` using `secrets.GITHUB_TOKEN`, and
+[events triggered by that token do not create workflow
+runs](https://docs.github.com/en/actions/security-for-github-actions/security-guides/automatic-token-authentication#using-the-github_token-in-a-workflow).
+The `release:published` triggers on the package-channel workflows apply only
+when someone publishes a Release out of band — by hand, with a PAT, or from a
+GitHub App (#15454).
 
 | Channel | Trigger | Auto on tag? |
 |---|---|---|
 | GitHub Release (binaries) | `release.yml` on tag push | Yes |
 | crates.io | `publish-crates.yml` from `release.yml` | Yes (with new-crate burst cap) |
-| Homebrew tap | `brew-bump.yml` on `release:published` | Yes (auto-fires; tap-repo PR still needs merge) |
-| Scoop bucket | `scoop-bump.yml` on `release:published` | Yes (auto-fires; bucket-repo PR still needs merge) |
-| Chocolatey | `chocolatey-bump.yml` on `release:published` | Yes (auto-fires; package submission may queue) |
+| Homebrew tap | `brew-bump.yml` dispatched from `release.yml` | Yes (tap-repo PR still needs merge) |
+| Scoop bucket | `scoop-bump.yml` dispatched from `release.yml` | Yes (bucket-repo PR still needs merge) |
+| Chocolatey | `chocolatey-bump.yml` dispatched from `release.yml` | Yes (package submission may queue) |
+| Winget (repo-local) | `winget-bump.yml` dispatched from `release.yml` | Yes (upstream submission still manual) |
 | VS Code Marketplace | `publish-extension.yml` | **No - `workflow_dispatch` only** |
 | Open VSX | `publish-extension.yml` | **No - `workflow_dispatch` only** |
 | Docker (Hub + GHCR) | `docker-publish.yml` | **No - `workflow_dispatch` only** |
@@ -47,8 +55,11 @@ gh release view vX.Y.Z --json name,isDraft,isPrerelease,publishedAt,assets \
 Expected: `isDraft=false`, asset count matches the platform matrix
 (typically 5 platforms x {tarball, sha256, sig} = ~15).
 
-If draft: `gh release edit vX.Y.Z --draft=false` (this is the trigger
-that lets `release:published` fire downstream).
+If draft: `gh release edit vX.Y.Z --draft=false`. Publishing it yourself this
+way *does* fire `release:published` downstream, because it is your credential
+rather than the workflow's `GITHUB_TOKEN` — so the package-channel workflows
+start from that event. On a cut where `release.yml` already dispatched them,
+check for a second run per channel before re-dispatching by hand.
 
 ### 2. crates.io
 
@@ -134,9 +145,9 @@ brew update
 brew info --json perllsp | jq '.[0].versions.stable'
 ```
 
-If still on prior version: `brew-bump.yml` auto-fires on `release:published`
-and opens a PR against `EffortlessMetrics/homebrew-perllsp`. Check that
-PR was merged:
+If still on prior version: `brew-bump.yml` is dispatched by `release.yml` on an
+orchestrated cut and opens a PR against `EffortlessMetrics/homebrew-perllsp`.
+Check that PR was merged:
 
 ```bash
 gh pr list -R EffortlessMetrics/homebrew-perllsp --state all --limit 5
@@ -219,9 +230,11 @@ notes file so `notes_status` can flip from `pending` to `closed`.
 
 - Do not mark a release `notes_status: closed` until every channel above
   resolves to `X.Y.Z` or is documented as deliberately skipped.
-- Do not assume `release:published` covers Docker, VS Code Marketplace,
-  or Open VSX. Those are dispatch-only.
-- A Homebrew/Scoop/Chocolatey auto-bump that opens a tap-repo PR is not
+- Do not assume `release:published` starts anything on an orchestrated cut.
+  It cannot: the Release is published with `GITHUB_TOKEN`. Docker, VS Code
+  Marketplace, and Open VSX are dispatch-only; the package channels are
+  dispatched by `release.yml`.
+- A Homebrew/Scoop/Chocolatey bump that opens a tap-repo PR is not
   the same as a user-facing publish. The PR must merge.
 
 ## Related

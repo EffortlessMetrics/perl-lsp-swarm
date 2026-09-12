@@ -271,13 +271,24 @@ gh workflow run release-orchestration.yml \
 
 The build, crates, extension, and Docker workflows run in parallel after the tag is created.
 
-The four package-channel refreshes are started only by `release.yml`'s
-`Dispatch downstream package refresh workflows` step, which runs after the
-GitHub Release is published and is skipped for prereleases. They no longer carry
-a `release: published` trigger: keeping both entry points started each of them
-twice per cut (#15454). Publishing a GitHub Release outside `release.yml`
-therefore refreshes no package channel — re-run the specific workflow by hand
-with its `tag` input when that is what you want.
+On an orchestrated cut the four package-channel refreshes are started by
+`release.yml`'s `Dispatch downstream package refresh workflows` step, which runs
+after the GitHub Release is published and is skipped for prereleases — **not** by
+their `release: published` trigger (#15454).
+
+That trigger is still declared on all four workflows, but it cannot fire for an
+orchestrated release. `release.yml` creates the Release with
+`softprops/action-gh-release` authenticated by `secrets.GITHUB_TOKEN`, and
+[GitHub does not create workflow runs from events triggered by that
+token](https://docs.github.com/en/actions/security-for-github-actions/security-guides/automatic-token-authentication#using-the-github_token-in-a-workflow)
+(only `workflow_dispatch` and `repository_dispatch` are exempt). So each channel
+runs exactly once per cut, via the dispatch.
+
+The `release: published` trigger therefore covers only the out-of-band case: a
+Release published by a person, a PAT, or a GitHub App — including
+`gh release edit vX.Y.Z --draft=false`. On that path the four workflows start
+themselves from the tag, with no orchestration inputs. Both paths are live and
+neither duplicates the other.
 
 ---
 
@@ -360,7 +371,7 @@ docker pull "ghcr.io/effortlessmetrics/perl-lsp-perl:${VERSION}"
 
 ### 6. Homebrew auto-bump
 
-The `brew-bump.yml` workflow triggers automatically on `release.published`. It downloads all four Homebrew platform archives (`perllsp-${VERSION}-{x86_64,aarch64}-{apple-darwin,unknown-linux-gnu}.tar.gz`), validates them against `SHA256SUMS`, generates `Formula/perllsp.rb` through `cargo xtask update-homebrew`, and creates a bump PR in `EffortlessMetrics/homebrew-tap`.
+On an orchestrated cut the `brew-bump.yml` workflow is started by `release.yml`'s package refresh dispatch, not by `release.published` — see [Expected Workflow Runtimes](#expected-workflow-runtimes) for why that event cannot fire for a `GITHUB_TOKEN`-published Release. It downloads all four Homebrew platform archives (`perllsp-${VERSION}-{x86_64,aarch64}-{apple-darwin,unknown-linux-gnu}.tar.gz`), validates them against `SHA256SUMS`, generates `Formula/perllsp.rb` through `cargo xtask update-homebrew`, and creates a bump PR in `EffortlessMetrics/homebrew-tap`.
 
 To verify the workflow ran:
 
