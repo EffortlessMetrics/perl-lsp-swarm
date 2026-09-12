@@ -75,15 +75,28 @@ void test('current-source Linux smoke enables the candidate-bound Test Explorer 
     /PERL_LSP_ARTIFACT_SET_ID: current-source-linux-\$\{\{ matrix\.vscode_version \}\}-\$\{\{ github\.run_id \}\}/,
   );
   const subjectSha = 'a'.repeat(40);
+  const workflowValue = (name) => {
+    const match = smokeStep.match(new RegExp(`^\\s+${name}: (.+)$`, 'm'));
+    assert.notEqual(match, null, `${name} must be present in the smoke environment`);
+    return match[1].trim().replace(/^['"]|['"]$/g, '');
+  };
+  const resolveWorkflowValue = (value) =>
+    value
+      .replaceAll('${{ env.PERL_LSP_SMOKE_SUBJECT_SHA }}', subjectSha)
+      .replaceAll('${{ matrix.vscode_version }}', '1.125.0')
+      .replaceAll('${{ github.run_id }}', '123');
+  const smokeEnv = Object.fromEntries(
+    [
+      'PERL_LSP_CONSTRUCT_CANDIDATE_MANIFEST',
+      'PERL_LSP_CANDIDATE_ID',
+      'PERL_LSP_ARTIFACT_SET_ID',
+      'PERL_LSP_CURRENT_SOURCE_SHA',
+    ].map((name) => [name, resolveWorkflowValue(workflowValue(name))]),
+  );
   const manifest = JSON.parse(
     String(
       constructCandidateArtifactManifest(
-        {
-          PERL_LSP_CONSTRUCT_CANDIDATE_MANIFEST: '1',
-          PERL_LSP_CANDIDATE_ID: `current-source-${subjectSha}`,
-          PERL_LSP_ARTIFACT_SET_ID: 'current-source-linux-1.125.0-123',
-          PERL_LSP_CURRENT_SOURCE_SHA: subjectSha,
-        },
+        smokeEnv,
         subjectSha,
         'linux',
         'b'.repeat(64),
@@ -94,6 +107,19 @@ void test('current-source Linux smoke enables the candidate-bound Test Explorer 
   assert.equal(manifest.candidate_id, `current-source-${subjectSha}`);
   assert.equal(manifest.frozen_product_sha, subjectSha);
   assert.equal(manifest.artifact_set_id, 'current-source-linux-1.125.0-123');
+  const missingSourceEnv = { ...smokeEnv };
+  delete missingSourceEnv.PERL_LSP_CURRENT_SOURCE_SHA;
+  assert.throws(
+    () =>
+      constructCandidateArtifactManifest(
+        missingSourceEnv,
+        subjectSha,
+        'linux',
+        'b'.repeat(64),
+        'c'.repeat(64),
+      ),
+    /missing frozenProductSha/,
+  );
   assert.match(smokeStep, /run: xvfb-run -a npm run test:published:local/);
   assert.match(
     smokeStep,
