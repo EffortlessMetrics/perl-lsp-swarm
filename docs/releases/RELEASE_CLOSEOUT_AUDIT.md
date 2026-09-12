@@ -71,17 +71,19 @@ restating the procedure.
 record the submission URL in the populated audit for that release. With a
 receipt, the state is known and nothing below is needed.
 
-Without one, search for an upstream submission before filing, and match the
-result:
+Without one, look for an upstream submission before filing. The three channels
+expose different things — Scoop and Winget show pull-request state, Chocolatey
+shows package-version moderation state — so match on what the evidence *means*,
+not on its label:
 
-| Result | Meaning | Action |
-|---|---|---|
-| Merged | Accepted upstream; the public listing is still propagating | Record the URL as the receipt. Wait. Do not refile. |
-| Open | Filed, awaiting upstream review or moderation | Wait. Do not refile. |
-| Closed unmerged | Rejected or superseded | Read the thread before refiling. |
-| Nothing found | No *evidence* of a submission — not proof there is none | Confirm with whoever ran the release, then file. A search can miss a differently-titled submission, and moderation queues are not always public. |
+| What you find | Scoop / Winget | Chocolatey | Action |
+|---|---|---|---|
+| Submission accepted | PR merged | version approved / listed | Record it as the receipt. The public listing is still propagating; wait. Do not refile. |
+| Submission in progress | PR open | version pending moderation | Wait. Do not refile. |
+| Submission rejected or superseded | PR closed unmerged | version rejected | Read the reason before refiling. |
+| No evidence found | no matching PR | version absent from history | **Not proof there is none.** Confirm with whoever ran the release, then file. A search can miss a differently-titled submission, and Chocolatey moderation state is not reliably public. |
 
-Never close a channel on the absence of a search result alone, and never refile
+Never close a channel on the absence of evidence alone, and never refile
 without establishing that the last attempt is genuinely gone.
 
 ### 1. GitHub Release
