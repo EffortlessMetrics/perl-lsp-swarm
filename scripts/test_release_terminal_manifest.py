@@ -367,6 +367,16 @@ class ReleaseTerminalManifestTests(unittest.TestCase):
             with self.assertRaisesRegex(subject.ManifestError, "not a passing"):
                 subject.build_manifest(root, SOURCE, TAG)
 
+    def test_local_adapter_receipt_is_not_public_terminal_authority(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = candidate(Path(directory))
+            receipt_path = root / "evidence" / TARGET / "release-build-receipt.json"
+            receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+            receipt["build_execution"] = "adapter"
+            write_json(receipt_path, receipt)
+            with self.assertRaisesRegex(subject.ManifestError, "execution authority"):
+                subject.build_manifest(root, SOURCE, TAG)
+
     def test_forged_binary_packet_digest_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = candidate(Path(directory))

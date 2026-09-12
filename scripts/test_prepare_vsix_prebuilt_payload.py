@@ -170,6 +170,22 @@ class PrebuiltPayloadAdapterTests(unittest.TestCase):
                 consumer = self.run_consumer(paths, root)
                 self.assertEqual(consumer.returncode, 0, consumer.stderr)
 
+    def test_adapter_accepts_verified_local_adapter_receipt(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            paths = self.fixture(root)
+            receipt = json.loads(Path(paths["receipt"]).read_text(encoding="utf-8"))
+            receipt["build_execution"] = "adapter"
+            Path(paths["receipt"]).write_text(json.dumps(receipt), encoding="utf-8")
+            producer_output, producer = self.produce_evidence(paths, root)
+            self.assertEqual(producer.returncode, 0, producer.stderr)
+            paths["evidence"] = producer_output
+            result = subprocess.run(
+                self.command(paths), cwd=Path(__file__).parents[1],
+                capture_output=True, text=True, check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_consumer_rejects_missing_or_contradictory_packet_limitation(self) -> None:
         for limitations in (None, [], ["artifact_role_not_proven"], ["artifact_digest_not_externally_bound", "extra"]):
             with self.subTest(limitations=limitations), tempfile.TemporaryDirectory() as directory:
