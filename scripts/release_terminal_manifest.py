@@ -244,7 +244,7 @@ def validate_binary_row(
     if packet.get("compatibility") != {
         "expected_product_identity_version": 1,
         "dap_posture": "preview",
-    } or packet.get("limitations") != []:
+    } or packet.get("limitations") != ["artifact_digest_not_externally_bound"]:
         raise ManifestError("build receipt binary packet is not exact-compatible")
 
 

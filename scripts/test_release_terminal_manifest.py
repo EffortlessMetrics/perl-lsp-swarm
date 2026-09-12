@@ -61,7 +61,7 @@ def packet(executable: str, package: str, role: str) -> dict[str, object]:
         },
         "artifact": {"role": "archive", "digest": None, "candidate_identity": TAG},
         "compatibility": {"expected_product_identity_version": 1, "dap_posture": "preview"},
-        "limitations": [],
+        "limitations": ["artifact_digest_not_externally_bound"],
     }
 
 
