@@ -60,6 +60,15 @@ void test('current-source Linux smoke enables the candidate-bound Test Explorer 
     nextStepIndex === -1 ? source.length : smokeIndex + 1 + nextStepIndex,
   );
   assert.match(smokeStep, /PERL_LSP_TEST_EXPLORER_JOURNEY: '1'/);
+  assert.match(smokeStep, /PERL_LSP_CONSTRUCT_CANDIDATE_MANIFEST: '1'/);
+  assert.match(
+    smokeStep,
+    /PERL_LSP_CANDIDATE_ID: current-source-\$\{\{ env\.PERL_LSP_SMOKE_SUBJECT_SHA \}\}/,
+  );
+  assert.match(
+    smokeStep,
+    /PERL_LSP_ARTIFACT_SET_ID: current-source-linux-\$\{\{ matrix\.vscode_version \}\}-\$\{\{ github\.run_id \}\}/,
+  );
   assert.match(smokeStep, /run: xvfb-run -a npm run test:published:local/);
   assert.match(
     smokeStep,
