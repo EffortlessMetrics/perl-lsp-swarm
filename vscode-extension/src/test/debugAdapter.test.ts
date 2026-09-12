@@ -19,8 +19,10 @@ import {
   rewriteTestLensCommand,
   VSCODE_DEBUG_TEST_COMMAND,
   VSCODE_RUN_TEST_COMMAND,
+  packagedDapTargetDirectory,
 } from '../debugAdapter';
-import { hostManagedCompatibilityKeys } from '../downloader';
+import * as downloader from '../downloader';
+import { hostManagedCompatibilityKeys, resolvePlatformTarget } from '../downloader';
 import { managedNamespaceDir } from '../managedStorageIdentity';
 
 // ---------------------------------------------------------------------------
@@ -64,6 +66,12 @@ function required<T>(value: T | undefined, label: string): T {
     throw new Error(`Missing ${label}`);
   }
   return value;
+}
+
+function currentBundledDapDirectory(extensionDir: string): string {
+  const target = resolvePlatformTarget(() => {});
+  const directory = packagedDapTargetDirectory(target);
+  return path.join(extensionDir, 'bin', directory ?? `${process.platform}-${process.arch}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -255,7 +263,7 @@ describe('PerlDebugAdapterDescriptorFactory', () => {
 
   test('prefers the packaged perl-dap over a stale ambient adapter', () => {
     const extensionDir = fs.mkdtempSync(path.join(tmpDir, 'extension-'));
-    const bundledDir = path.join(extensionDir, 'bin', `${process.platform}-${process.arch}`);
+    const bundledDir = currentBundledDapDirectory(extensionDir);
     const ambientDir = fs.mkdtempSync(path.join(tmpDir, 'ambient-'));
     const dapName = process.platform === 'win32' ? 'perl-dap.exe' : 'perl-dap';
     const bundledPath = path.join(bundledDir, dapName);
@@ -302,9 +310,56 @@ describe('PerlDebugAdapterDescriptorFactory', () => {
     }
   });
 
+  test('maps musl and GNU Linux hosts to distinct packaged DAP payloads', () => {
+    expect(packagedDapTargetDirectory('x86_64-unknown-linux-musl')).toBe('alpine-x64');
+    expect(packagedDapTargetDirectory('aarch64-unknown-linux-musl')).toBe('alpine-arm64');
+    expect(packagedDapTargetDirectory('x86_64-unknown-linux-gnu')).toBe('linux-x64');
+    expect(packagedDapTargetDirectory('aarch64-unknown-linux-gnu')).toBe('linux-arm64');
+  });
+
+  test('factory selects Alpine DAP on a simulated musl Linux host', () => {
+    const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
+    const originalArch = Object.getOwnPropertyDescriptor(process, 'arch');
+    const originalTarget = jest.spyOn(downloader, 'resolvePlatformTarget');
+    const extensionDir = fs.mkdtempSync(path.join(tmpDir, 'extension-'));
+    const alpineDir = path.join(extensionDir, 'bin', 'alpine-x64');
+    const gnuDir = path.join(extensionDir, 'bin', 'linux-x64');
+    fs.mkdirSync(alpineDir, { recursive: true });
+    fs.mkdirSync(gnuDir, { recursive: true });
+    const alpinePath = path.join(alpineDir, 'perl-dap');
+    const gnuPath = path.join(gnuDir, 'perl-dap');
+    fs.writeFileSync(alpinePath, 'alpine packaged dap');
+    fs.writeFileSync(gnuPath, 'gnu packaged dap');
+    fs.chmodSync(alpinePath, 0o755);
+    fs.chmodSync(gnuPath, 0o755);
+    Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
+    Object.defineProperty(process, 'arch', { value: 'x64', configurable: true });
+    try {
+      const factory = new PerlDebugAdapterDescriptorFactory(makeContext(tmpDir, extensionDir));
+      originalTarget.mockReturnValueOnce('x86_64-unknown-linux-musl');
+      const alpineResult = factory.createDebugAdapterDescriptor(
+        {} as unknown as vscode.DebugSession,
+        undefined,
+      ) as vscode.DebugAdapterExecutable;
+      expect(alpineResult.command).toBe(alpinePath);
+      expect(alpineResult.command).not.toBe(gnuPath);
+      originalTarget.mockReturnValueOnce('x86_64-unknown-linux-gnu');
+      const gnuResult = factory.createDebugAdapterDescriptor(
+        {} as unknown as vscode.DebugSession,
+        undefined,
+      ) as vscode.DebugAdapterExecutable;
+      expect(gnuResult.command).toBe(gnuPath);
+      expect(gnuResult.command).not.toBe(alpinePath);
+    } finally {
+      originalTarget.mockRestore();
+      if (originalPlatform) Object.defineProperty(process, 'platform', originalPlatform);
+      if (originalArch) Object.defineProperty(process, 'arch', originalArch);
+    }
+  });
+
   test('finds the packaged perl-dap with no ambient search path', () => {
     const extensionDir = fs.mkdtempSync(path.join(tmpDir, 'extension-'));
-    const bundledDir = path.join(extensionDir, 'bin', `${process.platform}-${process.arch}`);
+    const bundledDir = currentBundledDapDirectory(extensionDir);
     const dapName = process.platform === 'win32' ? 'perl-dap.exe' : 'perl-dap';
     const bundledPath = path.join(bundledDir, dapName);
     fs.mkdirSync(bundledDir, { recursive: true });
