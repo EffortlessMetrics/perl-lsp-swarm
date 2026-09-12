@@ -285,11 +285,6 @@ impl TypeHierarchyProvider {
         Ok(())
     }
 
-    /// Normalize parent argument (handle quotes, qw(), etc.)
-    fn normalize_parent_arg(&self, arg: &str) -> Vec<String> {
-        self.normalize_parent_arg_with_cancellation(arg, &|| false).unwrap_or_default()
-    }
-
     fn normalize_parent_arg_with_cancellation(
         &self,
         arg: &str,
@@ -346,14 +341,6 @@ impl TypeHierarchyProvider {
         Ok(result)
     }
 
-    /// Extract package/role names from function call arguments (e.g., `extends 'A', 'B'`).
-    ///
-    /// Handles `String`, `Identifier`, and `ArrayLiteral` nodes. Hash literal
-    /// arguments (e.g., `{ -version => 0.01 }`) are harmlessly skipped.
-    fn extract_names_from_args(args: &[Node]) -> Vec<String> {
-        args.iter().flat_map(Self::collect_symbol_names).collect()
-    }
-
     fn extract_names_from_args_with_cancellation(
         &self,
         args: &[Node],
@@ -367,24 +354,6 @@ impl TypeHierarchyProvider {
             result.extend(self.collect_symbol_names_with_cancellation(arg, is_cancelled)?);
         }
         Ok(result)
-    }
-
-    /// Collect symbol names from a single AST node (String, Identifier, or ArrayLiteral).
-    fn collect_symbol_names(node: &Node) -> Vec<String> {
-        match &node.kind {
-            NodeKind::String { value, .. } => {
-                let trimmed = value.trim().trim_matches('\'').trim_matches('"').trim();
-                if trimmed.is_empty() { Vec::new() } else { vec![trimmed.to_string()] }
-            }
-            NodeKind::Identifier { name } => {
-                let trimmed = name.trim();
-                if trimmed.is_empty() { Vec::new() } else { vec![trimmed.to_string()] }
-            }
-            NodeKind::ArrayLiteral { elements } => {
-                elements.iter().flat_map(Self::collect_symbol_names).collect()
-            }
-            _ => Vec::new(),
-        }
     }
 
     fn collect_symbol_names_with_cancellation(
@@ -415,42 +384,6 @@ impl TypeHierarchyProvider {
             }
             _ => Ok(Vec::new()),
         }
-    }
-
-    /// Extract parent classes from @ISA initialization
-    fn extract_isa_parents(&self, node: &Node) -> Vec<String> {
-        let mut parents = Vec::new();
-
-        match &node.kind {
-            NodeKind::ArrayLiteral { elements } => {
-                for elem in elements {
-                    match &elem.kind {
-                        NodeKind::String { value, .. } => {
-                            for parent in self.normalize_parent_arg(value) {
-                                parents.push(parent);
-                            }
-                        }
-                        NodeKind::Identifier { name } => {
-                            // Bareword
-                            parents.push(name.clone());
-                        }
-                        _ => {}
-                    }
-                }
-            }
-            NodeKind::String { value, .. } => {
-                for parent in self.normalize_parent_arg(value) {
-                    parents.push(parent);
-                }
-            }
-            NodeKind::Identifier { name } => {
-                // Bareword
-                parents.push(name.clone());
-            }
-            _ => {}
-        }
-
-        parents
     }
 
     fn extract_isa_parents_with_cancellation(
@@ -824,30 +757,6 @@ impl TypeHierarchyProvider {
             Ok(Some(node))
         } else {
             Ok(None)
-        }
-    }
-
-    fn get_children<'a>(&self, node: &'a Node) -> Option<Vec<&'a Node>> {
-        match &node.kind {
-            NodeKind::Program { statements } => Some(statements.iter().collect()),
-            NodeKind::Block { statements } => Some(statements.iter().collect()),
-            NodeKind::If { condition, then_branch, elsif_branches, else_branch, .. } => {
-                let mut children = vec![condition.as_ref(), then_branch.as_ref()];
-                for branch in elsif_branches {
-                    children.push(&branch.0);
-                    children.push(&branch.1);
-                }
-                if let Some(else_b) = else_branch {
-                    children.push(else_b.as_ref());
-                }
-                Some(children)
-            }
-            NodeKind::Package { block, .. } => block.as_ref().map(|b| vec![b.as_ref()]),
-            NodeKind::Class { body, .. } => Some(vec![body.as_ref()]),
-            NodeKind::Subroutine { body, .. } => Some(vec![body.as_ref()]),
-            NodeKind::Assignment { lhs, rhs, .. } => Some(vec![lhs.as_ref(), rhs.as_ref()]),
-            NodeKind::ExpressionStatement { expression } => Some(vec![expression.as_ref()]),
-            _ => None,
         }
     }
 
@@ -1589,7 +1498,10 @@ our @ISA = ('B', 'C');
             loc(0, 57),
         );
 
-        let children = provider.get_children(&node).ok_or("If nodes should expose children")?;
+        let children = provider
+            .get_children_with_cancellation(&node, &|| false)
+            .map_err(|_| std::io::Error::other("unexpected cancellation"))?
+            .ok_or("If nodes should expose children")?;
 
         assert_eq!(children.len(), 5);
         Ok(())
