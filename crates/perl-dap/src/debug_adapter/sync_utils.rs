@@ -28,9 +28,10 @@ pub(crate) enum EventDispatchResult {
     Disconnected,
 }
 
-/// Shared event-sender admission gate. The sender stays under the mutex for the
-/// complete dispatch, so closing the gate waits for already-admitted sends and
-/// late producers cannot retain a raw channel clone.
+/// Shared event-sender admission gate. A producer clones the sender while the
+/// gate is held, then performs its potentially blocking send after releasing
+/// the gate. Closing therefore cannot wait on a producer, while an admitted
+/// clone keeps the receiver connected until that send completes.
 #[derive(Clone)]
 pub(crate) struct EventSender(Arc<Mutex<Option<SyncSender<DapMessage>>>>);
 
@@ -43,31 +44,33 @@ impl EventSender {
         *lock_or_recover(&self.0, "event_sender") = None;
     }
 
-    pub(crate) fn dispatch(
+    fn admitted_sender(&self) -> Option<SyncSender<DapMessage>> {
+        lock_or_recover(&self.0, "event_sender").as_ref().cloned()
+    }
+
+    pub(crate) fn send_event(
         &self,
         seq: &Mutex<i64>,
         event: &str,
         body: Option<Value>,
     ) -> EventDispatchResult {
-        let guard = lock_or_recover(&self.0, "event_sender");
-        let Some(sender) = guard.as_ref() else {
+        let Some(sender) = self.admitted_sender() else {
             return EventDispatchResult::Disconnected;
         };
-        dispatch_event(sender, seq, event, body)
+        dispatch_event(&sender, seq, event, body)
     }
 
-    pub(crate) fn dispatch_generation_guarded(
+    pub(crate) fn send_event_generation_guarded(
         &self,
         seq: &Mutex<i64>,
         event: &str,
         body: Option<Value>,
         stale: &dyn Fn() -> bool,
     ) -> GuardedDispatchResult {
-        let guard = lock_or_recover(&self.0, "event_sender");
-        let Some(sender) = guard.as_ref() else {
+        let Some(sender) = self.admitted_sender() else {
             return GuardedDispatchResult::Disconnected;
         };
-        dispatch_event_generation_guarded(sender, seq, event, body, stale)
+        dispatch_event_generation_guarded(&sender, seq, event, body, stale)
     }
 }
 
@@ -330,13 +333,13 @@ mod tests {
         let (tx, rx) = sync_channel::<DapMessage>(2);
         let sender = EventSender::new(tx);
         let seq = Mutex::new(0i64);
-        if sender.dispatch(&seq, "output", Some(json!({"output": "before-close\n"})))
+        if sender.send_event(&seq, "output", Some(json!({"output": "before-close\n"})))
             != EventDispatchResult::Sent
         {
             return Err("pre-close event was not admitted".to_string());
         }
         sender.close();
-        if sender.dispatch(&seq, "output", Some(json!({"output": "after-close\n"})))
+        if sender.send_event(&seq, "output", Some(json!({"output": "after-close\n"})))
             != EventDispatchResult::Disconnected
         {
             return Err("late event was admitted after close".to_string());
@@ -356,7 +359,7 @@ mod tests {
         let (tx, rx) = sync_channel::<DapMessage>(1);
         let sender = EventSender::new(tx);
         let seq = Arc::new(Mutex::new(0i64));
-        if sender.dispatch(&seq, "output", Some(json!({"output": "queued\n"})))
+        if sender.send_event(&seq, "output", Some(json!({"output": "queued\n"})))
             != EventDispatchResult::Sent
         {
             return Err("queue-filling event was not admitted".to_string());
@@ -365,7 +368,7 @@ mod tests {
         let producer_sender = sender.clone();
         let producer_seq = Arc::clone(&seq);
         let producer = thread::spawn(move || {
-            producer_sender.dispatch(&producer_seq, "stopped", Some(json!({"reason": "pause"})))
+            producer_sender.send_event(&producer_seq, "stopped", Some(json!({"reason": "pause"})))
         });
         match rx.recv().map_err(|error| error.to_string())? {
             DapMessage::Event { event, .. } if event == "output" => {}
@@ -378,7 +381,7 @@ mod tests {
         }
 
         sender.close();
-        if sender.dispatch(&seq, "stopped", Some(json!({"reason": "late"})))
+        if sender.send_event(&seq, "stopped", Some(json!({"reason": "late"})))
             != EventDispatchResult::Disconnected
         {
             return Err("late lifecycle event was admitted after close".to_string());
@@ -391,6 +394,76 @@ mod tests {
         match rx.try_recv() {
             Err(std::sync::mpsc::TryRecvError::Disconnected) => Ok(()),
             other => Err(format!("event channel remained open: {other:?}")),
+        }
+    }
+
+    #[test]
+    fn event_sender_close_does_not_wait_on_admitted_send() -> Result<(), String> {
+        let (tx, rx) = sync_channel::<DapMessage>(1);
+        let sender = EventSender::new(tx);
+        let seq = Mutex::new(0i64);
+        if sender.send_event(&seq, "output", Some(json!({"output": "queued\n"})))
+            != EventDispatchResult::Sent
+        {
+            return Err("queue-filling event was not admitted".to_string());
+        }
+        let seq = Arc::new(seq);
+        let producer_seq = Arc::clone(&seq);
+        let producer_sender = sender.clone();
+        let producer = thread::spawn(move || {
+            producer_sender.send_event(&producer_seq, "stopped", Some(json!({"reason": "pause"})))
+        });
+
+        let deadline = Instant::now() + Duration::from_secs(1);
+        let producer_blocked = loop {
+            match seq.try_lock() {
+                Ok(_) => {
+                    if Instant::now() >= deadline {
+                        break false;
+                    }
+                    thread::yield_now();
+                }
+                Err(std::sync::TryLockError::WouldBlock) => break true,
+                Err(std::sync::TryLockError::Poisoned(_)) => break false,
+            }
+        };
+        let (close_done_tx, close_done_rx) = sync_channel(1);
+        let close_sender = sender.clone();
+        let closer = thread::spawn(move || {
+            close_sender.close();
+            let _ = close_done_tx.send(());
+        });
+        let close_completed_before_drain =
+            close_done_rx.recv_timeout(Duration::from_millis(200)).is_ok();
+
+        let queued = rx.recv().map_err(|error| error.to_string())?;
+        if !matches!(&queued, DapMessage::Event { event, .. } if event == "output") {
+            let _ = producer.join();
+            let _ = closer.join();
+            return Err(format!("unexpected queued event: {queued:?}"));
+        }
+        let producer_result =
+            producer.join().map_err(|_| "admitted producer panicked".to_string())?;
+        let _ = closer.join();
+        let late_result = sender.send_event(&seq, "stopped", Some(json!({"reason": "late"})));
+        if !producer_blocked || !close_completed_before_drain {
+            return Err(format!(
+                "close must complete before draining a blocked admitted send: blocked={producer_blocked}, close_completed={close_completed_before_drain}"
+            ));
+        }
+        if late_result != EventDispatchResult::Disconnected {
+            return Err("late lifecycle event was admitted after close".to_string());
+        }
+        if producer_result != EventDispatchResult::Sent {
+            return Err("admitted lifecycle event was not delivered".to_string());
+        }
+        match rx.recv().map_err(|error| error.to_string())? {
+            DapMessage::Event { event, .. } if event == "stopped" => {}
+            other => return Err(format!("expected admitted lifecycle event: {other:?}")),
+        }
+        match rx.recv_timeout(Duration::from_millis(200)) {
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Ok(()),
+            other => Err(format!("closed sender retained the channel after delivery: {other:?}")),
         }
     }
 

@@ -465,7 +465,7 @@ impl DebugAdapter {
     /// when the queue is full); all other events apply backpressure.
     fn send_event(&self, event: &str, body: Option<Value>) {
         if let Some(ref sender) = self.event_sender {
-            let _ = sender.dispatch(&self.seq, event, body);
+            let _ = sender.send_event(&self.seq, event, body);
         }
     }
 

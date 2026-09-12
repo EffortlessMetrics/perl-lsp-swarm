@@ -37,7 +37,7 @@ fn emit_event_safe(
     event: &str,
     body: Option<Value>,
 ) -> bool {
-    sender.dispatch(seq, event, body) != super::sync_utils::EventDispatchResult::Disconnected
+    sender.send_event(seq, event, body) != super::sync_utils::EventDispatchResult::Disconnected
 }
 
 const SCOPE_FRAME_ID_MAX: u64 = 99_999;
@@ -2553,7 +2553,7 @@ fn emit_logpoint_messages(sender: Option<&EventSender>, seq: &Mutex<i64>, messag
         return;
     };
     for message in messages {
-        let _ = sender.dispatch(
+        let _ = sender.send_event(
             seq,
             "output",
             Some(json!({
@@ -2608,7 +2608,7 @@ pub(super) fn emit_terminated_event_guarded(
         return false;
     }
     !matches!(
-        sender.dispatch_generation_guarded(seq, "terminated", body, stale),
+        sender.send_event_generation_guarded(seq, "terminated", body, stale),
         GuardedDispatchResult::Disconnected
     )
 }

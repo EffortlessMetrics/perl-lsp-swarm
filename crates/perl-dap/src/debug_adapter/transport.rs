@@ -340,7 +340,7 @@ fn write_response_then_notify_initialized<W: Write>(
     }
 
     if notify_initialized && let Some(sender) = event_sender {
-        let _ = sender.dispatch(seq, "initialized", None);
+        let _ = sender.send_event(seq, "initialized", None);
     }
     Ok(())
 }

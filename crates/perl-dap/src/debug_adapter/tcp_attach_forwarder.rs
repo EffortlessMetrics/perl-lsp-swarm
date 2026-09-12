@@ -119,7 +119,7 @@ pub(super) fn spawn_tcp_attach_event_forwarder(
                         // re-validates the generation before every commit
                         // attempt, so the replacement retires the stale event
                         // instead (#9521 review).
-                        if sender.dispatch_generation_guarded(&seq_counter, name, body, &stale)
+                        if sender.send_event_generation_guarded(&seq_counter, name, body, &stale)
                             == GuardedDispatchResult::Stale
                         {
                             break;
