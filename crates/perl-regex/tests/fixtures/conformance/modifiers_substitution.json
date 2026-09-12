@@ -1,0 +1,127 @@
+{
+  "schema_version": 1,
+  "programme": "perl_regex_modifier_conformance",
+  "family": "modifiers.substitution",
+  "owner_issue": 7036,
+  "rows": [
+    {
+      "id": "modifiers.substitution.e-eval-depth-1",
+      "family": "modifiers.substitution",
+      "authority": "perlop(1) 'Modifiers': /e evaluates the replacement as Perl code (depth 1)",
+      "operator": "substitution",
+      "profile": { "perl_minor": 26, "enhanced_xx": "disabled" },
+      "modifier_sequence": "e",
+      "positive_source": null,
+      "negative_source": null,
+      "expected": {
+        "substitution_evaluation_depth": 1,
+        "diagnostic_codes": []
+      },
+      "completeness": "proven",
+      "owner_issue": 7036,
+      "oracle_disposition": "not_applicable"
+    },
+    {
+      "id": "modifiers.substitution.ee-eval-depth-2",
+      "family": "modifiers.substitution",
+      "authority": "perlop(1) 'Modifiers': /ee evaluates the replacement expression twice (depth 2)",
+      "operator": "substitution",
+      "profile": { "perl_minor": 26, "enhanced_xx": "disabled" },
+      "modifier_sequence": "ee",
+      "positive_source": null,
+      "negative_source": null,
+      "expected": {
+        "substitution_evaluation_depth": 2,
+        "diagnostic_codes": []
+      },
+      "completeness": "proven",
+      "owner_issue": 7036,
+      "oracle_disposition": "not_applicable"
+    },
+    {
+      "id": "modifiers.substitution.e-not-for-match",
+      "family": "modifiers.substitution",
+      "authority": "perlop(1): /e is only valid for s///; using it on m// is a diagnostic",
+      "operator": "match",
+      "profile": { "perl_minor": 26, "enhanced_xx": "disabled" },
+      "modifier_sequence": "e",
+      "positive_source": null,
+      "negative_source": null,
+      "expected": {
+        "substitution_evaluation_depth": 0,
+        "diagnostic_codes": ["modifier_not_allowed_for_operator"]
+      },
+      "completeness": "proven",
+      "owner_issue": 7036,
+      "oracle_disposition": "not_applicable"
+    },
+    {
+      "id": "modifiers.substitution.r-non-destructive",
+      "family": "modifiers.substitution",
+      "authority": "perlop(1) 'Modifiers': /r makes s/// return the modified string without changing the original",
+      "operator": "substitution",
+      "profile": { "perl_minor": 26, "enhanced_xx": "disabled" },
+      "modifier_sequence": "r",
+      "positive_source": null,
+      "negative_source": null,
+      "expected": {
+        "non_destructive": true,
+        "diagnostic_codes": []
+      },
+      "completeness": "proven",
+      "owner_issue": 7036,
+      "oracle_disposition": "not_applicable"
+    },
+    {
+      "id": "modifiers.substitution.r-not-for-match",
+      "family": "modifiers.substitution",
+      "authority": "perlop(1): /r is only valid for s///; using it on m// is a diagnostic",
+      "operator": "match",
+      "profile": { "perl_minor": 26, "enhanced_xx": "disabled" },
+      "modifier_sequence": "r",
+      "positive_source": null,
+      "negative_source": null,
+      "expected": {
+        "non_destructive": false,
+        "diagnostic_codes": ["modifier_not_allowed_for_operator"]
+      },
+      "completeness": "proven",
+      "owner_issue": 7036,
+      "oracle_disposition": "not_applicable"
+    },
+    {
+      "id": "modifiers.substitution.r-for-transliteration",
+      "family": "modifiers.substitution",
+      "authority": "perlop(1) 'tr Operator': /r also applies to tr// for non-destructive transliteration",
+      "operator": "transliteration",
+      "profile": { "perl_minor": 26, "enhanced_xx": "disabled" },
+      "modifier_sequence": "r",
+      "positive_source": null,
+      "negative_source": null,
+      "expected": {
+        "diagnostic_codes": []
+      },
+      "completeness": "proven",
+      "owner_issue": 7036,
+      "oracle_disposition": "not_applicable"
+    },
+    {
+      "id": "modifiers.substitution.er-combined",
+      "family": "modifiers.substitution",
+      "authority": "perlop(1): combining /e and /r is valid for s///",
+      "operator": "substitution",
+      "profile": { "perl_minor": 26, "enhanced_xx": "disabled" },
+      "modifier_sequence": "er",
+      "positive_source": null,
+      "negative_source": null,
+      "expected": {
+        "substitution_evaluation_depth": 1,
+        "non_destructive": true,
+        "diagnostic_codes": []
+      },
+      "completeness": "proven",
+      "owner_issue": 7036,
+      "oracle_disposition": "not_applicable"
+    }
+  ]
+}
