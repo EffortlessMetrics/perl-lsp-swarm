@@ -62,7 +62,6 @@ pub use perl_parser::parser
 pub use perl_parser::parser_context
 pub use perl_parser::path_normalize
 pub use perl_parser::path_security
-pub use perl_parser::percentile
 pub use perl_parser::position
 pub use perl_parser::pragma_tracker
 pub use perl_parser::qualified_name
@@ -108,7 +107,6 @@ pub use perl_parser::compat::index
 pub use perl_parser::compat::parser_context
 pub use perl_parser::compat::path_normalize
 pub use perl_parser::compat::path_security
-pub use perl_parser::compat::percentile
 pub use perl_parser::compat::pragma_tracker
 pub use perl_parser::compat::qualified_name
 pub use perl_parser::compat::quote_parser

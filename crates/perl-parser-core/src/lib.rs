@@ -124,8 +124,6 @@ pub use syntax::heredoc as heredoc_collector;
 pub use syntax::path_normalize;
 /// Workspace-bound path validation and traversal prevention.
 pub use syntax::path_security;
-/// Percentile helpers for integer metric samples.
-pub use syntax::percentile;
 /// Perl qualified-name parsing, splitting, and validation helpers.
 pub use syntax::qualified_name;
 /// Canonical qw/q/qq operator content extractor shared across the workspace.

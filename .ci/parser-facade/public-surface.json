@@ -138,7 +138,6 @@
         "perl_parser_core::line_index",
         "perl_parser_core::path_normalize",
         "perl_parser_core::path_security",
-        "perl_parser_core::percentile",
         "perl_parser_core::qualified_name",
         "perl_parser_core::source_file",
         "perl_parser_core::text_line",

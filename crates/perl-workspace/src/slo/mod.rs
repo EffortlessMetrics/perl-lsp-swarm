@@ -33,8 +33,10 @@
 //! tracker.record_operation_type(OperationType::DefinitionLookup, start, OperationResult::Success);
 //! ```
 
+mod percentile;
+
 use parking_lot::Mutex;
-use perl_parser_core::percentile::nearest_rank_percentile;
+use percentile::nearest_rank_percentile;
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
