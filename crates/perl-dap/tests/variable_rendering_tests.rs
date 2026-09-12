@@ -84,9 +84,8 @@ fn test_variables_lazy_expansion_indicators() -> Result<(), Box<dyn std::error::
             .ok_or("Expected variables array")?;
 
         assert!(
-            vars.iter().all(|v| v.get("name").and_then(|n| n.as_str()) != Some("@_")
-                && v.get("name").and_then(|n| n.as_str()) != Some("$self")),
-            "session-less Locals must not fabricate DB-internal placeholders: {vars:?}"
+            vars.is_empty(),
+            "session-less Locals must not fabricate variables (no @_ / $self / any other placeholder): {vars:?}"
         );
     }
     Ok(())
@@ -137,13 +136,11 @@ fn test_scalar_truncation() -> Result<(), Box<dyn std::error::Error>> {
             .as_array()
             .ok_or("Expected variables array")?;
 
-        // Session-less Locals must be empty rather than fabricated (#7275);
-        // every emitted variable still carries the required DAP fields.
-        for var in vars {
-            assert!(var.get("name").is_some());
-            assert!(var.get("value").is_some());
-            assert!(var.get("variablesReference").is_some());
-        }
+        // Session-less Locals must be empty rather than fabricated (#7275).
+        assert!(vars.is_empty(), "session-less Locals must be empty; got: {vars:?}");
+        // Field-shape coverage for emitted variables lives in the renderer
+        // unit tests and the live-session suites; truncation itself is
+        // covered by test_string_truncation* in variables/renderer.rs.
     }
     Ok(())
 }

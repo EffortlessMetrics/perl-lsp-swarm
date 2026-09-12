@@ -429,7 +429,7 @@ fn parse_value_bareword_as_scalar() -> Result<(), Box<dyn std::error::Error>> {
 fn parse_value_array_ref() -> Result<(), Box<dyn std::error::Error>> {
     let parser = VariableParser::new();
     let val = must(parser.parse_value("ARRAY(0x1a2b3c4d)", 0));
-    assert_eq!(val, PerlValue::Scalar("ARRAY(0x1a2b3c4d)".to_string()));
+    assert_eq!(val, PerlValue::scalar("ARRAY(0x1a2b3c4d)"));
     Ok(())
 }
 
@@ -437,7 +437,7 @@ fn parse_value_array_ref() -> Result<(), Box<dyn std::error::Error>> {
 fn parse_value_hash_ref() -> Result<(), Box<dyn std::error::Error>> {
     let parser = VariableParser::new();
     let val = must(parser.parse_value("HASH(0xdeadbeef)", 0));
-    assert_eq!(val, PerlValue::Scalar("HASH(0xdeadbeef)".to_string()));
+    assert_eq!(val, PerlValue::scalar("HASH(0xdeadbeef)"));
     Ok(())
 }
 
@@ -445,7 +445,7 @@ fn parse_value_hash_ref() -> Result<(), Box<dyn std::error::Error>> {
 fn parse_value_code_ref() -> Result<(), Box<dyn std::error::Error>> {
     let parser = VariableParser::new();
     let val = must(parser.parse_value("CODE(0xfeedface)", 0));
-    assert_eq!(val, PerlValue::Scalar("CODE(0xfeedface)".to_string()));
+    assert_eq!(val, PerlValue::scalar("CODE(0xfeedface)"));
     Ok(())
 }
 
