@@ -80,6 +80,9 @@
 
 /// Builtin function signatures and metadata.
 pub use perl_lexer::builtins;
+/// Structured decoding of a Perl interpreter invocation into source fragments
+/// and switch facts.
+pub mod command_line;
 /// Parser engine components and supporting utilities.
 pub mod engine;
 /// Normalized high-level constructs lowered from the parser AST.

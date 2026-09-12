@@ -18,6 +18,239 @@ pub use perl_parser_core::token_wrapper
 pub use perl_parser_core::util
 pub mod perl_parser_core::ast
 pub use perl_parser_core::ast::<<perl_ast::ast::*>>
+pub mod perl_parser_core::command_line
+pub enum perl_parser_core::command_line::AmbiguityKind
+pub perl_parser_core::command_line::AmbiguityKind::EmptySplitPattern
+pub perl_parser_core::command_line::AmbiguityKind::ModuleExpressionIsNotAModuleName
+pub perl_parser_core::command_line::AmbiguityKind::ModuleNameDependsOnSourceContext
+pub fn perl_parser_core::command_line::AmbiguityKind::clone(&self) -> perl_parser_core::command_line::AmbiguityKind
+pub fn perl_parser_core::command_line::AmbiguityKind::eq(&self, other: &perl_parser_core::command_line::AmbiguityKind) -> bool
+pub fn perl_parser_core::command_line::AmbiguityKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_parser_core::command_line::AmbiguityKind::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub enum perl_parser_core::command_line::ArgvLead
+pub perl_parser_core::command_line::ArgvLead::Interpreter
+pub perl_parser_core::command_line::ArgvLead::SwitchesOnly
+pub fn perl_parser_core::command_line::ArgvLead::clone(&self) -> perl_parser_core::command_line::ArgvLead
+pub fn perl_parser_core::command_line::ArgvLead::eq(&self, other: &perl_parser_core::command_line::ArgvLead) -> bool
+pub fn perl_parser_core::command_line::ArgvLead::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_parser_core::command_line::ArgvLead::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub enum perl_parser_core::command_line::ContextFactKind
+pub perl_parser_core::command_line::ContextFactKind::AutoSplit
+pub perl_parser_core::command_line::ContextFactKind::IncludeDirectory
+pub perl_parser_core::command_line::ContextFactKind::IncludeDirectory::directory: alloc::string::String
+pub perl_parser_core::command_line::ContextFactKind::LineEnding
+pub perl_parser_core::command_line::ContextFactKind::LineEnding::octal_digits: core::option::Option<alloc::string::String>
+pub perl_parser_core::command_line::ContextFactKind::ModuleImport
+pub perl_parser_core::command_line::ContextFactKind::ModuleImport::form: perl_parser_core::command_line::ModuleForm
+pub perl_parser_core::command_line::ContextFactKind::ModuleImport::spec: perl_parser_core::command_line::ModuleSpec
+pub perl_parser_core::command_line::ContextFactKind::PrintLoop
+pub perl_parser_core::command_line::ContextFactKind::ReadLoop
+pub perl_parser_core::command_line::ContextFactKind::RecordSeparator
+pub perl_parser_core::command_line::ContextFactKind::RecordSeparator::digits: core::option::Option<perl_parser_core::command_line::RecordSeparatorDigits>
+pub perl_parser_core::command_line::ContextFactKind::SlurpMode
+pub perl_parser_core::command_line::ContextFactKind::SplitPattern
+pub perl_parser_core::command_line::ContextFactKind::SplitPattern::pattern: alloc::string::String
+pub fn perl_parser_core::command_line::ContextFactKind::clone(&self) -> perl_parser_core::command_line::ContextFactKind
+pub fn perl_parser_core::command_line::ContextFactKind::eq(&self, other: &perl_parser_core::command_line::ContextFactKind) -> bool
+pub fn perl_parser_core::command_line::ContextFactKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_parser_core::command_line::InvocationDecodeError
+pub perl_parser_core::command_line::InvocationDecodeError::EmptyModuleName
+pub perl_parser_core::command_line::InvocationDecodeError::EmptyModuleName::span: perl_parser_core::command_line::ArgvSpan
+pub perl_parser_core::command_line::InvocationDecodeError::EmptyModuleName::switch: char
+pub perl_parser_core::command_line::InvocationDecodeError::MalformedUnicodeOptionNumber
+pub perl_parser_core::command_line::InvocationDecodeError::MalformedUnicodeOptionNumber::span: perl_parser_core::command_line::ArgvSpan
+pub perl_parser_core::command_line::InvocationDecodeError::MalformedUnicodeOptionNumber::value: alloc::string::String
+pub perl_parser_core::command_line::InvocationDecodeError::MissingInterpreter
+pub perl_parser_core::command_line::InvocationDecodeError::MissingValue
+pub perl_parser_core::command_line::InvocationDecodeError::MissingValue::span: perl_parser_core::command_line::ArgvSpan
+pub perl_parser_core::command_line::InvocationDecodeError::MissingValue::switch: char
+pub perl_parser_core::command_line::InvocationDecodeError::SingleColonInModuleName
+pub perl_parser_core::command_line::InvocationDecodeError::SingleColonInModuleName::span: perl_parser_core::command_line::ArgvSpan
+pub perl_parser_core::command_line::InvocationDecodeError::SingleColonInModuleName::switch: char
+pub perl_parser_core::command_line::InvocationDecodeError::UnexpectedModuleSuffix
+pub perl_parser_core::command_line::InvocationDecodeError::UnexpectedModuleSuffix::character: char
+pub perl_parser_core::command_line::InvocationDecodeError::UnexpectedModuleSuffix::span: perl_parser_core::command_line::ArgvSpan
+pub perl_parser_core::command_line::InvocationDecodeError::UnknownUnicodeOption
+pub perl_parser_core::command_line::InvocationDecodeError::UnknownUnicodeOption::character: char
+pub perl_parser_core::command_line::InvocationDecodeError::UnknownUnicodeOption::span: perl_parser_core::command_line::ArgvSpan
+pub perl_parser_core::command_line::InvocationDecodeError::UnrecognizedLongSwitch
+pub perl_parser_core::command_line::InvocationDecodeError::UnrecognizedLongSwitch::span: perl_parser_core::command_line::ArgvSpan
+pub perl_parser_core::command_line::InvocationDecodeError::UnrecognizedLongSwitch::spelling: alloc::string::String
+pub perl_parser_core::command_line::InvocationDecodeError::UnrecognizedSwitch
+pub perl_parser_core::command_line::InvocationDecodeError::UnrecognizedSwitch::span: perl_parser_core::command_line::ArgvSpan
+pub perl_parser_core::command_line::InvocationDecodeError::UnrecognizedSwitch::switch: char
+pub perl_parser_core::command_line::InvocationDecodeError::UnsupportedUnicodeOptionValue
+pub perl_parser_core::command_line::InvocationDecodeError::UnsupportedUnicodeOptionValue::span: perl_parser_core::command_line::ArgvSpan
+pub perl_parser_core::command_line::InvocationDecodeError::UnsupportedUnicodeOptionValue::value: alloc::string::String
+pub fn perl_parser_core::command_line::InvocationDecodeError::clone(&self) -> perl_parser_core::command_line::InvocationDecodeError
+pub fn perl_parser_core::command_line::InvocationDecodeError::eq(&self, other: &perl_parser_core::command_line::InvocationDecodeError) -> bool
+pub fn perl_parser_core::command_line::InvocationDecodeError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_parser_core::command_line::InvocationDecodeError::fmt(&self, __formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_parser_core::command_line::ModuleForm
+pub perl_parser_core::command_line::ModuleForm::Use
+pub perl_parser_core::command_line::ModuleForm::UseSuppressingDefaultImport
+pub fn perl_parser_core::command_line::ModuleForm::clone(&self) -> perl_parser_core::command_line::ModuleForm
+pub fn perl_parser_core::command_line::ModuleForm::eq(&self, other: &perl_parser_core::command_line::ModuleForm) -> bool
+pub fn perl_parser_core::command_line::ModuleForm::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_parser_core::command_line::ModuleForm::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub enum perl_parser_core::command_line::ModuleImportAction
+pub perl_parser_core::command_line::ModuleImportAction::Import
+pub perl_parser_core::command_line::ModuleImportAction::NoCall
+pub perl_parser_core::command_line::ModuleImportAction::Undetermined
+pub perl_parser_core::command_line::ModuleImportAction::Unimport
+pub fn perl_parser_core::command_line::ModuleImportAction::clone(&self) -> perl_parser_core::command_line::ModuleImportAction
+pub fn perl_parser_core::command_line::ModuleImportAction::eq(&self, other: &perl_parser_core::command_line::ModuleImportAction) -> bool
+pub fn perl_parser_core::command_line::ModuleImportAction::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_parser_core::command_line::ModuleImportAction::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub enum perl_parser_core::command_line::NeutralSwitch
+pub perl_parser_core::command_line::NeutralSwitch::AllWarnings
+pub perl_parser_core::command_line::NeutralSwitch::AllowUnsafe
+pub perl_parser_core::command_line::NeutralSwitch::CompileOnly
+pub perl_parser_core::command_line::NeutralSwitch::Configuration
+pub perl_parser_core::command_line::NeutralSwitch::Debugger
+pub perl_parser_core::command_line::NeutralSwitch::DumpCore
+pub perl_parser_core::command_line::NeutralSwitch::InPlaceEdit
+pub perl_parser_core::command_line::NeutralSwitch::NoSiteCustomize
+pub perl_parser_core::command_line::NeutralSwitch::NoWarnings
+pub perl_parser_core::command_line::NeutralSwitch::ProgramSwitches
+pub perl_parser_core::command_line::NeutralSwitch::SearchPath
+pub perl_parser_core::command_line::NeutralSwitch::TaintChecks
+pub perl_parser_core::command_line::NeutralSwitch::TaintWarnings
+pub perl_parser_core::command_line::NeutralSwitch::UnicodeFlags
+pub perl_parser_core::command_line::NeutralSwitch::Warnings
+pub fn perl_parser_core::command_line::NeutralSwitch::clone(&self) -> perl_parser_core::command_line::NeutralSwitch
+pub fn perl_parser_core::command_line::NeutralSwitch::eq(&self, other: &perl_parser_core::command_line::NeutralSwitch) -> bool
+pub fn perl_parser_core::command_line::NeutralSwitch::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_parser_core::command_line::NeutralSwitch::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub enum perl_parser_core::command_line::ProgramSource
+pub perl_parser_core::command_line::ProgramSource::CommandLineFragments
+pub perl_parser_core::command_line::ProgramSource::NotReached
+pub perl_parser_core::command_line::ProgramSource::ScriptFile
+pub perl_parser_core::command_line::ProgramSource::ScriptFile::path: alloc::string::String
+pub perl_parser_core::command_line::ProgramSource::ScriptFile::span: perl_parser_core::command_line::ArgvSpan
+pub perl_parser_core::command_line::ProgramSource::StandardInput
+pub perl_parser_core::command_line::ProgramSource::StandardInput::span: perl_parser_core::command_line::ArgvSpan
+pub perl_parser_core::command_line::ProgramSource::Unspecified
+pub fn perl_parser_core::command_line::ProgramSource::clone(&self) -> perl_parser_core::command_line::ProgramSource
+pub fn perl_parser_core::command_line::ProgramSource::eq(&self, other: &perl_parser_core::command_line::ProgramSource) -> bool
+pub fn perl_parser_core::command_line::ProgramSource::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_parser_core::command_line::RecordSeparatorDigits
+pub perl_parser_core::command_line::RecordSeparatorDigits::Hex(alloc::string::String)
+pub perl_parser_core::command_line::RecordSeparatorDigits::Octal(alloc::string::String)
+pub fn perl_parser_core::command_line::RecordSeparatorDigits::clone(&self) -> perl_parser_core::command_line::RecordSeparatorDigits
+pub fn perl_parser_core::command_line::RecordSeparatorDigits::eq(&self, other: &perl_parser_core::command_line::RecordSeparatorDigits) -> bool
+pub fn perl_parser_core::command_line::RecordSeparatorDigits::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_parser_core::command_line::RecordSeparatorDigits::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub enum perl_parser_core::command_line::SourceSwitch
+pub perl_parser_core::command_line::SourceSwitch::BigE
+pub perl_parser_core::command_line::SourceSwitch::E
+pub fn perl_parser_core::command_line::SourceSwitch::clone(&self) -> perl_parser_core::command_line::SourceSwitch
+pub fn perl_parser_core::command_line::SourceSwitch::eq(&self, other: &perl_parser_core::command_line::SourceSwitch) -> bool
+pub fn perl_parser_core::command_line::SourceSwitch::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_parser_core::command_line::SourceSwitch::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub enum perl_parser_core::command_line::TerminatingActionKind
+pub perl_parser_core::command_line::TerminatingActionKind::Usage
+pub perl_parser_core::command_line::TerminatingActionKind::Version
+pub fn perl_parser_core::command_line::TerminatingActionKind::clone(&self) -> perl_parser_core::command_line::TerminatingActionKind
+pub fn perl_parser_core::command_line::TerminatingActionKind::eq(&self, other: &perl_parser_core::command_line::TerminatingActionKind) -> bool
+pub fn perl_parser_core::command_line::TerminatingActionKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_parser_core::command_line::TerminatingActionKind::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub enum perl_parser_core::command_line::UnsupportedSwitchKind
+pub perl_parser_core::command_line::UnsupportedSwitchKind::DebuggingFlags
+pub perl_parser_core::command_line::UnsupportedSwitchKind::ScriptTextOffset
+pub fn perl_parser_core::command_line::UnsupportedSwitchKind::clone(&self) -> perl_parser_core::command_line::UnsupportedSwitchKind
+pub fn perl_parser_core::command_line::UnsupportedSwitchKind::eq(&self, other: &perl_parser_core::command_line::UnsupportedSwitchKind) -> bool
+pub fn perl_parser_core::command_line::UnsupportedSwitchKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_parser_core::command_line::UnsupportedSwitchKind::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub struct perl_parser_core::command_line::Ambiguity
+pub perl_parser_core::command_line::Ambiguity::kind: perl_parser_core::command_line::AmbiguityKind
+pub perl_parser_core::command_line::Ambiguity::span: perl_parser_core::command_line::ArgvSpan
+pub fn perl_parser_core::command_line::Ambiguity::clone(&self) -> perl_parser_core::command_line::Ambiguity
+pub fn perl_parser_core::command_line::Ambiguity::eq(&self, other: &perl_parser_core::command_line::Ambiguity) -> bool
+pub fn perl_parser_core::command_line::Ambiguity::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_parser_core::command_line::ArgvSpan
+pub perl_parser_core::command_line::ArgvSpan::argument_index: usize
+pub perl_parser_core::command_line::ArgvSpan::end: usize
+pub perl_parser_core::command_line::ArgvSpan::start: usize
+pub const fn perl_parser_core::command_line::ArgvSpan::is_empty(&self) -> bool
+pub const fn perl_parser_core::command_line::ArgvSpan::len(&self) -> usize
+pub const fn perl_parser_core::command_line::ArgvSpan::new(argument_index: usize, start: usize, end: usize) -> Self
+pub fn perl_parser_core::command_line::ArgvSpan::clone(&self) -> perl_parser_core::command_line::ArgvSpan
+pub fn perl_parser_core::command_line::ArgvSpan::cmp(&self, other: &perl_parser_core::command_line::ArgvSpan) -> core::cmp::Ordering
+pub fn perl_parser_core::command_line::ArgvSpan::eq(&self, other: &perl_parser_core::command_line::ArgvSpan) -> bool
+pub fn perl_parser_core::command_line::ArgvSpan::partial_cmp(&self, other: &perl_parser_core::command_line::ArgvSpan) -> core::option::Option<core::cmp::Ordering>
+pub fn perl_parser_core::command_line::ArgvSpan::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_parser_core::command_line::ArgvSpan::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub struct perl_parser_core::command_line::ContextFact
+pub perl_parser_core::command_line::ContextFact::kind: perl_parser_core::command_line::ContextFactKind
+pub perl_parser_core::command_line::ContextFact::span: perl_parser_core::command_line::ArgvSpan
+pub perl_parser_core::command_line::ContextFact::switch_span: perl_parser_core::command_line::ArgvSpan
+pub fn perl_parser_core::command_line::ContextFact::clone(&self) -> perl_parser_core::command_line::ContextFact
+pub fn perl_parser_core::command_line::ContextFact::eq(&self, other: &perl_parser_core::command_line::ContextFact) -> bool
+pub fn perl_parser_core::command_line::ContextFact::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_parser_core::command_line::ModuleSpec
+pub perl_parser_core::command_line::ModuleSpec::import_arguments: core::option::Option<alloc::string::String>
+pub perl_parser_core::command_line::ModuleSpec::import_arguments_span: core::option::Option<perl_parser_core::command_line::ArgvSpan>
+pub perl_parser_core::command_line::ModuleSpec::module: alloc::string::String
+pub perl_parser_core::command_line::ModuleSpec::module_is_plain_name: bool
+pub perl_parser_core::command_line::ModuleSpec::module_span: perl_parser_core::command_line::ArgvSpan
+pub perl_parser_core::command_line::ModuleSpec::negated: bool
+pub fn perl_parser_core::command_line::ModuleSpec::import_action(&self, form: perl_parser_core::command_line::ModuleForm) -> perl_parser_core::command_line::ModuleImportAction
+pub fn perl_parser_core::command_line::ModuleSpec::clone(&self) -> perl_parser_core::command_line::ModuleSpec
+pub fn perl_parser_core::command_line::ModuleSpec::eq(&self, other: &perl_parser_core::command_line::ModuleSpec) -> bool
+pub fn perl_parser_core::command_line::ModuleSpec::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_parser_core::command_line::NeutralSwitchUse
+pub perl_parser_core::command_line::NeutralSwitchUse::span: perl_parser_core::command_line::ArgvSpan
+pub perl_parser_core::command_line::NeutralSwitchUse::switch: perl_parser_core::command_line::NeutralSwitch
+pub perl_parser_core::command_line::NeutralSwitchUse::switch_span: perl_parser_core::command_line::ArgvSpan
+pub perl_parser_core::command_line::NeutralSwitchUse::value: core::option::Option<alloc::string::String>
+pub fn perl_parser_core::command_line::NeutralSwitchUse::clone(&self) -> perl_parser_core::command_line::NeutralSwitchUse
+pub fn perl_parser_core::command_line::NeutralSwitchUse::eq(&self, other: &perl_parser_core::command_line::NeutralSwitchUse) -> bool
+pub fn perl_parser_core::command_line::NeutralSwitchUse::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_parser_core::command_line::PerlInvocation
+pub perl_parser_core::command_line::PerlInvocation::ambiguities: alloc::vec::Vec<perl_parser_core::command_line::Ambiguity>
+pub perl_parser_core::command_line::PerlInvocation::context_facts: alloc::vec::Vec<perl_parser_core::command_line::ContextFact>
+pub perl_parser_core::command_line::PerlInvocation::interpreter: core::option::Option<perl_parser_core::command_line::ArgvSpan>
+pub perl_parser_core::command_line::PerlInvocation::neutral_switches: alloc::vec::Vec<perl_parser_core::command_line::NeutralSwitchUse>
+pub perl_parser_core::command_line::PerlInvocation::program: perl_parser_core::command_line::ProgramSource
+pub perl_parser_core::command_line::PerlInvocation::program_arguments: alloc::vec::Vec<perl_parser_core::command_line::ProgramArgument>
+pub perl_parser_core::command_line::PerlInvocation::source_fragments: alloc::vec::Vec<perl_parser_core::command_line::SourceFragment>
+pub perl_parser_core::command_line::PerlInvocation::terminating_action: core::option::Option<perl_parser_core::command_line::TerminatingAction>
+pub perl_parser_core::command_line::PerlInvocation::terminator: core::option::Option<perl_parser_core::command_line::ArgvSpan>
+pub perl_parser_core::command_line::PerlInvocation::uninterpreted_arguments: alloc::vec::Vec<perl_parser_core::command_line::ProgramArgument>
+pub perl_parser_core::command_line::PerlInvocation::unsupported_switches: alloc::vec::Vec<perl_parser_core::command_line::UnsupportedSwitch>
+pub fn perl_parser_core::command_line::PerlInvocation::is_one_liner(&self) -> bool
+pub fn perl_parser_core::command_line::PerlInvocation::clone(&self) -> perl_parser_core::command_line::PerlInvocation
+pub fn perl_parser_core::command_line::PerlInvocation::eq(&self, other: &perl_parser_core::command_line::PerlInvocation) -> bool
+pub fn perl_parser_core::command_line::PerlInvocation::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_parser_core::command_line::ProgramArgument
+pub perl_parser_core::command_line::ProgramArgument::span: perl_parser_core::command_line::ArgvSpan
+pub perl_parser_core::command_line::ProgramArgument::text: alloc::string::String
+pub fn perl_parser_core::command_line::ProgramArgument::clone(&self) -> perl_parser_core::command_line::ProgramArgument
+pub fn perl_parser_core::command_line::ProgramArgument::eq(&self, other: &perl_parser_core::command_line::ProgramArgument) -> bool
+pub fn perl_parser_core::command_line::ProgramArgument::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_parser_core::command_line::SourceFragment
+pub perl_parser_core::command_line::SourceFragment::span: perl_parser_core::command_line::ArgvSpan
+pub perl_parser_core::command_line::SourceFragment::switch: perl_parser_core::command_line::SourceSwitch
+pub perl_parser_core::command_line::SourceFragment::switch_span: perl_parser_core::command_line::ArgvSpan
+pub perl_parser_core::command_line::SourceFragment::text: alloc::string::String
+pub fn perl_parser_core::command_line::SourceFragment::clone(&self) -> perl_parser_core::command_line::SourceFragment
+pub fn perl_parser_core::command_line::SourceFragment::eq(&self, other: &perl_parser_core::command_line::SourceFragment) -> bool
+pub fn perl_parser_core::command_line::SourceFragment::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_parser_core::command_line::TerminatingAction
+pub perl_parser_core::command_line::TerminatingAction::kind: perl_parser_core::command_line::TerminatingActionKind
+pub perl_parser_core::command_line::TerminatingAction::span: perl_parser_core::command_line::ArgvSpan
+pub fn perl_parser_core::command_line::TerminatingAction::clone(&self) -> perl_parser_core::command_line::TerminatingAction
+pub fn perl_parser_core::command_line::TerminatingAction::eq(&self, other: &perl_parser_core::command_line::TerminatingAction) -> bool
+pub fn perl_parser_core::command_line::TerminatingAction::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_parser_core::command_line::UnsupportedSwitch
+pub perl_parser_core::command_line::UnsupportedSwitch::kind: perl_parser_core::command_line::UnsupportedSwitchKind
+pub perl_parser_core::command_line::UnsupportedSwitch::span: perl_parser_core::command_line::ArgvSpan
+pub perl_parser_core::command_line::UnsupportedSwitch::spelling: alloc::string::String
+pub fn perl_parser_core::command_line::UnsupportedSwitch::clone(&self) -> perl_parser_core::command_line::UnsupportedSwitch
+pub fn perl_parser_core::command_line::UnsupportedSwitch::eq(&self, other: &perl_parser_core::command_line::UnsupportedSwitch) -> bool
+pub fn perl_parser_core::command_line::UnsupportedSwitch::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_parser_core::command_line::decode<S: core::convert::AsRef<str>>(argv: &[S], lead: perl_parser_core::command_line::ArgvLead) -> core::result::Result<perl_parser_core::command_line::PerlInvocation, perl_parser_core::command_line::InvocationDecodeError>
 pub mod perl_parser_core::edit
 pub struct perl_parser_core::edit::Edit
 pub perl_parser_core::edit::Edit::new_end_byte: usize
