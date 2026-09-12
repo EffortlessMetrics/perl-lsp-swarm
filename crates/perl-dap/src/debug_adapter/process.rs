@@ -600,9 +600,11 @@ impl DebugAdapter {
         // EMACS is absent, even when all three stdio handles are pipes.  Mark
         // this owned pipe launch explicitly; the variable is scoped to the
         // child and does not change the adapter's process environment or the
-        // user's argv/launch configuration.
+        // user's argv/launch configuration.  ReadLine must also use its dummy
+        // interface: its console backend otherwise calls GetConsoleMode on a
+        // pipe and raises an exception inside an otherwise valid debuggee.
         #[cfg(windows)]
-        cmd.env("EMACS", "1");
+        cmd.env("EMACS", "1").env("PERL_RL", "0");
 
         // Perl debugger stops on the first line by default
         let _ = stop_on_entry; // currently unused

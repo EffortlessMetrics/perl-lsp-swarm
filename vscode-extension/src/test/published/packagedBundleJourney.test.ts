@@ -801,6 +801,7 @@ suite('Packaged VSIX bundled-server journey', function () {
     let stopRequested = false;
     const protocolTrace: Array<Record<string, unknown>> = [];
     let adapterError: string | undefined;
+    let unexpectedException: string | undefined;
     let adapterExit: { code?: number; signal?: string } | undefined;
     let terminated = false;
     let resolveStarted: ((session: vscode.DebugSession) => void) | undefined;
@@ -872,10 +873,30 @@ suite('Packaged VSIX bundled-server journey', function () {
                 if (!message || typeof message !== 'object') return;
                 const record = message as {
                   type?: unknown;
+                  event?: unknown;
                   command?: unknown;
                   success?: unknown;
                   request_seq?: unknown;
+                  body?: unknown;
                 };
+                const body =
+                  record.body && typeof record.body === 'object'
+                    ? (record.body as { reason?: unknown })
+                    : undefined;
+                if (
+                  record.type === 'event' &&
+                  record.event === 'stopped' &&
+                  body?.reason === 'exception'
+                ) {
+                  unexpectedException = 'DAP stopped event reported reason=exception';
+                }
+                if (
+                  record.type === 'response' &&
+                  record.command === 'exceptionInfo' &&
+                  record.success === true
+                ) {
+                  unexpectedException = 'DAP exceptionInfo response was successful';
+                }
                 if (record.type !== 'response' || record.success !== true) return;
                 if (
                   record.command === 'initialize' ||
@@ -961,6 +982,11 @@ suite('Packaged VSIX bundled-server journey', function () {
       );
       await withTimeout('packaged DAP initialize/launch', responses, 30_000);
       assert.deepEqual(responseOrder.slice(0, 2), ['initialize', 'launch']);
+      assert.equal(
+        unexpectedException,
+        undefined,
+        unexpectedException ?? 'packaged DAP reported no unexpected exception',
+      );
       debuggee = await waitForDebuggee(pidFile);
       stopRequested = true;
       await withTimeout('packaged DAP stopDebugging', vscode.debug.stopDebugging(session), 30_000);
@@ -968,6 +994,11 @@ suite('Packaged VSIX bundled-server journey', function () {
       assert.equal(adapterError, undefined, adapterError ?? 'packaged DAP adapter error');
       const observedExit = await withTimeout('packaged DAP adapter exit', exitEvent, 30_000);
       adapterExit = observedExit;
+      assert.equal(
+        unexpectedException,
+        undefined,
+        unexpectedException ?? 'packaged DAP reported no unexpected exception',
+      );
       assert.equal(adapterError, undefined, adapterError ?? 'packaged DAP adapter error');
       assert.ok(
         successfulStopResponses.has('disconnect'),
