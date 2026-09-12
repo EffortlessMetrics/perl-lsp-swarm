@@ -41,11 +41,16 @@ interface LaunchJson {
   configurations: LaunchConfiguration[];
 }
 
-function makeContext(storagePath?: string, extensionPath?: string): vscode.ExtensionContext {
+function makeContext(
+  storagePath?: string,
+  extensionPath?: string,
+  linuxLibc?: string,
+): vscode.ExtensionContext {
   const dir = storagePath ?? fs.mkdtempSync(path.join(os.tmpdir(), 'dap-test-'));
   return {
     globalStorageUri: { fsPath: dir } as vscode.Uri,
     extensionPath: extensionPath ?? dir,
+    configuration: linuxLibc ? { get: () => linuxLibc } : undefined,
     subscriptions: [],
   } as unknown as vscode.ExtensionContext;
 }
@@ -330,14 +335,16 @@ describe('PerlDebugAdapterDescriptorFactory', () => {
     fs.writeFileSync(gnuPath, 'gnu packaged dap');
     fs.chmodSync(alpinePath, 0o755);
     fs.chmodSync(gnuPath, 0o755);
-    Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
-    Object.defineProperty(process, 'arch', { value: 'x64', configurable: true });
     try {
+      Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
+      Object.defineProperty(process, 'arch', { value: 'x64', configurable: true });
       fs.writeFileSync(
         path.join(extensionDir, 'package.json'),
         JSON.stringify({ __metadata: { targetPlatform: 'alpine-x64' } }),
       );
-      const factory = new PerlDebugAdapterDescriptorFactory(makeContext(tmpDir, extensionDir));
+      const factory = new PerlDebugAdapterDescriptorFactory(
+        makeContext(tmpDir, extensionDir, 'gnu'),
+      );
       const alpineResult = factory.createDebugAdapterDescriptor(
         {} as unknown as vscode.DebugSession,
         undefined,
@@ -348,7 +355,9 @@ describe('PerlDebugAdapterDescriptorFactory', () => {
         path.join(extensionDir, 'package.json'),
         JSON.stringify({ __metadata: { targetPlatform: 'linux-x64' } }),
       );
-      const gnuFactory = new PerlDebugAdapterDescriptorFactory(makeContext(tmpDir, extensionDir));
+      const gnuFactory = new PerlDebugAdapterDescriptorFactory(
+        makeContext(tmpDir, extensionDir, 'musl'),
+      );
       const gnuResult = gnuFactory.createDebugAdapterDescriptor(
         {} as unknown as vscode.DebugSession,
         undefined,
