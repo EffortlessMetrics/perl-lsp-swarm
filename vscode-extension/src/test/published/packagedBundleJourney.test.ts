@@ -830,6 +830,8 @@ suite('Packaged VSIX bundled-server journey', function () {
           'print {$pid} $$; close $pid or die "pid close: $!";',
           'my $deadline = time + 120;',
           'while (!-e $release_file && time < $deadline) { select undef, undef, undef, 0.1; }',
+          'open my $ended, q{>}, $pid_file or die "exit marker: $!";',
+          'print {$ended} "completed-without-stop"; close $ended or die "exit marker close: $!";',
           '',
         ].join('\n'),
         { flag: 'wx' },
@@ -975,6 +977,11 @@ suite('Packaged VSIX bundled-server journey', function () {
       );
       assert.equal(terminated, true);
       await waitForDebuggeeExit(debuggee);
+      assert.equal(
+        fs.readFileSync(pidFile, 'utf8').trim(),
+        String(debuggee.pid),
+        'debuggee completed through its safety deadline instead of Stop',
+      );
       const terminalEvents = protocolTrace.filter((entry) => {
         const message = entry.message as { type?: string; event?: string } | undefined;
         return (
