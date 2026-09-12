@@ -229,22 +229,25 @@ impl LspServer {
     pub(super) fn handle_prepare_type_hierarchy_dispatch(
         &self,
         params: Option<Value>,
+        request_id: Option<&Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
-        self.handle_prepare_type_hierarchy(params)
+        self.handle_prepare_type_hierarchy(params, request_id)
     }
 
     pub(super) fn handle_type_hierarchy_supertypes_dispatch(
         &self,
         params: Option<Value>,
+        request_id: Option<&Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
-        self.handle_type_hierarchy_supertypes(params)
+        self.handle_type_hierarchy_supertypes(params, request_id)
     }
 
     pub(super) fn handle_type_hierarchy_subtypes_dispatch(
         &self,
         params: Option<Value>,
+        request_id: Option<&Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
-        self.handle_type_hierarchy_subtypes(params)
+        self.handle_type_hierarchy_subtypes(params, request_id)
     }
 
     // Diagnostics
