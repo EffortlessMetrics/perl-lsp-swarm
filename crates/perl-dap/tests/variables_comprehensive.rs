@@ -421,11 +421,15 @@ fn parse_value_bareword_as_scalar() -> Result<(), Box<dyn std::error::Error>> {
 
 // ── parse_value: references ──
 
+// Unexpanded reference notation is preserved verbatim as a scalar (#5086):
+// an empty container would claim emptiness the debugger has not confirmed
+// until children are actually fetched. Mirrors the in-crate tests
+// (variables/parser.rs test_parse_array_reference et al).
 #[test]
 fn parse_value_array_ref() -> Result<(), Box<dyn std::error::Error>> {
     let parser = VariableParser::new();
     let val = must(parser.parse_value("ARRAY(0x1a2b3c4d)", 0));
-    assert!(matches!(val, PerlValue::Array(ref a) if a.is_empty()));
+    assert_eq!(val, PerlValue::Scalar("ARRAY(0x1a2b3c4d)".to_string()));
     Ok(())
 }
 
@@ -433,7 +437,7 @@ fn parse_value_array_ref() -> Result<(), Box<dyn std::error::Error>> {
 fn parse_value_hash_ref() -> Result<(), Box<dyn std::error::Error>> {
     let parser = VariableParser::new();
     let val = must(parser.parse_value("HASH(0xdeadbeef)", 0));
-    assert!(matches!(val, PerlValue::Hash(ref h) if h.is_empty()));
+    assert_eq!(val, PerlValue::Scalar("HASH(0xdeadbeef)".to_string()));
     Ok(())
 }
 
@@ -441,7 +445,7 @@ fn parse_value_hash_ref() -> Result<(), Box<dyn std::error::Error>> {
 fn parse_value_code_ref() -> Result<(), Box<dyn std::error::Error>> {
     let parser = VariableParser::new();
     let val = must(parser.parse_value("CODE(0xfeedface)", 0));
-    assert_eq!(val, PerlValue::Code { name: None });
+    assert_eq!(val, PerlValue::Scalar("CODE(0xfeedface)".to_string()));
     Ok(())
 }
 

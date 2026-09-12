@@ -51,35 +51,23 @@ fn test_scopes_hierarchy() -> Result<(), Box<dyn std::error::Error>> {
             .as_array()
             .ok_or("Expected scopes array")?;
 
-        // Should have 3 scopes: Locals, Package, Globals
-        assert_eq!(scopes.len(), 3);
-        assert_eq!(scopes[0].get("name").ok_or("Expected name field")?.as_str(), Some("Locals"));
-        assert_eq!(scopes[1].get("name").ok_or("Expected name field")?.as_str(), Some("Package"));
-        assert_eq!(scopes[2].get("name").ok_or("Expected name field")?.as_str(), Some("Globals"));
-
-        // Verify unique variable references
-        let ref0 = scopes[0]
-            .get("variablesReference")
-            .ok_or("Expected variablesReference")?
-            .as_i64()
-            .ok_or("Expected i64")?;
-        let ref1 = scopes[1]
-            .get("variablesReference")
-            .ok_or("Expected variablesReference")?
-            .as_i64()
-            .ok_or("Expected i64")?;
-        let ref2 = scopes[2]
-            .get("variablesReference")
-            .ok_or("Expected variablesReference")?
-            .as_i64()
-            .ok_or("Expected i64")?;
-        assert!(ref0 != ref1 && ref1 != ref2);
+        // Without a live debuggee session the adapter must not fabricate the
+        // Locals/Package/Globals frame state — same no-fabrication law as the
+        // variables tests above (#7275). Scope enumeration is exercised by the
+        // live-session suites.
+        assert!(scopes.is_empty(), "session-less scopes must be empty; got: {scopes:?}");
     }
     Ok(())
 }
 
 #[test]
 // AC:8.4
+// Without a live debuggee session the adapter must not fabricate DB-internal
+// placeholders (`@_`, `$self`): the Locals flow deliberately returns nothing
+// rather than reconstructing "unrelated session history" — same law as the
+// Globals scope test above (#7275). Lazy-expansion indicators are exercised
+// where they are produced: the renderer unit tests (indexed/named variables)
+// and the live-session suites.
 fn test_variables_lazy_expansion_indicators() -> Result<(), Box<dyn std::error::Error>> {
     let mut adapter = create_test_adapter();
 
@@ -95,21 +83,11 @@ fn test_variables_lazy_expansion_indicators() -> Result<(), Box<dyn std::error::
             .as_array()
             .ok_or("Expected variables array")?;
 
-        // Find @ _ array
-        let array_var = vars
-            .iter()
-            .find(|v| v.get("name").and_then(|n| n.as_str()) == Some("@_"))
-            .ok_or("Expected @_ variable")?;
-        assert_eq!(array_var.get("type").ok_or("Expected type field")?.as_str(), Some("array"));
-        assert!(array_var.get("indexedVariables").is_some());
-
-        // Find $self hash
-        let hash_var = vars
-            .iter()
-            .find(|v| v.get("name").and_then(|n| n.as_str()) == Some("$self"))
-            .ok_or("Expected $self variable")?;
-        assert_eq!(hash_var.get("type").ok_or("Expected type field")?.as_str(), Some("hash"));
-        assert!(hash_var.get("namedVariables").is_some());
+        assert!(
+            vars.iter().all(|v| v.get("name").and_then(|n| n.as_str()) != Some("@_")
+                && v.get("name").and_then(|n| n.as_str()) != Some("$self")),
+            "session-less Locals must not fabricate DB-internal placeholders: {vars:?}"
+        );
     }
     Ok(())
 }
@@ -139,7 +117,10 @@ fn test_variables_globals_scope() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
-// AC8.4: Test scalar value truncation at 1KB
+// AC8.4: Scalar truncation itself is covered at the rendering layer
+// (variables/renderer.rs: test_string_truncation, test_string_truncation_zero_max_length,
+// test_string_truncation_utf8_boundary_safety). Here we pin the session-less
+// contract that feeds the renderer: no fabricated Locals content.
 fn test_scalar_truncation() -> Result<(), Box<dyn std::error::Error>> {
     let mut adapter = create_test_adapter();
 
@@ -156,10 +137,8 @@ fn test_scalar_truncation() -> Result<(), Box<dyn std::error::Error>> {
             .as_array()
             .ok_or("Expected variables array")?;
 
-        // Verify variables are returned (placeholder data)
-        assert!(!vars.is_empty());
-
-        // Verify each variable has required fields
+        // Session-less Locals must be empty rather than fabricated (#7275);
+        // every emitted variable still carries the required DAP fields.
         for var in vars {
             assert!(var.get("name").is_some());
             assert!(var.get("value").is_some());
@@ -277,7 +256,8 @@ fn test_lazy_expansion_references() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
-// AC8.3: Test scope expensive flags
+// AC8.3: Expensive-flag classification is exercised where scopes are
+// produced (live-session suites); session-less scopes are empty.
 fn test_scope_expensive_flags() -> Result<(), Box<dyn std::error::Error>> {
     let mut adapter = create_test_adapter();
     let args = json!({ "frameId": 1 });
@@ -291,28 +271,7 @@ fn test_scope_expensive_flags() -> Result<(), Box<dyn std::error::Error>> {
             .as_array()
             .ok_or("Expected scopes array")?;
 
-        // Locals should be cheap
-        let locals = &scopes[0];
-        assert_eq!(
-            locals.get("expensive").and_then(|e| e.as_bool()),
-            Some(false),
-            "Locals scope should not be marked as expensive"
-        );
-
-        // Package and Globals should be expensive
-        let package = &scopes[1];
-        assert_eq!(
-            package.get("expensive").and_then(|e| e.as_bool()),
-            Some(true),
-            "Package scope should be marked as expensive"
-        );
-
-        let globals = &scopes[2];
-        assert_eq!(
-            globals.get("expensive").and_then(|e| e.as_bool()),
-            Some(true),
-            "Globals scope should be marked as expensive"
-        );
+        assert!(scopes.is_empty(), "session-less scopes must be empty; got: {scopes:?}");
     }
     Ok(())
 }
@@ -332,8 +291,9 @@ fn test_variables_placeholder_pagination() -> Result<(), Box<dyn std::error::Err
             .as_array()
             .ok_or("Expected variables array")?;
 
-        assert_eq!(vars.len(), 1);
-        assert_eq!(vars[0].get("name").and_then(|name| name.as_str()), Some("@_"));
+        // Pagination over a session-less Locals scope has no fabricated
+        // placeholders to paginate (see #7275 no-fabrication law above).
+        assert!(vars.is_empty(), "session-less Locals pagination must be empty; got: {vars:?}");
     }
     Ok(())
 }
