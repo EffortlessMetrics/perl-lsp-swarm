@@ -295,6 +295,9 @@ impl TypeHierarchyProvider {
         arg: &str,
         is_cancelled: &dyn Fn() -> bool,
     ) -> Result<Vec<String>, TypeHierarchyCancelled> {
+        if is_cancelled() {
+            return Err(TypeHierarchyCancelled);
+        }
         let arg = arg.trim();
         let mut result = Vec::new();
         let mut add = |parent: &str| {
@@ -316,7 +319,9 @@ impl TypeHierarchyProvider {
             return Ok(result);
         }
         if arg.starts_with("qw") && arg.len() > 2 {
-            let delim_start = arg.chars().nth(2).unwrap_or(' ');
+            let Some((_, delim_start)) = arg.char_indices().nth(2) else {
+                return Ok(result);
+            };
             let delim_end = match delim_start {
                 '(' => ')',
                 '{' => '}',
@@ -324,17 +329,16 @@ impl TypeHierarchyProvider {
                 '<' => '>',
                 _ => delim_start,
             };
-            if let Some((start, _)) = arg.char_indices().find(|(_, ch)| *ch == delim_start)
+            if let Some((start, _)) = arg.char_indices().nth(2)
                 && let Some((end, _)) = arg.char_indices().rev().find(|(_, ch)| *ch == delim_end)
             {
                 let content_start = start + delim_start.len_utf8();
-                if end < content_start {
+                if end >= content_start {
+                    for parent in arg[content_start..end].split_whitespace() {
+                        add(parent)?;
+                    }
                     return Ok(result);
                 }
-                for parent in arg[content_start..end].split_whitespace() {
-                    add(parent)?;
-                }
-                return Ok(result);
             }
         }
         let clean = arg.trim_matches('"').trim_matches('\'').trim_matches('`');
@@ -454,6 +458,9 @@ impl TypeHierarchyProvider {
         node: &Node,
         is_cancelled: &dyn Fn() -> bool,
     ) -> Result<Vec<String>, TypeHierarchyCancelled> {
+        if is_cancelled() {
+            return Err(TypeHierarchyCancelled);
+        }
         let mut parents = Vec::new();
         match &node.kind {
             NodeKind::ArrayLiteral { elements } => {
@@ -1041,14 +1048,18 @@ mod tests {
     fn malformed_qw_delimiters_remain_fallible_with_unicode_input() -> Result<()> {
         let provider = TypeHierarchyProvider::new();
         let never_cancelled = || false;
-        let unicode = provider
-            .normalize_parent_arg_with_cancellation("qwéFooé", &never_cancelled)
-            .map_err(|_| anyhow::anyhow!("unexpected cancellation"))?;
-        ensure!(unicode == vec!["Foo".to_string()]);
-        let unclosed = provider
-            .normalize_parent_arg_with_cancellation("qw(Foo", &never_cancelled)
-            .map_err(|_| anyhow::anyhow!("unexpected cancellation"))?;
-        ensure!(unclosed == vec!["qw(Foo".to_string()]);
+        for (input, expected) in [
+            ("qwéFooé", vec!["Foo"]),
+            ("qwéFoo", vec!["qwéFoo"]),
+            ("qwxFoo", vec!["qwxFoo"]),
+            ("qwqFooq", vec!["Foo"]),
+            ("qw(Foo", vec!["qw(Foo"]),
+        ] {
+            let actual = provider
+                .normalize_parent_arg_with_cancellation(input, &never_cancelled)
+                .map_err(|_| anyhow::anyhow!("unexpected cancellation"))?;
+            ensure!(actual == expected.into_iter().map(String::from).collect::<Vec<_>>());
+        }
         Ok(())
     }
 
