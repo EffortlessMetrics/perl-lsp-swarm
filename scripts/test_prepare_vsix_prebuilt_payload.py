@@ -297,10 +297,18 @@ class PrebuiltPayloadAdapterTests(unittest.TestCase):
                     else paths["output"] / collided_name
                 )
                 self.assertEqual(destination.read_bytes(), b"COMPETITOR-SENTINEL")
-                self.assertEqual(
-                    [path for path in paths["output"].rglob("*") if path.is_file()],
-                    [destination],
-                )
+                if collided_name == "perllsp":
+                    self.assertEqual(
+                        [path for path in paths["output"].rglob("*") if path.is_file()],
+                        [destination],
+                    )
+                else:
+                    self.assertEqual(
+                        (final_dir / "perllsp").read_bytes(), b"server"
+                    )
+                    self.assertEqual(
+                        (final_dir / "perl-dap").read_bytes(), b"dap"
+                    )
                 self.assertEqual(list(root.glob(".prebuilt-payload-*")), [])
 
     def test_rollback_preserves_replaced_publication(self) -> None:
@@ -333,6 +341,7 @@ class PrebuiltPayloadAdapterTests(unittest.TestCase):
 
             self.assertTrue(injected)
             self.assertEqual(destination.read_bytes(), b"COMPETITOR-SENTINEL")
+            self.assertFalse((paths["output"] / "vsix-candidate-payload.json").exists())
             self.assertEqual(list(root.glob(".prebuilt-payload-*")), [])
 
 if __name__ == "__main__":

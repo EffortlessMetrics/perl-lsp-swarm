@@ -56,11 +56,14 @@ has published all of its output files.
 Publication requires hard-link support between the staging directory and its output
 filesystem. A destination collision during publication fails without replacing the
 competing file; if hard-linking is unsupported, the adapter fails closed rather than
-falling back to overwrite-based publication.
+falling back to overwrite-based publication. The caller must provide a fresh private
+output directory and discard that directory after a failed invocation; partial final
+files are intentionally retained so rollback never deletes a pathname that may have
+been replaced by another writer.
 
-During an adapter invocation, other processes may create competing destination
-files. Rollback records each staged source and removes a published path only if
-that path still names the same staged file and is not a symlink, so a replacement
-cannot be removed as if it were ours. Callers should still use a fresh output
-directory and must not replace output parent directories during the invocation;
-this does not establish a universal concurrent-directory transaction.
+During an adapter invocation, other processes must not share or replace the private
+output directory. Creation-collision refusal protects a competing file before
+publication; after publication, the adapter performs no final-path deletion during
+failure cleanup. This preserves competing files under replacement races at the cost
+of leaving partial output for the caller to discard. Parent-directory replacement
+and hostile concurrent filesystem mutation remain outside the supported contract.

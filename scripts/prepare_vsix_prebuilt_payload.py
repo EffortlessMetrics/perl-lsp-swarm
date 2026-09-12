@@ -26,16 +26,6 @@ def canonical(value: object) -> bytes:
     return (json.dumps(value, sort_keys=True, indent=2) + "\n").encode("utf-8")
 
 
-def remove_owned_publication(source: Path, destination: Path) -> None:
-    """Remove a publication only while its path still names our staged inode."""
-    try:
-        if destination.is_symlink() or not os.path.samefile(source, destination):
-            return
-        destination.unlink()
-    except FileNotFoundError:
-        return
-
-
 def build(args: argparse.Namespace) -> None:
     receipt = load_json_object(args.receipt, "release build receipt")
     identity = receipt.get("input")
@@ -127,7 +117,6 @@ def build(args: argparse.Namespace) -> None:
         raise ValueError("output must be a real directory")
     output.mkdir(parents=True, exist_ok=True)
     temp_root: Path | None = None
-    created: list[tuple[Path, Path]] = []
     try:
         for parent in (output / "bin", output / "bin" / vscode_target):
             if parent.exists() and (parent.is_symlink() or not parent.is_dir()):
@@ -153,10 +142,7 @@ def build(args: argparse.Namespace) -> None:
             # hard link publishes without replacing a competitor created
             # after the destination precheck.
             os.link(source, destination)
-            created.append((source, destination))
     except Exception:
-        for source, destination in reversed(created):
-            remove_owned_publication(source, destination)
         raise
     finally:
         if temp_root is not None:
