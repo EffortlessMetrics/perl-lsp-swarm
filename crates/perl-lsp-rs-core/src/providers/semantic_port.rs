@@ -17,6 +17,7 @@
 //! intentionally cannot be deserialized without a versioned receipt validator.
 
 mod model;
+mod resolve_at;
 mod result;
 
 pub use model::{
@@ -28,6 +29,11 @@ pub use model::{
     ProviderReadinessState,
 };
 pub(crate) use model::{semantic_provenance_is_exact, validate_envelope_structure};
+pub use resolve_at::{
+    ResolveAtOutcome, ResolveAtSource, ResolveGenerationBasis, ResolveLimitation, ResolveNotReady,
+    ResolveUnavailable, ResolvedOccurrence, SemanticQueriesResolveSource,
+    accepted_generation_basis, resolve_at_position, resolve_at_position_with_dynamic_boundary,
+};
 pub use result::*;
 
 use model::facts_are_related;
