@@ -1791,6 +1791,20 @@ class ReleaseTopologyTests(unittest.TestCase):
         self.assertEqual(
             MODULE.derive_downloader_targets(string_literal, workflow_targets), set()
         )
+        commented_declaration = """
+        // const WINDOWS_X64_TARGET = 'x86_64-pc-windows-msvc';
+        return WINDOWS_X64_TARGET;
+        """
+        commented_return = """
+        const WINDOWS_X64_TARGET = 'x86_64-pc-windows-msvc';
+        // return WINDOWS_X64_TARGET;
+        """
+        self.assertEqual(
+            MODULE.derive_downloader_targets(commented_declaration, workflow_targets), set()
+        )
+        self.assertEqual(
+            MODULE.derive_downloader_targets(commented_return, workflow_targets), set()
+        )
 
     def test_manifest_mutations_fail_closed(self):
         with self.valid_manifest_fixture() as (root, manifest, frozen_sha):
