@@ -14,21 +14,6 @@ export interface DebugTestLaunchTarget {
   args: string[];
 }
 
-/** Map the downloader's canonical cargo target to the VSIX payload directory. */
-export function packagedDapTargetDirectory(target: string): string | undefined {
-  const arch = target.startsWith('x86_64-')
-    ? 'x64'
-    : target.startsWith('aarch64-')
-      ? 'arm64'
-      : undefined;
-  if (!arch) return undefined;
-  if (target.endsWith('-unknown-linux-musl')) return `alpine-${arch}`;
-  if (target.endsWith('-unknown-linux-gnu')) return `linux-${arch}`;
-  if (target.endsWith('-apple-darwin')) return `darwin-${arch}`;
-  if (target.endsWith('-pc-windows-msvc')) return `win32-${arch}`;
-  return undefined;
-}
-
 function packagedDapTargetDirectoryForContext(
   context: vscode.ExtensionContext,
   isExecutable: (filePath: string) => boolean,

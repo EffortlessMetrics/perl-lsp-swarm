@@ -19,9 +19,8 @@ import {
   rewriteTestLensCommand,
   VSCODE_DEBUG_TEST_COMMAND,
   VSCODE_RUN_TEST_COMMAND,
-  packagedDapTargetDirectory,
 } from '../debugAdapter';
-import { hostManagedCompatibilityKeys, resolvePlatformTarget } from '../downloader';
+import { hostManagedCompatibilityKeys } from '../downloader';
 import { managedNamespaceDir } from '../managedStorageIdentity';
 
 // ---------------------------------------------------------------------------
@@ -68,9 +67,7 @@ function required<T>(value: T | undefined, label: string): T {
 }
 
 function currentBundledDapDirectory(extensionDir: string): string {
-  const target = resolvePlatformTarget(() => {});
-  const directory = packagedDapTargetDirectory(target);
-  return path.join(extensionDir, 'bin', directory ?? `${process.platform}-${process.arch}`);
+  return path.join(extensionDir, 'bin', `${process.platform}-${process.arch}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -307,13 +304,6 @@ describe('PerlDebugAdapterDescriptorFactory', () => {
         }
       }
     }
-  });
-
-  test('maps musl and GNU Linux hosts to distinct packaged DAP payloads', () => {
-    expect(packagedDapTargetDirectory('x86_64-unknown-linux-musl')).toBe('alpine-x64');
-    expect(packagedDapTargetDirectory('aarch64-unknown-linux-musl')).toBe('alpine-arm64');
-    expect(packagedDapTargetDirectory('x86_64-unknown-linux-gnu')).toBe('linux-x64');
-    expect(packagedDapTargetDirectory('aarch64-unknown-linux-gnu')).toBe('linux-arm64');
   });
 
   test('factory selects Alpine DAP on a simulated musl Linux host', () => {
