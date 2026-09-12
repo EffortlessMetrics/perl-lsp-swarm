@@ -117,6 +117,7 @@ jobs:
           PERL_LSP_CONSTRUCT_CANDIDATE_MANIFEST: '1'
           PERL_LSP_CANDIDATE_ID: current-source-${{ env.PERL_LSP_SMOKE_SUBJECT_SHA }}
           PERL_LSP_ARTIFACT_SET_ID: current-source-linux-${{ matrix.vscode_version }}-${{ github.run_id }}
+          PERL_LSP_CURRENT_SOURCE_SHA: ${{ env.PERL_LSP_SMOKE_SUBJECT_SHA }}
           # The local runner keeps this installed Test Explorer leg separate
           # from first-hour smoke while reusing the same staged VSIX/server.
           PERL_LSP_TEST_EXPLORER_JOURNEY: '1'
