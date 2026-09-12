@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import importlib.util
 import json
 import re
 import subprocess
@@ -64,12 +63,20 @@ def publish_dependency_graph(
     helper_path = (
         root or Path(__file__).resolve().parents[1]
     ) / "scripts" / "publish-topo.py"
-    spec = importlib.util.spec_from_file_location("publish_topo", helper_path)
-    if spec is None or spec.loader is None:
-        raise TopologyError(f"cannot load publish graph helper: {helper_path}")
-    helper = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(helper)
-    return helper.build_publish_dependency_graph(packages)
+    try:
+        source = helper_path.read_bytes()
+    except OSError as error:
+        raise TopologyError(f"cannot read publish graph helper: {helper_path}: {error}") from error
+    try:
+        code = compile(source, str(helper_path), "exec")
+    except (SyntaxError, UnicodeError) as error:
+        raise TopologyError(f"cannot compile publish graph helper: {helper_path}: {error}") from error
+    namespace: dict[str, Any] = {"__name__": "publish_topo", "__file__": str(helper_path)}
+    exec(code, namespace)
+    builder = namespace.get("build_publish_dependency_graph")
+    if not callable(builder):
+        raise TopologyError(f"publish graph helper has no callable builder: {helper_path}")
+    return builder(packages)
 
 
 def topology_schema_version(value: Any) -> int:
