@@ -32,18 +32,36 @@ export function packagedDapTargetDirectory(target: string): string | undefined {
 function packagedDapTargetDirectoryForContext(
   context: vscode.ExtensionContext,
 ): string | undefined {
+  let packagedTarget: unknown;
   try {
     const packageJson = JSON.parse(
       fs.readFileSync(path.join(context.extensionPath, 'package.json'), 'utf8'),
     ) as { __metadata?: { targetPlatform?: unknown } };
-    const packagedTarget = packageJson.__metadata?.targetPlatform;
+    packagedTarget = packageJson.__metadata?.targetPlatform;
     if (typeof packagedTarget === 'string') {
       return /^(?:linux|alpine|darwin|win32)-(?:x64|arm64)$/.test(packagedTarget)
         ? packagedTarget
         : undefined;
     }
   } catch {
-    // Development test fixtures may omit package.json; retain runtime fallback.
+    // Development test fixtures may omit package.json; inspect known payloads.
+  }
+
+  const arch = process.arch === 'arm64' ? 'arm64' : process.arch === 'x64' ? 'x64' : undefined;
+  const hostTargets =
+    process.platform === 'linux' && arch
+      ? [`linux-${arch}`, `alpine-${arch}`]
+      : process.platform === 'darwin' && arch
+        ? [`darwin-${arch}`]
+        : process.platform === 'win32' && arch
+          ? [`win32-${arch}`]
+          : [];
+  const dapName = process.platform === 'win32' ? 'perl-dap.exe' : 'perl-dap';
+  const packagedCandidates = hostTargets.filter((target) =>
+    fs.existsSync(path.join(context.extensionPath, 'bin', target, dapName)),
+  );
+  if (packagedCandidates.length === 1) {
+    return packagedCandidates[0];
   }
   return packagedDapTargetDirectory(resolvePlatformTarget(() => {}));
 }

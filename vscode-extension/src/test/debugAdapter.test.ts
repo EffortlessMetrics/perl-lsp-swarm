@@ -374,6 +374,17 @@ describe('PerlDebugAdapterDescriptorFactory', () => {
       ) as vscode.DebugAdapterExecutable;
       expect(gnuResult.command).toBe(gnuPath);
       expect(gnuResult.command).not.toBe(alpinePath);
+
+      fs.rmSync(gnuPath);
+      fs.writeFileSync(path.join(extensionDir, 'package.json'), JSON.stringify({}));
+      const localVsixFactory = new PerlDebugAdapterDescriptorFactory(
+        makeContext(tmpDir, extensionDir),
+      );
+      const localVsixResult = localVsixFactory.createDebugAdapterDescriptor(
+        {} as unknown as vscode.DebugSession,
+        undefined,
+      ) as vscode.DebugAdapterExecutable;
+      expect(localVsixResult.command).toBe(alpinePath);
     } finally {
       const vscodeApi = require('vscode') as {
         workspace: { getConfiguration: jest.Mock };
