@@ -44,7 +44,6 @@ interface LaunchJson {
 function makeContext(
   storagePath?: string,
   extensionPath?: string,
-  linuxLibc?: string,
 ): vscode.ExtensionContext {
   const dir = storagePath ?? fs.mkdtempSync(path.join(os.tmpdir(), 'dap-test-'));
   return {
@@ -339,7 +338,9 @@ describe('PerlDebugAdapterDescriptorFactory', () => {
     try {
       Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
       Object.defineProperty(process, 'arch', { value: 'x64', configurable: true });
-      const vscodeApi = require('vscode') as typeof import('vscode');
+      const vscodeApi = require('vscode') as {
+        workspace: { getConfiguration: jest.Mock };
+      };
       const getConfiguration = vscodeApi.workspace.getConfiguration as jest.Mock;
       previousConfiguration = getConfiguration.getMockImplementation();
       getConfiguration.mockImplementation(() => ({
@@ -374,7 +375,9 @@ describe('PerlDebugAdapterDescriptorFactory', () => {
       expect(gnuResult.command).toBe(gnuPath);
       expect(gnuResult.command).not.toBe(alpinePath);
     } finally {
-      const vscodeApi = require('vscode') as typeof import('vscode');
+      const vscodeApi = require('vscode') as {
+        workspace: { getConfiguration: jest.Mock };
+      };
       const getConfiguration = vscodeApi.workspace.getConfiguration as jest.Mock;
       if (previousConfiguration) getConfiguration.mockImplementation(previousConfiguration);
       if (originalPlatform) Object.defineProperty(process, 'platform', originalPlatform);
