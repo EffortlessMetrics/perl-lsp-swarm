@@ -604,7 +604,14 @@ impl DebugAdapter {
         // interface: its console backend otherwise calls GetConsoleMode on a
         // pipe and raises an exception inside an otherwise valid debuggee.
         #[cfg(windows)]
-        cmd.env("EMACS", "1").env("PERL_RL", "0");
+        {
+            cmd.env("EMACS", "1");
+            let perl_db_opts = env_overrides.get("PERLDB_OPTS").map_or_else(
+                || "ReadLine=0".to_string(),
+                |value| append_debugger_readline_option(value),
+            );
+            cmd.env("PERLDB_OPTS", perl_db_opts);
+        }
 
         // Perl debugger stops on the first line by default
         let _ = stop_on_entry; // currently unused
@@ -2480,6 +2487,20 @@ impl DebugAdapter {
     }
 }
 
+/// Append the debugger-owned readline switch without replacing user options.
+///
+/// Strawberry's `perl5db.pl` parses `PERLDB_OPTS` left-to-right, so the final
+/// `ReadLine=0` wins over an earlier value while unrelated options remain
+/// available to the child. This is deliberately string-preserving; malformed
+/// user options retain their existing debugger behavior.
+fn append_debugger_readline_option(existing: &str) -> String {
+    if existing.trim().is_empty() {
+        "ReadLine=0".to_string()
+    } else {
+        format!("{existing} ReadLine=0")
+    }
+}
+
 /// Atomically claim the single `terminated` emission for this session generation.
 ///
 /// Returns `true` if this caller now owns emission (and must deliver the event),
@@ -3714,5 +3735,18 @@ mod tests {
             }
             other => Err(format!("expected Response from handle_launch; got {other:?}")),
         }
+    }
+
+    #[test]
+    fn debugger_readline_option_preserves_child_options() -> Result<(), String> {
+        let retained = super::append_debugger_readline_option("CommandSet=580 PERL_RL=Perl");
+        if retained != "CommandSet=580 PERL_RL=Perl ReadLine=0" {
+            return Err(format!("unexpected debugger options: {retained:?}"));
+        }
+        let defaulted = super::append_debugger_readline_option("  ");
+        if defaulted != "ReadLine=0" {
+            return Err(format!("unexpected empty debugger options: {defaulted:?}"));
+        }
+        Ok(())
     }
 }

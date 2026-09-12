@@ -791,6 +791,7 @@ suite('Packaged VSIX bundled-server journey', function () {
     const program = path.join(workspacePath, `packaged_dap_${runId}.pl`);
     const pidFile = path.join(workspacePath, `packaged_dap_${runId}.pid`);
     const releaseFile = path.join(workspacePath, `packaged_dap_${runId}.release`);
+    const environmentFile = path.join(workspacePath, `packaged_dap_${runId}.env`);
     let debuggee: OwnedDebuggee | undefined;
     const subscriptions: vscode.Disposable[] = [];
 
@@ -803,6 +804,9 @@ suite('Packaged VSIX bundled-server journey', function () {
     let adapterError: string | undefined;
     let unexpectedException: string | undefined;
     let adapterExit: { code?: number; signal?: string } | undefined;
+    let primaryFailure: unknown;
+    let primaryFailed = false;
+    let cleanupFailure: AggregateError | undefined;
     let terminated = false;
     let resolveStarted: ((session: vscode.DebugSession) => void) | undefined;
     let resolveTerminated: (() => void) | undefined;
@@ -826,7 +830,9 @@ suite('Packaged VSIX bundled-server journey', function () {
         [
           'use strict;',
           'use warnings;',
-          'my ($pid_file, $release_file) = @ARGV;',
+          'my ($pid_file, $release_file, $environment_file) = @ARGV;',
+          'open my $environment, q{>}, $environment_file or die "environment file: $!";',
+          'print {$environment} "PERL_RL=$ENV{PERL_RL}\\nPERLDB_OPTS=$ENV{PERLDB_OPTS}\\n"; close $environment or die "environment close: $!";',
           'open my $pid, q{>}, $pid_file or die "pid file: $!";',
           'print {$pid} $$; close $pid or die "pid close: $!";',
           'my $deadline = time + 120;',
@@ -965,7 +971,8 @@ suite('Packaged VSIX bundled-server journey', function () {
           request: 'launch',
           name: 'Packaged DAP startup',
           program,
-          args: [pidFile, releaseFile],
+          args: [pidFile, releaseFile, environmentFile],
+          env: { PERL_RL: 'Perl', PERLDB_OPTS: 'CommandSet=580' },
           cwd: workspacePath,
           stopOnEntry: false,
         }),
@@ -988,6 +995,9 @@ suite('Packaged VSIX bundled-server journey', function () {
         unexpectedException ?? 'packaged DAP reported no unexpected exception',
       );
       debuggee = await waitForDebuggee(pidFile);
+      const childEnvironment = fs.readFileSync(environmentFile, 'utf8');
+      assert.match(childEnvironment, /^PERL_RL=Perl$/m);
+      assert.match(childEnvironment, /^PERLDB_OPTS=CommandSet=580 ReadLine=0$/m);
       stopRequested = true;
       await withTimeout('packaged DAP stopDebugging', vscode.debug.stopDebugging(session), 30_000);
       await withTimeout('packaged DAP termination event', termination, 30_000);
@@ -1042,7 +1052,8 @@ suite('Packaged VSIX bundled-server journey', function () {
       );
     } catch (error) {
       protocolTrace.push({ direction: 'failure', message: String(error) });
-      throw error;
+      primaryFailed = true;
+      primaryFailure = error;
     } finally {
       const cleanupErrors: unknown[] = [];
       if (fs.existsSync(program)) {
@@ -1065,7 +1076,7 @@ suite('Packaged VSIX bundled-server journey', function () {
       if (debuggee)
         await waitForDebuggeeExit(debuggee).catch((error: unknown) => cleanupErrors.push(error));
       for (const subscription of subscriptions) subscription.dispose();
-      for (const file of [program, pidFile, releaseFile]) {
+      for (const file of [program, pidFile, releaseFile, environmentFile]) {
         try {
           fs.rmSync(file, { force: true });
         } catch (error) {
@@ -1078,9 +1089,20 @@ suite('Packaged VSIX bundled-server journey', function () {
         path.join(receiptsDir(), 'packaged_dap_protocol_trace.json'),
         JSON.stringify(protocolTrace, null, 2),
       );
-      if (cleanupErrors.length)
-        throw new AggregateError(cleanupErrors, 'packaged DAP cleanup failed');
+      if (cleanupErrors.length) {
+        cleanupFailure = new AggregateError(cleanupErrors, 'packaged DAP cleanup failed');
+      }
     }
+    if (primaryFailed) {
+      if (cleanupFailure) {
+        throw new AggregateError(
+          [primaryFailure, ...cleanupFailure.errors],
+          'packaged DAP journey and cleanup failed',
+        );
+      }
+      throw primaryFailure;
+    }
+    if (cleanupFailure) throw cleanupFailure;
     assert.ok(startedSession && adapterExit && debuggee);
     recordPackagedDapEvidence(extensionPath, dapPath, startedSession, adapterExit, debuggee);
   });
