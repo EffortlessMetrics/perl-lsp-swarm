@@ -70,6 +70,23 @@
 "                                   the stable public settings channel:
 "                                   lsp#update_workspace_config over a
 "                                   comma-separated relative include-path list
+"   VimLspHostStartPendingDocumentSymbol()
+"                                   start one deterministic pending request
+"                                   through the client's public request path
+"                                   (lsp#request_with_context over
+"                                   textDocument/documentSymbol) (#11401)
+"   VimLspHostPendingRequestId()    the started request's wire identity, 0
+"                                   until the client assigns one (#11401)
+"   VimLspHostPendingNotificationCount()
+"                                   how many results the client delivered to
+"                                   the started request's subscription (#11401)
+"   VimLspHostPendingDone()         whether the client settled the started
+"                                   request (done) (#11401)
+"   VimLspHostCancelPendingDocumentSymbol()
+"                                   cancel the started request by identity
+"                                   through the client's own public
+"                                   lsp#cancel_request ($/cancelRequest with
+"                                   the exact request id) (#11401)
 "   VimLspHostStopServer()          stop the server through vim-lsp
 "   VimLspHostStopServerAndWait()   stop + bounded wait for client exit
 "                                   evidence (one bounded stop re-issue)
@@ -496,6 +513,74 @@ endfunction
 function! VimLspHostStopServer() abort
   call lsp#stop_server(s:server_name)
   return v:true
+endfunction
+
+" ---------------------------------------------------------------------------
+" #11401 pending-request surface (thin wrappers over the client's public
+" request path). One pending request slot per session: the driver starts,
+" observes, and optionally cancels or leaves in flight. The wrapper, its
+" context handle, and the disposal function stay in adapter script scope; the
+" driver observes only through the bounded read functions below, and the
+" admission counter counts exactly what the client itself delivered to the
+" subscription.
+let s:pending_wrapper = v:null
+let s:pending_dispose = v:null
+let g:perllsp_vim_host_pending_notifications = 0
+
+function! VimLspHostStartPendingDocumentSymbol() abort
+  " Reset the slot: a prior completed request's delivery count must never
+  " leak into the next observation.
+  if !empty(s:pending_dispose)
+    try
+      call s:pending_dispose()
+    catch
+      " A prior request already settled server-side; its disposal is
+      " contained and the new slot starts from zero either way.
+    endtry
+  endif
+  let s:pending_dispose = v:null
+  let g:perllsp_vim_host_pending_notifications = 0
+  let s:pending_wrapper = lsp#request_with_context(s:server_name, {
+        \ 'method': 'textDocument/documentSymbol',
+        \ 'params': {'textDocument': lsp#get_text_document_identifier()},
+        \ })
+  let s:pending_dispose = lsp#callbag#pipe(
+        \ s:pending_wrapper.callbag,
+        \ lsp#callbag#subscribe({
+        \   'next': {d -> execute('let g:perllsp_vim_host_pending_notifications += 1')},
+        \   'error': {e -> 0},
+        \   'complete': {-> 0},
+        \ }))
+  return v:true
+endfunction
+
+function! VimLspHostPendingRequestId() abort
+  if empty(s:pending_wrapper)
+    return 0
+  endif
+  return get(s:pending_wrapper.ctx, 'request_id', 0)
+endfunction
+
+function! VimLspHostPendingNotificationCount() abort
+  return g:perllsp_vim_host_pending_notifications
+endfunction
+
+function! VimLspHostPendingDone() abort
+  if empty(s:pending_wrapper)
+    return 0
+  endif
+  return get(s:pending_wrapper.ctx, 'done', 0)
+endfunction
+
+function! VimLspHostCancelPendingDocumentSymbol() abort
+  " Identity-bound cancellation through the client's own public path: the
+  " client sends $/cancelRequest carrying the exact request id and suppresses
+  " any late delivery to the cancelled subscription.
+  if empty(s:pending_wrapper)
+    return 0
+  endif
+  call lsp#cancel_request(s:pending_wrapper.ctx)
+  return 1
 endfunction
 
 " Stop the server through the public vim-lsp stop path and boundedly wait for

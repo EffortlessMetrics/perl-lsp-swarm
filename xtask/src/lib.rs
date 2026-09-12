@@ -40,6 +40,7 @@ pub mod rust_hygiene;
 pub mod utils;
 pub mod vim_host_diagnostics_run;
 pub mod vim_host_freshness_run;
+pub mod vim_host_lifecycle_run;
 pub mod vim_host_run;
 pub mod vim_host_save_format_run;
 pub mod vim_host_toolchain;
