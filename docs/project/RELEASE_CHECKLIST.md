@@ -134,7 +134,7 @@ for crate_name in allow:
 
 ## Post-Release Verification
 
-Use [`docs/releases/RELEASE_CLOSEOUT_AUDIT.md`](../releases/RELEASE_CLOSEOUT_AUDIT.md) as the canonical re-runnable checklist. The items below are the minimum subset; the audit doc covers each channel in detail (including dispatch-only workflows that don't fire on `release:published` and require manual `gh workflow run`).
+Use [`docs/releases/RELEASE_CLOSEOUT_AUDIT.md`](../releases/RELEASE_CLOSEOUT_AUDIT.md) as the canonical re-runnable checklist. The items below are the minimum subset; the audit doc covers each channel in detail — including which `workflow_dispatch` workflows `release.yml` starts for you and which ones still need an operator `gh workflow run`.
 
 - [ ] `gh release view vNEW_VERSION` shows the expected release notes and assets.
 - [ ] `cargo search perl-lsp-rs --limit 1` resolves `perl-lsp-rs = "NEW_VERSION"`.

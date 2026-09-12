@@ -35,10 +35,12 @@ GitHub App (#15454).
 | Open VSX | `publish-extension.yml` | **No - `workflow_dispatch` only** |
 | Docker (Hub + GHCR) | `docker-publish.yml` | **No - `workflow_dispatch` only** |
 
-**Three channels (Docker, VS Code Marketplace, Open VSX) require manual
-dispatch.** They are the most common 0.14.0-style "still pending"
-channels. Brew/Scoop/Chocolatey auto-fire but each opens a downstream
-package-repo PR that must merge before users see the bump.
+**Three channels (Docker, VS Code Marketplace, Open VSX) require a manual
+`workflow_dispatch` by the operator.** They are the most common 0.14.0-style
+"still pending" channels. Brew/Scoop/Chocolatey/Winget are also
+`workflow_dispatch` workflows, but `release.yml` dispatches them for you — so
+they need no operator action to start, and each opens a downstream package-repo
+PR that must merge before users see the bump.
 
 ## Per-channel verification
 
