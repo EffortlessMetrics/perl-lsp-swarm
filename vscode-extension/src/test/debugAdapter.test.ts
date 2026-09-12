@@ -20,6 +20,7 @@ import {
   VSCODE_DEBUG_TEST_COMMAND,
   VSCODE_RUN_TEST_COMMAND,
 } from '../debugAdapter';
+import * as downloader from '../downloader';
 import { hostManagedCompatibilityKeys } from '../downloader';
 import { managedNamespaceDir } from '../managedStorageIdentity';
 
@@ -306,7 +307,7 @@ describe('PerlDebugAdapterDescriptorFactory', () => {
     }
   });
 
-  test('factory selects Alpine DAP on a simulated musl Linux host', () => {
+  test('factory honors metadata and detects libc for unknown Linux packages', () => {
     const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
     const originalArch = Object.getOwnPropertyDescriptor(process, 'arch');
     const originalPath = process.env.PATH;
@@ -324,6 +325,7 @@ describe('PerlDebugAdapterDescriptorFactory', () => {
     fs.chmodSync(alpinePath, 0o755);
     fs.chmodSync(gnuPath, 0o755);
     let linuxLibcForTest = 'gnu';
+    const detectMuslSpy = jest.spyOn(downloader, 'detectMusl').mockReturnValue(false);
     let previousConfiguration: (() => unknown) | undefined;
     try {
       Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
@@ -368,6 +370,7 @@ describe('PerlDebugAdapterDescriptorFactory', () => {
       const managedPath = path.join(managedDir, 'perl-dap');
       fs.writeFileSync(managedPath, 'managed dap');
       fs.chmodSync(managedPath, 0o755);
+      fs.rmSync(gnuPath);
       process.env.PATH = '';
       process.env.HOME = tmpDir;
       process.env.CARGO_HOME = tmpDir;
@@ -380,8 +383,7 @@ describe('PerlDebugAdapterDescriptorFactory', () => {
         undefined,
       ) as vscode.DebugAdapterExecutable;
       expect(ambiguousResult.command).toBe(managedPath);
-      fs.rmSync(gnuPath);
-      linuxLibcForTest = 'gnu';
+      detectMuslSpy.mockReturnValue(true);
       fs.writeFileSync(
         path.join(extensionDir, 'package.json'),
         JSON.stringify({ __metadata: { targetPlatform: 'undefined' } }),
@@ -408,6 +410,7 @@ describe('PerlDebugAdapterDescriptorFactory', () => {
       else process.env.CARGO_HOME = originalCargo;
       if (originalPlatform) Object.defineProperty(process, 'platform', originalPlatform);
       if (originalArch) Object.defineProperty(process, 'arch', originalArch);
+      detectMuslSpy.mockRestore();
     }
   });
 
