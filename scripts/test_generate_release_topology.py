@@ -1775,6 +1775,52 @@ class ReleaseTopologyTests(unittest.TestCase):
         self.assertEqual(MODULE.derive_downloader_targets(unused, workflow_targets), set())
         self.assertEqual(MODULE.derive_downloader_targets(wrong, workflow_targets), set())
 
+    def test_downloader_target_derivation_ignores_comments_and_strings(self):
+        workflow_targets = {"x86_64-pc-windows-msvc"}
+        commented = """
+        const WINDOWS_X64_TARGET = 'x86_64-pc-windows-msvc';
+        // return WINDOWS_X64_TARGET;
+        """
+        string_literal = """
+        const WINDOWS_X64_TARGET = 'x86_64-pc-windows-msvc';
+        const documentation = 'return WINDOWS_X64_TARGET';
+        """
+        quoted_literal = "// return 'x86_64-pc-windows-msvc';"
+        block_comment = """
+        const WINDOWS_X64_TARGET = 'x86_64-pc-windows-msvc';
+        /* return WINDOWS_X64_TARGET; */
+        """
+        template_literal = "const WINDOWS_X64_TARGET = 'x86_64-pc-windows-msvc'; const documentation = `return WINDOWS_X64_TARGET`;"
+        self.assertEqual(
+            MODULE.derive_downloader_targets(commented, workflow_targets), set()
+        )
+        self.assertEqual(
+            MODULE.derive_downloader_targets(string_literal, workflow_targets), set()
+        )
+        self.assertEqual(
+            MODULE.derive_downloader_targets(quoted_literal, workflow_targets), set()
+        )
+        self.assertEqual(
+            MODULE.derive_downloader_targets(block_comment, workflow_targets), set()
+        )
+        self.assertEqual(
+            MODULE.derive_downloader_targets(template_literal, workflow_targets), set()
+        )
+        commented_declaration = """
+        // const WINDOWS_X64_TARGET = 'x86_64-pc-windows-msvc';
+        return WINDOWS_X64_TARGET;
+        """
+        commented_return = """
+        const WINDOWS_X64_TARGET = 'x86_64-pc-windows-msvc';
+        // return WINDOWS_X64_TARGET;
+        """
+        self.assertEqual(
+            MODULE.derive_downloader_targets(commented_declaration, workflow_targets), set()
+        )
+        self.assertEqual(
+            MODULE.derive_downloader_targets(commented_return, workflow_targets), set()
+        )
+
     def test_manifest_mutations_fail_closed(self):
         with self.valid_manifest_fixture() as (root, manifest, frozen_sha):
             MODULE.validate_manifest(manifest, root, frozen_sha)
