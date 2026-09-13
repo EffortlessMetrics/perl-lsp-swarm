@@ -1437,7 +1437,7 @@
     "markdown-it": "14.2.0",
     "picomatch@2": "2.3.2",
     "picomatch@4": "4.0.4",
-    "qs": "6.15.2",
+    "qs": "6.16.0",
     "serialize-javascript": "7.0.5",
     "tmp": "0.2.7",
     "undici": "7.29.0",
