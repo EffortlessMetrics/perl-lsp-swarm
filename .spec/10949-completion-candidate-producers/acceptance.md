@@ -139,7 +139,7 @@ along one axis and asserting the refusal names that axis:
 | same-terminal-name self types fused | `a::Shared` and `b::Shared` are two types |
 | an append through a wrapper field | wrapping is a rename with extra steps |
 | an append through a tuple field | same, by index |
-| a candidate rebuilt into the page after finalization | construction after the finalizer is an append |
+| a candidate rebuilt into the page after finalization | the post-finalizer control recognizes a candidate struct literal in the entry body, so rebuilding the page through an iterator chain is an append; this is that control, not the file-granularity construction plane |
 | an enum variant carrying the page | `CompletionFlow::Return` holds candidates |
 | a producer disposition erased to `not_applicable` | only a router or the finalizer produces nothing of its own |
 | a seam carrying a producer disposition | a seam has no identity, insertion, evidence or rank to record |
@@ -153,6 +153,7 @@ along one axis and asserting the refusal names that axis:
 | a repeated entry point in `reached_by` | two copies of one route look like two routes to a length check |
 | a `.gitignore`d producer under a scan root | ignored source is as unscanned as unadded source |
 | a finalizer inside an uncalled closure | a deferred body runs when called, not where written |
+| an append inside an **invoked** deferred body | **not refused — a pinned known miss, owned by #15470.** `an_append_inside_an_invoked_deferred_body_is_a_known_miss` asserts the current behavior so the ceiling is executable rather than prose, and fails loudly when the gap closes. It is the reason #10949's post-finalizer criterion is recorded partial. |
 | a block-scoped provider alias leaking to a sibling | `use` is lexically scoped, so an alias is not file-wide |
 | a `super::` path reaching a provider sibling | a relative path names `providers` nowhere |
 | a test-only type entering the carrier set | the set is global, so a `#[cfg(test)]` name widens production discovery |

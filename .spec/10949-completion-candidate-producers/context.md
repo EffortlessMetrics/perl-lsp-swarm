@@ -132,8 +132,15 @@ behavior, so neither is fixed here.
   those bodies are skipped: descending into one made an uncalled closure that
   merely mentions the finalizer arm the control at its definition, refusing
   correct code. An append made inside a deferred body is therefore not seen
-  either. Neither shipped entry point has that shape, and the non-vacuity
-  assertion still requires each to call the finalizer directly.
+  either — including one in a body that *is* invoked, which really does mutate
+  the finalized page. Neither shipped entry point has that shape, and the
+  non-vacuity assertion still requires each to call the finalizer directly, but
+  that is a bound on today's tree rather than a property of the control. This is
+  the reason #10949's post-finalizer criterion is recorded partial rather than
+  satisfied: the residual — an invocation-sensitive model that evaluates a
+  deferred body at its call site rather than its definition — is owned by
+  #15470, and closing it by descending indiscriminately would restore the false
+  alarm above rather than repair anything.
 - The post-finalizer control is source-order, not control-flow aware. It can
   raise a false alarm on a body that finalizes inside one branch and
   contributes on another; it cannot miss an append on that axis. Neither

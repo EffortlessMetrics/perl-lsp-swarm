@@ -73,6 +73,17 @@
 //! alarm an author can restructure around for a control-flow analysis this
 //! task would have to keep correct is the deliberate choice; the alternative
 //! risks a checker complex enough to be wrong quietly.
+//!
+//! That same control reads the entry body only. Closures, `async` blocks and
+//! nested `fn`s are skipped, because descending into one made an *uncalled*
+//! closure arm the finalizer at its definition and refuse correct source. The
+//! cost is a genuine miss rather than a false alarm: a deferred body that is
+//! invoked does mutate the finalized page, and this control will not see it.
+//! So what the check establishes is that no append follows finalization **in
+//! the straight-line entry body** — not over every reachable append. Neither
+//! shipped entry point has that shape, and the non-vacuity assertion still
+//! requires each to call the finalizer directly, but that bounds today's tree
+//! rather than the control. An invocation-sensitive model is #15470.
 
 use crate::utils::project_root;
 use color_eyre::eyre::{Context, Result, bail};
@@ -1943,6 +1954,14 @@ impl<'ast> Visit<'ast> for EntryBodyVisitor<'_> {
     /// made inside a deferred body is therefore not seen either — recorded in
     /// the module ceiling, and bounded by the same non-vacuity assertion that
     /// requires each entry point to call the finalizer directly.
+    ///
+    /// That boundary has a real cost, and the cost is not "a body that never
+    /// runs": a deferred body that *is* invoked mutates the finalized page and
+    /// this control does not see it. So the post-finalizer guarantee here is
+    /// over the straight-line entry body, not over every reachable append. The
+    /// repair is an invocation-sensitive model — descend only where the body is
+    /// actually called, and evaluate it at the call site rather than the
+    /// definition — which is #15470, not a matter of deleting these no-ops.
     fn visit_expr_closure(&mut self, _node: &'ast syn::ExprClosure) {}
 
     fn visit_expr_async(&mut self, _node: &'ast syn::ExprAsync) {}
@@ -3050,6 +3069,14 @@ pub fn render_markdown(ledger: &Ledger, discovered: &Discovered) -> String {
          module granularity, but a producer evading all three would not appear. The module \
          header records the exact ceilings, including the post-finalizer control's source-order \
          modelling."
+    );
+    let _ = writeln!(
+        out,
+        "- The post-finalizer control covers the straight-line entry body only. Closures, \
+         `async` blocks and nested `fn`s are skipped — descending into one armed the finalizer \
+         at an uncalled closure's definition and refused correct source — so an append inside a \
+         deferred body that *is* invoked is a miss, not a false alarm. Read \"0 post-finalizer \
+         appends\" as that bounded claim. #15470 owns the invocation-sensitive model."
     );
     let _ = writeln!(
         out,
@@ -4309,6 +4336,54 @@ mod tests {
             visitor.appended_after_finalizer,
             "skipping deferred bodies must not disarm the control it protects"
         );
+    }
+
+    /// The cost of skipping deferred bodies, pinned rather than described.
+    ///
+    /// The test above proves an *uncalled* body does not arm the control. This
+    /// one proves the other half, which is a miss and not a false alarm: a body
+    /// that **is** invoked mutates the finalized page and the control does not
+    /// see it. The ceiling is stated in the module header, `context.md` and the
+    /// generated projection; an assertion that can fail is worth more than
+    /// three paragraphs that cannot.
+    ///
+    /// This is deliberately a characterization test, not an aspiration. When
+    /// #15470 lands an invocation-sensitive model it will fail, which is the
+    /// point: whoever closes that gap is told exactly which claim to update
+    /// instead of discovering the prose is stale.
+    #[test]
+    fn an_append_inside_an_invoked_deferred_body_is_a_known_miss() {
+        let no_producers = BTreeSet::new();
+
+        for body in [
+            // Bound, then called.
+            quote_body(syn::parse_quote! {
+                fn entry() {
+                    let (mut completions, is_incomplete) =
+                        sort_and_cap_completions(completions, cap);
+                    let mut inject = || completions.push(sneaky());
+                    inject();
+                }
+            }),
+            // Immediately invoked.
+            quote_body(syn::parse_quote! {
+                fn entry() {
+                    let (mut completions, is_incomplete) =
+                        sort_and_cap_completions(completions, cap);
+                    (|| completions.push(sneaky()))();
+                }
+            }),
+        ] {
+            let mut visitor = EntryBodyVisitor::new(&no_producers);
+            visitor.visit_block(&body);
+            assert!(
+                !visitor.appended_after_finalizer,
+                "this documents a known gap (#15470): if the control now sees an append inside \
+                 an invoked deferred body, that is the gap closing — update the module header, \
+                 `.spec/10949-…/context.md`, the projection ceiling and the checklist, then \
+                 delete this test"
+            );
+        }
     }
 
     /// A `use` inside one function is not in scope in the next one.
