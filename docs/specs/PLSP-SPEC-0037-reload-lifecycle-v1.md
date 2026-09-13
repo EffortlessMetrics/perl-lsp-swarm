@@ -545,10 +545,14 @@ behavior, and how each relates to this contract.
 | [ADR-0046](../adr/0046-loaded-module-reload-semantics.md) | current, different subject | Accepted DAP loaded-module reload contract. Does not describe workspace observation routes or workspace publication, and is not superseded by this spec. |
 | [PLSP-SPEC-0022](PLSP-SPEC-0022-module-path-authority.md) | current, upstream input | Module path authority. Feeds URI and source identity; owns no reload transition. |
 | [PLSP-SPEC-0023](PLSP-SPEC-0023-ambient-inputs.md) | current, upstream input | Ambient inputs. Feeds configuration and environment identity; owns no route or publication rule. |
+| [INDEX_LIFECYCLE_V1_SPEC.md](INDEX_LIFECYCLE_V1_SPEC.md) | historical, not current authority | Marked `Status: Draft`, baselined on PR #245 (2025-12-29), and absent from the `docs/specs/README.md` catalog. It predates the generation-bound model: its `IndexState::Building { indexed_count, total_count }` readiness shape is the pending-count authority [RL-F13](#forbidden-architecture-patterns) rejects, and its `Ready → Building` on `didChangeWatchedFiles` is not a reload-operation contract. Index readiness remains owned by #10434 and #3099, not by that draft and not by this spec. |
+| [workspace_runtime_ownership.md](../generated/workspace_runtime_ownership.md) | current, generated projection | Per-row runtime ownership ledger generated from `policy/workspace-runtime-ownership.v1.tsv`. It is an ownership inventory, not architecture doctrine, and it corroborates this contract: `WRT-RELOAD-001` records the #7893 coordinator as `planned_not_on_main`, matching RL-I13 and RL-I15, while `WRT-WATCH-002` records the live `FileWatcherDebouncer`, matching RL-I10. Regenerate it only through its owning writer; never hand-edit it and never restate its rows here. |
 
-No in-repo document currently claims workspace reload lifecycle or observation-route authority, so
-this spec supersedes nothing. A document later found to conflict is added here with an explicit
-disposition rather than silently outranked.
+No in-repo document claims workspace reload lifecycle or observation-route authority, so this spec
+supersedes nothing. The one genuine overlap is index readiness, where the stale draft above and
+[RL-R25](#c6-publication) disagree; that disagreement is resolved by #10434 and #3099 as the
+readiness owners, and this spec constrains only what publication may claim. A document later found
+to conflict is added here with an explicit disposition rather than silently outranked.
 
 ## Valid PR shapes
 
