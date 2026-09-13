@@ -1440,8 +1440,14 @@ fn process_is_alive(pid: u32) -> Result<bool> {
     }
     #[cfg(target_os = "linux")]
     {
-        let stat = fs::read_to_string(format!("/proc/{pid}/stat"))
-            .with_context(|| format!("checking delayed debuggee process {pid}"))?;
+        let stat = match fs::read_to_string(format!("/proc/{pid}/stat")) {
+            Ok(stat) => stat,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("checking delayed debuggee process {pid}"));
+            }
+        };
         let state = stat
             .rsplit_once(") ")
             .and_then(|(_, rest)| rest.chars().next())
@@ -1450,10 +1456,23 @@ fn process_is_alive(pid: u32) -> Result<bool> {
     }
     #[cfg(all(unix, not(target_os = "linux")))]
     {
-        let output = Command::new("ps")
-            .args(["-p", &pid.to_string(), "-o", "stat="])
-            .output()
-            .context("checking delayed debuggee process")?;
+        let mut command = Command::new("ps");
+        command.args(["-p", &pid.to_string(), "-o", "stat="]);
+        let mut child = command.spawn().context("checking delayed debuggee process")?;
+        let deadline = Instant::now() + Duration::from_millis(500);
+        let output = loop {
+            if child.try_wait()?.is_some() {
+                break child
+                    .wait_with_output()
+                    .context("reading delayed debuggee process state")?;
+            }
+            if Instant::now() >= deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(anyhow!("timed out checking delayed debuggee process {pid}"));
+            }
+            thread::sleep(Duration::from_millis(10));
+        };
         let state = String::from_utf8_lossy(&output.stdout).trim().to_string();
         Ok(output.status.success() && !state.is_empty() && !state.starts_with('Z'))
     }

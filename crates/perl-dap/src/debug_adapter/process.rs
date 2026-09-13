@@ -671,6 +671,16 @@ impl DebugAdapter {
             );
         };
 
+        // A previously rejected replacement remains the sole owner of an
+        // unconfirmed child. Do not spawn another child until terminal
+        // cleanup has retried that owner successfully.
+        if lock_or_recover(&self.rejected_child, "debug_adapter.rejected_child").is_some() {
+            return Err(
+                "Cannot replace the active debugger session while a rejected process cleanup remains unconfirmed"
+                    .to_string(),
+            );
+        }
+
         match cmd.spawn() {
             Ok(mut child) => {
                 // Only advance the session generation once spawning has succeeded. A rejected
@@ -678,14 +688,9 @@ impl DebugAdapter {
                 if !self.prepare_replacement_session() {
                     let cleanup = Self::terminate_child_process(&mut child);
                     if !cleanup {
-                        match self.rejected_child.lock() {
-                            Ok(mut guard) if guard.is_none() => *guard = Some(child),
-                            Ok(_) => {
-                                return Err("Cannot retain the rejected debugger process because another unconfirmed process is already retained".to_string());
-                            }
-                            Err(_) => {
-                                return Err("Cannot retain the rejected debugger process because its ownership state is unavailable".to_string());
-                            }
+                        if let Err(mut child) = self.try_retain_rejected_child(child) {
+                            let _ = Self::terminate_child_process(&mut child);
+                            return Err("Cannot retain the rejected debugger process because another unconfirmed process is already retained".to_string());
                         }
                     }
                     return Err(if cleanup {
@@ -2187,6 +2192,16 @@ impl DebugAdapter {
         }
     }
 
+    fn try_retain_rejected_child(&self, child: Child) -> Result<(), Child> {
+        let mut guard = lock_or_recover(&self.rejected_child, "debug_adapter.rejected_child");
+        if guard.is_some() {
+            Err(child)
+        } else {
+            *guard = Some(child);
+            Ok(())
+        }
+    }
+
     /// Advance the session generation and tear down the prior active session.
     ///
     /// Callers invoke this only after a replacement launch or attach has
@@ -2867,10 +2882,18 @@ mod tests {
         let adapter = DebugAdapter::new();
         let child = DebugAdapter::spawn_noop_child_for_test()
             .map_err(|error| format!("spawning rejected child: {error}"))?;
-        if let Ok(mut guard) = adapter.rejected_child.lock() {
-            *guard = Some(child);
-        } else {
-            return Err("rejected-child lock was poisoned".to_string());
+        adapter
+            .try_retain_rejected_child(child)
+            .map_err(|_| "first rejected child was not retained".to_string())?;
+
+        let second = DebugAdapter::spawn_noop_child_for_test()
+            .map_err(|error| format!("spawning second rejected child: {error}"))?;
+        let mut second = match adapter.try_retain_rejected_child(second) {
+            Ok(()) => return Err("second rejected child was incorrectly retained".to_string()),
+            Err(child) => child,
+        };
+        if !DebugAdapter::terminate_child_process(&mut second) {
+            return Err("unowned second rejected child could not be cleaned up".to_string());
         }
 
         if adapter.clear_rejected_child_with_terminator(|_| false) {
