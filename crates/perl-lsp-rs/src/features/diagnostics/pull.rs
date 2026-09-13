@@ -76,6 +76,12 @@ pub struct PullDiagnosticsContext {
     pub workspace_root: Option<PathBuf>,
     /// @INC paths for module resolution
     pub include_paths: Vec<String>,
+    /// Folder-owned `[perl].version` fallback for PL900.
+    pub project_version: Option<String>,
+    /// Owning folder's `project_config_generation`, or the single-file
+    /// project-config generation when no folder owns the document; distinct
+    /// from the server-wide `workspace_identity_generation`.
+    pub configuration_generation: Option<u64>,
     /// Whether client supports LSP 3.18 markup messages
     pub markup_message_support: bool,
     /// Optional workspace index for dead code detection
@@ -107,6 +113,8 @@ impl PullDiagnosticsContext {
             native_critic_exclude: Vec::new(),
             workspace_root: None,
             include_paths: Vec::new(),
+            project_version: None,
+            configuration_generation: None,
             markup_message_support: false,
             identity_root_key: Some(PROVIDER_DEFAULT_ROOT_AUTHORITY.to_string()),
             facts_generation: None,
@@ -132,6 +140,8 @@ impl PullDiagnosticsContext {
             native_critic_exclude: Vec::new(),
             workspace_root: None,
             include_paths: Vec::new(),
+            project_version: None,
+            configuration_generation: None,
             markup_message_support: false,
             identity_root_key: Some(PROVIDER_DEFAULT_ROOT_AUTHORITY.to_string()),
             facts_generation: None,
@@ -159,6 +169,8 @@ impl PullDiagnosticsContext {
             native_critic_exclude: Vec::new(),
             workspace_root: None,
             include_paths: Vec::new(),
+            project_version: None,
+            configuration_generation: None,
             markup_message_support: false,
             identity_root_key: Some(PROVIDER_DEFAULT_ROOT_AUTHORITY.to_string()),
             facts_generation: None,
@@ -183,6 +195,8 @@ impl std::fmt::Debug for PullDiagnosticsContext {
             .field("native_critic_exclude", &self.native_critic_exclude)
             .field("workspace_root", &self.workspace_root)
             .field("include_paths", &self.include_paths)
+            .field("project_version", &self.project_version)
+            .field("configuration_generation", &self.configuration_generation)
             .field("markup_message_support", &self.markup_message_support)
             .field("identity_root_key", &self.identity_root_key)
             .field("facts_generation", &self.facts_generation)
@@ -498,6 +512,7 @@ impl PullDiagnosticsProvider {
                         source_path.as_deref(),
                         file_id,
                         &queries,
+                        context.project_version.as_deref(),
                         diagnostic_analysis.as_deref(),
                     )
                 })
@@ -510,6 +525,7 @@ impl PullDiagnosticsProvider {
                     Some(&resolver),
                     &search_paths,
                     source_path.as_deref(),
+                    context.project_version.as_deref(),
                     diagnostic_analysis.as_deref(),
                 )
             })
@@ -956,6 +972,7 @@ impl PullDiagnosticsProvider {
                             source_path.as_deref(),
                             file_id,
                             &queries,
+                            context.project_version.as_deref(),
                             diagnostic_analysis.as_deref(),
                         )
                     })
@@ -968,6 +985,7 @@ impl PullDiagnosticsProvider {
                         Some(&resolver),
                         &search_paths,
                         source_path.as_deref(),
+                        context.project_version.as_deref(),
                         diagnostic_analysis.as_deref(),
                     )
                 })
@@ -980,6 +998,7 @@ impl PullDiagnosticsProvider {
                 Some(&resolver),
                 &search_paths,
                 source_path.as_deref(),
+                context.project_version.as_deref(),
                 diagnostic_analysis.as_deref(),
             );
 

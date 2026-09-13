@@ -1,4 +1,4 @@
-# contract-version: 5
+# contract-version: 7
 name: Non-Rust policy
 
 on:
@@ -76,52 +76,24 @@ jobs:
           echo "subject_sha=$SUBJECT_SHA" >> "$GITHUB_OUTPUT"
           echo "SUBJECT_SHA=$SUBJECT_SHA" >> "$GITHUB_ENV"
 
-      - name: Write identity failure receipt
-        if: always() && steps.bind.outcome == 'failure'
-        shell: bash
-        env:
-          BIND_ERROR: ${{ steps.bind.outcome }}
-        run: |
-          set -euo pipefail
-          mkdir -p target/policy
-          python3 - <<'PY'
-          import json, os
-          receipt = {
-              "schema_version": 2,
-              "event_name": os.environ.get("GITHUB_EVENT_NAME"),
-              "repository": os.environ.get("GITHUB_REPOSITORY"),
-              "base_sha": os.environ.get("BASE_SHA", ""),
-              "subject_sha": os.environ.get("SUBJECT_SHA", ""),
-              "pr_head_sha": os.environ.get("PR_HEAD_SHA") or None,
-              "base_tree_sha": None,
-              "subject_tree_sha": None,
-              "base_allowlist_blob_sha": None,
-              "subject_allowlist_blob_sha": None,
-              "base_unclassified_count": 0,
-              "subject_unclassified_count": 0,
-              "new_unclassified_paths": [],
-              "outcome": "fail",
-              "failure_stage": "identity-binding",
-              "error": "subject/base Git-object binding failed",
-              "evaluation_date": "",
-              "evaluator_commit": None,
-              "evaluator_tree": None,
-              "inventory_markdown_path": None,
-              "inventory_markdown_size": None,
-              "inventory_markdown_sha256": None,
-              "inventory_json_path": None,
-              "inventory_json_size": None,
-              "inventory_json_sha256": None,
-          }
-          with open("target/policy/non-rust-policy-exact-tree.json", "w", encoding="utf-8") as handle:
-              json.dump(receipt, handle, indent=2, sort_keys=True)
-          PY
-
       - name: Verify trusted workflow contract
         id: verify-trusted-workflow-contract
         shell: bash
         run: |
           set -euo pipefail
+          # This is availability only, not compilation or historical-age proof.
+          echo "failure_stage=evaluator-availability" >> "$GITHUB_OUTPUT"
+          missing=()
+          for required in .github/workflows/non-rust-policy.yml Cargo.toml Cargo.lock xtask/Cargo.toml xtask/src/main.rs xtask/src/tasks/file_policy.rs; do
+            if [ ! -f "$required" ]; then
+              missing+=("$required")
+            fi
+          done
+          if [ "${#missing[@]}" -ne 0 ]; then
+            printf '::error::evaluator-availability: pre-bootstrap or incomplete trusted evaluator; base=%s evaluator=%s subject=%s; missing inputs: %s. Inventory was not evaluated. Obtain a reviewed base containing the evaluator and verify the next event selects it; an unchanged rerun is not recovery.\n' "$BASE_SHA" "$EVALUATOR_SHA" "$SUBJECT_SHA" "${missing[*]}" >&2
+            exit 1
+          fi
+          echo "failure_stage=trusted-workflow-contract" >> "$GITHUB_OUTPUT"
           workflow=.github/workflows/non-rust-policy.yml
           grep -q '^  merge_group:' "$workflow"
           grep -q 'name: Non-Rust policy exact-tree' "$workflow"
@@ -133,7 +105,7 @@ jobs:
           # trusted environment declarations, while direct interpolation in a
           # command would allow candidate-controlled code or refs to reach the
           # evaluator.  Keeping the pattern in a variable also prevents this
-          # guard from matching its own source text.
+          # guard from matching its own run text.
           python3 - "$workflow" <<'PY'
           import re
           import sys
@@ -201,6 +173,51 @@ jobs:
           if offenders:
               raise SystemExit("trusted run body interpolates pull-request event data")
           PY
+      - name: Write pre-evaluation failure receipt
+        if: always() && (steps.bind.outcome == 'failure' || steps.verify-trusted-workflow-contract.outcome == 'failure')
+        shell: bash
+        env:
+          BIND_ERROR: ${{ steps.bind.outcome }}
+          GUARD_FAILURE_STAGE: ${{ steps.verify-trusted-workflow-contract.outputs.failure_stage }}
+        run: |
+          set -euo pipefail
+          mkdir -p target/policy
+          python3 - <<'PY'
+          import json, os
+          stage = ("identity-binding" if os.environ.get("BIND_ERROR") == "failure"
+                   else os.environ.get("GUARD_FAILURE_STAGE") or "trusted-workflow-contract")
+          receipt = {
+              "schema_version": 2,
+              "event_name": os.environ.get("GITHUB_EVENT_NAME"),
+              "repository": os.environ.get("GITHUB_REPOSITORY"),
+              "base_sha": os.environ.get("BASE_SHA", ""),
+              "subject_sha": os.environ.get("SUBJECT_SHA", ""),
+              "pr_head_sha": os.environ.get("PR_HEAD_SHA") or None,
+              "base_tree_sha": None,
+              "subject_tree_sha": None,
+              "base_allowlist_blob_sha": None,
+              "subject_allowlist_blob_sha": None,
+              "base_unclassified_count": 0,
+              "subject_unclassified_count": 0,
+              "new_unclassified_paths": [],
+              "outcome": "fail",
+              "failure_stage": stage,
+              "error": ("subject/base Git-object binding failed" if stage == "identity-binding"
+                        else "trusted evaluator unavailable or invalid; inventory was not evaluated"),
+              "evaluation_date": "",
+              "evaluator_commit": os.environ.get("EVALUATOR_SHA") or None,
+              "evaluator_tree": None,
+              "inventory_markdown_path": None,
+              "inventory_markdown_size": None,
+              "inventory_markdown_sha256": None,
+              "inventory_json_path": None,
+              "inventory_json_size": None,
+              "inventory_json_sha256": None,
+          }
+          with open("target/policy/non-rust-policy-exact-tree.json", "w", encoding="utf-8") as handle:
+              json.dump(receipt, handle, indent=2, sort_keys=True)
+          PY
+
       - name: Run trusted exact-tree evaluator
         if: steps.bind.outcome == 'success'
         run: cargo run --locked -p xtask -- non-rust exact-tree --base-sha "$BASE_SHA" --subject-sha "$SUBJECT_SHA" ${PR_HEAD_SHA:+--pr-head-sha "$PR_HEAD_SHA"} --event-name "$GITHUB_EVENT_NAME" --repository "$GITHUB_REPOSITORY" --receipt target/policy/non-rust-policy-exact-tree.json

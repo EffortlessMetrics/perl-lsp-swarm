@@ -180,6 +180,34 @@ impl DiagnosticsProvider {
             module_search_paths,
             None,
             source_path,
+            None,
+            FileId(0),
+            &NullSemanticQueries,
+            None,
+        )
+    }
+
+    /// Generate diagnostics with a folder-owned project version fallback for PL900.
+    #[allow(clippy::too_many_arguments)]
+    pub fn get_diagnostics_with_path_and_project_version(
+        &self,
+        ast: &std::sync::Arc<Node>,
+        parse_errors: &[ParseError],
+        source: &str,
+        module_resolver: Option<&dyn Fn(&str, usize) -> bool>,
+        module_search_paths: &[String],
+        source_path: Option<&Path>,
+        project_version: Option<&str>,
+    ) -> Vec<Diagnostic> {
+        self.get_diagnostics_with_path_and_semantics_impl(
+            ast,
+            parse_errors,
+            source,
+            module_resolver,
+            module_search_paths,
+            None,
+            source_path,
+            project_version,
             FileId(0),
             &NullSemanticQueries,
             None,
@@ -207,6 +235,7 @@ impl DiagnosticsProvider {
         module_resolver: Option<&dyn Fn(&str, usize) -> bool>,
         module_search_paths: &[String],
         source_path: Option<&Path>,
+        project_version: Option<&str>,
         analysis: Option<&DocumentDiagnosticAnalysis>,
     ) -> Vec<Diagnostic> {
         self.get_diagnostics_with_path_and_semantics_impl(
@@ -217,6 +246,7 @@ impl DiagnosticsProvider {
             module_search_paths,
             None,
             source_path,
+            project_version,
             FileId(0),
             &NullSemanticQueries,
             analysis,
@@ -236,6 +266,29 @@ impl DiagnosticsProvider {
         module_search_context: &[ModuleSearchPathDisplay],
         source_path: Option<&Path>,
     ) -> Vec<Diagnostic> {
+        self.get_diagnostics_with_search_context_and_project_version(
+            ast,
+            parse_errors,
+            source,
+            module_resolver,
+            module_search_context,
+            source_path,
+            None,
+        )
+    }
+
+    /// Generate diagnostics with labeled search context and a project version fallback.
+    #[allow(clippy::too_many_arguments)]
+    pub fn get_diagnostics_with_search_context_and_project_version(
+        &self,
+        ast: &std::sync::Arc<Node>,
+        parse_errors: &[ParseError],
+        source: &str,
+        module_resolver: Option<&dyn Fn(&str, usize) -> bool>,
+        module_search_context: &[ModuleSearchPathDisplay],
+        source_path: Option<&Path>,
+        project_version: Option<&str>,
+    ) -> Vec<Diagnostic> {
         self.get_diagnostics_with_path_and_semantics_impl(
             ast,
             parse_errors,
@@ -244,6 +297,7 @@ impl DiagnosticsProvider {
             &[],
             Some(module_search_context),
             source_path,
+            project_version,
             FileId(0),
             &NullSemanticQueries,
             None,
@@ -263,6 +317,7 @@ impl DiagnosticsProvider {
         module_resolver: Option<&dyn Fn(&str, usize) -> bool>,
         module_search_context: &[ModuleSearchPathDisplay],
         source_path: Option<&Path>,
+        project_version: Option<&str>,
         analysis: Option<&DocumentDiagnosticAnalysis>,
     ) -> Vec<Diagnostic> {
         self.get_diagnostics_with_path_and_semantics_impl(
@@ -273,6 +328,7 @@ impl DiagnosticsProvider {
             &[],
             Some(module_search_context),
             source_path,
+            project_version,
             FileId(0),
             &NullSemanticQueries,
             analysis,
@@ -309,6 +365,36 @@ impl DiagnosticsProvider {
             module_search_paths,
             None,
             source_path,
+            None,
+            file_id,
+            semantic_queries,
+            None,
+        )
+    }
+
+    /// Generate semantic-aware diagnostics with a folder-owned project version fallback.
+    #[allow(clippy::too_many_arguments)]
+    pub fn get_diagnostics_with_path_and_semantics_and_project_version<Q: SemanticQueries>(
+        &self,
+        ast: &std::sync::Arc<Node>,
+        parse_errors: &[ParseError],
+        source: &str,
+        module_resolver: Option<&dyn Fn(&str, usize) -> bool>,
+        module_search_paths: &[String],
+        source_path: Option<&Path>,
+        project_version: Option<&str>,
+        file_id: FileId,
+        semantic_queries: &Q,
+    ) -> Vec<Diagnostic> {
+        self.get_diagnostics_with_path_and_semantics_impl(
+            ast,
+            parse_errors,
+            source,
+            module_resolver,
+            module_search_paths,
+            None,
+            source_path,
+            project_version,
             file_id,
             semantic_queries,
             None,
@@ -330,6 +416,7 @@ impl DiagnosticsProvider {
         source_path: Option<&Path>,
         file_id: FileId,
         semantic_queries: &Q,
+        project_version: Option<&str>,
         analysis: Option<&DocumentDiagnosticAnalysis>,
     ) -> Vec<Diagnostic> {
         self.get_diagnostics_with_path_and_semantics_impl(
@@ -340,6 +427,7 @@ impl DiagnosticsProvider {
             module_search_paths,
             None,
             source_path,
+            project_version,
             file_id,
             semantic_queries,
             analysis,
@@ -362,6 +450,35 @@ impl DiagnosticsProvider {
         file_id: FileId,
         semantic_queries: &Q,
     ) -> Vec<Diagnostic> {
+        self.get_diagnostics_with_search_context_and_semantics_and_project_version(
+            ast,
+            parse_errors,
+            source,
+            module_resolver,
+            module_search_context,
+            source_path,
+            None,
+            file_id,
+            semantic_queries,
+        )
+    }
+
+    /// Generate semantic-aware diagnostics with labeled search context and a project version fallback.
+    #[allow(clippy::too_many_arguments)]
+    pub fn get_diagnostics_with_search_context_and_semantics_and_project_version<
+        Q: SemanticQueries,
+    >(
+        &self,
+        ast: &std::sync::Arc<Node>,
+        parse_errors: &[ParseError],
+        source: &str,
+        module_resolver: Option<&dyn Fn(&str, usize) -> bool>,
+        module_search_context: &[ModuleSearchPathDisplay],
+        source_path: Option<&Path>,
+        project_version: Option<&str>,
+        file_id: FileId,
+        semantic_queries: &Q,
+    ) -> Vec<Diagnostic> {
         self.get_diagnostics_with_path_and_semantics_impl(
             ast,
             parse_errors,
@@ -370,6 +487,7 @@ impl DiagnosticsProvider {
             &[],
             Some(module_search_context),
             source_path,
+            project_version,
             file_id,
             semantic_queries,
             None,
@@ -391,6 +509,7 @@ impl DiagnosticsProvider {
         source_path: Option<&Path>,
         file_id: FileId,
         semantic_queries: &Q,
+        project_version: Option<&str>,
         analysis: Option<&DocumentDiagnosticAnalysis>,
     ) -> Vec<Diagnostic> {
         self.get_diagnostics_with_path_and_semantics_impl(
@@ -401,6 +520,7 @@ impl DiagnosticsProvider {
             &[],
             Some(module_search_context),
             source_path,
+            project_version,
             file_id,
             semantic_queries,
             analysis,
@@ -422,6 +542,7 @@ impl DiagnosticsProvider {
         module_search_paths: &[String],
         module_search_context: Option<&[ModuleSearchPathDisplay]>,
         source_path: Option<&Path>,
+        project_version: Option<&str>,
         file_id: FileId,
         semantic_queries: &Q,
         analysis: Option<&DocumentDiagnosticAnalysis>,
@@ -566,7 +687,16 @@ impl DiagnosticsProvider {
             check_pod_coverage(ast, source, &mut diagnostics);
 
             // Version compatibility lint (PL900)
-            check_version_compat_with_pragma_map(ast, analysis.pragma_map(), &mut diagnostics);
+            // Both contracts hold here: the folder-owned project-version
+            // fallback main added, and this generation's shared pragma timeline
+            // (#7286) instead of a fourth rebuild of it.
+            check_version_compat_with_pragma_map(
+                ast,
+                source,
+                analysis.pragma_map(),
+                &mut diagnostics,
+                project_version,
+            );
 
             // Unreachable code detection (PL406)
             check_unreachable_code(ast, &mut diagnostics);

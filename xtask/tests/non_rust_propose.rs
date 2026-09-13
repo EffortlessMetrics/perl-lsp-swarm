@@ -15,7 +15,7 @@ use tempfile::TempDir;
 
 mod git_test_support;
 
-use git_test_support::{add_and_commit, init_git_repo};
+use git_test_support::{HermeticGit, add_and_commit, init_git_repo};
 
 // ---------------------------------------------------------------------------
 // Helpers (shared with check_file_policy.rs pattern)
@@ -60,6 +60,8 @@ fn setup_repo(extra_files: &[(&str, &str)]) -> Result<(TempDir, PathBuf)> {
 
 /// Run `cargo xtask non-rust propose` with the given extra args.
 fn run_propose(root: &Path, extra_args: &[&str]) -> Result<std::process::Output> {
+    let env_scope = tempfile::tempdir()?;
+    let hermetic = HermeticGit::at(env_scope.path())?;
     let allowlist_path = root.join("policy/non-rust-allowlist.toml");
     let root_str = root.to_str().expect("root is UTF-8");
     let mut cmd = Command::cargo_bin("xtask")?;
@@ -73,6 +75,7 @@ fn run_propose(root: &Path, extra_args: &[&str]) -> Result<std::process::Output>
     // the command can load it without needing the real workspace).
     let _ = allowlist_path; // used via --root; allowlist is found relative to root
     cmd.args(extra_args);
+    hermetic.apply_env_to_assert(&mut cmd);
     let output = cmd.output()?;
     Ok(output)
 }
@@ -362,6 +365,8 @@ fn propose_round_trips_via_advisory_checker() -> Result<()> {
     // Now run advisory check using the proposed allowlist.
     let root_str = root.to_str().expect("root is UTF-8");
     let allowlist_str = proposed_allowlist.to_str().expect("UTF-8");
+    let env_scope = tempfile::tempdir()?;
+    let hermetic = HermeticGit::at(env_scope.path())?;
     let mut cmd = Command::cargo_bin("xtask")?;
     cmd.current_dir(&root);
     cmd.args([
@@ -374,6 +379,7 @@ fn propose_round_trips_via_advisory_checker() -> Result<()> {
         "--root",
         root_str,
     ]);
+    hermetic.apply_env_to_assert(&mut cmd);
     let check_out = cmd.output()?;
 
     assert!(

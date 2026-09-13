@@ -124,6 +124,7 @@ utf16-complete = ["perl-parser/utf16-complete"]  # Complete UTF-16 round-trip su
 perl-lsp-rs-core = { workspace = true, features = ["test-instrumentation"] }
 assert_cmd = "2.2.2"
 chrono = "0.4.43"
+unicode-ident = "1.0.22"
 insta = { workspace = true, features = ["yaml"] }
 predicates = "3.1.3"
 serial_test = "4.0.1"

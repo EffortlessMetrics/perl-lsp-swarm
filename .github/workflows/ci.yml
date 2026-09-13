@@ -128,30 +128,49 @@ jobs:
           # perl-parser-core, perl-workspace, perl-ast, ...) derives its crates/<dir>/
           # prefix from the perl_X:: tokens in .ci/public-api-baselines/*.txt, so the
           # selector tracks the real re-export closure without maintaining a second
-          # hand-written list beside the baselines.
+          # hand-written list beside the baselines. The crates the rails check
+          # directly come from the same single list the recipes read
+          # (.ci/public-api-baselines/ratchet-crates.txt, #14607), so this
+          # selector cannot disagree with `just public-api-check`.
           STATIC_PREFIXES = (
-              # Facade surfaces checked directly by just public-api-check and the
-              # nightly semver rail (includes crates with no re-export trail).
-              "crates/perl-lsp-rs/",
-              "crates/perl-parser/",
-              "crates/perl-lexer/",
-              "crates/perl-parser-core/",
-              "crates/perl-uri/",
-              "crates/perl-dap/",
-              "crates/perllsp/",
               ".ci/public-api-baselines/",
           )
+          RATCHET_LIST = os.path.join(".ci", "public-api-baselines", "ratchet-crates.txt")
           TOKEN_RE = re.compile("(?<![A-Za-z0-9_])perl_[a-z0-9_]+(?=::)")
+
+
+          def ratchet_crates():
+              try:
+                  lines = open(RATCHET_LIST, encoding="utf-8").read().splitlines()
+              except OSError as error:
+                  print("::error::cannot read " + RATCHET_LIST + ": " + str(error), file=sys.stderr)
+                  raise SystemExit(1)
+              crates = (line.split("#", 1)[0].strip() for line in lines)
+              crates = tuple(crate for crate in crates if crate)
+              if not crates:
+                  # An empty list would silently shrink the api scope to the
+                  # baseline directory alone; publish-manifest-check rejects
+                  # that state, so fail here too rather than under-select.
+                  print("::error::" + RATCHET_LIST + " lists no crates", file=sys.stderr)
+                  raise SystemExit(1)
+              if len(crates) != len(set(crates)):
+                  print("::error::" + RATCHET_LIST + " lists duplicate crates", file=sys.stderr)
+                  raise SystemExit(1)
+              return crates
 
 
           def derive_prefixes():
               found = set(STATIC_PREFIXES)
+              for crate in ratchet_crates():
+                  found.add("crates/" + crate + "/")
               baseline_dir = os.path.join(".ci", "public-api-baselines")
               try:
                   names = os.listdir(baseline_dir)
               except OSError:
                   return tuple(sorted(found))
               for name in names:
+                  if not name.endswith(".txt") or name == "ratchet-crates.txt":
+                      continue
                   path = os.path.join(baseline_dir, name)
                   try:
                       content = open(path, encoding="utf-8").read()
@@ -306,6 +325,7 @@ jobs:
           cache-on-failure: true
           cache-all-crates: true
           shared-key: ci-platform-scope-${{ hashFiles('Cargo.lock') }}
+          save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}
       - name: Classify platform overrides
         id: scope
         shell: bash
@@ -382,8 +402,13 @@ jobs:
         shell: bash
         env:
           WINDOWS_TEST_CRATES: ${{ needs.platform-overrides.outputs.windows_test_crates }}
+        # Keep the existing library smoke execution, then compile the
+        # Unix-only integration target on Windows so its cfg boundary cannot
+        # silently bit-rot. Unix remains the execution authority for the
+        # Bash/chmod smoke.
         run: |
           cargo test $WINDOWS_TEST_CRATES --locked --lib
+          cargo test -p xtask --test release_artifact_size_smoke_script --locked --no-run
           if [[ " $WINDOWS_TEST_CRATES " == *" -p perl-ci-hygiene "* ]]; then
             cargo test -p perl-ci-hygiene --locked --bin perl-ci-hygiene process::tests::
           fi
@@ -431,6 +456,7 @@ jobs:
           cache-on-failure: true
           cache-all-crates: true
           shared-key: ci-contract-${{ hashFiles('Cargo.lock') }}
+          save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}
       - name: Run Repository Contract
         env:
           SUBJECT_BASE_SHA: ${{ inputs.base_sha || '' }}
@@ -584,6 +610,7 @@ jobs:
         with:
           key: public-api-${{ hashFiles('Cargo.lock') }}
           cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}
 
       - name: Install cargo-public-api
         if: needs.draft-pr-check.outputs.api_scope == 'true'
@@ -591,11 +618,11 @@ jobs:
 
       - name: Install just
         if: needs.draft-pr-check.outputs.api_scope == 'true'
-        uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc  # v2.86.7
+        uses: taiki-e/install-action@5bf6ce016fd2e72eefc647cbca1e4213f65955b8  # v2.87.5
         with:
           tool: just
 
-      - name: Check public API surface (perl-lsp-rs, perl-parser, perl-uri, perl-dap, perllsp)
+      - name: Check public API surface (.ci/public-api-baselines/ratchet-crates.txt)
         if: needs.draft-pr-check.outputs.api_scope == 'true'
         # Uses cargo public-api --simplified to omit blanket-impl noise; baselines in .ci/public-api-baselines/
         run: just public-api-check
@@ -646,6 +673,7 @@ jobs:
         with:
           key: semver-${{ hashFiles('Cargo.lock') }}
           cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}
 
       - name: Install cargo-semver-checks
         if: needs.draft-pr-check.outputs.api_scope == 'true'
@@ -671,12 +699,23 @@ jobs:
             echo "Using baseline: ${BASELINE}"
           fi
 
-      - name: Check published parser-stack crates against baseline
+      - name: Check API-ratcheted crates against baseline
         if: needs.draft-pr-check.outputs.api_scope == 'true' && steps.baseline.outputs.baseline != 'none'
         env:
           SEMVER_BASELINE: ${{ steps.baseline.outputs.baseline }}
+        # The crate set is .ci/public-api-baselines/ratchet-crates.txt, the same
+        # list `just semver-check-all` and `just public-api-check` read (#14607).
         run: |
-          for crate in perl-parser perl-lexer perl-parser-core perl-lsp-rs perllsp; do
+          mapfile -t crates < <(sed -e 's/#.*$//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' .ci/public-api-baselines/ratchet-crates.txt | grep -v '^$')
+          if [ "${#crates[@]}" -eq 0 ]; then
+            echo "::error::.ci/public-api-baselines/ratchet-crates.txt lists no crates; refusing a vacuous semver pass"
+            exit 1
+          fi
+          if [ -n "$(printf '%s\n' "${crates[@]}" | sort | uniq -d)" ]; then
+            echo "::error::.ci/public-api-baselines/ratchet-crates.txt lists a crate twice; fix the list rather than checking it twice"
+            exit 1
+          fi
+          for crate in "${crates[@]}"; do
             if cargo semver-checks check-release -p "${crate}" \
               --baseline-rev "${SEMVER_BASELINE}"; then
               echo "semver: ${crate} compatible"
@@ -700,7 +739,9 @@ jobs:
   pr-smoke:
     name: PR Smoke (Fast Feedback, advisory)
     runs-on: ubuntu-24.04
-    timeout-minutes: 50
+    # Leave setup headroom plus enough room for the inner 45m watchdog to return
+    # its status and for the always-run receipt/telemetry steps to finish.
+    timeout-minutes: 75
     # Advisory: a pr-fast flake must not present as a hard red on an otherwise
     # green PR. The deterministic base (CI Gate shards + the two required lanes)
     # is the real gate.
@@ -741,7 +782,7 @@ jobs:
           components: rustfmt, clippy
 
       - name: Install just
-        uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc  # v2.86.7
+        uses: taiki-e/install-action@5bf6ce016fd2e72eefc647cbca1e4213f65955b8  # v2.87.5
         with:
           tool: just
 
@@ -868,7 +909,7 @@ jobs:
           set +e
           # The target directory is selected before Warm xtask so gate commands reuse that build.
           # Gate receipts intentionally stay at target/receipts for upload steps.
-          echo "PR-fast timeout policy: GitHub job 50m, outer runner watchdog 45m, per-gate timeouts recorded in target/receipts/receipt.json"
+          echo "PR-fast timeout policy: GitHub job 75m, outer runner watchdog 45m, per-gate timeouts recorded in target/receipts/receipt.json"
           timeout --signal=TERM --kill-after=60s 2700s "$CARGO_TARGET_DIR/debug/xtask" gates --tier pr-fast --subject target/receipts/ci-subject.json --receipt
           status=$?
           case "$status" in
@@ -962,6 +1003,17 @@ jobs:
     # Raised 30 -> 40 with #10023's watchdog-retry support: a retried
     # unit_lsp_full consumes 2x its 420s budget (+7 min), which at lsp's
     # measured wall time left under 2.5 min of slow-runner headroom.
+    #
+    # The inner `timeout ... 1800s` watchdog below was raised 1200 -> 1800 with
+    # #11933. It is a runaway bound sized against measured wall time, not the
+    # sum of child budgets (that sum is 35 min for lsp even without retries).
+    # The 1200s value predated the 30 -> 40 raise above and never absorbed the
+    # retried-unit_lsp_full case it was made for: lsp measured 18.6 min, +7 min
+    # for that retry is 25.6 min, already past 20. #11933 adds two more gates to
+    # the same shard, so the ordinary path moves to ~20.6 min and the 20m
+    # watchdog would kill a required shard whose gates are all healthy. 1800s
+    # covers 25.6 min with headroom and stays inside the 40 min outer guard,
+    # which remains the true runaway bound.
     timeout-minutes: 40
     # No functional dependency on pr-smoke output; run in parallel after preflight
     # + conflict guard to reduce end-to-end merge-gate wall time.
@@ -985,7 +1037,7 @@ jobs:
           - name: analysis
             gates: unit_analysis_full
           - name: lsp
-            gates: unit_lsp_core_full unit_lsp_full lsp_smoke
+            gates: unit_lsp_core_full unit_lsp_full lsp_smoke pending_parse_freshness pull_diagnostics_freshness
           - name: support
             gates: unit_dap_support_full
           - name: corpus
@@ -994,7 +1046,7 @@ jobs:
             # The cheapest control remains first for fast diagnosis, but the
             # shard runner now records every independent member before it
             # returns the aggregate failure verdict.
-            gates: msrv_authority_sync compiler_concept_ledger compiler_proof_policy compiler_concept_proof docs_build adr_link_check non_rust_inventory_check must_context_check lint_policy v2_bundle_sync nested_lock_check version_sync
+            gates: docs_agents_contract_workflows msrv_authority_sync compiler_concept_ledger compiler_proof_policy compiler_concept_proof postfix_capability_closure release_trust_invariants docs_build adr_link_check non_rust_inventory_check must_context_check lint_policy v2_bundle_sync nested_lock_check version_sync
     permissions:
       contents: read
     # Run on every PR push and on push to main/master
@@ -1004,10 +1056,22 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.ref_name }}
+          # Match the PR merge workflow's gate list to its commands and policy (#14946).
+          ref: ${{ github.sha }}
           # Release-history verification compares every fetched release tag.
           fetch-depth: 0
           fetch-tags: true
+
+      - name: Bind shard integration source
+        id: inventory-source
+        shell: bash
+        env:
+          EXPECTED_SOURCE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          source_sha="$(git rev-parse 'HEAD^{commit}')"
+          test "$source_sha" = "$EXPECTED_SOURCE_SHA"
+          echo "sha=$source_sha" >> "$GITHUB_OUTPUT"
 
       - name: Reject unsupported PR attributions in reference docs
         if: matrix.name == 'meta'
@@ -1030,7 +1094,7 @@ jobs:
           components: rustfmt, clippy
 
       - name: Install just
-        uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc  # v2.86.7
+        uses: taiki-e/install-action@5bf6ce016fd2e72eefc647cbca1e4213f65955b8  # v2.87.5
         with:
           tool: just
 
@@ -1041,6 +1105,16 @@ jobs:
           cache-all-crates: true
           shared-key: ci-gate-${{ hashFiles('Cargo.lock') }}
           save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}
+
+      - name: Clear restored inventory evidence
+        id: inventory-clean
+        if: matrix.name == 'policy'
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f target/policy/non-rust-inventory.md \
+            target/policy/non-rust-inventory.json \
+            target/policy/non-rust-inventory-subject.json
 
       - name: Warm xtask
         run: cargo build -p xtask --locked
@@ -1081,9 +1155,11 @@ jobs:
           # overwrite the failure status.
           rm -rf target/receipts/shards target/receipts/shard-summaries \
             target/receipts/logs target/receipts/artifacts \
+            target/policy/non-rust-inventory.md \
+            target/policy/non-rust-inventory.json \
             || { echo "::error::cannot clear cache-restored target/receipts surfaces (#12085); refusing to run the shard over possibly stale logs/artifacts"; exit 1; }
           mkdir -p target/receipts/shards target/receipts/shard-summaries
-          timeout --signal=TERM --kill-after=30s 1200s \
+          timeout --signal=TERM --kill-after=30s 1800s \
             python3 scripts/ci/run_gate_shard.py \
               --xtask target/debug/xtask \
               --gate-policy .ci/gate-policy.yaml \
@@ -1095,7 +1171,7 @@ jobs:
           status=$?
           case "$status" in
             124)
-              echo "::error::Shard hit the 20m inner watchdog; completed receipts and the partial shard summary remain available"
+              echo "::error::Shard hit the 30m inner watchdog; completed receipts and the partial shard summary remain available"
               ;;
             137|143)
               echo "::error::Shard was cancelled by the runner or process group (exit $status)"
@@ -1142,6 +1218,45 @@ jobs:
             target/receipts/logs/*.log
             target/receipts/artifacts/*
           if-no-files-found: warn
+          retention-days: 7
+
+      - name: Bind produced inventory evidence
+        id: inventory-evidence
+        if: always() && matrix.name == 'policy' && steps.inventory-source.outcome == 'success' && steps.inventory-clean.outcome == 'success'
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ steps.inventory-source.outputs.sha }}
+        run: |
+          python3 - <<'PYTHON'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import subprocess
+
+          source = subprocess.check_output(["git", "rev-parse", "HEAD^{commit}"], text=True).strip()
+          if source != os.environ["SOURCE_SHA"]:
+              raise SystemExit("inventory source changed during the shard")
+          paths = [Path("target/policy/non-rust-inventory." + ext) for ext in ("md", "json")]
+          if not any(path.exists() for path in paths):
+              raise SystemExit(0)  # The producer never emitted evidence.
+          files = {path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in paths}
+          receipt = {"schema_version": 1, "source_sha": source, "sha256": files}
+          Path("target/policy/non-rust-inventory-subject.json").write_text(json.dumps(receipt) + "\n")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              output.write("ready=true\n")
+          PYTHON
+
+      - name: Upload non-Rust inventory evidence
+        if: always() && matrix.name == 'policy' && steps.inventory-evidence.outputs.ready == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: non-rust-inventory-${{ steps.inventory-source.outputs.sha }}
+          path: |
+            target/policy/non-rust-inventory.md
+            target/policy/non-rust-inventory.json
+            target/policy/non-rust-inventory-subject.json
+          if-no-files-found: error
           retention-days: 7
 
       - name: Upload parser integration receipt
@@ -1330,7 +1445,7 @@ jobs:
           toolchain: 1.95.0
 
       - name: Install just
-        uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc  # v2.86.7
+        uses: taiki-e/install-action@5bf6ce016fd2e72eefc647cbca1e4213f65955b8  # v2.87.5
         with:
           tool: just
 
@@ -1351,6 +1466,21 @@ jobs:
         env:
           PERL_LSP_BIN: ${{ github.workspace }}/target/debug/perllsp
           RUST_TEST_THREADS: "1"
+          # #9616: golden-manifest error waivers carry calendar expiry dates, so
+          # enforcing a lapse on every branch makes the verdict depend on
+          # merge-base age rather than on the diff under test. A branch reports
+          # a lapse as a warning; a push to the default branch fails, which is
+          # where the waiver can actually be refreshed. Waiver *shape* stays
+          # enforced everywhere.
+          #
+          # merge_group stays on `warn` deliberately. A lapsed waiver is a
+          # property of the repository, not of the candidate being queued: it
+          # is equally true whether or not this candidate lands, so failing the
+          # candidate's queue run would attribute a repository problem to a
+          # change that did not cause it — the same misattribution this issue
+          # removes from branches. The push-to-main run below catches the lapse
+          # within one merge, and reports it against the commit that can fix it.
+          PERL_LSP_UX_WAIVER_EXPIRY: ${{ (github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')) && 'enforce' || 'warn' }}
         run: |
           set -o pipefail
           mkdir -p target/receipts
@@ -1526,9 +1656,13 @@ jobs:
       # whether what would actually land still compiles. Other jobs in this
       # workflow deliberately keep exact-head checkout for head-pinned receipts;
       # this one is a merge-surface gate and must not.
+      # Full history: the non-Rust file policy contract below runs the real
+      # `non-rust inventory --check`, whose newly-added-path ratchet needs
+      # `origin/main` (or `HEAD^`) to resolve and fails closed in CI otherwise.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
@@ -1536,7 +1670,7 @@ jobs:
           toolchain: 1.95.0
 
       - name: Install just
-        uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc  # v2.86.7
+        uses: taiki-e/install-action@5bf6ce016fd2e72eefc647cbca1e4213f65955b8  # v2.87.5
         with:
           tool: just
 
@@ -1555,7 +1689,7 @@ jobs:
       # both integration targets here because compile-all-targets alone cannot
       # execute their assertions, and the routed pr-fast lane is advisory.
       - name: Legacy parity library authority (required merge surface)
-        run: cargo test -p perl-kwalitee --test legacy_parity --locked -- --nocapture
+        run: cargo test -p perl-release-readiness --test legacy_parity --locked -- --nocapture
 
       - name: Legacy parity CLI authority (required merge surface)
         run: cargo test -p xtask --test perl_kwalitee_parity --locked -- --nocapture
@@ -1596,6 +1730,97 @@ jobs:
       # to the four contracts above on the same required merge surface.
       - name: Gate-policy budget witness contract (required merge surface)
         run: cargo test -p xtask --test issue_4657_ci_workflow_contract --locked -- --nocapture
+
+      # #14585: nothing executed `xtask/tests/file_policy.rs`. No workflow named
+      # `--test file_policy`, the merge gate runs `cargo test --workspace --lib`
+      # (which does not build `tests/`), and the policy shard runs
+      # `cargo xtask gates` rather than the test binary. The suite asserts the
+      # inventory gate's tier, required flag, description, command, timeout,
+      # budgets, single mapping, and shard membership — so the gate guarding the
+      # non-Rust inventory was itself guarded by a contract that could not go
+      # red, and did in fact sit red on main unnoticed. Same reasoning as the
+      # contracts above, so it belongs on the same required merge surface.
+      - name: Non-Rust file policy contract (required merge surface)
+        run: cargo test -p xtask --test file_policy --locked -- --nocapture
+
+      # #14178: identical reasoning to the file-policy contract directly above.
+      # This suite asserts that every literal crate name in the Cargo dependabot
+      # entry, and every crate the dependency guide advertises, resolves to a
+      # dependency some workspace manifest declares. Its whole value is going
+      # red when a stale name is added, and `.github/dependabot.yml` is not in
+      # ci-scope's CI_CONFIG_PATHS, so a config-only edit does not even reach
+      # the advisory routed lane. Left off this surface the guard would compile
+      # and never execute — the state #14585 found `file_policy` in.
+      - name: Dependabot dependency-name contract (required merge surface)
+        run: cargo test -p xtask --test dependabot_cargo_dependency_names --locked -- --nocapture
+
+      # #13477: same required-surface reasoning as the dependency-name
+      # contract above. This suite asserts that the Cargo row keeps
+      # `prefix: "chore"` plus `include: "scope"` and rejects
+      # `prefix: "chore(deps)"` plus that include. `.github/dependabot.yml`
+      # is not in ci-scope's CI_CONFIG_PATHS, so a config-only revert of
+      # #13482 would never reach the advisory routed lane.
+      - name: Dependabot Cargo commit-message contract (required merge surface)
+        run: cargo test -p xtask --test dependabot_cargo_commit_message --locked -- --nocapture
+
+      # #13484: nothing executed the `xtask` *bin* unit tests. The merge gate
+      # runs `cargo test --workspace --lib` (a bin is not a lib target) and no
+      # workflow names `--bin xtask`, so `tasks::changelog::tests` — the proof
+      # that a malformed fragment `time:` becomes a named per-fragment finding
+      # instead of a repo-wide `changie batch` crash, and that an absent
+      # disposition artifact cannot supply the disposition removing it — could
+      # not go red. Same failure mode as #14585 above: the gate guarding the
+      # release ledger was itself guarded by a contract with no way to fail.
+      # Scoped to the changelog/changie modules rather than the whole bin
+      # suite on purpose — that suite also carries inventory ratchets which are
+      # red on main today, so enabling it wholesale would gate this surface on
+      # other lanes' work.
+      # One invocation with both filters, not two runs: libtest ORs positional
+      # filters and runs each match once, so `check_malformed_changie_yaml_is_
+      # instrument_failure_exit2` — the one name containing both words — is not
+      # executed twice. Kept as substring filters rather than exact module
+      # paths on purpose: they also pick up the `merge_ready` changelog fan-in
+      # tests and the `file_policy` changie-rule tests, which exact paths would
+      # drop from this surface.
+      - name: Changelog fragment gate contract (required merge surface)
+        run: cargo test -p xtask --bin xtask --locked -- --nocapture changelog changie
+
+      # #14180: same required-surface reasoning as the Cargo dependency-name
+      # contract above. This suite asserts that the GitHub Actions `/` and npm
+      # `/vscode-extension` rows keep `prefix: "chore"` plus `include: "scope"`
+      # and reject `prefix: "chore(deps)"` plus that include. Cargo is out of
+      # this claim (#13482 / #14898). `.github/dependabot.yml` is not in
+      # ci-scope's CI_CONFIG_PATHS, so a config-only revert would never reach
+      # the advisory routed lane. Inserted after the changelog fragment gate
+      # so it does not occupy the insertion site #14898 uses after the Cargo
+      # name contract.
+      - name: Dependabot GitHub Actions and npm commit-message contract (required merge surface)
+        run: cargo test -p xtask --test dependabot_gha_npm_commit_message --locked -- --nocapture
+
+      # #15100: same required-surface reasoning as the contracts above. These
+      # suites assert that every generated-PR CI dispatcher (post-merge-status
+      # today, lane-history after this change) satisfies ci.yml's required
+      # workflow_dispatch subject inputs (#13019) and refuses to prove a moved
+      # subject. No workflow named either target: the post-merge suite sat red
+      # on main unobserved after #13468 changed the dispatch shape, and the
+      # lane-history suite would never run at all.
+      - name: Post-merge generated-PR dispatch contract (required merge surface)
+        run: cargo test -p xtask --test post_merge_status_regen_tests --locked -- --nocapture
+
+      - name: Lane-history generated-PR dispatch contract (required merge surface)
+        run: cargo test -p xtask --test lane_history_ci_dispatch_contract --locked -- --nocapture
+
+      # #11933: the freshness cfg-binding test lives in
+      # `xtask/tests/gate_policy_profile_tests.rs`. unit_routed_full only
+      # executes xtask integration tests when the PR diff selects xtask, and
+      # `.ci/gate-policy.yaml` is not an xtask-policy-guarded input. A
+      # gate-policy-only edit that dropped `workspace` from
+      # `pending_parse_freshness` would compile zero tests, exit 0, and leave
+      # every required check green — the exact silent-rot this gate exists to
+      # catch. Compile-all-targets is the required merge surface that still
+      # runs when only `.ci/` changes.
+      - name: Freshness-gate cfg-binding contract (required merge surface)
+        run: cargo test -p xtask --test gate_policy_profile_tests --locked -- freshness_gate_commands_satisfy_every_named_suite_cfg --nocapture
 
   lsp-memory-smoke:
     name: LSP Memory Smoke

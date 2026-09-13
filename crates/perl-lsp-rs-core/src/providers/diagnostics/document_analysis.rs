@@ -166,6 +166,41 @@ impl DocumentDiagnosticAnalysis {
         self.symbol_table
             .get_or_init(|| SymbolExtractor::new_with_source(&self.source).extract(&self.ast))
     }
+
+    /// Proof-only: whether this analysis's pragma timeline has been
+    /// materialized, i.e. whether some consumer actually read it *from here*.
+    ///
+    /// This is the instrument that distinguishes reuse from coincidence. A
+    /// route that obtains the generation-owned analysis and then hands the
+    /// provider `None` still warms `ParsedSnapshot`'s cell and still returns
+    /// byte-identical diagnostics — the provider simply builds a throwaway
+    /// analysis of its own — so neither the snapshot's construction counter nor
+    /// output equivalence can see the bypass. These cells can: they stay cold
+    /// unless the shared facts were the ones consumed.
+    ///
+    /// Gated exactly as the native-critic rebuild counter, so no production
+    /// build carries it.
+    #[cfg(any(test, feature = "test-instrumentation"))]
+    #[must_use]
+    pub fn pragma_map_materialized(&self) -> bool {
+        self.pragma_map.get().is_some()
+    }
+
+    /// Proof-only companion to [`Self::pragma_map_materialized`] for the
+    /// scope-analysis facts.
+    #[cfg(any(test, feature = "test-instrumentation"))]
+    #[must_use]
+    pub fn scope_issues_materialized(&self) -> bool {
+        self.scope_issues.get().is_some()
+    }
+
+    /// Proof-only companion to [`Self::pragma_map_materialized`] for the
+    /// symbol table.
+    #[cfg(any(test, feature = "test-instrumentation"))]
+    #[must_use]
+    pub fn symbol_table_materialized(&self) -> bool {
+        self.symbol_table.get().is_some()
+    }
 }
 
 #[cfg(test)]
@@ -401,6 +436,7 @@ mod tests {
             source,
             None,
             &[],
+            None,
             None,
             Some(&analysis),
         );

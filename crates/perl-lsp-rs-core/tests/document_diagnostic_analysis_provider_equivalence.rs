@@ -33,6 +33,7 @@ fn assert_provider_equivalent(label: &str, source: &str) {
         None,
         &[],
         None,
+        None,
         Some(&analysis),
     );
 
@@ -146,6 +147,7 @@ fn mismatched_analysis_does_not_leak_into_provider_result() {
         None,
         &[],
         None,
+        None,
         Some(&mismatched_analysis),
     );
 
@@ -180,6 +182,7 @@ fn same_length_different_content_analysis_is_rejected_by_provider() {
         source_b,
         None,
         &[],
+        None,
         None,
         Some(&mismatched_analysis),
     );

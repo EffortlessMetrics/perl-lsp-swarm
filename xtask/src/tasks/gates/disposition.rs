@@ -1035,9 +1035,62 @@ mod gate_disposition_spec {
         FlakePolicy, GateDefinition, GatePlanningConfig, GatePlanningRole, GatePolicy,
         GlobalSettings, QuarantinedGate,
     };
+    use perl_tdd_support::{must_err_with, must_some_with, must_with};
     use std::collections::HashMap;
+    use std::path::PathBuf;
 
-    const TODAY: NaiveDate = NaiveDate::from_ymd_opt(2026, 8, 24).unwrap();
+    fn fixture_today() -> NaiveDate {
+        must_some_with(
+            NaiveDate::from_ymd_opt(2026, 8, 24),
+            "fixture today is a valid calendar date",
+        )
+    }
+
+    fn fixture_date(text: &str) -> NaiveDate {
+        must_with(text.parse(), format_args!("fixture date {text}"))
+    }
+
+    fn resolved_row<'a>(authority: &'a DispositionAuthority, gate_id: &str) -> &'a GateDisposition {
+        must_some_with(authority.get(gate_id), format_args!("resolved row for {gate_id}"))
+    }
+
+    fn closed_detail(row: &GateDisposition) -> &str {
+        must_some_with(
+            row.detail.as_deref(),
+            format_args!("{} must carry a closed-reason detail", row.gate_id),
+        )
+    }
+
+    fn quarantine_authority(row: &GateDisposition) -> &QuarantineAuthority {
+        must_some_with(
+            row.quarantine.as_ref(),
+            format_args!("{} must carry quarantine evidence", row.gate_id),
+        )
+    }
+
+    fn skip_observation() -> ExecutionObservation {
+        must_some_with(
+            interpret_gate_status("skip"),
+            "skip status must map to an execution observation",
+        )
+    }
+
+    fn project_root() -> PathBuf {
+        must_with(crate::utils::project_root(), "workspace project root")
+    }
+
+    fn checked_in_authority() -> DispositionAuthority {
+        must_with(resolve(&project_root()), "resolve checked-in gate disposition")
+    }
+
+    fn checked_in_policy() -> GatePolicy {
+        must_with(
+            crate::tasks::gates::load_policy_for_inspection(
+                &project_root().join(".ci/gate-policy.yaml"),
+            ),
+            "load checked-in gate policy",
+        )
+    }
 
     fn gate(name: &str, tier: &str, required: bool, quarantine: bool) -> GateDefinition {
         GateDefinition {
@@ -1122,8 +1175,8 @@ mod gate_disposition_spec {
     #[test]
     fn ordinary_gate_resolves_active_current_from_policy_default() {
         let authority =
-            resolve_from(&policy(vec![gate("fmt", "pr_fast", true, false)]), None, TODAY);
-        let row = authority.get("fmt").unwrap();
+            resolve_from(&policy(vec![gate("fmt", "pr_fast", true, false)]), None, fixture_today());
+        let row = resolved_row(&authority, "fmt");
         assert_eq!(row.lifecycle, GateLifecycle::Active);
         assert_eq!(row.resolution, DispositionResolution::Current);
         assert_eq!(row.policy_role, GatePolicyRole::Required);
@@ -1136,16 +1189,16 @@ mod gate_disposition_spec {
         let authority = resolve_from(
             &policy(vec![gate("clippy_scoped", "pr_fast", false, true)]),
             ledger(vec![entry("clippy_scoped")]).as_ref(),
-            TODAY,
+            fixture_today(),
         );
-        let row = authority.get("clippy_scoped").unwrap();
+        let row = resolved_row(&authority, "clippy_scoped");
         assert_eq!(row.lifecycle, GateLifecycle::Quarantined);
         assert_eq!(row.resolution, DispositionResolution::Current);
-        let quarantine = row.quarantine.as_ref().unwrap();
+        let quarantine = quarantine_authority(row);
         assert_eq!(quarantine.owner, "maintainer");
         assert_eq!(quarantine.reason_token, "timeout waiting for completion");
-        assert_eq!(quarantine.review_after, "2026-09-30".parse().unwrap());
-        assert_eq!(quarantine.quarantined_at, Some("2026-08-01".parse().unwrap()));
+        assert_eq!(quarantine.review_after, fixture_date("2026-09-30"));
+        assert_eq!(quarantine.quarantined_at, Some(fixture_date("2026-08-01")));
         assert!(authority.is_current());
     }
 
@@ -1159,7 +1212,7 @@ mod gate_disposition_spec {
             gate("existing", "merge_gate", true, false),
             gate("named_new_contract", "merge_gate", false, false),
         ];
-        let authority = resolve_from(&policy(gates.clone()), None, TODAY);
+        let authority = resolve_from(&policy(gates.clone()), None, fixture_today());
         assert_eq!(authority.rows.len(), gates.len());
         let unique: BTreeSet<&str> =
             authority.rows.iter().map(|row| row.gate_id.as_str()).collect();
@@ -1179,12 +1232,12 @@ mod gate_disposition_spec {
         let authority = resolve_from(
             &policy(vec![gate("orphan", "nightly", false, true)]),
             ledger(vec![no_owner]).as_ref(),
-            TODAY,
+            fixture_today(),
         );
-        let row = authority.get("orphan").unwrap();
+        let row = resolved_row(&authority, "orphan");
         assert_eq!(row.resolution, DispositionResolution::Invalid);
         assert_eq!(row.lifecycle, GateLifecycle::Quarantined);
-        assert!(row.detail.as_deref().unwrap().contains("owner"));
+        assert!(closed_detail(row).contains("owner"));
         assert!(!authority.is_current());
     }
 
@@ -1196,11 +1249,11 @@ mod gate_disposition_spec {
         let authority = resolve_from(
             &policy(vec![gate("silent", "nightly", false, true)]),
             ledger(vec![no_reason]).as_ref(),
-            TODAY,
+            fixture_today(),
         );
-        let row = authority.get("silent").unwrap();
+        let row = resolved_row(&authority, "silent");
         assert_eq!(row.resolution, DispositionResolution::Invalid);
-        assert!(row.detail.as_deref().unwrap().contains("reason"));
+        assert!(closed_detail(row).contains("reason"));
     }
 
     #[test]
@@ -1211,11 +1264,11 @@ mod gate_disposition_spec {
         let authority = resolve_from(
             &policy(vec![gate("horizonless", "nightly", false, true)]),
             ledger(vec![no_horizon]).as_ref(),
-            TODAY,
+            fixture_today(),
         );
-        let row = authority.get("horizonless").unwrap();
+        let row = resolved_row(&authority, "horizonless");
         assert_eq!(row.resolution, DispositionResolution::Invalid);
-        assert!(row.detail.as_deref().unwrap().contains("review horizon"));
+        assert!(closed_detail(row).contains("review horizon"));
     }
 
     #[test]
@@ -1225,12 +1278,12 @@ mod gate_disposition_spec {
         let authority = resolve_from(
             &policy(vec![gate("stale", "merge_gate", false, true)]),
             ledger(vec![expired]).as_ref(),
-            TODAY,
+            fixture_today(),
         );
-        let row = authority.get("stale").unwrap();
+        let row = resolved_row(&authority, "stale");
         assert_eq!(row.lifecycle, GateLifecycle::Quarantined);
         assert_eq!(row.resolution, DispositionResolution::Expired);
-        assert!(row.detail.as_deref().unwrap().contains("2026-05-26"));
+        assert!(closed_detail(row).contains("2026-05-26"));
         assert!(!authority.is_current());
         assert_eq!(
             planned_outcome(row, SelectorEvidence::Applicable),
@@ -1247,9 +1300,9 @@ mod gate_disposition_spec {
         let authority = resolve_from(
             &policy(vec![gate("qg", "merge_gate", false, true)]),
             ledger(vec![entry("qg")]).as_ref(),
-            TODAY,
+            fixture_today(),
         );
-        let row = authority.get("qg").unwrap();
+        let row = resolved_row(&authority, "qg");
         assert_eq!(planned_outcome(row, SelectorEvidence::Applicable), PlannedOutcome::Quarantined);
         // Even positive selector non-applicability cannot erase a current
         // quarantine into a scoped no-op.
@@ -1262,8 +1315,8 @@ mod gate_disposition_spec {
     #[test]
     fn scoped_noop_requires_both_active_lifecycle_and_selector_evidence() {
         let authority =
-            resolve_from(&policy(vec![gate("ag", "pr_fast", true, false)]), None, TODAY);
-        let row = authority.get("ag").unwrap();
+            resolve_from(&policy(vec![gate("ag", "pr_fast", true, false)]), None, fixture_today());
+        let row = resolved_row(&authority, "ag");
         assert_eq!(
             planned_outcome(row, SelectorEvidence::NotApplicableToSubject),
             PlannedOutcome::ScopedNoop
@@ -1273,7 +1326,7 @@ mod gate_disposition_spec {
 
     #[test]
     fn execution_skip_observation_establishes_neither_proposition() {
-        let observation = interpret_gate_status("skip").unwrap();
+        let observation = skip_observation();
         assert_eq!(observation, ExecutionObservation::Skip);
         assert!(!observation.establishes_scoped_noop());
         assert!(!observation.establishes_quarantine());
@@ -1287,9 +1340,9 @@ mod gate_disposition_spec {
         let authority = resolve_from(
             &policy(vec![gate("frozen", "merge_gate", false, true)]),
             ledger(vec![entry("frozen")]).as_ref(),
-            TODAY,
+            fixture_today(),
         );
-        let row = authority.get("frozen").unwrap();
+        let row = resolved_row(&authority, "frozen");
         let before = (row.lifecycle, row.resolution);
         let _ = planned_outcome(row, SelectorEvidence::NotApplicableToSubject);
         assert_eq!((row.lifecycle, row.resolution), before);
@@ -1348,9 +1401,9 @@ mod gate_disposition_spec {
         let authority = resolve_from(
             &policy(vec![gate("sec", "merge_gate", false, true)]),
             ledger(vec![entry("sec")]).as_ref(),
-            TODAY,
+            fixture_today(),
         );
-        let row = authority.get("sec").unwrap();
+        let row = resolved_row(&authority, "sec");
         assert_eq!(row.policy_role, GatePolicyRole::Advisory);
         assert_eq!(row.lifecycle, GateLifecycle::Quarantined);
     }
@@ -1364,11 +1417,11 @@ mod gate_disposition_spec {
         let authority = resolve_from(
             &policy(vec![gate("drift", "pr_fast", true, false)]),
             ledger(vec![entry("drift")]).as_ref(),
-            TODAY,
+            fixture_today(),
         );
-        let row = authority.get("drift").unwrap();
+        let row = resolved_row(&authority, "drift");
         assert_eq!(row.resolution, DispositionResolution::Invalid);
-        assert!(row.detail.as_deref().unwrap().contains("conflicts"));
+        assert!(closed_detail(row).contains("conflicts"));
     }
 
     #[test]
@@ -1377,11 +1430,11 @@ mod gate_disposition_spec {
         let authority = resolve_from(
             &policy_with_flake(gates, Some(flake_with_projection("projected"))),
             ledger(Vec::new()).as_ref(),
-            TODAY,
+            fixture_today(),
         );
-        let row = authority.get("projected").unwrap();
+        let row = resolved_row(&authority, "projected");
         assert_eq!(row.resolution, DispositionResolution::Invalid);
-        assert!(row.detail.as_deref().unwrap().contains("conflicting"));
+        assert!(closed_detail(row).contains("conflicting"));
     }
 
     /// A projection that mirrors the corroborating ledger evidence leaves the
@@ -1406,9 +1459,9 @@ mod gate_disposition_spec {
                 Some(mirroring_projection("mirrored")),
             ),
             ledger(vec![entry("mirrored")]).as_ref(),
-            TODAY,
+            fixture_today(),
         );
-        let row = authority.get("mirrored").unwrap();
+        let row = resolved_row(&authority, "mirrored");
         assert_eq!(row.resolution, DispositionResolution::Current);
         assert_eq!(row.lifecycle, GateLifecycle::Quarantined);
     }
@@ -1448,16 +1501,16 @@ mod gate_disposition_spec {
             let authority = resolve_from(
                 &policy_with_flake(vec![gate("drift", "pr_fast", false, true)], Some(flake)),
                 ledger(vec![entry("drift")]).as_ref(),
-                TODAY,
+                fixture_today(),
             );
-            let row = authority.get("drift").unwrap();
+            let row = resolved_row(&authority, "drift");
             assert_eq!(
                 row.resolution,
                 DispositionResolution::Invalid,
                 "projection {} disagreement must fail closed",
                 mutated.0
             );
-            assert!(row.detail.as_deref().unwrap().contains("disagrees"));
+            assert!(closed_detail(row).contains("disagrees"));
         }
     }
 
@@ -1473,28 +1526,29 @@ mod gate_disposition_spec {
         let authority = resolve_from(
             &policy_with_flake(vec![gate("twins", "pr_fast", false, true)], Some(flake)),
             ledger(vec![entry("twins")]).as_ref(),
-            TODAY,
+            fixture_today(),
         );
-        let row = authority.get("twins").unwrap();
+        let row = resolved_row(&authority, "twins");
         assert_eq!(row.resolution, DispositionResolution::Invalid);
-        assert!(row.detail.as_deref().unwrap().contains("duplicate"));
+        assert!(closed_detail(row).contains("duplicate"));
     }
 
     #[test]
     fn duplicate_policy_rows_and_duplicate_ledger_rows_fail_closed() {
         let duplicated =
             vec![gate("twin", "pr_fast", true, false), gate("twin", "pr_fast", true, false)];
-        let authority = resolve_from(&policy(duplicated), ledger(Vec::new()).as_ref(), TODAY);
+        let authority =
+            resolve_from(&policy(duplicated), ledger(Vec::new()).as_ref(), fixture_today());
         assert!(authority.rows.iter().all(|row| row.resolution == DispositionResolution::Invalid));
 
         let authority = resolve_from(
             &policy(vec![gate("twin_ledger", "pr_fast", true, true)]),
             ledger(vec![entry("twin_ledger"), entry("twin_ledger")]).as_ref(),
-            TODAY,
+            fixture_today(),
         );
-        let row = authority.get("twin_ledger").unwrap();
+        let row = resolved_row(&authority, "twin_ledger");
         assert_eq!(row.resolution, DispositionResolution::Invalid);
-        assert!(row.detail.as_deref().unwrap().contains("duplicate"));
+        assert!(closed_detail(row).contains("duplicate"));
     }
 
     #[test]
@@ -1508,7 +1562,7 @@ mod gate_disposition_spec {
         let authority = resolve_from(
             &policy(vec![gate("known", "pr_fast", true, false)]),
             ledger(vec![entry("lsp::test_completion_timeout")]).as_ref(),
-            TODAY,
+            fixture_today(),
         );
         assert_eq!(
             authority.test_level_ledger_rows,
@@ -1516,7 +1570,7 @@ mod gate_disposition_spec {
         );
         assert!(authority.unknown_ledger_entries.is_empty());
         assert!(authority.is_current());
-        assert_eq!(authority.get("known").unwrap().resolution, DispositionResolution::Current);
+        assert_eq!(resolved_row(&authority, "known").resolution, DispositionResolution::Current);
         assert!(authority.format_explanation().contains("test-level ledger rows"));
     }
 
@@ -1539,7 +1593,7 @@ mod gate_disposition_spec {
                 Some(projected_at_unknown),
             ),
             ledger(Vec::new()).as_ref(),
-            TODAY,
+            fixture_today(),
         );
         assert_eq!(authority.unknown_ledger_entries.len(), 1);
         assert!(authority.unknown_ledger_entries[0].contains("ghost"));
@@ -1548,13 +1602,18 @@ mod gate_disposition_spec {
         // Unsupported source schema versions are refused before reading.
         let mut unsupported_policy = policy(vec![gate("x", "pr_fast", true, false)]);
         unsupported_policy.schema_version = 2;
-        let err = check_schema_versions(&unsupported_policy, None).unwrap_err();
+        let err = must_err_with(
+            check_schema_versions(&unsupported_policy, None),
+            "unsupported gate-policy schema must be refused",
+        );
         assert!(err.to_string().contains("unsupported gate-policy schema_version"));
 
-        let mut unsupported_ledger = ledger(Vec::new());
-        unsupported_ledger.as_mut().unwrap().schema_version = 7;
-        let err =
-            check_schema_versions(&policy(Vec::new()), unsupported_ledger.as_ref()).unwrap_err();
+        let mut unsupported_ledger = must_some_with(ledger(Vec::new()), "empty ledger fixture");
+        unsupported_ledger.schema_version = 7;
+        let err = must_err_with(
+            check_schema_versions(&policy(Vec::new()), Some(&unsupported_ledger)),
+            "unsupported debt-ledger schema must be refused",
+        );
         assert!(err.to_string().contains("unsupported debt-ledger schema_version"));
     }
 
@@ -1565,7 +1624,7 @@ mod gate_disposition_spec {
         let authority = resolve_from(
             &policy(vec![gate("named", "pr_fast", true, false)]),
             ledger(vec![unnamed]).as_ref(),
-            TODAY,
+            fixture_today(),
         );
         assert_eq!(authority.unknown_ledger_entries, vec![UNNAMED_LEDGER_ROW.to_string()]);
         assert!(!authority.is_current());
@@ -1583,7 +1642,7 @@ mod gate_disposition_spec {
                 gate("beta", "merge_gate", false, true),
             ]),
             ledger(vec![entry("beta")]).as_ref(),
-            TODAY,
+            fixture_today(),
         );
         let reordered = resolve_from(
             &policy(vec![
@@ -1591,7 +1650,7 @@ mod gate_disposition_spec {
                 gate("alpha", "pr_fast", true, false),
             ]),
             ledger(vec![entry("beta")]).as_ref(),
-            TODAY,
+            fixture_today(),
         );
         assert_eq!(first.semantic_digest, reordered.semantic_digest);
 
@@ -1601,7 +1660,7 @@ mod gate_disposition_spec {
                 gate("beta", "merge_gate", false, true),
             ]),
             ledger(vec![entry("beta")]).as_ref(),
-            TODAY,
+            fixture_today(),
         );
         assert_ne!(first.semantic_digest, moved.semantic_digest);
     }
@@ -1615,7 +1674,7 @@ mod gate_disposition_spec {
         let base = resolve_from(
             &policy(vec![gate("q", "pr_fast", false, true)]),
             ledger(vec![entry("q")]).as_ref(),
-            TODAY,
+            fixture_today(),
         );
 
         // Different closed failure detail on an invalid row: a quarantine
@@ -1623,7 +1682,7 @@ mod gate_disposition_spec {
         let bit_without_ledger = resolve_from(
             &policy(vec![gate("q", "pr_fast", true, true)]),
             ledger(Vec::new()).as_ref(),
-            TODAY,
+            fixture_today(),
         );
         let projected_without_ledger = resolve_from(
             &policy_with_flake(
@@ -1631,7 +1690,7 @@ mod gate_disposition_spec {
                 Some(flake_with_projection("q")),
             ),
             ledger(Vec::new()).as_ref(),
-            TODAY,
+            fixture_today(),
         );
         assert_ne!(
             bit_without_ledger.semantic_digest, projected_without_ledger.semantic_digest,
@@ -1650,7 +1709,7 @@ mod gate_disposition_spec {
             let authority = resolve_from(
                 &policy(vec![gate("q", "pr_fast", false, true)]),
                 ledger(vec![mutated]).as_ref(),
-                TODAY,
+                fixture_today(),
             );
             assert_ne!(
                 base.semantic_digest, authority.semantic_digest,
@@ -1672,9 +1731,9 @@ mod gate_disposition_spec {
         let authority = resolve_from(
             &policy(vec![gate("seam", "merge_gate", false, true)]),
             ledger(vec![entry("seam")]).as_ref(),
-            TODAY,
+            fixture_today(),
         );
-        let row = authority.get("seam").unwrap();
+        let row = resolved_row(&authority, "seam");
         assert_eq!(
             planned_outcome(row, SelectorEvidence::NotApplicableToSubject),
             PlannedOutcome::Quarantined
@@ -1683,7 +1742,7 @@ mod gate_disposition_spec {
             skip_population_admission(row),
             SkipPopulationAdmission::Refused { lifecycle: GateLifecycle::Quarantined }
         );
-        assert!(!row.quarantine.as_ref().unwrap().owner.is_empty());
+        assert!(!quarantine_authority(row).owner.is_empty());
     }
 
     #[test]
@@ -1693,9 +1752,9 @@ mod gate_disposition_spec {
         let authority = resolve_from(
             &policy(vec![gate("loud", "merge_gate", false, true)]),
             ledger(vec![expired]).as_ref(),
-            TODAY,
+            fixture_today(),
         );
-        let row = authority.get("loud").unwrap();
+        let row = resolved_row(&authority, "loud");
         assert_eq!(execution_admission(row, true), ExecutionAdmission::ActionRequired);
         assert_eq!(execution_admission(row, false), ExecutionAdmission::ActionRequired);
 
@@ -1705,9 +1764,9 @@ mod gate_disposition_spec {
         let authority = resolve_from(
             &policy(vec![gate("loud2", "merge_gate", false, true)]),
             ledger(vec![ownerless]).as_ref(),
-            TODAY,
+            fixture_today(),
         );
-        let row = authority.get("loud2").unwrap();
+        let row = resolved_row(&authority, "loud2");
         assert_eq!(execution_admission(row, true), ExecutionAdmission::ActionRequired);
     }
 
@@ -1716,9 +1775,9 @@ mod gate_disposition_spec {
         let authority = resolve_from(
             &policy(vec![gate("held", "merge_gate", false, true)]),
             ledger(vec![entry("held")]).as_ref(),
-            TODAY,
+            fixture_today(),
         );
-        let row = authority.get("held").unwrap();
+        let row = resolved_row(&authority, "held");
         assert_eq!(execution_admission(row, false), ExecutionAdmission::QuarantineSkip);
         assert_eq!(execution_admission(row, true), ExecutionAdmission::QuarantineSkip);
     }
@@ -1733,7 +1792,7 @@ mod gate_disposition_spec {
                 gate("plain", "pr_fast", true, false),
             ]),
             ledger(vec![expired]).as_ref(),
-            TODAY,
+            fixture_today(),
         );
         let text = authority.format_explanation();
         assert!(text.contains("gate_disposition.v1"));
@@ -1748,16 +1807,17 @@ mod gate_disposition_spec {
 
     #[test]
     fn checked_in_security_audit_resolves_invalid_not_quarantined_or_noop() {
-        let root = crate::utils::project_root().unwrap();
-        let authority = resolve(&root).unwrap();
-        let row =
-            authority.get("security_audit").expect("security_audit must remain a governed gate");
+        let authority = checked_in_authority();
+        let row = must_some_with(
+            authority.get("security_audit"),
+            "security_audit must remain a governed gate",
+        );
         // Source-backed: the ledger evidence is expired (2026-05-26) and
         // ownerless, so this is invalid action-required input — not a valid
         // current quarantine, and never scoped_noop.
         assert_eq!(row.lifecycle, GateLifecycle::Quarantined);
         assert_ne!(row.resolution, DispositionResolution::Current);
-        let detail = row.detail.as_deref().unwrap();
+        let detail = closed_detail(row);
         assert!(detail.contains("owner"), "detail must name the missing owner: {detail}");
         assert_eq!(row.policy_role, GatePolicyRole::Advisory);
         assert_eq!(
@@ -1768,8 +1828,7 @@ mod gate_disposition_spec {
 
     #[test]
     fn checked_in_quarantine_bits_without_ledger_rows_resolve_invalid() {
-        let root = crate::utils::project_root().unwrap();
-        let authority = resolve(&root).unwrap();
+        let authority = checked_in_authority();
         let unevidenced: Vec<&str> = authority
             .rows
             .iter()
@@ -1795,11 +1854,8 @@ mod gate_disposition_spec {
 
     #[test]
     fn checked_in_rows_cover_every_governed_gate_exactly_once() {
-        let root = crate::utils::project_root().unwrap();
-        let policy =
-            crate::tasks::gates::load_policy_for_inspection(&root.join(".ci/gate-policy.yaml"))
-                .unwrap();
-        let authority = resolve(&root).unwrap();
+        let policy = checked_in_policy();
+        let authority = checked_in_authority();
         assert_eq!(authority.rows.len(), policy.gates.len());
         for gate in &policy.gates {
             assert!(authority.get(&gate.name).is_some(), "missing row for {}", gate.name);
@@ -1807,5 +1863,32 @@ mod gate_disposition_spec {
         // The checked-in authority names its canonical sources.
         assert!(authority.source_paths.iter().any(|path| path.contains("gate-policy.yaml")));
         assert!(authority.source_paths.iter().any(|path| path.contains("debt-ledger.yaml")));
+    }
+
+    // -------------------------------------------------------------------
+    // Conversion falsifiers: helpers still fail with named context
+    // -------------------------------------------------------------------
+
+    #[test]
+    #[should_panic(expected = "must_some: resolved row for missing:")]
+    fn disposition_converted_option_assertion_still_fails_when_row_is_absent() {
+        let authority =
+            resolve_from(&policy(vec![gate("fmt", "pr_fast", true, false)]), None, fixture_today());
+        let _ = resolved_row(&authority, "missing");
+    }
+
+    #[test]
+    #[should_panic(expected = "must: fixture date not-a-date:")]
+    fn disposition_converted_result_assertion_still_fails_when_date_is_invalid() {
+        let _ = fixture_date("not-a-date");
+    }
+
+    #[test]
+    #[should_panic(expected = "must_err: supported schema must not be treated as refusal:")]
+    fn disposition_converted_err_assertion_still_fails_when_schema_is_supported() {
+        let _ = must_err_with(
+            check_schema_versions(&policy(vec![gate("x", "pr_fast", true, false)]), None),
+            "supported schema must not be treated as refusal",
+        );
     }
 }
