@@ -3,11 +3,9 @@
 //!
 //! The valid matrix uses three AST shapes: `Unary` for star forms, `Binary`
 //! for delimiter-bearing array/hash forms, and `HashSlice` for postfix hash
-//! slices. Delimiter-bearing rows pin the intended operator-inclusive span;
-//! star rows pin current operand-only spans from the production defect tracked
-//! in #13891. Recovery rows pin current diagnosed and silent-drop behavior,
-//! including the span-containment defect tracked in #14174. This candidate
-//! changes no production code.
+//! slices. Every row pins its operator-inclusive byte span, and every
+//! malformed row pins a diagnosed recovery whose recovered node still contains
+//! its own children. This candidate changes no production code.
 
 mod cpan_test_helpers;
 
@@ -37,53 +35,44 @@ enum ExpectedShape<'a> {
     HashSlice { receiver: &'a str, selector: &'a str },
 }
 
-#[derive(Clone, Copy, Debug)]
-enum RowSpan<'a> {
-    /// Operator-inclusive span, as an honest parser contract requires.
-    Full(&'a str),
-    /// Current behavior: arrow star-forms record only their operand's span
-    /// (stale `last_end_position`); tracked in #13891. This pin must become
-    /// `Full` in the PR that fixes it.
-    OperandOnly(&'a str),
-}
-
 #[derive(Clone, Copy)]
 struct MatrixCase<'a> {
     text: &'a str,
     shape: ExpectedShape<'a>,
-    span: RowSpan<'a>,
+    /// Operator-inclusive span text, as an honest parser contract requires.
+    span: &'a str,
 }
 
 const MATRIX: &[MatrixCase<'static>] = &[
     MatrixCase {
         text: "$sref->$*",
         shape: ExpectedShape::Unary { op: "->$*", receiver: "$sref" },
-        span: RowSpan::OperandOnly("$sref"),
+        span: "$sref->$*",
     },
     MatrixCase {
         text: "$aref->$#*",
         shape: ExpectedShape::Unary { op: "->$#*", receiver: "$aref" },
-        span: RowSpan::OperandOnly("$aref"),
+        span: "$aref->$#*",
     },
     MatrixCase {
         text: "$aref->@*",
         shape: ExpectedShape::Unary { op: "->@*", receiver: "$aref" },
-        span: RowSpan::OperandOnly("$aref"),
+        span: "$aref->@*",
     },
     MatrixCase {
         text: "$aref->@[0, 2]",
         shape: ExpectedShape::Binary { op: "->@[]", receiver: "$aref", selector: "0, 2" },
-        span: RowSpan::Full("$aref->@[0, 2]"),
+        span: "$aref->@[0, 2]",
     },
     MatrixCase {
         text: "$href->@{'alpha', $dynamic_key}",
         shape: ExpectedShape::HashSlice { receiver: "$href", selector: "'alpha', $dynamic_key" },
-        span: RowSpan::Full("$href->@{'alpha', $dynamic_key}"),
+        span: "$href->@{'alpha', $dynamic_key}",
     },
     MatrixCase {
         text: "$href->%*",
         shape: ExpectedShape::Unary { op: "->%*", receiver: "$href" },
-        span: RowSpan::OperandOnly("$href"),
+        span: "$href->%*",
     },
     MatrixCase {
         text: "$href->%{'alpha', $dynamic_key}",
@@ -92,17 +81,17 @@ const MATRIX: &[MatrixCase<'static>] = &[
             receiver: "$href",
             selector: "'alpha', $dynamic_key",
         },
-        span: RowSpan::Full("$href->%{'alpha', $dynamic_key}"),
+        span: "$href->%{'alpha', $dynamic_key}",
     },
     MatrixCase {
         text: "$cref->&*",
         shape: ExpectedShape::Unary { op: "->&*", receiver: "$cref" },
-        span: RowSpan::OperandOnly("$cref"),
+        span: "$cref->&*",
     },
     MatrixCase {
         text: "$gref->**",
         shape: ExpectedShape::Unary { op: "->**", receiver: "$gref" },
-        span: RowSpan::OperandOnly("$gref"),
+        span: "$gref->**",
     },
 ];
 
@@ -240,47 +229,22 @@ fn assert_shape(source: &str, node: &Node, expected: ExpectedShape<'_>) -> TestR
 }
 
 fn assert_span(source: &str, node: &Node, case: MatrixCase<'_>) -> TestResult {
-    match (case.span, &case.shape) {
-        (RowSpan::Full(expected), _) => {
-            if source_text(source, node)? != expected {
-                return Err(format!(
-                    "{} must keep its full operator-inclusive span, got {:?}\n{}",
-                    case.text,
-                    source_text(source, node)?,
-                    node.to_sexp()
-                ));
-            }
-        }
-        (RowSpan::OperandOnly(receiver), ExpectedShape::Unary { .. }) => {
-            if source_text(source, node)? != receiver {
-                return Err(format!(
-                    "{} currently records only receiver text {receiver:?}, got {:?}\n{}",
-                    case.text,
-                    source_text(source, node)?,
-                    node.to_sexp()
-                ));
-            }
-            let NodeKind::Unary { operand, .. } = &node.kind else {
-                return Err(format!(
-                    "{} span pin reached non-Unary shape: {}",
-                    case.text,
-                    node.to_sexp()
-                ));
-            };
-            if node.location != operand.location {
-                return Err(format!(
-                    "{} must currently share operand location {:?}, got {:?}\n{}",
-                    case.text,
-                    operand.location,
-                    node.location,
-                    node.to_sexp()
-                ));
-            }
-        }
-        (RowSpan::OperandOnly(receiver), shape) => {
+    if source_text(source, node)? != case.span {
+        return Err(format!(
+            "{} must keep its full operator-inclusive span, got {:?}\n{}",
+            case.text,
+            source_text(source, node)?,
+            node.to_sexp()
+        ));
+    }
+    for child in node.children() {
+        if child.location.start < node.location.start || child.location.end > node.location.end {
             return Err(format!(
-                "{} has OperandOnly span pin with incompatible shape {shape:?}",
-                receiver
+                "{} child {:?} escapes row span {:?}\n{}",
+                case.text,
+                child.location,
+                node.location,
+                node.to_sexp()
             ));
         }
     }
@@ -360,8 +324,6 @@ fn postfix_dereference_matrix_has_explicit_canonical_hir_dispositions() -> TestR
 
     for case in MATRIX {
         let ast_node = matrix_node(&ast, MATRIX_SOURCE, *case)?;
-        // Star rows intentionally collide with their receiver's HIR range
-        // because of the #13891 AST span defect; select by variant only first.
         let hir_candidates = body
             .source_map
             .expr_ranges
@@ -611,14 +573,7 @@ fn postfix_classifier_reports_matrix_rows_and_rejects_prefix_control() -> TestRe
     let ast = parse(MATRIX_SOURCE);
     let mut postfix_rows = Vec::new();
     collect_postfix_rows(&ast, MATRIX_SOURCE, &mut postfix_rows)?;
-    // Expected strings are the rows' current pinned spans, including #13891
-    // operand-only star spans, not their intended operator-inclusive text.
-    let expected = MATRIX
-        .iter()
-        .map(|case| match case.span {
-            RowSpan::Full(text) | RowSpan::OperandOnly(text) => text.to_string(),
-        })
-        .collect::<Vec<_>>();
+    let expected = MATRIX.iter().map(|case| case.span.to_string()).collect::<Vec<_>>();
     if postfix_rows != expected {
         return Err(format!(
             "classifier found {postfix_rows:?}, expected exactly {expected:?}\n{}",
@@ -676,136 +631,33 @@ $cref->();
 }
 
 #[derive(Clone, Copy)]
-enum RecoveryOutcome<'a> {
-    /// A recovery diagnostic is retained, as an honest parser should.
-    Diagnosed,
-    /// Current behavior: the trailing operator is consumed with no
-    /// diagnostic at all, leaving `retained` as the whole program text.
-    /// Confirmed defect, tracked in #14174; this pin must flip when fixed.
-    SilentlyDropsOperator { retained: RetainedShape<'a> },
-}
-
-#[derive(Clone, Copy)]
-enum RetainedShape<'a> {
-    ScalarVariable { text: &'a str, span: SourceLocation },
-    MethodCall { text: &'a str, span: SourceLocation, object: &'a str },
-}
-
-#[derive(Clone, Copy)]
 struct RecoveryCase<'a> {
     source: &'a str,
-    outcome: RecoveryOutcome<'a>,
+    /// Exact number of diagnostics the malformed row must still report. No row
+    /// may recover silently: a dropped postfix operator without a diagnostic
+    /// was the #14174 defect.
+    diagnostics: usize,
 }
 
 const RECOVERY_ROWS: &[RecoveryCase<'static>] = &[
-    RecoveryCase { source: "$ref->", outcome: RecoveryOutcome::Diagnosed },
-    RecoveryCase {
-        source: "$ref->$",
-        outcome: RecoveryOutcome::SilentlyDropsOperator {
-            retained: RetainedShape::ScalarVariable {
-                text: "$ref",
-                span: SourceLocation { start: 0, end: 4 },
-            },
-        },
-    },
-    RecoveryCase {
-        source: "$ref->$#",
-        outcome: RecoveryOutcome::SilentlyDropsOperator {
-            retained: RetainedShape::MethodCall {
-                text: "$ref->$#",
-                span: SourceLocation { start: 0, end: 8 },
-                object: "$ref",
-            },
-        },
-    },
-    RecoveryCase {
-        source: "$ref->@",
-        outcome: RecoveryOutcome::SilentlyDropsOperator {
-            retained: RetainedShape::ScalarVariable {
-                text: "$ref",
-                span: SourceLocation { start: 0, end: 4 },
-            },
-        },
-    },
-    RecoveryCase { source: "$ref->@[0, 2", outcome: RecoveryOutcome::Diagnosed },
-    RecoveryCase { source: "$ref->@{'alpha'", outcome: RecoveryOutcome::Diagnosed },
-    RecoveryCase {
-        source: "$ref->%",
-        outcome: RecoveryOutcome::SilentlyDropsOperator {
-            retained: RetainedShape::ScalarVariable {
-                text: "$ref",
-                span: SourceLocation { start: 0, end: 4 },
-            },
-        },
-    },
-    RecoveryCase { source: "$ref->%{'alpha'", outcome: RecoveryOutcome::Diagnosed },
-    RecoveryCase {
-        source: "$ref->&",
-        outcome: RecoveryOutcome::SilentlyDropsOperator {
-            retained: RetainedShape::ScalarVariable {
-                text: "$ref",
-                span: SourceLocation { start: 0, end: 4 },
-            },
-        },
-    },
-    RecoveryCase {
-        source: "$ref->*",
-        outcome: RecoveryOutcome::SilentlyDropsOperator {
-            retained: RetainedShape::ScalarVariable {
-                text: "$ref",
-                span: SourceLocation { start: 0, end: 4 },
-            },
-        },
-    },
+    RecoveryCase { source: "$ref->", diagnostics: 1 },
+    RecoveryCase { source: "$ref->$", diagnostics: 1 },
+    RecoveryCase { source: "$ref->$#", diagnostics: 1 },
+    RecoveryCase { source: "$ref->@", diagnostics: 1 },
+    RecoveryCase { source: "$ref->@[0, 2", diagnostics: 1 },
+    RecoveryCase { source: "$ref->@{'alpha'", diagnostics: 1 },
+    RecoveryCase { source: "$ref->%", diagnostics: 1 },
+    RecoveryCase { source: "$ref->%{'alpha'", diagnostics: 1 },
+    RecoveryCase { source: "$ref->&", diagnostics: 1 },
+    RecoveryCase { source: "$ref->*", diagnostics: 1 },
     // External Perl 5.34 oracle:
     // perl -Mstrict -e "use feature 'postderef'; my \$href={}; my @x = \$href->@{};"
     // prints `syntax error ... near "{}"`; empty selectors are not valid Perl
     // and therefore belong here rather than in the valid matrix.
-    RecoveryCase { source: "$href->@{}", outcome: RecoveryOutcome::Diagnosed },
-    RecoveryCase { source: "$href->%{}", outcome: RecoveryOutcome::Diagnosed },
-    RecoveryCase { source: "$aref->@[]", outcome: RecoveryOutcome::Diagnosed },
+    RecoveryCase { source: "$href->@{}", diagnostics: 2 },
+    RecoveryCase { source: "$href->%{}", diagnostics: 2 },
+    RecoveryCase { source: "$aref->@[]", diagnostics: 2 },
 ];
-
-fn assert_retained_ast_shape(source: &str, ast: &Node, retained: RetainedShape<'_>) -> TestResult {
-    match retained {
-        RetainedShape::ScalarVariable { text, span } => {
-            let retained_node = unique_node_where(ast, |node| {
-                source_text(source, node).ok() == Some(text)
-                    && node.location == span
-                    && matches!(
-                        &node.kind,
-                        NodeKind::Variable { sigil, name } if sigil == "$" && name == "ref"
-                    )
-            })?;
-            if source_text(source, retained_node)? != text {
-                return Err(format!(
-                    "silent recovery retained unexpected scalar text {:?}\n{}",
-                    source_text(source, retained_node)?,
-                    ast.to_sexp()
-                ));
-            }
-        }
-        RetainedShape::MethodCall { text, span, object } => {
-            let retained_node = unique_node_where(ast, |node| {
-                if source_text(source, node).ok() != Some(text) || node.location != span {
-                    return false;
-                }
-                let NodeKind::MethodCall { object: actual_object, .. } = &node.kind else {
-                    return false;
-                };
-                source_text(source, actual_object).ok() == Some(object)
-            })?;
-            if source_text(source, retained_node)? != text {
-                return Err(format!(
-                    "silent recovery retained unexpected method-call text {:?}\n{}",
-                    source_text(source, retained_node)?,
-                    ast.to_sexp()
-                ));
-            }
-        }
-    }
-    Ok(())
-}
 
 fn assert_surviving_declaration(
     source: &str,
@@ -845,27 +697,15 @@ fn malformed_postfix_dereference_rows_pin_recovery_outcomes() -> TestResult {
                 output.ast.to_sexp()
             ));
         }
-        match case.outcome {
-            RecoveryOutcome::Diagnosed => {
-                if output.diagnostics.is_empty() {
-                    return Err(format!(
-                        "malformed row {:?} retained no recovery diagnostic\n{}",
-                        case.source,
-                        output.ast.to_sexp()
-                    ));
-                }
-            }
-            RecoveryOutcome::SilentlyDropsOperator { retained } => {
-                if !output.diagnostics.is_empty() {
-                    return Err(format!(
-                        "silent-drop row {:?} gained diagnostics {:?}\n{}",
-                        case.source,
-                        output.diagnostics,
-                        output.ast.to_sexp()
-                    ));
-                }
-                assert_retained_ast_shape(case.source, &output.ast, retained)?;
-            }
+        if output.diagnostics.len() != case.diagnostics {
+            return Err(format!(
+                "malformed row {:?} reported {} diagnostics {:?}, expected {}\n{}",
+                case.source,
+                output.diagnostics.len(),
+                output.diagnostics,
+                case.diagnostics,
+                output.ast.to_sexp()
+            ));
         }
     }
 
@@ -909,7 +749,7 @@ fn malformed_postfix_dereference_rows_pin_recovery_outcomes() -> TestResult {
 }
 
 #[test]
-fn malformed_hash_slice_recovery_pins_span_violation_and_following_statement() -> TestResult {
+fn malformed_hash_slice_recovery_contains_its_children_and_following_statement() -> TestResult {
     let source = "$ref->@{'alpha';\nmy $next = 1;\n";
     let mut parser = Parser::new(source);
     let output = parser.parse_with_recovery();
@@ -929,9 +769,9 @@ fn malformed_hash_slice_recovery_pins_span_violation_and_following_statement() -
     }
     let slice =
         unique_node_where(&output.ast, |node| matches!(&node.kind, NodeKind::HashSlice { .. }))?;
-    if slice.location != (SourceLocation { start: 0, end: 4 }) {
+    if slice.location != (SourceLocation { start: 0, end: 15 }) {
         return Err(format!(
-            "current #14174 HashSlice span changed: got {:?}, expected 0..4\n{}",
+            "recovered HashSlice span changed: got {:?}, expected 0..15\n{}",
             slice.location,
             output.ast.to_sexp()
         ));
@@ -943,13 +783,13 @@ fn malformed_hash_slice_recovery_pins_span_violation_and_following_statement() -
     let direct_children = slice.children();
     if !direct_children.iter().any(|child| std::ptr::eq(*child, string)) {
         return Err(format!(
-            "current #14174 String child is not direct child of recovered HashSlice\n{}",
+            "recovered String is not a direct child of the recovered HashSlice\n{}",
             output.ast.to_sexp()
         ));
     }
-    if slice.location.start <= string.location.start && string.location.end <= slice.location.end {
+    if slice.location.start > string.location.start || string.location.end > slice.location.end {
         return Err(format!(
-            "current #14174 span-containment violation disappeared: slice={:?}, child={:?}\n{}",
+            "recovered slice must contain its selector: slice={:?}, child={:?}\n{}",
             slice.location,
             string.location,
             output.ast.to_sexp()
