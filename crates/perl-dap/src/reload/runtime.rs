@@ -1757,27 +1757,334 @@ mod tests {
         let Some(oracle) = perl_lsp_rs_core::config::PerlOracleEnv::for_dap_test_fixture() else {
             return refuse("perl is not on PATH");
         };
-        if !perl_debugger_available(&oracle) {
-            return refuse("perl is present but `perl -d` is unusable");
+        match perl_debugger_available(&oracle) {
+            DebuggerProbe::Usable => Ok(Some(oracle)),
+            DebuggerProbe::Refused => refuse("perl is present but `perl -d` is unusable"),
+            DebuggerProbe::TimedOut => refuse(&format!(
+                "perl is present but `perl -d` did not answer within {}s",
+                DEBUGGER_PROBE_DEADLINE.as_secs()
+            )),
+            DebuggerProbe::InstrumentFailed(reason) => refuse(&format!(
+                "perl is present but the `perl -d` probe could not be observed: {reason}"
+            )),
         }
-        Ok(Some(oracle))
     }
 
-    /// Whether a real `perl -d` is usable here. A missing interpreter or a
-    /// missing debugger is an instrument skip, never a pass.
-    fn perl_debugger_available(oracle: &perl_lsp_rs_core::config::PerlOracleEnv) -> bool {
-        oracle
-            .clone()
-            .into_command()
+    /// How long the availability probe may take before the instrument is
+    /// declared unusable.
+    ///
+    /// This is deliberately well under `drive_live_debuggee`'s own 20s
+    /// deadline: answering "is the instrument there?" is a single process
+    /// start, not a debugger session.
+    const DEBUGGER_PROBE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
+
+    /// What asking "is a real `perl -d` usable here?" actually established.
+    ///
+    /// The four outcomes stay distinct because they mean different things
+    /// to the caller: only `Usable` is an instrument, and the other three
+    /// are separately actionable NOT_PROVEN reasons. Collapsing them to a
+    /// `bool` is what let a hang read as "unusable" — after hanging the
+    /// whole test binary first.
+    #[derive(Debug, PartialEq, Eq)]
+    enum DebuggerProbe {
+        /// The probe exited successfully: `perl -d` runs here.
+        Usable,
+        /// The probe ran to completion and exited nonzero: the interpreter
+        /// is present but its debugger is not usable.
+        Refused,
+        /// The probe never exited within the deadline. The owned child was
+        /// killed and reaped before this was returned.
+        TimedOut,
+        /// The probe could not be started, or could not be observed once
+        /// started. Distinct from `Refused`: nothing was measured at all.
+        InstrumentFailed(String),
+    }
+
+    /// Whether a real `perl -d` is usable here. A missing interpreter, a
+    /// missing debugger, or one that never answers is an instrument skip,
+    /// never a pass.
+    fn perl_debugger_available(oracle: &perl_lsp_rs_core::config::PerlOracleEnv) -> DebuggerProbe {
+        let mut command = oracle.into_command();
+        command
             .arg("-d")
             .arg("-e")
             .arg("1")
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .map(|status| status.success())
-            .unwrap_or(false)
+            .stderr(std::process::Stdio::null());
+        probe_with_deadline(command, DEBUGGER_PROBE_DEADLINE)
+    }
+
+    /// Run one already-configured probe command under a deadline.
+    ///
+    /// `Command::status()` waits forever, and the caller's own deadline
+    /// cannot govern a probe that runs *before* the deadline exists. A
+    /// debugger-incapable `perl -d` that stops at a prompt instead of
+    /// exiting therefore parked the whole test binary: the reload fixtures
+    /// were observed still running past the harness's 60s notice with
+    /// `perl -d -e 1` children of their own (#15099).
+    ///
+    /// The child is killed *and* reaped on every non-exit path, because
+    /// `Child::drop` does neither — abandoning it would trade a hang for
+    /// an accumulating zombie. Stdio is whatever the caller configured, so
+    /// no pipe reader is left running here.
+    fn probe_with_deadline(
+        mut command: std::process::Command,
+        deadline: std::time::Duration,
+    ) -> DebuggerProbe {
+        let mut child = match command.spawn() {
+            Ok(child) => child,
+            Err(error) => return DebuggerProbe::InstrumentFailed(format!("spawn: {error}")),
+        };
+        let expiry = std::time::Instant::now() + deadline;
+        loop {
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    return if status.success() {
+                        DebuggerProbe::Usable
+                    } else {
+                        DebuggerProbe::Refused
+                    };
+                }
+                Ok(None) => {
+                    if std::time::Instant::now() >= expiry {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        return DebuggerProbe::TimedOut;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(25));
+                }
+                Err(error) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return DebuggerProbe::InstrumentFailed(format!("wait: {error}"));
+                }
+            }
+        }
+    }
+
+    /// Selects the control child's behaviour. Unset — every ordinary suite
+    /// run — means "return immediately".
+    const PROBE_CONTROL_MODE: &str = "PERL_LSP_DAP_PROBE_CONTROL_MODE";
+    /// Directory the armed control child ticks into while it is alive.
+    const PROBE_CONTROL_TICK_DIR: &str = "PERL_LSP_DAP_PROBE_CONTROL_TICK_DIR";
+    /// `--exact` filter naming the control child inside this test binary.
+    const PROBE_CONTROL_TEST: &str = "reload::runtime::tests::probe_control_child";
+
+    /// Gap between the hang control's heartbeat ticks.
+    const CONTROL_TICK: std::time::Duration = std::time::Duration::from_millis(100);
+    /// Hard cap on the hang control's lifetime, so a control child that
+    /// somehow escapes its parent still exits on its own.
+    const CONTROL_MAX_TICKS: u32 = 600;
+    /// The deadline the bounded probe is given against the hang control.
+    /// Generous next to process startup — a slow host must not be able to
+    /// turn this into a flake — and tiny next to the child's own lifetime.
+    const CONTROL_DEADLINE: std::time::Duration = std::time::Duration::from_secs(3);
+    /// How long to watch the heartbeat after the probe returns. Long
+    /// enough that a surviving child would tick many times.
+    const CONTROL_WATCH: std::time::Duration = std::time::Duration::from_secs(2);
+
+    /// The deterministic control child, re-invoked out of this same test
+    /// binary — the convention `tests/debuggee_probe_hygiene.rs` already
+    /// uses for child-mode fixtures.
+    ///
+    /// This is what makes the probe controls deterministic *and* portable:
+    /// the hang is manufactured here rather than borrowed from whichever
+    /// `perl -d` happens to misbehave on the host, so the bound is proved
+    /// identically on Windows, Linux, and macOS, and on hosts with no perl
+    /// at all. Unarmed it returns at once, so an ordinary suite run pays
+    /// nothing for it.
+    #[test]
+    fn probe_control_child() {
+        match std::env::var(PROBE_CONTROL_MODE).ok().as_deref() {
+            // Outlive any sane probe deadline, publishing a heartbeat so
+            // the parent can tell "alive" from "killed" without waiting
+            // for this child to finish.
+            Some("hang") => {
+                let Ok(ticks) = std::env::var(PROBE_CONTROL_TICK_DIR) else {
+                    return;
+                };
+                let ticks = std::path::PathBuf::from(ticks);
+                if std::fs::create_dir_all(&ticks).is_err() {
+                    return;
+                }
+                for tick in 0..CONTROL_MAX_TICKS {
+                    let _ = std::fs::write(ticks.join(tick.to_string()), b"");
+                    std::thread::sleep(CONTROL_TICK);
+                }
+            }
+            // Exit nonzero without panicking: a clean, quiet stand-in for
+            // an interpreter whose `-d` refuses.
+            Some("refuse") => std::process::exit(3),
+            // Ordinary suite run, or the success control: pass and exit 0.
+            _ => {}
+        }
+    }
+
+    /// Build a probe command that re-invokes this test binary's control
+    /// child in `mode`.
+    fn probe_control_command(mode: &str) -> Result<std::process::Command, String> {
+        let exe = std::env::current_exe().map_err(|error| format!("current_exe: {error}"))?;
+        let mut command = std::process::Command::new(exe);
+        command
+            .args(["--exact", PROBE_CONTROL_TEST, "--nocapture"])
+            .env(PROBE_CONTROL_MODE, mode)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        Ok(command)
+    }
+
+    /// How many heartbeat ticks the hang control has published so far.
+    fn control_ticks(directory: &std::path::Path) -> usize {
+        std::fs::read_dir(directory).map(|entries| entries.flatten().count()).unwrap_or(0)
+    }
+
+    /// A probe that never exits is bounded, and its child is killed — not
+    /// merely abandoned.
+    ///
+    /// This is the regression the reload fixtures actually hit (#15099):
+    /// `Command::status()` had no deadline, so a `perl -d` that stopped at
+    /// a prompt instead of exiting parked the whole test binary past the
+    /// harness's 60s notice.
+    ///
+    /// Three assertions, each falsifiable on its own:
+    ///
+    /// - a nonzero tick count proves the control child really ran, so a
+    ///   renamed or filtered-out control cannot pass this vacuously;
+    /// - the elapsed bound proves the probe answered on its own deadline
+    ///   rather than waiting the child out;
+    /// - the frozen heartbeat proves the child is dead, not merely
+    ///   unfinished. Delete the `child.kill()` in `probe_with_deadline`
+    ///   and the survivor keeps ticking through the watch window.
+    #[test]
+    fn bounded_probe_kills_a_probe_that_never_exits() -> TestResult {
+        let scratch = ScratchDir(std::env::temp_dir().join(format!(
+            "perl-dap-probe-control-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|since| since.as_nanos())
+                .unwrap_or(0),
+        )));
+        let ticks = scratch.0.join("ticks");
+        std::fs::create_dir_all(&ticks)?;
+
+        let mut command = probe_control_command("hang")?;
+        command.env(PROBE_CONTROL_TICK_DIR, &ticks);
+
+        let started = std::time::Instant::now();
+        let outcome = probe_with_deadline(command, CONTROL_DEADLINE);
+        let elapsed = started.elapsed();
+        let at_deadline = control_ticks(&ticks);
+
+        assert_eq!(
+            outcome,
+            DebuggerProbe::TimedOut,
+            "a probe that never exits must be reported as timed out"
+        );
+        assert!(
+            at_deadline > 0,
+            "the control child published no heartbeat, so this run proves nothing about \
+             bounding a hang; check that `{PROBE_CONTROL_TEST}` still names the control"
+        );
+        // The child's own lifetime is CONTROL_MAX_TICKS * CONTROL_TICK; the
+        // probe must have answered on its deadline, far short of that.
+        assert!(
+            elapsed < CONTROL_TICK * CONTROL_MAX_TICKS / 2,
+            "the probe waited {elapsed:?}: it answered because the child gave up, not \
+             because the deadline fired"
+        );
+
+        // A live child would tick ~20 more times across this window.
+        std::thread::sleep(CONTROL_WATCH);
+        assert_eq!(
+            control_ticks(&ticks),
+            at_deadline,
+            "the heartbeat advanced after the probe returned: the timed-out probe left its \
+             child running, so it was abandoned rather than killed"
+        );
+        Ok(())
+    }
+
+    /// A probe that exits cleanly is `Usable`, and is reached well inside
+    /// the deadline. Negative control for the timeout path: without this,
+    /// a `probe_with_deadline` that always reported `TimedOut` would still
+    /// satisfy the hang test.
+    #[test]
+    fn bounded_probe_reports_a_clean_exit_as_usable() -> TestResult {
+        let command = probe_control_command("pass")?;
+        // The production deadline, not the hang control's short one: a
+        // deliberately tight bound here would only test process startup.
+        assert_eq!(probe_with_deadline(command, DEBUGGER_PROBE_DEADLINE), DebuggerProbe::Usable);
+        Ok(())
+    }
+
+    /// A probe that runs and exits nonzero stays distinct from both a hang
+    /// and a success: perl is there, its debugger refused.
+    #[test]
+    fn bounded_probe_reports_a_nonzero_exit_as_refused() -> TestResult {
+        let command = probe_control_command("refuse")?;
+        assert_eq!(probe_with_deadline(command, DEBUGGER_PROBE_DEADLINE), DebuggerProbe::Refused);
+        Ok(())
+    }
+
+    /// A probe that cannot start at all is an instrument failure, not a
+    /// refusal: nothing was measured, so nothing may be concluded about
+    /// the debugger.
+    #[test]
+    fn bounded_probe_reports_an_unstartable_probe_as_instrument_failed() {
+        let mut command =
+            std::process::Command::new("/definitely/not/a/real/perl-lsp-probe-binary");
+        command
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        assert!(
+            matches!(
+                probe_with_deadline(command, CONTROL_DEADLINE),
+                DebuggerProbe::InstrumentFailed(_)
+            ),
+            "a probe that cannot be spawned must not be reported as a measured refusal"
+        );
+    }
+
+    /// An unavailable instrument under `PERL_LSP_REQUIRE_LIVE_PERL=1` still
+    /// fails the live fixture rather than skipping green.
+    ///
+    /// Routing every refusal through the new typed outcomes must not have
+    /// turned the enforcement into a silent `Ok(())`. The check runs in a
+    /// child process with an emptied `PATH`, because `std::env::set_var` is
+    /// unsound in a multithreaded test binary — the same reasoning, and the
+    /// same child-mode shape, as `tests/debuggee_probe_hygiene.rs`.
+    ///
+    /// Unix-only: emptying `PATH` on Windows also disturbs DLL resolution
+    /// for the child test binary itself, which would make this a test of
+    /// the loader rather than of the refusal. The bounded-probe controls
+    /// above carry the cross-platform claim.
+    #[cfg(unix)]
+    #[test]
+    fn required_live_perl_still_fails_when_the_instrument_is_unavailable() -> TestResult {
+        let exe = std::env::current_exe()?;
+        let child = std::process::Command::new(exe)
+            .args([
+                "--exact",
+                "reload::runtime::tests::live_perl_debuggee_reload_replaces_running_code",
+                "--nocapture",
+            ])
+            .env("PERL_LSP_REQUIRE_LIVE_PERL", "1")
+            .env("PATH", "")
+            .stdin(std::process::Stdio::null())
+            .output()?;
+
+        assert!(
+            !child.status.success(),
+            "a required live-perl proof with no interpreter on PATH reported success; \
+             an unavailable instrument must fail, never skip green. stdout={} stderr={}",
+            String::from_utf8_lossy(&child.stdout),
+            String::from_utf8_lossy(&child.stderr),
+        );
+        Ok(())
     }
 
     /// Drive a real `perl -d` debuggee through the given command stream.
