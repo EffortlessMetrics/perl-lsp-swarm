@@ -303,6 +303,70 @@ describe('live legacy configuration reader', () => {
     });
   });
 
+  test('cross-scope eras sharing a target are refused before era coverage (#14968 boundary)', () => {
+    // CHARACTERIZATION, not an endorsement. `machine` authorizes only the user target while
+    // `resource` authorizes user, workspace and workspace-folder, so a key carrying one era at
+    // each scope has *two* authorizing scopes for a value in user settings.
+    // `scopeForOccurrence` resolves that to the target's own scope (`user`), which no row
+    // declares — so the occurrence is refused as out-of-scope before era coverage ever runs,
+    // and the era that does cover the source release is never selected.
+    //
+    // This is unchanged from `main`: choosing among several authorizing scopes has always been
+    // unresolved, and #14968 owns it. What this PR changes is reachability — multi-era
+    // registries were unusable before era selection existed, so the shape could not occur.
+    // The choice is trust-bearing (a `machine` era versus a `resource` era for the same key),
+    // so it is deliberately not made here.
+    //
+    // When #14968 resolves it, this expectation must change. Pinning it is the point: the
+    // narrowing is executable rather than a sentence in a PR body.
+    const { registry, key } = registryWithRow({
+      old_scope: 'resource',
+      introduced_version: '0.16.0',
+      last_supported_version: '0.16.x',
+      security_trust_class: 'ordinary',
+    });
+    const resourceEra = registry.rows[0];
+    if (resourceEra === undefined) {
+      throw new Error('registryWithRow must define one row');
+    }
+    const machineEra: ConfigurationMigrationRow = {
+      ...resourceEra,
+      migration_id: 'legacy_current_era_machine',
+      introduced_version: '0.17.0',
+      last_supported_version: '0.17.x',
+      old_scope: 'machine',
+    };
+    const crossScope: ConfigurationMigrationRegistry = {
+      ...registry,
+      rows: [resourceEra, machineEra],
+    };
+    const userSite = (probed: string): LegacyConfigurationSites =>
+      probed === key ? { user: { value: true } } : {};
+
+    // Different scopes are not a competing historical subject, so this registry is valid.
+    expect(validateMigrationRegistry(crossScope)).toEqual([]);
+
+    const occurrences = readLegacyConfiguration(crossScope, EXTENSION_VERSION, userSite);
+    expect(occurrences).toHaveLength(1);
+    expect(occurrences[0]?.runtime).toMatchObject({
+      source_scope: 'user',
+      status: 'invalid',
+      migration_id: null,
+      canonical_value_present: false,
+      reason_code: 'legacy_key_scope_not_permitted',
+    });
+
+    // The control that makes the line above a real narrowing rather than a blanket refusal:
+    // the same user-settings value, with only the machine era declared, IS selected.
+    const machineOnly: ConfigurationMigrationRegistry = { ...registry, rows: [machineEra] };
+    expect(
+      readLegacyConfiguration(machineOnly, EXTENSION_VERSION, userSite)[0]?.runtime,
+    ).toMatchObject({
+      source_scope: 'machine',
+      migration_id: 'legacy_current_era_machine',
+    });
+  });
+
   test('published state carries no raw value, path, or secret', () => {
     const state = legacyMigrationState(
       V018_CONFIGURATION_MIGRATIONS,
