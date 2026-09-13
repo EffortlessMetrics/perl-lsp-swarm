@@ -18,6 +18,8 @@ use crate::id::FileId;
 pub enum DistMetadataSource {
     /// `META.json` (CPAN Meta Spec v2).
     MetaJson,
+    /// `META.yml` (CPAN Meta Spec v1.4/v2, bounded YAML subset).
+    MetaYml,
     /// A `cpanfile` (Perl DSL).
     Cpanfile,
 }
@@ -61,12 +63,12 @@ pub struct DistMetadataFacts {
     pub prereqs: Vec<Prereq>,
 }
 
-/// The prereq relations recognized in cpanfile / META.json.
-const RELATIONS: &[&str] = &["requires", "recommends", "suggests", "conflicts"];
+/// The prereq relations recognized in cpanfile / META.json / META.yml.
+pub(crate) const RELATIONS: &[&str] = &["requires", "recommends", "suggests", "conflicts"];
 /// Canonical prerequisite phases recognized in cpanfile `on` blocks.
 const CPANFILE_PHASES: &[&str] = &["configure", "build", "test", "runtime", "develop"];
 /// META 1.x phase-specific top-level prerequisite keys → canonical phase.
-const META_V1_PHASED_REQUIRES: &[(&str, &str)] =
+pub(crate) const META_V1_PHASED_REQUIRES: &[(&str, &str)] =
     &[("configure_requires", "configure"), ("build_requires", "build")];
 /// cpanfile statement keywords → (relation, phase).
 ///
