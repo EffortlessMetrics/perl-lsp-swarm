@@ -163,7 +163,11 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let server = LspServer::new();
         let numeric = Value::from(71003_i64);
-        let string = Value::from("71003-string");
+        let string = Value::from("71003");
+        crate::cancellation::GLOBAL_CANCELLATION_REGISTRY
+            .remove_request(&crate::protocol::JsonRpcId::Integer(71003));
+        crate::cancellation::GLOBAL_CANCELLATION_REGISTRY
+            .remove_request(&crate::protocol::JsonRpcId::String("71003".to_string()));
 
         server.mark_request_pending(&crate::protocol::JsonRpcId::Integer(71003));
         if !handle_cancel_notification(&server, &cancellation_request(numeric.clone())) {
@@ -182,7 +186,7 @@ mod tests {
             return Err("unrelated string ID was incorrectly cancelled".into());
         }
         crate::cancellation::GLOBAL_CANCELLATION_REGISTRY
-            .remove_request(&crate::protocol::JsonRpcId::String("71003-string".to_string()));
+            .remove_request(&crate::protocol::JsonRpcId::String("71003".to_string()));
 
         server.clear_request_pending(&crate::protocol::JsonRpcId::Integer(71003));
         if register_request_cancellation(&server, Some(&numeric), &hover_request()).is_some() {
