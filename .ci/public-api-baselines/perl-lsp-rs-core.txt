@@ -1692,7 +1692,9 @@ pub fn perl_lsp_rs_core::features::flags::BuildFlags::clone(&self) -> perl_lsp_r
 pub fn perl_lsp_rs_core::features::flags::BuildFlags::eq(&self, other: &perl_lsp_rs_core::features::flags::BuildFlags) -> bool
 pub fn perl_lsp_rs_core::features::flags::BuildFlags::default() -> perl_lsp_rs_core::features::flags::BuildFlags
 pub fn perl_lsp_rs_core::features::flags::BuildFlags::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub const perl_lsp_rs_core::protocol::capabilities::SERVER_WORKSPACE_FOLDER_SUPPORT: bool
 pub const perl_lsp_rs_core::protocol::capabilities::SUPPORTED_COMMANDS: &[&str]
+pub const perl_lsp_rs_core::protocol::capabilities::WORKSPACE_FOLDER_CHANGE_ROUTE_AVAILABLE: bool
 pub fn perl_lsp_rs_core::protocol::capabilities::cap_bool_or_object(caps: &serde_json::value::Value, key: &str) -> bool
 pub fn perl_lsp_rs_core::protocol::capabilities::capabilities_for(build: perl_lsp_rs_core::features::flags::BuildFlags) -> lsp_types::ServerCapabilities
 pub fn perl_lsp_rs_core::protocol::capabilities::capabilities_json(build: perl_lsp_rs_core::features::flags::BuildFlags) -> serde_json::value::Value

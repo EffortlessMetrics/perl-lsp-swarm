@@ -94,20 +94,32 @@ fn initialize_once(
 }
 
 #[test]
-fn workspace_folder_support_requires_boolean_true() -> Result<()> {
+fn workspace_folder_server_support_is_client_independent() -> Result<()> {
+    // #8161: `workspaceFolders.supported` describes whether the server
+    // implements workspace-folder semantics, so the exact process must
+    // advertise `true` for every client shape. The client's own bit (absent,
+    // explicit false, malformed, or supported) is a client limitation and
+    // never rewrites server truth.
     let cases = [
-        (json!({}), false, "absent"),
-        (json!({ "workspace": { "workspaceFolders": false } }), false, "explicit false"),
-        (json!({ "workspace": { "workspaceFolders": "true" } }), false, "malformed string"),
-        (json!({ "workspace": { "workspaceFolders": true } }), true, "supported true"),
+        (json!({}), "absent"),
+        (json!({ "workspace": { "workspaceFolders": false } }), "explicit false"),
+        (json!({ "workspace": { "workspaceFolders": "true" } }), "malformed string"),
+        (json!({ "workspace": { "workspaceFolders": true } }), "supported true"),
     ];
 
-    for (capabilities, expected, label) in cases {
+    for (capabilities, label) in cases {
         let response = initialize_once("capability-matrix", capabilities, None)?;
         ensure!(
             response.pointer("/result/capabilities/workspace/workspaceFolders/supported")
-                == Some(&json!(expected)),
-            "workspaceFolders negotiation mismatch for {label}: {response}"
+                == Some(&json!(true)),
+            "server workspaceFolders.supported must stay true for client shape ({label}): \
+             {response}"
+        );
+        ensure!(
+            response.pointer("/result/capabilities/workspace/workspaceFolders/changeNotifications")
+                == Some(&json!(true)),
+            "changeNotifications must agree with the compiled-in dispatch route ({label}): \
+             {response}"
         );
     }
     Ok(())

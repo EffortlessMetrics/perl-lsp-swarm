@@ -1319,10 +1319,15 @@ fn cmd_simple_lsp_test(repo_root: &Path) -> Result<i32> {
     }
     #[cfg(not(windows))]
     {
+        // Content-Length must equal the frame body exactly; the previous 205
+        // over-declared the 180-byte body, so the reader waited on bytes that
+        // never arrived. `workspaceFolders` is omitted rather than null so the
+        // declared `rootUri` is actually adopted (#8161: a present null is an
+        // explicit no-active-folder declaration).
         let shell_script = r#"cat <<'EOF' | cargo run -p perl-parser --bin perl-lsp 2>&1 | head -20
-Content-Length: 205
+Content-Length: 156
 
-{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"processId":123,"rootUri":"file:///tmp","capabilities":{},"initializationOptions":{},"trace":"off","workspaceFolders":null}}
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"processId":123,"rootUri":"file:///tmp","capabilities":{},"initializationOptions":{},"trace":"off"}}
 EOF
 "#;
         let output = command_with_output(repo_root, "sh", &["-c", shell_script], &[])?;

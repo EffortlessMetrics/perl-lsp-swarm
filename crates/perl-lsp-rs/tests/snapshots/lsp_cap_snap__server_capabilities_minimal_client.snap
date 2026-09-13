@@ -1,6 +1,5 @@
 ---
 source: crates/perl-lsp-rs/tests/lsp_cap_snap.rs
-assertion_line: 32
 expression: caps
 ---
 callHierarchyProvider: true
@@ -154,6 +153,6 @@ workspace:
       - perldoc
   workspaceFolders:
     changeNotifications: true
-    supported: false
+    supported: true
 workspaceSymbolProvider:
   resolveProvider: true
