@@ -905,6 +905,32 @@ table users => sub { column id => sub { primary_key }; };
 1;
 "#,
             ),
+            // `method` is a distinct node kind sharing the same walk arm, so it
+            // needs its own case rather than inheriting the `sub` result.
+            (
+                "nested import in a method body",
+                r#"
+package My::ORM::Table::User;
+use DBIx::QuickORM type => 'table';
+
+method helper { use DBIx::QuickORM; }
+
+table users => sub { column id => sub { primary_key }; };
+1;
+"#,
+            ),
+            (
+                "nested unimport in a method body",
+                r#"
+package My::ORM::Table::User;
+use DBIx::QuickORM type => 'table';
+
+method helper { no DBIx::QuickORM; }
+
+table users => sub { column id => sub { primary_key }; };
+1;
+"#,
+            ),
         ] {
             let facts = candidate_facts(source);
             assert!(
