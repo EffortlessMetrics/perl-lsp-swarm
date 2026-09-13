@@ -801,6 +801,47 @@ impl LspServer {
             return;
         };
 
+        let provider_config = Self::ai_provider_config(&ai_config, api_key);
+
+        // The token bucket is the requests-per-second control. Its burst is a
+        // refill allowance, NOT a concurrency ceiling: a token is consumed at
+        // dispatch and never returned, so burst alone cannot bound how many
+        // requests are simultaneously active. `maxInflight` is enforced by the
+        // provider's InflightGate above. The allowance is left at its
+        // historical value so this change does not alter rate-limit behavior.
+        let rate_limit_burst = ai_config.max_inflight.max(1);
+        let limiter = Arc::new(perl_lsp_rs_core::providers::ai::RateLimiter::new(
+            ai_config.rate_limit_rps,
+            rate_limit_burst,
+        ));
+
+        let provider =
+            perl_lsp_rs_core::providers::ai::OpenAiProvider::new(provider_config, limiter);
+        *self.ai_inline_backend.lock() = Some(Arc::new(provider));
+
+        tracing::info!(endpoint = %ai_config.endpoint, model = %ai_config.model, "AI inline completion backend configured");
+    }
+
+    /// Translate the workspace AI configuration into the provider's own config.
+    ///
+    /// Split out of [`Self::refresh_ai_backend`] so the field-by-field
+    /// translation is directly testable. The live-concurrency ceiling (`#8300`)
+    /// is the reason: it is a single assignment, and dropping it would silently
+    /// restore the original defect — the provider would fall back to
+    /// `OpenAiConfig::new`'s default of 1 while the configured value still
+    /// reached only the rate limiter. Nothing observable at the LSP boundary
+    /// would change, because the backend is installed behind a trait object
+    /// with no way to read the gate back, so the omission would not fail a
+    /// test.
+    ///
+    /// Activation authority, credential resolution, and backend lifetime are
+    /// not this function's concern — see [`Self::refresh_ai_backend`], which
+    /// decides whether a provider may be constructed at all before calling
+    /// this.
+    pub(crate) fn ai_provider_config(
+        ai_config: &perl_lsp_rs_core::config::AiCompletionConfig,
+        api_key: String,
+    ) -> perl_lsp_rs_core::providers::ai::OpenAiConfig {
         let mut provider_config = perl_lsp_rs_core::providers::ai::OpenAiConfig::new(
             ai_config.endpoint.clone(),
             ai_config.model.clone(),
@@ -810,17 +851,10 @@ impl LspServer {
         provider_config.api_key_header = ai_config.api_key_header.clone();
         provider_config.api_key_prefix = ai_config.api_key_prefix.clone();
         provider_config.local_model_mode = ai_config.local_model_mode;
-
-        let limiter = Arc::new(perl_lsp_rs_core::providers::ai::RateLimiter::new(
-            ai_config.rate_limit_rps,
-            ai_config.max_inflight,
-        ));
-
-        let provider =
-            perl_lsp_rs_core::providers::ai::OpenAiProvider::new(provider_config, limiter);
-        *self.ai_inline_backend.lock() = Some(Arc::new(provider));
-
-        tracing::info!(endpoint = %ai_config.endpoint, model = %ai_config.model, "AI inline completion backend configured");
+        // Live concurrency ceiling. The provider builds its gate from this, so
+        // the gate's lifetime is this backend generation's (#8300).
+        provider_config.max_inflight = ai_config.max_inflight;
+        provider_config
     }
 
     /// Get the subprocess runtime for external tool execution (perltidy, perlcritic).
@@ -2646,6 +2680,86 @@ model = "gpt-4"
         server.refresh_ai_backend();
 
         assert!(server.ai_backend().is_some());
+        Ok(())
+    }
+
+    /// The production wiring for `#8300`: a configured `maxInflight` must reach
+    /// the provider's gate, not only the rate limiter.
+    ///
+    /// This is the line the issue is actually about. Before it existed,
+    /// `ai_config.max_inflight` was passed *only* as the token bucket's burst,
+    /// which bounds starts-per-second rather than live requests. Deleting
+    /// `provider_config.max_inflight = ai_config.max_inflight` restores exactly
+    /// that defect while every other test in the tree stays green, because the
+    /// backend is installed behind `Arc<dyn InlineCompletionBackend>` and the
+    /// gate cannot be read back through it. Hence a config-level assertion.
+    #[test]
+    fn ai_provider_config_carries_the_configured_inflight_ceiling()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let ai_config = AiCompletionConfig {
+            endpoint: "https://api.example/v1/chat/completions".to_string(),
+            model: "custom-code-model".to_string(),
+            timeout_ms: 1_800,
+            max_inflight: 3,
+            ..AiCompletionConfig::default()
+        };
+
+        let provider_config = LspServer::ai_provider_config(&ai_config, "test-key".to_string());
+
+        if provider_config.max_inflight != 3 {
+            return Err(std::io::Error::other(
+                "a configured maxInflight must reach the provider, not just the rate limiter",
+            )
+            .into());
+        }
+        // Negative control on the assertion itself: 3 must not be the default,
+        // or this test would pass with the assignment removed.
+        if perl_lsp_rs_core::providers::ai::OpenAiConfig::new(
+            ai_config.endpoint.clone(),
+            ai_config.model.clone(),
+            "test-key".to_string(),
+            ai_config.timeout_ms,
+        )
+        .max_inflight
+            == 3
+        {
+            return Err(std::io::Error::other(
+                "the constructor default must differ from the configured value",
+            )
+            .into());
+        }
+        Ok(())
+    }
+
+    /// The translation must not quietly drop the other transport fields either.
+    #[test]
+    fn ai_provider_config_carries_the_transport_fields() -> Result<(), Box<dyn std::error::Error>> {
+        let ai_config = AiCompletionConfig {
+            endpoint: "http://127.0.0.1:11434/v1/chat/completions".to_string(),
+            model: "local-model".to_string(),
+            api_key_header: "x-api-key".to_string(),
+            api_key_prefix: None,
+            timeout_ms: 900,
+            local_model_mode: true,
+            max_inflight: 2,
+            ..AiCompletionConfig::default()
+        };
+
+        let provider_config = LspServer::ai_provider_config(&ai_config, "local-key".to_string());
+
+        if provider_config.endpoint != ai_config.endpoint
+            || provider_config.model != ai_config.model
+            || provider_config.api_key != "local-key"
+            || provider_config.api_key_header != "x-api-key"
+            || provider_config.api_key_prefix.is_some()
+            || provider_config.timeout_ms != 900
+            || !provider_config.local_model_mode
+            || provider_config.max_inflight != 2
+        {
+            return Err(
+                std::io::Error::other("provider transport fields were not preserved").into()
+            );
+        }
         Ok(())
     }
 

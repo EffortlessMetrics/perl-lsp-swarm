@@ -200,7 +200,7 @@
             "timeoutMs": { "type": "integer", "minimum": 0, "default": 1800 },
             "maxOutputTokens": { "type": "integer", "minimum": 1, "default": 64 },
             "rateLimitRps": { "type": "number", "exclusiveMinimum": 0, "default": 1.0 },
-            "maxInflight": { "type": "integer", "minimum": 1, "default": 1 },
+            "maxInflight": { "type": "integer", "minimum": 1, "maximum": 64, "default": 1 },
             "fallback": { "type": "boolean", "default": true },
             "localModelMode": { "type": "boolean", "default": false },
             "streaming": {

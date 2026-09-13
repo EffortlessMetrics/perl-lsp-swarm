@@ -2607,6 +2607,26 @@ pub fn perl_lsp_rs_core::providers::ai::destination::validate_endpoint(url: &str
 pub fn perl_lsp_rs_core::providers::ai::destination::validate_endpoint_with_resolver(url: &str, allow_local_http: bool, resolve: &dyn core::ops::function::Fn(&str, u16) -> core::result::Result<alloc::vec::Vec<core::net::ip_addr::IpAddr>, perl_lsp_rs_core::providers::destination::DestinationError>) -> core::result::Result<perl_lsp_rs_core::providers::destination::ApprovedDestination, perl_lsp_rs_core::providers::destination::DestinationError>
 pub fn perl_lsp_rs_core::providers::ai::destination::validate_tcp_attach_host(host: &str, port: u16) -> core::result::Result<alloc::vec::Vec<core::net::ip_addr::IpAddr>, perl_lsp_rs_core::providers::destination::DestinationError>
 pub fn perl_lsp_rs_core::providers::ai::destination::validate_tcp_attach_host_with_resolver(host: &str, port: u16, resolve: &dyn core::ops::function::Fn(&str, u16) -> core::result::Result<alloc::vec::Vec<core::net::ip_addr::IpAddr>, perl_lsp_rs_core::providers::destination::DestinationError>) -> core::result::Result<alloc::vec::Vec<core::net::ip_addr::IpAddr>, perl_lsp_rs_core::providers::destination::DestinationError>
+pub mod perl_lsp_rs_core::providers::ai::inflight
+pub struct perl_lsp_rs_core::providers::ai::inflight::InflightCounters
+pub perl_lsp_rs_core::providers::ai::inflight::InflightCounters::active: u32
+pub perl_lsp_rs_core::providers::ai::inflight::InflightCounters::admitted: u64
+pub perl_lsp_rs_core::providers::ai::inflight::InflightCounters::peak_active: u32
+pub perl_lsp_rs_core::providers::ai::inflight::InflightCounters::released: u64
+pub perl_lsp_rs_core::providers::ai::inflight::InflightCounters::saturated_rejections: u64
+pub fn perl_lsp_rs_core::providers::inflight::InflightCounters::clone(&self) -> perl_lsp_rs_core::providers::inflight::InflightCounters
+pub fn perl_lsp_rs_core::providers::inflight::InflightCounters::eq(&self, other: &perl_lsp_rs_core::providers::inflight::InflightCounters) -> bool
+pub fn perl_lsp_rs_core::providers::inflight::InflightCounters::default() -> perl_lsp_rs_core::providers::inflight::InflightCounters
+pub fn perl_lsp_rs_core::providers::inflight::InflightCounters::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_lsp_rs_core::providers::ai::inflight::InflightGate
+pub fn perl_lsp_rs_core::providers::inflight::InflightGate::capacity(&self) -> u32
+pub fn perl_lsp_rs_core::providers::inflight::InflightGate::counters(&self) -> perl_lsp_rs_core::providers::inflight::InflightCounters
+pub fn perl_lsp_rs_core::providers::inflight::InflightGate::new(capacity: u32) -> Self
+pub fn perl_lsp_rs_core::providers::inflight::InflightGate::try_acquire(&self) -> core::option::Option<perl_lsp_rs_core::providers::inflight::InflightPermit<'_>>
+pub fn perl_lsp_rs_core::providers::inflight::InflightGate::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_lsp_rs_core::providers::ai::inflight::InflightPermit<'gate>
+pub fn perl_lsp_rs_core::providers::inflight::InflightPermit<'_>::drop(&mut self)
+pub fn perl_lsp_rs_core::providers::inflight::InflightPermit<'gate>::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub mod perl_lsp_rs_core::providers::ai::openai
 pub struct perl_lsp_rs_core::providers::ai::openai::OpenAiConfig
 pub perl_lsp_rs_core::providers::ai::openai::OpenAiConfig::api_key: alloc::string::String
@@ -2614,19 +2634,21 @@ pub perl_lsp_rs_core::providers::ai::openai::OpenAiConfig::api_key_header: alloc
 pub perl_lsp_rs_core::providers::ai::openai::OpenAiConfig::api_key_prefix: core::option::Option<alloc::string::String>
 pub perl_lsp_rs_core::providers::ai::openai::OpenAiConfig::endpoint: alloc::string::String
 pub perl_lsp_rs_core::providers::ai::openai::OpenAiConfig::local_model_mode: bool
+pub perl_lsp_rs_core::providers::ai::openai::OpenAiConfig::max_inflight: u32
 pub perl_lsp_rs_core::providers::ai::openai::OpenAiConfig::model: alloc::string::String
 pub perl_lsp_rs_core::providers::ai::openai::OpenAiConfig::timeout_ms: u64
 pub fn perl_lsp_rs_core::providers::openai::OpenAiConfig::new(endpoint: alloc::string::String, model: alloc::string::String, api_key: alloc::string::String, timeout_ms: u64) -> Self
 pub fn perl_lsp_rs_core::providers::openai::OpenAiConfig::clone(&self) -> perl_lsp_rs_core::providers::openai::OpenAiConfig
 pub fn perl_lsp_rs_core::providers::openai::OpenAiConfig::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_lsp_rs_core::providers::ai::openai::OpenAiProvider
+pub fn perl_lsp_rs_core::providers::openai::OpenAiProvider::inflight_counters(&self) -> perl_lsp_rs_core::providers::inflight::InflightCounters
 pub fn perl_lsp_rs_core::providers::openai::OpenAiProvider::new(config: perl_lsp_rs_core::providers::openai::OpenAiConfig, limiter: alloc::sync::Arc<perl_lsp_rs_core::providers::rate_limiter::RateLimiter>) -> Self
 pub fn perl_lsp_rs_core::providers::openai::OpenAiProvider::stream(&self, req: &perl_lsp_rs_core::providers::BackendRequest, sink: &mut dyn core::ops::function::FnMut(perl_lsp_rs_core::providers::StreamChunk) -> perl_lsp_rs_core::providers::StreamControl) -> core::result::Result<(), perl_lsp_rs_core::providers::BackendError>
 pub mod perl_lsp_rs_core::providers::ai::prompt
 pub fn perl_lsp_rs_core::providers::ai::prompt::build_fim_prompt(context: &perl_lsp_rs_core::providers::PreparedInlineCompletionContext) -> (alloc::string::String, alloc::string::String)
 pub mod perl_lsp_rs_core::providers::ai::rate_limiter
 pub struct perl_lsp_rs_core::providers::ai::rate_limiter::RateLimiter
-pub fn perl_lsp_rs_core::providers::rate_limiter::RateLimiter::new(rps: f64, burst: u32) -> Self
+pub fn perl_lsp_rs_core::providers::rate_limiter::RateLimiter::new(rps: f64, burst_capacity: u32) -> Self
 pub fn perl_lsp_rs_core::providers::rate_limiter::RateLimiter::try_acquire(&self) -> bool
 pub mod perl_lsp_rs_core::providers::ai::sanitize
 pub fn perl_lsp_rs_core::providers::ai::sanitize::sanitize_completion_text(raw: &str) -> alloc::string::String
@@ -2661,22 +2683,43 @@ pub perl_lsp_rs_core::providers::ai::ApprovedDestination::scheme: alloc::string:
 pub fn perl_lsp_rs_core::providers::destination::ApprovedDestination::clone(&self) -> perl_lsp_rs_core::providers::destination::ApprovedDestination
 pub fn perl_lsp_rs_core::providers::destination::ApprovedDestination::eq(&self, other: &perl_lsp_rs_core::providers::destination::ApprovedDestination) -> bool
 pub fn perl_lsp_rs_core::providers::destination::ApprovedDestination::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_lsp_rs_core::providers::ai::InflightCounters
+pub perl_lsp_rs_core::providers::ai::InflightCounters::active: u32
+pub perl_lsp_rs_core::providers::ai::InflightCounters::admitted: u64
+pub perl_lsp_rs_core::providers::ai::InflightCounters::peak_active: u32
+pub perl_lsp_rs_core::providers::ai::InflightCounters::released: u64
+pub perl_lsp_rs_core::providers::ai::InflightCounters::saturated_rejections: u64
+pub fn perl_lsp_rs_core::providers::inflight::InflightCounters::clone(&self) -> perl_lsp_rs_core::providers::inflight::InflightCounters
+pub fn perl_lsp_rs_core::providers::inflight::InflightCounters::eq(&self, other: &perl_lsp_rs_core::providers::inflight::InflightCounters) -> bool
+pub fn perl_lsp_rs_core::providers::inflight::InflightCounters::default() -> perl_lsp_rs_core::providers::inflight::InflightCounters
+pub fn perl_lsp_rs_core::providers::inflight::InflightCounters::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_lsp_rs_core::providers::ai::InflightGate
+pub fn perl_lsp_rs_core::providers::inflight::InflightGate::capacity(&self) -> u32
+pub fn perl_lsp_rs_core::providers::inflight::InflightGate::counters(&self) -> perl_lsp_rs_core::providers::inflight::InflightCounters
+pub fn perl_lsp_rs_core::providers::inflight::InflightGate::new(capacity: u32) -> Self
+pub fn perl_lsp_rs_core::providers::inflight::InflightGate::try_acquire(&self) -> core::option::Option<perl_lsp_rs_core::providers::inflight::InflightPermit<'_>>
+pub fn perl_lsp_rs_core::providers::inflight::InflightGate::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_lsp_rs_core::providers::ai::InflightPermit<'gate>
+pub fn perl_lsp_rs_core::providers::inflight::InflightPermit<'_>::drop(&mut self)
+pub fn perl_lsp_rs_core::providers::inflight::InflightPermit<'gate>::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_lsp_rs_core::providers::ai::OpenAiConfig
 pub perl_lsp_rs_core::providers::ai::OpenAiConfig::api_key: alloc::string::String
 pub perl_lsp_rs_core::providers::ai::OpenAiConfig::api_key_header: alloc::string::String
 pub perl_lsp_rs_core::providers::ai::OpenAiConfig::api_key_prefix: core::option::Option<alloc::string::String>
 pub perl_lsp_rs_core::providers::ai::OpenAiConfig::endpoint: alloc::string::String
 pub perl_lsp_rs_core::providers::ai::OpenAiConfig::local_model_mode: bool
+pub perl_lsp_rs_core::providers::ai::OpenAiConfig::max_inflight: u32
 pub perl_lsp_rs_core::providers::ai::OpenAiConfig::model: alloc::string::String
 pub perl_lsp_rs_core::providers::ai::OpenAiConfig::timeout_ms: u64
 pub fn perl_lsp_rs_core::providers::openai::OpenAiConfig::new(endpoint: alloc::string::String, model: alloc::string::String, api_key: alloc::string::String, timeout_ms: u64) -> Self
 pub fn perl_lsp_rs_core::providers::openai::OpenAiConfig::clone(&self) -> perl_lsp_rs_core::providers::openai::OpenAiConfig
 pub fn perl_lsp_rs_core::providers::openai::OpenAiConfig::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_lsp_rs_core::providers::ai::OpenAiProvider
+pub fn perl_lsp_rs_core::providers::openai::OpenAiProvider::inflight_counters(&self) -> perl_lsp_rs_core::providers::inflight::InflightCounters
 pub fn perl_lsp_rs_core::providers::openai::OpenAiProvider::new(config: perl_lsp_rs_core::providers::openai::OpenAiConfig, limiter: alloc::sync::Arc<perl_lsp_rs_core::providers::rate_limiter::RateLimiter>) -> Self
 pub fn perl_lsp_rs_core::providers::openai::OpenAiProvider::stream(&self, req: &perl_lsp_rs_core::providers::BackendRequest, sink: &mut dyn core::ops::function::FnMut(perl_lsp_rs_core::providers::StreamChunk) -> perl_lsp_rs_core::providers::StreamControl) -> core::result::Result<(), perl_lsp_rs_core::providers::BackendError>
 pub struct perl_lsp_rs_core::providers::ai::RateLimiter
-pub fn perl_lsp_rs_core::providers::rate_limiter::RateLimiter::new(rps: f64, burst: u32) -> Self
+pub fn perl_lsp_rs_core::providers::rate_limiter::RateLimiter::new(rps: f64, burst_capacity: u32) -> Self
 pub fn perl_lsp_rs_core::providers::rate_limiter::RateLimiter::try_acquire(&self) -> bool
 pub fn perl_lsp_rs_core::providers::ai::credential_may_attach(approved: &perl_lsp_rs_core::providers::destination::ApprovedDestination, request_url: &str) -> bool
 pub fn perl_lsp_rs_core::providers::ai::validate_endpoint(url: &str, allow_local_http: bool) -> core::result::Result<perl_lsp_rs_core::providers::destination::ApprovedDestination, perl_lsp_rs_core::providers::destination::DestinationError>
@@ -3875,6 +3918,26 @@ pub fn perl_lsp_rs_core::providers::ImportManager::fmt(&self, f: &mut core::fmt:
 pub fn perl_lsp_rs_core::providers::import_management::collect_imports(lines: &[alloc::string::String]) -> alloc::vec::Vec<alloc::string::String>
 pub fn perl_lsp_rs_core::providers::import_management::find_imports_range(source: &str, lines: &[alloc::string::String]) -> core::option::Option<(usize, usize)>
 pub fn perl_lsp_rs_core::providers::import_management::sort_imports(imports: alloc::vec::Vec<alloc::string::String>) -> alloc::vec::Vec<alloc::string::String>
+pub mod perl_lsp_rs_core::providers::inflight
+pub struct perl_lsp_rs_core::providers::inflight::InflightCounters
+pub perl_lsp_rs_core::providers::inflight::InflightCounters::active: u32
+pub perl_lsp_rs_core::providers::inflight::InflightCounters::admitted: u64
+pub perl_lsp_rs_core::providers::inflight::InflightCounters::peak_active: u32
+pub perl_lsp_rs_core::providers::inflight::InflightCounters::released: u64
+pub perl_lsp_rs_core::providers::inflight::InflightCounters::saturated_rejections: u64
+pub fn perl_lsp_rs_core::providers::inflight::InflightCounters::clone(&self) -> perl_lsp_rs_core::providers::inflight::InflightCounters
+pub fn perl_lsp_rs_core::providers::inflight::InflightCounters::eq(&self, other: &perl_lsp_rs_core::providers::inflight::InflightCounters) -> bool
+pub fn perl_lsp_rs_core::providers::inflight::InflightCounters::default() -> perl_lsp_rs_core::providers::inflight::InflightCounters
+pub fn perl_lsp_rs_core::providers::inflight::InflightCounters::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_lsp_rs_core::providers::inflight::InflightGate
+pub fn perl_lsp_rs_core::providers::inflight::InflightGate::capacity(&self) -> u32
+pub fn perl_lsp_rs_core::providers::inflight::InflightGate::counters(&self) -> perl_lsp_rs_core::providers::inflight::InflightCounters
+pub fn perl_lsp_rs_core::providers::inflight::InflightGate::new(capacity: u32) -> Self
+pub fn perl_lsp_rs_core::providers::inflight::InflightGate::try_acquire(&self) -> core::option::Option<perl_lsp_rs_core::providers::inflight::InflightPermit<'_>>
+pub fn perl_lsp_rs_core::providers::inflight::InflightGate::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_lsp_rs_core::providers::inflight::InflightPermit<'gate>
+pub fn perl_lsp_rs_core::providers::inflight::InflightPermit<'_>::drop(&mut self)
+pub fn perl_lsp_rs_core::providers::inflight::InflightPermit<'gate>::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub mod perl_lsp_rs_core::providers::inlay_hints
 pub enum perl_lsp_rs_core::providers::inlay_hints::InlayHintKind
 pub perl_lsp_rs_core::providers::inlay_hints::InlayHintKind::Parameter = 2
@@ -4261,6 +4324,7 @@ pub perl_lsp_rs_core::providers::inline_completion::BackendError::Auth(alloc::st
 pub perl_lsp_rs_core::providers::inline_completion::BackendError::Cancelled
 pub perl_lsp_rs_core::providers::inline_completion::BackendError::Provider(alloc::string::String)
 pub perl_lsp_rs_core::providers::inline_completion::BackendError::RateLimited
+pub perl_lsp_rs_core::providers::inline_completion::BackendError::Saturated
 pub perl_lsp_rs_core::providers::inline_completion::BackendError::Timeout
 pub perl_lsp_rs_core::providers::inline_completion::BackendError::Transport(alloc::string::String)
 pub fn perl_lsp_rs_core::providers::BackendError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -5433,12 +5497,14 @@ pub perl_lsp_rs_core::providers::openai::OpenAiConfig::api_key_header: alloc::st
 pub perl_lsp_rs_core::providers::openai::OpenAiConfig::api_key_prefix: core::option::Option<alloc::string::String>
 pub perl_lsp_rs_core::providers::openai::OpenAiConfig::endpoint: alloc::string::String
 pub perl_lsp_rs_core::providers::openai::OpenAiConfig::local_model_mode: bool
+pub perl_lsp_rs_core::providers::openai::OpenAiConfig::max_inflight: u32
 pub perl_lsp_rs_core::providers::openai::OpenAiConfig::model: alloc::string::String
 pub perl_lsp_rs_core::providers::openai::OpenAiConfig::timeout_ms: u64
 pub fn perl_lsp_rs_core::providers::openai::OpenAiConfig::new(endpoint: alloc::string::String, model: alloc::string::String, api_key: alloc::string::String, timeout_ms: u64) -> Self
 pub fn perl_lsp_rs_core::providers::openai::OpenAiConfig::clone(&self) -> perl_lsp_rs_core::providers::openai::OpenAiConfig
 pub fn perl_lsp_rs_core::providers::openai::OpenAiConfig::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_lsp_rs_core::providers::openai::OpenAiProvider
+pub fn perl_lsp_rs_core::providers::openai::OpenAiProvider::inflight_counters(&self) -> perl_lsp_rs_core::providers::inflight::InflightCounters
 pub fn perl_lsp_rs_core::providers::openai::OpenAiProvider::new(config: perl_lsp_rs_core::providers::openai::OpenAiConfig, limiter: alloc::sync::Arc<perl_lsp_rs_core::providers::rate_limiter::RateLimiter>) -> Self
 pub fn perl_lsp_rs_core::providers::openai::OpenAiProvider::stream(&self, req: &perl_lsp_rs_core::providers::BackendRequest, sink: &mut dyn core::ops::function::FnMut(perl_lsp_rs_core::providers::StreamChunk) -> perl_lsp_rs_core::providers::StreamControl) -> core::result::Result<(), perl_lsp_rs_core::providers::BackendError>
 pub mod perl_lsp_rs_core::providers::package_subroutine
@@ -5812,7 +5878,7 @@ pub fn perl_lsp_rs_core::providers::range_admission::admit_format_range(geometry
 pub fn perl_lsp_rs_core::providers::range_admission::admit_wire_endpoints(geometry: &perl_lsp_rs_core::providers::range_admission::SourceGeometry, source: &str, start: (u32, u32), end: (u32, u32)) -> core::result::Result<perl_lsp_rs_core::providers::range_admission::AdmittedFormatRange, perl_lsp_rs_core::providers::range_admission::RangeAdmissionError>
 pub mod perl_lsp_rs_core::providers::rate_limiter
 pub struct perl_lsp_rs_core::providers::rate_limiter::RateLimiter
-pub fn perl_lsp_rs_core::providers::rate_limiter::RateLimiter::new(rps: f64, burst: u32) -> Self
+pub fn perl_lsp_rs_core::providers::rate_limiter::RateLimiter::new(rps: f64, burst_capacity: u32) -> Self
 pub fn perl_lsp_rs_core::providers::rate_limiter::RateLimiter::try_acquire(&self) -> bool
 pub mod perl_lsp_rs_core::providers::references_pir_shadow
 pub perl_lsp_rs_core::providers::references_pir_shadow::PirShadowRefusalReason::DynamicBoundary
@@ -6814,6 +6880,7 @@ pub perl_lsp_rs_core::providers::BackendError::Auth(alloc::string::String)
 pub perl_lsp_rs_core::providers::BackendError::Cancelled
 pub perl_lsp_rs_core::providers::BackendError::Provider(alloc::string::String)
 pub perl_lsp_rs_core::providers::BackendError::RateLimited
+pub perl_lsp_rs_core::providers::BackendError::Saturated
 pub perl_lsp_rs_core::providers::BackendError::Timeout
 pub perl_lsp_rs_core::providers::BackendError::Transport(alloc::string::String)
 pub fn perl_lsp_rs_core::providers::BackendError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -8069,6 +8136,25 @@ pub fn perl_lsp_rs_core::providers::ImportManager::new() -> Self
 pub fn perl_lsp_rs_core::providers::ImportManager::sort(&self, imports: alloc::vec::Vec<alloc::string::String>) -> alloc::vec::Vec<alloc::string::String>
 pub fn perl_lsp_rs_core::providers::ImportManager::default() -> perl_lsp_rs_core::providers::ImportManager
 pub fn perl_lsp_rs_core::providers::ImportManager::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_lsp_rs_core::providers::InflightCounters
+pub perl_lsp_rs_core::providers::InflightCounters::active: u32
+pub perl_lsp_rs_core::providers::InflightCounters::admitted: u64
+pub perl_lsp_rs_core::providers::InflightCounters::peak_active: u32
+pub perl_lsp_rs_core::providers::InflightCounters::released: u64
+pub perl_lsp_rs_core::providers::InflightCounters::saturated_rejections: u64
+pub fn perl_lsp_rs_core::providers::inflight::InflightCounters::clone(&self) -> perl_lsp_rs_core::providers::inflight::InflightCounters
+pub fn perl_lsp_rs_core::providers::inflight::InflightCounters::eq(&self, other: &perl_lsp_rs_core::providers::inflight::InflightCounters) -> bool
+pub fn perl_lsp_rs_core::providers::inflight::InflightCounters::default() -> perl_lsp_rs_core::providers::inflight::InflightCounters
+pub fn perl_lsp_rs_core::providers::inflight::InflightCounters::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_lsp_rs_core::providers::InflightGate
+pub fn perl_lsp_rs_core::providers::inflight::InflightGate::capacity(&self) -> u32
+pub fn perl_lsp_rs_core::providers::inflight::InflightGate::counters(&self) -> perl_lsp_rs_core::providers::inflight::InflightCounters
+pub fn perl_lsp_rs_core::providers::inflight::InflightGate::new(capacity: u32) -> Self
+pub fn perl_lsp_rs_core::providers::inflight::InflightGate::try_acquire(&self) -> core::option::Option<perl_lsp_rs_core::providers::inflight::InflightPermit<'_>>
+pub fn perl_lsp_rs_core::providers::inflight::InflightGate::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_lsp_rs_core::providers::InflightPermit<'gate>
+pub fn perl_lsp_rs_core::providers::inflight::InflightPermit<'_>::drop(&mut self)
+pub fn perl_lsp_rs_core::providers::inflight::InflightPermit<'gate>::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_lsp_rs_core::providers::InlayHint
 pub perl_lsp_rs_core::providers::InlayHint::kind: perl_lsp_rs_core::providers::InlayHintKind
 pub perl_lsp_rs_core::providers::InlayHint::label: alloc::string::String
@@ -8278,12 +8364,14 @@ pub perl_lsp_rs_core::providers::OpenAiConfig::api_key_header: alloc::string::St
 pub perl_lsp_rs_core::providers::OpenAiConfig::api_key_prefix: core::option::Option<alloc::string::String>
 pub perl_lsp_rs_core::providers::OpenAiConfig::endpoint: alloc::string::String
 pub perl_lsp_rs_core::providers::OpenAiConfig::local_model_mode: bool
+pub perl_lsp_rs_core::providers::OpenAiConfig::max_inflight: u32
 pub perl_lsp_rs_core::providers::OpenAiConfig::model: alloc::string::String
 pub perl_lsp_rs_core::providers::OpenAiConfig::timeout_ms: u64
 pub fn perl_lsp_rs_core::providers::openai::OpenAiConfig::new(endpoint: alloc::string::String, model: alloc::string::String, api_key: alloc::string::String, timeout_ms: u64) -> Self
 pub fn perl_lsp_rs_core::providers::openai::OpenAiConfig::clone(&self) -> perl_lsp_rs_core::providers::openai::OpenAiConfig
 pub fn perl_lsp_rs_core::providers::openai::OpenAiConfig::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_lsp_rs_core::providers::OpenAiProvider
+pub fn perl_lsp_rs_core::providers::openai::OpenAiProvider::inflight_counters(&self) -> perl_lsp_rs_core::providers::inflight::InflightCounters
 pub fn perl_lsp_rs_core::providers::openai::OpenAiProvider::new(config: perl_lsp_rs_core::providers::openai::OpenAiConfig, limiter: alloc::sync::Arc<perl_lsp_rs_core::providers::rate_limiter::RateLimiter>) -> Self
 pub fn perl_lsp_rs_core::providers::openai::OpenAiProvider::stream(&self, req: &perl_lsp_rs_core::providers::BackendRequest, sink: &mut dyn core::ops::function::FnMut(perl_lsp_rs_core::providers::StreamChunk) -> perl_lsp_rs_core::providers::StreamControl) -> core::result::Result<(), perl_lsp_rs_core::providers::BackendError>
 pub const fn perl_lsp_rs_core::providers::PartialSemanticTokens::raw_token_count(&self) -> usize
@@ -8528,7 +8616,7 @@ pub fn perl_lsp_rs_core::providers::ProviderQueryResultDraft::eq(&self, other: &
 pub fn perl_lsp_rs_core::providers::ProviderQueryResultDraft::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_lsp_rs_core::providers::ProviderQueryResultDraft::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 pub struct perl_lsp_rs_core::providers::RateLimiter
-pub fn perl_lsp_rs_core::providers::rate_limiter::RateLimiter::new(rps: f64, burst: u32) -> Self
+pub fn perl_lsp_rs_core::providers::rate_limiter::RateLimiter::new(rps: f64, burst_capacity: u32) -> Self
 pub fn perl_lsp_rs_core::providers::rate_limiter::RateLimiter::try_acquire(&self) -> bool
 pub struct perl_lsp_rs_core::providers::ReferenceOptions
 pub perl_lsp_rs_core::providers::ReferenceOptions::include_declaration: bool
