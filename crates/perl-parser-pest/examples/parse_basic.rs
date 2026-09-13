@@ -12,6 +12,7 @@
 // Narrow, deliberate disposition: a usage example demonstrates output, and the
 // package lint policy denies `print_stdout` for library and service code.
 #![allow(clippy::print_stdout)]
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 use std::error::Error;
 
