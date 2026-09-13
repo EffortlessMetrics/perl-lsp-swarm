@@ -152,6 +152,13 @@ pub fn parse_meta_json(file_id: FileId, content: &str) -> Option<DistMetadataFac
     })
 }
 
+/// Words after which a `/` opens a regex instead of dividing. A bare word is
+/// otherwise a value, and `$count / 2` must stay a division.
+const CPANFILE_REGEX_OPERANDS: &[&str] = &[
+    "split", "grep", "map", "return", "and", "or", "not", "xor", "if", "unless", "while", "until",
+    "when",
+];
+
 /// Perl statement modifiers that make a declaration conditional.
 const CPANFILE_STATEMENT_MODIFIERS: &[&str] =
     &["if", "unless", "while", "until", "for", "foreach", "when"];
@@ -213,12 +220,51 @@ enum CpanfileChar {
 /// rather than each re-deriving quote state, which is how an unbalanced brace
 /// inside a quote-like literal used to swallow every later declaration.
 ///
-/// Known limits, all fail-closed for the block scan: a bare `/.../` regex is
-/// not separable from division without a real parser, and heredocs, POD, and
-/// `__END__`/`__DATA__` sections are treated as ordinary code.
+/// A bare `/.../` regex is recognized by operand position rather than by
+/// parsing: see `starts_bare_regex`. Remaining limits, all fail-closed for the
+/// block scan: heredocs, POD, and `__END__`/`__DATA__` sections are treated as
+/// ordinary code.
 struct CpanfileLex {
     /// Per-character classification, parallel to the source characters.
     class: Vec<CpanfileChar>,
+}
+
+/// Whether the `/` at `index` opens a bare regex rather than dividing.
+///
+/// Perl cannot be told apart here without a parser, so this is a denylist of
+/// the tokens that *end a value* — an identifier or number, a closing bracket,
+/// a string literal — plus the short list of words that take a regex operand.
+/// Everything else leaves the `/` in operand position, where a regex is the
+/// only reading.
+///
+/// Defaulting the other way is not neutral. An unrecognized `/}/` leaves its
+/// `}` as code, and that brace pops the enclosing unsupported block, so every
+/// declaration after it inside a `feature` or `if` block is published as an
+/// unconditional fact. Reading a division as a regex instead loses the
+/// declarations up to the next `/`, which is the fail-closed direction.
+fn starts_bare_regex(chars: &[char], class: &[CpanfileChar], index: usize) -> bool {
+    let mut cursor = index;
+    while cursor > 0 {
+        cursor -= 1;
+        if class[cursor] == CpanfileChar::Comment || chars[cursor].is_whitespace() {
+            continue;
+        }
+        if class[cursor] == CpanfileChar::Literal {
+            return false;
+        }
+        let previous = chars[cursor];
+        if !is_identifier_char(previous) {
+            return !matches!(previous, ')' | ']' | '}');
+        }
+        let mut start = cursor + 1;
+        while start > 0 && is_identifier_char(chars[start - 1]) {
+            start -= 1;
+        }
+        let word: String = chars[start..=cursor].iter().collect();
+        return CPANFILE_REGEX_OPERANDS.contains(&word.as_str());
+    }
+    // A `/` with nothing before it has nothing to divide.
+    true
 }
 
 fn is_identifier_char(ch: char) -> bool {
@@ -313,6 +359,15 @@ impl CpanfileLex {
             }
             if ch == '\'' || ch == '"' {
                 // An unterminated literal runs to the end of the file.
+                let literal_end = skip_delimited(chars, index).unwrap_or(chars.len());
+                for slot in &mut class[index..literal_end] {
+                    *slot = CpanfileChar::Literal;
+                }
+                index = literal_end;
+                continue;
+            }
+            if ch == '/' && starts_bare_regex(chars, &class, index) {
+                // An unterminated regex runs to the end of the file.
                 let literal_end = skip_delimited(chars, index).unwrap_or(chars.len());
                 for slot in &mut class[index..literal_end] {
                     *slot = CpanfileChar::Literal;
@@ -1314,6 +1369,49 @@ mod tests {
     }
 
     #[test]
+    fn cpanfile_bare_regexes_cannot_reopen_an_unsupported_block() {
+        // A `}` left as code inside a bare regex pops the block the scanner
+        // pushed for `if`, `feature`, or any other unsupported construct. Every
+        // declaration after it in that block is then published unconditionally.
+        for content in [
+            "if ($enabled) { my $r = /}/; requires 'Leak'; }",
+            "if ($enabled) { my $r = /;/; requires 'Leak'; }",
+            "feature 'X' => sub { my @p = split /}/, $x; requires 'Leak'; };",
+            "if ($enabled) { requires 'Leak' if $x =~ /}/; }",
+        ] {
+            let facts = parse_cpanfile(FileId::new("cpanfile", &Digest::of("x")), content);
+            assert!(
+                !facts.prereqs.iter().any(|p| p.module == "Leak"),
+                "FAIL-OPEN: {content:?} published {:?}",
+                facts.prereqs
+            );
+        }
+    }
+
+    #[test]
+    fn cpanfile_division_is_not_a_regex() {
+        // The other direction has a cost too: reading a division as a regex
+        // swallows everything up to the next `/`, losing real declarations.
+        for expression in [
+            "6 / 2 / 3",
+            "$a / $b",
+            "fn(1) / 2",
+            "$h{k} / 2",
+            "$#{$b} / 2",
+            "$list[0] / 2",
+            "'10' / 2",
+        ] {
+            let content = format!("my $n = {expression};\nrequires 'Kept';\n");
+            let facts = parse_cpanfile(FileId::new("cpanfile", &Digest::of("x")), &content);
+            assert!(
+                facts.prereqs.iter().any(|p| p.module == "Kept"),
+                "{expression} divides: {:?}",
+                facts.prereqs
+            );
+        }
+    }
+
+    #[test]
     fn adversarial_fail_open_sweep() {
         // Every one of these encloses a declaration in a construct that is not
         // an unconditional top-level or canonical-phase declaration. None may
@@ -1335,6 +1433,8 @@ mod tests {
             "requires 'Le' . 'ak';",
             "feature 'X' => sub { on 'test' => sub { requires 'Leak'; }; };",
             "if (1) { on 'test' => sub { requires 'Leak'; }; }",
+            "if ($enabled) { my $r = /}/; requires 'Leak'; }",
+            "feature 'X' => sub { my @p = split /}/, $x; requires 'Leak'; };",
         ];
         for content in hostile {
             let facts = parse_cpanfile(FileId::new("cpanfile", &Digest::of("x")), content);
