@@ -91,6 +91,19 @@ fn workflow_paths(workflow: &serde_yaml_ng::Value, event: &str) -> Result<Vec<St
         .collect()
 }
 
+/// Whether `step`'s `key` is a string equal to `expected`, ignoring surrounding
+/// whitespace. A missing key, a non-string value, and a different value are all
+/// simply "not equal": the caller ANDs these together, and keeping each fail
+/// path inside one named predicate makes that conjunction legible — the shape
+/// this replaced inlined two fallible lookups and a comparison per operand,
+/// where dropping one operand would silently weaken the ratchet.
+fn step_field_equals(step: &serde_yaml_ng::Value, key: &str, expected: &str) -> bool {
+    mapping_value(step, key)
+        .ok()
+        .and_then(serde_yaml_ng::Value::as_str)
+        .is_some_and(|value| value.trim() == expected)
+}
+
 fn validate_workflow(workflow: &serde_yaml_ng::Value) -> Result<(), String> {
     for &event in WORKFLOW_EVENTS {
         let paths = workflow_paths(workflow, event)?;
@@ -107,12 +120,8 @@ fn validate_workflow(workflow: &serde_yaml_ng::Value) -> Result<(), String> {
         .as_sequence()
         .ok_or_else(|| format!("{WORKFLOW_PATH}: jobs.check.steps must be a YAML sequence"))?;
     let named_step = steps.iter().any(|step| {
-        mapping_value(step, "name")
-            .and_then(|name| name.as_str().ok_or_else(|| "name is not a string".to_owned()))
-            .is_ok_and(|name| name == "Check shift-left publication contract")
-            && mapping_value(step, "run")
-                .and_then(|run| run.as_str().ok_or_else(|| "run is not a string".to_owned()))
-                .is_ok_and(|run| run.trim() == PUBLICATION_CHECK_COMMAND)
+        step_field_equals(step, "name", "Check shift-left publication contract")
+            && step_field_equals(step, "run", PUBLICATION_CHECK_COMMAND)
     });
     if !named_step {
         return Err(format!(
@@ -172,6 +181,28 @@ fn replace_publication_command(workflow: &mut serde_yaml_ng::Value) -> Result<()
         })
         .ok_or_else(|| "publication-contract step fixture was not present".to_owned())?;
     *mapping_value_mut(step, "run")? = serde_yaml_ng::Value::String("true".to_owned());
+    Ok(())
+}
+
+/// Normalize for **semantic-marker** matching: lowercase ASCII, keep only
+/// `[A-Za-z0-9_]`, collapse whitespace. This is deliberately not a verbatim
+/// equality check — the ratchet enforces that an obligation is stated, not the
+/// exact wording, so punctuation, capitalization, and line wrapping may differ.
+/// Rename the publication-contract step while leaving its `run` command intact,
+/// so the mutation isolates the `name` half of the step predicate.
+fn rename_publication_step(workflow: &mut serde_yaml_ng::Value) -> Result<(), String> {
+    let steps = mapping_value_mut(
+        mapping_value_mut(mapping_value_mut(workflow, "jobs")?, "check")?,
+        "steps",
+    )?
+    .as_sequence_mut()
+    .ok_or_else(|| format!("{WORKFLOW_PATH}: jobs.check.steps must be a YAML sequence"))?;
+    let step = steps
+        .iter_mut()
+        .find(|step| step_field_equals(step, "name", "Check shift-left publication contract"))
+        .ok_or_else(|| "publication-contract step fixture was not present".to_owned())?;
+    *mapping_value_mut(step, "name")? =
+        serde_yaml_ng::Value::String("Check something else".to_owned());
     Ok(())
 }
 
@@ -390,11 +421,21 @@ fn ratchet_rejects_workflow_trigger_and_command_mutations() -> Result<(), Box<dy
         }
     }
 
-    let mut missing_command = workflow;
+    let mut missing_command = workflow.clone();
     replace_publication_command(&mut missing_command).map_err(contract_error)?;
     assert!(
         validate_workflow(&missing_command).is_err(),
         "replacing the publication-contract command must fail the contract"
+    );
+
+    // The step is identified by name AND command. Without this, dropping the
+    // name half of that predicate passes every other test in this file — the
+    // exact weakening the conjunction exists to prevent.
+    let mut renamed_step = workflow;
+    rename_publication_step(&mut renamed_step).map_err(contract_error)?;
+    assert!(
+        validate_workflow(&renamed_step).is_err(),
+        "renaming the publication-contract step must fail the contract"
     );
     Ok(())
 }
