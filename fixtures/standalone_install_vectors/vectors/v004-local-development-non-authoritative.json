@@ -1,0 +1,64 @@
+{
+  "vector_id": "v004-local-development-non-authoritative",
+  "contract_generation": 1,
+  "family": "local_development_non_authoritative",
+  "platform_classification": "platform_neutral",
+  "intent": {
+    "operation_id": "txn-v004",
+    "attempt_id": "attempt-a1",
+    "route": "first_party_powershell",
+    "mode": "explicit_local_development",
+    "selector": { "latest_requested": null },
+    "target": { "platform": "synthetic-platform", "arch": "synthetic-arch", "libc": "synthetic-libc" },
+    "requested_product_unit": "server_dap_pair",
+    "fallback_policy": "forbidden",
+    "path_policy": "session_only",
+    "config_digest": "cfg-digest-v004"
+  },
+  "resolved_subject": {
+    "subject_id": "subject-v004",
+    "mode": "explicit_local_development",
+    "product_unit": "server_dap_pair",
+    "required_executables": ["perllsp", "perl-dap"],
+    "destination_role": "local_workspace",
+    "provenance_required": false
+  },
+  "stage_graph": [
+    { "stage_id": "resolve_subject", "applicability": "required", "predecessors": [], "port_script": "resolve" },
+    { "stage_id": "transport", "applicability": "not_applicable", "predecessors": [], "port_script": "unused-transport" },
+    { "stage_id": "checksum_integrity", "applicability": "not_applicable", "predecessors": [], "port_script": "unused-checksum" },
+    { "stage_id": "provenance", "applicability": "not_applicable", "predecessors": [], "port_script": "unused-provenance" },
+    { "stage_id": "archive_manifest_and_staging", "applicability": "not_applicable", "predecessors": [], "port_script": "unused-staging" },
+    { "stage_id": "source_build", "applicability": "required", "predecessors": ["resolve_subject"], "port_script": "source-build" },
+    { "stage_id": "executable_observation", "applicability": "required", "predecessors": ["source_build"], "port_script": "observe" },
+    { "stage_id": "promotion", "applicability": "not_applicable", "predecessors": [], "port_script": "unused-promote" },
+    { "stage_id": "path_persistence", "applicability": "not_applicable", "predecessors": [], "port_script": "unused-path" },
+    { "stage_id": "fresh_process_observation", "applicability": "not_applicable", "predecessors": [], "port_script": "unused-fresh" },
+    { "stage_id": "installed_transition", "applicability": "not_applicable", "predecessors": [], "port_script": "unused-install" }
+  ],
+  "port_scripts": {
+    "resolve": { "calls": [{ "result": "success" }] },
+    "unused-transport": { "calls": [{ "result": "success" }] },
+    "unused-checksum": { "calls": [{ "result": "success" }] },
+    "unused-provenance": { "calls": [{ "result": "success" }] },
+    "unused-staging": { "calls": [{ "result": "success" }] },
+    "source-build": { "calls": [{ "result": "success", "artifacts": ["artifact-local-v004"] }] },
+    "observe": { "calls": [{ "result": "success", "executables": { "perllsp": "ok", "perl-dap": "ok" } }] },
+    "unused-promote": { "calls": [{ "result": "success" }] },
+    "unused-path": { "calls": [{ "result": "success" }] },
+    "unused-fresh": { "calls": [{ "result": "success" }] },
+    "unused-install": { "calls": [{ "result": "success" }] }
+  },
+  "expected": {
+    "terminal_result": "succeeded",
+    "terminal_stage": "executable_observation",
+    "reason_family": "none",
+    "action_class": "none",
+    "side_effect_ceiling": "none",
+    "claim_ceiling": "local_development_only",
+    "pair_claims_satisfied": false,
+    "branch_count": 1,
+    "attempt_count": 1
+  },
+  "redaction": { "forbidden_tokens": [] }
+}

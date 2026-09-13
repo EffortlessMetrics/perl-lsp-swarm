@@ -1,0 +1,125 @@
+{
+  "schema": "standalone_semantic_packet.v1",
+  "vector_id": "v004-local-development-non-authoritative",
+  "contract_generation": 1,
+  "route": "first_party_powershell",
+  "mode": "explicit_local_development",
+  "requested_product_unit": "server_dap_pair",
+  "effective_product_unit": "server_dap_pair",
+  "effective_path_policy": "session_only",
+  "resolved_subject_digest": "sha256:fe6ed86b03dac68db5d62fc186e198b48d48ffc49585f4850c90cd099adc2a97",
+  "attempts": [
+    {
+      "attempt_id": "attempt-a1",
+      "branch_id": "branch-main",
+      "outcome": "succeeded",
+      "reason_family": "none"
+    }
+  ],
+  "branches": [
+    {
+      "branch_id": "branch-main",
+      "subject_digest": "sha256:fe6ed86b03dac68db5d62fc186e198b48d48ffc49585f4850c90cd099adc2a97",
+      "terminal_result": "succeeded",
+      "reason_family": "none"
+    }
+  ],
+  "executed_stages": [
+    {
+      "attempt_id": "attempt-a1",
+      "branch_id": "branch-main",
+      "stage_id": "resolve_subject",
+      "result": "succeeded",
+      "reason_family": "none",
+      "receipt_digest": "sha256:f745e728e3e27e1ed9db5bee1283b6fd7cef1f85ec31e08d963237d230d440d0",
+      "predecessor_digests": []
+    },
+    {
+      "attempt_id": "attempt-a1",
+      "branch_id": "branch-main",
+      "stage_id": "source_build",
+      "result": "succeeded",
+      "reason_family": "none",
+      "receipt_digest": "sha256:927d2aa8efc0947434da8e1bf8b5da818ec44c5968ee5a4726c28eceeae16595",
+      "predecessor_digests": [
+        "sha256:f745e728e3e27e1ed9db5bee1283b6fd7cef1f85ec31e08d963237d230d440d0"
+      ],
+      "artifacts": [
+        "artifact-local-v004"
+      ]
+    },
+    {
+      "attempt_id": "attempt-a1",
+      "branch_id": "branch-main",
+      "stage_id": "executable_observation",
+      "result": "succeeded",
+      "reason_family": "none",
+      "receipt_digest": "sha256:c4e9536ad0ad0723f211adac81270e0d84b0f39186f0e10227e215ec3fe0cfb3",
+      "predecessor_digests": [
+        "sha256:927d2aa8efc0947434da8e1bf8b5da818ec44c5968ee5a4726c28eceeae16595"
+      ]
+    }
+  ],
+  "skipped_stages": [
+    {
+      "attempt_id": "attempt-a1",
+      "branch_id": "branch-main",
+      "stage_id": "archive_manifest_and_staging",
+      "authorization": "mode_authorized"
+    },
+    {
+      "attempt_id": "attempt-a1",
+      "branch_id": "branch-main",
+      "stage_id": "checksum_integrity",
+      "authorization": "mode_authorized"
+    },
+    {
+      "attempt_id": "attempt-a1",
+      "branch_id": "branch-main",
+      "stage_id": "fresh_process_observation",
+      "authorization": "mode_authorized"
+    },
+    {
+      "attempt_id": "attempt-a1",
+      "branch_id": "branch-main",
+      "stage_id": "installed_transition",
+      "authorization": "mode_authorized"
+    },
+    {
+      "attempt_id": "attempt-a1",
+      "branch_id": "branch-main",
+      "stage_id": "path_persistence",
+      "authorization": "mode_authorized"
+    },
+    {
+      "attempt_id": "attempt-a1",
+      "branch_id": "branch-main",
+      "stage_id": "promotion",
+      "authorization": "mode_authorized"
+    },
+    {
+      "attempt_id": "attempt-a1",
+      "branch_id": "branch-main",
+      "stage_id": "provenance",
+      "authorization": "mode_authorized"
+    },
+    {
+      "attempt_id": "attempt-a1",
+      "branch_id": "branch-main",
+      "stage_id": "transport",
+      "authorization": "mode_authorized"
+    }
+  ],
+  "observations": [],
+  "effects": [],
+  "side_effect_ceiling": "none",
+  "claim_ceiling": "local_development_only",
+  "pair_claims_satisfied": false,
+  "terminal": {
+    "result": "succeeded",
+    "stage_id": "executable_observation",
+    "reason_family": "none",
+    "action_class": "none"
+  },
+  "redaction_disposition": "roles_only"
+}
