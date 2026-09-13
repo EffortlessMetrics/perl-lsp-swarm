@@ -1367,6 +1367,39 @@ created = "2026-08-08"
 review_after = "2026-11-08"
 
 [[allow]]
+id = "non-rust-release-topology-json-admission"
+path = "scripts/release_topology_json.py"
+kind = "release_contract"
+language = "python"
+surface = "release"
+classification = "production"
+owner = "release/ci"
+reason = "Shared standard-library admission of exact release-topology schema numbers at the canonical and bounded consumer JSON file boundaries; preserves original evidence bytes."
+covered_by = [
+  "python -m unittest scripts.test_generate_release_topology scripts.test_release_build_identity",
+  "python scripts/tests/test-validate-public-release-claims.py",
+  "cargo xtask check-file-policy",
+]
+created = "2026-09-10"
+review_after = "2026-12-10"
+
+[[allow]]
+id = "non-rust-release-topology-v2-schema"
+path = "schemas/release_topology.v2.schema.json"
+kind = "release_contract"
+language = "json"
+surface = "release"
+classification = "config"
+owner = "release/ci"
+reason = "Closed opt-in release topology checksum inventory contract for #6067; preserves the historical v1 schema and exact frozen/prepared authority."
+covered_by = [
+  "python -m unittest scripts.test_generate_release_topology",
+  "cargo xtask check-file-policy",
+]
+created = "2026-09-10"
+review_after = "2026-12-10"
+
+[[allow]]
 id = "non-rust-release-trust-invariants-schema"
 path = "schemas/release_trust_invariants.v1.schema.json"
 kind = "release_contract"

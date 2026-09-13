@@ -511,8 +511,8 @@ fn test_dap_attach_process_id_mode_is_refused() -> TestResult {
             if !msg.contains("not supported") {
                 return Err(format!("refusal must name the disposition: {msg}").into());
             }
-            if !msg.contains("8109") {
-                return Err(format!("refusal must cite the owning issue: {msg}").into());
+            if !msg.contains("host") || !msg.contains("port") {
+                return Err(format!("refusal must provide TCP host/port guidance: {msg}").into());
             }
         }
         _ => return Err("Expected attach response".into()),
