@@ -14,6 +14,133 @@ use real_process::RealProcessClient;
 use serde_json::{Value, json};
 use std::time::Duration;
 
+fn explain_trace(client: &mut RealProcessClient, provider: &str) -> Result<Value> {
+    let id = json!("explain-trace");
+    let response = client.request(
+        id.clone(),
+        "workspace/executeCommand",
+        json!({
+            "command": "perl.explainProviderDecision",
+            "arguments": [{"provider": provider}]
+        }),
+        timeout(),
+    )?;
+    assert_response_id(&response, &id)?;
+    ensure!(response.get("error").is_none(), "explanation request failed: {response}");
+    response
+        .get("result")
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("missing explanation: {response}"))
+}
+
+fn open_trace_fixture(client: &mut RealProcessClient) -> Result<&'static str> {
+    let uri = "file:///workspace/provider-trace.pl";
+    client.notify(
+        "textDocument/didOpen",
+        json!({"textDocument": {
+            "uri": uri, "languageId": "perl", "version": 1,
+            "text": "my $value = 1;\nprint $value;\n"
+        }}),
+    )?;
+    Ok(uri)
+}
+
+#[test]
+fn generic_trace_success_does_not_invent_freshness() -> Result<()> {
+    let mut client = RealProcessClient::spawn_exact()?;
+    assert_public_candidate(&client)?;
+    initialize_and_notify(&mut client, json!("initialize-trace"))?;
+    let uri = open_trace_fixture(&mut client)?;
+    let hover = client.request(
+        json!(801),
+        "textDocument/hover",
+        json!({
+            "textDocument": {"uri": uri}, "position": {"line": 1, "character": 2}
+        }),
+        timeout(),
+    )?;
+    assert_response_id(&hover, &json!(801))?;
+    ensure!(hover.get("error").is_none(), "valid hover failed: {hover}");
+    ensure!(
+        hover.pointer("/result/contents").is_some_and(|value| value.to_string().contains("print")),
+        "builtin hover control must describe print: {hover}"
+    );
+    let explanation = explain_trace(&mut client, "hover")?;
+    ensure!(
+        explanation.pointer("/request_receipt/freshness") == Some(&json!("unknown")),
+        "dispatch shape alone cannot establish freshness: {explanation}"
+    );
+    ensure!(
+        explanation.pointer("/request_receipt/source_backed_state")
+            == Some(&json!("not_proven_by_dispatch_trace")),
+        "expected the actual generic dispatch trace: {explanation}"
+    );
+    ensure!(
+        explanation.pointer("/request_receipt/live_provider_result_count") == Some(&json!(1)),
+        "successful hover trace must still record the actual result: {explanation}"
+    );
+    shutdown_and_exit(&mut client, json!("shutdown-trace"))
+}
+
+#[test]
+fn generic_trace_error_does_not_invent_freshness() -> Result<()> {
+    let mut client = RealProcessClient::spawn_exact()?;
+    assert_public_candidate(&client)?;
+    initialize_and_notify(&mut client, json!("initialize-trace-error"))?;
+    let response = client.request(json!("801"), "textDocument/hover", json!({}), timeout())?;
+    assert_response_id(&response, &json!("801"))?;
+    ensure!(
+        response.pointer("/error/code") == Some(&json!(-32602)),
+        "expected invalid params: {response}"
+    );
+    let explanation = explain_trace(&mut client, "hover")?;
+    ensure!(
+        explanation.pointer("/request_receipt/freshness") == Some(&json!("unknown")),
+        "provider error without accepted-state evidence cannot claim freshness: {explanation}"
+    );
+    ensure!(
+        explanation.pointer("/request_receipt/provider_error/code") == Some(&json!(-32602)),
+        "trace must retain the provider error: {explanation}"
+    );
+    shutdown_and_exit(&mut client, json!("shutdown-trace-error"))
+}
+
+#[test]
+fn generic_trace_preserves_provider_owned_full_token_freshness() -> Result<()> {
+    let mut client = RealProcessClient::spawn_exact()?;
+    assert_public_candidate(&client)?;
+    initialize_and_notify(&mut client, json!("initialize-trace-tokens"))?;
+    let uri = open_trace_fixture(&mut client)?;
+    let response = client.request(
+        json!(802),
+        "textDocument/semanticTokens/full",
+        json!({
+            "textDocument": {"uri": uri}
+        }),
+        timeout(),
+    )?;
+    assert_response_id(&response, &json!(802))?;
+    ensure!(response.get("error").is_none(), "valid full-token request failed: {response}");
+    ensure!(
+        response
+            .pointer("/result/data")
+            .and_then(Value::as_array)
+            .is_some_and(|data| !data.is_empty()),
+        "full-token control must execute the provider: {response}"
+    );
+    let explanation = explain_trace(&mut client, "semantic_tokens")?;
+    ensure!(
+        explanation.pointer("/request_receipt/freshness") == Some(&json!("fresh")),
+        "dispatcher must preserve provider-owned freshness: {explanation}"
+    );
+    ensure!(
+        explanation.pointer("/request_receipt/provider_action")
+            == Some(&json!("textDocument/semanticTokens/full")),
+        "expected the provider-owned full-token trace: {explanation}"
+    );
+    shutdown_and_exit(&mut client, json!("shutdown-trace-tokens"))
+}
+
 fn timeout() -> Duration {
     Duration::from_secs(10)
 }
