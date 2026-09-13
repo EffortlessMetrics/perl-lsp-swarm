@@ -1,0 +1,242 @@
+{
+  "schema": "lsp_runtime_identity_state.v1",
+  "version": 1,
+  "authority": {
+    "issue": 11045,
+    "architecture": 7384,
+    "train": 10360,
+    "consumers": [
+      10512,
+      11051,
+      11053
+    ],
+    "claim": "Normative identities, state propositions, legal joins, and checked journeys only; no runtime implementation or migration."
+  },
+  "fragments": {
+    "identities": "identities.v1.json",
+    "states": "states.v1.json",
+    "relations": "relations.v1.json",
+    "journeys": "journeys.v1.json"
+  },
+  "request_state": {
+    "kind": "orthogonal_axes",
+    "linear_phase_forbidden": true,
+    "axes": [
+      "cleanup",
+      "control",
+      "execution",
+      "output_delivery",
+      "protocol_admission",
+      "publication",
+      "terminal",
+      "tracking_registration"
+    ],
+    "law": "One canonical request entry advances on orthogonal axes; no total phase value stands in for the full state."
+  },
+  "generic_boundary": {
+    "one_authority": {
+      "law": "One canonical semantic owner does not require one object, actor, global lock, or mutable store.",
+      "single_object": false,
+      "single_actor": false,
+      "global_lock": false,
+      "single_store": false
+    },
+    "client_consumption_claimable": false,
+    "currentness_law": "Currentness is opaque evidence minted and validated only by its owning authority.",
+    "forbidden_terms": [
+      "perl",
+      "document",
+      "provider",
+      "workspace",
+      "parser",
+      "lexer"
+    ]
+  },
+  "axes": [
+    {
+      "id": "application_readiness",
+      "proposition": "Whether the application service is able to accept new execution work.",
+      "source": 10483
+    },
+    {
+      "id": "cleanup",
+      "proposition": "Whether every resource owned by the request has reached a known terminal or released state.",
+      "source": 11053
+    },
+    {
+      "id": "connection",
+      "proposition": "Whether one physical or logical protocol connection is open, closing, or closed.",
+      "source": 9636
+    },
+    {
+      "id": "control",
+      "proposition": "Whether cancellation, deadline, supersession, or shutdown control has been requested or applied.",
+      "source": 7389
+    },
+    {
+      "id": "execution",
+      "proposition": "Whether application work is rejected, queued, running, or completed.",
+      "source": 10483
+    },
+    {
+      "id": "output_delivery",
+      "proposition": "Preparation, admission, writer commitment, flush commitment, or failure of one output obligation.",
+      "source": 9647
+    },
+    {
+      "id": "protocol_admission",
+      "proposition": "Whether an observed message satisfies the protocol envelope and message-shape contract.",
+      "source": 9636
+    },
+    {
+      "id": "protocol_lifecycle",
+      "proposition": "The protocol-defined server lifecycle, independent from connection and task settlement.",
+      "source": 9640
+    },
+    {
+      "id": "publication",
+      "proposition": "Whether a terminal result is current and committed to the causal publication order.",
+      "source": 9507
+    },
+    {
+      "id": "task_settlement",
+      "proposition": "Whether all runtime tasks owned by the relevant session or request have reached known settlement.",
+      "source": 9648
+    },
+    {
+      "id": "terminal",
+      "proposition": "Which exactly-once terminal cause owns the request outcome.",
+      "source": 9506
+    },
+    {
+      "id": "tracking_registration",
+      "proposition": "Whether capacity is reserved and one canonical request obligation is registered.",
+      "source": 11053
+    }
+  ],
+  "boundary_terms": [
+    {
+      "id": "application_completion",
+      "name": "ApplicationCompletion",
+      "proposition": "An application invocation returned, failed, or otherwise stopped producing application work.",
+      "owner": "Application boundary.",
+      "runtime_claimable": true,
+      "source": 10483
+    },
+    {
+      "id": "delivery_fate",
+      "name": "DeliveryFate",
+      "proposition": "The writer and transport outcome for one output obligation.",
+      "owner": "Output authority.",
+      "runtime_claimable": true,
+      "source": 9647
+    },
+    {
+      "id": "terminal_decision",
+      "name": "TerminalDecision",
+      "proposition": "The exactly-once terminal authority selected the request cause that owns all later publication attempts.",
+      "owner": "Terminal authority.",
+      "runtime_claimable": true,
+      "source": 9506
+    },
+    {
+      "id": "terminal_signal",
+      "name": "TerminalSignal",
+      "proposition": "One candidate cause asks terminal authority to decide an outcome.",
+      "owner": "The source of the candidate cause.",
+      "runtime_claimable": true,
+      "source": 9506
+    }
+  ],
+  "ambiguous_terms": [
+    {
+      "term": "accepted",
+      "reason": "Acceptance has several authorities; name the exact admission or commitment proposition.",
+      "replacements": [
+        "execution_admitted",
+        "message_observed",
+        "output_admitted",
+        "protocol_valid",
+        "request_tracking_reserved"
+      ]
+    },
+    {
+      "term": "active",
+      "reason": "Name the exact identity and axis instead of collapsing registration, execution, output, or task ownership.",
+      "replacements": [
+        "output_admitted",
+        "request_registered",
+        "running",
+        "task_group_settled"
+      ]
+    },
+    {
+      "term": "admitted",
+      "reason": "Execution admission and output admission are different axes.",
+      "replacements": [
+        "execution_admitted",
+        "output_admitted"
+      ]
+    },
+    {
+      "term": "closed",
+      "reason": "Protocol exit, connection closure, task settlement, and request cleanup are distinct.",
+      "replacements": [
+        "connection_closed",
+        "owner_cleaned",
+        "protocol_exited",
+        "task_group_settled"
+      ]
+    },
+    {
+      "term": "completed",
+      "reason": "Application, writer, flush, task, and cleanup completion are not interchangeable.",
+      "replacements": [
+        "application_completed",
+        "output_flush_committed",
+        "output_write_committed",
+        "owner_cleaned",
+        "task_group_settled"
+      ]
+    },
+    {
+      "term": "delivered",
+      "reason": "Channel admission, write, flush, and client consumption are distinct propositions.",
+      "replacements": [
+        "client_consumed",
+        "output_admitted",
+        "output_flush_committed",
+        "output_write_committed"
+      ]
+    },
+    {
+      "term": "pending",
+      "reason": "Name whether the request is registered, queued, running, awaiting terminal selection, or awaiting cleanup.",
+      "replacements": [
+        "enqueued",
+        "owner_cleaned",
+        "request_registered",
+        "running",
+        "terminal_selected"
+      ]
+    },
+    {
+      "term": "published",
+      "reason": "Causal publication commitment is not writer admission or external consumption.",
+      "replacements": [
+        "client_consumed",
+        "output_admitted",
+        "publication_committed"
+      ]
+    },
+    {
+      "term": "terminal",
+      "reason": "A candidate terminal signal is not the selected terminal decision or settled delivery fate.",
+      "replacements": [
+        "delivery_fate",
+        "terminal_decision",
+        "terminal_signal"
+      ]
+    }
+  ]
+}
