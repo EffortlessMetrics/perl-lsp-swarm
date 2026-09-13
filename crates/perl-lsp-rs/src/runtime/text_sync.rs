@@ -51,11 +51,49 @@ impl LspServer {
     /// Validate the didChange content-change batch before lifecycle state is
     /// touched, using the canonical protocol union.
     pub(super) fn validate_did_change_admission(
+        &self,
         params: Option<&Value>,
     ) -> Result<(), JsonRpcError> {
         let params = params.ok_or_else(|| invalid_params("Missing didChange parameters"))?;
-        perl_lsp_rs_core::protocol::schema::validate_did_change_content_changes(params)
-            .map_err(|error| invalid_params(&format!("Invalid didChange parameters: {error}")))
+        perl_lsp_rs_core::protocol::schema::validate_did_change_content_changes(params).map_err(
+            |error| {
+                let change_index = error
+                    .path
+                    .split_once("contentChanges[")
+                    .and_then(|(_, suffix)| suffix.split_once(']'))
+                    .and_then(|(index, _)| index.parse::<usize>().ok());
+                let valid_uri = params
+                    .pointer("/textDocument/uri")
+                    .and_then(Value::as_str)
+                    .map(|uri| self.normalize_uri_key(uri))
+                    .filter(|uri| crate::security::validate_document_uri(uri).is_ok());
+
+                match (change_index, valid_uri.as_deref()) {
+                    (Some(change_index), Some(uri)) => tracing::error!(
+                        change_index,
+                        error_category = "invalid_content_change",
+                        uri,
+                        "Rejected malformed didChange content change"
+                    ),
+                    (Some(change_index), None) => tracing::error!(
+                        change_index,
+                        error_category = "invalid_content_change",
+                        "Rejected malformed didChange content change"
+                    ),
+                    (None, Some(uri)) => tracing::error!(
+                        error_category = "invalid_content_change",
+                        uri,
+                        "Rejected malformed didChange content change batch"
+                    ),
+                    (None, None) => tracing::error!(
+                        error_category = "invalid_content_change",
+                        "Rejected malformed didChange content change batch"
+                    ),
+                }
+
+                invalid_params(&format!("Invalid didChange parameters: {error}"))
+            },
+        )
     }
 
     /// Whether the dormant eager-incremental-maintenance fast-path
@@ -658,8 +696,8 @@ impl LspServer {
     ) -> Result<(), JsonRpcError> {
         if let Some(params) = params {
             // Direct callers bypass the JSON-RPC dispatcher, so retain the
-            // same pure admission guard before cancellation or mutation.
-            Self::validate_did_change_admission(Some(&params))?;
+            // same admission guard before cancellation or mutation.
+            self.validate_did_change_admission(Some(&params))?;
             // Sink-owned admission (#8895): same URI policy as didOpen,
             // enforced where the change is applied and judged on the
             // normalized key. Typed InvalidParams belongs to this method, not
