@@ -1,0 +1,55 @@
+name: Reload Lifecycle Authority
+
+# PLSP-SPEC-0037 is the single in-repo architecture authority for the
+# generation-bound reload and observation-route lifecycle (#10874). This gate
+# fails when a second document claims that authority, when the contract loses
+# its structure (an identity row without an owner, a deleted rule id still
+# cited elsewhere), or when the contract stops being indexed.
+#
+# The path filters must cover every surface
+# `test_reload_lifecycle_authority.py` reads, otherwise one of those surfaces
+# can change on `main` with no gate having run.
+# `test_workflow_triggers_on_every_surface_it_guards` enforces that.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/reload-lifecycle-authority.yml'
+      - 'docs/INDEX.md'
+      - 'docs/adr/0046-loaded-module-reload-semantics.md'
+      - 'docs/specs/PLSP-SPEC-0037-reload-lifecycle-v1.md'
+      - 'docs/specs/README.md'
+      - 'tests/test_reload_lifecycle_authority.py'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/reload-lifecycle-authority.yml'
+      - 'docs/INDEX.md'
+      - 'docs/adr/0046-loaded-module-reload-semantics.md'
+      - 'docs/specs/PLSP-SPEC-0037-reload-lifecycle-v1.md'
+      - 'docs/specs/README.md'
+      - 'tests/test_reload_lifecycle_authority.py'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: reload-lifecycle-authority-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  check:
+    name: Check reload lifecycle authority
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Check the reload lifecycle contract
+        # Kept on one line: test_workflow_runs_this_suite asserts the contiguous
+        # source substring "python3 -m unittest tests/test_reload_lifecycle_authority.py",
+        # which folded (>-) YAML would break.
+        run: python3 -m unittest tests/test_reload_lifecycle_authority.py
