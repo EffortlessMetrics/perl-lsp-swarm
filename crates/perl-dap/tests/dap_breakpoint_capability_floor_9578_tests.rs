@@ -479,31 +479,63 @@ fn mixed_request_preserves_input_order_and_per_item_truth() -> Result<()> {
     match response {
         DapMessage::Response { success: true, body: Some(body), .. } => {
             let breakpoints = response_breakpoints(&body)?;
-            assert_eq!(breakpoints.len(), 4, "one response per input, in order");
-            assert_eq!(
-                breakpoints[0].get("line").and_then(Value::as_i64),
-                Some(3),
-                "plain entry keeps its requested line"
-            );
-            assert_eq!(breakpoints[0].get("verified").and_then(Value::as_bool), Some(true));
-            assert_eq!(breakpoints[1].get("line").and_then(Value::as_i64), Some(1));
-            let condition_message = breakpoints[1]
+            if breakpoints.len() != 4 {
+                anyhow::bail!("one response per input, in order: {breakpoints:?}");
+            }
+            let plain = breakpoints.first().ok_or_else(|| anyhow::anyhow!("missing plain slot"))?;
+            if plain.get("line").and_then(Value::as_i64) != Some(3)
+                || plain.get("verified").and_then(Value::as_bool) != Some(false)
+            {
+                anyhow::bail!("plain entry must remain pending at its requested line: {plain:?}");
+            }
+            let pending_message = plain
+                .get("message")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("missing pending message"))?;
+            if pending_message != "Breakpoint is pending debugger launch" {
+                anyhow::bail!("unexpected pending message: {pending_message:?}");
+            }
+            let condition =
+                breakpoints.get(1).ok_or_else(|| anyhow::anyhow!("missing condition slot"))?;
+            if condition.get("line").and_then(Value::as_i64) != Some(1)
+                || condition.get("verified").and_then(Value::as_bool) != Some(false)
+            {
+                anyhow::bail!("condition slot changed line: {condition:?}");
+            }
+            let condition_message = condition
                 .get("message")
                 .and_then(Value::as_str)
                 .ok_or_else(|| anyhow::anyhow!("missing message"))?;
-            assert!(condition_message.contains(CONDITION_FLOOR_MARKER));
-            assert_eq!(breakpoints[2].get("line").and_then(Value::as_i64), Some(2));
-            let hit_message = breakpoints[2]
+            if !condition_message.contains(CONDITION_FLOOR_MARKER) {
+                anyhow::bail!("condition refusal marker missing: {condition_message:?}");
+            }
+            let hit =
+                breakpoints.get(2).ok_or_else(|| anyhow::anyhow!("missing hit-condition slot"))?;
+            if hit.get("line").and_then(Value::as_i64) != Some(2)
+                || hit.get("verified").and_then(Value::as_bool) != Some(false)
+            {
+                anyhow::bail!("hit-condition slot changed line: {hit:?}");
+            }
+            let hit_message = hit
                 .get("message")
                 .and_then(Value::as_str)
                 .ok_or_else(|| anyhow::anyhow!("missing message"))?;
-            assert!(hit_message.contains(HIT_CONDITION_FLOOR_MARKER));
-            assert_eq!(breakpoints[3].get("line").and_then(Value::as_i64), Some(4));
-            let log_message = breakpoints[3]
+            if !hit_message.contains(HIT_CONDITION_FLOOR_MARKER) {
+                anyhow::bail!("hit-condition refusal marker missing: {hit_message:?}");
+            }
+            let log = breakpoints.get(3).ok_or_else(|| anyhow::anyhow!("missing logpoint slot"))?;
+            if log.get("line").and_then(Value::as_i64) != Some(4)
+                || log.get("verified").and_then(Value::as_bool) != Some(false)
+            {
+                anyhow::bail!("logpoint slot changed line: {log:?}");
+            }
+            let log_message = log
                 .get("message")
                 .and_then(Value::as_str)
                 .ok_or_else(|| anyhow::anyhow!("missing message"))?;
-            assert!(log_message.contains(LOG_MESSAGE_FLOOR_MARKER));
+            if !log_message.contains(LOG_MESSAGE_FLOOR_MARKER) {
+                anyhow::bail!("logpoint refusal marker missing: {log_message:?}");
+            }
         }
         other => anyhow::bail!("expected a mixed-response, got {other:?}"),
     }
