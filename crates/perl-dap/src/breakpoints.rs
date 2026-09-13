@@ -1072,7 +1072,7 @@ print "result: $final\n";
     #[test]
     fn test_clear_breakpoints() -> Result<(), String> {
         let store = BreakpointStore::new();
-        let source_path = "/workspace/script.pl";
+        let (_file, source_path) = create_test_perl_file();
 
         let args = SetBreakpointsArguments {
             source: Source {
@@ -1089,20 +1089,20 @@ print "result: $final\n";
             source_modified: None,
         };
         store.set_breakpoints(&args);
-        if !store.mark_engine_installed(1, source_path, 10, 7, "digest".to_string()) {
+        if !store.mark_engine_installed(1, &source_path, 10, 7, "digest".to_string()) {
             return Err("test breakpoint must be installable".to_string());
         }
-        if !store.has_engine_breakpoint_candidate(source_path, 10, 7) {
+        if !store.has_engine_breakpoint_candidate(&source_path, 10, 7) {
             return Err("test breakpoint installation must be observable".to_string());
         }
 
         // Clear breakpoints
-        store.clear_breakpoints(source_path);
+        store.clear_breakpoints(&source_path);
 
         // Should be empty
-        let breakpoints = store.get_breakpoints(source_path);
+        let breakpoints = store.get_breakpoints(&source_path);
         assert_eq!(breakpoints.len(), 0);
-        if store.has_engine_breakpoint_candidate(source_path, 10, 7) {
+        if store.has_engine_breakpoint_candidate(&source_path, 10, 7) {
             return Err("cleared breakpoint installation must be removed".to_string());
         }
         Ok(())
