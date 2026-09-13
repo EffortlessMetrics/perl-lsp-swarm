@@ -19,18 +19,13 @@
 //! has [qw(host port)] => 'default';
 //! ```
 //!
-//! **Known unmodeled spelling.** A bare `qw` list with no brackets and no
-//! parentheses — `has qw(name default);` — is not extracted, and unlike every
-//! other unsupported form here it yields no typed boundary either. The parser
-//! does not bind the `qw` list to the `has` bareword: it emits two sibling
-//! statements (a bare `Identifier` and a free-standing `ArrayLiteral`), so no
-//! `has` declaration shape is present to observe. Recognizing it would mean
-//! stitching two statements back together in this extractor to compensate for
-//! a parse shape, which belongs upstream in the parser rather than here. The
-//! spelling is legal Perl (`qw` flattens, so it means name plus default, not
-//! two attributes) but is rare in reviewed `Mojo::Base` source, which spells a
-//! multi-attribute declaration `has [qw(...)]`. Tracked as #14808; see
-//! `a_bare_qw_list_without_brackets_is_a_known_unmodeled_spelling`.
+//! **Bare `qw` flattens; it does not list attributes.** `has qw(name default);`
+//! is one attribute with a default, not two attributes — `qw` expands into the
+//! operand list and `attr` binds `($self, $attrs, $value, %kv)`. This spelling
+//! was previously invisible here, because the parser emitted the bareword and
+//! the list as two sibling statements (#14808); it now binds them, and the
+//! extractor handles the shape unchanged. See
+//! `a_bare_qw_list_flattens_into_name_and_default`.
 //!
 //! `Mojo::Base` binds the first operand to the attribute name (or an array
 //! reference of names) and the optional second operand to the default, so
@@ -824,6 +819,16 @@ mod tests {
         extract_mojo_base_attribute_declarations(&ast, FileId(1), SourceGeneration::known("gen-1"))
     }
 
+    /// The exact source bytes one declaration's name anchor covers.
+    ///
+    /// Every byte-identity assertion goes through this, so a test cannot
+    /// accidentally assert against a reconstructed string instead of the real
+    /// range the carrier points at.
+    fn name_anchor_text<'a>(code: &'a str, declaration: &MojoBaseAttributeDeclaration) -> &'a str {
+        let anchor = declaration.name_anchor;
+        &code[(anchor.start_byte as usize)..(anchor.end_byte as usize)]
+    }
+
     fn names(code: &str) -> Vec<String> {
         declarations(code)
             .iter()
@@ -887,16 +892,31 @@ mod tests {
 
     #[test]
     fn computed_names_and_defaults_stay_typed_boundaries() {
-        let dynamic_name = declarations("package App;\nhas $field => 1;\n");
+        let dynamic_name_code = "package App;\nhas $field => 1;\n";
+        let dynamic_name = declarations(dynamic_name_code);
         assert!(matches!(dynamic_name[0].name, MojoBaseAttributeName::Dynamic { .. }));
+        // A typed boundary still has to point at the real operand. Asserting
+        // only the variant would let a refactor anchor the whole statement, or
+        // the wrong operand, without any test noticing.
+        assert_eq!(
+            name_anchor_text(dynamic_name_code, &dynamic_name[0]),
+            "$field",
+            "a Dynamic name anchors the computed operand, not the statement"
+        );
         let dynamic_default = declarations("package App;\nhas 'name' => $value;\n");
         assert!(matches!(dynamic_default[0].default, MojoBaseAttributeDefault::Dynamic { .. }));
     }
 
     #[test]
     fn an_interpolated_name_is_dynamic_but_a_plain_one_is_literal() {
-        let interpolated = declarations("package App;\nhas \"pre$suffix\";\n");
+        let interpolated_code = "package App;\nhas \"pre$suffix\";\n";
+        let interpolated = declarations(interpolated_code);
         assert!(matches!(interpolated[0].name, MojoBaseAttributeName::Dynamic { .. }));
+        assert_eq!(
+            name_anchor_text(interpolated_code, &interpolated[0]),
+            "\"pre$suffix\"",
+            "an interpolated name anchors the whole quoted operand"
+        );
         let plain = declarations("package App;\nhas \"plain\";\n");
         assert_eq!(plain[0].name.literal(), Some("plain"));
     }
@@ -1000,6 +1020,13 @@ mod tests {
                 matches!(found[0].name, MojoBaseAttributeName::Malformed { .. }),
                 "{rejected} must not become a literal accessor name"
             );
+            // A rejected name is still source the reader can be sent to, so
+            // the boundary must point at the offending spelling itself.
+            assert_eq!(
+                name_anchor_text(&code, &found[0]),
+                rejected,
+                "a Malformed name anchors the rejected spelling"
+            );
         }
         // Controls: names Mojo::Base accepts stay literal.
         for accepted in ["'ok_name'", "'_leading'", "'a9'", "'CamelCase'"] {
@@ -1059,15 +1086,39 @@ mod tests {
     }
 
     #[test]
-    fn a_bare_qw_list_without_brackets_is_a_known_unmodeled_spelling() {
-        // Pins the documented limitation rather than asserting it is correct:
-        // the parser emits `has` and the `qw` list as two sibling statements,
-        // so no declaration shape reaches this extractor. The bracketed
-        // spelling immediately below is the control proving the extractor
-        // itself handles `qw` words fine — the gap is the unbracketed parse,
-        // not `qw` support.
-        assert!(declarations("package App;\nhas qw(name);\n").is_empty());
-        assert!(declarations("package App;\nhas qw(name default);\n").is_empty());
+    fn a_bare_qw_list_flattens_into_name_and_default() {
+        // This was a documented limitation (#14808): the parser emitted `has`
+        // and the `qw` list as two sibling statements, so no declaration shape
+        // reached this extractor and the spelling was invisible. `main` now
+        // binds the list to the `has` bareword, and the extractor handles the
+        // shape correctly without change — so the limitation is gone and this
+        // pins the behaviour instead.
+        //
+        // The semantics are the load-bearing part. `qw` flattens into the
+        // operand list, and `attr` binds `($self, $attrs, $value, %kv)`, so a
+        // bare list is one attribute plus a default — *not* one attribute per
+        // word. Reading it as several attributes would invent accessors that
+        // do not exist.
+        let bare = declarations("package App;\nhas qw(name);\n");
+        assert_eq!(bare.len(), 1);
+        assert_eq!(bare[0].name.literal(), Some("name"));
+        assert_eq!(bare[0].default, MojoBaseAttributeDefault::Absent);
+
+        let with_default = declarations("package App;\nhas qw(name default);\n");
+        assert_eq!(with_default.len(), 1, "two words are one attribute and its default");
+        assert_eq!(with_default[0].name.literal(), Some("name"));
+        assert_eq!(with_default[0].default, MojoBaseAttributeDefault::Constant);
+
+        // A third word lands in `%kv` as an option key, matching the flat
+        // operand form `has name => 'default', option;`.
+        let with_option = declarations("package App;\nhas qw(a b c);\n");
+        assert_eq!(with_option.len(), 1);
+        assert_eq!(with_option[0].name.literal(), Some("a"));
+        assert_eq!(with_option[0].default, MojoBaseAttributeDefault::Constant);
+        assert_eq!(with_option[0].unmodeled_options, ["c"]);
+
+        // The bracketed spelling still means one attribute *per* name, which
+        // is the distinction the flattening rule turns on.
         assert_eq!(names("package App;\nhas [qw(name other)];\n"), ["name", "other"]);
     }
 
@@ -1082,6 +1133,32 @@ mod tests {
         assert_eq!(found[0].explicit_method, MojoBaseExplicitMethodState::Collides);
         let clean = declarations("package App;\nhas 'name';\nsub other { 1 }\n");
         assert_eq!(clean[0].explicit_method, MojoBaseExplicitMethodState::None);
+    }
+
+    #[test]
+    fn every_name_in_an_array_reference_anchors_its_own_element() {
+        // The strongest discriminator for the anchor: one statement, several
+        // name operands, mixed classifications. Anchoring the bracket, the
+        // statement, or a neighbouring element would still produce the right
+        // *classifications* while pointing at the wrong bytes, so only a
+        // per-element byte assertion catches it.
+        let code = "package App;\nhas [qw(ok 9bad other)];\n";
+        let found = declarations(code);
+        assert_eq!(found.len(), 3, "each listed name is its own declaration");
+        assert_eq!(found[0].name.literal(), Some("ok"));
+        assert!(matches!(found[1].name, MojoBaseAttributeName::Malformed { .. }));
+        assert_eq!(found[2].name.literal(), Some("other"));
+
+        let anchors: Vec<&str> = found.iter().map(|d| name_anchor_text(code, d)).collect();
+        assert_eq!(
+            anchors,
+            ["ok", "9bad", "other"],
+            "each element anchors its own bytes, whatever its classification"
+        );
+        // And the anchors are disjoint and ascending, so no two elements share
+        // a range even when one of them is a typed boundary.
+        assert!(found[0].name_anchor.end_byte <= found[1].name_anchor.start_byte);
+        assert!(found[1].name_anchor.end_byte <= found[2].name_anchor.start_byte);
     }
 
     #[test]

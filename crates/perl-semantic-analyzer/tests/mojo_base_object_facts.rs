@@ -1099,3 +1099,35 @@ fn an_undetermined_slot_degrades_the_reader_but_not_the_write_contract() {
         CallableResultRelation::Concrete(ValueShape::Scalar)
     );
 }
+
+#[test]
+fn a_typed_boundary_name_is_byte_anchored_through_the_whole_seam() {
+    // The e2e counterpart to the carrier's unit-level byte-identity proof.
+    // Every other test in this file starts from a Literal name, so without
+    // this one the typed-boundary classifications are never exercised through
+    // the real parse -> extract -> mint path, only in isolation.
+    //
+    // Both halves matter: the boundary must point at the offending source
+    // bytes, and it must still mint no member.
+    let code = concat!(
+        "package App;\n",
+        "use Mojo::Base -base;\n",
+        "has $computed;\n",
+        "has '9lives';\n",
+        "has 'real';\n",
+    );
+    let declared = declarations(code, FileId(1), "gen-1");
+    assert_eq!(declared.len(), 3, "all three are observed by extraction");
+
+    let anchored = |index: usize| {
+        let anchor = declared[index].name_anchor;
+        &code[(anchor.start_byte as usize)..(anchor.end_byte as usize)]
+    };
+    assert_eq!(anchored(0), "$computed", "a Dynamic name anchors its operand");
+    assert_eq!(anchored(1), "'9lives'", "a Malformed name anchors the rejected spelling");
+    assert_eq!(anchored(2), "'real'");
+
+    // Only the admissible name reaches the fact surface.
+    let facts = only_facts(code);
+    assert_eq!(member_names(&facts), ["real"]);
+}
