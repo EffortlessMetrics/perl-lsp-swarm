@@ -784,6 +784,37 @@ fn resolve_valid_items_retain_documentation_and_edits() -> Result<()> {
 }
 
 #[test]
+fn malformed_resolve_notifications_do_not_emit_errors_or_poison_requests() -> Result<()> {
+    let mut client = RealProcessClient::spawn_exact()?;
+    assert_public_candidate(&client)?;
+    initialize_and_notify(&mut client, json!("initialize-resolve-notifications"))?;
+    for method in ["completionItem/resolve", "codeAction/resolve"] {
+        let missing = json!({"jsonrpc": "2.0", "method": method});
+        client.send_raw_bytes(&RealProcessClient::encode_message(&missing))?;
+        client.notify(method, Value::Null)?;
+        client.notify(method, json!({}))?;
+    }
+    let id = json!("resolve-after-notifications");
+    let response = client.request(
+        id.clone(),
+        "completionItem/resolve",
+        json!({"label": "print", "kind": 3}),
+        timeout(),
+    )?;
+    assert_response_id(&response, &id)?;
+    ensure!(response.get("error").is_none(), "valid resolve failed: {response}");
+    ensure!(response.pointer("/result/label") == Some(&json!("print")));
+    ensure!(
+        response
+            .pointer("/result/documentation/value")
+            .and_then(Value::as_str)
+            .is_some_and(|text| !text.is_empty()),
+        "valid resolve lost documentation: {response}"
+    );
+    shutdown_and_exit(&mut client, json!("shutdown-resolve-notifications"))
+}
+
+#[test]
 fn resolve_completion_rejects_invalid_supplied_shapes() -> Result<()> {
     require_resolve_shape_errors("completionItem/resolve", "label")
 }
