@@ -424,14 +424,50 @@ fn shell_commands(script: &str) -> Vec<Vec<String>> {
         .collect()
 }
 
+/// Whether a token is a shell variable assignment such as `RUST_LOG=debug`.
+fn is_env_assignment(token: &str) -> bool {
+    match token.split_once('=') {
+        Some((name, _)) => {
+            !name.is_empty() && name.chars().all(|byte| byte.is_ascii_alphanumeric() || byte == '_')
+        }
+        None => false,
+    }
+}
+
+/// Whether these tokens run the `xtask` CLI, ignoring anything in front of the
+/// command that does not change what runs.
+///
+/// A leading assignment (`RUST_LOG=debug cargo …`) and a wrapper together with
+/// its own options and their arguments (`env A=1`, `sudo -E`, `nice -n 10`) are
+/// consumed first. Skipping only the wrapper's name would leave a non-`cargo`
+/// token in command position and silently miss the invocation.
 fn command_tokens_invoke_xtask_cli(tokens: &[String]) -> bool {
     let mut rest = tokens;
-    while let Some(first) = rest.first() {
-        if COMMAND_WRAPPERS.contains(&first.as_str()) {
+    loop {
+        let Some(first) = rest.first().map(String::as_str) else {
+            return false;
+        };
+        if is_env_assignment(first) {
             rest = &rest[1..];
-        } else {
-            break;
+            continue;
         }
+        if COMMAND_WRAPPERS.contains(&first) {
+            rest = &rest[1..];
+            // The wrapper's own options, their values, and any assignments it
+            // carries sit between it and the real command.
+            while let Some(next) = rest.first().map(String::as_str) {
+                let is_option_or_value = next.starts_with('-')
+                    || is_env_assignment(next)
+                    || next.chars().all(|byte| byte.is_ascii_digit());
+                if is_option_or_value {
+                    rest = &rest[1..];
+                } else {
+                    break;
+                }
+            }
+            continue;
+        }
+        break;
     }
     let Some((command, args)) = rest.split_first() else {
         return false;
@@ -2015,6 +2051,36 @@ mod tests {
             "a documented command in a comment is prose, not a dependency"
         );
         Ok(())
+    }
+
+    /// Assignments and wrapper options do not change what runs, so each of
+    /// these is still a CLI claim.
+    #[test]
+    fn wrapped_invocations_are_cli_claims() -> Result<()> {
+        let issues = wiring_issues("xtask_cli_wrapped_invocation.yml")?;
+        assert_eq!(issues.len(), 1, "one finding for the one paths-filtered trigger: {issues:?}");
+        Ok(())
+    }
+
+    /// Each wrapper form must be detected on its own, not merely because a
+    /// sibling job in the same fixture was.
+    #[test]
+    fn every_wrapper_form_is_detected_independently() {
+        for script in [
+            "RUST_LOG=debug cargo xtask example-contract check",
+            "env RUST_LOG=debug cargo xtask example-contract check",
+            "sudo -E cargo xtask example-contract check",
+            "nice -n 10 cargo xtask example-contract check",
+        ] {
+            assert!(command_invokes_xtask_cli(script), "not detected: {script}");
+        }
+        for script in [
+            "echo -n 10 cargo xtask example-contract check",
+            "RUST_LOG=debug cargo test -p xtask",
+            "env RUST_LOG=debug cargo run -p xtask --bin other -- check",
+        ] {
+            assert!(!command_invokes_xtask_cli(script), "wrongly detected: {script}");
+        }
     }
 
     #[test]
