@@ -539,11 +539,10 @@ impl RuntimeServices {
                 },
             );
         }
-        // Retire the previous occupant AFTER the guard is released. This
-        // debouncer's `Drop` only posts a message today, but every slot in
-        // this component follows one rule -- never drop a worker under its
-        // own slot lock -- so adding a join to that `Drop` later cannot
-        // silently turn this line into a stall.
+        // Retire the previous occupant AFTER the guard is released.
+        // `DiagnosticDebouncer::Drop` sends `Shutdown` and then JOINS its
+        // worker, so dropping it under the guard would hold the slot across
+        // that join and stall every concurrent reader.
         let retired = self.diagnostic_debouncer.lock().replace(debouncer);
         drop(retired);
     }
@@ -684,8 +683,14 @@ impl RuntimeServices {
 
     /// The installed off-lock parse worker, if any. `None` means the
     /// synchronous fallback path is active.
+    /// Selection is on LIVENESS, not presence: a pool whose threads have all
+    /// exited would otherwise keep accepting `didChange` jobs that nothing
+    /// will ever run, silently stalling parsing and diagnostics (#14690).
+    /// Filtering here puts the synchronous fallback back in charge, which is
+    /// the same choice `install_parse_worker` already makes for a pool that
+    /// never spawned.
     pub(crate) fn parse_worker(&self) -> Option<Arc<ParseWorker>> {
-        self.parse_worker_handle.lock().clone()
+        self.parse_worker_handle.lock().clone().filter(|worker| worker.is_operational())
     }
 
     /// Install the file watcher debouncer, registering

@@ -169,11 +169,9 @@ pub fn repository_from_remote_url(url: &str) -> Option<RepositoryId> {
     parse_remote_identity(url).map(|identity| identity.repository)
 }
 
-fn parent_terminality(state: &str, merged: bool) -> ParentTerminality {
-    if merged {
-        return ParentTerminality::Merged;
-    }
+fn parent_terminality(state: &str) -> ParentTerminality {
     match state {
+        "MERGED" => ParentTerminality::Merged,
         "OPEN" => ParentTerminality::Open,
         "CLOSED" => ParentTerminality::ClosedUnmerged,
         _ => ParentTerminality::NotProven,
@@ -206,14 +204,45 @@ fn child_mergeability(mergeable: &str) -> Mergeability {
 fn collect_branch(commands: &dyn ReadOnlyCommands, remote: &str, branch: &str) -> BranchSubject {
     let reference = format!("refs/heads/{branch}");
     let Ok(output) = commands.capture("git", &["ls-remote", remote, &reference]) else {
-        return BranchSubject { current_sha: None };
+        return BranchSubject { local_ref: None, current_sha: None };
     };
     let sha = output
         .lines()
         .find_map(|line| line.split_whitespace().next())
         .filter(|sha| is_full_object_id(sha))
         .map(str::to_string);
-    BranchSubject { current_sha: sha }
+    BranchSubject { local_ref: None, current_sha: sha }
+}
+
+/// Read a local branch alias without consulting or mutating the remote.
+///
+/// The parent PR and child graph still come from the live remote admission;
+/// this subject only changes which local ref the final compare-and-delete
+/// leases. An unreadable alias remains `RETAIN_BRANCH_MOVED` through the same
+/// fail-closed branch subject used by normal admission.
+fn collect_local_branch(commands: &dyn ReadOnlyCommands, branch: &str) -> BranchSubject {
+    let reference = format!("refs/heads/{branch}");
+    if commands.capture("git", &["check-ref-format", &reference]).is_err() {
+        return BranchSubject { local_ref: Some(branch.to_string()), current_sha: None };
+    }
+    let Ok(ref_metadata) =
+        commands.capture("git", &["for-each-ref", "--format=%(refname)%00%(symref)", &reference])
+    else {
+        return BranchSubject { local_ref: Some(branch.to_string()), current_sha: None };
+    };
+    let Some((reported_ref, symref)) = ref_metadata.trim_end().split_once('\0') else {
+        return BranchSubject { local_ref: Some(branch.to_string()), current_sha: None };
+    };
+    if reported_ref != reference || !symref.is_empty() {
+        return BranchSubject { local_ref: Some(branch.to_string()), current_sha: None };
+    }
+    let sha = commands
+        .capture("git", &["rev-parse", "--verify", "--quiet", &reference])
+        .ok()
+        .and_then(|output| output.lines().find_map(|line| line.trim().parse().ok()))
+        .filter(|sha: &String| is_full_object_id(sha))
+        .map(|sha| sha.to_string());
+    BranchSubject { local_ref: Some(branch.to_string()), current_sha: sha }
 }
 
 /// Report whether any registered local worktree has `branch` checked out.
@@ -251,13 +280,12 @@ fn collect_worktree_ownership(commands: &dyn ReadOnlyCommands, branch: &str) -> 
 struct GhParent {
     number: u64,
     state: String,
-    merged: bool,
     #[serde(rename = "headRefName")]
     head_ref_name: String,
     #[serde(rename = "headRefOid")]
     head_ref_oid: String,
     /// True when the head branch lives in a fork rather than this repository.
-    #[serde(rename = "isCrossRepository", default)]
+    #[serde(rename = "isCrossRepository")]
     is_cross_repository: bool,
 }
 
@@ -313,7 +341,7 @@ pub fn collect_request(
             "--repo",
             &repository.render(),
             "--json",
-            "number,state,merged,headRefName,headRefOid,isCrossRepository",
+            "number,state,headRefName,headRefOid,isCrossRepository",
         ],
     )?;
     let parent: GhParent = serde_json::from_str(&parent_json)
@@ -324,7 +352,7 @@ pub fn collect_request(
         number: parent.number,
         head_ref: parent.head_ref_name.clone(),
         reviewed_head_sha: parent.head_ref_oid.clone(),
-        terminality: parent_terminality(&parent.state, parent.merged),
+        terminality: parent_terminality(&parent.state),
         head_in_admitted_repository: !parent.is_cross_repository,
     };
 
@@ -417,6 +445,22 @@ pub fn collect_request(
         },
         remote_identity,
     })
+}
+
+/// Build a live admission for a local branch alias whose tip is expected to
+/// equal the reviewed terminal PR head. The remote parent/child graph and
+/// repository identity remain the normal live subjects; only the leased local
+/// ref and its ownership are substituted.
+pub fn collect_request_for_local_alias(
+    commands: &dyn ReadOnlyCommands,
+    parent_number: u64,
+    remote: &str,
+    local_ref: &str,
+) -> Result<LiveCollection> {
+    let mut collection = collect_request(commands, parent_number, remote)?;
+    collection.request.branch = collect_local_branch(commands, local_ref);
+    collection.request.worktree_ownership = collect_worktree_ownership(commands, local_ref);
+    Ok(collection)
 }
 
 /// What one live collection observed.

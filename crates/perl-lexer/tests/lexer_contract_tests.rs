@@ -99,7 +99,7 @@ fn quote_ops_with_delimiters_tokenize_correctly() -> TestResult {
         // Basic type check
         let actual_type_name = match &t.token_type {
             TokenType::QuoteSingle => "QuoteSingle",
-            TokenType::QuoteDouble => "QuoteDouble",
+            TokenType::QuoteDouble(_) => "QuoteDouble",
             TokenType::QuoteWords => "QuoteWords",
             TokenType::QuoteCommand => "QuoteCommand",
             TokenType::RegexMatch => "RegexMatch",
