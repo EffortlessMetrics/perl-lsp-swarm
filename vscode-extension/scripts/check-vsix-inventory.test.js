@@ -11,6 +11,7 @@ const {
   classifyInventoryViolations,
   compareInventory,
   currentSourceBundleFile,
+  currentSourceBundleFiles,
   parseArgs,
   platformForPackagedFile,
   summarizeInventory,
@@ -244,6 +245,60 @@ void test('checks an explicitly staged current-source target already in the base
       { allowedFiles: [currentSourceFile], arch: 'arm64' },
     ),
     [],
+  );
+});
+
+void test('allows only the exact current-source server and DAP target', () => {
+  const baseline = {
+    total_files: 1,
+    total_bytes: 2,
+    files: { 'README.md': 2 },
+  };
+  /** @type {[string, string]} */
+  const allowed = currentSourceBundleFiles('linux', 'x64');
+
+  assert.deepEqual(
+    compareInventory(
+      {
+        total_files: 3,
+        total_bytes: 12,
+        files: { 'README.md': 2, [allowed[0]]: 4, [allowed[1]]: 6 },
+      },
+      baseline,
+      'linux',
+      { allowedFiles: allowed, arch: 'x64' },
+    ),
+    [],
+  );
+  assert.deepEqual(
+    compareInventory(
+      {
+        total_files: 3,
+        total_bytes: 12,
+        files: { 'README.md': 2, [allowed[0]]: 4, [allowed[1]]: 6 },
+      },
+      baseline,
+      'linux',
+      { allowedFiles: [allowed[0]], arch: 'x64' },
+    ),
+    [
+      'file count grew from 1 to 2',
+      'total bytes grew from 2 to 8',
+      'new packaged file: bin/linux-x64/perl-dap',
+    ],
+  );
+  assert.deepEqual(
+    compareInventory(
+      {
+        total_files: 3,
+        total_bytes: 12,
+        files: { 'README.md': 2, [allowed[0]]: 4, 'bin/linux-arm64/perl-dap': 6 },
+      },
+      baseline,
+      'linux',
+      { allowedFiles: allowed, arch: 'x64' },
+    ),
+    ['unexpected foreign-platform packaged file: bin/linux-arm64/perl-dap'],
   );
 });
 
