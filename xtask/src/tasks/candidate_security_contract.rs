@@ -70,11 +70,23 @@ pub struct SubjectIdentities {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub container_digest: Option<String>,
     pub workflow_run_id: String,
-    /// Producer run attempt. Integer-typed after
-    /// `release_candidate_artifacts.v1` `producer_run.attempt`, so a
-    /// non-numeric placeholder is unrepresentable rather than merely rejected.
-    /// Zero stays representable in the type and is rejected by validation.
-    pub workflow_attempt: u32,
+    /// Producer run attempt, after `release_candidate_artifacts.v1`
+    /// `producer_run.attempt` (`type: integer`, `minimum: 1`). Integer-typed
+    /// so a non-numeric placeholder is unrepresentable rather than merely
+    /// rejected; zero stays representable and is rejected by validation.
+    ///
+    /// Two deliberate narrowings of that authority's domain, both
+    /// fail-closed:
+    ///
+    /// - **Integer syntax only.** JSON Schema counts `1.0` as an integer, but
+    ///   this contract's identities are digest inputs, and `1` and `1.0` are
+    ///   two spellings of one attempt that serialize to different bytes. That
+    ///   is the same hazard canonical rail ordering exists to prevent, so the
+    ///   canonical spelling is the only accepted one.
+    /// - **Bounded width.** `u64` rather than an arbitrary-precision integer.
+    ///   A producer run attempt is a small counter; the bound is far above
+    ///   any reachable value and rejects rather than truncates.
+    pub workflow_attempt: u64,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
@@ -1321,6 +1333,19 @@ mod tests {
         Ok(())
     }
 
+    /// Replace `workflow_attempt` in a serialized baseline document with
+    /// `raw` JSON text, so parse-level behavior is exercised on the bytes a
+    /// producer would actually emit rather than on an already-typed value.
+    fn document_with_raw_attempt(raw: &str) -> Result<String> {
+        let value = serde_json::to_value(contract())?;
+        let encoded = serde_json::to_string(&value)?;
+        let needle = format!("\"workflow_attempt\":{}", contract().subjects.workflow_attempt);
+        if !encoded.contains(&needle) {
+            bail!("baseline document does not carry the expected attempt encoding");
+        }
+        Ok(encoded.replace(&needle, &format!("\"workflow_attempt\":{raw}")))
+    }
+
     #[test]
     fn rejects_non_integer_workflow_attempt_document() -> Result<()> {
         // The former placeholder spelling is now unrepresentable: it cannot
@@ -1333,6 +1358,48 @@ mod tests {
             .insert("workflow_attempt".to_string(), serde_json::Value::String("<attempt>".into()));
         let parsed: Result<CandidateSecurityContract, _> = serde_json::from_value(value);
         assert!(parsed.is_err(), "a non-integer producer attempt must not parse");
+        Ok(())
+    }
+
+    #[test]
+    fn workflow_attempt_accepts_only_the_canonical_integer_spelling() -> Result<()> {
+        // JSON Schema would count `1.0` and `1e0` as integers. This contract
+        // does not: its subject identities feed a digest, and one attempt with
+        // several spellings serializes to several byte sequences — the hazard
+        // canonical rail ordering already exists to prevent. The narrowing is
+        // deliberate and fail-closed, so it is pinned rather than left to
+        // whatever serde happens to do.
+        let canonical = document_with_raw_attempt("1")?;
+        let parsed: CandidateSecurityContract = serde_json::from_str(&canonical)?;
+        validate_contract(&parsed)?;
+        for raw in ["1.0", "1e0", "0.5", "-1"] {
+            let document = document_with_raw_attempt(raw)?;
+            let outcome: Result<CandidateSecurityContract, _> = serde_json::from_str(&document);
+            let Err(error) = outcome else {
+                bail!("non-canonical attempt spelling {raw:?} unexpectedly parsed");
+            };
+            // Attributable to the attempt field, not to an unrelated parse
+            // failure in the rest of the document.
+            if !error.to_string().contains("workflow_attempt")
+                && !error.to_string().contains("integer")
+                && !error.to_string().contains("u64")
+            {
+                bail!("attempt spelling {raw:?} failed for an unrelated reason: {error}");
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn workflow_attempt_accepts_values_beyond_a_32_bit_counter() -> Result<()> {
+        // The authority sets no maximum, so the accepted width must not stop
+        // at a 32-bit counter. This is the boundary a reviewer would probe.
+        let document = document_with_raw_attempt("4294967296")?;
+        let parsed: CandidateSecurityContract = serde_json::from_str(&document)?;
+        if parsed.subjects.workflow_attempt != 4_294_967_296 {
+            bail!("attempt beyond 32 bits was not preserved");
+        }
+        validate_contract(&parsed)?;
         Ok(())
     }
 
