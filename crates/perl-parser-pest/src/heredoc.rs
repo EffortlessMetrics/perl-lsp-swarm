@@ -241,6 +241,7 @@ pub struct HeredocScan {
     captures: Vec<HeredocCapture>,
     diagnostics: Vec<ParseDiagnostic>,
     recovery_ranges: Vec<SourceRange>,
+    removals: Vec<HeredocRemoval>,
 }
 
 impl HeredocScan {
@@ -250,6 +251,15 @@ impl HeredocScan {
     #[must_use]
     pub fn stripped(&self) -> &str {
         &self.stripped
+    }
+
+    /// Body spans this scan removed, in source order.
+    ///
+    /// Used to translate an offset in [`Self::stripped`] back to the caller's
+    /// source, so a range reported against the parsed text names the bytes the
+    /// caller actually wrote.
+    pub(crate) fn removals(&self) -> &[HeredocRemoval] {
+        &self.removals
     }
 
     /// Captures in source order.
@@ -297,6 +307,19 @@ pub fn scan(source: &str) -> HeredocScan {
 }
 
 /// A heredoc opener found on one logical line, before its body is consumed.
+/// One body span the pre-pass removed, in byte offsets.
+///
+/// `source_start..source_end` is the span taken out of the caller's source;
+/// `stripped_at` is the offset in [`HeredocScan::stripped`] it was taken from.
+/// Removing a body shifts every later byte, so translating a stripped offset
+/// back to the caller's source means adding back the removals that precede it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct HeredocRemoval {
+    pub(crate) source_start: usize,
+    pub(crate) source_end: usize,
+    pub(crate) stripped_at: usize,
+}
+
 #[derive(Debug, Clone)]
 struct PendingOpener {
     marker: String,
@@ -311,6 +334,7 @@ struct Scanner<'a> {
     captures: Vec<HeredocCapture>,
     diagnostics: Vec<ParseDiagnostic>,
     recovery_ranges: Vec<SourceRange>,
+    removals: Vec<HeredocRemoval>,
 }
 
 impl<'a> Scanner<'a> {
@@ -321,14 +345,15 @@ impl<'a> Scanner<'a> {
             captures: Vec::new(),
             diagnostics: Vec::new(),
             recovery_ranges: Vec::new(),
+            removals: Vec::new(),
         }
     }
 
     fn finish(self) -> HeredocScan {
-        let Self { stripped, captures, mut diagnostics, mut recovery_ranges, .. } = self;
+        let Self { stripped, captures, mut diagnostics, mut recovery_ranges, removals, .. } = self;
         ParseDiagnostic::sort_slice(&mut diagnostics);
         recovery_ranges.sort_by_key(|range| (range.start(), range.end()));
-        HeredocScan { stripped, captures, diagnostics, recovery_ranges }
+        HeredocScan { stripped, captures, diagnostics, recovery_ranges, removals }
     }
 
     /// Walk physical lines, emitting non-body lines and consuming owned bodies.
@@ -537,6 +562,17 @@ impl<'a> Scanner<'a> {
             // owning no body rather than recording an invented range.
             return resume;
         };
+
+        // Record what this removal did to the coordinate system. Body lines are
+        // never appended, so `stripped.len()` here is exactly where the removed
+        // span would have sat. Callers translate a stripped offset back to the
+        // caller's own source with it; without this, an error range reported
+        // against the stripped text would name the wrong bytes of the original.
+        self.removals.push(HeredocRemoval {
+            source_start: body_start,
+            source_end: removed_end,
+            stripped_at: self.stripped.len(),
+        });
 
         if truncated {
             self.record_defect(
@@ -873,7 +909,14 @@ fn is_format_start(line: &str) -> bool {
     if !rest.starts_with([' ', '\t', '=']) {
         return false;
     }
-    rest.trim_end().ends_with('=')
+    // perl accepts a comment after the `=` and nothing else: a bare word or a
+    // `;` there is a syntax error. So dropping a trailing comment before the
+    // check cannot admit a line of code as a format opener, while missing it
+    // would leave the picture body to be scanned — and opener-shaped picture
+    // text would then delete the real source below it. The declaration's name
+    // is an identifier, so the first `#` can only begin that comment.
+    let code = rest.split_once('#').map_or(rest, |(before, _)| before);
+    code.trim_end().ends_with('=')
 }
 
 /// Find every heredoc opener on one physical line.
@@ -1561,7 +1604,7 @@ impl PureRustPerlParser {
         let mut diagnostics = scan.diagnostics().to_vec();
         let mut recovery_ranges = scan.recovery_ranges().to_vec();
 
-        let ast = match self.parse_scanned(&scan) {
+        let ast = match self.parse_scanned(&scan, source) {
             Ok(ast) => ast,
             Err(error) => {
                 let Some(range) = source_range(0, source.len(), source) else {

@@ -20,22 +20,21 @@ use perl_parser_pest::{
     AstNode, HeredocDefect, HeredocDelimiterForm, MAX_HEREDOC_BODY_BYTES, MAX_HEREDOC_DEPTH,
     ParseAttempt, ParseCompleteness, ParseDiagnosticKind, PureRustPerlParser,
 };
-use perl_tdd_support::must;
 use pest::Parser;
 
-fn sexp(source: &str) -> String {
+fn sexp(source: &str) -> Result<String, String> {
     let mut parser = PureRustPerlParser::new();
-    let ast = must(parser.parse(source));
-    parser.to_sexp(&ast)
+    let ast = parser.parse(source).map_err(|error| format!("{error:?}"))?;
+    Ok(parser.to_sexp(&ast))
 }
 
 /// Every `AstNode::Heredoc` in the tree, in traversal order.
-fn heredoc_contents(source: &str) -> Vec<(String, String)> {
+fn heredoc_contents(source: &str) -> Result<Vec<(String, String)>, String> {
     let mut parser = PureRustPerlParser::new();
-    let ast = must(parser.parse(source));
+    let ast = parser.parse(source).map_err(|error| format!("{error:?}"))?;
     let mut found = Vec::new();
     collect(&ast, &mut found);
-    found
+    Ok(found)
 }
 
 fn collect(node: &AstNode, found: &mut Vec<(String, String)>) {
@@ -78,39 +77,45 @@ fn completeness(source: &str) -> Option<ParseCompleteness> {
 // --- Body capture ----------------------------------------------------------
 
 #[test]
-fn when_body_is_non_empty_then_content_is_the_body_text() {
+fn when_body_is_non_empty_then_content_is_the_body_text() -> Result<(), String> {
     // perl: `print` of this heredoc emits "hello\n".
     assert_eq!(
-        heredoc_contents("my $x = <<EOF;\nhello\nEOF\n"),
+        heredoc_contents("my $x = <<EOF;\nhello\nEOF\n")?,
         vec![("EOF".to_string(), "hello\n".to_string())]
     );
+    Ok(())
 }
 
 #[test]
-fn when_body_is_empty_then_content_is_empty_and_outcome_is_complete() {
+fn when_body_is_empty_then_content_is_empty_and_outcome_is_complete() -> Result<(), String> {
     // perl: an immediately-terminated heredoc interpolates to "".
-    assert_eq!(heredoc_contents("my $x = <<EOF;\nEOF\n"), vec![("EOF".to_string(), String::new())]);
+    assert_eq!(
+        heredoc_contents("my $x = <<EOF;\nEOF\n")?,
+        vec![("EOF".to_string(), String::new())]
+    );
     // An empty body is a truthful empty content, so the contract is complete —
     // this is the distinction #8220 requires: empty because the body is empty,
     // not empty because the body was never read.
     assert_eq!(completeness("my $x = <<EOF;\nEOF\n"), Some(ParseCompleteness::Complete));
+    Ok(())
 }
 
 #[test]
-fn when_body_has_multiple_lines_then_all_lines_are_owned() {
+fn when_body_has_multiple_lines_then_all_lines_are_owned() -> Result<(), String> {
     assert_eq!(
-        heredoc_contents("my $x = <<EOF;\none\ntwo\nthree\nEOF\n"),
+        heredoc_contents("my $x = <<EOF;\none\ntwo\nthree\nEOF\n")?,
         vec![("EOF".to_string(), "one\ntwo\nthree\n".to_string())]
     );
+    Ok(())
 }
 
 // --- Following-code resumption ---------------------------------------------
 
 #[test]
-fn when_code_follows_the_terminator_then_it_parses_as_a_sibling_statement() {
+fn when_code_follows_the_terminator_then_it_parses_as_a_sibling_statement() -> Result<(), String> {
     // Before body capture the body and terminator lines fell through as
     // statements, nesting the following declaration inside a bogus call chain.
-    let rendered = sexp("my $x = <<EOF;\nhello\nEOF\nmy $y = 1;\n");
+    let rendered = sexp("my $x = <<EOF;\nhello\nEOF\nmy $y = 1;\n")?;
     assert!(
         rendered.contains("(variable_declaration $y   = (number 1)"),
         "code after the terminator must resume as its own statement; got: {rendered}"
@@ -123,15 +128,16 @@ fn when_code_follows_the_terminator_then_it_parses_as_a_sibling_statement() {
         !rendered.contains("(identifier EOF)"),
         "the terminator must not reach the AST as an identifier; got: {rendered}"
     );
+    Ok(())
 }
 
 #[test]
-fn when_body_contains_perl_code_then_it_is_text_not_statements() {
+fn when_body_contains_perl_code_then_it_is_text_not_statements() -> Result<(), String> {
     // The body is a string in Perl; `my $y = 2;` inside it must never become a
     // declaration. This is the sharpest regression control for source loss.
     let source = "my $x = <<EOF;\nmy $y = 2;\nEOF\nmy $z = 3;\n";
-    assert_eq!(heredoc_contents(source), vec![("EOF".to_string(), "my $y = 2;\n".to_string())]);
-    let rendered = sexp(source);
+    assert_eq!(heredoc_contents(source)?, vec![("EOF".to_string(), "my $y = 2;\n".to_string())]);
+    let rendered = sexp(source)?;
     // `$y` still appears — inside the heredoc's content string. What must not
     // appear is a declaration node built from it.
     assert!(
@@ -142,24 +148,26 @@ fn when_body_contains_perl_code_then_it_is_text_not_statements() {
         rendered.contains("(variable_declaration $z   = (number 3)"),
         "the statement after the heredoc must still parse; got: {rendered}"
     );
+    Ok(())
 }
 
 #[test]
-fn when_body_holds_unbalanced_delimiters_then_following_code_still_parses() {
+fn when_body_holds_unbalanced_delimiters_then_following_code_still_parses() -> Result<(), String> {
     // `if ({` used to derail the recovery scanner and silently drop the rest of
     // the file while still returning Ok.
     let source = "my $x = <<EOF;\nif ({\nEOF\nmy $z = 3;\n";
-    assert_eq!(heredoc_contents(source), vec![("EOF".to_string(), "if ({\n".to_string())]);
+    assert_eq!(heredoc_contents(source)?, vec![("EOF".to_string(), "if ({\n".to_string())]);
     assert!(
-        sexp(source).contains("(variable_declaration $z   = (number 3)"),
+        sexp(source)?.contains("(variable_declaration $z   = (number 3)"),
         "an unbalanced brace inside a body must not consume following code"
     );
+    Ok(())
 }
 
 // --- Marker forms ----------------------------------------------------------
 
 #[test]
-fn when_marker_is_quoted_or_escaped_then_the_body_is_still_owned() {
+fn when_marker_is_quoted_or_escaped_then_the_body_is_still_owned() -> Result<(), String> {
     // perl agrees on all four spellings; only interpolation differs, and this
     // crate does not interpolate.
     let cases: [(&str, &str, &str); 4] = [
@@ -170,89 +178,99 @@ fn when_marker_is_quoted_or_escaped_then_the_body_is_still_owned() {
     ];
     for (source, marker, content) in cases {
         assert_eq!(
-            heredoc_contents(source),
+            heredoc_contents(source)?,
             vec![(marker.to_string(), content.to_string())],
             "marker form must not change body ownership for {source:?}"
         );
     }
+    Ok(())
 }
 
 #[test]
-fn when_marker_is_numeric_then_the_body_is_owned() {
+fn when_marker_is_numeric_then_the_body_is_owned() -> Result<(), String> {
     // perl 5.38 accepts `<<123`; the grammar's bare delimiter allows digits.
     assert_eq!(
-        heredoc_contents("my $x = <<123;\nbody\n123\n"),
+        heredoc_contents("my $x = <<123;\nbody\n123\n")?,
         vec![("123".to_string(), "body\n".to_string())]
     );
+    Ok(())
 }
 
 #[test]
-fn when_opener_is_indented_form_then_terminator_indentation_is_stripped() {
+fn when_opener_is_indented_form_then_terminator_indentation_is_stripped() -> Result<(), String> {
     // perl: terminator `    EOF` strips four columns, so `      deeper` keeps
     // exactly two. A naive `trim_start` would flatten both lines to column 0.
     assert_eq!(
-        heredoc_contents("my $x = <<~EOF;\n    hi\n      deeper\n    EOF\n"),
+        heredoc_contents("my $x = <<~EOF;\n    hi\n      deeper\n    EOF\n")?,
         vec![("EOF".to_string(), "hi\n  deeper\n".to_string())]
     );
+    Ok(())
 }
 
 #[test]
-fn when_opener_is_not_indented_form_then_indentation_is_preserved() {
+fn when_opener_is_not_indented_form_then_indentation_is_preserved() -> Result<(), String> {
     assert_eq!(
-        heredoc_contents("my $x = <<EOF;\n    hi\nEOF\n"),
+        heredoc_contents("my $x = <<EOF;\n    hi\nEOF\n")?,
         vec![("EOF".to_string(), "    hi\n".to_string())]
     );
+    Ok(())
 }
 
 // --- Multiple queued openers -----------------------------------------------
 
 #[test]
-fn when_two_openers_share_a_line_then_bodies_are_owned_in_opener_order() {
+fn when_two_openers_share_a_line_then_bodies_are_owned_in_opener_order() -> Result<(), String> {
     // perl: `(<<A, <<B)` yields ("aaa\n", "bbb\n"). Swapping the queue order is
     // the falsifier this pins.
     assert_eq!(
-        heredoc_contents("my ($a,$b) = (<<A, <<B);\naaa\nA\nbbb\nB\n"),
+        heredoc_contents("my ($a,$b) = (<<A, <<B);\naaa\nA\nbbb\nB\n")?,
         vec![("A".to_string(), "aaa\n".to_string()), ("B".to_string(), "bbb\n".to_string())]
     );
+    Ok(())
 }
 
 #[test]
-fn when_two_openers_share_a_line_then_following_code_resumes_after_both_bodies() {
+fn when_two_openers_share_a_line_then_following_code_resumes_after_both_bodies()
+-> Result<(), String> {
     assert!(
-        sexp("my ($a,$b) = (<<A, <<B);\naaa\nA\nbbb\nB\nmy $z=3;\n")
+        sexp("my ($a,$b) = (<<A, <<B);\naaa\nA\nbbb\nB\nmy $z=3;\n")?
             .contains("(variable_declaration $z  = (number 3)"),
         "code after the second terminator must resume"
     );
+    Ok(())
 }
 
 // --- Terminator exactness --------------------------------------------------
 
 #[test]
-fn when_terminator_has_trailing_whitespace_then_it_does_not_terminate() {
+fn when_terminator_has_trailing_whitespace_then_it_does_not_terminate() -> Result<(), String> {
     // perl: `EOF ` is not a terminator — the program dies with
     // "Can't find string terminator". This crate reports it instead of
     // pretending the heredoc closed.
     let source = "my $x = <<EOF;\nhi\nEOF \n";
     assert_eq!(completeness(source), Some(ParseCompleteness::Recovered));
-    assert_eq!(heredoc_contents(source), vec![("EOF".to_string(), "hi\nEOF \n".to_string())]);
+    assert_eq!(heredoc_contents(source)?, vec![("EOF".to_string(), "hi\nEOF \n".to_string())]);
+    Ok(())
 }
 
 #[test]
-fn when_terminator_is_a_prefix_of_a_longer_word_then_it_does_not_terminate() {
+fn when_terminator_is_a_prefix_of_a_longer_word_then_it_does_not_terminate() -> Result<(), String> {
     let source = "my $x = <<EOF;\nhi\nEOFX\nEOF\n";
-    assert_eq!(heredoc_contents(source), vec![("EOF".to_string(), "hi\nEOFX\n".to_string())]);
+    assert_eq!(heredoc_contents(source)?, vec![("EOF".to_string(), "hi\nEOFX\n".to_string())]);
     assert_eq!(completeness(source), Some(ParseCompleteness::Complete));
+    Ok(())
 }
 
 #[test]
-fn when_body_mentions_another_opener_then_it_stays_literal_text() {
+fn when_body_mentions_another_opener_then_it_stays_literal_text() -> Result<(), String> {
     // perl treats body bytes as data; `<<NOPE` must not queue a second heredoc.
     let source = "my $x = <<EOF;\nsee <<NOPE here\nEOF\nmy $y=1;\n";
     assert_eq!(
-        heredoc_contents(source),
+        heredoc_contents(source)?,
         vec![("EOF".to_string(), "see <<NOPE here\n".to_string())]
     );
     assert_eq!(completeness(source), Some(ParseCompleteness::Complete));
+    Ok(())
 }
 
 // --- Missing terminator -----------------------------------------------------
@@ -293,7 +311,7 @@ fn when_terminator_is_missing_then_the_scan_records_the_defect() {
 // --- Negative controls ------------------------------------------------------
 
 #[test]
-fn when_shift_operator_is_used_then_no_body_is_owned() {
+fn when_shift_operator_is_used_then_no_body_is_owned() -> Result<(), String> {
     // perl: `1 << 2` is 4 and `1 <<2` is also 4 — both left shifts. A scanner
     // that queues `<<2` here would swallow the rest of the file.
     for source in ["my $x = 1 << 2;\nmy $y = 3;\n", "my $x = 1 <<2;\nmy $y = 3;\n"] {
@@ -301,10 +319,11 @@ fn when_shift_operator_is_used_then_no_body_is_owned() {
         assert!(scan.captures().is_empty(), "left shift must own no body: {source:?}");
         assert_eq!(scan.stripped(), source, "left shift must not remove source: {source:?}");
         assert!(
-            sexp(source).contains("(variable_declaration $y   = (number 3)"),
+            sexp(source)?.contains("(variable_declaration $y   = (number 3)"),
             "the statement after a left shift must still parse: {source:?}"
         );
     }
+    Ok(())
 }
 
 #[test]
@@ -320,7 +339,7 @@ fn when_shift_follows_a_value_then_no_body_is_owned() {
 }
 
 #[test]
-fn when_shift_follows_a_method_call_then_following_source_survives() {
+fn when_shift_follows_a_method_call_then_following_source_survives() -> Result<(), String> {
     // perl 5.38: with `sub val { 4 }`, `$o->val <<2` prints 16 — a left shift.
     // A method call takes no unparenthesized list, so the call is a completed
     // term. Reading the method name as a bareword list operator makes `<<2` an
@@ -335,10 +354,11 @@ fn when_shift_follows_a_method_call_then_following_source_survives() {
         assert!(scan.captures().is_empty(), "method-call shift must own no body: {source:?}");
         assert_eq!(scan.stripped(), source, "no source may be removed for: {source:?}");
         assert!(
-            sexp(source).contains("(variable_declaration $z   = (number 3)"),
+            sexp(source)?.contains("(variable_declaration $z   = (number 3)"),
             "the statement after a method-call shift must still parse: {source:?}"
         );
     }
+    Ok(())
 }
 
 #[test]
@@ -671,7 +691,7 @@ fn when_a_replacement_spans_lines_then_its_text_is_not_scanned_for_openers() {
 }
 
 #[test]
-fn when_opener_follows_defined_or_then_the_body_is_owned() {
+fn when_opener_follows_defined_or_then_the_body_is_owned() -> Result<(), String> {
     // perl 5.38: `my $x = $u // <<EOF;` assigns the heredoc body when `$u` is
     // undef, so `//` here is the defined-or *operator* and `<<EOF` starts a
     // term. Treating `//` as a completed value (an empty pattern) makes the
@@ -693,10 +713,11 @@ fn when_opener_follows_defined_or_then_the_body_is_owned() {
             "the body must leave the text handed to Pest for: {source:?}"
         );
         assert!(
-            sexp(source).contains("(variable_declaration $z   = (number 3)"),
+            sexp(source)?.contains("(variable_declaration $z   = (number 3)"),
             "code after the terminator must still parse: {source:?}"
         );
     }
+    Ok(())
 }
 
 #[test]
@@ -729,12 +750,13 @@ fn when_opener_text_is_inside_a_comment_or_string_then_no_body_is_owned() {
 }
 
 #[test]
-fn when_list_operator_precedes_the_opener_then_the_body_is_owned() {
+fn when_list_operator_precedes_the_opener_then_the_body_is_owned() -> Result<(), String> {
     // `print <<EOF` is the common shape and must not be mistaken for a shift.
     assert_eq!(
-        heredoc_contents("print <<EOF;\nhi\nEOF\n"),
+        heredoc_contents("print <<EOF;\nhi\nEOF\n")?,
         vec![("EOF".to_string(), "hi\n".to_string())]
     );
+    Ok(())
 }
 
 #[test]
@@ -753,40 +775,44 @@ fn when_bare_marker_is_separated_by_whitespace_then_the_opener_is_reported_unsup
 }
 
 #[test]
-fn when_quoted_marker_is_separated_by_whitespace_then_the_body_is_owned() {
+fn when_quoted_marker_is_separated_by_whitespace_then_the_body_is_owned() -> Result<(), String> {
     // perl accepts `<< "EOF"` — only the bare form is forbidden.
     assert_eq!(
-        heredoc_contents("my $x = << \"EOF\";\nhi\nEOF\n"),
+        heredoc_contents("my $x = << \"EOF\";\nhi\nEOF\n")?,
         vec![("EOF".to_string(), "hi\n".to_string())]
     );
+    Ok(())
 }
 
 // --- Newline variants -------------------------------------------------------
 
 #[test]
-fn when_source_uses_crlf_then_the_terminator_matches_and_content_keeps_its_bytes() {
+fn when_source_uses_crlf_then_the_terminator_matches_and_content_keeps_its_bytes()
+-> Result<(), String> {
     let source = "my $x = <<EOF;\r\nhello\r\nEOF\r\nmy $y=1;\r\n";
     assert_eq!(
-        heredoc_contents(source),
+        heredoc_contents(source)?,
         vec![("EOF".to_string(), "hello\r\n".to_string())],
         "CRLF bodies keep their exact bytes; the terminator match ignores the CR"
     );
     assert_eq!(completeness(source), Some(ParseCompleteness::Complete));
+    Ok(())
 }
 
 #[test]
-fn when_final_line_has_no_newline_then_the_terminator_still_matches() {
+fn when_final_line_has_no_newline_then_the_terminator_still_matches() -> Result<(), String> {
     assert_eq!(
-        heredoc_contents("my $x = <<EOF;\nhi\nEOF"),
+        heredoc_contents("my $x = <<EOF;\nhi\nEOF")?,
         vec![("EOF".to_string(), "hi\n".to_string())]
     );
     assert_eq!(completeness("my $x = <<EOF;\nhi\nEOF"), Some(ParseCompleteness::Complete));
+    Ok(())
 }
 
 // --- Determinism and bounded operation --------------------------------------
 
 #[test]
-fn when_the_same_source_is_scanned_twice_then_output_is_identical() {
+fn when_the_same_source_is_scanned_twice_then_output_is_identical() -> Result<(), String> {
     for source in [
         "my $x = <<EOF;\nhello\nEOF\nmy $y = 1;\n",
         "my $x = <<EOF;\nhello\n",
@@ -796,8 +822,9 @@ fn when_the_same_source_is_scanned_twice_then_output_is_identical() {
         let first = perl_parser_pest::heredoc::scan(source);
         let second = perl_parser_pest::heredoc::scan(source);
         assert_eq!(first, second, "scan must be a pure function of source: {source:?}");
-        assert_eq!(sexp(source), sexp(source), "projection must be deterministic: {source:?}");
+        assert_eq!(sexp(source)?, sexp(source)?, "projection must be deterministic: {source:?}");
     }
+    Ok(())
 }
 
 #[test]
@@ -930,7 +957,7 @@ fn when_marker_form_is_recorded_then_it_matches_the_opener_spelling() {
 // text inside them must own nothing and remove nothing.
 
 #[test]
-fn when_opener_text_is_inside_pod_then_no_body_is_owned() {
+fn when_opener_text_is_inside_pod_then_no_body_is_owned() -> Result<(), String> {
     // perl: `perl -c` accepts this and the trailing code runs — POD is never
     // lexed as code. A per-line scanner would queue an opener at `<<EOF`, find
     // no unindented terminator, and swallow `=cut` plus the real code below it.
@@ -939,10 +966,11 @@ fn when_opener_text_is_inside_pod_then_no_body_is_owned() {
     assert!(scan.captures().is_empty(), "POD prose must own no body");
     assert_eq!(scan.stripped(), source, "POD must not have source removed");
     assert!(
-        sexp(source).contains("print"),
+        sexp(source)?.contains("print"),
         "code after `=cut` must survive; got: {}",
-        sexp(source)
+        sexp(source)?
     );
+    Ok(())
 }
 
 #[test]
@@ -973,30 +1001,32 @@ fn when_opener_text_is_inside_a_multiline_quote_then_no_body_is_owned() {
 }
 
 #[test]
-fn when_pod_ends_then_a_later_heredoc_is_still_owned() {
+fn when_pod_ends_then_a_later_heredoc_is_still_owned() -> Result<(), String> {
     // The POD exemption must not swallow the rest of the file.
     let source = "=pod\n\ntext\n\n=cut\n\nmy $x = <<EOF;\nreal body\nEOF\n";
     assert_eq!(
-        heredoc_contents(source),
+        heredoc_contents(source)?,
         vec![("EOF".to_string(), "real body\n".to_string())],
         "a heredoc after `=cut` must still own its body"
     );
+    Ok(())
 }
 
 // --- Term position agrees with the grammar (#14563 review) ------------------
 
 #[test]
-fn when_a_builtin_list_operator_precedes_the_opener_then_the_body_is_owned() {
+fn when_a_builtin_list_operator_precedes_the_opener_then_the_body_is_owned() -> Result<(), String> {
     // perl accepts a heredoc term after every one of these; an allowlist that
     // omits them leaves the body to be misparsed as code.
     for op in ["length", "scalar", "uc", "lc", "ucfirst", "eval", "system", "defined", "ref"] {
         let source = format!("my $x = {op} <<EOF;\nbody\nEOF\n");
         assert_eq!(
-            heredoc_contents(&source),
+            heredoc_contents(&source)?,
             vec![("EOF".to_string(), "body\n".to_string())],
             "`{op} <<EOF` must own its body"
         );
     }
+    Ok(())
 }
 
 /// Heredoc openers the grammar itself produces for `source`.
@@ -1143,7 +1173,7 @@ fn when_the_scanner_and_grammar_disagree_then_the_outcome_reports_it() -> Result
 }
 
 #[test]
-fn when_the_scanner_owns_a_user_sub_opener_then_the_outcome_is_complete() {
+fn when_the_scanner_owns_a_user_sub_opener_then_the_outcome_is_complete() -> Result<(), String> {
     // A missed opener creates no capture, so no per-capture defect can fire.
     // This is the only check that can see it, and without it the outcome would
     // report `Complete` while a body was left to be parsed as code.
@@ -1159,18 +1189,21 @@ fn when_the_scanner_owns_a_user_sub_opener_then_the_outcome_is_complete() {
     );
     assert_eq!(completeness(source), Some(ParseCompleteness::Complete));
     // The body is owned, not left behind as code.
-    assert_eq!(heredoc_contents(source), vec![("EOF".to_string(), "body\n".to_string())]);
+    assert_eq!(heredoc_contents(source)?, vec![("EOF".to_string(), "body\n".to_string())]);
+    Ok(())
 }
 
 #[test]
-fn when_two_same_marker_openers_differ_in_shape_then_bodies_are_not_swapped() {
+fn when_two_same_marker_openers_differ_in_shape_then_bodies_are_not_swapped() -> Result<(), String>
+{
     // Content corruption control: if the scanner recognized only one of these,
     // the FIFO queue would hand the second body to the first node while still
     // reporting a clean parse.
     assert_eq!(
-        heredoc_contents("croak <<EOF;\naaa\nEOF\ndie <<EOF;\nbbb\nEOF\n"),
+        heredoc_contents("croak <<EOF;\naaa\nEOF\ndie <<EOF;\nbbb\nEOF\n")?,
         vec![("EOF".to_string(), "aaa\n".to_string()), ("EOF".to_string(), "bbb\n".to_string())]
     );
+    Ok(())
 }
 
 #[test]
@@ -1271,7 +1304,7 @@ fn when_a_phantom_opener_repeats_a_later_marker_then_the_real_heredoc_keeps_its_
     // Both markers read `EOF`, so *which* node holds the body is the whole
     // question — asserting only that some node holds it passes either way.
     // Nodes come in source order, so the phantom is first and must be empty.
-    let contents = heredoc_contents(source);
+    let contents = heredoc_contents(source)?;
     assert_eq!(
         contents,
         vec![("EOF".to_string(), String::new()), ("EOF".to_string(), "body\n".to_string()),],
@@ -1311,7 +1344,7 @@ fn when_recovery_reparses_fragments_then_a_valid_heredoc_still_owns_its_body() -
         ("my $x = ;\r\nmy $h = <<EOF;\r\nbody\r\nEOF\r\nmy $z = 3;\r\n", "body\r\n"),
     ] {
         assert_eq!(
-            heredoc_contents(source),
+            heredoc_contents(source)?,
             vec![("EOF".to_string(), body.to_string())],
             "recovery must not empty a valid heredoc: {source:?}"
         );
@@ -1342,7 +1375,7 @@ fn when_normalization_rewrites_the_source_then_opener_identity_survives_it() -> 
     // over-report; the repeated `EOF` marker is what let the phantom take the
     // real body.
     let source = "my $v = $$name;\nmy $a = $^W <<EOF;\nmy $b = <<EOF;\nbody\nEOF\nmy $z = 3;\n";
-    let contents = heredoc_contents(source);
+    let contents = heredoc_contents(source)?;
     assert_eq!(
         contents.iter().filter(|(_, content)| content == "body\n").count(),
         1,
@@ -1370,7 +1403,7 @@ fn when_normalization_rewrites_the_source_then_opener_identity_survives_it() -> 
     // by attaching nothing.
     let plain = "my $v = $$name;\nmy $b = <<EOF;\nbody\nEOF\nmy $z = 3;\n";
     assert_eq!(
-        heredoc_contents(plain),
+        heredoc_contents(plain)?,
         vec![("EOF".to_string(), "body\n".to_string())],
         "a rewritten source must still attach its body"
     );
@@ -1452,13 +1485,14 @@ fn when_indented_terminator_is_not_a_prefix_of_body_indent_then_it_does_not_term
 }
 
 #[test]
-fn when_indented_terminator_is_less_indented_than_body_then_it_terminates() {
+fn when_indented_terminator_is_less_indented_than_body_then_it_terminates() -> Result<(), String> {
     // perl accepts a terminator indented less than the body, stripping only the
     // terminator's own indentation.
     assert_eq!(
-        heredoc_contents("my $x = <<~EOF;\n    hi\n  EOF\n"),
+        heredoc_contents("my $x = <<~EOF;\n    hi\n  EOF\n")?,
         vec![("EOF".to_string(), "  hi\n".to_string())]
     );
+    Ok(())
 }
 
 // --- Review round 2 ---------------------------------------------------------
@@ -1476,16 +1510,17 @@ fn when_pod_prose_starts_with_a_cut_prefix_then_pod_does_not_end() {
 }
 
 #[test]
-fn when_pod_ends_with_a_real_cut_then_code_resumes() {
+fn when_pod_ends_with_a_real_cut_then_code_resumes() -> Result<(), String> {
     // The exact-match fix must not make `=cut` unrecognizable.
     for ending in ["=cut\n", "=cut some trailing prose\n"] {
         let source = format!("=pod\n\ntext\n\n{ending}\nmy $x = <<EOF;\nbody\nEOF\n");
         assert_eq!(
-            heredoc_contents(&source),
+            heredoc_contents(&source)?,
             vec![("EOF".to_string(), "body\n".to_string())],
             "code after {ending:?} must resume"
         );
     }
+    Ok(())
 }
 
 #[test]
@@ -1499,12 +1534,26 @@ fn when_a_format_body_contains_opener_text_then_no_body_is_owned() {
 }
 
 #[test]
-fn when_a_format_body_ends_then_a_later_heredoc_is_still_owned() {
+fn when_a_format_declaration_carries_a_comment_then_its_body_still_owns_no_opener() {
+    // `format STDOUT = # comment` is `syntax OK` to perl 5.38.2 and the picture
+    // text below it is data, so the program still reaches the code after the
+    // terminator. Only whitespace or a comment may follow the `=`: a bare word
+    // or a `;` there is a perl syntax error, so ignoring the comment cannot let
+    // a line of code open a format region.
+    let source = "format STDOUT = # trailing comment\n<<EOF\n.\nprint \"after\";\n";
+    let scan = perl_parser_pest::heredoc::scan(source);
+    assert!(scan.captures().is_empty(), "a commented format body must own no body");
+    assert_eq!(scan.stripped(), source, "a commented format body must not be removed");
+}
+
+#[test]
+fn when_a_format_body_ends_then_a_later_heredoc_is_still_owned() -> Result<(), String> {
     assert_eq!(
-        heredoc_contents("format STDOUT =\n@<<<\n.\nmy $x = <<EOF;\nbody\nEOF\n"),
+        heredoc_contents("format STDOUT =\n@<<<\n.\nmy $x = <<EOF;\nbody\nEOF\n")?,
         vec![("EOF".to_string(), "body\n".to_string())],
         "code after the format terminator must resume"
     );
+    Ok(())
 }
 
 #[test]
@@ -1584,17 +1633,19 @@ fn when_a_completed_term_precedes_the_shift_then_no_body_is_owned() {
 }
 
 #[test]
-fn when_a_name_merely_starts_with_a_quote_like_letter_then_it_is_not_an_operator() {
+fn when_a_name_merely_starts_with_a_quote_like_letter_then_it_is_not_an_operator()
+-> Result<(), String> {
     // `$s->trim()` is not an `s///`. Treating it as one consumes to a bogus
     // delimiter and desynchronizes the scan, which surfaces as a *later*
     // heredoc silently losing its body — the subtlest failure in this family.
     let source = "my $t = $s->trim();\nmy $x = <<EOF;\nbody\nEOF\nmy $z = 3;\n";
     assert_eq!(
-        heredoc_contents(source),
+        heredoc_contents(source)?,
         vec![("EOF".to_string(), "body\n".to_string())],
         "a later heredoc must still own its body"
     );
     assert_eq!(perl_parser_pest::heredoc::scan(source).captures().len(), grammar_openers(source));
+    Ok(())
 }
 
 #[test]
@@ -1638,7 +1689,7 @@ fn when_openers_exceed_the_depth_budget_then_the_excess_is_recorded_not_dropped(
 // --- Review round 4 ---------------------------------------------------------
 
 #[test]
-fn when_defined_or_precedes_a_heredoc_then_the_body_is_still_owned() {
+fn when_defined_or_precedes_a_heredoc_then_the_body_is_still_owned() -> Result<(), String> {
     // `//` is one token. Letting its second slash open a regex scan left an
     // unterminated construct that carried to the next line and swallowed the
     // heredoc below it — a false *negative* reached through a false positive.
@@ -1654,11 +1705,12 @@ fn when_defined_or_precedes_a_heredoc_then_the_body_is_still_owned() {
             "scanner and grammar must agree for {source:?}"
         );
         assert_eq!(
-            heredoc_contents(source),
+            heredoc_contents(source)?,
             vec![("EOF".to_string(), "body\n".to_string())],
             "the heredoc after a `//` must own its body: {source:?}"
         );
     }
+    Ok(())
 }
 
 #[test]
@@ -1713,7 +1765,7 @@ fn when_the_grammar_over_reports_inside_a_multiline_substitution_then_it_is_not_
     // spell `EOF`, so *which* node ends up with the body is the whole question:
     // matching on marker text alone hands it to the phantom inside the
     // replacement and leaves the real heredoc empty.
-    let projection = sexp(source);
+    let projection = sexp(source)?;
     assert!(
         projection.contains(r#"(hash_ref (heredoc EOF  ""))"#),
         "the phantom opener in the replacement must own nothing; got {projection}"

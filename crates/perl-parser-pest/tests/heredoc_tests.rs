@@ -21,53 +21,55 @@
 #![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 use perl_parser_pest::{AstNode, PureRustPerlParser};
-use perl_tdd_support::must;
 
-fn parse_to_sexp(source: &str) -> String {
+fn parse_to_sexp(source: &str) -> Result<String, String> {
     let mut parser = PureRustPerlParser::new();
-    let ast = must(parser.parse(source));
-    parser.to_sexp(&ast)
+    let ast = parser.parse(source).map_err(|error| format!("{error:?}"))?;
+    Ok(parser.to_sexp(&ast))
 }
 
-fn parse_ast(source: &str) -> AstNode {
+fn parse_ast(source: &str) -> Result<AstNode, String> {
     let mut parser = PureRustPerlParser::new();
-    must(parser.parse(source))
+    parser.parse(source).map_err(|error| format!("{error:?}"))
 }
 
 // --- Marker forms ----------------------------------------------------------
 
 #[test]
-fn when_bare_heredoc_then_emits_heredoc_node_with_marker() {
-    let sexp = parse_to_sexp("my $x = <<EOF;\nhello\nEOF\n");
+fn when_bare_heredoc_then_emits_heredoc_node_with_marker() -> Result<(), String> {
+    let sexp = parse_to_sexp("my $x = <<EOF;\nhello\nEOF\n")?;
     assert!(
         sexp.contains("(heredoc EOF  \""),
         "bare `<<EOF` should emit a heredoc node with the EOF marker and no flags; got: {sexp}"
     );
+    Ok(())
 }
 
 #[test]
-fn when_indented_heredoc_then_sets_tilde_flag() {
-    let sexp = parse_to_sexp("my $x = <<~EOF;\n  indented\n  EOF\n");
+fn when_indented_heredoc_then_sets_tilde_flag() -> Result<(), String> {
+    let sexp = parse_to_sexp("my $x = <<~EOF;\n  indented\n  EOF\n")?;
     assert!(
         sexp.contains("(heredoc EOF ~ \""),
         "`<<~EOF` should set the indented (`~`) flag; got: {sexp}"
     );
+    Ok(())
 }
 
 #[test]
-fn when_single_quoted_heredoc_then_sets_quote_flag() {
-    let sexp = parse_to_sexp("my $x = <<'EOF';\nno $interp\nEOF\n");
+fn when_single_quoted_heredoc_then_sets_quote_flag() -> Result<(), String> {
+    let sexp = parse_to_sexp("my $x = <<'EOF';\nno $interp\nEOF\n")?;
     assert!(
         sexp.contains("(heredoc EOF ' \""),
         "`<<'EOF'` should set the quoted (`'`) flag; got: {sexp}"
     );
+    Ok(())
 }
 
 #[test]
-fn when_double_quoted_heredoc_then_marker_parsed_without_quote_flag() {
+fn when_double_quoted_heredoc_then_marker_parsed_without_quote_flag() -> Result<(), String> {
     // The builder only sets `quoted` for the single-quote form, so a
     // double-quoted marker parses the bare marker with no quote flag.
-    let sexp = parse_to_sexp("my $x = <<\"EOF\";\ninterp $y\nEOF\n");
+    let sexp = parse_to_sexp("my $x = <<\"EOF\";\ninterp $y\nEOF\n")?;
     assert!(
         sexp.contains("(heredoc EOF  \""),
         "`<<\"EOF\"` should parse the EOF marker with no quote flag; got: {sexp}"
@@ -76,87 +78,95 @@ fn when_double_quoted_heredoc_then_marker_parsed_without_quote_flag() {
         !sexp.contains("(heredoc EOF '"),
         "double-quoted marker must not set the single-quote flag; got: {sexp}"
     );
+    Ok(())
 }
 
 #[test]
-fn when_backtick_heredoc_then_marker_parsed() {
-    let sexp = parse_to_sexp("my $x = <<`CMD`;\nls\nCMD\n");
+fn when_backtick_heredoc_then_marker_parsed() -> Result<(), String> {
+    let sexp = parse_to_sexp("my $x = <<`CMD`;\nls\nCMD\n")?;
     assert!(
         sexp.contains("(heredoc CMD  \""),
         "`<<`CMD`` should parse the CMD marker; got: {sexp}"
     );
+    Ok(())
 }
 
 #[test]
-fn when_escaped_heredoc_then_marker_parsed() {
-    let sexp = parse_to_sexp("my $x = <<\\EOF;\nx\nEOF\n");
+fn when_escaped_heredoc_then_marker_parsed() -> Result<(), String> {
+    let sexp = parse_to_sexp("my $x = <<\\EOF;\nx\nEOF\n")?;
     assert!(
         sexp.contains("(heredoc EOF  \""),
         "`<<\\EOF` should parse the EOF marker; got: {sexp}"
     );
+    Ok(())
 }
 
 #[test]
-fn when_numeric_marker_then_marker_parsed() {
+fn when_numeric_marker_then_marker_parsed() -> Result<(), String> {
     // `bare_heredoc_delimiter` accepts ASCII alphanumerics, so digits are valid.
-    let sexp = parse_to_sexp("my $x = <<123;\nx\n123\n");
+    let sexp = parse_to_sexp("my $x = <<123;\nx\n123\n")?;
     assert!(
         sexp.contains("(heredoc 123  \""),
         "`<<123` should parse the numeric marker; got: {sexp}"
     );
+    Ok(())
 }
 
 #[test]
-fn when_heredoc_is_bare_statement_then_parses() {
-    let sexp = parse_to_sexp("<<END;\n");
+fn when_heredoc_is_bare_statement_then_parses() -> Result<(), String> {
+    let sexp = parse_to_sexp("<<END;\n")?;
     assert!(
         sexp.contains("(heredoc END  \""),
         "a bare `<<END;` statement should parse as a heredoc primary; got: {sexp}"
     );
+    Ok(())
 }
 
 // --- Body / content limitation --------------------------------------------
 
 #[test]
-fn when_heredoc_has_body_then_content_is_the_body_text() {
+fn when_heredoc_has_body_then_content_is_the_body_text() -> Result<(), String> {
     // #8220 closed the gap this test used to characterize: the body is now
     // owned by the opener and becomes the node's content. The exhaustive
     // contract — terminator exactness, `<<~` stripping, multiple openers,
     // missing terminators, negative controls — lives in
     // `heredoc_body_contract.rs`; this row keeps the marker suite's own
     // end-to-end check that content is no longer unconditionally empty.
-    let sexp = parse_to_sexp("my $x = <<EOF;\nhello world\nEOF\n");
+    let sexp = parse_to_sexp("my $x = <<EOF;\nhello world\nEOF\n")?;
     assert!(
         sexp.contains("(heredoc EOF  \"hello world"),
         "heredoc content must carry the body text; got: {sexp}"
     );
+    Ok(())
 }
 
 #[test]
-fn when_heredoc_body_is_empty_then_still_emits_node() {
-    let sexp = parse_to_sexp("my $x = <<EOF;\nEOF\n");
+fn when_heredoc_body_is_empty_then_still_emits_node() -> Result<(), String> {
+    let sexp = parse_to_sexp("my $x = <<EOF;\nEOF\n")?;
     assert!(
         sexp.contains("(heredoc EOF  \""),
         "an empty-body heredoc should still emit a heredoc node; got: {sexp}"
     );
+    Ok(())
 }
 
 // --- Malformed / recovery (must not panic) ---------------------------------
 
 #[test]
-fn when_heredoc_missing_delimiter_then_recovers_without_panic() {
+fn when_heredoc_missing_delimiter_then_recovers_without_panic() -> Result<(), String> {
     // `<<` with no delimiter is not a valid heredoc; the parser recovers to a
     // Program rather than panicking, and emits no heredoc node.
-    let sexp = parse_to_sexp("my $x = << ;\n");
+    let sexp = parse_to_sexp("my $x = << ;\n")?;
     assert!(
         !sexp.contains("heredoc"),
         "malformed `<< ;` should not produce a heredoc node; got: {sexp}"
     );
+    Ok(())
 }
 
 #[test]
 fn when_heredoc_single_quote_unterminated_then_recovers_without_panic() -> Result<(), String> {
-    let ast = parse_ast("my $x = <<'EOF;\nx\n");
+    let ast = parse_ast("my $x = <<'EOF;\nx\n")?;
     // Recovery returns a Program; the important guarantee is "no panic".
     let AstNode::Program(nodes) = ast else {
         return Err("expected recovery to return a Program".to_string());
@@ -171,31 +181,34 @@ fn when_heredoc_single_quote_unterminated_then_recovers_without_panic() -> Resul
 // wrappers. These integration tests exercise that path end-to-end.
 
 #[test]
-fn when_q_string_has_heredoc_placeholder_then_extracts_inner_content() {
-    let sexp = parse_to_sexp("my $x = q{__HEREDOC__body text__HEREDOC__};\n");
+fn when_q_string_has_heredoc_placeholder_then_extracts_inner_content() -> Result<(), String> {
+    let sexp = parse_to_sexp("my $x = q{__HEREDOC__body text__HEREDOC__};\n")?;
     assert!(
         sexp.contains("(string_literal body text)"),
         "q{{}} heredoc placeholder should extract the inner content; got: {sexp}"
     );
+    Ok(())
 }
 
 #[test]
-fn when_qq_string_has_heredoc_placeholder_then_extracts_inner_content() {
-    let sexp = parse_to_sexp("my $x = qq{__HEREDOC__body text__HEREDOC__};\n");
+fn when_qq_string_has_heredoc_placeholder_then_extracts_inner_content() -> Result<(), String> {
+    let sexp = parse_to_sexp("my $x = qq{__HEREDOC__body text__HEREDOC__};\n")?;
     assert!(
         sexp.contains("(string_literal body text)"),
         "qq{{}} heredoc placeholder should extract the inner content; got: {sexp}"
     );
+    Ok(())
 }
 
 #[test]
-fn when_q_string_has_marker_without_content_then_does_not_panic() {
+fn when_q_string_has_marker_without_content_then_does_not_panic() -> Result<(), String> {
     // Regression guard for #3917 at the integration level: the placeholder open
     // and close overlap, so the slice guard must reject the inverted range and
     // fall back to the whole literal instead of panicking.
-    let sexp = parse_to_sexp("my $x = q{__HEREDOC__};\n");
+    let sexp = parse_to_sexp("my $x = q{__HEREDOC__};\n")?;
     assert!(
         sexp.contains("(string_literal q{__HEREDOC__})"),
         "a marker-only q{{}} placeholder should fall back to the whole literal; got: {sexp}"
     );
+    Ok(())
 }

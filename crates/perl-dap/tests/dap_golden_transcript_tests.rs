@@ -5,6 +5,10 @@
 //! Run with: `cargo test -p perl-dap --features dap-phase2 -- golden`
 
 #[cfg(feature = "dap-phase2")]
+#[path = "common/dap_core_capability_witnesses.rs"]
+mod dap_core_capability_witnesses;
+
+#[cfg(feature = "dap-phase2")]
 mod dap_golden_transcripts {
     use anyhow::{Result, anyhow};
     use perl_dap::debug_adapter::{DapMessage, DebugAdapter};
@@ -398,6 +402,69 @@ mod dap_golden_transcripts {
             );
         }
 
+        Ok(())
+    }
+
+    fn initialize_response_body(messages: &[Value]) -> Result<&Map<String, Value>> {
+        let response = messages
+            .iter()
+            .find(|message| message["type"] == "response" && message["command"] == "initialize")
+            .ok_or_else(|| anyhow!("initialize_sequence.json missing initialize response"))?;
+        require_object(
+            response.get("body").ok_or_else(|| anyhow!("initialize response missing body"))?,
+            "initialize_sequence.json initialize response body",
+        )
+    }
+
+    fn live_initialize_body() -> Result<Value> {
+        match DebugAdapter::new().handle_request(1, "initialize", None) {
+            DapMessage::Response { success: true, body: Some(body), .. } => Ok(body),
+            other => anyhow::bail!("expected a successful live initialize response, got {other:?}"),
+        }
+    }
+
+    /// #14933: `initialize_sequence.json` is a handshake excerpt, not a full
+    /// capability dump. Every field it names must match the live native
+    /// initialize body. Deleting `supportsValueFormattingOptions` is not
+    /// reconciliation; promoting it to true is not either.
+    #[tokio::test]
+    async fn initialize_sequence_named_fields_match_live_and_keep_value_format_floor() -> Result<()>
+    {
+        use super::dap_core_capability_witnesses::{VALUE_FORMAT_FLOOR_FIELD, capability_bool};
+
+        let transcript = load_transcript("initialize_sequence.json")?;
+        let messages = extract_messages(&transcript)?;
+        assert_transcript_conformance("initialize_sequence.json", messages)?;
+
+        let golden_body = initialize_response_body(messages)?;
+        assert!(
+            golden_body.contains_key(VALUE_FORMAT_FLOOR_FIELD),
+            "initialize_sequence.json must keep naming {VALUE_FORMAT_FLOOR_FIELD}; \
+             deleting the field is not reconciliation with the #9581 floor"
+        );
+        assert_eq!(
+            golden_body.get(VALUE_FORMAT_FLOOR_FIELD).and_then(Value::as_bool),
+            Some(false),
+            "{VALUE_FORMAT_FLOOR_FIELD} in the golden must stay false; do not promote the #9581 floor"
+        );
+
+        let live = live_initialize_body()?;
+        let live_obj = require_object(&live, "live initialize body")?;
+        assert_eq!(
+            capability_bool(&live, VALUE_FORMAT_FLOOR_FIELD),
+            Some(false),
+            "live initialize must keep the #9581 {VALUE_FORMAT_FLOOR_FIELD} floor"
+        );
+
+        for (key, golden_value) in golden_body {
+            let live_value = live_obj
+                .get(key)
+                .ok_or_else(|| anyhow!("live initialize is missing golden field `{key}`"))?;
+            assert_eq!(
+                live_value, golden_value,
+                "initialize_sequence.json field `{key}` must match live initialize"
+            );
+        }
         Ok(())
     }
 }

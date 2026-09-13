@@ -23,7 +23,7 @@
 //!     }
 //! "#;
 //!
-//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
+//! # fn main() -> Result<(), perl_parser_pest::ParseError> {
 //! let ast = parser.parse(code)?;
 //! # Ok(())
 //! # }
@@ -47,7 +47,7 @@ pub mod pure_rust_parser;
 pub mod sexp_formatter;
 
 // Re-export the main types for convenience
-pub use error::{ParseError, ParseResult};
+pub use error::ParseError;
 pub use heredoc::{
     HeredocCapture, HeredocDefect, HeredocDelimiterForm, HeredocScan, MAX_HEREDOC_BODY_BYTES,
     MAX_HEREDOC_DEPTH,

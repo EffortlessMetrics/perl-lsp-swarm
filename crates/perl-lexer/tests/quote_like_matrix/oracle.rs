@@ -1,14 +1,14 @@
 //! Bounded real-Perl compile/parse oracle for quote-like matrix rows.
 
 use super::schema::{ORACLE_INVOCATION, OracleExpectation};
-use std::fs;
+use std::fs::{self, File};
+use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
+use std::process::{Child, Command, ExitStatus, Stdio};
+use std::thread;
+use std::time::{Duration, Instant};
 
 const ORACLE_TIMEOUT: Duration = Duration::from_secs(2);
-static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OracleOutcome {
@@ -59,48 +59,41 @@ pub fn compile_source(source: &str) -> OracleResult {
         Ok(path) => path,
         Err(reason) => return OracleResult::NotProven { reason },
     };
-    let source_path = temp_dir.join("quote_like_row.pl");
+    let source_path = temp_dir.path().join("quote_like_row.pl");
     if let Err(error) = fs::write(&source_path, source) {
-        return OracleResult::NotProven { reason: format!("writing oracle tempfile: {error}") };
+        return close_tempdir(
+            temp_dir,
+            OracleResult::NotProven { reason: format!("writing oracle tempfile: {error}") },
+        );
     }
 
-    let timeout = match resolve_timeout() {
-        Ok(path) => path,
-        Err(reason) => return OracleResult::NotProven { reason },
-    };
-
-    let path_var = std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin".to_string());
-    let output = Command::new(&timeout)
-        .args(["--signal=KILL", "2"])
-        .arg(&executable)
+    let mut command = Command::new(&executable);
+    configure_environment(&mut command);
+    let output = command
         .arg("-c")
         .arg(&source_path)
-        .env_clear()
-        .env("PATH", &path_var)
-        .env("LC_ALL", "C")
         .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output();
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|error| format!("spawning oracle: {error}"))
+        .and_then(wait_bounded);
 
-    let _ = fs::remove_dir_all(&temp_dir);
-
-    match output {
-        Ok(output) => {
-            match interpret_oracle_status(output.status.success(), output.status.code()) {
-                InterpretedStatus::Accept => OracleResult::Proven {
-                    identity: OracleIdentity { executable, version, invocation: ORACLE_INVOCATION },
-                    outcome: OracleOutcome::Accept,
-                },
-                InterpretedStatus::Reject => OracleResult::Proven {
-                    identity: OracleIdentity { executable, version, invocation: ORACLE_INVOCATION },
-                    outcome: OracleOutcome::Reject,
-                },
-                InterpretedStatus::NotProven(reason) => OracleResult::NotProven { reason },
-            }
-        }
-        Err(error) => OracleResult::NotProven { reason: format!("spawning oracle: {error}") },
-    }
+    let result = match output {
+        Ok(status) => match interpret_oracle_status(status.success(), status.code()) {
+            InterpretedStatus::Accept => OracleResult::Proven {
+                identity: OracleIdentity { executable, version, invocation: ORACLE_INVOCATION },
+                outcome: OracleOutcome::Accept,
+            },
+            InterpretedStatus::Reject => OracleResult::Proven {
+                identity: OracleIdentity { executable, version, invocation: ORACLE_INVOCATION },
+                outcome: OracleOutcome::Reject,
+            },
+            InterpretedStatus::NotProven(reason) => OracleResult::NotProven { reason },
+        },
+        Err(reason) => OracleResult::NotProven { reason },
+    };
+    close_tempdir(temp_dir, result)
 }
 
 pub fn check_expectation(source: &str, expected: OracleExpectation) -> Result<(), String> {
@@ -112,27 +105,15 @@ pub fn check_expectation(source: &str, expected: OracleExpectation) -> Result<()
     }
 }
 
-/// GNU coreutils `timeout` statuses that are instrument failures, not `perl -c` rejection.
-///
-/// `timeout --signal=KILL` documents 137 (128+SIGKILL), not 124. 124 is the default TERM
-/// watchdog. 125–127 are timeout-itself / invoke / not-found failures.
+/// A direct Perl child owns every ordinary exit status.  Only a missing status
+/// or a native status outside the portable exit-code range is NOT_PROVEN.
 fn interpret_oracle_status(success: bool, code: Option<i32>) -> InterpretedStatus {
     if success {
         return InterpretedStatus::Accept;
     }
     match code {
-        Some(124) => InterpretedStatus::NotProven(format!(
-            "oracle timed out after {ORACLE_TIMEOUT:?} (timeout status 124)"
-        )),
-        Some(125) => InterpretedStatus::NotProven("timeout itself failed (status 125)".to_string()),
-        Some(126) => InterpretedStatus::NotProven(
-            "oracle command found but could not be invoked (status 126)".to_string(),
-        ),
-        Some(127) => InterpretedStatus::NotProven(
-            "oracle command could not be found (status 127)".to_string(),
-        ),
-        Some(137) => InterpretedStatus::NotProven(format!(
-            "oracle timed out after {ORACLE_TIMEOUT:?} (timeout --signal=KILL status 137)"
+        Some(code) if !(1..=255).contains(&code) => InterpretedStatus::NotProven(format!(
+            "oracle process exited with abnormal status {code}"
         )),
         Some(_) => InterpretedStatus::Reject,
         None => InterpretedStatus::NotProven(
@@ -174,17 +155,20 @@ fn resolve_perl() -> Result<PathBuf, String> {
     which("perl")
 }
 
-fn resolve_timeout() -> Result<PathBuf, String> {
-    which("timeout")
-}
-
 fn which(name: &str) -> Result<PathBuf, String> {
-    let path = std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin".to_string());
-    for dir in path.split(':') {
-        if dir.is_empty() {
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    for dir in std::env::split_paths(&path) {
+        if dir.as_os_str().is_empty() {
             continue;
         }
-        let candidate = PathBuf::from(dir).join(name);
+        #[cfg(windows)]
+        if Path::new(name).extension().is_none() {
+            let candidate = dir.join(format!("{name}.exe"));
+            if candidate.is_file() {
+                return Ok(candidate);
+            }
+        }
+        let candidate = dir.join(name);
         if candidate.is_file() {
             return Ok(candidate);
         }
@@ -193,15 +177,78 @@ fn which(name: &str) -> Result<PathBuf, String> {
 }
 
 fn read_version(perl: &Path) -> Result<String, String> {
-    let output = Command::new(perl)
-        .args(["-e", "print $]"])
-        .env("LC_ALL", "C")
-        .output()
-        .map_err(|error| format!("reading perl version: {error}"))?;
-    if !output.status.success() {
-        return Err("perl version probe failed".to_string());
+    let temp_dir = tempfile_dir()?;
+    let result = (|| {
+        let version_path = temp_dir.path().join("perl_version.txt");
+        let stdout = File::create(&version_path)
+            .map_err(|error| format!("creating version output: {error}"))?;
+        let mut command = Command::new(perl);
+        configure_environment(&mut command);
+        let status = command
+            .args(["-e", "print $]"])
+            .stdin(Stdio::null())
+            .stdout(stdout)
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|error| format!("spawning perl version probe: {error}"))
+            .and_then(wait_bounded)?;
+        if !status.success() {
+            return Err("perl version probe failed".to_string());
+        }
+        let file = File::open(version_path)
+            .map_err(|error| format!("opening perl version output: {error}"))?;
+        let mut bytes = Vec::new();
+        file.take(129)
+            .read_to_end(&mut bytes)
+            .map_err(|error| format!("reading perl version output: {error}"))?;
+        parse_version_output(&bytes)
+    })();
+    match temp_dir.close() {
+        Ok(()) => result,
+        Err(error) => Err(format!("{result:?}; cleaning version probe tempfile: {error}")),
     }
-    let raw = String::from_utf8_lossy(&output.stdout).trim().to_string();
+}
+
+fn configure_environment(command: &mut Command) {
+    command
+        .env_clear()
+        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+        .env("LC_ALL", "C");
+    // Windows runtime libraries can need SystemRoot even for an isolated probe.
+    #[cfg(windows)]
+    if let Some(system_root) = std::env::var_os("SystemRoot") {
+        command.env("SystemRoot", system_root);
+    }
+}
+
+fn wait_bounded(mut child: Child) -> Result<ExitStatus, String> {
+    let deadline = Instant::now() + ORACLE_TIMEOUT;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return Ok(status),
+            Ok(None) => {}
+            Err(error) => {
+                let kill = child.kill();
+                let reap = child.wait();
+                return Err(format!("waiting for oracle: {error}; kill={kill:?}, reap={reap:?}"));
+            }
+        }
+        if Instant::now() >= deadline {
+            let kill_result = child.kill();
+            let wait_result = child.wait();
+            return Err(format!(
+                "oracle timed out after {ORACLE_TIMEOUT:?}; kill={kill_result:?}, reap={wait_result:?}"
+            ));
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+fn parse_version_output(bytes: &[u8]) -> Result<String, String> {
+    if bytes.len() > 128 {
+        return Err("perl version output exceeded 128 bytes".to_string());
+    }
+    let raw = String::from_utf8_lossy(bytes).trim().to_string();
     Ok(dotted_perl_version(&raw).unwrap_or(raw))
 }
 
@@ -214,25 +261,65 @@ fn dotted_perl_version(raw: &str) -> Option<String> {
     Some(format!("{major}.{minor}.{patch}"))
 }
 
-fn tempfile_dir() -> Result<PathBuf, String> {
-    let unique = std::env::temp_dir().join("quote-like-lexical-oracle").join(format!(
-        "{}-{}",
-        std::process::id(),
-        TEMP_COUNTER.fetch_add(1, Ordering::Relaxed)
-    ));
-    fs::create_dir_all(&unique).map_err(|error| format!("creating oracle row dir: {error}"))?;
-    Ok(unique)
+fn tempfile_dir() -> Result<tempfile::TempDir, String> {
+    tempfile::Builder::new()
+        .prefix("quote-like-lexical-oracle-")
+        .tempdir()
+        .map_err(|error| format!("creating oracle row dir: {error}"))
+}
+
+fn close_tempdir(temp_dir: tempfile::TempDir, result: OracleResult) -> OracleResult {
+    match temp_dir.close() {
+        Ok(()) => result,
+        Err(error) => cleanup_failed(result, error.to_string()),
+    }
+}
+
+fn cleanup_failed(result: OracleResult, error: String) -> OracleResult {
+    OracleResult::NotProven {
+        reason: format!("{result:?}; cleaning oracle tempfile failed: {error}"),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
         InterpretedStatus, OracleExpectation, OracleIdentity, OracleOutcome, OracleResult,
-        assert_oracle_result, dotted_perl_version, interpret_oracle_status,
+        assert_oracle_result, cleanup_failed, dotted_perl_version, interpret_oracle_status,
+        parse_version_output, resolve_perl, wait_bounded, which,
     };
     use std::path::PathBuf;
+    use std::process::Command;
 
     type R = Result<(), String>;
+
+    #[cfg(windows)]
+    #[test]
+    fn isolated_environment_preserves_windows_system_root() -> R {
+        let expected = std::env::var_os("SystemRoot").ok_or("SystemRoot unavailable")?;
+        let mut command = Command::new("perl");
+        super::configure_environment(&mut command);
+        let actual = command.get_envs().find_map(|(key, value)| {
+            key.to_string_lossy().eq_ignore_ascii_case("SystemRoot").then_some(value)
+        });
+        if actual != Some(Some(expected.as_os_str())) {
+            return Err("isolated probe lost Windows SystemRoot".to_string());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn owned_tempdir_is_removed_and_primary_failure_preserved() -> R {
+        let temp_dir = super::tempfile_dir()?;
+        let path = temp_dir.path().to_path_buf();
+        std::fs::write(path.join("probe.pl"), "1;").map_err(|error| error.to_string())?;
+        let expected = OracleResult::NotProven { reason: "spawn failed".to_string() };
+        let result = super::close_tempdir(temp_dir, expected.clone());
+        if result != expected || path.exists() {
+            return Err(format!("cleanup changed failure or retained directory: {result:?}"));
+        }
+        Ok(())
+    }
 
     #[test]
     fn dotted_version_maps_perl_revision() {
@@ -245,33 +332,14 @@ mod tests {
     }
 
     #[test]
-    fn gnu_timeout_kill_status_is_not_proven_not_reject() -> R {
-        match interpret_oracle_status(false, Some(137)) {
-            InterpretedStatus::NotProven(reason) => {
-                assert!(reason.contains("137"), "{reason}");
-                assert!(reason.contains("KILL") || reason.contains("timed out"), "{reason}");
-                Ok(())
-            }
-            other => Err(format!("expected NOT_PROVEN for timeout --signal=KILL, got {other:?}")),
-        }
-    }
-
-    #[test]
-    fn gnu_timeout_term_status_is_not_proven() -> R {
-        match interpret_oracle_status(false, Some(124)) {
-            InterpretedStatus::NotProven(reason) => {
-                assert!(reason.contains("124"), "{reason}");
-                Ok(())
-            }
-            other => Err(format!("expected NOT_PROVEN for timeout status 124, got {other:?}")),
-        }
-    }
-
-    #[test]
     fn perl_nonzero_compile_status_is_reject() -> R {
-        match interpret_oracle_status(false, Some(255)) {
-            InterpretedStatus::Reject => {}
-            other => return Err(format!("expected Reject for perl -c status 255, got {other:?}")),
+        for code in [1, 124, 125, 126, 127, 137, 255] {
+            match interpret_oracle_status(false, Some(code)) {
+                InterpretedStatus::Reject => {}
+                other => {
+                    return Err(format!("expected Reject for Perl status {code}, got {other:?}"));
+                }
+            }
         }
         match interpret_oracle_status(true, Some(0)) {
             InterpretedStatus::Accept => Ok(()),
@@ -280,18 +348,73 @@ mod tests {
     }
 
     #[test]
-    fn timeout_instrument_failures_are_not_proven() -> R {
-        for code in [125, 126, 127] {
-            match interpret_oracle_status(false, Some(code)) {
-                InterpretedStatus::NotProven(reason) => {
-                    assert!(reason.contains(&code.to_string()), "{reason}");
-                }
-                other => {
-                    return Err(format!(
-                        "expected NOT_PROVEN for timeout status {code}, got {other:?}"
-                    ));
-                }
+    fn direct_perl_exit_status_is_reject() -> R {
+        match super::compile_source("BEGIN { exit 124 }\n") {
+            OracleResult::Proven { outcome: OracleOutcome::Reject, .. } => Ok(()),
+            other => Err(format!("direct Perl status 124 was not proven Reject: {other:?}")),
+        }
+    }
+
+    #[test]
+    fn missing_executable_is_not_found() -> R {
+        let missing = format!("perl-quote-oracle-missing-{}", std::process::id());
+        match which(&missing) {
+            Err(reason) if reason.contains("not available on PATH") => Ok(()),
+            other => Err(format!("expected missing executable refusal, got {other:?}")),
+        }
+    }
+
+    #[test]
+    fn direct_timeout_reaps_owned_perl_child() -> R {
+        let perl =
+            resolve_perl().map_err(|error| format!("timeout fixture requires Perl: {error}"))?;
+        let child = Command::new(perl)
+            .args(["-e", "sleep 5"])
+            .spawn()
+            .map_err(|error| format!("spawning timeout fixture: {error}"))?;
+        match wait_bounded(child) {
+            Err(reason) if reason.contains("timed out") && reason.contains("reap=Ok") => Ok(()),
+            other => Err(format!("expected bounded timeout with successful reap, got {other:?}")),
+        }
+    }
+
+    #[test]
+    fn version_output_is_bounded_before_parsing() -> R {
+        let oversized = vec![b'5'; 129];
+        let error = match parse_version_output(&oversized) {
+            Err(error) => error,
+            Ok(version) => return Err(format!("oversized version was accepted: {version}")),
+        };
+        if !error.contains("exceeded 128 bytes") {
+            return Err(format!("unexpected oversized-version error: {error}"));
+        }
+        match parse_version_output(b"5.038002\n") {
+            Ok(version) if version == "5.38.2" => Ok(()),
+            other => Err(format!("valid bounded version was not parsed: {other:?}")),
+        }
+    }
+
+    #[test]
+    fn cleanup_failure_preserves_primary_result() -> R {
+        let result = cleanup_failed(
+            OracleResult::NotProven { reason: "compile child failed".to_string() },
+            "access denied".to_string(),
+        );
+        match result {
+            OracleResult::NotProven { reason }
+                if reason.contains("compile child failed") && reason.contains("access denied") =>
+            {
+                Ok(())
             }
+            other => Err(format!("cleanup failure lost primary result: {other:?}")),
+        }
+    }
+
+    #[test]
+    fn missing_or_abnormal_status_is_not_proven() -> R {
+        match interpret_oracle_status(false, Some(-1_073_741_819)) {
+            InterpretedStatus::NotProven(reason) if reason.contains("abnormal status") => {}
+            other => return Err(format!("expected abnormal status NOT_PROVEN, got {other:?}")),
         }
         match interpret_oracle_status(false, None) {
             InterpretedStatus::NotProven(_) => Ok(()),
@@ -316,14 +439,16 @@ mod tests {
     #[test]
     fn check_expectation_propagates_timeout_not_proven_for_compile_reject_rows() -> R {
         let result = OracleResult::NotProven {
-            reason: "oracle timed out after 2s (timeout --signal=KILL status 137)".to_string(),
+            reason: "oracle timed out after 2s; kill=Ok, reap=Ok".to_string(),
         };
         let error = match assert_oracle_result(result, OracleExpectation::CompileReject) {
             Err(error) => error,
             Ok(()) => return Err("timed-out CompileReject must not look proven".to_string()),
         };
         assert!(error.contains("NOT_PROVEN"), "{error}");
-        assert!(error.contains("137"), "{error}");
+        if !error.contains("timed out") {
+            return Err(format!("timeout reason was lost: {error}"));
+        }
         Ok(())
     }
 
@@ -332,7 +457,7 @@ mod tests {
         let identity = OracleIdentity {
             executable: PathBuf::from("/usr/bin/perl"),
             version: "5.38.2".to_string(),
-            invocation: "timeout --signal=KILL 2 env -i PATH=$PATH LC_ALL=C perl -c <tempfile>",
+            invocation: "direct perl -c child with a 2s deadline; env_clear with preserved PATH + LC_ALL=C",
         };
         match assert_oracle_result(
             OracleResult::Proven { identity: identity.clone(), outcome: OracleOutcome::Accept },
