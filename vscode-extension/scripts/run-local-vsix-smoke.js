@@ -9,6 +9,7 @@ const { spawnSync } = require('child_process');
 const root = path.resolve(__dirname, '..');
 const repoRoot = path.resolve(root, '..');
 const serverPath = process.env.PERL_LSP_FIRST_HOUR_SERVER_PATH;
+const dapPath = process.env.PERL_LSP_DAP_PATH;
 const serverSourceRevision = (process.env.PERL_LSP_SERVER_SOURCE_SHA || '').trim();
 
 const npmCommand = process.platform === 'win32' ? 'npm.cmd' : 'npm';
@@ -360,43 +361,68 @@ function bundleTargetForPlatform(platform = process.platform, arch = process.arc
   };
 }
 
-function stageServerForPackage(serverPath, extensionRoot = root) {
+function stageServerForPackage(serverPath, extensionRoot = root, dapSource) {
   const { directory, binaryName } = bundleTargetForPlatform();
   const binRoot = path.join(extensionRoot, 'bin');
   const platformRoot = path.join(binRoot, directory);
-  const destination = path.join(platformRoot, binaryName);
-  const existing = fs.existsSync(destination) ? fs.lstatSync(destination) : null;
-  if (existing && (!existing.isFile() || existing.isSymbolicLink())) {
-    throw new Error(`Refusing to replace non-regular packaged server path: ${destination}`);
-  }
-  const previous = existing ? { bytes: fs.readFileSync(destination), mode: existing.mode } : null;
   const createdBinRoot = !fs.existsSync(binRoot);
   const createdPlatformRoot = !fs.existsSync(platformRoot);
+  const staged = [];
 
   const restore = () => {
-    if (previous) {
-      fs.writeFileSync(destination, previous.bytes);
-      fs.chmodSync(destination, previous.mode);
-    } else {
-      fs.rmSync(destination, { force: true });
+    const errors = [];
+    for (const { destination, previous } of [...staged].reverse()) {
+      try {
+        if (previous) {
+          fs.writeFileSync(destination, previous.bytes);
+          fs.chmodSync(destination, previous.mode);
+        } else {
+          fs.rmSync(destination, { force: true });
+        }
+      } catch (error) {
+        errors.push(error);
+      }
     }
-    if (
-      createdPlatformRoot &&
-      fs.existsSync(platformRoot) &&
-      fs.readdirSync(platformRoot).length === 0
-    ) {
-      fs.rmSync(platformRoot, { recursive: true, force: true });
+    try {
+      if (
+        createdPlatformRoot &&
+        fs.existsSync(platformRoot) &&
+        fs.readdirSync(platformRoot).length === 0
+      ) {
+        fs.rmSync(platformRoot, { recursive: true, force: true });
+      }
+      if (createdBinRoot && fs.existsSync(binRoot) && fs.readdirSync(binRoot).length === 0) {
+        fs.rmSync(binRoot, { recursive: true, force: true });
+      }
+    } catch (error) {
+      errors.push(error);
     }
-    if (createdBinRoot && fs.existsSync(binRoot) && fs.readdirSync(binRoot).length === 0) {
-      fs.rmSync(binRoot, { recursive: true, force: true });
+    if (errors.length > 0) {
+      throw new AggregateError(errors, 'failed to restore staged VSIX binaries');
     }
   };
 
   try {
     fs.mkdirSync(platformRoot, { recursive: true });
-    fs.copyFileSync(serverPath, destination);
-    if (process.platform !== 'win32') {
-      fs.chmodSync(destination, 0o755);
+    const binaries = [{ source: serverPath, name: binaryName }];
+    if (dapSource) {
+      binaries.push({
+        source: dapSource,
+        name: process.platform === 'win32' ? 'perl-dap.exe' : 'perl-dap',
+      });
+    }
+    for (const binary of binaries) {
+      const destination = path.join(platformRoot, binary.name);
+      const existing = fs.lstatSync(destination, { throwIfNoEntry: false });
+      if (existing && (!existing.isFile() || existing.isSymbolicLink())) {
+        throw new Error(`Refusing to replace non-regular packaged binary path: ${destination}`);
+      }
+      staged.push({
+        destination,
+        previous: existing ? { bytes: fs.readFileSync(destination), mode: existing.mode } : null,
+      });
+      fs.copyFileSync(binary.source, destination);
+      if (process.platform !== 'win32') fs.chmodSync(destination, 0o755);
     }
   } catch (error) {
     try {
@@ -2843,7 +2869,7 @@ function main() {
 
   const runStageBody = () => {
     try {
-      restoreStagedServer = stageServerForPackage(serverPath);
+      restoreStagedServer = stageServerForPackage(serverPath, root, dapPath);
       /** @type {NodeJS.ProcessEnv} */
       const packageEnv = {
         ...process.env,
