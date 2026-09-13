@@ -762,6 +762,11 @@ export class BinaryDownloader {
    * "Set GITHUB_TOKEN" is wrong advice for a user who already set one and had
    * it withheld because certificate validation is off (#15493): the setting to
    * change is `http.proxyStrictSSL`, not the environment.
+   *
+   * The remedy names the release check rather than the failing request. A 403
+   * can also come from the artifact download, which never carries credentials,
+   * and the withheld-credential statement stays true either way: the release
+   * check really did run unauthenticated.
    */
   private rateLimitRemedy(): string {
     const strictTls = vscode.workspace
@@ -775,8 +780,8 @@ export class BinaryDownloader {
 
     if (disposition === 'withheld_unverified_tls') {
       return (
-        'Your GitHub token was not sent because "http.proxyStrictSSL" is disabled, which turns off ' +
-        'certificate validation; re-enable it so the token can be used over a verified connection.'
+        'The release check ran without your GitHub token because "http.proxyStrictSSL" is disabled, ' +
+        'which turns off certificate validation; re-enable it so the token can be used over a verified connection.'
       );
     }
 
