@@ -3,7 +3,13 @@ use std::collections::BTreeSet;
 use color_eyre::eyre::{Result, bail, eyre};
 use serde_json::Value;
 
-use super::*;
+use super::concept_id_set;
+use super::constants::{
+    REQUIRED_AMBIGUOUS_TERMS, REQUIRED_AXES, REQUIRED_BOUNDARY_TERMS, REQUIRED_IDENTITIES,
+    REQUIRED_JOURNEYS, REQUIRED_RELATION_IDS, REQUIRED_RELATION_KEYS, REQUIRED_STATES,
+};
+use super::model::{Identity, RelationKind, StateTerm, Vocabulary};
+use super::{SCHEMA_NAME, SCHEMA_VERSION};
 
 impl Vocabulary {
     pub(super) fn validate(&self) -> Result<()> {

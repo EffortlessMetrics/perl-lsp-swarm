@@ -5,7 +5,7 @@ use color_eyre::eyre::{Result, bail, eyre};
 use serde_json::Value;
 use sha2::{Digest as _, Sha256};
 
-use super::*;
+use super::model::Vocabulary;
 
 pub(super) fn semantic_digest(vocabulary: &Vocabulary) -> Result<String> {
     let value = serde_json::to_value(vocabulary)?;

@@ -13,8 +13,9 @@ mod model;
 mod render;
 mod validate;
 
-use constants::*;
-use model::*;
+use model::{
+    ContractFile, IdentityFragment, JourneyFragment, RelationFragment, StateFragment, Vocabulary,
+};
 
 /// Normative contract root. It names the checked data fragments below.
 pub const MANIFEST_RELATIVE_PATH: &str = ".spec/11045-lsp-runtime-vocabulary/contract.v1.json";
