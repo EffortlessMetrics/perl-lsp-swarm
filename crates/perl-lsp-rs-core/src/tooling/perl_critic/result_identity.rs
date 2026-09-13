@@ -15,7 +15,7 @@ use crate::config::CriticEngine;
 use super::NativeCriticProfile;
 
 /// Schema version for [`DiagnosticResultIdentity`] composition.
-pub const DIAGNOSTIC_RESULT_IDENTITY_SCHEMA_VERSION: u16 = 2;
+pub const DIAGNOSTIC_RESULT_IDENTITY_SCHEMA_VERSION: u16 = 3;
 
 /// Source snapshot inputs that affect diagnostic output.
 ///
@@ -62,6 +62,32 @@ pub struct CriticPolicyIdentity {
     include: BTreeSet<String>,
     exclude: BTreeSet<String>,
     legacy_policy_digest: Option<ContentDigest>,
+}
+
+/// Identity of one sealed accepted Critic snapshot.
+///
+/// The configuration authority is the root captured with the snapshot and the
+/// fingerprint is derived from its complete accepted state. Pull transports
+/// use this instead of independently re-encoding raw engine/profile/severity/
+/// filter observations.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AcceptedCriticPolicyIdentity {
+    configuration_authority: WorkspaceRootId,
+    accepted_state_fingerprint: String,
+}
+
+impl AcceptedCriticPolicyIdentity {
+    /// Bind an accepted-state fingerprint to the root authority that issued it.
+    #[must_use]
+    pub fn new(
+        configuration_authority: WorkspaceRootId,
+        accepted_state_fingerprint: impl Into<String>,
+    ) -> Self {
+        Self {
+            configuration_authority,
+            accepted_state_fingerprint: accepted_state_fingerprint.into(),
+        }
+    }
 }
 
 /// Error returned when a policy identity contradicts its engine's requirements.
@@ -163,7 +189,7 @@ impl DiagnosticResultSchemaVersions {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiagnosticResultIdentityInput {
     source: DiagnosticSourceIdentity,
-    policy: CriticPolicyIdentity,
+    policy: AcceptedCriticPolicyIdentity,
     facts: DiagnosticFactIdentity,
     schemas: DiagnosticResultSchemaVersions,
 }
@@ -173,7 +199,7 @@ impl DiagnosticResultIdentityInput {
     #[must_use]
     pub const fn new(
         source: DiagnosticSourceIdentity,
-        policy: CriticPolicyIdentity,
+        policy: AcceptedCriticPolicyIdentity,
         facts: DiagnosticFactIdentity,
         schemas: DiagnosticResultSchemaVersions,
     ) -> Self {
@@ -202,23 +228,7 @@ impl DiagnosticResultIdentityInput {
             "configuration_authority",
             self.policy.configuration_authority.as_wire(),
         );
-        push_u64(&mut canonical, "configuration_generation", self.policy.configuration_generation);
-        push_str(
-            &mut canonical,
-            "critic_engine",
-            match self.policy.engine {
-                CriticEngine::Legacy => "legacy",
-                CriticEngine::Native => "native",
-            },
-        );
-        push_str(&mut canonical, "native_profile", self.policy.profile.as_str());
-        push_u64(&mut canonical, "severity", u64::from(self.policy.severity));
-        push_set(&mut canonical, "include", &self.policy.include);
-        push_set(&mut canonical, "exclude", &self.policy.exclude);
-        match &self.policy.legacy_policy_digest {
-            Some(digest) => push_str(&mut canonical, "legacy_policy_digest", digest.as_wire()),
-            None => push_str(&mut canonical, "legacy_policy_digest", "none"),
-        }
+        push_str(&mut canonical, "accepted_critic_state", &self.policy.accepted_state_fingerprint);
         push_fact_identity(&mut canonical, &self.facts);
         push_u64(&mut canonical, "rule_catalog", u64::from(self.schemas.rule_catalog));
         push_u64(&mut canonical, "alias_catalog", u64::from(self.schemas.alias_catalog));
@@ -272,13 +282,6 @@ fn push_fact_identity(output: &mut String, facts: &DiagnosticFactIdentity) {
     }
 }
 
-fn push_set(output: &mut String, name: &str, values: &BTreeSet<String>) {
-    push_u64(output, name, values.len() as u64);
-    for value in values {
-        push_str(output, "item", value);
-    }
-}
-
 fn push_optional_u64(output: &mut String, name: &str, value: Option<u64>) {
     match value {
         Some(value) => {
@@ -308,13 +311,13 @@ fn push_token(output: &mut String, value: &str) {
 #[cfg(test)]
 mod tests {
     use super::{
-        CriticPolicyIdentity, CriticPolicyIdentityError, DiagnosticFactIdentity,
-        DiagnosticResultIdentityInput, DiagnosticResultSchemaVersions, DiagnosticSourceIdentity,
+        AcceptedCriticPolicyIdentity, CriticPolicyIdentity, CriticPolicyIdentityError,
+        DiagnosticFactIdentity, DiagnosticResultIdentityInput, DiagnosticResultSchemaVersions,
+        DiagnosticSourceIdentity,
     };
     use crate::config::CriticEngine;
     use crate::tooling::perl_critic::NativeCriticProfile;
     use perl_source_identity::{ContentDigest, LogicalSourceId, ProjectId, WorkspaceRootId};
-    use std::collections::BTreeSet;
 
     fn folder(name: &str) -> WorkspaceRootId {
         WorkspaceRootId::from_project_and_root_key(
@@ -331,22 +334,11 @@ mod tests {
         ContentDigest::of_bytes(content.as_bytes())
     }
 
-    fn policy(
+    fn accepted_policy(
         authority: WorkspaceRootId,
-        engine: CriticEngine,
-    ) -> Result<CriticPolicyIdentity, CriticPolicyIdentityError> {
-        let legacy_digest =
-            (engine == CriticEngine::Legacy).then(|| digest_of("legacy profile v1"));
-        CriticPolicyIdentity::new(
-            authority,
-            11,
-            engine,
-            NativeCriticProfile::Recommended,
-            3,
-            vec!["native.testing.require_use_strict".to_string()],
-            vec!["native.security.string_eval".to_string()],
-            legacy_digest,
-        )
+        fingerprint: &str,
+    ) -> AcceptedCriticPolicyIdentity {
+        AcceptedCriticPolicyIdentity::new(authority, fingerprint)
     }
 
     fn baseline() -> DiagnosticResultIdentityInput {
@@ -357,8 +349,7 @@ mod tests {
                 digest_of("source bytes v1"),
                 Some(7),
             ),
-            policy(root.clone(), CriticEngine::Native)
-                .unwrap_or_else(|error| unreachable!("valid native policy: {error}")),
+            accepted_policy(root.clone(), "accepted-state-a"),
             DiagnosticFactIdentity::Live { workspace: folder("workspace-a"), generation: 13 },
             DiagnosticResultSchemaVersions::new(28, 1, 1, 1, 1),
         )
@@ -366,7 +357,7 @@ mod tests {
 
     fn baseline_with(
         source: DiagnosticSourceIdentity,
-        policy: CriticPolicyIdentity,
+        policy: AcceptedCriticPolicyIdentity,
         facts: DiagnosticFactIdentity,
         schemas: DiagnosticResultSchemaVersions,
     ) -> DiagnosticResultIdentityInput {
@@ -375,7 +366,7 @@ mod tests {
 
     fn baseline_parts() -> (
         DiagnosticSourceIdentity,
-        CriticPolicyIdentity,
+        AcceptedCriticPolicyIdentity,
         DiagnosticFactIdentity,
         DiagnosticResultSchemaVersions,
     ) {
@@ -401,8 +392,7 @@ mod tests {
                 digest_of("source bytes v2"),
                 Some(7),
             ),
-            policy(root.clone(), CriticEngine::Native)
-                .unwrap_or_else(|error| unreachable!("{error}")),
+            baseline_policy.clone(),
             facts.clone(),
             schemas,
         );
@@ -415,8 +405,7 @@ mod tests {
                 digest_of("source bytes v1"),
                 Some(7),
             ),
-            policy(root.clone(), CriticEngine::Native)
-                .unwrap_or_else(|error| unreachable!("{error}")),
+            baseline_policy.clone(),
             facts.clone(),
             schemas,
         );
@@ -430,8 +419,7 @@ mod tests {
                 digest_of("source bytes v1"),
                 Some(7),
             ),
-            policy(other_root.clone(), CriticEngine::Native)
-                .unwrap_or_else(|error| unreachable!("{error}")),
+            accepted_policy(other_root.clone(), "accepted-state-a"),
             DiagnosticFactIdentity::Live { workspace: other_root, generation: 13 },
             schemas,
         );
@@ -444,51 +432,20 @@ mod tests {
                 digest_of("source bytes v1"),
                 Some(8),
             ),
-            policy(root.clone(), CriticEngine::Native)
-                .unwrap_or_else(|error| unreachable!("{error}")),
+            baseline_policy.clone(),
             facts.clone(),
             schemas,
         );
         assert_ne!(baseline_id, newer_document.compose());
 
-        // Policy fields, one at a time.
-        let mut varied = baseline_policy.clone();
-        varied.severity = 4;
+        // Accepted snapshot root and complete state fingerprint.
+        let varied = accepted_policy(folder("workspace-a"), "accepted-state-b");
         assert_ne!(
             baseline_id,
             baseline_with(source.clone(), varied, facts.clone(), schemas).compose()
         );
 
-        let mut varied = baseline_policy.clone();
-        varied.configuration_generation = 12;
-        assert_ne!(
-            baseline_id,
-            baseline_with(source.clone(), varied, facts.clone(), schemas).compose()
-        );
-
-        let varied = policy(root.clone(), CriticEngine::Legacy)
-            .unwrap_or_else(|error| unreachable!("legacy policy with digest: {error}"));
-        assert_ne!(
-            baseline_id,
-            baseline_with(source.clone(), varied, facts.clone(), schemas).compose()
-        );
-
-        let mut varied = baseline_policy.clone();
-        varied.profile = NativeCriticProfile::Strict;
-        assert_ne!(
-            baseline_id,
-            baseline_with(source.clone(), varied, facts.clone(), schemas).compose()
-        );
-
-        let mut varied = baseline_policy.clone();
-        varied.include = BTreeSet::from(["native.testing.require_prototypes".to_string()]);
-        assert_ne!(
-            baseline_id,
-            baseline_with(source.clone(), varied, facts.clone(), schemas).compose()
-        );
-
-        let mut varied = baseline_policy.clone();
-        varied.exclude = BTreeSet::from(["native.security.eval_string".to_string()]);
+        let varied = accepted_policy(folder("workspace-b"), "accepted-state-a");
         assert_ne!(
             baseline_id,
             baseline_with(source.clone(), varied, facts.clone(), schemas).compose()
@@ -598,61 +555,34 @@ mod tests {
             Some(digest_of("legacy profile B")),
         )
         .unwrap_or_else(|error| unreachable!("{error}"));
-        let facts = DiagnosticFactIdentity::Unavailable;
-        let schemas = DiagnosticResultSchemaVersions::new(28, 1, 1, 1, 1);
-        let source = DiagnosticSourceIdentity::new(
-            document(&root, "lib/Module.pm"),
-            digest_of("source bytes v1"),
-            Some(7),
-        );
-        assert_ne!(
-            baseline_with(source.clone(), legacy_a, facts.clone(), schemas).compose(),
-            baseline_with(source, legacy_b, facts, schemas).compose()
-        );
+        assert_ne!(legacy_a, legacy_b);
     }
 
     #[test]
     fn set_order_and_duplicates_do_not_change_the_id() {
         let root = folder("workspace-a");
-        let source = DiagnosticSourceIdentity::new(
-            document(&root, "lib/Module.pm"),
-            digest_of("source bytes v1"),
-            Some(7),
-        );
-        let first = baseline_with(
-            source.clone(),
-            CriticPolicyIdentity::new(
-                root.clone(),
-                11,
-                CriticEngine::Native,
-                NativeCriticProfile::Recommended,
-                3,
-                vec!["b".to_string(), "a".to_string(), "a".to_string()],
-                vec!["d".to_string(), "c".to_string()],
-                None,
-            )
-            .unwrap_or_else(|error| unreachable!("{error}")),
-            DiagnosticFactIdentity::Unavailable,
-            DiagnosticResultSchemaVersions::new(28, 1, 1, 1, 1),
+        let first = CriticPolicyIdentity::new(
+            root.clone(),
+            11,
+            CriticEngine::Native,
+            NativeCriticProfile::Recommended,
+            3,
+            vec!["b".to_string(), "a".to_string(), "a".to_string()],
+            vec!["d".to_string(), "c".to_string()],
+            None,
         )
-        .compose();
-        let second = baseline_with(
-            source,
-            CriticPolicyIdentity::new(
-                root,
-                11,
-                CriticEngine::Native,
-                NativeCriticProfile::Recommended,
-                3,
-                vec!["a".to_string(), "b".to_string()],
-                vec!["c".to_string(), "d".to_string(), "c".to_string()],
-                None,
-            )
-            .unwrap_or_else(|error| unreachable!("{error}")),
-            DiagnosticFactIdentity::Unavailable,
-            DiagnosticResultSchemaVersions::new(28, 1, 1, 1, 1),
+        .unwrap_or_else(|error| unreachable!("{error}"));
+        let second = CriticPolicyIdentity::new(
+            root,
+            11,
+            CriticEngine::Native,
+            NativeCriticProfile::Recommended,
+            3,
+            vec!["a".to_string(), "b".to_string()],
+            vec!["c".to_string(), "d".to_string(), "c".to_string()],
+            None,
         )
-        .compose();
+        .unwrap_or_else(|error| unreachable!("{error}"));
 
         assert_eq!(first, second);
     }
@@ -667,34 +597,14 @@ mod tests {
         );
         let first = baseline_with(
             source.clone(),
-            CriticPolicyIdentity::new(
-                root.clone(),
-                1,
-                CriticEngine::Legacy,
-                NativeCriticProfile::Recommended,
-                3,
-                vec!["a".to_string(), "bc".to_string()],
-                Vec::new(),
-                Some(digest_of("legacy profile")),
-            )
-            .unwrap_or_else(|error| unreachable!("{error}")),
+            accepted_policy(root.clone(), "a|bc"),
             DiagnosticFactIdentity::Snapshot(digest_of("facts")),
             DiagnosticResultSchemaVersions::new(28, 1, 1, 1, 1),
         )
         .compose();
         let second = baseline_with(
             source,
-            CriticPolicyIdentity::new(
-                root,
-                1,
-                CriticEngine::Legacy,
-                NativeCriticProfile::Recommended,
-                3,
-                vec!["ab".to_string(), "c".to_string()],
-                Vec::new(),
-                Some(digest_of("legacy profile")),
-            )
-            .unwrap_or_else(|error| unreachable!("{error}")),
+            accepted_policy(root, "ab|c"),
             DiagnosticFactIdentity::Snapshot(digest_of("facts")),
             DiagnosticResultSchemaVersions::new(28, 1, 1, 1, 1),
         )
@@ -707,11 +617,11 @@ mod tests {
     fn public_id_is_opaque_collision_resistant_and_fixed_shape() {
         let id = baseline().compose();
 
-        assert!(id.as_str().starts_with("diagnostic-result.v2-sha256:"));
-        assert_eq!(id.as_str().len(), "diagnostic-result.v2-sha256:".len() + 64);
+        assert!(id.as_str().starts_with("diagnostic-result.v3-sha256:"));
+        assert_eq!(id.as_str().len(), "diagnostic-result.v3-sha256:".len() + 64);
         assert!(!id.as_str().contains("workspace-a"));
         assert!(
-            id.as_str().strip_prefix("diagnostic-result.v2-sha256:").is_some_and(|digest| digest
+            id.as_str().strip_prefix("diagnostic-result.v3-sha256:").is_some_and(|digest| digest
                 .chars()
                 .all(|character| character.is_ascii_hexdigit()))
         );
