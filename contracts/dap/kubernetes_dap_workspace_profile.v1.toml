@@ -1,0 +1,258 @@
+schema_version = "kubernetes_dap_workspace_profile.v1"
+contract_id = "kubernetes_dap_workspace_profiles_seed_v1"
+controller_issue = "#10112"
+parent_train = "#10111"
+environment_subject_authority = "#9966"
+path_namespace_authority = "#7667"
+dap_core_authority = "#9415"
+launch_environment_authority = "#9051"
+support_registry_authority = "#7122"
+coverage_scope = "In-workspace Kubernetes DAP subject admission: one environment subject composed with #9966 plus DAP-specific projections, exact project_image and injected_tool identities, and mechanical rejection of unsupported network/service/sidecar/operator topologies."
+claim_boundary = "This contract admits or rejects candidate Kubernetes DAP workspace profiles before any cluster execution work. It creates no manifests, no cluster harness, no DAP behavior, no support verdict, and no sidecar admission. DAP cell rows reference current exact evidence sources; they are not new behavioral proof."
+complete = false
+
+[transport_boundary]
+transport = "stdio"
+stream_owner = "parent"
+tty = false
+shell = false
+network_listener = false
+
+[source_namespace]
+equality = "client == adapter == debuggee"
+canonicalization_authority = "#7667"
+rewrite_authority = "none"
+
+[[admitted_profiles]]
+profile_id = "project_image"
+install_mode = "project_image"
+summary = "The exact project development image already contains perl-dap, the project Perl, declared dependencies, and the source under one workspace namespace; the parent owns stdio and Kubernetes owns isolation and lifecycle outside the adapter."
+required_facts = [
+  "image_digest_and_build_identity",
+  "image_libc_identity",
+  "adapter_binary_path_version_hash_target",
+  "project_perl_path_version_environment",
+  "exact_workspace_root_and_source_paths",
+  "non_root_security_resource_cleanup",
+  "no_network_listener",
+]
+
+[[admitted_profiles]]
+profile_id = "injected_tool"
+install_mode = "injected_tool"
+summary = "An init container copies one exact verified adapter artifact into an ephemeral shared tool volume mounted read-only into the project workspace container; the adapter executes with the project container's own Perl and dependencies, never the init image environment."
+required_facts = [
+  "injection_source_artifact_digest_and_build_revision",
+  "injected_artifact_libc_identity",
+  "copy_and_post_copy_digest_verification",
+  "executable_mode",
+  "host_container_os_libc_architecture_loader_compatibility",
+  "tool_volume_ownership_and_read_only_mount",
+  "project_container_perl_authority_not_init_image_perl",
+]
+
+# ---------------------------------------------------------------------------
+# Rejected topology registry. Each row is mechanically enforced by
+# `cargo run -p xtask --bin kubernetes-dap-profiles -- --check`; a negative
+# fixture must exist for every registered reason code.
+# ---------------------------------------------------------------------------
+
+[[rejected_topologies]]
+topology_id = "standalone_perl_dap_deployment"
+reason_code = "standalone_deployment_forbidden"
+boundary = "A standalone perl-dap Deployment is not an in-workspace subject: the adapter would own lifecycle outside the project workspace container."
+
+[[rejected_topologies]]
+topology_id = "service_ingress_loadbalancer_nodeport"
+reason_code = "service_exposure_forbidden"
+boundary = "No Service, Ingress, LoadBalancer, or NodePort may expose the adapter; DAP transport is parent-owned stdio only."
+
+[[rejected_topologies]]
+topology_id = "ambient_tcp_or_wildcard_listener"
+reason_code = "network_listener_forbidden"
+boundary = "The adapter and debuggee create no ambient TCP socket and no 0.0.0.0 listener for DAP."
+
+[[rejected_topologies]]
+topology_id = "shared_multi_tenant_adapter"
+reason_code = "shared_multi_tenant_adapter_forbidden"
+boundary = "One adapter process serves exactly one dedicated workspace subject; multi-tenant sharing is not admitted."
+
+[[rejected_topologies]]
+topology_id = "sidecar_other_filesystem_or_perl"
+reason_code = "sidecar_environment_mismatch"
+boundary = "An adapter sidecar sharing only a pod is not admitted; identical source and project-Perl parity would have to be proven separately and is out of scope here."
+
+[[rejected_topologies]]
+topology_id = "editor_path_translated_to_workspace"
+reason_code = "editor_path_translation_forbidden"
+boundary = "Local editor paths may not be opportunistically translated to /workspace or any other container path; no Kubernetes path-rewrite table exists."
+
+[[rejected_topologies]]
+topology_id = "process_id_attach_into_pod_process"
+reason_code = "attach_injection_unsupported"
+boundary = "processId attach or injection into an arbitrary pod process is not an admitted cell and cannot appear in an admissible profile."
+
+[[rejected_topologies]]
+topology_id = "adapter_owned_kubectl_exec_port_forward"
+reason_code = "adapter_owned_cluster_access_forbidden"
+boundary = "perl-dap owns no kubectl, exec, or port-forward authority; the adapter remains an ordinary DAP stdio process."
+
+[[rejected_topologies]]
+topology_id = "kubernetes_api_rbac_serviceaccount_dependency"
+reason_code = "kubernetes_api_dependency_forbidden"
+boundary = "perl-dap depends on no Kubernetes API, RBAC, or ServiceAccount identity; tokens stay absent or unused per the profile."
+
+[[rejected_topologies]]
+topology_id = "operator_crd_controller"
+reason_code = "operator_controller_forbidden"
+boundary = "No operator, CRD, or controller reconciles debugger subjects; admission is static and machine-checked."
+
+[[rejected_topologies]]
+topology_id = "public_image_existence_as_behavior_proof"
+reason_code = "image_identity_not_exact"
+boundary = "Public existence of an image proves nothing; only an exact digest plus build/source identity satisfies a project-environment row."
+
+# ---------------------------------------------------------------------------
+# DAP claim projection. Rows reference current exact evidence sources; they do
+# not name all possible requests as supported and they grant no new proof.
+# ---------------------------------------------------------------------------
+
+[[dap_cells]]
+cell_id = "initialize"
+family = "initial_admitted"
+state = "evidence_backed"
+evidence = ["crates/perl-dap/tests/dap_capability_advertising_tests.rs"]
+
+[[dap_cells]]
+cell_id = "launch"
+family = "initial_admitted"
+state = "evidence_backed"
+evidence = ["crates/perl-dap/tests/config_launch_config_tests.rs", "crates/perl-dap/tests/dap_smoke_e2e.rs"]
+
+[[dap_cells]]
+cell_id = "configurationDone"
+family = "initial_admitted"
+state = "evidence_backed"
+evidence = ["crates/perl-dap/tests/dap_lifecycle_matrix_tests.rs"]
+
+[[dap_cells]]
+cell_id = "source_breakpoint_install_exact_stop"
+family = "initial_admitted"
+state = "evidence_backed"
+evidence = ["crates/perl-dap/tests/dap_breakpoint_matrix_tests.rs", "crates/perl-dap/tests/breakpoint_breakpoint_tests.rs"]
+
+[[dap_cells]]
+cell_id = "threads_stack_source"
+family = "initial_admitted"
+state = "evidence_backed"
+evidence = ["crates/perl-dap/tests/dap_e2e_workflow_tests.rs", "#6684"]
+
+[[dap_cells]]
+cell_id = "bounded_current_frame_scopes_variables"
+family = "initial_admitted"
+state = "evidence_backed"
+evidence = ["crates/perl-dap/tests/dap_scope_filtering_tests.rs", "crates/perl-dap/tests/dap_variables_pagination_tests.rs", "#10563"]
+
+[[dap_cells]]
+cell_id = "one_continue_step"
+family = "initial_admitted"
+state = "evidence_backed"
+evidence = ["crates/perl-dap/tests/dap_step_through_tests.rs"]
+
+[[dap_cells]]
+cell_id = "termination_disconnect_cleanup"
+family = "initial_admitted"
+state = "evidence_backed"
+evidence = ["crates/perl-dap/tests/dap_session_cleanup_e2e.rs"]
+
+[[dap_cells]]
+cell_id = "process_id_attach"
+family = "optional"
+state = "unsupported"
+evidence = []
+
+[[dap_cells]]
+cell_id = "evaluate_repl"
+family = "optional"
+state = "not_proven"
+evidence = []
+
+[[dap_cells]]
+cell_id = "conditional_breakpoints"
+family = "optional"
+state = "not_proven"
+evidence = []
+
+[[dap_cells]]
+cell_id = "logpoints"
+family = "optional"
+state = "not_proven"
+evidence = []
+
+[[dap_cells]]
+cell_id = "exception_breakpoints"
+family = "optional"
+state = "not_proven"
+evidence = []
+
+[[dap_cells]]
+cell_id = "watch_hover"
+family = "optional"
+state = "not_proven"
+evidence = []
+
+[[dap_cells]]
+cell_id = "set_variable"
+family = "optional"
+state = "not_proven"
+evidence = []
+
+[[dap_cells]]
+cell_id = "completions"
+family = "optional"
+state = "unsupported"
+evidence = []
+
+[[security_requirements]]
+requirement_id = "parent_owned_stdio_no_shell_no_tty"
+statement = "stdin/stdout are owned by the parent with no shell and no TTY between parent, adapter, and debuggee."
+
+[[security_requirements]]
+requirement_id = "no_kubernetes_credentials_to_adapter_or_debuggee"
+statement = "No Kubernetes credentials reach the adapter or the debuggee."
+
+[[security_requirements]]
+requirement_id = "service_account_token_absent_or_unused"
+statement = "The projected ServiceAccount token is absent, or mounted and provably unused according to the profile."
+
+[[security_requirements]]
+requirement_id = "no_network_listener_created_for_dap"
+statement = "No network listener is created for DAP by the adapter or the debuggee."
+
+[[security_requirements]]
+requirement_id = "explicit_uid_gid_and_path_ownership"
+statement = "UID/GID, writable paths, and temp/cache/home ownership are declared explicitly."
+
+[[security_requirements]]
+requirement_id = "process_tree_and_pod_cleanup_owner"
+statement = "Both the debuggee process tree and the pod have one named cleanup owner."
+
+[[security_requirements]]
+requirement_id = "secrets_redacted_from_retained_receipts"
+statement = "Secrets and private paths are redacted from retained receipts."
+
+[[security_requirements]]
+requirement_id = "workspace_data_cannot_select_adapter_or_cluster_target"
+statement = "Workspace-controlled data cannot select another adapter binary or a different cluster target."
+
+[[limitations]]
+statement = "No cluster, pod, or debug session is executed by this contract; kind execution, live probes, and manifests that run the adapter remain future work."
+
+[[limitations]]
+statement = "Sidecar topologies are rejected here even when they share a pod; proving identical source and project-Perl parity is a separate claim."
+
+[[limitations]]
+statement = "DAP cell rows are evidence references into current perl-dap proof surfaces; this contract promotes no capability and creates no support row in #7122."
+
+[[limitations]]
+statement = "loader os is declared, not machine-compared against the subject identity"

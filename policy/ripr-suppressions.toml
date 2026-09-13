@@ -3535,3 +3535,25 @@ created = "2026-09-13"
 review_after = "2026-10-13"
 expires = "2026-12-13"
 removal_criteria = "Remove when EffortlessMetrics/ripr#1429 traces declaration owners to the tests that construct them and stops probing base-only deleted code for a head-side test path, or when targeted mutation replaces this advisory path per #1289. Narrow immediately if a receipt reports an executable no_static_path seam in class_model.rs, field_trait.rs or analysis/mod.rs outside the declaration and removed-owner shapes enumerated above."
+
+# -----------------------------------------------------------------------------
+# Kubernetes DAP workspace-profile validator (PR #12643, #10112): declaration-line
+# no_static_path probes on a new xtask bin. The diff-scoped run reported 184
+# no_static_path and 0 reachable_unrevealed, all in this one new file: consts,
+# required-fact/topology tables, serde field declarations, and the file's own
+# #[cfg(test)] include_str! constants. Same declaration-line ripr#1429 class as
+# ripr-suppress-quickorm-api-reference-registry, with the bin-entry tracing limit
+# of ripr-suppress-perl-dap-cli-entry-point.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-kubernetes-dap-profiles-validator"
+kind = "declaration_line_no_static_path"
+paths = ["xtask/src/bin/kubernetes-dap-profiles.rs"]
+classification = ["no_static_path"]
+owner = "proof-lane"
+issue = "EffortlessMetrics/ripr#1429"
+reason = "PR #12643 (#10112) adds xtask/src/bin/kubernetes-dap-profiles.rs, the machine-checked Kubernetes DAP workspace-profile contract validator. The diff-scoped ripr run (workflow run 34732565368) reported 184 no_static_path probes and 0 reachable_unrevealed, every one inside this single new bin: 172 field_construction and 12 call_deletion probes on non-executable declarations — the *_SCHEMA_VERSION and DEFAULT_* consts (lines 26-32), the REQUIRED_TOPOLOGY_CODES / REQUIRED_SECURITY_REQUIREMENTS / REQUIRED_AUTHORITIES / INITIAL_ADMITTED_CELLS / FACT_ENFORCEMENT tables, the serde Deserialize field declarations for the contract, profile, and fixture documents (lines ~285-1166 and 1846-1850), and the test module's own include_str! constants at lines 2385-2395 inside #[cfg(test)] mod tests. ripr cannot trace a static path from a bin target's in-crate #[cfg(test)] tests to a declaration line, the same class as ripr-suppress-quickorm-api-reference-registry (declaration-line probes) and ripr-suppress-perl-dap-cli-entry-point (bin entry point). The behavior these declarations carry is proven, not unproven: 50 inline falsifier tests pin every rejection reason, the fact-enforcement mapping, schema parity, fixture-id binding, and status rendering, and the required generated-status lane runs the validator's own --check over the committed contract and 60 fixtures (2 admitting, 58 rejecting, exactly one positive per admitted install mode). HONEST SCOPE NOTE: the matcher is path-scoped and classification-scoped to no_static_path, so a genuinely unproven declaration added to this file during the window would be masked; reachable_unrevealed is not suppressed, and the same run's guidance pass was degraded (ripr timed out after 600s, guidance receipt incomplete), so the per-probe guidance was fallback-named rather than analyzer-confirmed. Remove when ripr#1429 resolves declaration-line probes, when this validator's logic moves into a library target ripr can trace, or when targeted mutation is scheduled per #1289."
+created = "2026-09-13"
+review_after = "2026-09-20"
+expires = "2026-09-27"
+removal_criteria = "Remove when ripr#1429 resolves declaration-line probes for const/struct-field declarations, or when the validator's logic moves from the bin target into a library target whose in-crate tests ripr can trace; narrow immediately if any reachable_unrevealed finding appears in this file."
