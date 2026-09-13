@@ -187,6 +187,14 @@ const TAUTOLOGY_CHECK_PACK: ProofPack = ProofPack {
     ],
 };
 
+const XTASK_PRODUCT_TOPOLOGY_PACK: ProofPack = ProofPack {
+    id: "xtask-product-topology",
+    commands: &[
+        "cargo test -p xtask --bin product-topology --profile agent --locked -- --nocapture",
+        "cargo test -p xtask --test product_topology_cli --profile agent --locked -- --nocapture",
+    ],
+};
+
 const XTASK_PARSER_TDD_FACADE_GUARD_PACK: ProofPack = ProofPack {
     id: "xtask-parser-tdd-facade-guard",
     commands: &[
@@ -723,6 +731,20 @@ fn route_file(file: &str, route: &mut RouteBuilder) {
         route.add_surface("tautology-check");
         route.add_pack(TAUTOLOGY_CHECK_PACK);
         return route.add_coverage_pack("patch-coverage-tautology-check");
+    }
+
+    // #13491: the staged topology contract is a checker, its CLI proof, and the
+    // policy file that *is* its content. The policy file has to match here
+    // rather than fall through to the generic `policy/` arm below, or editing
+    // the contract itself selects the broad CI-policy pack and never runs the
+    // topology commands.
+    if file == "xtask/src/bin/product-topology.rs"
+        || file == "xtask/tests/product_topology_cli.rs"
+        || file == "policy/product-topology.toml"
+    {
+        route.add_surface("xtask-product-topology");
+        route.add_pack(XTASK_PRODUCT_TOPOLOGY_PACK);
+        return route.add_coverage_pack("patch-coverage-xtask-product-topology");
     }
 
     if file == "xtask/tests/parser_tdd_facade_consumers.rs" {
@@ -1818,6 +1840,32 @@ mod tests {
             receipt.skipped_by_policy.get("patch-coverage-ci-route").map(String::as_str),
             Some(NON_LCOV_COVERAGE_SKIP_REASON)
         );
+        Ok(())
+    }
+
+    /// Each of the three topology files must select the topology surface.
+    /// `policy/product-topology.toml` is the one that can regress silently: it
+    /// also matches the generic `policy/` arm, so if the topology arm is ever
+    /// moved below it, editing the contract's own content would select the
+    /// broad CI-policy pack and never run the topology commands.
+    #[test]
+    fn route_receipt_maps_product_topology_files_to_the_topology_surface() -> Result<()> {
+        for file in [
+            "xtask/src/bin/product-topology.rs",
+            "xtask/tests/product_topology_cli.rs",
+            "policy/product-topology.toml",
+        ] {
+            let receipt = route_receipt("origin/main", "HEAD", vec![file.to_string()])?;
+            assert_eq!(
+                receipt.changed_surfaces,
+                vec!["xtask-product-topology"],
+                "{file} selected the wrong surface"
+            );
+            assert!(
+                proof_pack_ids(&receipt).contains(&"xtask-product-topology"),
+                "{file} did not select the topology proof pack"
+            );
+        }
         Ok(())
     }
 
@@ -3388,6 +3436,7 @@ mod tests {
                 "patch-coverage-completion-core",
                 "patch-coverage-ux-scenario",
                 "patch-coverage-ci-policy",
+                "patch-coverage-xtask-product-topology",
                 "patch-coverage-xtask-parser-tdd-facade-guard",
                 "patch-coverage-ci-route",
                 "patch-coverage-ci-actuals",
