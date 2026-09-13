@@ -94,7 +94,7 @@ rule keeps its number for life so that citations elsewhere stay valid.
 | RL-I10 watch set generation | #8217 | partial | `WorkspaceFolderSetGeneration` tracks folder-set mutation; a watch-set generation distinct from the folder set is #8217 work |
 | RL-I11 observation route plan generation | #11227 | contracted | no type today |
 | RL-I12 observation route generation | #10770 | contracted | no type today |
-| RL-I13 reload subject id | #7893 | partial | `perl-dap` has `LoadedModuleSubject` for its own out-of-scope subject; the workspace reload subject is #7893 work |
+| RL-I13 reload subject id | #7893 | contracted | no workspace reload subject type exists today. The DAP loaded-module subject is a different subject under a different authority (see [Non-authority boundary](#non-authority-boundary)) and does not partially realise this identity |
 | RL-I14 reload operation id | #7893 | partial | `WorkspaceRuntimeOperationId` exists as an opaque caller-scoped id |
 | RL-I15 operation budget and deadline identity | #7893 | contracted | no type today |
 | RL-I16 private source/workspace/config/adapter candidate identity | #8594 | contracted | no type today |
@@ -477,8 +477,12 @@ one of the C7 terminal results. Earned: the terminal result only. Not earned: re
 
 Before: a `vscode-remote`-shaped client URI. Evidence: exact session (#10226), root (#10013), and
 URI projection (#8198) prove `perllsp` executes on the workspace host. Mutation: #11582 mints a
-server-local access context. Terminal: a workspace-local route class is permitted. Earned:
-native observation for that subject. Not earned: generalising to every remote-shaped URI (RL-R32).
+server-local access context. Terminal: the subject stays in the remote-host-local class and that
+class admits a native filesystem backend, because the process is proven co-located. Earned: native
+observation for that subject. Not earned: reclassifying it as workspace-local — co-location permits
+a backend, it does not merge two of the four classes RL-R11 keeps distinct, and workspace-local
+policy does not follow the subject across that boundary. Also not earned: generalising to every
+remote-shaped URI (RL-R32).
 
 ### RL-S16 local process with a remote subject, negative
 
