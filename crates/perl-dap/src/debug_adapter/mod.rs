@@ -463,6 +463,30 @@ impl DebugAdapter {
         debuggee_cwd: &Path,
         session_generation: u64,
     ) -> EngineBreakpointHitOutcome {
+        Self::register_observed_engine_breakpoint_hit_with_digest_reader(
+            breakpoints,
+            source_path,
+            line,
+            workspace_root,
+            debuggee_cwd,
+            session_generation,
+            |path| {
+                std::fs::read(path)
+                    .map(|bytes| ContentDigest::of_bytes(&bytes).to_string())
+                    .unwrap_or_default()
+            },
+        )
+    }
+
+    fn register_observed_engine_breakpoint_hit_with_digest_reader(
+        breakpoints: &crate::breakpoints::BreakpointStore,
+        source_path: &str,
+        line: i64,
+        workspace_root: Option<&Path>,
+        debuggee_cwd: &Path,
+        session_generation: u64,
+        read_digest: impl FnOnce(&str) -> String,
+    ) -> EngineBreakpointHitOutcome {
         let observed = Path::new(source_path);
         let resolved = if observed.is_absolute() {
             observed.to_path_buf()
@@ -480,9 +504,7 @@ impl DebugAdapter {
                 if !breakpoints.has_engine_breakpoint_candidate(path, line, session_generation) {
                     return EngineBreakpointHitOutcome::default();
                 }
-                let digest = std::fs::read(path)
-                    .map(|bytes| ContentDigest::of_bytes(&bytes).to_string())
-                    .unwrap_or_default();
+                let digest = read_digest(path);
                 breakpoints.register_engine_breakpoint_hit(path, line, session_generation, &digest)
             })
             .unwrap_or_default()
@@ -1018,6 +1040,85 @@ mod tests {
             return Err("different source or digest was accepted".into());
         }
         drop(adapter);
+        Ok(())
+    }
+
+    #[test]
+    fn observed_engine_hit_gates_source_digest_reads() -> Result<(), Box<dyn Error>> {
+        let dir = tempfile::tempdir()?;
+        let source = dir.path().join("digest_gate.pl");
+        std::fs::write(&source, "my $x = 1;\n")?;
+        let source_path = source.canonicalize()?;
+        let source_text = source_path.to_str().ok_or("source path is not UTF-8")?;
+        let store = BreakpointStore::new();
+        let args = crate::protocol::SetBreakpointsArguments {
+            source: crate::protocol::Source { path: Some(source_text.to_string()), name: None },
+            breakpoints: Some(vec![crate::protocol::SourceBreakpoint {
+                line: 1,
+                column: None,
+                condition: None,
+                hit_condition: None,
+                log_message: None,
+            }]),
+            source_modified: None,
+        };
+        let response = store.set_breakpoints(&args);
+        let id = response.first().ok_or("missing breakpoint response")?.id;
+        let digest = ContentDigest::of_bytes(&std::fs::read(&source_path)?).to_string();
+        if !store.mark_engine_installed(id, source_text, 1, 7, digest) {
+            return Err("engine installation was not committed".into());
+        }
+
+        let mut reads = 0;
+        let wrong_line = DebugAdapter::register_observed_engine_breakpoint_hit_with_digest_reader(
+            &store,
+            source_text,
+            2,
+            Some(dir.path()),
+            dir.path(),
+            7,
+            |_| {
+                reads += 1;
+                "unused".to_string()
+            },
+        );
+        if wrong_line.matched || reads != 0 {
+            return Err("wrong-line engine stop performed attribution I/O".into());
+        }
+        let mut reads = 0;
+        let stale_generation =
+            DebugAdapter::register_observed_engine_breakpoint_hit_with_digest_reader(
+                &store,
+                source_text,
+                1,
+                Some(dir.path()),
+                dir.path(),
+                8,
+                |_| {
+                    reads += 1;
+                    "unused".to_string()
+                },
+            );
+        if stale_generation.matched || reads != 0 {
+            return Err("stale-generation engine stop performed attribution I/O".into());
+        }
+        let mut reads = 0;
+        let expected_digest = ContentDigest::of_bytes(&std::fs::read(&source_path)?).to_string();
+        let current = DebugAdapter::register_observed_engine_breakpoint_hit_with_digest_reader(
+            &store,
+            source_text,
+            1,
+            Some(dir.path()),
+            dir.path(),
+            7,
+            |_| {
+                reads += 1;
+                expected_digest.clone()
+            },
+        );
+        if !current.matched || reads != 1 {
+            return Err("current engine stop did not perform one fresh attribution read".into());
+        }
         Ok(())
     }
 
