@@ -926,6 +926,200 @@ Point->new(
     assert_eq!(x_item.insert_text.as_deref(), Some("x => "));
 }
 
+/// A named `:param(external_name)` is the keyword `new` actually accepts, so
+/// the completion must offer the explicit name instead of the field name.
+///
+/// Controlling issue: #13449.
+#[test]
+fn test_object_pad_constructor_param_completion_uses_explicit_param_name() {
+    let code = r#"
+use Object::Pad;
+
+class Point {
+field $x :param(across) = 0;
+field $y :param = 0;
+}
+
+Point->new(
+"#;
+
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index_and_source(&ast, code, None);
+
+    let completions = provider.get_completions(code, code.len());
+
+    let across = must_some(completions.iter().find(|item| item.label == "across"));
+    assert_eq!(across.insert_text.as_deref(), Some("across => "));
+    assert_eq!(across.detail.as_deref(), Some("Object::Pad constructor parameter"));
+
+    assert!(
+        !completions.iter().any(|item| {
+            item.label == "x" && item.detail.as_deref() == Some("Object::Pad constructor parameter")
+        }),
+        "the field name must not be offered as a constructor keyword once :param names one"
+    );
+    assert!(
+        completions.iter().any(|item| item.label == "y"),
+        "a bare :param still completes under the field name"
+    );
+}
+
+/// A literal constructor key must be quoted before it is inserted as Perl.
+///
+/// `=>` auto-quotes only a plain identifier. Verified on perl 5.38.2 that
+/// `C->new(foo-bar => 1)` dies with `Bareword "foo" not allowed while
+/// "strict subs" in use`, `C->new(Foo::bar => 1)` dies under `use strict`,
+/// and `C->new($dyn => 1)` inserts the variable's *value* rather than the key.
+/// Inserting any of them unquoted silently changes which constructor argument
+/// the user is naming.
+///
+/// Controlling issue: #13449.
+#[test]
+fn test_object_pad_constructor_param_completion_quotes_literal_keys() {
+    for (key, expected_insert) in [
+        // A plain identifier is left bare: `=>` already quotes it.
+        ("plain_key", "plain_key => "),
+        ("_leading", "_leading => "),
+        ("mixed123", "mixed123 => "),
+        // Everything else has to be quoted.
+        ("foo-bar", "'foo-bar' => "),
+        ("Foo::bar", "'Foo::bar' => "),
+        ("1bad", "'1bad' => "),
+        ("get()", "'get()' => "),
+    ] {
+        let code = format!(
+            "\nuse Object::Pad;\n\nclass Point {{\nfield $x :param({key}) = 0;\n}}\n\nPoint->new(\n"
+        );
+
+        let mut parser = Parser::new(&code);
+        let ast = must(parser.parse());
+        let provider = CompletionProvider::new_with_index_and_source(&ast, &code, None);
+        let completions = provider.get_completions(&code, code.len());
+
+        let item = must_some(completions.iter().find(|item| {
+            item.label == key && item.detail.as_deref() == Some("Object::Pad constructor parameter")
+        }));
+        assert_eq!(
+            item.insert_text.as_deref(),
+            Some(expected_insert),
+            "`:param({key})` must insert `{expected_insert}`"
+        );
+        assert_eq!(item.label, key, "the label keeps the key as the source wrote it");
+        assert_eq!(item.filter_text.as_deref(), Some(key), "filtering keeps the decoded key");
+    }
+}
+
+/// A literal constructor key stays reachable while the user types the
+/// identifier head of that key, and the edit replaces what was typed.
+///
+/// Offering `foo-bar` only at the bare `->new(` caret would make the key
+/// visible but unusable in practice: a user who starts typing it would lose
+/// it. This pins the reachable window that the quoting work depends on.
+///
+/// Boundary, deliberately not asserted here: once the caret follows the `-`
+/// itself, `analyze_context` rewrites the prefix to `foo->` and answers the
+/// position as a method call, so no key survives the `field_name`
+/// `starts_with` filter. That rule is in `analyze_context` and predates this
+/// change; #15466 owns it, with the measured evidence that widening
+/// `object_pad_constructor_package` instead removes the method and variable
+/// completions that currently answer those carets.
+///
+/// Controlling issue: #13449.
+#[test]
+fn test_object_pad_constructor_param_completion_survives_an_identifier_prefix() {
+    let code = "\nuse Object::Pad;\n\nclass Point {\nfield $x :param(foo-bar) = 0;\nfield $y :param = 0;\n}\n\nPoint->new(foo";
+
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index_and_source(&ast, code, None);
+    let completions = provider.get_completions(code, code.len());
+
+    let item = must_some(completions.iter().find(|item| item.label == "foo-bar"));
+    assert_eq!(
+        item.insert_text.as_deref(),
+        Some("'foo-bar' => "),
+        "the typed identifier head must still reach the quoted literal key"
+    );
+    assert_eq!(
+        item.text_edit_range,
+        Some((code.len() - "foo".len(), code.len())),
+        "accepting the item must replace the typed `foo`, not append after it"
+    );
+    assert!(
+        !completions.iter().any(|item| item.label == "y"),
+        "the typed prefix must still filter out the keys it does not match; got {:?}",
+        completions.iter().map(|item| item.label.as_ref()).collect::<Vec<_>>()
+    );
+}
+
+/// The `=>` auto-quote discriminator: only a leading `_`/ASCII letter
+/// followed by `_`/ASCII-alphanumeric characters keeps the bare form.
+///
+/// Each boundary the analyzer cannot trace needs a named input: a leading
+/// underscore, a full alphanumeric run, and underscores inside the tail.
+/// Anything else (empty, leading digit, hyphens, spaces, sigils, colons,
+/// non-ASCII) must take the quoted form.
+#[test]
+fn test_is_bareword_constructor_key_discriminates_identifier_boundaries() {
+    for (key, expected) in [
+        // Leading-underscore boundary (`first == '_'`).
+        ("_", true),
+        ("_foo", true),
+        ("_9lives", true),
+        // Full alphanumeric-run boundary.
+        ("a", true),
+        ("plain", true),
+        ("abc123", true),
+        ("Z", true),
+        // Underscore inside the tail (`character == '_'`).
+        ("a_b", true),
+        ("foo__bar", true),
+        ("_a_b9", true),
+        // Non-identifier keys take the quoted form.
+        ("", false),
+        ("9abc", false),
+        ("foo-bar", false),
+        ("foo bar", false),
+        ("$dyn", false),
+        ("Foo::bar", false),
+        ("it's", false),
+        ("café", false),
+    ] {
+        assert_eq!(
+            super::is_bareword_constructor_key(key),
+            expected,
+            "`{key}` bareword classification must be `{expected}`"
+        );
+    }
+}
+
+/// Sigils, spaces, apostrophes, and backslashes survive quoting intact.
+///
+/// These keys cannot reach the provider through the current parser, which
+/// collapses internal trivia (#14998), so they are exercised at the rendering
+/// seam directly. The quoting must already be correct for when they can.
+#[test]
+fn test_constructor_key_insertion_escapes_quotes_and_backslashes() {
+    for (key, expected) in [
+        ("$dyn", "'$dyn' => "),
+        ("foo@arr", "'foo@arr' => "),
+        ("external name", "'external name' => "),
+        ("$dyn + 1", "'$dyn + 1' => "),
+        // A single quote must be escaped, or the inserted string terminates early.
+        ("it's", "'it\\'s' => "),
+        // A backslash must be escaped, or it escapes the closing quote.
+        ("back\\slash", "'back\\\\slash' => "),
+        ("trailing\\", "'trailing\\\\' => "),
+    ] {
+        assert_eq!(
+            super::constructor_key_insertion(key),
+            expected,
+            "`{key}` must be inserted as `{expected}`"
+        );
+    }
+}
+
 #[test]
 fn test_object_pad_constructor_param_completion_honors_prefix_and_value_context() {
     let prefix_code = r#"
