@@ -66,10 +66,21 @@ struct QuickOrmWalkCtx {
 }
 
 impl QuickOrmWalkCtx {
+    /// The package whose symbol table a statement at this point would touch.
+    ///
+    /// Perl's implicit starting package is `main`, so a file with no `package`
+    /// statement still has one key rather than a null one.
     fn package(&self) -> &str {
         self.current_package.as_deref().unwrap_or("main")
     }
 
+    /// Whether the current package's one-shot table builder is installed and
+    /// still unused.
+    ///
+    /// Both clauses are load-bearing and neither implies the other. The exact
+    /// match on `ExactTableImport` is deliberate: `UnadmittedSingleImport` and
+    /// `NotProven` must not activate, and `NotProven` in particular must not,
+    /// even though the end-of-walk filter would discard its candidates anyway.
     fn table_builder_active(&self) -> bool {
         let package = self.package();
         self.imports.get(package) == Some(&PackageImportState::ExactTableImport)
@@ -106,6 +117,12 @@ impl QuickOrmWalkCtx {
         self.consumed_builders.insert(package);
     }
 
+    /// Whether candidates already collected for `package` must be retracted.
+    ///
+    /// Only `NotProven` retracts. A package that is absent, or carries one
+    /// unadmitted import, produced nothing to retract — that is a different
+    /// answer from "lost the authority it had", and collapsing the two is the
+    /// single-bit model this containment slice retires.
     fn is_suppressed(&self, package: &str) -> bool {
         self.imports.get(package) == Some(&PackageImportState::NotProven)
     }
@@ -680,6 +697,41 @@ mod tests {
         assert!(
             !consumed.is_suppressed("main"),
             "consuming the builder must not suppress the candidates it emitted"
+        );
+    }
+
+    /// The retroactive filter's predicate, asserted without the parser.
+    ///
+    /// Only `NotProven` retracts candidates. The other three cases — never
+    /// imported, one unadmitted import, and a package this walk never saw —
+    /// emit nothing to retract in the first place, so widening the predicate
+    /// to cover them changes no parsed-source result. They are still distinct
+    /// answers to "did this package lose authority it had", and confusing
+    /// "produced nothing" with "was retracted" is how the previous
+    /// single-bit model went wrong. Pin all four directly.
+    #[test]
+    fn the_walk_context_suppresses_only_a_package_whose_import_history_is_unprovable() {
+        let mut ctx = QuickOrmWalkCtx::default();
+        assert!(
+            !ctx.is_suppressed("main"),
+            "a package with no QuickORM import has nothing to retract"
+        );
+
+        ctx.record_import(false);
+        assert!(
+            !ctx.is_suppressed("main"),
+            "one unadmitted import is not proof that authority was lost"
+        );
+
+        ctx.record_import(true);
+        assert!(ctx.is_suppressed("main"), "a second import leaves the installed names unknown");
+        assert!(!ctx.is_suppressed("Other::Package"), "suppression is per package, not per file");
+
+        let mut exact = QuickOrmWalkCtx::default();
+        exact.record_import(true);
+        assert!(
+            !exact.is_suppressed("main"),
+            "the admitted single-import cohort must survive the filter"
         );
     }
 
