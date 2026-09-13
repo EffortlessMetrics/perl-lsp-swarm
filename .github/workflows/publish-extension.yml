@@ -426,6 +426,11 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          # Residual #12888: this smoke surface holds only `contents: read`
+          # today, so it checked out the dispatch-selected ref by convention.
+          # Pin it to the gate-approved anchor so the invariant survives even
+          # if the job later gains authority.
+          ref: ${{ needs.prepare-vsix.outputs.build_sha }}
 
       - name: Setup VS Code toolchain
         uses: ./.github/actions/setup-vscode-toolchain
@@ -459,6 +464,9 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          # Residual #12888: pin the smoke surface to the gate-approved anchor
+          # (see the Marketplace smoke job).
+          ref: ${{ needs.prepare-vsix.outputs.build_sha }}
 
       - name: Setup VS Code toolchain
         uses: ./.github/actions/setup-vscode-toolchain

@@ -1,3 +1,5 @@
+#![deny(clippy::map_err_ignore)]
+
 //! Frozen parity authority for the historical `perl_kwalitee.v1` evaluator.
 //!
 //! The expected side is committed data, not values derived from the live catalog.
@@ -12,8 +14,8 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 
 use perl_kwalitee::{
-    EvidencePaths, IndicatorStatus, KwaliteeOptions, KwaliteeProfile, KwaliteeReceipt,
-    indicator_ids,
+    EvidencePaths, EvidenceRef, ExternalResult, IndicatorStatus, KwaliteeOptions, KwaliteeProfile,
+    KwaliteeReceipt, indicator_ids,
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -321,9 +323,14 @@ fn sha256(text: &str) -> String {
     encoded
 }
 
-fn canonical_json(value: &str) -> String {
-    let parsed: Value = serde_json::from_str(value).expect("decode parity JSON");
-    format!("{}\n", serde_json::to_string_pretty(&parsed).expect("format parity JSON"))
+/// The frozen JSON byte form: the receipt writer's own representation,
+/// newline-terminated. Comparing these bytes directly (instead of a parsed and
+/// re-serialized canonical form) keeps writer drift — compact output, key
+/// ordering, whitespace — visible to the parity harness.
+fn frozen_json_bytes(receipt: &KwaliteeReceipt) -> String {
+    let mut json = receipt.to_json_pretty().expect("serialize parity receipt");
+    json.push('\n');
+    json
 }
 
 fn read_artifact(artifact: &Artifact) -> String {
@@ -333,8 +340,7 @@ fn read_artifact(artifact: &Artifact) -> String {
 
 fn artifact_matches(actual: &str, artifact: &Artifact) -> bool {
     let expected = read_artifact(artifact);
-    let actual = canonical_json(actual);
-    sha256(&expected) == artifact.sha256 && sha256(&actual) == artifact.sha256 && actual == expected
+    sha256(&expected) == artifact.sha256 && actual == expected
 }
 
 fn assert_artifact(actual: &str, artifact: &Artifact, label: &str) {
@@ -413,7 +419,7 @@ fn frozen_matrix_covers_every_row_profile_and_strictness() {
         }
 
         normalize_receipt(&mut receipt, fixture.path(), &manifest.repo_token);
-        let json = canonical_json(&receipt.to_json_pretty().expect("serialize parity receipt"));
+        let json = frozen_json_bytes(&receipt);
         let markdown = receipt.to_markdown();
         assert_artifact(&json, &case.json, &format!("{} JSON", case.id));
         assert_artifact(&markdown, &case.markdown, &format!("{} Markdown", case.id));
@@ -506,7 +512,7 @@ fn focused_semantic_or_order_drift_is_rejected() {
     let baseline: KwaliteeReceipt =
         serde_json::from_str(&expected).expect("decode committed receipt");
     assert!(
-        artifact_matches(&baseline.to_json_pretty().expect("serialize baseline"), &case.json),
+        artifact_matches(&frozen_json_bytes(&baseline), &case.json),
         "baseline must match before mutation controls run"
     );
 
@@ -542,7 +548,7 @@ fn focused_semantic_or_order_drift_is_rejected() {
     mutations.push(("aggregate score", score));
 
     for (label, mutated) in mutations {
-        let actual = mutated.to_json_pretty().expect("serialize mutation");
+        let actual = frozen_json_bytes(&mutated);
         assert!(
             !artifact_matches(&actual, &case.json),
             "{label} mutation escaped the parity comparator"
@@ -582,4 +588,270 @@ fn pinned_reader_and_migration_reference_are_part_of_the_authority() {
         "rendered migration reference digest drifted"
     );
     assert_eq!(rendered, expected_reference, "migration reference bytes drifted");
+}
+
+/// Statuses of the committed golden receipt for `case_id`, keyed by indicator id.
+fn golden_statuses(manifest: &Manifest, case_id: &str) -> BTreeMap<String, String> {
+    let case = manifest
+        .cases
+        .iter()
+        .find(|case| case.id == case_id)
+        .unwrap_or_else(|| panic!("{case_id} case is part of the frozen matrix"));
+    let expected = read_artifact(&case.json);
+    let golden: KwaliteeReceipt =
+        serde_json::from_str(&expected).unwrap_or_else(|error| panic!("decode golden: {error}"));
+    golden.indicators.into_iter().map(|row| (row.id, row.status.as_str().to_string())).collect()
+}
+
+/// Evaluate `case` against the materialized fixture with an explicit commit and
+/// return the observed statuses keyed by indicator id.
+fn evaluated_statuses(
+    root: &Path,
+    manifest: &Manifest,
+    case: &ParityCase,
+    commit: &str,
+) -> BTreeMap<String, String> {
+    let mut options = options_for(root, manifest, case);
+    options.commit = commit.to_string();
+    let receipt = CurrentLegacySubject.evaluate(&options);
+    receipt.indicators.into_iter().map(|row| (row.id, row.status.as_str().to_string())).collect()
+}
+
+/// The fixture receipts stamp `fixture-source`, so the frozen harness default
+/// (`commit = "unknown"`) never arms [`perl_kwalitee`] receipt freshness. These
+/// cases prove that a matched commit reproduces the frozen statuses, a
+/// mismatched commit downgrades every otherwise-healthy receipt-backed row, and
+/// each downgrade is explained by a stale-receipt evidence note.
+#[test]
+fn receipt_freshness_downgrades_are_visible_to_the_frozen_harness() {
+    let manifest = load_manifest();
+    let fixture = materialize_inputs(&manifest);
+    let pr =
+        manifest.cases.iter().find(|case| case.id == "pr_non_strict").expect("pr_non_strict case");
+    let nightly = manifest
+        .cases
+        .iter()
+        .find(|case| case.id == "nightly_non_strict")
+        .expect("nightly_non_strict case");
+
+    // Matched commit: the fixture receipts are current, so the frozen statuses
+    // must be reproduced exactly — freshness must not over-downgrade.
+    let golden_pr = golden_statuses(&manifest, "pr_non_strict");
+    assert_eq!(
+        evaluated_statuses(fixture.path(), &manifest, pr, "fixture-source"),
+        golden_pr,
+        "a matched receipt commit must not move any frozen status"
+    );
+    let golden_nightly = golden_statuses(&manifest, "nightly_non_strict");
+    assert_eq!(
+        evaluated_statuses(fixture.path(), &manifest, nightly, "fixture-source"),
+        golden_nightly,
+        "a matched receipt commit must not move any frozen nightly status"
+    );
+
+    // The frozen harness default must keep trusting receipts as-is.
+    assert_eq!(
+        evaluated_statuses(fixture.path(), &manifest, pr, "unknown"),
+        golden_pr,
+        "the unknown-commit harness default must not downgrade"
+    );
+
+    // Mismatched commit: every receipt-backed row that was passing must
+    // downgrade to warn; rows that were already unhealthy or not receipt-backed
+    // must keep their frozen status.
+    let stale_pr = evaluated_statuses(fixture.path(), &manifest, pr, "stale-head");
+    assert_eq!(
+        stale_pr["formatter.native_default"], "warn",
+        "a stale otherwise-healthy readiness receipt must downgrade pass to warn"
+    );
+    assert_eq!(
+        stale_pr["quality.no_new_severe_gaps"], "warn",
+        "a stale otherwise-healthy quality-gate receipt must downgrade pass to warn"
+    );
+    for (id, status) in &golden_pr {
+        if id == "formatter.native_default" || id == "quality.no_new_severe_gaps" {
+            continue;
+        }
+        assert_eq!(&stale_pr[id], status, "{id} must not move without a stale receipt");
+    }
+
+    let stale_nightly = evaluated_statuses(fixture.path(), &manifest, nightly, "stale-head");
+    assert_eq!(
+        stale_nightly["formatter.native_default"], "warn",
+        "stale readiness receipt must downgrade pass to warn under nightly too"
+    );
+    assert_eq!(
+        stale_nightly["quality.no_new_severe_gaps"], "warn",
+        "stale quality-gate receipt must downgrade pass to warn under nightly too"
+    );
+    assert_eq!(
+        stale_nightly["formatter.corpus_idempotent"], "warn",
+        "a stale otherwise-healthy corpus receipt must downgrade pass to warn"
+    );
+    assert_eq!(
+        stale_nightly["formatter.perltidy_compat_no_external_only"], "warn",
+        "a stale otherwise-healthy perltidy-compat receipt must downgrade pass to warn"
+    );
+    for (id, status) in &golden_nightly {
+        if matches!(
+            id.as_str(),
+            "formatter.native_default"
+                | "quality.no_new_severe_gaps"
+                | "formatter.corpus_idempotent"
+                | "formatter.perltidy_compat_no_external_only"
+        ) {
+            continue;
+        }
+        assert_eq!(&stale_nightly[id], status, "{id} must not move without a stale receipt");
+    }
+
+    // Each downgrade must be explained by a stale-receipt note naming both
+    // commits, so a namespace move cannot silently drop the propagation.
+    let mut options = options_for(fixture.path(), &manifest, pr);
+    options.commit = "stale-head".to_string();
+    let receipt = CurrentLegacySubject.evaluate(&options);
+    let readiness = receipt
+        .indicators
+        .iter()
+        .find(|row| row.id == "formatter.native_default")
+        .expect("formatter.native_default row");
+    assert!(
+        readiness.evidence.iter().any(|evidence| evidence.kind == "note"
+            && evidence.value == "stale receipt: commit fixture-source != HEAD stale-head"),
+        "readiness downgrade must carry the stale-receipt note: {:?}",
+        readiness.evidence
+    );
+    let quality = receipt
+        .indicators
+        .iter()
+        .find(|row| row.id == "quality.no_new_severe_gaps")
+        .expect("quality.no_new_severe_gaps row");
+    assert!(
+        quality.evidence.iter().any(|evidence| evidence.kind == "note"
+            && evidence.value == "stale receipt: head fixture-source != HEAD stale-head"),
+        "quality-gate downgrade must carry the stale-receipt note: {:?}",
+        quality.evidence
+    );
+
+    let mut nightly_options = options_for(fixture.path(), &manifest, nightly);
+    nightly_options.commit = "stale-head".to_string();
+    let nightly_receipt = CurrentLegacySubject.evaluate(&nightly_options);
+    let corpus = nightly_receipt
+        .indicators
+        .iter()
+        .find(|row| row.id == "formatter.corpus_idempotent")
+        .expect("formatter.corpus_idempotent row");
+    assert_eq!(corpus.status.as_str(), "warn", "nightly corpus receipt must be stale");
+    assert!(
+        corpus.evidence.iter().any(|evidence| evidence.kind == "note"
+            && evidence.value == "stale receipt: commit fixture-source != HEAD stale-head"),
+        "nightly downgrade must carry the stale-receipt note: {:?}",
+        corpus.evidence
+    );
+}
+
+/// The frozen matrix never supplies `dist_dir` or `external_results`, so
+/// critic-parity/docs-status forwarding and the successful release/dist path
+/// were unverified. This case proves supplied external outcomes forward their
+/// status and evidence into the receipt, and that a populated dist directory
+/// moves release rows off the hard no-dist fail.
+#[test]
+fn supplied_external_results_and_dist_path_forward_into_the_receipt() {
+    let manifest = load_manifest();
+    let fixture = materialize_inputs(&manifest);
+    let case = manifest
+        .cases
+        .iter()
+        .find(|case| case.id == "release_non_strict")
+        .expect("release_non_strict case");
+
+    let mut options = options_for(fixture.path(), &manifest, case);
+    options.commit = "fixture-source".to_string();
+    options.dist_dir = Some(fixture.path().join("dist"));
+    let dist_dir = fixture.path().join("dist");
+    fs::create_dir_all(&dist_dir)
+        .unwrap_or_else(|error| panic!("create {}: {error}", dist_dir.display()));
+    let dist_artifact = dist_dir.join("perl-lsp-fixture.txt");
+    fs::write(&dist_artifact, "frozen parity dist artifact\n")
+        .unwrap_or_else(|error| panic!("write {}: {error}", dist_artifact.display()));
+
+    // With a dist directory but no supplied result, release rows must be
+    // unverified (the gate simply has not run) instead of the frozen no-dist
+    // fail; unforwarded externals stay unverified too.
+    let undist = CurrentLegacySubject.evaluate(&options);
+    let mut expected: BTreeMap<String, String> = golden_statuses(&manifest, "release_non_strict");
+    for id in [
+        "release.native_binaries_present",
+        "release.no_external_tooling",
+        "release.checksums_valid",
+    ] {
+        assert_eq!(
+            expected.insert(id.to_string(), "unverified".to_string()),
+            Some("fail".to_string()),
+            "{id} is a frozen no-dist fail"
+        );
+    }
+    assert_eq!(
+        undist
+            .indicators
+            .into_iter()
+            .map(|row| (row.id, row.status.as_str().to_string()))
+            .collect::<BTreeMap<_, _>>(),
+        expected,
+        "a populated dist path must replace the no-dist fail with unverified externals"
+    );
+
+    // Supplying the external outcomes must forward both status and evidence.
+    let supplied: [(&str, &str); 5] = [
+        (
+            "release.native_binaries_present",
+            "fixture: cargo xtask release artifact-check (binaries)",
+        ),
+        (
+            "release.no_external_tooling",
+            "fixture: cargo xtask release artifact-check (external tooling)",
+        ),
+        ("release.checksums_valid", "fixture: cargo xtask release artifact-check (checksums)"),
+        ("critic.run_critic_registry_parity", "fixture: run_critic native/registry parity harness"),
+        ("docs.status_current", "fixture: cargo xtask update-status --check"),
+    ];
+    for (id, command) in &supplied {
+        options
+            .external_results
+            .insert((*id).to_string(), ExternalResult::pass(vec![EvidenceRef::command(*command)]));
+    }
+
+    let receipt = CurrentLegacySubject.evaluate(&options);
+    for (id, command) in &supplied {
+        let row = receipt
+            .indicators
+            .iter()
+            .find(|row| row.id == *id)
+            .unwrap_or_else(|| panic!("{id} row is part of the frozen catalog"));
+        assert_eq!(row.status.as_str(), "pass", "{id} must honor the supplied external pass");
+        assert!(row.remediation.is_none(), "{id}: a passing row must not carry remediation");
+        assert!(
+            row.evidence
+                .iter()
+                .any(|evidence| evidence.kind == "command" && evidence.value == *command),
+            "{id} must forward the supplied command evidence: {:?}",
+            row.evidence
+        );
+    }
+
+    // Every other row must keep its frozen status, and the only non-pass row
+    // left is the fixture's intentional critic readiness warning.
+    let mut expected: BTreeMap<String, String> = golden_statuses(&manifest, "release_non_strict");
+    for (id, _) in &supplied {
+        expected.insert((*id).to_string(), "pass".to_string());
+    }
+    assert_eq!(
+        receipt
+            .indicators
+            .into_iter()
+            .map(|row| (row.id, row.status.as_str().to_string()))
+            .collect::<BTreeMap<_, _>>(),
+        expected,
+        "supplied external results must move exactly the forwarded rows"
+    );
 }

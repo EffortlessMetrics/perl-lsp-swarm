@@ -228,6 +228,9 @@ then resolve — never a raw resolve API):
 
   scripts/reviews/disposition --pr $PR --repo $REPO --thread <id> \\
       --class fixed --commit <sha> --reply 'Disposition: fixed
+
+<concise judgment: what failed, why this boundary owns it, and what changed>
+
 Evidence: <claim-bounded evidence>'
 
 Classes: fixed (--commit) | refuted (--argument) | superseded (--superseded-by) | follow-up (--issue)

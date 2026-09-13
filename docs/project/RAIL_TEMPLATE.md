@@ -5,8 +5,8 @@ A **rail** in perl-lsp is the `@INC`-shaped pattern:
 > **Existing substrate** + **small connector PR(s)** = **user-visible upside**.
 
 Each rail has a roadmap doc following the canonical shape below. Coworker
-agents (codex, factory-droid) and human contributors pick rails from
-[`RAILS_INDEX.md`](RAILS_INDEX.md). A rail's doc is the single source of
+agents (codex, factory-droid) and human contributors pick rails from the
+current issue-owned plan. A rail's doc is the single source of
 truth for: what's already built, what connectors remain, which agent owns
 them, and what "closed" means.
 
@@ -142,7 +142,7 @@ Lane: closed; no further coworker pickup.
 
 > **Substrate (already built)**: Rust 1.95 toolchain + MSRV (#8509);
 > nine 1.94/1.95 lints already cleaned (#8511, #8520-#8523, #8538). See
-> [`docs/development/RUST_1_95_ROLLOUT.md`](../development/RUST_1_95_ROLLOUT.md).
+> [`docs/CLIPPY_POLICY.md`](../CLIPPY_POLICY.md) for current policy authority.
 > **Connector gap**: 11 remaining ladder rows (C-1..RP-2). Each row is a
 > single-purpose PR that removes one workspace clippy allow or tightens
 > one policy.

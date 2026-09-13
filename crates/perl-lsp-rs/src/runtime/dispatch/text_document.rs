@@ -457,30 +457,21 @@ impl LspServer {
         &self,
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
-        // Gate unadvertised feature
-        if !self.advertised_features.lock().folding_range {
-            return Err(crate::protocol::method_not_advertised());
-        }
-        // Test-only fast path (#4628): compiled out of production builds.
+        // Test-only fast path (#4628): compiled out of production builds and
+        // incapable of satisfying production acceptance (#13981). Unadvertised
+        // folding must still refuse; the fallback must not become a second
+        // success path around the handler gate.
         #[cfg(any(test, feature = "test-fallbacks"))]
-        if std::env::var("LSP_TEST_FALLBACKS").is_ok() {
+        if std::env::var("LSP_TEST_FALLBACKS").is_ok()
+            && self.advertised_features.lock().folding_range
+        {
             return match self.on_folding_range(params.clone().unwrap_or(json!({}))) {
                 Ok(res) => Ok(Some(res)),
                 Err(_) => self.handle_folding_range(params),
             };
         }
 
-        // Production path: try real handler first, fall back on
-        // non-cancellation errors.  REQUEST_CANCELLED is preserved so the
-        // client receives the cancellation instead of an empty result (#4628).
-        self.handle_folding_range(params).or_else(|error| {
-            if error.code == crate::protocol::REQUEST_CANCELLED {
-                Err(error)
-            } else {
-                tracing::warn!(error = %error, "foldingRange handler error, using empty-params fallback");
-                self.on_folding_range(json!({})).map(Some)
-            }
-        })
+        self.handle_folding_range(params)
     }
 
     // Formatting
@@ -579,20 +570,18 @@ mod tests {
         );
     }
 
-    /// Static-analysis test: verify that all three production fallback paths
-    /// (definition, references, folding) preserve REQUEST_CANCELLED instead
-    /// of silently swallowing it (#4628).
+    /// Static-analysis test: verify that definition and references production
+    /// fallback paths preserve REQUEST_CANCELLED instead of silently swallowing
+    /// it (#4628). FoldingRange production dispatch is a transparent adapter
+    /// and must not regain an error-to-empty fallback (#13981).
     #[test]
     fn production_fallback_paths_preserve_request_cancelled() {
         let source = include_str!("text_document.rs");
 
         // Find each dispatch method and verify its production path checks
         // for REQUEST_CANCELLED.
-        let methods = [
-            "handle_definition_cancellable_dispatch",
-            "handle_references_cancellable_dispatch",
-            "handle_folding_range_dispatch",
-        ];
+        let methods =
+            ["handle_definition_cancellable_dispatch", "handle_references_cancellable_dispatch"];
 
         for method_name in &methods {
             // Find the method body
@@ -620,6 +609,64 @@ mod tests {
                  — it must check for REQUEST_CANCELLED (#4628)"
             );
         }
+    }
+
+    fn folding_range_dispatch_source(source: &str) -> Result<&str, &'static str> {
+        let start_marker = "fn handle_folding_range_dispatch(";
+        let method_start =
+            source.find(start_marker).ok_or("handle_folding_range_dispatch present")?;
+        let after_start = method_start + start_marker.len();
+        let next_fn = source[after_start..]
+            .find("\n    pub(super) fn ")
+            .map(|offset| after_start + offset)
+            .unwrap_or(source.len());
+        Ok(&source[method_start..next_fn])
+    }
+
+    /// Production foldingRange dispatch must be a transparent adapter over the
+    /// canonical handler. An `.or_else` retry through `on_folding_range(json!({}))`
+    /// flattens invalid, stale, and provider failures into empty success (#13981).
+    #[test]
+    fn production_folding_range_dispatch_does_not_retry_errors_as_empty()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let source = include_str!("text_document.rs");
+        let production_source = source.split("#[cfg(test)]\nmod tests").next().unwrap_or(source);
+        let method_body = folding_range_dispatch_source(production_source)?;
+
+        assert!(
+            method_body.contains("self.handle_folding_range(params)"),
+            "production foldingRange dispatch must call the canonical handler"
+        );
+        assert!(
+            !method_body.contains(".or_else"),
+            "production foldingRange dispatch must not regain an error-to-empty `.or_else` (#13981)\n{method_body}"
+        );
+        assert!(
+            !method_body.contains("on_folding_range(json!({}))"),
+            "production foldingRange dispatch must not replace errors with on_folding_range(json!({{}})) (#13981)\n{method_body}"
+        );
+        assert!(
+            method_body.contains("#[cfg(any(test, feature = \"test-fallbacks\"))]"),
+            "retained LSP_TEST_FALLBACKS path must stay cfg-gated (#13981)"
+        );
+        assert!(
+            method_body.contains("std::env::var(\"LSP_TEST_FALLBACKS\")"),
+            "test-only foldingRange fallback must remain behind LSP_TEST_FALLBACKS"
+        );
+        assert!(
+            method_body.contains("advertised_features.lock().folding_range"),
+            "test-only foldingRange fallback must not run when the feature is unadvertised (#13981)"
+        );
+        let handler_source = include_str!("../language/symbols.rs");
+        let handler_production =
+            handler_source.split("#[cfg(test)]\nmod tests").next().unwrap_or(handler_source);
+        assert!(
+            handler_production.contains(
+                "#[cfg(any(test, feature = \"test-fallbacks\"))]\n    pub(crate) fn on_folding_range("
+            ),
+            "on_folding_range must stay cfg-gated out of production builds (#13981)"
+        );
+        Ok(())
     }
 
     /// Behavioral test: verify that a cancelled definition request returns

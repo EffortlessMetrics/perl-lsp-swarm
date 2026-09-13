@@ -32,28 +32,6 @@ impl<'a> Parser<'a> {
         matches!(kind, Some(TokenKind::Increment) | Some(TokenKind::Decrement))
     }
 
-    fn peek_compound_assign_op(&mut self) -> Option<&'static str> {
-        match self.peek_kind()? {
-            TokenKind::Assign => Some("="),
-            TokenKind::PlusAssign => Some("+="),
-            TokenKind::MinusAssign => Some("-="),
-            TokenKind::StarAssign => Some("*="),
-            TokenKind::SlashAssign => Some("/="),
-            TokenKind::PercentAssign => Some("%="),
-            TokenKind::DotAssign => Some(".="),
-            TokenKind::AndAssign => Some("&="),
-            TokenKind::OrAssign => Some("|="),
-            TokenKind::XorAssign => Some("^="),
-            TokenKind::PowerAssign => Some("**="),
-            TokenKind::LeftShiftAssign => Some("<<="),
-            TokenKind::RightShiftAssign => Some(">>="),
-            TokenKind::LogicalAndAssign => Some("&&="),
-            TokenKind::LogicalOrAssign => Some("||="),
-            TokenKind::DefinedOrAssign => Some("//="),
-            _ => None,
-        }
-    }
-
     #[inline]
     fn is_variable_sigil(kind: Option<TokenKind>) -> bool {
         matches!(

@@ -246,14 +246,25 @@ not require a new full review merely because another commit was pushed.
 
 ## Finding disposition
 
-Before resolving a substantive thread, reply with one supported disposition:
+Before resolving a substantive thread, reply with one supported disposition and a
+concise engineering decision record:
 
 ```text
 Disposition: fixed | refuted | superseded | follow-up
+
+<judgment, architectural reason, and what changed or why no change is warranted>
+
 Evidence: current candidate, focused test or oracle, governing source, or linked follow-up
 ```
 
-Thread resolution is not itself evidence.
+Evaluate the concern and the suggested repair separately. Do not blindly agree and do
+not reflexively defend the candidate. A reviewer can identify a real failure while
+proposing the wrong layer or mechanism; preserve the concern, repair the owning seam,
+and explain why that boundary owns the change. Refute only from current source,
+governing authority, or discriminating evidence.
+
+A bare `fixed`, `done`, `addressed`, generic thanks, labels-only reply, or paraphrase of
+the diff is not a supported disposition. Thread resolution is not itself evidence.
 
 ## Related pull request synthesis
 

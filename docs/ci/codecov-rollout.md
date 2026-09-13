@@ -201,8 +201,8 @@ The lane answers: "Did tests execute this parser/lexer/AST surface, and
 did branch coverage regress beyond the accepted baseline budget?"
 
 It does not answer correctness, completeness, or release readiness — see
-`docs/development/RUST_1_95_ROLLOUT.md` and `docs/project/status/` for the
-relevant evidence lanes.
+[`verification-ladder.md`](verification-ladder.md) and `docs/project/status/`
+for the relevant evidence lanes.
 
 The local branch-coverage source of truth is `.ci/coverage-baseline.txt`.
 Codecov project/patch statuses are informational until stable data is
@@ -383,7 +383,7 @@ or release readiness.
 
 ## References
 
-- `docs/development/RUST_1_95_ROLLOUT.md` — parallel rollout ladder.
+- `verification-ladder.md` — current layered proof ladder.
 - `.ci/coverage-baseline.txt` — source of truth for the local ratchet.
 - `scripts/check-coverage-baseline.sh`, `scripts/update-coverage-baseline.sh` — ratchet tooling.
 - `.github/workflows/ci-nightly.yml::test-coverage` — current coverage lane.

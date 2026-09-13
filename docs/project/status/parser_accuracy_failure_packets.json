@@ -1,8 +1,1142 @@
 {
   "schema_version": 1,
-  "commit": "f87de5c9a",
+  "commit": "db2ac971a",
   "cadence": "pr",
   "generated_by": "cargo xtask metrics parser-accuracy --export-status-receipts",
-  "failure_packet_count": 0,
-  "failure_packets": []
+  "failure_packet_count": 50,
+  "failure_packets": [
+    {
+      "id": "packet-99b51477ff2420ec",
+      "failure_kind": "ast_shape_mismatch",
+      "likely_layer": "ast_projection",
+      "fixture_id": "dynamic_require_boundary",
+      "family": "dynamic_require",
+      "metric": "ast_node_kind_f1",
+      "line": 3,
+      "expected": [
+        "VariableDeclaration line=3 span=\"my $module\" parent=Some(\"Program\")"
+      ],
+      "actual": [
+        "VariableDeclaration line=3 span=\"my $module = \\\"Accuracy::Plugin\\\"\" parent=Some(\"Program\")"
+      ],
+      "actual_nearest": [
+        "VariableDeclaration line=3 span=\"my $module = \\\"Accuracy::Plugin\\\"\" parent=Some(\"Program\")",
+        "String line=3 span=\"\\\"Accuracy::Plugin\\\"\" parent=Some(\"VariableDeclaration\")"
+      ],
+      "source_excerpt": "my $module = \"Accuracy::Plugin\";",
+      "details": "AST node kind matched but span or parent shape differed",
+      "suggested_next_fix": "compare the projected AST span and parent edge with the gold expectation",
+      "suggested_next_pr": "feat(parser-accuracy): tighten AST projection fixture expectations"
+    },
+    {
+      "id": "packet-32c9155f781ced73",
+      "failure_kind": "ast_shape_mismatch",
+      "likely_layer": "ast_projection",
+      "fixture_id": "operator_precedence",
+      "family": "operators",
+      "metric": "ast_node_kind_f1",
+      "line": 3,
+      "expected": [
+        "VariableDeclaration line=3 span=\"my $value\" parent=Some(\"Program\")"
+      ],
+      "actual": [
+        "VariableDeclaration line=3 span=\"my $value = 1 + 2 * 3\" parent=Some(\"Program\")"
+      ],
+      "actual_nearest": [
+        "VariableDeclaration line=3 span=\"my $value = 1 + 2 * 3\" parent=Some(\"Program\")",
+        "Binary line=3 span=\"1 + 2 * 3\" parent=Some(\"VariableDeclaration\")",
+        "Binary line=3 span=\"2 * 3\" parent=Some(\"Binary\")"
+      ],
+      "source_excerpt": "my $value = 1 + 2 * 3;",
+      "details": "AST node kind matched but span or parent shape differed",
+      "suggested_next_fix": "compare the projected AST span and parent edge with the gold expectation",
+      "suggested_next_pr": "feat(parser-accuracy): tighten AST projection fixture expectations"
+    },
+    {
+      "id": "packet-5a7aaa329ca00b72",
+      "failure_kind": "ast_shape_mismatch",
+      "likely_layer": "ast_projection",
+      "fixture_id": "typeglob_alias",
+      "family": "typeglob_alias",
+      "metric": "ast_node_kind_f1",
+      "line": 3,
+      "expected": [
+        "Subroutine line=3 span=\"sub original\" parent=Some(\"Program\")"
+      ],
+      "actual": [
+        "Subroutine line=3 span=\"sub original {\\n    return 1;\\n}\" parent=Some(\"Program\")"
+      ],
+      "actual_nearest": [
+        "Subroutine line=3 span=\"sub original {\\n    return 1;\\n}\" parent=Some(\"Program\")"
+      ],
+      "source_excerpt": "sub original {",
+      "details": "AST node kind matched but span or parent shape differed",
+      "suggested_next_fix": "compare the projected AST span and parent edge with the gold expectation",
+      "suggested_next_pr": "feat(parser-accuracy): tighten AST projection fixture expectations"
+    },
+    {
+      "id": "packet-122df95dfb0595d3",
+      "failure_kind": "ast_shape_mismatch",
+      "likely_layer": "ast_projection",
+      "fixture_id": "generated_accessor",
+      "family": "generated_accessor",
+      "metric": "ast_node_kind_f1",
+      "line": 7,
+      "expected": [
+        "Subroutine line=7 span=\"sub existing\" parent=Some(\"Program\")"
+      ],
+      "actual": [
+        "Subroutine line=7 span=\"sub existing {\\n    return 1;\\n}\" parent=Some(\"Program\")"
+      ],
+      "actual_nearest": [
+        "Subroutine line=7 span=\"sub existing {\\n    return 1;\\n}\" parent=Some(\"Program\")"
+      ],
+      "source_excerpt": "sub existing {",
+      "details": "AST node kind matched but span or parent shape differed",
+      "suggested_next_fix": "compare the projected AST span and parent edge with the gold expectation",
+      "suggested_next_pr": "feat(parser-accuracy): tighten AST projection fixture expectations"
+    },
+    {
+      "id": "packet-be75328dce2f2096",
+      "failure_kind": "ast_shape_mismatch",
+      "likely_layer": "ast_projection",
+      "fixture_id": "generated_accessor",
+      "family": "generated_accessor",
+      "metric": "ast_node_kind_f1",
+      "line": 5,
+      "expected": [
+        "HashLiteral line=5 span=\"is => 'ro'\" parent=None"
+      ],
+      "actual": [
+        "HashLiteral line=5 span=\"(is => 'ro')\" parent=Some(\"FunctionCall\")"
+      ],
+      "actual_nearest": [
+        "FunctionCall line=5 span=\"has name => (is => 'ro')\" parent=Some(\"ExpressionStatement\")",
+        "HashLiteral line=5 span=\"(is => 'ro')\" parent=Some(\"FunctionCall\")",
+        "String line=5 span=\"is\" parent=Some(\"HashLiteral\")",
+        "String line=5 span=\"'ro'\" parent=Some(\"HashLiteral\")"
+      ],
+      "source_excerpt": "has name => (is => 'ro');",
+      "details": "AST node kind matched but span or parent shape differed",
+      "suggested_next_fix": "compare the projected AST span and parent edge with the gold expectation",
+      "suggested_next_pr": "feat(parser-accuracy): tighten AST projection fixture expectations"
+    },
+    {
+      "id": "packet-dbdff58bd0dca62f",
+      "failure_kind": "ast_shape_mismatch",
+      "likely_layer": "ast_projection",
+      "fixture_id": "heuristic_generated_member",
+      "family": "generated_accessor",
+      "metric": "ast_node_kind_f1",
+      "line": 5,
+      "expected": [
+        "HashLiteral line=5 span=\"is => 'ro'\" parent=None"
+      ],
+      "actual": [
+        "HashLiteral line=5 span=\"(is => 'ro')\" parent=Some(\"FunctionCall\")"
+      ],
+      "actual_nearest": [
+        "FunctionCall line=5 span=\"has name => (is => 'ro')\" parent=Some(\"ExpressionStatement\")",
+        "HashLiteral line=5 span=\"(is => 'ro')\" parent=Some(\"FunctionCall\")",
+        "String line=5 span=\"is\" parent=Some(\"HashLiteral\")",
+        "String line=5 span=\"'ro'\" parent=Some(\"HashLiteral\")"
+      ],
+      "source_excerpt": "has name => (is => 'ro');",
+      "details": "AST node kind matched but span or parent shape differed",
+      "suggested_next_fix": "compare the projected AST span and parent edge with the gold expectation",
+      "suggested_next_pr": "feat(parser-accuracy): tighten AST projection fixture expectations"
+    },
+    {
+      "id": "packet-de44026183657df4",
+      "failure_kind": "ast_shape_mismatch",
+      "likely_layer": "ast_projection",
+      "fixture_id": "negative_symbol_regions",
+      "family": "negative_symbol_regions",
+      "metric": "ast_node_kind_f1",
+      "line": 4,
+      "expected": [
+        "VariableDeclaration line=4 span=\"my $text\" parent=Some(\"Program\")"
+      ],
+      "actual": [
+        "VariableDeclaration line=4 span=\"my $text = \\\"sub stringy { return 1 }\\\"\" parent=Some(\"Program\")"
+      ],
+      "actual_nearest": [
+        "VariableDeclaration line=4 span=\"my $text = \\\"sub stringy { return 1 }\\\"\" parent=Some(\"Program\")",
+        "String line=4 span=\"\\\"sub stringy { return 1 }\\\"\" parent=Some(\"VariableDeclaration\")"
+      ],
+      "source_excerpt": "my $text = \"sub stringy { return 1 }\";",
+      "details": "AST node kind matched but span or parent shape differed",
+      "suggested_next_fix": "compare the projected AST span and parent edge with the gold expectation",
+      "suggested_next_pr": "feat(parser-accuracy): tighten AST projection fixture expectations"
+    },
+    {
+      "id": "packet-c810a5e6e14abe27",
+      "failure_kind": "ast_shape_mismatch",
+      "likely_layer": "ast_projection",
+      "fixture_id": "span_coordinates",
+      "family": "span_coordinates",
+      "metric": "ast_node_kind_f1",
+      "line": 2,
+      "expected": [
+        "VariableDeclaration line=2 span=\"my $emoji\" parent=Some(\"Program\")"
+      ],
+      "actual": [
+        "VariableDeclaration line=2 span=\"my $emoji = \\\"😀\\\"\" parent=Some(\"Program\")"
+      ],
+      "actual_nearest": [
+        "VariableDeclaration line=2 span=\"my $emoji = \\\"😀\\\"\" parent=Some(\"Program\")",
+        "String line=2 span=\"\\\"😀\\\"\" parent=Some(\"VariableDeclaration\")"
+      ],
+      "source_excerpt": "my $emoji = \"😀\";",
+      "details": "AST node kind matched but span or parent shape differed",
+      "suggested_next_fix": "compare the projected AST span and parent edge with the gold expectation",
+      "suggested_next_pr": "feat(parser-accuracy): tighten AST projection fixture expectations"
+    },
+    {
+      "id": "packet-27a3c187412a49e8",
+      "failure_kind": "ast_shape_mismatch",
+      "likely_layer": "ast_projection",
+      "fixture_id": "span_coordinates",
+      "family": "span_coordinates",
+      "metric": "ast_node_kind_f1",
+      "line": 3,
+      "expected": [
+        "VariableDeclaration line=3 span=\"my $café\" parent=Some(\"Program\")"
+      ],
+      "actual": [
+        "VariableDeclaration line=3 span=\"my $café = \\\"café\\\"\" parent=Some(\"Program\")"
+      ],
+      "actual_nearest": [
+        "VariableDeclaration line=3 span=\"my $café = \\\"café\\\"\" parent=Some(\"Program\")",
+        "String line=3 span=\"\\\"café\\\"\" parent=Some(\"VariableDeclaration\")"
+      ],
+      "source_excerpt": "my $café = \"café\";",
+      "details": "AST node kind matched but span or parent shape differed",
+      "suggested_next_fix": "compare the projected AST span and parent edge with the gold expectation",
+      "suggested_next_pr": "feat(parser-accuracy): tighten AST projection fixture expectations"
+    },
+    {
+      "id": "packet-a970dbd4f1da583b",
+      "failure_kind": "ast_shape_mismatch",
+      "likely_layer": "ast_projection",
+      "fixture_id": "span_utf8_multibyte",
+      "family": "span_coordinates",
+      "metric": "ast_node_kind_f1",
+      "line": 2,
+      "expected": [
+        "VariableDeclaration line=2 span=\"my $value\" parent=Some(\"Program\")"
+      ],
+      "actual": [
+        "VariableDeclaration line=2 span=\"my $value = \\\"cafeé\\\"\" parent=Some(\"Program\")"
+      ],
+      "actual_nearest": [
+        "VariableDeclaration line=2 span=\"my $value = \\\"cafeé\\\"\" parent=Some(\"Program\")",
+        "String line=2 span=\"\\\"cafeé\\\"\" parent=Some(\"VariableDeclaration\")"
+      ],
+      "source_excerpt": "my $value = \"cafeé\";",
+      "details": "AST node kind matched but span or parent shape differed",
+      "suggested_next_fix": "compare the projected AST span and parent edge with the gold expectation",
+      "suggested_next_pr": "feat(parser-accuracy): tighten AST projection fixture expectations"
+    },
+    {
+      "id": "packet-1220bdb16214a13b",
+      "failure_kind": "ast_shape_mismatch",
+      "likely_layer": "ast_projection",
+      "fixture_id": "span_emoji",
+      "family": "span_coordinates",
+      "metric": "ast_node_kind_f1",
+      "line": 2,
+      "expected": [
+        "VariableDeclaration line=2 span=\"my $value\" parent=Some(\"Program\")"
+      ],
+      "actual": [
+        "VariableDeclaration line=2 span=\"my $value = \\\"😀\\\"\" parent=Some(\"Program\")"
+      ],
+      "actual_nearest": [
+        "VariableDeclaration line=2 span=\"my $value = \\\"😀\\\"\" parent=Some(\"Program\")",
+        "String line=2 span=\"\\\"😀\\\"\" parent=Some(\"VariableDeclaration\")"
+      ],
+      "source_excerpt": "my $value = \"😀\";",
+      "details": "AST node kind matched but span or parent shape differed",
+      "suggested_next_fix": "compare the projected AST span and parent edge with the gold expectation",
+      "suggested_next_pr": "feat(parser-accuracy): tighten AST projection fixture expectations"
+    },
+    {
+      "id": "packet-b31e27ba9b10981d",
+      "failure_kind": "ast_shape_mismatch",
+      "likely_layer": "ast_projection",
+      "fixture_id": "span_crlf",
+      "family": "span_coordinates",
+      "metric": "ast_node_kind_f1",
+      "line": 3,
+      "expected": [
+        "VariableDeclaration line=3 span=\"my $other\" parent=Some(\"Program\")"
+      ],
+      "actual": [
+        "VariableDeclaration line=3 span=\"my $other = \\\"line2\\\"\" parent=Some(\"Program\")"
+      ],
+      "actual_nearest": [
+        "VariableDeclaration line=3 span=\"my $other = \\\"line2\\\"\" parent=Some(\"Program\")",
+        "String line=3 span=\"\\\"line2\\\"\" parent=Some(\"VariableDeclaration\")"
+      ],
+      "source_excerpt": "my $other = \"line2\";",
+      "details": "AST node kind matched but span or parent shape differed",
+      "suggested_next_fix": "compare the projected AST span and parent edge with the gold expectation",
+      "suggested_next_pr": "feat(parser-accuracy): tighten AST projection fixture expectations"
+    },
+    {
+      "id": "packet-47c89e8dcb641bb3",
+      "failure_kind": "ast_shape_mismatch",
+      "likely_layer": "ast_projection",
+      "fixture_id": "span_crlf",
+      "family": "span_coordinates",
+      "metric": "ast_node_kind_f1",
+      "line": 2,
+      "expected": [
+        "VariableDeclaration line=2 span=\"my $value\" parent=Some(\"Program\")"
+      ],
+      "actual": [
+        "VariableDeclaration line=2 span=\"my $value = \\\"line1\\\"\" parent=Some(\"Program\")"
+      ],
+      "actual_nearest": [
+        "VariableDeclaration line=2 span=\"my $value = \\\"line1\\\"\" parent=Some(\"Program\")",
+        "String line=2 span=\"\\\"line1\\\"\" parent=Some(\"VariableDeclaration\")"
+      ],
+      "source_excerpt": "my $value = \"line1\";",
+      "details": "AST node kind matched but span or parent shape differed",
+      "suggested_next_fix": "compare the projected AST span and parent edge with the gold expectation",
+      "suggested_next_pr": "feat(parser-accuracy): tighten AST projection fixture expectations"
+    },
+    {
+      "id": "packet-dfb53684a802fe14",
+      "failure_kind": "ast_shape_mismatch",
+      "likely_layer": "ast_projection",
+      "fixture_id": "span_tabs",
+      "family": "span_coordinates",
+      "metric": "ast_node_kind_f1",
+      "line": 2,
+      "expected": [
+        "VariableDeclaration line=2 span=\"my $value\" parent=Some(\"Program\")"
+      ],
+      "actual": [
+        "VariableDeclaration line=2 span=\"my $value = 1\" parent=Some(\"Program\")"
+      ],
+      "actual_nearest": [
+        "VariableDeclaration line=2 span=\"my $value = 1\" parent=Some(\"Program\")"
+      ],
+      "source_excerpt": "my $value = 1;",
+      "details": "AST node kind matched but span or parent shape differed",
+      "suggested_next_fix": "compare the projected AST span and parent edge with the gold expectation",
+      "suggested_next_pr": "feat(parser-accuracy): tighten AST projection fixture expectations"
+    },
+    {
+      "id": "packet-6ef4580d2338c46b",
+      "failure_kind": "ast_shape_mismatch",
+      "likely_layer": "ast_projection",
+      "fixture_id": "span_tabs",
+      "family": "span_coordinates",
+      "metric": "ast_node_kind_f1",
+      "line": 3,
+      "expected": [
+        "VariableDeclaration line=3 span=\"my $indented\" parent=Some(\"Program\")"
+      ],
+      "actual": [
+        "VariableDeclaration line=3 span=\"my $indented = $value\" parent=Some(\"Program\")"
+      ],
+      "actual_nearest": [
+        "VariableDeclaration line=3 span=\"my $indented = $value\" parent=Some(\"Program\")"
+      ],
+      "source_excerpt": "my $indented = $value;",
+      "details": "AST node kind matched but span or parent shape differed",
+      "suggested_next_fix": "compare the projected AST span and parent edge with the gold expectation",
+      "suggested_next_pr": "feat(parser-accuracy): tighten AST projection fixture expectations"
+    },
+    {
+      "id": "packet-428eae682f7548a2",
+      "failure_kind": "ast_shape_mismatch",
+      "likely_layer": "ast_projection",
+      "fixture_id": "span_bom",
+      "family": "span_coordinates",
+      "metric": "ast_node_kind_f1",
+      "line": 2,
+      "expected": [
+        "VariableDeclaration line=2 span=\"my $x\" parent=Some(\"Program\")"
+      ],
+      "actual": [
+        "VariableDeclaration line=2 span=\"my $x = 1\" parent=Some(\"Program\")"
+      ],
+      "actual_nearest": [
+        "VariableDeclaration line=2 span=\"my $x = 1\" parent=Some(\"Program\")"
+      ],
+      "source_excerpt": "my $x = 1;",
+      "details": "AST node kind matched but span or parent shape differed",
+      "suggested_next_fix": "compare the projected AST span and parent edge with the gold expectation",
+      "suggested_next_pr": "feat(parser-accuracy): tighten AST projection fixture expectations"
+    },
+    {
+      "id": "packet-38f18bdaaad2b784",
+      "failure_kind": "ast_shape_mismatch",
+      "likely_layer": "ast_projection",
+      "fixture_id": "span_mixed_newlines",
+      "family": "span_coordinates",
+      "metric": "ast_node_kind_f1",
+      "line": 2,
+      "expected": [
+        "VariableDeclaration line=2 span=\"my $lf\" parent=Some(\"Program\")"
+      ],
+      "actual": [
+        "VariableDeclaration line=2 span=\"my $lf = 1\" parent=Some(\"Program\")"
+      ],
+      "actual_nearest": [
+        "VariableDeclaration line=2 span=\"my $lf = 1\" parent=Some(\"Program\")"
+      ],
+      "source_excerpt": "my $lf = 1;",
+      "details": "AST node kind matched but span or parent shape differed",
+      "suggested_next_fix": "compare the projected AST span and parent edge with the gold expectation",
+      "suggested_next_pr": "feat(parser-accuracy): tighten AST projection fixture expectations"
+    },
+    {
+      "id": "packet-54cf132099032c23",
+      "failure_kind": "ast_shape_mismatch",
+      "likely_layer": "ast_projection",
+      "fixture_id": "span_mixed_newlines",
+      "family": "span_coordinates",
+      "metric": "ast_node_kind_f1",
+      "line": 3,
+      "expected": [
+        "VariableDeclaration line=3 span=\"my $crlf\" parent=Some(\"Program\")"
+      ],
+      "actual": [
+        "VariableDeclaration line=3 span=\"my $crlf = 2\" parent=Some(\"Program\")"
+      ],
+      "actual_nearest": [
+        "VariableDeclaration line=3 span=\"my $crlf = 2\" parent=Some(\"Program\")"
+      ],
+      "source_excerpt": "my $crlf = 2;",
+      "details": "AST node kind matched but span or parent shape differed",
+      "suggested_next_fix": "compare the projected AST span and parent edge with the gold expectation",
+      "suggested_next_pr": "feat(parser-accuracy): tighten AST projection fixture expectations"
+    },
+    {
+      "id": "packet-647b7066310f4b1f",
+      "failure_kind": "ast_shape_mismatch",
+      "likely_layer": "ast_projection",
+      "fixture_id": "span_empty_at_eof",
+      "family": "span_coordinates",
+      "metric": "ast_node_kind_f1",
+      "line": 2,
+      "expected": [
+        "VariableDeclaration line=2 span=\"my $value\" parent=Some(\"Program\")"
+      ],
+      "actual": [
+        "VariableDeclaration line=2 span=\"my $value = 1\" parent=Some(\"Program\")"
+      ],
+      "actual_nearest": [
+        "VariableDeclaration line=2 span=\"my $value = 1\" parent=Some(\"Program\")"
+      ],
+      "source_excerpt": "my $value = 1;",
+      "details": "AST node kind matched but span or parent shape differed",
+      "suggested_next_fix": "compare the projected AST span and parent edge with the gold expectation",
+      "suggested_next_pr": "feat(parser-accuracy): tighten AST projection fixture expectations"
+    },
+    {
+      "id": "packet-2ec1d7e390c6dbe2",
+      "failure_kind": "ast_shape_mismatch",
+      "likely_layer": "ast_projection",
+      "fixture_id": "incremental_small_edit",
+      "family": "incremental",
+      "metric": "ast_node_kind_f1",
+      "line": 3,
+      "expected": [
+        "VariableDeclaration line=3 span=\"my $value\" parent=Some(\"Program\")"
+      ],
+      "actual": [
+        "VariableDeclaration line=3 span=\"my $value = 1\" parent=Some(\"Program\")"
+      ],
+      "actual_nearest": [
+        "VariableDeclaration line=3 span=\"my $value = 1\" parent=Some(\"Program\")"
+      ],
+      "source_excerpt": "my $value = 1;",
+      "details": "AST node kind matched but span or parent shape differed",
+      "suggested_next_fix": "compare the projected AST span and parent edge with the gold expectation",
+      "suggested_next_pr": "feat(parser-accuracy): tighten AST projection fixture expectations"
+    },
+    {
+      "id": "packet-28423d6529c1a7f5",
+      "failure_kind": "ast_shape_mismatch",
+      "likely_layer": "ast_projection",
+      "fixture_id": "incremental_small_edit",
+      "family": "incremental",
+      "metric": "ast_node_kind_f1",
+      "line": 5,
+      "expected": [
+        "Subroutine line=5 span=\"sub value {\" parent=Some(\"Program\")"
+      ],
+      "actual": [
+        "Subroutine line=5 span=\"sub value {\\n    return $value;\\n}\" parent=Some(\"Program\")"
+      ],
+      "actual_nearest": [
+        "Subroutine line=5 span=\"sub value {\\n    return $value;\\n}\" parent=Some(\"Program\")"
+      ],
+      "source_excerpt": "sub value {",
+      "details": "AST node kind matched but span or parent shape differed",
+      "suggested_next_fix": "compare the projected AST span and parent edge with the gold expectation",
+      "suggested_next_pr": "feat(parser-accuracy): tighten AST projection fixture expectations"
+    },
+    {
+      "id": "packet-84812cc87ed2055f",
+      "failure_kind": "ast_shape_mismatch",
+      "likely_layer": "ast_projection",
+      "fixture_id": "malformed_heredoc_recovery",
+      "family": "recovery",
+      "metric": "ast_node_kind_f1",
+      "line": 3,
+      "expected": [
+        "VariableDeclaration line=3 span=\"my $text\" parent=Some(\"Program\")"
+      ],
+      "actual": [
+        "VariableDeclaration line=3 span=\"my $text = <<'BROKEN'\" parent=Some(\"Program\")"
+      ],
+      "actual_nearest": [
+        "VariableDeclaration line=3 span=\"my $text = <<'BROKEN'\" parent=Some(\"Program\")",
+        "Heredoc line=3 span=\"<<'BROKEN'\" parent=Some(\"VariableDeclaration\")"
+      ],
+      "source_excerpt": "my $text = <<'BROKEN';",
+      "details": "AST node kind matched but span or parent shape differed",
+      "suggested_next_fix": "compare the projected AST span and parent edge with the gold expectation",
+      "suggested_next_pr": "feat(parser-accuracy): tighten AST projection fixture expectations"
+    },
+    {
+      "id": "packet-10c3c5b4c732c56e",
+      "failure_kind": "ast_shape_mismatch",
+      "likely_layer": "ast_projection",
+      "fixture_id": "malformed_heredoc_recovery",
+      "family": "recovery",
+      "metric": "ast_node_kind_f1",
+      "line": 4,
+      "expected": [
+        "UnknownRest line=4 span=\"sub after_recovery {\" parent=Some(\"Program\")"
+      ],
+      "actual": [
+        "UnknownRest line=4 span=\"unterminated body\\n\\nsub after_recovery {\\n    return 1;\\n}\\n\\n1;\\n\" parent=Some(\"Program\")"
+      ],
+      "actual_nearest": [
+        "UnknownRest line=4 span=\"unterminated body\\n\\nsub after_recovery {\\n    return 1;\\n}\\n\\n1;\\n\" parent=Some(\"Program\")"
+      ],
+      "source_excerpt": "unterminated body",
+      "details": "AST node kind matched but span or parent shape differed",
+      "suggested_next_fix": "compare the projected AST span and parent edge with the gold expectation",
+      "suggested_next_pr": "feat(parser-accuracy): tighten AST projection fixture expectations"
+    },
+    {
+      "id": "packet-3b373001f5bbe277",
+      "failure_kind": "ast_shape_mismatch",
+      "likely_layer": "ast_projection",
+      "fixture_id": "imports_exports",
+      "family": "imports_exports",
+      "metric": "ast_node_kind_f1",
+      "line": 5,
+      "expected": [
+        "Use line=5 span=\"use Accuracy::ImportsExports\" parent=None"
+      ],
+      "actual": [
+        "Use line=5 span=\"use Accuracy::ImportsExports qw(answer)\" parent=Some(\"Program\")"
+      ],
+      "actual_nearest": [
+        "Use line=5 span=\"use Accuracy::ImportsExports qw(answer)\" parent=Some(\"Program\")"
+      ],
+      "source_excerpt": "use Accuracy::ImportsExports qw(answer);",
+      "details": "AST node kind matched but span or parent shape differed",
+      "suggested_next_fix": "compare the projected AST span and parent edge with the gold expectation",
+      "suggested_next_pr": "feat(parser-accuracy): tighten AST projection fixture expectations"
+    },
+    {
+      "id": "packet-932b205c5c739d13",
+      "failure_kind": "ast_shape_mismatch",
+      "likely_layer": "ast_projection",
+      "fixture_id": "imports_exports",
+      "family": "imports_exports",
+      "metric": "ast_node_kind_f1",
+      "line": 7,
+      "expected": [
+        "Subroutine line=7 span=\"sub call_imported\" parent=Some(\"Program\")"
+      ],
+      "actual": [
+        "Subroutine line=7 span=\"sub call_imported {\\n    return answer();\\n}\" parent=Some(\"Program\")"
+      ],
+      "actual_nearest": [
+        "Subroutine line=7 span=\"sub call_imported {\\n    return answer();\\n}\" parent=Some(\"Program\")"
+      ],
+      "source_excerpt": "sub call_imported {",
+      "details": "AST node kind matched but span or parent shape differed",
+      "suggested_next_fix": "compare the projected AST span and parent edge with the gold expectation",
+      "suggested_next_pr": "feat(parser-accuracy): tighten AST projection fixture expectations"
+    },
+    {
+      "id": "packet-b8bc8ed7b851364c",
+      "failure_kind": "missing_symbol_reference",
+      "likely_layer": "semantic_fact_extraction",
+      "fixture_id": "imports_exports",
+      "family": "imports_exports",
+      "metric": "symbol_ref_f1",
+      "expected": [
+        "Export Some(\"Accuracy::ImportsExports::answer\") span=\"answer\""
+      ],
+      "actual": [],
+      "actual_nearest": [
+        "Call None span=\"answer()\"",
+        "Import Some(\"Accuracy::ImportsExports::answer\") span=\"answer\""
+      ],
+      "source_excerpt": "use Accuracy::ImportsExports qw(answer);",
+      "details": "gold symbol expectation was not present in canonical fact predictions",
+      "suggested_next_fix": "inspect fact extraction for this fixture before changing the gold expectation",
+      "suggested_next_pr": "fix(semantic): resolve parser-accuracy semantic fact packet"
+    },
+    {
+      "id": "packet-d414fb915448a361",
+      "failure_kind": "ast_shape_mismatch",
+      "likely_layer": "ast_projection",
+      "fixture_id": "imports_exports_producer",
+      "family": "imports_exports",
+      "metric": "ast_node_kind_f1",
+      "line": 5,
+      "expected": [
+        "Use line=5 span=\"use Exporter\" parent=None"
+      ],
+      "actual": [
+        "Use line=5 span=\"use Exporter qw(import)\" parent=Some(\"Program\")"
+      ],
+      "actual_nearest": [
+        "Use line=5 span=\"use Exporter qw(import)\" parent=Some(\"Program\")"
+      ],
+      "source_excerpt": "use Exporter qw(import);",
+      "details": "AST node kind matched but span or parent shape differed",
+      "suggested_next_fix": "compare the projected AST span and parent edge with the gold expectation",
+      "suggested_next_pr": "feat(parser-accuracy): tighten AST projection fixture expectations"
+    },
+    {
+      "id": "packet-45992abf910ffb2d",
+      "failure_kind": "ast_shape_mismatch",
+      "likely_layer": "ast_projection",
+      "fixture_id": "imports_exports_producer",
+      "family": "imports_exports",
+      "metric": "ast_node_kind_f1",
+      "line": 7,
+      "expected": [
+        "VariableDeclaration line=7 span=\"our @EXPORT_OK\" parent=None"
+      ],
+      "actual": [
+        "VariableDeclaration line=7 span=\"our @EXPORT_OK = qw(answer)\" parent=Some(\"Program\")"
+      ],
+      "actual_nearest": [
+        "VariableDeclaration line=7 span=\"our @EXPORT_OK = qw(answer)\" parent=Some(\"Program\")",
+        "String line=7 span=\"answer\" parent=Some(\"ArrayLiteral\")"
+      ],
+      "source_excerpt": "our @EXPORT_OK = qw(answer);",
+      "details": "AST node kind matched but span or parent shape differed",
+      "suggested_next_fix": "compare the projected AST span and parent edge with the gold expectation",
+      "suggested_next_pr": "feat(parser-accuracy): tighten AST projection fixture expectations"
+    },
+    {
+      "id": "packet-51ea648ed1814fb5",
+      "failure_kind": "ast_shape_mismatch",
+      "likely_layer": "ast_projection",
+      "fixture_id": "imports_exports_producer",
+      "family": "imports_exports",
+      "metric": "ast_node_kind_f1",
+      "line": 9,
+      "expected": [
+        "Subroutine line=9 span=\"sub answer\" parent=Some(\"Program\")"
+      ],
+      "actual": [
+        "Subroutine line=9 span=\"sub answer {\\n    return 42;\\n}\" parent=Some(\"Program\")"
+      ],
+      "actual_nearest": [
+        "Subroutine line=9 span=\"sub answer {\\n    return 42;\\n}\" parent=Some(\"Program\")"
+      ],
+      "source_excerpt": "sub answer {",
+      "details": "AST node kind matched but span or parent shape differed",
+      "suggested_next_fix": "compare the projected AST span and parent edge with the gold expectation",
+      "suggested_next_pr": "feat(parser-accuracy): tighten AST projection fixture expectations"
+    },
+    {
+      "id": "packet-fc778c8da6caf7e2",
+      "failure_kind": "ast_shape_mismatch",
+      "likely_layer": "ast_projection",
+      "fixture_id": "same_bare_subs",
+      "family": "same_bare_subs",
+      "metric": "ast_node_kind_f1",
+      "line": 3,
+      "expected": [
+        "Subroutine line=3 span=\"sub run\" parent=Some(\"Program\")"
+      ],
+      "actual": [
+        "Subroutine line=3 span=\"sub run {\\n    return \\\"A\\\";\\n}\" parent=Some(\"Program\")"
+      ],
+      "actual_nearest": [
+        "Subroutine line=3 span=\"sub run {\\n    return \\\"A\\\";\\n}\" parent=Some(\"Program\")"
+      ],
+      "source_excerpt": "sub run {",
+      "details": "AST node kind matched but span or parent shape differed",
+      "suggested_next_fix": "compare the projected AST span and parent edge with the gold expectation",
+      "suggested_next_pr": "feat(parser-accuracy): tighten AST projection fixture expectations"
+    },
+    {
+      "id": "packet-569e69c38750b710",
+      "failure_kind": "ast_shape_mismatch",
+      "likely_layer": "ast_projection",
+      "fixture_id": "same_bare_subs",
+      "family": "same_bare_subs",
+      "metric": "ast_node_kind_f1",
+      "line": 9,
+      "expected": [
+        "Subroutine line=9 span=\"sub run\" parent=Some(\"Program\")"
+      ],
+      "actual": [
+        "Subroutine line=9 span=\"sub run {\\n    return \\\"B\\\";\\n}\" parent=Some(\"Program\")"
+      ],
+      "actual_nearest": [
+        "Subroutine line=9 span=\"sub run {\\n    return \\\"B\\\";\\n}\" parent=Some(\"Program\")"
+      ],
+      "source_excerpt": "sub run {",
+      "details": "AST node kind matched but span or parent shape differed",
+      "suggested_next_fix": "compare the projected AST span and parent edge with the gold expectation",
+      "suggested_next_pr": "feat(parser-accuracy): tighten AST projection fixture expectations"
+    },
+    {
+      "id": "packet-d4252d0fb824a1a5",
+      "failure_kind": "ast_shape_mismatch",
+      "likely_layer": "ast_projection",
+      "fixture_id": "same_bare_subs",
+      "family": "same_bare_subs",
+      "metric": "ast_node_kind_f1",
+      "line": 15,
+      "expected": [
+        "Subroutine line=15 span=\"sub call_both\" parent=Some(\"Program\")"
+      ],
+      "actual": [
+        "Subroutine line=15 span=\"sub call_both {\\n    Accuracy::Same::A::run();\\n    Accuracy::Same::B::run();\\n}\" parent=Some(\"Program\")"
+      ],
+      "actual_nearest": [
+        "Subroutine line=15 span=\"sub call_both {\\n    Accuracy::Same::A::run();\\n    Accuracy::Same::B::run();\\n}\" parent=Some(\"Program\")"
+      ],
+      "source_excerpt": "sub call_both {",
+      "details": "AST node kind matched but span or parent shape differed",
+      "suggested_next_fix": "compare the projected AST span and parent edge with the gold expectation",
+      "suggested_next_pr": "feat(parser-accuracy): tighten AST projection fixture expectations"
+    },
+    {
+      "id": "packet-6812c5504f1d4ec6",
+      "failure_kind": "ast_shape_mismatch",
+      "likely_layer": "ast_projection",
+      "fixture_id": "heredoc_basic",
+      "family": "heredoc",
+      "metric": "ast_node_kind_f1",
+      "line": 3,
+      "expected": [
+        "VariableDeclaration line=3 span=\"my $text\" parent=Some(\"Program\")"
+      ],
+      "actual": [
+        "VariableDeclaration line=3 span=\"my $text = <<'END_TEXT'\" parent=Some(\"Program\")"
+      ],
+      "actual_nearest": [
+        "VariableDeclaration line=3 span=\"my $text = <<'END_TEXT'\" parent=Some(\"Program\")",
+        "Heredoc line=3 span=\"<<'END_TEXT'\" parent=Some(\"VariableDeclaration\")"
+      ],
+      "source_excerpt": "my $text = <<'END_TEXT';",
+      "details": "AST node kind matched but span or parent shape differed",
+      "suggested_next_fix": "compare the projected AST span and parent edge with the gold expectation",
+      "suggested_next_pr": "feat(parser-accuracy): tighten AST projection fixture expectations"
+    },
+    {
+      "id": "packet-61b0c81d2759a66d",
+      "failure_kind": "ast_shape_mismatch",
+      "likely_layer": "ast_projection",
+      "fixture_id": "heredoc_basic",
+      "family": "heredoc",
+      "metric": "ast_node_kind_f1",
+      "line": 7,
+      "expected": [
+        "Subroutine line=7 span=\"sub after {\" parent=Some(\"Program\")"
+      ],
+      "actual": [
+        "Subroutine line=7 span=\"sub after {\\n    return $text;\\n}\" parent=Some(\"Program\")"
+      ],
+      "actual_nearest": [
+        "Subroutine line=7 span=\"sub after {\\n    return $text;\\n}\" parent=Some(\"Program\")"
+      ],
+      "source_excerpt": "sub after {",
+      "details": "AST node kind matched but span or parent shape differed",
+      "suggested_next_fix": "compare the projected AST span and parent edge with the gold expectation",
+      "suggested_next_pr": "feat(parser-accuracy): tighten AST projection fixture expectations"
+    },
+    {
+      "id": "packet-0c51bcd471191082",
+      "failure_kind": "ast_shape_mismatch",
+      "likely_layer": "ast_projection",
+      "fixture_id": "heredoc_utf8_delimiter",
+      "family": "heredoc",
+      "metric": "ast_node_kind_f1",
+      "line": 5,
+      "expected": [
+        "VariableDeclaration line=5 span=\"my $text\" parent=Some(\"Program\")"
+      ],
+      "actual": [
+        "VariableDeclaration line=5 span=\"my $text = <<עד_כאן\" parent=Some(\"Program\")"
+      ],
+      "actual_nearest": [
+        "VariableDeclaration line=5 span=\"my $text = <<עד_כאן\" parent=Some(\"Program\")",
+        "Heredoc line=5 span=\"<<עד_כאן\" parent=Some(\"VariableDeclaration\")"
+      ],
+      "source_excerpt": "my $text = <<עד_כאן;",
+      "details": "AST node kind matched but span or parent shape differed",
+      "suggested_next_fix": "compare the projected AST span and parent edge with the gold expectation",
+      "suggested_next_pr": "feat(parser-accuracy): tighten AST projection fixture expectations"
+    },
+    {
+      "id": "packet-0f8b775d22f881af",
+      "failure_kind": "ast_shape_mismatch",
+      "likely_layer": "ast_projection",
+      "fixture_id": "regex_match",
+      "family": "regex",
+      "metric": "ast_node_kind_f1",
+      "line": 3,
+      "expected": [
+        "Subroutine line=3 span=\"sub matches {\" parent=Some(\"Program\")"
+      ],
+      "actual": [
+        "Subroutine line=3 span=\"sub matches {\\n    my $value = shift;\\n    return $value =~ /foo\\\\d+/;\\n}\" parent=Some(\"Program\")"
+      ],
+      "actual_nearest": [
+        "Subroutine line=3 span=\"sub matches {\\n    my $value = shift;\\n    return $value =~ /foo\\\\d+/;\\n}\" parent=Some(\"Program\")"
+      ],
+      "source_excerpt": "sub matches {",
+      "details": "AST node kind matched but span or parent shape differed",
+      "suggested_next_fix": "compare the projected AST span and parent edge with the gold expectation",
+      "suggested_next_pr": "feat(parser-accuracy): tighten AST projection fixture expectations"
+    },
+    {
+      "id": "packet-b25eab44fdde274c",
+      "failure_kind": "ast_shape_mismatch",
+      "likely_layer": "ast_projection",
+      "fixture_id": "regex_match",
+      "family": "regex",
+      "metric": "ast_node_kind_f1",
+      "line": 8,
+      "expected": [
+        "Subroutine line=8 span=\"sub does_not_match {\" parent=Some(\"Program\")"
+      ],
+      "actual": [
+        "Subroutine line=8 span=\"sub does_not_match {\\n    my $value = shift;\\n    return $value !~ /bar/;\\n}\" parent=Some(\"Program\")"
+      ],
+      "actual_nearest": [
+        "Subroutine line=8 span=\"sub does_not_match {\\n    my $value = shift;\\n    return $value !~ /bar/;\\n}\" parent=Some(\"Program\")"
+      ],
+      "source_excerpt": "sub does_not_match {",
+      "details": "AST node kind matched but span or parent shape differed",
+      "suggested_next_fix": "compare the projected AST span and parent edge with the gold expectation",
+      "suggested_next_pr": "feat(parser-accuracy): tighten AST projection fixture expectations"
+    },
+    {
+      "id": "packet-2f1421870ad28671",
+      "failure_kind": "line_tag_mismatch",
+      "likely_layer": "parser",
+      "fixture_id": "slash_ambiguity",
+      "family": "slash_ambiguity",
+      "metric": "line_construct_f1",
+      "line": 5,
+      "expected": [
+        "division"
+      ],
+      "actual": [
+        "variable_decl",
+        "division"
+      ],
+      "actual_nearest": [
+        "variable_decl",
+        "division"
+      ],
+      "source_excerpt": "my $ratio = $total / $count;",
+      "details": "expected line construct tags did not match parser projection",
+      "suggested_next_fix": "check whether the parser projection missed this construct or the gold line label is too narrow",
+      "suggested_next_pr": "fix(parser-core): resolve parser projection failure packet"
+    },
+    {
+      "id": "packet-005da22b89848e97",
+      "failure_kind": "line_tag_mismatch",
+      "likely_layer": "parser",
+      "fixture_id": "slash_ambiguity",
+      "family": "slash_ambiguity",
+      "metric": "line_construct_f1",
+      "line": 6,
+      "expected": [
+        "function_call",
+        "regex"
+      ],
+      "actual": [
+        "variable_decl",
+        "function_call",
+        "regex"
+      ],
+      "actual_nearest": [
+        "variable_decl",
+        "function_call",
+        "regex"
+      ],
+      "source_excerpt": "my @parts = split /,/, $line;",
+      "details": "expected line construct tags did not match parser projection",
+      "suggested_next_fix": "check whether the parser projection missed this construct or the gold line label is too narrow",
+      "suggested_next_pr": "fix(parser-core): resolve parser projection failure packet"
+    },
+    {
+      "id": "packet-b4c0daf526c5e3f0",
+      "failure_kind": "line_tag_mismatch",
+      "likely_layer": "parser",
+      "fixture_id": "slash_ambiguity",
+      "family": "slash_ambiguity",
+      "metric": "line_construct_f1",
+      "line": 7,
+      "expected": [
+        "regex_match"
+      ],
+      "actual": [
+        "variable_decl",
+        "regex_match"
+      ],
+      "actual_nearest": [
+        "variable_decl",
+        "regex_match"
+      ],
+      "source_excerpt": "my $matched = $line =~ /^ok:/;",
+      "details": "expected line construct tags did not match parser projection",
+      "suggested_next_fix": "check whether the parser projection missed this construct or the gold line label is too narrow",
+      "suggested_next_pr": "fix(parser-core): resolve parser projection failure packet"
+    },
+    {
+      "id": "packet-e5dbb5e685056668",
+      "failure_kind": "line_tag_mismatch",
+      "likely_layer": "parser",
+      "fixture_id": "slash_ambiguity",
+      "family": "slash_ambiguity",
+      "metric": "line_construct_f1",
+      "line": 8,
+      "expected": [
+        "defined_or"
+      ],
+      "actual": [
+        "variable_decl",
+        "defined_or"
+      ],
+      "actual_nearest": [
+        "variable_decl",
+        "defined_or"
+      ],
+      "source_excerpt": "my $fallback = $maybe // $ratio;",
+      "details": "expected line construct tags did not match parser projection",
+      "suggested_next_fix": "check whether the parser projection missed this construct or the gold line label is too narrow",
+      "suggested_next_pr": "fix(parser-core): resolve parser projection failure packet"
+    },
+    {
+      "id": "packet-97341af9b0a24d35",
+      "failure_kind": "ast_shape_mismatch",
+      "likely_layer": "ast_projection",
+      "fixture_id": "slash_ambiguity",
+      "family": "slash_ambiguity",
+      "metric": "ast_node_kind_f1",
+      "line": 3,
+      "expected": [
+        "Subroutine line=3 span=\"sub classify_slashes\" parent=Some(\"Program\")"
+      ],
+      "actual": [
+        "Subroutine line=3 span=\"sub classify_slashes {\\n    my ($total, $count, $line, $maybe) = @_;\\n    my $ratio = $total / $count;\\n    my @parts = split /,/, $line;\\n    my $matched = $line =~ /^ok:/;\\n    my $fallback = $maybe // $ratio;\\n    return ($ratio, @parts, $matched, $fallback);\\n}\" parent=Some(\"Program\")"
+      ],
+      "actual_nearest": [
+        "Subroutine line=3 span=\"sub classify_slashes {\\n    my ($total, $count, $line, $maybe) = @_;\\n    my $ratio = $total / $count;\\n    my @parts = split /,/, $line;\\n    my $matched = $line =~ /^ok:/;\\n    my $fallback = $maybe // $ratio;\\n    return ($ratio, @parts, $matched, $fallback);\\n}\" parent=Some(\"Program\")"
+      ],
+      "source_excerpt": "sub classify_slashes {",
+      "details": "AST node kind matched but span or parent shape differed",
+      "suggested_next_fix": "compare the projected AST span and parent edge with the gold expectation",
+      "suggested_next_pr": "feat(parser-accuracy): tighten AST projection fixture expectations"
+    },
+    {
+      "id": "packet-1eedee06682ddbb7",
+      "failure_kind": "ast_shape_mismatch",
+      "likely_layer": "ast_projection",
+      "fixture_id": "slash_ambiguity",
+      "family": "slash_ambiguity",
+      "metric": "ast_node_kind_f1",
+      "line": 7,
+      "expected": [
+        "VariableDeclaration line=7 span=\"my $matched = $line\" parent=Some(\"Block\")"
+      ],
+      "actual": [
+        "VariableDeclaration line=7 span=\"my $matched = $line =~ /^ok:/\" parent=Some(\"Block\")"
+      ],
+      "actual_nearest": [
+        "VariableDeclaration line=7 span=\"my $matched = $line =~ /^ok:/\" parent=Some(\"Block\")",
+        "Match line=7 span=\"$line =~ /^ok:/\" parent=Some(\"VariableDeclaration\")"
+      ],
+      "source_excerpt": "my $matched = $line =~ /^ok:/;",
+      "details": "AST node kind matched but span or parent shape differed",
+      "suggested_next_fix": "compare the projected AST span and parent edge with the gold expectation",
+      "suggested_next_pr": "feat(parser-accuracy): tighten AST projection fixture expectations"
+    },
+    {
+      "id": "packet-1a23fc353ddc08e5",
+      "failure_kind": "ast_shape_mismatch",
+      "likely_layer": "ast_projection",
+      "fixture_id": "method_call",
+      "family": "method_call",
+      "metric": "ast_node_kind_f1",
+      "line": 3,
+      "expected": [
+        "Subroutine line=3 span=\"sub invoke\" parent=Some(\"Program\")"
+      ],
+      "actual": [
+        "Subroutine line=3 span=\"sub invoke {\\n    my $object = shift;\\n    $object->run;\\n    Accuracy::MethodCall->run();\\n}\" parent=Some(\"Program\")"
+      ],
+      "actual_nearest": [
+        "Subroutine line=3 span=\"sub invoke {\\n    my $object = shift;\\n    $object->run;\\n    Accuracy::MethodCall->run();\\n}\" parent=Some(\"Program\")"
+      ],
+      "source_excerpt": "sub invoke {",
+      "details": "AST node kind matched but span or parent shape differed",
+      "suggested_next_fix": "compare the projected AST span and parent edge with the gold expectation",
+      "suggested_next_pr": "feat(parser-accuracy): tighten AST projection fixture expectations"
+    },
+    {
+      "id": "packet-6ad6aea39b26880e",
+      "failure_kind": "ast_shape_mismatch",
+      "likely_layer": "ast_projection",
+      "fixture_id": "method_call",
+      "family": "method_call",
+      "metric": "ast_node_kind_f1",
+      "line": 4,
+      "expected": [
+        "VariableDeclaration line=4 span=\"my $object\" parent=None"
+      ],
+      "actual": [
+        "VariableDeclaration line=4 span=\"my $object = shift\" parent=Some(\"Block\")"
+      ],
+      "actual_nearest": [
+        "VariableDeclaration line=4 span=\"my $object = shift\" parent=Some(\"Block\")",
+        "FunctionCall line=4 span=\"shift\" parent=Some(\"VariableDeclaration\")"
+      ],
+      "source_excerpt": "my $object = shift;",
+      "details": "AST node kind matched but span or parent shape differed",
+      "suggested_next_fix": "compare the projected AST span and parent edge with the gold expectation",
+      "suggested_next_pr": "feat(parser-accuracy): tighten AST projection fixture expectations"
+    },
+    {
+      "id": "packet-4b00d9dc7b21a427",
+      "failure_kind": "ast_shape_mismatch",
+      "likely_layer": "ast_projection",
+      "fixture_id": "method_call",
+      "family": "method_call",
+      "metric": "ast_node_kind_f1",
+      "line": 9,
+      "expected": [
+        "Subroutine line=9 span=\"sub run\" parent=Some(\"Program\")"
+      ],
+      "actual": [
+        "Subroutine line=9 span=\"sub run {\\n    return 1;\\n}\" parent=Some(\"Program\")"
+      ],
+      "actual_nearest": [
+        "Subroutine line=9 span=\"sub run {\\n    return 1;\\n}\" parent=Some(\"Program\")"
+      ],
+      "source_excerpt": "sub run {",
+      "details": "AST node kind matched but span or parent shape differed",
+      "suggested_next_fix": "compare the projected AST span and parent edge with the gold expectation",
+      "suggested_next_pr": "feat(parser-accuracy): tighten AST projection fixture expectations"
+    },
+    {
+      "id": "packet-18dd0e8db4432167",
+      "failure_kind": "ast_shape_mismatch",
+      "likely_layer": "ast_projection",
+      "fixture_id": "autoload_boundary",
+      "family": "autoload",
+      "metric": "ast_node_kind_f1",
+      "line": 5,
+      "expected": [
+        "Subroutine line=5 span=\"sub AUTOLOAD {\" parent=Some(\"Program\")"
+      ],
+      "actual": [
+        "Subroutine line=5 span=\"sub AUTOLOAD {\\n    return $AUTOLOAD;\\n}\" parent=Some(\"Program\")"
+      ],
+      "actual_nearest": [
+        "Subroutine line=5 span=\"sub AUTOLOAD {\\n    return $AUTOLOAD;\\n}\" parent=Some(\"Program\")"
+      ],
+      "source_excerpt": "sub AUTOLOAD {",
+      "details": "AST node kind matched but span or parent shape differed",
+      "suggested_next_fix": "compare the projected AST span and parent edge with the gold expectation",
+      "suggested_next_pr": "feat(parser-accuracy): tighten AST projection fixture expectations"
+    },
+    {
+      "id": "packet-2e911f0cc245f9c2",
+      "failure_kind": "ast_shape_mismatch",
+      "likely_layer": "ast_projection",
+      "fixture_id": "autoload_boundary",
+      "family": "autoload",
+      "metric": "ast_node_kind_f1",
+      "line": 9,
+      "expected": [
+        "Subroutine line=9 span=\"sub call_missing {\" parent=Some(\"Program\")"
+      ],
+      "actual": [
+        "Subroutine line=9 span=\"sub call_missing {\\n    Accuracy::Autoload->missing();\\n}\" parent=Some(\"Program\")"
+      ],
+      "actual_nearest": [
+        "Subroutine line=9 span=\"sub call_missing {\\n    Accuracy::Autoload->missing();\\n}\" parent=Some(\"Program\")"
+      ],
+      "source_excerpt": "sub call_missing {",
+      "details": "AST node kind matched but span or parent shape differed",
+      "suggested_next_fix": "compare the projected AST span and parent edge with the gold expectation",
+      "suggested_next_pr": "feat(parser-accuracy): tighten AST projection fixture expectations"
+    },
+    {
+      "id": "packet-d2cfa9aca6b56fbd",
+      "failure_kind": "ast_shape_mismatch",
+      "likely_layer": "ast_projection",
+      "fixture_id": "eval_string_boundary",
+      "family": "eval_string",
+      "metric": "ast_node_kind_f1",
+      "line": 3,
+      "expected": [
+        "VariableDeclaration line=3 span=\"my $code\" parent=Some(\"Program\")"
+      ],
+      "actual": [
+        "VariableDeclaration line=3 span=\"my $code = 'sub generated { 1 }'\" parent=Some(\"Program\")"
+      ],
+      "actual_nearest": [
+        "VariableDeclaration line=3 span=\"my $code = 'sub generated { 1 }'\" parent=Some(\"Program\")",
+        "String line=3 span=\"'sub generated { 1 }'\" parent=Some(\"VariableDeclaration\")"
+      ],
+      "source_excerpt": "my $code = 'sub generated { 1 }';",
+      "details": "AST node kind matched but span or parent shape differed",
+      "suggested_next_fix": "compare the projected AST span and parent edge with the gold expectation",
+      "suggested_next_pr": "feat(parser-accuracy): tighten AST projection fixture expectations"
+    },
+    {
+      "id": "packet-b5b1bb8d9ca0eeac",
+      "failure_kind": "ast_shape_mismatch",
+      "likely_layer": "ast_projection",
+      "fixture_id": "eval_string_boundary",
+      "family": "eval_string",
+      "metric": "ast_node_kind_f1",
+      "line": 3,
+      "expected": [
+        "String line=3 span=\"sub generated { 1 }\" parent=Some(\"VariableDeclaration\")"
+      ],
+      "actual": [
+        "String line=3 span=\"'sub generated { 1 }'\" parent=Some(\"VariableDeclaration\")"
+      ],
+      "actual_nearest": [
+        "VariableDeclaration line=3 span=\"my $code = 'sub generated { 1 }'\" parent=Some(\"Program\")",
+        "String line=3 span=\"'sub generated { 1 }'\" parent=Some(\"VariableDeclaration\")"
+      ],
+      "source_excerpt": "my $code = 'sub generated { 1 }';",
+      "details": "AST node kind matched but span or parent shape differed",
+      "suggested_next_fix": "compare the projected AST span and parent edge with the gold expectation",
+      "suggested_next_pr": "feat(parser-accuracy): tighten AST projection fixture expectations"
+    }
+  ]
 }

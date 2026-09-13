@@ -21,11 +21,63 @@ use crate::cancellation::RequestCleanupGuard;
 use crate::protocol::{REQUEST_CANCELLED, req_range, req_uri};
 use std::sync::LazyLock;
 
-static GLOBAL_VAR_ASSIGNMENT_RE: LazyLock<regex::Regex> =
-    LazyLock::new(|| match regex::Regex::new(r"(?m)^(\$|\@|\%)[a-zA-Z_]\w*\s*=") {
-        Ok(re) => re,
-        Err(err) => unreachable!("GLOBAL_VAR_ASSIGNMENT_RE is a known-good static pattern: {err}"),
-    });
+/// Authored pattern for "global-variable assignment at the start of a line".
+///
+/// Named so the detector, its failure diagnostic, and the tests that pin its
+/// behavior all reference one source of truth.
+const GLOBAL_VAR_ASSIGNMENT_PATTERN: &str = r"(?m)^(\$|\@|\%)[a-zA-Z_]\w*\s*=";
+
+/// Detector backing the optional `Convert globals to 'my' declarations` action.
+///
+/// The pattern is authored by this program, so a compile failure would be a
+/// source regression rather than expected runtime input. It is still built
+/// inside a long-lived language server, where a fatal initializer would take
+/// the whole process down with it, so initialization is non-fatal: on failure
+/// the detector is unavailable, the single optional action it gates is
+/// withheld, and every other code action still returns.
+static GLOBAL_VAR_ASSIGNMENT_RE: LazyLock<Option<regex::Regex>> = LazyLock::new(|| {
+    match regex::Regex::new(GLOBAL_VAR_ASSIGNMENT_PATTERN) {
+        Ok(regex) => Some(regex),
+        Err(error) => {
+            // Bounded: `LazyLock` initializes once, so this reports the defect
+            // a single time for the life of the process rather than per request.
+            tracing::error!(
+                pattern = GLOBAL_VAR_ASSIGNMENT_PATTERN,
+                %error,
+                "global-assignment detector unavailable; withholding the \
+                 \"Convert globals to 'my' declarations\" code action"
+            );
+            None
+        }
+    }
+});
+
+#[cfg(test)]
+thread_local! {
+    /// Test-only switch simulating a detector whose static pattern failed to
+    /// compile. Production builds contain no such switch.
+    static FORCE_GLOBAL_VAR_DETECTOR_UNAVAILABLE: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(false) };
+}
+
+/// The compiled detector, or `None` when the static instrument is unavailable.
+fn global_var_assignment_detector() -> Option<&'static regex::Regex> {
+    #[cfg(test)]
+    if FORCE_GLOBAL_VAR_DETECTOR_UNAVAILABLE.with(std::cell::Cell::get) {
+        return None;
+    }
+    GLOBAL_VAR_ASSIGNMENT_RE.as_ref()
+}
+
+/// Whether `text` contains a global-variable assignment that the optional
+/// "convert to `my`" refactor would target.
+///
+/// An unavailable detector withholds the action rather than guessing: answering
+/// `false` keeps the server responsive and never offers a malformed refactor.
+fn offers_convert_globals_to_my(text: &str) -> bool {
+    global_var_assignment_detector().is_some_and(|regex| regex.is_match(text))
+}
+
 const CODE_ACTION_TAG_LLM_GENERATED: i64 = 1;
 
 fn requested_code_action_kinds(params: &Value) -> Vec<&str> {
@@ -1064,7 +1116,7 @@ impl LspServer {
             }));
 
             // Check for global variables that could use 'my' declarations
-            if GLOBAL_VAR_ASSIGNMENT_RE.is_match(&doc.text) {
+            if offers_convert_globals_to_my(&doc.text) {
                 code_actions.push(json!({
                     "title": "Convert globals to 'my' declarations",
                     "kind": "refactor.rewrite",
@@ -2686,6 +2738,191 @@ my $x = 1 + 2;
             !codes.iter().any(|code| code == "native.testing.require_use_strict"),
             "threshold 5 must gate Harsh critic quickfixes off like the diagnostics plane: \
              {codes:?}"
+        );
+        Ok(())
+    }
+
+    // ---- #13689: non-fatal global-assignment detector ----------------------
+
+    /// RAII switch simulating a detector whose static pattern failed to
+    /// compile, so a panicking assertion cannot leak the forced state into
+    /// another test sharing the thread.
+    struct ForcedDetectorFailure;
+
+    impl ForcedDetectorFailure {
+        fn engage() -> Self {
+            FORCE_GLOBAL_VAR_DETECTOR_UNAVAILABLE.with(|forced| forced.set(true));
+            Self
+        }
+    }
+
+    impl Drop for ForcedDetectorFailure {
+        fn drop(&mut self) {
+            FORCE_GLOBAL_VAR_DETECTOR_UNAVAILABLE.with(|forced| forced.set(false));
+        }
+    }
+
+    #[test]
+    fn global_assignment_detector_matches_every_sigil_at_line_start() {
+        for text in ["$name = 1;\n", "@name = ();\n", "%name = ();\n"] {
+            assert!(
+                offers_convert_globals_to_my(text),
+                "{text:?} is a line-start global assignment"
+            );
+        }
+    }
+
+    #[test]
+    fn global_assignment_detector_requires_an_ascii_leading_identifier_character() {
+        assert!(offers_convert_globals_to_my("$_name = 1;\n"));
+        assert!(offers_convert_globals_to_my("$Name = 1;\n"));
+        // The first identifier character is `[a-zA-Z_]`, so a digit or a
+        // non-ASCII letter leaves the line outside the match.
+        assert!(!offers_convert_globals_to_my("$1name = 1;\n"));
+        assert!(!offers_convert_globals_to_my("$\u{00F1}ame = 1;\n"));
+    }
+
+    #[test]
+    fn global_assignment_detector_pins_unicode_word_tail_and_whitespace() {
+        // `\w` is Unicode-aware in the `regex` crate, so a non-ASCII tail
+        // matches. Pinned rather than assumed: a pure ASCII scanner would
+        // silently narrow this.
+        assert!(offers_convert_globals_to_my("$na\u{00EF}ve = 1;\n"));
+        // `\s` is Unicode-aware too; U+00A0 NO-BREAK SPACE still separates the
+        // name from `=`.
+        assert!(offers_convert_globals_to_my("$name\u{00A0}= 1;\n"));
+    }
+
+    #[test]
+    fn global_assignment_detector_requires_a_line_start_anchor() {
+        // `(?m)` anchors at any line start, not only the start of input.
+        assert!(offers_convert_globals_to_my("use strict;\n$name = 1;\n"));
+        // Indented assignments stay outside the current disposition.
+        assert!(!offers_convert_globals_to_my("    $name = 1;\n"));
+        assert!(!offers_convert_globals_to_my("\t$name = 1;\n"));
+    }
+
+    #[test]
+    fn global_assignment_detector_boundaries_do_not_widen_in_this_repair() {
+        // Commented and embedded occurrences are not at a line start.
+        assert!(!offers_convert_globals_to_my("# $name = 1;\n"));
+        assert!(!offers_convert_globals_to_my("my $copy = \"$name = 1\";\n"));
+        // A `my`-declared local does not start the line with a sigil.
+        assert!(!offers_convert_globals_to_my("my $name = 1;\n"));
+        // A sigil with no assignment is not a match.
+        assert!(!offers_convert_globals_to_my("$name;\n"));
+        // Known current false positive, retained deliberately: `\s*=` is
+        // satisfied by the first `=` of a comparison. This repair preserves the
+        // existing disposition instead of narrowing it.
+        assert!(offers_convert_globals_to_my("$name == 1;\n"));
+    }
+
+    #[test]
+    fn global_assignment_detector_is_available_by_default() {
+        assert!(global_var_assignment_detector().is_some());
+        assert!(offers_convert_globals_to_my("$name = 1;\n"));
+    }
+
+    #[test]
+    fn an_unavailable_detector_withholds_the_convert_globals_action() {
+        let _forced = ForcedDetectorFailure::engage();
+        assert!(global_var_assignment_detector().is_none());
+        assert!(
+            !offers_convert_globals_to_my("$name = 1;\n"),
+            "an unavailable detector must withhold the action, never guess"
+        );
+    }
+
+    #[test]
+    fn forced_detector_failure_is_released_on_drop() {
+        {
+            let _forced = ForcedDetectorFailure::engage();
+            assert!(!offers_convert_globals_to_my("$name = 1;\n"));
+        }
+        assert!(
+            offers_convert_globals_to_my("$name = 1;\n"),
+            "the forced-failure switch must not outlive its guard"
+        );
+    }
+
+    /// Source carrying a line-start global assignment.
+    const GLOBAL_ASSIGNMENT_DOC: &str = "$global = 1;\n";
+
+    /// Open `uri` and leave it in the pending-parse gap, which is the branch
+    /// that offers the optional "Convert globals" action.
+    ///
+    /// The action lives on `handle_code_action`'s no-current-AST path. That
+    /// path cannot be reached by feeding malformed source through a normal
+    /// `didOpen`: the v3 parser recovers, so broken input still yields an AST
+    /// (documented on `state::document`'s `minimal_snapshot_for`, from the
+    /// #3760 review, where guarding on `ast().is_none()` after a real parse was
+    /// found to be vacuous). `test_apply_text_change_without_reparse` reaches
+    /// the branch through the genuine production condition instead: the text
+    /// generation has advanced past the last published snapshot.
+    fn open_with_pending_parse(
+        server: &LspServer,
+        uri: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        open_test_document(server, uri, "my $placeholder = 1;\n");
+        server.test_apply_text_change_without_reparse(uri, GLOBAL_ASSIGNMENT_DOC, 2)?;
+        Ok(())
+    }
+
+    fn code_action_titles(
+        server: &LspServer,
+        uri: &str,
+    ) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+        let response = server.handle_code_action(Some(json!({
+            "textDocument": { "uri": uri },
+            "range": {
+                "start": { "line": 0, "character": 0 },
+                "end": { "line": 0, "character": 0 }
+            },
+            "context": { "diagnostics": [] }
+        })))?;
+        Ok(response
+            .ok_or("missing code action response")?
+            .as_array()
+            .ok_or("code action response must be an array")?
+            .iter()
+            .filter_map(|action| action.get("title").and_then(Value::as_str).map(str::to_owned))
+            .collect())
+    }
+
+    #[test]
+    fn available_detector_offers_the_convert_globals_action()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        let uri = "file:///global_assignment_baseline.pl";
+        open_with_pending_parse(&server, uri)?;
+
+        let titles = code_action_titles(&server, uri)?;
+
+        assert!(
+            titles.iter().any(|title| title == "Convert globals to 'my' declarations"),
+            "baseline proves this document reaches the branch under test: {titles:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn code_actions_survive_an_unavailable_global_assignment_detector()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let _forced = ForcedDetectorFailure::engage();
+        let server = LspServer::new();
+        let uri = "file:///global_assignment_detector_down.pl";
+        open_with_pending_parse(&server, uri)?;
+
+        // The request completes rather than terminating the server.
+        let titles = code_action_titles(&server, uri)?;
+
+        assert!(
+            !titles.iter().any(|title| title == "Convert globals to 'my' declarations"),
+            "an unavailable detector must withhold only its own action: {titles:?}"
+        );
+        assert!(
+            titles.iter().any(|title| title == "Add debug print"),
+            "unrelated code actions must still be returned: {titles:?}"
         );
         Ok(())
     }

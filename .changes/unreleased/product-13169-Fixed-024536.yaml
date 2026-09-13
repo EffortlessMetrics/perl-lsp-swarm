@@ -1,0 +1,14 @@
+project: product
+component: Parser and lexer
+kind: Fixed
+body: >-
+  Recognize Perl's contiguous string-repetition assignment operator (`x=`) as
+  a right-associative assignment in direct expressions, variable-declaration
+  initializers, and the `pos` named-unary call path. Spaced `x =` is never
+  normalized into the operator; the same-line leftover parses as ordinary
+  tokens without a repetition diagnostic.
+time: 2026-08-28T02:45:36Z
+custom:
+  PR: "13169"
+  Slug: repetition-assignment
+  Breaking: "no"

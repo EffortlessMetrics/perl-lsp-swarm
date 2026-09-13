@@ -8,9 +8,6 @@ pub mod uri;
 
 pub use command_timeout::run_command_with_timeout;
 
-use std::io;
-use std::path::Path;
-
 use lsp_types::Position;
 use perl_module::extract_module_reference as extract_module_reference_at_cursor;
 use perl_module::extract_module_reference_extended as extract_module_reference_extended_at_cursor;
@@ -88,68 +85,6 @@ pub fn escape_markdown_text(text: &str) -> String {
         }
     }
     result
-}
-
-/// Decode source text bytes while handling common editor encodings.
-///
-/// Behavior:
-/// - UTF-8 with optional BOM
-/// - UTF-16 LE/BE when BOM is present (odd-length payloads fall back to
-///   Latin-1 decoding of the original bytes rather than silently
-///   truncating the trailing byte)
-/// - Latin-1 byte-preserving fallback for non-UTF8 legacy files
-pub fn decode_text_bytes(bytes: &[u8]) -> String {
-    if bytes.starts_with(&[0xEF, 0xBB, 0xBF])
-        && let Ok(utf8) = std::str::from_utf8(&bytes[3..])
-    {
-        return utf8.to_string();
-    }
-
-    if bytes.starts_with(&[0xFF, 0xFE])
-        && let Some(decoded) = decode_utf16_lossy(&bytes[2..], true)
-    {
-        return decoded;
-    }
-    // Odd-length UTF-16 payload — fall through to latin-1 on the full bytes.
-
-    if bytes.starts_with(&[0xFE, 0xFF])
-        && let Some(decoded) = decode_utf16_lossy(&bytes[2..], false)
-    {
-        return decoded;
-    }
-    // Odd-length UTF-16 payload — fall through to latin-1 on the full bytes.
-
-    match std::str::from_utf8(bytes) {
-        Ok(utf8) => utf8.to_string(),
-        Err(_) => bytes.iter().map(|byte| char::from(*byte)).collect(),
-    }
-}
-
-/// Read a text file and decode it with [`decode_text_bytes`].
-pub fn read_text_file_with_encoding(path: &Path) -> io::Result<String> {
-    std::fs::read(path).map(|bytes| decode_text_bytes(&bytes))
-}
-
-/// Decode a UTF-16 byte payload (BOM already stripped) into a String.
-///
-/// Returns `None` when the payload has an odd byte length, since UTF-16
-/// code units are always 2 bytes and a dangling odd byte indicates
-/// corrupted or mis-detected input. Callers should fall back to another
-/// decoder in that case rather than silently truncating the trailing byte.
-fn decode_utf16_lossy(bytes: &[u8], little_endian: bool) -> Option<String> {
-    if !bytes.len().is_multiple_of(2) {
-        return None;
-    }
-    let mut words = Vec::with_capacity(bytes.len() / 2);
-    for pair in bytes.chunks_exact(2) {
-        let word = if little_endian {
-            u16::from_le_bytes([pair[0], pair[1]])
-        } else {
-            u16::from_be_bytes([pair[0], pair[1]])
-        };
-        words.push(word);
-    }
-    Some(String::from_utf16_lossy(&words))
 }
 
 /// Convert byte offset to UTF-16 column position
@@ -603,7 +538,7 @@ pub fn offset_to_position(content: &str, offset: usize) -> Position {
 mod tests {
     use super::{
         arg_starts_in_call_body, arg_starts_top_level, byte_to_line_col, byte_to_utf16_col,
-        decode_text_bytes, escape_markdown_text, extract_module_reference, find_matching_paren,
+        escape_markdown_text, extract_module_reference, find_matching_paren,
         get_text_around_offset, get_text_window_around_offset, offset_to_position,
         position_to_offset, slice_in_range, slice_until_stmt_end, smart_arg_anchor,
     };
@@ -750,39 +685,6 @@ mod tests {
     }
 
     #[test]
-    fn decode_text_bytes_supports_utf16_le_bom() {
-        let bytes = [0xFF, 0xFE, b'P', 0x00, b'e', 0x00, b'r', 0x00, b'l', 0x00];
-        assert_eq!(decode_text_bytes(&bytes), "Perl");
-    }
-
-    #[test]
-    fn decode_text_bytes_falls_back_to_latin1() {
-        let bytes = [0x63, 0x61, 0x66, 0xE9];
-        assert_eq!(decode_text_bytes(&bytes), "café");
-    }
-
-    /// Regression: UTF-16 LE BOM followed by an odd number of payload bytes
-    /// must not panic or silently truncate the trailing byte.
-    #[test]
-    fn decode_text_bytes_handles_odd_length_utf16_le() {
-        // BOM (2 bytes) + 3 payload bytes = odd-length UTF-16 payload.
-        let bytes = [0xFF, 0xFE, 0x6D, 0x00, 0x79];
-        let decoded = decode_text_bytes(&bytes);
-        // Must return something (not panic); falls back to latin-1 of
-        // the full original bytes so the caller still sees the content.
-        assert!(!decoded.is_empty());
-    }
-
-    /// Regression: UTF-16 BE BOM followed by an odd number of payload bytes
-    /// must not panic or silently truncate the trailing byte.
-    #[test]
-    fn decode_text_bytes_handles_odd_length_utf16_be() {
-        let bytes = [0xFE, 0xFF, 0x00, 0x6D, 0x00];
-        let decoded = decode_text_bytes(&bytes);
-        assert!(!decoded.is_empty());
-    }
-
-    #[test]
     fn escape_markdown_text_escapes_asterisks() {
         let text = "This is *not* bold";
         let escaped = escape_markdown_text(text);
@@ -861,37 +763,5 @@ mod tests {
         let text = "Résumé: *important*";
         let escaped = escape_markdown_text(text);
         assert_eq!(escaped, r"Résumé: \*important\*");
-    }
-
-    #[test]
-    fn read_text_file_with_encoding_handles_latin1_corpus_fixture()
-    -> Result<(), Box<dyn std::error::Error>> {
-        // test_corpus/legacy_encoding.pl is a genuinely non-UTF8 Latin-1
-        // encoded file (single-byte 0xE9/0xE0, NOT the 2-byte UTF-8 sequences
-        // for é/à) — it must fail `str::from_utf8` and exercise the per-byte
-        // Latin-1 fallback branch in `decode_text_bytes`, not the UTF-8 fast
-        // path. The LSP must be able to open and parse such files without
-        // crashing.
-        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../test_corpus/legacy_encoding.pl");
-        if !fixture.exists() {
-            return Ok(()); // fixture may not be present in all build environments
-        }
-        let raw = std::fs::read(&fixture)?;
-        assert!(
-            std::str::from_utf8(&raw).is_err(),
-            "fixture must be genuinely invalid UTF-8 so this test exercises the \
-             Latin-1 fallback path, not the UTF-8 fast path"
-        );
-        let content = super::read_text_file_with_encoding(&fixture)?;
-        assert!(
-            content.contains("package Encoding::Legacy"),
-            "Latin-1 file must parse the ASCII portions correctly"
-        );
-        assert!(
-            content.contains("caf\u{E9}"),
-            "Latin-1 byte 0xE9 must round-trip as Unicode U+00E9 (é)"
-        );
-        Ok(())
     }
 }

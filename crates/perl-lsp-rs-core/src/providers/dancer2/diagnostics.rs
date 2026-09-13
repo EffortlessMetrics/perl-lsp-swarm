@@ -204,10 +204,11 @@ mod tests {
     use crate::providers::dancer2::facts::canonical_file_facts;
     use perl_semantic_analyzer::Parser;
     use perl_semantic_facts::{FileId, SourceGeneration};
+    use perl_test_must::{must_some_with, must_with};
 
     fn setup(source: &'static str) -> (Dancer2FileActivations, CanonicalDancer2FileFacts, Node) {
         let mut parser = Parser::new(source);
-        let ast = parser.parse().expect("fixture must parse");
+        let ast = must_with(parser.parse(), "fixture must parse");
         let module = RuntimeDancer2Module::new("lib/Dancer2.pm", "1.1.1");
         let activations =
             file_activations(&ast, FileId(1), Some(&module), &SourceGeneration::known("g1"));
@@ -222,7 +223,8 @@ mod tests {
         let diagnostics = bounded_diagnostics(&ast, &activations, &facts);
         assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
         assert_eq!(diagnostics[0].code, "dancer2.excluded-keyword-used");
-        let declaration_get_offset = source.rfind("get").expect("declaration keyword offset");
+        let declaration_get_offset =
+            must_some_with(source.rfind("get"), "declaration keyword offset");
         assert_eq!(diagnostics[0].start as usize, declaration_get_offset);
     }
 
@@ -234,7 +236,7 @@ mod tests {
         assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
         assert_eq!(diagnostics[0].code, "dancer2.handler-only-keyword-outside-handler");
         assert!(diagnostics[0].message.contains("params"));
-        let params_offset = source.find("params").expect("params offset");
+        let params_offset = must_some_with(source.find("params"), "params offset");
         assert_eq!(diagnostics[0].start as usize, params_offset);
     }
 
@@ -249,7 +251,7 @@ mod tests {
     fn no_activation_reports_nothing() {
         let source = "my $x = params;";
         let mut parser = Parser::new(source);
-        let ast = parser.parse().expect("fixture must parse");
+        let ast = must_with(parser.parse(), "fixture must parse");
         let activations = file_activations(&ast, FileId(1), None, &SourceGeneration::known("g1"));
         let facts = canonical_file_facts(&ast, FileId(1), &activations);
         assert!(bounded_diagnostics(&ast, &activations, &facts).is_empty());

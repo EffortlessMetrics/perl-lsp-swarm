@@ -29,6 +29,7 @@ pub(super) fn lint_entry(name: &str, status: &str) -> LintEntry {
         name: name.to_owned(),
         level: "deny".to_owned(),
         status: status.to_owned(),
+        configuration_state: None,
         class: "test".to_owned(),
         reason: "test reason".to_owned(),
     }
@@ -105,7 +106,8 @@ fn repository_catalog_and_workspace_inputs_validate() -> Result<()> {
     let lint_ledger = super::read::load_lint_ledger(root)?;
     let debt_ledger: DebtLedger = super::read::read_toml_as(root.join(super::DEBT_LEDGER))?;
 
-    super::validate::validate_all(root, &cargo, &lint_ledger, &debt_ledger, test_date()?)
+    super::validate::validate_all(root, &cargo, &lint_ledger, &debt_ledger, test_date()?)?;
+    Ok(())
 }
 
 #[test]

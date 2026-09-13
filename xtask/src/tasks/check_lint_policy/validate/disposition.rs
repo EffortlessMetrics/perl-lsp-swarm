@@ -16,7 +16,6 @@ const REQUIRED_DISPOSITIONS: &[(&str, Option<&str>, Option<&str>)] = &[
     ("rust::const_item_interior_mutations", None, None),
     ("rust::function_casts_as_integer", None, None),
     ("clippy::same_length_and_capacity", None, None),
-    ("clippy::disallowed_fields", None, None),
     ("clippy::manual_checked_ops", None, None),
     ("clippy::manual_ilog2", Some("deny"), Some("active")),
     ("clippy::manual_take", None, None),

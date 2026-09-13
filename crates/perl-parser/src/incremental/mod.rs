@@ -5,6 +5,7 @@
 mod checkpoint;
 mod diagnostics;
 mod edit;
+mod geometry_attachment;
 mod lex;
 mod reparse;
 mod snapshot;
@@ -18,6 +19,12 @@ pub use perl_line_index::LineIndex;
 pub use checkpoint::{LexCheckpoint, ParseCheckpoint, ScopeSnapshot};
 pub use diagnostics::{LexRestartReport, LexRestartStrategy, ReparseResult};
 pub use edit::Edit;
+pub use geometry_attachment::{
+    SOURCE_GEOMETRY_ATTACHMENT_SCHEMA_VERSION, SourceGeometryAttachment,
+    SourceGeometryAttachmentState, SourceGeometryInstrumentFailureReason, SourceGeometryLimitation,
+    SourceGeometryPayload, SourceGeometrySubject, SourceGeometryUnavailableReason,
+    SourceGeometryValidationError,
+};
 pub use lex::MAX_STORED_LEX_CHECKPOINTS;
 use reparse::{apply_single_edit, apply_text_edit_to_state, full_reparse};
 pub use snapshot::{

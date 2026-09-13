@@ -30,6 +30,9 @@ on:
       - 'scripts/windows_fresh_path_oracle.py'
       - 'scripts/tests/test-windows-fresh-path-oracle.sh'
       - 'scripts/tests/test-distribution-manifest-consistency.sh'
+      - 'scripts/maintenance/verify_11983_reject_identities.py'
+      - 'scripts/tests/test-rebuild-11983-reject-identities.py'
+      - 'scripts/maintenance/rebuild_11983_current_main.sh'
       # The manifest-consistency gate derives its expected values from these
       # three authorities, so a change to any of them can make every
       # distribution manifest stale. Without them here, the only gate that
@@ -266,6 +269,31 @@ jobs:
             echo "## Distribution manifest consistency self-test FAILED" >> "$GITHUB_STEP_SUMMARY"
             echo "" >> "$GITHUB_STEP_SUMMARY"
             echo "A public package manifest disagrees with the repository's license, posture, asset-name, or binary-set truth. These strings are what users read in \`winget show\` / \`scoop info\` / the Chocolatey listing. Check the step output above." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  rebuild-11983-reject-identity-self-test:
+    name: Rebuild 11983 reject-identity self-test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Run reject-identity fixture self-test
+        run: python3 scripts/tests/test-rebuild-11983-reject-identities.py
+
+      - name: Summary
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          if [ "$JOB_STATUS" = "success" ]; then
+            echo "## Rebuild 11983 reject-identity self-test passed" >> "$GITHUB_STEP_SUMMARY"
+            echo "The widened 12-file/20-hunk denominator and all authored hunk/old-side reject identities accept the positive fixture while mismatch, omission, duplicate, and unaccounted-artifact controls fail closed (issue #12975)." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "## Rebuild 11983 reject-identity self-test FAILED" >> "$GITHUB_STEP_SUMMARY"
+            echo "The per-file reject-identity contract accepted a mismatch, omission, duplicate, or unaccounted artifact, or rejected the authored positive fixture." >> "$GITHUB_STEP_SUMMARY"
           fi
 
   check-pr-review-convergence-self-test:

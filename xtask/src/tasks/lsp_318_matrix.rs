@@ -259,7 +259,7 @@ const ROWS: &[MatrixRow] = &[
         proof: "`lsp_codelens_tests`; `lsp_318_negative_claims`; `check-lsp-318-claims`",
         owner: "`crates/perl-lsp-rs-core/src/providers/code_lens/`; CodeLens handlers",
         priority: "P3",
-        notes: "CodeLens command tooltips are plain text; non-CodeLens command tooltips remain unclaimed and negative-gated.",
+        notes: "CodeLens command tooltips are plain text; non-CodeLens command tooltips remain unclaimed and negative-gated. <!-- closure: partly-unclaimed -->",
     },
     MatrixRow {
         feature: "`RelativePattern` watcher registrations",
@@ -271,7 +271,7 @@ const ROWS: &[MatrixRow] = &[
         proof: "`lsp_318_negative_claims`; `lsp_registration_tests`; `check-lsp-318-claims`",
         owner: "`crates/perl-lsp-rs/src/runtime/lifecycle/watchers.rs`; capability parser",
         priority: "P3",
-        notes: "Capable clients receive `baseUri`/`pattern` watcher globs rooted at workspace folders; unsupported clients or invalid roots keep string glob fallback. Document-selector `RelativePattern` support remains unclaimed.",
+        notes: "Capable clients receive `baseUri`/`pattern` watcher globs rooted at workspace folders; unsupported clients or invalid roots keep string glob fallback. Document-selector `RelativePattern` support remains unclaimed. <!-- closure: partly-unclaimed -->",
     },
     MatrixRow {
         feature: "`CodeLens.resolveSupport.properties`",
