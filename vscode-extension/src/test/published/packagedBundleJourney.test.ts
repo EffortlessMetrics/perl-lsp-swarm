@@ -1,10 +1,13 @@
 import * as assert from 'assert';
 import * as fs from 'fs';
 import * as path from 'path';
+import { randomUUID } from 'crypto';
 import * as vscode from 'vscode';
+import { runBoundedProcess } from '../../testAdapter';
 import {
   assertProviderSucceeded,
   bundledBinaryPath,
+  bundledDapPath,
   bundledServerVersion,
   pathsEquivalent,
   platformLabel,
@@ -15,6 +18,7 @@ import {
   waitForActiveDocumentGeneration,
   sha256,
   waitForStartupMetrics,
+  scanBundledDapProcessIdentities,
   withTimeout,
   type ReceiptValue,
 } from './journeySupport';
@@ -191,6 +195,136 @@ function writeVerifiedChildArtifact(receipt: ReceiptValue, sourceReceiptPath: st
   };
   fs.mkdirSync(path.dirname(outputPath), { recursive: true });
   fs.writeFileSync(outputPath, JSON.stringify(artifact, null, 2));
+}
+
+function recordPackagedDapEvidence(
+  extensionPath: string,
+  dapPath: string,
+  session: vscode.DebugSession,
+  exit: { code?: number; signal?: string },
+  debuggee: OwnedDebuggee,
+): void {
+  const receiptPath = path.join(receiptsDir(), 'packaged_bundle_journey_receipt.json');
+  if (!fs.existsSync(receiptPath)) {
+    throw new Error('packaged DAP evidence requires the bundled journey receipt');
+  }
+  const receipt = JSON.parse(fs.readFileSync(receiptPath, 'utf8')) as ReceiptValue;
+  assert.match(process.env.PERL_LSP_CURRENT_SOURCE_SHA ?? '', /^[0-9a-f]{40}$/);
+  assert.ok(process.env.PERL_LSP_CANDIDATE_ID);
+  assert.ok(process.env.PERL_LSP_ARTIFACT_SET_ID);
+  const hashes =
+    receipt.artifact_hashes && typeof receipt.artifact_hashes === 'object'
+      ? (receipt.artifact_hashes as Record<string, unknown>)
+      : {};
+  hashes.dap_sha256 = sha256(dapPath);
+  hashes.vsix_sha256 ||= process.env.PERL_LSP_VSIX_SHA256 ?? null;
+  assert.match(String(hashes.vsix_sha256 ?? ''), /^[0-9a-f]{64}$/);
+  receipt.artifact_hashes = hashes;
+  if (Array.isArray(receipt.known_limitations)) {
+    const limitations = receipt.known_limitations.filter(
+      (limitation) => limitation !== 'DAP preview is not exercised by this slice.',
+    );
+    limitations.push(
+      'DAP startup and ordinary Stop are exercised; breakpoint, stepping, variables and evaluation semantics remain not proven.',
+    );
+    receipt.known_limitations = limitations;
+  }
+  receipt.dap_startup = {
+    extension_path: extensionPath,
+    adapter_path: dapPath,
+    session_id: session.id,
+    initialize_then_launch: true,
+    exit,
+    debuggee,
+    owned_process_cleanup: 'pass',
+    candidate_id: process.env.PERL_LSP_CANDIDATE_ID ?? null,
+    frozen_product_sha: process.env.PERL_LSP_CURRENT_SOURCE_SHA ?? null,
+    artifact_set_id: process.env.PERL_LSP_ARTIFACT_SET_ID ?? null,
+  };
+  fs.writeFileSync(receiptPath, JSON.stringify(receipt, null, 2));
+  writeVerifiedChildArtifact(receipt, receiptPath);
+}
+
+interface OwnedDebuggee {
+  pid: number;
+  creationTimeFileTime: string;
+}
+
+async function observeDebuggee(pid: number): Promise<OwnedDebuggee | null> {
+  assert.ok(Number.isSafeInteger(pid) && pid > 0, 'invalid owned debuggee PID');
+  const result = await runBoundedProcess(
+    'powershell.exe',
+    [
+      '-NoProfile',
+      '-NonInteractive',
+      '-Command',
+      `try { $observed = Get-Process -Id ${pid} -ErrorAction Stop; $observed.StartTime.ToFileTimeUtc().ToString(); exit 0 } catch { if ($_.FullyQualifiedErrorId -eq 'NoProcessFoundForGivenId,Microsoft.PowerShell.Commands.GetProcessCommand') { exit 0 }; Write-Error $_; exit 1 }`,
+    ],
+    {
+      shell: false,
+      windowsHide: true,
+      timeoutMs: 5000,
+      maxOutputBytes: 4096,
+      terminationGraceMs: 1000,
+      terminationWatchdogMs: 5000,
+    },
+  );
+  if (result.outcome !== 'completed' || result.exitCode !== 0) {
+    throw new Error(`owned debuggee scan failed: ${result.outcome}, ${result.exitCode}`);
+  }
+  const creationTimeFileTime = result.stdout.trim();
+  if (!creationTimeFileTime) return null;
+  assert.match(creationTimeFileTime, /^\d+$/, 'invalid process creation time');
+  return { pid, creationTimeFileTime };
+}
+
+async function waitForDebuggee(pidFile: string): Promise<OwnedDebuggee> {
+  const deadline = Date.now() + 30_000;
+  while (Date.now() < deadline) {
+    if (fs.existsSync(pidFile)) {
+      const raw = fs.readFileSync(pidFile, 'utf8').trim();
+      if (/^\d+$/.test(raw)) {
+        const observed = await observeDebuggee(Number(raw));
+        if (observed) return observed;
+      }
+    }
+    await new Promise<void>((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error('debuggee did not publish a live process identity');
+}
+
+async function waitForDebuggeeExit(debuggee: OwnedDebuggee): Promise<void> {
+  const deadline = Date.now() + 30_000;
+  while (Date.now() < deadline) {
+    const observed = await observeDebuggee(debuggee.pid);
+    if (!observed || observed.creationTimeFileTime !== debuggee.creationTimeFileTime) return;
+    await new Promise<void>((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error(`owned debuggee survived Stop: ${debuggee.pid}`);
+}
+
+async function waitForNewPackagedDap(
+  directory: string,
+  baseline: Set<string>,
+  expectedPath: string,
+): Promise<{ pid: number; path: string; creationTimeFileTime?: string }> {
+  const deadline = Date.now() + 30_000;
+  while (Date.now() < deadline) {
+    const processes = await scanBundledDapProcessIdentities(directory);
+    const matches = processes.filter((entry) => {
+      const key = `${entry.pid}:${entry.creationTimeFileTime ?? ''}:${entry.path.toLowerCase()}`;
+      return !baseline.has(key) && pathsEquivalent(entry.path, expectedPath);
+    });
+    if (matches.length > 1) {
+      throw new Error(
+        `multiple new packaged DAP processes were observed: ${JSON.stringify(matches)}`,
+      );
+    }
+    const match = matches[0];
+    if (match) return match;
+    await new Promise<void>((resolve) => setTimeout(resolve, 250));
+  }
+  throw new Error('packaged DAP process was not observed within 30 seconds');
 }
 
 suite('Packaged VSIX bundled-server journey', function () {
@@ -630,5 +764,356 @@ suite('Packaged VSIX bundled-server journey', function () {
         ),
       );
     }
+  });
+
+  test('starts and cleanly stops the packaged DAP on Windows', async function () {
+    if (process.platform !== 'win32') {
+      this.skip();
+      return;
+    }
+    const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+    assert.ok(workspaceFolder, 'packaged DAP journey requires a workspace folder');
+    const extension = vscode.extensions.getExtension('EffortlessMetrics.perl-lsp-rs');
+    assert.ok(extension, 'packaged DAP journey requires the installed extension');
+    const extensionPath = extension.extensionPath;
+    const dapPath = bundledDapPath(extensionPath);
+    assert.ok(fs.existsSync(dapPath), `packaged DAP is missing: ${dapPath}`);
+    const expectedDapSha256 = sha256(dapPath);
+    const dapDirectory = path.dirname(dapPath);
+    const beforeProcesses = await scanBundledDapProcessIdentities(dapDirectory);
+    const beforeKeys = new Set(
+      beforeProcesses.map(
+        (entry) => `${entry.pid}:${entry.creationTimeFileTime ?? ''}:${entry.path.toLowerCase()}`,
+      ),
+    );
+    const workspacePath = workspaceFolder.uri.fsPath;
+    const runId = randomUUID();
+    const program = path.join(workspacePath, `packaged_dap_${runId}.pl`);
+    const pidFile = path.join(workspacePath, `packaged_dap_${runId}.pid`);
+    const releaseFile = path.join(workspacePath, `packaged_dap_${runId}.release`);
+    const environmentFile = path.join(workspacePath, `packaged_dap_${runId}.env`);
+    let debuggee: OwnedDebuggee | undefined;
+    const subscriptions: vscode.Disposable[] = [];
+
+    let startedSession: vscode.DebugSession | undefined;
+    const responseOrder: string[] = [];
+    const requestCommands = new Map<number, string>();
+    const successfulStopResponses = new Set<string>();
+    let stopRequested = false;
+    const protocolTrace: Array<Record<string, unknown>> = [];
+    let adapterError: string | undefined;
+    let unexpectedException: string | undefined;
+    let adapterExit: { code?: number; signal?: string } | undefined;
+    let primaryFailure: unknown;
+    let primaryFailed = false;
+    let cleanupFailure: AggregateError | undefined;
+    let terminated = false;
+    let resolveStarted: ((session: vscode.DebugSession) => void) | undefined;
+    let resolveTerminated: (() => void) | undefined;
+    let resolveResponses: (() => void) | undefined;
+    let resolveExit: ((exit: { code?: number; signal?: string }) => void) | undefined;
+    const started = new Promise<vscode.DebugSession>((resolve) => {
+      resolveStarted = resolve;
+    });
+    const termination = new Promise<void>((resolve) => {
+      resolveTerminated = resolve;
+    });
+    const responses = new Promise<void>((resolve) => {
+      resolveResponses = resolve;
+    });
+    const exitEvent = new Promise<{ code?: number; signal?: string }>((resolve) => {
+      resolveExit = resolve;
+    });
+    try {
+      fs.writeFileSync(
+        program,
+        [
+          'use strict;',
+          'use warnings;',
+          'my ($pid_file, $release_file, $environment_file) = @ARGV;',
+          'open my $environment, q{>}, $environment_file or die "environment file: $!";',
+          'print {$environment} "PERL_RL=$ENV{PERL_RL}\nPERLDB_OPTS=$ENV{PERLDB_OPTS}\n"; close $environment or die "environment close: $!";',
+          'open my $pid, q{>}, $pid_file or die "pid file: $!";',
+          'print {$pid} $$; close $pid or die "pid close: $!";',
+          'my $deadline = time + 120;',
+          'while (!-e $release_file && time < $deadline) { select undef, undef, undef, 0.1; }',
+          'open my $ended, q{>}, $pid_file or die "exit marker: $!";',
+          'print {$ended} "completed-without-stop"; close $ended or die "exit marker close: $!";',
+          '',
+        ].join('\n'),
+        { flag: 'wx' },
+      );
+      subscriptions.push(
+        vscode.debug.onDidStartDebugSession((session) => {
+          if (
+            session.type === 'perl' &&
+            session.configuration.program === program &&
+            session.configuration.request === 'launch'
+          ) {
+            startedSession = session;
+            resolveStarted?.(session);
+          }
+        }),
+      );
+      subscriptions.push(
+        vscode.debug.onDidTerminateDebugSession((session) => {
+          if (session === startedSession) {
+            terminated = true;
+            resolveTerminated?.();
+          }
+        }),
+      );
+      subscriptions.push(
+        vscode.debug.registerDebugAdapterTrackerFactory('perl', {
+          createDebugAdapterTracker: (session) => {
+            if (
+              session.configuration.program !== program ||
+              session.configuration.request !== 'launch'
+            ) {
+              return undefined;
+            }
+            startedSession = session;
+            return {
+              onDidSendMessage: (message: unknown) => {
+                protocolTrace.push({ direction: 'out', message });
+                if (!message || typeof message !== 'object') return;
+                const record = message as {
+                  type?: unknown;
+                  event?: unknown;
+                  command?: unknown;
+                  success?: unknown;
+                  request_seq?: unknown;
+                  body?: unknown;
+                };
+                const body =
+                  record.body && typeof record.body === 'object'
+                    ? (record.body as { reason?: unknown })
+                    : undefined;
+                if (
+                  record.type === 'event' &&
+                  record.event === 'stopped' &&
+                  body?.reason === 'exception'
+                ) {
+                  unexpectedException = 'DAP stopped event reported reason=exception';
+                }
+                if (
+                  record.type === 'response' &&
+                  record.command === 'exceptionInfo' &&
+                  record.success === true
+                ) {
+                  unexpectedException = 'DAP exceptionInfo response was successful';
+                }
+                if (record.type !== 'response' || record.success !== true) return;
+                if (
+                  record.command === 'initialize' ||
+                  record.command === 'launch' ||
+                  record.command === 'terminate' ||
+                  record.command === 'disconnect'
+                ) {
+                  if (
+                    typeof record.request_seq !== 'number' ||
+                    requestCommands.get(record.request_seq) !== record.command
+                  ) {
+                    adapterError = 'DAP response did not match its live request';
+                    resolveResponses?.();
+                    return;
+                  }
+                  if (record.command === 'initialize' || record.command === 'launch') {
+                    responseOrder.push(record.command);
+                    if (responseOrder.length >= 2) resolveResponses?.();
+                  } else if (stopRequested) {
+                    successfulStopResponses.add(record.command);
+                  }
+                }
+              },
+              onError: (error: Error) => {
+                protocolTrace.push({ direction: 'error', message: error.message });
+                // VS Code 1.125's extension-host transport reports the
+                // expected stream close as a generic "read error".  It is
+                // harmless only after this session's disconnect response has
+                // been correlated; every earlier or different error remains
+                // a failure.  The adapter exit is checked below before this
+                // marker can affect the journey verdict.
+                if (error.message === 'read error' && successfulStopResponses.has('disconnect')) {
+                  return;
+                }
+                adapterError = error.message;
+              },
+              onExit: (code: number | undefined, signal: string | undefined) => {
+                adapterExit = {
+                  ...(code === undefined ? {} : { code }),
+                  ...(signal === undefined ? {} : { signal }),
+                };
+                protocolTrace.push({ direction: 'exit', ...adapterExit });
+                resolveExit?.(adapterExit);
+              },
+              onWillReceiveMessage: (message: unknown) => {
+                protocolTrace.push({ direction: 'in', message });
+                if (message && typeof message === 'object') {
+                  const request = message as { type?: unknown; seq?: unknown; command?: unknown };
+                  if (
+                    request.type === 'request' &&
+                    typeof request.seq === 'number' &&
+                    typeof request.command === 'string'
+                  ) {
+                    requestCommands.set(request.seq, request.command);
+                  }
+                }
+              },
+            };
+          },
+        }),
+      );
+      const startResult = await withTimeout(
+        'packaged DAP startDebugging',
+        vscode.debug.startDebugging(workspaceFolder, {
+          type: 'perl',
+          request: 'launch',
+          name: 'Packaged DAP startup',
+          program,
+          args: [pidFile, releaseFile, environmentFile],
+          env: { PERL_RL: 'Perl', perldb_opts: 'CommandSet=580 ReadLine=1' },
+          cwd: workspacePath,
+          stopOnEntry: false,
+        }),
+        30_000,
+      );
+      assert.equal(startResult, true, 'VS Code did not start the packaged DAP session');
+      const session = await withTimeout('packaged DAP session start', started, 30_000);
+      const matchingProcess = await waitForNewPackagedDap(dapDirectory, beforeKeys, dapPath);
+      assert.ok(matchingProcess.creationTimeFileTime, 'packaged DAP creation time is required');
+      assert.equal(
+        sha256(matchingProcess.path),
+        expectedDapSha256,
+        'running DAP hash differs from package',
+      );
+      await withTimeout('packaged DAP initialize/launch', responses, 30_000);
+      assert.deepEqual(responseOrder.slice(0, 2), ['initialize', 'launch']);
+      assert.equal(
+        unexpectedException,
+        undefined,
+        unexpectedException ?? 'packaged DAP reported no unexpected exception',
+      );
+      debuggee = await waitForDebuggee(pidFile);
+      const childEnvironment = fs.readFileSync(environmentFile, 'utf8');
+      assert.match(childEnvironment, /^PERL_RL=Perl$/m);
+      assert.match(childEnvironment, /^PERLDB_OPTS=CommandSet=580 ReadLine=1 ReadLine=0$/m);
+      stopRequested = true;
+      await withTimeout('packaged DAP stopDebugging', vscode.debug.stopDebugging(session), 30_000);
+      await withTimeout('packaged DAP termination event', termination, 30_000);
+      assert.equal(adapterError, undefined, adapterError ?? 'packaged DAP adapter error');
+      const observedExit = await withTimeout('packaged DAP adapter exit', exitEvent, 30_000);
+      adapterExit = observedExit;
+      assert.equal(
+        unexpectedException,
+        undefined,
+        unexpectedException ?? 'packaged DAP reported no unexpected exception',
+      );
+      assert.equal(adapterError, undefined, adapterError ?? 'packaged DAP adapter error');
+      assert.ok(
+        successfulStopResponses.has('disconnect'),
+        'ordinary Stop did not complete a correlated disconnect',
+      );
+      const adapterExitCode = observedExit.code;
+      assert.equal(
+        adapterExitCode,
+        0,
+        `packaged DAP exit was not clean: ${JSON.stringify(adapterExit)}`,
+      );
+      assert.equal(
+        adapterExit.signal,
+        undefined,
+        `packaged DAP was signaled: ${JSON.stringify(adapterExit)}`,
+      );
+      assert.equal(terminated, true);
+      await waitForDebuggeeExit(debuggee);
+      assert.equal(
+        fs.readFileSync(pidFile, 'utf8').trim(),
+        String(debuggee.pid),
+        'debuggee completed through its safety deadline instead of Stop',
+      );
+      const terminalEvents = protocolTrace.filter((entry) => {
+        const message = entry.message as { type?: string; event?: string } | undefined;
+        return (
+          entry.direction === 'out' && message?.type === 'event' && message.event === 'terminated'
+        );
+      });
+      assert.equal(terminalEvents.length, 1, 'expected one terminal event');
+      const remainingProcesses = await scanBundledDapProcessIdentities(dapDirectory);
+      assert.equal(
+        remainingProcesses.filter(
+          (process) =>
+            !beforeKeys.has(
+              `${process.pid}:${process.creationTimeFileTime ?? ''}:${process.path.toLowerCase()}`,
+            ),
+        ).length,
+        0,
+        `packaged DAP process leaked: ${JSON.stringify(remainingProcesses)}`,
+      );
+    } catch (error) {
+      protocolTrace.push({ direction: 'failure', message: String(error) });
+      primaryFailed = true;
+      primaryFailure = error;
+    } finally {
+      const cleanupErrors: unknown[] = [];
+      if (fs.existsSync(program)) {
+        try {
+          fs.writeFileSync(releaseFile, 'release', { flag: 'wx' });
+        } catch (error) {
+          cleanupErrors.push(error);
+        }
+      }
+      if (startedSession && !terminated) {
+        await withTimeout(
+          'packaged DAP failure cleanup',
+          vscode.debug.stopDebugging(startedSession),
+          30_000,
+        ).catch((error: unknown) => cleanupErrors.push(error));
+        await withTimeout('packaged DAP failure termination', termination, 30_000).catch(
+          (error: unknown) => cleanupErrors.push(error),
+        );
+      }
+      if (debuggee)
+        await waitForDebuggeeExit(debuggee).catch((error: unknown) => cleanupErrors.push(error));
+      for (const subscription of subscriptions) {
+        try {
+          subscription.dispose();
+        } catch (error) {
+          cleanupErrors.push(error);
+        }
+      }
+      for (const file of [program, pidFile, releaseFile, environmentFile]) {
+        try {
+          fs.rmSync(file, { force: true });
+        } catch (error) {
+          cleanupErrors.push(error);
+        }
+      }
+      protocolTrace.push({ direction: 'cleanup', errors: cleanupErrors.map(String) });
+      try {
+        fs.mkdirSync(receiptsDir(), { recursive: true });
+        fs.writeFileSync(
+          path.join(receiptsDir(), 'packaged_dap_protocol_trace.json'),
+          JSON.stringify(protocolTrace, null, 2),
+        );
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
+      if (cleanupErrors.length) {
+        cleanupFailure = new AggregateError(cleanupErrors, 'packaged DAP cleanup failed');
+      }
+    }
+    if (primaryFailed) {
+      if (cleanupFailure) {
+        throw new AggregateError(
+          [primaryFailure, ...cleanupFailure.errors],
+          'packaged DAP journey and cleanup failed',
+        );
+      }
+      throw primaryFailure;
+    }
+    if (cleanupFailure) throw cleanupFailure;
+    assert.ok(startedSession && adapterExit && debuggee);
+    recordPackagedDapEvidence(extensionPath, dapPath, startedSession, adapterExit, debuggee);
   });
 });
