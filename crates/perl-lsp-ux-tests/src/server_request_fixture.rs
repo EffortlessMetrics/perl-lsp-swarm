@@ -442,35 +442,243 @@ mod tests {
 
     #[test]
     fn response_validation_reports_exact_errors() -> Result<()> {
-        let request = json!({"jsonrpc": "2.0", "id": 1, "method": "request"});
-        let Err(response_error) = response_id(&request) else {
-            bail!("request must not be a response");
-        };
-        ensure!(response_error.to_string().contains("expected a JSON-RPC response"));
+        let numeric_id = response_id(&json!({
+            "jsonrpc": "2.0",
+            "id": 7,
+            "result": {}
+        }))?;
+        assert_eq!(numeric_id, json!(7));
+        let string_id = response_id(&json!({
+            "jsonrpc": "2.0",
+            "id": "failure",
+            "error": {"code": -1}
+        }))?;
+        assert_eq!(string_id, json!("failure"));
+
+        for message in [
+            json!({"jsonrpc": "2.0", "id": 1, "method": "request"}),
+            json!({"jsonrpc": "2.0", "id": 1}),
+        ] {
+            let Err(response_error) = response_id(&message) else {
+                bail!("non-response must fail");
+            };
+            assert_eq!(
+                response_error.to_string(),
+                format!("fixture expected a JSON-RPC response, received {message}")
+            );
+        }
+        for message in [
+            json!({"jsonrpc": "2.0", "id": null, "result": {}}),
+            json!({"jsonrpc": "2.0", "result": {}}),
+        ] {
+            let Err(response_error) = response_id(&message) else {
+                bail!("response without an id must fail");
+            };
+            assert_eq!(
+                response_error.to_string(),
+                format!("fixture response had no id: {message}")
+            );
+        }
+
+        require_response_pair(&json!(REGISTRATION_ID), &json!(PROGRESS_ID))?;
+        require_response_pair(&json!(PROGRESS_ID), &json!(REGISTRATION_ID))?;
         for (first, second) in [
             (json!(REGISTRATION_ID), json!(REGISTRATION_ID)),
             (json!(REGISTRATION_ID), json!("other")),
+            (json!(PROGRESS_ID), json!("other")),
+            (json!("other"), json!(PROGRESS_ID)),
         ] {
             let Err(error) = require_response_pair(&first, &second) else {
                 bail!("invalid response pair must fail");
             };
-            ensure!(error.to_string().contains("fixture expected responses for ids"));
+            assert_eq!(
+                error.to_string(),
+                format!(
+                    "fixture expected responses for ids 41 and \"fixture-progress\", got {first} and {second}"
+                )
+            );
         }
         Ok(())
     }
 
     #[test]
     fn framing_validation_reports_header_errors() -> Result<()> {
+        let well_framed = frame(&json!({"jsonrpc": "2.0", "id": 1, "result": {}}));
+        assert_eq!(
+            read_one_message(&mut Cursor::new(well_framed))?,
+            json!({"jsonrpc": "2.0", "id": 1, "result": {}})
+        );
+        let odd_case_body = r#"{"jsonrpc":"2.0","id":1}"#;
+        let odd_case =
+            format!("cOnTeNt-LeNgTh: {}\r\n\r\n{odd_case_body}", odd_case_body.len()).into_bytes();
+        assert_eq!(
+            read_one_message(&mut Cursor::new(odd_case))?,
+            json!({"jsonrpc": "2.0", "id": 1})
+        );
         let Err(eof) = read_one_message(&mut Cursor::new(b"Content-Length: 4\r\n".to_vec())) else {
             bail!("truncated headers must fail");
         };
-        ensure!(eof.to_string().contains("fixture reached EOF while reading LSP headers"));
+        assert_eq!(eof.to_string(), "fixture reached EOF while reading LSP headers");
         let Err(missing_length) =
             read_one_message(&mut Cursor::new(b"X-Test: value\r\n\r\n".to_vec()))
         else {
             bail!("missing content length must fail");
         };
-        ensure!(missing_length.to_string() == "fixture message had no Content-Length");
+        assert_eq!(missing_length.to_string(), "fixture message had no Content-Length");
+        let invalid_body = b"Content-Length: 9\r\n\r\nnot-json!".to_vec();
+        let Err(invalid_json) = read_one_message(&mut Cursor::new(invalid_body)) else {
+            bail!("invalid JSON must fail");
+        };
+        assert_eq!(invalid_json.to_string(), "fixture could not decode LSP JSON body");
+        Ok(())
+    }
+
+    #[test]
+    fn request_and_notification_helpers_cover_success_and_failures() -> Result<()> {
+        assert_eq!(
+            request_id(
+                &json!({"jsonrpc": "2.0", "id": "initialize", "method": "initialize"}),
+                "initialize"
+            )?,
+            json!("initialize")
+        );
+        let wrong_request = json!({"jsonrpc": "2.0", "id": 1, "method": "other"});
+        let Err(error) = request_id(&wrong_request, "initialize") else {
+            bail!("wrong request method must fail");
+        };
+        assert_eq!(
+            error.to_string(),
+            format!("fixture expected initialize, received {wrong_request}")
+        );
+        for request in [
+            json!({"jsonrpc": "2.0", "method": "initialize"}),
+            json!({"jsonrpc": "2.0", "id": null, "method": "initialize"}),
+        ] {
+            let Err(error) = request_id(&request, "initialize") else {
+                bail!("request without an id must fail");
+            };
+            assert_eq!(
+                error.to_string(),
+                format!("fixture initialize request had no id: {request}")
+            );
+        }
+
+        require_notification(&json!({"jsonrpc": "2.0", "method": "initialized"}), "initialized")?;
+        let wrong_notification = json!({"jsonrpc": "2.0", "method": "other"});
+        let Err(error) = require_notification(&wrong_notification, "initialized") else {
+            bail!("wrong notification method must fail");
+        };
+        assert_eq!(
+            error.to_string(),
+            format!("fixture expected initialized, received {wrong_notification}")
+        );
+        let notification_with_id = json!({"jsonrpc": "2.0", "id": 1, "method": "initialized"});
+        let Err(error) = require_notification(&notification_with_id, "initialized") else {
+            bail!("notification with an id must fail");
+        };
+        assert_eq!(
+            error.to_string(),
+            format!("fixture expected initialized notification without id: {notification_with_id}")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn response_matching_and_reading_cover_success_and_failures() -> Result<()> {
+        let matching = json!({"jsonrpc": "2.0", "id": 7, "result": {"ok": true}});
+        assert!(is_response_for(&matching, &json!(7)));
+        assert!(!is_response_for(&matching, &json!(8)));
+        assert!(!is_response_for(&json!({"jsonrpc": "2.0", "id": 7}), &json!(7)));
+        assert!(!is_response_for(
+            &json!({"jsonrpc": "2.0", "id": 7, "result": {}, "method": "request"}),
+            &json!(7)
+        ));
+
+        let response =
+            read_response(&mut Cursor::new(frame(&matching)), &json!(7), "fixture/request")?;
+        assert_eq!(response, matching);
+        let mismatched = json!({"jsonrpc": "2.0", "id": 8, "result": {}});
+        let Err(error) =
+            read_response(&mut Cursor::new(frame(&mismatched)), &json!(7), "fixture/request")
+        else {
+            bail!("mismatched response id must fail");
+        };
+        assert_eq!(
+            error.to_string(),
+            format!("fixture expected response to fixture/request id=7, received {mismatched}")
+        );
+        let Err(error) = read_response(
+            &mut Cursor::new(Vec::new()),
+            &json!("configuration"),
+            "workspace/configuration",
+        ) else {
+            bail!("EOF while reading a response must fail");
+        };
+        assert_eq!(
+            error.to_string(),
+            "fixture expected response to workspace/configuration id=\"configuration\""
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn write_message_emits_exact_frame() -> Result<()> {
+        let body = r#"{"id":1,"jsonrpc":"2.0","result":{"ok":true}}"#;
+        let message = serde_json::from_str::<Value>(body)?;
+        let mut output = Vec::new();
+        write_message(&mut output, &message)?;
+        let expected = format!("Content-Length: {}\r\n\r\n{body}", body.len());
+        assert_eq!(output, expected.as_bytes());
+        Ok(())
+    }
+
+    #[test]
+    fn serve_until_exit_covers_shutdown_and_exit_paths() -> Result<()> {
+        let shutdown = json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "shutdown",
+            "params": {}
+        });
+        let exit = json!({"jsonrpc": "2.0", "method": "exit"});
+        let mut output = Vec::new();
+        serve_until_exit(&mut input_messages(&[shutdown.clone(), exit.clone()]), &mut output)?;
+        assert_eq!(
+            parse_messages(&output, 1)?,
+            vec![json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "result": {"unexpectedShowDocumentResponse": false}
+            })]
+        );
+
+        let show_document_response = json!({
+            "jsonrpc": "2.0",
+            "id": SHOW_DOCUMENT_ID,
+            "result": {"shown": true}
+        });
+        let mut output = Vec::new();
+        serve_until_exit(
+            &mut input_messages(&[show_document_response, shutdown.clone(), exit.clone()]),
+            &mut output,
+        )?;
+        assert_eq!(
+            parse_messages(&output, 1)?,
+            vec![json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "result": {"unexpectedShowDocumentResponse": true}
+            })]
+        );
+
+        let notification = json!({"jsonrpc": "2.0", "method": "other"});
+        let mut output = Vec::new();
+        serve_until_exit(&mut input_messages(&[notification, exit.clone()]), &mut output)?;
+        assert!(output.is_empty());
+
+        let mut output = Vec::new();
+        serve_until_exit(&mut input_messages(&[exit]), &mut output)?;
+        assert!(output.is_empty());
         Ok(())
     }
 }
