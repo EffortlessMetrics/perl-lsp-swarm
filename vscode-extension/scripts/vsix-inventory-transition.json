@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "owner_issue": 6694,
-  "reason": "Issue #6694 records the canonical packaged DAP target-selection change and its package-owned VS Code target metadata lookup. The exact binaryless Windows candidate bundle measures out/extension.js at 1678414 bytes, a declared +1300-byte size-only transition from the accepted base.",
-  "base_baseline_file_sha256": "d0f4bd2eaf0a74de3e8e74119e79ec070be3cdd3fb498188b68944f6e38f1d42",
-  "candidate_baseline_file_sha256": "b056bc5c2f0940e85f9d3710755f1a39805357f26502f0428a38edfa57e8100c",
-  "base_inventory_sha256": "f96e90df387423bb1b58aeed16ec63df14638bc35c37ce748e423333314856ce",
-  "candidate_inventory_sha256": "efb6c015d76fa78802b07f0171e64bef7cd71651dbf78590112e68c22366d5f6"
+  "owner_issue": 15451,
+  "reason": "Issue #15451 records the packaged DAP target-selection repair: compatible Windows ARM64 payloads prefer native ARM64, with Windows 11 x64 emulation only when supported; missing metadata follows the ordered host payload candidates. The exact candidate package measures out/extension.js at 1678528 bytes, a declared +114-byte size-only transition from the accepted base.",
+  "base_baseline_file_sha256": "b056bc5c2f0940e85f9d3710755f1a39805357f26502f0428a38edfa57e8100c",
+  "candidate_baseline_file_sha256": "97e252c780703cdac57817eb53c68e62fe8d8454364c4689569126f8dd7882f2",
+  "base_inventory_sha256": "efb6c015d76fa78802b07f0171e64bef7cd71651dbf78590112e68c22366d5f6",
+  "candidate_inventory_sha256": "4330c8d298776388ded382fe8ce8b3e810a47adf54cd214f25c5df4c0d033956"
 }
