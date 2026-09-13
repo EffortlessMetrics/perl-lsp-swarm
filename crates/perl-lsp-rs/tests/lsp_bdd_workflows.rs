@@ -20,6 +20,10 @@ use std::time::{Duration, Instant};
 use support::bdd_diagnostics::{BddScenario, DocumentDiagnosticFlow};
 use support::lsp_harness::{LspHarness, TempWorkspace};
 
+fn is_retryable_readiness_error(error: &str) -> bool {
+    error.starts_with("Request timed out after ") || error == "No response received"
+}
+
 fn find_position(text: &str, needle: &str) -> (u32, u32) {
     perl_tdd_support::must_some(
         text.split('\n').enumerate().find_map(|(line_idx, line)| {
@@ -1566,8 +1570,10 @@ sub score {
 
 #[test]
 #[serial]
-fn bdd_pull_diagnostics_tracks_result_ids_per_document() -> Result<(), Box<dyn std::error::Error>> {
-    let scenario = BddScenario::new("Pull diagnostics keep per-document resultId caches isolated");
+fn bdd_pull_diagnostics_workspace_fact_movement_retires_cached_ids()
+-> Result<(), Box<dyn std::error::Error>> {
+    let scenario =
+        BddScenario::new("Workspace fact movement retires cached pull-diagnostics result IDs");
 
     let healthy = r#"use strict;
 use warnings;
@@ -1624,22 +1630,45 @@ sub boom {
     harness.change_full(&changing_uri, 2, broken)?;
     harness.barrier();
 
-    let (stable_after_edit, changing_after_edit) = {
+    // The workspace fact tier is part of every report subject (#7480,
+    // 470277161c): re-indexing `changing.pl` moves the workspace fact
+    // generation, so the untouched document's identity moves with it and the
+    // next pull for `stable.pl` must degrade honestly to `full` with a fresh
+    // ID. The index consumes the edit on a background worker, so wait for the
+    // fact-tier movement explicitly instead of racing it: poll until the
+    // stable document's previously cached result ID stops matching. If the
+    // tier never moves the deadline expires and the full-report assertion
+    // below fails loudly, so this wait cannot mask a real regression.
+    let movement_deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let stable_after_edit = loop {
         let mut stable_diag = DocumentDiagnosticFlow::new(&mut harness, stable_uri.clone());
-        let stable_after_edit = stable_diag.request(Some(stable_id.as_str()))?;
-
-        let mut changing_diag = DocumentDiagnosticFlow::new(&mut harness, changing_uri.clone());
-        let changing_after_edit = changing_diag.request(Some(changing_id.as_str()))?;
-        (stable_after_edit, changing_after_edit)
+        let report = stable_diag.request(Some(stable_id.as_str()))?;
+        let moved = DocumentDiagnosticFlow::kind(&report) != Some("unchanged");
+        if !moved && std::time::Instant::now() < movement_deadline {
+            std::thread::sleep(std::time::Duration::from_millis(25));
+            continue;
+        }
+        break report;
     };
 
-    scenario
-        .then("the unchanged file stays unchanged while the edited file gets a new full report");
-    assert_eq!(DocumentDiagnosticFlow::kind(&stable_after_edit), Some("unchanged"));
+    let mut changing_diag = DocumentDiagnosticFlow::new(&mut harness, changing_uri.clone());
+    let changing_after_edit = changing_diag.request(Some(changing_id.as_str()))?;
+
+    scenario.then("the fact-tier movement surfaces as fresh full reports on both documents");
     assert_eq!(
-        stable_after_edit.get("resultId").and_then(Value::as_str),
-        Some(stable_id.as_str()),
-        "stable file should keep the same resultId"
+        DocumentDiagnosticFlow::kind(&stable_after_edit),
+        Some("full"),
+        "workspace fact movement (#7480) must retire the stable document's cached result ID"
+    );
+    let stable_fresh_id = DocumentDiagnosticFlow::result_id(&stable_after_edit)?;
+    assert_ne!(
+        stable_fresh_id, stable_id,
+        "stable file must receive a fresh resultId after the fact tier moved"
+    );
+    assert_eq!(
+        diagnostic_error_count(&stable_after_edit),
+        0,
+        "stable file's fresh full report must stay error-free"
     );
 
     assert_eq!(DocumentDiagnosticFlow::kind(&changing_after_edit), Some("full"));
@@ -1994,16 +2023,28 @@ Foo::do_foo();
     scenario.when("requesting hover on the module name");
     let (line, col) = find_position(main, "use Foo;");
 
-    let response = harness
-        .request_with_timeout(
+    // A single request with a fixed 1s timeout raced hover readiness under
+    // parallel test load (#13492). Poll within a bounded deadline until a
+    // hover payload arrives; the content assertions below still discriminate.
+    let hover_deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let response = loop {
+        let reply = match harness.request_with_timeout(
             "textDocument/hover",
             json!({
                 "textDocument": { "uri": main_uri },
                 "position": { "line": line, "character": col + 4 } // offset for "use "
             }),
-            std::time::Duration::from_secs(1),
-        )
-        .unwrap_or(serde_json::Value::Null);
+            std::time::Duration::from_secs(2),
+        ) {
+            Ok(reply) => reply,
+            Err(error) if is_retryable_readiness_error(&error) => serde_json::Value::Null,
+            Err(error) => return Err(error.into()),
+        };
+        if reply.get("contents").is_some() || std::time::Instant::now() >= hover_deadline {
+            break reply;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    };
 
     scenario.then("the hover response should contain the module links and MetaCPAN reference");
     assert!(!response.is_null(), "Hover response should not be null");
@@ -2047,15 +2088,33 @@ sub main_func {}
     harness.barrier();
 
     scenario.when("requesting document symbols");
-    let response = harness
-        .request_with_timeout(
+    // A single request with a fixed 1s timeout raced the server's parse
+    // publication pipeline under parallel test load (#13492): the reply could
+    // land after the deadline or list symbols before the first full
+    // publication. Poll within a bounded deadline until the package becomes
+    // visible (the same deterministic-wait pattern as `wait_for_symbol`);
+    // the full symbol assertions below still discriminate the content.
+    let symbols_deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let response = loop {
+        let reply = match harness.request_with_timeout(
             "textDocument/documentSymbol",
             json!({
                 "textDocument": { "uri": uri }
             }),
-            std::time::Duration::from_secs(1),
-        )
-        .unwrap_or(serde_json::Value::Null);
+            std::time::Duration::from_secs(2),
+        ) {
+            Ok(reply) => reply,
+            Err(error) if is_retryable_readiness_error(&error) => serde_json::Value::Null,
+            Err(error) => return Err(error.into()),
+        };
+        let published = reply.as_array().is_some_and(|symbols| {
+            symbols.iter().any(|node| node["name"].as_str() == Some("Outer"))
+        });
+        if published || std::time::Instant::now() >= symbols_deadline {
+            break reply;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    };
 
     scenario.then("the document symbols should include all packages and their subroutines");
     let empty_vec = vec![];
