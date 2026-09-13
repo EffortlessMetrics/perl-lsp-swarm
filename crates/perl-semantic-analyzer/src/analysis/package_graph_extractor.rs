@@ -32,8 +32,20 @@
 //! source-ordered and package-local: `use Moose` in one package or later in
 //! the file does not license an earlier call elsewhere.
 //!
+//! Only a declaration that actually replaces the package subroutine shadows
+//! the import. A `my`/`state` sub binds lexically, and `sub extends;` merely
+//! predeclares the name, so neither suppresses the DSL reading; `our sub` and
+//! a qualified `sub Other::extends` do, for the package they install into.
+//!
 //! Native Perl forms (`use parent`, `use base`, `@ISA`) are unaffected — they
 //! are not framework DSL and need no activation.
+//!
+//! Two boundaries remain, both narrower than the behavior this replaces.
+//! `use Moose ();` loads without importing, but the parser records it with the
+//! same empty argument vector as `use Moose;`, so it is still read as
+//! activation. And activation follows source order rather than Perl's
+//! compile-time `BEGIN` semantics, so `extends('Base'); use Moose;` emits
+//! nothing. Both err toward omitting an edge rather than inventing one.
 
 use crate::analysis::symbol::{FrameworkKind, classify_framework_module};
 use crate::ast::{Node, NodeKind};
@@ -167,9 +179,11 @@ impl ShadowScan {
                 self.current_package = name.clone();
                 return;
             }
-            NodeKind::Subroutine { name: Some(sub_name), .. } => {
-                if let Some(keyword) = dsl_keyword_for(sub_name) {
-                    self.shadowed.entry(self.current_package.clone()).or_default().set(keyword);
+            NodeKind::Subroutine { name: Some(sub_name), declarator, body, .. }
+                if Self::installs_a_package_sub(declarator.as_deref(), body) =>
+            {
+                if let Some((package, keyword)) = self.shadow_target(sub_name) {
+                    self.shadowed.entry(package).or_default().set(keyword);
                 }
             }
             _ => {}
@@ -178,6 +192,40 @@ impl ShadowScan {
         for child in node.children() {
             self.walk(child);
         }
+    }
+
+    /// Whether this declaration actually replaces a package subroutine.
+    ///
+    /// A `my`/`state` sub binds lexically and shadows the import only inside
+    /// its own scope, so it cannot suppress calls elsewhere in the package.
+    /// `our sub` is package-scoped and does shadow.
+    ///
+    /// A forward declaration (`sub extends;`) only predeclares the name and
+    /// leaves an already-imported implementation in place. The parser gives it
+    /// an empty body span, which distinguishes it from `sub extends { }` — an
+    /// empty but real definition that does shadow.
+    fn installs_a_package_sub(declarator: Option<&str>, body: &Node) -> bool {
+        let package_scoped = !matches!(declarator, Some("my") | Some("state"));
+        let is_forward_declaration = body.location.start == body.location.end;
+        package_scoped && !is_forward_declaration
+    }
+
+    /// Resolve which package a subroutine name installs into, and which DSL
+    /// keyword it collides with.
+    ///
+    /// A qualified name installs into the package it names, not the enclosing
+    /// one: `sub Other::extends` shadows `Other`, and a leading `::` means
+    /// `main`.
+    fn shadow_target(&self, sub_name: &str) -> Option<(String, DslKeyword)> {
+        let (package, base) = match sub_name.rfind("::") {
+            Some(index) => {
+                let qualifier = &sub_name[..index];
+                let package = if qualifier.is_empty() { "main" } else { qualifier }.to_string();
+                (package, &sub_name[index + 2..])
+            }
+            None => (self.current_package.clone(), sub_name),
+        };
+        dsl_keyword_for(base).map(|keyword| (package, keyword))
     }
 }
 
@@ -832,6 +880,54 @@ with 'MyApp::Printable', 'MyApp::Serializable';
             edges.iter().all(|e| e.kind != PackageEdgeKind::Inherits),
             "a shadowing sub must prevent an exact Inherits edge, got {edges:?}"
         );
+    }
+
+    #[test]
+    fn lexical_sub_does_not_shadow_the_whole_package() {
+        // `my sub extends` binds lexically inside its block; the outer Moose
+        // declaration is still the framework DSL and must keep its edge.
+        let code = "package P;\nuse Moose;\n{ my sub extends { 1 } }\nextends 'Base';\n1;\n";
+        let edges = dsl_edges(code);
+        assert_eq!(edges.len(), 1, "lexical sub must not suppress the outer call, got {edges:?}");
+        assert_eq!(edges[0].to_package, "Base");
+    }
+
+    #[test]
+    fn our_sub_does_shadow_the_package() {
+        // `our sub` is package-scoped, so it does replace the import.
+        let edges =
+            dsl_edges("package P;\nuse Moose;\nour sub extends { 1 }\nextends 'NotAParent';\n1;");
+        assert!(edges.is_empty(), "`our sub` must shadow, got {edges:?}");
+    }
+
+    #[test]
+    fn forward_declaration_does_not_shadow() {
+        // `sub extends;` predeclares the name; it does not replace the
+        // already-imported implementation.
+        let edges = dsl_edges("package P;\nuse Moose;\nsub extends;\nextends 'Base';\n1;");
+        assert_eq!(edges.len(), 1, "forward declaration must not shadow, got {edges:?}");
+        assert_eq!(edges[0].to_package, "Base");
+    }
+
+    #[test]
+    fn empty_bodied_definition_still_shadows() {
+        // `sub extends { }` is an empty but real definition, unlike `sub extends;`.
+        let edges = dsl_edges("package P;\nuse Moose;\nsub extends { }\nextends 'NotAParent';\n1;");
+        assert!(edges.is_empty(), "an empty-bodied definition must shadow, got {edges:?}");
+    }
+
+    #[test]
+    fn qualified_sub_shadows_the_package_it_names() {
+        // `sub P::extends` installs into P and shadows P's import...
+        let edges =
+            dsl_edges("package P;\nuse Moose;\nsub P::extends { 1 }\nextends 'NotAParent';");
+        assert!(edges.is_empty(), "qualified sub must shadow its own package, got {edges:?}");
+
+        // ...but a qualified sub naming a different package must not.
+        let other =
+            dsl_edges("package P;\nuse Moose;\nsub Other::extends { 1 }\nextends 'Base';\n1;");
+        assert_eq!(other.len(), 1, "qualifier names another package, got {other:?}");
+        assert_eq!(other[0].to_package, "Base");
     }
 
     #[test]
