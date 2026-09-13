@@ -280,7 +280,7 @@ impl UxClient {
         // loop yet. Readiness is then established by the server's own
         // `initialize` response, which the handshake waits for — an observable
         // signal rather than a guess about process startup latency.
-        let mut client = Self {
+        let client = Self {
             child: Mutex::new(child),
             stdin,
             initialize_result: Value::Null,
@@ -641,16 +641,9 @@ impl UxClient {
     // ── Internal helpers ──────────────────────────────────────────────────────
 
     fn send_raw(&self, msg: &Value) -> Result<()> {
-        let body = msg.to_string();
-        let header = format!("Content-Length: {}\r\n\r\n", body.len());
         let mut stdin = self.stdin.lock().unwrap_or_else(|e| e.into_inner());
-        let stdin = stdin
-            .as_mut()
-            .ok_or_else(|| anyhow!("LSP client stdin is already closed"))?;
-        stdin.write_all(header.as_bytes()).context("Failed to write LSP header to stdin")?;
-        stdin.write_all(body.as_bytes()).context("Failed to write LSP body to stdin")?;
-        stdin.flush().context("Failed to flush LSP stdin")?;
-        Ok(())
+        let stdin = stdin.as_mut().ok_or_else(|| anyhow!("LSP client stdin is already closed"))?;
+        write_framed(stdin, msg)
     }
 
     /// Explain a wait outcome, folding in the child's real exit status.
@@ -838,6 +831,14 @@ fn reap_or_kill(child: &mut Child) {
 }
 
 // ── Message framing ───────────────────────────────────────────────────────────
+
+fn write_framed(stdin: &mut ChildStdin, message: &Value) -> Result<()> {
+    let body = message.to_string();
+    let header = format!("Content-Length: {}\r\n\r\n", body.len());
+    stdin.write_all(header.as_bytes()).context("Failed to write LSP header to stdin")?;
+    stdin.write_all(body.as_bytes()).context("Failed to write LSP body to stdin")?;
+    stdin.flush().context("Failed to flush LSP stdin")
+}
 
 /// The outcome of reading one LSP frame.
 ///
