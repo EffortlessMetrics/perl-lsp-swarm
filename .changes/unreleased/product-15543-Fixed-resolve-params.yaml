@@ -1,0 +1,9 @@
+project: product
+component: Editor behavior
+kind: Fixed
+body: "Completion-item and code-action resolve requests with missing or null parameters now return a useful error instead of leaving the client waiting indefinitely."
+time: 2026-09-13T19:20:49Z
+custom:
+  PR: "15543"
+  Slug: resolve-missing-parameters
+  Breaking: "no"
