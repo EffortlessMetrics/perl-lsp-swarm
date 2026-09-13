@@ -205,7 +205,13 @@ fn walk_quickorm(
                 ctx.consume_current_builder();
             }
         }
-        NodeKind::Subroutine { .. } | NodeKind::Method { .. } => {}
+        NodeKind::Subroutine { .. } | NodeKind::Method { .. } => {
+            // A `table` call in a deferred definition has not executed, but
+            // `use`/`no` are compile-time: they run wherever they appear. Scan
+            // the body for import events only, so a nested import cannot escape
+            // containment while a nested `table` call still stays deferred.
+            record_nested_import_events(node, ctx);
+        }
         _ => {
             // A declaration or nested call can still execute the one-shot
             // builder's first `table` invocation (for example
@@ -216,6 +222,43 @@ fn walk_quickorm(
             }
             for child in node.children() {
                 walk_quickorm(child, file_id, ctx, out);
+            }
+        }
+    }
+}
+
+/// Record QuickORM import events inside a deferred definition.
+///
+/// This deliberately emits no candidates and consumes no builder: only the
+/// compile-time import events matter here.
+fn record_nested_import_events(node: &Node, ctx: &mut QuickOrmWalkCtx) {
+    match &node.kind {
+        NodeKind::Block { statements } => {
+            // Same lexical rule as the main walk: a `package` inside the body
+            // must not leak back out to the enclosing statement sequence.
+            let saved_package = ctx.current_package.clone();
+            for statement in statements {
+                record_nested_import_events(statement, ctx);
+            }
+            ctx.current_package = saved_package;
+        }
+        NodeKind::Package { name, block, .. } => {
+            let saved_package = ctx.current_package.clone();
+            ctx.current_package = Some(name.clone());
+            if let Some(block) = block {
+                record_nested_import_events(block, ctx);
+                ctx.current_package = saved_package;
+            }
+        }
+        NodeKind::Use { module, args, .. } if module == "DBIx::QuickORM" => {
+            ctx.record_import(is_explicit_table_class_import(args));
+        }
+        NodeKind::No { module, .. } if module == "DBIx::QuickORM" => {
+            ctx.record_unimport();
+        }
+        _ => {
+            for child in node.children() {
+                record_nested_import_events(child, ctx);
             }
         }
     }
@@ -256,8 +299,8 @@ fn normalized_import_args(args: &[String]) -> Vec<ImportArg> {
         let trimmed = arg.trim();
         if let Some(words) = parse_qw_words(trimmed) {
             // `qw` autoquotes every word, so each one is a proven literal.
-            normalized.extend(words.iter().filter_map(|word| {
-                normalize_symbol_name(word).map(|value| ImportArg { value, proven_static: true })
+            normalized.extend(words.into_iter().filter_map(|word| {
+                normalize_symbol_name(&word).map(|value| ImportArg { value, proven_static: true })
             }));
         } else if !matches!(trimmed, "" | "," | "=>")
             && let Some(arg) = classify_import_arg(trimmed)
@@ -829,6 +872,69 @@ use DBIx::QuickORM;
         );
 
         assert!(!has_name(&facts, "My::ORM::Table::User::id"));
+    }
+
+    #[test]
+    fn an_import_inside_a_deferred_definition_still_fails_the_package_closed() {
+        // `use`/`no` run at compile time wherever they appear, so a sub body is
+        // not a hiding place for a second import event. The companion control
+        // in `deferred_sub_body_table_call_does_not_consume_the_builder` proves
+        // a nested `table` call is still treated as deferred.
+        for (label, source) in [
+            (
+                "nested plain import",
+                r#"
+package My::ORM::Table::User;
+use DBIx::QuickORM type => 'table';
+
+sub helper { use DBIx::QuickORM; }
+
+table users => sub { column id => sub { primary_key }; };
+1;
+"#,
+            ),
+            (
+                "nested unimport",
+                r#"
+package My::ORM::Table::User;
+use DBIx::QuickORM type => 'table';
+
+sub helper { no DBIx::QuickORM; }
+
+table users => sub { column id => sub { primary_key }; };
+1;
+"#,
+            ),
+        ] {
+            let facts = candidate_facts(source);
+            assert!(
+                !has_name(&facts, "My::ORM::Table::User::id"),
+                "nested import event must fail the package closed: {label}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_package_inside_a_deferred_definition_does_not_leak_to_the_outer_walk() {
+        // If the nested import scan left `Inner` current, the outer `table`
+        // call would be attributed to the wrong package and silently lost.
+        let facts = candidate_facts(
+            r#"
+package Outer;
+use DBIx::QuickORM type => 'table';
+
+sub helper {
+    package Inner;
+    use DBIx::QuickORM;
+}
+
+table outer => sub { column outer_id => sub { primary_key }; };
+1;
+"#,
+        );
+
+        assert!(has_name(&facts, "Outer::outer_id"));
+        assert!(!has_name(&facts, "Inner::outer_id"));
     }
 
     #[test]
