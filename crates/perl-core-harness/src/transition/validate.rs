@@ -62,9 +62,10 @@ impl ValidatedCompileBaselineV2 {
 /// Validate a current run report for definitive transition classification.
 ///
 /// Requires a terminally scoreable observation (#6884 typed admission: clean
-/// exit or recognized runner/mode status) plus path uniqueness, per-file
-/// assertion bounds, summary/file-result reconciliation, and honest
-/// semantic-boundary identity. Terminal validity precedes every count check.
+/// exit or recognized runner/mode status) plus a non-empty observation in any
+/// mode (#14375), path uniqueness, per-file assertion bounds, summary/file-result
+/// reconciliation, and honest semantic-boundary identity. Terminal validity
+/// precedes every count check, and completeness precedes every per-row check.
 pub fn validate_run_report(
     report: &RunReport,
 ) -> Result<ValidatedRunReport, EvidenceValidationError> {
@@ -169,6 +170,10 @@ fn validate_mechanism_claims(
 }
 
 /// Validate an accepted V2 baseline's structural count and membership invariants.
+///
+/// Refuses an empty observation in any mode before the membership and count
+/// checks, so a vacuous baseline is reported as such rather than as a
+/// membership mismatch (#14375).
 pub fn validate_compile_baseline_v2(
     baseline: &CompileBaselineV2,
 ) -> Result<ValidatedCompileBaselineV2, EvidenceValidationError> {
@@ -656,6 +661,37 @@ mod ripr_inventory_call_observers {
         );
     }
 
+    /// The V2 arm is exercised through `classify_transition` elsewhere; this
+    /// pins its own message directly, so the gate cannot be dropped from
+    /// `validate_compile_baseline_v2` and hidden behind the membership check.
+    #[test]
+    fn validate_compile_baseline_v2_rejects_an_empty_baseline() {
+        let mut baseline = clean_v2_accepted();
+        baseline.file_results.clear();
+        baseline.file_membership.clear();
+        baseline.files_total = 0;
+        baseline.files_passed = 0;
+        baseline.files_failed = 0;
+        baseline.tap_assertions_total = 0;
+        baseline.tap_assertions_passed = 0;
+
+        let err = validate_compile_baseline_v2(&baseline).expect_err("empty accepted V2 baseline");
+
+        assert_eq!(
+            err,
+            EvidenceValidationError::new(
+                "accepted V2 observation contains no file results, so there is nothing to compare"
+            )
+        );
+    }
+
+    #[test]
+    fn validate_compile_baseline_v2_accepts_a_single_file_baseline() {
+        // Opposite-direction control for the V2 arm.
+        validate_compile_baseline_v2(&clean_v2_accepted())
+            .expect("a one-file accepted V2 baseline stays comparable");
+    }
+
     #[test]
     fn validate_run_report_accepts_a_single_file_compile_observation() {
         // Opposite-direction control: the completeness gate must refuse only
@@ -721,6 +757,41 @@ mod ripr_inventory_call_observers {
         // Opposite-direction control: the contract must not block real evidence.
         validate_run_report(&clean_execute_report())
             .expect("an honestly classified execute observation stays comparable");
+    }
+
+    /// A minimal well-formed accepted V2 baseline in compile mode.
+    fn clean_v2_accepted() -> CompileBaselineV2 {
+        let report = clean_report();
+        CompileBaselineV2 {
+            schema_version: COMPILE_BASELINE_V2_SCHEMA_VERSION.into(),
+            report_schema_version: RUN_REPORT_SCHEMA_VERSION.into(),
+            series_id: "series".into(),
+            manifest_hash: "manifest".into(),
+            repository_commit: "a".repeat(40),
+            perl_resolved_ref: report.perl_ref.clone(),
+            preparation_receipt_id: "prepare".into(),
+            compiler_subject_identity: "compiler".into(),
+            invocation_identity: "invocation".into(),
+            capability_identity: "capability".into(),
+            environment_identity: "environment".into(),
+            source_report_digest: "digest".into(),
+            accepted_transition_id: Some("transition".into()),
+            evidence_bundle: Some("bundle".into()),
+            mode: report.mode,
+            profile: report.profile,
+            runner: report.runner,
+            file_membership: report.file_results.iter().map(|result| result.path.clone()).collect(),
+            files_total: report.summary.files_total,
+            files_passed: report.summary.files_passed,
+            files_failed: report.summary.files_failed,
+            tap_assertions_total: report.summary.tap_assertions_total,
+            tap_assertions_passed: report.summary.tap_assertions_passed,
+            buckets: BTreeMap::new(),
+            expected_failures: Vec::new(),
+            file_results: report.file_results.clone(),
+            semantic_boundaries: Vec::new(),
+            boundary_retirements: Vec::new(),
+        }
     }
 
     /// A V1 accepted baseline in execute mode with an honest mechanism.
