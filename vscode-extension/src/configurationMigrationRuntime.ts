@@ -82,6 +82,15 @@ export const INVALID_REASON_CODES = {
    * exists. This is a defect in the registry, not in the user's settings.
    */
   ambiguous: 'legacy_registry_ambiguous',
+  /**
+   * The key is registered at this scope, but no historical era declared at this scope
+   * covers the public release this registry migrates from. A registry that carries several
+   * eras for one key can legitimately reach this: the era covering the source release may
+   * be declared at a different scope than the one the value was found at. Applying the
+   * nearest era anyway would silently enforce a policy written for a different release, so
+   * this fails closed instead.
+   */
+  era_not_applicable: 'legacy_registry_era_not_applicable',
   /** The registry row contains an unknown or malformed compatibility window. */
   registry_invalid: 'legacy_registry_invalid',
   /** The running extension version is absent or malformed, so expiry cannot be established. */
@@ -143,10 +152,15 @@ type RowSelection =
  * identity is taken from the caller: a second source-release input could disagree with the
  * envelope's, and there would be no way to say which of the two was policy.
  *
- * Era coverage disambiguates only. A lone same-scope row is selected exactly as before, so
- * interpretation of a single-era registry does not depend on release comparison at all.
- * When coverage does not yield exactly one row the result stays ambiguous rather than
- * resolving to whichever row happens to sort first.
+ * Era coverage is consulted whenever the *key* declares more than one era — not merely when
+ * more than one era survives the scope filter. Filtering by scope first can leave exactly one
+ * row while the era covering the source release sits at a different scope, and the live reader
+ * genuinely produces that shape: `scopeForOccurrence` derives its scope from every historical
+ * row, so it can hand this function the scope of a superseded era. Accepting that lone row
+ * would silently apply a policy written for a release this registry does not migrate from.
+ *
+ * A key with a single era carries no era choice to make, so it is selected without any release
+ * comparison and behaves exactly as it did before eras were comparable.
  */
 function selectMigrationRow(
   registry: ConfigurationMigrationRegistry,
@@ -162,13 +176,15 @@ function selectMigrationRow(
   if (onlyScopedRow === undefined) {
     return { kind: 'scope_not_permitted' };
   }
-  if (scopedRows.length === 1) {
+  if (keyRows.length === 1) {
     return { kind: 'selected', row: onlyScopedRow };
   }
 
+  // Unreachable through `interpretLegacyConfiguration`, which validates the envelope first;
+  // retained so this function cannot silently guess if it is ever called on its own.
   const sourceRelease = parseMigrationVersion(registry.source_public_release);
   if (sourceRelease === null) {
-    return { kind: 'ambiguous' };
+    return { kind: 'registry_invalid' };
   }
 
   const applicableRows = scopedRows.filter((row) => {
@@ -176,7 +192,12 @@ function selectMigrationRow(
     return era !== null && migrationEraCoversVersion(era, sourceRelease);
   });
   const applicableRow = applicableRows[0];
-  if (applicableRows.length !== 1 || applicableRow === undefined) {
+  if (applicableRows.length === 0 || applicableRow === undefined) {
+    return { kind: 'era_not_applicable' };
+  }
+  // Two eras at one key and scope both covering the source release must share that release,
+  // so registry validation rejects them. Defence in depth for an unvalidated registry.
+  if (applicableRows.length > 1) {
     return { kind: 'ambiguous' };
   }
   return { kind: 'selected', row: applicableRow };

@@ -655,8 +655,55 @@ describe('configuration migration runtime', () => {
       status: 'invalid',
       canonical_value_present: false,
       notice_required: true,
-      // Not `legacy_key_not_registered`: the key is registered.
-      reason_code: 'legacy_registry_ambiguous',
+      // Not `legacy_key_not_registered`: the key is registered. And not `ambiguous`: the
+      // eras are disjoint, so nothing is ambiguous — none of them simply applies here.
+      reason_code: 'legacy_registry_era_not_applicable',
+    });
+  });
+
+  test('a lone row at the resolved scope is refused when its era is superseded', () => {
+    // The era covering the source release is declared at a *different* scope, so filtering
+    // by scope leaves exactly one row — a superseded one. Consulting era coverage only when
+    // several rows survive the scope filter would accept it and apply 0.16-era policy to a
+    // registry that migrates from 0.17.0.
+    const supersededAtThisScope = twoEraRegistry(
+      { introduced_version: '0.16.0', last_supported_version: '0.16.x', old_scope: 'resource' },
+      {
+        introduced_version: '0.17.0',
+        last_supported_version: '0.17.x',
+        old_scope: 'machine',
+        security_trust_class: 'ordinary',
+      },
+    );
+
+    expect(validateMigrationRegistry(supersededAtThisScope)).toEqual([]);
+    expect(interpretOldSetting(supersededAtThisScope)).toMatchObject({
+      migration_id: null,
+      status: 'invalid',
+      canonical_value_present: false,
+      reason_code: 'legacy_registry_era_not_applicable',
+    });
+  });
+
+  test('a single-era key is still selected without any release comparison', () => {
+    // The negative control for the rule above: one era means no era choice, so a registry
+    // whose lone row does not cover its own source release behaves exactly as on main.
+    const singleStaleEra = (() => {
+      const base = compatibleRegistry();
+      const row = base.rows[0];
+      if (row === undefined) {
+        throw new Error('compatibleRegistry must define one row');
+      }
+      return {
+        ...base,
+        rows: [{ ...row, introduced_version: '0.14.0', last_supported_version: '0.14.x' }],
+      };
+    })();
+
+    expect(validateMigrationRegistry(singleStaleEra)).toEqual([]);
+    expect(interpretOldSetting(singleStaleEra)).toMatchObject({
+      migration_id: 'legacy_rename',
+      status: 'compatible_legacy',
     });
   });
 

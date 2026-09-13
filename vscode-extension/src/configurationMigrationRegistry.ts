@@ -131,12 +131,14 @@ const MINOR_SERIES_PATTERN = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.x$/;
 /**
  * Parse one era bound, or `null` when the spelling is outside the accepted grammar.
  *
- * A leading `v` and a prerelease tag are both refused rather than normalized away: a
- * release era is not a prerelease, and admitting two spellings of one bound would make
- * the registry's byte-stable serialization depend on which spelling an author chose.
+ * A leading `v`, a prerelease tag, and build metadata are all refused rather than
+ * normalized away. A release era is not a prerelease, and `parseStrictSemver` *discards*
+ * build metadata — so accepting it would make `0.17.0` and `0.17.0+build.1` two spellings
+ * of one bound, and the registry's byte-stable serialization would then depend on which
+ * spelling an author happened to choose.
  */
 export function parseMigrationEraBound(value: unknown): MigrationEraBound | null {
-  if (typeof value !== 'string' || value.startsWith('v')) return null;
+  if (typeof value !== 'string' || value.startsWith('v') || value.includes('+')) return null;
 
   const series = MINOR_SERIES_PATTERN.exec(value);
   if (series) {

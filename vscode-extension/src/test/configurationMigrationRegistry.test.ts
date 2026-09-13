@@ -158,6 +158,8 @@ describe('public-beta configuration migration registry', () => {
     ['0.17.*', 'the wildcard spelling is `x`'],
     ['0.17.0-rc.1', 'a release era is not a prerelease'],
     ['v0.17.0', 'one bound must have one spelling'],
+    ['0.17.0+build.1', 'build metadata is discarded, so it would be a second spelling'],
+    ['0.17.x+build.1', 'a minor series takes no build metadata either'],
     ['latest', 'a moving target is not a historical bound'],
     ['', 'an empty bound admits nothing'],
   ])('rejects %s as an era bound (%s)', (bound) => {

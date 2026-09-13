@@ -2,6 +2,7 @@ import {
   type ConfigurationMigrationRegistry,
   type ConfigurationMigrationRow,
   V018_CONFIGURATION_MIGRATIONS,
+  validateMigrationRegistry,
 } from '../configurationMigrationRegistry';
 import {
   type ConfigurationTarget,
@@ -232,9 +233,11 @@ describe('live legacy configuration reader', () => {
           firstRow,
           {
             ...firstRow,
-            migration_id: 'legacy_rename_other_era',
-            introduced_version: '0.16.0',
-            last_supported_version: '0.16.x',
+            migration_id: 'legacy_rename_other_scope',
+            // Deliberately the same era as the first row. This case is about scope
+            // resolution, not era selection: both rows must speak for the registry's
+            // source release so the outcome is attributable to scope alone. (Same era at
+            // a *different* scope is not an overlap — overlap is per key and scope.)
             old_scope: secondScope,
           },
         ],
@@ -256,6 +259,49 @@ describe('live legacy configuration reader', () => {
       }
     },
   );
+
+  test('a superseded era at the resolved scope is refused, not honored', () => {
+    // The end-to-end form of the same rule: the era covering source_public_release (0.17.0)
+    // is declared at `machine`, which does not authorize a workspace target, so the reader
+    // resolves the occurrence to `resource` and finds only the superseded 0.16 row there.
+    const { registry, key } = registryWithRow({
+      old_scope: 'resource',
+      introduced_version: '0.16.0',
+      last_supported_version: '0.16.x',
+      security_trust_class: 'ordinary',
+    });
+    const firstRow = registry.rows[0];
+    if (firstRow === undefined) {
+      throw new Error('registryWithRow must define one row');
+    }
+    const crossScopeEras: ConfigurationMigrationRegistry = {
+      ...registry,
+      rows: [
+        firstRow,
+        {
+          ...firstRow,
+          migration_id: 'legacy_current_era_machine',
+          introduced_version: '0.17.0',
+          last_supported_version: '0.17.x',
+          old_scope: 'machine',
+        },
+      ],
+    };
+
+    expect(validateMigrationRegistry(crossScopeEras)).toEqual([]);
+
+    const occurrences = readLegacyConfiguration(crossScopeEras, EXTENSION_VERSION, (probed) =>
+      probed === key ? { workspace: { value: true } } : {},
+    );
+
+    expect(occurrences).toHaveLength(1);
+    expect(occurrences[0]?.runtime).toMatchObject({
+      source_scope: 'resource',
+      status: 'invalid',
+      canonical_value_present: false,
+      reason_code: 'legacy_registry_era_not_applicable',
+    });
+  });
 
   test('published state carries no raw value, path, or secret', () => {
     const state = legacyMigrationState(
