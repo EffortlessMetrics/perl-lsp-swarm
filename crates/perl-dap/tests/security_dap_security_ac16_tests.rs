@@ -16,6 +16,8 @@
 //! Spec: docs/DAP_SECURITY_SPECIFICATION.md
 //! AC:16
 
+use std::path::PathBuf;
+
 use perl_dap::security::{
     MAX_TIMEOUT_MS, SecurityError, validate_condition, validate_expression, validate_path,
     validate_timeout,
@@ -23,6 +25,22 @@ use perl_dap::security::{
 use std::path::Path;
 
 type R = Result<(), Box<dyn std::error::Error>>;
+
+// fs::canonicalize on Windows returns a verbatim `\?\`-prefixed path; the
+// validator's contract (perl-parser-core path_security) compares against the
+// stripped form, so tests must speak the same shape (#15420).
+fn normalize_canonical(path: PathBuf) -> PathBuf {
+    #[cfg(windows)]
+    {
+        if let Some(stripped) = path.to_str().and_then(|s| s.strip_prefix(r"\\?\UNC\")) {
+            return PathBuf::from(format!(r"\\{}", stripped));
+        }
+        if let Some(stripped) = path.to_str().and_then(|s| s.strip_prefix(r"\\?\")) {
+            return PathBuf::from(stripped);
+        }
+    }
+    path
+}
 
 // ===========================================================================
 // Section 1: Breakpoint path traversal (setBreakpoints source.path)
@@ -32,7 +50,7 @@ type R = Result<(), Box<dyn std::error::Error>>;
 #[test]
 fn breakpoint_path_classic_parent_traversal_rejected() -> R {
     let tmp = tempfile::tempdir()?;
-    let ws = tmp.path().canonicalize()?;
+    let ws = normalize_canonical(tmp.path().canonicalize()?);
     let result = validate_path(Path::new("../../etc/passwd"), &ws);
     assert!(result.is_err(), "Classic traversal must be rejected");
     match result {
@@ -48,7 +66,7 @@ fn breakpoint_path_classic_parent_traversal_rejected() -> R {
 #[test]
 fn breakpoint_path_absolute_system_file_rejected() -> R {
     let tmp = tempfile::tempdir()?;
-    let ws = tmp.path().canonicalize()?;
+    let ws = normalize_canonical(tmp.path().canonicalize()?);
     let result = validate_path(Path::new("/etc/passwd"), &ws);
     assert!(result.is_err(), "Absolute path outside workspace must be rejected");
     Ok(())
@@ -58,7 +76,7 @@ fn breakpoint_path_absolute_system_file_rejected() -> R {
 #[test]
 fn breakpoint_path_null_byte_injection_rejected() -> R {
     let tmp = tempfile::tempdir()?;
-    let ws = tmp.path().canonicalize()?;
+    let ws = normalize_canonical(tmp.path().canonicalize()?);
     let result = validate_path(Path::new("src/main.pl\0.evil"), &ws);
     assert!(
         matches!(result, Err(SecurityError::InvalidPathCharacters)),
@@ -71,7 +89,7 @@ fn breakpoint_path_null_byte_injection_rejected() -> R {
 #[test]
 fn breakpoint_path_within_workspace_accepted() -> R {
     let tmp = tempfile::tempdir()?;
-    let ws = tmp.path().canonicalize()?;
+    let ws = normalize_canonical(tmp.path().canonicalize()?);
     let result = validate_path(Path::new("src/main.pl"), &ws)?;
     assert!(result.starts_with(&ws), "Resolved path must be within workspace");
     Ok(())
@@ -83,7 +101,7 @@ fn breakpoint_path_within_workspace_accepted() -> R {
 #[test]
 fn breakpoint_path_deep_traversal_bomb_rejected() -> R {
     let tmp = tempfile::tempdir()?;
-    let ws = tmp.path().canonicalize()?;
+    let ws = normalize_canonical(tmp.path().canonicalize()?);
     let payload = "../".repeat(50) + "etc/passwd";
     let result = validate_path(Path::new(&payload), &ws);
     assert!(result.is_err(), "Deep traversal bomb must be rejected");
@@ -95,7 +113,7 @@ fn breakpoint_path_deep_traversal_bomb_rejected() -> R {
 #[test]
 fn breakpoint_path_proc_self_environ_rejected() -> R {
     let tmp = tempfile::tempdir()?;
-    let ws = tmp.path().canonicalize()?;
+    let ws = normalize_canonical(tmp.path().canonicalize()?);
     let result = validate_path(Path::new("/proc/self/environ"), &ws);
     assert!(result.is_err(), "/proc/self/environ must be rejected as breakpoint path");
     Ok(())

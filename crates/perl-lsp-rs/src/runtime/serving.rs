@@ -28,9 +28,11 @@ impl LspServer {
         let mut message_reader = ContentLengthMessageReader::new();
 
         loop {
-            // Read LSP message using transport module
-            match message_reader.read_next(reader)? {
-                Some(request) => {
+            // Read LSP message using transport module. Typed decode failures are
+            // logged with payload-private metadata and skipped; exact respond/
+            // close/exit disposition remains #6720.
+            match message_reader.read_next_outcome(reader)? {
+                Some(Ok(request)) => {
                     tracing::trace!(method = %request.method, "Received request");
 
                     // Handle the request
@@ -39,6 +41,13 @@ impl LspServer {
                         log_response(&response);
                         self.outbound_sink().send_response(response)?;
                     }
+                }
+                Some(Err(error)) => {
+                    tracing::warn!(
+                        stage = error.stage().as_str(),
+                        payload_bytes = error.payload_bytes(),
+                        "incoming message rejected"
+                    );
                 }
                 None => {
                     // EOF reached, exit cleanly
