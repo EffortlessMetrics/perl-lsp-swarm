@@ -8,6 +8,8 @@ import Mocha from 'mocha';
 import {
   assertCandidateBoundInstallSource,
   assertCandidateBoundPlatform,
+  isDeterministicPublishedInstallFailure,
+  retryPublishedInstall,
 } from './runPublishedSmoke';
 import { assertSmokeSelector, run as runPublishedSuite } from './suite';
 
@@ -129,6 +131,111 @@ void test('unsupported candidate-bound platform still throws the typed boundary 
   assert.throws(
     () => assertCandidateBoundPlatform('darwin', true),
     /supported only on Linux and Windows.*darwin bundled-server digest binding/,
+  );
+});
+
+void test('published install fails fast for deterministic launcher failures', async () => {
+  let attempts = 0;
+  const waits: number[] = [];
+  await assert.rejects(
+    retryPublishedInstall(
+      () => {
+        attempts += 1;
+        return { status: 127, stderr: 'error while loading shared libraries: libnspr4.so' };
+      },
+      async (milliseconds) => {
+        waits.push(milliseconds);
+      },
+    ),
+    /deterministically[\s\S]*libnspr4\.so/,
+  );
+  assert.equal(attempts, 1);
+  assert.deepEqual(waits, []);
+});
+
+void test('published install fails fast for the WSL launcher refusal', async () => {
+  let attempts = 0;
+  await assert.rejects(
+    retryPublishedInstall(
+      () => {
+        attempts += 1;
+        return {
+          status: 1,
+          stderr: 'To use Visual Studio Code with the Windows Subsystem for Linux',
+        };
+      },
+      async () => undefined,
+    ),
+    /deterministically[\s\S]*Windows Subsystem for Linux/,
+  );
+  assert.equal(attempts, 1);
+});
+
+void test('published install retries generic WSL environment and prompt diagnostics', async () => {
+  let attempts = 0;
+  const waits: number[] = [];
+  await retryPublishedInstall(
+    () => {
+      attempts += 1;
+      return attempts === 1
+        ? { status: 1, stderr: 'DONT_PROMPT_WSL_INSTALL=1\nDo you want to continue anyway? [y/N]' }
+        : { status: 0 };
+    },
+    async (milliseconds) => {
+      waits.push(milliseconds);
+    },
+  );
+  assert.equal(attempts, 2);
+  assert.deepEqual(waits, [20_000]);
+});
+
+void test('published install keeps retrying transient failures', async () => {
+  let attempts = 0;
+  const waits: number[] = [];
+  await retryPublishedInstall(
+    () => {
+      attempts += 1;
+      return attempts < 3 ? { status: 1, stderr: 'extension install lock is busy' } : { status: 0 };
+    },
+    async (milliseconds) => {
+      waits.push(milliseconds);
+    },
+  );
+  assert.equal(attempts, 3);
+  assert.deepEqual(waits, [20_000, 20_000]);
+});
+
+void test('published install exhausts the existing bound for unknown failures', async () => {
+  let attempts = 0;
+  const waits: number[] = [];
+  await assert.rejects(
+    retryPublishedInstall(
+      () => {
+        attempts += 1;
+        return { status: 1, stderr: 'unknown install failure' };
+      },
+      async (milliseconds) => {
+        waits.push(milliseconds);
+      },
+    ),
+    /after 12 attempts[\s\S]*unknown install failure/,
+  );
+  assert.equal(attempts, 12);
+  assert.equal(waits.length, 11);
+});
+
+void test('published install classifies spawn ENOENT as deterministic', () => {
+  const missing = Object.assign(new Error('missing executable'), { code: 'ENOENT' as const });
+  assert.equal(isDeterministicPublishedInstallFailure({ status: null, error: missing }), true);
+});
+
+void test('published install success wins over launcher-looking output', () => {
+  assert.equal(
+    isDeterministicPublishedInstallFailure({
+      status: 0,
+      stderr: 'DONT_PROMPT_WSL_INSTALL is recommended for this launcher',
+    }),
+    false,
   );
 });
 

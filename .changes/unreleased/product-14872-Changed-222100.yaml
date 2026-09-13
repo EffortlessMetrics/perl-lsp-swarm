@@ -1,0 +1,9 @@
+project: product
+component: Release governance
+kind: Changed
+body: "Release status now distinguishes the shipped v0.17 public beta from the bounded v0.18 first-RC transaction, treats the discarded internal rc.1 preparation and closed projection leaves as historical, and preserves #13768 standing RC authorization without implying stable-channel approval."
+time: 2026-09-05T22:21:00Z
+custom:
+  PR: "14872"
+  Slug: first-rc-release-status-authority
+  Breaking: "no"
