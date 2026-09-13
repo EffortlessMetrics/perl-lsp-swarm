@@ -27,6 +27,8 @@ import {
   isTransientManagedInstallError,
   parseLocalVersion,
   hostManagedCompatibilityKeys,
+  readGitHubToken,
+  resolveGitHubAuthDisposition,
   __resetManagedInstallSingleflightForTesting,
 } from '../downloader';
 import {
@@ -2113,6 +2115,230 @@ describe('BinaryDownloader getLatestRelease timeout', () => {
       }
     }
   });
+
+  /**
+   * The credential decision is named rather than inferred (#15493): the reason
+   * the token was dropped reaches the log, and the token itself never does.
+   */
+  test('records why credentials were withheld without logging the token', async () => {
+    // This control reads the log, so it needs its own channel rather than the
+    // shared fixture's discarded one.
+    const channel = makeOutputChannel();
+    const localDownloader = new BinaryDownloader(
+      makeContext(),
+      channel,
+    ) as unknown as TestDownloader;
+    jest
+      .spyOn(localDownloader as unknown as { getPlatformTarget: () => string }, 'getPlatformTarget')
+      .mockReturnValue('x86_64-unknown-linux-gnu');
+    const seams = localDownloader as unknown as DownloaderSeams;
+    const response = makeResponse();
+    const request = new EventEmitter() as TestRequest;
+    request.destroy = jest.fn();
+    const priorToken = process.env.GITHUB_TOKEN;
+    const priorGh = process.env.GH_TOKEN;
+    process.env.GITHUB_TOKEN = 'test-token-should-not-leak';
+    delete process.env.GH_TOKEN;
+
+    const vscode = require('vscode');
+    vscode.workspace.getConfiguration.mockReturnValue({
+      get: jest.fn((key: string, defaultValue?: unknown) => {
+        if (key === 'channel') {
+          return 'latest';
+        }
+        if (key === 'downloadBaseUrl') {
+          return '';
+        }
+        if (key === 'proxyStrictSSL') {
+          return false;
+        }
+        return defaultValue;
+      }),
+      update: jest.fn(),
+    });
+
+    jest.spyOn(seams, 'httpGet').mockImplementation((_https, _url, _options, callback) => {
+      (callback as (value: unknown) => void)(response);
+      process.nextTick(() => {
+        response.emit(
+          'data',
+          JSON.stringify([
+            {
+              tag_name: 'v1.2.3',
+              prerelease: false,
+              assets: [
+                {
+                  name: 'perllsp-1.2.3-x86_64-unknown-linux-gnu.tar.gz',
+                  browser_download_url:
+                    'https://example.invalid/perllsp-1.2.3-x86_64-unknown-linux-gnu.tar.gz',
+                },
+              ],
+            },
+          ]),
+        );
+        response.emit('end');
+      });
+      return request;
+    });
+
+    try {
+      await seams.getLatestRelease(1000);
+      const logged = (channel.appendLine as unknown as jest.Mock).mock.calls
+        .map((call) => String(call[0]))
+        .join('\n');
+      expect(logged).toMatch(/withheld/i);
+      expect(logged).toMatch(/http\.proxyStrictSSL/);
+      expect(logged).not.toContain('test-token-should-not-leak');
+    } finally {
+      if (priorToken === undefined) {
+        delete process.env.GITHUB_TOKEN;
+      } else {
+        process.env.GITHUB_TOKEN = priorToken;
+      }
+      if (priorGh !== undefined) {
+        process.env.GH_TOKEN = priorGh;
+      }
+    }
+  });
+
+  test('sends GitHub bearer credentials when certificate validation is on', async () => {
+    const seams = downloader as unknown as DownloaderSeams;
+    const response = makeResponse();
+    const request = new EventEmitter() as TestRequest;
+    request.destroy = jest.fn();
+    const priorToken = process.env.GITHUB_TOKEN;
+    const priorGh = process.env.GH_TOKEN;
+    process.env.GITHUB_TOKEN = 'test-token-should-be-sent';
+    delete process.env.GH_TOKEN;
+
+    const vscode = require('vscode');
+    vscode.workspace.getConfiguration.mockReturnValue({
+      get: jest.fn((key: string, defaultValue?: unknown) => {
+        if (key === 'channel') {
+          return 'latest';
+        }
+        if (key === 'downloadBaseUrl') {
+          return '';
+        }
+        if (key === 'proxyStrictSSL') {
+          return true;
+        }
+        return defaultValue;
+      }),
+      update: jest.fn(),
+    });
+
+    let capturedOptions: { headers?: Record<string, string> } | undefined;
+    jest.spyOn(seams, 'httpGet').mockImplementation((_https, _url, options, callback) => {
+      capturedOptions = options as { headers?: Record<string, string> };
+      (callback as (value: unknown) => void)(response);
+      process.nextTick(() => {
+        response.emit(
+          'data',
+          JSON.stringify([
+            {
+              tag_name: 'v1.2.3',
+              prerelease: false,
+              assets: [
+                {
+                  name: 'perllsp-1.2.3-x86_64-unknown-linux-gnu.tar.gz',
+                  browser_download_url:
+                    'https://example.invalid/perllsp-1.2.3-x86_64-unknown-linux-gnu.tar.gz',
+                },
+              ],
+            },
+          ]),
+        );
+        response.emit('end');
+      });
+      return request;
+    });
+
+    try {
+      await seams.getLatestRelease(1000);
+      expect(capturedOptions?.headers?.Authorization).toBe('Bearer test-token-should-be-sent');
+    } finally {
+      if (priorToken === undefined) {
+        delete process.env.GITHUB_TOKEN;
+      } else {
+        process.env.GITHUB_TOKEN = priorToken;
+      }
+      if (priorGh !== undefined) {
+        process.env.GH_TOKEN = priorGh;
+      }
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// GitHub credential policy (#15493)
+// ---------------------------------------------------------------------------
+describe('GitHub API credential policy', () => {
+  const apiUrl = 'https://api.github.com/repos/EffortlessMetrics/perl-lsp/releases';
+
+  test('attaches the credential to a GitHub API host over verified TLS', () => {
+    expect(resolveGitHubAuthDisposition({ url: apiUrl, hasToken: true, strictTls: true })).toBe(
+      'sent',
+    );
+  });
+
+  test('withholds the credential when certificate validation is disabled', () => {
+    expect(resolveGitHubAuthDisposition({ url: apiUrl, hasToken: true, strictTls: false })).toBe(
+      'withheld_unverified_tls',
+    );
+  });
+
+  test('reports the absent token separately from a transport refusal', () => {
+    expect(resolveGitHubAuthDisposition({ url: apiUrl, hasToken: false, strictTls: true })).toBe(
+      'no_token',
+    );
+    expect(resolveGitHubAuthDisposition({ url: apiUrl, hasToken: false, strictTls: false })).toBe(
+      'no_token',
+    );
+  });
+
+  test('never offers the credential to another host', () => {
+    for (const url of [
+      'https://api.github.com.evil.invalid/repos/x/y/releases',
+      'https://objects.githubusercontent.com/release.tar.gz',
+      'https://internal.invalid/releases',
+      'http://api.github.com/repos/x/y/releases',
+    ]) {
+      expect(resolveGitHubAuthDisposition({ url, hasToken: true, strictTls: true })).toBe(
+        'not_github_api_host',
+      );
+    }
+  });
+
+  test('reads either supported token variable', () => {
+    const priorToken = process.env.GITHUB_TOKEN;
+    const priorGh = process.env.GH_TOKEN;
+    try {
+      delete process.env.GITHUB_TOKEN;
+      delete process.env.GH_TOKEN;
+      expect(readGitHubToken()).toBeUndefined();
+
+      process.env.GH_TOKEN = 'gh-token';
+      expect(readGitHubToken()).toBe('gh-token');
+
+      process.env.GITHUB_TOKEN = 'github-token';
+      expect(readGitHubToken()).toBe('github-token');
+
+      process.env.GITHUB_TOKEN = '';
+      expect(readGitHubToken()).toBe('gh-token');
+    } finally {
+      if (priorToken === undefined) {
+        delete process.env.GITHUB_TOKEN;
+      } else {
+        process.env.GITHUB_TOKEN = priorToken;
+      }
+      if (priorGh === undefined) {
+        delete process.env.GH_TOKEN;
+      } else {
+        process.env.GH_TOKEN = priorGh;
+      }
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -2896,6 +3122,96 @@ describe('ensureBinary error classification', () => {
     const call = vscode.window.showErrorMessage.mock.calls[0];
     expect(call[0]).toMatch(/403|rate.?limit|GITHUB_TOKEN/i);
     expect(call[0]).toMatch(/perl-lsp\.serverPath/);
+  });
+
+  /**
+   * A 403 is diagnosed against the credential decision that was actually made
+   * (#15493). Telling a user to set GITHUB_TOKEN is wrong advice when the token
+   * exists and was withheld because certificate validation is disabled.
+   */
+  function withStrictSSL(strictSSL: boolean): void {
+    const vscode = require('vscode');
+    vscode.workspace.getConfiguration.mockImplementation(() => ({
+      get: jest.fn((key: string, defaultValue?: unknown) =>
+        key === 'proxyStrictSSL' ? strictSSL : defaultValue,
+      ),
+      has: jest.fn(() => false),
+      inspect: jest.fn(),
+      update: jest.fn(),
+    }));
+  }
+
+  function withGitHubToken(token: string | undefined, run: () => Promise<void>): Promise<void> {
+    const priorGithub = process.env.GITHUB_TOKEN;
+    const priorGh = process.env.GH_TOKEN;
+    delete process.env.GH_TOKEN;
+    if (token === undefined) {
+      delete process.env.GITHUB_TOKEN;
+    } else {
+      process.env.GITHUB_TOKEN = token;
+    }
+    return run().finally(() => {
+      if (priorGithub === undefined) {
+        delete process.env.GITHUB_TOKEN;
+      } else {
+        process.env.GITHUB_TOKEN = priorGithub;
+      }
+      if (priorGh !== undefined) {
+        process.env.GH_TOKEN = priorGh;
+      }
+    });
+  }
+
+  test('HTTP 403 names proxyStrictSSL when a present token was withheld', async () => {
+    await withGitHubToken('test-token-should-not-leak', async () => {
+      withStrictSSL(false);
+      setupDownloadError('Failed to download: HTTP 403');
+      const vscode = require('vscode');
+      vscode.window.showErrorMessage.mockResolvedValue(undefined);
+
+      await downloader.ensureBinary();
+
+      const message = vscode.window.showErrorMessage.mock.calls[0][0] as string;
+      expect(message).toMatch(/http\.proxyStrictSSL/);
+      // The user already set a token; repeating that advice sends them to the
+      // wrong setting.
+      expect(message).not.toMatch(/set the GITHUB_TOKEN environment variable/);
+      expect(message).not.toContain('test-token-should-not-leak');
+      expect(message).toMatch(/perl-lsp\.serverPath/);
+    });
+  });
+
+  test('HTTP 403 keeps the token advice when no token was withheld', async () => {
+    await withGitHubToken(undefined, async () => {
+      // Certificate validation is off, but there is no credential to withhold,
+      // so the anonymous rate limit really is the whole story.
+      withStrictSSL(false);
+      setupDownloadError('Failed to download: HTTP 403');
+      const vscode = require('vscode');
+      vscode.window.showErrorMessage.mockResolvedValue(undefined);
+
+      await downloader.ensureBinary();
+
+      const message = vscode.window.showErrorMessage.mock.calls[0][0] as string;
+      expect(message).toMatch(/set the GITHUB_TOKEN environment variable/);
+      expect(message).not.toMatch(/http\.proxyStrictSSL/);
+    });
+  });
+
+  test('HTTP 403 keeps the token advice when the token was sent', async () => {
+    await withGitHubToken('test-token-should-not-leak', async () => {
+      withStrictSSL(true);
+      setupDownloadError('Failed to download: HTTP 403');
+      const vscode = require('vscode');
+      vscode.window.showErrorMessage.mockResolvedValue(undefined);
+
+      await downloader.ensureBinary();
+
+      const message = vscode.window.showErrorMessage.mock.calls[0][0] as string;
+      expect(message).toMatch(/set the GITHUB_TOKEN environment variable/);
+      expect(message).not.toMatch(/http\.proxyStrictSSL/);
+      expect(message).not.toContain('test-token-should-not-leak');
+    });
   });
 
   test('HTTP 404 shows not-found guidance with download URL', async () => {

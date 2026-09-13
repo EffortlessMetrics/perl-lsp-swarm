@@ -275,15 +275,66 @@ export async function copyManagedFileWithRetry(
   }
 }
 
-function githubApiHeaders(url: string, includeAuth = true): Record<string, string> {
+/** Only requests to this origin may carry the GitHub API bearer credential. */
+const GITHUB_API_ORIGIN = 'https://api.github.com/';
+
+/**
+ * Why a managed-release request did or did not carry GitHub API credentials.
+ *
+ * Certificate validation (`http.proxyStrictSSL`) and credential attachment are
+ * two separate policies. They used to share one boolean by accident: the
+ * strict-TLS flag was passed positionally into an `includeAuth` parameter, so
+ * editing either policy silently moved the other and nothing in the code named
+ * the rule being applied (#15493). Resolving the decision into this disposition
+ * keeps the two policies independent and lets callers explain the outcome.
+ */
+export type GitHubAuthDisposition =
+  | 'sent'
+  | 'no_token'
+  | 'not_github_api_host'
+  | 'withheld_unverified_tls';
+
+/** The GitHub token this host offers, if any. */
+export function readGitHubToken(): string | undefined {
+  return process.env.GITHUB_TOKEN || process.env.GH_TOKEN || undefined;
+}
+
+/**
+ * Decide whether one managed-release request may carry the GitHub credential.
+ *
+ * `withheld_unverified_tls` is a deliberate refusal, not a side effect: with
+ * `http.proxyStrictSSL` disabled the connection's certificate is not validated,
+ * so any host able to intercept it could read a bearer token. The request still
+ * proceeds, unauthenticated and subject to the anonymous rate limit.
+ */
+export function resolveGitHubAuthDisposition(params: {
+  readonly url: string;
+  readonly hasToken: boolean;
+  readonly strictTls: boolean;
+}): GitHubAuthDisposition {
+  if (!params.url.startsWith(GITHUB_API_ORIGIN)) {
+    return 'not_github_api_host';
+  }
+  if (!params.hasToken) {
+    return 'no_token';
+  }
+  if (!params.strictTls) {
+    return 'withheld_unverified_tls';
+  }
+  return 'sent';
+}
+
+function githubApiHeaders(authDisposition: GitHubAuthDisposition): Record<string, string> {
   const headers: Record<string, string> = {
     'User-Agent': 'vscode-perl-lsp',
     Accept: 'application/vnd.github+json',
   };
 
-  const token = process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
-  if (includeAuth && token && url.startsWith('https://api.github.com/')) {
-    headers.Authorization = `Bearer ${token}`;
+  if (authDisposition === 'sent') {
+    const token = readGitHubToken();
+    if (token) {
+      headers.Authorization = `Bearer ${token}`;
+    }
   }
 
   return headers;
@@ -700,6 +751,38 @@ export class BinaryDownloader {
     return this.lastErrorMessage;
   }
 
+  /** The GitHub API endpoint that lists this product's releases. */
+  private static releasesApiUrl(): string {
+    return `${GITHUB_API_ORIGIN}repos/${BinaryDownloader.REPO_OWNER}/${BinaryDownloader.REPO_NAME}/releases`;
+  }
+
+  /**
+   * Remedy sentence for an HTTP 403 from the release API.
+   *
+   * "Set GITHUB_TOKEN" is wrong advice for a user who already set one and had
+   * it withheld because certificate validation is off (#15493): the setting to
+   * change is `http.proxyStrictSSL`, not the environment.
+   */
+  private rateLimitRemedy(): string {
+    const strictTls = vscode.workspace
+      .getConfiguration('http')
+      .get<boolean>('proxyStrictSSL', true);
+    const disposition = resolveGitHubAuthDisposition({
+      url: BinaryDownloader.releasesApiUrl(),
+      hasToken: readGitHubToken() !== undefined,
+      strictTls,
+    });
+
+    if (disposition === 'withheld_unverified_tls') {
+      return (
+        'Your GitHub token was not sent because "http.proxyStrictSSL" is disabled, which turns off ' +
+        'certificate validation; re-enable it so the token can be used over a verified connection.'
+      );
+    }
+
+    return 'Wait a few minutes, or set the GITHUB_TOKEN environment variable to increase your rate limit.';
+  }
+
   async ensureBinary(forceDownload = false): Promise<string | null> {
     this.lastErrorMessage = undefined;
     const myReason: ManagedInstallReason = forceDownload ? 'force' : 'ensure';
@@ -816,7 +899,7 @@ export class BinaryDownloader {
         // GitHub rate limit or auth failure
         message =
           'perl-lsp: Download blocked (HTTP 403 — GitHub rate limit). ' +
-          'Wait a few minutes, or set the GITHUB_TOKEN environment variable to increase your rate limit. ' +
+          `${this.rateLimitRemedy()} ` +
           manualInstallNote;
         buttons = ['Install Manually', 'View Logs'];
       } else if (errorMsg.includes('HTTP 404')) {
@@ -1183,13 +1266,13 @@ export class BinaryDownloader {
       if (versionTag) {
         // Get specific release by tag. The tag is user configuration, so it is
         // encoded before it reaches the API path.
-        url = `https://api.github.com/repos/${BinaryDownloader.REPO_OWNER}/${BinaryDownloader.REPO_NAME}/releases/tags/${encodeURIComponent(versionTag)}`;
+        url = `${BinaryDownloader.releasesApiUrl()}/tags/${encodeURIComponent(versionTag)}`;
       }
       // A tag channel without versionTag performs no fetch: the selector's
       // closed policy owns that refusal instead of a silent channel fallback.
     } else {
       // One list endpoint feeds the selector for both stable and latest.
-      url = `https://api.github.com/repos/${BinaryDownloader.REPO_OWNER}/${BinaryDownloader.REPO_NAME}/releases`;
+      url = BinaryDownloader.releasesApiUrl();
     }
 
     let releases: Release[] = [];
@@ -1280,8 +1363,20 @@ export class BinaryDownloader {
     const isHttps = url.startsWith('https:');
     const httpConfig = vscode.workspace.getConfiguration('http');
     const proxyStrictSSL = httpConfig.get<boolean>('proxyStrictSSL', true);
+    const authDisposition = resolveGitHubAuthDisposition({
+      url,
+      hasToken: readGitHubToken() !== undefined,
+      strictTls: proxyStrictSSL,
+    });
+    if (authDisposition === 'withheld_unverified_tls') {
+      // Record the reason, never the credential.
+      this.outputChannel.appendLine(
+        'Managed release metadata: GitHub credentials withheld because "http.proxyStrictSSL" is disabled, ' +
+          'which turns off certificate validation. The request proceeds unauthenticated under the anonymous rate limit.',
+      );
+    }
     const options = {
-      headers: githubApiHeaders(url, proxyStrictSSL),
+      headers: githubApiHeaders(authDisposition),
       rejectUnauthorized: proxyStrictSSL,
     };
 
