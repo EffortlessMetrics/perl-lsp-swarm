@@ -286,10 +286,10 @@ fn comment_gap_after_whitespace_skips_consecutive_comments() -> TestResult {
 }
 
 #[test]
-fn paired_substitution_replacement_gap_skips_consecutive_comments() -> TestResult {
+fn two_body_quote_like_gap_skips_consecutive_comments() -> TestResult {
     let mut lexer = PerlLexer::new(" # first\n # second\n [replacement]");
 
-    lexer.skip_paired_substitution_replacement_gap();
+    lexer.skip_two_body_quote_like_gap();
 
     assert_eq!(lexer.current_char(), Some('['));
     assert_eq!(lexer.position, " # first\n # second\n ".len());
