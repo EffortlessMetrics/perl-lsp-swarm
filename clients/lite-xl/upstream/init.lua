@@ -62,10 +62,13 @@ local HelpDoc = require "plugins.lsp.helpdoc"
 
 ---Configuration options for the LSP plugin.
 ---@class config.plugins.lsp
----Absolute path of a file that receives the complete JSON protocol trace.
----Explicit opt-in local sensitive trace (#11155): LSP traffic carries
----document text, file paths and configuration values, so this file can
----contain source code. Empty disables it. Writes are appended with no
+---Absolute path of a file that receives the JSON protocol payloads this
+---client logs. Explicit opt-in local sensitive trace (#11155): LSP traffic
+---carries document text, file paths and configuration values, so this file
+---can contain source code. It is not a complete transcript: large documents
+---travel the raw path (`Server:push_raw`), whose frames are written straight
+---to the server and never appended here, so a missing frame is not evidence
+---it was never sent. Empty disables it. Writes are appended with no
 ---automatic rotation or retention bound, and it is never enabled for
 ---canonical host or CI proof artifacts.
 ---@field log_file string
@@ -168,9 +171,9 @@ config.plugins.lsp = common.merge({
     },
     {
       label = "Log File",
-      description = "Absolute path to a '.log' file for logging all json. "
-        .. "Sensitive: the trace can contain source code, file paths and "
-        .. "configuration values. Empty disables it; no automatic rotation.",
+      description = "Absolute path to a '.log' file for logging json. "
+        .. "Sensitive: can contain source code, file paths and configuration "
+        .. "values. Partial: large documents are not logged. No rotation.",
       path = "log_file",
       type = "FILE",
       filters = {"%.log$"}
@@ -195,7 +198,8 @@ config.plugins.lsp = common.merge({
       label = "Force Verbosity Off",
       description = "Turn verbosity off even if a server is configured with "
         .. "verbosity on. Sensitive: verbosity logs complete protocol "
-        .. "payloads, which can contain source code and configuration values.",
+        .. "payloads, which can contain source code, file paths and "
+        .. "configuration values.",
       path = "force_verbosity_off",
       type = "TOGGLE",
       default = false

@@ -37,11 +37,15 @@
 --   A4  GUI descriptions stay within a readable bound, so disclosure
 --       cannot be satisfied by dumping an unbounded paragraph into the
 --       settings UI;
---   A5  CROSS-MODULE CONSISTENCY - `verbose` is declared twice in
---       server.lua (the Server class field and the default options table).
---       BOTH declarations must disclose; one honest declaration beside one
---       innocuous "debug the lsp client" declaration is exactly the defect
---       this slice repairs;
+--   A5  CROSS-MODULE CONSISTENCY - `verbose` is declared THREE times in
+--       server.lua: the `Server` class field (the constructed server), the
+--       `lsp.server.options` class field (what a user's server definition is
+--       written against, and therefore what an editor resolves on hover),
+--       and the default options table. ALL THREE must disclose the same
+--       content classes; one honest declaration beside an innocuous "debug
+--       the lsp client" one is exactly the defect this slice repairs, and a
+--       missing options-class field leaves the option undocumented at the
+--       precise place a user opts in;
 --   A6  every admission option still exists as a real config default /
 --       server option, so the disclosure describes a live switch rather
 --       than drifting off a removed one.
@@ -51,8 +55,9 @@
 --   lua clients/lite-xl/tests/init_trace_admission_test.lua \
 --     clients/lite-xl/leaves/base/init.lua \
 --     clients/lite-xl/leaves/base/server.lua
--- Observed pristine baseline: 17 failed / 21 passed. Observed patched
--- result: 38 passed, 0 failed.
+-- Observed pristine baseline: 20 failed / 21 passed. Observed patched
+-- result: 41 passed, 0 failed, identically on an LF and on a CRLF copy of
+-- the staged modules.
 --
 -- Mutation falsifiers of the PATCHED source (each mechanically verified to
 -- fail this suite against a mutated copy):
@@ -68,7 +73,14 @@
 --      operational keyword -> A1's meaning-preservation row fails.
 --      Verified on log_file ('.log') and on force_verbosity_off ('even if
 --      a server'), whose operational keyword is deliberately chosen so it
---      does NOT also occur in that option's disclosure sentence.
+--      does NOT also occur in that option's disclosure sentence;
+--   5. delete the `---@field verbose boolean` declaration from the
+--      `lsp.server.options` class -> the three A5 options-class rows fail
+--      while the other two verbose sites still pass;
+--   6. drop the `comment_text` normalization and join raw comment lines ->
+--      the A5 default-options "configuration values" row fails on BOTH LF
+--      and CRLF, because that phrase wraps as "... and configuration" /
+--      "values." and the retained marker splits it.
 --
 -- No framework: plain asserts, one process, deterministic, exit code
 -- carries the result. Compatible with the Lite XL Lua runtime family (5.4).
@@ -88,6 +100,8 @@ end
 local harness = dofile(here .. "/harness.lua")
 
 local passed, failed = 0, 0
+
+---Record one assertion; a failure prints its message and sets the exit code.
 local function ok(condition, message)
   if condition then
     passed = passed + 1
@@ -97,6 +111,8 @@ local function ok(condition, message)
   end
 end
 
+---Read a file as raw bytes (no newline translation, so a CRLF checkout is
+---observed exactly as it sits on disk).
 local function read_file(path)
   local fh = assert(io.open(path, "rb"), "cannot read " .. path)
   local text = fh:read("*a")
@@ -109,6 +125,8 @@ local function says(text, needle)
   return tostring(text):lower():find(needle:lower(), 1, true) ~= nil
 end
 
+---Containment of every needle; returns the completeness flag and, when the
+---check fails, the needles that were missing so the message can name them.
 local function says_all(text, needles)
   local missing = {}
   for _, needle in ipairs(needles) do
@@ -148,13 +166,16 @@ local ADMISSIONS = {
   {
     path = "force_verbosity_off",
     label = "Force Verbosity Off",
-    classes = { "protocol payloads", "source code" },
+    -- The GUI names the same content classes as the annotation beside it:
+    -- a user deciding whether to leave per-server verbosity on reads this
+    -- string, not the LuaCATS block.
+    classes = { "protocol payloads", "source code", "file paths" },
     -- "verbosity" would be a vacuous operational keyword here: the
     -- disclosure sentence uses the word too, so a description replaced by
     -- the disclosure alone would still satisfy it. The override semantics
     -- ("even if a server ...") appear ONLY in the operational half.
     operational = "even if a server",
-    annotation_classes = { "protocol payloads", "source code" },
+    annotation_classes = { "protocol payloads", "source code", "file paths" },
   },
 }
 
@@ -259,6 +280,21 @@ world.teardown()
 
 local init_source = read_file(init_module_path)
 
+---Strip one comment line down to its prose: drop a trailing carriage return
+---(a CRLF checkout keeps it, and `.gitattributes` normalization is not
+---guaranteed for every consumer of these files), then the `--`/`---` marker
+---and the space after it.
+---
+---Both the marker and the CR must go before the block is joined. Keeping
+---either means a phrase that wraps across two comment lines - "... and
+---configuration" / "values. ..." - concatenates as `configuration ---values`
+---or `configuration\r values` and can never match, on any platform. That
+---would silently weaken every content-class assertion below to
+---"single-line phrases only".
+local function comment_text(line)
+  return (line:gsub("\r+$", ""):gsub("^%s*%-%-%-?", ""):gsub("^%s+", ""))
+end
+
 ---A documentation block is the run of comment lines immediately above a
 ---declaration. Both `--` and `---` runs count: the staged #11155 blocks use
 ---plain `--` while LuaCATS descriptions use `---`, and a reader meets
@@ -269,7 +305,7 @@ local function comment_block_above(lines, index)
   while cursor >= 1 do
     local previous = lines[cursor]
     if previous:match("^%s*%-%-") and not previous:match("^%s*%-%-%-@") then
-      table.insert(block, 1, previous)
+      table.insert(block, 1, comment_text(previous))
       cursor = cursor - 1
     else
       break
@@ -279,12 +315,17 @@ local function comment_block_above(lines, index)
   return table.concat(block, " ")
 end
 
+---Split source into lines, preserving empty ones (`[^\n]*` also yields the
+---zero-width match after each newline).
 local function source_lines(source)
   local lines = {}
   for line in source:gmatch("[^\n]*") do lines[#lines + 1] = line end
   return lines
 end
 
+---The documentation block above `---@field <field_name> ...`. `field_name` is
+---a Lua pattern, so a caller can disambiguate `@field public verbose` from
+---`@field verbose` - two different declaration sites in server.lua.
 local function field_annotation(source, field_name)
   local lines = source_lines(source)
   for index, line in ipairs(lines) do
@@ -321,7 +362,15 @@ end
 
 local server_source = read_file(server_module_path)
 
-local VERBOSE_CLASSES = { "protocol payloads", "source code" }
+-- All three `verbose` declaration sites name the same content classes.
+-- "configuration values" WRAPS across two comment lines at the options-class
+-- and default-options sites ("... file paths and" / "configuration values."),
+-- so this row is also the live control on `comment_text`: without the marker
+-- and CR strip the phrase reads as `and ---configuration values` and cannot
+-- match, on any platform.
+local VERBOSE_CLASSES = {
+  "protocol payloads", "source code", "file paths", "configuration values",
+}
 
 local class_field_annotation = field_annotation(server_source, "public%s+verbose")
   or field_annotation(server_source, "verbose")
@@ -349,6 +398,26 @@ local function default_option_annotation(source, option_name)
     end
   end
   return nil
+end
+
+-- Third site: the `lsp.server.options` LuaCATS class. A server definition is
+-- written against THIS class, so an editor resolving `verbose` in a user's
+-- server table surfaces this annotation - not the Server class field (which
+-- describes the constructed server) and not the default-options comment
+-- (which a LuaCATS consumer does not attach to the field at all). Without a
+-- declaration here the option hovers undocumented at the exact place a user
+-- opts in.
+local options_verbose = field_annotation(server_source, "verbose")
+ok(options_verbose ~= nil and #options_verbose > 0,
+  "A5 lsp.server.options declares a `verbose` field annotation")
+do
+  local text = options_verbose or ""
+  local complete, missing = says_all(text, VERBOSE_CLASSES)
+  ok(complete,
+    "A5 lsp.server.options verbose discloses protocol payload exposure"
+      .. (complete and "" or (" (missing: " .. table.concat(missing, ", ") .. ")")))
+  ok(says(text, OWNER_ISSUE),
+    "A5 lsp.server.options verbose cites " .. OWNER_ISSUE)
 end
 
 local default_verbose = default_option_annotation(server_source, "verbose")
