@@ -62,11 +62,13 @@ by the author's next force-push, and the author's local head and the PR head div
 without either party noticing. All three are expensive precisely because the branch
 still looks like one coherent candidate.
 
-If a reviewer has already pushed, do not race it. Read what landed, verify it against
-observed behavior rather than assuming it is correct, and either adopt it — restating
-the proof, since a reviewer's push carries none — or replace it and say why in the
-thread. Step 8 of `address-review-comments` covers the same case: a reviewer-applied
-repair makes a new authored candidate whose affected review dimensions are invalid.
+Where another context has already pushed, first establish one writer before recovery
+mutation. That writer inspects and verifies the foreign change, fast-forwards when
+possible, and merges a true divergence so both published tips remain ancestors.
+Unwanted behavior is repaired with a new commit and an explanation in the thread;
+do not rebase away or force-push over a foreign commit. Applicable user and repository
+authorization still governs the operation. Re-prove the affected dimensions and
+refresh the affected review; a second writer receives no recovery exception.
 
 Recreating a closed PR is a different matter, and the first move is to try reopening
 it. A closed PR whose head and base branches both still exist normally reopens even

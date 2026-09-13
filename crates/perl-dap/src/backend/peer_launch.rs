@@ -309,17 +309,31 @@ fn mint_session_token() -> std::io::Result<String> {
 ///
 /// The peer's runtime capabilities (learned at `peer/hello`) only ever *narrow*
 /// behavior internally; they never require the editor to renegotiate, so the
-/// editor-facing capabilities are fixed and conservative. `breakpointLocations`
-/// is answered locally from the AST oracle, so it is always available;
-/// conditional and function breakpoints are within the ptkdb v1 floor;
+/// editor-facing capabilities are fixed and conservative. Conditional and
+/// function breakpoints are within the ptkdb v1 floor;
 /// hovers/hit-conditions/logpoints/data-breakpoints are conservatively off.
+///
+/// The seven #9581 secondary-capability fields are explicit `false` rows here,
+/// independently of the native surface: the mirror peer has no exact receipt
+/// for completions, modules, loaded sources, restart, ValueFormat options,
+/// breakpoint locations, or cancel, so each request is rejected explicitly
+/// (no AST-oracle source reads, no peer I/O, no state mutation) while its row
+/// is false. A gate receipt for one field never widens another.
 #[must_use]
 pub fn static_mirror_capabilities() -> Value {
     json!({
         "supportsConfigurationDoneRequest": true,
         "supportsConditionalBreakpoints": true,
         "supportsFunctionBreakpoints": true,
-        "supportsBreakpointLocationsRequest": true,
+        // #9581 secondary-capability floor (mirror surface): each row is an
+        // independent literal `false`; re-enable gates are per field.
+        "supportsCompletionsRequest": false,
+        "supportsModulesRequest": false,
+        "supportsLoadedSourcesRequest": false,
+        "supportsRestartRequest": false,
+        "supportsValueFormattingOptions": false,
+        "supportsBreakpointLocationsRequest": false,
+        "supportsCancelRequest": false,
         "supportsEvaluateForHovers": crate::backend::capabilities::MIRROR_ADVERTISES_EVALUATE_FOR_HOVERS,
         // One source with the mirror setExpression refusal gate (#9568): the
         // profile does not advertise setExpression, so it must refuse it.
@@ -590,9 +604,34 @@ impl MirrorPeerBridge {
         }
     }
 
+    /// Dispatch a single DAP request through the #9581 capability floor.
+    ///
+    /// This is the editor-facing entry point on the mirror surface. The #9581
+    /// secondary-capability floor is resolved *here* — outside the canonical
+    /// route match in [`Self::dispatch_unchecked`], whose body the protocol-authority
+    /// gate pins to the table-owned shape — so a floored request is refused
+    /// before any AST-oracle source read, peer I/O, or queued-event drain can
+    /// happen. Non-floored requests route exactly as [`Self::dispatch_unchecked`]
+    /// always has.
+    pub fn dispatch(
+        &mut self,
+        request_seq: i64,
+        command: &str,
+        arguments: Option<Value>,
+    ) -> Vec<DapMessage> {
+        if let Some(response) =
+            self.secondary_floor_response(request_seq, command, arguments.as_ref())
+        {
+            return vec![response];
+        }
+        self.dispatch_unchecked(request_seq, command, arguments)
+    }
+
     /// Dispatch a single DAP request, returning the response followed by any
     /// backend events drained while servicing it.
-    pub fn dispatch(
+    ///
+    /// The fixed, table-owned route match used after capability admission.
+    fn dispatch_unchecked(
         &mut self,
         request_seq: i64,
         command: &str,
@@ -625,6 +664,13 @@ impl MirrorPeerBridge {
                 out.push(self.response(request_seq, command, true, Some(body), None));
             }
             Some(DapRequestRoute::BreakpointLocations) => {
+                // Answered locally from the AST oracle (the source is on the
+                // same host as perl-dap), independent of the peer. The #9581
+                // capability floor intercepts the request at
+                // [`Self::dispatch`] while
+                // `supportsBreakpointLocationsRequest` is false, so this arm is
+                // unreachable through the floored editor entry until that
+                // per-field re-enable gate passes.
                 let body = handle_breakpoint_locations(arguments.as_ref());
                 out.push(self.response(request_seq, command, true, Some(body), None));
             }
@@ -778,6 +824,23 @@ impl MirrorPeerBridge {
         }
         out.extend(self.poll_events());
         out
+    }
+
+    /// The #9581 floor disposition for this request, if it is floored.
+    ///
+    /// The single authority in `backend/capabilities.rs`
+    /// (`capability_floor_message`) decides for both floored families: the
+    /// six secondary requests and a non-default `format` option on the four
+    /// ValueFormat families. This surface only builds its own explicit
+    /// unsupported response from that decision.
+    fn secondary_floor_response(
+        &mut self,
+        request_seq: i64,
+        command: &str,
+        arguments: Option<&Value>,
+    ) -> Option<DapMessage> {
+        crate::backend::capabilities::capability_floor_message(command, arguments)
+            .map(|message| self.response(request_seq, command, false, None, Some(message)))
     }
 
     /// Reject an editor-initiated control request in mirror mode.
@@ -1407,6 +1470,8 @@ fn dispatch_frame(bridge: &mut MirrorPeerBridge, body: &[u8]) -> (Vec<DapMessage
     };
     let seq =
         v.get("seq").and_then(|s| s.as_i64().or_else(|| s.as_f64().map(|f| f as i64))).unwrap_or(0);
+    // The editor-facing ingress applies the #9581 capability floor before the
+    // canonical route match.
     let out = bridge.dispatch(seq, command, v.get("arguments").cloned());
     let disconnect = command == "disconnect";
     (out, disconnect)
@@ -1481,6 +1546,13 @@ fn dap_stop_reason(reason: &StopReason) -> String {
 
 /// Answer a DAP `breakpointLocations` request from the local AST oracle (the
 /// source is on the same host as `perl-dap`), independent of the peer.
+///
+/// Retained as the AST oracle behind the canonical `BreakpointLocations`
+/// route arm. The #9581 capability floor intercepts the request at
+/// `dispatch` while `supportsBreakpointLocationsRequest`
+/// is `false`, so production reaches this arm only after that per-field
+/// re-enable gate (#10524 + #2300 + #9021 + #7566) passes; the unit proofs
+/// keep proving its geometry/empty-set contract in the meantime.
 fn handle_breakpoint_locations(args: Option<&Value>) -> Value {
     let empty = json!({ "breakpoints": [] });
     let Some(args) = args else { return empty };
@@ -1742,7 +1814,15 @@ mod tests {
         assert_eq!(caps["supportsConfigurationDoneRequest"], true);
         assert_eq!(caps["supportsConditionalBreakpoints"], true);
         assert_eq!(caps["supportsFunctionBreakpoints"], true);
-        assert_eq!(caps["supportsBreakpointLocationsRequest"], true);
+        // #9581: breakpointLocations (and the rest of the secondary rows) are
+        // explicit false floor rows on the mirror surface.
+        assert_eq!(caps["supportsBreakpointLocationsRequest"], false);
+        assert_eq!(caps["supportsCompletionsRequest"], false);
+        assert_eq!(caps["supportsModulesRequest"], false);
+        assert_eq!(caps["supportsLoadedSourcesRequest"], false);
+        assert_eq!(caps["supportsRestartRequest"], false);
+        assert_eq!(caps["supportsValueFormattingOptions"], false);
+        assert_eq!(caps["supportsCancelRequest"], false);
         assert_eq!(caps["supportsEvaluateForHovers"], false);
         // #9568: the mirror profile advertises setExpression false, from the
         // same single authority its request gate reads.
@@ -1764,6 +1844,15 @@ mod tests {
         let caps = body.ok_or_else(|| "initialize response missing capabilities".to_string())?;
         assert_eq!(caps["supportsConditionalBreakpoints"], true);
         assert_eq!(caps["supportsLogPoints"], false);
+        // #9581: the secondary-capability rows are explicit false on the mirror
+        // surface, before any peer connects.
+        assert_eq!(caps["supportsCompletionsRequest"], false);
+        assert_eq!(caps["supportsModulesRequest"], false);
+        assert_eq!(caps["supportsLoadedSourcesRequest"], false);
+        assert_eq!(caps["supportsRestartRequest"], false);
+        assert_eq!(caps["supportsValueFormattingOptions"], false);
+        assert_eq!(caps["supportsBreakpointLocationsRequest"], false);
+        assert_eq!(caps["supportsCancelRequest"], false);
         let initialized = out
             .get(1)
             .ok_or_else(|| "initialize response missing initialized event".to_string())?;

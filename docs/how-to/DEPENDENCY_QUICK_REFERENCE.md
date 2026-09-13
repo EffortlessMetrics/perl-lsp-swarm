@@ -237,6 +237,14 @@ gh pr comment <pr-number> -b "@dependabot ignore this dependency"
 
 ### Common `.github/dependabot.yml` Patterns
 
+**14-day admission cooldown**:
+```yaml
+cooldown:
+  default-days: 14
+```
+
+Every managed ecosystem row carries this scalar for normal version updates. Dependabot security updates bypass the updater cooldown; package-manager-native age gates are separate.
+
 **Add dependency group**:
 ```yaml
 groups:
@@ -293,3 +301,5 @@ labels:
 gh repo set-default
 gh api --method PUT repos/:owner/:repo/subscription -f subscribed=true -f ignored=false
 ```
+
+Dependency version updates use a 14-day admission window. See the [release-age boundary](DEPENDENCY_MANAGEMENT.md#release-age-boundary) for updater versus npm resolver behavior and security exceptions.

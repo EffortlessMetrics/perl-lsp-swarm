@@ -60,9 +60,11 @@ jobs:
         with:
           cache-on-failure: true
           shared-key: post-merge-corpus-ratchet-${{ hashFiles('Cargo.lock') }}
+          # This analysis job only restores caches; publication belongs to #14002.
+          save-if: false
 
       - name: Install just
-        uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf  # v2.87.2
+        uses: taiki-e/install-action@5bf6ce016fd2e72eefc647cbca1e4213f65955b8  # v2.87.5
         with:
           tool: just
 
@@ -82,13 +84,6 @@ jobs:
           cargo xtask cpan-corpus install \
             --dist-list .ci/cpan-top-50-distributions.txt \
             --install-dir target/cpan-corpus-bounded
-
-      - name: Save CPAN corpus cache (bounded)
-        if: steps.cpan-bounded-install.outcome == 'success'
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
-        with:
-          path: target/cpan-corpus-bounded
-          key: cpan-corpus-bounded-${{ runner.os }}-${{ hashFiles('.ci/cpan-top-50-distributions.txt') }}
 
       - name: Verify bounded corpus path
         run: test -d "$GITHUB_WORKSPACE/target/cpan-corpus-bounded/lib/perl5"
@@ -270,7 +265,7 @@ jobs:
           shared-key: post-merge-corpus-ratchet-${{ hashFiles('Cargo.lock') }}
 
       - name: Install just
-        uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf  # v2.87.2
+        uses: taiki-e/install-action@5bf6ce016fd2e72eefc647cbca1e4213f65955b8  # v2.87.5
         with:
           tool: just
 
