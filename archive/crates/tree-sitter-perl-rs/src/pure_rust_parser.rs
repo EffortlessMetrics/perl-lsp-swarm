@@ -3220,4 +3220,92 @@ mod tests {
         );
         Ok(())
     }
+
+    // -----------------------------------------------------------------------
+    // Offset translation (#8220). `NormalizationMap` is the single authority
+    // for rewrite spans and runs both ways: back to the caller's source for
+    // error ranges, forward into Pest's coordinates for heredoc openers. The
+    // integration tests cover the composed behaviour through `parse()`; these
+    // rows pin the map's own branches, including the fail-closed one that no
+    // real source reaches.
+    // -----------------------------------------------------------------------
+
+    /// A one-pass map replacing `input_start..input_end` with a span of
+    /// `output_len` bytes at the same start.
+    fn one_pass_map(input_start: usize, input_end: usize, output_len: usize) -> NormalizationMap {
+        NormalizationMap {
+            passes: vec![vec![RewriteEdit {
+                input_start,
+                input_end,
+                output_start: input_start,
+                output_end: input_start + output_len,
+            }]],
+        }
+    }
+
+    #[test]
+    fn identity_map_translates_every_offset_to_itself_in_both_directions() {
+        let map = NormalizationMap::identity();
+        for offset in [0_usize, 1, 17, 4096] {
+            assert_eq!(map.to_source_offset(offset), offset);
+            assert_eq!(map.to_normalized_offset(offset), Some(offset));
+        }
+    }
+
+    #[test]
+    fn forward_translation_shifts_offsets_after_a_rewrite_and_leaves_earlier_ones() {
+        // `$$name` (6 bytes at 4..10) becomes `${$name}` (8 bytes): everything
+        // after it moves by two, everything before it does not move at all.
+        let map = one_pass_map(4, 10, 8);
+        assert_eq!(map.to_normalized_offset(0), Some(0), "an offset before the rewrite is fixed");
+        assert_eq!(map.to_normalized_offset(3), Some(3));
+        assert_eq!(map.to_normalized_offset(10), Some(12), "the byte after it shifts by two");
+        assert_eq!(map.to_normalized_offset(14), Some(16));
+    }
+
+    #[test]
+    fn forward_translation_fails_closed_inside_a_rewritten_span() {
+        // Bytes inside the replaced span have no single forward image, and
+        // that includes the span's own first byte: it is the start of text
+        // that no longer exists, not a boundary. The heredoc queue depends on
+        // `None` here rather than a plausible-looking offset, because a wrong
+        // opener identity hands a body to the wrong node. No real opener lands
+        // here — neither normalization pattern can match text containing `<<`
+        // — so this is the fail-closed branch, asserted rather than assumed.
+        let map = one_pass_map(4, 10, 8);
+        assert_eq!(map.to_normalized_offset(4), None, "the replaced span's start is inside it");
+        assert_eq!(map.to_normalized_offset(5), None);
+        assert_eq!(map.to_normalized_offset(9), None, "the last replaced byte is inside it");
+    }
+
+    #[test]
+    fn behind_removals_is_a_no_op_when_the_scan_removed_nothing() {
+        // Source with no heredoc: the composed map must behave exactly like
+        // the normalization map alone, or every ordinary parse would report
+        // shifted ranges.
+        let map = one_pass_map(0, 6, 8);
+        let composed = map.behind_removals(&[]);
+        for offset in [0_usize, 8, 12, 99] {
+            assert_eq!(composed.to_source_offset(offset), map.to_source_offset(offset));
+        }
+    }
+
+    #[test]
+    fn behind_removals_adds_back_every_removed_body_before_the_offset() {
+        // Two bodies removed at the same stripped position, as two openers on
+        // one line produce. An offset after them must gain the total removed
+        // length; one before them must not move.
+        let removals = [
+            HeredocRemoval { source_start: 10, source_end: 30, stripped_at: 10 },
+            HeredocRemoval { source_start: 30, source_end: 45, stripped_at: 10 },
+        ];
+        let composed = NormalizationMap::identity().behind_removals(&removals);
+        assert_eq!(composed.to_source_offset(5), 5, "an offset before the removals does not move");
+        assert_eq!(
+            composed.to_source_offset(10),
+            45,
+            "an offset at the removal point resumes after both removed bodies"
+        );
+        assert_eq!(composed.to_source_offset(12), 47);
+    }
 }
