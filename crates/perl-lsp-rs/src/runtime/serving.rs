@@ -140,9 +140,9 @@ impl LspServer {
     /// still queued or executing are retained by the scheduler-aware pending
     /// set, so trimming cannot erase a live queued cancellation.
     pub(crate) fn cancel_mark(&self, id: &JsonRpcId) {
+        let pending = self.pending_request_ids.lock();
         let mut c = self.cancelled.lock();
         if c.len() >= CANCELLED_SET_CAP {
-            let pending = self.pending_request_ids.lock();
             c.retain(|candidate| pending.contains(candidate));
         }
         c.insert(id.clone());
@@ -153,9 +153,24 @@ impl LspServer {
         self.pending_request_ids.lock().insert(id.clone());
     }
 
+    /// Mark cancellation only while the scheduler still owns this request.
+    /// Holding both locks in this order closes the settlement race.
+    pub(crate) fn mark_cancelled_if_pending(&self, id: &JsonRpcId) {
+        let pending = self.pending_request_ids.lock();
+        if !pending.contains(id) {
+            return;
+        }
+        let mut cancelled = self.cancelled.lock();
+        if cancelled.len() >= CANCELLED_SET_CAP {
+            cancelled.retain(|candidate| pending.contains(candidate));
+        }
+        cancelled.insert(id.clone());
+    }
+
     /// Release a scheduler-owned request ID after it is fully settled.
     pub(crate) fn clear_request_pending(&self, id: &JsonRpcId) {
         self.pending_request_ids.lock().remove(id);
+        self.cancel_clear(id);
     }
 
     /// Clear a cancelled request

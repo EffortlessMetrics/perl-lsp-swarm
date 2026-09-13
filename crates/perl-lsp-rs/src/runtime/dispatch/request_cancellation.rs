@@ -25,7 +25,7 @@ pub(super) fn handle_cancel_notification(server: &LspServer, request: &JsonRpcRe
                 tracing::warn!(latency = ?latency, "Cancellation latency exceeded 50ms");
             }
         }
-        server.cancel_mark(&typed_id);
+        server.mark_cancelled_if_pending(&typed_id);
     }
 
     true
