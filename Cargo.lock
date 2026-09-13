@@ -1835,6 +1835,7 @@ dependencies = [
  "phf",
  "proptest",
  "serde_json",
+ "tempfile",
  "thiserror",
  "tracing",
  "unicode-ident",
