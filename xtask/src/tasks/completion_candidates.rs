@@ -3172,6 +3172,52 @@ mod tests {
         assert_eq!(render_list(&ledger), render_list(&ledger));
     }
 
+    /// Every scan root still matches tracked source, one root at a time.
+    ///
+    /// `scanned_files` filters tracked paths by `SCAN_ROOTS` prefix and refuses
+    /// only when *every* root matches nothing. So a single renamed or deleted
+    /// root is silent: it contributes no files, the denominator shrinks, and
+    /// `check` still reports a green tree — while the producers that used to
+    /// live there stop being inventoried. That is the quiet form of the
+    /// untracked-file bypass, and `discovery_finds_the_live_surface` does not
+    /// catch it, because five of six roots still clear the floor of 40.
+    ///
+    /// Six roots and one rename is the realistic failure, not six roots and six
+    /// renames, so the assertion is per-root rather than on the total.
+    #[test]
+    fn every_scan_root_still_matches_tracked_source() {
+        let root = project_root().expect("project root");
+        let tracked = tracked_files(&root).expect("git ls-files runs");
+        let rust: Vec<&String> = tracked.iter().filter(|path| path.ends_with(".rs")).collect();
+
+        for scope in SCAN_ROOTS {
+            assert!(
+                rust.iter().any(|path| path.starts_with(scope) || *path == scope),
+                "scan root `{scope}` matches no tracked Rust file. It was renamed, moved or \
+                 deleted, so the inventory silently stopped covering it: discovery only refuses \
+                 when every root matches nothing. Update SCAN_ROOTS and re-audit the rows that \
+                 lived there."
+            );
+        }
+
+        // A test-surface exclusion that names a path no longer present is dead
+        // configuration reading as a deliberate exemption.
+        for excluded in TEST_SURFACE_FILES {
+            assert!(
+                tracked.iter().any(|path| path == excluded),
+                "TEST_SURFACE_FILES names `{excluded}`, which is not tracked. The exclusion is \
+                 stale: either the file moved, in which case its replacement is now inside the \
+                 denominator as product source, or it is gone and the entry should be removed."
+            );
+            assert!(
+                SCAN_ROOTS.iter().any(|scope| excluded.starts_with(scope) || excluded == scope),
+                "TEST_SURFACE_FILES names `{excluded}`, which lies outside every scan root. \
+                 Excluding a file discovery would never have read hides nothing and suggests \
+                 the roots moved out from under it."
+            );
+        }
+    }
+
     /// Discovery is not vacuous. A denominator that quietly became empty would
     /// make every other assertion here pass while proving nothing.
     #[test]

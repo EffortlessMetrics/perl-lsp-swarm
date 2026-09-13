@@ -152,6 +152,7 @@ along one axis and asserting the refusal names that axis:
 | a renamed `providers` namespace | `use crate::providers as p` leaves nothing spelled `providers::` |
 | a repeated entry point in `reached_by` | two copies of one route look like two routes to a length check |
 | a `.gitignore`d producer under a scan root | ignored source is as unscanned as unadded source |
+| a single stale scan root | `SCAN_ROOTS` filters by prefix and `scanned_files` refuses only when *every* root matches nothing, so one renamed root silently shrinks the denominator while `check` stays green — `every_scan_root_still_matches_tracked_source` asserts per root, and was proven by renaming `providers/htmx/` to a path that does not exist |
 | a finalizer inside an uncalled closure | a deferred body runs when called, not where written |
 | an append inside an **invoked** deferred body | **not refused — a pinned known miss, owned by #15470.** `an_append_inside_an_invoked_deferred_body_is_a_known_miss` asserts the current behavior so the ceiling is executable rather than prose, and fails loudly when the gap closes. It is the reason #10949's post-finalizer criterion is recorded partial. |
 | a block-scoped provider alias leaking to a sibling | `use` is lexically scoped, so an alias is not file-wide |
