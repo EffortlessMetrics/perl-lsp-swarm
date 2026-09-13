@@ -148,10 +148,14 @@ impl RouteProductUnit {
         }
     }
 
-    /// Whether a current-route consumer may treat this unit as settled.
+    /// Whether this unit *names* a current route.
     ///
     /// Historical and not-proven units are explicitly not green, which is what keeps
     /// an unresolved row from reading as a route.
+    ///
+    /// This is only half the question: the same unit can be reached at a ceiling that
+    /// forbids a current claim, as a package recipe does. Ask
+    /// [`RouteMapping::claims_current_route`] for a mapping's actual standing.
     #[must_use]
     pub const fn is_current_route_claim(self) -> bool {
         matches!(
@@ -475,6 +479,24 @@ pub struct RouteMapping {
     pub reasons: Vec<ReasonCode>,
     /// What the mapping deliberately does not establish.
     pub limitation: String,
+}
+
+impl RouteMapping {
+    /// Whether a current-route consumer may treat this mapping as settled.
+    ///
+    /// Both the unit and the ceiling must agree. A package recipe reaches
+    /// [`RouteProductUnit::PackageManagerOwned`] — a unit that does name a current
+    /// route — at [`ClaimCeiling::SourceRecipeOnly`], whose whole point is that the
+    /// recipe is not an installed or published product. Counting the unit alone would
+    /// contradict the ceiling in the same mapping.
+    #[must_use]
+    pub fn claims_current_route(&self) -> bool {
+        self.route_product_unit.is_current_route_claim()
+            && matches!(
+                self.claim_ceiling,
+                ClaimCeiling::CurrentPublicRoute | ClaimCeiling::ExternallyOwnedChannel
+            )
+    }
 }
 
 /// A reviewed rule: one (shape, channel class) pair and the evidence it demands.
@@ -1036,10 +1058,8 @@ fn parse_subjects(source: &str) -> Result<Vec<SurfaceRouteSubject>> {
 pub fn explain_report(subjects: &[SurfaceRouteSubject]) -> RouteMappingReport {
     let mut mappings: Vec<RouteMapping> = subjects.iter().map(map_surface).collect();
     mappings.sort_by(|left, right| left.surface_id.cmp(&right.surface_id));
-    let current_route_claim_count = mappings
-        .iter()
-        .filter(|mapping| mapping.route_product_unit.is_current_route_claim())
-        .count();
+    let current_route_claim_count =
+        mappings.iter().filter(|mapping| mapping.claims_current_route()).count();
     let not_proven_count = mappings
         .iter()
         .filter(|mapping| mapping.route_product_unit == RouteProductUnit::NotProven)
@@ -1166,6 +1186,34 @@ mod tests {
         assert!(mapping.reasons.contains(&ReasonCode::PackageSourceWithoutPackageChannel));
     }
 
+    /// A recipe reaches `package_manager_owned`, a unit that does name a current
+    /// route, but at the `source_recipe_only` ceiling. Counting the unit alone would
+    /// report the recipe as a current route claim while the same mapping says it is
+    /// not an installed product.
+    #[test]
+    fn a_source_recipe_is_not_counted_as_a_current_route_claim() {
+        let recipe = settled("package_source", "homebrew");
+        let mapping = map_surface(&recipe);
+        assert_eq!(mapping.route_product_unit, RouteProductUnit::PackageManagerOwned);
+        assert_eq!(mapping.claim_ceiling, ClaimCeiling::SourceRecipeOnly);
+        assert!(
+            mapping.route_product_unit.is_current_route_claim(),
+            "the unit itself names a current route; the ceiling is what withholds it"
+        );
+        assert!(!mapping.claims_current_route());
+
+        // And the report's counter must agree with the mapping.
+        let report = explain_report(&[recipe]);
+        assert_eq!(report.current_route_claim_count, 0);
+
+        // An installed unit on the same channel is still counted.
+        let installed = settled("server", "homebrew");
+        let mapping = map_surface(&installed);
+        assert_eq!(mapping.claim_ceiling, ClaimCeiling::ExternallyOwnedChannel);
+        assert!(mapping.claims_current_route());
+        assert_eq!(explain_report(&[installed]).current_route_claim_count, 1);
+    }
+
     // Falsifier 4: `EditorPackage` treated as a managed pair without product relation
     // evidence.
     #[test]
@@ -1222,7 +1270,7 @@ mod tests {
                 "{field}={value} should stay historical"
             );
             assert_eq!(mapping.claim_ceiling, ClaimCeiling::HistoricalOnly);
-            assert!(!mapping.route_product_unit.is_current_route_claim());
+            assert!(!mapping.claims_current_route());
         }
     }
 
@@ -1265,7 +1313,7 @@ mod tests {
         assert_eq!(mapping.route_product_unit, RouteProductUnit::NotProven);
         assert_eq!(mapping.claim_ceiling, ClaimCeiling::NotProven);
         assert!(mapping.reasons.contains(&ReasonCode::UnknownProductShape));
-        assert!(!mapping.route_product_unit.is_current_route_claim());
+        assert!(!mapping.claims_current_route());
 
         let mapping = map_surface(&settled("server_quad_bundle", "github_release"));
         assert_eq!(mapping.route_product_unit, RouteProductUnit::NotProven);
@@ -1332,7 +1380,7 @@ mod tests {
         assert_eq!(report.mapped_surface_count, subjects.len());
         for mapping in &report.mappings {
             assert!(
-                !mapping.route_product_unit.is_current_route_claim(),
+                !mapping.claims_current_route(),
                 "{} claimed current route unit {} from an unclassified registry row",
                 mapping.surface_id,
                 mapping.route_product_unit.as_str()
@@ -1363,7 +1411,7 @@ mod tests {
         let mapping = map_surface(&subject);
         assert_eq!(mapping.route_product_unit, RouteProductUnit::LocalDevelopmentNonAuthoritative);
         assert_eq!(mapping.claim_ceiling, ClaimCeiling::LocalDevelopmentOnly);
-        assert!(!mapping.route_product_unit.is_current_route_claim());
+        assert!(!mapping.claims_current_route());
     }
 
     #[test]
