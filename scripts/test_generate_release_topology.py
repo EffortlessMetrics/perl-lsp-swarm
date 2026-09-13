@@ -97,6 +97,9 @@ class ReleaseTopologyTests(unittest.TestCase):
                 ),
                 "vscode-extension/src/downloader.ts": downloader,
                 "scripts/inject-sha-assets.sh": "#!/bin/sh\n",
+                "scripts/publish-topo.py": (MODULE_PATH.parent / "publish-topo.py").read_text(
+                    encoding="utf-8"
+                ),
             }
             for relative, contents in files.items():
                 path = root / relative
@@ -1036,6 +1039,9 @@ class ReleaseTopologyTests(unittest.TestCase):
                 "return `${archPrefix}-unknown-linux-${libc}`;\nvalue === 'gnu';\nvalue === 'musl';\n"
                 "return 'x86_64-pc-windows-msvc';\nreturn 'aarch64-pc-windows-msvc';\n",
                 "scripts/inject-sha-assets.sh": "#!/bin/sh\n",
+                "scripts/publish-topo.py": (MODULE_PATH.parent / "publish-topo.py").read_text(
+                    encoding="utf-8"
+                ),
             }
             actual_workflow = (MODULE_PATH.parents[1] / ".github/workflows/release.yml").read_text(encoding="utf-8")
             candidate_start = actual_workflow.index("  candidate:\n")
@@ -1592,6 +1598,119 @@ class ReleaseTopologyTests(unittest.TestCase):
         with self.assertRaises(MODULE.TopologyError):
             MODULE.derive_crates(metadata)
 
+    def test_publish_graph_drops_only_intra_scc_dev_edge(self):
+        metadata = {
+            "metadata": {"publish": {"allow": ["a", "b"]}},
+            "workspace_members": ["a-id", "b-id"],
+            "packages": [
+                {
+                    "id": "a-id", "name": "a", "version": "0.18.0",
+                    "manifest_path": "/a/Cargo.toml", "publish": None,
+                    "dependencies": [{"name": "b", "source": None}],
+                },
+                {
+                    "id": "b-id", "name": "b", "version": "0.18.0",
+                    "manifest_path": "/b/Cargo.toml", "publish": None,
+                    "dependencies": [{"name": "a", "kind": "dev", "source": None}],
+                },
+            ],
+        }
+        crates = MODULE.derive_crates(metadata)
+        self.assertEqual([crate["name"] for crate in crates], ["b", "a"])
+        self.assertEqual(crates[0]["internal_dependencies"], [])
+        self.assertEqual(crates[1]["internal_dependencies"], ["b"])
+
+    def test_publish_graph_loads_helper_from_selected_root(self):
+        metadata = {
+            "metadata": {"publish": {"allow": ["a", "b"]}},
+            "workspace_members": ["a-id", "b-id"],
+            "packages": [
+                {
+                    "id": "a-id", "name": "a", "version": "0.18.0",
+                    "manifest_path": "/a/Cargo.toml", "publish": None,
+                    "dependencies": [{"name": "b", "source": None}],
+                },
+                {
+                    "id": "b-id", "name": "b", "version": "0.18.0",
+                    "manifest_path": "/b/Cargo.toml", "publish": None,
+                    "dependencies": [{"name": "a", "kind": "dev", "source": None}],
+                },
+            ],
+        }
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            helper = root / "scripts/publish-topo.py"
+            helper.parent.mkdir()
+            source_a = (
+                "def build_publish_dependency_graph(packages):\n"
+                "    return {package['name']: {'b'} if package['name'] == 'a' else {'a'} for package in packages}\n"
+            )
+            source_b = (
+                "def build_publish_dependency_graph(packages):\n"
+                "    return {package['name']: set() for package in packages}\n"
+            ).ljust(len(source_a))
+            self.assertEqual(len(source_a), len(source_b))
+            helper.write_text(source_a, encoding="utf-8")
+            self.assertNotEqual(
+                MODULE.sha256(helper),
+                MODULE.sha256(MODULE_PATH.parent / "publish-topo.py"),
+            )
+            self.assertEqual(len(MODULE.derive_crates(metadata)), 2)
+            with self.assertRaisesRegex(MODULE.TopologyError, "cycle"):
+                MODULE.derive_crates(metadata, root)
+            original_stat = helper.stat()
+            helper.write_text(source_b, encoding="utf-8")
+            os.utime(helper, ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns))
+            self.assertEqual(
+                [crate["name"] for crate in MODULE.derive_crates(metadata, root)], ["a", "b"]
+            )
+
+    def test_publish_graph_rejects_normal_and_build_cycles(self):
+        metadata = {
+            "metadata": {"publish": {"allow": ["a", "b"]}},
+            "workspace_members": ["a-id", "b-id"],
+            "packages": [
+                {
+                    "id": "a-id", "name": "a", "version": "0.18.0",
+                    "manifest_path": "/a/Cargo.toml", "publish": None,
+                    "dependencies": [{"name": "b", "source": None}],
+                },
+                {
+                    "id": "b-id", "name": "b", "version": "0.18.0",
+                    "manifest_path": "/b/Cargo.toml", "publish": None,
+                    "dependencies": [{"name": "a", "kind": "build", "source": None}],
+                },
+            ],
+        }
+        with self.assertRaises(MODULE.TopologyError):
+            MODULE.derive_crates(metadata)
+
+    def test_publish_graph_retains_cross_scc_dev_edge(self):
+        metadata = {
+            "metadata": {"publish": {"allow": ["a", "b", "c"]}},
+            "workspace_members": ["a-id", "b-id", "c-id"],
+            "packages": [
+                {
+                    "id": "a-id", "name": "a", "version": "0.18.0",
+                    "manifest_path": "/a/Cargo.toml", "publish": None,
+                    "dependencies": [{"name": "b", "kind": "dev", "source": None}],
+                },
+                {
+                    "id": "b-id", "name": "b", "version": "0.18.0",
+                    "manifest_path": "/b/Cargo.toml", "publish": None,
+                    "dependencies": [{"name": "c", "source": None}],
+                },
+                {
+                    "id": "c-id", "name": "c", "version": "0.18.0",
+                    "manifest_path": "/c/Cargo.toml", "publish": None,
+                    "dependencies": [],
+                },
+            ],
+        }
+        crates = MODULE.derive_crates(metadata)
+        self.assertEqual([crate["name"] for crate in crates], ["c", "b", "a"])
+        self.assertEqual(crates[-1]["internal_dependencies"], ["b"])
+
     def test_downloader_target_derivation_requires_native_windows_arm64(self):
         source = """
         return arch === 'arm64' ? 'aarch64-apple-darwin' : 'x86_64-apple-darwin';
@@ -1628,6 +1747,78 @@ class ReleaseTopologyTests(unittest.TestCase):
         self.assertEqual(
             MODULE.derive_downloader_targets(source, workflow_targets),
             workflow_targets,
+        )
+
+    def test_downloader_target_derivation_accepts_windows_target_constants(self):
+        source = """
+        const WINDOWS_X64_TARGET = 'x86_64-pc-windows-msvc';
+        const WINDOWS_ARM64_TARGET = 'aarch64-pc-windows-msvc';
+        if (arch === 'arm64') return WINDOWS_ARM64_TARGET;
+        return WINDOWS_X64_TARGET;
+        """
+        workflow_targets = {
+            "x86_64-pc-windows-msvc",
+            "aarch64-pc-windows-msvc",
+        }
+        self.assertEqual(
+            MODULE.derive_downloader_targets(source, workflow_targets),
+            workflow_targets,
+        )
+
+    def test_downloader_target_derivation_rejects_unused_or_wrong_constants(self):
+        unused = "const WINDOWS_X64_TARGET = 'x86_64-pc-windows-msvc';"
+        wrong = """
+        const WINDOWS_X64_TARGET = 'other-target';
+        return WINDOWS_X64_TARGET;
+        """
+        workflow_targets = {"x86_64-pc-windows-msvc"}
+        self.assertEqual(MODULE.derive_downloader_targets(unused, workflow_targets), set())
+        self.assertEqual(MODULE.derive_downloader_targets(wrong, workflow_targets), set())
+
+    def test_downloader_target_derivation_ignores_comments_and_strings(self):
+        workflow_targets = {"x86_64-pc-windows-msvc"}
+        commented = """
+        const WINDOWS_X64_TARGET = 'x86_64-pc-windows-msvc';
+        // return WINDOWS_X64_TARGET;
+        """
+        string_literal = """
+        const WINDOWS_X64_TARGET = 'x86_64-pc-windows-msvc';
+        const documentation = 'return WINDOWS_X64_TARGET';
+        """
+        quoted_literal = "// return 'x86_64-pc-windows-msvc';"
+        block_comment = """
+        const WINDOWS_X64_TARGET = 'x86_64-pc-windows-msvc';
+        /* return WINDOWS_X64_TARGET; */
+        """
+        template_literal = "const WINDOWS_X64_TARGET = 'x86_64-pc-windows-msvc'; const documentation = `return WINDOWS_X64_TARGET`;"
+        self.assertEqual(
+            MODULE.derive_downloader_targets(commented, workflow_targets), set()
+        )
+        self.assertEqual(
+            MODULE.derive_downloader_targets(string_literal, workflow_targets), set()
+        )
+        self.assertEqual(
+            MODULE.derive_downloader_targets(quoted_literal, workflow_targets), set()
+        )
+        self.assertEqual(
+            MODULE.derive_downloader_targets(block_comment, workflow_targets), set()
+        )
+        self.assertEqual(
+            MODULE.derive_downloader_targets(template_literal, workflow_targets), set()
+        )
+        commented_declaration = """
+        // const WINDOWS_X64_TARGET = 'x86_64-pc-windows-msvc';
+        return WINDOWS_X64_TARGET;
+        """
+        commented_return = """
+        const WINDOWS_X64_TARGET = 'x86_64-pc-windows-msvc';
+        // return WINDOWS_X64_TARGET;
+        """
+        self.assertEqual(
+            MODULE.derive_downloader_targets(commented_declaration, workflow_targets), set()
+        )
+        self.assertEqual(
+            MODULE.derive_downloader_targets(commented_return, workflow_targets), set()
         )
 
     def test_manifest_mutations_fail_closed(self):
