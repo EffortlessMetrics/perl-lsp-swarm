@@ -95,10 +95,10 @@ impl ProductShape {
         }
     }
 
-    /// Shapes that deliver a runnable server, and therefore the only shapes a
-    /// server-bearing route unit may describe.
-    const fn is_server_bearing(self) -> bool {
-        matches!(self, Self::ServerOnly | Self::ServerDapPair | Self::ManagedServerDapPair)
+    /// Shapes that deliver both members, and therefore cannot be described by any
+    /// single-member route unit without discarding the DAP adapter.
+    const fn is_pair(self) -> bool {
+        matches!(self, Self::ServerDapPair | Self::ManagedServerDapPair)
     }
 }
 
@@ -112,8 +112,16 @@ pub enum RouteProductUnit {
     /// A pair delivered through a managed editor channel.
     ManagedEditorPair,
     /// A current advanced route that deliberately delivers the server alone.
+    ///
+    /// The standalone candidate-selection contract spells the same concept
+    /// `advanced_source_server_only` under its own schema; #10831's required model
+    /// names it `advanced_server_only`, which is the spelling used here. A consumer
+    /// bridging the two contracts should treat them as the same unit.
     AdvancedServerOnly,
     /// A server-only unit retained as history; never a current route.
+    ///
+    /// Like the candidate-selection contract's unit of the same name, this describes
+    /// exactly one server member. A pair shape therefore cannot be mapped onto it.
     HistoricalServerOnly,
     /// A unit whose currentness is owned by an external package manager.
     PackageManagerOwned,
@@ -315,6 +323,15 @@ pub enum ChannelClass {
     ManagedEditor,
     /// A third-party package manager that owns its own currentness.
     PackageManager,
+    /// A reusable action that external callers invoke to install a published
+    /// artifact.
+    ///
+    /// Deliberately not [`Self::RepositoryInternal`]: the action's implementation
+    /// lives in this repository, but consumers call it from their own workflows and
+    /// it resolves and installs public releases. It *consumes* a route rather than
+    /// owning one, and the route vocabulary has no unit for a consumer, so no rule
+    /// maps it yet.
+    ReusableSetupAction,
     /// Repository-internal surfaces with no public distribution.
     RepositoryInternal,
 }
@@ -327,7 +344,8 @@ impl ChannelClass {
             "vscode_marketplace" => Self::ManagedEditor,
             "homebrew" | "linux_packages" | "package_managers" | "cargo_binstall"
             | "external_channels" => Self::PackageManager,
-            "repository_gate" | "github_action" | "documentation" => Self::RepositoryInternal,
+            "github_action" => Self::ReusableSetupAction,
+            "repository_gate" | "documentation" => Self::RepositoryInternal,
             _ => return None,
         })
     }
@@ -338,6 +356,7 @@ impl ChannelClass {
             Self::FirstPartyArchive => "first_party_archive",
             Self::ManagedEditor => "managed_editor",
             Self::PackageManager => "package_manager",
+            Self::ReusableSetupAction => "reusable_setup_action",
             Self::RepositoryInternal => "repository_internal",
         }
     }
@@ -371,6 +390,12 @@ pub enum ReasonCode {
     HistoricalEvidence,
     /// Historical evidence on a shape with no historical route unit.
     HistoricalNonServerShape,
+    /// Historical evidence on a pair shape; `historical_server_only` names exactly
+    /// one server member, so it cannot carry a pair.
+    HistoricalPairHasNoRouteUnit,
+    /// A reusable setup action consumes a route; the vocabulary has no unit for a
+    /// route consumer.
+    SetupActionRouteOwnershipUnreviewed,
     /// The surface names no product unit.
     NoProductUnitClaimed,
     /// A package recipe is not an installed product.
@@ -407,6 +432,8 @@ impl ReasonCode {
             Self::TopologyNotProven => "topology_not_proven",
             Self::HistoricalEvidence => "historical_evidence",
             Self::HistoricalNonServerShape => "historical_non_server_shape",
+            Self::HistoricalPairHasNoRouteUnit => "historical_pair_has_no_route_unit",
+            Self::SetupActionRouteOwnershipUnreviewed => "setup_action_route_ownership_unreviewed",
             Self::NoProductUnitClaimed => "no_product_unit_claimed",
             Self::PackageRecipeNotInstalledProduct => "package_recipe_not_installed_product",
             Self::PackageSourceWithoutPackageChannel => "package_source_without_package_channel",
@@ -463,9 +490,21 @@ struct RouteRule {
     allowed_topology: &'static [TopologyRelationship],
     /// Managed-editor pairs additionally need a named product relation, so an editor
     /// package cannot become a pair on channel evidence alone.
+    ///
+    /// Satisfied only by an `authority_refs` entry in
+    /// [`PRODUCT_RELATION_AUTHORITIES`]. A nonempty list is not evidence: rows
+    /// routinely cite topology, release, workflow and currentness authorities, none
+    /// of which says the package carries this product.
     requires_product_relation_authority: bool,
     limitation: &'static str,
 }
+
+/// Authorities that establish which product a surface carries.
+///
+/// #10831's architecture ruling routes product and executable identity to #6855
+/// (`policy/product-identity.toml`). A row must cite it for a managed-pair rule to
+/// treat the package as carrying the product.
+const PRODUCT_RELATION_AUTHORITIES: &[&str] = &[PRODUCT_AUTHORITY];
 
 /// Dispositions under which a row is a settled, currently-owned surface.
 const SETTLED_ACTIVE: &[RegistryDisposition] =
@@ -764,7 +803,7 @@ pub fn map_surface(subject: &SurfaceRouteSubject) -> RouteMapping {
             RegistryDisposition::HistoricalFixture | RegistryDisposition::Retired
         );
     if historical {
-        return if product_shape.is_server_bearing() {
+        return if product_shape == ProductShape::ServerOnly {
             RouteMapping {
                 surface_id: subject.surface_id.clone(),
                 product_shape: Some(product_shape),
@@ -777,6 +816,19 @@ pub fn map_surface(subject: &SurfaceRouteSubject) -> RouteMapping {
                              that the historical unit was ever published."
                     .to_string(),
             }
+        } else if product_shape.is_pair() {
+            // `historical_server_only` names exactly one server member, so mapping a
+            // pair onto it would silently discard the DAP adapter. There is no
+            // historical pair unit, and inventing one is outside this claim.
+            not_proven(
+                subject,
+                Some(product_shape),
+                Some(channel_class),
+                vec![ReasonCode::HistoricalEvidence, ReasonCode::HistoricalPairHasNoRouteUnit],
+                "Historical evidence on a pair shape. The historical unit describes a \
+                 single server member, so the pair cannot be mapped onto it without \
+                 losing the DAP adapter.",
+            )
         } else {
             not_proven(
                 subject,
@@ -830,7 +882,12 @@ pub fn map_surface(subject: &SurfaceRouteSubject) -> RouteMapping {
     if !rule.allowed_topology.contains(&topology) {
         blocked.push(ReasonCode::TopologyOutsideRule);
     }
-    if rule.requires_product_relation_authority && subject.authority_refs.is_empty() {
+    if rule.requires_product_relation_authority
+        && !subject
+            .authority_refs
+            .iter()
+            .any(|reference| PRODUCT_RELATION_AUTHORITIES.contains(&reference.trim()))
+    {
         blocked.push(ReasonCode::EditorPackageWithoutProductRelation);
     }
 
@@ -861,6 +918,7 @@ pub fn map_surface(subject: &SurfaceRouteSubject) -> RouteMapping {
 /// table miss, so a reviewer can tell a deliberate gap from an unreviewed pair.
 fn missing_rule_reason(product_shape: ProductShape, channel_class: ChannelClass) -> ReasonCode {
     match (product_shape, channel_class) {
+        (_, ChannelClass::ReusableSetupAction) => ReasonCode::SetupActionRouteOwnershipUnreviewed,
         (ProductShape::ServerDapPair, ChannelClass::ManagedEditor) => {
             ReasonCode::ManagedPairRequiresManagedShape
         }
@@ -877,6 +935,12 @@ fn missing_rule_limitation(
     channel_class: ChannelClass,
 ) -> &'static str {
     match (product_shape, channel_class) {
+        (_, ChannelClass::ReusableSetupAction) => {
+            "A reusable setup action that external callers invoke to install a \
+             published artifact. It consumes a route rather than owning one, and the \
+             route vocabulary has no unit for a consumer, so its ownership is \
+             reported unresolved rather than guessed."
+        }
         (ProductShape::PackageSource, _) => {
             "A package recipe on a channel no package manager owns. A recipe is never \
              itself an installed product."
@@ -997,11 +1061,14 @@ pub fn render_explain(report: &RouteMappingReport) -> String {
     for mapping in &report.mappings {
         let reasons =
             mapping.reasons.iter().map(|reason| reason.as_str()).collect::<Vec<_>>().join(",");
+        // The channel class selects the rule, so a reader cannot diagnose a mapping
+        // without seeing which class the row's channel resolved to.
         let _ = writeln!(
             rendered,
-            "{}\t{}\t{}\t{}\t{}",
+            "{}\t{}\t{}\t{}\t{}\t{}",
             mapping.surface_id,
             mapping.product_shape.map_or("unrecognized", ProductShape::as_str),
+            mapping.channel_class.map_or("unrecognized", ChannelClass::as_str),
             mapping.route_product_unit.as_str(),
             mapping.claim_ceiling.as_str(),
             reasons
@@ -1022,6 +1089,11 @@ mod tests {
 
     /// A row carrying every piece of evidence a current first-party route needs.
     /// Individual tests weaken exactly one field, so a failure names one cause.
+    ///
+    /// `authority_refs` deliberately holds only the topology authority. That is a
+    /// real registry shape (`workflow.publish-extension` cites `#6067` with no
+    /// product authority) and it must not satisfy a product-relation gate, so the
+    /// managed-pair tests have to add that evidence explicitly.
     fn settled(product_unit: &str, channel: &str) -> SurfaceRouteSubject {
         SurfaceRouteSubject {
             surface_id: "surface.under.test".to_string(),
@@ -1031,8 +1103,15 @@ mod tests {
             active_user_reachability: "active".to_string(),
             topology_relationship: "checked".to_string(),
             disposition: "active_owned_channel_source".to_string(),
-            authority_refs: vec!["#6067".to_string()],
+            authority_refs: vec![TOPOLOGY_AUTHORITY.to_string()],
         }
+    }
+
+    /// The same row, additionally citing the product-identity authority.
+    fn settled_with_product_relation(product_unit: &str, channel: &str) -> SurfaceRouteSubject {
+        let mut subject = settled(product_unit, channel);
+        subject.authority_refs.push(PRODUCT_AUTHORITY.to_string());
+        subject
     }
 
     fn unit_of(subject: &SurfaceRouteSubject) -> RouteProductUnit {
@@ -1091,12 +1170,22 @@ mod tests {
     // evidence.
     #[test]
     fn editor_package_needs_product_relation_evidence() {
-        let settled_package = settled("editor_package", "vscode_marketplace");
+        let settled_package = settled_with_product_relation("editor_package", "vscode_marketplace");
         assert_eq!(unit_of(&settled_package), RouteProductUnit::ManagedEditorPair);
 
         let mut without_authority = settled_package.clone();
         without_authority.authority_refs.clear();
         let mapping = map_surface(&without_authority);
+        assert_eq!(mapping.route_product_unit, RouteProductUnit::NotProven);
+        assert!(mapping.reasons.contains(&ReasonCode::EditorPackageWithoutProductRelation));
+
+        // Nonemptiness is not the evidence. This is the real shape of
+        // `workflow.publish-extension`: authorities that own topology and workflow,
+        // none of which says the package carries this product.
+        let mut unrelated_authorities = settled_package.clone();
+        unrelated_authorities.authority_refs =
+            vec!["#9093".to_string(), TOPOLOGY_AUTHORITY.to_string()];
+        let mapping = map_surface(&unrelated_authorities);
         assert_eq!(mapping.route_product_unit, RouteProductUnit::NotProven);
         assert!(mapping.reasons.contains(&ReasonCode::EditorPackageWithoutProductRelation));
 
@@ -1135,6 +1224,38 @@ mod tests {
             assert_eq!(mapping.claim_ceiling, ClaimCeiling::HistoricalOnly);
             assert!(!mapping.route_product_unit.is_current_route_claim());
         }
+    }
+
+    /// `historical_server_only` describes exactly one server member, so a historical
+    /// pair must not be mapped onto it — that would silently drop the DAP adapter and
+    /// collapse the pair role into the server-only role.
+    #[test]
+    fn historical_pair_is_not_collapsed_into_a_server_only_unit() {
+        for shape in ["server_dap_pair", "managed_server_dap_pair"] {
+            let mut subject = settled(shape, "github_release");
+            subject.publication_stage = "historical".to_string();
+            let mapping = map_surface(&subject);
+            assert_eq!(
+                mapping.route_product_unit,
+                RouteProductUnit::NotProven,
+                "{shape} must not claim a single-member historical unit"
+            );
+            assert!(mapping.reasons.contains(&ReasonCode::HistoricalEvidence));
+            assert!(mapping.reasons.contains(&ReasonCode::HistoricalPairHasNoRouteUnit));
+        }
+    }
+
+    /// A reusable setup action installs public releases for external callers, so it
+    /// must not be classified as a repository-internal, working-tree-only surface.
+    #[test]
+    fn reusable_setup_action_is_not_local_development() {
+        let mut subject = settled("server", "github_action");
+        subject.publication_stage = "source".to_string();
+        let mapping = map_surface(&subject);
+        assert_eq!(mapping.channel_class, Some(ChannelClass::ReusableSetupAction));
+        assert_ne!(mapping.route_product_unit, RouteProductUnit::LocalDevelopmentNonAuthoritative);
+        assert_eq!(mapping.route_product_unit, RouteProductUnit::NotProven);
+        assert!(mapping.reasons.contains(&ReasonCode::SetupActionRouteOwnershipUnreviewed));
     }
 
     // Falsifier 6: an unknown mapping serialized as an empty or default success.
@@ -1257,7 +1378,10 @@ mod tests {
 
     #[test]
     fn managed_shape_reaches_the_managed_pair_route() {
-        let mapping = map_surface(&settled("managed_server_dap_pair", "vscode_marketplace"));
+        let mapping = map_surface(&settled_with_product_relation(
+            "managed_server_dap_pair",
+            "vscode_marketplace",
+        ));
         assert_eq!(mapping.route_product_unit, RouteProductUnit::ManagedEditorPair);
         assert_eq!(mapping.claim_ceiling, ClaimCeiling::CurrentPublicRoute);
     }
