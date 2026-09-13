@@ -374,30 +374,20 @@ fn ratchet_rejects_workflow_trigger_and_command_mutations() -> Result<(), Box<dy
     let workflow = workflow(&root)?;
     validate_workflow(&workflow).map_err(contract_error)?;
 
+    // Drive the mutation from REQUIRED_WORKFLOW_PATHS rather than from a
+    // hand-listed subset, so every required path — including this ratchet's own
+    // file, whose removal would stop the workflow re-running on changes to the
+    // very test enforcing it — is covered, and so a path added later cannot
+    // enter the requirement without also entering the proof.
     for &event in WORKFLOW_EVENTS {
-        let mut missing_template_path = workflow.clone();
-        remove_workflow_path(&mut missing_template_path, event, TEMPLATE_PATH)
-            .map_err(contract_error)?;
-        assert!(
-            validate_workflow(&missing_template_path).is_err(),
-            "removing the template trigger path from on.{event} must fail the contract"
-        );
-
-        let mut missing_codex_path = workflow.clone();
-        remove_workflow_path(&mut missing_codex_path, event, ".agents/skills/**")
-            .map_err(contract_error)?;
-        assert!(
-            validate_workflow(&missing_codex_path).is_err(),
-            "removing the Codex skill trigger path from on.{event} must fail the contract"
-        );
-
-        let mut missing_claude_path = workflow.clone();
-        remove_workflow_path(&mut missing_claude_path, event, ".claude/skills/**")
-            .map_err(contract_error)?;
-        assert!(
-            validate_workflow(&missing_claude_path).is_err(),
-            "removing the Claude skill trigger path from on.{event} must fail the contract"
-        );
+        for &required in REQUIRED_WORKFLOW_PATHS {
+            let mut missing_path = workflow.clone();
+            remove_workflow_path(&mut missing_path, event, required).map_err(contract_error)?;
+            assert!(
+                validate_workflow(&missing_path).is_err(),
+                "removing the {required:?} trigger path from on.{event} must fail the contract"
+            );
+        }
     }
 
     let mut missing_command = workflow;
