@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
   "owner_issue": 8109,
-  "reason": "Issue #8109 removes unsupported PID attach suggestions while preserving legacy input for deterministic refusal. The measured archive changes package.json (-155 bytes), snippets/launch.json (-348 bytes), and out/extension.js (-107 bytes), totaling -610 bytes from the accepted base. Installed behavior remains an independent proof stage.",
+  "reason": "Issue #8109 removes unsupported PID attach suggestions and corrects the packaged README while preserving legacy input for deterministic refusal. The measured archive changes package.json (-155 bytes), snippets/launch.json (-348 bytes), out/extension.js (-107 bytes), and readme.md (+35 bytes), totaling -575 bytes from the accepted base. Installed behavior remains an independent proof stage.",
   "base_baseline_file_sha256": "97e252c780703cdac57817eb53c68e62fe8d8454364c4689569126f8dd7882f2",
-  "candidate_baseline_file_sha256": "c0c0779673867b800781d2ac816e4ea5c722be347bfc4855fd591bb403e21520",
+  "candidate_baseline_file_sha256": "aa7dfe6d0fcba6d5e9d94d74eb12a02fbee8dd2572208da6fd7eeba356a6231b",
   "base_inventory_sha256": "4330c8d298776388ded382fe8ce8b3e810a47adf54cd214f25c5df4c0d033956",
-  "candidate_inventory_sha256": "b21ebb3dcd707418d988615e3685fe36a671faf52948ac6b289ebfae7f119c0a"
+  "candidate_inventory_sha256": "5ec8dff263215ee5ced263711d0a015929ef3537ee20b3df26d9c1db614eae9a"
 }
