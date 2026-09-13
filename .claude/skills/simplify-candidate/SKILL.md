@@ -11,11 +11,11 @@ Simplify without weakening proof, rollback, production behavior, or clarity. A c
 
 ## Orchestration affordances
 
-### Lane-root decisions
+### Root decisions
 
-The lane root retains which complexity is necessary for the claim, whether a proposed
-simplification changes public behavior/authority/support/rollback, and whether the
-candidate remains inside the accepted design.
+The main Claude thread retains which complexity is necessary for the claim, whether a
+proposed simplification changes public behavior/authority/support/rollback, and whether
+the candidate remains inside the accepted design.
 
 ### Useful review contexts
 
@@ -33,9 +33,9 @@ the candidate or decide design changes independently.
 
 ### Mutation owner and join
 
-One candidate writer applies accepted simplifications. Join when the lane root can
-state which machinery was removed or retained, why the remaining structure is needed,
-which semantic owner is canonical, and what proof/review dimensions changed.
+One candidate writer applies accepted simplifications. Join when the main Claude thread
+can state which machinery was removed or retained, why the remaining structure is
+needed, which semantic owner is canonical, and what proof/review dimensions changed.
 
 Any simplification changing production code, behavior, configuration, generated output,
 or proof artifacts creates a new candidate and returns through `improve-test-suite`.
@@ -57,8 +57,9 @@ Publish when simplification changes semantic ownership, public/support/rollback 
 removes durable compatibility/migration machinery, or materially changes the candidate
 proof/limitation summary. Localized findings may be inline.
 
-The lane root posts. Focused subagents and context forks return file/line-anchored
-findings as evidence and do not write to GitHub themselves.
+The main Claude thread posts the joined durable conclusion. Focused subagents and
+context forks return file/line-anchored findings as evidence and do not write to GitHub
+unless their brief grants one specific bounded finding publication.
 
 Keep subagent/Team topology, candidate-shaping experiments, discarded alternatives,
 raw logs, retries, and clean `ALREADY_MINIMAL` analysis runtime-local unless the

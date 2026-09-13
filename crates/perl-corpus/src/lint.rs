@@ -124,7 +124,6 @@ pub const KNOWN_TAGS: &[&str] = &[
     // Object-oriented
     "class",
     "field",
-    "method",
     "bless",
     "isa",
     "can",
@@ -169,7 +168,6 @@ pub const KNOWN_TAGS: &[&str] = &[
     "pod",
     "comment",
     "annotation",
-    "pragma",
     "shebang",
     "legacy",
     "do",
@@ -368,4 +366,106 @@ pub fn check_sections(sections: &[Section], config: &LintConfig) -> LintResult {
     }
 
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{KNOWN_FLAGS, KNOWN_TAGS};
+    use anyhow::{Result, bail, ensure};
+    use std::collections::BTreeSet;
+
+    /// Canonical shape for a temporary vocabulary entry.
+    ///
+    /// `metadata::parser::parse_sections` splits declared `@tags`/`@flags` on
+    /// whitespace, so an entry carrying whitespace, uppercase, non-ASCII, or
+    /// punctuation can never match a parsed token: it is dead vocabulary that
+    /// silently widens the accepted set without ever accepting anything. A
+    /// leading or trailing hyphen is rejected for the same reason -- no corpus
+    /// file declares one, and `-` alone is not a name.
+    fn is_canonical_entry(value: &str) -> bool {
+        let bytes = value.as_bytes();
+        let alphanumeric = |byte: &u8| byte.is_ascii_lowercase() || byte.is_ascii_digit();
+
+        bytes.iter().all(|byte| alphanumeric(byte) || *byte == b'-')
+            && bytes.first().is_some_and(alphanumeric)
+            && bytes.last().is_some_and(alphanumeric)
+    }
+
+    fn validate_temporary_vocabulary(kind: &str, values: &[&str]) -> Result<()> {
+        let mut seen = BTreeSet::new();
+
+        for value in values {
+            ensure!(!value.is_empty(), "{kind} vocabulary entry {value:?} must not be empty");
+            ensure!(
+                is_canonical_entry(value),
+                "{kind} vocabulary entry {value:?} must be lowercase ASCII \
+                 letters, digits, and interior hyphens"
+            );
+            ensure!(seen.insert(*value), "{kind} vocabulary contains duplicate entry {value:?}");
+        }
+
+        Ok(())
+    }
+
+    fn rejected_message(kind: &str, values: &[&str]) -> Result<String> {
+        match validate_temporary_vocabulary(kind, values) {
+            Ok(()) => bail!("temporary {kind} vocabulary unexpectedly accepted {values:?}"),
+            Err(error) => Ok(error.to_string()),
+        }
+    }
+
+    #[test]
+    fn temporary_vocabularies_are_unique_and_canonical() -> Result<()> {
+        validate_temporary_vocabulary("tag", KNOWN_TAGS)?;
+        validate_temporary_vocabulary("flag", KNOWN_FLAGS)?;
+
+        for retained_tag in ["method", "pragma"] {
+            ensure!(
+                KNOWN_TAGS.contains(&retained_tag),
+                "duplicate cleanup removed canonical tag {retained_tag:?}"
+            );
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn temporary_vocabulary_validator_rejects_false_green_entries() -> Result<()> {
+        let cases: &[(&[&str], &str, &str)] = &[
+            (&["regex", "regex"], "duplicate", "regex"),
+            (&[""], "must not be empty", "\"\""),
+            (&["Regex"], "lowercase ASCII", "Regex"),
+            (&[" regex"], "lowercase ASCII", " regex"),
+            (&["regex "], "lowercase ASCII", "regex "),
+            // Interior whitespace survives a trim-only guard, but no parsed
+            // token can ever contain it.
+            (&["re gex"], "lowercase ASCII", "re gex"),
+            (&["regex!"], "lowercase ASCII", "regex!"),
+            (&["r\u{e9}gex"], "lowercase ASCII", "r\u{e9}gex"),
+            (&["-regex"], "lowercase ASCII", "-regex"),
+            (&["regex-"], "lowercase ASCII", "regex-"),
+        ];
+
+        // Both live kinds are driven so that a validator hardcoding one kind
+        // label instead of threading `kind` cannot pass.
+        for kind in ["tag", "flag"] {
+            for &(values, reason, token) in cases {
+                let message = rejected_message(kind, values)?;
+                ensure!(
+                    message.contains(&format!("{kind} vocabulary")),
+                    "validator failure lost vocabulary kind {kind:?}: {message}"
+                );
+                ensure!(
+                    message.contains(reason),
+                    "validator failure did not explain {reason:?}: {message}"
+                );
+                ensure!(
+                    message.contains(token),
+                    "validator failure lost offending token {token:?}: {message}"
+                );
+            }
+        }
+
+        Ok(())
+    }
 }

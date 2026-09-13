@@ -24,6 +24,7 @@ audited_at = "2026-07-12"
 [[tag]]
 name = "v0.1.0-pest"
 current_sha = "4f92dc575418b5870f5d655ae0d63c4ff125627b"
+unresolvable = true
 record_status = "match"
 recorded_sha = "4f92dc57"
 recorded_reachable = true
@@ -32,6 +33,7 @@ lineage = "root"
 [[tag]]
 name = "v0.5.0"
 current_sha = "8ed7583658e588c1c42a23794951375e25884319"
+unresolvable = true
 record_status = "stale"
 recorded_sha = "60190640"
 recorded_reachable = false
@@ -41,6 +43,7 @@ lineage = "linear"
 [[tag]]
 name = "v0.7.2"
 current_sha = "79d372e9867ba4bc374ea0e535f29368f5896108"
+unresolvable = true
 record_status = "stale"
 recorded_sha = "a19ba90b"
 recorded_reachable = false
@@ -50,6 +53,7 @@ lineage = "linear"
 [[tag]]
 name = "v0.7.3"
 current_sha = "4149fee1b20594d9412e1bec167facedcf301475"
+unresolvable = true
 record_status = "stale"
 recorded_sha = "20751374"
 recorded_reachable = false
@@ -59,6 +63,7 @@ lineage = "linear"
 [[tag]]
 name = "v0.8.0"
 current_sha = "a9534827f975ffff358d23801a52d153684f2df4"
+unresolvable = true
 record_status = "stale"
 recorded_sha = "2eeb06c5"
 recorded_reachable = false
@@ -68,6 +73,7 @@ lineage = "linear"
 [[tag]]
 name = "v0.8.2"
 current_sha = "9d7584d09d2120193a9cc0ac92618fc67939b473"
+unresolvable = true
 record_status = "stale"
 recorded_sha = "0b962684"
 recorded_reachable = false
@@ -77,6 +83,7 @@ lineage = "linear"
 [[tag]]
 name = "v0.8.3-rc1"
 current_sha = "150a22b1eda3602b9f81ad1ee5640c50feafd9cb"
+unresolvable = true
 record_status = "match"
 recorded_sha = "150a22b1"
 recorded_reachable = true
@@ -86,6 +93,7 @@ lineage = "linear"
 [[tag]]
 name = "v0.8.3"
 current_sha = "274005de298a02cfb8f56f534dde8e3a4b55b7a7"
+unresolvable = true
 record_status = "stale"
 recorded_sha = "5331007a215cfc0cef4e41cee958d62b2504527a"
 recorded_reachable = false
@@ -95,6 +103,7 @@ lineage = "linear"
 [[tag]]
 name = "v0.8.5"
 current_sha = "a6ca88fb39bede9a8f0d244e0d5996a4dd9c8b3c"
+unresolvable = true
 record_status = "stale"
 recorded_sha = "ae75da03226fa31c17e695b3c96fb0e4be687263"
 recorded_reachable = false

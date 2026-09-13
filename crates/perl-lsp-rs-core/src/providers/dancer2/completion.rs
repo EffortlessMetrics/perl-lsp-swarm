@@ -4,6 +4,8 @@
 //! [`Dancer2KeywordImportFact`]s under exact activation:
 //!
 //! - `!keyword` exclusions are honored: an excluded keyword is never offered;
+//! - deprecated exports remain canonical facts but are not offered as usable
+//!   keywords: their reviewed upstream implementations fail when invoked;
 //! - request-scoped keywords (the reviewed `is_global => 0` vocabulary) are
 //!   offered only where the canonical handler-context facts establish request
 //!   context: inside an exact inline route handler (#8921) or inside an
@@ -18,9 +20,7 @@
 
 use super::activation::Dancer2FileActivations;
 use super::facts::CanonicalDancer2FileFacts;
-use perl_semantic_facts::framework_adapters::dancer2::{
-    DANCER2_DSL_CONTRACT_VERSION, Dancer2KeywordState, DslKeywordScope,
-};
+use perl_semantic_facts::framework_adapters::dancer2::{Dancer2KeywordState, DslKeywordScope};
 use perl_semantic_facts::route::HandlerContextKind;
 
 /// Sort penalty applied to Dancer2 keyword completion items so ordinary
@@ -92,8 +92,8 @@ pub fn keyword_completion_candidates(
         request_context.filter(|context| context.establishes_request_context());
     let mut candidates = Vec::new();
     for keyword in &activation.facts.keywords {
-        if keyword.state != Dancer2KeywordState::Imported {
-            // `!keyword` at the activating import: never offered.
+        if keyword.state != Dancer2KeywordState::Imported || keyword.deprecated {
+            // Exclusions and deprecated upstream failure stubs are never offered.
             continue;
         }
         if locally_declared_subnames(&keyword.keyword) {
@@ -128,10 +128,10 @@ pub fn keyword_completion_candidates(
             rank_penalty: KEYWORD_RANK_PENALTY,
             detail: format!(
                 "Dancer2 {} keyword ({} — {})",
-                &version, scope_detail, DANCER2_DSL_CONTRACT_VERSION
+                &version, scope_detail, activation.facts.dsl_contract_version
             ),
             availability: scope_detail,
-            dsl_contract_version: DANCER2_DSL_CONTRACT_VERSION,
+            dsl_contract_version: activation.facts.dsl_contract_version,
         });
     }
     candidates
@@ -151,13 +151,26 @@ mod tests {
     use crate::providers::dancer2::facts::canonical_file_facts;
     use perl_semantic_analyzer::Parser;
     use perl_semantic_facts::{FileId, SourceGeneration};
+    use perl_test_must::{must_some_with, must_with};
 
     fn setup(source: &'static str) -> (Dancer2FileActivations, CanonicalDancer2FileFacts) {
+        setup_with_version(source, "1.1.1")
+    }
+
+    fn setup_with_version(
+        source: &'static str,
+        framework_version: &str,
+    ) -> (Dancer2FileActivations, CanonicalDancer2FileFacts) {
         let mut parser = Parser::new(source);
-        let ast = parser.parse().expect("fixture must parse");
-        let module = RuntimeDancer2Module::new("lib/Dancer2.pm", "1.1.1");
-        let activations =
-            file_activations(&ast, FileId(1), Some(&module), &SourceGeneration::known("g1"));
+        let ast = must_with(parser.parse(), "fixture must parse");
+        let module = RuntimeDancer2Module::new("lib/Dancer2.pm", framework_version);
+        let activations = file_activations(
+            &ast,
+            source,
+            FileId(1),
+            Some(&module),
+            &SourceGeneration::known("g1"),
+        );
         let facts = canonical_file_facts(&ast, FileId(1), &activations);
         (activations, facts)
     }
@@ -167,7 +180,7 @@ mod tests {
     }
 
     #[test]
-    fn bare_activation_offers_global_keywords() {
+    fn bare_activation_offers_complete_global_vocabulary_only() {
         let (activations, facts) = setup("use Dancer2;\nget '/x' => sub { 1 };\n");
         // Offset at the `get` route keyword: outside every handler body.
         let keyword_offset = "use Dancer2;\n".len();
@@ -178,21 +191,32 @@ mod tests {
             keyword_offset,
             &none_declared,
         );
-        let labels: Vec<&str> = candidates.iter().map(|c| c.label.as_str()).collect();
-        for expected in ["get", "post", "prefix", "hook", "set", "template"] {
+        let labels: Vec<&str> =
+            candidates.iter().map(|candidate| candidate.label.as_str()).collect();
+        for expected in
+            ["get", "app", "dancer_version", "mime", "prepare_app", "to_app", "template"]
+        {
             assert!(labels.contains(&expected), "missing {expected} in {labels:?}");
         }
-        assert!(
-            labels.iter().all(|label| *label != "params"),
-            "handler-only keyword must not be offered outside a handler: {labels:?}"
-        );
+        for handler_only in ["params", "uri_for", "redirect", "cookie", "content_type"] {
+            assert!(
+                !labels.contains(&handler_only),
+                "handler-only keyword `{handler_only}` offered outside a handler: {labels:?}"
+            );
+        }
+        for non_keyword in ["route", "before", "after", "body"] {
+            assert!(
+                !labels.contains(&non_keyword),
+                "non-keyword `{non_keyword}` offered by the default DSL: {labels:?}"
+            );
+        }
     }
 
     #[test]
-    fn inside_handler_offers_handler_only_keywords() {
+    fn inside_handler_offers_complete_request_context_vocabulary() {
         let source = "use Dancer2;\nget '/x' => sub { params; };\n";
         let (activations, facts) = setup(source);
-        let handler_offset = source.find("params").expect("handler body offset");
+        let handler_offset = must_some_with(source.find("params"), "handler body offset");
         let candidates = keyword_completion_candidates(
             &activations,
             &facts,
@@ -200,9 +224,145 @@ mod tests {
             handler_offset,
             &none_declared,
         );
-        let labels: Vec<&str> = candidates.iter().map(|c| c.label.as_str()).collect();
-        assert!(labels.contains(&"params"), "handler-only keyword offered inside handler");
-        assert!(labels.contains(&"splat"), "splat offered inside handler");
+        let labels: Vec<&str> =
+            candidates.iter().map(|candidate| candidate.label.as_str()).collect();
+        for expected in [
+            "params",
+            "body_parameters",
+            "query_parameters",
+            "uri_for_route",
+            "redirect",
+            "cookie",
+            "response_header",
+            "splat",
+        ] {
+            assert!(labels.contains(&expected), "missing {expected} in {labels:?}");
+        }
+    }
+
+    #[test]
+    fn dancer2_1_0_omits_uri_for_route_and_uses_v1_0_contract() {
+        let source = "use Dancer2;
+get '/x' => sub { params; };
+";
+        let (activations, facts) = setup_with_version(source, "1.0.0");
+        let handler_offset = must_some_with(source.find("params"), "handler body offset");
+        let candidates = keyword_completion_candidates(
+            &activations,
+            &facts,
+            "main",
+            handler_offset,
+            &none_declared,
+        );
+        assert!(
+            candidates.iter().all(|candidate| candidate.label != "uri_for_route"),
+            "Dancer2 1.0.x must not receive a v1.1 keyword"
+        );
+        let uri_for = must_some_with(
+            candidates.iter().find(|candidate| candidate.label == "uri_for"),
+            "v1.0 request helper",
+        );
+        assert_eq!(uri_for.dsl_contract_version, "dancer2-dsl.1-0.v3");
+    }
+
+    #[test]
+    fn versioned_canonical_contexts_and_completion_share_the_activation_receipt()
+    -> Result<(), String> {
+        let source = "use Dancer2;\nget '/x' => sub { params; };\nhook before => sub { request; };";
+        for (version, receipt) in [
+            ("1.0.0", "dancer2-dsl.1-0.v3"),
+            ("1.1.0", "dancer2-dsl.1-1.v3"),
+            ("1.1.1", "dancer2-dsl.1-1.v3"),
+        ] {
+            let (activations, facts) = setup_with_version(source, version);
+            let activation = activations.for_package("main").ok_or("missing activation")?;
+            if !activation.facts.is_exact() || activation.facts.dsl_contract_version != receipt {
+                return Err(format!("{version}: wrong activation receipt: {:?}", activation.facts));
+            }
+            if facts.handler_contexts.len() != 2 {
+                return Err(format!("{version}: expected route and hook contexts: {facts:?}"));
+            }
+            for context in &facts.handler_contexts {
+                if context.dsl_contract_version != receipt || context.framework_version != version {
+                    return Err(format!("{version}: wrong canonical context receipt: {context:?}"));
+                }
+            }
+            for (needle, owner) in [("params", "route handler"), ("request", "hook handler")] {
+                let offset = source.find(needle).ok_or("missing handler offset")?;
+                let candidates = keyword_completion_candidates(
+                    &activations,
+                    &facts,
+                    "main",
+                    offset,
+                    &none_declared,
+                );
+                let candidate = candidates
+                    .iter()
+                    .find(|candidate| candidate.label == needle)
+                    .ok_or("missing request keyword")?;
+                if candidate.dsl_contract_version != receipt
+                    || !candidate.detail.contains(receipt)
+                    || !candidate.availability.contains(owner)
+                {
+                    return Err(format!(
+                        "{version}: wrong completion receipt or scope: {candidate:?}"
+                    ));
+                }
+                let has_later_keyword =
+                    candidates.iter().any(|candidate| candidate.label == "uri_for_route");
+                if has_later_keyword != (version != "1.0.0") {
+                    return Err(format!("{version}: incorrect uri_for_route availability"));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn unsupported_versions_publish_no_one_x_facts_or_completions() -> Result<(), String> {
+        let source = "use Dancer2;\nget '/x' => sub { params; };\nhook before => sub { request; };";
+        for version in ["", "1.1oops", "0.9.9", "3.0.0", "2.0.1"] {
+            let (activations, facts) = setup_with_version(source, version);
+            let offset = source.find("params").ok_or("missing handler offset")?;
+            if activations.for_package("main").is_some_and(|a| a.facts.is_exact())
+                || !facts.handler_contexts.is_empty()
+                || !keyword_completion_candidates(
+                    &activations,
+                    &facts,
+                    "main",
+                    offset,
+                    &none_declared,
+                )
+                .is_empty()
+            {
+                return Err(format!("{version}: unsupported 1.x version published facts"));
+            }
+            if version == "2.0.1" {
+                let activation = activations
+                    .two_x_packages
+                    .iter()
+                    .find(|a| a.package == "main")
+                    .ok_or("missing 2.x control")?;
+                let contexts: Vec<_> = facts
+                    .two_x_route_facts
+                    .iter()
+                    .flat_map(|family| &family.handler_contexts)
+                    .collect();
+                if !activation.facts.is_exact() || contexts.len() != 1 {
+                    return Err(format!(
+                        "2.x control did not mint one comparison context: {facts:?}"
+                    ));
+                }
+                for context in contexts {
+                    if context.dsl_contract_version != activation.facts.dsl_contract_version {
+                        return Err(format!("2.x context inherited wrong contract: {context:?}"));
+                    }
+                }
+            } else if activations.two_x_packages.iter().any(|a| a.facts.is_exact()) {
+                return Err(format!("{version}: unsupported version activated 2.x"));
+            }
+        }
+        Ok(())
     }
 
     #[test]
@@ -212,7 +372,7 @@ mod tests {
         // offers inside a route handler.
         let source = "use Dancer2;\nhook before => sub { my $r = request; };\n";
         let (activations, facts) = setup(source);
-        let inside = source.find("request").expect("hook body offset");
+        let inside = must_some_with(source.find("request"), "hook body offset");
         let candidates =
             keyword_completion_candidates(&activations, &facts, "main", inside, &none_declared);
         let labels: Vec<&str> = candidates.iter().map(|c| c.label.as_str()).collect();
@@ -230,13 +390,13 @@ mod tests {
         // inside a hook handler cannot describe itself as route-handler-only.
         let hook_source = "use Dancer2;\nhook before => sub { my $r = request; };\n";
         let (activations, facts) = setup(hook_source);
-        let inside = hook_source.find("request").expect("hook body offset");
+        let inside = must_some_with(hook_source.find("request"), "hook body offset");
         let candidates =
             keyword_completion_candidates(&activations, &facts, "main", inside, &none_declared);
-        let request = candidates
-            .iter()
-            .find(|candidate| candidate.label == "request")
-            .expect("request offered inside an admitted hook handler");
+        let request = must_some_with(
+            candidates.iter().find(|candidate| candidate.label == "request"),
+            "request offered inside an admitted hook handler",
+        );
         assert!(request.detail.contains("hook handler"), "{}", request.detail);
         assert!(
             !request.detail.contains("route handler only"),
@@ -265,13 +425,13 @@ mod tests {
         // context rather than being blanket-renamed.
         let route_source = "use Dancer2;\nget '/x' => sub { my $p = params; };\n";
         let (activations, facts) = setup(route_source);
-        let inside = route_source.find("params").expect("route body offset");
+        let inside = must_some_with(route_source.find("params"), "route body offset");
         let candidates =
             keyword_completion_candidates(&activations, &facts, "main", inside, &none_declared);
-        let params = candidates
-            .iter()
-            .find(|candidate| candidate.label == "params")
-            .expect("params offered inside a route handler");
+        let params = must_some_with(
+            candidates.iter().find(|candidate| candidate.label == "params"),
+            "params offered inside a route handler",
+        );
         assert!(params.detail.contains("route handler"), "{}", params.detail);
     }
 
@@ -279,7 +439,7 @@ mod tests {
     fn nested_blocks_inside_a_hook_handler_stay_in_request_context() {
         let source = "use Dancer2;\nhook before => sub { if (1) { my $r = request; } };\n";
         let (activations, facts) = setup(source);
-        let inside = source.find("request").expect("nested body offset");
+        let inside = must_some_with(source.find("request"), "nested body offset");
         let candidates =
             keyword_completion_candidates(&activations, &facts, "main", inside, &none_declared);
         let labels: Vec<&str> = candidates.iter().map(|c| c.label.as_str()).collect();
@@ -293,10 +453,11 @@ mod tests {
         // availability must not be claimed.
         let source = "use Dancer2;\nhook before_template_render => sub { my $r = request; };\n";
         let (activations, facts) = setup(source);
-        let inside = source.find("my $r").expect("hook body offset");
+        let inside = must_some_with(source.find("my $r"), "hook body offset");
         // Guard against a vacuous pass: the interval must really exist and
         // really be unadmitted, not be missing because the hook never minted.
-        let context = facts.request_context_at(inside).expect("hook handler interval exists");
+        let context =
+            must_some_with(facts.request_context_at(inside), "hook handler interval exists");
         assert_eq!(context.handler_kind, HandlerContextKind::Hook);
         assert!(!context.establishes_request_context());
         let candidates =
@@ -316,10 +477,11 @@ mod tests {
         // about its shape may mint availability.
         let source = "hook before => sub { my $r = request; };\n";
         let mut parser = Parser::new(source);
-        let ast = parser.parse().expect("fixture must parse");
-        let activations = file_activations(&ast, FileId(1), None, &SourceGeneration::known("g1"));
+        let ast = must_with(parser.parse(), "fixture must parse");
+        let activations =
+            file_activations(&ast, source, FileId(1), None, &SourceGeneration::known("g1"));
         let facts = canonical_file_facts(&ast, FileId(1), &activations);
-        let inside = source.find("request").expect("body offset");
+        let inside = must_some_with(source.find("request"), "body offset");
         assert!(
             keyword_completion_candidates(&activations, &facts, "main", inside, &none_declared)
                 .is_empty(),
@@ -334,7 +496,7 @@ mod tests {
         // would silently withhold the helpers here.
         let source = "use Dancer2;\nhook before # a note\n    => sub { my $r = request; };\n";
         let (activations, facts) = setup(source);
-        let inside = source.find("my $r").expect("hook body offset");
+        let inside = must_some_with(source.find("my $r"), "hook body offset");
         let candidates =
             keyword_completion_candidates(&activations, &facts, "main", inside, &none_declared);
         let labels: Vec<&str> = candidates.iter().map(|c| c.label.as_str()).collect();
@@ -351,9 +513,11 @@ mod tests {
         // the admitted position's request context.
         let source = "use Dancer2;\nhook(before, sub { my $r = request; });\n";
         let (activations, facts) = setup(source);
-        let inside = source.find("my $r").expect("hook body offset");
-        let context =
-            facts.request_context_at(inside).expect("an inline body still owns an interval");
+        let inside = must_some_with(source.find("my $r"), "hook body offset");
+        let context = must_some_with(
+            facts.request_context_at(inside),
+            "an inline body still owns an interval",
+        );
         assert!(
             !context.establishes_request_context(),
             "an unproven hook name must not establish request context"
@@ -371,7 +535,7 @@ mod tests {
     fn an_exclusion_still_wins_inside_an_admitted_hook_handler() {
         let source = "use Dancer2 '!request';\nhook before => sub { my $r = request; };\n";
         let (activations, facts) = setup(source);
-        let inside = source.find("my $r").expect("hook body offset");
+        let inside = must_some_with(source.find("my $r"), "hook body offset");
         let candidates =
             keyword_completion_candidates(&activations, &facts, "main", inside, &none_declared);
         let labels: Vec<&str> = candidates.iter().map(|c| c.label.as_str()).collect();
@@ -386,7 +550,7 @@ mod tests {
     fn an_adjacent_ordinary_sub_is_not_a_request_context() {
         let source = "use Dancer2;\nhook before => sub { 1 };\nsub helper { my $r = request; }\n";
         let (activations, facts) = setup(source);
-        let inside = source.find("my $r").expect("adjacent sub offset");
+        let inside = must_some_with(source.find("my $r"), "adjacent sub offset");
         let candidates =
             keyword_completion_candidates(&activations, &facts, "main", inside, &none_declared);
         let labels: Vec<&str> = candidates.iter().map(|c| c.label.as_str()).collect();
@@ -401,9 +565,64 @@ mod tests {
         let (activations, facts) = setup("use Dancer2 '!get';\npost '/x' => sub { 1 };\n");
         let candidates =
             keyword_completion_candidates(&activations, &facts, "main", 40, &none_declared);
-        let labels: Vec<&str> = candidates.iter().map(|c| c.label.as_str()).collect();
+        let labels: Vec<&str> =
+            candidates.iter().map(|candidate| candidate.label.as_str()).collect();
         assert!(!labels.contains(&"get"), "excluded `get` offered: {labels:?}");
         assert!(labels.contains(&"post"));
+    }
+
+    #[test]
+    fn deprecated_exports_are_not_offered_as_usable_keywords() -> Result<(), String> {
+        let source = "use Dancer2;\nget '/x' => sub { params; };\nhook before => sub { request; };";
+        for version in ["1.0.0", "1.1.1"] {
+            let (activations, facts) = setup_with_version(source, version);
+            let activation = activations.for_package("main").ok_or("missing activation")?;
+            if activation.facts.keywords.iter().filter(|keyword| keyword.deprecated).count() != 4 {
+                return Err(format!(
+                    "{version}: deprecated exports were lost from canonical facts"
+                ));
+            }
+            for needle in ["params;", "request;"] {
+                let offset = source.find(needle).ok_or("missing handler offset")?;
+                let candidates = keyword_completion_candidates(
+                    &activations,
+                    &facts,
+                    "main",
+                    offset,
+                    &none_declared,
+                );
+                for deprecated in ["context", "header", "headers", "push_header"] {
+                    if candidates.iter().any(|candidate| candidate.label == deprecated) {
+                        return Err(format!("{version}: {deprecated} was offered at {needle}"));
+                    }
+                }
+                for available in ["request", "params", "response_header", "push_response_header"] {
+                    if !candidates.iter().any(|candidate| candidate.label == available) {
+                        return Err(format!("{version}: {available} was withheld at {needle}"));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn excluded_reviewed_handler_keyword_is_never_offered() {
+        let source = "use Dancer2 '!uri_for_route';\nget '/x' => sub { params; };\n";
+        let (activations, facts) = setup(source);
+        let handler_offset = must_some_with(source.find("params"), "handler body offset");
+        let candidates = keyword_completion_candidates(
+            &activations,
+            &facts,
+            "main",
+            handler_offset,
+            &none_declared,
+        );
+        let labels: Vec<&str> =
+            candidates.iter().map(|candidate| candidate.label.as_str()).collect();
+        assert!(!labels.contains(&"uri_for_route"), "excluded `uri_for_route` offered: {labels:?}");
+        assert!(labels.contains(&"uri_for"), "unrelated request helper remains imported");
+        assert!(labels.contains(&"params"), "unrelated request helper remains imported");
     }
 
     #[test]
@@ -413,11 +632,12 @@ mod tests {
             keyword_completion_candidates(&activations, &facts, "main", 30, &|name: &str| {
                 name == "get"
             });
-        let labels: Vec<&str> = candidates.iter().map(|c| c.label.as_str()).collect();
+        let labels: Vec<&str> =
+            candidates.iter().map(|candidate| candidate.label.as_str()).collect();
         assert!(!labels.contains(&"get"), "local `sub get` owns the name");
         assert!(labels.contains(&"post"));
         assert!(
-            candidates.iter().all(|c| c.rank_penalty >= KEYWORD_RANK_PENALTY),
+            candidates.iter().all(|candidate| candidate.rank_penalty >= KEYWORD_RANK_PENALTY),
             "every keyword carries the ranking penalty"
         );
     }
@@ -426,8 +646,9 @@ mod tests {
     fn without_activation_there_are_zero_keyword_candidates() {
         let source = "use Dancer2::Core;\nget '/x' => sub { 1 };\n";
         let mut parser = Parser::new(source);
-        let ast = parser.parse().expect("fixture must parse");
-        let activations = file_activations(&ast, FileId(1), None, &SourceGeneration::known("g1"));
+        let ast = must_with(parser.parse(), "fixture must parse");
+        let activations =
+            file_activations(&ast, source, FileId(1), None, &SourceGeneration::known("g1"));
         let facts = canonical_file_facts(&ast, FileId(1), &activations);
         assert!(
             keyword_completion_candidates(&activations, &facts, "main", 30, &none_declared)
