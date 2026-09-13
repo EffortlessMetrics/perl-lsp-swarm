@@ -91,6 +91,7 @@ describe('installed journey single-process crash injection', () => {
         reject(new Error('owned child did not close within 5 seconds'));
       }, 5_000);
     });
+    let primaryFailure: { error: unknown } | undefined;
     try {
       if (child.pid === undefined) throw new Error('owned child has no PID');
       const result = await terminateServerProcess(child.pid);
@@ -98,12 +99,15 @@ describe('installed journey single-process crash injection', () => {
       await Promise.race([exit, deadline]);
       expect(closed).toBe(true);
       expect(processRunner.runBoundedProcess).not.toHaveBeenCalled();
+    } catch (error) {
+      primaryFailure = { error };
+      throw error;
     } finally {
       if (timer !== undefined) clearTimeout(timer);
       if (!closed) {
-        child.kill('SIGKILL');
         let cleanupTimer: ReturnType<typeof setTimeout> | undefined;
         try {
+          child.kill('SIGKILL');
           await Promise.race([
             exit,
             new Promise<never>((_, reject) => {
@@ -113,6 +117,14 @@ describe('installed journey single-process crash injection', () => {
               );
             }),
           ]);
+        } catch (cleanupError) {
+          if (primaryFailure !== undefined) {
+            throw new AggregateError(
+              [primaryFailure.error, cleanupError],
+              'test and owned-child cleanup failed',
+            );
+          }
+          throw cleanupError;
         } finally {
           if (cleanupTimer !== undefined) clearTimeout(cleanupTimer);
         }
