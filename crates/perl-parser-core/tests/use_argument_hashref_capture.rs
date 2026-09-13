@@ -197,6 +197,29 @@ fn a_retained_option_hash_publishes_no_other_option_value() -> Result<(), String
 }
 
 #[test]
+fn an_as_option_is_honoured_wherever_it_sits_in_the_hash() -> Result<(), String> {
+    // Key order in a Perl hash literal carries no meaning, so this installs
+    // `bar` exactly as `{ -as => 'bar', -prefix => 'p_' }` does. Deciding whether
+    // a hash is per-symbol options from its *first* key alone read this one as
+    // module configuration, skipped it, and published `foo` — a name the
+    // importer never receives — while losing the one it does.
+    let source = "use Module foo => { -prefix => 'p_', -as => 'bar' };\n";
+    assert_clean_parse(source);
+    let file = lower(source);
+
+    let specs = file.compile_environment.import_specs(FileId(0));
+    let spec = import_spec_for(&specs, "Module")
+        .ok_or_else(|| format!("no import spec for Module in {specs:?}"))?;
+
+    assert_eq!(
+        spec.symbols,
+        ImportSymbols::Explicit(vec!["bar".to_string()]),
+        "the installed name does not depend on which option was written first"
+    );
+    Ok(())
+}
+
+#[test]
 fn a_repeated_as_option_publishes_only_the_effective_name() -> Result<(), String> {
     // A Perl hash literal keeps the last value for a repeated key, so this
     // installs `second`. Keeping both would publish a name the importer never

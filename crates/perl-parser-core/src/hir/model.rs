@@ -2521,13 +2521,20 @@ fn import_spec(
 /// keeps an ordinary module configuration hash that happens to open with a
 /// dashed key — `use M 'foo', { -config => 'value' }` — on the skipped side.
 ///
+/// The `-as` pair need not come first. Key order in a Perl hash literal carries
+/// no meaning, so `{ -prefix => 'p_', -as => 'bar' }` installs `bar` exactly as
+/// `{ -as => 'bar', -prefix => 'p_' }` does. Deciding on the first key alone
+/// made the answer depend on the order the author happened to write.
+///
 /// Perl cannot separate these two shapes on syntax alone: `foo => {...}` and
 /// `foo, {...}` are the same list, and which reading applies is the imported
 /// module's business. The option vocabulary is the only evidence available
 /// here, so this errs toward skipping and keeps the retained case narrow.
+///
+/// This is deliberately the same scan that picks the installed name, so the
+/// decision to retain a hash and the name retained from it cannot disagree.
 fn opens_per_symbol_options(args: &[String], open: usize) -> bool {
-    args.get(open + 1).map(|token| token.trim()) == Some("-")
-        && args.get(open + 2).map(|token| token.trim()).is_some_and(|name| name == "as")
+    effective_as_value_index(args, open).is_some()
 }
 
 /// Whether the token at `index` is a name renamed by a per-symbol option hash
