@@ -134,7 +134,11 @@ pub struct DebugAdapter {
     /// A replacement child whose cleanup was not confirmed; retained so a
     /// later terminal cleanup can retry it instead of losing ownership.
     rejected_child: Arc<Mutex<Option<Child>>>,
-    /// Attached process ID for PID-based attach mode
+    /// Legacy signal-control state, dead for production attach requests.
+    /// Only the test/test-helpers seed can populate this field; retained readers
+    /// characterize legacy cleanup and signal failure, not supported PID attach.
+    /// Removal owner: #8109; retention expires 2026-10-13. Real native attach
+    /// requires #6684's transport/session proof rather than reviving this state.
     attached_pid: Arc<Mutex<Option<u32>>>,
     /// TCP attach session (for connecting to running debugger)
     tcp_session: Arc<Mutex<Option<TcpAttachSession>>>,
@@ -2173,12 +2177,18 @@ print "result: $final\n";
             "port": 13603
         });
         assert_ambiguous(adapter.handle_request(6, "attach", Some(args)))?;
+        if adapter.current_session_generation() != before_generation {
+            return Err("ambiguous refusal changed session generation".into());
+        }
         let args = json!({
             "processId": "not-a-number",
             "host": "127.0.0.1",
             "port": 13603
         });
         assert_invalid(adapter.handle_request(7, "attach", Some(args)))?;
+        if adapter.current_session_generation() != before_generation {
+            return Err("malformed mixed refusal changed session generation".into());
+        }
         let after_mixed_pid = {
             let session =
                 lock_or_recover(&adapter.session, "test.attach_refusal_after_mixed_session");
