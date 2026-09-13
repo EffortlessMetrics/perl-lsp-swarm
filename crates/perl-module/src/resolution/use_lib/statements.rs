@@ -826,3 +826,20 @@ pub(super) fn strip_no_lib_prefix(trimmed: &str) -> Option<&str> {
     }
     Some(rest.trim_start())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::split_perl_statements;
+
+    #[test]
+    fn split_perl_statements_call_presence_observer() {
+        let source = "my $s = <<'EOF';\nBEGIN { use lib 'phantom'; }\nEOF\n";
+        assert_eq!(split_perl_statements(source), vec!["my $s = <<'EOF';"]);
+
+        let source = "use lib 'real';";
+        assert_eq!(split_perl_statements(source), vec!["use lib 'real';"]);
+
+        let source = "use strict;\n\n=pod\nBEGIN { use lib 'phantom'; }\n=cut\nuse lib 'real';\n";
+        assert_eq!(split_perl_statements(source), vec!["use strict;", "use lib 'real';", ""]);
+    }
+}
