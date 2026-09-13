@@ -9,13 +9,12 @@ use perl_dap::{DapMessage, DebugAdapter};
 use perl_lsp_rs_core::config::PerlOracleEnv;
 use serde_json::{Value, json};
 use std::collections::VecDeque;
-use std::ffi::OsStr;
 use std::fs;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStderr, ChildStdout, Command, Stdio};
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, channel, sync_channel};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
@@ -758,6 +757,60 @@ pub(crate) fn normalize_explicit_debuggee_pin(path: &Path) -> Result<PathBuf, St
     Ok(canonical)
 }
 
+/// Decode the display form returned by DAP `evaluate` for the debuggee path.
+///
+/// The adapter deliberately renders scalar strings with quotes and escaped
+/// characters, and perl5db prefixes an evaluated scalar with its result
+/// ordinal.  A path identity assertion must compare the represented path,
+/// rather than treating display decoration as filesystem-path content.
+#[cfg(test)]
+fn decode_evaluate_path(reported: &str) -> Result<String, String> {
+    let trimmed = reported.trim();
+    let decoded = if trimmed.starts_with('"') {
+        serde_json::from_str::<String>(trimmed)
+            .map_err(|error| format!("invalid quoted DAP string {trimmed:?}: {error}"))
+    } else {
+        Ok(trimmed.to_string())
+    }?;
+
+    if let Some((prefix, payload)) = decoded.split_once(" '")
+        && prefix.trim().parse::<u64>().is_ok()
+    {
+        let mut path = String::with_capacity(payload.len());
+        let mut characters = payload.chars();
+        let mut closed = false;
+        while let Some(character) = characters.next() {
+            match character {
+                '\\' => match characters.next() {
+                    Some('\\') => path.push('\\'),
+                    Some('\'') => path.push('\''),
+                    Some(other) => {
+                        return Err(format!(
+                            "unsupported perl5db ordinal escape \\{other} in {decoded:?}"
+                        ));
+                    }
+                    None => {
+                        return Err(format!("trailing perl5db ordinal escape in {decoded:?}"));
+                    }
+                },
+                '\'' => {
+                    closed = true;
+                    break;
+                }
+                other => path.push(other),
+            }
+        }
+        if !closed || characters.any(|character| !character.is_whitespace()) {
+            return Err(format!("unclosed perl5db ordinal path {decoded:?}"));
+        }
+        if path.is_empty() {
+            return Err(format!("empty perl5db ordinal path {decoded:?}"));
+        }
+        return Ok(path);
+    }
+    Ok(decoded)
+}
+
 #[cfg(test)]
 pub(crate) fn assert_pinned_identity(
     reported: &str,
@@ -769,8 +822,14 @@ pub(crate) fn assert_pinned_identity(
         .map_err(|error| format!("{label} pinned path did not normalize: {error}"))?;
     let expected_ambient = normalize_explicit_debuggee_pin(ambient)
         .map_err(|error| format!("{label} ambient path did not normalize: {error}"))?;
-    let actual = normalize_explicit_debuggee_pin(Path::new(reported.trim()))
-        .map_err(|error| format!("{label} reported path did not normalize: {error}"))?;
+    let decoded = decode_evaluate_path(reported).map_err(|error| {
+        format!("{label} reported path did not decode (raw DAP result {reported:?}): {error}")
+    })?;
+    let actual = normalize_explicit_debuggee_pin(Path::new(&decoded)).map_err(|error| {
+        format!(
+            "{label} reported path did not normalize (raw DAP result {reported:?}, decoded {decoded:?}): {error}"
+        )
+    })?;
     if actual != expected_pinned {
         return Err(format!(
             "{label} evaluated $^X from {actual:?}, expected pinned {expected_pinned:?}"
@@ -798,9 +857,171 @@ fn normalize_windows_path_prefix(path: PathBuf) -> PathBuf {
 
 #[cfg(test)]
 mod explicit_pin_tests {
-    use super::{launch_arguments, normalize_explicit_debuggee_pin, resolve_debuggee_candidate};
+    use super::{
+        assert_pinned_identity, launch_arguments, normalize_explicit_debuggee_pin,
+        resolve_debuggee_candidate,
+    };
+    use perl_dap::variables::{PerlValue, PerlVariableRenderer, VariableRenderer};
     use std::fs;
     use std::path::Path;
+
+    #[test]
+    fn pinned_identity_decodes_rendered_dap_string() -> Result<(), String> {
+        let controls = tempfile::tempdir().map_err(|error| error.to_string())?;
+        let pinned = controls.path().join("perl with spaces");
+        let ambient = controls.path().join("ambient-perl");
+        fs::write(&pinned, b"pinned").map_err(|error| error.to_string())?;
+        fs::write(&ambient, b"ambient").map_err(|error| error.to_string())?;
+
+        let rendered = PerlVariableRenderer::new()
+            .render("$^X", &PerlValue::Scalar(pinned.to_string_lossy().to_string()))
+            .value;
+        assert_pinned_identity(&rendered, &pinned, &ambient, "rendered")?;
+        let plain =
+            pinned.to_str().ok_or_else(|| "the test pin should be valid UTF-8".to_string())?;
+        assert_pinned_identity(plain, &pinned, &ambient, "plain")
+    }
+
+    #[test]
+    fn pinned_identity_decodes_perl_debugger_ordinal() -> Result<(), String> {
+        let controls = tempfile::tempdir().map_err(|error| error.to_string())?;
+        let pinned = controls.path().join("perl5");
+        let ambient = controls.path().join("perl");
+        fs::write(&pinned, b"pinned").map_err(|error| error.to_string())?;
+        fs::write(&ambient, b"ambient").map_err(|error| error.to_string())?;
+
+        let perl_quote =
+            |path: &Path| path.to_string_lossy().replace('\\', "\\\\").replace('\'', "\\'");
+        let rendered = serde_json::to_string(&format!("0  '{}'", perl_quote(&pinned)))
+            .map_err(|error| error.to_string())?;
+        assert_pinned_identity(&rendered, &pinned, &ambient, "ordinal")?;
+
+        let ambient_rendered = format!("0  '{}'", perl_quote(&ambient));
+        let error = assert_pinned_identity(&ambient_rendered, &pinned, &ambient, "ambient ordinal")
+            .err()
+            .ok_or_else(|| "the ordinal ambient path was accepted".to_string())?;
+        if !error.contains("expected pinned") {
+            return Err(format!("ordinal ambient rejection lost its reason: {error}"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn pinned_identity_decodes_raw_perl_debugger_escapes() -> Result<(), String> {
+        let controls = tempfile::tempdir().map_err(|error| error.to_string())?;
+        #[cfg(unix)]
+        let pinned = controls.path().join("nested").join("pinned\\'perl");
+        #[cfg(not(unix))]
+        let pinned = controls.path().join("nested").join("pinned'perl");
+        let ambient = controls.path().join("ambient").join("perl'with spaces");
+        fs::create_dir_all(
+            pinned.parent().ok_or_else(|| "the pinned path should have a parent".to_string())?,
+        )
+        .map_err(|error| error.to_string())?;
+        fs::create_dir_all(
+            ambient.parent().ok_or_else(|| "the ambient path should have a parent".to_string())?,
+        )
+        .map_err(|error| error.to_string())?;
+        fs::write(&pinned, b"pinned").map_err(|error| error.to_string())?;
+        fs::write(&ambient, b"ambient").map_err(|error| error.to_string())?;
+
+        let perl_quote =
+            |path: &Path| path.to_string_lossy().replace('\\', "\\\\").replace('\'', "\\'");
+        let raw_perl5db = format!("0  '{}'", perl_quote(&pinned));
+        assert_pinned_identity(&raw_perl5db, &pinned, &ambient, "raw perl5db")?;
+        let rendered = serde_json::to_string(&raw_perl5db).map_err(|error| error.to_string())?;
+        assert_pinned_identity(&rendered, &pinned, &ambient, "JSON-wrapped perl5db")?;
+
+        let ambient_rendered = format!("0  '{}'", perl_quote(&ambient));
+        let error = assert_pinned_identity(&ambient_rendered, &pinned, &ambient, "raw ambient")
+            .err()
+            .ok_or_else(|| "the escaped ambient path was accepted".to_string())?;
+        if !error.contains("expected pinned") {
+            return Err(format!("escaped ambient rejection lost its reason: {error}"));
+        }
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn plain_path_ending_in_double_quote_is_not_json_decoded() -> Result<(), String> {
+        let path = "/tmp/perl-lsp-15217-plain-quote\"";
+        if super::decode_evaluate_path(path)? != path {
+            return Err("plain path ending in a double quote was changed".to_string());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn pinned_identity_rejects_rendered_ambient_path() -> Result<(), String> {
+        let controls = tempfile::tempdir().map_err(|error| error.to_string())?;
+        let pinned = controls.path().join("pinned-perl");
+        let ambient = controls.path().join("ambient-perl");
+        fs::write(&pinned, b"pinned").map_err(|error| error.to_string())?;
+        fs::write(&ambient, b"ambient").map_err(|error| error.to_string())?;
+
+        let rendered_ambient = PerlVariableRenderer::new()
+            .render("$^X", &PerlValue::Scalar(ambient.to_string_lossy().to_string()))
+            .value;
+        let error = assert_pinned_identity(&rendered_ambient, &pinned, &ambient, "ambient")
+            .err()
+            .ok_or_else(|| "the rendered ambient path was accepted".to_string())?;
+        if !error.contains("expected pinned") {
+            return Err(format!("ambient rejection lost its reason: {error}"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn pinned_identity_rejects_ambiguous_unclosed_rendered_string() -> Result<(), String> {
+        let controls = tempfile::tempdir().map_err(|error| error.to_string())?;
+        let pinned = controls.path().join("pinned-perl");
+        let ambient = controls.path().join("ambient-perl");
+        fs::write(&pinned, b"pinned").map_err(|error| error.to_string())?;
+        fs::write(&ambient, b"ambient").map_err(|error| error.to_string())?;
+
+        let error = assert_pinned_identity("\"unclosed", &pinned, &ambient, "malformed")
+            .err()
+            .ok_or_else(|| "malformed rendered output was accepted".to_string())?;
+        if !error.contains("raw DAP result") || !error.contains("invalid quoted DAP string") {
+            return Err(format!("malformed rendered output lost diagnostic context: {error}"));
+        }
+
+        let ordinal_error = assert_pinned_identity("0  '", &pinned, &ambient, "ordinal")
+            .err()
+            .ok_or_else(|| "an empty ordinal payload was accepted".to_string())?;
+        if !ordinal_error.contains("raw DAP result") || !ordinal_error.contains("unclosed") {
+            return Err(format!("malformed ordinal lost diagnostic context: {ordinal_error}"));
+        }
+
+        let empty_ordinal_error = assert_pinned_identity("0  ''", &pinned, &ambient, "ordinal")
+            .err()
+            .ok_or_else(|| "an empty quoted ordinal payload was accepted".to_string())?;
+        if !empty_ordinal_error.contains("raw DAP result") || !empty_ordinal_error.contains("empty")
+        {
+            return Err(format!("empty ordinal lost diagnostic context: {empty_ordinal_error}"));
+        }
+
+        let unsupported_escape = assert_pinned_identity("0  'C:\\q'", &pinned, &ambient, "ordinal")
+            .err()
+            .ok_or_else(|| "an unsupported ordinal escape was accepted".to_string())?;
+        if !unsupported_escape.contains("unsupported perl5db ordinal escape") {
+            return Err(format!(
+                "unsupported ordinal escape lost its reason: {unsupported_escape}"
+            ));
+        }
+
+        let escaped_quote_without_close =
+            assert_pinned_identity("0  'C:\\'", &pinned, &ambient, "ordinal")
+                .err()
+                .ok_or_else(|| "an ordinal with no closing quote was accepted".to_string())?;
+        if !escaped_quote_without_close.contains("unclosed") {
+            return Err(format!(
+                "unclosed escaped ordinal lost its reason: {escaped_quote_without_close}"
+            ));
+        }
+        Ok(())
+    }
 
     #[test]
     fn nested_relative_pin_is_frozen_before_different_launch_cwd() -> Result<(), String> {
@@ -849,11 +1070,23 @@ mod explicit_pin_tests {
         Ok(())
     }
 
+    /// A bare program name reachable only through the search path must resolve
+    /// to the absolute path the probe will execute, so the launch boundary's
+    /// pin canonicalization sees the same value (#13553).
     #[test]
     fn path_only_candidate_is_frozen_to_absolute_path() -> Result<(), String> {
         let controls = tempfile::tempdir().map_err(|error| error.to_string())?;
-        let binary = controls.path().join("perl");
+        let binary = controls.path().join(if cfg!(windows) { "perl.exe" } else { "perl" });
         fs::write(&binary, b"path candidate").map_err(|error| error.to_string())?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            let mut permissions =
+                fs::metadata(&binary).map_err(|error| error.to_string())?.permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(&binary, permissions).map_err(|error| error.to_string())?;
+        }
         let search_path =
             std::env::join_paths([controls.path()]).map_err(|error| error.to_string())?;
         let resolved =
@@ -862,6 +1095,47 @@ mod explicit_pin_tests {
         if resolved != expected {
             return Err(format!(
                 "PATH candidate was not frozen absolutely: {resolved:?} != {expected:?}"
+            ));
+        }
+        Ok(())
+    }
+
+    /// PATH lookup must continue past a regular file that Unix cannot execute.
+    /// This negative control distinguishes executable eligibility from mere
+    /// canonicalizability and protects the ordering contract for later PATH
+    /// entries.
+    #[cfg(unix)]
+    #[test]
+    fn path_lookup_skips_non_executable_candidate() -> Result<(), String> {
+        use std::os::unix::fs::PermissionsExt;
+
+        let controls = tempfile::tempdir().map_err(|error| error.to_string())?;
+        let first_dir = controls.path().join("first");
+        let second_dir = controls.path().join("second");
+        fs::create_dir_all(&first_dir).map_err(|error| error.to_string())?;
+        fs::create_dir_all(&second_dir).map_err(|error| error.to_string())?;
+        let first = first_dir.join("perl");
+        let second = second_dir.join("perl");
+        fs::write(&first, b"non-executable path candidate").map_err(|error| error.to_string())?;
+        fs::write(&second, b"executable path candidate").map_err(|error| error.to_string())?;
+
+        let mut first_permissions =
+            fs::metadata(&first).map_err(|error| error.to_string())?.permissions();
+        first_permissions.set_mode(0o644);
+        fs::set_permissions(&first, first_permissions).map_err(|error| error.to_string())?;
+        let mut second_permissions =
+            fs::metadata(&second).map_err(|error| error.to_string())?.permissions();
+        second_permissions.set_mode(0o755);
+        fs::set_permissions(&second, second_permissions).map_err(|error| error.to_string())?;
+
+        let search_path =
+            std::env::join_paths([&first_dir, &second_dir]).map_err(|error| error.to_string())?;
+        let resolved =
+            resolve_debuggee_candidate(Path::new("perl"), Some(search_path.as_os_str()))?;
+        let expected = fs::canonicalize(&second).map_err(|error| error.to_string())?;
+        if resolved != expected {
+            return Err(format!(
+                "PATH lookup did not skip the non-executable candidate: {resolved:?} != {expected:?}"
             ));
         }
         Ok(())
@@ -886,6 +1160,113 @@ mod explicit_pin_tests {
         Ok(())
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn path_candidate_with_extension_does_not_gain_pathext_suffix() -> Result<(), String> {
+        let controls = tempfile::tempdir().map_err(|error| error.to_string())?;
+        // A faulty extension replacement would reinterpret `perl.cmd` as
+        // `perl.EXE`; keep that decoy present so the negative control fails.
+        let misleading = controls.path().join("perl.EXE");
+        fs::write(&misleading, b"path candidate").map_err(|error| error.to_string())?;
+        // A faulty PATHEXT append would instead search for `perl.cmd.EXE`;
+        // keep that distinct decoy present so both regressions are caught.
+        let pathext_suffix = controls.path().join("perl.cmd.EXE");
+        fs::write(&pathext_suffix, b"path candidate").map_err(|error| error.to_string())?;
+        let search_path =
+            std::env::join_paths([controls.path()]).map_err(|error| error.to_string())?;
+        let error = match resolve_debuggee_candidate(
+            Path::new("perl.cmd"),
+            Some(search_path.as_os_str()),
+        ) {
+            Ok(resolved) => {
+                return Err(format!("extended candidate unexpectedly resolved to {resolved:?}"));
+            }
+            Err(error) => error,
+        };
+        if !error.contains("was not found") {
+            return Err(format!("unexpected failure reason: {error}"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn uncached_resolver_continues_after_a_failed_path_probe() -> Result<(), String> {
+        let controls = tempfile::tempdir().map_err(|error| error.to_string())?;
+        let first_dir = controls.path().join("first");
+        let second_dir = controls.path().join("second");
+        fs::create_dir_all(&first_dir).map_err(|error| error.to_string())?;
+        fs::create_dir_all(&second_dir).map_err(|error| error.to_string())?;
+        let first = first_dir.join(if cfg!(windows) { "perl.exe" } else { "perl" });
+        let second = second_dir.join(if cfg!(windows) { "perl.exe" } else { "perl" });
+        fs::write(&first, b"first candidate").map_err(|error| error.to_string())?;
+        fs::write(&second, b"second candidate").map_err(|error| error.to_string())?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            for candidate in [&first, &second] {
+                let mut permissions =
+                    fs::metadata(candidate).map_err(|error| error.to_string())?.permissions();
+                permissions.set_mode(0o755);
+                fs::set_permissions(candidate, permissions).map_err(|error| error.to_string())?;
+            }
+        }
+
+        let mut attempted = Vec::new();
+        let search_path =
+            std::env::join_paths([&first_dir, &second_dir]).map_err(|error| error.to_string())?;
+        let first = fs::canonicalize(first).map_err(|error| error.to_string())?;
+        let second = fs::canonicalize(second).map_err(|error| error.to_string())?;
+        let resolution = super::resolve_debuggee_perl_uncached_with(
+            [Path::new("perl").to_path_buf()],
+            false,
+            Some(search_path.as_os_str()),
+            |candidate| {
+                attempted.push(candidate.to_path_buf());
+                if candidate == first {
+                    return Err(super::ProbeFailure {
+                        reason: "simulated spawn failure".to_string(),
+                        transient: false,
+                    });
+                }
+                Ok(super::DebuggeePerl {
+                    binary: candidate.to_path_buf(),
+                    identity: "fixture candidate".to_string(),
+                })
+            },
+        );
+
+        if attempted != [first.clone(), second.clone()] {
+            return Err(format!("probe sequence was {attempted:?}"));
+        }
+        let resolved = resolution.resolved.ok_or("the later candidate should be selected")?;
+        if resolved.binary != second {
+            return Err(format!("unexpected selected candidate: {:?}", resolved.binary));
+        }
+        if resolution.diagnostics != [format!("{}: simulated spawn failure", first.display())] {
+            return Err(format!("unexpected probe diagnostics: {:?}", resolution.diagnostics));
+        }
+        if resolution.transient_failure {
+            return Err("deterministic fixture failure was marked transient".to_string());
+        }
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn bare_name_lookup_uses_only_exe_as_the_implicit_extension() -> Result<(), String> {
+        let bare = super::bare_name_lookup_variants(std::ffi::OsStr::new("perl"));
+        if bare != [std::ffi::OsString::from("perl"), std::ffi::OsString::from("perl.exe")] {
+            return Err(format!("bare-name variants were {bare:?}"));
+        }
+
+        let extended = super::bare_name_lookup_variants(std::ffi::OsStr::new("perl.cmd"));
+        if extended != [std::ffi::OsString::from("perl.cmd")] {
+            return Err(format!("extended-name variants were {extended:?}"));
+        }
+        Ok(())
+    }
+
     #[cfg(unix)]
     #[test]
     fn non_utf8_pin_is_rejected_before_launch() -> Result<(), String> {
@@ -901,6 +1282,63 @@ mod explicit_pin_tests {
         };
         if !error.contains("not valid UTF-8") {
             return Err(format!("unexpected error: {error}"));
+        }
+        Ok(())
+    }
+
+    /// A bare name absent from the search path is a resolution failure, never
+    /// an accepted candidate: the resolver must not hand the probe a value the
+    /// launch boundary would later reject.
+    #[test]
+    fn bare_candidate_absent_from_search_path_fails_closed() -> Result<(), String> {
+        let controls = tempfile::tempdir().map_err(|error| error.to_string())?;
+        let search_path =
+            std::env::join_paths([controls.path()]).map_err(|error| error.to_string())?;
+        let error =
+            match resolve_debuggee_candidate(Path::new("perl"), Some(search_path.as_os_str())) {
+                Ok(resolved) => {
+                    return Err(format!("absent candidate unexpectedly resolved to {resolved:?}"));
+                }
+                Err(error) => error,
+            };
+        if !error.contains("was not found") {
+            return Err(format!("unexpected failure reason: {error}"));
+        }
+        Ok(())
+    }
+
+    /// A bare candidate without a captured PATH is a resolution failure, not a
+    /// relative path that can leak through to the probe or launch boundary.
+    #[test]
+    fn bare_candidate_without_search_path_fails_closed() -> Result<(), String> {
+        let error = match resolve_debuggee_candidate(Path::new("perl"), None) {
+            Ok(resolved) => {
+                return Err(format!("candidate unexpectedly resolved to {resolved:?}"));
+            }
+            Err(error) => error,
+        };
+        if !error.contains("no search path is available") {
+            return Err(format!("unexpected failure reason: {error}"));
+        }
+        Ok(())
+    }
+
+    /// A non-bare candidate that does not exist on disk must fail closed at
+    /// resolution instead of reaching the probe or the launch boundary.
+    #[test]
+    fn absolute_candidate_missing_on_disk_fails_closed() -> Result<(), String> {
+        let controls = tempfile::tempdir().map_err(|error| error.to_string())?;
+        let absent = controls.path().join("absent-perl");
+        let error = match resolve_debuggee_candidate(&absent, None) {
+            Ok(resolved) => {
+                return Err(format!(
+                    "missing absolute candidate unexpectedly resolved to {resolved:?}"
+                ));
+            }
+            Err(error) => error,
+        };
+        if !error.contains("cannot canonicalize") {
+            return Err(format!("unexpected failure reason: {error}"));
         }
         Ok(())
     }
@@ -1070,7 +1508,6 @@ struct DebuggeePerlResolution {
 
 static DEBUGGEE_PERL: OnceLock<DebuggeePerlResolution> = OnceLock::new();
 #[cfg(test)]
-static LAST_PROBE_PID: AtomicU32 = AtomicU32::new(0);
 #[cfg(test)]
 static ACTIVE_PROBE_READERS: AtomicUsize = AtomicUsize::new(0);
 #[cfg(all(test, unix))]
@@ -1140,7 +1577,15 @@ struct ProbeFailure {
 /// resolver retries once on a transient-class failure before caching a
 /// negative result ([`resolved_debuggee_perl_or_reason`]).
 fn probe_debuggee_perl(binary: &Path) -> Result<DebuggeePerl, ProbeFailure> {
-    probe_debuggee_perl_with_options(binary, DEBUGGEE_PROBE_BUDGET, false, None, CleanupFault::None)
+    probe_debuggee_perl_with_options_and_barrier(
+        binary,
+        DEBUGGEE_PROBE_BUDGET,
+        false,
+        None,
+        CleanupFault::None,
+        None,
+        false,
+    )
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1189,8 +1634,16 @@ pub(crate) fn probe_debuggee_perl_for_test(
     budget: Duration,
     simulate_wait_error: bool,
 ) -> Result<DebuggeePerl, String> {
-    probe_debuggee_perl_with_options(binary, budget, simulate_wait_error, None, CleanupFault::None)
-        .map_err(|failure| failure.reason)
+    probe_debuggee_perl_with_options_and_barrier(
+        binary,
+        budget,
+        simulate_wait_error,
+        None,
+        CleanupFault::None,
+        None,
+        false,
+    )
+    .map_err(|failure| failure.reason)
 }
 
 #[cfg(test)]
@@ -1199,13 +1652,35 @@ pub(crate) fn probe_debuggee_perl_for_test_with_descendant_pid(
     budget: Duration,
     simulate_wait_error: bool,
     descendant_pid_file: &Path,
+    descendant_binary: &Path,
 ) -> Result<DebuggeePerl, String> {
-    probe_debuggee_perl_with_options(
+    probe_debuggee_perl_with_options_and_barrier(
         binary,
         budget,
         simulate_wait_error,
         Some(descendant_pid_file),
         CleanupFault::None,
+        Some(descendant_binary),
+        false,
+    )
+    .map_err(|failure| failure.reason)
+}
+
+#[cfg(test)]
+pub(crate) fn probe_debuggee_perl_for_test_with_descendant_pid_publication_barrier(
+    binary: &Path,
+    budget: Duration,
+    descendant_pid_file: &Path,
+    descendant_binary: &Path,
+) -> Result<DebuggeePerl, String> {
+    probe_debuggee_perl_with_options_and_barrier(
+        binary,
+        budget,
+        false,
+        Some(descendant_pid_file),
+        CleanupFault::None,
+        Some(descendant_binary),
+        true,
     )
     .map_err(|failure| failure.reason)
 }
@@ -1215,13 +1690,16 @@ pub(crate) fn probe_debuggee_perl_for_test_with_termination_failure(
     binary: &Path,
     budget: Duration,
     descendant_pid_file: &Path,
+    descendant_binary: &Path,
 ) -> Result<DebuggeePerl, String> {
-    probe_debuggee_perl_with_options(
+    probe_debuggee_perl_with_options_and_barrier(
         binary,
         budget,
         false,
         Some(descendant_pid_file),
         CleanupFault::TerminationOperations,
+        Some(descendant_binary),
+        false,
     )
     .map_err(|failure| failure.reason)
 }
@@ -1231,8 +1709,16 @@ pub(crate) fn probe_debuggee_perl_for_test_with_workspace_cleanup_failure(
     binary: &Path,
     budget: Duration,
 ) -> Result<DebuggeePerl, String> {
-    probe_debuggee_perl_with_options(binary, budget, false, None, CleanupFault::WorkspaceRemoval)
-        .map_err(|failure| failure.reason)
+    probe_debuggee_perl_with_options_and_barrier(
+        binary,
+        budget,
+        false,
+        None,
+        CleanupFault::WorkspaceRemoval,
+        None,
+        false,
+    )
+    .map_err(|failure| failure.reason)
 }
 
 #[cfg(test)]
@@ -1240,14 +1726,17 @@ pub(crate) fn probe_debuggee_perl_for_test_with_thread_spawn_failure(
     binary: &Path,
     budget: Duration,
     descendant_pid_file: &Path,
+    descendant_binary: &Path,
     stage: ProbeThreadSpawnFailure,
 ) -> Result<DebuggeePerl, String> {
-    probe_debuggee_perl_with_options(
+    probe_debuggee_perl_with_options_and_barrier(
         binary,
         budget,
         false,
         Some(descendant_pid_file),
         CleanupFault::ThreadSpawn(stage),
+        Some(descendant_binary),
+        false,
     )
     .map_err(|failure| failure.reason)
 }
@@ -1291,13 +1780,16 @@ pub(crate) fn probe_debuggee_perl_for_test_with_job_assignment_failure(
     binary: &Path,
     budget: Duration,
     descendant_pid_file: &Path,
+    descendant_binary: &Path,
 ) -> Result<DebuggeePerl, String> {
-    probe_debuggee_perl_with_options(
+    probe_debuggee_perl_with_options_and_barrier(
         binary,
         budget,
         false,
         Some(descendant_pid_file),
         CleanupFault::JobAssignment,
+        Some(descendant_binary),
+        false,
     )
     .map_err(|failure| failure.reason)
 }
@@ -1418,11 +1910,8 @@ fn wait_for_spawn_failure_control(descendant_pid_file: &Path) -> Result<(), Stri
 }
 
 #[cfg(test)]
-pub(crate) fn last_probe_pid_for_test() -> Option<u32> {
-    match LAST_PROBE_PID.load(Ordering::Acquire) {
-        0 => None,
-        pid => Some(pid),
-    }
+pub(crate) fn probe_pid_file_for_test(descendant_pid_file: &Path) -> PathBuf {
+    PathBuf::from(format!("{}.probe", descendant_pid_file.display()))
 }
 
 #[cfg(test)]
@@ -1435,12 +1924,14 @@ fn defer_probe_child_for_test(child: Child) {
     children.push(child);
 }
 
-fn probe_debuggee_perl_with_options(
+fn probe_debuggee_perl_with_options_and_barrier(
     binary: &Path,
     probe_budget: Duration,
     mut simulate_wait_error: bool,
     descendant_pid_file: Option<&Path>,
     cleanup_fault: CleanupFault,
+    descendant_binary: Option<&Path>,
+    publication_barrier: bool,
 ) -> Result<DebuggeePerl, ProbeFailure> {
     let fail = |reason: String| ProbeFailure { reason, transient: false };
     // The workspace is explicitly closed after the probe body so recursive
@@ -1476,6 +1967,9 @@ fn probe_debuggee_perl_with_options(
                 "PERL_LSP_DAP_TEST_DESCENDANT_READY_FILE",
                 format!("{}.ready", descendant_pid_file.display()),
             );
+            if let Some(descendant_binary) = descendant_binary {
+                command.env("PERL_LSP_DAP_TEST_DESCENDANT_BINARY", descendant_binary);
+            }
         }
         // A dedicated process group lets cleanup terminate descendants on Unix;
         // Windows uses a Job Object and taskkill's process-tree fallback. These
@@ -1491,10 +1985,59 @@ fn probe_debuggee_perl_with_options(
             command.creation_flags(CREATE_SUSPENDED_FLAG);
         }
         let mut child = command.spawn().map_err(|e| fail(format!("cannot spawn: {e}")))?;
+        #[cfg(all(test, windows))]
+        if publication_barrier && let Err(error) = resume_suspended_probe_process(&child) {
+            let cleanup =
+                terminate_probe_process_tree(&mut child, descendant_pid_file, cleanup_fault);
+            return Err(fail(format!(
+                "cannot resume probe process for publication barrier: {error}{}",
+                cleanup
+                    .err()
+                    .map_or_else(String::new, |error| format!("; cleanup failed: {error}"))
+            )));
+        }
         #[cfg(test)]
-        // Record before Windows job assignment so the assignment-failure
-        // control can observe and verify cleanup of the suspended child.
-        LAST_PROBE_PID.store(child.id(), Ordering::Release);
+        if let Some(descendant_pid_file) = descendant_pid_file {
+            if publication_barrier {
+                let child_pid_file =
+                    PathBuf::from(format!("{}.child", descendant_pid_file.display()));
+                let deadline = Instant::now() + Duration::from_secs(5);
+                while !child_pid_file.is_file() {
+                    if Instant::now() >= deadline {
+                        let cleanup = terminate_probe_process_tree(
+                            &mut child,
+                            Some(descendant_pid_file),
+                            cleanup_fault,
+                        );
+                        return Err(fail(format!(
+                            "publication barrier did not start probe child{}",
+                            cleanup.err().map_or_else(String::new, |error| format!(
+                                "; cleanup failed: {error}"
+                            ))
+                        )));
+                    }
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+            }
+            if let Err(error) =
+                fs::write(probe_pid_file_for_test(descendant_pid_file), child.id().to_string())
+            {
+                // The child is already running at this point. Preserve the
+                // publication error, but close the owned process-tree boundary
+                // before returning so a receipt failure cannot leak a probe.
+                let cleanup = terminate_probe_process_tree(
+                    &mut child,
+                    Some(descendant_pid_file),
+                    cleanup_fault,
+                );
+                return Err(fail(format!(
+                    "cannot publish probe child PID: {error}{}",
+                    cleanup
+                        .err()
+                        .map_or_else(String::new, |error| format!("; cleanup failed: {error}"))
+                )));
+            }
+        }
         #[cfg(windows)]
         let _probe_job = if cleanup_fault.termination_failed() {
             // Leave the owned process tree live for the termination-failure
@@ -1546,7 +2089,7 @@ fn probe_debuggee_perl_with_options(
             )
         };
         #[cfg(windows)]
-        if let Err(error) = resume_suspended_probe_process(&child) {
+        if !publication_barrier && let Err(error) = resume_suspended_probe_process(&child) {
             let cleanup =
                 terminate_probe_process_tree(&mut child, descendant_pid_file, cleanup_fault);
             return Err(fail(format!(
@@ -2190,8 +2733,6 @@ fn probe_pipe_has_data<T>(pipe: &T) -> Option<bool>
 where
     T: std::os::fd::AsRawFd,
 {
-    use std::os::fd::AsRawFd;
-
     let mut descriptor = libc::pollfd { fd: pipe.as_raw_fd(), events: libc::POLLIN, revents: 0 };
     let result = unsafe { libc::poll(&mut descriptor, 1, 0) };
     if result < 0 { None } else { Some(result > 0) }
@@ -2397,57 +2938,175 @@ pub fn resolve_debuggee_perl() -> Option<&'static DebuggeePerl> {
     resolved_debuggee_perl_or_reason().ok()
 }
 
-fn resolve_debuggee_candidate(path: &Path, search_path: Option<&OsStr>) -> Result<PathBuf, String> {
-    if path.is_absolute() || path.components().count() > 1 || path.starts_with(".") {
+/// Whether `path` is a single unadorned program name — no root, prefix, `.`,
+/// `..`, or directory component — whose location must come from the search
+/// path, exactly as the spawning `Command` would resolve it.
+fn is_bare_program_name(path: &Path) -> bool {
+    use std::path::Component;
+    matches!(path.components().collect::<Vec<_>>().as_slice(), [Component::Normal(_)])
+}
+
+/// The lookup names `Command` would try for a bare program name: the exact
+/// name first, then the implicit `.exe` extension on Windows.  Rust's
+/// `Command` lookup does not use the shell's `PATHEXT` list.
+#[cfg(windows)]
+fn bare_name_lookup_variants(name: &std::ffi::OsStr) -> Vec<std::ffi::OsString> {
+    let mut variants = vec![name.to_os_string()];
+    if Path::new(name).extension().is_some() {
+        return variants;
+    }
+    let mut with_extension = name.to_os_string();
+    with_extension.push(".exe");
+    variants.push(with_extension);
+    variants
+}
+
+#[cfg(not(windows))]
+fn bare_name_lookup_variants(name: &std::ffi::OsStr) -> Vec<std::ffi::OsString> {
+    vec![name.to_os_string()]
+}
+
+#[cfg(unix)]
+fn candidate_is_executable(path: &Path) -> bool {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+
+    let Ok(path) = CString::new(path.as_os_str().as_bytes()) else {
+        return false;
+    };
+    // SAFETY: `path` is a NUL-free, live C string for the duration of this
+    // call, and `access` does not retain the pointer.  X_OK asks the kernel to
+    // apply the current user's ownership, ACL, and execute-permission rules.
+    unsafe { libc::access(path.as_ptr(), libc::X_OK) == 0 }
+}
+
+#[cfg(not(unix))]
+fn candidate_is_executable(_path: &Path) -> bool {
+    true
+}
+
+/// Resolve one ambient candidate to the absolute interpreter path the probe
+/// will validate, so the launch-time pin canonicalization sees the same value
+/// the probe executed (#13553). A bare program name is looked up on the
+/// search path; absolute and multi-component candidates must exist as paths.
+/// Every failure is a resolution failure: a candidate this function accepts
+/// is always canonicalizable, so the launch boundary can never inherit a
+/// probe-validated value it cannot resolve.
+fn resolve_debuggee_candidates(
+    path: &Path,
+    search_path: Option<&std::ffi::OsStr>,
+) -> Result<Vec<PathBuf>, String> {
+    if !is_bare_program_name(path) {
         let absolute = if path.is_absolute() {
             path.to_path_buf()
         } else {
             std::env::current_dir()
                 .map_err(|error| {
-                    format!("cannot resolve candidate relative to the test process: {error}")
+                    format!(
+                        "cannot resolve candidate {} relative to the test process: {error}",
+                        path.display()
+                    )
                 })?
                 .join(path)
         };
         return fs::canonicalize(&absolute)
+            .map(|candidate| vec![candidate])
             .map_err(|error| format!("cannot canonicalize candidate {}: {error}", path.display()));
     }
 
-    let search_path = search_path
-        .ok_or_else(|| "PATH is unavailable while resolving a Perl candidate".to_string())?;
+    let search_path = search_path.ok_or_else(|| {
+        format!(
+            "candidate {} is a bare program name but no search path is available",
+            path.display()
+        )
+    })?;
+    let mut candidates = Vec::new();
     for directory in std::env::split_paths(search_path) {
-        let mut candidates = vec![directory.join(path)];
-        #[cfg(windows)]
-        if path.extension().is_none() {
-            let pathext = std::env::var_os("PATHEXT")
-                .unwrap_or_else(|| std::ffi::OsString::from(".COM;.EXE;.BAT;.CMD"));
-            candidates.extend(
-                pathext.to_string_lossy().split(';').filter(|extension| !extension.is_empty()).map(
-                    |extension| {
-                        directory.join(path).with_extension(extension.trim_start_matches('.'))
-                    },
-                ),
-            );
-        }
-        for candidate in candidates {
+        for variant in bare_name_lookup_variants(path.as_os_str()) {
+            let candidate = directory.join(&variant);
             if let Ok(canonical) = fs::canonicalize(&candidate)
                 && canonical.is_file()
+                && candidate_is_executable(&canonical)
+                && !candidates.contains(&canonical)
             {
-                return Ok(canonical);
+                candidates.push(canonical);
             }
         }
     }
-    Err(format!("candidate {} was not found on PATH", path.display()))
+    if candidates.is_empty() {
+        Err(format!("candidate {} was not found on the search path", path.display()))
+    } else {
+        Ok(candidates)
+    }
+}
+
+/// Resolve the first eligible candidate for focused lookup tests.  Production
+/// resolution uses [`resolve_debuggee_candidates`] so a candidate that passes
+/// filesystem checks but fails at actual process spawn can be probed before a
+/// later PATH candidate is selected.
+fn resolve_debuggee_candidate(
+    path: &Path,
+    search_path: Option<&std::ffi::OsStr>,
+) -> Result<PathBuf, String> {
+    resolve_debuggee_candidates(path, search_path)?
+        .into_iter()
+        .next()
+        .ok_or_else(|| format!("candidate {} was not found on the search path", path.display()))
+}
+
+/// Probe every eligible ambient candidate in order, preserving the operating
+/// system's PATH fall-through behavior when a candidate cannot actually be
+/// spawned.  Production callers provide the real pipe-conformance probe;
+/// tests inject a deterministic failure so the ordering contract stays
+/// independently executable.
+fn probe_debuggee_candidates<F>(
+    candidates: impl IntoIterator<Item = PathBuf>,
+    diagnostics: &mut Vec<String>,
+    transient_failure: &mut bool,
+    mut probe: F,
+) -> Option<DebuggeePerl>
+where
+    F: FnMut(&Path) -> Result<DebuggeePerl, ProbeFailure>,
+{
+    for candidate in candidates {
+        match probe(&candidate) {
+            Ok(perl) => return Some(perl),
+            Err(failure) => {
+                *transient_failure |= failure.transient;
+                diagnostics.push(format!("{}: {}", candidate.display(), failure.reason));
+            }
+        }
+    }
+    None
 }
 
 /// One uncached resolution sweep over every candidate interpreter.
 fn resolve_debuggee_perl_uncached() -> DebuggeePerlResolution {
     let explicit = std::env::var_os(DEBUGGEE_PERL_OVERRIDE_ENV).is_some();
+    let search_path = std::env::var_os("PATH");
+    resolve_debuggee_perl_uncached_with(
+        debuggee_perl_candidates(),
+        explicit,
+        search_path.as_deref(),
+        probe_debuggee_perl,
+    )
+}
+
+fn resolve_debuggee_perl_uncached_with<F>(
+    raw_candidates: impl IntoIterator<Item = PathBuf>,
+    explicit: bool,
+    search_path: Option<&std::ffi::OsStr>,
+    mut probe: F,
+) -> DebuggeePerlResolution
+where
+    F: FnMut(&Path) -> Result<DebuggeePerl, ProbeFailure>,
+{
     let mut diagnostics = Vec::new();
     let mut transient_failure = false;
-    for raw_candidate in debuggee_perl_candidates() {
-        let candidate = if explicit {
+    'raw_candidates: for raw_candidate in raw_candidates {
+        let candidates = if explicit {
             match normalize_explicit_debuggee_pin(&raw_candidate) {
-                Ok(candidate) => candidate,
+                Ok(candidate) => vec![candidate],
                 Err(reason) => {
                     diagnostics.push(format!(
                         "{DEBUGGEE_PERL_OVERRIDE_ENV} pin {}: {reason}",
@@ -2457,36 +3116,45 @@ fn resolve_debuggee_perl_uncached() -> DebuggeePerlResolution {
                 }
             }
         } else {
-            match resolve_debuggee_candidate(&raw_candidate, std::env::var_os("PATH").as_deref()) {
-                Ok(candidate) => candidate,
+            match resolve_debuggee_candidates(&raw_candidate, search_path) {
+                Ok(candidates) => candidates,
                 Err(reason) => {
                     diagnostics.push(format!("{}: {reason}", raw_candidate.display()));
                     continue;
                 }
             }
         };
-        match probe_debuggee_perl(&candidate) {
-            Ok(perl) => {
-                return DebuggeePerlResolution {
-                    resolved: Some(perl),
-                    diagnostics,
-                    transient_failure: false,
-                };
-            }
-            Err(failure) => {
-                transient_failure |= failure.transient;
-                if explicit {
-                    // An explicitly pinned identity must not fall through:
-                    // surface its failure and stop.
+        if explicit {
+            let Some(candidate) = candidates.into_iter().next() else { break };
+            match probe(&candidate) {
+                Ok(perl) => {
+                    return DebuggeePerlResolution {
+                        resolved: Some(perl),
+                        diagnostics,
+                        transient_failure: false,
+                    };
+                }
+                Err(failure) => {
+                    transient_failure |= failure.transient;
                     diagnostics.push(format!(
                         "{DEBUGGEE_PERL_OVERRIDE_ENV} pin {}: {}",
                         candidate.display(),
                         failure.reason
                     ));
-                    break;
+                    break 'raw_candidates;
                 }
-                diagnostics.push(format!("{}: {}", candidate.display(), failure.reason));
             }
+        } else if let Some(perl) = probe_debuggee_candidates(
+            candidates,
+            &mut diagnostics,
+            &mut transient_failure,
+            &mut probe,
+        ) {
+            return DebuggeePerlResolution {
+                resolved: Some(perl),
+                diagnostics,
+                transient_failure: false,
+            };
         }
     }
     DebuggeePerlResolution { resolved: None, diagnostics, transient_failure }

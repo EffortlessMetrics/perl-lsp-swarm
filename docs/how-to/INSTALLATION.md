@@ -20,7 +20,7 @@ Use one of the public install paths that matches how you work:
 
 - VS Code: install the `EffortlessMetrics.perl-lsp-rs` extension and let it download the matching `perllsp` binary.
 - macOS or Linux: use the [manual archive](#manual-archive) until the release packet publishes an immutable installer identity and digest. The identity-bound [installer wrapper](#installer-script-macos-and-linux) becomes usable when those values exist.
-- Windows: install from the [manual archive](#manual-archive). The PowerShell installer script does not work against the published assets yet ([#5461](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/5461)).
+- Windows: install from the [manual archive](#manual-archive), or use the [published PowerShell script](#published-powershell-script) for `perllsp.exe` only after reviewing its checksum limitations.
 - Other editors: download a prebuilt binary from [GitHub Releases](https://github.com/EffortlessMetrics/perl-lsp/releases) and put it on your `PATH`.
 - Local testing or pre-release validation: install from this repo with `cargo install --path crates/perllsp`.
 
@@ -96,6 +96,12 @@ curl -fsSL "https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/$INSTAL
 Supported release-archive platforms are Linux x86_64 and aarch64 (gnu or
 musl), macOS x86_64, and macOS aarch64.
 
+Termux is detected from `TERMUX_VERSION` or the Termux `usr/bin` directory.
+There is no Android/bionic release archive, so a Termux host selects
+source-build mode rather than a Linux gnu or musl asset. An explicit
+`INSTALL_DIR` still wins over the Termux prefix default
+(`/data/data/com.termux/files/usr/bin`).
+
 This bootstrap boundary proves only the identity of the downloaded
 `scripts/install.sh`. For POSIX release-download mode, the canonical installer
 now requires a local SHA-256 implementation, a downloadable `SHA256SUMS`,
@@ -106,9 +112,45 @@ mismatched checksum evidence fails closed.
 That is an artifact-integrity control, not independent publisher provenance:
 the archive and checksum manifest are still co-hosted by the release. The
 PowerShell installer also retains its separate fail-open checksum boundary.
-Safe archive inspection, target/member identity, complete server/DAP pair
-verification, atomic promotion, and rollback preservation remain open under
-[#6097](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/6097).
+Safe archive inspection for first-party standalone installers landed in
+[#8352](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/8352).
+
+POSIX inspection classifies each archive entry from its ustar header fields
+rather than from `tar -t` / `tar -tv` output, so entry names and types do not
+depend on which `tar` the host provides. That closes a divergence where BusyBox
+tar reported a hardlink as a regular file and stripped `/` and `../` from the
+names it printed, admitting members that GNU tar and bsdtar rejected
+([#11508](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/11508)).
+POSIX release-download mode therefore requires `od` alongside `tar` and `gzip`;
+all three are present on the supported Linux and macOS hosts. Archives carrying
+PAX (`x`/`g`) or GNU long-name (`L`/`K`) extended records fail closed, because
+such a record can rewrite the path of the entry that follows it. The published
+release archives do not use them: they are built with `tar czf` on the GNU and
+macOS runners, and libarchive's restricted-pax default emits no extended record
+for their short ASCII names and small metadata. Two further refusals come from
+the same header walk. Bytes after the archive's own end-of-archive marker are
+refused rather than ignored, because tar implementations disagree about whether
+a lone zero block ends the archive — BusyBox tar reads past it — so a member
+placed after that marker would be invisible to a reader that stops there and
+still be extracted by one that does not. Stored names are also restricted to
+printable ASCII excluding backslash; backslash is refused even though it is
+printable because a rejected name is echoed into a diagnostic that renders
+backslash escapes, so admitting it would let an archive forge installer output.
+The archive-safety receipt records the resolved extractor profile (`gnu`,
+`libarchive`, `busybox`, or `unknown`) so an install report names the tar it
+ran under.
+Those installers now promote a verified `perllsp` + `perl-dap` product unit as
+one current selection
+([#8359](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/8359)):
+readers observe the previous complete unit or the new complete unit, never a
+mixed or partial pair. POSIX local promotion tests and the GitHub-hosted
+PowerShell checksum, archive safety, and product-unit promotion job both prove
+the clone-local installer path. Publisher provenance, health-driven rollback, PATH
+persistence, and hosted install-transition proof remain separate under
+[#6097](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/6097),
+[#7832](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/7832),
+[#5903](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/5903), and
+[#10746](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/10746).
 Use the manual archive with independently reviewed checksum or attestation
 evidence for release-sensitive installation until those remaining boundaries
 land.
@@ -123,60 +165,66 @@ build `perl-dap` yourself from a clone with
 
 ## Windows
 
-Use the [manual archive](#manual-archive) below. It is the only Windows path
-that works today.
+Use the [manual archive](#manual-archive) for both `perllsp.exe` and
+`perl-dap.exe`, or the published PowerShell script for `perllsp.exe` only.
 
-### Installer script — currently broken, do not use
+### Published PowerShell script
 
-The published script fails for every user. The copy served from
-`perl-lsp/master` still derives its download name from `$Name = "perl-lsp"`,
-producing `perl-lsp-<version>-x86_64-pc-windows-msvc.zip`, but
-`.github/workflows/release.yml` publishes assets as
-`perllsp-<version>-<target>.zip`. The requested URL 404s and the script exits
-with `Failed to download from ...`; there is no fallback.
+The [published script at commit 866d832](https://github.com/EffortlessMetrics/perl-lsp/blob/866d83285b69c7a80276735cbdc2b20d66694d86/install.ps1) selects
+`perllsp-<version>-x86_64-pc-windows-msvc.zip`. It supports x86_64 Windows
+and selects the same x64 archive on Windows 11 ARM64, where x64 emulation is
+available. Windows 10 ARM64 cannot run that archive; the script rejects the
+fallback before downloading. Build from source there or on unsupported
+architectures.
 
-Verified against the live v0.17.0 release:
+The script verifies the archive against the release `SHA256SUMS` file and
+aborts on a checksum mismatch. If the manifest cannot be downloaded, has no
+matching row, cannot be parsed, or the archive hash cannot be computed, it
+warns and continues without verification. This is not fail-closed integrity
+verification or independent publisher provenance.
 
-```text
-perllsp-0.17.0-x86_64-pc-windows-msvc.zip   -> 200
-perl-lsp-0.17.0-x86_64-pc-windows-msvc.zip  -> 404
-```
+It installs `perllsp.exe` into `%USERPROFILE%\.local\bin` by default. It does
+not install `perl-dap.exe`, atomically promote a server/adapter pair, or
+provide health-driven rollback. It may print PATH instructions, but a similar
+directory name can make its PATH check report success incorrectly. It does
+not update PATH automatically. Open **Edit environment variables for your
+account** from Start, select **Path** under **User variables**, and add the
+exact install directory as a separate entry if it is absent. Open a new
+terminal and verify `perllsp --version` before configuring your editor.
 
-[`install.ps1`](../../install.ps1) in this repository already carries the asset-name fix,
-but the publication repo has not been synced
-([#4348](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/4348)).
-Once it is, the script will require `SHA256SUMS` before downloading the release
-zip, require exactly one lowercase SHA-256 row for the exact selected asset,
-and verify the downloaded archive before extraction. Missing, duplicate,
-malformed, or mismatched checksum evidence fails closed. This proves archive
-integrity against the co-hosted manifest; it does not independently prove
-publisher provenance, safe archive members, atomic replacement, or rollback.
-The script installs into `%USERPROFILE%\.local\bin` by default.
-
-Two further limits apply to the script even after that sync:
-
-- The script installs `perllsp.exe` only. It does not install the `perl-dap.exe`
-  debug adapter, unlike the POSIX installer. Take `perl-dap.exe` from the
-  release zip if you need the debugger
-  ([#5036](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/5036)).
-- Only `x86_64-pc-windows-msvc` is built by the release workflow, so there is
-  no native ARM64 Windows binary. The script installs the x64 build on ARM64,
-  which runs under the x64 emulation in Windows 11 on ARM. Windows 10 on ARM
-  emulates x86 but not x64, so the extension and PowerShell installer reject
-  the fallback before downloading and you must build from source there
-  ([#5007](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/5007)).
-
-Once the sync lands and the script works, pinning a version or changing the
-install directory means downloading it and passing parameters rather than
-piping it. These commands 404 until then:
+Download and inspect this same script revision before running it. Pass
+`-Version` to select a release and `-InstallDir` to change the install directory:
 
 ```powershell
-irm https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/master/install.ps1 -OutFile install.ps1
+irm https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/866d83285b69c7a80276735cbdc2b20d66694d86/install.ps1 -OutFile install.ps1
+# Review install.ps1, then:
 .\install.ps1 -Version 0.17.0 -InstallDir C:\tools\bin
 ```
 
 If PowerShell refuses to run the downloaded script, either unblock it
 (`Unblock-File .\install.ps1`) or run it in a session that allows local scripts.
+
+### Development-checkout installer
+
+[`install.ps1`](../../install.ps1) in this development repository has stronger
+checks than the published script above. It requires `SHA256SUMS` before
+downloading the release zip, requires exactly one lowercase SHA-256 row for
+the selected asset, and verifies the archive before extraction. Missing,
+duplicate, malformed, or mismatched checksum evidence fails closed. This
+proves archive integrity against the co-hosted manifest, not independent
+publisher provenance.
+
+The clone-local installer also promotes `perllsp.exe` and `perl-dap.exe` as
+one product unit through an immutable candidate directory and an atomic
+current pointer. Windows uses a file `current` pointer replaced with
+`MoveFileEx` and PATH-visible `perllsp.cmd` / `perl-dap.cmd` shims that follow
+that pointer, without requiring privileged file symlinks or independent PATH
+copies. Clone-local PowerShell product-unit promotion is proven by the hosted
+Windows installer-powershell-checksum-contract job on
+[#12815](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/12815).
+Health confirmation, whole-unit rollback after failed startup, and PATH
+persistence remain separate claims. These development guarantees do not
+describe the script downloaded from the publication repository above.
 
 ### Manual archive
 
@@ -210,7 +258,7 @@ winget search EffortlessMetrics.perl-lsp
 ```
 
 If it is missing or behind, use the [manual archive](#manual-archive) — it is
-the only Windows path proven against the published assets today.
+the direct route to the published `perllsp.exe` and `perl-dap.exe` pair.
 
 ## Homebrew via the EffortlessMetrics tap
 

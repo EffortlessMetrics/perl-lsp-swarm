@@ -19,6 +19,11 @@ def _canonical_json_bytes(value: Mapping[str, Any]) -> bytes:
     ).encode("utf-8")
 
 
+def manifest_digest(manifest: Mapping[str, Any]) -> str:
+    """Return the canonical identity used to bind a receipt to its manifest."""
+    return hashlib.sha256(_canonical_json_bytes(manifest)).hexdigest()
+
+
 def _normalized_rows(manifest: Mapping[str, Any], key: str) -> list[Mapping[str, Any]]:
     rows = [dict(sorted(row.items())) for row in manifest_rows(manifest, key)]
     return sorted(rows, key=lambda row: json.dumps(row, sort_keys=True))
@@ -34,7 +39,7 @@ def build_receipt(
         "schema_version": RECEIPT_SCHEMA,
         "created_unix_seconds": int(time.time()),
         "authority": {
-            "manifest_sha256": hashlib.sha256(_canonical_json_bytes(manifest)).hexdigest(),
+            "manifest_sha256": manifest_digest(manifest),
             "project_extensions": _normalized_rows(manifest, "project_extensions"),
             "project_configuration": _normalized_rows(manifest, "project_configuration"),
             "project_families": _normalized_rows(manifest, "project_families"),

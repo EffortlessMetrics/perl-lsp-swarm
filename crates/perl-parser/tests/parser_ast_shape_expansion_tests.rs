@@ -187,7 +187,7 @@ fn phase_defer_and_data_section_cover_compile_time_and_tail_constructs() -> Resu
         .find(|statement| matches!(statement.kind, NodeKind::DataSection { .. }))
         .ok_or("missing data section")?;
     match &data_node.kind {
-        NodeKind::DataSection { marker, body } => {
+        NodeKind::DataSection { marker, body, .. } => {
             assert_eq!(marker, "__DATA__");
             let body = body.as_ref().ok_or("missing data body")?;
             assert!(body.contains("first"));

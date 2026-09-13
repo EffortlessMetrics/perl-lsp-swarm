@@ -101,6 +101,33 @@ pub fn assert_has_error(source: &str, needle: &str) {
     );
 }
 
+/// Assert that malformed input produces a blocking diagnostic or an explicit
+/// Error/Missing node, rather than merely an advisory recovery diagnostic.
+pub fn assert_has_blocking_error(source: &str, needle: &str) {
+    let mut parser = Parser::new(source);
+    let ast = must(parser.parse());
+    let diagnostics = format!("{:?}", parser.get_errors());
+    let blocking = parser.get_errors().iter().any(|error| error.blocks_clean_parse());
+    let ast_error = find_first_error(&ast).is_some();
+    assert!(
+        blocking || ast_error,
+        "Expected blocking error or Error/Missing node for source:\n{}\n\nsexp:\n{}\n\ndiagnostics:\n{}",
+        source,
+        ast.to_sexp(),
+        diagnostics,
+    );
+    let needle_lower = needle.to_lowercase();
+    assert!(
+        ast.to_sexp().to_lowercase().contains(&needle_lower)
+            || diagnostics.to_lowercase().contains(&needle_lower),
+        "Expected error containing '{}' for source:\n{}\n\nsexp:\n{}\n\ndiagnostics:\n{}",
+        needle,
+        source,
+        ast.to_sexp(),
+        diagnostics,
+    );
+}
+
 /// Extract top-level statement kinds from a Program node.
 pub fn top_level_kinds(ast: &perl_parser_core::Node) -> Vec<&str> {
     match &ast.kind {
