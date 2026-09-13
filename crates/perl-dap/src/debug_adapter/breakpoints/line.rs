@@ -262,9 +262,14 @@ mod source_boundary_tests {
     }
 
     fn bounded_adapter(root: &Path) -> Result<DebugAdapter, Box<dyn Error>> {
-        let adapter = DebugAdapter::new();
-        adapter.set_workspace_root(root.canonicalize()?);
-        Ok(adapter)
+        // The startup authority is the post-#14592 spelling of what
+        // `set_workspace_root` used to do: one trusted root, bounded.
+        Ok(DebugAdapter::with_workspace_authority(
+            crate::security::workspace_authority::WorkspaceAuthority::from_startup(
+                &[root.canonicalize()?],
+                false,
+            )?,
+        ))
     }
 
     fn source_text(path: &Path) -> Result<&str, Box<dyn Error>> {
@@ -432,7 +437,13 @@ mod source_boundary_tests {
             1,
             "seeded-record control must read the source exactly once",
         )?;
-        adapter.set_workspace_root(root.canonicalize()?);
+        // Post-#14592 the adapter's startup authority is immutable, so the
+        // narrowing this test needs is the launch-derived one: a live session
+        // whose boundary governs source admission. That exercises the real
+        // production path (`live_session_boundary`) rather than a setter that
+        // no longer exists.
+        adapter.seed_session_for_test()?;
+        adapter.restore_session_boundary(Some(root.canonicalize()?));
 
         require_refused(request(&mut adapter, key, json!([])))?;
         require_equal(
@@ -552,7 +563,8 @@ mod source_boundary_tests {
             &adapter.breakpoints,
             "lib/module.pl",
             1,
-            Some(&authority),
+            std::slice::from_ref(&authority),
+            true,
             &cwd,
         );
         require(
@@ -563,7 +575,8 @@ mod source_boundary_tests {
             &adapter.breakpoints,
             "lib/module.pl",
             1,
-            Some(&authority),
+            std::slice::from_ref(&authority),
+            true,
             &cwd,
         );
         require(
@@ -579,7 +592,8 @@ mod source_boundary_tests {
             &adapter.breakpoints,
             "lib/module.pl",
             1,
-            Some(&authority),
+            std::slice::from_ref(&authority),
+            true,
             outside.path(),
         );
         require(
@@ -634,7 +648,8 @@ mod source_boundary_tests {
             &adapter.breakpoints,
             source_text(&alias)?,
             1,
-            Some(&authority),
+            std::slice::from_ref(&authority),
+            true,
             root.path(),
         );
         require(
@@ -666,7 +681,8 @@ mod source_boundary_tests {
             &adapter.breakpoints,
             "escaping_alias.pl",
             1,
-            Some(&authority),
+            std::slice::from_ref(&authority),
+            true,
             root.path(),
         );
         require(

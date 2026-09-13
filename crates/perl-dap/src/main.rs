@@ -17,6 +17,7 @@ use perl_dap::backend::peer_launch::{
 use perl_dap::backend::{DapPeerBridge, run_external_peer_session_stdio};
 use perl_dap::model::{DebugSessionPacket, DebugSource};
 use perl_dap::ptkdb_bootstrap::render_ptkdbrc;
+use perl_dap::security::{UnboundedGrant, WorkspaceAuthority};
 use perl_dap::session_plan::DebugSessionPlanBuilder;
 use perl_dap::{DapConfig, DapMode, DapServer};
 use perl_lsp_rs_core::product_identity::{
@@ -269,6 +270,150 @@ struct Args {
     /// mirror-rejected. Editor `--socket` / `--port` fail before bind.
     #[arg(long, value_name = "HOST[:PORT]")]
     external_peer_listen: Option<String>,
+
+    /// Confine debug launches to DIR. Repeat for a multi-root workspace.
+    ///
+    /// This is the adapter's trusted startup authority: launch arguments may
+    /// narrow it but can never widen it, and neither the debugged program's own
+    /// directory nor its `cwd` can establish it.
+    #[arg(long, value_name = "DIR")]
+    workspace_root: Vec<PathBuf>,
+
+    /// Allow debug launches anywhere on this machine.
+    ///
+    /// Single-file debugging outside an opened workspace is legitimate, but it
+    /// must be the operator's deliberate choice rather than the silent
+    /// consequence of an unconfigured adapter. Conflicts with
+    /// `--workspace-root`.
+    #[arg(long)]
+    allow_unbounded_workspace: bool,
+}
+
+/// Refuse workspace-authority flags in modes that cannot honour them.
+///
+/// Returns `None` when the combination is fine, so `main` reads as a guard
+/// rather than a branch on two unrelated booleans.
+fn workspace_flags_unsupported_in_peer_mode(args: &Args) -> Option<anyhow::Error> {
+    let peer_mode = if args.external_peer.is_some() {
+        "--external-peer"
+    } else if args.external_peer_listen.is_some() {
+        "--external-peer-listen"
+    } else {
+        return None;
+    };
+
+    let workspace_flag = if !args.workspace_root.is_empty() {
+        "--workspace-root"
+    } else if args.allow_unbounded_workspace {
+        "--allow-unbounded-workspace"
+    } else {
+        return None;
+    };
+
+    Some(anyhow::anyhow!(
+        "{workspace_flag} is not supported with {peer_mode}.\n\
+         Workspace confinement applies to the native launch path, which resolves and \
+         spawns the program itself.\n\
+         In external-peer mode the selected debugger engine owns the runtime, so the \
+         adapter cannot confine what it launches.\n\
+         \n\
+         Drop {workspace_flag}, or run the native adapter:\n\
+         \n\
+         \x20 perl-dap --stdio {workspace_flag}{}",
+        if workspace_flag == "--workspace-root" { " <DIR>" } else { "" }
+    ))
+}
+
+/// Build the server configuration the shipped binary runs under.
+///
+/// Extracted from `main` so the wiring itself is provable. The defect this
+/// crate's `--workspace-root` work exists to fix was precisely that
+/// `DapConfig`'s workspace field was hardcoded and no flag reached it: a test
+/// that only checks `clap` parsing and `WorkspaceAuthority::from_startup`
+/// passes just as happily when `main` drops the authority on the floor. Asserting
+/// on the returned config is what closes that gap.
+///
+/// The shipped binary always runs the native adapter. External implementations
+/// may be compared in repository-only conformance tooling, but no alternate DAP
+/// server is reachable from this CLI or crate runtime.
+///
+/// # Errors
+///
+/// Propagates [`WorkspaceAuthority::from_startup`]'s refusal of a contradictory
+/// or unusable workspace configuration, so a bad configuration fails startup
+/// rather than serving requests under an authority the operator did not ask for.
+fn build_config(args: &Args) -> anyhow::Result<DapConfig> {
+    // Establish the trust boundary before the server exists.
+    let workspace_authority =
+        WorkspaceAuthority::from_startup(&args.workspace_root, args.allow_unbounded_workspace)?;
+
+    Ok(DapConfig { log_level: args.log_level.clone(), mode: DapMode::Native, workspace_authority })
+}
+
+/// How the startup log should report an authority.
+///
+/// Split out from the emit so the classification is provable. The operator-facing
+/// signal is half of what naming the unconfigured state buys: an adapter that is
+/// silently unconfined looks exactly like a confined one in a log that does not
+/// say so. Asserting on `tracing` output is awkward and brittle, but the decision
+/// this enum records is the part that can be wrong.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AuthorityLogRecord {
+    /// Confined to `roots` trusted directories — informational.
+    Confined { roots: usize },
+    /// Unconfined because the operator asked for it — a warning.
+    OperatorGrant,
+    /// Unconfined because nothing was configured — a warning naming the remedy.
+    Unconfigured,
+}
+
+/// Classify an authority for the startup log.
+fn classify_workspace_authority(authority: &WorkspaceAuthority) -> AuthorityLogRecord {
+    match authority.unbounded_grant() {
+        None => AuthorityLogRecord::Confined { roots: authority.trusted_roots().len() },
+        Some(UnboundedGrant::OperatorFlag) => AuthorityLogRecord::OperatorGrant,
+        Some(UnboundedGrant::UnconfiguredDefault) => AuthorityLogRecord::Unconfigured,
+    }
+}
+
+/// Record the launch authority this process is running under.
+///
+/// The unconfigured case is a warning, not an info line: it is the state
+/// #8145 exists to remove, and it is indistinguishable from the bounded case in
+/// a log that does not say so.
+fn log_workspace_authority(authority: &WorkspaceAuthority) {
+    // Dispatch on the classification the tests assert on. Emitting from a second
+    // `match` over the authority would let the two drift, and the test would then
+    // be proving something the shipped binary does not do.
+    match classify_workspace_authority(authority) {
+        AuthorityLogRecord::Confined { roots } => {
+            tracing::info!(
+                target = "perl_dap.security",
+                mode = authority.mode_identity(),
+                roots,
+                "Debug launches are confined to the configured workspace roots"
+            );
+        }
+        AuthorityLogRecord::OperatorGrant => {
+            tracing::warn!(
+                target = "perl_dap.security",
+                mode = authority.mode_identity(),
+                grant = UnboundedGrant::OperatorFlag.as_str(),
+                "--allow-unbounded-workspace was passed: debug launches are not confined \
+                 to any workspace root"
+            );
+        }
+        AuthorityLogRecord::Unconfigured => {
+            tracing::warn!(
+                target = "perl_dap.security",
+                mode = authority.mode_identity(),
+                grant = UnboundedGrant::UnconfiguredDefault.as_str(),
+                "No workspace authority configured: debug launches are not confined to any \
+                 workspace root. Pass --workspace-root <DIR> to confine them, or \
+                 --allow-unbounded-workspace to make this explicit."
+            );
+        }
+    }
 }
 
 fn main() -> anyhow::Result<()> {
@@ -309,6 +454,18 @@ fn main() -> anyhow::Result<()> {
 
     init_logging(&args.log_level);
 
+    // Workspace authority governs the *native* launch path, which is the only
+    // path that resolves a `program` and spawns it. External-peer modes hand
+    // runtime control to a separately selected debugger engine and never build a
+    // `DapConfig`, so these flags would be silently ignored — and a security
+    // flag that silently does nothing is worse than no flag: an operator who
+    // passes `--workspace-root` would believe launches are confined when nothing
+    // is confining them. Refuse before any session starts, like the retired
+    // editor-socket flags above.
+    if let Some(error) = workspace_flags_unsupported_in_peer_mode(&args) {
+        return Err(error);
+    }
+
     // External-peer session: drive an explicitly selected debugger engine over
     // the peer protocol while the editor speaks DAP over stdio.
     if let Some(peer_addr) = args.external_peer.as_deref() {
@@ -337,11 +494,8 @@ fn main() -> anyhow::Result<()> {
 
     log_server_startup("perl-dap", env!("CARGO_PKG_VERSION"), args.transport.mode(), None, None);
 
-    // The shipped binary always runs the native adapter. External
-    // implementations may be compared in repository-only conformance tooling,
-    // but no alternate DAP server is reachable from this CLI or crate runtime.
-    let config =
-        DapConfig { log_level: args.log_level, mode: DapMode::Native, workspace_root: None };
+    let config = build_config(&args)?;
+    log_workspace_authority(&config.workspace_authority);
 
     let mut server = DapServer::new(config)?;
 
@@ -354,8 +508,10 @@ fn main() -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        Args, DEFAULT_DAP_PORT, editor_socket_retired, native_editor_socket_retired,
-        resolve_socket_port, windows_shell_quote,
+        Args, AuthorityLogRecord, DEFAULT_DAP_PORT, UnboundedGrant, WorkspaceAuthority,
+        build_config, classify_workspace_authority, editor_socket_retired,
+        native_editor_socket_retired, resolve_socket_port, windows_shell_quote,
+        workspace_flags_unsupported_in_peer_mode,
     };
     use clap::{CommandFactory, Parser};
     use perl_lsp_rs_core::product_identity::{
@@ -488,5 +644,196 @@ mod tests {
     fn windows_remediation_uses_cmd_quoting() {
         assert_eq!(windows_shell_quote("[::1]:13604"), "\"[::1]:13604\"");
         assert_eq!(windows_shell_quote("100% ready\"now"), "\"100% ready\"\"now\"");
+    }
+
+    // --- workspace launch authority (#14587) ---
+
+    /// The shipped binary can actually reach workspace-bound mode.
+    ///
+    /// Before this flag existed, `DapConfig.workspace_root` was hardcoded to
+    /// `None` in `main`, so the bounded launch path was unreachable in the
+    /// product and every real session ran unbounded.
+    ///
+    /// This asserts on the `DapConfig` the binary actually hands to
+    /// `DapServer::new`, not on `WorkspaceAuthority::from_startup` in isolation:
+    /// parsing the flag correctly and building the authority correctly prove
+    /// nothing if `main` then discards it, which is the exact shape of the
+    /// defect being fixed.
+    #[test]
+    fn workspace_root_flag_establishes_bounded_authority() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let temp = tempfile::tempdir()?;
+        let alpha = temp.path().join("alpha");
+        let beta = temp.path().join("beta");
+        std::fs::create_dir_all(&alpha)?;
+        std::fs::create_dir_all(&beta)?;
+
+        let args = Args::parse_from([
+            "perl-dap",
+            "--stdio",
+            "--workspace-root",
+            alpha.to_str().ok_or("non-utf8 fixture path")?,
+            "--workspace-root",
+            beta.to_str().ok_or("non-utf8 fixture path")?,
+        ]);
+        assert_eq!(args.workspace_root.len(), 2, "the flag must be repeatable for multi-root");
+
+        let config = build_config(&args)?;
+        assert!(
+            config.workspace_authority.is_bounded(),
+            "--workspace-root must reach the config the server is built from"
+        );
+        assert_eq!(config.workspace_authority.trusted_roots().len(), 2);
+        Ok(())
+    }
+
+    /// An unconfigured adapter is unbounded, but nameably so.
+    #[test]
+    fn no_authority_flags_resolve_to_the_named_legacy_default()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let args = Args::parse_from(["perl-dap", "--stdio"]);
+        assert!(args.workspace_root.is_empty());
+        assert!(!args.allow_unbounded_workspace);
+
+        let config = build_config(&args)?;
+        assert_eq!(
+            config.workspace_authority.unbounded_grant(),
+            Some(UnboundedGrant::UnconfiguredDefault)
+        );
+        assert!(!config.workspace_authority.is_bounded());
+        Ok(())
+    }
+
+    /// The operator's explicit opt-in is distinguishable from the default.
+    #[test]
+    fn allow_unbounded_flag_records_an_operator_grant() -> Result<(), Box<dyn std::error::Error>> {
+        let args = Args::parse_from(["perl-dap", "--stdio", "--allow-unbounded-workspace"]);
+        assert!(args.allow_unbounded_workspace);
+
+        let config = build_config(&args)?;
+        assert_eq!(
+            config.workspace_authority.unbounded_grant(),
+            Some(UnboundedGrant::OperatorFlag)
+        );
+        assert!(!config.workspace_authority.is_bounded());
+        Ok(())
+    }
+
+    /// Asking to confine and to unconfine at once is a startup error, not a
+    /// silent precedence rule.
+    #[test]
+    fn contradictory_authority_flags_fail_startup() -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let root = temp.path().join("ws");
+        std::fs::create_dir_all(&root)?;
+
+        let args = Args::parse_from([
+            "perl-dap",
+            "--stdio",
+            "--workspace-root",
+            root.to_str().ok_or("non-utf8 fixture path")?,
+            "--allow-unbounded-workspace",
+        ]);
+        assert!(build_config(&args).is_err(), "both flags together must fail startup");
+        Ok(())
+    }
+
+    /// A workspace root that does not exist fails startup rather than silently
+    /// degrading the adapter to unbounded.
+    #[test]
+    fn a_nonexistent_workspace_root_fails_startup() -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let missing = temp.path().join("absent");
+
+        let args = Args::parse_from([
+            "perl-dap",
+            "--stdio",
+            "--workspace-root",
+            missing.to_str().ok_or("non-utf8 fixture path")?,
+        ]);
+        assert!(build_config(&args).is_err(), "a missing root must fail startup");
+        Ok(())
+    }
+
+    /// The startup log distinguishes all three authority states.
+    ///
+    /// An operator reads this line to learn whether launches are confined. If
+    /// the unconfigured default were reported like the bounded case, the state
+    /// #8145 exists to remove would be invisible — which is the whole reason
+    /// `UnconfiguredDefault` is a named variant rather than a silent `None`.
+    #[test]
+    fn the_startup_log_distinguishes_every_authority_state()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let alpha = temp.path().join("alpha");
+        let beta = temp.path().join("beta");
+        std::fs::create_dir_all(&alpha)?;
+        std::fs::create_dir_all(&beta)?;
+
+        let bound = WorkspaceAuthority::from_startup(&[alpha, beta], false)?;
+        assert_eq!(
+            classify_workspace_authority(&bound),
+            AuthorityLogRecord::Confined { roots: 2 },
+            "a bounded adapter must report how many roots confine it"
+        );
+
+        let operator = WorkspaceAuthority::from_startup(&[], true)?;
+        assert_eq!(classify_workspace_authority(&operator), AuthorityLogRecord::OperatorGrant);
+
+        let legacy = WorkspaceAuthority::unconfigured();
+        assert_eq!(classify_workspace_authority(&legacy), AuthorityLogRecord::Unconfigured);
+
+        // The two unconfined states must not collapse: one is a deliberate
+        // operator choice, the other is the gap #8145 tracks.
+        assert_ne!(
+            classify_workspace_authority(&operator),
+            classify_workspace_authority(&legacy),
+            "an operator grant and the legacy default must be distinguishable in the log"
+        );
+        Ok(())
+    }
+
+    /// Workspace flags are refused in modes that cannot honour them.
+    ///
+    /// Both external-peer paths return from `main` before `build_config` runs,
+    /// so these flags would otherwise be silently ignored — including the
+    /// contradictory-flags refusal. An operator who passes `--workspace-root`
+    /// and gets a running adapter would reasonably believe launches are
+    /// confined; in peer mode the selected debugger engine owns the runtime and
+    /// nothing is confining them.
+    #[test]
+    fn workspace_flags_are_refused_in_external_peer_modes() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let temp = tempfile::tempdir()?;
+        let root = temp.path().join("ws");
+        std::fs::create_dir_all(&root)?;
+        let root = root.to_str().ok_or("non-utf8 fixture path")?;
+
+        for (peer_flag, peer_value) in
+            [("--external-peer", "127.0.0.1:9000"), ("--external-peer-listen", "127.0.0.1:0")]
+        {
+            for workspace in [vec!["--workspace-root", root], vec!["--allow-unbounded-workspace"]] {
+                let mut argv = vec!["perl-dap", "--stdio", peer_flag, peer_value];
+                argv.extend(workspace.iter().copied());
+                let args = Args::parse_from(argv);
+
+                let refusal = workspace_flags_unsupported_in_peer_mode(&args).ok_or_else(|| {
+                    format!("{peer_flag} with {workspace:?} must be refused, not silently ignored")
+                })?;
+                let message = refusal.to_string();
+                assert!(
+                    message.contains(peer_flag) && message.contains(workspace[0]),
+                    "the refusal must name both flags, got: {message}"
+                );
+            }
+        }
+
+        // The native path keeps working: no peer flag, no refusal.
+        let native = Args::parse_from(["perl-dap", "--stdio", "--workspace-root", root]);
+        assert!(
+            workspace_flags_unsupported_in_peer_mode(&native).is_none(),
+            "the native adapter must still accept --workspace-root"
+        );
+        Ok(())
     }
 }
