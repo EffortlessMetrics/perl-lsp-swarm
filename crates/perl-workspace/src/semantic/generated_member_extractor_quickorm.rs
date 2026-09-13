@@ -946,6 +946,28 @@ table users => sub { column id => sub { primary_key }; };
     }
 
     #[test]
+    fn only_quickorm_import_events_count_toward_the_containment() {
+        // Real Perl files carry unrelated imports. If the module guard did not
+        // discriminate, `use strict` alone would suppress every package, and a
+        // cohort built only from QuickORM imports would never notice.
+        let facts = candidate_facts(
+            r#"
+package My::ORM::Table::User;
+use strict;
+use warnings;
+use DBIx::QuickORM type => 'table';
+use POSIX qw(floor);
+no warnings 'uninitialized';
+
+table users => sub { column id => sub { primary_key }; };
+1;
+"#,
+        );
+
+        assert!(has_name(&facts, "My::ORM::Table::User::id"));
+    }
+
+    #[test]
     fn an_import_inside_the_table_builder_still_fails_the_package_closed() {
         // The builder body is an anonymous sub the extractor reads for columns
         // only, and the active-builder statement arm does not descend. A second
