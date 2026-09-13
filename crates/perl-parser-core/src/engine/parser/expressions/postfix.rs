@@ -71,7 +71,7 @@ impl<'a> Parser<'a> {
                     || matches!(&expr.kind, NodeKind::Unary { op, .. } if op == "%{}");
 
                 if is_at_slice || is_pct_slice {
-                    self.tokens.next()?; // consume {
+                    self.advance_token()?; // consume {
                     let key = self.parse_hash_subscript_key()?;
                     self.expect_closing_delimiter(TokenKind::RightBrace)?;
 
@@ -84,7 +84,7 @@ impl<'a> Parser<'a> {
                     } else {
                         NodeKind::KeyValueSlice { target: Box::new(expr), keys: Box::new(key) }
                     };
-                    expr = Node::new(kind, SourceLocation { start, end });
+                    expr = self.charge_node(kind, SourceLocation { start, end })?;
                     continue;
                 }
             }
@@ -104,10 +104,10 @@ impl<'a> Parser<'a> {
                     let func_name = name.clone();
                     let arg = self.parse_unary()?;
                     let end = arg.location.end;
-                    expr = Node::new(
+                    expr = self.charge_node(
                         NodeKind::FunctionCall { name: func_name, args: vec![arg] },
                         SourceLocation { start, end },
-                    );
+                    )?;
                     continue;
                 }
             }
@@ -122,10 +122,10 @@ impl<'a> Parser<'a> {
                     let end = op_token.end();
 
                     record_postfix_layer()?;
-                    expr = Node::new(
+                    expr = self.charge_node(
                         NodeKind::Unary { op: op_token.text.to_string(), operand: Box::new(expr) },
                         SourceLocation { start, end },
-                    );
+                    )?;
                 }
 
                 Some(TokenKind::Arrow) => {
@@ -143,7 +143,7 @@ impl<'a> Parser<'a> {
                                 record_postfix_layer()?;
                             } else if self.peek_kind() == Some(TokenKind::LeftBracket) {
                                 // ->@[...] array slice
-                                self.tokens.next()?; // consume [
+                                self.advance_token()?; // consume [
                                 let index = self.parse_expression()?;
                                 self.expect_closing_delimiter(TokenKind::RightBracket)?;
 
@@ -152,17 +152,17 @@ impl<'a> Parser<'a> {
 
                                 // Represent as a special binary operation for array slice dereference
                                 record_postfix_layer()?;
-                                expr = Node::new(
+                                expr = self.charge_node(
                                     NodeKind::Binary {
                                         op: "->@[]".to_string(),
                                         left: Box::new(expr),
                                         right: Box::new(index),
                                     },
                                     SourceLocation { start, end },
-                                );
+                                )?;
                             } else if self.peek_kind() == Some(TokenKind::LeftBrace) {
                                 // ->@{...} postfix hash slice
-                                self.tokens.next()?; // consume {
+                                self.advance_token()?; // consume {
                                 let keys = self.parse_hash_subscript_key()?;
                                 self.expect_closing_delimiter(TokenKind::RightBrace)?;
 
@@ -170,13 +170,13 @@ impl<'a> Parser<'a> {
                                 let end = self.previous_position().max(keys.location.end);
 
                                 record_postfix_layer()?;
-                                expr = Node::new(
+                                expr = self.charge_node(
                                     NodeKind::HashSlice {
                                         target: Box::new(expr),
                                         keys: Box::new(keys),
                                     },
                                     SourceLocation { start, end },
-                                );
+                                )?;
                             } else {
                                 expr = self.recover_truncated_arrow(expr);
                                 break;
@@ -193,7 +193,7 @@ impl<'a> Parser<'a> {
                                 record_postfix_layer()?;
                             } else if self.peek_kind() == Some(TokenKind::LeftBrace) {
                                 // ->%{...} hash slice
-                                self.tokens.next()?; // consume {
+                                self.advance_token()?; // consume {
                                 let key = self.parse_hash_subscript_key()?;
                                 self.expect_closing_delimiter(TokenKind::RightBrace)?;
 
@@ -202,14 +202,14 @@ impl<'a> Parser<'a> {
 
                                 // Represent as a special binary operation for hash slice dereference
                                 record_postfix_layer()?;
-                                expr = Node::new(
+                                expr = self.charge_node(
                                     NodeKind::Binary {
                                         op: "->%{}".to_string(),
                                         left: Box::new(expr),
                                         right: Box::new(key),
                                     },
                                     SourceLocation { start, end },
-                                );
+                                )?;
                             } else {
                                 expr = self.recover_truncated_arrow(expr);
                                 break;
@@ -279,7 +279,7 @@ impl<'a> Parser<'a> {
                                     .peek_second()
                                     .is_ok_and(|t| t.kind() == TokenKind::Star)
                             {
-                                self.tokens.next()?; // consume $#
+                                self.advance_token()?; // consume $#
                                 expr = self.consume_arrow_star_deref(expr, "->$#*")?;
                                 record_postfix_layer()?;
                                 continue;
@@ -310,10 +310,10 @@ impl<'a> Parser<'a> {
                             let end = self.previous_position();
 
                             record_postfix_layer()?;
-                            expr = Node::new(
+                            expr = self.charge_node(
                                 NodeKind::MethodCall { object: Box::new(expr), method, args },
                                 SourceLocation { start, end },
-                            );
+                            )?;
                         }
 
                         Some(TokenKind::LeftParen) => {
@@ -326,15 +326,15 @@ impl<'a> Parser<'a> {
                             all_args.extend(args);
 
                             record_postfix_layer()?;
-                            expr = Node::new(
+                            expr = self.charge_node(
                                 NodeKind::FunctionCall { name: "->()".to_string(), args: all_args },
                                 SourceLocation { start, end },
-                            );
+                            )?;
                         }
 
                         Some(TokenKind::LeftBracket) => {
                             // Arrow array dereference: $ref->[index]
-                            self.tokens.next()?; // consume [
+                            self.advance_token()?; // consume [
                             let index = self.parse_expression()?;
                             self.expect_closing_delimiter(TokenKind::RightBracket)?;
 
@@ -342,19 +342,19 @@ impl<'a> Parser<'a> {
                             let end = self.previous_position();
 
                             record_postfix_layer()?;
-                            expr = Node::new(
+                            expr = self.charge_node(
                                 NodeKind::Binary {
                                     op: "->[]".to_string(),
                                     left: Box::new(expr),
                                     right: Box::new(index),
                                 },
                                 SourceLocation { start, end },
-                            );
+                            )?;
                         }
 
                         Some(TokenKind::LeftBrace) => {
                             // Arrow hash dereference: $ref->{key}
-                            self.tokens.next()?; // consume {
+                            self.advance_token()?; // consume {
                             let key = self.parse_hash_subscript_key()?;
                             self.expect_closing_delimiter(TokenKind::RightBrace)?;
 
@@ -362,14 +362,14 @@ impl<'a> Parser<'a> {
                             let end = self.previous_position();
 
                             record_postfix_layer()?;
-                            expr = Node::new(
+                            expr = self.charge_node(
                                 NodeKind::Binary {
                                     op: "->{}".to_string(),
                                     left: Box::new(expr),
                                     right: Box::new(key),
                                 },
                                 SourceLocation { start, end },
-                            );
+                            )?;
                         }
 
                         _ => {
@@ -407,10 +407,10 @@ impl<'a> Parser<'a> {
                             args.push(self.parse_ternary()?);
                         }
                         let end = args.last().map_or(expr.location.end, |a| a.location.end);
-                        expr = Node::new(
+                        expr = self.charge_node(
                             NodeKind::FunctionCall { name, args },
                             SourceLocation { start, end },
-                        );
+                        )?;
                         continue;
                     }
                     // Detect array slices: @arr[...] or @{$aref}[...]
@@ -418,7 +418,7 @@ impl<'a> Parser<'a> {
                         || matches!(&expr.kind, NodeKind::Unary { op, .. } if op == "@{}");
 
                     // Array indexing - can be a single index or slice with multiple indices
-                    self.tokens.next()?; // consume [
+                    self.advance_token()?; // consume [
 
                     // Check if this might be a slice (multiple indices)
                     let mut indices = vec![self.parse_expression()?];
@@ -452,10 +452,10 @@ impl<'a> Parser<'a> {
                             })?
                             .location
                             .end;
-                        Node::new(
+                        self.charge_node(
                             NodeKind::ArrayLiteral { elements: indices },
                             SourceLocation { start, end },
-                        )
+                        )?
                     };
 
                     let start = expr.location.start;
@@ -463,22 +463,22 @@ impl<'a> Parser<'a> {
 
                     record_postfix_layer()?;
                     if is_array_slice {
-                        expr = Node::new(
+                        expr = self.charge_node(
                             NodeKind::ArraySlice {
                                 target: Box::new(expr),
                                 indices: Box::new(index),
                             },
                             SourceLocation { start, end },
-                        );
+                        )?;
                     } else {
-                        expr = Node::new(
+                        expr = self.charge_node(
                             NodeKind::Binary {
                                 op: "[]".to_string(),
                                 left: Box::new(expr),
                                 right: Box::new(index),
                             },
                             SourceLocation { start, end },
-                        );
+                        )?;
                     }
                 }
 
@@ -511,7 +511,7 @@ impl<'a> Parser<'a> {
                                     if self.peek_kind() == Some(TokenKind::FatArrow)
                                         && let Some(arg) = args.last_mut()
                                     {
-                                        Self::auto_quote_bareword_before_fat_comma(arg);
+                                        self.auto_quote_bareword_before_fat_comma(arg)?;
                                     }
                                     self.consume_token()?; // consume comma or fat arrow
                                     if self.is_at_statement_end() {
@@ -547,7 +547,7 @@ impl<'a> Parser<'a> {
                                     if self.peek_kind() == Some(TokenKind::FatArrow)
                                         && let Some(arg) = args.last_mut()
                                     {
-                                        Self::auto_quote_bareword_before_fat_comma(arg);
+                                        self.auto_quote_bareword_before_fat_comma(arg)?;
                                     }
                                     self.consume_token()?; // consume comma or fat arrow
                                     if is_bare_func {
@@ -596,7 +596,7 @@ impl<'a> Parser<'a> {
                                             if self.peek_kind() == Some(TokenKind::FatArrow)
                                                 && let Some(arg) = args.last_mut()
                                             {
-                                                Self::auto_quote_bareword_before_fat_comma(arg);
+                                                self.auto_quote_bareword_before_fat_comma(arg)?;
                                             }
                                             self.consume_token()?;
                                         }
@@ -614,7 +614,7 @@ impl<'a> Parser<'a> {
                                         if self.peek_kind() == Some(TokenKind::FatArrow)
                                             && let Some(arg) = args.last_mut()
                                         {
-                                            Self::auto_quote_bareword_before_fat_comma(arg);
+                                            self.auto_quote_bareword_before_fat_comma(arg)?;
                                         }
                                         self.consume_token()?; // consume comma or fat arrow
                                         if self.is_implicit_arg_terminator() {
@@ -633,16 +633,16 @@ impl<'a> Parser<'a> {
                                 .location
                                 .end;
 
-                            expr = Node::new(
+                            expr = self.charge_node(
                                 NodeKind::FunctionCall { name: name.clone(), args },
                                 SourceLocation { start, end },
-                            );
+                            )?;
                             continue; // Continue the loop
                         }
                     }
 
                     // Hash element access
-                    self.tokens.next()?; // consume {
+                    self.advance_token()?; // consume {
                     let key = self.parse_hash_subscript_key()?;
                     self.expect_closing_delimiter(TokenKind::RightBrace)?;
 
@@ -651,14 +651,14 @@ impl<'a> Parser<'a> {
 
                     // Represent as binary subscript operation
                     record_postfix_layer()?;
-                    expr = Node::new(
+                    expr = self.charge_node(
                         NodeKind::Binary {
                             op: "{}".to_string(),
                             left: Box::new(expr),
                             right: Box::new(key),
                         },
                         SourceLocation { start, end },
-                    );
+                    )?;
                 }
 
                 Some(TokenKind::LeftParen) if matches!(&expr.kind, NodeKind::Identifier { .. }) => {
@@ -672,10 +672,10 @@ impl<'a> Parser<'a> {
                             let start = expr.location.start;
                             let end = self.previous_position();
 
-                            expr = Node::new(
+                            expr = self.charge_node(
                                 NodeKind::ArrayLiteral { elements: words },
                                 SourceLocation { start, end },
-                            );
+                            )?;
                         } else if matches!(name.as_str(), "print" | "say" | "printf" | "send") {
                             // `print( $fh EXPR )` — filehandle-style inside explicit parens.
                             // parse_args() treats every argument as comma-separated, so
@@ -687,19 +687,19 @@ impl<'a> Parser<'a> {
                             let start = expr.location.start;
                             let end = self.previous_position();
 
-                            expr = Node::new(
+                            expr = self.charge_node(
                                 NodeKind::FunctionCall { name, args },
                                 SourceLocation { start, end },
-                            );
+                            )?;
                         } else {
                             let args = self.parse_args()?;
                             let start = expr.location.start;
                             let end = self.previous_position();
 
-                            expr = Node::new(
+                            expr = self.charge_node(
                                 NodeKind::FunctionCall { name, args },
                                 SourceLocation { start, end },
-                            );
+                            )?;
                         }
                     }
                 }
@@ -720,17 +720,17 @@ impl<'a> Parser<'a> {
 
                     record_postfix_layer()?;
                     expr = if matches!(&expr.kind, NodeKind::Undef) {
-                        Node::new(
+                        self.charge_node(
                             NodeKind::FunctionCall { name: "undef".to_string(), args },
                             SourceLocation { start, end },
-                        )
+                        )?
                     } else {
                         let mut all_args = vec![expr];
                         all_args.extend(args);
-                        Node::new(
+                        self.charge_node(
                             NodeKind::FunctionCall { name: "->()".to_string(), args: all_args },
                             SourceLocation { start, end },
-                        )
+                        )?
                     };
                 }
 
@@ -752,10 +752,10 @@ impl<'a> Parser<'a> {
                             // A qualified CORE builtin remains executable before a fat comma;
                             // do not let the generic key conversion turn it into a string.
                             let start = expr.location.start;
-                            expr = Node::new(
+                            expr = self.charge_node(
                                 NodeKind::FunctionCall { name: name.clone(), args: vec![] },
                                 SourceLocation { start, end: expr.location.end },
-                            );
+                            )?;
                         } else if Self::is_nullary_builtin(name) {
                             // Nullary builtins (shift, pop, caller, wantarray, etc.) can also
                             // take an explicit sigil-starting argument, e.g. `shift @arr`.
@@ -780,10 +780,10 @@ impl<'a> Parser<'a> {
                                 .last()
                                 .map(|arg: &Node| arg.location.end)
                                 .unwrap_or(expr.location.end);
-                            expr = Node::new(
+                            expr = self.charge_node(
                                 NodeKind::FunctionCall { name: name.clone(), args },
                                 SourceLocation { start, end },
-                            );
+                            )?;
                         } else if !Self::is_builtin_function(name)
                             && !self.is_at_statement_end()
                             && self.peek_kind() != Some(TokenKind::FatArrow)
@@ -818,10 +818,10 @@ impl<'a> Parser<'a> {
 
                             let start = expr.location.start;
                             let end = args.last().map_or(expr.location.end, |arg| arg.location.end);
-                            expr = Node::new(
+                            expr = self.charge_node(
                                 NodeKind::FunctionCall { name: name.clone(), args },
                                 SourceLocation { start, end },
-                            );
+                            )?;
                         } else if name.contains("::")
                             && !self.is_at_statement_end()
                             && self.peek_kind() != Some(TokenKind::FatArrow)
@@ -862,10 +862,10 @@ impl<'a> Parser<'a> {
                             }
                             let start = expr.location.start;
                             let end = self.previous_position();
-                            expr = Node::new(
+                            expr = self.charge_node(
                                 NodeKind::FunctionCall { name: name.clone(), args },
                                 SourceLocation { start, end },
-                            );
+                            )?;
                         } else if Self::is_builtin_function(name)
                             || Self::core_qualified_builtin_name(name).is_some()
                             || self.looks_like_bare_call(name)
@@ -928,10 +928,10 @@ impl<'a> Parser<'a> {
                                 || is_str_op_terminated
                             {
                                 // Bare builtin with no arguments
-                                expr = Node::new(
+                                expr = self.charge_node(
                                     NodeKind::FunctionCall { name: name.clone(), args: vec![] },
                                     expr.location,
-                                );
+                                )?;
                             } else {
                                 // Parse arguments without parentheses
                                 let mut args = Vec::new();
@@ -968,7 +968,7 @@ impl<'a> Parser<'a> {
                                             if self.peek_kind() == Some(TokenKind::FatArrow)
                                                 && let Some(arg) = args.last_mut()
                                             {
-                                                Self::auto_quote_bareword_before_fat_comma(arg);
+                                                self.auto_quote_bareword_before_fat_comma(arg)?;
                                             }
                                             self.consume_token()?;
                                         }
@@ -1028,7 +1028,7 @@ impl<'a> Parser<'a> {
                                             if self.peek_kind() == Some(TokenKind::FatArrow)
                                                 && let Some(arg) = args.last_mut()
                                             {
-                                                Self::auto_quote_bareword_before_fat_comma(arg);
+                                                self.auto_quote_bareword_before_fat_comma(arg)?;
                                             }
                                             self.consume_token()?;
                                         }
@@ -1067,7 +1067,7 @@ impl<'a> Parser<'a> {
                                             if self.peek_kind() == Some(TokenKind::FatArrow)
                                                 && let Some(arg) = args.last_mut()
                                             {
-                                                Self::auto_quote_bareword_before_fat_comma(arg);
+                                                self.auto_quote_bareword_before_fat_comma(arg)?;
                                             }
                                             self.consume_token()?;
                                         }
@@ -1090,7 +1090,7 @@ impl<'a> Parser<'a> {
                                         if self.peek_kind() == Some(TokenKind::FatArrow)
                                             && let Some(arg) = args.last_mut()
                                         {
-                                            Self::auto_quote_bareword_before_fat_comma(arg);
+                                            self.auto_quote_bareword_before_fat_comma(arg)?;
                                         }
                                         self.consume_token()?; // consume comma or fat arrow
                                         if self.is_at_statement_end() {
@@ -1124,7 +1124,7 @@ impl<'a> Parser<'a> {
                                             if self.peek_kind() == Some(TokenKind::FatArrow)
                                                 && let Some(arg) = args.last_mut()
                                             {
-                                                Self::auto_quote_bareword_before_fat_comma(arg);
+                                                self.auto_quote_bareword_before_fat_comma(arg)?;
                                             }
                                             self.consume_token()?;
                                         }
@@ -1149,7 +1149,7 @@ impl<'a> Parser<'a> {
                                         if self.peek_kind() == Some(TokenKind::FatArrow)
                                             && let Some(arg) = args.last_mut()
                                         {
-                                            Self::auto_quote_bareword_before_fat_comma(arg);
+                                            self.auto_quote_bareword_before_fat_comma(arg)?;
                                         }
                                         self.consume_token()?;
                                         if self.is_at_statement_end() {
@@ -1244,7 +1244,7 @@ impl<'a> Parser<'a> {
                                                 if self.peek_kind() == Some(TokenKind::FatArrow)
                                                     && let Some(arg) = args.last_mut()
                                                 {
-                                                    Self::auto_quote_bareword_before_fat_comma(arg);
+                                                    self.auto_quote_bareword_before_fat_comma(arg)?;
                                                 }
                                                 self.consume_token()?;
                                             }
@@ -1309,7 +1309,7 @@ impl<'a> Parser<'a> {
                                         if self.peek_kind() == Some(TokenKind::FatArrow)
                                             && let Some(arg) = args.last_mut()
                                         {
-                                            Self::auto_quote_bareword_before_fat_comma(arg);
+                                            self.auto_quote_bareword_before_fat_comma(arg)?;
                                         }
                                         self.consume_token()?;
                                         if self.is_at_statement_end() {
@@ -1337,19 +1337,19 @@ impl<'a> Parser<'a> {
                                     } else {
                                         message_args.remove(0)
                                     };
-                                    Node::new(
+                                    self.charge_node(
                                         NodeKind::IndirectCall {
                                             method: name.clone(),
                                             object: Box::new(object),
                                             args: message_args,
                                         },
                                         SourceLocation { start, end },
-                                    )
+                                    )?
                                 } else {
-                                    Node::new(
+                                    self.charge_node(
                                         NodeKind::FunctionCall { name: name.clone(), args },
                                         SourceLocation { start, end },
-                                    )
+                                    )?
                                 };
                             }
                         }
@@ -1371,13 +1371,13 @@ impl<'a> Parser<'a> {
                             let arg = self.parse_ternary()?;
                             let start = expr.location.start;
                             let end = arg.location.end;
-                            expr = Node::new(
+                            expr = self.charge_node(
                                 NodeKind::FunctionCall {
                                     name: "undef".to_string(),
                                     args: vec![arg],
                                 },
                                 SourceLocation { start, end },
-                            );
+                            )?;
                         }
                     }
                     break;
@@ -1475,11 +1475,11 @@ impl<'a> Parser<'a> {
     /// Consume the next token as a bareword string node (for quote-op names used
     /// as hash keys, e.g. the `m` in `$h{m}` or `@h{m, s}`).
     fn consume_as_bareword_string(&mut self) -> ParseResult<Node> {
-        let token = self.tokens.next()?;
-        Ok(Node::new(
+        let token = self.advance_token()?;
+        self.charge_node(
             NodeKind::String { value: token.text.to_string(), interpolated: false },
             SourceLocation { start: token.start(), end: token.end() },
-        ))
+        )
     }
 
     /// Parse hash subscript key expression, treating lone keywords as bare
@@ -1548,7 +1548,7 @@ impl<'a> Parser<'a> {
         }
 
         let end = elements.last().map(|n| n.location.end).unwrap_or(start);
-        Ok(Some(Node::new(NodeKind::ArrayLiteral { elements }, SourceLocation { start, end })))
+        Ok(Some(self.charge_node(NodeKind::ArrayLiteral { elements }, SourceLocation { start, end })?))
     }
 
     fn peek_is_keyword_bareword_key(&mut self, allow_terminal_control_key: bool) -> bool {
@@ -1590,21 +1590,24 @@ impl<'a> Parser<'a> {
     }
 
     fn consume_as_bareword_identifier(&mut self) -> ParseResult<Node> {
-        let token = self.tokens.next()?;
-        Ok(Node::new(
+        let token = self.advance_token()?;
+        self.charge_node(
             NodeKind::Identifier { name: token.text.to_string() },
             SourceLocation { start: token.start(), end: token.end() },
-        ))
+        )
     }
 
     fn recover_truncated_arrow(&mut self, expr: Node) -> Node {
         let start = expr.location.start;
         let end = self.previous_position();
-        self.errors.push(ParseError::Recovered {
+        self.record_error(ParseError::Recovered {
             site: RecoverySite::PostfixChain,
             kind: RecoveryKind::TruncatedChain,
             location: end,
         });
+        // #8786: not charged. Synthetic recovery node — recovery-node
+        // accounting is #7074's dimension, not an admitted core dimension
+        // (same exemption class as the missing-operand recovery node).
         Node::new(
             NodeKind::Error {
                 message: "Incomplete arrow expression".to_string(),
@@ -1656,7 +1659,7 @@ impl<'a> Parser<'a> {
         }
 
         let end = elements.last().map(|n| n.location.end).unwrap_or(start);
-        Ok(Some(Node::new(NodeKind::ArrayLiteral { elements }, SourceLocation { start, end })))
+        Ok(Some(self.charge_node(NodeKind::ArrayLiteral { elements }, SourceLocation { start, end })?))
     }
 
     /// Finish an arrow star-form postfix dereference from the consumed `*` token.
@@ -1667,9 +1670,9 @@ impl<'a> Parser<'a> {
     fn consume_arrow_star_deref(&mut self, expr: Node, op: &'static str) -> ParseResult<Node> {
         let star = self.consume_token()?;
         let start = expr.location.start;
-        Ok(Node::new(
+        self.charge_node(
             NodeKind::Unary { op: op.to_string(), operand: Box::new(expr) },
             SourceLocation { start, end: star.end() },
-        ))
+        )
     }
 }

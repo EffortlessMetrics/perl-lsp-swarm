@@ -117,6 +117,14 @@ pub struct ParseBudget {
     /// Maximum number of errors to collect before giving up.
     /// After this limit, parsing stops to avoid flooding diagnostics.
     /// Default: 100
+    ///
+    /// This governs *recoverable* diagnostics. A terminal diagnostic — one that
+    /// reports work the parser refused to perform, such as a heredoc scan
+    /// budget refusal — is retained beyond this limit and is not charged
+    /// against it, because a refusal that cannot be reported is
+    /// indistinguishable from work that succeeded (#8786). A parse can
+    /// therefore return more diagnostics than `max_errors`, and does so only
+    /// when it also reports a [`ParseStopCause`].
     pub max_errors: usize,
 
     /// Maximum nesting depth for recursive constructs (blocks, expressions).
@@ -146,6 +154,34 @@ pub struct ParseBudget {
     /// files charge on the order of their own size; the default exists to bound
     /// pathological inputs, not to constrain real Perl.
     pub max_heredoc_scan_bytes: usize,
+
+    /// Maximum number of non-EOF tokens the parser may consume in one
+    /// operation (#8786).
+    ///
+    /// Charged before the token leaves the stream, so a refused token is
+    /// never consumed and never counted. The synthetic sticky `Eof` token is
+    /// not consumed input and is not charged; see
+    /// [`BudgetTracker::tokens_consumed`].
+    ///
+    /// Default: 16,777,216. Real Perl files are orders of magnitude smaller;
+    /// this bounds pathological or adversarial input rather than constraining
+    /// ordinary source.
+    pub max_tokens_consumed: usize,
+
+    /// Maximum number of AST nodes the parser may construct in one operation
+    /// (#8786).
+    ///
+    /// Charged before the node is built, so a refused node is never
+    /// constructed and never retained.
+    ///
+    /// Bounds admitted construction work. Synthetic recovery nodes and the
+    /// terminal fallback shell are outside it — see
+    /// [`BudgetTracker::nodes_constructed`] for what that count does and does
+    /// not include.
+    ///
+    /// Default: 16,777,216, chosen on the same bounding rationale as
+    /// [`ParseBudget::max_tokens_consumed`].
+    pub max_nodes_constructed: usize,
 }
 
 impl Default for ParseBudget {
@@ -156,6 +192,8 @@ impl Default for ParseBudget {
             max_tokens_skipped: 1000,
             max_recoveries: 500,
             max_heredoc_scan_bytes: 64 * 1024 * 1024,
+            max_tokens_consumed: 16 * 1024 * 1024,
+            max_nodes_constructed: 16 * 1024 * 1024,
         }
     }
 }
@@ -174,6 +212,8 @@ impl ParseBudget {
             max_tokens_skipped: 100,
             max_recoveries: 50,
             max_heredoc_scan_bytes: 4 * 1024 * 1024,
+            max_tokens_consumed: 1024 * 1024,
+            max_nodes_constructed: 1024 * 1024,
         }
     }
 
@@ -185,7 +225,62 @@ impl ParseBudget {
             max_tokens_skipped: usize::MAX,
             max_recoveries: usize::MAX,
             max_heredoc_scan_bytes: usize::MAX,
+            max_tokens_consumed: usize::MAX,
+            max_nodes_constructed: usize::MAX,
         }
+    }
+
+    /// Configured limit for one admitted core work dimension (#8786).
+    ///
+    /// `DiagnosticsEmitted` maps to [`ParseBudget::max_errors`]: the
+    /// diagnostic limit already existed and keeps its field, so charging it
+    /// does not create a second vocabulary for the same policy.
+    #[must_use]
+    pub fn core_limit(&self, dimension: ParseCoreDimension) -> usize {
+        match dimension {
+            ParseCoreDimension::TokensConsumed => self.max_tokens_consumed,
+            ParseCoreDimension::NodesConstructed => self.max_nodes_constructed,
+            ParseCoreDimension::DiagnosticsEmitted => self.max_errors,
+        }
+    }
+}
+
+/// One admitted core parser work dimension governed by charge-before-work
+/// authority (#8786).
+///
+/// Each variant has exactly one production meaning, one configured limit on
+/// [`ParseBudget`], one charged counter on [`BudgetTracker`], and one charge
+/// site in the parser. Recovery scanning, recovery synchronization, synthetic
+/// recovery nodes, heredoc collection, and fallback invocation are *not*
+/// members of this set: they are charged by #7074 and #7291 against their own
+/// dimensions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum ParseCoreDimension {
+    /// Non-EOF tokens taken from the token stream by the parser.
+    TokensConsumed,
+    /// AST nodes constructed by the parser.
+    NodesConstructed,
+    /// Parser diagnostics retained for the caller.
+    DiagnosticsEmitted,
+}
+
+impl ParseCoreDimension {
+    /// Stable machine token for this dimension, suitable for receipts and logs
+    /// that must not depend on `Debug` formatting.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::TokensConsumed => "tokens_consumed",
+            Self::NodesConstructed => "nodes_constructed",
+            Self::DiagnosticsEmitted => "diagnostics_emitted",
+        }
+    }
+}
+
+impl std::fmt::Display for ParseCoreDimension {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
     }
 }
 
@@ -196,7 +291,19 @@ impl ParseBudget {
 #[derive(Debug, Clone, Default)]
 #[non_exhaustive]
 pub struct BudgetTracker {
-    /// Number of errors emitted so far.
+    /// Number of errors charged against [`ParseBudget::max_errors`] so far.
+    ///
+    /// Within a parse operation this counts diagnostics the budget *admitted*,
+    /// not diagnostics the parse returned. Terminal diagnostics are exempt from
+    /// `max_errors` and are correspondingly absent from this count, so
+    /// `ParseOutput::diagnostics.len()` may exceed it (#8786). Compare this
+    /// field against `max_errors` to reason about the budget; use the
+    /// diagnostics themselves to reason about what the parse reported.
+    ///
+    /// Post-parse projection layers may add to this count after the operation
+    /// has ended and its tracker has been taken, in which case the value is no
+    /// longer bounded by `max_errors`. `engine::regex_retention` does this
+    /// today; that predates the charging authority and is not governed by it.
     pub errors_emitted: usize,
     /// Current nesting depth.
     pub current_depth: usize,
@@ -211,6 +318,40 @@ pub struct BudgetTracker {
     /// Charged in source bytes rather than elapsed time, so this value is
     /// identical for identical source and configuration on every host (#7291).
     pub heredoc_scan_bytes: usize,
+
+    /// Non-EOF tokens the parser has consumed in this operation (#8786).
+    ///
+    /// Charged exactly once per token, before the token is removed from the
+    /// stream, by the single production advance seam. Lookahead (`peek`,
+    /// `peek_second`, `peek_third`) is not consumption and is never charged.
+    ///
+    /// A repeated read of the synthetic `Eof` terminator is excluded:
+    /// `TokenStream::next` makes `Eof` *sticky*, returning it indefinitely once
+    /// the input is exhausted, so charging every read would let a terminal loop
+    /// inflate usage without taking anything from the stream. This counter
+    /// therefore measures input actually taken. In practice the parser peeks
+    /// before it advances, so the terminator is already cached and is not
+    /// charged at all; an advance issued with no prior peek would charge the
+    /// first, fresh `Eof` once, and never again.
+    pub tokens_consumed: usize,
+
+    /// AST nodes the parser has constructed in this operation (#8786).
+    ///
+    /// Charged exactly once per node, before construction, by the single
+    /// production node seam. Nodes built by non-parser consumers of
+    /// `perl_ast` are not parser work and are not counted here.
+    ///
+    /// This measures *admitted construction work*, not nodes retained in the
+    /// returned AST, and the two differ in both directions. A node built to
+    /// replace another — the container rebuilt when a list resolves to a hash,
+    /// say — is construction work and is charged, even though the AST gains
+    /// nothing. Synthetic recovery nodes and the terminal fallback shell are
+    /// *not* charged: they are not admitted parse work but the product of work
+    /// that failed or was refused, and their accounting is #7074's deferred
+    /// recovery/fallback dimension rather than this one. So this count can
+    /// exceed the retained node count on a rebuilt tree and fall below it on a
+    /// recovered one.
+    pub nodes_constructed: usize,
 }
 
 impl BudgetTracker {
@@ -303,6 +444,111 @@ impl BudgetTracker {
     /// [`BudgetTracker::heredoc_scan_exhausted`].
     pub fn record_heredoc_scan(&mut self, bytes: usize) {
         self.heredoc_scan_bytes = self.heredoc_scan_bytes.saturating_add(bytes);
+    }
+
+    /// Charged usage for one core work dimension (#8786).
+    #[must_use]
+    pub fn core_usage(&self, dimension: ParseCoreDimension) -> usize {
+        match dimension {
+            ParseCoreDimension::TokensConsumed => self.tokens_consumed,
+            ParseCoreDimension::NodesConstructed => self.nodes_constructed,
+            ParseCoreDimension::DiagnosticsEmitted => self.errors_emitted,
+        }
+    }
+
+    /// Charge one unit of core work after the limit check admitted it.
+    ///
+    /// Separated from [`BudgetTracker::authorize_core`] only so the charge is
+    /// a single named mutation per dimension; production callers reach it
+    /// through the operation context, never directly.
+    fn charge_core(&mut self, dimension: ParseCoreDimension) {
+        self.charge_core_batch(dimension, 1);
+    }
+
+    /// Charge `count` admitted units at once, in a single saturating add, so a
+    /// batch cannot lose units to repeated per-unit saturation.
+    fn charge_core_batch(&mut self, dimension: ParseCoreDimension, count: usize) {
+        let slot = match dimension {
+            ParseCoreDimension::TokensConsumed => &mut self.tokens_consumed,
+            ParseCoreDimension::NodesConstructed => &mut self.nodes_constructed,
+            ParseCoreDimension::DiagnosticsEmitted => &mut self.errors_emitted,
+        };
+        *slot = slot.saturating_add(count);
+    }
+
+    /// Record `count` units of core work that a nested operation already
+    /// performed, without a limit check (#8786).
+    ///
+    /// Distinct from [`BudgetTracker::authorize_core_batch`]: this is not an
+    /// admission decision. It exists for the one case where the work is a fact
+    /// rather than a request — a nested sub-parse that failed after charging
+    /// its own tracker. Refusing there would be meaningless, since the caller
+    /// is already returning that failure; dropping the units instead would
+    /// leave the receipt understating what the parse actually spent.
+    pub(crate) fn record_core_batch(&mut self, dimension: ParseCoreDimension, count: usize) {
+        self.charge_core_batch(dimension, count);
+    }
+
+    /// Check-then-charge `count` units of core work in `dimension` (#8786).
+    ///
+    /// Used where work was performed by a nested operation and is only
+    /// countable afterwards, so the whole batch is admitted or refused
+    /// together. `count == 0` is a no-op and always succeeds.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParseError::CoreBudgetExhausted`] when charging `count` more
+    /// units would exceed the configured limit; nothing is charged in that
+    /// case.
+    pub fn authorize_core_batch(
+        &mut self,
+        budget: &ParseBudget,
+        dimension: ParseCoreDimension,
+        count: usize,
+    ) -> ParseResult<()> {
+        if count == 0 {
+            return Ok(());
+        }
+        let limit = budget.core_limit(dimension);
+        let usage = self.core_usage(dimension);
+        // Compare against remaining capacity rather than `usage + count`: a
+        // saturating sum lands exactly on the limit at the top of the range and
+        // would admit a batch it cannot actually charge, then silently charge
+        // fewer units than it promised.
+        if count > limit.saturating_sub(usage) {
+            return Err(ParseError::CoreBudgetExhausted { dimension, limit, usage });
+        }
+        self.charge_core_batch(dimension, count);
+        Ok(())
+    }
+
+    /// Check-then-charge one unit of core work in `dimension` (#8786).
+    ///
+    /// This is the single charge-before-work authority for the admitted core
+    /// dimensions. On success exactly one unit has been charged and the caller
+    /// may perform the work. On refusal nothing is charged, the work must not
+    /// be performed, and the returned error carries the dimension, the
+    /// configured limit, and the usage charged so far.
+    ///
+    /// Arithmetic saturates rather than wrapping, and the comparison is
+    /// `usage >= limit` so a limit of `n` admits exactly `n` units.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParseError::CoreBudgetExhausted`] when the configured limit
+    /// for `dimension` has already been reached.
+    pub fn authorize_core(
+        &mut self,
+        budget: &ParseBudget,
+        dimension: ParseCoreDimension,
+    ) -> ParseResult<()> {
+        let limit = budget.core_limit(dimension);
+        let usage = self.core_usage(dimension);
+        if usage >= limit {
+            return Err(ParseError::CoreBudgetExhausted { dimension, limit, usage });
+        }
+        self.charge_core(dimension);
+        Ok(())
     }
 }
 
@@ -470,6 +716,27 @@ pub enum ParseError {
         max_depth: usize,
     },
 
+    /// An admitted core work budget was exhausted before the parser could
+    /// perform the next unit of that work (#8786).
+    ///
+    /// Raised by the charge-before-work authority
+    /// ([`BudgetTracker::authorize_core`]), so the refused unit was never
+    /// performed and never charged: `usage` is the work actually admitted
+    /// before the refusal, and `usage == limit` always holds.
+    ///
+    /// This is distinct from cancellation, syntax recovery, catastrophic
+    /// termination, and the recursion/nesting/heredoc/lexer budgets, each of
+    /// which keeps its own typed identity.
+    #[error("{dimension} budget exhausted: {usage} of {limit} charged")]
+    CoreBudgetExhausted {
+        /// Which admitted core dimension refused the work.
+        dimension: ParseCoreDimension,
+        /// Configured limit for that dimension.
+        limit: usize,
+        /// Usage charged for that dimension when the work was refused.
+        usage: usize,
+    },
+
     /// Invalid numeric literal found in Perl script content
     ///
     /// Common when processing malformed configuration values during Analyze stage analysis.
@@ -566,6 +833,7 @@ impl ErrorClass for ParseError {
             Self::RecursionLimit
             | Self::RecursionDepthExhausted { .. }
             | Self::HeredocBudgetExhausted { .. }
+            | Self::CoreBudgetExhausted { .. }
             | Self::NestingTooDeep { .. } => ErrorCategory::ResourceLimit,
             Self::UnexpectedEof
             | Self::UnexpectedToken { .. }
@@ -659,6 +927,22 @@ pub enum ParseStopCause {
         usage: usize,
     },
 
+    /// An admitted core work budget (tokens, nodes, or diagnostics) refused
+    /// the parser's next unit of work (#8786).
+    ///
+    /// The refused unit was never performed, so `usage` equals `limit` and the
+    /// retained AST and diagnostics describe only admitted work. This cause is
+    /// deliberately distinct from the recursion, nesting, heredoc, and lexer
+    /// budgets so a consumer can tell which authority stopped the parse.
+    CoreBudgetExhausted {
+        /// Which admitted core dimension refused the work.
+        dimension: ParseCoreDimension,
+        /// Configured limit for that dimension.
+        limit: usize,
+        /// Usage charged for that dimension at refusal.
+        usage: usize,
+    },
+
     /// The lexer exhausted a per-token budget (regex/heredoc bytes, scan
     /// steps, or delimiter nesting) and degraded the remainder of the source
     /// to an `UnknownRest` token.
@@ -725,6 +1009,9 @@ impl ParseStopCause {
             ParseError::HeredocBudgetExhausted { limit, usage, .. } => {
                 Self::HeredocBudgetExhausted { limit: *limit, usage: *usage }
             }
+            ParseError::CoreBudgetExhausted { dimension, limit, usage } => {
+                Self::CoreBudgetExhausted { dimension: *dimension, limit: *limit, usage: *usage }
+            }
             _ => Self::CatastrophicTermination,
         }
     }
@@ -745,6 +1032,7 @@ impl ParseStopCause {
             Self::RecursionBudgetExhausted { .. }
                 | Self::NestingOrDepthBudgetExhausted { .. }
                 | Self::HeredocBudgetExhausted { .. }
+                | Self::CoreBudgetExhausted { .. }
                 | Self::LexerBudgetExhausted
         )
     }
@@ -758,6 +1046,7 @@ impl ParseStopCause {
             Self::RecursionBudgetExhausted { .. } => "recursion_budget_exhausted",
             Self::NestingOrDepthBudgetExhausted { .. } => "nesting_or_depth_budget_exhausted",
             Self::HeredocBudgetExhausted { .. } => "heredoc_budget_exhausted",
+            Self::CoreBudgetExhausted { .. } => "core_budget_exhausted",
             Self::LexerBudgetExhausted => "lexer_budget_exhausted",
             Self::CatastrophicTermination => "catastrophic_termination",
             Self::FutureTypedTerminal => "future_typed_terminal",
@@ -1337,6 +1626,7 @@ impl ParseError {
             Self::LexerError { .. }
             | Self::RecursionLimit
             | Self::RecursionDepthExhausted { .. }
+            | Self::CoreBudgetExhausted { .. }
             | Self::InvalidNumber { .. }
             | Self::InvalidString
             | Self::UnclosedDelimiter { .. }

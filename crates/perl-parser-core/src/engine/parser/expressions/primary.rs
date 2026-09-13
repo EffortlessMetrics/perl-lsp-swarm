@@ -37,7 +37,7 @@ impl<'a> Parser<'a> {
         }
 
         let end = self.previous_position();
-        Ok(Node::new(NodeKind::Identifier { name }, SourceLocation { start, end }))
+        self.charge_node(NodeKind::Identifier { name }, SourceLocation { start, end })
     }
 
     /// Parse primary expression
@@ -223,48 +223,48 @@ impl<'a> Parser<'a> {
 
         match token_kind {
             TokenKind::Number => {
-                let token = self.tokens.next()?;
-                Ok(Node::new(
+                let token = self.advance_token()?;
+                self.charge_node(
                     NodeKind::Number { value: token.text.to_string() },
                     SourceLocation { start: token.start(), end: token.end() },
-                ))
+                )
             }
 
             TokenKind::VString => {
-                let token = self.tokens.next()?;
-                Ok(Node::new(
+                let token = self.advance_token()?;
+                self.charge_node(
                     NodeKind::VString { value: token.text.to_string() },
                     SourceLocation { start: token.start(), end: token.end() },
-                ))
+                )
             }
 
             TokenKind::String => {
-                let token = self.tokens.next()?;
+                let token = self.advance_token()?;
                 // Check if it's a double-quoted string (interpolated)
                 let interpolated = token.text.starts_with('"');
                 if interpolated {
                     self.record_unclosed_interpolation_delimiter(&token.text, token.start());
                 }
-                Ok(Node::new(
+                self.charge_node(
                     NodeKind::String { value: token.text.to_string(), interpolated },
                     SourceLocation { start: token.start(), end: token.end() },
-                ))
+                )
             }
 
             TokenKind::Regex => {
-                let token = self.tokens.next()?;
+                let token = self.advance_token()?;
                 let (pattern, body, modifiers) = quote_parser::extract_regex_parts(&token.text);
 
                 let has_embedded_code = self.analyze_regex_body_for_ast(&body, token.start())?;
 
-                Ok(Node::new(
+                self.charge_node(
                     NodeKind::Regex { pattern, replacement: None, modifiers, has_embedded_code },
                     SourceLocation { start: token.start(), end: token.end() },
-                ))
+                )
             }
 
             TokenKind::QuoteSingle | TokenKind::QuoteDouble => {
-                let token = self.tokens.next()?;
+                let token = self.advance_token()?;
                 // Quote operators produce strings
                 let interpolated = matches!(token.kind(), TokenKind::QuoteDouble);
                 let text = token.text.as_ref();
@@ -291,14 +291,14 @@ impl<'a> Parser<'a> {
                     }
                 }
 
-                Ok(Node::new(
+                self.charge_node(
                     NodeKind::String { value: text.to_string(), interpolated },
                     SourceLocation { start: token.start(), end: token.end() },
-                ))
+                )
             }
 
             TokenKind::QuoteWords => {
-                let token = self.tokens.next()?;
+                let token = self.advance_token()?;
                 let start = token.start();
                 let text = &token.text;
 
@@ -358,37 +358,37 @@ impl<'a> Parser<'a> {
                                 &mut search_offset,
                                 token.end(),
                             );
-                            Node::new(
+                            self.charge_node(
                                 NodeKind::String { value: word.to_string(), interpolated: false },
                                 location,
                             )
                         })
-                        .collect();
+                        .collect::<ParseResult<Vec<Node>>>()?;
 
-                    Ok(Node::new(
+                    self.charge_node(
                         NodeKind::ArrayLiteral { elements: words },
                         SourceLocation { start, end: token.end() },
-                    ))
+                    )
                 } else {
                     // Fallback - shouldn't happen with proper lexer
-                    Ok(Node::new(
+                    self.charge_node(
                         NodeKind::String { value: token.text.to_string(), interpolated: false },
                         SourceLocation { start, end: token.end() },
-                    ))
+                    )
                 }
             }
 
             TokenKind::QuoteCommand => {
-                let token = self.tokens.next()?;
+                let token = self.advance_token()?;
                 // qx/backticks - for now treat as a string
-                Ok(Node::new(
+                self.charge_node(
                     NodeKind::String { value: token.text.to_string(), interpolated: true },
                     SourceLocation { start: token.start(), end: token.end() },
-                ))
+                )
             }
 
             TokenKind::Substitution => {
-                let token = self.tokens.next()?;
+                let token = self.advance_token()?;
                 // Use strict validation that rejects invalid modifiers
                 let (pattern, replacement, modifiers) =
                     quote_parser::extract_substitution_parts_strict(&token.text).map_err(
@@ -432,12 +432,15 @@ impl<'a> Parser<'a> {
                     || modifiers.contains('e');
 
                 // Substitution as a standalone expression (will be used with =~ later)
-                Ok(Node::new(
+                // Charged before the enclosing node so the charge order matches
+                // the original construction order.
+                let charged_operand = self.charge_node(
+                    NodeKind::Identifier { name: String::from("$_") },
+                    SourceLocation { start: token.start(), end: token.start() },
+                )?;
+                self.charge_node(
                     NodeKind::Substitution {
-                        expr: Box::new(Node::new(
-                            NodeKind::Identifier { name: String::from("$_") },
-                            SourceLocation { start: token.start(), end: token.start() },
-                        )),
+                        expr: Box::new(charged_operand),
                         pattern,
                         replacement,
                         modifiers,
@@ -445,11 +448,11 @@ impl<'a> Parser<'a> {
                         negated: false,
                     },
                     SourceLocation { start: token.start(), end: token.end() },
-                ))
+                )
             }
 
             TokenKind::Transliteration => {
-                let token = self.tokens.next()?;
+                let token = self.advance_token()?;
                 let (search, replace, modifiers) =
                     quote_parser::extract_transliteration_parts_strict(&token.text).map_err(
                         |e| {
@@ -487,23 +490,26 @@ impl<'a> Parser<'a> {
                     )?;
 
                 // Transliteration as a standalone expression (will be used with =~ later)
-                Ok(Node::new(
+                // Charged before the enclosing node so the charge order matches
+                // the original construction order.
+                let charged_operand_2 = self.charge_node(
+                    NodeKind::Identifier { name: String::from("$_") },
+                    SourceLocation { start: token.start(), end: token.start() },
+                )?;
+                self.charge_node(
                     NodeKind::Transliteration {
-                        expr: Box::new(Node::new(
-                            NodeKind::Identifier { name: String::from("$_") },
-                            SourceLocation { start: token.start(), end: token.start() },
-                        )),
+                        expr: Box::new(charged_operand_2),
                         search,
                         replace,
                         modifiers,
                         negated: false,
                     },
                     SourceLocation { start: token.start(), end: token.end() },
-                ))
+                )
             }
 
             TokenKind::HeredocStart => {
-                let start_token = self.tokens.next()?;
+                let start_token = self.advance_token()?;
                 let text = &start_token.text;
                 let start = start_token.start();
                 let end = start_token.end();
@@ -519,7 +525,7 @@ impl<'a> Parser<'a> {
                 self.byte_cursor = end;
 
                 // Return declaration node (content attaches when draining pending heredocs)
-                Ok(Node::new(
+                self.charge_node(
                     NodeKind::Heredoc {
                         delimiter: delimiter.to_string(),
                         content: String::new(), // Placeholder until drain_pending_heredocs
@@ -529,11 +535,11 @@ impl<'a> Parser<'a> {
                         body_span: None, // Populated by drain_pending_heredocs
                     },
                     SourceLocation { start, end },
-                ))
+                )
             }
 
             TokenKind::HeredocDepthLimit => {
-                let token = self.tokens.next()?;
+                let token = self.advance_token()?;
                 Err(ParseError::syntax(
                     format!("Heredoc depth limit exceeded (max {})", MAX_HEREDOC_DEPTH),
                     token.start(),
@@ -543,11 +549,11 @@ impl<'a> Parser<'a> {
             TokenKind::Eval => {
                 // Check for autoquoting: `eval => value`
                 if self.is_keyword_hash_key_boundary() {
-                    let token = self.tokens.next()?;
-                    Ok(Node::new(
+                    let token = self.advance_token()?;
+                    self.charge_node(
                         NodeKind::Identifier { name: token.text.to_string() },
                         SourceLocation { start: token.start(), end: token.end() },
-                    ))
+                    )
                 } else {
                     self.parse_eval()
                 }
@@ -556,11 +562,11 @@ impl<'a> Parser<'a> {
             TokenKind::Do => {
                 // Check for autoquoting: `do => value`
                 if self.is_keyword_hash_key_boundary() {
-                    let token = self.tokens.next()?;
-                    Ok(Node::new(
+                    let token = self.advance_token()?;
+                    self.charge_node(
                         NodeKind::Identifier { name: token.text.to_string() },
                         SourceLocation { start: token.start(), end: token.end() },
-                    ))
+                    )
                 } else {
                     self.parse_do()
                 }
@@ -581,11 +587,11 @@ impl<'a> Parser<'a> {
                     || next_is_arg_boundary
                     || next_is_parenthesized_call
                 {
-                    let token = self.tokens.next()?;
-                    Ok(Node::new(
+                    let token = self.advance_token()?;
+                    self.charge_node(
                         NodeKind::Identifier { name: token.text.to_string() },
                         SourceLocation { start: token.start(), end: token.end() },
-                    ))
+                    )
                 } else {
                     self.parse_try()
                 }
@@ -594,11 +600,11 @@ impl<'a> Parser<'a> {
             TokenKind::Defer => {
                 // Check for autoquoting: `defer => value` (e.g. in feature.pm hash)
                 if self.is_keyword_hash_key_boundary() {
-                    let token = self.tokens.next()?;
-                    Ok(Node::new(
+                    let token = self.advance_token()?;
+                    self.charge_node(
                         NodeKind::Identifier { name: token.text.to_string() },
                         SourceLocation { start: token.start(), end: token.end() },
-                    ))
+                    )
                 } else {
                     self.parse_defer()
                 }
@@ -615,7 +621,7 @@ impl<'a> Parser<'a> {
                 if self.peek_kind() == Some(TokenKind::RightShift) {
                     self.consume_token()?; // consume >>
                     let end = self.previous_position();
-                    Ok(Node::new(NodeKind::Diamond, SourceLocation { start, end }))
+                    self.charge_node(NodeKind::Diamond, SourceLocation { start, end })
                 } else {
                     Err(ParseError::unexpected(
                         "expression",
@@ -633,7 +639,7 @@ impl<'a> Parser<'a> {
                     // Diamond operator <>
                     self.consume_token()?; // consume >
                     let end = self.previous_position();
-                    Ok(Node::new(NodeKind::Diamond, SourceLocation { start, end }))
+                    self.charge_node(NodeKind::Diamond, SourceLocation { start, end })
                 } else {
                     // Try to parse content until >
                     let mut pattern = String::new();
@@ -660,27 +666,27 @@ impl<'a> Parser<'a> {
 
                         if pattern.is_empty() {
                             // Empty <> is diamond operator
-                            Ok(Node::new(NodeKind::Diamond, SourceLocation { start, end }))
+                            self.charge_node(NodeKind::Diamond, SourceLocation { start, end })
                         } else if has_glob_chars || pattern.contains('/') {
                             // Looks like a glob pattern
-                            Ok(Node::new(NodeKind::Glob { pattern }, SourceLocation { start, end }))
+                            self.charge_node(NodeKind::Glob { pattern }, SourceLocation { start, end })
                         } else if pattern.chars().all(|c| c.is_uppercase() || c == '_') {
                             // Bareword filehandle e.g. <STDIN>, <FH>
-                            Ok(Node::new(
+                            self.charge_node(
                                 NodeKind::Readline { filehandle: Some(pattern) },
                                 SourceLocation { start, end },
-                            ))
+                            )
                         } else if is_simple_scalar_variable(&pattern) {
                             // Simple scalar variable e.g. <$fh>, <$FH>, <$Foo::bar>.
                             // Per perlop: the scalar holds the filehandle reference,
                             // so this is an indirect readline, not a glob.
-                            Ok(Node::new(
+                            self.charge_node(
                                 NodeKind::Readline { filehandle: Some(pattern) },
                                 SourceLocation { start, end },
-                            ))
+                            )
                         } else {
                             // Default to glob
-                            Ok(Node::new(NodeKind::Glob { pattern }, SourceLocation { start, end }))
+                            self.charge_node(NodeKind::Glob { pattern }, SourceLocation { start, end })
                         }
                     } else {
                         Err(ParseError::syntax(
@@ -722,28 +728,28 @@ impl<'a> Parser<'a> {
                                 Ok(t) if t.kind() == TokenKind::RightBrace
                             );
                             if next_is_fat_arrow || next_is_right_brace {
-                                let tok = self.tokens.next()?;
-                                Ok(Node::new(
+                                let tok = self.advance_token()?;
+                                self.charge_node(
                                     NodeKind::String {
                                         value: tok.text.to_string(),
                                         interpolated: false,
                                     },
                                     SourceLocation { start: tok.start(), end: tok.end() },
-                                ))
+                                )
                             } else {
                                 self.parse_quote_operator()
                             }
                         }
                         "tie" => {
                             if self.is_keyword_hash_key_boundary() {
-                                let tok = self.tokens.next()?;
-                                return Ok(Node::new(
+                                let tok = self.advance_token()?;
+                                return self.charge_node(
                                     NodeKind::Identifier { name: tok.text.to_string() },
                                     SourceLocation { start: tok.start(), end: tok.end() },
-                                ));
+                                );
                             }
 
-                            let token = self.tokens.next()?;
+                            let token = self.advance_token()?;
                             let start = token.start();
                             let variable = if matches!(
                                 self.peek_kind(),
@@ -784,28 +790,28 @@ impl<'a> Parser<'a> {
                                 args.push(self.parse_assignment()?);
                             }
                             let end = self.previous_position();
-                            Ok(Node::new(
+                            self.charge_node(
                                 NodeKind::Tie { variable, package, args },
                                 SourceLocation { start, end },
-                            ))
+                            )
                         }
                         "untie" => {
                             if self.is_keyword_hash_key_boundary() {
-                                let tok = self.tokens.next()?;
-                                return Ok(Node::new(
+                                let tok = self.advance_token()?;
+                                return self.charge_node(
                                     NodeKind::Identifier { name: tok.text.to_string() },
                                     SourceLocation { start: tok.start(), end: tok.end() },
-                                ));
+                                );
                             }
 
-                            let token = self.tokens.next()?;
+                            let token = self.advance_token()?;
                             let start = token.start();
                             let variable = Box::new(self.parse_assignment()?);
                             let end = self.previous_position();
-                            Ok(Node::new(
+                            self.charge_node(
                                 NodeKind::Untie { variable },
                                 SourceLocation { start, end },
-                            ))
+                            )
                         }
                         "new" => {
                             // When `new` is immediately before `}`, `=>`, or `,`, treat it as a
@@ -830,14 +836,14 @@ impl<'a> Parser<'a> {
                                 Ok(t) if t.kind() == TokenKind::Comma
                             );
                             if next_is_right_brace || next_is_fat_arrow || next_is_comma {
-                                let tok = self.tokens.next()?;
-                                return Ok(Node::new(
+                                let tok = self.advance_token()?;
+                                return self.charge_node(
                                     NodeKind::Identifier { name: tok.text.to_string() },
                                     SourceLocation { start: tok.start(), end: tok.end() },
-                                ));
+                                );
                             }
 
-                            let new_token = self.tokens.next()?;
+                            let new_token = self.advance_token()?;
                             let start = new_token.start();
 
                             // If `new` is followed immediately by `(`, treat it as a
@@ -848,13 +854,13 @@ impl<'a> Parser<'a> {
                             if self.peek_kind() == Some(TokenKind::LeftParen) {
                                 let args = self.parse_args()?;
                                 let end = self.previous_position();
-                                return Ok(Node::new(
+                                return self.charge_node(
                                     NodeKind::FunctionCall {
                                         name: String::from("new"),
                                         args,
                                     },
                                     SourceLocation { start, end },
-                                ));
+                                );
                             }
 
                             // Constructor target can be qualified (e.g. IO::Handle)
@@ -885,14 +891,14 @@ impl<'a> Parser<'a> {
                             }
 
                             let end = self.previous_position();
-                            Ok(Node::new(
+                            self.charge_node(
                                 NodeKind::IndirectCall {
                                     method: String::from("new"),
                                     object,
                                     args,
                                 },
                                 SourceLocation { start, end },
-                            ))
+                            )
                         }
                         _ => {
                             // Regular identifier (possibly qualified with ::)
@@ -911,7 +917,7 @@ impl<'a> Parser<'a> {
             | TokenKind::Percent => self.parse_variable_from_sigil(),
 
             TokenKind::LeftParen => {
-                let start_token = self.tokens.next()?; // consume (
+                let start_token = self.advance_token()?; // consume (
                 let start = start_token.start();
 
                 // Inside parentheses we are no longer at statement start.
@@ -921,11 +927,11 @@ impl<'a> Parser<'a> {
 
                 // Check for empty list
                 if self.peek_kind() == Some(TokenKind::RightParen) {
-                    let end_token = self.tokens.next()?;
-                    return Ok(Node::new(
+                    let end_token = self.advance_token()?;
+                    return self.charge_node(
                         NodeKind::ArrayLiteral { elements: vec![] },
                         SourceLocation { start, end: end_token.end() },
-                    ));
+                    );
                 }
 
                 // Check if we might have a simple parenthesized expression
@@ -970,16 +976,16 @@ impl<'a> Parser<'a> {
                                         .into_iter()
                                         .flat_map(|(k, v)| [k, v])
                                         .collect(),
-                                    (kind, location) => vec![Node::new(kind, location)],
+                                    (kind, location) => vec![self.charge_node(kind, location)?],
                                 };
                                 let call_end = args
                                     .last()
                                     .map(|arg| arg.location.end.max(self.previous_position()))
                                     .unwrap_or_else(|| self.previous_position());
-                                let call = Node::new(
+                                let call = self.charge_node(
                                     NodeKind::FunctionCall { name, args },
                                     SourceLocation { start: call_start, end: call_end },
-                                );
+                                )?;
                                 self.parse_word_or_expr(call)?
                             } else {
                                 self.parse_word_or_expr(expr)?
@@ -1002,14 +1008,14 @@ impl<'a> Parser<'a> {
                         let last_idx = elements.len() - 1;
                         if let NodeKind::Identifier { ref name } = elements[last_idx].kind {
                             let loc = elements[last_idx].location;
-                            elements[last_idx] = Node::new(
+                            elements[last_idx] = self.charge_node(
                                 NodeKind::String { value: name.clone(), interpolated: false },
                                 loc,
-                            );
+                            )?;
                         }
-                        self.tokens.next()?; // consume =>
+                        self.advance_token()?; // consume =>
                         if self.peek_kind() == Some(TokenKind::FatArrow) {
-                            self.tokens.next()?; // consume redundant chained =>
+                            self.advance_token()?; // consume redundant chained =>
                         }
                         if self.peek_kind() != Some(TokenKind::RightParen) {
                             // The value after => may be followed by a word operator inside the list:
@@ -1036,10 +1042,10 @@ impl<'a> Parser<'a> {
                             if !was_comma
                                 && let Some(last) = elements.last_mut()
                                     && let NodeKind::Identifier { ref name } = last.kind {
-                                        *last = Node::new(
+                                        *last = self.charge_node(
                                             NodeKind::String { value: name.clone(), interpolated: false },
                                             last.location,
-                                        );
+                                        )?;
                                     }
                             self.consume_token()?; // consume =>
                             if self.peek_kind() == Some(TokenKind::FatArrow) {
@@ -1060,10 +1066,10 @@ impl<'a> Parser<'a> {
                         if self.peek_kind() == Some(TokenKind::FatArrow) {
                             saw_fat_comma = true;
                             if let NodeKind::Identifier { ref name } = elem.kind {
-                                elem = Node::new(
+                                elem = self.charge_node(
                                     NodeKind::String { value: name.clone(), interpolated: false },
                                     elem.location,
-                                );
+                                )?;
                             }
                             self.consume_token()?; // consume =>
                             if self.peek_kind() == Some(TokenKind::FatArrow) {
@@ -1087,7 +1093,7 @@ impl<'a> Parser<'a> {
                     let end = self.previous_position();
 
                     // Only convert to hash if we saw a fat comma
-                    Ok(Self::build_list_or_hash(elements, saw_fat_comma, start, end))
+                    self.build_list_or_hash(elements, saw_fat_comma, start, end)
                 } else {
                     // It's a parenthesized expression
                     self.expect_closing_delimiter(TokenKind::RightParen)?;
@@ -1117,19 +1123,19 @@ impl<'a> Parser<'a> {
             }
 
             TokenKind::Ellipsis => {
-                let token = self.tokens.next()?;
-                Ok(Node::new(
+                let token = self.advance_token()?;
+                self.charge_node(
                     NodeKind::Ellipsis,
                     SourceLocation { start: token.start(), end: token.end() },
-                ))
+                )
             }
 
             TokenKind::Undef => {
-                let token = self.tokens.next()?;
-                Ok(Node::new(
+                let token = self.advance_token()?;
+                self.charge_node(
                     NodeKind::Undef,
                     SourceLocation { start: token.start(), end: token.end() },
-                ))
+                )
             }
 
             // Handle 'sub' specially - it might be an anonymous subroutine
@@ -1148,11 +1154,11 @@ impl<'a> Parser<'a> {
                     self.parse_subroutine()
                 } else {
                     // It's used as an identifier
-                    let token = self.tokens.next()?;
-                    Ok(Node::new(
+                    let token = self.advance_token()?;
+                    self.charge_node(
                         NodeKind::Identifier { name: token.text.to_string() },
                         SourceLocation { start: token.start(), end: token.end() },
-                    ))
+                    )
                 }
             }
 
@@ -1166,11 +1172,11 @@ impl<'a> Parser<'a> {
                 // Keep fat-arrow autoquoting (`local => 1`) by treating only the
                 // `=>` form as an identifier.
                 if self.is_keyword_before_fat_arrow() {
-                    let token = self.tokens.next()?;
-                    Ok(Node::new(
+                    let token = self.advance_token()?;
+                    self.charge_node(
                         NodeKind::Identifier { name: token.text.to_string() },
                         SourceLocation { start: token.start(), end: token.end() },
-                    ))
+                    )
                 } else {
                     self.parse_local_statement()
                 }
@@ -1180,11 +1186,11 @@ impl<'a> Parser<'a> {
                 let looks_like_declaration = self.next_token_starts_variable_declaration();
 
                 if self.is_keyword_before_fat_arrow() || !looks_like_declaration {
-                    let token = self.tokens.next()?;
-                    Ok(Node::new(
+                    let token = self.advance_token()?;
+                    self.charge_node(
                         NodeKind::Identifier { name: token.text.to_string() },
                         SourceLocation { start: token.start(), end: token.end() },
-                    ))
+                    )
                 } else {
                     self.parse_declaration_expression()
                 }
@@ -1221,11 +1227,11 @@ impl<'a> Parser<'a> {
             | TokenKind::Goto => {
                 // In expression context, keywords are used as barewords/identifiers
                 // This happens in hash keys, method names, etc.
-                let token = self.tokens.next()?;
-                Ok(Node::new(
+                let token = self.advance_token()?;
+                self.charge_node(
                     NodeKind::Identifier { name: token.text.to_string() },
                     SourceLocation { start: token.start(), end: token.end() },
-                ))
+                )
             }
 
             // return / next / last / redo — when followed by `=>` they are
@@ -1234,11 +1240,11 @@ impl<'a> Parser<'a> {
             // branches, short-circuit operators, etc.
             TokenKind::Return => {
                 if self.is_keyword_before_fat_arrow() {
-                    let token = self.tokens.next()?;
-                    Ok(Node::new(
+                    let token = self.advance_token()?;
+                    self.charge_node(
                         NodeKind::Identifier { name: token.text.to_string() },
                         SourceLocation { start: token.start(), end: token.end() },
-                    ))
+                    )
                 } else {
                     self.parse_return_expr()
                 }
@@ -1246,11 +1252,11 @@ impl<'a> Parser<'a> {
 
             TokenKind::Next | TokenKind::Last | TokenKind::Redo => {
                 if self.is_keyword_before_fat_arrow() {
-                    let token = self.tokens.next()?;
-                    Ok(Node::new(
+                    let token = self.advance_token()?;
+                    self.charge_node(
                         NodeKind::Identifier { name: token.text.to_string() },
                         SourceLocation { start: token.start(), end: token.end() },
-                    ))
+                    )
                 } else {
                     self.parse_loop_control()
                 }
@@ -1288,7 +1294,7 @@ impl<'a> Parser<'a> {
         // using parse_assignment so that comma / fat-arrow separators are
         // consumed at this level rather than being swallowed into a single
         // inner expression by parse_expression -> parse_comma.
-        let start_token = self.tokens.next()?; // consume [
+        let start_token = self.advance_token()?; // consume [
         let start = start_token.start();
 
         let mut elements = Vec::new();
@@ -1298,7 +1304,7 @@ impl<'a> Parser<'a> {
 
             // Fat arrow: auto-quote bare identifiers and consume the =>
             if self.peek_kind() == Some(TokenKind::FatArrow) {
-                Self::auto_quote_bareword_before_fat_comma(&mut elem);
+                self.auto_quote_bareword_before_fat_comma(&mut elem)?;
                 self.consume_token()?; // consume =>
                 elements.push(elem);
                 // Parse the value that follows =>
@@ -1326,7 +1332,7 @@ impl<'a> Parser<'a> {
                 // the auto-quoted key for the next pair.  Autoquote the
                 // last element and consume the `=>`.
                 if let Some(last) = elements.last_mut() {
-                    Self::auto_quote_bareword_before_fat_comma(last);
+                    self.auto_quote_bareword_before_fat_comma(last)?;
                 }
                 self.consume_token()?; // consume chained =>
                 // Parse the value that follows the chained =>
@@ -1341,7 +1347,7 @@ impl<'a> Parser<'a> {
 
         self.expect_closing_delimiter(TokenKind::RightBracket)?;
         let end = self.previous_position();
-        Ok(Node::new(NodeKind::ArrayLiteral { elements }, SourceLocation { start, end }))
+        self.charge_node(NodeKind::ArrayLiteral { elements }, SourceLocation { start, end })
     }
 }
 

@@ -40,7 +40,7 @@ impl<'a> Parser<'a> {
             let attributes = Vec::new();
 
             let initializer = if self.peek_kind() == Some(TokenKind::Assign) {
-                self.tokens.next()?; // consume =
+                self.advance_token()?; // consume =
                 Some(Box::new(self.parse_expression()?))
             } else {
                 None
@@ -52,7 +52,7 @@ impl<'a> Parser<'a> {
                 || self.previous_position(),
                 |node| node.location.end.max(self.previous_position()),
             );
-            let node = Node::new(
+            let node = self.charge_node(
                 NodeKind::VariableListDeclaration {
                     declarator,
                     variables,
@@ -60,7 +60,7 @@ impl<'a> Parser<'a> {
                     initializer,
                 },
                 SourceLocation { start, end },
-            );
+            )?;
             Ok(node)
         } else {
             // Single variable declaration
@@ -163,14 +163,17 @@ impl<'a> Parser<'a> {
                 } else {
                     let var_clone = variable.clone();
                     let assign_end = rhs.location.end;
-                    Some(Box::new(Node::new(
+                    // Charged before the enclosing node so the charge order matches
+                    // the original construction order.
+                    let charged_operand = self.charge_node(
                         NodeKind::Assignment {
                             op: op.to_string(),
                             lhs: Box::new(var_clone),
                             rhs: Box::new(rhs),
                         },
                         SourceLocation { start: variable.location.start, end: assign_end },
-                    )))
+                    )?;
+                    Some(Box::new(charged_operand))
                 }
             } else {
                 None
@@ -187,7 +190,7 @@ impl<'a> Parser<'a> {
                 .as_ref()
                 .map_or(variable.location.end, |node| node.location.end)
                 .max(self.previous_position());
-            let node = Node::new(
+            let node = self.charge_node(
                 NodeKind::VariableDeclaration {
                     declarator,
                     variable: Box::new(variable),
@@ -195,7 +198,7 @@ impl<'a> Parser<'a> {
                     initializer,
                 },
                 SourceLocation { start, end },
-            );
+            )?;
             Ok(node)
         }
     }
@@ -205,10 +208,10 @@ impl<'a> Parser<'a> {
         match self.peek_kind() {
             Some(TokenKind::Undef) => {
                 let undef_token = self.consume_token()?;
-                Ok(Node::new(
+                self.charge_node(
                     NodeKind::Undef,
                     SourceLocation { start: undef_token.start(), end: undef_token.end() },
-                ))
+                )
             }
             Some(TokenKind::LeftParen) => {
                 let start = self.current_position();
@@ -230,19 +233,19 @@ impl<'a> Parser<'a> {
                 // Single-item group: return the item directly for backward compatibility.
                 // Multi-item group: wrap in NestedVariableList.
                 match items.len() {
-                    0 => Ok(Node::new(NodeKind::Undef, SourceLocation { start, end })),
+                    0 => self.charge_node(NodeKind::Undef, SourceLocation { start, end }),
                     1 => {
                         // Safe: we just checked len == 1
                         let mut it = items.into_iter();
                         match it.next() {
                             Some(only) => Ok(only),
-                            None => Ok(Node::new(NodeKind::Undef, SourceLocation { start, end })), // LCOV_EXCL_LINE
+                            None => self.charge_node(NodeKind::Undef, SourceLocation { start, end }), // LCOV_EXCL_LINE
                         }
                     }
-                    _ => Ok(Node::new(
+                    _ => self.charge_node(
                         NodeKind::NestedVariableList { items },
                         SourceLocation { start, end },
-                    )),
+                    ),
                 }
             }
             _ => self.parse_ternary(),
@@ -264,13 +267,13 @@ impl<'a> Parser<'a> {
         }
         let start = var.location.start;
         let end = self.previous_position();
-        Ok(Node::new(
+        self.charge_node(
             NodeKind::VariableWithAttributes {
                 variable: Box::new(var),
                 attributes: var_attributes,
             },
             SourceLocation { start, end },
-        ))
+        )
     }
 
     /// Consume an optional legacy type constraint in lexical declarations.
@@ -328,7 +331,7 @@ impl<'a> Parser<'a> {
         let variable = Box::new(self.parse_expression()?);
 
         let initializer = if self.peek_kind() == Some(TokenKind::Assign) {
-            self.tokens.next()?; // consume =
+            self.advance_token()?; // consume =
             Some(Box::new(self.parse_expression()?))
         } else {
             None
@@ -340,7 +343,7 @@ impl<'a> Parser<'a> {
             .as_ref()
             .map_or(variable.location.end, |node| node.location.end)
             .max(self.previous_position());
-        let node = Node::new(
+        let node = self.charge_node(
             NodeKind::VariableDeclaration {
                 declarator,
                 variable,
@@ -348,7 +351,7 @@ impl<'a> Parser<'a> {
                 initializer,
             },
             SourceLocation { start, end },
-        );
+        )?;
         Ok(node)
     }
 
@@ -378,10 +381,10 @@ impl<'a> Parser<'a> {
         let text = &token.text;
 
         if let Some(name) = Self::simple_braced_scalar_token_name(text) {
-            return Ok(Node::new(
+            return self.charge_node(
                 NodeKind::Variable { sigil: String::from("$"), name: name.to_string() },
                 SourceLocation { start: token.start(), end: token.end() },
-            ));
+            );
         }
 
         // `${Foo::bar}` (no internal whitespace): the lexer's braced-variable
@@ -389,10 +392,10 @@ impl<'a> Parser<'a> {
         // token (issue #3593). Fold to the scalar `$Foo::bar`, matching
         // perlref's "Not-so-symbolic references" rule.
         if let Some(name) = Self::qualified_braced_scalar_token_name(text) {
-            return Ok(Node::new(
+            return self.charge_node(
                 NodeKind::Variable { sigil: String::from("$"), name: name.to_string() },
                 SourceLocation { start: token.start(), end: token.end() },
-            ));
+            );
         }
 
         // Special handling for @{, %{, and ${ (array/hash/scalar dereference)
@@ -429,10 +432,10 @@ impl<'a> Parser<'a> {
             }
 
             let op = format!("{}{{}}", sigil);
-            return Ok(Node::new(
+            return self.charge_node(
                 NodeKind::Unary { op, operand: Box::new(expr) },
                 SourceLocation { start, end },
-            ));
+            );
         }
 
         // Special handling for &{ (code dereference)
@@ -469,13 +472,43 @@ impl<'a> Parser<'a> {
             && self.peek_kind() != Some(TokenKind::Assign)
         {
             let inner_text = &name[1..name.len() - 1];
-            let (operand, diagnostics) = parse_inline_expression(inner_text, token.start() + 2)?;
-            self.errors.extend(diagnostics);
+            // The nested parse runs under this operation's *remaining* core
+            // allowance, so recursive fused dereferences cannot each spend a
+            // fresh full budget, and its nodes, tokens and diagnostics are then
+            // adopted into this operation's accounting (#8786).
+            let nested_config =
+                self.config_identity().with_budget(self.operation.remaining_core_budget());
+            let (operand, diagnostics, adopted_nodes, adopted_tokens) =
+                match parse_inline_expression(inner_text, token.start() + 2, nested_config) {
+                    Ok(parts) => parts,
+                    // The nested tracker dies with the failed parse, so its
+                    // charges are adopted here and its refusal is restated
+                    // against this operation's configured limit rather than the
+                    // remainder it was handed (#8786).
+                    Err(failure) => {
+                        // The nested parse retained these before it failed; the
+                        // Ok path forwards its diagnostics through the seam, so
+                        // this path must too. Charging for them without
+                        // retaining them would spend `max_errors` on
+                        // diagnostics no caller receives (#8786).
+                        for diagnostic in failure.diagnostics {
+                            self.record_error(diagnostic);
+                        }
+                        return Err(
+                            self.operation.adopt_nested_failure(failure.error, failure.usage)
+                        );
+                    }
+                };
+            self.operation.authorize_adopted_nodes(adopted_nodes)?;
+            self.operation.authorize_adopted_tokens(adopted_tokens)?;
+            for diagnostic in diagnostics {
+                self.record_error(diagnostic);
+            }
             let end = token.end();
-            let node = Node::new(
+            let node = self.charge_node(
                 NodeKind::Unary { op: "*{}".to_string(), operand: Box::new(operand) },
                 SourceLocation { start: token.start(), end },
-            );
+            )?;
             return self.parse_postfix_chain(node);
         }
 
@@ -483,7 +516,7 @@ impl<'a> Parser<'a> {
             && name.is_empty()
             && self.peek_kind() == Some(TokenKind::LeftBrace)
         {
-            self.tokens.next()?; // consume {
+            self.advance_token()?; // consume {
 
             let (expr, folded) = if sigil == "$" {
                 self.parse_braced_scalar_body()?
@@ -504,10 +537,10 @@ impl<'a> Parser<'a> {
             }
 
             let op = format!("{}{{}}", sigil);
-            return Ok(Node::new(
+            return self.charge_node(
                 NodeKind::Unary { op, operand: Box::new(expr) },
                 SourceLocation { start: token.start(), end },
-            ));
+            );
         }
 
         // Handle sigil + partial deref: when the lexer produces e.g. `%{shift` as one
@@ -533,20 +566,20 @@ impl<'a> Parser<'a> {
             {
                 self.expect(TokenKind::RightBrace)?;
                 let end = self.previous_position();
-                return Ok(Node::new(
+                return self.charge_node(
                     NodeKind::Variable { sigil: "$".to_string(), name: inner_name.to_string() },
                     SourceLocation { start: token.start(), end },
-                ));
+                );
             }
 
             let mut inner = if sigil == "$" && self.peek_kind() == Some(TokenKind::DoubleColon) {
                 self.parse_qualified_scalar_tail(inner_name.to_string(), inner_start, inner_end)?
             } else {
                 // Create an identifier node for the captured name
-                let inner = Node::new(
+                let inner = self.charge_node(
                     NodeKind::Identifier { name: inner_name.to_string() },
                     SourceLocation { start: inner_start, end: inner_end },
-                );
+                )?;
 
                 // Parse postfix chain (handles function call parens, method calls, etc.)
                 self.parse_postfix_chain(inner)?
@@ -562,10 +595,10 @@ impl<'a> Parser<'a> {
             let end = self.previous_position();
 
             let op = format!("{}{{}}", sigil);
-            return Ok(Node::new(
+            return self.charge_node(
                 NodeKind::Unary { op, operand: Box::new(inner) },
                 SourceLocation { start: token.start(), end },
-            ));
+            );
         }
 
         // Check if the variable name is followed by :: for package-qualified variables
@@ -581,21 +614,21 @@ impl<'a> Parser<'a> {
                 // $#$ref — parse the inner variable and wrap
                 let inner = self.parse_variable()?;
                 let inner_end = inner.location.end;
-                return Ok(Node::new(
+                return self.charge_node(
                     NodeKind::Unary { op: "$#".to_string(), operand: Box::new(inner) },
                     SourceLocation { start: token.start(), end: inner_end },
-                ));
+                );
             } else if self.peek_kind() == Some(TokenKind::LeftBrace) {
                 // $#{expr} — last index via block dereference
-                self.tokens.next()?; // consume {
+                self.advance_token()?; // consume {
                 let inner = self.parse_expression()?;
                 self.consume_deref_body_terminators()?;
                 self.expect(TokenKind::RightBrace)?;
                 let brace_end = self.previous_position();
-                return Ok(Node::new(
+                return self.charge_node(
                     NodeKind::Unary { op: "$#".to_string(), operand: Box::new(inner) },
                     SourceLocation { start: token.start(), end: brace_end },
-                ));
+                );
             }
         }
 
@@ -614,19 +647,19 @@ impl<'a> Parser<'a> {
                     .ok()
                     .is_some_and(|name_token| name_token.start() == end))
         {
-            let name_token = self.tokens.next()?;
+            let name_token = self.advance_token()?;
             full_name.push_str(&name_token.text);
             end = name_token.end();
         }
 
         // Handle :: in package-qualified variables
         while self.peek_kind() == Some(TokenKind::DoubleColon) {
-            self.tokens.next()?; // consume ::
+            self.advance_token()?; // consume ::
             full_name.push_str("::");
 
             // The next part might be an identifier or another variable
             if self.peek_kind() == Some(TokenKind::Identifier) {
-                let name_token = self.tokens.next()?;
+                let name_token = self.advance_token()?;
                 full_name.push_str(&name_token.text);
                 end = name_token.end();
             } else {
@@ -640,30 +673,30 @@ impl<'a> Parser<'a> {
 
         if sigil == "*" {
             let name = normalize_dynamic_typeglob_name(&full_name);
-            Ok(Node::new(
+            self.charge_node(
                 NodeKind::Typeglob { name },
                 SourceLocation { start: token.start(), end },
-            ))
+            )
         } else if matches!(sigil.as_str(), "$" | "@" | "%")
             && Self::is_unbraced_scalar_deref_name(&full_name)
         {
             // Unbraced dereference: $$ref, @$ref, %$ref — equivalent to ${$ref}, @{$ref}, %{$ref}.
             // The `full_name` here is e.g. "$ref"; strip the leading `$` to get the inner name.
             let inner_name = full_name[1..].to_string();
-            let inner = Node::new(
+            let inner = self.charge_node(
                 NodeKind::Variable { sigil: "$".to_string(), name: inner_name },
                 SourceLocation { start: token.start() + sigil.len(), end },
-            );
+            )?;
             let op = format!("{}{{}}", sigil);
-            Ok(Node::new(
+            self.charge_node(
                 NodeKind::Unary { op, operand: Box::new(inner) },
                 SourceLocation { start: token.start(), end },
-            ))
+            )
         } else {
-            Ok(Node::new(
+            self.charge_node(
                 NodeKind::Variable { sigil, name: full_name },
                 SourceLocation { start: token.start(), end },
-            ))
+            )
         }
     }
 
@@ -701,7 +734,7 @@ impl<'a> Parser<'a> {
         }
 
         if self.tokens.peek_second()?.kind() == TokenKind::DoubleColon {
-            let first = self.tokens.next()?;
+            let first = self.advance_token()?;
             return self
                 .parse_qualified_scalar_tail(first.text.to_string(), first.start(), first.end())
                 .map(Some);
@@ -710,11 +743,11 @@ impl<'a> Parser<'a> {
         if is_package_qualified_scalar_name(&self.tokens.peek()?.text)
             && self.tokens.peek_second()?.kind() == TokenKind::RightBrace
         {
-            let name_token = self.tokens.next()?;
-            return Ok(Some(Node::new(
+            let name_token = self.advance_token()?;
+            return Ok(Some(self.charge_node(
                 NodeKind::Variable { sigil: "$".to_string(), name: name_token.text.to_string() },
                 SourceLocation { start: name_token.start(), end: name_token.end() },
-            )));
+            )?));
         }
 
         Ok(None)
@@ -763,11 +796,11 @@ impl<'a> Parser<'a> {
             return Ok(None);
         }
 
-        let name_token = self.tokens.next()?;
-        Ok(Some(Node::new(
+        let name_token = self.advance_token()?;
+        Ok(Some(self.charge_node(
             NodeKind::Variable { sigil: String::from("$"), name: name_token.text.to_string() },
             SourceLocation { start: name_token.start(), end: name_token.end() },
-        )))
+        )?))
     }
 
     fn simple_braced_scalar_token_name(text: &str) -> Option<&str> {
@@ -805,20 +838,20 @@ impl<'a> Parser<'a> {
             return Ok(None);
         }
 
-        let caret_token = self.tokens.next()?;
+        let caret_token = self.advance_token()?;
         let mut name = String::from("^");
         let mut end = caret_token.end();
 
         if self.peek_kind() == Some(TokenKind::Identifier) {
-            let ident = self.tokens.next()?;
+            let ident = self.advance_token()?;
             name.push_str(&ident.text);
             end = ident.end();
         }
 
-        Ok(Some(Node::new(
+        Ok(Some(self.charge_node(
             NodeKind::Variable { sigil: String::from("$"), name },
             SourceLocation { start: caret_token.start(), end },
-        )))
+        )?))
     }
 
     fn parse_qualified_scalar_tail(
@@ -828,11 +861,11 @@ impl<'a> Parser<'a> {
         mut end: usize,
     ) -> ParseResult<Node> {
         while self.peek_kind() == Some(TokenKind::DoubleColon) {
-            self.tokens.next()?;
+            self.advance_token()?;
             full_name.push_str("::");
 
             if self.peek_kind() == Some(TokenKind::Identifier) {
-                let name_token = self.tokens.next()?;
+                let name_token = self.advance_token()?;
                 full_name.push_str(&name_token.text);
                 end = name_token.end();
             } else {
@@ -843,10 +876,10 @@ impl<'a> Parser<'a> {
             }
         }
 
-        let variable = Node::new(
+        let variable = self.charge_node(
             NodeKind::Variable { sigil: "$".to_string(), name: full_name },
             SourceLocation { start, end },
-        );
+        )?;
 
         self.parse_postfix_chain(variable)
     }
@@ -875,7 +908,7 @@ impl<'a> Parser<'a> {
                 break;
             }
         }
-        build_deref_body(expressions, body_start)
+        build_deref_body(self, expressions, body_start)
     }
 
     /// Parse a variable when we have a sigil token first
@@ -893,7 +926,7 @@ impl<'a> Parser<'a> {
         // Keywords can be used as variable names with any sigil
         // e.g., %try, $default, @for, &try are all valid Perl.
         let (name, mut end) = if next_kind.is_some_and(Self::is_variable_name_kind) {
-            let name_token = self.tokens.next()?;
+            let name_token = self.advance_token()?;
             let mut name = name_token.text.to_string();
             let mut end = name_token.end();
 
@@ -907,18 +940,18 @@ impl<'a> Parser<'a> {
                     .ok()
                     .is_some_and(|next_token| next_token.start() == end)
             {
-                let next_token = self.tokens.next()?;
+                let next_token = self.advance_token()?;
                 name.push_str(&next_token.text);
                 end = next_token.end();
             }
 
             // Handle :: in package-qualified variables
             while self.peek_kind() == Some(TokenKind::DoubleColon) {
-                self.tokens.next()?; // consume ::
+                self.advance_token()?; // consume ::
                 name.push_str("::");
 
                 if self.peek_kind() == Some(TokenKind::Identifier) {
-                    let next_token = self.tokens.next()?;
+                    let next_token = self.advance_token()?;
                     name.push_str(&next_token.text);
                     end = next_token.end();
                 } else {
@@ -936,20 +969,20 @@ impl<'a> Parser<'a> {
                 Some(TokenKind::ScalarSigil) => {
                     // `$$` is the PID special variable, but `$$ident` is a scalar
                     // dereference target that must preserve the referenced name.
-                    let token = self.tokens.next()?;
+                    let token = self.advance_token()?;
                     if self.tokens.peek().ok().is_some_and(|name_token| {
                         Self::is_variable_name_kind(name_token.kind()) && name_token.start() == token.end()
                     }) {
-                        let name_token = self.tokens.next()?;
+                        let name_token = self.advance_token()?;
                         let mut name = format!("${}", name_token.text);
                         let mut end = name_token.end();
 
                         while self.peek_kind() == Some(TokenKind::DoubleColon) {
-                            self.tokens.next()?; // consume ::
+                            self.advance_token()?; // consume ::
                             name.push_str("::");
 
                             if self.peek_kind() == Some(TokenKind::Identifier) {
-                                let next_token = self.tokens.next()?;
+                                let next_token = self.advance_token()?;
                                 name.push_str(&next_token.text);
                                 end = next_token.end();
                             } else {
@@ -967,12 +1000,12 @@ impl<'a> Parser<'a> {
                 }
                 Some(TokenKind::ArraySigil) => {
                     // $@ - eval error
-                    let token = self.tokens.next()?;
+                    let token = self.advance_token()?;
                     ("@".to_string(), token.end())
                 }
                 Some(TokenKind::Not) => {
                     // $! - system error
-                    let token = self.tokens.next()?;
+                    let token = self.advance_token()?;
                     ("!".to_string(), token.end())
                 }
                 Some(TokenKind::Unknown) => {
@@ -980,14 +1013,14 @@ impl<'a> Parser<'a> {
                     let token = self.tokens.peek()?;
                     match token.text.as_ref() {
                         "?" => {
-                            let token = self.tokens.next()?;
+                            let token = self.advance_token()?;
                             ("?".to_string(), token.end())
                         }
                         "^" => {
                             // Handle $^X variables
-                            let token = self.tokens.next()?;
+                            let token = self.advance_token()?;
                             if self.peek_kind() == Some(TokenKind::Identifier) {
-                                let var_token = self.tokens.next()?;
+                                let var_token = self.advance_token()?;
                                 (format!("^{}", var_token.text), var_token.end())
                             } else {
                                 ("^".to_string(), token.end())
@@ -995,18 +1028,18 @@ impl<'a> Parser<'a> {
                         }
                         "#" => {
                             // Handle $# (array length)
-                            let token = self.tokens.next()?;
+                            let token = self.advance_token()?;
                             if self.peek_kind() == Some(TokenKind::Identifier) {
-                                let var_token = self.tokens.next()?;
+                                let var_token = self.advance_token()?;
                                 let mut var_name = var_token.text.to_string();
                                 let mut var_end = var_token.end();
 
                                 // Handle $#Pkg::Var (package-qualified)
                                 while self.peek_kind() == Some(TokenKind::DoubleColon) {
-                                    self.tokens.next()?;
+                                    self.advance_token()?;
                                     var_name.push_str("::");
                                     if self.peek_kind() == Some(TokenKind::Identifier) {
-                                        let next_token = self.tokens.next()?;
+                                        let next_token = self.advance_token()?;
                                         var_name.push_str(&next_token.text);
                                         var_end = next_token.end();
                                     }
@@ -1021,27 +1054,27 @@ impl<'a> Parser<'a> {
                                 let inner = self.parse_variable()?;
                                 let end = inner.location.end;
                                 // Wrap in a Unary $#() node
-                                let node = Node::new(
+                                let node = self.charge_node(
                                     NodeKind::Unary {
                                         op: "$#".to_string(),
                                         operand: Box::new(inner),
                                     },
                                     SourceLocation { start, end },
-                                );
+                                )?;
                                 return Ok(node);
                             } else if self.peek_kind() == Some(TokenKind::LeftBrace) {
                                 // $#{expr} — last index of dereferenced array via block
-                                self.tokens.next()?; // consume {
+                                self.advance_token()?; // consume {
                                 let inner = self.parse_expression()?;
                                 self.expect(TokenKind::RightBrace)?;
                                 let end = self.previous_position();
-                                let node = Node::new(
+                                let node = self.charge_node(
                                     NodeKind::Unary {
                                         op: "$#".to_string(),
                                         operand: Box::new(inner),
                                     },
                                     SourceLocation { start, end },
-                                );
+                                )?;
                                 return Ok(node);
                             } else {
                                 // Just $# by itself
@@ -1058,14 +1091,14 @@ impl<'a> Parser<'a> {
                 }
                 Some(TokenKind::Number) => {
                     // $0, $1, $2, etc. - numbered capture groups
-                    let num_token = self.tokens.next()?;
+                    let num_token = self.advance_token()?;
                     (num_token.text.to_string(), num_token.end())
                 }
                 Some(TokenKind::DoubleColon) => {
                     // $:: — the main namespace stash
-                    let dc_token = self.tokens.next()?; // consume ::
+                    let dc_token = self.advance_token()?; // consume ::
                     if self.peek_kind() == Some(TokenKind::Identifier) {
-                        let name_token = self.tokens.next()?;
+                        let name_token = self.advance_token()?;
                         (format!("::{}", name_token.text), name_token.end())
                     } else {
                         ("::".to_string(), dc_token.end())
@@ -1073,7 +1106,7 @@ impl<'a> Parser<'a> {
                 }
                 Some(TokenKind::Colon) => {
                     // $: — format line-break character variable
-                    let colon_token = self.tokens.next()?;
+                    let colon_token = self.advance_token()?;
                     (":".to_string(), colon_token.end())
                 }
                 _ => {
@@ -1087,7 +1120,7 @@ impl<'a> Parser<'a> {
         // Keep this distinct from a named typeglob (`*name`), which remains a
         // Typeglob node for aliasing and slot analysis.
         if sigil == "*" && name.is_empty() && self.peek_kind() == Some(TokenKind::LeftBrace) {
-            self.tokens.next()?; // consume {
+            self.advance_token()?; // consume {
             let body_start = self.current_position();
             let expr = self.parse_deref_body_expression(body_start)?;
             self.expect(TokenKind::RightBrace)?;
@@ -1096,12 +1129,12 @@ impl<'a> Parser<'a> {
                 let name = normalize_dynamic_typeglob_name(&String::from_utf8_lossy(
                     &self.src_bytes[body_start..end.saturating_sub(1)],
                 ));
-                return Ok(Node::new(NodeKind::Typeglob { name }, SourceLocation { start, end }));
+                return self.charge_node(NodeKind::Typeglob { name }, SourceLocation { start, end });
             }
-            let node = Node::new(
+            let node = self.charge_node(
                 NodeKind::Unary { op: "*{}".to_string(), operand: Box::new(expr) },
                 SourceLocation { start, end },
-            );
+            )?;
             return self.parse_postfix_chain(node);
         }
 
@@ -1111,7 +1144,7 @@ impl<'a> Parser<'a> {
             && name.is_empty()
             && self.peek_kind() == Some(TokenKind::LeftBrace)
         {
-            self.tokens.next()?; // consume {
+            self.advance_token()?; // consume {
 
             // Parse the expression inside the braces
             let (expr, folded) = if sigil == "$" {
@@ -1133,15 +1166,15 @@ impl<'a> Parser<'a> {
             }
 
             let op = format!("{}{{}}", sigil);
-            return Ok(Node::new(
+            return self.charge_node(
                 NodeKind::Unary { op, operand: Box::new(expr) },
                 SourceLocation { start, end },
-            ));
+            );
         }
 
         // Special handling for & sigil followed by { - code dereference: &{expr}(args)
         if sigil == "&" && name.is_empty() && self.peek_kind() == Some(TokenKind::LeftBrace) {
-            self.tokens.next()?; // consume {
+            self.advance_token()?; // consume {
             return self.parse_code_dereference(start);
         }
 
@@ -1158,10 +1191,10 @@ impl<'a> Parser<'a> {
                 vec![]
             };
 
-            Ok(Node::new(NodeKind::AmperCall { name, args }, SourceLocation { start, end }))
+            self.charge_node(NodeKind::AmperCall { name, args }, SourceLocation { start, end })
         } else if sigil == "*" {
             let name = normalize_dynamic_typeglob_name(&name);
-            Ok(Node::new(NodeKind::Typeglob { name }, SourceLocation { start, end }))
+            self.charge_node(NodeKind::Typeglob { name }, SourceLocation { start, end })
         } else if matches!(sigil.as_str(), "$" | "@" | "%")
             && Self::is_unbraced_scalar_deref_name(&name)
         {
@@ -1169,17 +1202,17 @@ impl<'a> Parser<'a> {
             // `@` + `$ref`, `%` + `$ref`, or `$` (ScalarSigil) + `$ref`.
             // Equivalent to @{$ref}, %{$ref}, ${$ref}.
             let inner_name = name[1..].to_string();
-            let inner = Node::new(
+            let inner = self.charge_node(
                 NodeKind::Variable { sigil: "$".to_string(), name: inner_name },
                 SourceLocation { start: start + sigil.len(), end },
-            );
+            )?;
             let op = format!("{}{{}}", sigil);
-            Ok(Node::new(
+            self.charge_node(
                 NodeKind::Unary { op, operand: Box::new(inner) },
                 SourceLocation { start, end },
-            ))
+            )
         } else {
-            Ok(Node::new(NodeKind::Variable { sigil, name }, SourceLocation { start, end }))
+            self.charge_node(NodeKind::Variable { sigil, name }, SourceLocation { start, end })
         }
     }
 
@@ -1211,10 +1244,10 @@ impl<'a> Parser<'a> {
         self.consume_deref_body_terminators()?;
         self.expect(TokenKind::RightBrace)?;
         let deref_end = self.previous_position();
-        let deref_node = Node::new(
+        let deref_node = self.charge_node(
             NodeKind::Unary { op: "&{}".to_string(), operand: Box::new(inner_expr) },
             SourceLocation { start, end: deref_end },
-        );
+        )?;
 
         if self.peek_kind() == Some(TokenKind::LeftParen) {
             self.consume_token()?;
@@ -1222,10 +1255,10 @@ impl<'a> Parser<'a> {
             let call_end = self.previous_position();
             let mut all = vec![deref_node];
             all.extend(args);
-            return Ok(Node::new(
+            return self.charge_node(
                 NodeKind::FunctionCall { name: "&{}".to_string(), args: all },
                 SourceLocation { start, end: call_end },
-            ));
+            );
         }
 
         Ok(deref_node)
@@ -1247,9 +1280,9 @@ impl<'a> Parser<'a> {
             //   method run ($self: $arg1, $arg2) { ... }
             // Treat the first `:` after a parameter as a valid separator.
             if self.peek_kind() == Some(TokenKind::Comma) {
-                self.tokens.next()?; // consume comma
+                self.advance_token()?; // consume comma
             } else if self.peek_kind() == Some(TokenKind::Colon) && !seen_invocant_separator {
-                self.tokens.next()?; // consume invocant separator
+                self.advance_token()?; // consume invocant separator
                 seen_invocant_separator = true;
             } else if self.peek_kind() == Some(TokenKind::RightParen) {
                 break;
@@ -1289,7 +1322,7 @@ impl<'a> Parser<'a> {
 
                     if sigil == "@" {
                         if seen_slurpy_pct {
-                            self.errors.push(ParseError::syntax(
+                            self.record_error(ParseError::syntax(
                                 "Signature cannot have both @ and % slurpy parameters",
                                 param.location.start,
                             ));
@@ -1297,7 +1330,7 @@ impl<'a> Parser<'a> {
                         seen_slurpy_at = true;
                     } else if sigil == "%" {
                         if seen_slurpy_at {
-                            self.errors.push(ParseError::syntax(
+                            self.record_error(ParseError::syntax(
                                 "Signature cannot have both @ and % slurpy parameters",
                                 param.location.start,
                             ));
@@ -1306,7 +1339,7 @@ impl<'a> Parser<'a> {
                     }
 
                     if !is_last {
-                        self.errors.push(ParseError::syntax(
+                        self.record_error(ParseError::syntax(
                             "Slurpy parameter must be the last parameter in the signature",
                             param.location.start,
                         ));
@@ -1316,7 +1349,7 @@ impl<'a> Parser<'a> {
                     seen_optional = true;
                 }
                 NodeKind::MandatoryParameter { .. } if seen_optional => {
-                    self.errors.push(ParseError::syntax(
+                    self.record_error(ParseError::syntax(
                         "Mandatory parameter cannot follow an optional parameter in signature",
                         param.location.start,
                     ));
@@ -1332,7 +1365,7 @@ impl<'a> Parser<'a> {
 
         // Check for named parameter (:$name)
         let named = if self.peek_kind() == Some(TokenKind::Colon) {
-            self.tokens.next()?; // consume :
+            self.advance_token()?; // consume :
             true
         } else {
             false
@@ -1348,7 +1381,7 @@ impl<'a> Parser<'a> {
                 && !token.text.starts_with('&')
             {
                 // It's likely a type constraint
-                Some(self.tokens.next()?.text.to_string())
+                Some(self.advance_token()?.text.to_string())
             } else {
                 None
             }
@@ -1378,7 +1411,7 @@ impl<'a> Parser<'a> {
             _ => None,
         };
         let default_value = if default_op.is_some() {
-            self.tokens.next()?; // consume the default operator
+            self.advance_token()?; // consume the default operator
             // Parse a full scalar expression for the default value (perlsub: "any scalar
             // expression").  parse_ternary covers calls, binops, and ternary expressions
             // while stopping at the `,` or `)` that delimits signature parameters, since
@@ -1428,7 +1461,7 @@ impl<'a> Parser<'a> {
             NodeKind::MandatoryParameter { variable: Box::new(variable) }
         };
 
-        Ok(Node::new(param_kind, SourceLocation { start, end }))
+        self.charge_node(param_kind, SourceLocation { start, end })
     }
 
     fn consume_signature_param_attributes(&mut self, mut end: usize) -> ParseResult<usize> {
@@ -1650,7 +1683,7 @@ impl<'a> Parser<'a> {
             .collect();
 
         if !invalid_chars.is_empty() {
-            self.errors.push(ParseError::SyntaxError {
+            self.record_error(ParseError::SyntaxError {
                 message: format!(
                     "Invalid prototype character(s) '{}' — valid characters are: \
                     $, @, %, &, *, \\, ;, +, _ (see perlsub)",
@@ -1668,11 +1701,76 @@ impl<'a> Parser<'a> {
     }
 }
 
+/// A failed nested sub-parse, paired with the core work it had already charged
+/// when it failed (#8786).
+///
+/// Without this pairing a nested failure is unaccountable in two ways at once:
+/// the adopting operation's receipt omits work that genuinely happened, and a
+/// propagated `CoreBudgetExhausted` names the remainder the nested parse was
+/// handed instead of the parent's configured limit. Carrying the usage out with
+/// the error lets [`ParserOperationContext::adopt_nested_failure`] repair both.
+struct NestedParseFailure {
+    error: ParseError,
+    /// Diagnostics the nested parse had already retained when it failed.
+    ///
+    /// Carried out with the error so the adopting operation can put them
+    /// through its own retention seam. Charging for them while discarding them
+    /// — which is what dropping this vector amounts to — spends the parent's
+    /// `max_errors` on diagnostics no caller ever receives (#8786).
+    diagnostics: Vec<ParseError>,
+    usage: NestedCoreUsage,
+}
+
+impl NestedParseFailure {
+    /// Capture a nested parser's charged core work and retained diagnostics
+    /// alongside its error, with diagnostics shifted to outer coordinates.
+    fn capture(error: ParseError, parser: &Parser<'_>, offset: usize) -> Self {
+        let diagnostics = parser
+            .errors()
+            .iter()
+            .cloned()
+            .map(|diagnostic| offset_parse_error(diagnostic, offset))
+            .collect();
+        Self { error, diagnostics, usage: parser.operation.core_usage_snapshot() }
+    }
+}
+
 /// Parse an expression captured inside the lexer's single `*{...}` token and
 /// restore its source offsets relative to the containing source file.
-fn parse_inline_expression(source: &str, offset: usize) -> ParseResult<(Node, Vec<ParseError>)> {
-    let mut parser = Parser::new(source);
-    let ast = parser.parse().map_err(|error| offset_parse_error(error, offset))?;
+/// Parse an expression captured inside a single `*{...}` token.
+///
+/// Returns the node, the offset-adjusted diagnostics, and the number of AST
+/// nodes and tokens the nested operation charged, so the adopting parser can
+/// charge them against its own budget (#8786).
+///
+/// `config` is expected to carry the adopting operation's *remaining* core
+/// allowance, not its full configuration, so recursion cannot multiply the
+/// budget.
+///
+/// On failure the charged work is reported alongside the error, because the
+/// nested tracker is discarded and the adopting operation is the only place
+/// that can still account for it (#8786).
+fn parse_inline_expression(
+    source: &str,
+    offset: usize,
+    config: ParserConfigIdentity,
+) -> Result<(Node, Vec<ParseError>, usize, usize), NestedParseFailure> {
+    // The nested parse runs under the *adopting* operation's configuration, not
+    // the default. Adoption can only charge after the nested parse finishes, so
+    // this is what bounds the overshoot: without it a small outer
+    // `max_nodes_constructed` would still permit a nested parse to build up to
+    // the default limit before the outer parse could refuse it (#8786).
+    let mut parser = Parser::with_production_config(source, config);
+    let ast = match parser.parse() {
+        Ok(ast) => ast,
+        Err(error) => {
+            return Err(NestedParseFailure::capture(
+                offset_parse_error(error, offset),
+                &parser,
+                offset,
+            ));
+        }
+    };
     let diagnostics = parser
         .errors()
         .iter()
@@ -1680,7 +1778,11 @@ fn parse_inline_expression(source: &str, offset: usize) -> ParseResult<(Node, Ve
         .map(|error| offset_parse_error(error, offset))
         .collect();
     let NodeKind::Program { mut statements } = ast.into_parts().0 else {
-        return Err(ParseError::syntax("Expected an expression program", offset));
+        return Err(NestedParseFailure::capture(
+            ParseError::syntax("Expected an expression program", offset),
+            &parser,
+            offset,
+        ));
     };
     let mut expressions = Vec::new();
     for statement in statements.drain(..) {
@@ -1688,9 +1790,13 @@ fn parse_inline_expression(source: &str, offset: usize) -> ParseResult<(Node, Ve
         let NodeKind::ExpressionStatement { expression: statement_expression } =
             statement.into_parts().0
         else {
-            return Err(ParseError::syntax(
-                "Expected an expression statement",
-                offset.saturating_add(statement_start),
+            return Err(NestedParseFailure::capture(
+                ParseError::syntax(
+                    "Expected an expression statement",
+                    offset.saturating_add(statement_start),
+                ),
+                &parser,
+                offset,
             ));
         };
         // A braced dereference follows Perl block-expression semantics: when
@@ -1701,10 +1807,27 @@ fn parse_inline_expression(source: &str, offset: usize) -> ParseResult<(Node, Ve
         shift_node_locations(&mut expression, offset);
         expressions.push(expression);
     }
-    Ok((build_deref_body(expressions, offset)?, diagnostics))
+    // Assembly nodes are charged to the nested operation, then reported so the
+    // adopting parser charges the whole nested total against its own budget.
+    let body = match build_deref_body(&mut parser, expressions, offset) {
+        Ok(body) => body,
+        Err(error) => return Err(NestedParseFailure::capture(error, &parser, offset)),
+    };
+    let adopted_nodes = parser.operation.charged_nodes();
+    let adopted_tokens = parser.operation.charged_tokens();
+    Ok((body, diagnostics, adopted_nodes, adopted_tokens))
 }
 
-fn build_deref_body(mut expressions: Vec<Node>, body_start: usize) -> ParseResult<Node> {
+/// Assemble a `*{...}` dereference body from its already-parsed expressions.
+///
+/// Takes the parser explicitly because it is a free function shared by the
+/// ordinary parse path and by [`parse_inline_expression`]: the nodes it builds
+/// are charged to whichever operation is assembling them (#8786).
+fn build_deref_body(
+    parser: &mut Parser<'_>,
+    mut expressions: Vec<Node>,
+    body_start: usize,
+) -> ParseResult<Node> {
     if expressions.is_empty() {
         return Err(ParseError::syntax("Expected an expression", body_start));
     }
@@ -1720,13 +1843,13 @@ fn build_deref_body(mut expressions: Vec<Node>, body_start: usize) -> ParseResul
         .into_iter()
         .map(|expression| {
             let location = expression.location;
-            Node::new(
+            parser.charge_node(
                 NodeKind::ExpressionStatement { expression: Box::new(expression) },
                 location,
             )
         })
-        .collect();
-    Ok(Node::new(NodeKind::Block { statements }, SourceLocation { start, end }))
+        .collect::<ParseResult<Vec<Node>>>()?;
+    parser.charge_node(NodeKind::Block { statements }, SourceLocation { start, end })
 }
 
 fn offset_parse_error(error: ParseError, offset: usize) -> ParseError {
@@ -1792,14 +1915,14 @@ mod inline_expression_tests {
 
     #[test]
     fn non_expression_inline_statement_reports_offset_location() -> ParseResult<()> {
-        let error = match parse_inline_expression("my $name;", 17) {
+        let error = match parse_inline_expression("my $name;", 17, ParserConfigIdentity::production_default()) {
             Ok(_) => {
                 return Err(ParseError::syntax(
                     "expected a non-expression statement to be rejected",
                     17,
                 ));
             }
-            Err(error) => error,
+            Err(failure) => failure.error,
         };
         if error.location() != Some(17) {
             let location = error.location().unwrap_or(17);
@@ -1813,9 +1936,9 @@ mod inline_expression_tests {
 
     #[test]
     fn non_expression_after_expression_is_not_discarded() -> Result<(), Box<dyn std::error::Error>> {
-        let error = match parse_inline_expression("$tmp; my $name;", 17) {
+        let error = match parse_inline_expression("$tmp; my $name;", 17, ParserConfigIdentity::production_default()) {
             Ok(_) => return Err("expected a non-expression statement to be rejected".into()),
-            Err(error) => error,
+            Err(failure) => failure.error,
         };
         assert_eq!(error.location(), Some(23));
         Ok(())
@@ -1829,14 +1952,14 @@ mod inline_expression_tests {
 
     #[test]
     fn malformed_inline_expression_reports_outer_offset() -> ParseResult<()> {
-        let error = match parse_inline_expression("(", 17) {
+        let error = match parse_inline_expression("(", 17, ParserConfigIdentity::production_default()) {
             Ok(_) => {
                 return Err(ParseError::syntax(
                     "expected malformed inline expression to be rejected",
                     17,
                 ));
             }
-            Err(error) => error,
+            Err(failure) => failure.error,
         };
         let Some(location) = error.location() else {
             return Err(ParseError::syntax("expected a located parse error", 17));
@@ -1852,7 +1975,8 @@ mod inline_expression_tests {
 
     #[test]
     fn multi_statement_inline_expression_preserves_every_expression() -> ParseResult<()> {
-        let (node, _) = parse_inline_expression("$tmp; 'STDOUT'", 17)?;
+        let (node, _, _, _) = parse_inline_expression("$tmp; 'STDOUT'", 17, ParserConfigIdentity::production_default())
+            .map_err(|failure| failure.error)?;
 
         let NodeKind::Block { statements } = node.into_parts().0 else {
             return Err(ParseError::syntax(
@@ -1867,7 +1991,8 @@ mod inline_expression_tests {
     #[test]
     fn inline_expression_forwards_recoverable_diagnostics() -> ParseResult<()> {
         let source = r#""abab" =~ /(?:[^b]*(?=(b)|(a))ab)*/"#;
-        let (_, diagnostics) = parse_inline_expression(source, 17)?;
+        let (_, diagnostics, _, _) = parse_inline_expression(source, 17, ParserConfigIdentity::production_default())
+            .map_err(|failure| failure.error)?;
         if !diagnostics.iter().any(|diagnostic| {
             matches!(diagnostic, ParseError::Advisory { message, .. }
                 if message.contains("Nested quantifiers detected"))

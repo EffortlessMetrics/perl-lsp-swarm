@@ -195,6 +195,15 @@ pub fn perl_parser_core::syntax::error::ErrorCategory::clone(&self) -> perl_pars
 pub fn perl_parser_core::syntax::error::ErrorCategory::eq(&self, other: &perl_parser_core::syntax::error::ErrorCategory) -> bool
 pub fn perl_parser_core::syntax::error::ErrorCategory::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_parser_core::syntax::error::ErrorCategory::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub perl_parser_core::engine::error::ParseCoreDimension::DiagnosticsEmitted
+pub perl_parser_core::engine::error::ParseCoreDimension::NodesConstructed
+pub perl_parser_core::engine::error::ParseCoreDimension::TokensConsumed
+pub fn perl_parser_core::syntax::error::ParseCoreDimension::as_str(self) -> &'static str
+pub fn perl_parser_core::syntax::error::ParseCoreDimension::clone(&self) -> perl_parser_core::syntax::error::ParseCoreDimension
+pub fn perl_parser_core::syntax::error::ParseCoreDimension::eq(&self, other: &perl_parser_core::syntax::error::ParseCoreDimension) -> bool
+pub fn perl_parser_core::syntax::error::ParseCoreDimension::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_parser_core::syntax::error::ParseCoreDimension::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_parser_core::syntax::error::ParseCoreDimension::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
 pub enum perl_parser_core::engine::error::ParseDiagnosticAnchor
 pub perl_parser_core::engine::error::ParseDiagnosticAnchor::EndOfInput
 pub perl_parser_core::engine::error::ParseDiagnosticAnchor::Exact(usize)
@@ -214,6 +223,10 @@ pub perl_parser_core::engine::error::ParseError::Advisory
 pub perl_parser_core::engine::error::ParseError::Advisory::location: usize
 pub perl_parser_core::engine::error::ParseError::Advisory::message: alloc::string::String
 pub perl_parser_core::engine::error::ParseError::Cancelled
+pub perl_parser_core::engine::error::ParseError::CoreBudgetExhausted
+pub perl_parser_core::engine::error::ParseError::CoreBudgetExhausted::dimension: perl_parser_core::syntax::error::ParseCoreDimension
+pub perl_parser_core::engine::error::ParseError::CoreBudgetExhausted::limit: usize
+pub perl_parser_core::engine::error::ParseError::CoreBudgetExhausted::usage: usize
 pub perl_parser_core::engine::error::ParseError::HeredocBudgetExhausted
 pub perl_parser_core::engine::error::ParseError::HeredocBudgetExhausted::limit: usize
 pub perl_parser_core::engine::error::ParseError::HeredocBudgetExhausted::location: usize
@@ -263,6 +276,10 @@ pub fn perl_parser_core::syntax::error::ParseError::fmt(&self, __formatter: &mut
 pub fn perl_parser_core::syntax::error::ParseError::error_class(&self) -> perl_parser_core::syntax::error::ErrorCategory
 pub perl_parser_core::engine::error::ParseStopCause::Cancelled
 pub perl_parser_core::engine::error::ParseStopCause::CatastrophicTermination
+pub perl_parser_core::engine::error::ParseStopCause::CoreBudgetExhausted
+pub perl_parser_core::engine::error::ParseStopCause::CoreBudgetExhausted::dimension: perl_parser_core::syntax::error::ParseCoreDimension
+pub perl_parser_core::engine::error::ParseStopCause::CoreBudgetExhausted::limit: usize
+pub perl_parser_core::engine::error::ParseStopCause::CoreBudgetExhausted::usage: usize
 pub perl_parser_core::engine::error::ParseStopCause::FutureTypedTerminal
 pub perl_parser_core::engine::error::ParseStopCause::HeredocBudgetExhausted
 pub perl_parser_core::engine::error::ParseStopCause::HeredocBudgetExhausted::limit: usize
@@ -321,10 +338,15 @@ pub perl_parser_core::engine::error::BudgetTracker::current_depth: usize
 pub perl_parser_core::engine::error::BudgetTracker::errors_emitted: usize
 pub perl_parser_core::engine::error::BudgetTracker::heredoc_scan_bytes: usize
 pub perl_parser_core::engine::error::BudgetTracker::max_depth_reached: usize
+pub perl_parser_core::engine::error::BudgetTracker::nodes_constructed: usize
 pub perl_parser_core::engine::error::BudgetTracker::recoveries_attempted: usize
+pub perl_parser_core::engine::error::BudgetTracker::tokens_consumed: usize
 pub perl_parser_core::engine::error::BudgetTracker::tokens_skipped: usize
+pub fn perl_parser_core::syntax::error::BudgetTracker::authorize_core(&mut self, budget: &perl_parser_core::syntax::error::ParseBudget, dimension: perl_parser_core::syntax::error::ParseCoreDimension) -> perl_parser_core::syntax::error::ParseResult<()>
+pub fn perl_parser_core::syntax::error::BudgetTracker::authorize_core_batch(&mut self, budget: &perl_parser_core::syntax::error::ParseBudget, dimension: perl_parser_core::syntax::error::ParseCoreDimension, count: usize) -> perl_parser_core::syntax::error::ParseResult<()>
 pub fn perl_parser_core::syntax::error::BudgetTracker::begin_recovery(&mut self, budget: &perl_parser_core::syntax::error::ParseBudget) -> bool
 pub fn perl_parser_core::syntax::error::BudgetTracker::can_skip_more(&self, budget: &perl_parser_core::syntax::error::ParseBudget, additional: usize) -> bool
+pub fn perl_parser_core::syntax::error::BudgetTracker::core_usage(&self, dimension: perl_parser_core::syntax::error::ParseCoreDimension) -> usize
 pub fn perl_parser_core::syntax::error::BudgetTracker::depth_would_exceed(&self, budget: &perl_parser_core::syntax::error::ParseBudget) -> bool
 pub fn perl_parser_core::syntax::error::BudgetTracker::enter_depth(&mut self)
 pub fn perl_parser_core::syntax::error::BudgetTracker::errors_exhausted(&self, budget: &perl_parser_core::syntax::error::ParseBudget) -> bool
@@ -350,8 +372,11 @@ pub fn perl_parser_core::syntax::error::ErrorContext::fmt(&self, f: &mut core::f
 pub perl_parser_core::engine::error::ParseBudget::max_depth: usize
 pub perl_parser_core::engine::error::ParseBudget::max_errors: usize
 pub perl_parser_core::engine::error::ParseBudget::max_heredoc_scan_bytes: usize
+pub perl_parser_core::engine::error::ParseBudget::max_nodes_constructed: usize
 pub perl_parser_core::engine::error::ParseBudget::max_recoveries: usize
+pub perl_parser_core::engine::error::ParseBudget::max_tokens_consumed: usize
 pub perl_parser_core::engine::error::ParseBudget::max_tokens_skipped: usize
+pub fn perl_parser_core::syntax::error::ParseBudget::core_limit(&self, dimension: perl_parser_core::syntax::error::ParseCoreDimension) -> usize
 pub fn perl_parser_core::syntax::error::ParseBudget::for_ide() -> Self
 pub fn perl_parser_core::syntax::error::ParseBudget::strict() -> Self
 pub fn perl_parser_core::syntax::error::ParseBudget::unlimited() -> Self
@@ -669,6 +694,15 @@ pub fn perl_parser_core::syntax::error::ErrorCategory::clone(&self) -> perl_pars
 pub fn perl_parser_core::syntax::error::ErrorCategory::eq(&self, other: &perl_parser_core::syntax::error::ErrorCategory) -> bool
 pub fn perl_parser_core::syntax::error::ErrorCategory::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_parser_core::syntax::error::ErrorCategory::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub perl_parser_core::error::ParseCoreDimension::DiagnosticsEmitted
+pub perl_parser_core::error::ParseCoreDimension::NodesConstructed
+pub perl_parser_core::error::ParseCoreDimension::TokensConsumed
+pub fn perl_parser_core::syntax::error::ParseCoreDimension::as_str(self) -> &'static str
+pub fn perl_parser_core::syntax::error::ParseCoreDimension::clone(&self) -> perl_parser_core::syntax::error::ParseCoreDimension
+pub fn perl_parser_core::syntax::error::ParseCoreDimension::eq(&self, other: &perl_parser_core::syntax::error::ParseCoreDimension) -> bool
+pub fn perl_parser_core::syntax::error::ParseCoreDimension::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_parser_core::syntax::error::ParseCoreDimension::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_parser_core::syntax::error::ParseCoreDimension::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
 pub enum perl_parser_core::error::ParseDiagnosticAnchor
 pub perl_parser_core::error::ParseDiagnosticAnchor::EndOfInput
 pub perl_parser_core::error::ParseDiagnosticAnchor::Exact(usize)
@@ -688,6 +722,10 @@ pub perl_parser_core::error::ParseError::Advisory
 pub perl_parser_core::error::ParseError::Advisory::location: usize
 pub perl_parser_core::error::ParseError::Advisory::message: alloc::string::String
 pub perl_parser_core::error::ParseError::Cancelled
+pub perl_parser_core::error::ParseError::CoreBudgetExhausted
+pub perl_parser_core::error::ParseError::CoreBudgetExhausted::dimension: perl_parser_core::syntax::error::ParseCoreDimension
+pub perl_parser_core::error::ParseError::CoreBudgetExhausted::limit: usize
+pub perl_parser_core::error::ParseError::CoreBudgetExhausted::usage: usize
 pub perl_parser_core::error::ParseError::HeredocBudgetExhausted
 pub perl_parser_core::error::ParseError::HeredocBudgetExhausted::limit: usize
 pub perl_parser_core::error::ParseError::HeredocBudgetExhausted::location: usize
@@ -737,6 +775,10 @@ pub fn perl_parser_core::syntax::error::ParseError::fmt(&self, __formatter: &mut
 pub fn perl_parser_core::syntax::error::ParseError::error_class(&self) -> perl_parser_core::syntax::error::ErrorCategory
 pub perl_parser_core::error::ParseStopCause::Cancelled
 pub perl_parser_core::error::ParseStopCause::CatastrophicTermination
+pub perl_parser_core::error::ParseStopCause::CoreBudgetExhausted
+pub perl_parser_core::error::ParseStopCause::CoreBudgetExhausted::dimension: perl_parser_core::syntax::error::ParseCoreDimension
+pub perl_parser_core::error::ParseStopCause::CoreBudgetExhausted::limit: usize
+pub perl_parser_core::error::ParseStopCause::CoreBudgetExhausted::usage: usize
 pub perl_parser_core::error::ParseStopCause::FutureTypedTerminal
 pub perl_parser_core::error::ParseStopCause::HeredocBudgetExhausted
 pub perl_parser_core::error::ParseStopCause::HeredocBudgetExhausted::limit: usize
@@ -795,10 +837,15 @@ pub perl_parser_core::error::BudgetTracker::current_depth: usize
 pub perl_parser_core::error::BudgetTracker::errors_emitted: usize
 pub perl_parser_core::error::BudgetTracker::heredoc_scan_bytes: usize
 pub perl_parser_core::error::BudgetTracker::max_depth_reached: usize
+pub perl_parser_core::error::BudgetTracker::nodes_constructed: usize
 pub perl_parser_core::error::BudgetTracker::recoveries_attempted: usize
+pub perl_parser_core::error::BudgetTracker::tokens_consumed: usize
 pub perl_parser_core::error::BudgetTracker::tokens_skipped: usize
+pub fn perl_parser_core::syntax::error::BudgetTracker::authorize_core(&mut self, budget: &perl_parser_core::syntax::error::ParseBudget, dimension: perl_parser_core::syntax::error::ParseCoreDimension) -> perl_parser_core::syntax::error::ParseResult<()>
+pub fn perl_parser_core::syntax::error::BudgetTracker::authorize_core_batch(&mut self, budget: &perl_parser_core::syntax::error::ParseBudget, dimension: perl_parser_core::syntax::error::ParseCoreDimension, count: usize) -> perl_parser_core::syntax::error::ParseResult<()>
 pub fn perl_parser_core::syntax::error::BudgetTracker::begin_recovery(&mut self, budget: &perl_parser_core::syntax::error::ParseBudget) -> bool
 pub fn perl_parser_core::syntax::error::BudgetTracker::can_skip_more(&self, budget: &perl_parser_core::syntax::error::ParseBudget, additional: usize) -> bool
+pub fn perl_parser_core::syntax::error::BudgetTracker::core_usage(&self, dimension: perl_parser_core::syntax::error::ParseCoreDimension) -> usize
 pub fn perl_parser_core::syntax::error::BudgetTracker::depth_would_exceed(&self, budget: &perl_parser_core::syntax::error::ParseBudget) -> bool
 pub fn perl_parser_core::syntax::error::BudgetTracker::enter_depth(&mut self)
 pub fn perl_parser_core::syntax::error::BudgetTracker::errors_exhausted(&self, budget: &perl_parser_core::syntax::error::ParseBudget) -> bool
@@ -824,8 +871,11 @@ pub fn perl_parser_core::syntax::error::ErrorContext::fmt(&self, f: &mut core::f
 pub perl_parser_core::error::ParseBudget::max_depth: usize
 pub perl_parser_core::error::ParseBudget::max_errors: usize
 pub perl_parser_core::error::ParseBudget::max_heredoc_scan_bytes: usize
+pub perl_parser_core::error::ParseBudget::max_nodes_constructed: usize
 pub perl_parser_core::error::ParseBudget::max_recoveries: usize
+pub perl_parser_core::error::ParseBudget::max_tokens_consumed: usize
 pub perl_parser_core::error::ParseBudget::max_tokens_skipped: usize
+pub fn perl_parser_core::syntax::error::ParseBudget::core_limit(&self, dimension: perl_parser_core::syntax::error::ParseCoreDimension) -> usize
 pub fn perl_parser_core::syntax::error::ParseBudget::for_ide() -> Self
 pub fn perl_parser_core::syntax::error::ParseBudget::strict() -> Self
 pub fn perl_parser_core::syntax::error::ParseBudget::unlimited() -> Self
@@ -3274,6 +3324,15 @@ pub fn perl_parser_core::syntax::error::ErrorCategory::clone(&self) -> perl_pars
 pub fn perl_parser_core::syntax::error::ErrorCategory::eq(&self, other: &perl_parser_core::syntax::error::ErrorCategory) -> bool
 pub fn perl_parser_core::syntax::error::ErrorCategory::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_parser_core::syntax::error::ErrorCategory::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub perl_parser_core::syntax::error::ParseCoreDimension::DiagnosticsEmitted
+pub perl_parser_core::syntax::error::ParseCoreDimension::NodesConstructed
+pub perl_parser_core::syntax::error::ParseCoreDimension::TokensConsumed
+pub fn perl_parser_core::syntax::error::ParseCoreDimension::as_str(self) -> &'static str
+pub fn perl_parser_core::syntax::error::ParseCoreDimension::clone(&self) -> perl_parser_core::syntax::error::ParseCoreDimension
+pub fn perl_parser_core::syntax::error::ParseCoreDimension::eq(&self, other: &perl_parser_core::syntax::error::ParseCoreDimension) -> bool
+pub fn perl_parser_core::syntax::error::ParseCoreDimension::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_parser_core::syntax::error::ParseCoreDimension::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_parser_core::syntax::error::ParseCoreDimension::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
 pub enum perl_parser_core::syntax::error::ParseDiagnosticAnchor
 pub perl_parser_core::syntax::error::ParseDiagnosticAnchor::EndOfInput
 pub perl_parser_core::syntax::error::ParseDiagnosticAnchor::Exact(usize)
@@ -3293,6 +3352,10 @@ pub perl_parser_core::syntax::error::ParseError::Advisory
 pub perl_parser_core::syntax::error::ParseError::Advisory::location: usize
 pub perl_parser_core::syntax::error::ParseError::Advisory::message: alloc::string::String
 pub perl_parser_core::syntax::error::ParseError::Cancelled
+pub perl_parser_core::syntax::error::ParseError::CoreBudgetExhausted
+pub perl_parser_core::syntax::error::ParseError::CoreBudgetExhausted::dimension: perl_parser_core::syntax::error::ParseCoreDimension
+pub perl_parser_core::syntax::error::ParseError::CoreBudgetExhausted::limit: usize
+pub perl_parser_core::syntax::error::ParseError::CoreBudgetExhausted::usage: usize
 pub perl_parser_core::syntax::error::ParseError::HeredocBudgetExhausted
 pub perl_parser_core::syntax::error::ParseError::HeredocBudgetExhausted::limit: usize
 pub perl_parser_core::syntax::error::ParseError::HeredocBudgetExhausted::location: usize
@@ -3342,6 +3405,10 @@ pub fn perl_parser_core::syntax::error::ParseError::fmt(&self, __formatter: &mut
 pub fn perl_parser_core::syntax::error::ParseError::error_class(&self) -> perl_parser_core::syntax::error::ErrorCategory
 pub perl_parser_core::syntax::error::ParseStopCause::Cancelled
 pub perl_parser_core::syntax::error::ParseStopCause::CatastrophicTermination
+pub perl_parser_core::syntax::error::ParseStopCause::CoreBudgetExhausted
+pub perl_parser_core::syntax::error::ParseStopCause::CoreBudgetExhausted::dimension: perl_parser_core::syntax::error::ParseCoreDimension
+pub perl_parser_core::syntax::error::ParseStopCause::CoreBudgetExhausted::limit: usize
+pub perl_parser_core::syntax::error::ParseStopCause::CoreBudgetExhausted::usage: usize
 pub perl_parser_core::syntax::error::ParseStopCause::FutureTypedTerminal
 pub perl_parser_core::syntax::error::ParseStopCause::HeredocBudgetExhausted
 pub perl_parser_core::syntax::error::ParseStopCause::HeredocBudgetExhausted::limit: usize
@@ -3400,10 +3467,15 @@ pub perl_parser_core::syntax::error::BudgetTracker::current_depth: usize
 pub perl_parser_core::syntax::error::BudgetTracker::errors_emitted: usize
 pub perl_parser_core::syntax::error::BudgetTracker::heredoc_scan_bytes: usize
 pub perl_parser_core::syntax::error::BudgetTracker::max_depth_reached: usize
+pub perl_parser_core::syntax::error::BudgetTracker::nodes_constructed: usize
 pub perl_parser_core::syntax::error::BudgetTracker::recoveries_attempted: usize
+pub perl_parser_core::syntax::error::BudgetTracker::tokens_consumed: usize
 pub perl_parser_core::syntax::error::BudgetTracker::tokens_skipped: usize
+pub fn perl_parser_core::syntax::error::BudgetTracker::authorize_core(&mut self, budget: &perl_parser_core::syntax::error::ParseBudget, dimension: perl_parser_core::syntax::error::ParseCoreDimension) -> perl_parser_core::syntax::error::ParseResult<()>
+pub fn perl_parser_core::syntax::error::BudgetTracker::authorize_core_batch(&mut self, budget: &perl_parser_core::syntax::error::ParseBudget, dimension: perl_parser_core::syntax::error::ParseCoreDimension, count: usize) -> perl_parser_core::syntax::error::ParseResult<()>
 pub fn perl_parser_core::syntax::error::BudgetTracker::begin_recovery(&mut self, budget: &perl_parser_core::syntax::error::ParseBudget) -> bool
 pub fn perl_parser_core::syntax::error::BudgetTracker::can_skip_more(&self, budget: &perl_parser_core::syntax::error::ParseBudget, additional: usize) -> bool
+pub fn perl_parser_core::syntax::error::BudgetTracker::core_usage(&self, dimension: perl_parser_core::syntax::error::ParseCoreDimension) -> usize
 pub fn perl_parser_core::syntax::error::BudgetTracker::depth_would_exceed(&self, budget: &perl_parser_core::syntax::error::ParseBudget) -> bool
 pub fn perl_parser_core::syntax::error::BudgetTracker::enter_depth(&mut self)
 pub fn perl_parser_core::syntax::error::BudgetTracker::errors_exhausted(&self, budget: &perl_parser_core::syntax::error::ParseBudget) -> bool
@@ -3429,8 +3501,11 @@ pub fn perl_parser_core::syntax::error::ErrorContext::fmt(&self, f: &mut core::f
 pub perl_parser_core::syntax::error::ParseBudget::max_depth: usize
 pub perl_parser_core::syntax::error::ParseBudget::max_errors: usize
 pub perl_parser_core::syntax::error::ParseBudget::max_heredoc_scan_bytes: usize
+pub perl_parser_core::syntax::error::ParseBudget::max_nodes_constructed: usize
 pub perl_parser_core::syntax::error::ParseBudget::max_recoveries: usize
+pub perl_parser_core::syntax::error::ParseBudget::max_tokens_consumed: usize
 pub perl_parser_core::syntax::error::ParseBudget::max_tokens_skipped: usize
+pub fn perl_parser_core::syntax::error::ParseBudget::core_limit(&self, dimension: perl_parser_core::syntax::error::ParseCoreDimension) -> usize
 pub fn perl_parser_core::syntax::error::ParseBudget::for_ide() -> Self
 pub fn perl_parser_core::syntax::error::ParseBudget::strict() -> Self
 pub fn perl_parser_core::syntax::error::ParseBudget::unlimited() -> Self
@@ -4109,6 +4184,15 @@ pub fn perl_parser_core::syntax::error::ErrorCategory::clone(&self) -> perl_pars
 pub fn perl_parser_core::syntax::error::ErrorCategory::eq(&self, other: &perl_parser_core::syntax::error::ErrorCategory) -> bool
 pub fn perl_parser_core::syntax::error::ErrorCategory::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_parser_core::syntax::error::ErrorCategory::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub perl_parser_core::ParseCoreDimension::DiagnosticsEmitted
+pub perl_parser_core::ParseCoreDimension::NodesConstructed
+pub perl_parser_core::ParseCoreDimension::TokensConsumed
+pub fn perl_parser_core::syntax::error::ParseCoreDimension::as_str(self) -> &'static str
+pub fn perl_parser_core::syntax::error::ParseCoreDimension::clone(&self) -> perl_parser_core::syntax::error::ParseCoreDimension
+pub fn perl_parser_core::syntax::error::ParseCoreDimension::eq(&self, other: &perl_parser_core::syntax::error::ParseCoreDimension) -> bool
+pub fn perl_parser_core::syntax::error::ParseCoreDimension::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_parser_core::syntax::error::ParseCoreDimension::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_parser_core::syntax::error::ParseCoreDimension::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
 pub perl_parser_core::ParseDiagnosticSeverity::Advisory
 pub perl_parser_core::ParseDiagnosticSeverity::Blocking
 pub const fn perl_parser_core::syntax::error::ParseDiagnosticSeverity::blocks_clean_parse(self) -> bool
@@ -4119,6 +4203,10 @@ pub perl_parser_core::ParseError::Advisory
 pub perl_parser_core::ParseError::Advisory::location: usize
 pub perl_parser_core::ParseError::Advisory::message: alloc::string::String
 pub perl_parser_core::ParseError::Cancelled
+pub perl_parser_core::ParseError::CoreBudgetExhausted
+pub perl_parser_core::ParseError::CoreBudgetExhausted::dimension: perl_parser_core::syntax::error::ParseCoreDimension
+pub perl_parser_core::ParseError::CoreBudgetExhausted::limit: usize
+pub perl_parser_core::ParseError::CoreBudgetExhausted::usage: usize
 pub perl_parser_core::ParseError::HeredocBudgetExhausted
 pub perl_parser_core::ParseError::HeredocBudgetExhausted::limit: usize
 pub perl_parser_core::ParseError::HeredocBudgetExhausted::location: usize
@@ -4168,6 +4256,10 @@ pub fn perl_parser_core::syntax::error::ParseError::fmt(&self, __formatter: &mut
 pub fn perl_parser_core::syntax::error::ParseError::error_class(&self) -> perl_parser_core::syntax::error::ErrorCategory
 pub perl_parser_core::ParseStopCause::Cancelled
 pub perl_parser_core::ParseStopCause::CatastrophicTermination
+pub perl_parser_core::ParseStopCause::CoreBudgetExhausted
+pub perl_parser_core::ParseStopCause::CoreBudgetExhausted::dimension: perl_parser_core::syntax::error::ParseCoreDimension
+pub perl_parser_core::ParseStopCause::CoreBudgetExhausted::limit: usize
+pub perl_parser_core::ParseStopCause::CoreBudgetExhausted::usage: usize
 pub perl_parser_core::ParseStopCause::FutureTypedTerminal
 pub perl_parser_core::ParseStopCause::HeredocBudgetExhausted
 pub perl_parser_core::ParseStopCause::HeredocBudgetExhausted::limit: usize
@@ -4268,10 +4360,15 @@ pub perl_parser_core::BudgetTracker::current_depth: usize
 pub perl_parser_core::BudgetTracker::errors_emitted: usize
 pub perl_parser_core::BudgetTracker::heredoc_scan_bytes: usize
 pub perl_parser_core::BudgetTracker::max_depth_reached: usize
+pub perl_parser_core::BudgetTracker::nodes_constructed: usize
 pub perl_parser_core::BudgetTracker::recoveries_attempted: usize
+pub perl_parser_core::BudgetTracker::tokens_consumed: usize
 pub perl_parser_core::BudgetTracker::tokens_skipped: usize
+pub fn perl_parser_core::syntax::error::BudgetTracker::authorize_core(&mut self, budget: &perl_parser_core::syntax::error::ParseBudget, dimension: perl_parser_core::syntax::error::ParseCoreDimension) -> perl_parser_core::syntax::error::ParseResult<()>
+pub fn perl_parser_core::syntax::error::BudgetTracker::authorize_core_batch(&mut self, budget: &perl_parser_core::syntax::error::ParseBudget, dimension: perl_parser_core::syntax::error::ParseCoreDimension, count: usize) -> perl_parser_core::syntax::error::ParseResult<()>
 pub fn perl_parser_core::syntax::error::BudgetTracker::begin_recovery(&mut self, budget: &perl_parser_core::syntax::error::ParseBudget) -> bool
 pub fn perl_parser_core::syntax::error::BudgetTracker::can_skip_more(&self, budget: &perl_parser_core::syntax::error::ParseBudget, additional: usize) -> bool
+pub fn perl_parser_core::syntax::error::BudgetTracker::core_usage(&self, dimension: perl_parser_core::syntax::error::ParseCoreDimension) -> usize
 pub fn perl_parser_core::syntax::error::BudgetTracker::depth_would_exceed(&self, budget: &perl_parser_core::syntax::error::ParseBudget) -> bool
 pub fn perl_parser_core::syntax::error::BudgetTracker::enter_depth(&mut self)
 pub fn perl_parser_core::syntax::error::BudgetTracker::errors_exhausted(&self, budget: &perl_parser_core::syntax::error::ParseBudget) -> bool
@@ -4296,8 +4393,11 @@ pub fn perl_parser_core::tokens::trivia::NodeWithTrivia::fmt(&self, f: &mut core
 pub perl_parser_core::ParseBudget::max_depth: usize
 pub perl_parser_core::ParseBudget::max_errors: usize
 pub perl_parser_core::ParseBudget::max_heredoc_scan_bytes: usize
+pub perl_parser_core::ParseBudget::max_nodes_constructed: usize
 pub perl_parser_core::ParseBudget::max_recoveries: usize
+pub perl_parser_core::ParseBudget::max_tokens_consumed: usize
 pub perl_parser_core::ParseBudget::max_tokens_skipped: usize
+pub fn perl_parser_core::syntax::error::ParseBudget::core_limit(&self, dimension: perl_parser_core::syntax::error::ParseCoreDimension) -> usize
 pub fn perl_parser_core::syntax::error::ParseBudget::for_ide() -> Self
 pub fn perl_parser_core::syntax::error::ParseBudget::strict() -> Self
 pub fn perl_parser_core::syntax::error::ParseBudget::unlimited() -> Self
