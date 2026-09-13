@@ -1668,4 +1668,6 @@ impl CompletionProvider {
 }
 
 #[cfg(test)]
+mod keyword_role_tests;
+#[cfg(test)]
 mod tests;

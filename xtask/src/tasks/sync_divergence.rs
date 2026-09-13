@@ -8,6 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use xtask::git_ancestry::{AncestryDisposition, AncestryReceipt, is_ancestor};
 
 const CLASSIFICATIONS: [&str; 5] = [
     "port_to_swarm",
@@ -596,12 +597,19 @@ fn ensure_reachable_from_source(
 ) -> Result<()> {
     validate_subject_syntax("source_commit", candidate)?;
     let resolved = resolve_peeled_commit("source_commit", candidate, directory)?;
-    match git_status_in(["merge-base", "--is-ancestor", &resolved, source], directory)? {
-        0 => Ok(()),
-        1 => Err(eyre!(
+    let repository = directory.unwrap_or(Path::new("."));
+    let receipt = is_ancestor(repository, &resolved, source);
+    match &receipt.disposition {
+        AncestryDisposition::Ancestor => Ok(()),
+        AncestryDisposition::Diverged | AncestryDisposition::Unrelated => Err(eyre!(
             "`source_commit` `{candidate}` is not reachable from the declared swarm source {source}; a port must exist in the source before the ledger can accept it"
         )),
-        code => Err(eyre!("git merge-base --is-ancestor exited with status {code}")),
+        _ => Err(not_proven_ancestry_error(
+            &receipt,
+            &format!(
+                "cannot prove `source_commit` `{candidate}` is reachable from source {source}"
+            ),
+        )),
     }
 }
 
@@ -813,14 +821,19 @@ fn resolve_subject(label: &str, state: &SubjectState, directory: Option<&Path>) 
 }
 
 fn ensure_boundary_bounds_target(shas: &ResolvedShas, directory: Option<&Path>) -> Result<()> {
-    match git_status_in(["merge-base", "--is-ancestor", &shas.boundary, &shas.target], directory)? {
-        0 => Ok(()),
-        1 => Err(eyre!(
+    let repository = directory.unwrap_or(Path::new("."));
+    let receipt = is_ancestor(repository, &shas.boundary, &shas.target);
+    match &receipt.disposition {
+        AncestryDisposition::Ancestor => Ok(()),
+        AncestryDisposition::Diverged | AncestryDisposition::Unrelated => Err(eyre!(
             "reversed subjects: boundary {} is not an ancestor of target {}; the completed reconciliation boundary must bound the target history",
             shas.boundary,
             shas.target
         )),
-        code => Err(eyre!("git merge-base --is-ancestor exited with status {code}")),
+        _ => Err(not_proven_ancestry_error(
+            &receipt,
+            &format!("cannot prove boundary {} bounds target {}", shas.boundary, shas.target),
+        )),
     }
 }
 
@@ -831,15 +844,40 @@ fn ensure_source_not_contained_in_target(
     shas: &ResolvedShas,
     directory: Option<&Path>,
 ) -> Result<()> {
-    match git_status_in(["merge-base", "--is-ancestor", &shas.source, &shas.target], directory)? {
-        0 => Err(eyre!(
+    let repository = directory.unwrap_or(Path::new("."));
+    let receipt = is_ancestor(repository, &shas.source, &shas.target);
+    match &receipt.disposition {
+        AncestryDisposition::Ancestor => Err(eyre!(
             "reversed subjects: source {} is already contained in target {}; the swarm source must not be reachable from the release head (swarm may have been passed as the target)",
             shas.source,
             shas.target
         )),
-        1 => Ok(()),
-        code => Err(eyre!("git merge-base --is-ancestor exited with status {code}")),
+        AncestryDisposition::Diverged | AncestryDisposition::Unrelated => Ok(()),
+        // A shallow or partial checkout reports a present-but-disconnected
+        // graft as non-ancestry through the bare exit code; only a proved
+        // verdict may claim the source is absent from the target (#14557).
+        _ => Err(not_proven_ancestry_error(
+            &receipt,
+            &format!("cannot prove source {} is absent from target {}", shas.source, shas.target),
+        )),
     }
+}
+
+/// Fail-closed error for an ancestry question the local checkout cannot
+/// decide: a shallow or partial checkout, a missing object, or a git failure
+/// must never be rendered as a history verdict (#14557).
+fn not_proven_ancestry_error(receipt: &AncestryReceipt, context: &str) -> Report {
+    let mut message = format!(
+        "{context}: git ancestry is `{}` ({})",
+        receipt.disposition.as_str(),
+        receipt.reason
+    );
+    if let Some(guidance) = receipt.guidance.first() {
+        message.push_str("; ");
+        message.push_str(guidance);
+    }
+    message.push_str("; refusing to render a history verdict from incomplete evidence");
+    eyre!("{message}")
 }
 
 fn comparison_population(
@@ -968,16 +1006,6 @@ fn git_stderr_in<const N: usize>(args: [&str; N], directory: Option<&Path>) -> R
     }
     let output = command.output().context("running git for sync-divergence preflight")?;
     Ok(String::from_utf8_lossy(&output.stderr).to_string())
-}
-
-fn git_status_in<const N: usize>(args: [&str; N], directory: Option<&Path>) -> Result<i32> {
-    let mut command = Command::new("git");
-    command.args(args);
-    if let Some(directory) = directory {
-        command.current_dir(directory);
-    }
-    let output = command.output().context("running git for sync-divergence preflight")?;
-    Ok(output.status.code().unwrap_or(-1))
 }
 
 fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
