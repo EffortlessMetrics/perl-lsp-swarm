@@ -539,6 +539,26 @@ fn quote_like_bodies_do_not_yield_phantom_pragmas() {
     }
 }
 
+#[test]
+fn qx_delimiters_keep_quote_like_payload_out_of_the_scanner() {
+    let sources = [
+        "qx{echo 'quoted'; use lib 'phantom';};\nuse lib 'real';\n",
+        "qx(echo 'quoted'; use lib 'phantom');\nuse lib 'real';\n",
+        "qx/echo 'quoted'; use lib 'phantom'/;\nuse lib 'real';\n",
+    ];
+
+    for source in sources {
+        assert_eq!(
+            extract_use_lib_operations(source),
+            vec![UseLibAction::Add(vec![UseLibPath {
+                path: "real".to_string(),
+                from_findbin: false,
+            }])],
+            "qx payload reached the scanner: {source:?}"
+        );
+    }
+}
+
 /// Words that merely start with a quote-like letter, hash keys, methods,
 /// filetests and fat-comma barewords are not quote-like operators; a pragma
 /// after them still activates.
@@ -549,7 +569,7 @@ fn quote_like_lookalikes_do_not_swallow_following_pragmas() {
         "my $v = $h{q};\nuse lib 'real';\n",
         "my $v = $obj->m(1);\nuse lib 'real';\n",
         "$i18n->tr('key');\nuse lib 'real';\n",
-        "$obj->s(1);\nuse lib 'real';\n",
+        "$obj->s('a', 'b');\nuse lib 'real';\n",
         "$obj -> y(1);\nuse lib 'real';\n",
         "my $size = -s $file;\nuse lib 'real';\n",
         "my $qux = quux();\nuse lib 'real';\n",
@@ -567,6 +587,16 @@ fn quote_like_lookalikes_do_not_swallow_following_pragmas() {
             "pragma after a quote-like lookalike was swallowed: {source:?}"
         );
     }
+}
+
+#[test]
+fn bare_arrow_does_not_trigger_the_method_call_guard() {
+    let source = "$x = 1 > s/a/b/;\nuse lib 'real';\n";
+
+    assert_eq!(
+        extract_use_lib_operations(source),
+        vec![UseLibAction::Add(vec![UseLibPath { path: "real".to_string(), from_findbin: false }])]
+    );
 }
 
 /// An unterminated quote-like body never compiles, so nothing below it can
@@ -621,6 +651,25 @@ fn non_ascii_identifier_continue_is_not_a_data_marker() {
             "an identifier continuation was read as a data-section marker: {source:?}"
         );
     }
+}
+
+#[test]
+fn data_marker_identifier_boundaries_follow_xid_continue() {
+    for continuation in ['\u{0301}', '\u{203f}'] {
+        let source = format!("use utf8;\n__END__{continuation};\nuse lib 'still-code';\n");
+
+        assert_eq!(
+            extract_use_lib_operations(&source),
+            vec![UseLibAction::Add(vec![UseLibPath {
+                path: "still-code".to_string(),
+                from_findbin: false,
+            }])],
+            "XID-Continue marker continuation truncated the scan: {source:?}"
+        );
+    }
+
+    let source = "use utf8;\n__END__\u{00BD};\nuse lib 'hidden';\n";
+    assert_eq!(extract_use_lib_operations(source), Vec::new());
 }
 
 /// A colon after the marker makes it a *label*, so the code region continues.
