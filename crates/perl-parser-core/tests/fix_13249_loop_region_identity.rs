@@ -17,6 +17,9 @@
 
 use std::error::Error;
 
+mod cpan_test_helpers;
+use cpan_test_helpers::*;
+
 use perl_parser_core::Parser;
 use perl_parser_core::hir::{
     ControlTransferKind, HirBlock, HirBlockId, HirBody, HirExpr, HirFile, HirLoopRegionId, HirStmt,
@@ -25,7 +28,15 @@ use perl_parser_core::hir::{
 
 type TestResult = Result<(), Box<dyn Error>>;
 
-fn parse(source: &str) -> HirFile {
+/// Lower a fixture, rejecting any parse that is not clean.
+///
+/// Both admission checks matter and neither implies the other: the shared
+/// `assert_clean_parse` rejects recovery `Error` nodes in the AST, and the
+/// diagnostics check rejects a recovered parse that produced no error node.
+/// A recovered AST reaching HIR lowering would make these assertions
+/// false-positive coverage of a shape the parser never really accepted.
+fn lower_clean(source: &str) -> HirFile {
+    assert_clean_parse(source);
     let mut parser = Parser::new(source);
     let output = parser.parse_with_recovery();
     assert!(
@@ -108,7 +119,7 @@ fn loop_control(
 /// 10 — a body-owner/region-range change must invalidate the relationship).
 #[test]
 fn each_loop_kind_gets_a_stable_region_id() -> TestResult {
-    let file = parse(
+    let file = lower_clean(
         "\
         while ($a) { }\n\
         until ($b) { }\n\
@@ -146,7 +157,7 @@ fn each_loop_kind_gets_a_stable_region_id() -> TestResult {
 /// invalidate any assertion that binds the label to the loop.
 #[test]
 fn loop_without_label_has_none_label_field() -> TestResult {
-    let file = parse("while ($ready) { }");
+    let file = lower_clean("while ($ready) { }");
     let body = root_body(&file)?;
     let HirExpr::Loop { label, .. } = first_expr(body)? else {
         return Err("expected structured loop".into());
@@ -161,7 +172,7 @@ fn loop_without_label_has_none_label_field() -> TestResult {
 #[test]
 fn labeled_loop_binds_label_to_loop_expr() -> TestResult {
     let source = "OUTER: while ($ready) { }";
-    let file = parse(source);
+    let file = lower_clean(source);
     let body = root_body(&file)?;
     let HirExpr::Loop { label, .. } = first_expr(body)? else {
         return Err("expected structured loop".into());
@@ -180,7 +191,7 @@ fn labeled_loop_binds_label_to_loop_expr() -> TestResult {
 /// Falsifier 2: attaching a label to the next sibling loop.
 #[test]
 fn labels_do_not_leak_to_sibling_loops() -> TestResult {
-    let file = parse("OUTER: while ($a) { } while ($b) { }");
+    let file = lower_clean("OUTER: while ($a) { } while ($b) { }");
     let body = root_body(&file)?;
     let loops = loops_by_region_id(body);
     assert_eq!(loops.len(), 2, "expected two sibling loops");
@@ -203,7 +214,7 @@ fn labels_do_not_leak_to_sibling_loops() -> TestResult {
 /// loop, not an outer one.
 #[test]
 fn unlabelled_next_resolves_to_innermost_loop() -> TestResult {
-    let file = parse("OUTER: while ($a) { INNER: while ($b) { next; } }");
+    let file = lower_clean("OUTER: while ($a) { INNER: while ($b) { next; } }");
     let body = root_body(&file)?;
     let loops = loops_by_region_id(body);
     assert_eq!(loops.len(), 2, "expected outer + inner loops");
@@ -227,7 +238,7 @@ fn unlabelled_next_resolves_to_innermost_loop() -> TestResult {
 /// even when a differently-labelled inner loop is enclosing.
 #[test]
 fn labelled_last_resolves_across_nested_loop() -> TestResult {
-    let file = parse("OUTER: while ($a) { INNER: while ($b) { last OUTER; } }");
+    let file = lower_clean("OUTER: while ($a) { INNER: while ($b) { last OUTER; } }");
     let body = root_body(&file)?;
     let loops = loops_by_region_id(body);
     let outer_region = loop_region(loops[0]);
@@ -243,7 +254,7 @@ fn labelled_last_resolves_across_nested_loop() -> TestResult {
 /// must win for that label, so both remain independently addressable.
 #[test]
 fn same_spelled_nested_labels_pick_innermost() -> TestResult {
-    let file = parse("SAME: while ($a) { SAME: while ($b) { next SAME; } }");
+    let file = lower_clean("SAME: while ($a) { SAME: while ($b) { next SAME; } }");
     let body = root_body(&file)?;
     let loops = loops_by_region_id(body);
     assert_eq!(loops.len(), 2);
@@ -265,7 +276,7 @@ fn same_spelled_nested_labels_pick_innermost() -> TestResult {
 /// return `NoEnclosingLoop`, not silently resolve to nothing.
 #[test]
 fn bare_next_outside_any_loop_reports_no_enclosing_loop() -> TestResult {
-    let file = parse("sub bad { next; }");
+    let file = lower_clean("sub bad { next; }");
     let body = file
         .bodies
         .iter()
@@ -295,7 +306,7 @@ fn labelled_loop_outside_enclosure_is_unresolved() -> TestResult {
     // OUTER labels the FIRST while; the second while is a sibling that
     // contains the `next OUTER`. From that inner loop's perspective, OUTER
     // is not an enclosing region, so the transfer must NOT resolve to it.
-    let file = parse("OUTER: while ($a) { } while ($b) { next OUTER; }");
+    let file = lower_clean("OUTER: while ($a) { } while ($b) { next OUTER; }");
     let body = root_body(&file)?;
     let controls = collect_loop_controls(body);
     assert_eq!(controls.len(), 1);
@@ -324,7 +335,7 @@ fn labelled_non_loop_statement_reports_nonloop_target() -> TestResult {
     // corresponding labelled-bare-block form (`BLK: { last BLK; }`) is
     // covered by [`nonloop_target_from_bare_block_when_enclosed`] once the
     // enclosing loop causes bare-block statements to be lowered.
-    let file = parse("while ($x) { LABEL: last LABEL; }");
+    let file = lower_clean("while ($x) { LABEL: last LABEL; }");
     let body = root_body(&file)?;
     let controls = collect_loop_controls(body);
     assert_eq!(controls.len(), 1);
@@ -347,7 +358,7 @@ fn labelled_non_loop_statement_reports_nonloop_target() -> TestResult {
 /// last`, and the body lowerer descends the outer block.
 #[test]
 fn nonloop_target_from_bare_block_when_enclosed() -> TestResult {
-    let file = parse("while ($x) { BLK: { last BLK; next BLK; } }");
+    let file = lower_clean("while ($x) { BLK: { last BLK; next BLK; } }");
     let body = root_body(&file)?;
     let controls = collect_loop_controls(body);
     assert_eq!(controls.len(), 2, "all statements in a bare block must be lowered");
@@ -362,7 +373,7 @@ fn nonloop_target_from_bare_block_when_enclosed() -> TestResult {
 
 #[test]
 fn labelled_bare_block_keeps_all_child_statements() -> TestResult {
-    let file = parse("while ($x) { BLK: { next BLK; last BLK; } }");
+    let file = lower_clean("while ($x) { BLK: { next BLK; last BLK; } }");
     let body = root_body(&file)?;
     let controls = collect_loop_controls(body);
     assert_eq!(controls.len(), 2, "both transfers in the bare block must be lowered");
@@ -380,7 +391,7 @@ fn labelled_bare_block_keeps_all_child_statements() -> TestResult {
 /// way.
 #[test]
 fn redo_resolves_to_enclosing_loop() -> TestResult {
-    let file = parse("while ($a) { redo; }");
+    let file = lower_clean("while ($a) { redo; }");
     let body = root_body(&file)?;
     let loops = collect_loops(body);
     let region = loop_region(loops[0]);
@@ -407,7 +418,7 @@ fn branch_form_postfix_never_becomes_a_loop_target() -> TestResult {
     // labelled statement wrapper as a non-loop labelled region — the `if`
     // postfix itself must remain a non-loop, and `postfix_loop_region` /
     // must stay `None`.
-    let file = parse("BLK: $x = 1 if $ready;");
+    let file = lower_clean("BLK: $x = 1 if $ready;");
     let body = root_body(&file)?;
     let block = root_block(body)?;
     let stmt =
@@ -426,7 +437,7 @@ fn branch_form_postfix_never_becomes_a_loop_target() -> TestResult {
 /// Loop-form postfix modifiers are not loop-control targets.
 #[test]
 fn labelled_loop_form_postfix_is_not_a_target() -> TestResult {
-    let file = parse("LOOP: $x = 1 while $ready;");
+    let file = lower_clean("LOOP: $x = 1 while $ready;");
     let body = root_body(&file)?;
     let block = root_block(body)?;
     let stmt =
@@ -444,7 +455,7 @@ fn labelled_loop_form_postfix_is_not_a_target() -> TestResult {
 fn last_inside_labelled_postfix_loop_does_not_create_a_target() -> TestResult {
     // A loop-form postfix is not an enclosing loop for its statement; the
     // labelled transfer therefore remains a non-loop-target disposition.
-    let file = parse("LOOP: last LOOP while $ready;");
+    let file = lower_clean("LOOP: last LOOP while $ready;");
     let body = root_body(&file)?;
     let block = root_block(body)?;
     let stmt =
@@ -468,7 +479,7 @@ fn last_inside_labelled_postfix_loop_does_not_create_a_target() -> TestResult {
 
 #[test]
 fn postfix_control_does_not_target_the_modifier() -> TestResult {
-    let file = parse("last while $ready;");
+    let file = lower_clean("last while $ready;");
     let body = root_body(&file)?;
     let controls = collect_loop_controls(body);
     assert_eq!(controls.len(), 1);
@@ -480,7 +491,7 @@ fn postfix_control_does_not_target_the_modifier() -> TestResult {
 
 #[test]
 fn c_style_initializer_control_is_outside_loop() -> TestResult {
-    let file = parse("for (last; 1; ) { }");
+    let file = lower_clean("for (last; 1; ) { }");
     let body = root_body(&file)?;
     let controls = collect_loop_controls(body);
     assert_eq!(controls.len(), 1);
@@ -492,7 +503,7 @@ fn c_style_initializer_control_is_outside_loop() -> TestResult {
 
 #[test]
 fn inner_same_named_bare_block_shadows_outer_loop_label() -> TestResult {
-    let file = parse("OUTER: while ($x) { OUTER: { last OUTER; } }");
+    let file = lower_clean("OUTER: while ($x) { OUTER: { last OUTER; } }");
     let body = root_body(&file)?;
     let controls = collect_loop_controls(body);
     assert_eq!(controls.len(), 1);
@@ -510,7 +521,7 @@ fn inner_same_named_bare_block_shadows_outer_loop_label() -> TestResult {
 /// loop the `continue` is attached to.
 #[test]
 fn next_inside_continue_block_targets_the_loop() -> TestResult {
-    let file = parse("while ($a) { } continue { next; }");
+    let file = lower_clean("while ($a) { } continue { next; }");
     let body = root_body(&file)?;
     let loops = collect_loops(body);
     let region = loop_region(loops[0]);
@@ -527,7 +538,7 @@ fn next_inside_continue_block_targets_the_loop() -> TestResult {
 /// and omitting another. Two nested loops must never share a region ID.
 #[test]
 fn nested_loops_never_share_a_region_id() -> TestResult {
-    let file = parse("while ($a) { while ($b) { while ($c) { } } }");
+    let file = lower_clean("while ($a) { while ($b) { while ($c) { } } }");
     let body = root_body(&file)?;
     let loops = collect_loops(body);
     assert_eq!(loops.len(), 3);
@@ -540,7 +551,7 @@ fn nested_loops_never_share_a_region_id() -> TestResult {
 /// from 0. A cross-body region ID has no meaning.
 #[test]
 fn region_ids_are_body_local() -> TestResult {
-    let file = parse("sub a { while ($x) { } } sub b { while ($y) { } }");
+    let file = lower_clean("sub a { while ($x) { } } sub b { while ($y) { } }");
     let mut per_body_ids = Vec::new();
     for body in &file.bodies {
         for expr in body.exprs.iter() {
@@ -619,7 +630,7 @@ fn reachable_from_root<'a>(body: &'a HirBody) -> Result<Vec<&'a HirStmt>, Box<dy
 /// first become orphan arena entries that no consumer reaches.
 #[test]
 fn bare_block_keeps_every_statement_reachable_from_the_root_block() -> TestResult {
-    let file = parse("{ my $a = 1; my $b = 2; my $c = 3; } my $d = 4;");
+    let file = lower_clean("{ my $a = 1; my $b = 2; my $c = 3; } my $d = 4;");
     let body = root_body(&file)?;
     let names: Vec<&str> = reachable_from_root(body)?
         .into_iter()
@@ -640,7 +651,7 @@ fn bare_block_keeps_every_statement_reachable_from_the_root_block() -> TestResul
 /// `last BLK` after a leading statement must still be reachable.
 #[test]
 fn labelled_bare_block_keeps_trailing_loop_control_reachable() -> TestResult {
-    let file = parse("while ($x) { BLK: { my $seen = 1; last BLK; } }");
+    let file = lower_clean("while ($x) { BLK: { my $seen = 1; last BLK; } }");
     let body = root_body(&file)?;
     let reachable = reachable_from_root(body)?;
     assert!(
@@ -664,7 +675,7 @@ fn labelled_bare_block_keeps_trailing_loop_control_reachable() -> TestResult {
 /// instead would misclassify the read as a package variable.
 #[test]
 fn declaration_in_a_labelled_bare_block_resolves_as_lexical() -> TestResult {
-    let file = parse("BLK: { my $inner = 1; print $inner; }");
+    let file = lower_clean("BLK: { my $inner = 1; print $inner; }");
     let body = root_body(&file)?;
     let reads: Vec<&HirVariable> = body
         .exprs
@@ -688,7 +699,7 @@ fn declaration_in_a_labelled_bare_block_resolves_as_lexical() -> TestResult {
 /// the whole time they are lowered.
 #[test]
 fn unlabelled_postfix_loops_inside_a_labelled_block_keep_distinct_regions() -> TestResult {
-    let file = parse("BLK: { $x++ while $ready; $y++ until $done; }");
+    let file = lower_clean("BLK: { $x++ while $ready; $y++ until $done; }");
     let body = root_body(&file)?;
     let regions: Vec<HirLoopRegionId> = body
         .stmts
@@ -713,7 +724,7 @@ fn unlabelled_postfix_loops_inside_a_labelled_block_keep_distinct_regions() -> T
 /// in both directions.
 #[test]
 fn directly_labelled_postfix_loop_still_mints_no_region() -> TestResult {
-    let file = parse("LOOP: $x++ while $ready;");
+    let file = lower_clean("LOOP: $x++ while $ready;");
     let body = root_body(&file)?;
     let regions: Vec<Option<HirLoopRegionId>> = body
         .stmts
@@ -737,7 +748,7 @@ fn region_ids_are_dense_deterministic_and_outer_before_nested() -> TestResult {
     let source = "OUTER: while ($a) { INNER: while ($b) { last OUTER; } } while ($c) { }";
 
     let collect = || -> Result<Vec<u32>, Box<dyn Error>> {
-        let file = parse(source);
+        let file = lower_clean(source);
         let body = root_body(&file)?;
         let mut ids: Vec<u32> =
             collect_loops(body).iter().map(|l| loop_region(l).as_u32()).collect();
@@ -751,7 +762,7 @@ fn region_ids_are_dense_deterministic_and_outer_before_nested() -> TestResult {
 
     // A region is allocated before its own children are lowered, so the outer
     // loop holds a strictly lower ID than the loop nested inside it.
-    let file = parse(source);
+    let file = lower_clean(source);
     let body = root_body(&file)?;
     let labelled = |wanted: &str| -> Option<u32> {
         collect_loops(body).into_iter().find_map(|l| match l {
