@@ -628,6 +628,61 @@ mod tests {
         facts.iter().any(|fact| fact.entity.canonical_name == canonical_name)
     }
 
+    /// The walk context's transition table, asserted without the parser.
+    ///
+    /// The end-of-walk filter drops `NotProven` packages whatever the builder
+    /// predicate answered, so the `NotProven` arm of `table_builder_active` is
+    /// unobservable through parsed source. It is still load-bearing: without it
+    /// the predicate would claim authority the package no longer has. Pin the
+    /// transition table directly so that arm cannot silently rot.
+    #[test]
+    fn the_walk_context_activates_the_builder_only_for_one_exact_unconsumed_import() {
+        let fresh = QuickOrmWalkCtx::default;
+
+        assert!(!fresh().table_builder_active(), "no import proves nothing");
+
+        let mut unadmitted = fresh();
+        unadmitted.record_import(false);
+        assert!(
+            !unadmitted.table_builder_active(),
+            "a single import this extractor does not admit is not table mode"
+        );
+
+        let mut exact = fresh();
+        exact.record_import(true);
+        assert!(exact.table_builder_active(), "one exact table import activates");
+
+        let mut repeated = fresh();
+        repeated.record_import(true);
+        repeated.record_import(true);
+        assert!(
+            !repeated.table_builder_active(),
+            "a second import leaves the installed names unknown"
+        );
+        assert!(repeated.is_suppressed("main"));
+
+        let mut unimported = fresh();
+        unimported.record_import(true);
+        unimported.record_unimport();
+        assert!(
+            !unimported.table_builder_active(),
+            "`no DBIx::QuickORM` removes the authority this extractor cannot track"
+        );
+        assert!(unimported.is_suppressed("main"));
+
+        let mut consumed = fresh();
+        consumed.record_import(true);
+        consumed.consume_current_builder();
+        assert!(
+            !consumed.table_builder_active(),
+            "the builder is one-shot: the first table call closes it"
+        );
+        assert!(
+            !consumed.is_suppressed("main"),
+            "consuming the builder must not suppress the candidates it emitted"
+        );
+    }
+
     #[test]
     fn explicit_table_class_emits_singular_and_plural_column_candidates() {
         let facts = candidate_facts(
@@ -979,6 +1034,35 @@ use POSIX qw(floor);
 no warnings 'uninitialized';
 
 table users => sub { column id => sub { primary_key }; };
+1;
+"#,
+        );
+
+        assert!(has_name(&facts, "My::ORM::Table::User::id"));
+    }
+
+    #[test]
+    fn only_quickorm_import_events_count_inside_a_deferred_definition() {
+        // The nested scan has its own module guards, reached only from the
+        // builder statement and from deferred definitions. Without an unrelated
+        // import on those paths, a guard that matched every module would still
+        // look covered: the top-level negative control never enters them.
+        let facts = candidate_facts(
+            r#"
+package My::ORM::Table::User;
+use DBIx::QuickORM type => 'table';
+
+table users => sub {
+    use integer;
+    no warnings 'uninitialized';
+    column id => sub { primary_key };
+};
+
+sub helper {
+    use POSIX qw(floor);
+    no strict 'refs';
+    return 1;
+}
 1;
 "#,
         );
