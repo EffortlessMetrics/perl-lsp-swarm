@@ -75,6 +75,38 @@ required_receipts = [
 ]
 
 [[provider_class]]
+surface = "Completion"
+fact_class = "Source-backed generated/framework member"
+current_state = "narrow live generated-member pilot"
+decision = "promote"
+next_proof = "Additional labeled generated-member rank/noise receipts before broader completion expansion"
+promotion_conditions = [
+  "fresh_source_backed_generated_framework_member",
+  "explicit_generated_label",
+  "framework_declaration_anchor",
+  "bounded_confidence",
+  "completion_consumes_generated_member_surface_only",
+]
+fallback_conditions = [
+  "source_anchor_missing",
+  "generated_label_missing",
+  "dynamic_boundary",
+  "stale_fact",
+]
+blocker_conditions = [
+  "generated_no_source",
+  "low_confidence",
+  "ambiguous_identity",
+  "fallback_policy",
+  "unsupported_fact_class",
+]
+required_receipts = [
+  "docs/project/status/provider_confidence_matrix.md",
+  "docs/project/status/real_perl_editor_trust_v1.md",
+  "crates/perl-workspace/tests/quickorm_generated_member.rs",
+]
+
+[[provider_class]]
 surface = "References"
 fact_class = "PIR-A initialized same-file lexical reference"
 current_state = "narrow live gated"
