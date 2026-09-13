@@ -3534,3 +3534,26 @@ created = "2026-09-13"
 review_after = "2026-09-20"
 expires = "2026-10-13"
 removal_criteria = "Remove when #9684 gives these modules their first production consumer and ripr can trace them for real (re-scope to that consumer's seams), or when ripr#1429 resolves declaration-line probes; narrow immediately if the no_static_path count in these files rises for a reason other than added declarations."
+
+# -----------------------------------------------------------------------------
+# Field-trait decoder declaration owners and removed-predicate probes (#13449,
+# PR #14997): RIPR reports no_static_path on the new decoder's enum/struct/
+# field declaration lines and on the exact-string trait dispatch this PR
+# deletes. Neither shape has a call path a test could take.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-13449-field-trait-declaration-and-removed-owner-seams"
+kind = "declaration_line_no_static_path"
+paths = [
+  "crates/perl-semantic-analyzer/src/analysis/field_trait.rs",
+  "crates/perl-semantic-analyzer/src/analysis/mod.rs",
+  "crates/perl-semantic-analyzer/src/analysis/class_model.rs",
+]
+classification = ["no_static_path"]
+owner = "proof-lane"
+issue = "EffortlessMetrics/ripr#1429"
+reason = "RIPR 0.10.0 diff-scoped receipt for PR #14997 at head 368e0f22 (base 8b945cfd) reports 27 no_static_path probes, all reach:no 'No static test path found for the changed owner' with related_tests_total 0, and every one of them is a shape no test can reach. Eight are base-only: call_deletion/predicate/return_value probes on the exact-string trait dispatch `if traits.iter().any(|trait_name| trait_name == \"reader\")` and on the removed ASCII `is_valid_named_writer` predicate, both deleted by this PR — their reported class_model.rs coordinates (1500, 1739) are base-relative and now land on doc comments. The remaining nineteen are declaration owners: `pub(crate) mod field_trait;` in analysis/mod.rs; the `FieldTraitKind` / `FieldTraitArgument` enums, their `None` / `StaticName(String)` / `LiteralText(String)` variants, the `DecodedFieldTrait` struct and its `kind` / `raw_spelling` / `argument` fields in field_trait.rs; and `FieldInfo::param_name` in class_model.rs. The one moved executable body, object_pad_public_name's `field_name.strip_prefix('_').unwrap_or(field_name)`, is a mechanical move from an associated fn to a module-level free fn and is pinned by a_bare_param_on_an_underscore_field_uses_the_public_constructor_key plus the framework-split regressions, with the no-strip mutation confirmed failing. Behaviour in these files is not unproven: the same receipt classifies 107 findings in class_model.rs and 41 in field_trait.rs as `exposed`, with 362 related tests from crates/perl-semantic-analyzer/tests/class_field_trait_arguments.rs. This is the documented ripr#1429 declaration-owner tracing limitation recorded in docs/learnings/2026-07-ripr-weakly-exposed-suppression-churn.md — once the discriminator exists and RIPR still cannot see it, more tests do not clear the finding, and constructor-only tests for an enum variant would be proof theatre. Same class as ripr-suppress-reachability-contract-declarations (#11553), ripr-suppress-14058-tautology-declaration-seams, and ripr-suppress-14945-perl-corpus-train-declaration-seams. Scope is no_static_path only: exposed, weakly_exposed, weakly_gripped, reachable_unrevealed, infection_unknown, propagation_unknown and static_unknown stay active in all three files. The matcher has no line or function selector, so class_model.rs is listed only for its `param_name` declaration and the removed-predicate probes — any future receipt reporting an executable no_static_path seam in these files must trigger review and narrowing rather than inherit this entry."
+created = "2026-09-13"
+review_after = "2026-10-13"
+expires = "2026-12-13"
+removal_criteria = "Remove when EffortlessMetrics/ripr#1429 traces declaration owners to the tests that construct them and stops probing base-only deleted code for a head-side test path, or when targeted mutation replaces this advisory path per #1289. Narrow immediately if a receipt reports an executable no_static_path seam in class_model.rs, field_trait.rs or analysis/mod.rs outside the declaration and removed-owner shapes enumerated above."
