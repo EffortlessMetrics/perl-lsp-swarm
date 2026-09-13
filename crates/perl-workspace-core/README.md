@@ -81,7 +81,7 @@ producer, and no class reports itself unimplemented:
 | `IMPORTS` | `use`/`no`/`require` + effects |
 | `EXPORTS` | `@EXPORT`/`@EXPORT_OK` symbol lists |
 | `COMPILE_EFFECTS` | strict/warnings/features/version (via `perl-pragma`) |
-| `DIST` | `META.json`/`cpanfile` name/version/license/prereqs |
+| `DIST` | `META.json`/`cpanfile` facts plus bounded `Makefile.PL`/`Build.PL`/`dist.ini` authoring facts |
 | `TESTS` | test framework + assertion counts |
 | `POD` | module doc + documented methods + `=head`/`=item` sections |
 | `RELATIONS` | inherits / uses / tests edges |

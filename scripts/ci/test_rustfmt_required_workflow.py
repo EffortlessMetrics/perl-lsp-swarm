@@ -716,9 +716,11 @@ def validate_rust_small_fmt_contract(workflow_text: str) -> None:
         )
     if "continue-on-error: true" in prove:
         raise AssertionError("rustfmt prevention contract must not continue on error")
-    if "router was skipped (draft PR" not in result_job:
+    if "RUST_SMALL_GATE_VERDICT=draft-no-proof" not in _named_step_body(
+        result_job, "Evaluate routed result"
+    ):
         raise AssertionError(
-            "draft-skip remains owned by #10006; do not absorb it into this contract"
+            "draft-skip must remain explicit no-proof in the evaluate step (#9603)"
         )
 
 
