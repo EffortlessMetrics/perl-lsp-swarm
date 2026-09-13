@@ -276,6 +276,27 @@ fn relationship_semantics_reject_unlisted_extra_key() -> Result<()> {
 }
 
 #[test]
+fn relationship_ids_cannot_be_renamed_with_references_updated() -> Result<()> {
+    let mut changed = value()?;
+    row_mut(&mut changed, "relations", "id", "flush_requires_write")?
+        .insert("id".into(), Value::String("renamed_flush_requires_write".into()));
+    let journeys = changed
+        .get_mut("journeys")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| eyre!("missing journeys"))?;
+    for journey in journeys {
+        if let Some(relations) = journey.get_mut("relations").and_then(Value::as_array_mut) {
+            for relation in relations {
+                if relation.as_str() == Some("flush_requires_write") {
+                    *relation = Value::String("renamed_flush_requires_write".into());
+                }
+            }
+        }
+    }
+    reject(&changed, "relations denominator mismatch")
+}
+
+#[test]
 fn journey_requires_relation_endpoints_in_facts() -> Result<()> {
     let mut changed = value()?;
     let journey = row_mut(&mut changed, "journeys", "id", "ordinary_success")?;

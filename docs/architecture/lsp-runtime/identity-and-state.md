@@ -22,7 +22,7 @@ Client consumption is outside reusable-runtime claim authority. The runtime may 
 
 ## Identity domains
 
-`ConnectionId` identifies one accepted physical or logical connection occurrence. `SessionId` identifies one lifecycle/runtime incarnation on that connection. They remain distinct even when the selected architecture makes them one-to-one.
+`ConnectionId` identifies one established physical or logical connection occurrence. `SessionId` identifies one lifecycle/runtime incarnation on that connection. They remain distinct even when the selected architecture makes them one-to-one.
 
 `MessageId` identifies one observed message occurrence. `IngressSequence` orders those occurrences inside one connection. Equal bytes observed twice remain two messages.
 

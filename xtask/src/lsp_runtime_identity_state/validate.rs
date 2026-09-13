@@ -173,6 +173,11 @@ impl Vocabulary {
             relation_keys.iter().map(String::as_str),
             REQUIRED_RELATION_KEYS,
         )?;
+        exact_strings(
+            "relations",
+            self.relations.iter().map(|row| row.id.as_str()),
+            REQUIRED_RELATION_IDS,
+        )?;
 
         for term in &self.ambiguous_terms {
             if term.replacements.len() < 2 {

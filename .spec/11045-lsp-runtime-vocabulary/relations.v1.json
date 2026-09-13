@@ -421,7 +421,7 @@
       "from": "terminal_selected",
       "kind": "requires",
       "to": "request_registered",
-      "reason": "Every registered request must settle through its canonical terminal authority.",
+        "reason": "Terminal authority is selectable only for a registered request.",
       "source": 9506
     },
     {

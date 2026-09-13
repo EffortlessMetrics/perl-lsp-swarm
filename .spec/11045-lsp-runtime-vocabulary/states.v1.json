@@ -28,7 +28,7 @@
       "id": "cancellation_requested",
       "name": "cancellation requested",
       "axis": "control",
-      "proposition": "A valid cancellation control signal targets the exact active RequestKey or WorkId.",
+        "proposition": "A valid cancellation control signal targets the exact RequestKey or WorkId whose execution remains unsettled.",
       "runtime_claimable": true,
       "source": 7389
     },
