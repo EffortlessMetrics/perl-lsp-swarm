@@ -2052,6 +2052,17 @@ mod tests {
         // A trailing candidate with no unescaped closing quote ends the scan. It
         // must neither retract the keys already painted before it nor paint the
         // unterminated tail as a key.
+        //
+        // Honest bound on what this discriminates: it fails if the tail is painted
+        // or if the scan panics, but it cannot distinguish the `break` at the
+        // no-closing-quote branch from a reset-and-continue there, because the
+        // earlier key is pushed before the tail is ever reached and both choices
+        // then yield the same output. The reason `break` is correct is an argument
+        // about reachability, not about this output: the candidate-local `escaped`
+        // state starts false right after a real quote, so finding no unescaped
+        // quote in the remaining suffix proves none exists, and a later key needs
+        // two. The reset alternative is also what makes a `"\""\""...` body
+        // quadratic, which is why the production comment prefers `break`.
         let source = "my $json = <<JSON;\n{\"a\": 1, \"unterminated\nJSON\n";
 
         let keys = painted_tokens(source, "json_heredoc_key")?;
@@ -2106,17 +2117,15 @@ mod tests {
 
         let rescan_work = admissions(rescan);
         let plain_work = admissions(no_rescan);
-        assert!(
-            rescan_work > plain_work,
-            "rescanned bytes must be metered: the rescanning body charged {rescan_work} \
-             admissions, the equal-length body without a rescan charged {plain_work}"
-        );
 
-        // Exact ratchet. The inequality above survives dropping a whole loop's
-        // admissions, because a rescanning body runs two candidate scans and so
-        // still charges more than a body that runs one. Pinning both totals is
-        // what actually fails when any one scan loop stops charging: deleting the
-        // outer scan-loop admission alone moves these to 17 and 15.
+        // Exact totals, deliberately not a `rescan_work > plain_work` inequality.
+        // That inequality cannot discriminate: it survives dropping a whole scan
+        // loop's admissions, because a rescanning body runs two candidate scans
+        // and so charges more either way (the same mutation moves these totals to
+        // 17 and 15, where the inequality still holds). Pinning both totals is
+        // what actually fails when any one loop stops charging. 32 = 31 scanner
+        // admissions + 1 from `push_line_contained_segments` for the accepted
+        // single-line key; 22 = 21 + 1.
         assert_eq!(rescan_work, 32, "every byte position the scanner visits charges once");
         assert_eq!(plain_work, 22, "every byte position the scanner visits charges once");
 
