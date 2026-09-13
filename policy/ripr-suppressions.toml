@@ -3470,3 +3470,49 @@ created = "2026-09-09"
 review_after = "2026-09-16"
 expires = "2026-09-23"
 removal_criteria = "Remove when the registry gains a production consumer (re-scope suppression to that consumer's seams) or when ripr#1429 resolves declaration-line probes for data rows; narrow immediately if any executable (non-declaration) code lands in this file."
+
+# -----------------------------------------------------------------------------
+# QuickORM containment candidate: activation untraceable because the extractor
+# has no production consumer by contract (ripr#1429 class).
+#
+# #13367 requires this candidate stay non-published while #13238 owns the exact
+# installed-name model, so `extract_dbix_quickorm_column_candidates` carries
+# `#[allow(dead_code)]` and has no non-test caller. RIPR's activation tracing
+# starts from production entry points; there is none, by design. The only way
+# to supply one is to publish the candidate, which the controlling issue's
+# Non-goals forbid outright.
+#
+# Discriminator work was attempted first, over three rounds, and each round
+# found real gaps rather than a tracer artifact — the record is on PR #15462:
+#   round 1: the two nested `module ==` guards in record_nested_import_events
+#            had no negative control, and table_builder_active's NotProven arm
+#            was asserted nowhere;
+#   round 2: is_suppressed admitted UnadmittedSingleImport and absent packages
+#            without any test noticing;
+#   round 3: extracting the predicates exposed that nothing distinguished an
+#            exact module match from a `starts_with` prefix match, which would
+#            have admitted DBIx::QuickORM::Util.
+# Only after that did the reported class change from named-boundary "missing
+# discriminator" to activation_unknown with no boundary named — the
+# discriminators now exist; what RIPR cannot determine is whether a test
+# reaches the seam, which follows from having no production path.
+#
+# HONEST SCOPE NOTE: the matcher is path-scoped, so a future seam added to this
+# file is masked for this window. The module's contract forbids a production
+# consumer, so adding one is itself a contract change review must catch, and
+# the accompanying policy ratchet
+# (crates/perl-workspace/tests/quickorm_candidate_policy_currentness.rs) fails
+# if the registry prose drifts back to the retired claim.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-quickorm-containment-candidate-activation"
+kind = "activation_unknown"
+paths = ["crates/perl-workspace/src/semantic/generated_member_extractor_quickorm.rs"]
+classification = ["activation_unknown"]
+owner = "proof-lane"
+issue = "EffortlessMetrics/ripr#1429"
+reason = "PR #15462 (#13367) contains the DBIx::QuickORM table-column candidate so repeated or unprovable imports fail closed per package. ripr 0.10.0 reports 3 activation_unknown seams on the extractor. The structural cause is contractual, not incidental: #13367 requires the candidate stay non-published pending #13238, so extract_dbix_quickorm_column_candidates is #[allow(dead_code)] with no non-test caller and RIPR's activation tracing has no production entry point to reach. Supplying one means publishing the candidate, which that issue's Non-goals forbid. Per the gap-closure order, discriminator tests were attempted first across three ripr+ rounds and each round closed real mutation-surviving gaps (nested module== guards with no negative control; table_builder_active's NotProven arm; is_suppressed admitting UnadmittedSingleImport and absent packages; and an exact-vs-starts_with module match that no test distinguished); the reported class only became activation_unknown after e18c12d extracted the predicates into pure functions. All seams are mutation-proven by 8 controls: is_quickorm_module always-true and starts_with; admits_table_builder admitting NotProven and admitting any state; retracts_candidates admitting UnadmittedSingleImport and never retracting; is_suppressed ignoring its looked-up state; table_builder_active dropping the consumed-builder clause. Each fails at least one of the 33 extractor tests. HONEST SCOPE NOTE: path-scoped, so a future seam in this file is masked for this window; the module's contract forbids a production consumer, so such an addition is a contract change review must catch. Suppression is narrow: one production file, one PR."
+created = "2026-09-13"
+review_after = "2026-10-13"
+expires = "2026-12-31"
+removal_criteria = "Remove when #13238 lands the exact installed-name state that replaces this containment, or when the candidate gains its first production consumer (then re-scope the suppression to that consumer's seams and require activation evidence through it), or when ripr#1429 resolves activation tracing for modules with no production entry point. Narrow immediately if any seam unrelated to the containment predicates lands in this file."
