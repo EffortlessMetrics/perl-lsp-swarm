@@ -79,6 +79,42 @@ fn find_configured_or_path_pipe_perl() -> Result<Option<PathBuf>, Box<dyn Error>
     Ok(None)
 }
 
+#[test]
+#[cfg(windows)]
+#[serial(dap_debuggee_environment)]
+#[allow(clippy::print_stderr)]
+fn configured_perl_probe_uses_windows_stdio_bootstrap() -> Result<(), Box<dyn Error>> {
+    let _emacs = EnvGuard::remove("EMACS");
+    let _perl_rl = EnvGuard::remove("PERL_RL");
+    let _perl_db_opts = EnvGuard::remove("PERLDB_OPTS");
+    let Some(pin) = find_configured_or_path_pipe_perl()? else {
+        if env::var(common::REQUIRE_PERL_ENV)
+            .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+            .unwrap_or(false)
+        {
+            return Err("PERL_LSP_DAP_REQUIRE_PERL=1 but no pipe-capable Perl is available".into());
+        }
+        eprintln!("SKIP configured_perl_probe_uses_windows_stdio_bootstrap: Perl unavailable");
+        return Ok(());
+    };
+    let _pin = EnvGuard::set(DEBUGGEE_PERL_OVERRIDE_ENV, pin.as_os_str());
+    let resolved = probe_debuggee_perl_for_test(&pin, Duration::from_secs(10), false)
+        .map_err(|reason| format!("configured Perl was rejected: {reason}"))?;
+    let expected = fs::canonicalize(&pin)?;
+    if fs::canonicalize(&resolved.binary)? != expected {
+        return Err(format!(
+            "resolver selected {} instead of pinned {}",
+            resolved.binary.display(),
+            expected.display()
+        )
+        .into());
+    }
+    if resolved.identity.trim().is_empty() {
+        return Err("configured Perl probe returned no debugger identity".into());
+    }
+    Ok(())
+}
+
 fn observe_pin_with_session(
     mut session: DapWorkflowSession,
     launch_path: &str,
@@ -104,7 +140,7 @@ fn observe_pin_with_session(
 }
 
 #[test]
-#[serial]
+#[serial(dap_debuggee_environment)]
 #[allow(clippy::print_stderr)]
 fn all_convenience_launch_paths_reach_the_pinned_interpreter() -> Result<(), Box<dyn Error>> {
     let Some(source_perl) = find_configured_or_path_pipe_perl()? else {
@@ -172,7 +208,7 @@ fn all_convenience_launch_paths_reach_the_pinned_interpreter() -> Result<(), Box
 
 #[test]
 #[cfg(windows)]
-#[serial]
+#[serial(dap_debuggee_environment)]
 fn windows_pipe_launch_configures_perl_debugger_transport() -> Result<(), Box<dyn Error>> {
     let locator = Command::new("where.exe").arg("perl").output()?;
     if !locator.status.success() {
