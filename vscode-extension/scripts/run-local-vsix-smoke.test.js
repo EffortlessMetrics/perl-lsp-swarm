@@ -3187,8 +3187,10 @@ void test('main forwards its constructed manifest to the Test Explorer child', (
     PERL_LSP_ARTIFACT_SET_ID: 'local-artifacts',
     PERL_LSP_CONSTRUCT_CANDIDATE_MANIFEST: '1',
     PERL_LSP_TEST_EXPLORER_JOURNEY: '1',
+    PERL_LSP_CURRENT_SOURCE_DAP_STAGED: '1',
   };
   const childEnvironments = [];
+  const packageEnvironments = [];
   const sandbox = {
     __dirname,
     module: { exports: {} },
@@ -3212,6 +3214,7 @@ void test('main forwards its constructed manifest to the Test Explorer child', (
       return require(name);
     },
     capture: (env) => childEnvironments.push(env),
+    capturePackageEnv: (env) => packageEnvironments.push(env),
   };
   // Execute the actual main and manifest constructor. Only package/process IO
   // and unrelated journey legs are replaced; the handoff itself is untouched.
@@ -3222,7 +3225,7 @@ void test('main forwards its constructed manifest to the Test Explorer child', (
     ensureCleanWorkingTree = () => {};
     persistReceipt = () => {};
     stageServerForPackage = () => () => {};
-    runNpm = () => ({ status: 0 });
+    runNpm = (_args, env) => { capturePackageEnv(env); return { status: 0 }; };
     sha256File = () => 'b'.repeat(64);
     runInventoryTransition = () => ({ status: 'pass', behavior_safe: true });
     runPublishedSmoke = () => ({ phase: 'child', result: { status: 0 } });
@@ -3240,6 +3243,8 @@ void test('main forwards its constructed manifest to the Test Explorer child', (
     { filename: 'run-local-vsix-smoke-main-fixture.js' },
   );
   assert.equal(childEnvironments.length, 1, 'main must invoke the Test Explorer stage');
+  assert.equal(packageEnvironments.length, 1, 'main must package once');
+  assert.equal(packageEnvironments[0].PERL_LSP_CURRENT_SOURCE_DAP_STAGED, '0');
   const child = childEnvironments[0];
   assert.ok(
     child.PERL_LSP_CANDIDATE_ARTIFACT_MANIFEST,

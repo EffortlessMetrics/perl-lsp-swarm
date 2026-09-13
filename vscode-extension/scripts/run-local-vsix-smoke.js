@@ -2874,6 +2874,7 @@ function main() {
       const packageEnv = {
         ...process.env,
         PERL_LSP_CURRENT_SOURCE_SMOKE: '1',
+        PERL_LSP_CURRENT_SOURCE_DAP_STAGED: dapPath ? '1' : '0',
         PERL_LSP_SMOKE_RECEIPTS_DIR: receiptsRoot(),
       };
       delete packageEnv.PERL_LSP_TEST_EXPLORER_JOURNEY;

@@ -684,7 +684,11 @@ async function main() {
     const candidateDocument = readCandidateBaseline();
     const ignoredFiles =
       process.env.PERL_LSP_CURRENT_SOURCE_SMOKE === '1'
-        ? currentSourceBundleFiles(process.platform, process.arch)
+        ? currentSourceBundleFiles(
+            process.platform,
+            process.arch,
+            process.env.PERL_LSP_CURRENT_SOURCE_DAP_STAGED === '1',
+          )
         : [];
     const declaration = readDeclaration();
     const evaluation = evaluateTransition({
