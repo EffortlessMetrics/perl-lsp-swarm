@@ -33,6 +33,13 @@ and fail before bind with a `perl-dap --stdio` migration, including when
 combined with `--external-peer`. Do not start `perl-dap` as an ambient DAP
 listener for an editor.
 
+Source breakpoints set before launch remain pending until the launched Perl
+debugger acknowledges the exact source and line. The adapter then reports the
+same breakpoint ID as verified. If the launched source is changed or cannot be
+matched to the recorded source identity, the breakpoint remains unverified.
+This bounded behavior applies to the launched main source; module breakpoints
+remain unverified in this implementation.
+
 ## External dependencies
 
 Native launch and DAP attach use the built-in Rust adapter plus a local Perl

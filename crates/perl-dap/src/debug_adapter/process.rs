@@ -2,12 +2,13 @@
 
 use super::logpoint::{DrainStep, LogpointDrain, LogpointStep, PendingLogpoint};
 use super::{
-    Arc, BreakpointHitOutcome, BufRead, BufReader, Child, DEBUG_SESSION_TERMINATE_WAIT_MS,
-    DapEvent, DapMessage, DebugAdapter, DebugSession, DebugState, DisconnectArguments, Duration,
-    Instant, Mutex, Read, RestartArguments, ResumeMode, Source, StackFrame, Stdio, TcpAttachConfig,
-    TcpAttachSession, TerminateArguments, TerminationState, Value, Write, ansi_escape_re,
-    catalog_has_feature, context_re, die_suffix_re, error_re, exception_re, json, lock_or_recover,
-    module_path_to_name, prompt_re, security, stack_frame_re, thread, warning_re,
+    Arc, BufRead, BufReader, Child, DEBUG_SESSION_TERMINATE_WAIT_MS, DapEvent, DapMessage,
+    DebugAdapter, DebugSession, DebugState, DisconnectArguments, Duration,
+    EngineBreakpointHitOutcome, Instant, Mutex, Read, RestartArguments, ResumeMode, Source,
+    StackFrame, Stdio, TcpAttachConfig, TcpAttachSession, TerminateArguments, TerminationState,
+    Value, Write, ansi_escape_re, catalog_has_feature, context_re, die_suffix_re, error_re,
+    exception_re, json, lock_or_recover, module_path_to_name, prompt_re, security, stack_frame_re,
+    thread, warning_re,
 };
 #[cfg(unix)]
 use nix::sys::signal::{self, Signal};
@@ -652,6 +653,13 @@ impl DebugAdapter {
         let debuggee_cwd = std::path::absolute(cmd.get_current_dir().unwrap_or(Path::new(".")))
             .map_err(|error| format!("Cannot resolve debugger working directory: {error}"))?;
         cmd.current_dir(&debuggee_cwd);
+        let launch_source_path = {
+            let path = Path::new(program);
+            if path.is_absolute() { path.to_path_buf() } else { debuggee_cwd.join(path) }
+        };
+        let launch_source_digest = std::fs::read(&launch_source_path)
+            .map(|bytes| perl_source_identity::ContentDigest::of_bytes(&bytes).to_string())
+            .map_err(|error| format!("Cannot snapshot launched source identity: {error}"))?;
 
         // Allocate the execution-context id BEFORE spawning: a launch that
         // cannot mint a fresh id must fail without side effects.
@@ -668,6 +676,9 @@ impl DebugAdapter {
                 // Only advance the session generation once spawning has succeeded. A rejected
                 // launch must leave the currently active reader valid for its existing session.
                 self.prepare_replacement_session();
+                if let Ok(mut identity) = self.launch_source_identity.lock() {
+                    *identity = Some((launch_source_path.clone(), launch_source_digest.clone()));
+                }
 
                 let session = DebugSession {
                     process: child,
@@ -696,6 +707,48 @@ impl DebugAdapter {
 
                 // Start output reader thread
                 self.start_output_reader(debuggee_cwd);
+
+                // Replay source breakpoints admitted before launch after the
+                // reader is ready to capture each engine acknowledgement.
+                // The pending DAP records keep their original IDs; clients
+                // learn that installation completed through changed events.
+                let installed_source_breakpoints = self
+                    .launch_source_identity
+                    .lock()
+                    .ok()
+                    .and_then(|identity| identity.as_ref().map(|(path, _)| path.clone()))
+                    .map(|source_path| {
+                        let raw_key = source_path.to_string_lossy().into_owned();
+                        let canonical_key = source_path
+                            .canonicalize()
+                            .ok()
+                            .map(|path| path.to_string_lossy().into_owned());
+                        let (source_key, records) = {
+                            let raw_records = self.breakpoints.get_breakpoints(&raw_key);
+                            if raw_records.is_empty() {
+                                if let Some(canonical_key) = canonical_key {
+                                    let canonical_records =
+                                        self.breakpoints.get_breakpoints(&canonical_key);
+                                    (canonical_key, canonical_records)
+                                } else {
+                                    (raw_key, raw_records)
+                                }
+                            } else {
+                                (raw_key, raw_records)
+                            }
+                        };
+                        self.install_stored_source_breakpoints(&source_key, &records)
+                    })
+                    .unwrap_or_default();
+                for id in installed_source_breakpoints {
+                    self.send_event(
+                        "breakpoint",
+                        Some(serde_json::json!({
+                            "reason": "changed",
+                            "breakpoint": { "id": id, "verified": true }
+                        })),
+                    );
+                }
 
                 // Start debuggee watchdog if a wall-clock timeout was configured (#4640).
                 // The watchdog kills the perl -d process if it is still alive after
@@ -1220,6 +1273,7 @@ impl DebugAdapter {
                             let mut should_auto_continue = false;
                             let mut stop_reason = "step".to_string();
                             let mut logpoint_messages: Vec<String> = Vec::new();
+                            let mut hit_breakpoint_ids = Vec::new();
 
                             // Snapshot source authority before acquiring the session lock.
                             let observed_workspace_root =
@@ -1274,16 +1328,19 @@ impl DebugAdapter {
                                         ) && !current_file.is_empty()
                                             && current_line > 0
                                         {
-                                            DebugAdapter::register_observed_breakpoint_hit(
+                                            DebugAdapter::register_observed_engine_breakpoint_hit(
                                                 &breakpoints,
                                                 &current_file,
                                                 i64::from(current_line),
                                                 observed_workspace_root.as_deref(),
                                                 &debuggee_cwd,
+                                                session_generation,
                                             )
                                         } else {
-                                            BreakpointHitOutcome::default()
+                                            EngineBreakpointHitOutcome::default()
                                         };
+                                        hit_breakpoint_ids =
+                                            breakpoint_outcome.hit_breakpoint_ids.clone();
 
                                         if exception_match || warning_match {
                                             stop_reason = "exception".to_string();
@@ -1424,11 +1481,17 @@ impl DebugAdapter {
                                     sender,
                                     &seq,
                                     "stopped",
-                                    Some(json!({
-                                        "reason": stop_reason,
-                                        "threadId": thread_id,
-                                        "allThreadsStopped": true
-                                    })),
+                                    Some({
+                                        let mut body = json!({
+                                            "reason": stop_reason,
+                                            "threadId": thread_id,
+                                            "allThreadsStopped": true
+                                        });
+                                        if !hit_breakpoint_ids.is_empty() {
+                                            body["hitBreakpointIds"] = json!(hit_breakpoint_ids);
+                                        }
+                                        body
+                                    }),
                                 )
                             {
                                 tracing::warn!(

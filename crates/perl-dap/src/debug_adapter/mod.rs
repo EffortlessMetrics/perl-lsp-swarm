@@ -61,6 +61,7 @@ use crate::variables::{PerlVariableRenderer, RenderedVariable, VariableParser, V
 use perl_lexer::DAP_COMPLETION_KEYWORDS;
 use perl_lsp_rs_core::transport::framing::ContentLengthFramer;
 use perl_module::module_path_to_name;
+use perl_source_identity::ContentDigest;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
@@ -73,7 +74,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::breakpoints::{BreakpointHitOutcome, BreakpointStore};
+use crate::breakpoints::{BreakpointStore, EngineBreakpointHitOutcome};
 use crate::debug_adapter::data_breakpoints::DataBreakpointRecord;
 use crate::debug_adapter::session::{DebugSession, DebugState, ResumeMode};
 use crate::debug_adapter::variable_cache::CachedVariable;
@@ -172,6 +173,10 @@ pub struct DebugAdapter {
     last_exception_message: Arc<Mutex<Option<String>>>,
     /// Stored launch arguments for restart support
     last_launch_args: Arc<Mutex<Option<Value>>>,
+    /// Source identity captured at successful launch for breakpoint revision
+    /// checks. The debugger engine must never be credited with a later disk
+    /// revision merely because the path remained the same.
+    launch_source_identity: Arc<Mutex<Option<(PathBuf, String)>>>,
     /// Goto target ID → (file_path, line) mapping for cross-file goto
     goto_targets: Arc<Mutex<HashMap<i64, (String, i64)>>>,
     /// Monotonic goto target ID counter
@@ -272,6 +277,7 @@ impl DebugAdapter {
             data_breakpoints: Arc::new(Mutex::new(Vec::new())),
             last_exception_message: Arc::new(Mutex::new(None)),
             last_launch_args: Arc::new(Mutex::new(None)),
+            launch_source_identity: Arc::new(Mutex::new(None)),
             goto_targets: Arc::new(Mutex::new(HashMap::new())),
             next_goto_target_id: Arc::new(Mutex::new(1)),
             workspace_root: Arc::new(Mutex::new(None)),
@@ -422,9 +428,7 @@ impl DebugAdapter {
         }
     }
 
-    /// Correlate a debugger stop through the same source boundary as admission.
-    /// The caller supplies a root snapshot, so no authority lock is nested under
-    /// the session/store locks. Rejected paths cannot claim a breakpoint stop.
+    #[cfg(test)]
     fn register_observed_breakpoint_hit(
         breakpoints: &crate::breakpoints::BreakpointStore,
         source_path: &str,
@@ -432,9 +436,6 @@ impl DebugAdapter {
         workspace_root: Option<&Path>,
         debuggee_cwd: &Path,
     ) -> crate::breakpoints::BreakpointHitOutcome {
-        // Observed relative names belong to the debuggee's launch directory.
-        // Resolving them does not confer trust: containment is still checked
-        // independently against the configured workspace boundary below.
         let observed = Path::new(source_path);
         let resolved = if observed.is_absolute() {
             observed.to_path_buf()
@@ -450,6 +451,129 @@ impl DebugAdapter {
             .and_then(Path::to_str)
             .map(|path| breakpoints.register_breakpoint_hit(path, line))
             .unwrap_or_default()
+    }
+
+    /// Correlate a runtime stop only with a breakpoint that was acknowledged
+    /// by the current engine session.
+    pub(super) fn register_observed_engine_breakpoint_hit(
+        breakpoints: &crate::breakpoints::BreakpointStore,
+        source_path: &str,
+        line: i64,
+        workspace_root: Option<&Path>,
+        debuggee_cwd: &Path,
+        session_generation: u64,
+    ) -> EngineBreakpointHitOutcome {
+        Self::register_observed_engine_breakpoint_hit_with_digest_reader(
+            breakpoints,
+            source_path,
+            line,
+            workspace_root,
+            debuggee_cwd,
+            session_generation,
+            |path| {
+                std::fs::read(path)
+                    .map(|bytes| ContentDigest::of_bytes(&bytes).to_string())
+                    .unwrap_or_default()
+            },
+        )
+    }
+
+    fn register_observed_engine_breakpoint_hit_with_digest_reader(
+        breakpoints: &crate::breakpoints::BreakpointStore,
+        source_path: &str,
+        line: i64,
+        workspace_root: Option<&Path>,
+        debuggee_cwd: &Path,
+        session_generation: u64,
+        read_digest: impl FnOnce(&str) -> String,
+    ) -> EngineBreakpointHitOutcome {
+        let observed = Path::new(source_path);
+        let resolved = if observed.is_absolute() {
+            observed.to_path_buf()
+        } else {
+            debuggee_cwd.join(observed)
+        };
+        let Some(resolved) = resolved.to_str() else {
+            return EngineBreakpointHitOutcome::default();
+        };
+        Self::validate_source_path_at(resolved, workspace_root)
+            .ok()
+            .as_deref()
+            .and_then(Path::to_str)
+            .map(|path| {
+                if !breakpoints.has_engine_breakpoint_candidate(path, line, session_generation) {
+                    return EngineBreakpointHitOutcome::default();
+                }
+                let digest = read_digest(path);
+                breakpoints.register_engine_breakpoint_hit(path, line, session_generation, &digest)
+            })
+            .unwrap_or_default()
+    }
+
+    /// Ask the live Perl debugger to install one source breakpoint and read
+    /// back the exact perl5db glob slot before accepting the installation.
+    pub(super) fn acknowledge_engine_breakpoint(
+        &self,
+        source_path: &str,
+        line: i64,
+        timeout: Duration,
+    ) -> Result<(), String> {
+        let path_hex =
+            source_path.as_bytes().iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+        let command = format!(
+            "p do {{ my $f = pack(\"H*\", \"{path_hex}\"); DB::break_on_filename_line($f, {line}, 1); my $g = $main::{{\"_<\" . $f}}; my $h = defined($g) ? *{{$g}}{{HASH}} : undef; \"DAP_BP:\" . (defined($h) && defined($h->{{{line}}}) ? unpack(\"H*\", $h->{{{line}}}) : \"absent\") }}"
+        );
+        let captured_generation = self.current_session_generation();
+        let (operation, begin, end, prior_state) = {
+            let mut guard = lock_or_recover(&self.session, "debug_adapter.session");
+            let session = guard.as_mut().ok_or_else(|| "no active debugger session".to_string())?;
+            let stdin = session
+                .process
+                .stdin
+                .as_mut()
+                .ok_or_else(|| "debugger stdin is unavailable".to_string())?;
+            // The query is an adapter-internal inspection while perl5db is at a
+            // prompt. Mark that interval stopped so the reader does not expose
+            // the query's context echo as a user step stop. configurationDone
+            // will establish the real running mode afterward.
+            let prior_state = session.state.clone();
+            session.state = DebugState::Stopped;
+            let timeout_ms = timeout.as_millis().try_into().unwrap_or(u64::MAX);
+            let (operation, begin, end) =
+                match self.send_framed_debugger_query(stdin, &[command], timeout_ms) {
+                    Ok(query) => query,
+                    Err(error) => {
+                        session.state = prior_state;
+                        return Err(error);
+                    }
+                };
+            (operation, begin, end, prior_state)
+        };
+        let result = self
+            .capture_framed_debugger_output_for_operation(&operation, &begin, &end)
+            .ok_or_else(|| "engine breakpoint acknowledgement did not complete".to_string())
+            .and_then(|lines| {
+                if engine_breakpoint_acknowledged(&lines) {
+                    Ok(())
+                } else {
+                    Err(format!("engine did not acknowledge breakpoint at {source_path}:{line}"))
+                }
+            });
+        if self.current_session_generation() == captured_generation
+            && let Ok(mut guard) = self.session.lock()
+            && let Some(session) = guard.as_mut()
+        {
+            session.state = prior_state;
+        }
+        result
+    }
+
+    pub(super) fn launch_source_revision_matches(&self, source_path: &str, digest: &str) -> bool {
+        let Ok(identity) = self.launch_source_identity.lock() else { return false };
+        let Some((launch_path, launch_digest)) = identity.as_ref() else { return false };
+        let Ok(requested_path) = std::fs::canonicalize(source_path) else { return false };
+        let Ok(launched_path) = std::fs::canonicalize(launch_path) else { return false };
+        launched_path == requested_path && launch_digest == digest
     }
 
     /// Get next sequence number (monotonically increasing, poison-safe)
@@ -859,9 +983,144 @@ impl DebugAdapter {
         }
     }
 }
+
+/// Accept only the exact scalar marker emitted by the acknowledgement query.
+/// Query echoes, absent slots, and unrelated debugger output must not credit an
+/// engine installation.
+fn engine_breakpoint_acknowledged(lines: &[String]) -> bool {
+    lines.iter().any(|line| line.trim().trim_matches('"') == "DAP_BP:31")
+}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::error::Error;
+
+    #[test]
+    fn engine_ack_parser_requires_the_exact_scalar_marker() -> Result<(), Box<dyn Error>> {
+        if !engine_breakpoint_acknowledged(&["DAP_BP:31".to_string()])
+            || !engine_breakpoint_acknowledged(&["  \"DAP_BP:31\"  ".to_string()])
+            || engine_breakpoint_acknowledged(&["p do { ... DAP_BP:31 ... }".to_string()])
+            || engine_breakpoint_acknowledged(&["DAP_BP:absent".to_string()])
+            || engine_breakpoint_acknowledged(&["DAP_BP:32".to_string()])
+            || engine_breakpoint_acknowledged(&[])
+        {
+            return Err(
+                "ack parser accepted a non-exact marker or rejected the exact marker".into()
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn launch_source_revision_requires_same_canonical_source_and_digest()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let launched = dir.path().join("launched.pl");
+        let other = dir.path().join("other.pl");
+        std::fs::write(&launched, "print 1;\n")?;
+        std::fs::write(&other, "print 1;\n")?;
+        let digest = ContentDigest::of_bytes(&std::fs::read(&launched)?).to_string();
+        let adapter = DebugAdapter::new();
+        *adapter.launch_source_identity.lock().map_err(|_| "identity lock poisoned")? =
+            Some((launched.clone(), digest.clone()));
+
+        if !adapter.launch_source_revision_matches(
+            launched.to_str().ok_or("non-UTF-8 launched path")?,
+            &digest,
+        ) {
+            return Err("same canonical source and digest were rejected".into());
+        }
+        if adapter
+            .launch_source_revision_matches(other.to_str().ok_or("non-UTF-8 other path")?, &digest)
+            || adapter.launch_source_revision_matches(
+                launched.to_str().ok_or("non-UTF-8 launched path")?,
+                "changed-digest",
+            )
+        {
+            return Err("different source or digest was accepted".into());
+        }
+        drop(adapter);
+        Ok(())
+    }
+
+    #[test]
+    fn observed_engine_hit_gates_source_digest_reads() -> Result<(), Box<dyn Error>> {
+        let dir = tempfile::tempdir()?;
+        let source = dir.path().join("digest_gate.pl");
+        std::fs::write(&source, "my $x = 1;\n")?;
+        let source_path = source.canonicalize()?;
+        let source_text = source_path.to_str().ok_or("source path is not UTF-8")?;
+        let store = BreakpointStore::new();
+        let args = crate::protocol::SetBreakpointsArguments {
+            source: crate::protocol::Source { path: Some(source_text.to_string()), name: None },
+            breakpoints: Some(vec![crate::protocol::SourceBreakpoint {
+                line: 1,
+                column: None,
+                condition: None,
+                hit_condition: None,
+                log_message: None,
+            }]),
+            source_modified: None,
+        };
+        let response = store.set_breakpoints(&args);
+        let id = response.first().ok_or("missing breakpoint response")?.id;
+        let digest = ContentDigest::of_bytes(&std::fs::read(&source_path)?).to_string();
+        if !store.mark_engine_installed(id, source_text, 1, 7, digest) {
+            return Err("engine installation was not committed".into());
+        }
+
+        let mut reads = 0;
+        let wrong_line = DebugAdapter::register_observed_engine_breakpoint_hit_with_digest_reader(
+            &store,
+            source_text,
+            2,
+            Some(dir.path()),
+            dir.path(),
+            7,
+            |_| {
+                reads += 1;
+                "unused".to_string()
+            },
+        );
+        if wrong_line.matched || reads != 0 {
+            return Err("wrong-line engine stop performed attribution I/O".into());
+        }
+        let mut reads = 0;
+        let stale_generation =
+            DebugAdapter::register_observed_engine_breakpoint_hit_with_digest_reader(
+                &store,
+                source_text,
+                1,
+                Some(dir.path()),
+                dir.path(),
+                8,
+                |_| {
+                    reads += 1;
+                    "unused".to_string()
+                },
+            );
+        if stale_generation.matched || reads != 0 {
+            return Err("stale-generation engine stop performed attribution I/O".into());
+        }
+        let mut reads = 0;
+        let expected_digest = ContentDigest::of_bytes(&std::fs::read(&source_path)?).to_string();
+        let current = DebugAdapter::register_observed_engine_breakpoint_hit_with_digest_reader(
+            &store,
+            source_text,
+            1,
+            Some(dir.path()),
+            dir.path(),
+            7,
+            |_| {
+                reads += 1;
+                expected_digest.clone()
+            },
+        );
+        if !current.matched || reads != 1 {
+            return Err("current engine stop did not perform one fresh attribution read".into());
+        }
+        Ok(())
+    }
 
     fn create_breakpoint_test_perl_file()
     -> Result<(tempfile::NamedTempFile, String), Box<dyn std::error::Error>> {
@@ -1190,7 +1449,8 @@ print "result: $final\n";
                 let breakpoints =
                     body.get("breakpoints").and_then(Value::as_array).ok_or("missing array")?;
                 assert_eq!(breakpoints.len(), 3, "one response per input");
-                assert_eq!(breakpoints[0].get("verified").and_then(Value::as_bool), Some(true));
+                // Pre-launch AST validity is pending engine acknowledgement.
+                assert_eq!(breakpoints[0].get("verified").and_then(Value::as_bool), Some(false));
                 assert_eq!(breakpoints[1].get("verified").and_then(Value::as_bool), Some(false));
                 assert_eq!(breakpoints[2].get("verified").and_then(Value::as_bool), Some(false));
             }

@@ -1,6 +1,62 @@
 use super::{DapMessage, DebugAdapter, HashMap, Value, Write, json};
+use crate::breakpoints::BreakpointRecord;
+use std::collections::HashSet;
+use std::time::{Duration, Instant};
 
 impl DebugAdapter {
+    /// Install source breakpoints retained before launch once the debugger
+    /// reader is live. The same acknowledgement and identity checks are used
+    /// by an in-session setBreakpoints request and by launch replay.
+    pub(in crate::debug_adapter) fn install_stored_source_breakpoints(
+        &self,
+        source_path: &str,
+        records: &[BreakpointRecord],
+    ) -> HashSet<i64> {
+        let source_digest = std::fs::read(source_path)
+            .map(|bytes| perl_source_identity::ContentDigest::of_bytes(&bytes).to_string())
+            .unwrap_or_default();
+        let session_generation = self.current_session_generation();
+        let active_session = self.session.lock().map(|guard| guard.is_some()).unwrap_or(false);
+        if !active_session || !self.launch_source_revision_matches(source_path, &source_digest) {
+            return HashSet::new();
+        }
+
+        let mut installed = HashSet::new();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        for record in records {
+            if !record.verified
+                || record.condition.is_some()
+                || record.hit_condition.is_some()
+                || record.log_message.is_some()
+            {
+                continue;
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            let acknowledged =
+                self.acknowledge_engine_breakpoint(source_path, record.line, remaining).is_ok();
+            let current_revision = std::fs::read(source_path)
+                .map(|bytes| perl_source_identity::ContentDigest::of_bytes(&bytes).to_string())
+                .is_ok_and(|digest| digest == source_digest);
+            if acknowledged
+                && current_revision
+                && self.current_session_generation() == session_generation
+                && self.breakpoints.mark_engine_installed(
+                    record.id,
+                    source_path,
+                    record.line,
+                    session_generation,
+                    source_digest.clone(),
+                )
+            {
+                installed.insert(record.id);
+            }
+        }
+        installed
+    }
+
     /// Handle setBreakpoints request
     ///
     /// #9578: entries carrying floored optional fields (`condition`,
@@ -129,7 +185,8 @@ impl DebugAdapter {
             Vec::new()
         };
 
-        // AC7: AST-based breakpoint validation via BreakpointStore
+        // AC7: AST-based breakpoint validation via BreakpointStore. Replacement
+        // also clears prior engine acknowledgements under the store boundary.
         let verified_breakpoints =
             if all_entries_rejected { Vec::new() } else { self.breakpoints.set_breakpoints(&args) };
         let new_breakpoint_records = if all_entries_rejected {
@@ -178,6 +235,19 @@ impl DebugAdapter {
             }
         }
 
+        let engine_installed = if all_entries_rejected {
+            HashSet::new()
+        } else {
+            args.source
+                .path
+                .as_deref()
+                .map(|source_path| {
+                    let records = self.breakpoints.get_breakpoints(source_path);
+                    self.install_stored_source_breakpoints(source_path, &records)
+                })
+                .unwrap_or_default()
+        };
+
         // Keep function breakpoints active after line-breakpoint synchronization.
         if !all_entries_rejected {
             self.apply_stored_function_breakpoints();
@@ -208,9 +278,23 @@ impl DebugAdapter {
                 }
                 body_breakpoints.push(entry);
             } else if let Some(bp) = plain_results.next() {
-                body_breakpoints.push(
-                    serde_json::to_value(bp).unwrap_or_else(|_| json!({ "verified": false })),
-                );
+                let mut value =
+                    serde_json::to_value(&bp).unwrap_or_else(|_| json!({ "verified": false }));
+                // Static AST validity is a pending state.  A client-visible
+                // verified breakpoint requires the current debugger engine's
+                // acknowledgement for this session and source digest.
+                let engine_verified = engine_installed.contains(&bp.id);
+                value["verified"] = Value::Bool(engine_verified);
+                if bp.verified && !engine_verified {
+                    let active = self.session.lock().map(|guard| guard.is_some()).unwrap_or(false);
+                    value["message"] = Value::String(if active {
+                        "Breakpoint is pending acknowledgement by the current debugger engine"
+                            .to_string()
+                    } else {
+                        "Breakpoint is pending debugger launch".to_string()
+                    });
+                }
+                body_breakpoints.push(value);
             } else if let Some((_, line)) = plain_slots.next_if(|(i, _)| *i == index) {
                 body_breakpoints.push(json!({ "verified": false, "line": line }));
             }
@@ -232,9 +316,15 @@ impl DebugAdapter {
 #[cfg(test)]
 mod source_boundary_tests {
     use super::{DapMessage, DebugAdapter, Value, json};
+    use crate::breakpoints::BreakpointRecord;
+    use crate::debug_adapter::session::{DebugSession, DebugState, ResumeMode};
+    use crate::debug_adapter::variable_cache::VariableCache;
+    use std::collections::HashMap;
     use std::error::Error;
     use std::fs;
     use std::path::Path;
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
 
     fn require(condition: bool, context: &str) -> Result<(), Box<dyn Error>> {
         if condition { Ok(()) } else { Err(context.to_string().into()) }
@@ -308,6 +398,75 @@ mod source_boundary_tests {
     }
 
     #[test]
+    fn source_breakpoint_installation_uses_one_aggregate_timeout() -> Result<(), Box<dyn Error>> {
+        let root = tempfile::tempdir()?;
+        let source = root.path().join("aggregate_timeout.pl");
+        let source_contents =
+            (1..=20).map(|line| format!("my $v{line} = {line};\n")).collect::<String>();
+        fs::write(&source, source_contents.as_bytes())?;
+        let source_path = source.canonicalize()?;
+        let source_text = source_path.to_str().ok_or("source path is not UTF-8")?;
+
+        let child = Command::new("perl")
+            .args(["-e", "sleep 30"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?;
+        let adapter = DebugAdapter::new();
+        adapter.set_workspace_root(root.path().canonicalize()?);
+        let digest =
+            perl_source_identity::ContentDigest::of_bytes(source_contents.as_bytes()).to_string();
+        *adapter.launch_source_identity.lock().map_err(|_| "launch identity lock poisoned")? =
+            Some((source_path.clone(), digest));
+        *adapter.session.lock().map_err(|_| "session lock poisoned")? = Some(DebugSession {
+            process: child,
+            state: DebugState::Running,
+            stack_frames: Vec::new(),
+            stack_frame_arguments: HashMap::new(),
+            variable_cache: VariableCache::default(),
+            thread_id: 1,
+            last_resume_mode: ResumeMode::Unknown,
+            stopped_generation: 0,
+        });
+        adapter.operation_broker.open_session();
+
+        let records = (1..=20)
+            .map(|line| BreakpointRecord {
+                id: line,
+                line,
+                column: None,
+                condition: None,
+                hit_condition: None,
+                log_message: None,
+                hit_count: 0,
+                verified: true,
+                message: None,
+            })
+            .collect::<Vec<_>>();
+        let started = Instant::now();
+        let installed = adapter.install_stored_source_breakpoints(source_text, &records);
+        let elapsed = started.elapsed();
+        require(installed.is_empty(), "a nonresponding engine must not install breakpoints")?;
+        require(
+            elapsed < Duration::from_secs(8),
+            &format!("aggregate installation exceeded one budget: {elapsed:?}"),
+        )?;
+        let state = adapter
+            .session
+            .lock()
+            .map_err(|_| "session lock poisoned")?
+            .as_ref()
+            .map(|session| session.state.clone());
+        require_equal(
+            state,
+            Some(DebugState::Running),
+            "a failed aggregate installation must restore the prior session state",
+        )?;
+        Ok(())
+    }
+
+    #[test]
     fn contained_source_and_relative_alias_share_one_store_key() -> Result<(), Box<dyn Error>> {
         let root = tempfile::tempdir()?;
         let source = root.path().join("boundary_fixture.pl");
@@ -329,8 +488,8 @@ mod source_boundary_tests {
         )?;
         require_equal(
             single_breakpoint(&absolute)?.get("verified").and_then(Value::as_bool),
-            Some(true),
-            "absolute source breakpoint must verify",
+            Some(false),
+            "pre-launch absolute source breakpoint remains pending engine acknowledgement",
         )?;
 
         require_equal(
@@ -348,8 +507,8 @@ mod source_boundary_tests {
         )?;
         require_equal(
             single_breakpoint(&relative)?.get("verified").and_then(Value::as_bool),
-            Some(true),
-            "relative source breakpoint must verify",
+            Some(false),
+            "pre-launch relative source breakpoint remains pending engine acknowledgement",
         )?;
         let records = adapter.breakpoints.get_breakpoints(canonical_key);
         require_equal(
@@ -486,8 +645,8 @@ mod source_boundary_tests {
         )?;
         require_equal(
             single_breakpoint(&body)?.get("verified").and_then(Value::as_bool),
-            Some(true),
-            "ordinary absolute source breakpoint must verify",
+            Some(false),
+            "pre-launch ordinary absolute source breakpoint remains pending engine acknowledgement",
         )?;
         Ok(())
     }
@@ -619,8 +778,8 @@ mod source_boundary_tests {
             successful_body(request(&mut adapter, source_text(&alias)?, json!([{ "line": 1 }])))?;
         require_equal(
             single_breakpoint(&body)?.get("verified").and_then(Value::as_bool),
-            Some(true),
-            "admitted symlink must produce a verified breakpoint",
+            Some(false),
+            "pre-launch admitted symlink breakpoint remains pending engine acknowledgement",
         )?;
 
         // Raw suffix matching cannot correlate different basenames. The output
