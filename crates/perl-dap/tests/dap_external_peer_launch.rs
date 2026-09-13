@@ -181,6 +181,7 @@ fn run_peer(
                             success: true,
                             command: req.command.clone(),
                             message: None,
+                            cause: None,
                             body,
                         }),
                     );

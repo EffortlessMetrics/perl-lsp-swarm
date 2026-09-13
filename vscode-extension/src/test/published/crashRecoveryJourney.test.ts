@@ -624,9 +624,9 @@ suite('Packaged crash-recovery journey (#7848)', function () {
       }
 
       // Watchdog row: make the running replacement unresponsive WITHOUT first
-      // exiting (POSIX SIGSTOP) and prove one watchdog recovery episode whose
+      // exiting (POSIX SIGSTOP or the owned Windows helper) and prove one watchdog recovery episode whose
       // later process exit dedupes. Hosts without a suspend capability record
-      // the row honestly as not_proven (#7846 owns deterministic proof).
+      // the row honestly as not_proven when suspension is unavailable (#7846).
       let watchdogRow: ReceiptValue;
       const runningProcesses = await scanServerProcessIdentities(binDirectory);
       const watchdogTarget = runningProcesses[0];
@@ -639,7 +639,10 @@ suite('Packaged crash-recovery journey (#7848)', function () {
         };
       } else {
         const generationBeforeWatchdog = readinessGeneration(api);
-        const suspend = suspendServerProcess(watchdogTarget.pid);
+        const suspend = await suspendServerProcess(
+          watchdogTarget.pid,
+          watchdogTarget.creationTimeFileTime,
+        );
         observations.watchdog_suspend = suspend;
         if (suspend.outcome !== 'suspended') {
           watchdogRow = {
@@ -648,6 +651,10 @@ suite('Packaged crash-recovery journey (#7848)', function () {
           };
         } else {
           let watchdogRecovery;
+          let resume: Awaited<ReturnType<typeof resumeServerProcess>> = {
+            outcome: 'error',
+            detail: 'resume not attempted',
+          };
           try {
             watchdogRecovery = await awaitGenerationAdvance(
               api,
@@ -660,7 +667,7 @@ suite('Packaged crash-recovery journey (#7848)', function () {
             // so a leftover cannot wedge the host teardown (kill delivered
             // while suspended takes effect after SIGCONT) — even when the
             // generation wait itself throws.
-            const resume = resumeServerProcess(watchdogTarget.pid);
+            resume = await resumeServerProcess(watchdogTarget.pid);
             observations.watchdog_resume = resume;
           }
           if (!watchdogRecovery.advanced) {
@@ -697,10 +704,12 @@ suite('Packaged crash-recovery journey (#7848)', function () {
                 sample.server_pids.filter((pid) => pid !== watchdogTarget.pid).length === 1 &&
                 sample.lifecycle_state === 'running',
             );
+            const resumeSafe = resume.outcome === 'resumed' || resume.outcome === 'already_gone';
             watchdogRow = {
               status:
                 recoveryGeneration !== null &&
                 replacementRunning &&
+                resumeSafe &&
                 maxOverlap(dedupeSamples) <= 1 &&
                 generationStable
                   ? 'pass'

@@ -53,10 +53,6 @@ fn no_newline_defaults_to_lf() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn line_ending_equality() -> Result<(), Box<dyn std::error::Error>> {
-    assert_eq!(LineEnding::Lf, LineEnding::Lf);
-    assert_eq!(LineEnding::CrLf, LineEnding::CrLf);
-    assert_eq!(LineEnding::Cr, LineEnding::Cr);
-    assert_eq!(LineEnding::Mixed, LineEnding::Mixed);
     assert_ne!(LineEnding::Lf, LineEnding::CrLf);
     assert_ne!(LineEnding::Cr, LineEnding::Mixed);
     Ok(())

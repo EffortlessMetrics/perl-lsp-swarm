@@ -1,7 +1,12 @@
 //! Static project metadata dependency extraction.
 //!
 //! These extractors intentionally read common literal metadata shapes without
-//! executing Perl project files.
+//! executing Perl project files. The `cpanfile` extractor is transitional
+//! (#13695): it keeps top-level and canonical `on '<phase>' => sub { ... }`
+//! declarations while suppressing conditional declarations (`feature`,
+//! conditionals, loops, arbitrary callbacks, unknown phases) that
+//! `DeclaredDependency` cannot attribute, until #13631 converges the
+//! duplicated parsers.
 
 use serde_json::Value;
 use std::collections::HashSet;
@@ -59,6 +64,21 @@ pub enum DeclaredDependencySource {
 }
 
 impl DeclaredDependencySource {
+    /// Every declared-dependency metadata source, in detection order.
+    ///
+    /// [`detect_declared_dependencies`] iterates this list, so it is the exact
+    /// set of workspace-root files that produce declared-dependency facts.
+    /// `super::project_metadata` classifies watched paths from the same list
+    /// (#13640), which keeps detection and invalidation from drifting apart.
+    pub const ALL: [Self; 6] = [
+        Self::Cpanfile,
+        Self::MakefilePl,
+        Self::BuildPl,
+        Self::DistIni,
+        Self::MetaJson,
+        Self::MetaYml,
+    ];
+
     /// User-facing file label for this metadata source.
     #[must_use]
     pub fn display_name(self) -> &'static str {
@@ -71,10 +91,62 @@ impl DeclaredDependencySource {
             Self::MetaYml => "META.yml",
         }
     }
+
+    /// Workspace-root-relative file name this source is read from.
+    ///
+    /// Identical to [`Self::display_name`]; named separately because callers
+    /// resolving a path depend on it being the on-disk spelling.
+    #[must_use]
+    pub fn file_name(self) -> &'static str {
+        self.display_name()
+    }
+
+    /// Literal extractor applied to this source's contents.
+    fn extractor(self) -> fn(&str) -> Vec<DeclaredDependency> {
+        match self {
+            Self::Cpanfile => extract_cpanfile_requirements,
+            Self::MakefilePl => extract_makefile_pl_requirements,
+            Self::BuildPl => extract_build_pl_requirements,
+            Self::DistIni => extract_dist_ini_requirements,
+            Self::MetaJson => extract_meta_json_requirements,
+            Self::MetaYml => extract_meta_yml_requirements,
+        }
+    }
 }
 
-const CPANFILE_KEYS: &[&str] =
-    &["requires", "test_requires", "recommends", "build_requires", "configure_requires"];
+/// A literal `cpanfile` statement keyword mapped to the advisory relation it
+/// declares and the phase it forces when no enclosing block provides one.
+struct CpanfileKeyword {
+    keyword: &'static str,
+    relation: &'static str,
+    forced_phase: Option<&'static str>,
+}
+
+const CPANFILE_KEYWORDS: &[CpanfileKeyword] = &[
+    CpanfileKeyword { keyword: "requires", relation: "requires", forced_phase: None },
+    CpanfileKeyword { keyword: "recommends", relation: "recommends", forced_phase: None },
+    CpanfileKeyword { keyword: "suggests", relation: "suggests", forced_phase: None },
+    CpanfileKeyword { keyword: "conflicts", relation: "conflicts", forced_phase: None },
+    CpanfileKeyword { keyword: "test_requires", relation: "requires", forced_phase: Some("test") },
+    CpanfileKeyword {
+        keyword: "build_requires",
+        relation: "requires",
+        forced_phase: Some("build"),
+    },
+    CpanfileKeyword {
+        keyword: "configure_requires",
+        relation: "requires",
+        forced_phase: Some("configure"),
+    },
+    CpanfileKeyword {
+        keyword: "author_requires",
+        relation: "requires",
+        forced_phase: Some("develop"),
+    },
+];
+
+/// Canonical `on` phases with an explicit `{phase}.{relation}` advisory kind.
+const CPANFILE_PHASES: &[&str] = &["configure", "build", "test", "runtime", "develop"];
 const MAKEFILE_KEYS: &[&str] =
     &["PREREQ_PM", "BUILD_REQUIRES", "TEST_REQUIRES", "CONFIGURE_REQUIRES"];
 const BUILD_PL_KEYS: &[&str] =
@@ -82,75 +154,584 @@ const BUILD_PL_KEYS: &[&str] =
 const META_RELATION_KEYS: &[&str] =
     &["requires", "recommends", "build_requires", "test_requires", "configure_requires"];
 
+/// Authoritative text captured for one declared-dependency metadata source.
+///
+/// The watcher route (#13640) resolves each source exactly once per refresh and
+/// passes the outcome here, so detection consumes the same bytes the caller
+/// already observed. That removes the read-twice window in which a source could
+/// succeed during a readability probe and then fail when the detector reopened
+/// it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MetadataSourceRead {
+    /// Authoritative text: the file's bytes, or an open buffer's staged text.
+    Text(String),
+    /// The source does not exist and declares nothing.
+    Absent,
+    /// The source exists but could not be read as text.
+    Unreadable,
+}
+
+/// Compose declared dependencies from per-source captured reads.
+///
+/// Sources are consumed in [`DeclaredDependencySource::ALL`] order and each
+/// source contributes its own facts; only structurally identical facts (same
+/// module, version, kind, and source) collapse to the first occurrence,
+/// matching [`detect_declared_dependencies`].
+///
+/// Retention is per source, not per folder: an [`MetadataSourceRead::Unreadable`]
+/// source contributes its entries from `previous`, so an unreadable `META.yml`
+/// cannot erase what a readable `cpanfile` declares, and an unknown source is
+/// never silently downgraded to "declares nothing". An
+/// [`MetadataSourceRead::Absent`] source contributes nothing, which is how a
+/// genuine delete drops its declarations.
+///
+/// `reads` need not be complete. A source it does not mention is *unknown*,
+/// not absent, and retains its previous entries exactly as an unreadable one
+/// does. Every current caller resolves all of
+/// [`DeclaredDependencySource::ALL`], so this decides nothing today; it is
+/// defined this way because the alternative is that a partial slice silently
+/// erases facts about sources it makes no claim about, and `Absent` — the
+/// variant that drops declarations — should only ever come from a caller that
+/// actually looked. Staleness is the caller's to record: omission says nothing
+/// was observed, so an omitting caller that wants the folder marked stale must
+/// say so itself.
+///
+/// # Retention across sources
+///
+/// `previous` keeps each source's facts distinct rather than collapsing a
+/// module to its earliest source, so an unreadable source retains exactly the
+/// entries it contributed before, even when another readable source declares
+/// the same module. The folder is still reported stale whenever any source is
+/// unreadable, so the uncertainty is visible rather than silent.
+#[must_use]
+pub fn declared_dependencies_from_reads(
+    reads: &[(DeclaredDependencySource, MetadataSourceRead)],
+    previous: &[DeclaredDependency],
+) -> Vec<DeclaredDependency> {
+    let mut dependencies = Vec::new();
+    // Iterate the canonical order and look each source up, rather than walking
+    // `reads` in whatever order the caller assembled it. Output order is a
+    // property of `DeclaredDependencySource::ALL` — it is what
+    // `detect_declared_dependencies` uses — so letting the argument order
+    // decide would make the same inputs compose in different orders depending
+    // on who built the slice.
+    for source in DeclaredDependencySource::ALL {
+        let Some((_, read)) = reads.iter().find(|(candidate, _)| *candidate == source) else {
+            // Unknown, not absent — see the contract above.
+            retain_previous(&mut dependencies, previous, source);
+            continue;
+        };
+        match read {
+            MetadataSourceRead::Text(text) => {
+                for dependency in source.extractor()(text) {
+                    push_candidate(&mut dependencies, dependency);
+                }
+            }
+            MetadataSourceRead::Absent => {}
+            MetadataSourceRead::Unreadable => {
+                retain_previous(&mut dependencies, previous, source);
+            }
+        }
+    }
+    dedupe_dependencies(dependencies)
+}
+
+/// Carry `source`'s entries from the previous snapshot into `dependencies`.
+fn retain_previous(
+    dependencies: &mut Vec<DeclaredDependency>,
+    previous: &[DeclaredDependency],
+    source: DeclaredDependencySource,
+) {
+    for dependency in previous.iter().filter(|entry| entry.source == source) {
+        push_candidate(dependencies, dependency.clone());
+    }
+}
+
 /// Detect declared dependencies from common workspace-root metadata files.
 #[must_use]
 pub fn detect_declared_dependencies(workspace_root: &Path) -> Vec<DeclaredDependency> {
     let mut dependencies = Vec::new();
 
-    collect_from_file(
-        &mut dependencies,
-        &workspace_root.join("cpanfile"),
-        extract_cpanfile_requirements,
-    );
-    collect_from_file(
-        &mut dependencies,
-        &workspace_root.join("Makefile.PL"),
-        extract_makefile_pl_requirements,
-    );
-    collect_from_file(
-        &mut dependencies,
-        &workspace_root.join("Build.PL"),
-        extract_build_pl_requirements,
-    );
-    collect_from_file(
-        &mut dependencies,
-        &workspace_root.join("dist.ini"),
-        extract_dist_ini_requirements,
-    );
-    collect_from_file(
-        &mut dependencies,
-        &workspace_root.join("META.json"),
-        extract_meta_json_requirements,
-    );
-    collect_from_file(
-        &mut dependencies,
-        &workspace_root.join("META.yml"),
-        extract_meta_yml_requirements,
-    );
+    for source in DeclaredDependencySource::ALL {
+        collect_from_file(
+            &mut dependencies,
+            &workspace_root.join(source.file_name()),
+            source.extractor(),
+        );
+    }
 
     dedupe_dependencies(dependencies)
 }
 
 /// Extract literal dependencies from a `cpanfile`.
+///
+/// Transitional structural scan (#13695) over staged text only. Top-level
+/// declarations keep their literal relation keyword, canonical
+/// `on '<phase>' => sub { ... }` blocks are attributed as
+/// `{phase}.{relation}`, and declarations inside `feature` blocks,
+/// conditionals, loops, arbitrary callbacks, unknown `on` phases, or dynamic
+/// argument expressions (helper calls, ternaries, concatenations) are
+/// suppressed because `DeclaredDependency` cannot retain their predicates.
+/// Regex and quote-like operands (`qr/../`, `q(..)`, `s/../../`, ...) are
+/// skipped before block state updates so their delimiters and unbalanced
+/// braces cannot open phantom blocks. Exact duplicate identity remains
+/// delegated to the complete-identity path (#13628).
 #[must_use]
 pub fn extract_cpanfile_requirements(source: &str) -> Vec<DeclaredDependency> {
     let source = strip_comments_preserving_strings(source);
+    let bytes = source.as_bytes();
     let mut dependencies = Vec::new();
+    // Open blocks as `(phase, open brace depth)`. `None` marks an unsupported
+    // block (`feature`, conditionals, loops, arbitrary callbacks, unknown
+    // `on` phases); unsupported state propagates to nested blocks.
+    let mut blocks: Vec<(Option<&'static str>, usize)> = Vec::new();
+    let mut brace_depth = 0usize;
+    let mut at_boundary = true;
+    let mut pending_start = 0usize;
 
-    for statement in source.split(';') {
-        let statement = statement.trim();
-        for key in CPANFILE_KEYS {
-            if !starts_with_keyword(statement, key) {
+    let mut idx = 0usize;
+    while idx < source.len() {
+        if at_boundary {
+            skip_ws(bytes, &mut idx);
+            if bytes.get(idx).is_none() {
+                break;
+            }
+            if let Some(end) = ascii_ident_end(bytes, idx) {
+                let word = &source[idx..end];
+                at_boundary = false;
+                idx = end;
+                if let Some(declared) = CPANFILE_KEYWORDS.iter().find(|kw| kw.keyword == word)
+                    && cpanfile_call_boundary(bytes, idx)
+                    && blocks.last().is_none_or(|(phase, _)| phase.is_some())
+                {
+                    let block_phase = blocks.last().and_then(|(phase, _)| *phase);
+                    emit_cpanfile_declaration(
+                        &source,
+                        idx,
+                        declared,
+                        block_phase,
+                        &mut dependencies,
+                    );
+                } else if let Some(skipped) = skip_quotelike_operand(bytes, idx, word) {
+                    idx = skipped;
+                    pending_start = idx;
+                }
                 continue;
             }
-            let args = quoted_strings(statement);
-            let Some(module) = args.first().and_then(|value| normalize_module_name(value)) else {
-                continue;
-            };
-            let version = args.get(1).and_then(|value| normalize_version(value));
-            push_candidate(
-                &mut dependencies,
-                DeclaredDependency::new(
-                    module,
-                    version.as_deref(),
-                    *key,
-                    DeclaredDependencySource::Cpanfile,
-                ),
-            );
+            at_boundary = false;
+        }
+
+        match bytes[idx] {
+            b'\'' | b'"' => match parse_quoted_string(&source, idx) {
+                Some((_, consumed)) => idx += consumed,
+                None => idx += 1,
+            },
+            b'{' => {
+                brace_depth = brace_depth.saturating_add(1);
+                if is_block_opener(bytes, idx) {
+                    // Unsupported ancestors suppress canonical descendants.
+                    let inherited = matches!(blocks.last(), Some((None, _)));
+                    let phase =
+                        if inherited { None } else { on_block_phase(&source[pending_start..idx]) };
+                    blocks.push((phase, brace_depth));
+                }
+                at_boundary = true;
+                pending_start = idx + 1;
+                idx += 1;
+            }
+            b'}' => {
+                brace_depth = brace_depth.saturating_sub(1);
+                while matches!(blocks.last(), Some((_, open)) if *open > brace_depth) {
+                    blocks.pop();
+                }
+                at_boundary = true;
+                pending_start = idx + 1;
+                idx += 1;
+            }
+            b';' => {
+                at_boundary = true;
+                pending_start = idx + 1;
+                idx += 1;
+            }
+            _ => {
+                if let Some(end) = ascii_ident_end(bytes, idx) {
+                    let word = &source[idx..end];
+                    if let Some(skipped) = skip_quotelike_operand(bytes, end, word) {
+                        idx = skipped;
+                        pending_start = idx;
+                        continue;
+                    }
+                    idx = end;
+                } else {
+                    idx += 1;
+                }
+            }
         }
     }
 
     dedupe_dependencies(dependencies)
+}
+
+/// Parse the declaration arguments that follow a `cpanfile` relation keyword
+/// and push one advisory fact when they are literal and unconditional.
+fn emit_cpanfile_declaration(
+    source: &str,
+    args_start: usize,
+    declared: &CpanfileKeyword,
+    block_phase: Option<&'static str>,
+    dependencies: &mut Vec<DeclaredDependency>,
+) {
+    let (args, conditional) = cpanfile_statement_args(source, args_start);
+    if conditional {
+        return;
+    }
+    let Some(module) = args.first().and_then(|value| normalize_module_name(value)) else {
+        return;
+    };
+    let version = args.get(1).and_then(|value| normalize_version(value));
+    let kind = match block_phase {
+        None => declared.keyword.to_string(),
+        Some(phase) => {
+            format!("{}.{}", declared.forced_phase.unwrap_or(phase), declared.relation)
+        }
+    };
+    push_candidate(
+        dependencies,
+        DeclaredDependency::new(
+            module,
+            version.as_deref(),
+            kind,
+            DeclaredDependencySource::Cpanfile,
+        ),
+    );
+}
+
+/// Collect the quoted strings of one `cpanfile` statement.
+///
+/// Returns the strings and whether a postfix `if`/`unless` conditional was
+/// reached; conditional declarations produce no advisory fact.
+fn cpanfile_statement_args(source: &str, start: usize) -> (Vec<String>, bool) {
+    let bytes = source.as_bytes();
+    let mut values = Vec::new();
+    let mut idx = start;
+    // Any expression syntax outside the direct literal call shapes (quoted
+    // strings, commas, parentheses, fat commas, bare version numbers) makes
+    // the statement dynamic: helper calls, ternaries, and concatenations
+    // must suppress the advisory instead of naming undeclared modules.
+    let mut dynamic = false;
+
+    while idx < bytes.len() {
+        if let Some((value, consumed)) = parse_quoted_string(source, idx) {
+            if !dynamic {
+                values.push(value);
+            }
+            idx += consumed;
+            continue;
+        }
+        match bytes[idx] {
+            b';' | b'{' | b'}' => return (values, dynamic),
+            c if c.is_ascii_whitespace() || c == b',' || c == b'(' || c == b')' => idx += 1,
+            b'=' if bytes.get(idx + 1) == Some(&b'>') => idx += 2,
+            // Bare numeric version literals stay literal in every Perl form:
+            // digits, a decimal point (leading after an argument separator or
+            // embedded in digits), `_` separators, and exponent notation with
+            // an optional sign. A decimal point elsewhere is expression
+            // syntax (concatenation).
+            c if c.is_ascii_digit() => idx += 1,
+            b'.' if bytes.get(idx + 1).is_some_and(|b| b.is_ascii_digit())
+                && (idx > 0 && bytes[idx - 1].is_ascii_digit() || {
+                    // A leading-dot version is its own argument: the last
+                    // non-whitespace byte before it must be an argument
+                    // separator, never an operand (so `1 . 5` stays a
+                    // dynamic concatenation while `, .5` stays literal).
+                    let mut prev = idx;
+                    while prev > 0 && bytes[prev - 1].is_ascii_whitespace() {
+                        prev -= 1;
+                    }
+                    prev == 0 || matches!(bytes[prev - 1], b',' | b'(' | b'>')
+                }) =>
+            {
+                idx += 1
+            }
+            b'_' if bytes.get(idx + 1).is_some_and(|b| b.is_ascii_digit())
+                || (idx > 0 && bytes[idx - 1].is_ascii_digit()) =>
+            {
+                idx += 1
+            }
+            b'e' | b'E' if idx > 0 && bytes[idx - 1].is_ascii_digit() => idx += 1,
+            b'+' | b'-' if idx > 0 && matches!(bytes[idx - 1], b'e' | b'E') => idx += 1,
+            c if c.is_ascii_alphabetic() || c == b'_' => {
+                let end = ascii_ident_end(bytes, idx).unwrap_or(idx + 1);
+                if matches!(&source[idx..end], "if" | "unless") {
+                    return (values, true);
+                }
+                dynamic = true;
+                idx = end;
+            }
+            _ => {
+                dynamic = true;
+                idx += 1;
+            }
+        }
+    }
+
+    (values, dynamic)
+}
+
+/// Whether the source position after a relation keyword can start its
+/// argument list (whitespace, call parentheses, or a quoted module).
+fn cpanfile_call_boundary(bytes: &[u8], idx: usize) -> bool {
+    bytes
+        .get(idx)
+        .is_none_or(|byte| byte.is_ascii_whitespace() || matches!(byte, b'(' | b'\'' | b'"'))
+}
+
+/// Classify the statement that opens a block: `Some(phase)` for canonical
+/// `on '<phase>' => sub` headers, `None` for every other unsupported block.
+fn on_block_phase(pending: &str) -> Option<&'static str> {
+    let mut idx = 0usize;
+    let mut token = next_cpanfile_token(pending, &mut idx);
+    if matches!(token, Some(CpanfileToken::OpenParen)) {
+        token = next_cpanfile_token(pending, &mut idx);
+    }
+    match token? {
+        CpanfileToken::Ident("on") => {}
+        _ => return None,
+    }
+    let mut token = next_cpanfile_token(pending, &mut idx);
+    if matches!(token, Some(CpanfileToken::OpenParen)) {
+        token = next_cpanfile_token(pending, &mut idx);
+    }
+    let phase = match token? {
+        CpanfileToken::Str(value) => value,
+        CpanfileToken::Ident(word) => word.to_string(),
+        _ => return None,
+    };
+    match next_cpanfile_token(pending, &mut idx)? {
+        CpanfileToken::FatComma | CpanfileToken::Comma => {}
+        _ => return None,
+    }
+    match next_cpanfile_token(pending, &mut idx)? {
+        CpanfileToken::Ident("sub") => {}
+        _ => return None,
+    }
+    CPANFILE_PHASES.iter().find(|canonical| **canonical == phase).copied()
+}
+
+/// One literal token of a `cpanfile` block header.
+enum CpanfileToken<'a> {
+    Ident(&'a str),
+    Str(String),
+    FatComma,
+    Comma,
+    OpenParen,
+    CloseParen,
+    Other,
+}
+
+/// Read the next literal token of a block header, advancing `idx`.
+fn next_cpanfile_token<'a>(source: &'a str, idx: &mut usize) -> Option<CpanfileToken<'a>> {
+    let bytes = source.as_bytes();
+    while *idx < bytes.len() {
+        let byte = bytes[*idx];
+        if byte.is_ascii_whitespace() {
+            *idx += 1;
+            continue;
+        }
+        return match byte {
+            b'(' => {
+                *idx += 1;
+                Some(CpanfileToken::OpenParen)
+            }
+            b')' => {
+                *idx += 1;
+                Some(CpanfileToken::CloseParen)
+            }
+            b',' => {
+                *idx += 1;
+                Some(CpanfileToken::Comma)
+            }
+            b'=' if bytes.get(*idx + 1) == Some(&b'>') => {
+                *idx += 2;
+                Some(CpanfileToken::FatComma)
+            }
+            b'\'' | b'"' => {
+                let (value, consumed) = parse_quoted_string(source, *idx)?;
+                *idx += consumed;
+                Some(CpanfileToken::Str(value))
+            }
+            c if c.is_ascii_alphabetic() || c == b'_' => {
+                let end = ascii_ident_end(bytes, *idx).unwrap_or(*idx + 1);
+                let word = &source[*idx..end];
+                *idx = end;
+                Some(CpanfileToken::Ident(word))
+            }
+            _ => {
+                *idx += 1;
+                Some(CpanfileToken::Other)
+            }
+        };
+    }
+    None
+}
+
+/// Quote-like and regex operator keywords whose operands must never update
+/// cpanfile block state.
+const QUOTE_LIKE_OPERATORS: &[&str] = &["q", "qq", "qw", "qr", "m", "s", "tr", "y"];
+
+/// Regex-like operators that consume a replacement or transliteration operand
+/// after the pattern operand.
+const TWO_OPERAND_QUOTE_LIKES: &[&str] = &["s", "tr", "y"];
+
+/// Whether the `{` at `open_idx` opens a block instead of a hash subscript
+/// such as `$ENV{name}` or `$hash->{name}`.
+fn is_block_opener(bytes: &[u8], open_idx: usize) -> bool {
+    let mut before = open_idx;
+    while before > 0 && bytes[before - 1].is_ascii_whitespace() {
+        before -= 1;
+    }
+    let Some(prev) = before.checked_sub(1).and_then(|idx| bytes.get(idx)).copied() else {
+        return true;
+    };
+    match prev {
+        // Dereference and subscript sigils: `${...}`, `@{$list}`, `$ENV{key}`.
+        b'$' | b'@' | b'%' | b'&' | b'*' => false,
+        // Arrowed subscripts: `$hash->{key}`.
+        b'>' => before >= 2 && bytes[before - 2] == b'-',
+        c if c.is_ascii_alphanumeric() || c == b'_' => {
+            let mut start = before - 1;
+            while start > 0
+                && (bytes[start - 1].is_ascii_alphanumeric() || bytes[start - 1] == b'_')
+            {
+                start -= 1;
+            }
+            if start == 0 {
+                return true;
+            }
+            !matches!(bytes[start - 1], b'$' | b'@' | b'%' | b'&' | b'*')
+        }
+        _ => true,
+    }
+}
+
+/// If the scanned word is a quote-like or regex operator followed by a
+/// delimiter, return the index just past its full operand list.
+///
+/// Regex and string operands may contain unbalanced braces, so they must never
+/// update block state: `qr/\{/` previously opened a phantom unsupported block
+/// that suppressed every later top-level declaration.
+fn skip_quotelike_operand(bytes: &[u8], word_end: usize, word: &str) -> Option<usize> {
+    if !QUOTE_LIKE_OPERATORS.contains(&word) {
+        return None;
+    }
+    // Horizontal whitespace between the operator and its delimiter is legal
+    // Perl; a separator such as `=` means the word is not an operator use
+    // (e.g. a fat-comma bareword key).
+    let mut idx = word_end;
+    while matches!(bytes.get(idx), Some(b' ') | Some(b'\t')) {
+        idx += 1;
+    }
+    let &delimiter = bytes.get(idx)?;
+    if delimiter == b'=' || delimiter == b'>' {
+        return None;
+    }
+    let mut end = skip_quotelike_delimited(bytes, idx, delimiter)?;
+    if TWO_OPERAND_QUOTE_LIKES.contains(&word) {
+        while matches!(bytes.get(end), Some(b' ') | Some(b'\t')) {
+            end += 1;
+        }
+        let bracketing_first = matches!(delimiter, b'{' | b'(' | b'[' | b'<');
+        // Bracketing first delimiters may pair with any delimiter for the
+        // second operand (`s{pattern}{replacement}`); non-bracketing
+        // delimiters reuse the same character as the closing delimiter
+        // (`s/pattern/replacement/`), so the replacement body must always be
+        // consumed — braces inside it would otherwise corrupt block state.
+        if let Some(&second) = bytes.get(end) {
+            if matches!(second, b'{' | b'(' | b'[' | b'<') {
+                end = skip_quotelike_delimited(bytes, end, second)?;
+            } else if !bracketing_first {
+                end = skip_quotelike_to_delimiter(bytes, end, delimiter)?;
+            } else if !second.is_ascii_alphanumeric() && second != b'_' {
+                end = skip_quotelike_to_delimiter(bytes, end, second)?;
+            }
+        }
+    }
+    Some(end)
+}
+
+/// Skip one quote-like operand starting at its open delimiter, returning the
+/// index just past the closing delimiter. Bracketing delimiters nest and
+/// backslash escapes hide the next byte; other delimiters run to the next
+/// unescaped occurrence of the same byte.
+fn skip_quotelike_delimited(bytes: &[u8], open_idx: usize, delimiter: u8) -> Option<usize> {
+    let (open, close) = match delimiter {
+        b'{' => (b'{', b'}'),
+        b'(' => (b'(', b')'),
+        b'[' => (b'[', b']'),
+        b'<' => (b'<', b'>'),
+        other => (other, other),
+    };
+    let mut depth = 0usize;
+    let mut idx = open_idx;
+    while let Some(&byte) = bytes.get(idx) {
+        if byte == b'\\' {
+            idx = idx.checked_add(2)?;
+            continue;
+        }
+        if open == close {
+            // Non-bracketing delimiters cannot nest; occurrences alternate
+            // between opening and closing the operand.
+            if byte == open {
+                depth = 1 - depth;
+                if depth == 0 {
+                    return Some(idx + 1);
+                }
+            }
+        } else if byte == open {
+            depth = depth.checked_add(1)?;
+        } else if byte == close {
+            if depth == 0 {
+                return None;
+            }
+            depth -= 1;
+            if depth == 0 {
+                return Some(idx + 1);
+            }
+        }
+        idx += 1;
+    }
+    None
+}
+
+/// Skip a non-bracketing operand body to just past the next unescaped
+/// occurrence of `delimiter`, such as the replacement half of
+/// `s/pattern/replacement/`.
+fn skip_quotelike_to_delimiter(bytes: &[u8], start_idx: usize, delimiter: u8) -> Option<usize> {
+    let mut idx = start_idx;
+    while let Some(&byte) = bytes.get(idx) {
+        if byte == b'\\' {
+            idx = idx.checked_add(2)?;
+            continue;
+        }
+        if byte == delimiter {
+            return Some(idx + 1);
+        }
+        idx += 1;
+    }
+    None
+}
+
+/// End index of the ASCII identifier starting at `start`, if any.
+fn ascii_ident_end(bytes: &[u8], start: usize) -> Option<usize> {
+    let first = *bytes.get(start)?;
+    if !(first.is_ascii_alphabetic() || first == b'_') {
+        return None;
+    }
+    let mut end = start + 1;
+    while bytes.get(end).is_some_and(|byte| byte.is_ascii_alphanumeric() || *byte == b'_') {
+        end += 1;
+    }
+    Some(end)
 }
 
 /// Extract literal dependencies from `Makefile.PL`.
@@ -443,29 +1024,6 @@ fn meta_json_version(value: &Value) -> Option<String> {
     }
 }
 
-fn starts_with_keyword(statement: &str, key: &str) -> bool {
-    let Some(rest) = statement.strip_prefix(key) else {
-        return false;
-    };
-    rest.chars().next().is_none_or(|ch| ch.is_whitespace() || matches!(ch, '(' | '\'' | '"'))
-}
-
-fn quoted_strings(source: &str) -> Vec<String> {
-    let mut values = Vec::new();
-    let mut idx = 0;
-
-    while idx < source.len() {
-        if let Some((value, consumed)) = parse_quoted_string(source, idx) {
-            values.push(value);
-            idx += consumed;
-        } else {
-            idx += source[idx..].chars().next().map_or(1, char::len_utf8);
-        }
-    }
-
-    values
-}
-
 fn parse_literal_or_bare_value(source: &str, idx: &mut usize) -> Option<String> {
     if let Some((value, consumed)) = parse_quoted_string(source, *idx) {
         *idx += consumed;
@@ -626,12 +1184,11 @@ fn parse_quoted_string(source: &str, start: usize) -> Option<(String, usize)> {
             escaped = true;
             continue;
         }
-        if ch as u8 == quote {
+        if ch == char::from(quote) {
             return Some((value, idx - start));
         }
-        if ch == '\n' {
-            return None;
-        }
+        // Multiline strings are valid Perl: keep scanning so the whole
+        // operand stays opaque to statement and block tracking.
         value.push(ch);
     }
 
@@ -989,8 +1546,8 @@ mod tests {
         );
         assert_eq!(
             parse_quoted_string("'line\nbreak'", 0),
-            None,
-            "input that hits the boundary: ch == '\\n'"
+            Some(("line\nbreak".to_string(), "'line\nbreak'".len())),
+            "multiline strings are valid Perl operands and stay opaque"
         );
         assert_eq!(
             parse_quoted_string("'unterminated", 0),
@@ -1032,7 +1589,7 @@ mod tests {
         assert_eq!(value, "Module::Name");
         assert_eq!(consumed, r#"'Module\::Name'"#.len());
         assert!(parse_quoted_string("'unterminated", 0).is_none());
-        assert!(parse_quoted_string("'line\nbreak'", 0).is_none());
+        assert!(parse_quoted_string("'line\nbreak'", 0).is_some());
 
         let stripped = strip_comments_preserving_strings(
             r##"'Escaped\'#Tag' # drop
@@ -1045,5 +1602,141 @@ requires 'Kept#Tag'; # drop
         assert!(stripped.contains("'Kept#Tag'"));
         assert!(!stripped.contains("drop"));
         Ok(())
+    }
+
+    #[test]
+    fn source_precedence_does_not_depend_on_the_order_of_the_reads_slice() -> TestResult {
+        let cpanfile = MetadataSourceRead::Text("requires 'Shared::Module', '1.0';\n".to_string());
+        let meta_yml = MetadataSourceRead::Text("requires:\n  Shared::Module: '2.0'\n".to_string());
+
+        // The same two reads, assembled in opposite orders by the caller. Only
+        // `DeclaredDependencySource::ALL` may decide composition order, so both
+        // slices must yield the same facts in the same order.
+        let canonical_order = declared_dependencies_from_reads(
+            &[
+                (DeclaredDependencySource::Cpanfile, cpanfile.clone()),
+                (DeclaredDependencySource::MetaYml, meta_yml.clone()),
+            ],
+            &[],
+        );
+        let reversed_order = declared_dependencies_from_reads(
+            &[
+                (DeclaredDependencySource::MetaYml, meta_yml),
+                (DeclaredDependencySource::Cpanfile, cpanfile),
+            ],
+            &[],
+        );
+
+        assert_eq!(
+            canonical_order, reversed_order,
+            "the same reads must compose identically however the caller ordered them"
+        );
+        assert_eq!(
+            canonical_order.len(),
+            2,
+            "each source keeps its own fact for the shared module"
+        );
+        let first = canonical_order
+            .first()
+            .ok_or_else(|| missing("expected the cpanfile fact to be declared"))?;
+        assert_eq!(first.module, "Shared::Module");
+        assert_eq!(
+            first.source,
+            DeclaredDependencySource::Cpanfile,
+            "cpanfile precedes META.yml in DeclaredDependencySource::ALL"
+        );
+        assert_eq!(first.version.as_deref(), Some("1.0"));
+        let second = canonical_order
+            .get(1)
+            .ok_or_else(|| missing("expected the META.yml fact to be declared"))?;
+        assert_eq!(second.module, "Shared::Module");
+        assert_eq!(second.source, DeclaredDependencySource::MetaYml);
+        assert_eq!(second.version.as_deref(), Some("2.0"));
+        Ok(())
+    }
+
+    #[test]
+    fn retention_for_an_unreadable_source_does_not_depend_on_the_order_of_the_reads_slice()
+    -> TestResult {
+        // `META.yml` is unreadable and retains its own previous entry; the
+        // readable `cpanfile` declares a different module. Retention must be
+        // attributed by source, not by where the caller placed the read.
+        let previous = vec![DeclaredDependency::new(
+            "Retained::Module",
+            Some("3.0"),
+            "requires",
+            DeclaredDependencySource::MetaYml,
+        )];
+        let reads = [
+            (DeclaredDependencySource::MetaYml, MetadataSourceRead::Unreadable),
+            (
+                DeclaredDependencySource::Cpanfile,
+                MetadataSourceRead::Text("requires 'Fresh::Module', '1.0';\n".to_string()),
+            ),
+        ];
+
+        let composed = declared_dependencies_from_reads(&reads, &previous);
+        let modules: Vec<&str> = composed.iter().map(|entry| entry.module.as_str()).collect();
+        assert_eq!(
+            modules,
+            vec!["Fresh::Module", "Retained::Module"],
+            "composition follows DeclaredDependencySource::ALL, not the reads slice"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_source_missing_from_the_reads_slice_is_unknown_rather_than_absent() {
+        // Only `cpanfile` was resolved. The other five sources are unknown, so
+        // a partial slice must not erase what they previously declared —
+        // `Absent`, the variant that drops declarations, has to come from a
+        // caller that actually looked.
+        let previous = vec![
+            DeclaredDependency::new(
+                "From::MetaYml",
+                Some("2.0"),
+                "requires",
+                DeclaredDependencySource::MetaYml,
+            ),
+            DeclaredDependency::new(
+                "From::DistIni",
+                None,
+                "requires",
+                DeclaredDependencySource::DistIni,
+            ),
+        ];
+        let reads = [(
+            DeclaredDependencySource::Cpanfile,
+            MetadataSourceRead::Text("requires 'Fresh::Module', '1.0';\n".to_string()),
+        )];
+
+        let composed = declared_dependencies_from_reads(&reads, &previous);
+        let modules: Vec<&str> = composed.iter().map(|entry| entry.module.as_str()).collect();
+        assert_eq!(
+            modules,
+            vec!["Fresh::Module", "From::DistIni", "From::MetaYml"],
+            "unmentioned sources retain, in DeclaredDependencySource::ALL order"
+        );
+
+        // The contrast that makes the choice meaningful: an explicit `Absent`
+        // for the same source really does drop it.
+        let explicit_absence = declared_dependencies_from_reads(
+            &[
+                (
+                    DeclaredDependencySource::Cpanfile,
+                    MetadataSourceRead::Text("requires 'Fresh::Module', '1.0';\n".to_string()),
+                ),
+                (DeclaredDependencySource::MetaYml, MetadataSourceRead::Absent),
+                (DeclaredDependencySource::DistIni, MetadataSourceRead::Absent),
+            ],
+            &previous,
+        );
+        let dropped: Vec<&str> =
+            explicit_absence.iter().map(|entry| entry.module.as_str()).collect();
+        assert_eq!(
+            dropped,
+            vec!["Fresh::Module"],
+            "an observed absence still downgrades, which is how a real delete works"
+        );
     }
 }

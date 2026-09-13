@@ -687,6 +687,48 @@ mod tests {
         assert!(actions.iter().any(|a| a.title.contains("error checking")));
     }
 
+    /// Regression guard for #9835: a file operation followed within the
+    /// error-checking lookahead window by multi-byte text used to panic the
+    /// `textDocument/codeAction` request, because the window was cut at a fixed
+    /// 50-*byte* offset that could land inside a UTF-8 sequence.
+    #[test]
+    fn test_add_error_checking_does_not_panic_on_multibyte_source() {
+        let source = format!("open my $fh, '<', 'f';\n#{}\n", "é".repeat(40));
+        let mut parser = Parser::new(&source);
+        let ast = must(parser.parse());
+
+        let provider = EnhancedCodeActionsProvider::new(source.clone());
+        let actions = provider.get_enhanced_refactoring_actions(&ast, (0, source.len()));
+
+        assert!(
+            actions.iter().any(|a| a.title.contains("error checking")),
+            "the action must still be offered for an unchecked open followed by non-ASCII text"
+        );
+    }
+
+    /// The inverse of the test above, and the one that proves the *character*
+    /// window is the right behavior rather than merely a non-panicking one.
+    ///
+    /// The `die` here sits inside the 50-character window but well outside a
+    /// 50-byte one: the 30 two-byte 'é's push it past byte 60. So the pre-fix
+    /// byte window could not see it and would have offered the action on an
+    /// operation that is already checked; the character window suppresses it.
+    #[test]
+    fn test_add_error_checking_suppressed_by_idiom_beyond_the_byte_window() {
+        let source = format!("open my $fh, '<', 'f';\n# {} or die\n", "é".repeat(30));
+        let mut parser = Parser::new(&source);
+        let ast = must(parser.parse());
+
+        let provider = EnhancedCodeActionsProvider::new(source.clone());
+        let actions = provider.get_enhanced_refactoring_actions(&ast, (0, source.len()));
+
+        assert!(
+            !actions.iter().any(|a| a.title.contains("error checking")),
+            "an idiom inside the 50-character window must suppress the action, \
+             even though it lies beyond 50 bytes"
+        );
+    }
+
     #[test]
     fn test_convert_to_postfix() {
         let source = "if ($debug) { print \"Debug\\n\"; }";
