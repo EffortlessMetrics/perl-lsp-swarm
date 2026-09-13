@@ -1587,7 +1587,7 @@ impl LspServer {
                 // #5411 fixed for goto-definition -- a position the naive
                 // quote-counter classifies as both comment and string would
                 // wrongly skip this guard.
-                if perl_lsp_rs_core::providers::rename::is_in_comment(offset, &doc.text) {
+                if super::navigation::is_in_comment_naive(offset, &doc.text) {
                     break 'completion_response None;
                 }
 
@@ -1941,8 +1941,7 @@ impl LspServer {
                 // #5411 fixed for goto-definition -- a position the naive
                 // quote-counter classifies as both comment and string would
                 // wrongly skip this guard.
-                let in_comment =
-                    perl_lsp_rs_core::providers::rename::is_in_comment(offset, &doc.text);
+                let in_comment = super::navigation::is_in_comment_naive(offset, &doc.text);
 
                 // Test-only rendezvous: gives a regression test a
                 // deterministic window to land a cancellation here instead
@@ -2554,8 +2553,13 @@ mod tests {
         let mut parser = perl_parser_core::Parser::new(source);
         let ast = parser.parse().expect("fixture must parse");
         let module = RuntimeDancer2Module::new("lib/Dancer2.pm", "1.1.1");
-        let activations =
-            file_activations(&ast, FileId(1), Some(&module), &SourceGeneration::known("g1"));
+        let activations = file_activations(
+            &ast,
+            source,
+            FileId(1),
+            Some(&module),
+            &SourceGeneration::known("g1"),
+        );
         let facts = canonical_file_facts(&ast, FileId(1), &activations);
         let offset = source.find(needle).expect("fixture offset");
         let candidates =

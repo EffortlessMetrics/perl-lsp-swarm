@@ -14,7 +14,6 @@ use crate::runtime::window::RequestProgressGuard;
 use crate::state::{reference_search_deadline, references_cap};
 use crate::util::{is_word_boundary, token_under_cursor};
 use std::collections::BinaryHeap;
-use std::sync::OnceLock;
 use std::time::Instant;
 
 /// Serialize a slice of typed values to a JSON array (#4995).
@@ -36,8 +35,6 @@ use crate::runtime::readiness::IndexReadinessPolicy;
 #[cfg(feature = "workspace")]
 use crate::runtime::routing::{IndexAccessMode, route_index_access};
 
-static QUALIFIED_NAME_RE: OnceLock<Result<regex::Regex, regex::Error>> = OnceLock::new();
-
 const REFERENCE_TEXT_FALLBACK_MAX_DOCUMENTS: usize = 128;
 const REFERENCE_TEXT_FALLBACK_MAX_BYTES: usize = 4 * 1024 * 1024;
 
@@ -49,7 +46,7 @@ const REFERENCE_TEXT_FALLBACK_MAX_BYTES: usize = 4 * 1024 * 1024;
 /// existing fallback cascade. Flip to `false` to restore the pre-P8 routing
 /// boundary without changing the fallback tiers.
 #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
-const ENABLE_PIR_A_LEXICAL_REFERENCES_LIVE: bool = true;
+const ENABLE_SEMANTIC_SOURCE_BACKED_REFERENCES_LIVE: bool = true;
 
 fn lsp_location_count(value: Option<&Value>) -> usize {
     match value {
@@ -74,7 +71,7 @@ struct ReferencesDecisionTraceContext {
 /// results — a signal that would be lost if collapsed into `WorkspaceExact`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ReferencesAnsweringTier {
-    /// Tier 1 — live compiler source-backed references (most precise).
+    /// Tier 1 — live semantic source-backed references (most precise).
     SemanticSourceBacked,
     /// Tiers 2, 4, 5 — workspace index `find_refs`/`find_def`/`find_references` only.
     WorkspaceExact,
@@ -120,12 +117,24 @@ pub(crate) enum SourceBackedReferenceDecline {
     DeclarationAnchorUnavailable,
     /// The declaration anchor had no wire location.
     DeclarationLocationUnavailable,
+    /// The declaration wire location carried a URI that is not a valid protocol URI.
+    ///
+    /// Distinct from [`Self::DeclarationLocationUnavailable`]: an anchor was found and
+    /// produced a location, but its URI could not be converted without naming a
+    /// different resource, so the attempt declines rather than emitting one.
+    DeclarationLocationUriInvalid,
     /// The declaration location could not be serialized for the wire response.
     DeclarationSerializationFailed,
     /// The initialized lexical declaration gate rejected the source shape.
     InitializedLexicalGateRejected,
     /// An occurrence had no wire location anchor.
     OccurrenceLocationUnavailable,
+    /// An occurrence wire location carried a URI that is not a valid protocol URI.
+    ///
+    /// Distinct from [`Self::OccurrenceLocationUnavailable`]: the anchor produced a
+    /// location, but its URI could not be converted without naming a different
+    /// resource, so the attempt declines rather than emitting one.
+    OccurrenceLocationUriInvalid,
     /// An occurrence location could not be serialized for the wire response.
     OccurrenceSerializationFailed,
     /// The exact path produced no locations after filtering.
@@ -171,6 +180,9 @@ impl SourceBackedReferenceAttempt {
                     SourceBackedReferenceDecline::DeclarationLocationUnavailable => {
                         ("declaration_location", false, 0, None)
                     }
+                    SourceBackedReferenceDecline::DeclarationLocationUriInvalid => {
+                        ("declaration_location_uri", false, 0, None)
+                    }
                     SourceBackedReferenceDecline::DeclarationSerializationFailed => {
                         ("declaration_serialization", false, 0, None)
                     }
@@ -179,6 +191,9 @@ impl SourceBackedReferenceAttempt {
                     }
                     SourceBackedReferenceDecline::OccurrenceLocationUnavailable => {
                         ("occurrence_location", false, 0, None)
+                    }
+                    SourceBackedReferenceDecline::OccurrenceLocationUriInvalid => {
+                        ("occurrence_location_uri", false, 0, None)
                     }
                     SourceBackedReferenceDecline::OccurrenceSerializationFailed => {
                         ("occurrence_serialization", false, 0, None)
@@ -331,7 +346,7 @@ pub(crate) fn classify_combined_tier(
 
 #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
 fn may_use_source_backed_references(symbol_is_variable: bool, include_declaration: bool) -> bool {
-    !symbol_is_variable || (ENABLE_PIR_A_LEXICAL_REFERENCES_LIVE && !include_declaration)
+    !symbol_is_variable || (ENABLE_SEMANTIC_SOURCE_BACKED_REFERENCES_LIVE && !include_declaration)
 }
 
 #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
@@ -348,13 +363,6 @@ fn line_has_initialized_lexical_declaration(line: &str, sigil: char, name: &str)
         }
     }
     false
-}
-
-fn get_qualified_name_regex() -> Option<&'static regex::Regex> {
-    QUALIFIED_NAME_RE
-        .get_or_init(|| regex::Regex::new(r"([A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*)"))
-        .as_ref()
-        .ok()
 }
 
 fn search_document_texts_for_references<'a, I>(documents: I, needle: &str, cap: usize) -> Vec<Value>
@@ -817,39 +825,18 @@ impl LspServer {
                             key.sigil.is_none()
                                 && matches!(key.kind, crate::workspace_index::SymKind::Sub)
                         });
-                        if let Some(bare_sub_key) = bare_sub_key
-                            && let Some(qualified_name_re) = get_qualified_name_regex()
-                        {
-                            let (line_start, line_text) =
-                                crate::util::line_window_around_offset(&doc.text, offset);
-                            let cursor_in_line = offset.saturating_sub(line_start);
+                        if let Some(bare_sub_key) = bare_sub_key {
                             // The question the guard actually asks is "does the
                             // cursor sit on the token that names the sub every tier
-                            // below is about to search for?".
-                            //
-                            // A prefix component never does. Nor does a *final*
-                            // component whose text disagrees with the key's name:
-                            // in `Foo::Bar->baz()` the qualified-name match stops at
-                            // the `->`, so a cursor on `Bar` is the match's final
-                            // component while the key names the method `baz`. Testing
-                            // only for `Prefix` would let that receiver through and
-                            // answer with `baz`'s references -- this issue's defect,
-                            // reached by a different route.
+                            // below is about to search for?" -- the same question
+                            // `rename.rs` asks before editing, through the predicate
+                            // the two share (#14757).
                             let cursor_is_off_the_named_sub =
-                                match super::navigation::fqn_component_at_cursor(
-                                    qualified_name_re,
-                                    line_text,
-                                    cursor_in_line,
-                                ) {
-                                    Some(super::navigation::FqnCursorComponent::Prefix) => true,
-                                    Some(super::navigation::FqnCursorComponent::Final {
-                                        name,
-                                        ..
-                                    }) => name.as_str() != &*bare_sub_key.name,
-                                    // Not inside a `::`-qualified match at all, so the
-                                    // cursor's component is not a question worth asking.
-                                    None => false,
-                                };
+                                super::navigation::cursor_is_off_named_symbol(
+                                    &doc.text,
+                                    offset,
+                                    Some(&*bare_sub_key.name),
+                                );
                             if cursor_is_off_the_named_sub {
                                 return Ok((
                                     Some(json!([])),
@@ -911,7 +898,7 @@ impl LspServer {
                                                 tracing::debug!(
                                                     ref_count,
                                                     elapsed = ?elapsed,
-                                                    "References: returned live source-backed compiler facts"
+                                                    "References: returned live semantic source-backed facts"
                                                 );
                                                 let result_count = live_locations.len();
                                                 return Ok((
@@ -1163,7 +1150,12 @@ impl LspServer {
                                 let cursor_in_text = offset.saturating_sub(text_start);
 
                                 // Use cached regex to avoid per-request compilation overhead
-                                if let Some(qualified_name_re) = get_qualified_name_regex() {
+                                // `navigation.rs` owns the one copy of this
+                                // pattern. This file kept a byte-identical second
+                                // `OnceLock` until #14757; the guard above and
+                                // this fallback must see the same match, and two
+                                // owners is the drift that costs.
+                                if let Ok(qualified_name_re) = super::navigation::get_fqn_regex() {
                                     for captures in qualified_name_re.captures_iter(text_around) {
                                         if let Some(m) = captures.get(1)
                                             && cursor_in_text >= m.start()
@@ -1797,7 +1789,11 @@ impl LspServer {
                     SourceBackedReferenceDecline::OccurrenceLocationUnavailable,
                 );
             };
-            let location: lsp_types::Location = wire_location.into();
+            let Ok(location) = lsp_types::Location::try_from(wire_location) else {
+                return SourceBackedReferenceAttempt::Declined(
+                    SourceBackedReferenceDecline::OccurrenceLocationUriInvalid,
+                );
+            };
             let Ok(location) = serde_json::to_value(location) else {
                 return SourceBackedReferenceAttempt::Declined(
                     SourceBackedReferenceDecline::OccurrenceSerializationFailed,
@@ -1812,7 +1808,11 @@ impl LspServer {
             && let Some(anchor_id) = decl_anchor
             && let Some(wire_location) = workspace_index.semantic_anchor_wire_location(anchor_id)
         {
-            let decl_location: lsp_types::Location = wire_location.into();
+            let Ok(decl_location) = lsp_types::Location::try_from(wire_location) else {
+                return SourceBackedReferenceAttempt::Declined(
+                    SourceBackedReferenceDecline::DeclarationLocationUriInvalid,
+                );
+            };
             let Ok(decl_value) = serde_json::to_value(&decl_location) else {
                 return SourceBackedReferenceAttempt::Declined(
                     SourceBackedReferenceDecline::DeclarationSerializationFailed,
@@ -1845,7 +1845,7 @@ impl LspServer {
                 "provider": "references",
                 "live_provider_result": live_provider_result,
                 "live_provider_count": live_provider_count,
-                "compiler_receipt": null,
+                "source_backed_receipt": null,
                 "no_live_behavior_change": true,
                 "note": "references runtime proof unavailable without workspace semantic queries"
             })))
@@ -1858,7 +1858,7 @@ impl LspServer {
                     "provider": "references",
                     "live_provider_result": live_provider_result,
                     "live_provider_count": live_provider_count,
-                    "compiler_receipt": null,
+                    "source_backed_receipt": null,
                     "no_live_behavior_change": true,
                     "note": "references runtime proof missing request params"
                 })));
@@ -1877,14 +1877,15 @@ impl LspServer {
                     "provider": "references",
                     "live_provider_result": live_provider_result,
                     "live_provider_count": live_provider_count,
-                    "compiler_receipt": null,
+                    "source_backed_receipt": null,
                     "no_live_behavior_change": true,
                     "note": "references runtime proof found no symbol at request position"
                 })));
             };
 
             let _ = self.check_index_readiness(IndexReadinessPolicy::WaitBriefly);
-            let compiler_receipt_and_cutover = if self.workspace_index_stale_for_any_open_document()
+            let source_backed_receipt_and_cutover = if self
+                .workspace_index_stale_for_any_open_document()
             {
                 None
             } else {
@@ -1912,7 +1913,7 @@ impl LspServer {
                             let live_cutover =
                                 matches!(outcome.result, ReferencesCutoverResult::Exact(_));
                             let mut receipt = outcome.receipt;
-                            let compiler_result_count = receipt.new_result.match_count;
+                            let source_backed_result_count = receipt.new_result.match_count;
                             let behavior_note = if live_cutover && include_declaration {
                                 "partial live exact/imported references cutover (includeDeclaration=true)"
                             } else if live_cutover {
@@ -1921,8 +1922,8 @@ impl LspServer {
                                 "legacy fallback"
                             };
                             receipt.notes.push(format!(
-                                "references runtime proof: live_provider_results={live_provider_count}; compiler_fact_candidates={}; compiler_result_count={}; {behavior_note}",
-                                compiler_result_count, compiler_result_count,
+                                "references runtime proof: live_provider_results={live_provider_count}; source_backed_candidates={}; source_backed_result_count={}; {behavior_note}",
+                                source_backed_result_count, source_backed_result_count,
                             ));
                             Some((receipt, live_cutover))
                         })
@@ -1931,7 +1932,7 @@ impl LspServer {
                     IndexAccessMode::Partial(_) | IndexAccessMode::None => None,
                 }
             };
-            let (compiler_receipt, live_cutover) = match compiler_receipt_and_cutover {
+            let (source_backed_receipt, live_cutover) = match source_backed_receipt_and_cutover {
                 Some((receipt, live_cutover)) => (Some(receipt), live_cutover),
                 None => (None, false),
             };
@@ -1941,7 +1942,7 @@ impl LspServer {
                 "symbol": symbol,
                 "live_provider_result": live_provider_result,
                 "live_provider_count": live_provider_count,
-                "compiler_receipt": compiler_receipt,
+                "source_backed_receipt": source_backed_receipt,
                 "no_live_behavior_change": !live_cutover,
                 "live_cutover": if live_cutover {
                     Some("partial_exact_imported")
@@ -2045,7 +2046,11 @@ impl LspServer {
         Ok(Some(json!([])))
     }
 
-    /// Non-blocking references handler with fallback
+    /// Test-only references fallback provider. With the outer dispatch
+    /// fallback removed (#5108), no production caller remains: dispatch is an
+    /// adapter, not a fallback planner. Compiled out of production builds,
+    /// mirroring `on_definition` (#5108) and `on_folding_range` (#13981).
+    #[cfg(any(test, feature = "test-fallbacks"))]
     pub(crate) fn on_references(
         &self,
         params: serde_json::Value,
@@ -2216,6 +2221,13 @@ mod tests {
                 None,
             ),
             (
+                SourceBackedReferenceDecline::DeclarationLocationUriInvalid,
+                "declaration_location_uri",
+                false,
+                0,
+                None,
+            ),
+            (
                 SourceBackedReferenceDecline::DeclarationSerializationFailed,
                 "declaration_serialization",
                 false,
@@ -2232,6 +2244,13 @@ mod tests {
             (
                 SourceBackedReferenceDecline::OccurrenceLocationUnavailable,
                 "occurrence_location",
+                false,
+                0,
+                None,
+            ),
+            (
+                SourceBackedReferenceDecline::OccurrenceLocationUriInvalid,
+                "occurrence_location_uri",
                 false,
                 0,
                 None,

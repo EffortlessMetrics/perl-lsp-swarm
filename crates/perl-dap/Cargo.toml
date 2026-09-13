@@ -83,6 +83,7 @@ tempfile.workspace = true
 sha2.workspace = true
 
 perl-tdd-support = { workspace = true }
+perl-test-must = { workspace = true }
 
 # Serial test execution for env-mutating tests (prevents races on PLENV_*, PERLBREW_*, PATH)
 serial_test = "4.0.1"
@@ -190,9 +191,16 @@ path = "tests/dap_non_regression_tests.rs"
 # AC:17 Phase 3 non-regression: protocol shape, seq monotonicity, capabilities consistency (#435)
 
 [[test]]
+name = "dap_capability_advertising_tests"
+path = "tests/dap_capability_advertising_tests.rs"
+# Capability refusal proof uses the stopped-session test helper.
+required-features = ["test-helpers"]
+
+[[test]]
 name = "dap_step_through_tests"
 path = "tests/dap_step_through_tests.rs"
 # AC:3535 Comprehensive step-through debugging tests: stepIn, stepOut, stepOver, continue, pause, gotoTargets, cancel
+required-features = ["test-helpers"]
 
 [[test]]
 name = "dap_syntax_check_tests"

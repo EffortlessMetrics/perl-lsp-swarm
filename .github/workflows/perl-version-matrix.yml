@@ -178,6 +178,9 @@ jobs:
             print qq{version-gated probes passed on $^V\n};
           '
 
+      - name: Postfix statement-modifier conformance
+        run: bash scripts/ci/check-postfix-conformance.sh
+
       - name: Install Rust toolchain (smoke lanes)
         if: matrix.run_rust_smoke
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # stable (master)
@@ -189,7 +192,11 @@ jobs:
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         with:
           cache-on-failure: true
-          key: ${{ runner.os }}-perl-matrix-smoke-${{ matrix.perl }}-${{ hashFiles('Cargo.lock') }}
+          cache-all-crates: true
+          # rust-cache adds runner/toolchain compatibility to its internal key.
+          # Keep this stable and variant-only so Cargo.lock changes can restore by prefix.
+          shared-key: perl-matrix-smoke-${{ matrix.perl }}
+          save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}
 
       - name: Rust smoke test with Perl on PATH
         if: matrix.run_rust_smoke

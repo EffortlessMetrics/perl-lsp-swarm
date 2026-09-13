@@ -1,0 +1,47 @@
+name: VS Code Prebuilt Payload Adapter
+
+on:
+  pull_request:
+    branches: [main, master]
+    paths:
+      - 'scripts/prepare_vsix_prebuilt_payload.py'
+      - 'scripts/release_archive_members.py'
+      - 'scripts/release_build_identity.py'
+      - 'scripts/release_package_evidence.py'
+      - 'scripts/release_terminal_manifest.py'
+      - 'scripts/test_prepare_vsix_prebuilt_payload.py'
+      - 'vscode-extension/package.json'
+      - 'vscode-extension/scripts/reporter.js'
+      - 'vscode-extension/scripts/toolchain-doctor.js'
+      - 'vscode-extension/scripts/build_vsix_candidate_manifest.js'
+      - 'vscode-extension/scripts/package-vsix.js'
+      - 'vscode-extension/src/vsixPackageProjection.ts'
+      - '.github/actions/setup-vscode-toolchain/action.yml'
+      - '.github/workflows/vscode-prebuilt-payload-adapter.yml'
+  workflow_dispatch: {}
+
+concurrency:
+  group: vscode-prebuilt-payload-adapter-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  adapter:
+    name: Prebuilt payload adapter tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup repository Node authority
+        uses: ./.github/actions/setup-vscode-toolchain
+        with:
+          install-dependencies: 'false'
+
+      - name: Run release evidence to VSIX adapter tests
+        run: python3 -m unittest scripts.test_prepare_vsix_prebuilt_payload -v
