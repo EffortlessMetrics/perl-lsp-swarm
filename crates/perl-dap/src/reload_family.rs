@@ -1752,8 +1752,10 @@ mod tests {
             },
         ] {
             assert_eq!(
-                project_outcome(&outcome, 42, unchanged, &[], None)
-                    .expect_err("an advancing outcome cannot publish an unchanged witness"),
+                must_err_with(
+                    project_outcome(&outcome, 42, unchanged, &[], None),
+                    "an advancing outcome cannot publish an unchanged witness",
+                ),
                 WireProjectionRefusal::GenerationAdvanceMismatch
             );
         }
@@ -1771,8 +1773,10 @@ mod tests {
             },
         ] {
             assert_eq!(
-                project_outcome(&outcome, 42, advanced, &[], None)
-                    .expect_err("a static outcome cannot publish an advanced witness"),
+                must_err_with(
+                    project_outcome(&outcome, 42, advanced, &[], None),
+                    "a static outcome cannot publish an advanced witness",
+                ),
                 WireProjectionRefusal::GenerationAdvanceMismatch
             );
         }
@@ -1823,8 +1827,10 @@ mod tests {
         for advance in malformed {
             assert!(!advance.is_contiguous(), "the fixture must be malformed to be discriminating");
             assert_eq!(
-                project_outcome(&outcome, 42, advance, &[], None)
-                    .expect_err("a non-contiguous transition is never published"),
+                must_err_with(
+                    project_outcome(&outcome, 42, advance, &[], None),
+                    "a non-contiguous transition is never published",
+                ),
                 WireProjectionRefusal::GenerationAdvanceMismatch
             );
         }
