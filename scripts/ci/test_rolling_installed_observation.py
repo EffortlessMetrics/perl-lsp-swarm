@@ -21,6 +21,8 @@ SHA = "a" * 40
 OTHER_SHA = "b" * 40
 VSIX_SHA = "c" * 64
 VERSION = "0.17.0"
+DEFAULT_CANDIDATE_ID = f"rolling-{SHA}-test"
+DEFAULT_ARTIFACT_SET_ID = "rolling-test-artifacts"
 
 
 def write_json(path: pathlib.Path, value: object) -> None:
@@ -122,10 +124,80 @@ class ObservationTest(unittest.TestCase):
         platform: str = "linux",
         vscode_version: str = "1.125.0",
         smoke_outcome: str | None = None,
+        write_verified_child: bool = True,
+        verified_child_status: str = "not_proven",
+        candidate_id: str | None = DEFAULT_CANDIDATE_ID,
+        artifact_set_id: str | None = DEFAULT_ARTIFACT_SET_ID,
+        verified_candidate_id: str | None = DEFAULT_CANDIDATE_ID,
+        verified_artifact_set_id: str | None = DEFAULT_ARTIFACT_SET_ID,
     ) -> dict[str, object]:
         receipts = self.root / f"receipts-{row_id}"
         if receipt is not None:
             write_json(receipts / "current-source-orchestration.json", receipt)
+            behavioral = receipt.get("stages", {}).get("behavioral_smoke", {})
+            if (
+                platform == "windows"
+                and isinstance(behavioral, dict)
+                and behavioral.get("candidate_bound") is True
+                and write_verified_child
+            ):
+                source_receipt = {
+                    "schema_version": 1,
+                    "repository_sha": SHA,
+                    "vscode_version": "1.125.0",
+                    "server_identity": {
+                        "path": "C:/extension/bin/win32-x64/perllsp.exe",
+                        "source": "packaged_vsix_bundle",
+                        "startup_source": "bundled",
+                    },
+                    "outcome": "not_proven",
+                    "product_blockers": [],
+                    "startup": {
+                        "lifecycle_state": "running",
+                        "binary_resolution_status": "ok",
+                        "server_start_status": "ok",
+                        "initialize_status": "ok",
+                    },
+                    "requests": {
+                        "immediate": {
+                            key: {"status": "ok"}
+                            for key in ("completion", "hover", "definition", "references", "symbols")
+                        },
+                        "after_edit": {
+                            "status": "ok",
+                            "immediate_requery": {"status": "ok"},
+                        },
+                    },
+                    "shutdown": "stopped",
+                    "artifact_hashes": {
+                        "vsix_sha256": VSIX_SHA,
+                        "bundled_server_sha256": MODULE.sha256(self.server),
+                    },
+                }
+                source_receipt_path = (
+                    receipts / "local-current-source" / "windows" / "packaged_bundle_journey_receipt.json"
+                )
+                write_json(source_receipt_path, source_receipt)
+                write_json(
+                    receipts / "local-current-source" / "windows" / "verified_child_receipt.json",
+                    {
+                        "schema_version": "verified_child_receipt.v1",
+                        "receipt_schema_version": "installed_acceptance.v1",
+                        "candidate_id": (
+                            verified_candidate_id
+                        ),
+                        "frozen_product_sha": SHA,
+                        "artifact_set_id": (
+                            verified_artifact_set_id
+                        ),
+                        "status": verified_child_status,
+                        "source_receipt_sha256": MODULE.sha256(source_receipt_path),
+                        "artifact_hashes": {
+                            "vsix_sha256": VSIX_SHA,
+                            "bundled_server_sha256": MODULE.sha256(self.server),
+                        },
+                    },
+                )
         output = self.root / f"{row_id}.json"
         result = self.run_row(
             [
@@ -152,6 +224,11 @@ class ObservationTest(unittest.TestCase):
                 str(self.archive),
                 "--receipts-root",
                 str(receipts),
+                *(
+                    ["--candidate-id", candidate_id, "--artifact-set-id", artifact_set_id]
+                    if platform == "windows" and candidate_id is not None and artifact_set_id is not None
+                    else []
+                ),
                 "--smoke-outcome",
                 smoke_outcome or ("success" if receipt is not None else "failure"),
                 "--output",
@@ -260,7 +337,12 @@ class ObservationTest(unittest.TestCase):
             any("instrument" in finding for finding in row["findings"])
         )
 
-    def windows_receipt(self, behavioral: dict[str, object]) -> dict[str, object]:
+    def windows_receipt(
+        self, behavioral: dict[str, object], *, candidate_bound: bool = False
+    ) -> dict[str, object]:
+        behavioral = dict(behavioral)
+        if candidate_bound:
+            behavioral["candidate_bound"] = True
         receipt = smoke_receipt(
             self.server,
             platform="win32",
@@ -272,29 +354,38 @@ class ObservationTest(unittest.TestCase):
         )
         return receipt
 
-    def test_windows_behavioral_guard_is_unsupported_not_product_defect(self) -> None:
+    def test_windows_missing_candidate_journey_is_not_proven(self) -> None:
         self.package("windows")
         row = self.build_row(
             receipt=self.windows_receipt(
-                {"status": "failed", "reason": "published_extension_smoke_failed"}
+                {"status": "not_proven", "reason": "candidate_identity_incomplete"}
             ),
             row_id="windows-current",
             platform="windows",
             vscode_version="stable",
             smoke_outcome="failure",
         )
-        # The candidate-bound journey cannot execute on Windows by product
-        # policy; its failure is the guard boundary, never a product defect.
         self.assertEqual(
             row["cells"]["packaged_provider_edit_journey"],
-            "unsupported_or_withdrawn",
+            "not_proven",
         )
         self.assertNotEqual(row["status"], "blocked")
-        self.assertTrue(
-            any("policy-restricted" in finding for finding in row["findings"])
-        )
+        self.assertFalse(any("policy-restricted" in finding for finding in row["findings"]))
 
-    def test_windows_behavioral_pass_contradicts_policy(self) -> None:
+    def test_windows_complete_candidate_journey_can_be_observed(self) -> None:
+        self.package("windows")
+        row = self.build_row(
+            receipt=self.windows_receipt({"status": "pass"}, candidate_bound=True),
+            row_id="windows-current",
+            platform="windows",
+            vscode_version="stable",
+        )
+        self.assertEqual(
+            row["cells"]["packaged_provider_edit_journey"], "pass"
+        )
+        self.assertFalse(any("policy-restricted" in finding for finding in row["findings"]))
+
+    def test_windows_unbound_behavioral_pass_cannot_be_observed(self) -> None:
         self.package("windows")
         row = self.build_row(
             receipt=self.windows_receipt({"status": "pass"}),
@@ -302,14 +393,101 @@ class ObservationTest(unittest.TestCase):
             platform="windows",
             vscode_version="stable",
         )
-        # A candidate-bound behavioral pass on Windows means the product
-        # policy moved; the row must be reclassified, not trusted.
-        self.assertEqual(
-            row["cells"]["packaged_provider_edit_journey"], "instrument_defect"
+        self.assertEqual(row["cells"]["packaged_provider_edit_journey"], "not_proven")
+        self.assertTrue(any("verified child receipt" in finding for finding in row["findings"]))
+
+    def test_windows_forged_candidate_marker_cannot_be_observed(self) -> None:
+        self.package("windows")
+        row = self.build_row(
+            receipt=self.windows_receipt({"status": "pass"}, candidate_bound=True),
+            row_id="windows-current",
+            platform="windows",
+            vscode_version="stable",
+            write_verified_child=False,
         )
-        self.assertTrue(
-            any("policy drifted" in finding for finding in row["findings"])
+        self.assertEqual(row["cells"]["packaged_provider_edit_journey"], "not_proven")
+
+    def test_windows_unverified_child_cannot_prove_cleanup(self) -> None:
+        self.package("windows")
+        for child_case in ("missing", "invalid"):
+            with self.subTest(child_case=child_case):
+                row = self.build_row(
+                    receipt=self.windows_receipt({"status": "pass"}, candidate_bound=True),
+                    row_id="windows-current",
+                    platform="windows",
+                    vscode_version="stable",
+                    write_verified_child=child_case != "missing",
+                    verified_child_status="blocked" if child_case == "invalid" else "not_proven",
+                )
+                self.assertEqual(
+                    row["cells"]["packaged_provider_edit_journey"], "not_proven"
+                )
+                self.assertEqual(row["cells"]["process_cleanup"], "not_proven")
+
+    def test_windows_malformed_source_artifacts_are_rejected(self) -> None:
+        self.package("windows")
+        self.build_row(
+            receipt=self.windows_receipt({"status": "pass"}, candidate_bound=True),
+            row_id="windows-current",
+            platform="windows",
+            vscode_version="stable",
         )
+        source_path = (
+            self.root
+            / "receipts-windows-current"
+            / "local-current-source"
+            / "windows"
+            / "packaged_bundle_journey_receipt.json"
+        )
+        source = json.loads(source_path.read_text(encoding="utf-8"))
+        source["artifact_hashes"] = []
+        source_path.write_text(json.dumps(source), encoding="utf-8")
+        path, value, findings = MODULE.find_verified_candidate_receipt(
+            source_path.parent,
+            source_sha=SHA,
+            expected_platform="win32",
+            expected_vsix_hash=VSIX_SHA,
+            expected_server_hash=MODULE.sha256(self.server),
+            expected_candidate_id=f"rolling-{SHA}-test",
+            expected_artifact_set_id="rolling-test-artifacts",
+        )
+        self.assertIsNone(path)
+        self.assertIsNone(value)
+        self.assertEqual(findings, ["no exact verified child receipt bound the row source and artifacts"])
+
+    def test_windows_failed_or_empty_source_journey_is_rejected_with_recomputed_digest(self) -> None:
+        self.package("windows")
+        self.build_row(
+            receipt=self.windows_receipt({"status": "pass"}, candidate_bound=True),
+            row_id="windows-current",
+            platform="windows",
+            vscode_version="stable",
+        )
+        receipts = self.root / "receipts-windows-current" / "local-current-source" / "windows"
+        source_path = receipts / "packaged_bundle_journey_receipt.json"
+        child_path = receipts / "verified_child_receipt.json"
+        source = json.loads(source_path.read_text(encoding="utf-8"))
+        child = json.loads(child_path.read_text(encoding="utf-8"))
+        for mutation in (
+            {"outcome": "failed", "product_blockers": [{"label": "provider"}]},
+            {"outcome": "not_proven", "product_blockers": [], "requests": {"immediate": {}}},
+        ):
+            source.update(mutation)
+            source_path.write_text(json.dumps(source), encoding="utf-8")
+            child["source_receipt_sha256"] = MODULE.sha256(source_path)
+            child_path.write_text(json.dumps(child), encoding="utf-8")
+            path, value, findings = MODULE.find_verified_candidate_receipt(
+                receipts,
+                source_sha=SHA,
+                expected_platform="win32",
+                expected_vsix_hash=VSIX_SHA,
+                expected_server_hash=MODULE.sha256(self.server),
+                expected_candidate_id=f"rolling-{SHA}-test",
+                expected_artifact_set_id="rolling-test-artifacts",
+            )
+            self.assertIsNone(path)
+            self.assertIsNone(value)
+            self.assertEqual(findings, ["no exact verified child receipt bound the row source and artifacts"])
 
     def test_arbitrary_archive_bytes_cannot_pass(self) -> None:
         self.archive.write_bytes(b"arbitrary-non-zip-bytes")
@@ -435,6 +613,40 @@ class ObservationTest(unittest.TestCase):
         del receipt["cleanup_failure"]
         row = self.build_row(receipt=receipt)
         self.assertEqual(row["cells"]["process_cleanup"], "not_proven")
+
+    def test_windows_missing_candidate_ids_cannot_match_null_receipt_identity(self) -> None:
+        self.package("windows")
+        self.build_row(
+            receipt=self.windows_receipt({"status": "pass"}, candidate_bound=True),
+            row_id="windows-current",
+            platform="windows",
+            vscode_version="stable",
+            candidate_id=None,
+            artifact_set_id=None,
+            verified_candidate_id=None,
+            verified_artifact_set_id=None,
+        )
+        row = json.loads((self.root / "windows-current.json").read_text(encoding="utf-8"))
+        self.assertEqual(row["cells"]["packaged_provider_edit_journey"], "not_proven")
+        self.assertTrue(any("non-empty candidate and artifact-set IDs" in finding for finding in row["findings"]))
+
+    def test_windows_empty_candidate_ids_cannot_match_empty_receipt_identity(self) -> None:
+        self.package("windows")
+        for candidate_id, artifact_set_id in (("", ""), ("   ", "\t")):
+            with self.subTest(candidate_id=repr(candidate_id), artifact_set_id=repr(artifact_set_id)):
+                self.build_row(
+                    receipt=self.windows_receipt({"status": "pass"}, candidate_bound=True),
+                    row_id="windows-current",
+                    platform="windows",
+                    vscode_version="stable",
+                    candidate_id=candidate_id,
+                    artifact_set_id=artifact_set_id,
+                    verified_candidate_id=candidate_id,
+                    verified_artifact_set_id=artifact_set_id,
+                )
+                row = json.loads((self.root / "windows-current.json").read_text(encoding="utf-8"))
+                self.assertEqual(row["cells"]["packaged_provider_edit_journey"], "not_proven")
+                self.assertTrue(any("non-empty candidate and artifact-set IDs" in finding for finding in row["findings"]))
 
     def test_unscanned_post_host_exit_processes_are_not_clean_cleanup(self) -> None:
         # A receipt from before the orchestrator recorded its post-host-exit
