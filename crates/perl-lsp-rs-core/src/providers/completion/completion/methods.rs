@@ -2,7 +2,9 @@
 //!
 //! Provides context-aware method completion including DBI and common client APIs.
 
-use super::lexical_context::{is_in_comment, is_in_heredoc, is_in_pod, is_in_regex, is_in_string};
+use super::lexical_context::{
+    ascii_word_start, is_in_comment, is_in_heredoc, is_in_pod, is_in_regex, is_in_string,
+};
 use super::scope_distance;
 use super::{context::CompletionContext, items::CompletionItem, items::InsertTextFormat};
 use perl_lexer::find_data_marker_byte_lexed;
@@ -182,7 +184,7 @@ pub const HTTP_TINY_METHODS: &[(&str, &str)] = &[
 /// Common instance methods documented by `LWP::UserAgent`.
 ///
 /// `put` and `delete` are real `LWP::UserAgent` instance methods since LWP
-/// 6.56 (2023); verified against a live Perl oracle (`perl -MLWP::UserAgent`,
+/// 6.04 (2012); verified against a live Perl oracle (`perl -MLWP::UserAgent`,
 /// LWP 6.82: `defined *LWP::UserAgent::put{CODE}` / `...::delete{CODE}`).
 pub const LWP_USER_AGENT_METHODS: &[(&str, &str)] = &[
     ("request", "Send an HTTP request"),
@@ -539,7 +541,18 @@ fn latest_assignment_for_binding<'a>(
         if occurrence_binding.scope_id != binding.scope_id
             || occurrence_binding.location.start != binding.location.start
         {
-            continue;
+            // Redeclared `our` bindings of the same name in the SAME package
+            // alias one package variable, so a write through the redeclaration
+            // replaces the shared evidence instead of being skipped as
+            // unrelated. A different package's `our $name` is a distinct
+            // variable and must keep its own evidence.
+            let redeclared_same_package_our_binding = occurrence_binding.declaration.as_deref()
+                == Some("our")
+                && binding.declaration.as_deref() == Some("our")
+                && occurrence_binding.qualified_name == binding.qualified_name;
+            if !redeclared_same_package_our_binding {
+                continue;
+            }
         }
         if assignment_is_in_unrelated_subroutine(symbol_table, occurrence_scope, cursor_scope_id) {
             continue;
@@ -547,9 +560,12 @@ fn latest_assignment_for_binding<'a>(
 
         let after_receiver = source[receiver_pos + receiver.len()..].trim_start();
         let Some((assignment, compound)) = assignment_after_receiver(after_receiver) else {
-            if is_list_assignment_target(after_receiver) {
-                // A list assignment also replaces the receiver's value, even though
-                // the assignment operator is not immediately after the scalar.
+            if occurrence_is_undef_operand(source, receiver_pos, after_receiver)
+                || is_list_assignment_target(after_receiver)
+            {
+                // `undef $http` and a list assignment also replace the
+                // receiver's value, so an earlier constructor assignment is
+                // no longer reliable type evidence.
                 expression = Some("");
             }
             continue;
@@ -560,7 +576,7 @@ fn latest_assignment_for_binding<'a>(
             expression = Some("");
             continue;
         }
-        let statement_end = assignment.find(';').unwrap_or(assignment.len());
+        let statement_end = statement_terminator_index(assignment);
         expression = Some(assignment[..statement_end].trim());
     }
 
@@ -608,6 +624,68 @@ fn assignment_after_receiver(after_receiver: &str) -> Option<(&str, bool)> {
         }
     }
     None
+}
+
+/// True when the receiver occurrence is an operand of a value-clearing
+/// `undef` (`undef $http;`, `undef($http);`).
+///
+/// Only operands that terminate the statement (or group) count: a receiver
+/// followed by a member access (`undef $http->foo`) undefines the call result,
+/// not the variable, so it must not clear the binding's evidence.
+fn occurrence_is_undef_operand(source: &str, receiver_pos: usize, after_receiver: &str) -> bool {
+    // `after_receiver` is already left-trimmed; anything other than a
+    // statement or group terminator means the receiver is an intermediate
+    // operand (e.g. `undef $http->foo` undefines the call result, not the
+    // variable), which must not clear the binding's evidence.
+    if after_receiver.starts_with(|byte: char| !matches!(byte, ';' | ')' | '}')) {
+        return false;
+    }
+
+    let trimmed = source[..receiver_pos].trim_end_matches([' ', '\t']);
+    let trimmed = trimmed.strip_suffix('(').unwrap_or(trimmed);
+    let word_start = ascii_word_start(trimmed);
+    if trimmed.get(word_start..) != Some("undef") {
+        return false;
+    }
+    // A word spelled `undef` reached through a method call (`$c->undef`),
+    // subroutine sigil (`&undef`), or qualified name (`Foo::undef`) is a user
+    // sub call, not the built-in clearing operator.
+    let before_word = &trimmed[..word_start];
+    !before_word.ends_with('&') && !before_word.ends_with("->") && !before_word.ends_with("::")
+}
+
+/// Byte index of the first statement-terminating `;` that sits outside quoted
+/// strings and balanced delimiter groups, so constructor arguments containing
+/// semicolons survive assignment-evidence extraction.
+fn statement_terminator_index(text: &str) -> usize {
+    let bytes = text.as_bytes();
+    let mut depth = 0usize;
+    let mut escaped = false;
+    let mut quote: Option<u8> = None;
+
+    for (index, byte) in bytes.iter().copied().enumerate() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if let Some(active_quote) = quote {
+            if byte == b'\\' {
+                escaped = true;
+            } else if byte == active_quote {
+                quote = None;
+            }
+            continue;
+        }
+        match byte {
+            b'\'' | b'"' | b'`' => quote = Some(byte),
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => depth = depth.saturating_sub(1),
+            b';' if depth == 0 => return index,
+            _ => {}
+        }
+    }
+
+    bytes.len()
 }
 
 fn is_list_assignment_target(after_receiver: &str) -> bool {
