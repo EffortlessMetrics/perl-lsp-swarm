@@ -3470,3 +3470,29 @@ created = "2026-09-09"
 review_after = "2026-09-16"
 expires = "2026-09-23"
 removal_criteria = "Remove when the registry gains a production consumer (re-scope suppression to that consumer's seams) or when ripr#1429 resolves declaration-line probes for data rows; narrow immediately if any executable (non-declaration) code lands in this file."
+
+# -----------------------------------------------------------------------------
+# #7286 generation-owned diagnostic analysis: the three new owners carry
+# declaration-line no_static_path probes only. The same receipt traces every
+# executable line in those owners to hundreds or thousands of tests, so this is
+# the ripr#1429 declaration-anchor limitation rather than unproven behavior —
+# and unlike a missing test it cannot be closed by adding one, because a struct
+# field declaration and a `thread_local!` static have no call target a test can
+# reach.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-7286-document-analysis-declaration-seams"
+kind = "declaration_line_no_static_path"
+paths = [
+  "crates/perl-lsp-rs-core/src/providers/diagnostics/document_analysis.rs",
+  "crates/perl-lsp-rs-core/src/tooling/perl_critic/native/native_registry.rs",
+  "crates/perl-lsp-rs/src/state/document.rs",
+]
+classification = ["no_static_path"]
+owner = "proof-lane"
+issue = "EffortlessMetrics/ripr#1429"
+reason = "PR #14272 (#7286) reports exactly 9 no_static_path findings, every one anchored on a declaration line with related_tests_total = 0: the four DocumentDiagnosticAnalysis field declarations (document_analysis.rs:57 `ast: Arc<Node>`, :63 `source: Arc<str>`, :64 `pragma_map: OnceLock<..>` as both field_construction and call_deletion, :65 `scope_issues: OnceLock<..>`, :66 `symbol_table: OnceLock<..>`), the ParsedSnapshot cell field declaration (state/document.rs:201 `diagnostic_analysis:`), and the two gated thread_local counters (native_registry.rs:59 SCOPE_REBUILD_COUNT, :78 SCOPE_REUSE_COUNT). Every one carries stop_reasons = [\"no_changed_rust_line\"], which is the analyzer saying it found no executable line to anchor, not that behavior is unobserved. The same receipt classifies the executable lines in the same owners as `exposed` with strong related-test counts: document_analysis.rs:91 `ast: Arc::clone(ast)` inside build() at 755 related tests, state/document.rs:242 reading the cell at 947, and native_registry.rs:95 the counter accessor body at 1485. reachable_unrevealed is 0 for this candidate. Adding a test cannot clear these: a field declaration and a thread_local static are not call targets, so the only change that would remove the finding is removing the declaration, i.e. the type this claim exists to add. The behavior those declarations serve is proven by the candidate's own oracles — construction-count, per-fact cell, native-critic rebuild and reuse counters, the 12-fixture provider equivalence target, and mutation evidence recorded on PR #14272. HONEST SCOPE NOTE: the matcher is path-scoped with no line or function selector, so a future *executable* no_static_path seam in any of these three files would also be masked for this window; review must narrow this entry rather than accept that silently. Remove when ripr#1429 traces declaration owners through same-file constructor-call paths, or when a finer line/function selector or targeted mutation replaces this advisory path."
+created = "2026-09-13"
+review_after = "2026-09-20"
+expires = "2026-09-27"
+removal_criteria = "Remove when ripr#1429 resolves declaration-line probes via same-file constructor-call paths, or when a line/function selector lands. Narrow immediately if a future receipt reports an executable (non-declaration) no_static_path seam in any listed file, or any classification other than no_static_path."
