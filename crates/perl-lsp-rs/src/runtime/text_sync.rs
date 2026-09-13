@@ -663,6 +663,33 @@ impl LspServer {
                 params.pointer("/textDocument/version").and_then(|v| v.as_i64());
             let incoming_version = incoming_version_i64.and_then(|v| i32::try_from(v).ok());
 
+            // Deserialize the complete change batch before any cancellation,
+            // cache, generation, or readiness side effect. A malformed member
+            // must reject the notification as one unit instead of applying a
+            // valid prefix and leaving the document/version partially advanced.
+            let changes = params
+                .get("contentChanges")
+                .and_then(Value::as_array)
+                .ok_or_else(|| invalid_params("Missing required parameter: contentChanges"))?;
+            let lsp_changes = changes
+                .iter()
+                .enumerate()
+                .map(|(i, change)| {
+                    serde_json::from_value::<lsp_types::TextDocumentContentChangeEvent>(
+                        change.clone(),
+                    )
+                    .map_err(|_| {
+                        tracing::error!(
+                            change_index = i,
+                            uri = %uri,
+                            error_category = "invalid_content_change",
+                            "Rejected malformed textDocument/didChange content change"
+                        );
+                        invalid_params("Malformed textDocument/didChange content change")
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+
             // A save replacement can preserve the client's document version while
             // still replacing the buffer. In that case every stream for the URI
             // captured stale text, including same-version sessions, and must be
@@ -762,28 +789,7 @@ impl LspServer {
 
                 // Apply incremental changes with UTF-16 aware mapping
                 use crate::textdoc::{Doc, PosEnc, apply_changes};
-                use lsp_types::TextDocumentContentChangeEvent;
-
                 let mut doc = Doc { rope: doc_state.rope.clone(), version };
-
-                // Convert JSON changes to proper LSP types with error logging
-                // (Silent filter_map failures can mask document state corruption)
-                let mut lsp_changes = Vec::with_capacity(changes.len());
-                for (i, c) in changes.iter().enumerate() {
-                    match serde_json::from_value::<TextDocumentContentChangeEvent>(c.clone()) {
-                        Ok(change) => lsp_changes.push(change),
-                        Err(_) => {
-                            tracing::error!(
-                                change_index = i,
-                                uri = %uri,
-                                error_category = "invalid_content_change",
-                                "Rejected malformed textDocument/didChange content change"
-                            );
-                            // Continue processing other changes; LSP has no server-initiated
-                            // full sync, so logging is critical for diagnosing state issues.
-                        }
-                    }
-                }
 
                 // Build incremental edits from the OLD source BEFORE mutating the rope.
                 // UTF-16 line/char → byte conversion must use the pre-change line index.

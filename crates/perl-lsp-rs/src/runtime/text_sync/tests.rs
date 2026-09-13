@@ -37,6 +37,144 @@ fn make_server_with_capture() -> (LspServer, StdArc<parking_lot::Mutex<Vec<u8>>>
     (server, buf)
 }
 
+#[test]
+fn dispatch_rejects_malformed_change_before_document_mutation()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = LspServer::new();
+    let initialized = server.handle_request(JsonRpcRequest {
+        _jsonrpc: "2.0".to_string(),
+        id: Some(crate::protocol::JsonRpcId::Integer(0)),
+        method: "initialize".to_string(),
+        params: Some(json!({})),
+    });
+    if initialized.as_ref().is_none_or(|response| response.error.is_some()) {
+        return Err("test initialize request failed".into());
+    }
+    let uri = "file:///malformed-admission.pl";
+    server.did_open(json!({
+        "textDocument": {"uri": uri, "languageId": "perl", "version": 1, "text": "my $x = 1;\n"}
+    }))?;
+    let before = {
+        let documents = server.documents.lock();
+        let document = documents.get(uri).ok_or("didOpen did not store document")?;
+        (document.text.clone(), document.version, document.current_generation())
+    };
+    let normalized_uri = server.normalize_uri_key(uri);
+    let readiness_before = {
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            if let Some(receipt) = server.test_active_document_readiness(&normalized_uri)
+                && receipt.0 != "pending_parser"
+            {
+                break receipt;
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err("didOpen did not settle active-document readiness".into());
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    };
+    let session =
+        server.stream_sessions().start_session(crate::runtime::stream_session::SessionKey {
+            uri: uri.to_owned(),
+            document_version: 1,
+            line: 0,
+            character: 0,
+        });
+    if session.is_cancelled() || server.memory_state_snapshot().stream_sessions != 1 {
+        return Err("baseline stream session was not retained".into());
+    }
+    for changes in [
+        json!([{"text": 7}, {"text": "my $x = 2;\n"}]),
+        json!([{"text": "my $x = 2;\n"}, {"text": 7}]),
+        json!([{"text": 7}]),
+    ] {
+        let malformed = JsonRpcRequest {
+            _jsonrpc: "2.0".to_string(),
+            id: None,
+            method: "textDocument/didChange".to_string(),
+            params: Some(
+                json!({"textDocument": {"uri": uri, "version": 2}, "contentChanges": changes}),
+            ),
+        };
+        if server.handle_request(malformed).is_some() {
+            return Err("notification-shaped malformed change must not respond".into());
+        }
+        let after = {
+            let documents = server.documents.lock();
+            let document = documents.get(uri).ok_or("document disappeared after rejection")?;
+            (document.text.clone(), document.version, document.current_generation())
+        };
+        if after != before {
+            return Err(format!(
+                "malformed change mutated document: before={before:?}, after={after:?}"
+            )
+            .into());
+        }
+        if session.is_cancelled() {
+            return Err("malformed change cancelled the retained stream session".into());
+        }
+        if server.memory_state_snapshot().stream_sessions != 1 {
+            return Err("malformed change altered the retained stream count".into());
+        }
+        if server.test_active_document_readiness(&normalized_uri) != Some(readiness_before) {
+            return Err("malformed change altered active-document readiness".into());
+        }
+    }
+    for params in [
+        json!({"textDocument": {"uri": uri, "version": 2}}),
+        json!({"textDocument": {"uri": uri, "version": 2}, "contentChanges": {}}),
+        json!({"textDocument": {"uri": uri, "version": 2}, "contentChanges": null}),
+    ] {
+        let malformed = JsonRpcRequest {
+            _jsonrpc: "2.0".to_string(),
+            id: None,
+            method: "textDocument/didChange".to_string(),
+            params: Some(params),
+        };
+        if server.handle_request(malformed).is_some() {
+            return Err("notification-shaped malformed contentChanges must not respond".into());
+        }
+        let after = {
+            let documents = server.documents.lock();
+            let document = documents.get(uri).ok_or("document disappeared after rejection")?;
+            (document.text.clone(), document.version, document.current_generation())
+        };
+        if after != before
+            || session.is_cancelled()
+            || server.memory_state_snapshot().stream_sessions != 1
+            || server.test_active_document_readiness(&normalized_uri) != Some(readiness_before)
+        {
+            return Err("invalid contentChanges shape altered document side effects".into());
+        }
+    }
+    let recovery = JsonRpcRequest {
+        _jsonrpc: "2.0".to_string(),
+        id: None,
+        method: "textDocument/didChange".to_string(),
+        params: Some(
+            json!({"textDocument": {"uri": uri, "version": 2}, "contentChanges": [{"text": "my $x = 3;\n"}]}),
+        ),
+    };
+    if server.handle_request(recovery).is_some() {
+        return Err("notification-shaped recovery must not respond".into());
+    }
+    let recovered = {
+        let documents = server.documents.lock();
+        let document = documents.get(uri).ok_or("document disappeared after recovery")?;
+        (document.text.clone(), document.version, document.current_generation())
+    };
+    if recovered.0 != "my $x = 3;\n" || recovered.1 != 2 || recovered.2 <= before.2 {
+        return Err(format!(
+            "valid recovery was not applied: before={before:?}, recovered={recovered:?}"
+        )
+        .into());
+    }
+    if !session.is_cancelled() || server.memory_state_snapshot().stream_sessions != 0 {
+        return Err("valid recovery did not cancel and evict the retained stream".into());
+    }
+    Ok(())
+}
 #[cfg(feature = "incremental")]
 #[test]
 fn test_build_incremental_edits_uses_evolving_document_ranges() {
