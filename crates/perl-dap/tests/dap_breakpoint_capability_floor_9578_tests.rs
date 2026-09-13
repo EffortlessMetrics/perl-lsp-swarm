@@ -48,7 +48,7 @@ mod dap_core_capability_witnesses;
 use anyhow::Result;
 use dap_core_capability_witnesses::{
     DAP_CORE_DERIVED_TRUE_SIBLINGS, FORMER_TRUE_SIBLINGS_NOW_FLOORED, VALUE_FORMAT_FLOOR_FIELD,
-    assert_capability_bool, assert_capability_is_json_boolean,
+    assert_capability_bool, require_capability_is_json_boolean,
 };
 use perl_dap::debug_adapter::{DapMessage, DebugAdapter};
 use perl_dap::feature_catalog::has_feature;
@@ -101,6 +101,42 @@ fn response_breakpoints(body: &Value) -> Result<&Vec<Value>> {
         .ok_or_else(|| anyhow::anyhow!("setBreakpoints body must carry a breakpoints array"))
 }
 
+#[test]
+fn capability_boolean_witness_requires_present_json_boolean() -> Result<()> {
+    for value in [Value::Bool(true), Value::Bool(false)] {
+        let body = json!({"supportsExample": value});
+        require_capability_is_json_boolean(&body, "supportsExample")?;
+    }
+
+    for (value, expected_detail) in
+        [(Value::Null, "Null"), (json!("true"), "true"), (json!(1), "1")]
+    {
+        let body = json!({"supportsExample": value});
+        let error = require_capability_is_json_boolean(&body, "supportsExample")
+            .err()
+            .ok_or_else(|| anyhow::anyhow!("non-boolean capability unexpectedly accepted"))?;
+        let message = error.to_string();
+        if !message.contains("supportsExample")
+            || !message.contains("present value")
+            || !message.contains(expected_detail)
+        {
+            anyhow::bail!("boolean witness error lost field/value context: {message}");
+        }
+    }
+
+    let error = require_capability_is_json_boolean(&json!({}), "supportsExample")
+        .err()
+        .ok_or_else(|| anyhow::anyhow!("missing capability unexpectedly accepted"))?;
+    let message = error.to_string();
+    if !message.contains("supportsExample")
+        || !message.contains("present value")
+        || !message.contains("None")
+    {
+        anyhow::bail!("missing witness error lost field/value context: {message}");
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Advertisement floor
 // ---------------------------------------------------------------------------
@@ -134,7 +170,7 @@ fn all_four_optional_breakpoint_capabilities_are_false_while_catalog_advertises(
         "supportsLogPoints",
     ];
     for row in rows {
-        assert_capability_is_json_boolean(&body, row);
+        require_capability_is_json_boolean(&body, row)?;
         assert_capability_bool(&body, row, false, "must be advertised false (#9578)");
     }
     Ok(())
@@ -165,7 +201,7 @@ fn optional_floor_does_not_widen_or_flatten_neighboring_capability_rows() -> Res
     let body = initialize_body(&mut adapter)?;
 
     for name in DAP_CORE_DERIVED_TRUE_SIBLINGS {
-        assert_capability_is_json_boolean(&body, name);
+        require_capability_is_json_boolean(&body, name)?;
         assert_capability_bool(
             &body,
             name,
@@ -175,7 +211,7 @@ fn optional_floor_does_not_widen_or_flatten_neighboring_capability_rows() -> Res
     }
 
     for (name, floor) in FORMER_TRUE_SIBLINGS_NOW_FLOORED {
-        assert_capability_is_json_boolean(&body, name);
+        require_capability_is_json_boolean(&body, name)?;
         assert_capability_bool(
             &body,
             name,
@@ -491,7 +527,7 @@ fn mixed_request_preserves_input_order_and_per_item_truth() -> Result<()> {
             let pending_message = plain
                 .get("message")
                 .and_then(Value::as_str)
-                .ok_or_else(|| anyhow::anyhow!("missing pending message"))?;
+                .ok_or_else(|| anyhow::anyhow!("missing pending message in plain: {plain:?}"))?;
             if pending_message != "Breakpoint is pending debugger launch" {
                 anyhow::bail!("unexpected pending message: {pending_message:?}");
             }
@@ -502,10 +538,10 @@ fn mixed_request_preserves_input_order_and_per_item_truth() -> Result<()> {
             {
                 anyhow::bail!("condition slot changed line: {condition:?}");
             }
-            let condition_message = condition
-                .get("message")
-                .and_then(Value::as_str)
-                .ok_or_else(|| anyhow::anyhow!("missing message"))?;
+            let condition_message =
+                condition.get("message").and_then(Value::as_str).ok_or_else(|| {
+                    anyhow::anyhow!("missing condition message in condition: {condition:?}")
+                })?;
             if !condition_message.contains(CONDITION_FLOOR_MARKER) {
                 anyhow::bail!("condition refusal marker missing: {condition_message:?}");
             }
@@ -519,7 +555,7 @@ fn mixed_request_preserves_input_order_and_per_item_truth() -> Result<()> {
             let hit_message = hit
                 .get("message")
                 .and_then(Value::as_str)
-                .ok_or_else(|| anyhow::anyhow!("missing message"))?;
+                .ok_or_else(|| anyhow::anyhow!("missing hit-condition message in hit: {hit:?}"))?;
             if !hit_message.contains(HIT_CONDITION_FLOOR_MARKER) {
                 anyhow::bail!("hit-condition refusal marker missing: {hit_message:?}");
             }
@@ -532,7 +568,7 @@ fn mixed_request_preserves_input_order_and_per_item_truth() -> Result<()> {
             let log_message = log
                 .get("message")
                 .and_then(Value::as_str)
-                .ok_or_else(|| anyhow::anyhow!("missing message"))?;
+                .ok_or_else(|| anyhow::anyhow!("missing logpoint message in log: {log:?}"))?;
             if !log_message.contains(LOG_MESSAGE_FLOOR_MARKER) {
                 anyhow::bail!("logpoint refusal marker missing: {log_message:?}");
             }
