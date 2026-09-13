@@ -4748,8 +4748,10 @@ profile = "recommended"
             ..WorkspaceConfig::default()
         };
         config.refresh_dependency_include_paths(workspace.path());
+        let detected_root =
+            normalize_include_path("local/lib/perl5").ok_or("detected root should normalize")?;
         assert!(
-            config.detected_dependency_include_paths.contains(&"local/lib/perl5".to_string()),
+            config.detected_dependency_include_paths.contains(&detected_root),
             "the detector owns the root it contributed"
         );
 
