@@ -1,7 +1,7 @@
 # Reusable LSP runtime identity and state vocabulary
 
-Status: normative  
-Authority: #11045 under architecture #7384 and checked train #10360  
+Status: normative
+Authority: #11045 under architecture #7384 and checked train #10360
 Machine source: `.spec/11045-lsp-runtime-vocabulary/contract.v1.json` plus its four versioned fragments
 
 ## Claim boundary
