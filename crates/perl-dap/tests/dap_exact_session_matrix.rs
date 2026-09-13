@@ -1392,7 +1392,7 @@ fn write_delayed_breakpoint_fixture() -> Result<(tempfile::TempDir, PathBuf)> {
     fs::write(
         &path,
         format!(
-            "BEGIN {{ my $pid = $$; if ($^O eq 'msys' || $^O eq 'cygwin') {{ require Cygwin; $pid = Cygwin::pid_to_winpid($$); }} open(my $fh, '>', '{}') or die $!; print $fh $pid; close $fh; sleep 7; }}\nmy $before = 1;\nmy $target = 2;\nprint \"ok\\n\";\n",
+            "BEGIN {{ my $pid = $$; if ($^O eq 'msys' || $^O eq 'cygwin') {{ $pid = Cygwin::pid_to_winpid($$); }} open(my $fh, '>', '{}') or die $!; print $fh $pid; close $fh; sleep 7; }}\nmy $before = 1;\nmy $target = 2;\nprint \"ok\\n\";\n",
             pid_literal
         ),
     )
