@@ -34,21 +34,22 @@
       second, post-rejection serving, and mandatory-fallback sequences pass on
       the exact current branch.
 - [ ] Focused Rust tests, Clippy, rustfmt, generated final-surface checks, and
-      exact-head substantive review are current after the #12067 integration
-      restack.
+      substantive review are current after candidate integration.
 - [ ] PR #14159 is merged before #9380 begins.
 
 ## Integration order
 
 ```text
-land #12067
-→ restack #14159 once
-→ regenerate affected public API and non-Rust inventory
+reconcile actual conflicts or combined-tree failures
+→ regenerate affected public API and inventory when their surfaces change
 → run focused and affected proof
 → receive fresh exact-head review
 → merge #9378
 → admit #9380
 ```
 
-Do not repeatedly chase unrelated `main` movement after the one required
-integration restack. Do not race either live writer branch.
+The [integration ruling](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/14159#issuecomment-5607118090)
+supersedes the former #12067-first ordering. Either carrier may integrate independently.
+The second to land must retain accepted-session UTF-16 projection together with accepted
+Critic policy and topology currentness, and run affected lifecycle/diagnostic identity
+tests plus compilation. Do not chase unrelated main movement or race a live writer.

@@ -4,9 +4,12 @@
 
 #![recursion_limit = "256"]
 
+mod common;
 mod support;
 
+use common::{send_notification, send_request, start_lsp_server};
 use serde_json::json;
+use std::time::{Duration, Instant};
 use support::lsp_harness::LspHarness;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -576,15 +579,43 @@ fn test_initialized_notification() -> TestResult {
 
 #[test]
 fn test_shutdown_exit_3_17() -> TestResult {
-    let mut harness = LspHarness::new();
-    harness.initialize(None)?;
+    // The in-process harness cannot send `exit`: production intentionally
+    // calls process::exit, which would terminate this test binary.
+    let server = start_lsp_server();
+    let initialized = common::initialize_lsp(&server);
+    if initialized.get("error").is_some() {
+        return Err(format!("initialize failed: {initialized:?}").into());
+    }
 
     // Shutdown request
-    let response = harness.request("shutdown", json!(null))?;
-    assert!(response.is_null());
+    let response = send_request(
+        &server,
+        json!({"jsonrpc":"2.0","id":3_170_001,"method":"shutdown","params":null}),
+    );
+    if !response.get("result").is_some_and(serde_json::Value::is_null) {
+        return Err(format!("shutdown response was not null: {response:?}").into());
+    }
 
     // Exit notification
-    harness.notify("exit", json!(null));
+    send_notification(&server, json!({"jsonrpc":"2.0","method":"exit","params":null}));
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let status = loop {
+        let status = {
+            let mut process = match server.process.lock() {
+                Ok(process) => process,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            process.try_wait()?
+        };
+        if status.is_some() || Instant::now() >= deadline {
+            break status;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    };
+    let status = status.ok_or("server child did not exit naturally after exit notification")?;
+    if !status.success() {
+        return Err(format!("server child exited unsuccessfully: {status}").into());
+    }
     Ok(())
 }
 
@@ -595,19 +626,16 @@ fn test_inbound_before_initialize_contract() -> TestResult {
     // Requests before initialize must return -32002 ServerNotInitialized
     // Notifications must be dropped (except exit)
 
-    // This test would need a harness method to create without auto-initialize
-    // let mut harness = LspHarness::new_without_initialize();
-
-    // Request before initialize -> -32002
-    // let resp = harness.request_raw(json!({
-    //     "jsonrpc":"2.0","id":1,"method":"textDocument/hover",
-    //     "params":{"textDocument":{"uri":"file:///t.pl"},
-    //               "position":{"line":0,"character":0}}
-    // }));
-    // assert_eq!(resp["error"]["code"], -32002);
-
-    // Notification before initialize -> drop silently
-    // harness.notify("workspace/didChangeConfiguration", json!({"settings":{}}));
+    let mut harness = LspHarness::new_without_initialize();
+    let response = harness.request_raw(json!({
+        "jsonrpc":"2.0","id":1,"method":"textDocument/hover",
+        "params":{"textDocument":{"uri":"file:///t.pl"},
+                  "position":{"line":0,"character":0}}
+    }));
+    let code = response.pointer("/error/code").and_then(serde_json::Value::as_i64);
+    if code != Some(-32002) {
+        return Err(format!("pre-initialize request returned {response:?}").into());
+    }
     Ok(())
 }
 
@@ -621,11 +649,13 @@ fn test_dollar_prefixed_request_method_not_found() -> TestResult {
     // Requests with methods starting with $/ must return -32601 MethodNotFound
     // (unless explicitly implemented like $/cancelRequest)
 
-    // This would test unknown $/ methods
-    // let resp = harness.request_raw(json!({
-    //     "jsonrpc":"2.0","id":1,"method":"$/unknownRequest","params":{}
-    // }));
-    // assert_eq!(resp["error"]["code"], -32601);
+    let response = harness.request_raw(json!({
+        "jsonrpc":"2.0","id":1,"method":"$/unknownRequest","params":{}
+    }));
+    let code = response.pointer("/error/code").and_then(serde_json::Value::as_i64);
+    if code != Some(-32601) {
+        return Err(format!("unknown $/ request returned {response:?}").into());
+    }
     Ok(())
 }
 
