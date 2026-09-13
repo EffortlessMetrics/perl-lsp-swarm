@@ -23,12 +23,14 @@ use std::time::Duration;
 fn stage_perl_library_layout(
     source_perl: &Path,
     destination: &Path,
-) -> Result<std::ffi::OsString, Box<dyn Error>> {
+) -> Result<PathBuf, Box<dyn Error>> {
+    let source_bin = source_perl.parent().ok_or("selected Perl has no bin directory")?;
+    let source_root = source_bin.parent().ok_or("selected Perl has no installation root")?;
     let output = Command::new(source_perl)
         .args([
             "-MConfig",
             "-e",
-            "print join(\"\\n\", grep { defined($_) && length($_) } @Config{qw(privlib archlib sitelib sitearch vendorlib vendorarch)})",
+            "print join(\"\\n\", grep { defined($_) && length($_) } @Config{qw(privlib archlib)})",
         ])
         .output()?;
     if !output.status.success() {
@@ -38,25 +40,35 @@ fn stage_perl_library_layout(
         )
         .into());
     }
+    let staged_install = destination.join("perl-install");
     let mut staged_roots = Vec::new();
-    for (index, raw_root) in String::from_utf8_lossy(&output.stdout)
+    for raw_root in String::from_utf8_lossy(&output.stdout)
         .lines()
         .map(str::trim)
         .filter(|root| !root.is_empty())
-        .enumerate()
     {
         let root = PathBuf::from(raw_root);
         if !root.is_dir() {
             continue;
         }
-        let staged = destination.join(format!("perl-lib-{index}"));
+        let relative = root
+            .strip_prefix(source_root)
+            .map_err(|_| format!("Perl library root is outside installation root: {root:?}"))?;
+        let staged = staged_install.join(relative);
+        if staged_roots.iter().any(|existing: &PathBuf| existing == &staged) {
+            continue;
+        }
         copy_directory(&root, &staged)?;
         staged_roots.push(staged);
     }
     if staged_roots.is_empty() {
         return Err("selected Perl reported no usable library roots".into());
     }
-    Ok(std::env::join_paths(staged_roots)?)
+    let staged_bin = staged_install.join(source_bin.strip_prefix(source_root)?);
+    fs::create_dir_all(&staged_bin)?;
+    let staged_perl = staged_bin.join(source_perl.file_name().ok_or("Perl has no filename")?);
+    fs::copy(source_perl, &staged_perl)?;
+    Ok(staged_perl)
 }
 
 #[cfg(windows)]
@@ -71,6 +83,19 @@ fn copy_directory(source: &Path, destination: &Path) -> Result<(), Box<dyn Error
         } else {
             fs::copy(source_path, destination_path)?;
         }
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn require_native_windows_perl(binary: &Path) -> Result<(), Box<dyn Error>> {
+    let output = Command::new(binary).args(["-V:osname"]).output()?;
+    if !output.status.success() || !String::from_utf8_lossy(&output.stdout).contains("MSWin32") {
+        return Err(format!(
+            "selected Perl is not a native MSWin32 build: {}",
+            String::from_utf8_lossy(&output.stdout).trim()
+        )
+        .into());
     }
     Ok(())
 }
@@ -114,6 +139,8 @@ fn find_configured_or_path_pipe_perl() -> Result<Option<PathBuf>, Box<dyn Error>
             )
             .into());
         }
+        #[cfg(windows)]
+        require_native_windows_perl(&candidate)?;
         probe_debuggee_perl_for_test(&candidate, Duration::from_secs(10), false)
             .map_err(|reason| format!("configured interpreter is not pipe-usable: {reason}"))?;
         return Ok(Some(candidate));
@@ -126,6 +153,10 @@ fn find_configured_or_path_pipe_perl() -> Result<Option<PathBuf>, Box<dyn Error>
     }
     for line in String::from_utf8_lossy(&output.stdout).lines() {
         let candidate = PathBuf::from(line.trim());
+        #[cfg(windows)]
+        if require_native_windows_perl(&candidate).is_err() {
+            continue;
+        }
         if candidate.is_file()
             && probe_debuggee_perl_for_test(&candidate, Duration::from_secs(10), false).is_ok()
         {
@@ -163,30 +194,60 @@ fn observe_pin_with_session(
 #[serial]
 #[allow(clippy::print_stderr)]
 fn all_convenience_launch_paths_reach_the_pinned_interpreter() -> Result<(), Box<dyn Error>> {
+    #[cfg(windows)]
+    let _emacs_guard = EnvGuard::set("EMACS", std::ffi::OsStr::new("1"));
+    #[cfg(windows)]
+    let _perl_opts_guard = EnvGuard::set("PERLDB_OPTS", std::ffi::OsStr::new("ReadLine=0"));
     let Some(source_perl) = find_configured_or_path_pipe_perl()? else {
         eprintln!(
             "SKIP all_convenience_launch_paths_reach_the_pinned_interpreter: Perl unavailable"
         );
         return Ok(());
     };
+    #[cfg(windows)]
+    require_native_windows_perl(&source_perl)?;
     let controls = tempfile::tempdir()?;
     #[cfg(windows)]
-    let _library_guard = {
-        let library_root = controls.path().join("staged-libraries");
-        let library_path = stage_perl_library_layout(&source_perl, &library_root)?;
-        EnvGuard::set("PERL_LSP_DAP_TEST_LIBRARY_PATH", &library_path)
-    };
-    #[cfg(windows)]
     {
+        let staged_perl = stage_perl_library_layout(&source_perl, controls.path())?;
+        let staged_bin = staged_perl.parent().ok_or("staged Perl has no bin directory")?;
         let source_dir = source_perl.parent().ok_or("Perl path has no parent directory")?;
         for entry in fs::read_dir(source_dir)? {
             let entry = entry?;
             if entry.path().extension().and_then(|extension| extension.to_str()) == Some("dll") {
-                fs::copy(entry.path(), controls.path().join(entry.file_name()))?;
+                fs::copy(entry.path(), staged_bin.join(entry.file_name()))?;
             }
         }
+        let ambient = staged_perl;
+        let pinned = staged_bin.join("perl5.exe");
+        fs::copy(&ambient, &pinned)?;
+
+        for binary in [&ambient, &pinned] {
+            probe_debuggee_perl_for_test(binary, Duration::from_secs(10), false)
+                .map_err(|reason| format!("{} is not pipe-usable: {reason}", binary.display()))?;
+        }
+
+        let mut path_value = staged_bin.as_os_str().to_os_string();
+        path_value.push(";");
+        path_value.push(env::var_os("PATH").unwrap_or_default());
+        let _path_guard = EnvGuard::set("PATH", &path_value);
+        let script = controls.path().join("launch-paths.pl");
+        fs::write(
+            &script,
+            "use strict;\nuse warnings;\nmy $identity_probe = 1;\n$identity_probe++;\n",
+        )?;
+        let script_text = script.to_string_lossy().into_owned();
+        let cwd = controls.path().to_string_lossy().into_owned();
+        for launch_path in ["launch", "launch_with_stop_on_entry", "launch_with_cwd"] {
+            let session = DapWorkflowSession::new_with_perl(workflow_timeout(), Some(&pinned))?;
+            let reported = observe_pin_with_session(session, launch_path, &script_text, &cwd)
+                .map_err(|error| format!("{launch_path} failed: {error}"))?;
+            common::assert_pinned_identity(&reported, &pinned, &ambient, launch_path)
+                .map_err(std::io::Error::other)?;
+        }
+        return Ok(());
     }
-    let ambient = controls.path().join(if cfg!(windows) { "perl.exe" } else { "perl" });
+    let ambient = controls.path().join("perl");
     // Keep the copied pin's basename within the adapter's strict Perl-name
     // contract while still making it distinct from the ambient `perl` copy.
     let pinned = controls.path().join(if cfg!(windows) { "perl5.exe" } else { "perl5" });
