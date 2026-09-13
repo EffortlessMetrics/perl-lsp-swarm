@@ -204,6 +204,11 @@ fn walk_quickorm(
             if extract_table_declaration(expression, file_id, ctx, out) {
                 ctx.consume_current_builder();
             }
+            // This arm never descends, and the builder body is an anonymous
+            // sub that `extract_table_declaration` reads for columns only. A
+            // `use`/`no` inside it still runs at compile time, so record it
+            // here; the end-of-walk filter drops whatever it suppresses.
+            record_nested_import_events(expression, ctx);
         }
         NodeKind::Subroutine { .. } | NodeKind::Method { .. } => {
             // A `table` call in a deferred definition has not executed, but
@@ -936,6 +941,57 @@ table users => sub { column id => sub { primary_key }; };
             assert!(
                 !has_name(&facts, "My::ORM::Table::User::id"),
                 "nested import event must fail the package closed: {label}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_import_inside_the_table_builder_still_fails_the_package_closed() {
+        // The builder body is an anonymous sub the extractor reads for columns
+        // only, and the active-builder statement arm does not descend. A second
+        // import there is still a compile-time event for the package.
+        for (label, source) in [
+            (
+                "import in the builder body",
+                r#"
+package My::ORM::Table::User;
+use DBIx::QuickORM type => 'table';
+table users => sub { use DBIx::QuickORM; column id => sub { primary_key }; };
+1;
+"#,
+            ),
+            (
+                "unimport in the builder body",
+                r#"
+package My::ORM::Table::User;
+use DBIx::QuickORM type => 'table';
+table users => sub { no DBIx::QuickORM; column id => sub { primary_key }; };
+1;
+"#,
+            ),
+            (
+                "import in a nested column builder",
+                r#"
+package My::ORM::Table::User;
+use DBIx::QuickORM type => 'table';
+table users => sub { column id => sub { use DBIx::QuickORM; primary_key }; };
+1;
+"#,
+            ),
+            (
+                "import in an assigned table call builder",
+                r#"
+package My::ORM::Table::User;
+use DBIx::QuickORM type => 'table';
+my $first = table users => sub { use DBIx::QuickORM; column id => sub { primary_key }; };
+1;
+"#,
+            ),
+        ] {
+            let facts = candidate_facts(source);
+            assert!(
+                !has_name(&facts, "My::ORM::Table::User::id"),
+                "import inside the table expression must fail the package closed: {label}"
             );
         }
     }
