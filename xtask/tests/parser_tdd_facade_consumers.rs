@@ -51,6 +51,11 @@
 //! never create violations and mirrors the precision of the sibling semantic
 //! facade guard.
 
+#[path = "support/workspace_scan_roots.rs"]
+mod workspace_scan_roots;
+
+use workspace_scan_roots::{SKIPPED_DIR_NAMES, root_covers, scan_roots};
+
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -58,10 +63,6 @@ use std::{
 
 const FACADE_CRATE_PREFIX: &str = "crates/perl-parser/";
 const FACADE_HEAD: &str = "perl_parser";
-
-/// Scan roots for governed consumer sources. Root-level workspace members
-/// (`xtask`, `fuzz`) are scanned explicitly alongside `crates`.
-const SCAN_ROOTS: &[&str] = &["crates", "xtask/src", "fuzz/fuzz_targets"];
 
 /// Leading path segments of `perl-parser` modules that re-export TDD and
 /// test-generation authority.
@@ -662,6 +663,9 @@ fn collect_rs_files(
         }
         let path = entry.path();
         if path.is_dir() {
+            if SKIPPED_DIR_NAMES.contains(&name.as_str()) {
+                continue;
+            }
             collect_rs_files(&path, &child_relative, found, failures);
         } else if name.ends_with(".rs") {
             found.push(child_relative);
@@ -673,8 +677,13 @@ fn unregistered_facade_imports() -> (Vec<(String, String)>, Vec<String>) {
     let root = repo_root();
     let mut files = Vec::new();
     let mut failures = Vec::new();
-    for scan_root in SCAN_ROOTS {
-        collect_rs_files(&root.join(scan_root), scan_root, &mut files, &mut failures);
+    match scan_roots(&root) {
+        Ok(roots) => {
+            for scan_root in roots {
+                collect_rs_files(&root.join(&scan_root), &scan_root, &mut files, &mut failures);
+            }
+        }
+        Err(error) => failures.push(error),
     }
     files.sort();
 
