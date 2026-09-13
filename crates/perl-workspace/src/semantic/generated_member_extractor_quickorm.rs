@@ -946,6 +946,25 @@ table users => sub { column id => sub { primary_key }; };
     }
 
     #[test]
+    fn a_table_dsl_without_any_quickorm_import_is_not_a_candidate_source() {
+        // `table` and `column` are ordinary Perl sub names. Without an import
+        // the package has no QuickORM state at all, and the extractor must not
+        // mint fields from the bare shape of the call.
+        let facts = candidate_facts(
+            r#"
+package My::Reporting::Layout;
+
+table users => sub {
+    column id => sub { primary_key };
+};
+1;
+"#,
+        );
+
+        assert!(facts.is_empty());
+    }
+
+    #[test]
     fn only_quickorm_import_events_count_toward_the_containment() {
         // Real Perl files carry unrelated imports. If the module guard did not
         // discriminate, `use strict` alone would suppress every package, and a
