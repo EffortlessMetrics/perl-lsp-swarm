@@ -2212,8 +2212,9 @@ impl DebugAdapter {
     /// Advance the session generation and tear down the prior active session.
     ///
     /// Callers invoke this only after a replacement launch or attach has
-    /// successfully completed its external setup, so rejected replacements
-    /// leave the existing session untouched.
+    /// successfully completed its external setup. A spawn failure leaves the
+    /// existing session valid; a cleanup-blocked replacement invalidates the
+    /// protocol state while retaining process ownership for retry.
     fn prepare_replacement_session(&self) -> bool {
         self.begin_session_generation();
         self.clear_active_session_state()
