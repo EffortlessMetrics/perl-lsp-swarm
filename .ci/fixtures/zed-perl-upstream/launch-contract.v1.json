@@ -1,0 +1,52 @@
+{
+  "schema_version": "zed_perllsp_launch_contract.v1",
+  "product_protocol": "lsp",
+  "authority": {
+    "crate": "perl-lsp-rs-core",
+    "module": "runtime::launcher",
+    "parser_type": "LspArgs",
+    "source_path": "crates/perl-lsp-rs-core/src/runtime/launcher/mod.rs",
+    "currentness_check": "crates/perl-lsp-rs-core/tests/zed_launch_contract_currentness.rs",
+    "derivation": "The admitted/rejected inventory below is checked against the live clap Command for LspArgs; any product CLI drift fails that test before staged host evidence can go stale."
+  },
+  "provider_identity_note": "The Zed server-ID migration to perl-lsp-rs is owned by issue #10842. This contract binds executable argv behavior only and stays independent of the provider ID.",
+  "required_transport_flag": "--stdio",
+  "fail_closed_default": true,
+  "duplicate_transport_policy": "normalize_to_one",
+  "admitted_arguments": [
+    { "flag": "--log", "value": false },
+    { "flag": "--feature-profile", "value": true },
+    { "flag": "--runtime-mode", "value": true },
+    { "flag": "--diagnostic-mode", "value": true },
+    { "flag": "--diagnostic-debounce-ms", "value": true },
+    { "flag": "--eager-workspace-indexing", "value": true },
+    { "flag": "--file-watchers", "value": true }
+  ],
+  "rejected_exact_tokens": ["mcp", "--mcp"],
+  "rejected_flags": [
+    "--socket",
+    "--port",
+    "--health",
+    "--info",
+    "--check",
+    "--check-project",
+    "--doctor",
+    "--json",
+    "--completion",
+    "--critic-compatibility",
+    "--external-tools",
+    "--features-json",
+    "--perltidy-compat-report",
+    "--perlcritic-compat-report",
+    "--ripr-facts",
+    "--ripr-schema",
+    "--ripr-root",
+    "--ripr-base",
+    "--ripr-head",
+    "--ripr-fact-classes",
+    "--ripr-out",
+    "--version",
+    "--help"
+  ],
+  "rejected_short_flags": ["-h", "-V"]
+}
