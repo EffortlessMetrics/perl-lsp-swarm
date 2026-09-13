@@ -11,7 +11,7 @@ schema_version = 1
 policy = "ripr-suppressions"
 owner = "EffortlessMetrics"
 status = "advisory"
-updated = "2026-09-10"
+updated = "2026-09-13"
 
 # -----------------------------------------------------------------------------
 # Generated status docs: validated through status-generation checks, not
@@ -3512,3 +3512,24 @@ created = "2026-09-13"
 review_after = "2026-09-20"
 expires = "2026-09-27"
 removal_criteria = "Remove when #12617 wires the first production consumer (re-scope the suppression to that consumer's seams) or when ripr#1429 resolves declaration-line and newtype-declaration probes; narrow immediately if a future receipt reports an executable (non-declaration) no_static_path seam in this file."
+
+# PR #15458 (#10831) adds xtask/src/install_surface_route_units.rs: the bridge
+# between the install-surface registry's product-unit vocabulary and release-
+# route product units. The module is a reviewed rule table plus the typed
+# vocabulary its consumer imports; #10831 defines that vocabulary *before*
+# #10333/#10334 exist, so it has no production consumer yet — the same
+# not-yet-wired substrate boundary as the quickorm_api reference registry,
+# at declaration-line ripr#1429 class.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-10831-install-surface-route-unit-declarations"
+kind = "declaration_line_no_static_path"
+paths = ["xtask/src/install_surface_route_units.rs"]
+classification = ["no_static_path"]
+owner = "proof-lane"
+issue = "#10831"
+reason = "PR #15458 (#10831): ripr 0.10.0 reports 111 no_static_path probes on this newly added owner, every one family field_construction on a declaration line — 83 struct-field declarations (RouteSubject 473-481, RouteMapping 487-496, the RouteRule shape 520-527, the ten ROUTE_RULES table rows 535/610-733, and the report/loader fields 1023-1035), 17 top-level const declarations (the three pub schema/path constants 30-36, the three authority constants 40-58, and the allowed-set tables 544-602), and 11 `limitation:` string assignments inside that same const table. There is no executable seam in the list: every entry is a declaration or a const-data field assignment. The behavior IS discriminated — 23 in-file tests cover each of #10831's eight numbered falsifiers and every one was run against a deliberately wrong implementation to confirm it turns red (gate order, the historical short-circuit, the settled-disposition set, the product-relation authority gate, the ceiling term of the currentness predicate, and the pair-collapse guard); every_serialized_token_is_pinned, as_str_agrees_with_serde_for_every_variant and reason_codes_are_distinct_and_agree_with_serde pin all 53 serialized tokens against their serde representation; and bridge_covers_every_value_the_committed_registry_uses reads the real committed policy/install-surface-registry.toml so an unreviewed registry value fails loudly rather than degrading to not_proven. ripr cannot trace declaration-line probes to those same-module tests through struct-literal construction (EffortlessMetrics/ripr#1429; the #6772 passing precedent covers only pub-primitive-typed fields), and it additionally cannot trace activation at all while the vocabulary has no production consumer — #10333/#10334 are the consumers this exists to serve and neither has landed. A proof-based fix was attempted and measurably did not help: adding the three token tests moved the severe count 189 -> 190. HONEST SCOPE NOTE: the matcher is path-scoped, so this masks future no_static_path declaration probes in this one file for the window; the classification list IS enforced on the diff-scoped gate path (suppression_matches_finding), so the 79 weakly_exposed findings stay advisory-visible and are not covered, and reachable_unrevealed — 0 in this receipt — still blocks. Measured locally with the pinned ripr 0.10.0 running CI's exact producer at head 641abcc7fd233cb81987656bc57b83a7a66c2d4e against base 8b945cfd512ae03f406d7d9eb9bede039c7e9fb3. This entry does not claim the mapping is publication proof, installed proof, currentness proof, or a support claim; it decides no registry row's disposition."
+created = "2026-09-13"
+review_after = "2026-10-13"
+expires = "2026-11-13"
+removal_criteria = "Remove when #10333/#10334 give this vocabulary its first production consumer and re-scope to that consumer's seams, or when ripr#1429 resolves declaration-line probes via constructor-call paths; narrow immediately if a future receipt reports an executable (non-declaration) seam in this file outside no_static_path."
