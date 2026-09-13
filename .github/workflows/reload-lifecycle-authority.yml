@@ -6,30 +6,40 @@ name: Reload Lifecycle Authority
 # its structure (an identity row without an owner, a deleted rule id still
 # cited elsewhere), or when the contract stops being indexed.
 #
-# The path filters must cover every surface
-# `test_reload_lifecycle_authority.py` reads, otherwise one of those surfaces
-# can change on `main` with no gate having run.
-# `test_workflow_triggers_on_every_surface_it_guards` enforces that.
+# The path filters must cover every surface the suite READS, not just the files
+# it names. GitHub evaluates filters before the job runs, so an input outside
+# them changes on `main` with no gate having run:
+#
+#   docs/**   the marker scan reads every markdown file under docs/, so a
+#             competing authority added to any other doc would merge unseen --
+#             which would defeat the one rule this gate exists to enforce;
+#   crates/** the identity table's type claims are resolved against Rust
+#             source, so deleting or renaming a claimed type is what makes an
+#             `implemented` row go stale;
+#   tests/test_writer_authority_transfer_contract.py
+#             owns the run-command parser this suite borrows.
+#
+# `test_every_read_surface_fires_both_events` enforces the coverage, and
+# `crates/**` is why: it costs one small job on Rust PRs (a few seconds of
+# Python and git grep). Narrow it only by also narrowing what the suite reads.
 
 on:
   pull_request:
     branches: [main]
     paths:
       - '.github/workflows/reload-lifecycle-authority.yml'
-      - 'docs/INDEX.md'
-      - 'docs/adr/0046-loaded-module-reload-semantics.md'
-      - 'docs/specs/PLSP-SPEC-0037-reload-lifecycle-v1.md'
-      - 'docs/specs/README.md'
+      - 'crates/**'
+      - 'docs/**'
       - 'tests/test_reload_lifecycle_authority.py'
+      - 'tests/test_writer_authority_transfer_contract.py'
   push:
     branches: [main]
     paths:
       - '.github/workflows/reload-lifecycle-authority.yml'
-      - 'docs/INDEX.md'
-      - 'docs/adr/0046-loaded-module-reload-semantics.md'
-      - 'docs/specs/PLSP-SPEC-0037-reload-lifecycle-v1.md'
-      - 'docs/specs/README.md'
+      - 'crates/**'
+      - 'docs/**'
       - 'tests/test_reload_lifecycle_authority.py'
+      - 'tests/test_writer_authority_transfer_contract.py'
 
 permissions:
   contents: read

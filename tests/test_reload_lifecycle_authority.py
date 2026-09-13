@@ -30,6 +30,7 @@ DOC_INDEX = "docs/INDEX.md"
 WORKFLOW = ".github/workflows/reload-lifecycle-authority.yml"
 SELF_TEST = "tests/test_reload_lifecycle_authority.py"
 DAP_RELOAD_ADR = "docs/adr/0046-loaded-module-reload-semantics.md"
+PARSER_SOURCE = "tests/test_writer_authority_transfer_contract.py"
 
 # A document claims reload-lifecycle authority by carrying this exact line. Inline
 # mentions inside prose (backticked, mid-sentence) deliberately do not match.
@@ -106,6 +107,27 @@ def workflow_run_commands(text: str) -> tuple[str, ...]:
     return borrowed(text)
 
 
+def path_matches(pattern: str, path: str) -> bool:
+    """Does a GitHub Actions path filter cover this file?
+
+    GitHub's `**` matches across directory separators; `*` does not. Only the
+    subset this workflow uses needs to be modelled.
+    """
+    regex = ""
+    index = 0
+    while index < len(pattern):
+        if pattern.startswith("**", index):
+            regex += ".*"
+            index += 2
+        elif pattern[index] == "*":
+            regex += "[^/]*"
+            index += 1
+        else:
+            regex += re.escape(pattern[index])
+            index += 1
+    return re.fullmatch(regex, path) is not None
+
+
 def workflow_event_paths(text: str, event: str) -> tuple[str, ...]:
     """Extract `on.<event>.paths` for one event only.
 
@@ -150,24 +172,57 @@ def slugify(heading: str) -> str:
 
 
 def claimed_type_names(realisation: str) -> list[str]:
-    """Rust type names a realisation cell claims exist."""
+    """Type names a realisation cell claims exist in this repository's own source.
+
+    A backticked span carrying `::` names a type from a dependency
+    (`lsp_types::Uri`); this repository does not declare it, so it is returned
+    separately by `referenced_foreign_types` and checked by use, not declaration.
+    """
     names: list[str] = []
     for span in BACKTICKED.findall(realisation):
+        if "::" in span:
+            continue
         names.extend(RUST_TYPE_NAME.findall(span))
     return names
 
 
-def type_name_exists_in_crates(name: str) -> bool:
+def referenced_foreign_types(realisation: str) -> list[str]:
+    """Dependency-owned types a realisation cell names, as written."""
+    return [span for span in BACKTICKED.findall(realisation) if "::" in span]
+
+
+def _git_grep(pattern: str, *, fixed: bool) -> list[str]:
+    mode = "-F" if fixed else "-E"
     result = subprocess.run(
-        ["git", "grep", "-l", "-F", name, "--", "crates"],
+        ["git", "grep", "-l", mode, pattern, "--", "crates"],
         cwd=ROOT,
         capture_output=True,
         text=True,
         check=False,
     )
     if result.returncode not in (0, 1):
-        raise RuntimeError(f"git grep failed for {name!r}: {result.stderr.strip()}")
-    return any(line.endswith(".rs") for line in result.stdout.splitlines())
+        raise RuntimeError(f"git grep failed for {pattern!r}: {result.stderr.strip()}")
+    return [line for line in result.stdout.splitlines() if line.endswith(".rs")]
+
+
+def type_name_exists_in_crates(name: str) -> bool:
+    """True when `crates/` DECLARES this type, not merely mentions it.
+
+    A substring search is satisfied by a comment, an import, a match arm, or a
+    longer identifier, so a renamed type whose old name survives in a migration
+    note would keep an `implemented` row alive. Two declaration shapes count:
+    an ordinary Rust item, and a name standing alone inside an `opaque_id!`
+    invocation, which is how the workspace generations are declared.
+    """
+    escaped = re.escape(name)
+    item = rf"^[[:space:]]*(pub([[:space:]]*\([^)]*\))?[[:space:]]+)?(struct|enum|trait|union|type)[[:space:]]+{escaped}\b"
+    macro_arg = rf"^[[:space:]]*{escaped},?[[:space:]]*$"
+    return bool(_git_grep(item, fixed=False) or _git_grep(macro_arg, fixed=False))
+
+
+def foreign_type_is_used_in_crates(reference: str) -> bool:
+    """A dependency's type is claimed by use, since this repository cannot declare it."""
+    return bool(_git_grep(reference.split("::")[-1], fixed=True))
 
 
 def contiguous(ids: list[str], prefix: str) -> list[str]:
@@ -213,11 +268,16 @@ class ReloadLifecycleAuthorityTest(unittest.TestCase):
         match = re.search(r"^Status impact: (.*)$", self.spec, re.MULTILINE)
         self.assertIsNotNone(match, "the spec must carry a `Status impact:` line")
         assert match is not None
-        self.assertIn(
-            "none",
-            match.group(1).lower(),
-            "the reload lifecycle contract changes no runtime behavior; "
-            "a PR that gives it runtime status impact needs a different document",
+        # Neither a containment test nor a bare prefix: "none" must be the whole
+        # verdict, closed by punctuation. "none of this is true, it changes
+        # runtime behavior" both contains and starts with "none" and means the
+        # opposite.
+        self.assertRegex(
+            match.group(1),
+            re.compile(r"^none(\s*$|[.,;])", re.IGNORECASE),
+            "the reload lifecycle contract changes no runtime behavior, so its "
+            "status impact must start with `none`; a PR that gives it runtime "
+            "status impact needs a different document",
         )
 
     def test_exactly_one_document_claims_reload_lifecycle_authority(self) -> None:
@@ -299,7 +359,13 @@ class ReloadLifecycleAuthorityTest(unittest.TestCase):
                     if not type_name_exists_in_crates(name):
                         problems.append(
                             f"{identifier} is {marker} and names `{name}`, "
-                            "which no Rust file under crates/ mentions"
+                            "which no Rust file under crates/ declares"
+                        )
+                for reference in referenced_foreign_types(realisation):
+                    if not foreign_type_is_used_in_crates(reference):
+                        problems.append(
+                            f"{identifier} is {marker} and names `{reference}`, "
+                            "which no Rust file under crates/ uses"
                         )
             elif marker == "contracted" and names:
                 problems.append(
@@ -407,16 +473,41 @@ class ReloadLifecycleWorkflowWiringTest(unittest.TestCase):
             "the workflow must execute this suite in a run command, not merely name it",
         )
 
-    def test_every_guarded_surface_fires_both_events(self) -> None:
-        """One-sided path removal silently disables candidate- or merge-time enforcement."""
-        guarded = {SPEC, SPEC_CATALOG, DOC_INDEX, DAP_RELOAD_ADR, SELF_TEST, WORKFLOW}
+    def test_every_read_surface_fires_both_events(self) -> None:
+        """Every input the suite READS must trigger the gate, under both events.
+
+        Naming only the files the suite mentions is not enough. The marker scan
+        reads all of `docs/`, and the type check reads all of `crates/`, so a
+        filter listing six files lets a competing authority in a seventh doc
+        merge without this gate ever running.
+        """
+        read_surfaces = (
+            SPEC,
+            SPEC_CATALOG,
+            DOC_INDEX,
+            DAP_RELOAD_ADR,
+            SELF_TEST,
+            WORKFLOW,
+            PARSER_SOURCE,
+            "docs/reference/SOME_OTHER_DOC.md",
+            "crates/perl-workspace/src/workspace/runtime_generation/core.rs",
+        )
         for event in ("pull_request", "push"):
-            with self.subTest(event=event):
-                self.assertEqual(
-                    set(workflow_event_paths(self.workflow, event)),
-                    guarded,
-                    f"the {event} filter must list exactly the surfaces this suite reads",
-                )
+            patterns = workflow_event_paths(self.workflow, event)
+            self.assertTrue(patterns, f"the {event} filter is empty")
+            for surface in read_surfaces:
+                with self.subTest(event=event, surface=surface):
+                    self.assertTrue(
+                        any(path_matches(pattern, surface) for pattern in patterns),
+                        f"{surface} can change without running this gate on {event}",
+                    )
+
+    def test_both_events_guard_the_same_surfaces(self) -> None:
+        self.assertEqual(
+            set(workflow_event_paths(self.workflow, "pull_request")),
+            set(workflow_event_paths(self.workflow, "push")),
+            "a one-sided filter disables candidate- or merge-time enforcement",
+        )
 
 
 class DetectorSelfTest(unittest.TestCase):
