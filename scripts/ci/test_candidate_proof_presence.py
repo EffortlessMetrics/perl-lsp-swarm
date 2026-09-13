@@ -251,6 +251,31 @@ class RepositoryContractTests(unittest.TestCase):
     def test_workflow_declares_proofs(self) -> None:
         self.assertGreaterEqual(len(self.proofs), 7, self.proofs)
 
+    def test_the_guard_comes_from_the_effective_workflow_revision(self) -> None:
+        """The stale heads this repair targets carry no copy of the guard.
+
+        Running the candidate's own copy would leave exactly those candidates
+        unclassified, so every proof would run unguarded and an absent one would
+        still die in cargo target selection. The guard is therefore taken from
+        the revision that composed the effective workflow.
+        """
+        self.assertIn("ref: ${{ github.sha }}", self.workflow)
+        self.assertIn("path: .effective-workflow", self.workflow)
+        self.assertIn(
+            "sparse-checkout: scripts/ci/candidate_proof_presence.py", self.workflow
+        )
+        self.assertIn(
+            "python3 .effective-workflow/scripts/ci/candidate_proof_presence.py",
+            self.workflow,
+        )
+        # The candidate's own copy must never be the executed instrument.
+        self.assertNotIn("python3 scripts/ci/candidate_proof_presence.py", self.workflow)
+
+    def test_the_classified_subject_is_the_candidate_tree(self) -> None:
+        """Only the instrument is borrowed; the subject stays the candidate."""
+        self.assertIn("--root .", self.workflow)
+        self.assertIn("--workflow .github/workflows/workflow-policy.yml", self.workflow)
+
     def test_current_main_classifies_every_proof_as_present(self) -> None:
         """The guard must not degrade into a blanket skip on a healthy tree."""
         for identifier, path in self.proofs:

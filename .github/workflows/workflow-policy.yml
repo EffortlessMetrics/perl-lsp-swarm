@@ -81,22 +81,27 @@ jobs:
       # proof against the candidate tree first: absent-and-undeclared becomes a
       # visible stale-head no-op, while present, deleted-but-declared, and
       # non-regular proofs all stay red.
+      #
+      # The guard is workflow instrumentation, not candidate code, so it comes
+      # from the same revision as the effective workflow. A candidate predating
+      # the guard carries no copy of it, which would leave exactly the stale
+      # heads this repair targets unclassified. Only the instrument is taken
+      # from there; every classified subject is read from the candidate tree.
+      - name: Fetch the proof-presence guard from the effective workflow revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          path: .effective-workflow
+          persist-credentials: false
+          sparse-checkout: scripts/ci/candidate_proof_presence.py
+          sparse-checkout-cone-mode: false
       - name: Classify candidate proof presence
         id: candidate-proofs
         shell: bash
         run: |
           set -euo pipefail
-          guard=scripts/ci/candidate_proof_presence.py
-          if [ ! -f "$guard" ]; then
-            # Bootstrap: a head predating the guard itself keeps the previous
-            # behavior and runs every declared proof. Absence of the guard must
-            # never become a blanket skip.
-            echo "::notice::candidate predates $guard; every declared proof runs unguarded"
-            exit 0
-          fi
-          # The instrument proves itself before anything is allowed to rely on it.
-          python3 -m unittest scripts/ci/test_candidate_proof_presence.py
-          python3 "$guard" \
+          python3 .effective-workflow/scripts/ci/candidate_proof_presence.py \
+            --root . \
             --workflow .github/workflows/workflow-policy.yml \
             --proof ux_regression_gate_workflow_policy=xtask/tests/ux_regression_gate_workflow_policy.rs \
             --proof perl_version_matrix_cache_contract=xtask/tests/perl_version_matrix_cache_contract.rs \
