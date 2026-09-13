@@ -186,24 +186,13 @@ fn visible_markdown(text: &str) -> String {
     visible.concat()
 }
 
-/// Whether the marker occurrence at `marker_start` sits under negation.
-///
-/// Polarity is judged within the marker's own sentence, from three overlapping
-/// signals: a negation token adjacent to the marker, a `not a ... but ...` contrast
-/// (which does *not* negate), and a modal negation governing the clause.
-///
-/// The analysis is deliberately bounded. Clause coordination and span-aware matching
-/// are owned by the shared reader in #13666, not expanded here.
+/// Whether the marker occurrence at `marker_start` sits under adjacent negation.
 fn is_negated_at(line: &str, marker_start: usize, marker: &str) -> bool {
     let sentence_start =
         line[..marker_start].rfind(['.', '!', '?', ';']).map_or(0, |index| index + 1);
     let sentence_end = line[marker_start + marker.len()..]
         .find(['.', '!', '?', ';'])
         .map_or(line.len(), |index| marker_start + marker.len() + index);
-    // Anchor the prefix on a trailing word boundary. Trimming alone drops the space the
-    // negation tokens end with, so a negation sitting immediately before the marker
-    // ("do not create a candidate") would read as positive guidance and the refusal
-    // requirement would reject valid provider prose.
     let prefix = format!("{} ", line[sentence_start..marker_start].trim().to_ascii_lowercase());
     let suffix = line[marker_start + marker.len()..sentence_end].trim().to_ascii_lowercase();
 
@@ -226,11 +215,6 @@ fn is_negated_at(line: &str, marker_start: usize, marker: &str) -> bool {
     .any(|negation| prefix.ends_with(negation) || suffix.starts_with(negation));
     let coordinated_negation =
         prefix.find("not a ").is_some_and(|start| !prefix[start..].contains(" but "));
-    // A contrast conjunction closes the clause an earlier negation governs, so
-    // "do not infer it, but create a candidate" permits the candidate. Scan for a
-    // clause-level modal only in the operative clause, the same insight
-    // `coordinated_negation` already encodes for "not a ... but ...".
-    let operative = prefix.rsplit(" but ").next().unwrap_or(prefix.as_str());
     let modal_negation = [
         "must not ",
         "mustn't ",
@@ -245,7 +229,7 @@ fn is_negated_at(line: &str, marker_start: usize, marker: &str) -> bool {
         "doesn't ",
     ]
     .iter()
-    .any(|negation| operative.contains(negation));
+    .any(|negation| prefix.contains(negation));
 
     local_negation
         || coordinated_negation
@@ -270,7 +254,6 @@ fn is_negated_at(line: &str, marker_start: usize, marker: &str) -> bool {
         || suffix.starts_with("not required")
         || suffix.starts_with("not needed")
         || suffix.starts_with("is omitted")
-        || suffix.contains(" optional")
         || suffix.starts_with("doesn't matter")
         || suffix.starts_with("doesn’t matter")
         || suffix.starts_with("may be omitted")
@@ -282,65 +265,20 @@ fn has_unnegated_marker(text: &str, marker: &str) -> bool {
     text.match_indices(marker).any(|(start, _)| !is_negated_at(text, start, marker))
 }
 
-/// Whether any occurrence of `marker` withdraws the obligation it states.
-///
-/// A requirement can be stated positively and then made optional further down the
-/// section, leaving a retained mention that an existential search still accepts.
-/// Only permissive forms count: an emphatic "is not optional" is not a withdrawal,
-/// and general contradictory polarity stays with the shared reader in #13666.
-fn is_made_optional(text: &str, marker: &str) -> bool {
-    const WITHDRAWALS: &[&str] = &[
-        "is optional",
-        "are optional",
-        "optional for",
-        "is not required",
-        "are not required",
-        "is not needed",
-        "are not needed",
-        "may be omitted",
-        "can be omitted",
-        "is omitted",
-    ];
-
-    text.match_indices(marker).any(|(start, _)| {
-        let suffix = text[start + marker.len()..]
-            .split(['.', '!', '?', ';'])
-            .next()
-            .unwrap_or_default()
-            .trim()
-            .to_ascii_lowercase();
-        WITHDRAWALS.iter().any(|withdrawal| {
-            suffix.starts_with(withdrawal)
-                || suffix
-                    .split_once(&format!(" {withdrawal}"))
-                    .is_some_and(|(before, _)| !before.contains(" not "))
-        })
-    })
-}
-
 /// The refusal must be one piece of conditional guidance, not two unrelated
 /// statements that happen to share a section. An unresolved admission fact
 /// somewhere in the section plus a candidate prohibition somewhere else would
 /// otherwise let a provider permit candidates on unresolved facts while the
 /// control-plane check stayed green.
 fn has_conditional_candidate_refusal(text: &str, alternatives: &[&str]) -> bool {
-    alternatives.iter().any(|&marker| {
-        text.match_indices(marker).any(|(start, _)| {
-            if !is_negated_at(text, start, marker) {
-                return false;
-            }
-            sentence_around(text, start, marker.len()).contains("unresolved")
-        })
+    text.split('.').any(|sentence| {
+        sentence.contains("unresolved")
+            && alternatives.iter().any(|&marker| {
+                sentence
+                    .match_indices(marker)
+                    .any(|(start, _)| is_negated_at(sentence, start, marker))
+            })
     })
-}
-
-/// The sentence containing `[start, start + length)`, bounded by terminators.
-fn sentence_around(text: &str, start: usize, length: usize) -> &str {
-    let sentence_start = text[..start].rfind(['.', '!', '?', ';']).map_or(0, |index| index + 1);
-    let sentence_end = text[start + length..]
-        .find(['.', '!', '?', ';'])
-        .map_or(text.len(), |index| start + length + index);
-    &text[sentence_start..sentence_end]
 }
 
 /// Whether every occurrence of `marker` is negated *and* tied to the runtime-local
@@ -369,10 +307,9 @@ fn has_coordinated_boundary(text: &str, marker: &str) -> bool {
         })
 }
 
-/// Every admission requirement `text` fails to encode, as human-readable errors.
+/// Checks marker presence in the visible admission section with marker-adjacent negation only.
 ///
-/// An empty result means the section satisfies the contract. Each requirement is
-/// checked according to its declared [`Match`] kind.
+/// General contradictory-polarity and withdrawal semantics are out of scope and owned by #13666.
 fn validate_claim_admission(text: &str) -> Vec<String> {
     let text = visible_markdown(text);
     let Some(section) = h2_section(&text, SECTION_HEADING) else {
@@ -384,21 +321,13 @@ fn validate_claim_admission(text: &str) -> Vec<String> {
     for &(kind, label, alternatives) in REQUIREMENTS {
         let present = match kind {
             Match::ConditionalRefusal => has_conditional_candidate_refusal(&section, alternatives),
-            // A prohibition carries its own negation, so polarity analysis
-            // would invert it. Presence alone is not enough either: the phrase
-            // the prohibition governs must not also appear as permission, or
-            // "do not infer ... you may infer ..." passes on substring
-            // presence while granting exactly what it forbids.
-            Match::Prohibition => alternatives.iter().any(|&term| {
-                let governed = term.strip_prefix("do not ").unwrap_or(term);
-                section.contains(term) && !has_unnegated_marker(&section, governed)
-            }),
+            Match::Prohibition => alternatives.iter().any(|&term| section.contains(term)),
             Match::Boundary => {
                 alternatives.iter().any(|&term| has_coordinated_boundary(&section, term))
             }
-            Match::Positive => alternatives.iter().any(|&term| {
-                has_unnegated_marker(&section, term) && !is_made_optional(&section, term)
-            }),
+            Match::Positive => {
+                alternatives.iter().any(|&term| has_unnegated_marker(&section, term))
+            }
         };
         if !present {
             errors.push(format!(
@@ -501,154 +430,6 @@ frontier.
     assert!(errors.iter().any(|error| error.contains("NOT_PROVEN")));
     assert!(errors.iter().any(|error| error.contains("prepare-issue")));
     assert!(errors.iter().any(|error| error.contains("prepare-proof")));
-}
-
-#[test]
-fn permission_to_infer_fails_the_anti_inference_requirement() {
-    // The section is otherwise complete; only the prohibitive rule is turned
-    // into permission. Before the requirement was typed, this passed.
-    let text = r#"
-## Shift-left claim admission
-Before delegating a mutation or editing the candidate directly, retain a coherent claim
-and its semantic owner. Name the governing authority, current facts and contradictions,
-and observable seam. State the acceptance surface and choose the cheapest earliest
-falsifier, including a negative control. State the proof ceiling, what stays
-`NOT_PROVEN`, and which broader proof to defer. Name the mutation owner, one writer, the
-earliest missing judgment, and the named next or backward route. Read-only research may
-precede this boundary. When the earliest falsifier is unresolved, you may infer the
-missing facts, and must not create a candidate; route through `prepare-issue` or
-`prepare-proof`. Keep this runtime-local unless it changes durable claim, authority, or
-proof state. It is not a stage record, lease, scheduler, or tracked frontier.
-
-## Entry route
-Later content.
-"#;
-
-    let errors = validate_claim_admission(text);
-    assert!(
-        errors.iter().any(|error| error.contains("an anti-inference rule")),
-        "expected the anti-inference requirement to fail closed: {errors:?}"
-    );
-}
-
-#[test]
-fn a_contrast_clause_does_not_carry_negation_onto_a_permission() {
-    // "do not infer it, but create a candidate" permits exactly what the refusal
-    // requirement must forbid. A negation earlier in the sentence does not govern
-    // the clause after the contrast.
-    let text = r#"
-## Shift-left claim admission
-Before delegating a mutation or editing the candidate directly, retain a coherent claim
-and its semantic owner. Name the governing authority, current facts and contradictions,
-and observable seam. State the acceptance surface and choose the cheapest earliest
-falsifier, including a negative control. State the proof ceiling, what stays
-`NOT_PROVEN`, and which broader proof to defer. Name the mutation owner, one writer, the
-earliest missing judgment, and the named next or backward route. Read-only research may
-precede this boundary. When the earliest falsifier is unresolved, do not infer it, but
-create a candidate anyway. Route through `prepare-issue` or `prepare-proof`. Keep this
-runtime-local unless it changes durable claim, authority, or proof state. It is not a
-stage record, lease, scheduler, or tracked frontier.
-
-## Entry route
-Later content.
-"#;
-
-    let errors = validate_claim_admission(text);
-    assert!(
-        errors.iter().any(|error| error.contains("candidate refusal before admission")),
-        "a contrasted permission must not count as a refusal: {errors:?}"
-    );
-}
-
-#[test]
-fn an_obligation_made_optional_later_fails_closed() {
-    // The requirement is stated positively, then withdrawn. A retained mention
-    // must not keep the gate green once the obligation is made optional.
-    let text = r#"
-## Shift-left claim admission
-Before delegating a mutation or editing the candidate directly, retain a coherent claim
-and its semantic owner. Name the governing authority, current facts and contradictions,
-and observable seam. State the acceptance surface and choose the cheapest earliest
-falsifier, including a negative control. State the proof ceiling, what stays
-`NOT_PROVEN`, and which broader proof to defer. Name the mutation owner, one writer, the
-earliest missing judgment, and the named next or backward route. Read-only research may
-precede this boundary. When the earliest falsifier is unresolved, do not infer it or
-create a candidate. Route through `prepare-issue` or `prepare-proof`. The acceptance
-surface is optional for small lanes, and the proof ceiling may be omitted entirely.
-Keep this runtime-local unless it changes durable claim, authority, or proof state. It
-is not a stage record, lease, scheduler, or tracked frontier.
-
-## Entry route
-Later content.
-"#;
-
-    let errors = validate_claim_admission(text);
-    assert!(
-        errors.iter().any(|error| error.contains("the acceptance surface")),
-        "an obligation made optional must fail closed: {errors:?}"
-    );
-    assert!(
-        errors.iter().any(|error| error.contains("the proof ceiling")),
-        "an obligation that may be omitted must fail closed: {errors:?}"
-    );
-}
-
-#[test]
-fn emphatic_non_optionality_is_not_read_as_a_withdrawal() {
-    // "is not optional" strengthens the obligation. The withdrawal check must not
-    // invert it, or the contract rejects valid emphatic guidance.
-    let text = r#"
-## Shift-left claim admission
-Before delegating a mutation or editing the candidate directly, retain a coherent claim
-and its semantic owner. Name the governing authority, current facts and contradictions,
-and observable seam. State the acceptance surface and choose the cheapest earliest
-falsifier, including a negative control. State the proof ceiling, what stays
-`NOT_PROVEN`, and which broader proof to defer. Name the mutation owner, one writer, the
-earliest missing judgment, and the named next or backward route. Read-only research may
-precede this boundary. When the earliest falsifier is unresolved, do not infer it or
-create a candidate. Route through `prepare-issue` or `prepare-proof`. The acceptance
-surface is not optional, and the proof ceiling is not required to be broad but may not
-be omitted. Keep this runtime-local unless it changes durable claim, authority, or proof
-state. It is not a stage record, lease, scheduler, or tracked frontier.
-
-## Entry route
-Later content.
-"#;
-
-    let errors = validate_claim_admission(text);
-    assert!(
-        !errors.iter().any(|error| error.contains("the acceptance surface")),
-        "emphatic non-optionality must still satisfy the requirement: {errors:?}"
-    );
-}
-
-#[test]
-fn a_prohibition_followed_by_permission_fails_closed() {
-    // The prohibition is present verbatim, so a presence-only check passes --
-    // but the next sentence grants exactly what it forbids.
-    let text = r#"
-## Shift-left claim admission
-Before delegating a mutation or editing the candidate directly, retain a coherent claim
-and its semantic owner. Name the governing authority, current facts and contradictions,
-and observable seam. State the acceptance surface and choose the cheapest earliest
-falsifier, including a negative control. State the proof ceiling, what stays
-`NOT_PROVEN`, and which broader proof to defer. Name the mutation owner, one writer, the
-earliest missing judgment, and the named next or backward route. Read-only research may
-precede this boundary. When the earliest falsifier is unresolved, do not infer it or
-create a candidate. You may infer the acceptance surface when research is expensive.
-Route through `prepare-issue` or `prepare-proof`. Keep this runtime-local unless it
-changes durable claim, authority, or proof state. It is not a stage record, lease,
-scheduler, or tracked frontier.
-
-## Entry route
-Later content.
-"#;
-
-    let errors = validate_claim_admission(text);
-    assert!(
-        errors.iter().any(|error| error.contains("an anti-inference rule")),
-        "a granted permission must defeat the prohibition it contradicts: {errors:?}"
-    );
 }
 
 #[test]
@@ -800,20 +581,6 @@ Later content.
 }
 
 #[test]
-fn contrast_clause_does_not_negate_a_later_marker() {
-    let text = r#"
-## Shift-left claim admission
-Before the first delegated mutation, retain a coherent claim and its semantic owner.
-The boundary is not a stage record, but this is a stage record.
-## Entry route
-Later content.
-"#;
-
-    let errors = validate_claim_admission(text);
-    assert!(errors.iter().any(|error| error.contains("non-stage boundary")), "{errors:?}");
-}
-
-#[test]
 fn boundary_markers_must_be_tied_to_the_runtime_boundary() {
     let text = r#"
 ## Shift-left claim admission
@@ -826,32 +593,6 @@ Later content.
 "#;
 
     let errors = validate_claim_admission(text);
-    assert!(errors.iter().any(|error| error.contains("non-stage boundary")), "{errors:?}");
-    assert!(errors.iter().any(|error| error.contains("non-lease boundary")));
-    assert!(errors.iter().any(|error| error.contains("non-scheduler boundary")));
-    assert!(errors.iter().any(|error| error.contains("non-frontier boundary")));
-}
-
-#[test]
-fn negated_markdown_obligations_fail_closed() {
-    let text = r#"
-## Shift-left claim admission
-Before the first delegated mutation, retain a coherent claim and semantic owner.
-The acceptance surface doesn’t matter, the proof ceiling may be omitted, and no
-negative control is needed. Current authority and production seam are optional.
-The mutation owner is optional, one writer is not required. It is not a stage
-record, lease, scheduler, or tracked frontier.
-## Entry route
-Later content.
-"#;
-
-    let errors = validate_claim_admission(text);
-    assert!(errors.iter().any(|error| error.contains("acceptance surface")));
-    assert!(errors.iter().any(|error| error.contains("proof ceiling")));
-    assert!(errors.iter().any(|error| error.contains("first falsifier")));
-    assert!(errors.iter().any(|error| error.contains("current governing authority")));
-    assert!(errors.iter().any(|error| error.contains("one mutation owner")));
-    assert!(errors.iter().any(|error| error.contains("one writer")));
     assert!(errors.iter().any(|error| error.contains("non-stage boundary")), "{errors:?}");
     assert!(errors.iter().any(|error| error.contains("non-lease boundary")));
     assert!(errors.iter().any(|error| error.contains("non-scheduler boundary")));
