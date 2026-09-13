@@ -882,8 +882,8 @@ def validate_packet(
             f"{executable} compatibility identity mismatch"
         )
 
-    limitations = packet.get("limitations", [])
-    if limitations != []:
+    limitations = packet.get("limitations")
+    if limitations != ["artifact_digest_not_externally_bound"]:
         raise BuildIdentityError(
             f"{executable} exact release packet retained limitations: "
             f"{limitations}"

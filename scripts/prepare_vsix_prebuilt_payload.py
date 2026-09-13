@@ -42,7 +42,11 @@ def build(args: argparse.Namespace) -> None:
     validated_identity = ReleaseBuildIdentity.from_mapping(identity)
     if validated_identity.artifact_role != "archive":
         raise ValueError("release build identity is not archive-shaped")
-    binaries = validate_receipt(receipt, identity)
+    binaries = validate_receipt(
+        receipt,
+        identity,
+        allowed_build_executions={"adapter", "external_release_workflow"},
+    )
     evidence = load_json_object(args.package_evidence, "release package evidence")
     archive = args.archive.resolve(strict=True)
     if evidence.get("archive", {}).get("sha256") != digest(archive):

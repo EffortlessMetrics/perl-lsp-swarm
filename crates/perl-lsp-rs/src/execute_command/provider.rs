@@ -1782,8 +1782,30 @@ pub(crate) fn select_test_runner(
 }
 
 /// Check whether a command exists in the current PATH.
+///
+/// Empty PATH entries are stripped before delegating to the `which` crate:
+/// `which` 8.x emulates the Unix `which` command, which interprets an empty
+/// entry as the current directory, so a binary planted in the CWD would
+/// otherwise satisfy an availability probe even with an effectively empty
+/// PATH (the CWD-first admission seam, cf. #3028). When nothing searchable
+/// remains, the lookup fails closed.
 pub fn command_exists(command: &str) -> bool {
-    which::which(command).is_ok()
+    match std::env::var_os("PATH") {
+        None => which::which(command).is_ok(),
+        Some(path) => {
+            let dirs: Vec<std::path::PathBuf> =
+                std::env::split_paths(&path).filter(|dir| !dir.as_os_str().is_empty()).collect();
+            if dirs.is_empty() {
+                return false;
+            }
+            match std::env::join_paths(dirs.iter()) {
+                Ok(filtered) => std::env::current_dir()
+                    .map(|cwd| which::which_in(command, Some(&filtered), cwd).is_ok())
+                    .unwrap_or(false),
+                Err(_) => which::which(command).is_ok(),
+            }
+        }
+    }
 }
 
 /// Return the supported executeCommand identifiers.

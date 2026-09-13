@@ -101,7 +101,10 @@ pub enum RecoveryConfidence {
 ///
 /// Increment when the body arena layout changes in a backward-incompatible way.
 /// v3 adds the [`HirExpr::Subscript`] element-place variant to the body arena.
-pub const HIR_BODY_MODEL_VERSION: u32 = 3;
+/// v4 adds the regex-family variants [`HirExpr::Regex`], [`HirExpr::Match`],
+/// [`HirExpr::Substitution`] and [`HirExpr::Transliteration`] (#7136), which
+/// replace the previous `Opaque`/`Call` fallback for those constructs.
+pub const HIR_BODY_MODEL_VERSION: u32 = 4;
 
 /// HIR for one parsed file.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
