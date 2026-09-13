@@ -111,6 +111,90 @@ fn exact_public_candidate_completes_legal_lifecycle() -> Result<()> {
 }
 
 #[test]
+fn signature_help_empty_results_complete_exact_requests() -> Result<()> {
+    let mut client = RealProcessClient::spawn_exact()?;
+    assert_public_candidate(&client)?;
+    let initialized = initialize(&mut client, json!("initialize-signature-empty"))?;
+    ensure!(
+        initialized.pointer("/result/capabilities/signatureHelpProvider").is_some(),
+        "signature help must be advertised for this proof: {initialized}"
+    );
+    client.notify("initialized", json!({}))?;
+    let uri = "file:///signature-empty.pl";
+    client.notify(
+        "textDocument/didOpen",
+        json!({"textDocument": {
+            "uri": uri, "languageId": "perl", "version": 1, "text": "my $value = 1;\n"
+        }}),
+    )?;
+
+    // Numeric and string IDs with the same spelling must each settle. A
+    // legitimate empty result is an explicit JSON null, not a missing frame.
+    for id in [json!(42), json!("42")] {
+        let response = client.request(
+            id.clone(),
+            "textDocument/signatureHelp",
+            json!({"textDocument": {"uri": uri}, "position": {"line": 0, "character": 3}}),
+            timeout(),
+        )?;
+        assert_response_id(&response, &id)?;
+        ensure!(response.get("error").is_none(), "empty help returned an error: {response}");
+        ensure!(
+            response.get("result").is_some_and(Value::is_null),
+            "empty signature help must return explicit null: {response}"
+        );
+    }
+
+    client.notify("textDocument/didClose", json!({"textDocument": {"uri": uri}}))?;
+    let closed_id = json!("closed-signature-document");
+    let closed = client.request(
+        closed_id.clone(),
+        "textDocument/signatureHelp",
+        json!({"textDocument": {"uri": uri}, "position": {"line": 0, "character": 3}}),
+        timeout(),
+    )?;
+    assert_response_id(&closed, &closed_id)?;
+    ensure!(closed.get("result").is_some_and(Value::is_null), "closed help: {closed}");
+    shutdown_and_exit(&mut client, json!("shutdown-signature-empty"))
+}
+
+#[test]
+fn signature_help_success_and_invalid_params_remain_distinct() -> Result<()> {
+    let mut client = RealProcessClient::spawn_exact()?;
+    assert_public_candidate(&client)?;
+    initialize_and_notify(&mut client, json!("initialize-signature-control"))?;
+    let uri = "file:///signature-control.pl";
+    client.notify(
+        "textDocument/didOpen",
+        json!({"textDocument": {
+            "uri": uri, "languageId": "perl", "version": 1,
+            "text": "substr(\"hello\", 0, 1);\n"
+        }}),
+    )?;
+    let success_id = json!("signature-substr");
+    let success = client.request(
+        success_id.clone(),
+        "textDocument/signatureHelp",
+        json!({"textDocument": {"uri": uri}, "position": {"line": 0, "character": 7}}),
+        timeout(),
+    )?;
+    assert_response_id(&success, &success_id)?;
+    ensure!(
+        success
+            .pointer("/result/signatures/0/label")
+            .and_then(Value::as_str)
+            .is_some_and(|label| label.starts_with("substr")),
+        "known builtin must retain its signature: {success}"
+    );
+    let invalid_id = json!("signature-invalid-params");
+    let invalid =
+        client.request(invalid_id.clone(), "textDocument/signatureHelp", json!({}), timeout())?;
+    assert_response_id(&invalid, &invalid_id)?;
+    ensure!(invalid.pointer("/error/code") == Some(&json!(-32602)), "invalid help: {invalid}");
+    shutdown_and_exit(&mut client, json!("shutdown-signature-control"))
+}
+
+#[test]
 fn preinitialize_duplicate_initialize_and_post_shutdown_are_deterministic() -> Result<()> {
     let mut client = RealProcessClient::spawn_exact()?;
     assert_public_candidate(&client)?;
