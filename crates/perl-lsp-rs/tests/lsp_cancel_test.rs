@@ -7,7 +7,7 @@
 #![allow(clippy::print_stdout, clippy::print_stderr)]
 
 use perl_tdd_support::must;
-use serde_json::json;
+use serde_json::{Value, json};
 use std::time::Duration;
 
 mod common;
@@ -234,6 +234,119 @@ fn test_cancel_request_no_response() {
 
     // Verify server is still alive after processing the notification
     assert!(server.is_alive(), "server should not exit on cancel notification");
+}
+
+/// An unknown or already-settled cancellation must not poison a later request
+/// that legally reuses the same numeric or string JSON-RPC ID.  This exercises
+/// the shipped perllsp process over its real framed stdio transport rather than
+/// calling the route helpers directly.
+#[test]
+fn test_unknown_and_late_cancel_do_not_poison_reused_ids() -> Result<(), Box<dyn std::error::Error>>
+{
+    let server = start_lsp_server();
+    initialize_lsp(&server);
+    let uri = "file:///cancel-reuse.pl";
+    send_notification(
+        &server,
+        json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "perl",
+                    "version": 1,
+                    "text": "my $value = 1;\n"
+                }
+            }
+        }),
+    );
+    drain_until_quiet(&server, Duration::from_millis(25), Duration::from_millis(250));
+
+    let require_normal_response = |response: &Value,
+                                   id: &Value|
+     -> Result<(), Box<dyn std::error::Error>> {
+        if response.get("id") != Some(id) {
+            return Err(format!("response ID did not match {id}: {response}").into());
+        }
+        if response.get("error").is_some()
+            || !response.as_object().is_some_and(|body| body.contains_key("result"))
+        {
+            return Err(
+                format!("reused request did not complete normally for {id}: {response}").into()
+            );
+        }
+        Ok(())
+    };
+
+    for id in [json!(71001), json!("71001")] {
+        send_notification(
+            &server,
+            json!({
+                "jsonrpc": "2.0",
+                "method": "$/cancelRequest",
+                "params": { "id": id }
+            }),
+        );
+        send_request_no_wait(
+            &server,
+            json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "method": "textDocument/hover",
+                "params": {
+                    "textDocument": { "uri": uri },
+                    "position": { "line": 0, "character": 3 }
+                }
+            }),
+        );
+        let response = read_response_matching(&server, &id, Duration::from_secs(3))
+            .ok_or_else(|| format!("no response for reused ID {id}"))?;
+        require_normal_response(&response, &id)?;
+    }
+
+    for id in [json!(71002), json!("71002")] {
+        send_request_no_wait(
+            &server,
+            json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "method": "textDocument/hover",
+                "params": {
+                    "textDocument": { "uri": uri },
+                    "position": { "line": 0, "character": 3 }
+                }
+            }),
+        );
+        let settled = read_response_matching(&server, &id, Duration::from_secs(3))
+            .ok_or_else(|| format!("no first response for late-cancel ID {id}"))?;
+        require_normal_response(&settled, &id)?;
+        send_notification(
+            &server,
+            json!({
+                "jsonrpc": "2.0",
+                "method": "$/cancelRequest",
+                "params": { "id": id }
+            }),
+        );
+        send_request_no_wait(
+            &server,
+            json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "method": "textDocument/hover",
+                "params": {
+                    "textDocument": { "uri": uri },
+                    "position": { "line": 0, "character": 3 }
+                }
+            }),
+        );
+        let reused = read_response_matching(&server, &id, Duration::from_secs(3))
+            .ok_or_else(|| format!("no response after late-cancel reuse for ID {id}"))?;
+        require_normal_response(&reused, &id)?;
+    }
+
+    Ok(())
 }
 
 /// PHASE 1 STABLE: Test deterministic cancellation with stable harness
