@@ -124,6 +124,16 @@ fn code_action_documentation_advertised_when_supported() -> TestResult {
             argument.get("provider").and_then(Value::as_str).is_some(),
             "provider-decision documentation command must include provider context: {doc}"
         );
+        let title = command.get("title").and_then(Value::as_str);
+        let tooltip = command.get("tooltip").and_then(Value::as_str);
+        let tooltip = tooltip
+            .ok_or_else(|| format!("documentation Command must carry LSP 3.18 tooltip: {doc}"))?;
+        assert!(!tooltip.is_empty(), "documentation Command.tooltip must be non-empty: {doc}");
+        assert_ne!(
+            Some(tooltip),
+            title,
+            "documentation Command.tooltip must not replace title: {doc}"
+        );
     }
     Ok(())
 }
@@ -253,7 +263,7 @@ fn code_action_and_workspace_edit_responses_do_not_emit_optional_318_shapes() ->
     assert_no_key(&actions, "tags")?;
     assert_no_workspace_edit_metadata(&actions)?;
     assert_no_key(&actions, "snippet")?;
-    assert_no_command_tooltip(&actions)?;
+    assert_command_objects_carry_tooltip(&actions)?;
 
     let mut rename_harness = LspHarness::new();
     rename_harness.initialize(None)?;
@@ -970,30 +980,35 @@ fn collect_key_paths(value: &Value, key: &str, path: &str, paths: &mut Vec<Strin
     }
 }
 
-fn assert_no_command_tooltip(value: &Value) -> TestResult {
-    let mut paths = Vec::new();
-    collect_command_tooltip_paths(value, "$", &mut paths);
-    assert!(
-        paths.is_empty(),
-        "Command.tooltip outside CodeLens command objects is not claimed; found command objects with tooltip at {}",
-        paths.join(", ")
-    );
+fn assert_command_objects_carry_tooltip(value: &Value) -> TestResult {
+    let mut commands = Vec::new();
+    collect_lsp_command_objects(value, &mut commands);
+    for command in commands {
+        let title = command.get("title").and_then(Value::as_str);
+        let tooltip = command.get("tooltip").and_then(Value::as_str).ok_or_else(|| {
+            format!("reachable LSP Command objects must carry tooltip; missing at {command}")
+        })?;
+        assert!(!tooltip.is_empty(), "Command.tooltip must be non-empty plain text: {command}");
+        assert_ne!(Some(tooltip), title, "Command.tooltip must not replace title: {command}");
+    }
     Ok(())
 }
 
-fn collect_command_tooltip_paths(value: &Value, path: &str, paths: &mut Vec<String>) {
+fn collect_lsp_command_objects<'a>(value: &'a Value, commands: &mut Vec<&'a Value>) {
     match value {
         Value::Object(map) => {
-            if map.get("command").is_some() && map.get("tooltip").is_some() {
-                paths.push(path.to_string());
+            if map.get("title").and_then(Value::as_str).is_some()
+                && map.get("command").and_then(Value::as_str).is_some()
+            {
+                commands.push(value);
             }
-            for (name, child) in map {
-                collect_command_tooltip_paths(child, &format!("{path}.{name}"), paths);
+            for child in map.values() {
+                collect_lsp_command_objects(child, commands);
             }
         }
         Value::Array(items) => {
-            for (idx, child) in items.iter().enumerate() {
-                collect_command_tooltip_paths(child, &format!("{path}[{idx}]"), paths);
+            for child in items {
+                collect_lsp_command_objects(child, commands);
             }
         }
         _ => {}

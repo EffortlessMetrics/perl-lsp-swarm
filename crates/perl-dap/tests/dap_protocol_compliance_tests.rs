@@ -66,7 +66,8 @@ fn assert_response_message(
 // --- breakpointLocations ---
 
 #[test]
-// AC:16
+// AC:16 — #9581: breakpointLocations is floored, so even a missing-args
+// request gets the explicit unsupported rejection before argument parsing.
 fn test_breakpoint_locations_missing_args_returns_failure() -> Result<(), Box<dyn std::error::Error>>
 {
     let mut adapter = make_adapter();
@@ -76,7 +77,8 @@ fn test_breakpoint_locations_missing_args_returns_failure() -> Result<(), Box<dy
 }
 
 #[test]
-// AC:16
+// AC:16 — #9581: a no-source-path request must NOT return an empty success;
+// the floor rejects it before any oracle work (no missing-session masquerade).
 fn test_breakpoint_locations_no_source_path_returns_empty_success()
 -> Result<(), Box<dyn std::error::Error>> {
     let mut adapter = make_adapter();
@@ -85,30 +87,29 @@ fn test_breakpoint_locations_no_source_path_returns_empty_success()
         "line": 5
     });
     let response = adapter.handle_request(1, "breakpointLocations", Some(args));
-    let body = assert_response(response, "breakpointLocations", true)?;
-    let body = body.ok_or("breakpointLocations should return a body")?;
-    assert!(body.get("breakpoints").is_some(), "body must include breakpoints array");
+    assert_response(response, "breakpointLocations", false)?;
     Ok(())
 }
 
 // --- cancel ---
 
 #[test]
-// AC:16
+// AC:16 — #9581: cancel is floored; the explicit unsupported disposition must
+// not touch the shared cancellation flag.
 fn test_cancel_succeeds_without_args() -> Result<(), Box<dyn std::error::Error>> {
     let mut adapter = make_adapter();
     let response = adapter.handle_request(1, "cancel", None);
-    assert_response(response, "cancel", true)?;
+    assert_response(response, "cancel", false)?;
     Ok(())
 }
 
 #[test]
-// AC:16
+// AC:16 — #9581: cancel with arguments keeps the floor disposition.
 fn test_cancel_succeeds_with_args() -> Result<(), Box<dyn std::error::Error>> {
     let mut adapter = make_adapter();
     let args = json!({ "requestId": 42 });
     let response = adapter.handle_request(1, "cancel", Some(args));
-    assert_response(response, "cancel", true)?;
+    assert_response(response, "cancel", false)?;
     Ok(())
 }
 
@@ -140,13 +141,15 @@ fn test_goto_missing_args_returns_failure() -> Result<(), Box<dyn std::error::Er
 }
 
 #[test]
-// AC:16
-fn test_goto_unknown_target_id_returns_failure() -> Result<(), Box<dyn std::error::Error>> {
+// AC:16 — #9064 fail-closed: the gate refuses before any target lookup, so
+// the unknown-target-id path is unreachable while unadvertised.
+fn test_goto_unsupported_while_unadvertised() -> Result<(), Box<dyn std::error::Error>> {
     let mut adapter = make_adapter();
     let args = json!({ "threadId": 1, "targetId": 9999 });
     let response = adapter.handle_request(1, "goto", Some(args));
-    // targetId 9999 has never been registered via gotoTargets, so the implementation
-    // removes it from the goto_map (returning None) and unconditionally returns failure.
+    // Standard goto is fail-closed while unadvertised (#9064): the handler
+    // refuses before any target lookup, so no retained target can be consumed
+    // and no execution can start.
     match response {
         DapMessage::Response { success, command, message, .. } => {
             assert_eq!(command, "goto");
@@ -171,35 +174,38 @@ fn test_goto_targets_missing_args_returns_failure() -> Result<(), Box<dyn std::e
 
 #[test]
 // AC:16
-fn test_goto_targets_no_source_path_returns_empty_success() -> Result<(), Box<dyn std::error::Error>>
-{
+fn test_goto_targets_unsupported_regardless_of_source() -> Result<(), Box<dyn std::error::Error>> {
+    // #9064: gotoTargets is fail-closed while unadvertised. Even a
+    // well-formed source with no path gets the explicit unsupported response
+    // instead of a successful empty target list.
     let mut adapter = make_adapter();
     let args = json!({
         "source": {},
         "line": 1
     });
     let response = adapter.handle_request(1, "gotoTargets", Some(args));
-    let body = assert_response(response, "gotoTargets", true)?;
-    let body = body.ok_or("gotoTargets must return a body")?;
-    assert!(body.get("targets").is_some(), "targets array required in response body");
+    match response {
+        DapMessage::Response { success, command, body, message, .. } => {
+            assert_eq!(command, "gotoTargets");
+            assert!(!success, "gotoTargets must fail closed while unadvertised");
+            assert!(body.is_none(), "unsupported gotoTargets must not publish targets");
+            assert!(message.is_some_and(|m| !m.is_empty()), "rejection must explain why");
+        }
+        other => return Err(format!("expected Response, got {other:?}").into()),
+    }
     Ok(())
 }
 
 // --- loadedSources ---
 
 #[test]
-// AC:16
+// AC:16 — #9581: loadedSources is floored; a no-session request is an explicit
+// unsupported, never a successful empty sources list.
 fn test_loaded_sources_no_session_returns_empty_sources() -> Result<(), Box<dyn std::error::Error>>
 {
     let mut adapter = make_adapter();
     let response = adapter.handle_request(1, "loadedSources", None);
-    let body = assert_response(response, "loadedSources", true)?;
-    let body = body.ok_or("loadedSources must return a body")?;
-    let sources = body.get("sources").ok_or("sources array required")?;
-    assert!(
-        sources.as_array().is_some_and(|a| a.is_empty()),
-        "without a session, sources must be empty"
-    );
+    assert_response(response, "loadedSources", false)?;
     Ok(())
 }
 
@@ -264,15 +270,15 @@ fn test_step_in_targets_missing_args_returns_failure() -> Result<(), Box<dyn std
 }
 
 #[test]
-// AC:16
-fn test_step_in_targets_no_session_returns_empty_success() -> Result<(), Box<dyn std::error::Error>>
-{
+// AC:16 / #9069
+fn test_step_in_targets_no_session_returns_unsupported_failure()
+-> Result<(), Box<dyn std::error::Error>> {
     let mut adapter = make_adapter();
     let args = json!({ "frameId": 1 });
     let response = adapter.handle_request(1, "stepInTargets", Some(args));
-    let body = assert_response(response, "stepInTargets", true)?;
-    let body = body.ok_or("stepInTargets must return a body")?;
-    assert!(body.get("targets").is_some(), "targets array required");
+    // Targeted stepping is fail-closed (#9069): no empty success that a client
+    // could read as a (vacuous) targeted-step contract.
+    assert_response(response, "stepInTargets", false)?;
     Ok(())
 }
 
@@ -307,6 +313,9 @@ fn test_goto_targets_path_traversal_blocked_when_workspace_set()
     // rejects parent-directory traversal components.  Absolute paths outside the
     // CWD are warned but allowed (no workspace boundary is known).
     // Previously all paths were allowed through with no validation.
+    // #9064: gotoTargets is additionally fail-closed while unadvertised, so the
+    // gate refuses the request before path handling or any filesystem access;
+    // traversal can never reach discovery at all.
     let mut adapter = make_adapter();
     let malicious_paths =
         vec!["../../../etc/passwd", "/etc/passwd", "../../../../../../tmp/sensitive"];
@@ -543,58 +552,60 @@ fn test_unknown_command_returns_structured_error_response() -> Result<(), Box<dy
 // 4. Response Schema Validation
 // ---------------------------------------------------------------------------
 
-// --- gotoTargets response body has targets[] ---
+// --- gotoTargets response body must not publish targets while unsupported ---
 
 #[test]
-// AC:16 (Schema: gotoTargets response includes targets array)
-fn test_goto_targets_response_body_has_targets_array() -> Result<(), Box<dyn std::error::Error>> {
+// AC:16 (Schema: unsupported gotoTargets publishes no targets array)
+fn test_goto_targets_response_body_has_no_targets_while_unsupported()
+-> Result<(), Box<dyn std::error::Error>> {
     let mut adapter = make_adapter();
     let args = json!({
         "source": {},
         "line": 1
     });
     let response = adapter.handle_request(1, "gotoTargets", Some(args));
-    let body = assert_response(response, "gotoTargets", true)?;
-    let body = body.ok_or("gotoTargets body is required")?;
-    let targets = body.get("targets").ok_or("gotoTargets body must have 'targets'")?;
-    assert!(targets.is_array(), "'targets' must be an array");
+    match response {
+        DapMessage::Response { success, command, body, .. } => {
+            assert_eq!(command, "gotoTargets");
+            assert!(!success, "gotoTargets must fail closed while unadvertised (#9064)");
+            assert!(body.is_none(), "unsupported gotoTargets must not publish a targets body");
+        }
+        other => return Err(format!("expected Response, got {other:?}").into()),
+    }
     Ok(())
 }
 
 // --- stepInTargets response body has targets[] ---
 
 #[test]
-// AC:16 (Schema: stepInTargets response includes targets array)
-fn test_step_in_targets_response_body_has_targets_array() -> Result<(), Box<dyn std::error::Error>>
-{
+// AC:16 (Schema: #9069 fail-closed — unsupported stepInTargets carries no body)
+fn test_step_in_targets_unsupported_response_has_no_targets_body()
+-> Result<(), Box<dyn std::error::Error>> {
     let mut adapter = make_adapter();
     let args = json!({ "frameId": 1 });
     let response = adapter.handle_request(1, "stepInTargets", Some(args));
-    let body = assert_response(response, "stepInTargets", true)?;
-    let body = body.ok_or("stepInTargets body is required")?;
-    let targets = body.get("targets").ok_or("stepInTargets body must have 'targets'")?;
-    assert!(targets.is_array(), "'targets' must be an array");
+    let body = assert_response(response, "stepInTargets", false)?;
+    assert!(body.is_none(), "unsupported stepInTargets must not publish a targets body (#9069)");
     Ok(())
 }
 
 // --- loadedSources response body has sources[] ---
+// (#9581: loadedSources is floored, so the response is an explicit unsupported
+// with no sources body — the schema rows for floored responses assert the
+// failure shape instead.)
 
 #[test]
-// AC:16 (Schema: loadedSources response includes sources array)
+// AC:16 (Schema: loadedSources floored response is explicit unsupported)
 fn test_loaded_sources_response_body_has_sources_array() -> Result<(), Box<dyn std::error::Error>> {
     let mut adapter = make_adapter();
     let response = adapter.handle_request(1, "loadedSources", None);
-    let body = assert_response(response, "loadedSources", true)?;
-    let body = body.ok_or("loadedSources body is required")?;
-    let sources = body.get("sources").ok_or("loadedSources body must have 'sources'")?;
-    assert!(sources.is_array(), "'sources' must be an array");
+    let body = assert_response(response, "loadedSources", false)?;
+    assert!(body.is_none(), "a floored loadedSources must not carry a sources body");
     Ok(())
 }
 
-// --- breakpointLocations response body has breakpoints[] ---
-
 #[test]
-// AC:16 (Schema: breakpointLocations response includes breakpoints array)
+// AC:16 (Schema: breakpointLocations floored response is explicit unsupported)
 fn test_breakpoint_locations_response_body_has_breakpoints_array()
 -> Result<(), Box<dyn std::error::Error>> {
     let mut adapter = make_adapter();
@@ -603,10 +614,9 @@ fn test_breakpoint_locations_response_body_has_breakpoints_array()
         "line": 1
     });
     let response = adapter.handle_request(1, "breakpointLocations", Some(args));
-    let body = assert_response(response, "breakpointLocations", true)?;
-    let body = body.ok_or("breakpointLocations body is required")?;
-    let bps = body.get("breakpoints").ok_or("breakpointLocations body must have 'breakpoints'")?;
-    assert!(bps.is_array(), "'breakpoints' must be an array");
+    // #9581: the floored disposition carries no breakpoints body.
+    let body = assert_response(response, "breakpointLocations", false)?;
+    assert!(body.is_none(), "a floored breakpointLocations must not carry a body");
     Ok(())
 }
 
@@ -629,20 +639,28 @@ fn test_exception_info_response_body_has_required_fields() -> Result<(), Box<dyn
 // 5. Integration Scenarios
 // ---------------------------------------------------------------------------
 
-// --- Cancel clears the cancel flag (idempotent) ---
+// --- Cancel rejection is stable (idempotent disposition) ---
 
 #[test]
-// AC:16 (Integration: cancel can be called multiple times safely)
+// AC:16 — #9581 (Integration: cancel is rejected identically every time, and
+// the shared cancellation flag is never touched)
 fn test_cancel_is_idempotent() -> Result<(), Box<dyn std::error::Error>> {
     let mut adapter = make_adapter();
 
-    // First cancel
+    // First cancel: explicit unsupported, no flag mutation.
     let r1 = adapter.handle_request(1, "cancel", None);
-    assert_response(r1, "cancel", true)?;
+    let msg1 = assert_response_message(r1, "cancel")?;
+    assert!(msg1.as_deref().is_some_and(|m| m.contains("unsupported")));
 
-    // Second cancel — should still succeed
+    // Second cancel — same explicit disposition, no state drift.
     let r2 = adapter.handle_request(2, "cancel", None);
-    assert_response(r2, "cancel", true)?;
+    assert_response(r2, "cancel", false)?;
+    let msg2 = assert_response_message(adapter.handle_request(3, "cancel", None), "cancel")?;
+    assert_eq!(
+        msg1.as_deref(),
+        msg2.as_deref(),
+        "the #9581 floor disposition must be deterministic"
+    );
     Ok(())
 }
 

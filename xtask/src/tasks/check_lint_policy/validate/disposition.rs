@@ -1,7 +1,6 @@
 use super::super::model::{DeferredLint, LintEntry, LintLedger, PlannedLint, RustVersion};
 use super::super::read::collect_workspace_lints;
 use super::common::{parse_review_date, validate_level, validate_lint_name, validate_nonempty};
-use chrono::NaiveDate;
 use color_eyre::eyre::{Result, bail, eyre};
 use std::collections::BTreeMap;
 use toml::Value;
@@ -20,21 +19,20 @@ const REQUIRED_DISPOSITIONS: &[(&str, Option<&str>, Option<&str>)] = &[
     ("clippy::manual_ilog2", Some("deny"), Some("active")),
     ("clippy::manual_take", None, None),
     ("clippy::manual_pop_if", None, None),
+    // The lock-guard invariant is split across two tools with non-overlapping
+    // coverage (#14444), so both rows are pinned. Pinning only one would let a
+    // rollback silently uncover either the standard-library guards or the
+    // `parking_lot` guards while the surviving row still looks like coverage.
+    ("rust::let_underscore_lock", Some("deny"), Some("active")),
+    ("clippy::let_underscore_lock", Some("deny"), Some("active")),
 ];
 
-pub(crate) fn validate_workspace_lints(
-    cargo: &Value,
-    ledger: &LintLedger,
-    today: NaiveDate,
-) -> Result<()> {
-    validate_unique_dispositions(ledger)?;
-
+pub(crate) fn validate_workspace_lints(cargo: &Value, ledger: &LintLedger) -> Result<()> {
+    validate_disposition_model(ledger)?;
     let cargo_lints = collect_workspace_lints(cargo)?;
-    let current_msrv = RustVersion::from_text(&ledger.msrv)?;
     let mut lint_by_name = BTreeMap::new();
 
     for lint in &ledger.lint {
-        validate_lint_entry(lint)?;
         if lint_by_name.insert(lint.name.clone(), lint).is_some() {
             bail!("duplicate lint ledger entry for {}", lint.name);
         }
@@ -64,22 +62,12 @@ pub(crate) fn validate_workspace_lints(
     }
 
     for planned in &ledger.planned {
-        validate_planned_lint(planned)?;
         if cargo_lints.contains_key(&planned.name) {
             bail!("future-planned lint {} is already active in Cargo.toml", planned.name);
-        }
-        let activation = RustVersion::from_text(&planned.activate_when_msrv)?;
-        if activation <= current_msrv {
-            bail!(
-                "planned lint {} is due at MSRV {}; activate it or move it to deferred_due",
-                planned.name,
-                planned.activate_when_msrv
-            );
         }
     }
 
     for deferred in &ledger.deferred_due {
-        validate_deferred_lint(deferred, current_msrv, today)?;
         if cargo_lints.contains_key(&deferred.name) {
             bail!("deferred_due lint {} is already active in Cargo.toml", deferred.name);
         }
@@ -98,6 +86,37 @@ pub(crate) fn validate_workspace_lints(
                 lint.level
             );
         }
+    }
+
+    Ok(())
+}
+
+/// Validate the merged disposition model without consulting workspace wiring.
+///
+/// `policy cadence` uses this boundary before projecting lifecycle rows. It
+/// must not label malformed Clippy policy as current merely because serde could
+/// deserialize it, while the candidate gate remains responsible for Cargo and
+/// toolchain integration checks.
+pub(super) fn validate_disposition_model(ledger: &LintLedger) -> Result<()> {
+    validate_unique_dispositions(ledger)?;
+
+    let current_msrv = RustVersion::from_text(&ledger.msrv)?;
+    for lint in &ledger.lint {
+        validate_lint_entry(lint)?;
+    }
+    for planned in &ledger.planned {
+        validate_planned_lint(planned)?;
+        let activation = RustVersion::from_text(&planned.activate_when_msrv)?;
+        if activation <= current_msrv {
+            bail!(
+                "planned lint {} is due at MSRV {}; activate it or move it to deferred_due",
+                planned.name,
+                planned.activate_when_msrv
+            );
+        }
+    }
+    for deferred in &ledger.deferred_due {
+        validate_deferred_lint(deferred, current_msrv)?;
     }
 
     Ok(())
@@ -210,11 +229,7 @@ fn validate_planned_lint(planned: &PlannedLint) -> Result<()> {
     Ok(())
 }
 
-fn validate_deferred_lint(
-    deferred: &DeferredLint,
-    current_msrv: RustVersion,
-    today: NaiveDate,
-) -> Result<()> {
+fn validate_deferred_lint(deferred: &DeferredLint, current_msrv: RustVersion) -> Result<()> {
     validate_lint_name(&deferred.name)?;
     validate_level(&deferred.name, &deferred.level, false)?;
     validate_nonempty(&deferred.name, "class", &deferred.class)?;
@@ -233,10 +248,10 @@ fn validate_deferred_lint(
         );
     }
 
-    let review_after = parse_review_date(&deferred.name, &deferred.review_after)?;
-    if review_after < today {
-        bail!("deferred_due lint {} review date expired on {review_after}", deferred.name);
-    }
+    // Review dates schedule owner work. They remain structurally validated here,
+    // but cadence is reported by `cargo xtask policy cadence`; crossing midnight
+    // must not change an unrelated candidate's lint-policy verdict (#15267).
+    parse_review_date(&deferred.name, &deferred.review_after)?;
 
     Ok(())
 }

@@ -1,0 +1,67 @@
+{
+  "version": 1,
+  "fixture": "rename_subroutine",
+  "assertions": [
+    {
+      "kind": "rename_succeeds",
+      "line": 4,
+      "character": 4,
+      "new_name": "sum_values",
+      "expected_edits": [
+        {
+          "line": 4,
+          "character": 4,
+          "end_line": 4,
+          "end_character": 19,
+          "new_text": "sum_values"
+        },
+        {
+          "line": 9,
+          "character": 12,
+          "end_line": 9,
+          "end_character": 27,
+          "new_text": "sum_values"
+        },
+        {
+          "line": 10,
+          "character": 13,
+          "end_line": 10,
+          "end_character": 28,
+          "new_text": "sum_values"
+        }
+      ],
+      "rationale": "rename on the calculate_total declaration must return a WorkspaceEdit"
+    },
+    {
+      "kind": "rename_edit_count_at_least",
+      "min": 3,
+      "line": 4,
+      "character": 4,
+      "new_name": "sum_values",
+      "expected_edits": [
+        {
+          "line": 4,
+          "character": 4,
+          "end_line": 4,
+          "end_character": 19,
+          "new_text": "sum_values"
+        },
+        {
+          "line": 9,
+          "character": 12,
+          "end_line": 9,
+          "end_character": 27,
+          "new_text": "sum_values"
+        },
+        {
+          "line": 10,
+          "character": 13,
+          "end_line": 10,
+          "end_character": 28,
+          "new_text": "sum_values"
+        }
+      ],
+      "rationale": "the definition and both direct calls must be updated"
+    }
+  ]
+}

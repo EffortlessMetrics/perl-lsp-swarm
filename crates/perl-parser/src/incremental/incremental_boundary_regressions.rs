@@ -1,6 +1,9 @@
-use super::incremental_document::IncrementalDocument;
+use super::incremental_document::{
+    IncrementalDocument, IncrementalDocumentError, IncrementalEditRefusal,
+};
 use super::incremental_edit::{IncrementalEdit, IncrementalEditSet};
 use perl_parser_core::{error::ParseResult, parser::Parser};
+use perl_tdd_support::must_err_with;
 
 #[test]
 fn overlapping_batch_edits_fall_back_safely() -> ParseResult<()> {
@@ -40,9 +43,13 @@ fn backwards_range_batch_edit_is_rejected() -> ParseResult<()> {
     let mut edits = IncrementalEditSet::new();
     edits.add(IncrementalEdit::new(9, 7, "5".to_string()));
 
-    document.apply_edits(&edits)?;
-
+    let err = must_err_with(document.apply_edits(&edits), "backward range must refuse");
+    assert!(matches!(
+        err,
+        IncrementalDocumentError::InvalidEdit { reason: IncrementalEditRefusal::BackwardRange, .. }
+    ));
     assert_eq!(document.source, source);
+    assert_eq!(document.version, 0);
     assert_eq!(document.metrics.nodes_reused, 0);
 
     Ok(())
@@ -62,9 +69,16 @@ fn mid_codepoint_edit_attempt_falls_back() -> ParseResult<()> {
     let mut edits = IncrementalEditSet::new();
     edits.add(IncrementalEdit::new(accent_start + 1, accent_start + 1, "x".to_string()));
 
-    document.apply_edits(&edits)?;
-
+    let err = must_err_with(document.apply_edits(&edits), "mid-codepoint must refuse");
+    assert!(matches!(
+        err,
+        IncrementalDocumentError::InvalidEdit {
+            reason: IncrementalEditRefusal::NotCharBoundary,
+            ..
+        }
+    ));
     assert_eq!(document.source, source);
+    assert_eq!(document.version, 0);
     assert_eq!(document.metrics.nodes_reused, 0);
 
     Ok(())
@@ -85,11 +99,16 @@ fn batch_with_one_unmappable_edit_uses_fallback() -> ParseResult<()> {
     edits.add(IncrementalEdit::new(4, 6, "$value".to_string()));
     edits.add(IncrementalEdit::new(accent_start + 1, accent_start + 1, "x".to_string()));
 
-    let expected = edits.apply_to_string(&source);
-    document.apply_edits(&edits)?;
-
-    assert_eq!(document.source, expected);
-    assert!(document.source.contains("$value"));
+    let err = must_err_with(document.apply_edits(&edits), "mixed unmappable batch must refuse");
+    assert!(matches!(
+        err,
+        IncrementalDocumentError::InvalidEdit {
+            reason: IncrementalEditRefusal::NotCharBoundary,
+            ..
+        }
+    ));
+    assert_eq!(document.source, source);
+    assert_eq!(document.version, 0);
     assert_eq!(document.metrics.nodes_reused, 0);
 
     Ok(())
@@ -129,6 +148,7 @@ fn empty_edit_set_is_a_noop() -> ParseResult<()> {
 
     assert_eq!(document.source, source, "source must be unchanged for empty edit set");
     assert_eq!(*document.root, root_before, "tree must be unchanged for empty edit set");
+    assert_eq!(document.version, 0, "empty batch must not advance version");
 
     Ok(())
 }

@@ -136,14 +136,39 @@ fn interpolation_switch_has_an_exact_legacy_segmentation_contract() -> R {
 }
 
 #[test]
-fn interpolation_switch_does_not_claim_opaque_quote_like_bodies() {
+fn interpolation_switch_governs_qq_bodies_without_changing_their_identity() {
+    // #8779 corrected contract: the setting used to skip quote-like bodies
+    // (the switch's claim was misleading). Enabled segmentation and disabled
+    // opacity now differ in PARTS while the token kind, text, and geometry
+    // stay identical.
     let input = "qq{hello $name}";
     let enabled = signatures(input, LexerConfig::default());
     let disabled =
         signatures(input, LexerConfig { parse_interpolation: false, ..LexerConfig::default() });
 
-    assert_eq!(enabled, disabled);
-    assert!(matches!(enabled.first().map(|token| &token.0), Some(TokenType::QuoteDouble)));
+    assert!(
+        matches!(enabled.first().map(|token| &token.0), Some(TokenType::QuoteDouble(parts))
+        if parts == &vec![
+            StringPart::Literal(Arc::from("hello ")),
+            StringPart::Variable(Arc::from("$name")),
+        ]),
+        "enabled qq must segment its islands: {enabled:?}"
+    );
+    assert!(
+        matches!(disabled.first().map(|token| &token.0), Some(TokenType::QuoteDouble(parts))
+            if parts == &vec![StringPart::Literal(Arc::from("hello $name"))]),
+        "disabled qq must keep one opaque literal part: {disabled:?}"
+    );
+    // Token identity is stable across the setting: same kind, text, geometry.
+    let strip = |tokens: &[(TokenType, Arc<str>, usize, usize)]| {
+        tokens
+            .iter()
+            .map(|(kind, text, start, end)| {
+                (std::mem::discriminant(kind), text.clone(), *start, *end)
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(strip(&enabled), strip(&disabled), "identity must not move");
 }
 
 #[test]
@@ -260,7 +285,7 @@ fn configured_lookahead_survives_checkpoint_replay() -> R {
         let checkpoint = lexer.checkpoint();
         assert!(lexer.can_restore(&checkpoint));
         let uninterrupted = collect_remaining(&mut lexer);
-        lexer.restore(&checkpoint);
+        assert!(lexer.restore(&checkpoint).is_ok());
         let replayed = collect_remaining(&mut lexer);
         assert_eq!(uninterrupted, replayed, "lookahead limit {max_lookahead}");
     }
@@ -351,7 +376,7 @@ fn checkpoint_identity_ignores_noop_configuration_variation() -> R {
         );
 
         let from_tracked = collect_remaining(&mut tracked);
-        untracked.restore(&checkpoint);
+        assert!(untracked.restore(&checkpoint).is_ok());
         let replayed = collect_remaining(&mut untracked);
         assert_eq!(
             from_tracked, replayed,
@@ -376,7 +401,7 @@ fn checkpoint_identity_ignores_noop_configuration_variation() -> R {
             back_on_default.can_restore(&flipped_checkpoint),
             "default configuration must accept checkpoints captured under the no-op value"
         );
-        back_on_default.restore(&flipped_checkpoint);
+        assert!(back_on_default.restore(&flipped_checkpoint).is_ok());
         let reverse_replayed = collect_remaining(&mut back_on_default);
         assert_eq!(
             expected_reverse, reverse_replayed,
