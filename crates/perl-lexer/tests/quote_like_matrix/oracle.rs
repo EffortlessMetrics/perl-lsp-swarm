@@ -67,13 +67,11 @@ pub fn compile_source(source: &str) -> OracleResult {
         );
     }
 
-    let path_var = std::env::var_os("PATH").unwrap_or_default();
-    let output = Command::new(&executable)
+    let mut command = Command::new(&executable);
+    configure_environment(&mut command);
+    let output = command
         .arg("-c")
         .arg(&source_path)
-        .env_clear()
-        .env("PATH", &path_var)
-        .env("LC_ALL", "C")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -184,11 +182,10 @@ fn read_version(perl: &Path) -> Result<String, String> {
         let version_path = temp_dir.path().join("perl_version.txt");
         let stdout = File::create(&version_path)
             .map_err(|error| format!("creating version output: {error}"))?;
-        let status = Command::new(perl)
+        let mut command = Command::new(perl);
+        configure_environment(&mut command);
+        let status = command
             .args(["-e", "print $]"])
-            .env_clear()
-            .env("PATH", std::env::var_os("PATH").unwrap_or_default())
-            .env("LC_ALL", "C")
             .stdin(Stdio::null())
             .stdout(stdout)
             .stderr(Stdio::null())
@@ -209,6 +206,18 @@ fn read_version(perl: &Path) -> Result<String, String> {
     match temp_dir.close() {
         Ok(()) => result,
         Err(error) => Err(format!("{result:?}; cleaning version probe tempfile: {error}")),
+    }
+}
+
+fn configure_environment(command: &mut Command) {
+    command
+        .env_clear()
+        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+        .env("LC_ALL", "C");
+    // Windows runtime libraries can need SystemRoot even for an isolated probe.
+    #[cfg(windows)]
+    if let Some(system_root) = std::env::var_os("SystemRoot") {
+        command.env("SystemRoot", system_root);
     }
 }
 
@@ -283,6 +292,21 @@ mod tests {
     use std::process::Command;
 
     type R = Result<(), String>;
+
+    #[cfg(windows)]
+    #[test]
+    fn isolated_environment_preserves_windows_system_root() -> R {
+        let expected = std::env::var_os("SystemRoot").ok_or("SystemRoot unavailable")?;
+        let mut command = Command::new("perl");
+        super::configure_environment(&mut command);
+        let actual = command.get_envs().find_map(|(key, value)| {
+            key.to_string_lossy().eq_ignore_ascii_case("SystemRoot").then_some(value)
+        });
+        if actual != Some(Some(expected.as_os_str())) {
+            return Err("isolated probe lost Windows SystemRoot".to_string());
+        }
+        Ok(())
+    }
 
     #[test]
     fn owned_tempdir_is_removed_and_primary_failure_preserved() -> R {
