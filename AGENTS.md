@@ -27,14 +27,15 @@ Document applicability and status are governed by
 review, queue, branch, or orchestration spec/ADR/doc, check that registry. A path listed
 as `transitional`, `historical`, or `superseded` does not re-enter the hierarchy merely
 because its own old header says “accepted,” “active doctrine,” “north star,” or
-“current.” The registry classifies documentation authority; current source and live
-GitHub evidence still govern the underlying facts and transaction state.
+“current.”
+The registry classifies documentation authority; current source and live GitHub evidence still
+govern the underlying facts and transaction state.
 
 This file is Codex's route map. `.agents/skills/` contains the executable provider-
 native procedures. Shared docs define invariants and GitHub surface ownership; they do
 not replace a named `$skill`.
 
-GitHub owns durable live transaction state. Runtime topology, frontier, task order,
+GitHub owns durable live transaction state. Runtime topology, claim-frame ordering,
 liveness, retries, and temporary plans are not repository authority and must not be
 written to tracked state files.
 
@@ -72,80 +73,103 @@ Make reasonable documented engineering decisions and proceed. Missing historical
 ceremony, labels, receipts, or named-agent handoffs is not a reason to discard coherent
 work; perform the cheapest still-useful repair and continue.
 
-## Scope hierarchy
+## Root orchestration and claim frames
 
-### Campaign root
+The **main/root Codex thread is the accountable orchestrator**. It owns both goal-level
+and claim-level orchestration:
 
-Owns goal meaning, acceptance predicates, claim selection, cross-lane dependencies,
-contradictions, runtime-local frontier, joined evidence, exceptions, and goal
-reconciliation.
+- user goal, current interpretation, constraints, and acceptance predicates;
+- selection and ordering of coherent claims;
+- a runtime-local frame for each active or resumable claim;
+- cross-claim prerequisites and contradictions;
+- joined evidence and review sufficiency;
+- writer allocation and mutation ownership;
+- remote waits and wake events;
+- GitHub publication, merge judgment, reconciliation, and continuation.
 
-For substantive work the campaign root normally orchestrates. Leaf implementation,
-broad archaeology, raw logs, repetitive proof, and review exploration should run in
-claim-local lanes or focused workers so the campaign context remains decision-rich and
-raw-output-light.
+A claim or lane is a **logical frame held by the root**, not normally another
+orchestrator agent. These logical claim frames keep claim orchestration in the root
+while bounded contexts execute research, mutation, and review. A claim frame may contain:
 
-### Lane root
+```text
+claim
+acceptance predicate
+controlling issue / PR / merge subject
+current candidate and writer, if any
+current route or missing judgment
+proof / review status and limitations
+external wait and wake event
+```
 
-Owns one coherent acceptance-and-rollback claim. It runs `$deliver-pr`, invokes
-`$orchestrate-work`, keeps one candidate writer, joins claim-local evidence, publishes
-useful GitHub updates, and returns a typed result to its campaign root.
+Keep that frame runtime-local and reconstruct it from GitHub/repository artifacts after
+replacement. Do not serialize agent liveness or create a second claim-state database.
 
-A lane root may directly perform tiny tightly coupled claim-local work when briefing
-and joining cost more than the context saved. That does not make campaign-root leaf
-execution the default.
+The root should not personally absorb every high-volume leaf operation. It delegates
+bounded **programmes** when another context materially helps:
 
-### Worker, writer, and reviewer
+- research / archaeology / external truth / CI evidence → researcher or focused worker;
+- candidate or proof mutation → one writer/builder context;
+- fixed-subject adversarial judgment → reviewer context;
+- tightly coupled work needing provider-native lateral communication → a team only when
+  communication changes the result.
 
-- read-only workers answer one bounded question or consume one named `$skill`;
-- one writer mutates the selected candidate branch/worktree;
-- reviewers change the evidence surface and return findings, falsifiers,
-  contradictions, uncertainty, and references—not approval.
-
-A leaf worker may not widen into claim orchestration unless the brief explicitly grants
-lane-root authority.
+Recursive orchestration is an optional physical execution technique, not the logical
+architecture. A child does not become a subordinate orchestrator merely because it owns
+a substantial task or because the claim is long-lived.
 
 ## Codex orchestration
 
 Use `$orchestrate-work` after selecting a public flow or substantive atomic skill.
 
-Normal shapes:
+Normal shape:
 
 ```text
-campaign outcome
-→ campaign root runs `$deliver-goal`
-→ substantial claims become whole-flow `$deliver-pr` lane roots
-
-claim lane
-→ lane root runs the named route
-→ focused workers/explorers consume named `$skills` or bounded questions
-→ one writer integrates candidate mutation
-→ differentiated reviewers challenge proof and candidate
-→ lane root joins evidence and returns a typed result
+main/root orchestrator
+├── logical claim frame A
+│   ├── researcher programme(s), when useful
+│   ├── one candidate writer / builder programme
+│   └── reviewer programme(s)
+├── logical claim frame B
+│   └── remote wait; no live agent required
+└── logical claim frame C
+    └── bounded evidence work
 ```
 
-Use a compact whole-flow brief:
+`$deliver-goal` manages the goal and claim set. `$deliver-pr` focuses the root on one
+claim frame and carries that claim through the named SDLC flows. The root may switch
+between claim frames when one reaches a genuine GitHub-owned wait; it does not need one
+orchestrator process per frame.
 
-```text
-Take issue #123 through `$deliver-pr`.
-You are the accountable lane root for this claim. Use GitHub as durable state, invoke
-`$orchestrate-work` within the claim, keep one candidate writer, follow the public
-flow's normal and material backward routes, and return the typed lane result.
-Do not select unrelated claims or alter the parent goal.
-```
-
-For focused work, name the `$skill`, exact subject, accepted authority and facts,
+For bounded work, name the `$skill`, exact subject, accepted authority and facts,
 read/write boundary, falsifiers, sufficient return, stop conditions, and non-goals.
-Require the child to consume the named skill when supplied.
+Require a child to consume the named skill when supplied. Do not restate the skill's
+method in the brief.
 
-Choose agents when they preserve campaign/lane context, compress high-output evidence,
-change source/oracle/tool/environment/threat model, reduce elapsed time, improve
-recovery, or avoid expensive CI cycles. Stop adding agents when another result cannot
-change a decision.
+Choose agents when they preserve useful context, compress high-output evidence, change
+source/oracle/tool/environment/threat model, reduce elapsed time, improve recovery, or
+avoid expensive CI cycles. Stop adding agents when another result cannot change a
+decision.
 
-Keep campaign frontier and wake events in runtime memory only. Reconstruct them from
-issues, PRs, reviews, checks, merges, and repository artifacts after replacement.
-Do not poll unchanged remote state.
+A programme may intentionally span several ordered atomic skills. Do not fork once per
+skill when the same subject and artifact context remain load-bearing. Atomic skills
+change attention; they do not automatically justify a new identity.
+
+Keep claim frames and wake events in runtime memory only. Reconstruct them from issues,
+PRs, reviews, checks, merges, and repository artifacts after replacement. Do not poll
+unchanged remote state.
+
+A remote wait releases root attention. An exact wake event records the material
+condition that would justify reconstructing the claim later; it is not an instruction
+to keep the current root session alive until that condition changes. Do not create a
+timer, cron, scheduled reminder, recurring wake, or polling loop merely to revisit the
+same remote condition. In a multi-claim goal, release unnecessary live contexts and
+immediately advance another phase-eligible actionable claim. If no remaining
+required claim is actionable because each waits on a real external blocker or
+accountable owner decision, return `EXTERNAL_BLOCKER` with each claim's condition and
+wake event named, and let the bounded engineering session end rather than preserving
+the root as a watcher.
+Scheduled monitoring is a different user goal, not a continuation mechanism for
+ordinary engineering work.
 
 ## Useful GitHub handoffs
 
@@ -190,14 +214,19 @@ For substantive PRs the native route is:
 → `$merge-reconcile`
 ```
 
-Review is not diff reading, green CI, mergeability, zero threads, bot approval, or a
-worker verdict. It must proportionately challenge proof discrimination, production
-reachability, external truth, claim honesty, semantic authority/complexity, and
-risk/rollback.
+The root owns the cumulative judgment and disposition. Review is not diff reading, green
+CI, mergeability, zero threads, bot approval, or a worker verdict. It must
+proportionately challenge proof discrimination, production reachability, external
+truth, claim honesty, semantic authority/complexity, and risk/rollback.
 
 The construction context must not be the only detection surface supporting a
 substantive merge. Independence comes from changed evidence, oracle, method, threat
 model, environment, or attention—not identity alone.
+
+Read-only review is non-exclusive. Multiple sessions may inspect the same candidate and
+publish useful findings concurrently without writer allocation, a claim, or a wait.
+Exclusivity begins at mutation: a reviewer that wants to change the candidate must take
+the one writer role or leave the finding for the current writer.
 
 A clean review is valid. Do not manufacture findings or edits to demonstrate that the
 review happened.
@@ -219,6 +248,13 @@ Keep candidate, integration, and landed evidence distinct.
 Never weaken a test, ratchet, support claim, or required proof merely to obtain green
 status. Missing, partial, stale, contradictory, or instrument-failed evidence is
 `NOT_PROVEN`.
+
+## Self-authored correction and disclosure
+
+Follow the canonical correction and disclosure contract in
+[`docs/agents/DEVELOPMENT_METHOD.md`](docs/agents/DEVELOPMENT_METHOD.md): repair an
+in-scope reversible defect, rerun affected proof, disclose the correction, and request
+approval only for a separate non-derivable or protected decision.
 
 ## Hard stops
 
@@ -245,7 +281,12 @@ Otherwise detect, explain, repair, and continue.
   context-preserving `must_with`/`must_some_with`/`must_err_with`; the bare
   `must`/`must_some`/`must_err` are only correct when the call site carried no
   explanation (`cargo xtask ci-hygiene check-must-context` reports the drop);
-- never use `git stash` in worktrees; use scoped restore or a WIP commit;
+- never use `git stash` in this shared multi-worktree repository; `refs/stash` is
+  repository-global, so another worktree can pop or drop your entry without knowing it
+  is yours; use scoped restore or a branch-local WIP commit;
+- rewrite published candidate history only with established sole mutation ownership and
+  an explicit expected remote SHA; if exclusivity is unknown, preserve the observed
+  remote head and use a non-rewriting integration or stop;
 - stage intended paths explicitly;
 - use one worktree per genuine concurrent write claim, not per lifecycle pass;
 - run focused proof, then affected package proof, then broader proof only when risk or

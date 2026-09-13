@@ -9,10 +9,12 @@ import importlib.util
 import unittest
 import tempfile
 import json
+import sys
 from pathlib import Path
 
 
 ROOT = Path(__file__).parents[2]
+sys.path.insert(0, str(ROOT / "scripts"))
 SPEC = importlib.util.spec_from_file_location("validate_public_release_claims", ROOT / "scripts/validate_public_release_claims.py")
 assert SPEC and SPEC.loader
 MODULE = importlib.util.module_from_spec(SPEC)
@@ -64,6 +66,57 @@ class PublicReleaseClaimsTests(unittest.TestCase):
             path.write_bytes(raw + b"\n")
             with self.assertRaisesRegex(ValueError, "does not match topology bytes"):
                 MODULE.validate_topology_binding(value, path)
+
+    def test_supported_topology_versions_preserve_identity_and_digest_checks(self) -> None:
+        value = catalog()
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "release-topology.json"
+            for version in (1, 1.0, 2, 2.0, True, False, "1", "2", 1.5, 2.5, 3, None):
+                with self.subTest(version=repr(version)):
+                    topology = {"schema": version, "release": "0.18.0", "track": "public-beta", "frozen_product_sha": "0" * 40}
+                    raw = json.dumps(topology).encode()
+                    path.write_bytes(raw)
+                    value["topology_digest"] = "sha256:" + hashlib.sha256(raw).hexdigest()
+                    if type(version) in (int, float) and version in (1, 2):
+                        MODULE.validate_topology_binding(value, path)
+                        changed = dict(topology, frozen_product_sha="f" * 40)
+                        wrong_raw = json.dumps(changed).encode()
+                        path.write_bytes(wrong_raw)
+                        value["topology_digest"] = "sha256:" + hashlib.sha256(wrong_raw).hexdigest()
+                        with self.assertRaisesRegex(ValueError, "subject"):
+                            MODULE.validate_topology_binding(value, path)
+                    else:
+                        with self.assertRaisesRegex(ValueError, "schema"):
+                            MODULE.validate_topology_binding(value, path)
+
+    def test_raw_topology_schema_is_exact_before_float_decoding(self) -> None:
+        value = catalog()
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "topology.json"
+            for fields, accepted in [
+                ('"schema":1.0', True), ('"schema":2.00', True),
+                ('"schema":2e0', True), ('"schema":20e-1', True),
+                ('"schema":0.2e1', True), ('"schema":200.0e-2', True),
+                ('"schema":2.00000000000000000000', True),
+                ('"schema":2e9999999999999999999999999', False),
+                ('"schema":1.0000000000000001', False),
+                ('"schema":0.99999999999999999', False),
+                ('"schema":2.0000000000000001', False),
+                ('"schema":1.99999999999999999', False),
+                ('"schema":true', False), ('"schema":"2"', False),
+                ('"schema":3', False), ('"schema":1,"schema":2', False),
+                ('"schema":1,"sche\\u006da":2', False),
+                ('"decoy":{"schema":3},"sche\\u006da":2e0', True),
+            ]:
+                with self.subTest(fields=fields):
+                    raw = ('{' + fields + ',"release":"0.18.0","track":"public-beta","frozen_product_sha":"' + '0' * 40 + '"}').encode()
+                    path.write_bytes(raw)
+                    value["topology_digest"] = "sha256:" + hashlib.sha256(raw).hexdigest()
+                    if accepted:
+                        MODULE.validate_topology_binding(value, path)
+                    else:
+                        with self.assertRaisesRegex(ValueError, "schema"):
+                            MODULE.validate_topology_binding(value, path)
 
     def assert_invalid(self, mutation, message: str) -> None:
         value = copy.deepcopy(catalog())

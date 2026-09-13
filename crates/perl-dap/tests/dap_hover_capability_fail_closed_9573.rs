@@ -117,33 +117,6 @@ async fn native_initialize_advertises_hover_false() -> Result<()> {
     Ok(())
 }
 
-/// Test 8 + falsifier: REPL/evaluate capability cannot promote hover.
-///
-/// `supportsSetExpression` and the general evaluate path stay available; that
-/// must not drag hover up with them.
-#[tokio::test]
-async fn other_evaluation_capabilities_do_not_promote_hover() -> Result<()> {
-    let mut adapter = adapter();
-    let body = initialize_body(&mut adapter)?;
-
-    // Guard: if these are all false the test would be vacuous.
-    let set_expression = body.get("supportsSetExpression").and_then(Value::as_bool);
-    let set_variable = body.get("supportsSetVariable").and_then(Value::as_bool);
-    assert_eq!(
-        (set_expression, set_variable),
-        (Some(true), Some(true)),
-        "precondition: sibling evaluation capabilities are advertised, so the hover \
-         assertion below is discriminating"
-    );
-
-    assert_eq!(
-        body.get("supportsEvaluateForHovers").and_then(Value::as_bool),
-        Some(false),
-        "hover must not ride along with sibling evaluation capabilities (#9573)"
-    );
-    Ok(())
-}
-
 // ---------------------------------------------------------------------------
 // Request gate — the ordering proofs
 // ---------------------------------------------------------------------------

@@ -117,12 +117,20 @@ A branch name or local worktree does not prove mutation authority. Before any pu
 force-push, update, retarget, or conflict rewrite:
 
 - identify the current candidate and pull request;
-- identify the current mutation owner;
-- verify no other writer is active on the branch;
+- use the root-held mutation owner when that context exists;
+- do not create a tracked claim, reservation, or liveness marker merely to prove that no
+  other writer exists;
 - pin the expected remote head SHA;
 - inspect dirty, untracked, and unpushed state;
 - establish permission to modify the remote branch;
 - name the concrete purpose of the mutation.
+
+One-writer is an orchestration invariant, not a durable liveness oracle. If another live
+writer is actually known, stop concurrent mutation. If exclusivity is merely unknown
+across independent sessions, do not manufacture coordination state or wait on a stale
+claim; history-rewrite authority is absent until sole mutation ownership is established.
+Ordinary fast-forward publication may continue against the pinned remote head, which
+provides the collision check.
 
 For fork pull requests, verify which repository owns the head branch and whether
 maintainers may push. Never push a fork branch name into the base repository by
@@ -191,7 +199,7 @@ Explicit destination when the local branch name differs:
 git push origin HEAD:refs/heads/<remote-branch>
 ```
 
-Authorized history rewrite:
+Authorized history rewrite, with sole mutation ownership established:
 
 ```bash
 git push \
@@ -199,9 +207,21 @@ git push \
   origin HEAD:refs/heads/<branch>
 ```
 
-Naked `--force` is prohibited. Immediately before the push, re-read both the PR head
-and remote branch head. Both must equal the expected old SHA. If either moved, stop and
-reconcile ownership rather than overwriting the new work.
+A lease is compare-and-swap protection, not writer authority. It prevents overwriting a
+ref that moved after the expected SHA was read; it does not authorize replacing commits
+already observed from another writer, and refreshing the expected SHA does not create
+exclusivity. If sole mutation ownership is not established, do not rewrite published
+history.
+
+Naked `--force` is prohibited. Immediately before a rewrite, re-read both the PR head
+and remote branch head. Both must equal the expected old SHA. If either moved, stop the
+rewrite and inspect the new work rather than updating the lease and overwriting it.
+
+If an ordinary push is rejected because the remote head moved, fetch and inspect the new
+head. When no live co-writer is known and the integration is semantically safe, preserve
+that remote head as an ancestor of the next push: merge it, or rebase only unpublished
+local commits onto it, then push without force. If a live co-writer, a semantic conflict,
+or unresolved ownership is known, stop and hand off instead.
 
 After a successful mutation:
 
@@ -301,17 +321,20 @@ worktree's binary, or a local command proves the hosted integration result.
 Local slot tools may prevent two processes on one machine from choosing the same path.
 They are runtime aids, not durable ownership authority.
 
-Cross-machine ownership belongs in the current GitHub issue, PR, branch, and explicit
-maintainer handoff. Do not create a tracked lease database, file reservation map, or
-persistent agent-liveness record for ordinary work.
+Cross-machine writer liveness has no durable oracle. GitHub issues, PRs, and branches
+own useful transaction and handoff facts; they are not a claim registry or persistent
+agent-liveness database. Do not create a tracked lease database, file reservation map,
+PR claim ceremony, or persistent agent-liveness record for ordinary work.
 
-When ownership is ambiguous:
+When cross-session exclusivity is unknown:
 
-- stop branch mutation;
-- preserve local state;
-- inspect the live PR and remote head;
-- publish one useful ownership question or handoff when another context needs it;
-- continue another independent claim rather than polling.
+- unknown liveness alone does not block useful work;
+- pin the remote head and use fast-forward-only publication;
+- if the remote moves, fetch and inspect it; preserve the observed remote commit as an
+  ancestor of any next push;
+- if another live writer is actually known, stop branch mutation and hand off;
+- if semantic conflict or ownership remains unresolved, preserve local state and
+  continue another independent claim rather than polling.
 
 ## Cleanup and salvage
 
@@ -342,7 +365,7 @@ alone to decide that a branch contains no unique value.
 Before editing:
 
 - [ ] Current issue/claim and candidate are identified.
-- [ ] One mutation owner is established.
+- [ ] One mutation owner is established within the active orchestration context.
 - [ ] Worktree is isolated, named, and not on `main`.
 - [ ] Coordination checkout is clean and remains on `main`.
 - [ ] `CARGO_TARGET_DIR` is not inherited from a persistent shell profile.
@@ -353,7 +376,9 @@ Before branch mutation:
 - [ ] Expected remote head is pinned and revalidated.
 - [ ] Concrete repair or integration purpose is recorded.
 - [ ] Affected proof and review are known.
-- [ ] Force-push, when necessary, uses an explicit lease.
+- [ ] History rewrite, when necessary, has sole mutation ownership and an explicit lease.
+- [ ] If exclusivity is unknown, the observed remote head is preserved and publication
+      is non-rewriting.
 - [ ] Fork/head-repository ownership is correct.
 
 After completion:

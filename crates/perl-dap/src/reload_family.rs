@@ -1094,6 +1094,7 @@ mod tests {
         LoadedModuleReloadOutcome, PreMutationFailureCause, ReloadExecution,
         ReloadTransactionPhase, RuntimeModuleGenerationClock,
     };
+    use perl_test_must::must_err_with;
     use serde_json::Value;
     use std::collections::BTreeSet;
     use std::fs;
@@ -1268,8 +1269,7 @@ mod tests {
     fn evaluation_gates_fail_closed_in_the_registry_precedence() -> TestResult {
         // Payload bound.
         let mut oversized = request_value(51, 7);
-        oversized["subject"]["moduleIdentity"] =
-            Value::String("y".repeat(MAX_REQUEST_BYTES).into());
+        oversized["subject"]["moduleIdentity"] = Value::String("y".repeat(MAX_REQUEST_BYTES));
         let mut session = negotiated_backed_session(7);
         assert_eq!(
             rejection_code_of(&session.evaluate(&oversized)),
@@ -1340,7 +1340,7 @@ mod tests {
         // Identity bounds and insufficiency.
         let mut long_identity = request_value(58, 7);
         long_identity["subject"]["moduleIdentity"] =
-            Value::String("x".repeat(MAX_IDENTITY_CHARS + 1).into());
+            Value::String("x".repeat(MAX_IDENTITY_CHARS + 1));
         let mut session = negotiated_backed_session(7);
         assert_eq!(
             rejection_code_of(&session.evaluate(&long_identity)),
@@ -1355,7 +1355,7 @@ mod tests {
         );
 
         // Operation identity.
-        let mut zero_operation = request_value(0, 7);
+        let zero_operation = request_value(0, 7);
         let mut session = negotiated_backed_session(7);
         assert_eq!(
             rejection_code_of(&session.evaluate(&zero_operation)),
@@ -1697,21 +1697,23 @@ mod tests {
             advancing.apply(&LoadedModuleReloadOutcome::Reloaded, 42),
         ] {
             assert_eq!(
-                project_outcome(&outcome, 42, advance, &[], None).expect_err("must refuse"),
+                must_err_with(project_outcome(&outcome, 42, advance, &[], None), "must refuse"),
                 WireProjectionRefusal::OutcomePhaseKindMismatch
             );
             assert_eq!(
-                project_outcome(
-                    &LoadedModuleReloadOutcome::FailedBeforeMutation {
-                        phase: ReloadTransactionPhase::TerminalProjection,
-                        cause: PreMutationFailureCause::CancelledBeforeMutationBegan,
-                    },
-                    42,
-                    advance,
-                    &[],
-                    None
-                )
-                .expect_err("any post-boundary pairing must refuse"),
+                must_err_with(
+                    project_outcome(
+                        &LoadedModuleReloadOutcome::FailedBeforeMutation {
+                            phase: ReloadTransactionPhase::TerminalProjection,
+                            cause: PreMutationFailureCause::CancelledBeforeMutationBegan,
+                        },
+                        42,
+                        advance,
+                        &[],
+                        None
+                    ),
+                    "any post-boundary pairing must refuse"
+                ),
                 WireProjectionRefusal::OutcomePhaseKindMismatch
             );
         }

@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "generated_at_epoch_s": 1788429819,
+  "generated_at_epoch_s": 1788476559,
   "metrics": {
     "eof_synthetic_token_construction": {
       "iterations": 5000,
@@ -9,8 +9,8 @@
     },
     "lexer_to_parser_token_conversion": {
       "iterations": 3000,
-      "median_ns": 300,
-      "p95_ns": 400
+      "median_ns": 200,
+      "p95_ns": 300
     },
     "token_clone": {
       "iterations": 5000,
