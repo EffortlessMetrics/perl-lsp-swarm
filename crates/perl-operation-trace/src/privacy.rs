@@ -7,25 +7,53 @@
 //!
 //! - [`FieldPrivacy::Public`] — appears verbatim in a serialized trace.
 //! - [`FieldPrivacy::Private`] ([`PrivateValue`]) — the raw value is never
-//!   serialized, but its byte length is (`<redacted:N bytes>`).
-//!   Appropriate for high-entropy content such as a host path or a line of
-//!   source text, where distinct values are worth telling apart by size.
+//!   serialized, but its byte length is (`<redacted:N bytes>`). Appropriate
+//!   for content that is both (a) not meant to appear verbatim and (b)
+//!   genuinely high-entropy enough that distinct values are worth telling
+//!   apart by size alone — a host path is the crate's working example.
+//!   **A line of Perl source text is deliberately *not* offered as an
+//!   example here.** Real source lines are frequently low-entropy — `}`,
+//!   `1;`, `);`, or blank are common — and a low-entropy value is exactly
+//!   what byte length alone can identify, which is this crate's own stated
+//!   reason to prefer `Secret` (below). This crate's own registry classifies
+//!   its `source_line` field as `Secret`, not `Private`, precisely because
+//!   of this: see `crate::registry`.
 //! - [`FieldPrivacy::Secret`] ([`SecretField`]) — the raw value is never
 //!   serialized and *nothing about it is*, not even a length. Appropriate
-//!   for a low-entropy secret such as a token or password, where even a byte
-//!   count would help narrow a guess.
+//!   for low-entropy content such as a token, a password, or (per the
+//!   correction above) a line of source text, where even a byte count would
+//!   help narrow a guess.
 //!
-//! # This crate never fingerprints
+//! # This crate does not fold identity into a digest — and cannot enforce
+//! # that a caller won't
 //!
 //! `perl-subprocess-runtime`'s fingerprinted tier (`PrivatePath`,
 //! `PrivateBytes`) additionally exposes a digest of the redacted value, so
 //! two different high-entropy inputs stay distinguishable without exposing
-//! either. That requires a hash function. This crate deliberately has none
-//! — see `tests/dependency_contract.rs`, which forbids `sha2` outright — so
-//! fingerprinting a private or secret value here is not just undone, it is
-//! unreachable. A producer that needs that property owns computing and
-//! carrying its own digest; this crate's `Private` tier means "the raw value
-//! never leaves this crate serialized, and its length may", full stop.
+//! either. That requires a hash function. What is actually proven here, and
+//! no more:
+//!
+//! - this crate's own dependency closure contains no hash function
+//!   (`tests/dependency_contract.rs` forbids `sha2`, fail-closed);
+//! - no API in this crate folds a [`PrivateValue`], [`SecretField`], or
+//!   `OperationId` into a digest or fingerprint;
+//! - `tests/negative_control.rs` proves recorded event payloads are
+//!   independent of which operation recorded them.
+//!
+//! Absence of a `sha2` dependency does **not** make fingerprinting
+//! unreachable in any absolute sense: a hash or digest can be implemented in
+//! ordinary safe Rust with no dependency at all, and nothing stops a
+//! downstream caller from computing one over a value it already holds in
+//! the clear (its own copy of a secret before wrapping it, or
+//! `OperationId::as_wire`'s exposed string). The dependency allowlist proves
+//! this crate's own dependency *closure*, not the absence of every possible
+//! digest computation reachable from a caller. A producer that needs a
+//! fingerprinted tier owns computing and carrying that digest itself; this
+//! crate's `Private` tier means "the raw value never leaves this crate
+//! serialized, and its length may", full stop, and keeping ephemeral or
+//! redacted identity out of a durable digest is a contract obligation this
+//! crate places on its consumers, not a property this crate can enforce for
+//! them.
 
 use std::fmt;
 
@@ -90,18 +118,36 @@ impl PrivateValue {
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
+
+    /// The exact rendered redaction placeholder for a value of the given
+    /// byte length. The sole source of truth for this text: both
+    /// [`Self::approx_serialized_len`] and the `Serialize` impl below call
+    /// this, so the two cannot drift apart.
+    fn redacted_placeholder(byte_len: usize) -> String {
+        format!("<redacted:{byte_len} bytes>")
+    }
+
+    /// The exact byte length of this value's serialized redacted form
+    /// (`<redacted:N bytes>`), used by [`crate::OperationRecorder`]'s
+    /// `max_payload_bytes` accounting so that budget tracks what this value
+    /// actually serializes to, not its private plaintext's own length (which
+    /// would be a wrong-arithmetic bug, though not a redaction leak, since
+    /// `Private` already discloses its length by design).
+    pub(crate) fn approx_serialized_len(&self) -> usize {
+        Self::redacted_placeholder(self.0.len()).len()
+    }
 }
 
 impl fmt::Debug for PrivateValue {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "PrivateValue(<redacted:{} bytes>)", self.0.len())
+        write!(f, "PrivateValue({})", Self::redacted_placeholder(self.0.len()))
     }
 }
 
 impl Serialize for PrivateValue {
     /// Emits the redaction placeholder — never the wrapped content.
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(&format!("<redacted:{} bytes>", self.0.len()))
+        serializer.serialize_str(&Self::redacted_placeholder(self.0.len()))
     }
 }
 
@@ -115,9 +161,17 @@ impl Serialize for PrivateValue {
 ///
 /// A digest of a low-entropy secret is a guessable secret, and even a byte
 /// count narrows a guess (`<redacted:4 bytes>` all but announces a PIN) — so,
-/// unlike [`PrivateValue`], nothing about the content survives redaction.
+/// unlike [`PrivateValue`], nothing about the content survives redaction —
+/// **including in [`crate::OperationRecorder`]'s own budget accounting**: see
+/// [`Self::approx_serialized_len`].
 #[derive(Clone, PartialEq, Eq)]
 pub struct SecretField(String);
+
+/// The fixed redaction placeholder [`SecretField`] serializes to. The sole
+/// source of truth for this text: both the `Serialize` impl below and
+/// [`SecretField::approx_serialized_len`] use this constant, so the two
+/// cannot drift apart.
+const SECRET_REDACTED_PLACEHOLDER: &str = "<redacted>";
 
 impl SecretField {
     /// Wrap a value as secret.
@@ -148,11 +202,26 @@ impl SecretField {
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
+
+    /// The byte length of this value's serialized redacted form — always
+    /// [`SECRET_REDACTED_PLACEHOLDER`]'s fixed length, **never** a function
+    /// of this value's own plaintext length.
+    ///
+    /// This is the fix for a real length side channel: [`crate::OperationRecorder`]'s
+    /// `max_payload_bytes` budget previously charged a `Secret` field's
+    /// *plaintext* length, so whether an event was admitted or truncated
+    /// depended on the secret's length — exactly the property `Secret`
+    /// exists to keep an observer from learning. Charging this fixed
+    /// constant instead means two secrets of different lengths cost the
+    /// budget identically, matching what they actually serialize to.
+    pub(crate) fn approx_serialized_len(&self) -> usize {
+        SECRET_REDACTED_PLACEHOLDER.len()
+    }
 }
 
 impl fmt::Debug for SecretField {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("SecretField(<redacted>)")
+        write!(f, "SecretField({SECRET_REDACTED_PLACEHOLDER})")
     }
 }
 
@@ -160,7 +229,7 @@ impl Serialize for SecretField {
     /// Emits a fixed redaction placeholder with no length or other content
     /// property — never the wrapped content.
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str("<redacted>")
+        serializer.serialize_str(SECRET_REDACTED_PLACEHOLDER)
     }
 }
 

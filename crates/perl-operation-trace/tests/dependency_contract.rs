@@ -8,10 +8,15 @@
 //! `OperationId` into a digest, which is exactly what this crate's identity
 //! model forbids (see `src/lib.rs`).
 //!
-//! This test shells out to `cargo tree` and **fails closed**: if the
-//! dependency graph cannot be established, the contract is unproven and the
-//! test fails. A proof instrument that cannot run is not evidence of
-//! compliance.
+//! This test shells out to `cargo tree --target all` and **fails closed**:
+//! if the dependency graph cannot be established, the contract is unproven
+//! and the test fails. A proof instrument that cannot run is not evidence of
+//! compliance. `--target all` matters here: `cargo tree` defaults to the
+//! host target only, so without it a target-specific normal dependency (a
+//! Windows-only `sha2` edge, say) would evade both `FORBIDDEN` and the
+//! "exact closure" claim on every platform except the one it was added for —
+//! and the platform-specific CI job that might otherwise notice does not run
+//! this integration test.
 
 // Failing closed is the point of this file: an unavailable instrument must
 // abort the test rather than return a passing verdict.
@@ -52,9 +57,12 @@ const FORBIDDEN: &[&str] = &[
     // src/lib.rs's ephemeral-vs-durable contrast); depending on it would
     // blur the boundary this crate exists to keep explicit.
     "perl-source-identity",
-    // A hash-function dependency would make fingerprinting an OperationId
-    // possible; this crate's identity contract requires that to be
-    // unreachable, not merely unused.
+    // This crate's own dependency closure must contain no hash function, so
+    // that no API within this crate can fold an OperationId into a digest.
+    // This proves this crate's closure, not that fingerprinting is
+    // unreachable in any absolute sense: a caller can still hash
+    // OperationId::as_wire's exposed string in safe Rust with no dependency
+    // at all (see src/privacy.rs).
     "sha2",
 ];
 
@@ -85,7 +93,26 @@ const PERMITTED: &[&str] = &[
 /// contract is unproven in that case, which is a failure, not a pass.
 fn dependency_tree() -> String {
     let output = Command::new(env!("CARGO"))
-        .args(["tree", "-p", "perl-operation-trace", "--edges", "normal", "--prefix", "none"])
+        .args([
+            "tree",
+            "-p",
+            "perl-operation-trace",
+            "--edges",
+            "normal",
+            "--prefix",
+            "none",
+            // `cargo tree` defaults to the host target only. Without
+            // `--target all`, a target-specific normal dependency (a
+            // Windows-only `sha2` edge, say) would evade both `FORBIDDEN`
+            // and the "exact closure" claim below on every platform except
+            // the one it is added for -- and the platform-specific CI job
+            // that would otherwise catch it does not run this integration
+            // test. `--target all` unions every target's dependency graph
+            // into one tree, so this contract is proven across platforms,
+            // not just the one running the check.
+            "--target",
+            "all",
+        ])
         .output()
         .unwrap_or_else(|error| {
             panic!(

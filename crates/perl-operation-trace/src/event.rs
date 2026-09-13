@@ -173,16 +173,26 @@ impl EventFieldValue {
     /// An approximate payload size in bytes, used by
     /// [`crate::OperationRecorder`]'s `max_payload_bytes` bound.
     ///
-    /// This counts the *actual* underlying byte length of private and
-    /// secret values for the recorder's own bound accounting (which never
-    /// serializes them), not their redacted wire length.
+    /// Every variant is charged the byte length of what it actually
+    /// serializes to: a public value's own length, or a `Private`/`Secret`
+    /// value's *redacted* serialized length (`PrivateValue::approx_serialized_len`
+    /// / `SecretField::approx_serialized_len`) — **never** the private or
+    /// secret plaintext's own length. Charging a `Secret` value's plaintext
+    /// length used to make whether an event was admitted or truncated depend
+    /// on the secret's length: a length side channel through exactly the
+    /// tier designed to disclose no length at all. `Secret` is now charged a
+    /// fixed constant regardless of its plaintext length; `Private`
+    /// legitimately discloses its length already, but is now charged its
+    /// *rendered* `<redacted:N bytes>` length rather than its plaintext
+    /// length, since this bound is documented as an approximation of
+    /// serialized size.
     pub(crate) fn approx_payload_len(&self) -> usize {
         match self {
             Self::Integer(_) => std::mem::size_of::<i64>(),
             Self::Boolean(_) => std::mem::size_of::<bool>(),
             Self::PublicString(s) => s.len(),
-            Self::Private(p) => p.len(),
-            Self::Secret(s) => s.len(),
+            Self::Private(p) => p.approx_serialized_len(),
+            Self::Secret(s) => s.approx_serialized_len(),
         }
     }
 }

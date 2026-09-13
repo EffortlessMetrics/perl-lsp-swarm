@@ -3,10 +3,17 @@
 //!
 //! Builds one event carrying an absolute host path, an API-key-looking
 //! secret, and a line of real Perl source, and asserts none of those exact
-//! byte sequences — nor a byte length for the secret — survive
-//! `serde_json::to_string` of the full recorded trace.
-
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+//! byte sequences — nor a byte length for either non-`Private` value —
+//! survive `serde_json::to_string` of the full recorded trace.
+//!
+//! This crate's fallible test convention: as an integration test file (not
+//! an in-module `src/*.rs` unit test), this file does not carry a file-level
+//! `#![allow(clippy::unwrap_used, clippy::expect_used)]`. Every test returns
+//! `Result<(), Box<dyn std::error::Error>>` and uses `?` (or a `map_err` that
+//! preserves the original diagnostic context, matching #14825's "without
+//! losing context" principle) instead of `.unwrap()`/`.expect()`.
+//! `assert!`/`assert_eq!` remain: they are the actual property checks, not
+//! fallible setup, and the tests would be strictly weaker without them.
 
 use perl_operation_trace::{
     EventFieldValue, OperationContext, OperationEvent, OperationEventKind, OperationIdAllocator,
@@ -22,23 +29,32 @@ fn hostile_event() -> OperationEvent {
     OperationEvent::new(OperationEventKind::StageStarted)
         .with_field("stage", EventFieldValue::PublicString("compile".into()))
         .with_field("host_path", EventFieldValue::Private(PrivateValue::new(HOSTILE_HOST_PATH)))
-        .with_field("source_line", EventFieldValue::Private(PrivateValue::new(HOSTILE_SOURCE_LINE)))
+        .with_field("source_line", EventFieldValue::Secret(SecretField::new(HOSTILE_SOURCE_LINE)))
         .with_field("api_key_hint", EventFieldValue::Secret(SecretField::new(HOSTILE_SECRET)))
 }
 
 #[test]
-fn hostile_fixture_never_appears_in_the_serialized_trace() {
-    let mut allocator =
-        OperationIdAllocator::new(SessionId::new("redaction-fixture").expect("literal"));
-    let context = OperationContext::root(allocator.next(), OperationKind::CompilerBuild);
+fn hostile_fixture_never_appears_in_the_serialized_trace() -> Result<(), Box<dyn std::error::Error>>
+{
+    let mut allocator = OperationIdAllocator::new(
+        SessionId::new("redaction-fixture")
+            .map_err(|e| format!("build fixture session id: {e}"))?,
+    );
+    let context = OperationContext::root(
+        allocator.next().ok_or("fresh allocator unexpectedly exhausted its sequence space")?,
+        OperationKind::CompilerBuild,
+    );
 
-    let mut recorder = OperationRecorder::new(RecorderBounds::new(100, 100_000));
-    recorder.record(&context, hostile_event()).expect("registry-valid event");
+    let mut recorder = OperationRecorder::new(RecorderBounds::new(100, 100_000, 100));
+    recorder
+        .record(&context, hostile_event())
+        .map_err(|e| format!("record registry-valid hostile event: {e}"))?;
 
-    let json = serde_json::to_string(&recorder.snapshot()).expect("serialize the whole trace");
+    let json = serde_json::to_string(&recorder.snapshot())
+        .map_err(|e| format!("serialize the whole trace: {e}"))?;
 
     // (a) The absolute host path and the Perl source line, supplied as
-    // `PrivateValue`, must not appear.
+    // `Private`/`Secret` respectively, must not appear.
     assert!(!json.contains(HOSTILE_HOST_PATH), "host path leaked into the trace:\n{json}");
     assert!(!json.contains(HOSTILE_SOURCE_LINE), "Perl source leaked into the trace:\n{json}");
     assert!(!json.contains("alice"), "host path fragment leaked into the trace:\n{json}");
@@ -53,7 +69,7 @@ fn hostile_fixture_never_appears_in_the_serialized_trace() {
     );
 
     // (c) The load-bearing assertion: the serialized output must not
-    // disclose a byte length for the secret either. `PrivateValue`
+    // disclose a byte length for either `Secret` value either. `PrivateValue`
     // legitimately does disclose a length (`<redacted:N bytes>`), so a naive
     // implementation that treated `Secret` as "just another Private" would
     // still pass (a) and (b) above but fail here.
@@ -61,6 +77,13 @@ fn hostile_fixture_never_appears_in_the_serialized_trace() {
     assert!(
         !json.contains(&format!("<redacted:{secret_len} bytes>")),
         "the secret must not disclose its byte length via the Private-tier redaction shape:\n{json}"
+    );
+    let source_line_len = HOSTILE_SOURCE_LINE.len();
+    assert!(
+        !json.contains(&format!("<redacted:{source_line_len} bytes>")),
+        "the source line is Secret and must not disclose its byte length either \
+         (real Perl source is frequently low-entropy, which is why it is classified \
+         Secret rather than Private):\n{json}"
     );
     assert!(
         json.contains("\"<redacted>\""),
@@ -75,4 +98,6 @@ fn hostile_fixture_never_appears_in_the_serialized_trace() {
         json.contains(&format!("<redacted:{host_path_len} bytes>")),
         "sanity: the Private tier must still disclose its own byte length:\n{json}"
     );
+
+    Ok(())
 }

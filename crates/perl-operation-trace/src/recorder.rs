@@ -16,17 +16,74 @@ use crate::schema::OperationTraceSchemaVersion;
 /// The bounds an [`OperationRecorder`] enforces per operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RecorderBounds {
-    /// Maximum number of event entries retained per operation.
+    /// Maximum number of *admitted* events retained per operation — this
+    /// counts [`RecordedEntry::Event`] entries only, never a truncation
+    /// marker.
+    ///
+    /// A snapshot for one operation can therefore hold at most
+    /// `max_events + 1` entries in total: up to `max_events` admitted events,
+    /// plus at most one [`RecordedEventEntry::Truncated`] marker recording
+    /// *why* recording stopped. The marker is metadata about the recording
+    /// itself, not an event that was recorded, so it is deliberately not
+    /// charged against this bound — charging it would make `max_events = 0`
+    /// unable to ever record the marker that explains why nothing else was
+    /// admitted. `max_events = 0` is well-defined under this reading: zero
+    /// events are ever admitted, and the very first `record` call yields
+    /// only the truncation marker.
     pub max_events: usize,
-    /// Maximum total payload bytes retained per operation.
+    /// An approximate budget on retained payload bytes per operation, **not**
+    /// a hard cap on serialized byte size.
+    ///
+    /// Each field's contribution is `name.len() + approx_payload_len()` (see
+    /// `event_payload_len` below): the field name's own length plus what the
+    /// value itself actually serializes to — a public value's own byte
+    /// length, or a `Private`/`Secret` value's *redacted* serialized length,
+    /// never its plaintext length (see `crate::privacy`'s
+    /// `approx_serialized_len` methods: charging a `Secret` value's
+    /// plaintext length used to make budget admission itself leak the
+    /// secret's length, a real side channel through the tier designed to
+    /// disclose no length at all). This still deliberately does not match
+    /// `serde_json`'s actual externally tagged encoding, which adds a
+    /// per-value wrapper (`{"Kind":{...}}`-shaped structure, quoting,
+    /// punctuation) this accounting never counts. A trace with many small,
+    /// cheaply-accounted fields can therefore legitimately serialize to more
+    /// bytes than this bound names.
+    ///
+    /// What keeps this approximation from being gamed outright is
+    /// [`crate::EventRegistry`] rejecting a repeated declared field name
+    /// ([`crate::RegistryError::DuplicateField`]): before that rejection
+    /// existed, 500 repetitions of one cheap field passed this budget while
+    /// the actual serialized trace overshot it several times over. This
+    /// bound is an approximate, cheap-to-compute retention budget, not a
+    /// byte-exact wire-size guarantee.
     pub max_payload_bytes: usize,
+    /// Maximum number of *distinct operations* this recorder retains at
+    /// all, across the whole recorder — not per operation.
+    ///
+    /// [`Self::max_events`] and [`Self::max_payload_bytes`] bound one
+    /// operation's own trace; neither bounds how many distinct operations
+    /// accumulate in the recorder's internal table, which otherwise grows
+    /// without limit for the lifetime of the recorder (for example, one
+    /// long-running process recording one operation per request). Once this
+    /// many distinct operations have been established, a **new** operation's
+    /// first `record` call is rejected with
+    /// [`RecordError::TooManyOperations`] rather than silently evicting an
+    /// existing operation — eviction would discard a complete, otherwise
+    /// valid trace, which is exactly the kind of silent data loss this
+    /// crate's explicit-truncation-marker design exists to avoid elsewhere.
+    /// An operation already established before the cap was reached remains
+    /// fully recordable afterward; only a *new* operation's first mention is
+    /// rejected. Rejections are also counted in
+    /// [`OperationTraceSnapshot::operations_rejected_by_cap`], the
+    /// recorder-wide counterpart to a per-operation truncation marker.
+    pub max_operations: usize,
 }
 
 impl RecorderBounds {
     /// Construct explicit bounds.
     #[must_use]
-    pub fn new(max_events: usize, max_payload_bytes: usize) -> Self {
-        Self { max_events, max_payload_bytes }
+    pub fn new(max_events: usize, max_payload_bytes: usize, max_operations: usize) -> Self {
+        Self { max_events, max_payload_bytes, max_operations }
     }
 }
 
@@ -124,6 +181,20 @@ pub enum RecordError {
         /// The different kind this call supplied.
         supplied: OperationKind,
     },
+    /// A brand-new operation's first `record` call arrived once
+    /// [`RecorderBounds::max_operations`] distinct operations were already
+    /// established.
+    ///
+    /// An operation already established before the cap was reached is
+    /// unaffected and remains fully recordable; only a *new* operation's
+    /// first mention is rejected. This does not evict an existing operation
+    /// to make room — see [`RecorderBounds::max_operations`]'s docs for why.
+    TooManyOperations {
+        /// The new operation that was rejected.
+        operation: OperationId,
+        /// The bound that was reached.
+        max: usize,
+    },
 }
 
 impl fmt::Display for RecordError {
@@ -163,6 +234,10 @@ impl fmt::Display for RecordError {
                 f,
                 "operation {operation} already has kind {existing}, but this call supplied {supplied}"
             ),
+            Self::TooManyOperations { operation, max } => write!(
+                f,
+                "operation {operation} was rejected: this recorder already retains the maximum of {max} distinct operations"
+            ),
         }
     }
 }
@@ -193,6 +268,11 @@ struct OperationRecord {
     kind: OperationKind,
     parent: Option<OperationId>,
     entries: Vec<RecordedEntry>,
+    /// Count of [`RecordedEntry::Event`] entries in `entries` — tracked
+    /// separately from `entries.len()` so [`RecorderBounds::max_events`]
+    /// bounds admitted events only, never counting the one truncation marker
+    /// `entries` may additionally hold.
+    admitted_events: usize,
     terminal_outcome: Option<OperationOutcome>,
     truncated: Option<TruncationReason>,
     payload_bytes: usize,
@@ -211,6 +291,7 @@ impl OperationRecord {
             kind,
             parent: None,
             entries: Vec::new(),
+            admitted_events: 0,
             terminal_outcome: None,
             truncated: None,
             payload_bytes: 0,
@@ -228,8 +309,10 @@ impl OperationRecord {
 /// - one [`OperationKind`] and one parent per operation — a later
 ///   [`OperationContext`] disagreeing with either is rejected, not silently
 ///   overwritten;
-/// - [`RecorderBounds::max_events`] and [`RecorderBounds::max_payload_bytes`],
-///   truncating explicitly rather than dropping silently.
+/// - [`RecorderBounds::max_events`] and [`RecorderBounds::max_payload_bytes`]
+///   per operation, truncating explicitly rather than dropping silently;
+/// - [`RecorderBounds::max_operations`] across the whole recorder, rejecting
+///   (not evicting) a brand-new operation once reached.
 ///
 /// A disabled recorder ([`OperationRecorder::disabled`]) accepts every call
 /// and stores nothing: every query reports [`TerminalState::NotProven`] and
@@ -240,13 +323,21 @@ pub struct OperationRecorder {
     enabled: bool,
     bounds: RecorderBounds,
     operations: BTreeMap<OperationId, OperationRecord>,
+    /// Count of new-operation `record` calls rejected by
+    /// [`RecorderBounds::max_operations`]. Surfaced on
+    /// [`OperationTraceSnapshot::operations_rejected_by_cap`] as the
+    /// recorder-wide counterpart to a per-operation truncation marker: an
+    /// aggregate, durable signal that *some* operation's trace is entirely
+    /// missing from this snapshot, even though no single retained operation
+    /// shows it.
+    operations_rejected_by_cap: usize,
 }
 
 impl OperationRecorder {
     /// Construct an enabled recorder with the given bounds.
     #[must_use]
     pub fn new(bounds: RecorderBounds) -> Self {
-        Self { enabled: true, bounds, operations: BTreeMap::new() }
+        Self { enabled: true, bounds, operations: BTreeMap::new(), operations_rejected_by_cap: 0 }
     }
 
     /// Construct a recorder that accepts every call but records nothing.
@@ -257,13 +348,28 @@ impl OperationRecorder {
     /// partial validation with no storage.
     #[must_use]
     pub fn disabled() -> Self {
-        Self { enabled: false, bounds: RecorderBounds::new(0, 0), operations: BTreeMap::new() }
+        Self {
+            enabled: false,
+            bounds: RecorderBounds::new(0, 0, 0),
+            operations: BTreeMap::new(),
+            operations_rejected_by_cap: 0,
+        }
     }
 
     /// Whether this recorder actually stores events.
     #[must_use]
     pub fn is_enabled(&self) -> bool {
         self.enabled
+    }
+
+    /// The number of new-operation `record` calls rejected so far by
+    /// [`RecorderBounds::max_operations`]. See
+    /// [`RecordError::TooManyOperations`] for the per-call signal and
+    /// [`OperationTraceSnapshot::operations_rejected_by_cap`] for the
+    /// snapshot-level counterpart.
+    #[must_use]
+    pub fn operations_rejected_by_cap(&self) -> usize {
+        self.operations_rejected_by_cap
     }
 
     /// Record one event for the operation described by `context`.
@@ -287,18 +393,36 @@ impl OperationRecorder {
     /// at record time regardless of how the context was constructed.
     ///
     /// A well-formed `Terminal` event that arrives once
-    /// [`RecorderBounds::max_events`] has already been reached is truncated
-    /// like any other event, **not** given special priority: its outcome is
-    /// discarded along with the event, [`Self::terminal_state`] reports
-    /// [`TerminalState::NotProven`] for that operation forever afterward, and
-    /// the caller learns this from the returned
-    /// [`RecordOutcome::Truncated`] (not a silent `Ok(Recorded)`). This is a
-    /// deliberate reading of the bound: `max_events` bounds *retained event
-    /// count*, full stop, with no carved-out exception for any one kind —
-    /// exceptions would make the bound's actual behavior depend on arrival
-    /// order in a way this contract does not promise. A caller that must
-    /// guarantee its terminal event is never lost should size
-    /// `max_events` accordingly.
+    /// [`RecorderBounds::max_events`] admitted events have already been
+    /// recorded is truncated like any other event, **not** given special
+    /// priority: its outcome is discarded along with the event,
+    /// [`Self::terminal_state`] reports [`TerminalState::NotProven`] for
+    /// that operation forever afterward, and the caller learns this from
+    /// the returned [`RecordOutcome::Truncated`] (not a silent
+    /// `Ok(Recorded)`). This is a deliberate reading of the bound:
+    /// `max_events` bounds *admitted event count*, full stop, with no
+    /// carved-out exception for any one kind — exceptions would make the
+    /// bound's actual behavior depend on arrival order in a way this
+    /// contract does not promise. A caller that must guarantee its terminal
+    /// event is never lost should size `max_events` accordingly.
+    ///
+    /// # Evaluation order
+    ///
+    /// [`EventRegistry`] validation runs *first*, before this operation is
+    /// even looked up: a registry-invalid event never establishes the
+    /// operation (no kind or parent recorded, `operation_count` unaffected)
+    /// and never consumes [`RecorderBounds::max_operations`] capacity.
+    /// Once an event is registry-valid, this method checks, in order:
+    /// [`RecorderBounds::max_operations`] (for a brand-new operation only),
+    /// self-parent/parent-cycle, parent conflict, kind conflict,
+    /// duplicate-terminal/event-after-terminal, event-after-truncation, then
+    /// the `max_events`/`max_payload_bytes` bounds. Reordering any of this is
+    /// load-bearing (see `CLAUDE.md`'s "Review hotspots"): it can silently
+    /// reopen "event after terminal", "event after truncation", a stored
+    /// kind/parent conflict, a new operation evading the operation-count
+    /// cap, or (before this ordering existed) a registry-rejected event
+    /// nonetheless establishing the operation's kind and parent for a
+    /// later, unrelated call.
     ///
     /// # Errors
     ///
@@ -312,11 +436,25 @@ impl OperationRecorder {
             return Ok(RecordOutcome::Recorded);
         }
 
+        // Registry validation runs before this operation is looked up or
+        // created at all: a registry-invalid event must never establish an
+        // operation's kind or parent, and must never appear in
+        // `operation_count` (see this method's "Evaluation order" doc and
+        // `operation_count`'s own docs).
+        EventRegistry::validate(&event).map_err(RecordError::Registry)?;
+
         let operation = context.operation().clone();
         let parent = context.parent().cloned();
         let kind = context.kind();
 
         let first_time = !self.operations.contains_key(&operation);
+        if first_time && self.operations.len() >= self.bounds.max_operations {
+            self.operations_rejected_by_cap += 1;
+            return Err(RecordError::TooManyOperations {
+                operation,
+                max: self.bounds.max_operations,
+            });
+        }
         match (first_time, &parent) {
             (true, Some(parent)) => {
                 let parent_id = parent.operation_id();
@@ -367,8 +505,6 @@ impl OperationRecorder {
             return Err(RecordError::EventAfterTruncation { operation });
         }
 
-        EventRegistry::validate(&event).map_err(RecordError::Registry)?;
-
         let outcome = if event.kind() == OperationEventKind::Terminal {
             let outcome = event
                 .outcome()
@@ -378,7 +514,7 @@ impl OperationRecorder {
             None
         };
 
-        if record.entries.len() >= self.bounds.max_events {
+        if record.admitted_events >= self.bounds.max_events {
             record.truncated = Some(TruncationReason::MaxEventsExceeded);
             record.entries.push(RecordedEntry::Truncated(TruncationReason::MaxEventsExceeded));
             return Ok(RecordOutcome::Truncated(TruncationReason::MaxEventsExceeded));
@@ -394,6 +530,7 @@ impl OperationRecorder {
         }
 
         record.payload_bytes += payload_len;
+        record.admitted_events += 1;
         if let Some(outcome) = outcome {
             record.terminal_outcome = Some(outcome);
         }
@@ -425,13 +562,21 @@ impl OperationRecorder {
 
     /// The number of distinct operations this recorder has *touched*.
     ///
-    /// This counts every operation id ever passed to [`Self::record`] that
-    /// reached the point of being looked up in this recorder's internal
-    /// table — including one whose very first `record` call was ultimately
-    /// rejected (for example by [`EventRegistry`] validation) and therefore
-    /// has zero retained events. It is a "have we seen this id at all"
-    /// count, not a "how many operations have at least one recorded event"
-    /// count.
+    /// This counts every operation id whose `record` call reached the point
+    /// of being looked up or created in this recorder's internal table.
+    /// [`EventRegistry`] validation, and (for an operation's first mention) a
+    /// self-parent or parent-cycle rejection, both run *before* that point
+    /// (see [`Self::record`]'s "Evaluation order" docs) — so a registry
+    /// -invalid event, or a self-referential/cyclic first mention, never
+    /// touches this table and is **not** counted. A first-time `Terminal`
+    /// event whose `outcome` value fails to parse
+    /// ([`RecordError::MissingOutcome`]) is checked *after* the table entry
+    /// is created, so that case **is** counted despite the call itself
+    /// returning an error, with zero retained events. A `ParentConflict` or
+    /// `KindConflict` on a later call targets an operation that was already
+    /// counted from its earlier, successful first mention. This is a "have
+    /// we established this operation's table entry at all" count, not a
+    /// "how many operations have at least one recorded event" count.
     #[must_use]
     pub fn operation_count(&self) -> usize {
         self.operations.len()
@@ -465,6 +610,7 @@ impl OperationRecorder {
                         .collect(),
                 })
                 .collect(),
+            operations_rejected_by_cap: self.operations_rejected_by_cap,
         }
     }
 
@@ -500,6 +646,16 @@ pub struct OperationTraceSnapshot {
     pub schema_version: OperationTraceSchemaVersion,
     /// Every recorded operation, in ascending `(session, sequence)` order.
     pub operations: Vec<RecordedOperation>,
+    /// How many new-operation `record` calls [`RecorderBounds::max_operations`]
+    /// rejected over this recorder's lifetime.
+    ///
+    /// This is the recorder-wide counterpart to a per-operation truncation
+    /// marker: a nonzero value means at least one operation's trace is
+    /// entirely absent from `operations` above, even though every retained
+    /// operation's own entries look complete. Silently omitting this count
+    /// would make an operations-capped snapshot indistinguishable from one
+    /// where every operation simply happened to fit.
+    pub operations_rejected_by_cap: usize,
 }
 
 /// One recorded operation in an [`OperationTraceSnapshot`].
@@ -541,7 +697,7 @@ mod tests {
 
     use super::*;
     use crate::event::OUTCOME_FIELD;
-    use crate::privacy::PrivateValue;
+    use crate::privacy::{PrivateValue, SecretField};
     use crate::session::SessionId;
 
     fn op(session: &str, sequence: u64) -> OperationId {
@@ -566,7 +722,7 @@ mod tests {
 
     #[test]
     fn duplicate_terminal_is_rejected() {
-        let mut recorder = OperationRecorder::new(RecorderBounds::new(100, 10_000));
+        let mut recorder = OperationRecorder::new(RecorderBounds::new(100, 10_000, 100));
         let context = ctx("s1", 0);
         recorder.record(&context, OperationEvent::terminal(OperationOutcome::Completed)).unwrap();
         let err = recorder
@@ -577,7 +733,7 @@ mod tests {
 
     #[test]
     fn event_after_terminal_is_rejected() {
-        let mut recorder = OperationRecorder::new(RecorderBounds::new(100, 10_000));
+        let mut recorder = OperationRecorder::new(RecorderBounds::new(100, 10_000, 100));
         let context = ctx("s1", 0);
         recorder.record(&context, OperationEvent::terminal(OperationOutcome::Completed)).unwrap();
         let err = recorder.record(&context, admitted()).unwrap_err();
@@ -586,7 +742,7 @@ mod tests {
 
     #[test]
     fn missing_terminal_reports_not_proven_not_success_and_does_not_panic() {
-        let mut recorder = OperationRecorder::new(RecorderBounds::new(100, 10_000));
+        let mut recorder = OperationRecorder::new(RecorderBounds::new(100, 10_000, 100));
         let context = ctx("s1", 0);
         recorder.record(&context, admitted()).unwrap();
         assert_eq!(recorder.terminal_state(context.operation()), TerminalState::NotProven);
@@ -594,7 +750,7 @@ mod tests {
 
     #[test]
     fn unknown_operation_reports_not_proven() {
-        let recorder = OperationRecorder::new(RecorderBounds::new(100, 10_000));
+        let recorder = OperationRecorder::new(RecorderBounds::new(100, 10_000, 100));
         assert_eq!(recorder.terminal_state(&op("s1", 999)), TerminalState::NotProven);
     }
 
@@ -604,11 +760,48 @@ mod tests {
     /// separately below.
     #[test]
     fn terminal_event_with_no_outcome_field_is_rejected_by_the_registry() {
-        let mut recorder = OperationRecorder::new(RecorderBounds::new(100, 10_000));
+        let mut recorder = OperationRecorder::new(RecorderBounds::new(100, 10_000, 100));
         let context = ctx("s1", 0);
         let malformed = OperationEvent::new(OperationEventKind::Terminal);
         let err = recorder.record(&context, malformed).unwrap_err();
         assert!(matches!(err, RecordError::Registry(_)), "got {err:?}");
+    }
+
+    /// Regression test for finding I: `EventRegistry` validation must run
+    /// *before* this operation is looked up or created, so a registry
+    /// -invalid first event never establishes the operation's kind or
+    /// parent. Before this ordering existed, the operation was created (via
+    /// `self.operations.entry(...).or_insert_with(...)`) *before* registry
+    /// validation ran, so a rejected first event still silently claimed the
+    /// operation's kind for good -- and a later, genuinely valid event with
+    /// a *different* kind would then spuriously hit `KindConflict`, even
+    /// though the only "prior" mention of that kind was itself rejected.
+    #[test]
+    fn registry_invalid_first_event_does_not_establish_the_operation() {
+        let mut recorder = OperationRecorder::new(RecorderBounds::new(100, 10_000, 100));
+        let operation = op("s1", 0);
+
+        // `Rejected` requires a `reason` field; this one has none, so it
+        // fails registry validation.
+        let invalid_first = OperationContext::root(operation.clone(), OperationKind::TestRun);
+        let err = recorder
+            .record(&invalid_first, OperationEvent::new(OperationEventKind::Rejected))
+            .unwrap_err();
+        assert!(matches!(err, RecordError::Registry(_)), "got {err:?}");
+        assert_eq!(
+            recorder.operation_count(),
+            0,
+            "a registry-rejected first event must not establish the operation at all"
+        );
+        assert_eq!(recorder.operation_kind(&operation), None);
+
+        // A later, valid event with a *different* kind than the rejected
+        // first mention must now succeed -- not hit KindConflict, since the
+        // rejected mention never established TestRun as the kind.
+        let valid_second = OperationContext::root(operation.clone(), OperationKind::LspRequest);
+        assert!(recorder.record(&valid_second, admitted()).is_ok());
+        assert_eq!(recorder.operation_kind(&operation), Some(OperationKind::LspRequest));
+        assert_eq!(recorder.operation_count(), 1);
     }
 
     /// A `Terminal` event that *does* carry an `outcome` field (so it
@@ -619,7 +812,7 @@ mod tests {
     /// well-formedness.
     #[test]
     fn terminal_event_with_malformed_outcome_value_is_rejected() {
-        let mut recorder = OperationRecorder::new(RecorderBounds::new(100, 10_000));
+        let mut recorder = OperationRecorder::new(RecorderBounds::new(100, 10_000, 100));
         let context = ctx("s1", 0);
         let malformed = OperationEvent::new(OperationEventKind::Terminal)
             .with_field(OUTCOME_FIELD, EventFieldValue::PublicString("not-a-real-outcome".into()));
@@ -629,7 +822,7 @@ mod tests {
 
     #[test]
     fn well_formed_terminal_is_proven() {
-        let mut recorder = OperationRecorder::new(RecorderBounds::new(100, 10_000));
+        let mut recorder = OperationRecorder::new(RecorderBounds::new(100, 10_000, 100));
         let context = ctx("s1", 0);
         recorder.record(&context, OperationEvent::terminal(OperationOutcome::Failed)).unwrap();
         assert_eq!(
@@ -646,7 +839,7 @@ mod tests {
     /// tested behavior rather than an accidental one.
     #[test]
     fn terminal_event_at_the_max_events_cap_is_truncated_and_reports_not_proven() {
-        let mut recorder = OperationRecorder::new(RecorderBounds::new(1, 1_000_000));
+        let mut recorder = OperationRecorder::new(RecorderBounds::new(1, 1_000_000, 100));
         let context = ctx("s1", 0);
         recorder.record(&context, admitted()).unwrap();
 
@@ -665,7 +858,7 @@ mod tests {
 
     #[test]
     fn self_parent_is_rejected() {
-        let mut recorder = OperationRecorder::new(RecorderBounds::new(100, 10_000));
+        let mut recorder = OperationRecorder::new(RecorderBounds::new(100, 10_000, 100));
         let root = ctx("s1", 0);
         // Hand-build a self-referential context: `child` on itself, reusing
         // its own operation id for the "child". `OperationContext` cannot
@@ -682,7 +875,7 @@ mod tests {
     /// only be detected once the final edge is added.
     #[test]
     fn parent_cycle_is_rejected() {
-        let mut recorder = OperationRecorder::new(RecorderBounds::new(100, 10_000));
+        let mut recorder = OperationRecorder::new(RecorderBounds::new(100, 10_000, 100));
         let a = op("s1", 0);
         let b = op("s1", 1);
         let c = op("s1", 2);
@@ -705,7 +898,7 @@ mod tests {
 
     #[test]
     fn a_valid_parent_chain_is_accepted() {
-        let mut recorder = OperationRecorder::new(RecorderBounds::new(100, 10_000));
+        let mut recorder = OperationRecorder::new(RecorderBounds::new(100, 10_000, 100));
         let a = ctx("s1", 0);
         recorder.record(&a, admitted()).unwrap();
         let b = a.child(op("s1", 1), OperationKind::TestRun);
@@ -716,7 +909,7 @@ mod tests {
 
     #[test]
     fn repeating_the_same_context_on_a_later_call_is_accepted() {
-        let mut recorder = OperationRecorder::new(RecorderBounds::new(100, 10_000));
+        let mut recorder = OperationRecorder::new(RecorderBounds::new(100, 10_000, 100));
         let a = ctx("s1", 0);
         recorder.record(&a, admitted()).unwrap();
         let b = a.child(op("s1", 1), OperationKind::TestRun);
@@ -727,7 +920,7 @@ mod tests {
 
     #[test]
     fn a_different_parent_on_a_later_call_is_rejected() {
-        let mut recorder = OperationRecorder::new(RecorderBounds::new(100, 10_000));
+        let mut recorder = OperationRecorder::new(RecorderBounds::new(100, 10_000, 100));
         let a = ctx("s1", 0);
         let other = ctx("s1", 2);
         recorder.record(&a, admitted()).unwrap();
@@ -750,7 +943,7 @@ mod tests {
 
     #[test]
     fn asserting_a_parent_after_first_recording_with_none_is_rejected() {
-        let mut recorder = OperationRecorder::new(RecorderBounds::new(100, 10_000));
+        let mut recorder = OperationRecorder::new(RecorderBounds::new(100, 10_000, 100));
         let a = ctx("s1", 0);
         let b_root = ctx("s1", 1);
         recorder.record(&a, admitted()).unwrap();
@@ -772,7 +965,7 @@ mod tests {
 
     #[test]
     fn repeating_the_same_kind_on_a_later_call_is_accepted() {
-        let mut recorder = OperationRecorder::new(RecorderBounds::new(100, 10_000));
+        let mut recorder = OperationRecorder::new(RecorderBounds::new(100, 10_000, 100));
         let context = ctx_with_kind("s1", 0, OperationKind::TestRun);
         recorder.record(&context, admitted()).unwrap();
         assert!(recorder.record(&context, admitted()).is_ok());
@@ -781,7 +974,7 @@ mod tests {
 
     #[test]
     fn a_different_kind_on_a_later_call_is_rejected() {
-        let mut recorder = OperationRecorder::new(RecorderBounds::new(100, 10_000));
+        let mut recorder = OperationRecorder::new(RecorderBounds::new(100, 10_000, 100));
         let operation = op("s1", 0);
         let first = OperationContext::root(operation.clone(), OperationKind::TestRun);
         let second = OperationContext::root(operation.clone(), OperationKind::LspRequest);
@@ -801,7 +994,7 @@ mod tests {
 
     #[test]
     fn max_events_cap_is_enforced_with_an_explicit_marker() {
-        let mut recorder = OperationRecorder::new(RecorderBounds::new(2, 1_000_000));
+        let mut recorder = OperationRecorder::new(RecorderBounds::new(2, 1_000_000, 100));
         let context = ctx("s1", 0);
         assert_eq!(recorder.record(&context, admitted()).unwrap(), RecordOutcome::Recorded);
         assert_eq!(recorder.record(&context, admitted()).unwrap(), RecordOutcome::Recorded);
@@ -822,11 +1015,57 @@ mod tests {
             )),
             "truncation marker must be observable in the trace itself"
         );
+        // Pins the exact bound arithmetic (finding G): `max_events` counts
+        // *admitted* events only, so a snapshot may hold at most
+        // `max_events + 1` entries total (the admitted events, plus at most
+        // one truncation marker). With `max_events = 2`, exactly 2 admitted
+        // events plus 1 marker must be retained -- not `max_events` events
+        // total including the marker (the pre-fix off-by-one), and not
+        // `max_events` events with the marker on top of *that*.
+        assert_eq!(
+            recorded.events.len(),
+            3,
+            "expected exactly max_events (2) admitted events plus 1 truncation marker"
+        );
+        assert_eq!(
+            recorded
+                .events
+                .iter()
+                .filter(|e| matches!(e, RecordedEventEntry::Event { .. }))
+                .count(),
+            2,
+            "admitted-event count must equal max_events exactly, not max_events - 1"
+        );
+    }
+
+    /// `max_events = 0` is well-defined (finding G): zero events are ever
+    /// admitted, and the very first `record` call yields only the
+    /// truncation marker -- not an error, and not one silently-admitted
+    /// event before truncation kicks in.
+    #[test]
+    fn max_events_zero_admits_nothing_and_yields_only_the_marker() {
+        let mut recorder = OperationRecorder::new(RecorderBounds::new(0, 1_000_000, 100));
+        let context = ctx("s1", 0);
+
+        let outcome = recorder.record(&context, admitted()).unwrap();
+        assert_eq!(outcome, RecordOutcome::Truncated(TruncationReason::MaxEventsExceeded));
+
+        let snapshot = recorder.snapshot();
+        let recorded = &snapshot.operations[0];
+        assert_eq!(
+            recorded.events.len(),
+            1,
+            "exactly one entry: the truncation marker, nothing else"
+        );
+        assert!(matches!(
+            recorded.events[0],
+            RecordedEventEntry::Truncated { reason: TruncationReason::MaxEventsExceeded }
+        ));
     }
 
     #[test]
     fn events_after_truncation_are_rejected() {
-        let mut recorder = OperationRecorder::new(RecorderBounds::new(1, 1_000_000));
+        let mut recorder = OperationRecorder::new(RecorderBounds::new(1, 1_000_000, 100));
         let context = ctx("s1", 0);
         recorder.record(&context, admitted()).unwrap();
         // Second call trips the bound and truncates.
@@ -840,7 +1079,7 @@ mod tests {
 
     #[test]
     fn max_payload_bytes_cap_is_enforced_with_an_explicit_marker() {
-        let mut recorder = OperationRecorder::new(RecorderBounds::new(1_000, 4));
+        let mut recorder = OperationRecorder::new(RecorderBounds::new(1_000, 4, 100));
         let context = ctx("s1", 0);
         let big_event = OperationEvent::new(OperationEventKind::Rejected)
             .with_field("reason", EventFieldValue::PublicString("this reason is long".into()));
@@ -849,6 +1088,141 @@ mod tests {
         assert_eq!(
             recorder.truncation(context.operation()),
             Some(TruncationReason::MaxPayloadBytesExceeded)
+        );
+    }
+
+    /// Regression test for a real length side channel: `max_payload_bytes`
+    /// used to charge a `Secret` field's *plaintext* length, so whether an
+    /// event was admitted or truncated depended on the secret's length —
+    /// exactly the property `Secret` exists to keep an observer from
+    /// learning. Two secrets of very different plaintext lengths, identical
+    /// everything else, must now produce the *same* `RecordOutcome`: this
+    /// bound is tight enough that charging plaintext length would have
+    /// admitted the short secret's event while truncating the long secret's
+    /// event.
+    #[test]
+    fn secret_budget_accounting_does_not_vary_with_secret_plaintext_length() {
+        fn build_event(secret: &str) -> OperationEvent {
+            OperationEvent::new(OperationEventKind::StageStarted)
+                .with_field("stage", EventFieldValue::PublicString("x".into()))
+                .with_field("api_key_hint", EventFieldValue::Secret(SecretField::new(secret)))
+        }
+
+        let short_secret = "a";
+        let long_secret = "a-much-longer-low-entropy-secret-value-indeed-many-bytes-long-here";
+        assert!(
+            long_secret.len() > short_secret.len() + 50,
+            "sanity: the two secrets must differ hugely in plaintext length"
+        );
+
+        // "stage"(5) + "x"(1) = 6; "api_key_hint"(12) + fixed redacted
+        // placeholder length(10) = 22; total 28 regardless of the secret's
+        // plaintext length. A bound of 20 sits strictly between the
+        // plaintext-charged totals for the two secrets above (pre-fix: 19
+        // for the short one, far more for the long one) but below the
+        // shared, length-independent total of 28 for both under the fix.
+        let bound = RecorderBounds::new(100, 20, 100);
+
+        let mut recorder_short = OperationRecorder::new(bound);
+        let mut recorder_long = OperationRecorder::new(bound);
+        let context_short = ctx("s1", 0);
+        let context_long = ctx("s2", 0);
+
+        let outcome_short =
+            recorder_short.record(&context_short, build_event(short_secret)).unwrap();
+        let outcome_long = recorder_long.record(&context_long, build_event(long_secret)).unwrap();
+
+        assert_eq!(
+            outcome_short, outcome_long,
+            "RecordOutcome must not depend on a Secret field's plaintext length"
+        );
+        assert_eq!(
+            outcome_short,
+            RecordOutcome::Truncated(TruncationReason::MaxPayloadBytesExceeded),
+            "sanity: the shared bound must actually be tight enough to matter"
+        );
+    }
+
+    // ── Operation cap (max_operations) ───────────────────────────────────
+
+    /// A brand-new operation is rejected, not evicted, once
+    /// `max_operations` distinct operations are already established; an
+    /// operation established *before* the cap was reached remains fully
+    /// recordable afterward.
+    #[test]
+    fn too_many_operations_is_rejected_and_existing_operations_still_accept_events() {
+        let mut recorder = OperationRecorder::new(RecorderBounds::new(100, 10_000, 1));
+        let first = ctx("s1", 0);
+        let second = ctx("s1", 1);
+
+        assert_eq!(recorder.record(&first, admitted()).unwrap(), RecordOutcome::Recorded);
+        assert_eq!(recorder.operation_count(), 1);
+
+        // A brand-new operation is rejected once the cap (1) is reached.
+        let err = recorder.record(&second, admitted()).unwrap_err();
+        assert_eq!(
+            err,
+            RecordError::TooManyOperations { operation: second.operation().clone(), max: 1 }
+        );
+        assert_eq!(recorder.operation_count(), 1, "the rejected operation must not be established");
+        assert_eq!(recorder.operations_rejected_by_cap(), 1);
+
+        // The *existing* operation remains fully recordable after the cap
+        // was hit -- the cap does not evict or freeze it.
+        assert_eq!(
+            recorder.record(&first, OperationEvent::terminal(OperationOutcome::Completed)).unwrap(),
+            RecordOutcome::Recorded
+        );
+        assert_eq!(
+            recorder.terminal_state(first.operation()),
+            TerminalState::Proven(OperationOutcome::Completed)
+        );
+
+        // A second attempt at the same rejected new operation is rejected
+        // again, identically -- it never got a foothold from the first
+        // attempt.
+        let err_again = recorder.record(&second, admitted()).unwrap_err();
+        assert_eq!(
+            err_again,
+            RecordError::TooManyOperations { operation: second.operation().clone(), max: 1 }
+        );
+        assert_eq!(recorder.operations_rejected_by_cap(), 2);
+    }
+
+    /// [`OperationTraceSnapshot::operations_rejected_by_cap`] surfaces the
+    /// rejection count on the snapshot itself -- the recorder-wide
+    /// counterpart to a per-operation truncation marker, since a rejected
+    /// *new* operation has no per-operation record to attach a marker to.
+    #[test]
+    fn snapshot_surfaces_operations_rejected_by_cap() {
+        let mut recorder = OperationRecorder::new(RecorderBounds::new(100, 10_000, 1));
+        recorder.record(&ctx("s1", 0), admitted()).unwrap();
+        assert!(recorder.record(&ctx("s1", 1), admitted()).is_err());
+        assert!(recorder.record(&ctx("s1", 2), admitted()).is_err());
+
+        let snapshot = recorder.snapshot();
+        assert_eq!(snapshot.operations.len(), 1, "only the pre-cap operation is retained");
+        assert_eq!(snapshot.operations_rejected_by_cap, 2);
+    }
+
+    /// A registry-invalid event targeting a *new* operation must not consume
+    /// `max_operations` capacity: it is rejected before the operation is
+    /// even looked up (finding I's ordering), so it should not also trip
+    /// finding L's cap.
+    #[test]
+    fn registry_invalid_new_operation_does_not_consume_operation_cap() {
+        let mut recorder = OperationRecorder::new(RecorderBounds::new(100, 10_000, 1));
+        recorder.record(&ctx("s1", 0), admitted()).unwrap();
+
+        let invalid = OperationContext::root(op("s1", 1), OperationKind::TestRun);
+        let err = recorder
+            .record(&invalid, OperationEvent::new(OperationEventKind::Rejected))
+            .unwrap_err();
+        assert!(matches!(err, RecordError::Registry(_)), "got {err:?}");
+        assert_eq!(
+            recorder.operations_rejected_by_cap(),
+            0,
+            "a registry rejection must not also count as a cap rejection"
         );
     }
 
@@ -882,12 +1256,36 @@ mod tests {
         assert_eq!(recorder.operation_count(), 0);
     }
 
+    /// `OperationRecorder::disabled()`'s docs claim it skips *all*
+    /// validation classes, including registry validation — but until this
+    /// test, no test named that specific bypass: the existing disabled-mode
+    /// test above exercises terminal/event-after-terminal/self-parent, never
+    /// a registry-rejected event. A `Rejected` event with no `reason` field
+    /// fails registry validation on an enabled recorder (the field is
+    /// required) and must succeed on a disabled one.
+    #[test]
+    fn disabled_recorder_bypasses_registry_validation_too() {
+        let context = ctx("s1", 0);
+        let missing_reason = OperationEvent::new(OperationEventKind::Rejected);
+
+        let mut enabled = OperationRecorder::new(RecorderBounds::new(100, 10_000, 100));
+        let err = enabled.record(&context, missing_reason.clone()).unwrap_err();
+        assert!(matches!(err, RecordError::Registry(_)), "got {err:?}");
+
+        let mut disabled = OperationRecorder::disabled();
+        assert_eq!(
+            disabled.record(&context, missing_reason).unwrap(),
+            RecordOutcome::Recorded,
+            "a disabled recorder must skip registry validation, not just terminal/parent checks"
+        );
+    }
+
     #[test]
     fn enabled_recorder_with_generous_bounds_accepts_the_same_ordinary_sequence() {
         // The counterpart to the disabled test above: an *ordinary*,
         // contract-respecting call sequence succeeds identically whether or
         // not recording is enabled.
-        let mut recorder = OperationRecorder::new(RecorderBounds::new(100, 10_000));
+        let mut recorder = OperationRecorder::new(RecorderBounds::new(100, 10_000, 100));
         let context = ctx("s1", 0);
         assert_eq!(recorder.record(&context, admitted()).unwrap(), RecordOutcome::Recorded);
         assert_eq!(
@@ -906,7 +1304,7 @@ mod tests {
 
     #[test]
     fn snapshot_orders_operations_deterministically() {
-        let mut recorder = OperationRecorder::new(RecorderBounds::new(100, 10_000));
+        let mut recorder = OperationRecorder::new(RecorderBounds::new(100, 10_000, 100));
         recorder.record(&ctx("s1", 5), admitted()).unwrap();
         recorder.record(&ctx("s1", 1), admitted()).unwrap();
         let snapshot = recorder.snapshot();
@@ -917,7 +1315,7 @@ mod tests {
 
     #[test]
     fn snapshot_carries_the_established_kind() {
-        let mut recorder = OperationRecorder::new(RecorderBounds::new(100, 10_000));
+        let mut recorder = OperationRecorder::new(RecorderBounds::new(100, 10_000, 100));
         let context = ctx_with_kind("s1", 0, OperationKind::DebugSession);
         recorder.record(&context, admitted()).unwrap();
         let snapshot = recorder.snapshot();
@@ -926,7 +1324,7 @@ mod tests {
 
     #[test]
     fn redaction_holds_through_the_full_snapshot_serialization() {
-        let mut recorder = OperationRecorder::new(RecorderBounds::new(100, 10_000));
+        let mut recorder = OperationRecorder::new(RecorderBounds::new(100, 10_000, 100));
         let context = ctx("s1", 0);
         let event = OperationEvent::new(OperationEventKind::StageStarted)
             .with_field("stage", EventFieldValue::PublicString("parse".into()))
@@ -948,7 +1346,7 @@ mod tests {
 
     #[test]
     fn snapshot_serialization_is_byte_identical_across_repeated_serialize_calls() {
-        let mut recorder = OperationRecorder::new(RecorderBounds::new(100, 10_000));
+        let mut recorder = OperationRecorder::new(RecorderBounds::new(100, 10_000, 100));
         let context = ctx("s1", 0);
         recorder.record(&context, admitted()).unwrap();
         recorder.record(&context, OperationEvent::terminal(OperationOutcome::Completed)).unwrap();
@@ -962,7 +1360,7 @@ mod tests {
     #[test]
     fn two_recorders_built_from_identical_input_serialize_identically() {
         let build = || {
-            let mut recorder = OperationRecorder::new(RecorderBounds::new(100, 10_000));
+            let mut recorder = OperationRecorder::new(RecorderBounds::new(100, 10_000, 100));
             let context = ctx("s1", 0);
             recorder.record(&context, admitted()).unwrap();
             recorder
@@ -973,5 +1371,33 @@ mod tests {
         let a = serde_json::to_string(&build().snapshot()).unwrap();
         let b = serde_json::to_string(&build().snapshot()).unwrap();
         assert_eq!(a, b, "identical input must produce byte-identical serialized output");
+    }
+
+    // ── SessionId is outside the privacy model (pinned, not merely noted) ──
+
+    /// `SessionId` carries no redaction guarantee at all — see
+    /// `crate::session`'s module docs. This test pins that disclosed
+    /// behavior at the value level: an ordinary-looking but sensitive-shaped
+    /// session label appears verbatim in `RecordError`'s `Display` text, the
+    /// same text a caller is likely to write straight into a log line. This
+    /// is not a bug to fix; pinning it makes the exposure a documented,
+    /// tested contract rather than a surprise a future reader has to
+    /// rediscover by reading source.
+    #[test]
+    fn session_label_appears_verbatim_in_record_error_display() {
+        let sensitive_label = "api-key-shaped-secret-abc123";
+        let context = OperationContext::root(op(sensitive_label, 0), OperationKind::TestRun);
+        let mut recorder = OperationRecorder::new(RecorderBounds::new(100, 10_000, 100));
+        recorder.record(&context, OperationEvent::terminal(OperationOutcome::Completed)).unwrap();
+
+        let err = recorder
+            .record(&context, OperationEvent::terminal(OperationOutcome::Failed))
+            .unwrap_err();
+        let message = err.to_string();
+        assert!(
+            message.contains(sensitive_label),
+            "SessionId carries no redaction guarantee, so the label must appear verbatim \
+             in RecordError's Display text; got: {message}"
+        );
     }
 }

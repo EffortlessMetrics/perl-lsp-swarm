@@ -37,10 +37,16 @@
 //! is meaningful only for the lifetime of one recording session, and its
 //! wire form deliberately never uses a `sha256:` prefix, so a reader cannot
 //! mistake it for durable identity. An `OperationId` must **never** enter a
-//! durable digest, fingerprint, or stable entity id. This crate has no hash
-//! function dependency at all (see `tests/dependency_contract.rs`, which
-//! forbids `sha2`), so folding an `OperationId` into a digest is not merely
-//! avoided here, it is unreachable.
+//! durable digest, fingerprint, or stable entity id. What this crate
+//! actually proves, and no more: its own dependency closure contains no hash
+//! function (see `tests/dependency_contract.rs`, which forbids `sha2`,
+//! fail-closed), and no API in this crate folds an `OperationId` into a
+//! digest or fingerprint. A downstream caller can still compute a hash over
+//! `OperationId::as_wire`'s exposed string in ordinary safe Rust — no
+//! dependency closure can prevent that — so keeping ephemeral identity out
+//! of a durable digest is a contract obligation on consumers, not something
+//! this crate enforces for them. See `crate::privacy` for the full
+//! accounting.
 //!
 //! # Deterministic by construction
 //!
@@ -68,8 +74,17 @@
 //! `perl-subprocess-runtime`'s process-identity module: public, private
 //! ([`PrivateValue`] — redacted, byte length disclosed) and secret
 //! ([`SecretField`] — redacted, nothing disclosed, not even a length). This
-//! crate never computes or stores a digest of either non-public tier — see
-//! `crate::privacy` for why.
+//! crate does not fold either non-public tier into a digest itself — see
+//! `crate::privacy` for exactly what is and is not proven about that.
+//!
+//! **This three-tier model covers [`EventFieldValue`] only.** [`SessionId`]
+//! is validated for hygiene (non-blank, no ASCII control character, bounded
+//! length) but carries no redaction guarantee whatsoever: it is embedded
+//! verbatim into [`OperationId::as_wire`] (that type's `Serialize` impl) and
+//! into several [`RecordError`] `Display` variants. See `crate::session`'s
+//! module docs before ever constructing a `SessionId` from a value that
+//! would need `Private`- or `Secret`-tier treatment if it were an event
+//! field.
 //!
 //! # No subsystem is instrumented here
 //!
@@ -87,9 +102,12 @@
 //!
 //! let session = SessionId::new("fixture-session").expect("non-blank literal");
 //! let mut allocator = OperationIdAllocator::new(session);
-//! let context = OperationContext::root(allocator.next(), OperationKind::TestRun);
+//! let context = OperationContext::root(
+//!     allocator.next().expect("fresh allocator has plenty of remaining sequence numbers"),
+//!     OperationKind::TestRun,
+//! );
 //!
-//! let mut recorder = OperationRecorder::new(RecorderBounds::new(64, 4096));
+//! let mut recorder = OperationRecorder::new(RecorderBounds::new(64, 4096, 100));
 //! recorder
 //!     .record(&context, OperationEvent::new(OperationEventKind::Admitted))
 //!     .expect("admitted event is valid");
@@ -138,4 +156,4 @@ pub use registry::{EventRegistry, RegistryError};
 
 pub use schema::{OperationTraceSchemaVersion, SCHEMA_VERSION_V1};
 
-pub use session::{SessionId, SessionIdError};
+pub use session::{MAX_SESSION_ID_BYTES, SessionId, SessionIdError};

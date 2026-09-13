@@ -28,10 +28,13 @@ const fn field(name: &'static str, privacy: FieldPrivacy, required: bool) -> Fie
 // is trivially `'static`.
 //
 // `STAGE_STARTED_FIELDS` deliberately declares one field at each privacy
-// tier (`stage` public, `host_path`/`source_line` private, `api_key_hint`
+// tier (`stage` public, `host_path` private, `source_line`/`api_key_hint`
 // secret) so producers have one obvious event to attach high-entropy or
 // secret context to, and so the redaction contract has one concrete event
-// kind to exercise end to end.
+// kind to exercise end to end. `source_line` is `Secret`, not `Private`: see
+// `crate::privacy`'s module docs for why a line of real source text is
+// frequently low-entropy (`}`, `1;`, `);`, blank) and therefore belongs in
+// the tier that discloses no length, not the one that does.
 const ADMITTED_FIELDS: [FieldSpec; 0] = [];
 const REJECTED_FIELDS: [FieldSpec; 1] = [field("reason", FieldPrivacy::Public, true)];
 const GENERATION_SELECTED_FIELDS: [FieldSpec; 1] =
@@ -39,7 +42,7 @@ const GENERATION_SELECTED_FIELDS: [FieldSpec; 1] =
 const STAGE_STARTED_FIELDS: [FieldSpec; 4] = [
     field("stage", FieldPrivacy::Public, true),
     field("host_path", FieldPrivacy::Private, false),
-    field("source_line", FieldPrivacy::Private, false),
+    field("source_line", FieldPrivacy::Secret, false),
     field("api_key_hint", FieldPrivacy::Secret, false),
 ];
 const STAGE_COMPLETED_FIELDS: [FieldSpec; 1] = [field("stage", FieldPrivacy::Public, true)];
@@ -113,6 +116,26 @@ pub enum RegistryError {
         /// The tier the supplied value actually carries.
         got: FieldPrivacy,
     },
+    /// The same declared field name was supplied more than once on one
+    /// event.
+    ///
+    /// A repeated field name is not merely redundant: each occurrence still
+    /// contributes its own name length and approximate payload length to
+    /// [`crate::OperationRecorder`]'s `max_payload_bytes` accounting (see
+    /// `crate::recorder::event_payload_len`), while serde's externally
+    /// tagged encoding adds a per-value wrapper this accounting does not
+    /// count. Hundreds of duplicate low-cost fields can therefore pass the
+    /// approximate budget check while the actual serialized trace overshoots
+    /// it by several times over. Rejecting a duplicate field name outright
+    /// is what keeps that approximation honest.
+    DuplicateField {
+        /// The event kind the duplicate was supplied on.
+        kind: OperationEventKind,
+        /// The repeated field name. Never a value: `Display` must not risk
+        /// echoing a `Private`/`Secret` field's content just because it
+        /// happened to collide with itself.
+        field: String,
+    },
 }
 
 impl fmt::Display for RegistryError {
@@ -128,6 +151,9 @@ impl fmt::Display for RegistryError {
                 f,
                 "event kind {kind} field {field:?} is declared {expected} but was supplied as {got}"
             ),
+            Self::DuplicateField { kind, field } => {
+                write!(f, "event kind {kind} declares field {field:?} more than once")
+            }
         }
     }
 }
@@ -143,10 +169,11 @@ impl EventRegistry {
     /// # Errors
     ///
     /// See [`RegistryError`]'s variants: a missing required field, a field
-    /// name the event kind does not declare, or a declared field supplied at
+    /// name the event kind does not declare, a declared field supplied at
     /// the wrong privacy tier (in either direction — a `Secret`-declared
     /// field must not be supplied as `Private` either, since `Private`
-    /// still leaks a byte length).
+    /// still leaks a byte length), or the same declared field name supplied
+    /// more than once (see [`RegistryError::DuplicateField`]).
     pub fn validate(event: &OperationEvent) -> Result<(), RegistryError> {
         let kind = event.kind();
         let declared = specs(kind);
@@ -160,7 +187,11 @@ impl EventRegistry {
             }
         }
 
+        let mut seen_fields: std::collections::HashSet<&str> = std::collections::HashSet::new();
         for (name, value) in event.fields() {
+            if !seen_fields.insert(name.as_str()) {
+                return Err(RegistryError::DuplicateField { kind, field: name.clone() });
+            }
             let Some(spec) = declared.iter().find(|s| s.name == name) else {
                 return Err(RegistryError::UnknownField { kind, field: name.clone() });
             };
@@ -285,7 +316,7 @@ mod tests {
                 "host_path",
                 EventFieldValue::Private(PrivateValue::new("/home/alice/proj")),
             )
-            .with_field("source_line", EventFieldValue::Private(PrivateValue::new("my $x = 1;")))
+            .with_field("source_line", EventFieldValue::Secret(SecretField::new("my $x = 1;")))
             .with_field("api_key_hint", EventFieldValue::Secret(SecretField::new("sk-abc123")));
         assert!(EventRegistry::validate(&event).is_ok());
     }
@@ -295,5 +326,69 @@ mod tests {
         use crate::event::OperationOutcome;
         let event = OperationEvent::terminal(OperationOutcome::Completed);
         assert!(EventRegistry::validate(&event).is_ok());
+    }
+
+    /// Reproduces the probe that motivated [`RegistryError::DuplicateField`]:
+    /// 500 repetitions of the same declared field name (`"stage": true`, each
+    /// individually well-formed and at the right privacy tier) previously
+    /// passed field-level validation entirely, because nothing checked
+    /// whether a name had already been seen on this event. Once accepted,
+    /// each repetition's name length and `approx_payload_len()` still counted
+    /// toward `OperationRecorder`'s `max_payload_bytes` budget, but serde's
+    /// externally tagged encoding adds a per-value wrapper that accounting
+    /// never counted — in the original probe the actual serialized trace
+    /// overshot the configured budget by 4.57x. Rejecting the very first
+    /// duplicate closes that gap at the registry, before the recorder's
+    /// budget accounting ever runs.
+    #[test]
+    fn five_hundred_duplicate_stage_fields_are_rejected_not_merely_over_budget() {
+        let mut event = OperationEvent::new(OperationEventKind::StageStarted);
+        for _ in 0..500 {
+            event = event.with_field("stage", EventFieldValue::Boolean(true));
+        }
+        let err = EventRegistry::validate(&event).unwrap_err();
+        assert_eq!(
+            err,
+            RegistryError::DuplicateField {
+                kind: OperationEventKind::StageStarted,
+                field: "stage".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn duplicate_field_display_names_only_the_field_not_a_value() {
+        let err = RegistryError::DuplicateField {
+            kind: OperationEventKind::StageStarted,
+            field: "stage".to_string(),
+        };
+        let message = err.to_string();
+        assert!(message.contains("stage"));
+        assert!(message.contains("stage_started"));
+    }
+
+    /// Sharper duplicate-field example: a `Terminal` event carrying
+    /// `outcome=completed` followed by `outcome=failed`. Before duplicate
+    /// -field rejection existed, this passed field-level validation
+    /// entirely (each individual `outcome` value is well-formed and at the
+    /// right privacy tier), `OperationEvent::outcome()` silently returned
+    /// only the *first* one (`completed`), and the serialized trace would
+    /// retain *both* fields -- leaving a consumer with no canonical
+    /// terminal result and a trace that visibly disagrees with itself about
+    /// how the operation ended.
+    #[test]
+    fn terminal_event_with_two_different_outcome_values_is_rejected_as_duplicate() {
+        use crate::event::OUTCOME_FIELD;
+        let event = OperationEvent::new(OperationEventKind::Terminal)
+            .with_field(OUTCOME_FIELD, EventFieldValue::PublicString("completed".into()))
+            .with_field(OUTCOME_FIELD, EventFieldValue::PublicString("failed".into()));
+        let err = EventRegistry::validate(&event).unwrap_err();
+        assert_eq!(
+            err,
+            RegistryError::DuplicateField {
+                kind: OperationEventKind::Terminal,
+                field: OUTCOME_FIELD.to_string(),
+            }
+        );
     }
 }
