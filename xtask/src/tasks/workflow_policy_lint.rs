@@ -368,45 +368,113 @@ fn lint_workflow_file(path: &Path, is_fixture: bool, issues: &mut Vec<LintIssue>
     Ok(())
 }
 
+/// Words that may precede `cargo` while still executing it.
+const COMMAND_WRAPPERS: &[&str] = &["sudo", "env", "time", "exec", "nice", "command"];
+
 /// Whether a `run:` script invokes the default `xtask` binary's CLI.
 ///
-/// `cargo run -p xtask --bin <name>` and `--example <name>` select a different
-/// target that does not link `main.rs`'s dispatch, and `cargo test -p xtask`
-/// compiles test targets rather than the CLI, so neither is a subcommand claim.
+/// Detection is on the command in command position, not on substrings, so
+/// prose that merely names the command — a `#` comment line inside a block
+/// scalar, or `echo 'run cargo xtask foo locally'` — is not an invocation. The
+/// finding this feeds is error-level, so a false positive would block an
+/// otherwise valid workflow change.
 ///
-/// Matching is on whitespace-separated tokens rather than substrings, so a tab,
-/// a run of spaces, or a bare `cargo xtask` is classified the same as the
-/// ordinary spelling.
+/// What counts as the CLI is decided by what links `main.rs`:
 ///
-/// The bias is deliberate. Over-detection costs a workflow two redundant
-/// `paths:` entries; under-detection leaves a gate silently unenumerated, which
-/// is the failure this rule exists to prevent. So recall is preferred to
-/// precision, and no attempt is made to prove the token sits in command
-/// position: a prose mention of the command inside an `echo` can only matter on
-/// a workflow that also carries a `paths:` filter, and would only ask it for the
-/// two entries. Commented-out lines are excluded because they never execute.
+/// - `cargo xtask <sub>` and `cargo run {-p,--package} xtask ... -- <sub>` do;
+/// - so does `--bin xtask`, because `xtask/src/main.rs` *is* the `xtask` bin —
+///   only another `--bin <name>` or an `--example` selects a different target;
+/// - `cargo test -p xtask` compiles test targets rather than the dispatch.
+///
+/// Known limitation: an invocation reached indirectly, through a `just` recipe
+/// or another script, is not visible here. See #14293 for the residual claim.
 fn command_invokes_xtask_cli(script: &str) -> bool {
-    script.lines().any(|line| {
+    shell_commands(script).iter().any(|command| command_tokens_invoke_xtask_cli(command))
+}
+
+/// Split a `run:` script into candidate commands.
+///
+/// Backslash continuations are joined so one logical command may span lines,
+/// `&&`, `||`, `|` and `;` begin a new command, and comment lines are dropped.
+fn shell_commands(script: &str) -> Vec<Vec<String>> {
+    let mut joined = String::new();
+    for line in script.lines() {
         let line = line.trim();
         if line.starts_with('#') {
-            return false;
+            continue;
         }
-        let tokens: Vec<&str> = line.split_whitespace().collect();
-        let Some(cargo_at) = tokens.iter().position(|token| *token == "cargo") else {
-            return false;
-        };
-        let rest = &tokens[cargo_at + 1..];
-        if rest.iter().any(|token| *token == "--bin" || *token == "--example") {
-            return false;
+        match line.strip_suffix('\\') {
+            Some(continued) => {
+                joined.push_str(continued);
+                joined.push(' ');
+            }
+            None => {
+                joined.push_str(line);
+                joined.push('\n');
+            }
         }
-        match rest.first() {
-            // `cargo xtask [<sub>]` — the alias form.
-            Some(&"xtask") => true,
-            // `cargo run -p xtask [flags] -- <sub>` — the explicit form.
-            Some(&"run") => rest.contains(&"-p") && rest.contains(&"xtask") && rest.contains(&"--"),
-            _ => false,
+    }
+    joined
+        .split(['\n', ';'])
+        .flat_map(|segment| segment.split("&&"))
+        .flat_map(|segment| segment.split("||"))
+        .flat_map(|segment| segment.split('|'))
+        .map(|segment| segment.split_whitespace().map(str::to_string).collect::<Vec<String>>())
+        .filter(|tokens| !tokens.is_empty())
+        .collect()
+}
+
+fn command_tokens_invoke_xtask_cli(tokens: &[String]) -> bool {
+    let mut rest = tokens;
+    while let Some(first) = rest.first() {
+        if COMMAND_WRAPPERS.contains(&first.as_str()) {
+            rest = &rest[1..];
+        } else {
+            break;
         }
-    })
+    }
+    let Some((command, args)) = rest.split_first() else {
+        return false;
+    };
+    if command != "cargo" || selects_another_target(args) {
+        return false;
+    }
+    match args.first().map(String::as_str) {
+        // `cargo xtask [<sub>]` — the alias form.
+        Some("xtask") => true,
+        // `cargo run {-p,--package} xtask [flags] -- <sub>`, or the same
+        // selected by manifest path.
+        Some("run") => {
+            let names_package = args
+                .windows(2)
+                .any(|pair| (pair[0] == "-p" || pair[0] == "--package") && pair[1] == "xtask")
+                || args.iter().any(|arg| {
+                    arg == "-pxtask"
+                        || arg == "--package=xtask"
+                        || arg.ends_with("xtask/Cargo.toml")
+                });
+            names_package && args.iter().any(|arg| arg == "--")
+        }
+        _ => false,
+    }
+}
+
+/// Whether the arguments select a build target other than the default `xtask`
+/// binary. `--bin xtask` names `xtask/src/main.rs` itself, so it is not another
+/// target.
+fn selects_another_target(args: &[String]) -> bool {
+    for (index, arg) in args.iter().enumerate() {
+        if arg == "--example" || arg.starts_with("--example=") {
+            return true;
+        }
+        if let Some(name) = arg.strip_prefix("--bin=") {
+            return name != "xtask";
+        }
+        if arg == "--bin" {
+            return args.get(index + 1).map(String::as_str) != Some("xtask");
+        }
+    }
+    false
 }
 
 fn workflow_invokes_xtask_cli(workflow: &Value) -> bool {
@@ -422,13 +490,26 @@ fn workflow_invokes_xtask_cli(workflow: &Value) -> bool {
     })
 }
 
+/// Filter-pattern syntax GitHub defines differently from shell globbing.
+///
+/// GitHub reads `?` and `+` as quantifiers on the *preceding* character and
+/// restricts `[...]` to simple ranges, whereas the `glob` crate reads `?` as
+/// any single character, `+` as a literal, and `[...]` as a POSIX class. A
+/// pattern using these cannot be evaluated faithfully here.
+const GITHUB_SPECIFIC_PATTERN_SYNTAX: &[char] = &['?', '+', '['];
+
 /// Whether a `paths:` allowlist selects `target`.
 ///
-/// Entries are GitHub filter patterns, not literals: `xtask/**` already covers
-/// both wiring files, so requiring them to be spelled out would be a false
-/// positive. Later entries win, which is how a `!` exclusion takes a file back
-/// out of an earlier glob. A pattern that does not parse cannot be shown to
-/// cover anything and is therefore not treated as coverage.
+/// Entries are filter patterns, not literals: `xtask/**` already covers both
+/// wiring files, so requiring them to be spelled out would be a false positive.
+/// Later entries win, which is how a `!` exclusion takes a file back out of an
+/// earlier glob.
+///
+/// Only the `*`/`**`/`!` forms shared with shell globbing are evaluated, which
+/// is every form this repository's filters use. A pattern that does not parse,
+/// or that uses the GitHub-specific syntax above, cannot be shown to cover
+/// anything and so is not treated as coverage — the rule then asks for the
+/// wiring file explicitly rather than returning a verdict it cannot justify.
 fn paths_filter_covers(paths: &[String], target: &str) -> bool {
     let options = glob::MatchOptions {
         case_sensitive: true,
@@ -437,6 +518,9 @@ fn paths_filter_covers(paths: &[String], target: &str) -> bool {
     };
     let mut covered = false;
     for entry in paths {
+        if entry.contains(GITHUB_SPECIFIC_PATTERN_SYNTAX) {
+            continue;
+        }
         let (negated, raw) = match entry.strip_prefix('!') {
             Some(rest) => (true, rest),
             None => (false, entry.as_str()),
@@ -1929,6 +2013,53 @@ mod tests {
         assert!(
             wiring_issues("xtask_cli_commented_invocation.yml")?.is_empty(),
             "a documented command in a comment is prose, not a dependency"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn echoed_invocation_is_not_a_cli_claim() -> Result<()> {
+        assert!(
+            wiring_issues("xtask_cli_echoed_invocation.yml")?.is_empty(),
+            "printing the command as advice is not running it"
+        );
+        Ok(())
+    }
+
+    /// `xtask/src/main.rs` is the `xtask` bin, `--package` is the long `-p`,
+    /// and a command may span backslash continuations. Each still reaches the
+    /// dispatch this rule guards.
+    #[test]
+    fn default_bin_long_package_and_continuations_are_cli_claims() -> Result<()> {
+        let issues = wiring_issues("xtask_cli_default_bin_and_long_package.yml")?;
+        assert_eq!(issues.len(), 1, "one finding for the one paths-filtered trigger: {issues:?}");
+        Ok(())
+    }
+
+    /// Kills the mutant that drops `require_literal_separator`: with it off,
+    /// `xtask/*` would wrongly appear to reach `xtask/src/main.rs`.
+    #[test]
+    fn single_star_does_not_cross_a_path_separator() -> Result<()> {
+        let issues = wiring_issues("xtask_cli_paths_single_star.yml")?;
+        assert_eq!(issues.len(), 1, "{issues:?}");
+        let message = &issues[0].message;
+        for wiring in ["xtask/src/main.rs", "xtask/src/tasks/mod.rs"] {
+            assert!(message.contains(wiring), "`xtask/*` reaches neither file: {message}");
+        }
+        Ok(())
+    }
+
+    /// GitHub's `?`/`+` are quantifiers on the preceding character; the glob
+    /// crate disagrees. An unevaluable pattern must not be read as coverage.
+    #[test]
+    fn github_specific_pattern_syntax_is_not_counted_as_coverage() -> Result<()> {
+        let issues = wiring_issues("xtask_cli_paths_github_syntax.yml")?;
+        assert_eq!(issues.len(), 1, "{issues:?}");
+        let message = &issues[0].message;
+        assert!(message.contains("xtask/src/main.rs"), "the unevaluable pattern: {message}");
+        assert!(
+            !message.contains("xtask/src/tasks/mod.rs"),
+            "the plain literal beside it still covers: {message}"
         );
         Ok(())
     }
