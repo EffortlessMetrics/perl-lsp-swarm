@@ -48,6 +48,16 @@ fn uri_tail(uri: &str) -> String {
 }
 
 impl LspServer {
+    /// Validate the didChange content-change batch before lifecycle state is
+    /// touched, using the canonical protocol union.
+    pub(super) fn validate_did_change_admission(
+        params: Option<&Value>,
+    ) -> Result<(), JsonRpcError> {
+        let params = params.ok_or_else(|| invalid_params("Missing didChange parameters"))?;
+        perl_lsp_rs_core::protocol::schema::validate_did_change_content_changes(params)
+            .map_err(|error| invalid_params(&format!("Invalid didChange parameters: {error}")))
+    }
+
     /// Whether the dormant eager-incremental-maintenance fast-path
     /// (`incremental_doc`/`incremental_state`) is opted into for this
     /// server. Always `false` when the `incremental` cargo feature is not
@@ -647,6 +657,9 @@ impl LspServer {
         allow_same_version: bool,
     ) -> Result<(), JsonRpcError> {
         if let Some(params) = params {
+            // Direct callers bypass the JSON-RPC dispatcher, so retain the
+            // same pure admission guard before cancellation or mutation.
+            Self::validate_did_change_admission(Some(&params))?;
             // Sink-owned admission (#8895): same URI policy as didOpen,
             // enforced where the change is applied and judged on the
             // normalized key. Typed InvalidParams belongs to this method, not

@@ -84,10 +84,17 @@ fn dispatch_rejects_malformed_change_before_document_mutation()
     if session.is_cancelled() || server.memory_state_snapshot().stream_sessions != 1 {
         return Err("baseline stream session was not retained".into());
     }
+    let predecessor_parse_token = server.new_parse_token(uri);
+    if predecessor_parse_token.load(Ordering::Relaxed) {
+        return Err("baseline parse token was unexpectedly cancelled".into());
+    }
     for changes in [
         json!([{"text": 7}, {"text": "my $x = 2;\n"}]),
         json!([{"text": "my $x = 2;\n"}, {"text": 7}]),
         json!([{"text": 7}]),
+        json!([{"rangeLength": 7, "text": "my $x = 2;\n"}]),
+        json!([{"rangeLength": null, "text": "my $x = 2;\n"}]),
+        json!([{"range": null, "text": "my $x = 2;\n"}]),
     ] {
         let malformed = JsonRpcRequest {
             _jsonrpc: "2.0".to_string(),
@@ -117,6 +124,15 @@ fn dispatch_rejects_malformed_change_before_document_mutation()
         if server.memory_state_snapshot().stream_sessions != 1 {
             return Err("malformed change altered the retained stream count".into());
         }
+        if predecessor_parse_token.load(Ordering::Relaxed)
+            || !server
+                .parse_cancel_flags
+                .lock()
+                .get(uri)
+                .is_some_and(|token| Arc::ptr_eq(token, &predecessor_parse_token))
+        {
+            return Err("malformed change rotated or cancelled the parse token".into());
+        }
         if server.test_active_document_readiness(&normalized_uri) != Some(readiness_before) {
             return Err("malformed change altered active-document readiness".into());
         }
@@ -143,6 +159,12 @@ fn dispatch_rejects_malformed_change_before_document_mutation()
         if after != before
             || session.is_cancelled()
             || server.memory_state_snapshot().stream_sessions != 1
+            || predecessor_parse_token.load(Ordering::Relaxed)
+            || !server
+                .parse_cancel_flags
+                .lock()
+                .get(uri)
+                .is_some_and(|token| Arc::ptr_eq(token, &predecessor_parse_token))
             || server.test_active_document_readiness(&normalized_uri) != Some(readiness_before)
         {
             return Err("invalid contentChanges shape altered document side effects".into());
@@ -172,6 +194,9 @@ fn dispatch_rejects_malformed_change_before_document_mutation()
     }
     if !session.is_cancelled() || server.memory_state_snapshot().stream_sessions != 0 {
         return Err("valid recovery did not cancel and evict the retained stream".into());
+    }
+    if !predecessor_parse_token.load(Ordering::Relaxed) {
+        return Err("valid recovery did not cancel the predecessor parse token".into());
     }
     Ok(())
 }
