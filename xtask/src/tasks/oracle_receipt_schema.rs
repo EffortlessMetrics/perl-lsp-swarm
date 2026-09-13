@@ -566,6 +566,51 @@ mod tests {
         Ok(())
     }
 
+    /// Hex case must not decide the verdict. Without this, narrowing the
+    /// comparison back to `==` would pass every other digest test while
+    /// rejecting an upper-case digest that names the same bytes.
+    #[test]
+    fn accepts_an_upper_case_digest_for_the_same_bytes() -> TestResult {
+        let receipt: Value = serde_json::from_str(&current_receipt_text())?;
+        let declared = receipt["source_snapshot"]["content_hash"]
+            .as_str()
+            .ok_or_else(|| color_eyre::eyre::eyre!("content_hash must be a string"))?;
+        let upper =
+            format!("sha256:{}", declared.trim_start_matches("sha256:").to_ascii_uppercase());
+        let tempdir = receipt_workspace(mutated_receipt(|receipt| {
+            receipt["source_snapshot"]["content_hash"] = Value::String(upper);
+        })?)?;
+
+        let (_, violations) = collect(tempdir.path())?;
+
+        assert!(violations.is_empty(), "upper-case hex must verify: {violations:?}");
+        Ok(())
+    }
+
+    /// The two type guards ahead of the digest comparison. The schema would
+    /// normally reject a non-string here, so without these the guards could be
+    /// deleted outright and every other test would still pass.
+    #[test]
+    fn rejects_receipt_whose_source_snapshot_fields_are_not_strings() -> TestResult {
+        for (label, field) in [
+            ("non-string fixture_source", "fixture_source"),
+            ("non-string content_hash", "content_hash"),
+        ] {
+            let tempdir = receipt_workspace(mutated_receipt(|receipt| {
+                receipt["source_snapshot"][field] = serde_json::json!(7);
+            })?)?;
+
+            let (_, violations) = collect(tempdir.path())?;
+
+            assert!(
+                violations.iter().any(|violation| violation
+                    .contains(&format!("source_snapshot.{field} must be a string"))),
+                "{label}: the type guard must report it: {violations:?}"
+            );
+        }
+        Ok(())
+    }
+
     fn current_receipt_text() -> String {
         include_str!("../../../fixtures/oracle_receipt/canonical_receipt.v1.json").to_string()
     }

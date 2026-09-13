@@ -1646,6 +1646,32 @@ mod tests {
         Ok(())
     }
 
+    /// The adapted documents are generated rather than committed, so nothing
+    /// else in the suite would notice if the apply step over them were removed.
+    /// Adaptation stamps `train_edge_contract.v1` on its output, so each landed
+    /// programme manifest must adapt into a document the schema accepts.
+    #[test]
+    fn adapted_manifests_satisfy_the_published_schema() -> TestResult {
+        let root = project_root()?;
+        let schema = schema()?;
+        let adaptations = load_adaptations(&root)?;
+
+        assert!(!adaptations.manifests.is_empty(), "expected at least one adapted manifest");
+        for (bundle, programme_schema) in &adaptations.manifests {
+            let manifest = load_json(&root.join(bundle).join("train.manifest.json"))?;
+            let (adapted, _) = adapt_manifest(&manifest, programme_schema, &adaptations)?;
+
+            let violations = validate_payload_against_schema(
+                &schema,
+                SCHEMA_PATH,
+                &adapted,
+                &format!("{bundle} (adapted)"),
+            )?;
+            assert!(violations.is_empty(), "{bundle}: {violations:?}");
+        }
+        Ok(())
+    }
+
     /// Discriminating controls for #14268.
     ///
     /// The Rust reader is deliberately thorough about unknown keys, missing
