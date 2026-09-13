@@ -233,7 +233,11 @@ def validate_binary_row(
         "identity_state": "exact",
     }:
         raise ManifestError("build receipt binary packet source mismatch")
-    if artifact != {"role": "archive", "digest": None, "candidate_identity": identity["candidate_identity"]}:
+    if set(artifact) - {"role", "digest", "candidate_identity"}:
+        raise ManifestError("build receipt binary packet artifact contains unknown fields")
+    if artifact.get("role") != "archive" or artifact.get("candidate_identity") != identity["candidate_identity"]:
+        raise ManifestError("build receipt binary packet artifact identity mismatch")
+    if artifact.get("digest") is not None:
         raise ManifestError("build receipt binary packet artifact mismatch")
     if packet.get("product") != {
         "name": "perl-lsp",
@@ -244,11 +248,16 @@ def validate_binary_row(
     if packet.get("compatibility") != {
         "expected_product_identity_version": 1,
         "dap_posture": "preview",
-    } or packet.get("limitations") != []:
+    } or packet.get("limitations") != ["artifact_digest_not_externally_bound"]:
         raise ManifestError("build receipt binary packet is not exact-compatible")
 
 
-def validate_receipt(value: dict[str, Any], identity: dict[str, Any]) -> dict[str, dict[str, Any]]:
+def validate_receipt(
+    value: dict[str, Any],
+    identity: dict[str, Any],
+    *,
+    allowed_build_executions: set[str] | None = None,
+) -> dict[str, dict[str, Any]]:
     expected = {
         "schema_version", "status", "input_sha256", "input", "runner",
         "build_execution", "build_commands", "binaries", "claim_boundary",
@@ -260,7 +269,12 @@ def validate_receipt(value: dict[str, Any], identity: dict[str, Any]) -> dict[st
         raise ManifestError("release build receipt input differs from identity")
     if value.get("input_sha256") != digest_bytes(canonical(identity)):
         raise ManifestError("release build receipt input hash mismatch")
-    if value.get("runner") not in {"cargo", "cross"} or value.get("build_execution") != "external_release_workflow":
+    accepted_executions = (
+        {"external_release_workflow"}
+        if allowed_build_executions is None
+        else allowed_build_executions
+    )
+    if value.get("runner") not in {"cargo", "cross"} or value.get("build_execution") not in accepted_executions:
         raise ManifestError("release build receipt execution authority is invalid")
     if not isinstance(value.get("claim_boundary"), str) or not value["claim_boundary"].strip():
         raise ManifestError("release build receipt claim boundary is missing")

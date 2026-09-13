@@ -57,7 +57,7 @@ class PrebuiltPayloadAdapterTests(unittest.TestCase):
         receipt_path = root / "receipt.json"
         binaries = []
         for name, role in (("perllsp", "server"), ("perl-dap", "dap")):
-            packet = {"schema_version": "perl_lsp.binary_identity.v1", "product": {"name": "perl-lsp", "public_repository": "EffortlessMetrics/perl-lsp", "development_repository": "EffortlessMetrics/perl-lsp-swarm"}, "binary": {"executable": name, "cargo_package": name, "role": role, "version": VERSION}, "build": {"source_revision": SOURCE, "source_tree_digest": "b" * 64, "target": target, "profile": "release", "identity_state": "exact"}, "artifact": {"role": "archive", "digest": None, "candidate_identity": "candidate-1"}, "compatibility": {"expected_product_identity_version": 1, "dap_posture": "preview"}, "limitations": []}
+            packet = {"schema_version": "perl_lsp.binary_identity.v1", "product": {"name": "perl-lsp", "public_repository": "EffortlessMetrics/perl-lsp", "development_repository": "EffortlessMetrics/perl-lsp-swarm"}, "binary": {"executable": name, "cargo_package": name, "role": role, "version": VERSION}, "build": {"source_revision": SOURCE, "source_tree_digest": "b" * 64, "target": target, "profile": "release", "identity_state": "exact"}, "artifact": {"role": "archive", "candidate_identity": "candidate-1"}, "compatibility": {"expected_product_identity_version": 1, "dap_posture": "preview"}, "limitations": ["artifact_digest_not_externally_bound"]}
             binaries.append({"role": role, "executable": name, "path_role": f"target/{target}/release/{name}{suffix}", "file_sha256": digest(b"build-" + name.encode()), "packet_sha256": digest(json.dumps(packet, sort_keys=True, separators=(",", ":")).encode() + b"\n"), "packet": packet})
         receipt = {"schema_version": "perl_lsp.release_build_identity_receipt.v1", "status": "pass", "input_sha256": digest(json.dumps(identity, sort_keys=True, separators=(",", ":")).encode() + b"\n"), "input": identity, "runner": "cargo", "build_execution": "external_release_workflow", "build_commands": [["cargo", "build", "--locked", "--release", "--target", target, "-p", "perllsp", "--bin", "perllsp"], ["cargo", "build", "--locked", "--release", "--target", target, "-p", "perl-dap", "--bin", "perl-dap"]], "binaries": binaries, "claim_boundary": "test"}
         receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
@@ -169,6 +169,46 @@ class PrebuiltPayloadAdapterTests(unittest.TestCase):
                 self.assertEqual(adapter.returncode, 0, adapter.stderr)
                 consumer = self.run_consumer(paths, root)
                 self.assertEqual(consumer.returncode, 0, consumer.stderr)
+
+    def test_adapter_accepts_verified_local_adapter_receipt(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            paths = self.fixture(root)
+            receipt = json.loads(Path(paths["receipt"]).read_text(encoding="utf-8"))
+            receipt["build_execution"] = "adapter"
+            Path(paths["receipt"]).write_text(json.dumps(receipt), encoding="utf-8")
+            producer_output, producer = self.produce_evidence(paths, root)
+            self.assertEqual(producer.returncode, 0, producer.stderr)
+            paths["evidence"] = producer_output
+            result = subprocess.run(
+                self.command(paths), cwd=Path(__file__).parents[1],
+                capture_output=True, text=True, check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_consumer_rejects_missing_or_contradictory_packet_limitation(self) -> None:
+        for limitations in (None, [], ["artifact_role_not_proven"], ["artifact_digest_not_externally_bound", "extra"]):
+            with self.subTest(limitations=limitations), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                paths = self.fixture(root)
+                receipt = json.loads(Path(paths["receipt"]).read_text(encoding="utf-8"))
+                for row in receipt["binaries"]:
+                    packet = row["packet"]
+                    if limitations is None:
+                        del packet["limitations"]
+                    else:
+                        packet["limitations"] = limitations
+                    row["packet_sha256"] = digest(
+                        (json.dumps(packet, sort_keys=True, separators=(",", ":")) + "\n").encode()
+                    )
+                Path(paths["receipt"]).write_text(json.dumps(receipt), encoding="utf-8")
+                result = subprocess.run(
+                    self.command(paths), cwd=Path(__file__).parents[1],
+                    capture_output=True, text=True, check=False,
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("packet", result.stderr)
+                self.assertFalse((paths["output"] / "vsix-candidate-payload.json").exists())
 
     def test_stale_archive_after_real_evidence_is_rejected(self) -> None:
         for target in (TARGET, WINDOWS_TARGET):
