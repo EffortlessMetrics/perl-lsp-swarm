@@ -17,6 +17,7 @@ const REQUIRED_DISPOSITIONS: &[(&str, Option<&str>, Option<&str>)] = &[
     ("clippy::same_length_and_capacity", None, None),
     ("clippy::manual_checked_ops", None, None),
     ("clippy::manual_ilog2", Some("deny"), Some("active")),
+    ("clippy::decimal_bitwise_operands", Some("deny"), Some("active")),
     ("clippy::manual_take", None, None),
     ("clippy::manual_pop_if", None, None),
     // The lock-guard invariant is split across two tools with non-overlapping
