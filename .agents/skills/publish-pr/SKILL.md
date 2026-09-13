@@ -50,8 +50,14 @@ For an existing draft, inspect that named condition. When it is complete, re-eva
 Proportionality mirrors `$review-pr`'s carve-out: a candidate whose cumulative diff is
 mechanical — generated regeneration, lint-site collapse, allowlist row removal,
 comment-only edits — may publish a reduced index of three sections: **Claim**,
-**Proof**, and **What this does not establish**. The full index remains the default
-for anything crossing a production seam.
+**Proof**, and **Non-goals**. The full index remains the default for anything crossing
+a production seam.
+
+The order is load-bearing: establish claim and authority before proof; trace the changed
+production path; record focused and affected proof with `pass` / `fail` / `not-run` /
+`NOT_PROVEN`; challenge a realistic wrong implementation with negative, stale,
+failure, recovery, or opposite-direction controls; simplify before publication; bound
+the claim and non-goals; then name risk, rollback, and review locations.
 
 ```markdown
 ## Claim
@@ -62,8 +68,8 @@ for anything crossing a production seam.
 ## Test hardening
 ## Simplification
 ## Deviations
-## What this establishes
-## What this does not establish
+## Claim Boundary
+## Non-goals
 ## Risk and rollback
 ## Review index
 ```

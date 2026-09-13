@@ -19,6 +19,7 @@ WORKFLOW = Path(sys.argv[1])
 REQUIRED_PATHS = {
     "AGENTS.md",
     "CLAUDE.md",
+    ".github/PULL_REQUEST_TEMPLATE.md",
     "docs/agents/**",
     "docs/specs/PLSP-SPEC-0006-pr-queue-disposition.md",
     "docs/specs/README.md",
@@ -34,10 +35,25 @@ REQUIRED_PATHS = {
     "xtask/tests/agent_merge_review_backstop.rs",
     "xtask/tests/agent_remote_wait_attention.rs",
     "xtask/tests/pr_convergence_contract.rs",
+    "xtask/tests/shift_left_publication_contract.rs",
     "scripts/tests/test-agent-flow-control-plane-trigger.sh",
     ".github/workflows/agent-flow-control-plane.yml",
 }
-TARGET = "docs/specs/PLSP-SPEC-0006-pr-queue-disposition.md"
+# Keep in sync with REQUIRED_WORKFLOW_PATHS in
+# xtask/tests/shift_left_publication_contract.rs (plus the trigger-only spec
+# path). The two layers are deliberate — this Python fixture bootstraps the
+# workflow wiring, the Rust test owns the focused contract — but a path added to
+# one and not the other leaves one ratchet green while the other turns red.
+TARGETS = (
+    "docs/specs/PLSP-SPEC-0006-pr-queue-disposition.md",
+    ".github/PULL_REQUEST_TEMPLATE.md",
+    ".agents/skills/**",
+    ".claude/skills/**",
+    "xtask/tests/shift_left_publication_contract.rs",
+)
+REQUIRED_COMMAND = (
+    "cargo test -p xtask --test shift_left_publication_contract --locked"
+)
 EVENTS = ("pull_request", "push")
 
 
@@ -86,7 +102,47 @@ def event_paths(text: str, event: str) -> set[str]:
     return paths
 
 
+def publication_runs(text: str) -> list[str]:
+    """`run:` bodies of steps named for the publication contract.
+
+    Line-based on purpose: this fixture bootstraps the Rust ratchet, so it must
+    not assume the ratchet's own YAML parser is ever reached. Comment lines are
+    skipped rather than accepted, so a command parked in a comment yields no
+    run body at all.
+    """
+    lines = text.splitlines()
+    marker = "- name: Check shift-left publication contract"
+    bodies: list[str] = []
+    for index, line in enumerate(lines):
+        if line.strip() != marker:
+            continue
+        for follower in lines[index + 1 :]:
+            stripped = follower.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            if stripped.startswith("run:"):
+                bodies.append(stripped[len("run:") :].strip())
+            break
+    return bodies
+
+
 def validate(text: str) -> None:
+    # Executable placement, not textual presence: counting raw occurrences
+    # accepts the command inside a YAML comment and accepts a failure-swallowing
+    # wrapper such as `... --locked || true`, either of which stops the Rust
+    # ratchet running while leaving this bootstrap check green.
+    runs = publication_runs(text)
+    assert len(runs) == 1, (
+        "agent-flow workflow must execute the shift-left publication contract "
+        f"in exactly one named step, found {len(runs)}"
+    )
+    assert runs[0] == REQUIRED_COMMAND, (
+        "the publication-contract step must run the ratchet exactly, found "
+        f"{runs[0]!r}"
+    )
+    assert text.count(REQUIRED_COMMAND) == 1, (
+        "agent-flow workflow must execute the shift-left publication contract exactly once"
+    )
     for event in EVENTS:
         paths = event_paths(text, event)
         missing = REQUIRED_PATHS - paths
@@ -113,15 +169,59 @@ source = WORKFLOW.read_text(encoding="utf-8")
 validate(source)
 
 for event in EVENTS:
-    mutated = remove_scoped_path(source, event, TARGET)
-    try:
-        validate(mutated)
-    except AssertionError:
-        pass
-    else:
-        raise AssertionError(
-            f"removing {TARGET!r} only from on.{event}.paths must fail the contract"
-        )
+    for target in TARGETS:
+        mutated = remove_scoped_path(source, event, target)
+        try:
+            validate(mutated)
+        except AssertionError:
+            pass
+        else:
+            raise AssertionError(
+                f"removing {target!r} only from on.{event}.paths must fail the contract"
+            )
+
+without_publication_check = source.replace(REQUIRED_COMMAND, "true", 1)
+assert without_publication_check != source, "workflow-command mutation fixture must apply"
+try:
+    validate(without_publication_check)
+except AssertionError:
+    pass
+else:
+    raise AssertionError("removing the publication-contract command must fail the contract")
+
+# The two bypasses a raw substring count accepts. Both keep the command present
+# in the file while stopping it from enforcing anything.
+commented_out = source.replace(
+    f"run: {REQUIRED_COMMAND}", f"# run: {REQUIRED_COMMAND}", 1
+)
+assert commented_out != source, "comment-out mutation fixture must apply"
+assert commented_out.count(REQUIRED_COMMAND) == 1, (
+    "the comment-out fixture must keep the command textually present"
+)
+try:
+    validate(commented_out)
+except AssertionError:
+    pass
+else:
+    raise AssertionError(
+        "a publication-contract command parked in a comment must fail the contract"
+    )
+
+failure_swallowed = source.replace(
+    f"run: {REQUIRED_COMMAND}", f"run: {REQUIRED_COMMAND} || true", 1
+)
+assert failure_swallowed != source, "failure-swallowing mutation fixture must apply"
+assert failure_swallowed.count(REQUIRED_COMMAND) == 1, (
+    "the failure-swallowing fixture must keep the command textually present"
+)
+try:
+    validate(failure_swallowed)
+except AssertionError:
+    pass
+else:
+    raise AssertionError(
+        "a publication-contract command wrapped to swallow failure must fail the contract"
+    )
 
 print("agent-flow control-plane trigger fixtures passed")
 PY
