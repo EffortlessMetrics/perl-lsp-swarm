@@ -57,6 +57,25 @@ thread_local! {
     /// spurious zero, so any test using this must also prove the instrument is live
     /// on its own thread rather than trusting a bare zero.
     static SCOPE_REBUILD_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+
+    /// Counts how many times [`NativeCriticRegistry::check_unfiltered`] took the
+    /// opposite branch: a caller supplied both pre-computed facts and composition
+    /// consumed them.
+    ///
+    /// The rebuild counter alone cannot carry #7286's whole-evaluation claim,
+    /// because zero rebuilds is also exactly what a route that never reaches
+    /// native composition at all would report -- a disabled engine, a
+    /// configuration that routes to the legacy analyzer, or a caller that stopped
+    /// invoking the stage. The instrument-liveness guard the rebuild tests use
+    /// proves the counter is alive on the reading thread; it says nothing about
+    /// whether the *production* evaluation under test got here. This counter is
+    /// the positive half: a route that composed with the generation-owned facts
+    /// increments it, so `rebuilds == 0 && reuses > 0` distinguishes "shared the
+    /// facts" from "never ran".
+    ///
+    /// Gated, thread-local, and sound for exactly the same reasons as
+    /// [`SCOPE_REBUILD_COUNT`], whose documentation above applies unchanged.
+    static SCOPE_REUSE_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// Current value of the calling thread's native-critic scope/pragma rebuild
@@ -82,6 +101,26 @@ pub fn native_critic_scope_rebuild_count() -> usize {
 #[cfg(any(test, feature = "test-instrumentation"))]
 pub fn reset_native_critic_scope_rebuild_count() {
     SCOPE_REBUILD_COUNT.with(|c| c.set(0));
+}
+
+/// Current value of the calling thread's native-critic fact-reuse counter.
+///
+/// See [`SCOPE_REUSE_COUNT`]. Read alongside
+/// [`native_critic_scope_rebuild_count`]: the rebuild count proves no pass was
+/// re-run, and this proves the stage that would have re-run it actually
+/// executed. Gated exactly as the rebuild counter.
+#[cfg(any(test, feature = "test-instrumentation"))]
+#[must_use]
+pub fn native_critic_scope_reuse_count() -> usize {
+    SCOPE_REUSE_COUNT.with(std::cell::Cell::get)
+}
+
+/// Reset the calling thread's native-critic fact-reuse counter.
+///
+/// Gated exactly as [`native_critic_scope_reuse_count`].
+#[cfg(any(test, feature = "test-instrumentation"))]
+pub fn reset_native_critic_scope_reuse_count() {
+    SCOPE_REUSE_COUNT.with(|c| c.set(0));
 }
 
 const GENERAL: CriticFindingShape = CriticFindingShape::General;
@@ -482,6 +521,8 @@ impl NativeCriticRegistry {
             Option<&PragmaEntries>,
         ) = if ctx.scope_issues.is_some() && ctx.pragma_map.is_some() {
             // Caller already pre-computed; reuse.
+            #[cfg(any(test, feature = "test-instrumentation"))]
+            SCOPE_REUSE_COUNT.with(|c| c.set(c.get().saturating_add(1)));
             (ctx.scope_issues, ctx.pragma_map)
         } else {
             #[cfg(any(test, feature = "test-instrumentation"))]

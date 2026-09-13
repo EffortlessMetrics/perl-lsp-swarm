@@ -748,6 +748,28 @@ pub(super) fn suppresses_semantic_analysis(error: &ParseError) -> bool {
     error.blocks_clean_parse() && !matches!(error, ParseError::Recovered { .. })
 }
 
+/// Whether this error set is the one that makes the provider skip its
+/// scope/lint/semantic stack — the exact condition branched on above.
+///
+/// Proof-only, and exported for one reason: #7286's malformed-document
+/// contracts live in `perl-lsp-rs`, where a fixture asserting "the analysis
+/// still reaches the critic stage on a blocking parse error" is vacuous unless
+/// its source really does produce a blocking error. The v3 parser's recovery
+/// makes that impossible to read off the source text — an unbalanced brace may
+/// come back as `Recovered`, which deliberately does *not* suppress — so the
+/// premise has to be measured, and measured with this predicate rather than a
+/// re-derivation of it that could drift.
+///
+/// Gated exactly like the native-critic counters: compiled for this crate's
+/// tests and for a downstream crate that opts in with `test-instrumentation`,
+/// never in a production build, so proof-only observability does not become
+/// supported public API.
+#[cfg(any(test, feature = "test-instrumentation"))]
+#[must_use]
+pub fn parse_errors_suppress_semantic_analysis(errors: &[ParseError]) -> bool {
+    errors.iter().any(suppresses_semantic_analysis)
+}
+
 fn suppress_unused_imports_for_missing_modules(diagnostics: &mut Vec<Diagnostic>) {
     let missing_module_ranges: Vec<_> = diagnostics
         .iter()

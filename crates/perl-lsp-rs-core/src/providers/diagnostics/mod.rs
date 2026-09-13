@@ -54,6 +54,11 @@ pub mod scope;
 /// AST walker utilities
 mod walker;
 
+/// Proof-only premise predicate for #7286's malformed-document contracts; see
+/// `diagnostics::parse_errors_suppress_semantic_analysis`. Never present in a
+/// production build.
+#[cfg(any(test, feature = "test-instrumentation"))]
+pub use diagnostics::parse_errors_suppress_semantic_analysis;
 pub use diagnostics::{DiagnosticsProvider, build_parse_error_hint};
 pub use document_analysis::DocumentDiagnosticAnalysis;
 pub use heredoc_antipatterns::detect_heredoc_antipatterns;
