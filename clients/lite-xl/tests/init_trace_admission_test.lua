@@ -66,6 +66,9 @@
 --      A3 fails;
 --   4. replace a description with the disclosure alone, dropping its
 --      operational keyword -> A1's meaning-preservation row fails.
+--      Verified on log_file ('.log') and on force_verbosity_off ('even if
+--      a server'), whose operational keyword is deliberately chosen so it
+--      does NOT also occur in that option's disclosure sentence.
 --
 -- No framework: plain asserts, one process, deterministic, exit code
 -- carries the result. Compatible with the Lite XL Lua runtime family (5.4).
@@ -146,7 +149,11 @@ local ADMISSIONS = {
     path = "force_verbosity_off",
     label = "Force Verbosity Off",
     classes = { "protocol payloads", "source code" },
-    operational = "verbosity",
+    -- "verbosity" would be a vacuous operational keyword here: the
+    -- disclosure sentence uses the word too, so a description replaced by
+    -- the disclosure alone would still satisfy it. The override semantics
+    -- ("even if a server ...") appear ONLY in the operational half.
+    operational = "even if a server",
     annotation_classes = { "protocol payloads", "source code" },
   },
 }
