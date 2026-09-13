@@ -71,8 +71,14 @@ An implementer meeting a `contracted` row builds it under the named owner issue 
 
 ### C1. Independent identities
 
-Each identity below is independent. No identity may be substituted for, derived from, or compared
-against another by string equality.
+Each identity below is independent. No identity may be conflated with another, silently stand in for
+another, or be compared against another by string equality. Composing a new identity from named
+inputs is the normal construction path and is required in [C4](#c4-desired-observation-route-plan)
+and [C9](#c9-process-relative-resource-locality); what is forbidden is treating one identity **as**
+another once constructed.
+
+Rule numbers below are stable identifiers allocated in order of addition, not a reading order. A
+rule keeps its number for life so that citations elsewhere stay valid.
 
 | Identity | Canonical owner | Today | Current realisation |
 |---|---|---|---|
@@ -185,6 +191,10 @@ Rules:
   subject is marked stale at observation, not at dispatch.
 - **RL-R09.** `ProductFailure` and `InstrumentFailure` are distinct. An instrument failure leaves
   the product claim `NotProven` and never reports a passing subject.
+- **RL-R44.** Operations on different subjects under one root are independent. An event that
+  supersedes one subject's operation does not supersede another's. Only a change to a generation
+  both operations are bound to — root, configuration, trust, or watch set — supersedes them
+  together, and then it supersedes every operation bound to it, not an arbitrary subset.
 
 ### C4. Desired observation-route plan
 
@@ -233,6 +243,11 @@ Rules:
 - **RL-R20.** `ManualOnly` is a valid availability and support state. It is not automatic reload,
   and completing a manual reload never promotes it to automatic.
 - **RL-R21.** #10770 executes #11227 policy. It never chooses a route locally.
+- **RL-R43.** An observation naming a root, session, or subject the runtime never admitted is
+  discarded. It never creates a subject, route, or operation, and it is never evidence about any
+  existing subject. It is reported to the route owner as a backend fault. A foreign root, a path
+  that escaped its root through a link, and a backend defect all arrive looking like ordinary
+  events, so admission is checked against current membership rather than inferred from the event.
 - **RL-R22.** `ActiveCurrent` means the observation route is current, not that the subject is
   semantically valid. A complete reconciliation may establish that the current subject input is
   invalid; the route is current and the domain status is invalid or action-required. A failed,
@@ -254,6 +269,11 @@ Rules:
 - **RL-R24.** Effects and readiness are owned separately from the swap (#10434, #9858). Publication
   does not itself declare readiness.
 - **RL-R25.** `pending == 0`, a non-empty index, or any pending count is never readiness authority.
+- **RL-R42.** Shutdown arriving after an accepted swap does not un-commit it. The separately owned
+  effects and readiness (#10434, #9858) either reach their own terminal or report `Shutdown`; an
+  effect that did not run is never reported as delivered, and no effect runs against a torn-down
+  runtime. A swap that has not yet committed when shutdown arrives terminates `Shutdown` and
+  publishes nothing.
 
 ### C7. Manual reload request and result
 
@@ -301,9 +321,17 @@ claim about the invalid candidate = none
 ```
 
 - **RL-R29.** Transactional rejection is not last-known-good pretending an invalid input succeeded.
-  The rejected candidate is never described as current accepted configuration.
-- **RL-R30.** Subject owners choose which policy applies. #7893 orders and supersedes operations; it
-  does not impose one invalidity policy on every domain.
+  The rejected candidate is never described as the current accepted generation of any domain.
+- **RL-R41.** Transactional rejection applies only where the invalid bytes are an *attempted
+  replacement layer* whose domain contract defines the prior accepted generation as still valid on
+  its own terms — configuration and profile domains (#6736, #7123) and adapter definitions (#7894).
+  It never applies to a domain's own already-accepted authoritative input. When the authoritative
+  input for a subject becomes invalid, that subject's prior output stops being current under
+  [RL-R06](#c3-reload-operation-state-machine); a domain owner may not opt out of that by declaring
+  its own inputs a candidate layer. Absent that boundary, case B is
+  [RL-F07](#forbidden-architecture-patterns) wearing a transaction's costume.
+- **RL-R30.** Subject owners choose which policy applies within the boundary RL-R41 sets. #7893
+  orders and supersedes operations; it does not impose one invalidity policy on every domain.
 
 ### C9. Process-relative resource locality
 
@@ -328,6 +356,11 @@ claim about the invalid candidate = none
 - **RL-R36.** A missing or instrument-failed host relation is `NotProven`, not a guess.
 - **RL-R37.** #4261 and #9849 prove external topology for support claims; they never become runtime
   authority.
+- **RL-R45.** A locality reclassification for a live subject mints a new access context even when
+  the root generation is unchanged. A mount point that becomes remote, a link that begins resolving
+  off-host, or a host relation that is re-established differently are all reclassifications. Routes
+  installed under the prior context are superseded through [RL-R14](#c4-desired-observation-route-plan)
+  and never reused. Root transition is one trigger for a fresh context, not the only one.
 
 ## Worked sequences
 
@@ -456,9 +489,13 @@ Earned: an honest unavailable or manual state. Not earned: native watching by pa
 
 ### RL-S17 path-like non-file resource
 
-Before: a virtual or non-file scheme whose text resembles a path. Evidence: URI projection (#8198)
-reports non-file. Terminal: the virtual class; no filesystem route. Earned: nothing beyond the
-virtual class. Not earned: locality from path-like text (RL-R31).
+Before: a virtual or non-file scheme whose text resembles a path, and a client hint that supplies a
+plausible on-disk path for it. Evidence: URI projection (#8198) reports non-file. Mutation: #8198
+projects; #11582 classifies; neither may promote the hint. Stale: nothing. Terminal: the virtual
+class; no filesystem route, and the client hint changes no classification. Earned: nothing beyond
+the virtual class. Not earned: a filesystem route obtained by adopting the hint, or locality
+inferred from path-like text (RL-R31). The hint is the realistic pressure here — a projection that
+reports non-file is easy to honor until something offers a usable path.
 
 ### RL-S18 external path authority
 
@@ -473,6 +510,27 @@ Before: `RT1` `ActiveNeedsReconciliation`. Evidence: the reconciliation probe it
 none. Terminal: `InstrumentFailure`; the route stays `ActiveNeedsReconciliation`. Earned: nothing.
 Not earned: `ActiveCurrent`, a `ProductFailure` verdict, or a passing subject claim (RL-R09,
 RL-R22, RL-R36).
+
+### RL-S20 shutdown arrives mid-publication
+
+Before: operation `N` in `Publishing`; the accepted swap to `Wn+1` has committed and effects and
+readiness have not yet run. Evidence: runtime shutdown. Mutation: none may un-commit the swap;
+#10434 and #9858 own what happens to effects and readiness. Stale: nothing already committed.
+Private: nothing may keep running against a torn-down runtime. Terminal: `Shutdown` for the effects
+and readiness that did not run; the swap stands. Earned: the accepted generation is `Wn+1`. Not
+earned: reporting an effect or a readiness transition as delivered when it did not run, or
+rolling back a committed swap to make shutdown look clean (RL-R42). The mirror case — shutdown
+before the swap commits — terminates `Shutdown` and publishes nothing.
+
+### RL-S21 observation for a root the runtime never admitted
+
+Before: roots `Ra` and `Rb` admitted. Evidence: the backend delivers an event whose subject resolves
+under neither — a foreign root, a path that escaped `Ra` through a link, or a backend defect.
+Mutation: none. Stale: nothing. Terminal: the event is discarded and reported to the route owner as
+a backend fault. Earned: an honest fault signal. Not earned: creating a subject or route for the
+unadmitted root, treating the event as evidence about `Ra` because a prefix matched, or letting a
+link-escaped path inherit `Ra`'s authority (RL-R43, RL-R01). Admission is checked against current
+membership; an event never proves its own subject is admitted.
 
 ## Forbidden architecture patterns
 
@@ -515,13 +573,20 @@ registration success marks the route current               RL-R16, RL-R17, RL-F1
 internal watcher handle marks currentness                  RL-R17, RL-F11
 manual reload restarts the server or returns a bool        RL-R28, RL-F14
 partial accepted-map mutation with rollback                RL-R23, RL-F08
-configuration request id used as configuration generation  RL-R01, RL-F09
+configuration request id used as configuration generation  C1 preamble, RL-F09
 same root URI reuses a stale callback                      RL-R19, RL-S05
 stale facts stay current while invalid input rebuilds      RL-R06, RL-F07
 controlled-port pass promoted to installed support         RL-R09, RL-F17
 explicit external path becomes a relative pattern          RL-R12, RL-S07
 backend failure authorises polling                         RL-R15, RL-F15
 successful manual reload promotes automatic support        RL-R27, RL-F19
+source domain declares itself a candidate layer            RL-R41, RL-F07
+committed swap rolled back to make shutdown look clean     RL-R42, RL-S20
+unrun effect reported as delivered on shutdown             RL-R42, RL-R09
+event for an unadmitted root creates a subject             RL-R43, RL-S21
+link-escaped path inherits its apparent root's authority   RL-R43, RL-R01
+one subject's supersession cancels a sibling subject       RL-R44
+locality reclassified but the access context is reused     RL-R45, RL-R14
 ```
 
 ## Single-authority rule
@@ -577,7 +642,7 @@ to conflict is added here with an explicit disposition rather than silently outr
 - [x] Load-bearing identities are separated and their canonical owners named (C1).
 - [x] Route planning, route activation, reload operation, publication, and manual command state
       machines are explicit (C3–C7).
-- [x] Nineteen representative sequences make currentness, supersession, and authority concrete.
+- [x] Twenty-one representative sequences make currentness, supersession, and authority concrete.
 - [x] Remote and locality rules, client-name invariance, and the single-automatic-owner rule are
       explicit (C4, C9).
 - [x] Forbidden duplicate-authority patterns are explicit and mechanically guarded (RL-F*, RL-R38).
