@@ -150,6 +150,32 @@ fn a_hash_holding_a_block_with_statements_is_captured_whole() -> Result<(), Stri
 }
 
 #[test]
+fn a_retained_option_hash_does_not_publish_the_option_keyword() -> Result<(), String> {
+    // `foo => { -as => 'bar' }` is the one hash shape kept rather than skipped,
+    // because `bar` is literally the installed name. Keeping the body also put
+    // `as` in front of every consumer of `UseDecl.args`, and nothing asserted
+    // its absence: an option keyword names no symbol, so publishing it is the
+    // same over-claim in the import direction that the sibling contracts above
+    // refuse for ordinary configuration hashes. `foo` stays deliberately — this
+    // pass does not model the rename (a stated non-goal), so the imprecise name
+    // it carried before the hash was recorded at all is retained.
+    let source = "use Module foo => { -as => 'bar' };\n";
+    assert_clean_parse(source);
+    let file = lower(source);
+
+    let specs = file.compile_environment.import_specs(FileId(0));
+    let spec = import_spec_for(&specs, "Module")
+        .ok_or_else(|| format!("no import spec for Module in {specs:?}"))?;
+
+    assert_eq!(
+        spec.symbols,
+        ImportSymbols::Explicit(vec!["foo".to_string(), "bar".to_string()]),
+        "the installed name survives and the option keyword is not an import"
+    );
+    Ok(())
+}
+
+#[test]
 fn a_leading_hash_argument_is_unchanged() -> Result<(), String> {
     // `use constant { ... }` takes a different, older branch that this change
     // does not touch. The control that pins the two apart.

@@ -1024,10 +1024,17 @@ mod tests {
             .ok_or("expected an ImportSpec for Module")?;
 
         match &spec.symbols {
-            ImportSymbols::Explicit(names) => assert!(
-                names.iter().any(|name| name == "bar"),
-                "the installed name must survive: {names:?}"
-            ),
+            ImportSymbols::Explicit(names) => {
+                assert!(
+                    names.iter().any(|name| name == "bar"),
+                    "the installed name must survive: {names:?}"
+                );
+                // Retaining the body must not publish the option keyword itself.
+                assert!(
+                    !names.iter().any(|name| name == "as"),
+                    "an option keyword is not an imported symbol: {names:?}"
+                );
+            }
             other => return Err(format!("expected an explicit list, got {other:?}").into()),
         }
         Ok(())

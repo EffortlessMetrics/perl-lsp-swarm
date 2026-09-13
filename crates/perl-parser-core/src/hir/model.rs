@@ -2541,9 +2541,18 @@ pub fn opens_per_symbol_options(args: &[String], open: usize) -> bool {
 /// describes the symbol rather than the module. Modelling the rename is out of
 /// scope here, but dropping the body would hide the installed name while
 /// keeping the one that is not installed.
+///
+/// The option *names* inside such a retained hash are still dropped. `-as`
+/// arrives as `-` then `as`, and while the `-` names nothing a reader could
+/// mistake for a symbol, `as` does: keeping it published an option keyword as a
+/// requested import at `ExactAst`/`High`, the same over-claim this function
+/// exists to prevent for ordinary configuration hashes.
 pub fn arguments_outside_configuration_hashes(args: &[String]) -> Vec<&str> {
     let mut kept = Vec::new();
     let mut skip_depth = 0usize;
+    // Brace depth inside a retained per-symbol option hash, so its option names
+    // can be dropped without affecting dashed tokens anywhere else in the list.
+    let mut option_depth = 0usize;
     for (index, arg) in args.iter().enumerate() {
         let trimmed = arg.trim();
         if skip_depth > 0 {
@@ -2554,8 +2563,19 @@ pub fn arguments_outside_configuration_hashes(args: &[String]) -> Vec<&str> {
             }
             continue;
         }
-        if trimmed == "{" && !opens_per_symbol_options(args, index) {
-            skip_depth = 1;
+        if trimmed == "{" {
+            if opens_per_symbol_options(args, index) {
+                option_depth = option_depth.saturating_add(1);
+            } else {
+                skip_depth = 1;
+                continue;
+            }
+        } else if trimmed == "}" {
+            option_depth = option_depth.saturating_sub(1);
+        } else if option_depth > 0
+            && index > 0
+            && args.get(index - 1).map(|previous| previous.trim()) == Some("-")
+        {
             continue;
         }
         kept.push(trimmed);

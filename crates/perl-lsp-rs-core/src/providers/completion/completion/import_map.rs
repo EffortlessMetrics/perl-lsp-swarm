@@ -214,6 +214,9 @@ mod tests {
 
         let symbols = must_some(map.get("Module"));
         assert!(symbols.contains("bar"), "the installed name must survive; got: {symbols:?}");
+        // The filter gates completion, so an option keyword leaking into it would
+        // offer `as` as though the module installed it.
+        assert!(!symbols.contains("as"), "an option keyword is not a symbol; got: {symbols:?}");
     }
 
     /// An affix option carries a fragment, not a name: `ok => { -postfix => '_ok' }`
