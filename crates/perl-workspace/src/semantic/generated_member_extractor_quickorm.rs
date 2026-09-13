@@ -205,6 +205,23 @@ pub(crate) fn extract_dbix_quickorm_column_candidates(
         .collect()
 }
 
+/// Walk the file once, recording import events and collecting candidates.
+///
+/// Arm order is load-bearing, not incidental:
+///
+/// - `Use`/`No` come before everything, because import events are compile-time
+///   and must be recorded wherever they appear;
+/// - the active-builder `ExpressionStatement` arm extracts columns and then
+///   deliberately does **not** descend, so it calls
+///   [`record_nested_import_events`] itself to reach imports inside the builder;
+/// - `Subroutine`/`Method` scan for import events only, keeping a `table` call
+///   in a deferred body from consuming the one-shot builder;
+/// - the catch-all must test for an executable `table` call *before* descending,
+///   so a table call nested in an expression (`my $t = table ...`) still
+///   consumes the builder before a later bare statement can be mistaken for one.
+///
+/// Three of the defects found on this PR were in that ordering rather than in
+/// the predicates it dispatches to.
 fn walk_quickorm(
     node: &Node,
     file_id: FileId,
@@ -434,12 +451,36 @@ fn is_anonymous_builder(node: &Node) -> bool {
     matches!(&node.kind, NodeKind::Subroutine { name: None, .. } | NodeKind::Block { .. })
 }
 
+/// Whether the builder switches package anywhere inside itself.
+///
+/// The DSL names live in the package that imported them, and Perl resolves an
+/// unqualified call against the package in effect where it is compiled. After
+/// `package Inner;` a bare `column ...` compiles to `Inner::column`, which was
+/// never imported:
+///
+/// ```text
+/// $ perl -e 'package Outer; sub column {} sub b { package Inner; column("id") }
+///            eval { Outer::b(); 1 } or print $@'
+/// Undefined subroutine &Inner::column called at -e line 1.
+/// ```
+///
+/// So the builder dies, `table ... => sub {...}` dies with it, and the package
+/// never finishes loading. Nothing the builder declared is a fact — including
+/// columns written before the switch, since the module as a whole fails.
+fn builder_changes_package(node: &Node) -> bool {
+    matches!(node.kind, NodeKind::Package { .. })
+        || node.children().into_iter().any(builder_changes_package)
+}
+
 fn walk_table_builder(
     builder: &Node,
     file_id: FileId,
     ctx: &QuickOrmWalkCtx,
     out: &mut Vec<PendingCandidate>,
 ) {
+    if builder_changes_package(builder) {
+        return;
+    }
     match &builder.kind {
         NodeKind::Subroutine { name: None, body, .. } => walk_table_body(body, file_id, ctx, out),
         NodeKind::Block { .. } => walk_table_body(builder, file_id, ctx, out),
@@ -794,6 +835,80 @@ mod tests {
             !exact.is_suppressed("main"),
             "the admitted single-import cohort must survive the filter"
         );
+    }
+
+    /// A package switch inside the builder makes the whole builder unmodelable.
+    ///
+    /// Confirmed against perl 5.38: after `package Inner;` an unqualified
+    /// `column ...` compiles to `Inner::column`, which the outer package's
+    /// import never created, so the builder dies and the module never loads.
+    /// Columns written before the switch are not facts either — the `table`
+    /// call that would have created them dies with the builder.
+    ///
+    /// Found by CodeRabbit on a4a6830c.
+    #[test]
+    fn a_package_switch_inside_the_table_builder_emits_no_candidates() {
+        for (label, source) in [
+            (
+                "switch between two columns",
+                r#"
+package My::ORM::Table::User;
+use DBIx::QuickORM type => 'table';
+
+table users => sub {
+    column id => sub { primary_key };
+    package Inner;
+    column name => sub { };
+};
+1;
+"#,
+            ),
+            (
+                "switch before every column",
+                r#"
+package My::ORM::Table::User;
+use DBIx::QuickORM type => 'table';
+
+table users => sub {
+    package Inner;
+    column id => sub { primary_key };
+};
+1;
+"#,
+            ),
+            (
+                "switch nested inside a column builder",
+                r#"
+package My::ORM::Table::User;
+use DBIx::QuickORM type => 'table';
+
+table users => sub {
+    column id => sub { package Inner; primary_key };
+};
+1;
+"#,
+            ),
+            (
+                "block-form package inside the builder",
+                r#"
+package My::ORM::Table::User;
+use DBIx::QuickORM type => 'table';
+
+table users => sub {
+    package Inner { 1; }
+    column id => sub { primary_key };
+};
+1;
+"#,
+            ),
+        ] {
+            let facts = candidate_facts(source);
+            assert!(
+                facts.is_empty(),
+                "a package switch in the builder must mint nothing: {label}, got {:?}",
+                facts.iter().map(|f| &f.entity.canonical_name).collect::<Vec<_>>()
+            );
+        }
     }
 
     #[test]
