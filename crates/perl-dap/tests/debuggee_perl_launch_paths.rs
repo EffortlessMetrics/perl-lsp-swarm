@@ -15,7 +15,9 @@ use serial_test::serial;
 use std::env;
 use std::error::Error;
 use std::fs;
-use std::path::{Path, PathBuf};
+#[cfg(windows)]
+use std::path::Path;
+use std::path::PathBuf;
 use std::process::Command;
 use std::time::Duration;
 
@@ -192,20 +194,13 @@ fn all_convenience_launch_paths_reach_the_pinned_interpreter() -> Result<(), Box
     let (ambient, pinned) = if is_native_windows_perl(&source_perl)? {
         let staged_perl = stage_perl_library_layout(&source_perl, controls.path())?;
         let staged_bin = staged_perl.parent().ok_or("staged Perl has no bin directory")?;
-        let source_dir = source_perl.parent().ok_or("Perl path has no parent directory")?;
-        for entry in fs::read_dir(source_dir)? {
-            let entry = entry?;
-            if entry.path().extension().and_then(|extension| extension.to_str()) == Some("dll") {
-                fs::copy(entry.path(), staged_bin.join(entry.file_name()))?;
-            }
-        }
         let ambient = staged_perl;
         let pinned = staged_bin.join("perl5.exe");
         fs::copy(&ambient, &pinned)?;
         (ambient, pinned)
     } else {
-        let ambient = controls.path().join(if cfg!(windows) { "perl.exe" } else { "perl" });
-        let pinned = controls.path().join(if cfg!(windows) { "perl5.exe" } else { "perl5" });
+        let ambient = controls.path().join("perl.exe");
+        let pinned = controls.path().join("perl5.exe");
         fs::copy(&source_perl, &ambient)?;
         fs::copy(&source_perl, &pinned)?;
         (ambient, pinned)
@@ -218,6 +213,17 @@ fn all_convenience_launch_paths_reach_the_pinned_interpreter() -> Result<(), Box
         fs::copy(&source_perl, &pinned)?;
         (ambient, pinned)
     };
+    #[cfg(windows)]
+    {
+        let source_dir = source_perl.parent().ok_or("Perl path has no parent directory")?;
+        let destination_dir = ambient.parent().ok_or("ambient Perl has no parent directory")?;
+        for entry in fs::read_dir(source_dir)? {
+            let entry = entry?;
+            if entry.path().extension().and_then(|extension| extension.to_str()) == Some("dll") {
+                fs::copy(entry.path(), destination_dir.join(entry.file_name()))?;
+            }
+        }
+    }
     // Keep the copied pin's basename within the adapter's strict Perl-name
     // contract while still making it distinct from the ambient copy.
     for binary in [&ambient, &pinned] {
