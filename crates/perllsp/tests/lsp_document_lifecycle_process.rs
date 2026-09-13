@@ -19,6 +19,7 @@ use real_process::RealProcessClient;
 use serde_json::{Value, json};
 use std::path::Path;
 use std::time::{Duration, Instant};
+use url::Url;
 
 const URI: &str = "file:///document-lifecycle.pl";
 const CLOSED_SEMANTIC_TOKENS_MESSAGE: &str = "Document not open: file:///document-lifecycle.pl. textDocument/semanticTokens/full requires the editor to send textDocument/didOpen before requesting tokens; resend after the document is open and synchronized.";
@@ -89,8 +90,10 @@ fn initialize_with_root(client: &mut RealProcessClient, root_uri: Option<&str>) 
     client.notify("initialized", json!({}))
 }
 
-fn file_uri(path: &Path) -> String {
-    format!("file:///{}", path.display().to_string().replace('\\', "/"))
+fn file_uri(path: &Path) -> Result<String> {
+    Url::from_file_path(path)
+        .map(|url| url.to_string())
+        .map_err(|()| anyhow::anyhow!("could not convert path to file URI: {}", path.display()))
 }
 
 fn finish(client: &mut RealProcessClient) -> Result<()> {
@@ -374,12 +377,16 @@ fn parser_diagnostic_classifier_rejects_policy_codes_and_wrong_sources() -> Resu
 #[test]
 fn pull_diagnostics_identity_is_bound_to_exact_process_workspace_facts() -> Result<()> {
     let mut client = RealProcessClient::spawn_exact()?;
-    let root_uri = file_uri(client.workspace_path());
-    let stable_uri = file_uri(&client.workspace_path().join("stable.pl"));
-    let changing_uri = file_uri(&client.workspace_path().join("changing.pl"));
+    let root_uri = file_uri(client.workspace_path())?;
+    let fixture_dir = client.workspace_path().join("fixtures space#percent%25");
+    std::fs::create_dir_all(&fixture_dir)?;
+    let stable_path = fixture_dir.join("stable.pl");
+    let changing_path = fixture_dir.join("changing.pl");
+    let stable_uri = file_uri(&stable_path)?;
+    let changing_uri = file_uri(&changing_path)?;
     let healthy = "package Stable;\nsub stable { return 1; }\n";
-    std::fs::write(client.workspace_path().join("stable.pl"), healthy)?;
-    std::fs::write(client.workspace_path().join("changing.pl"), healthy)?;
+    std::fs::write(&stable_path, healthy)?;
+    std::fs::write(&changing_path, healthy)?;
     initialize_with_root(&mut client, Some(&root_uri))?;
 
     did_open_uri(&mut client, &stable_uri, 1, healthy)?;
@@ -482,12 +489,20 @@ fn pull_diagnostics_identity_is_bound_to_exact_process_workspace_facts() -> Resu
         .and_then(Value::as_str)
         .context("changing post-edit diagnostic report omitted resultId")?;
     ensure!(changing_after_edit_id != changing_id);
+    let changing_items = changing_after_edit
+        .get("items")
+        .and_then(Value::as_array)
+        .context("edited source report omitted items")?;
+    let mut has_parser_diagnostic = false;
+    for item in changing_items {
+        if is_parser_diagnostic(item)? {
+            has_parser_diagnostic = true;
+            break;
+        }
+    }
     ensure!(
-        changing_after_edit
-            .get("items")
-            .and_then(Value::as_array)
-            .is_some_and(|items| !items.is_empty()),
-        "edited source must publish diagnostics: {changing_after_edit}"
+        has_parser_diagnostic,
+        "edited source must publish a parser diagnostic: {changing_after_edit}"
     );
 
     finish(&mut client)
