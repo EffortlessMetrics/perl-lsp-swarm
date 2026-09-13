@@ -16,10 +16,10 @@ For an existing draft, inspect the named condition. Once complete, recheck the e
 
 ## PR review index
 
-A mechanical candidate — generated regeneration, lint-site collapse, allowlist row
-removal, or comment-only edits — may publish a reduced index of **Claim**, **Proof**,
-and **Non-goals**. The full index remains the default for anything crossing a
-production seam.
+Proportionality mirrors `review-pr`'s carve-out: a mechanical candidate — generated
+regeneration, lint-site collapse, allowlist row removal, or comment-only edits — may
+publish a reduced index of **Claim**, **Proof**, and **Non-goals**. The full index
+remains the default for anything crossing a production seam.
 
 The order is load-bearing: establish claim and authority before proof; trace the changed
 production path; record focused and affected proof with `pass` / `fail` / `not-run` /
