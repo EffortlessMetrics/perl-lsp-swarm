@@ -302,11 +302,15 @@ fn resolve_valid_items_retain_documentation_and_edits() -> Result<()> {
     let completion = client.request(
         json!(703),
         "completionItem/resolve",
-        json!({"label": "print", "kind": 3}),
+        json!({"label": "print", "kind": 3, "extension": {"opaque": [1, "β"]}}),
         timeout(),
     )?;
     assert_response_id(&completion, &json!(703))?;
     ensure!(completion.get("error").is_none(), "valid completion failed: {completion}");
+    ensure!(
+        completion.pointer("/result/extension") == Some(&json!({"opaque": [1, "β"]})),
+        "completion lost extension data: {completion}"
+    );
     ensure!(
         completion.pointer("/result/label") == Some(&json!("print")),
         "completion changed: {completion}"
@@ -330,12 +334,17 @@ fn resolve_valid_items_retain_documentation_and_edits() -> Result<()> {
         "codeAction/resolve",
         json!({
             "title": "Add use strict", "kind": "quickfix",
-            "data": {"uri": uri, "pragma": "use strict;"}
+            "data": {"uri": uri, "pragma": "use strict;"},
+            "extension": {"opaque": [1, "β"]}
         }),
         timeout(),
     )?;
     assert_response_id(&action, &json!("703"))?;
     ensure!(action.get("error").is_none(), "valid code action failed: {action}");
+    ensure!(
+        action.pointer("/result/extension") == Some(&json!({"opaque": [1, "β"]})),
+        "code action lost extension data: {action}"
+    );
     let edits = action
         .pointer("/result/edit/changes")
         .and_then(|changes| changes.get(uri))
@@ -351,6 +360,45 @@ fn resolve_valid_items_retain_documentation_and_edits() -> Result<()> {
         "wrong resolved pragma edit: {action}"
     );
     shutdown_and_exit(&mut client, json!("shutdown-resolve-valid"))
+}
+
+#[test]
+fn resolve_completion_rejects_invalid_supplied_shapes() -> Result<()> {
+    require_resolve_shape_errors("completionItem/resolve", "label")
+}
+
+#[test]
+fn resolve_code_action_rejects_invalid_supplied_shapes() -> Result<()> {
+    require_resolve_shape_errors("codeAction/resolve", "title")
+}
+
+fn require_resolve_shape_errors(method: &str, required_field: &str) -> Result<()> {
+    let mut client = RealProcessClient::spawn_exact()?;
+    assert_public_candidate(&client)?;
+    initialize_and_notify(&mut client, json!("initialize-shapes"))?;
+    let malformed =
+        [json!([]), json!({}), json!({(required_field): 7}), json!({(required_field): null})];
+    let mut unexpected = Vec::new();
+    for (index, params) in malformed.into_iter().enumerate() {
+        let id = json!(format!("invalid-{index}"));
+        let response = client.request(id.clone(), method, params, timeout())?;
+        assert_response_id(&response, &id)?;
+        if response.get("result").is_some()
+            || response.pointer("/error/code") != Some(&json!(-32602))
+            || response.pointer("/error/message").and_then(Value::as_str).is_none_or(str::is_empty)
+        {
+            unexpected.push(response);
+        }
+    }
+    // Empty strings satisfy the required string field; extension data is opaque.
+    let valid = json!({(required_field): "", "extension": {"opaque": [1, "β"]}});
+    let response = client.request(json!("valid-after-errors"), method, valid.clone(), timeout())?;
+    assert_response_id(&response, &json!("valid-after-errors"))?;
+    ensure!(response.get("error").is_none(), "valid recovery failed: {response}");
+    ensure!(response.get("result") == Some(&valid), "valid item was altered: {response}");
+    shutdown_and_exit(&mut client, json!("shutdown-shapes"))?;
+    ensure!(unexpected.is_empty(), "invalid {method} shapes returned success: {unexpected:?}");
+    Ok(())
 }
 
 #[test]

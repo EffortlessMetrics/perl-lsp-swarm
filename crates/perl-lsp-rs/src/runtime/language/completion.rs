@@ -2387,7 +2387,13 @@ impl LspServer {
         };
 
         // Extract the label and kind upfront (clone to avoid borrow issues)
-        let label = item.get("label").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let label = item
+            .get("label")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                crate::protocol::invalid_params("Missing or invalid completion item label")
+            })?
+            .to_string();
         let kind = item.get("kind").and_then(|v| v.as_u64()).unwrap_or(0);
         let has_doc = item.get("documentation").is_some();
         let label_details_support = self.client_capabilities.lock().label_details_support;

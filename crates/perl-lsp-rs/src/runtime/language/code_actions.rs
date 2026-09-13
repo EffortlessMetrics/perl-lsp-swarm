@@ -1208,6 +1208,11 @@ impl LspServer {
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
         if let Some(mut action) = params {
+            if action.get("title").and_then(Value::as_str).is_none() {
+                return Err(crate::protocol::invalid_params(
+                    "Missing or invalid code action title",
+                ));
+            }
             // The action should already have minimal information
             // We now need to compute the actual edits
 
