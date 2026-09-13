@@ -1,0 +1,9 @@
+project: vscode
+component: Editor behavior
+kind: Fixed
+body: Run Health Check now reports the current language-server startup and recovery state, revalidates setup across one bounded lifecycle replacement, and labels explicit-path checks as setup diagnostics.
+time: 2026-09-08T00:00:00Z
+custom:
+  PR: 15146
+  Slug: health-check-runtime-state
+  Breaking: "no"

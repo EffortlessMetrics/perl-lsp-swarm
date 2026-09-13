@@ -29,8 +29,10 @@ use serde::{Deserialize, Serialize};
 
 /// Identifier for a debuggee thread.
 ///
-/// Perl's stock debugger is single-threaded, so this is almost always `1`, but
-/// the model keeps it explicit so multi-interpreter peers can distinguish them.
+/// The adapter currently exposes one synthetic main execution context per
+/// active session; runtime context discovery is not proven, so no claim about
+/// Perl's interpreter or thread model is implied. The model keeps the id
+/// explicit so multi-context peers can distinguish contexts later (#8294).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct ThreadId(pub i64);

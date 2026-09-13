@@ -23,6 +23,9 @@ guessed.
       surface; the action map is keyed by conflict key and asserted duplicate-free.
 - [x] A viable canonical candidate is RESUME/REPAIR/RESTACK/REVIEW-ed before any
       duplicate START; two candidates are RECONCILE, ranked by nothing.
+- [x] A cross-revision, dirty, or unestablished C02 probe marks tree-dependent
+      actions `NOT_PROVEN`, while candidate-only actions remain classified from
+      their independently observed collaboration facts.
 - [x] Controllers/fan-in/gates/claims bound as implementation get STOP; C02
       blocked nodes never START for absence of a PR; fan-in START requires child
       receipts (unobservable → NOT_PROVEN).

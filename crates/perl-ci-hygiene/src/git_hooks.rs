@@ -497,6 +497,25 @@ mod tests {
     }
 
     #[test]
+    fn pre_commit_never_publishes_the_non_rust_inventory_reference() {
+        // #14688: the tracked inventory Markdown is a default-branch
+        // publication, not branch merge authority. A hook that regenerates
+        // and stages it makes every independently based branch write the
+        // same whole-repository snapshot, which is exactly the conflict
+        // topology `xtask/tests/non_rust_inventory_conflict_topology.rs`
+        // rejects end to end.
+        let hook = pre_commit_hook_script();
+        assert!(
+            !hook.contains("non-rust inventory --write"),
+            "generated pre-commit hook must not publish the non-Rust inventory reference"
+        );
+        assert!(
+            !hook.contains("docs/policy/NON_RUST_INVENTORY.md"),
+            "generated pre-commit hook must not stage the published inventory reference"
+        );
+    }
+
+    #[test]
     fn pre_commit_formats_staged_diff_before_the_gate() -> Result<()> {
         // Ordering is the hook's contract: format the staged diff, then let the
         // gate judge the result. Reversed, the gate would reject an index the

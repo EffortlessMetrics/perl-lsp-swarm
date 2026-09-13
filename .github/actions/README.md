@@ -7,8 +7,10 @@ This directory contains reusable composite actions for perl-lsp CI workflows.
 ### `setup-vscode-toolchain/`
 
 Sets up the extension's Node 26/npm 11 authority, verifies it before
-installation, runs `npm ci` from `vscode-extension/package-lock.json`, and can
-run the lockfile-resolved publisher CLI contract.
+installation, runs `npm ci` from `vscode-extension/package-lock.json` by
+default, and can run the lockfile-resolved publisher CLI contract. Workflows
+that only need the dependency-free authority check may set
+`install-dependencies: 'false'`; Node/npm pinning and `npm run doctor` still run.
 
 **Usage:**
 
@@ -17,6 +19,11 @@ run the lockfile-resolved publisher CLI contract.
   with:
     verify-publisher-tools: 'true' # publishing jobs only
 ```
+
+The prebuilt payload adapter uses `install-dependencies: 'false'` because its
+Python and built-in Node checks do not consume the extension's installed
+dependency tree. Callers retain the default `true` when later steps need
+`node_modules`.
 
 The action is the single workflow-owned setup path for extension CI, smoke,
 publishing preparation, and published-extension smoke. Publisher commands use
@@ -115,6 +122,14 @@ Runs standard Rust format, lint, and test checks.
 ### `upload-receipt/`
 
 Uploads gate receipts with GitHub step summary generation.
+
+The step summary is rendered by `upload-receipt/render_summary.py`, which reads
+the receipt contract in `.ci/receipt.schema.json` (produced by
+`xtask/src/tasks/gates.rs`): gate statuses are `pass` / `fail` / `skip` /
+`timeout` / `error`, and `fail` / `timeout` / `error` all block. An absent,
+malformed or empty gate set — or any status outside that vocabulary — renders
+as `NOT_PROVEN`, never as success. `upload-receipt/test_render_summary.py`
+holds that contract and runs in the `Composite Action Contracts` workflow.
 
 **Usage:**
 ```yaml
