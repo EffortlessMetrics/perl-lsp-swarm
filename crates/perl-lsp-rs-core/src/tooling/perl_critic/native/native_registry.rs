@@ -23,6 +23,106 @@ use super::{
     UnusedLexicalVariableRule, UnusedParameterRule,
 };
 
+#[cfg(any(test, feature = "test-instrumentation"))]
+thread_local! {
+    /// Counts how many times [`NativeCriticRegistry::check_unfiltered`] has had to
+    /// rebuild the pragma map and scope analysis for itself because its caller did
+    /// not supply them.
+    ///
+    /// #7286's observability contract asks for a traversal counter over the passes
+    /// a generation is supposed to own, so that "one accepted generation, one
+    /// construction" is provable across the *whole* diagnostic evaluation rather
+    /// than only inside `DocumentDiagnosticAnalysis`. This is that counter for the
+    /// native critic composition step, which is a separate evaluation stage from
+    /// the core provider and would otherwise be an invisible second rebuild.
+    ///
+    /// Always compiled rather than `#[cfg(test)]`, because the production callers
+    /// that must be observed live in `perl-lsp-rs` -- a different crate, where this
+    /// crate's `cfg(test)` is inactive. The cost is one thread-local increment on a
+    /// branch that is already about to perform two full AST walks.
+    ///
+    /// **Thread-local, deliberately.** A process-global counter is unusable as
+    /// proof here: the package's contracted test form runs with
+    /// `--test-threads=2`, so any other test that evaluates diagnostics
+    /// concurrently increments a shared counter between a reset and its read, and
+    /// the assertion fails for reasons that have nothing to do with the code under
+    /// test. Scoping the count to the calling thread measures exactly the
+    /// evaluation the test drives.
+    ///
+    /// This is sound for the routes it exists to observe because they are
+    /// synchronous: `publish_diagnostics` and the `textDocument/diagnostic` handler
+    /// run critic composition on the calling thread, so a rebuild triggered by the
+    /// code under test is always counted on the thread that reads it. A caller that
+    /// moved critic composition onto a worker thread would under-count and read a
+    /// spurious zero, so any test using this must also prove the instrument is live
+    /// on its own thread rather than trusting a bare zero.
+    static SCOPE_REBUILD_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+
+    /// Counts how many times [`NativeCriticRegistry::check_unfiltered`] took the
+    /// opposite branch: a caller supplied both pre-computed facts and composition
+    /// consumed them.
+    ///
+    /// The rebuild counter alone cannot carry #7286's whole-evaluation claim,
+    /// because zero rebuilds is also exactly what a route that never reaches
+    /// native composition at all would report -- a disabled engine, a
+    /// configuration that routes to the legacy analyzer, or a caller that stopped
+    /// invoking the stage. The instrument-liveness guard the rebuild tests use
+    /// proves the counter is alive on the reading thread; it says nothing about
+    /// whether the *production* evaluation under test got here. This counter is
+    /// the positive half: a route that composed with the generation-owned facts
+    /// increments it, so `rebuilds == 0 && reuses > 0` distinguishes "shared the
+    /// facts" from "never ran".
+    ///
+    /// Gated, thread-local, and sound for exactly the same reasons as
+    /// [`SCOPE_REBUILD_COUNT`], whose documentation above applies unchanged.
+    static SCOPE_REUSE_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Current value of the calling thread's native-critic scope/pragma rebuild
+/// counter.
+///
+/// See [`SCOPE_REBUILD_COUNT`]. Instrumentation, not behavior: nothing in
+/// production reads it, so it is compiled only for this crate's own tests and
+/// for a downstream crate that opts in with the `test-instrumentation`
+/// feature (`perl-lsp-rs` does so through its dev-dependencies). A production
+/// build carries neither these functions nor the counter, so proof-only
+/// observability never becomes supported public API -- the same gating the
+/// workspace already uses for `perl-dap`'s `test-helpers` and `perl-lsp-rs`'s
+/// `test-fallbacks`.
+#[cfg(any(test, feature = "test-instrumentation"))]
+#[must_use]
+pub fn native_critic_scope_rebuild_count() -> usize {
+    SCOPE_REBUILD_COUNT.with(std::cell::Cell::get)
+}
+
+/// Reset the calling thread's native-critic scope/pragma rebuild counter.
+///
+/// Gated exactly as [`native_critic_scope_rebuild_count`].
+#[cfg(any(test, feature = "test-instrumentation"))]
+pub fn reset_native_critic_scope_rebuild_count() {
+    SCOPE_REBUILD_COUNT.with(|c| c.set(0));
+}
+
+/// Current value of the calling thread's native-critic fact-reuse counter.
+///
+/// See [`SCOPE_REUSE_COUNT`]. Read alongside
+/// [`native_critic_scope_rebuild_count`]: the rebuild count proves no pass was
+/// re-run, and this proves the stage that would have re-run it actually
+/// executed. Gated exactly as the rebuild counter.
+#[cfg(any(test, feature = "test-instrumentation"))]
+#[must_use]
+pub fn native_critic_scope_reuse_count() -> usize {
+    SCOPE_REUSE_COUNT.with(std::cell::Cell::get)
+}
+
+/// Reset the calling thread's native-critic fact-reuse counter.
+///
+/// Gated exactly as [`native_critic_scope_reuse_count`].
+#[cfg(any(test, feature = "test-instrumentation"))]
+pub fn reset_native_critic_scope_reuse_count() {
+    SCOPE_REUSE_COUNT.with(|c| c.set(0));
+}
+
 const GENERAL: CriticFindingShape = CriticFindingShape::General;
 
 // Producer-owned logical dispositions. Combined native rules appear once per
@@ -421,8 +521,12 @@ impl NativeCriticRegistry {
             Option<&PragmaEntries>,
         ) = if ctx.scope_issues.is_some() && ctx.pragma_map.is_some() {
             // Caller already pre-computed; reuse.
+            #[cfg(any(test, feature = "test-instrumentation"))]
+            SCOPE_REUSE_COUNT.with(|c| c.set(c.get().saturating_add(1)));
             (ctx.scope_issues, ctx.pragma_map)
         } else {
+            #[cfg(any(test, feature = "test-instrumentation"))]
+            SCOPE_REBUILD_COUNT.with(|c| c.set(c.get().saturating_add(1)));
             pragma_map_owned = perl_pragma::PragmaTracker::build(ctx.ast);
             scope_issues_owned = perl_semantic_analyzer::scope_analyzer::ScopeAnalyzer::new()
                 .analyze(ctx.ast, ctx.source, &pragma_map_owned);

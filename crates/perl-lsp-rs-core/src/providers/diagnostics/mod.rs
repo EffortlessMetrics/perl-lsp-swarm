@@ -31,6 +31,8 @@ mod dedup;
 mod diagnostics;
 /// Diagnostics shadow compare and cutover paths for undefined-symbol diagnostics.
 pub mod diagnostics_shadow;
+/// Generation-owned, transport-neutral document diagnostic analysis (#7286).
+pub mod document_analysis;
 /// Dynamic boundary acceptance test fixtures (Req 23.1–23.8).
 #[cfg(test)]
 mod dynamic_boundary_acceptance;
@@ -52,7 +54,13 @@ pub mod scope;
 /// AST walker utilities
 mod walker;
 
+/// Proof-only premise predicate for #7286's malformed-document contracts; see
+/// `diagnostics::parse_errors_suppress_semantic_analysis`. Never present in a
+/// production build.
+#[cfg(any(test, feature = "test-instrumentation"))]
+pub use diagnostics::parse_errors_suppress_semantic_analysis;
 pub use diagnostics::{DiagnosticsProvider, build_parse_error_hint};
+pub use document_analysis::DocumentDiagnosticAnalysis;
 pub use heredoc_antipatterns::detect_heredoc_antipatterns;
 pub use internal_types::{
     Diagnostic, DiagnosticTag, RelatedInformation, take_critic_overlap_observations,
