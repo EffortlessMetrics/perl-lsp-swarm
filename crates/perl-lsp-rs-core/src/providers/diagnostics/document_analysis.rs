@@ -415,6 +415,80 @@ mod tests {
     /// afterwards. This is the pairing that makes an eager constructor a
     /// regression rather than a wash: `ParsedSnapshot` hands the analysis over
     /// unconditionally, so "this consumer will not read it" has to be free.
+    /// #7286 configuration isolation: the folder-owned project version must
+    /// still change PL900 output while the shared analysis is reused and never
+    /// rebuilt.
+    ///
+    /// This is the seam where a caching change could plausibly do real damage.
+    /// The analysis holds only source/AST-derived facts; `project_version` is
+    /// *configuration*. If configuration ever leaked into the shared facts, two
+    /// folders with the same file and different `[perl].version` would answer
+    /// from whichever evaluation warmed the cell first — a wrong diagnostic, not
+    /// a slow one. So this asserts both halves at once: varying configuration
+    /// varies the output, and the facts underneath are the same ones, built once.
+    ///
+    /// `use builtin 'inf'` with no `use VERSION` is the fixture because `inf`
+    /// arrived in v5.40, so the project fallback is what decides PL900.
+    #[test]
+    fn project_version_varies_output_while_the_shared_facts_are_reused() {
+        let source = "use builtin 'inf'; builtin::inf();\n";
+        let ast = parse(source);
+        let analysis = DocumentDiagnosticAnalysis::build(&ast, source);
+        let provider = super::super::DiagnosticsProvider::new();
+
+        let pl900 = |diags: &[crate::providers::diagnostics::Diagnostic]| -> usize {
+            diags.iter().filter(|d| d.code.as_deref() == Some("PL900")).count()
+        };
+
+        let below = provider.get_diagnostics_with_path_with_analysis(
+            &ast,
+            &[],
+            source,
+            None,
+            &[],
+            None,
+            Some("5.38"),
+            Some(&analysis),
+        );
+        // Pin the exact fact slice the first evaluation used.
+        let pragma_ptr = analysis.pragma_map().as_ptr();
+
+        let at_or_above = provider.get_diagnostics_with_path_with_analysis(
+            &ast,
+            &[],
+            source,
+            None,
+            &[],
+            None,
+            Some("5.40"),
+            Some(&analysis),
+        );
+
+        assert!(
+            pl900(&below) > 0,
+            "fixture invariant: a 5.38 project must report PL900 for `builtin 'inf'`, or the \
+             comparison below is vacuous: {below:?}"
+        );
+        assert_eq!(
+            pl900(&at_or_above),
+            0,
+            "a 5.40 project must accept `builtin 'inf'`; configuration must still decide PL900 \
+             even though both evaluations shared one analysis: {at_or_above:?}"
+        );
+
+        // The second evaluation must have read the same facts, not rebuilt them:
+        // a rebuild would hand back a different allocation.
+        assert!(
+            std::ptr::eq(analysis.pragma_map().as_ptr(), pragma_ptr),
+            "both evaluations must consume one pragma timeline; a new allocation means \
+             configuration variation forced a source-fact rebuild"
+        );
+        assert!(
+            !analysis.pragma_map().is_empty(),
+            "fixture must produce a non-empty pragma map, or the identity check is vacuous"
+        );
+    }
+
     /// #7286: the *provider* must reject an analysis built from a different
     /// tree — not merely `matches` in isolation.
     ///
