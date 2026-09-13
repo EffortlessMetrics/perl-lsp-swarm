@@ -1237,6 +1237,190 @@ fn run_later_source_breakpoint_row(
     session.require_natural_exit(budget)
 }
 
+/// Prove that a plain breakpoint admitted before launch is installed by the
+/// engine at the fixture's first executable line.  The stop must carry the
+/// original adapter ID and the real top frame; requested line numbers alone
+/// are not accepted as evidence.
+fn run_initial_source_breakpoint_row(
+    session: &mut ExactSession,
+    perl: &DebuggeePerl,
+    fixture: &Path,
+    budget: Duration,
+) -> Result<()> {
+    run_initialize_handshake(session, budget)?;
+    let pending = session.request(
+        "setBreakpoints",
+        Some(json!({
+            "source": { "path": fixture.display().to_string() },
+            "breakpoints": [{ "line": 2 }],
+        })),
+        budget,
+    )?;
+    if !pending.success {
+        return Err(anyhow!("initial pre-launch setBreakpoints failed: {:?}", pending.message));
+    }
+    let pending_body = pending.body.ok_or_else(|| anyhow!("initial setBreakpoints had no body"))?;
+    let pending_breakpoint = pending_body
+        .get("breakpoints")
+        .and_then(Value::as_array)
+        .and_then(|items| items.first())
+        .ok_or_else(|| anyhow!("initial setBreakpoints returned no breakpoint: {pending_body}"))?;
+    if pending_breakpoint.get("verified").and_then(Value::as_bool) != Some(false) {
+        return Err(anyhow!("initial breakpoint was verified before launch: {pending_breakpoint}"));
+    }
+    let breakpoint_id = pending_breakpoint
+        .get("id")
+        .and_then(Value::as_i64)
+        .ok_or_else(|| anyhow!("initial breakpoint had no numeric ID: {pending_breakpoint}"))?;
+
+    let launch = session.request(
+        "launch",
+        Some(json!({
+            "program": fixture.display().to_string(),
+            "perlPath": perl.binary.display().to_string(),
+            "stopOnEntry": false,
+        })),
+        budget,
+    )?;
+    if !launch.success {
+        return Err(anyhow!("initial breakpoint launch failed: {:?}", launch.message));
+    }
+    let changed = session.wait_for_event("breakpoint", budget)?;
+    let changed_body =
+        changed.body.ok_or_else(|| anyhow!("initial breakpoint event had no body"))?;
+    let changed_bp = changed_body
+        .get("breakpoint")
+        .ok_or_else(|| anyhow!("initial breakpoint event had no breakpoint: {changed_body}"))?;
+    if changed_body.get("reason").and_then(Value::as_str) != Some("changed")
+        || changed_bp.get("id").and_then(Value::as_i64) != Some(breakpoint_id)
+        || changed_bp.get("verified").and_then(Value::as_bool) != Some(true)
+    {
+        return Err(anyhow!(
+            "initial breakpoint was not engine-verified with its original ID: {changed_body}"
+        ));
+    }
+
+    let configured = session.request("configurationDone", None, budget)?;
+    if !configured.success {
+        return Err(anyhow!("initial configurationDone failed: {:?}", configured.message));
+    }
+    let stopped = session.wait_for_event("stopped", budget)?;
+    let stopped_body =
+        stopped.body.ok_or_else(|| anyhow!("initial breakpoint stop had no body"))?;
+    if stopped_body.get("reason").and_then(Value::as_str) != Some("breakpoint") {
+        return Err(anyhow!("initial executable stop had wrong reason: {stopped_body}"));
+    }
+    let hit_ids =
+        stopped_body.get("hitBreakpointIds").and_then(Value::as_array).ok_or_else(|| {
+            anyhow!("initial breakpoint stop had no hitBreakpointIds: {stopped_body}")
+        })?;
+    if hit_ids.len() != 1 || hit_ids.first().and_then(Value::as_i64) != Some(breakpoint_id) {
+        return Err(anyhow!("initial stop identified unexpected breakpoint set: {hit_ids:?}"));
+    }
+    let thread_id = stopped_body
+        .get("threadId")
+        .and_then(Value::as_i64)
+        .ok_or_else(|| anyhow!("initial breakpoint stop had no threadId: {stopped_body}"))?;
+    let stack = session.request("stackTrace", Some(json!({ "threadId": thread_id })), budget)?;
+    if !stack.success {
+        return Err(anyhow!("initial stackTrace failed: {:?}", stack.message));
+    }
+    let stack_body = stack.body.ok_or_else(|| anyhow!("initial stackTrace had no body"))?;
+    let frame = stack_body
+        .get("stackFrames")
+        .and_then(Value::as_array)
+        .and_then(|frames| frames.first())
+        .ok_or_else(|| anyhow!("initial stackTrace returned no frames: {stack_body}"))?;
+    let frame_path = frame
+        .get("source")
+        .and_then(|source| source.get("path"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("initial top frame had no source path: {frame}"))?;
+    if Path::new(frame_path) != fixture {
+        return Err(anyhow!("initial top frame source {frame_path:?} did not match {fixture:?}"));
+    }
+    if frame.get("line").and_then(Value::as_i64) != Some(2) {
+        return Err(anyhow!("initial top frame was not line 2: {frame}"));
+    }
+
+    let continued = session.request("continue", Some(json!({ "threadId": thread_id })), budget)?;
+    if !continued.success {
+        return Err(anyhow!("continuing initial breakpoint failed: {:?}", continued.message));
+    }
+    session.wait_for_event("terminated", budget)?;
+    session.require_natural_exit(budget)
+}
+
+/// With no breakpoint and stopOnEntry disabled, configurationDone must run
+/// the fixture to completion without inventing a stopped event.
+fn run_no_breakpoint_natural_exit_row(
+    session: &mut ExactSession,
+    perl: &DebuggeePerl,
+    fixture: &Path,
+    budget: Duration,
+) -> Result<()> {
+    run_initialize_handshake(session, budget)?;
+    let launch = session.request(
+        "launch",
+        Some(json!({
+            "program": fixture.display().to_string(),
+            "perlPath": perl.binary.display().to_string(),
+            "stopOnEntry": false,
+        })),
+        budget,
+    )?;
+    if !launch.success {
+        return Err(anyhow!("no-breakpoint launch failed: {:?}", launch.message));
+    }
+    let configured = session.request("configurationDone", None, budget)?;
+    if !configured.success {
+        return Err(anyhow!("no-breakpoint configurationDone failed: {:?}", configured.message));
+    }
+    session.wait_for_event("terminated", budget)?;
+    if session.pending_events.iter().any(|(event, _)| event == "stopped") {
+        return Err(anyhow!("stopOnEntry=false no-breakpoint row emitted a stopped event"));
+    }
+    session.require_natural_exit(budget)?;
+    if session.pending_events.iter().any(|(event, _)| event == "stopped") {
+        return Err(anyhow!(
+            "stopOnEntry=false no-breakpoint row emitted a stopped event while draining exit"
+        ));
+    }
+    Ok(())
+}
+
+#[test]
+fn exact_session_initial_source_breakpoint_before_launch_is_verified() -> Result<()> {
+    let binary = resolve_matrix_binary()?;
+    let Some(perl) = debuggee_perl_or_typed_skip(
+        "exact_session_initial_source_breakpoint_before_launch_is_verified",
+    ) else {
+        return Ok(());
+    };
+    let (guard, fixture) = write_fixture()?;
+    let mut session = ExactSession::spawn(&binary)?;
+    let outcome = run_initial_source_breakpoint_row(&mut session, perl, &fixture, LAUNCH_TIMEOUT);
+    let teardown = session.teardown();
+    drop(guard);
+    outcome.and(teardown)
+}
+
+#[test]
+fn exact_session_no_breakpoint_stop_on_entry_false_exits_naturally() -> Result<()> {
+    let binary = resolve_matrix_binary()?;
+    let Some(perl) = debuggee_perl_or_typed_skip(
+        "exact_session_no_breakpoint_stop_on_entry_false_exits_naturally",
+    ) else {
+        return Ok(());
+    };
+    let (guard, fixture) = write_fixture()?;
+    let mut session = ExactSession::spawn(&binary)?;
+    let outcome = run_no_breakpoint_natural_exit_row(&mut session, perl, &fixture, LAUNCH_TIMEOUT);
+    let teardown = session.teardown();
+    drop(guard);
+    outcome.and(teardown)
+}
+
 #[test]
 fn exact_session_later_source_breakpoint_is_verified() -> Result<()> {
     let binary = resolve_matrix_binary()?;
