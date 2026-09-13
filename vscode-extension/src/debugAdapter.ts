@@ -1,7 +1,13 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
-import { BinaryDownloader } from './downloader';
+import {
+  BinaryDownloader,
+  classifyWindowsArm64Support,
+  detectMusl,
+  isAndroidEnvironment,
+  isTermuxEnvironment,
+} from './downloader';
 
 const SERVER_DEBUG_TEST_COMMAND = 'perl.debugTest';
 export const VSCODE_DEBUG_TEST_COMMAND = 'perl-lsp.debugTest';
@@ -14,6 +20,47 @@ export interface DebugTestLaunchTarget {
   args: string[];
 }
 
+function packagedDapTargetDirectoryForContext(
+  context: vscode.ExtensionContext,
+  isExecutable: (filePath: string) => boolean,
+): string | undefined {
+  const arch = process.arch === 'arm64' ? 'arm64' : process.arch === 'x64' ? 'x64' : undefined;
+  const hostTargets =
+    process.platform === 'linux' && arch && !isAndroidEnvironment() && !isTermuxEnvironment()
+      ? [`${detectMusl() ? 'alpine' : 'linux'}-${arch}`]
+      : process.platform === 'darwin' && arch
+        ? [`darwin-${arch}`]
+        : process.platform === 'win32' && arch
+          ? arch === 'arm64'
+            ? [
+                'win32-arm64',
+                ...(classifyWindowsArm64Support() === 'windows-11-or-newer' ? ['win32-x64'] : []),
+              ]
+            : ['win32-x64']
+          : [];
+  const dapName = process.platform === 'win32' ? 'perl-dap.exe' : 'perl-dap';
+
+  let packagedTarget: unknown;
+  try {
+    const packageJson = JSON.parse(
+      fs.readFileSync(path.join(context.extensionPath, 'package.json'), 'utf8'),
+    ) as { __metadata?: { targetPlatform?: unknown } };
+    packagedTarget = packageJson.__metadata?.targetPlatform;
+    if (
+      typeof packagedTarget === 'string' &&
+      /^(?:linux|alpine|darwin|win32)-(?:x64|arm64)$/.test(packagedTarget)
+    ) {
+      return hostTargets.includes(packagedTarget) ? packagedTarget : undefined;
+    }
+  } catch {
+    // Development test fixtures may omit package.json; inspect known payloads.
+  }
+
+  return hostTargets.find((target) =>
+    isExecutable(path.join(context.extensionPath, 'bin', target, dapName)),
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Debug configuration wizard helpers (exported for unit testing)
 // ---------------------------------------------------------------------------
@@ -22,9 +69,17 @@ export interface DebugTestLaunchTarget {
 export type DebugConfigTemplate =
   | 'launch-script'
   | 'attach-process'
-  | 'remote-ssh'
+  | 'remote-tcp-attach'
   | 'external-peer'
   | 'all';
+
+/**
+ * Deprecated selector retained as a compatibility alias for `remote-tcp-attach`
+ * (#9868): the wizard never persisted template ids, but earlier extensions and
+ * tests could pass `remote-ssh` programmatically. It produces the same honest
+ * TCP-attach configuration — never an SSH-owned tunnel.
+ */
+export type LegacyDebugConfigTemplate = 'remote-ssh';
 
 /**
  * Build the content of a `.vscode/launch.json` file for the given template.
@@ -51,11 +106,15 @@ export function buildLaunchJsonContent(template: DebugConfigTemplate | string): 
     timeout: 5000,
   };
 
-  const remoteSSH = {
+  // #9868: this is an ordinary DAP TCP attach. perl-lsp does not create, own,
+  // or verify any SSH tunnel. Attach validation accepts loopback endpoints —
+  // run a port forward you control for a remote debuggee — and refuses
+  // private/link-local hosts at attach time (#5257).
+  const remoteTcpAttach = {
     type: 'perl',
     request: 'attach',
-    name: 'Perl: Remote (SSH)',
-    host: 'remote-host',
+    name: 'Perl: Remote TCP Attach',
+    host: 'localhost',
     port: 13603,
     timeout: 10000,
   };
@@ -75,14 +134,16 @@ export function buildLaunchJsonContent(template: DebugConfigTemplate | string): 
     case 'attach-process':
       configurations = [attachProcess];
       break;
+    // 'remote-ssh' is a legacy alias for the same honest TCP attach (#9868).
+    case 'remote-tcp-attach':
     case 'remote-ssh':
-      configurations = [remoteSSH];
+      configurations = [remoteTcpAttach];
       break;
     case 'external-peer':
       configurations = [externalPeer];
       break;
     case 'all':
-      configurations = [launchScript, attachProcess, remoteSSH, externalPeer];
+      configurations = [launchScript, attachProcess, remoteTcpAttach, externalPeer];
       break;
     case 'launch-script':
     default:
@@ -103,6 +164,63 @@ export function hasLaunchJson(workspaceRoot: string): boolean {
   } catch {
     return false;
   }
+}
+
+/**
+ * The wizard's template choices as pure data (exported so unit tests can pin
+ * the user-facing copy, #9868).
+ *
+ * The remote entry deliberately describes an ordinary DAP TCP attach to a
+ * loopback endpoint, typically exposed by a port forward the user runs. The
+ * adapter resolves the configured host and refuses private/link-local
+ * addresses at attach time (#5257), so no choice copy may claim direct
+ * non-loopback reachability. perl-lsp never creates, owns, or verifies an SSH
+ * connection or tunnel, so no choice copy may claim otherwise.
+ */
+export interface DebugConfigTemplateChoice {
+  label: string;
+  description: string;
+  detail: string;
+  template: DebugConfigTemplate;
+}
+
+export function debugConfigTemplateChoices(): DebugConfigTemplateChoice[] {
+  return [
+    {
+      label: '$(play) Launch Script',
+      description: 'Run the active Perl file under the debugger',
+      detail: 'Adds a "Launch Script" configuration — the most common starting point.',
+      template: 'launch-script',
+    },
+    {
+      label: '$(plug) Attach to Process',
+      description: 'Connect to a running Perl process over TCP',
+      detail: 'Adds an "Attach" configuration targeting localhost:13603.',
+      template: 'attach-process',
+    },
+    {
+      label: '$(remote) Remote TCP Attach',
+      description:
+        'Attach to a Perl debugger endpoint over TCP via loopback (run a port forward for a remote debuggee)',
+      detail:
+        'Adds a remote TCP attach configuration. Attach validation refuses private/link-local hosts (LAN or VPN addresses), so keep the host on loopback — such as localhost for a port forward you run to the debuggee.',
+      template: 'remote-tcp-attach',
+    },
+    {
+      label: '$(beaker) External Debugger Peer (experimental)',
+      description: 'Connect to a peer implementation that already speaks the peer protocol',
+      detail:
+        'Developer preview. Host behavior is proven against repository peers; stock Devel::ptkdb compatibility is not yet proven.',
+      template: 'external-peer',
+    },
+    {
+      label: '$(list-flat) All Templates',
+      description: 'Include native, attach, remote, and experimental peer configurations',
+      detail:
+        'Launch Script + Attach to Process + Remote TCP Attach + External Debugger Peer (experimental).',
+      template: 'all',
+    },
+  ];
 }
 
 /**
@@ -172,40 +290,7 @@ export async function createDebugConfigWizard(): Promise<void> {
     detail: string;
   }
 
-  const templateItems: TemplateItem[] = [
-    {
-      label: '$(play) Launch Script',
-      description: 'Run the active Perl file under the debugger',
-      detail: 'Adds a "Launch Script" configuration — the most common starting point.',
-      template: 'launch-script',
-    },
-    {
-      label: '$(plug) Attach to Process',
-      description: 'Connect to a running Perl process over TCP',
-      detail: 'Adds an "Attach" configuration targeting localhost:13603.',
-      template: 'attach-process',
-    },
-    {
-      label: '$(remote) Remote (SSH)',
-      description: 'Attach to a remote Perl process via SSH tunnel',
-      detail: 'Adds a remote attach configuration — edit the host to match your SSH target.',
-      template: 'remote-ssh',
-    },
-    {
-      label: '$(beaker) External Debugger Peer (experimental)',
-      description: 'Connect to a peer implementation that already speaks the peer protocol',
-      detail:
-        'Developer preview. Host behavior is proven against repository peers; stock Devel::ptkdb compatibility is not yet proven.',
-      template: 'external-peer',
-    },
-    {
-      label: '$(list-flat) All Templates',
-      description: 'Include native, attach, remote, and experimental peer configurations',
-      detail:
-        'Launch Script + Attach to Process + Remote (SSH) + External Debugger Peer (experimental).',
-      template: 'all',
-    },
-  ];
+  const templateItems: TemplateItem[] = debugConfigTemplateChoices();
 
   const selected = await vscode.window.showQuickPick(templateItems, {
     placeHolder: 'Choose a debug configuration template',
@@ -674,7 +759,22 @@ export class PerlDebugAdapterDescriptorFactory implements vscode.DebugAdapterDes
   }
 
   private findDebugAdapter(): string | undefined {
-    // First, check the auto-download directory (ships with perl-lsp)
+    const binary = process.platform === 'win32' ? 'perl-dap.exe' : 'perl-dap';
+
+    // Prefer the adapter shipped by this extension. This keeps a clean
+    // installed profile bound to the package it just loaded instead of an
+    // unrelated adapter found in managed storage or PATH.
+    const targetDirectory = packagedDapTargetDirectoryForContext(this.context, (candidate) =>
+      this.isExecutable(candidate),
+    );
+    if (targetDirectory) {
+      const bundledDap = path.join(this.context.extensionPath, 'bin', targetDirectory, binary);
+      if (this.isExecutable(bundledDap)) {
+        return bundledDap;
+      }
+    }
+
+    // Next, check the auto-download directory (ships with perl-lsp)
     const downloadedDap = BinaryDownloader.getLocalDapPath(this.context);
     if (this.isExecutable(downloadedDap)) {
       return downloadedDap;
@@ -687,7 +787,6 @@ export class PerlDebugAdapterDescriptorFactory implements vscode.DebugAdapterDes
     }
 
     // Otherwise, check common installation locations
-    const binary = process.platform === 'win32' ? 'perl-dap.exe' : 'perl-dap';
     const possiblePaths: string[] = [
       path.join(process.env.HOME || '', '.cargo', 'bin', binary),
       path.join(process.env.CARGO_HOME || '', 'bin', binary),
