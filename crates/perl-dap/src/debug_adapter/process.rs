@@ -2035,6 +2035,21 @@ impl DebugAdapter {
                     };
                 }
 
+                if stop_on_entry {
+                    return DapMessage::Response {
+                        seq,
+                        request_seq,
+                        success: false,
+                        command: "attach".to_string(),
+                        body: None,
+                        message: Some(
+                            "TCP attach does not support stopOnEntry=true. Set stopOnEntry=false and \
+                             configure the debugger peer to pause if needed"
+                                .to_string(),
+                        ),
+                    };
+                }
+
                 // Create TCP attach session
                 let mut session = TcpAttachSession::new();
 
@@ -2099,21 +2114,6 @@ impl DebugAdapter {
                             termination_state,
                             session_generation,
                         );
-
-                        // When stopOnEntry is requested, emit a stopped event so the IDE
-                        // pauses at the first available program location after the TCP
-                        // attach handshake completes.
-                        if stop_on_entry {
-                            self.send_event(
-                                "stopped",
-                                Some(json!({
-                                    "reason": "entry",
-                                    "threadId": 1,
-                                    "allThreadsStopped": true,
-                                    "description": "Paused on entry"
-                                })),
-                            );
-                        }
 
                         tracing::info!(host, port, stop_on_entry, "TCP attach successful");
 
