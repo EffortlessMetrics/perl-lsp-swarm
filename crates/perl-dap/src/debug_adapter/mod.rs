@@ -2276,12 +2276,18 @@ print "result: $final\n";
             "port": 13603
         });
         assert_ambiguous(adapter.handle_request(6, "attach", Some(args)))?;
+        if adapter.current_session_generation() != before_generation {
+            return Err("ambiguous refusal changed session generation".into());
+        }
         let args = json!({
             "processId": "not-a-number",
             "host": "127.0.0.1",
             "port": 13603
         });
         assert_invalid(adapter.handle_request(7, "attach", Some(args)))?;
+        if adapter.current_session_generation() != before_generation {
+            return Err("malformed mixed refusal changed session generation".into());
+        }
         let after_mixed_pid = {
             let session =
                 lock_or_recover(&adapter.session, "test.attach_refusal_after_mixed_session");
