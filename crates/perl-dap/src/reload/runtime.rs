@@ -619,19 +619,21 @@ fn parse_mutation_ack(lines: &[String], marker: &str) -> Option<bool> {
 /// The outcome of one executed reload transaction.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReloadExecution {
+    /// The operation identity paired with this terminal outcome and witness.
+    operation_id: u64,
     /// The terminal outcome in the frozen R01 vocabulary.
-    pub outcome: LoadedModuleReloadOutcome,
+    outcome: LoadedModuleReloadOutcome,
     /// The phase the transaction reached.
-    pub phase_reached: ReloadTransactionPhase,
+    phase_reached: ReloadTransactionPhase,
     /// Whether the mutation bytes reached the debuggee.
     ///
     /// This is the possibly-applied boundary as an observable fact: it is
     /// true exactly when the runtime-module generation advanced.
-    pub mutation_issued: bool,
+    mutation_issued: bool,
     /// The mechanism the transaction executed under.
-    pub mechanism: ReloadMechanism,
+    mechanism: ReloadMechanism,
     /// What the generation clock did.
-    pub generation: GenerationAdvance,
+    generation: GenerationAdvance,
 }
 
 impl ReloadExecution {
@@ -639,18 +641,68 @@ impl ReloadExecution {
     pub fn projects_as_clean(&self) -> bool {
         self.outcome.projects_as_clean()
     }
+
+    /// The terminal outcome paired with this execution's generation witness.
+    pub(crate) fn outcome(&self) -> &LoadedModuleReloadOutcome {
+        &self.outcome
+    }
+
+    /// The generation witness paired with this execution's terminal outcome.
+    pub(crate) fn generation(&self) -> GenerationAdvance {
+        self.generation
+    }
+
+    /// The operation identity paired with this execution.
+    pub(crate) fn operation_id(&self) -> u64 {
+        self.operation_id
+    }
+
+    /// Build a projection fixture without exposing a forgeable constructor to
+    /// library consumers. Unit tests use this to exercise malformed-pair
+    /// guards; production executions come exclusively from `execute_reload`.
+    #[cfg(test)]
+    pub(crate) fn from_projection_parts_for_test(
+        outcome: LoadedModuleReloadOutcome,
+        generation: GenerationAdvance,
+    ) -> Self {
+        let phase_reached = match &outcome {
+            LoadedModuleReloadOutcome::Reloaded => ReloadTransactionPhase::TerminalProjection,
+            LoadedModuleReloadOutcome::Refused { .. } => ReloadTransactionPhase::Admission,
+            LoadedModuleReloadOutcome::FailedBeforeMutation { phase, .. }
+            | LoadedModuleReloadOutcome::IndeterminatePossiblyApplied { phase, .. } => *phase,
+        };
+        Self {
+            operation_id: generation.operation(),
+            outcome,
+            phase_reached,
+            mutation_issued: generation.advanced(),
+            mechanism: ReloadMechanism::IncDeletionAndRequire,
+            generation,
+        }
+    }
 }
 
 /// Assemble an execution result, applying the outcome to the clock.
+///
+/// `operation` is the transaction's own identity; the witness carries it so
+/// a publisher can refuse one that belongs to a different reload (#14550).
 fn settle(
     outcome: LoadedModuleReloadOutcome,
     phase_reached: ReloadTransactionPhase,
     mutation_issued: bool,
     mechanism: ReloadMechanism,
     clock: &mut RuntimeModuleGenerationClock,
+    operation: u64,
 ) -> ReloadExecution {
-    let generation = clock.apply(&outcome);
-    ReloadExecution { outcome, phase_reached, mutation_issued, mechanism, generation }
+    let generation = clock.apply(&outcome, operation);
+    ReloadExecution {
+        operation_id: operation,
+        outcome,
+        phase_reached,
+        mutation_issued,
+        mechanism,
+        generation,
+    }
 }
 
 /// Execute one bounded loaded-module reload transaction.
@@ -711,6 +763,7 @@ pub fn execute_reload<C: ReloadRuntimeChannel + ?Sized>(
                 false,
                 mechanism,
                 clock,
+                operation,
             );
         }
     };
@@ -739,6 +792,7 @@ pub fn execute_reload<C: ReloadRuntimeChannel + ?Sized>(
             false,
             mechanism,
             clock,
+            operation,
         );
     }
 
@@ -752,6 +806,7 @@ pub fn execute_reload<C: ReloadRuntimeChannel + ?Sized>(
             false,
             mechanism,
             clock,
+            operation,
         )
     };
     let Some(view) = channel.currentness_view() else {
@@ -792,6 +847,7 @@ pub fn execute_reload<C: ReloadRuntimeChannel + ?Sized>(
                         false,
                         mechanism,
                         clock,
+                        operation,
                     );
                 }
             }
@@ -808,6 +864,7 @@ pub fn execute_reload<C: ReloadRuntimeChannel + ?Sized>(
                 false,
                 mechanism,
                 clock,
+                operation,
             );
         }
         ChannelSettlement::Unsettled(UnsettledKind::Cancelled) => {
@@ -820,6 +877,7 @@ pub fn execute_reload<C: ReloadRuntimeChannel + ?Sized>(
                 false,
                 mechanism,
                 clock,
+                operation,
             );
         }
     }
@@ -865,6 +923,7 @@ pub fn execute_reload<C: ReloadRuntimeChannel + ?Sized>(
                 false,
                 mechanism,
                 clock,
+                operation,
             );
         }
         ChannelSettlement::Unsettled(kind) => {
@@ -877,6 +936,7 @@ pub fn execute_reload<C: ReloadRuntimeChannel + ?Sized>(
                 true,
                 mechanism,
                 clock,
+                operation,
             );
         }
         ChannelSettlement::Acknowledged(lines) => parse_mutation_ack(&lines, &mutation_marker),
@@ -895,6 +955,7 @@ pub fn execute_reload<C: ReloadRuntimeChannel + ?Sized>(
             true,
             mechanism,
             clock,
+            operation,
         )
     };
     let read_back = match channel.run_readonly(commands.read_back()) {
@@ -923,6 +984,7 @@ pub fn execute_reload<C: ReloadRuntimeChannel + ?Sized>(
             true,
             mechanism,
             clock,
+            operation,
         )
     } else {
         indeterminate(IndeterminateCause::ReadBackInconclusive, clock)
@@ -991,7 +1053,22 @@ mod tests {
     }
 
     fn admitted_plan() -> Result<LoadedModuleReloadPlan, Box<dyn std::error::Error>> {
-        let subject = candidate().bind().map_err(|_| "candidate must bind")?;
+        admitted_plan_for(candidate().operation_identity)
+    }
+
+    /// An admitted plan for one specific operation identity.
+    ///
+    /// Admission refuses a repeated identity while it is still retained
+    /// (`recent_operations` / `WireRejectionCode::OperationStale`), so two
+    /// reloads in one session necessarily carry distinct identities. Tests
+    /// that compose more than one transaction must model that rather than
+    /// reuse a single plan.
+    fn admitted_plan_for(
+        operation_identity: u64,
+    ) -> Result<LoadedModuleReloadPlan, Box<dyn std::error::Error>> {
+        let subject = SubjectCandidate { operation_identity, ..candidate() }
+            .bind()
+            .map_err(|_| "candidate must bind")?;
         plan_reload(&subject, &admitted_observation()).map_err(|_| "plan must admit".into())
     }
 
@@ -1033,6 +1110,16 @@ mod tests {
 
         /// The happy path: preflight present, mutation ok, read-back present.
         fn happy() -> ScriptedChannel {
+            ScriptedChannel::happy_for(OP)
+        }
+
+        /// A happy channel whose markers are bound to `operation`.
+        ///
+        /// Markers carry the transaction's operation identity, so a
+        /// scripted exchange only answers the transaction it was written
+        /// for. Composing two reloads needs one channel per identity.
+        fn happy_for(operation: u64) -> ScriptedChannel {
+            let mark = |stem: &str| marker_for(stem, operation);
             ScriptedChannel::new(
                 vec![
                     ScriptedChannel::ok(&mark(PREFLIGHT_MARKER), true, PATH),
@@ -1212,6 +1299,100 @@ mod tests {
         assert_eq!(execution.phase_reached, ReloadTransactionPhase::CommitGeneration);
         assert!(execution.mutation_issued);
         assert!(execution.generation.advanced());
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------
+    // Cross-leaf clock ownership (#14550)
+    // ---------------------------------------------------------------
+
+    /// The executor (R02) and the wire projector (R01B) are composed by R03
+    /// against one shared clock. Exactly one of them may apply it, and the
+    /// witness the client receives must describe the reload that produced
+    /// it — `previous` is the generation the reload started from, not an
+    /// intermediate value minted by a second application.
+    ///
+    /// This is the falsifier for #14550: if either component starts
+    /// applying the clock again, one reload spends two generations and the
+    /// published `previous` skips the value the transaction actually began
+    /// at.
+    #[test]
+    fn composition_advances_the_generation_exactly_once_per_reload() -> TestResult {
+        // Two distinct admitted operations, as production requires: a
+        // repeated identity is refused as stale while it is still retained,
+        // so one plan cannot serve both reloads.
+        let plan = admitted_plan_for(OP)?;
+        let second_plan = admitted_plan_for(OP + 1)?;
+        let mut clock = RuntimeModuleGenerationClock::new();
+        let started_at = clock.current();
+        let mut channel = ScriptedChannel::happy();
+
+        let execution =
+            execute_reload(&plan, ReloadMechanism::IncDeletionAndRequire, &mut channel, &mut clock);
+        assert_eq!(execution.outcome, LoadedModuleReloadOutcome::Reloaded);
+        assert!(execution.mutation_issued, "the happy path issues the mutation");
+
+        // The projector receives the transaction-owned execution. Keeping the
+        // outcome and witness together prevents a later operation from being
+        // paired with this reload's generation endpoints (#14550, #14670).
+        let operation = plan.subject().operation_identity();
+        assert_eq!(
+            execution.generation.operation(),
+            operation,
+            "the executor must bind the witness to the transaction that produced it"
+        );
+        let response = crate::reload_family::project_execution(&execution, &[], None)
+            .map_err(|refusal| format!("projection refused: {refusal:?}"))?;
+
+        assert_eq!(
+            started_at.distance_to(clock.current()),
+            Some(1),
+            "one reload must spend exactly one runtime-module generation"
+        );
+
+        let crate::reload_family::LoadedModuleReloadResponseBody::Outcome(body) = response.body
+        else {
+            return Err("a terminal outcome must project an outcome body".into());
+        };
+        let witness = body.generation.ok_or("the generation witness must be carried")?;
+        assert!(witness.advanced, "a reload advances the generation");
+        assert_eq!(
+            witness.previous, 0,
+            "the witness must report the generation the reload started from"
+        );
+        assert_eq!(witness.current, 1, "the witness must report the generation it produced");
+
+        // A second reload on the same clock continues from where the first
+        // ended. This is the "skipped generation" symptom stated directly:
+        // a double application would publish `previous: 2` here, naming a
+        // generation no transaction ever ended at.
+        let mut channel = ScriptedChannel::happy_for(second_plan.subject().operation_identity());
+        let second = execute_reload(
+            &second_plan,
+            ReloadMechanism::IncDeletionAndRequire,
+            &mut channel,
+            &mut clock,
+        );
+        assert_eq!(second.outcome, LoadedModuleReloadOutcome::Reloaded);
+        let second_operation = second_plan.subject().operation_identity();
+        assert_ne!(operation, second_operation, "two admitted reloads carry distinct identities");
+
+        // Each execution publishes its own paired outcome and witness. The
+        // API has no separate outcome/witness arguments to cross-wire.
+        let response = crate::reload_family::project_execution(&second, &[], None)
+            .map_err(|refusal| format!("projection refused: {refusal:?}"))?;
+        let crate::reload_family::LoadedModuleReloadResponseBody::Outcome(body) = response.body
+        else {
+            return Err("a terminal outcome must project an outcome body".into());
+        };
+        let witness = body.generation.ok_or("the generation witness must be carried")?;
+        assert_eq!(witness.previous, 1, "the second reload starts where the first ended");
+        assert_eq!(witness.current, 2);
+        assert_eq!(
+            started_at.distance_to(clock.current()),
+            Some(2),
+            "two reloads, two generations"
+        );
         Ok(())
     }
 
