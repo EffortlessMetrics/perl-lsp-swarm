@@ -19,10 +19,13 @@ can skip *only* the stale-head case while every other state stays red:
     the proof exists as a regular file in the candidate tree; the step runs and
     its own exit status decides the result. Nothing here can turn a failing or
     unloadable present proof green.
-``stale_head_absent``
+``absent_and_undeclared``
     the proof file is absent *and* the candidate's own copy of the workflow never
-    mentions it. The candidate predates both the proof and its step, so the step
-    is an authorized scoped no-op.
+    mentions it. A stale head reaches this without editing anything, because the
+    base supplies the declaration to the merged workflow while the head simply
+    predates the path, so the step is an authorized scoped no-op. The name states
+    the predicate rather than the inference: staleness is what this ordinarily
+    means, but absence plus non-declaration is all that is actually observed.
 ``declared_but_missing``
     the proof file is absent while the candidate's own workflow still declares
     it. That is a candidate that removed a proof it continues to claim, so it
@@ -45,7 +48,7 @@ import sys
 from pathlib import Path
 
 PRESENT = "present"
-STALE_HEAD_ABSENT = "stale_head_absent"
+ABSENT_AND_UNDECLARED = "absent_and_undeclared"
 DECLARED_BUT_MISSING = "declared_but_missing"
 NOT_REGULAR_FILE = "not_regular_file"
 
@@ -54,7 +57,7 @@ FAILING_DISPOSITIONS = frozenset({DECLARED_BUT_MISSING, NOT_REGULAR_FILE})
 
 DISPOSITION_REASON = {
     PRESENT: "present in the candidate tree; the proof runs and decides its own result",
-    STALE_HEAD_ABSENT: (
+    ABSENT_AND_UNDECLARED: (
         "absent from the candidate tree and undeclared by the candidate workflow; "
         "authorized stale-head scoped no-op"
     ),
@@ -127,7 +130,7 @@ def classify(root: Path, workflow_text: str, proof_path: str) -> str:
         return PRESENT
     if declares(workflow_text, proof_path):
         return DECLARED_BUT_MISSING
-    return STALE_HEAD_ABSENT
+    return ABSENT_AND_UNDECLARED
 
 
 def classify_all(
