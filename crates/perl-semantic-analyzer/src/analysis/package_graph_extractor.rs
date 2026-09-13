@@ -846,6 +846,33 @@ with 'MyApp::Printable', 'MyApp::Serializable';
     }
 
     #[test]
+    fn each_keyword_maps_to_its_own_edge_kind() {
+        // Discriminates the two emission boundaries: `extends` must produce
+        // `Inherits` and never `ComposesRole`, and `with` the reverse.
+        //
+        // This inspects the whole edge set rather than the kind-filtered view
+        // `dsl_edges` returns, so emitting the wrong kind fails here instead of
+        // disappearing through that filter.
+        let from_extends = parse_and_extract("package P;\nuse Moose;\nextends 'B';\n1;");
+        assert_eq!(from_extends.len(), 1, "expected exactly one edge, got {from_extends:?}");
+        assert_eq!(from_extends[0].kind, PackageEdgeKind::Inherits);
+        assert_eq!(from_extends[0].to_package, "B");
+
+        let from_with = parse_and_extract("package P;\nuse Moose;\nwith 'R';\n1;");
+        assert_eq!(from_with.len(), 1, "expected exactly one edge, got {from_with:?}");
+        assert_eq!(from_with[0].kind, PackageEdgeKind::ComposesRole);
+        assert_eq!(from_with[0].to_package, "R");
+    }
+
+    #[test]
+    fn a_gated_call_emits_no_edge_of_any_kind() {
+        // The negative direction of the same boundary: when the gate refuses,
+        // nothing is emitted at all — not an edge of some other kind.
+        let gated = parse_and_extract("package P;\nextends 'B';\nwith 'R';\n1;");
+        assert!(gated.is_empty(), "a gated call must emit no edge at all, got {gated:?}");
+    }
+
+    #[test]
     fn dsl_spelling_alone_emits_no_edge() {
         // No framework anywhere and no local sub: the spelling alone must not
         // manufacture inheritance or role facts. This pins the activation
