@@ -37,6 +37,7 @@ const GOVERNED: &[&str] = &[
     "src/project_fixture.rs",
     "src/recorder.rs",
     "src/scorecard.rs",
+    "src/server_request_fixture.rs",
     "src/taxonomy.rs",
     "src/workspace.rs",
     "tests/ux_scenario_01_simple_file.rs",
