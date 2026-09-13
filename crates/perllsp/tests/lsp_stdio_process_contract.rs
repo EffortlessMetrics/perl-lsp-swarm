@@ -412,6 +412,42 @@ fn exact_public_candidate_completes_legal_lifecycle() -> Result<()> {
 }
 
 #[test]
+fn cancellation_of_unknown_or_completed_ids_does_not_poison_reuse() -> Result<()> {
+    let mut client = RealProcessClient::spawn_exact()?;
+    assert_public_candidate(&client)?;
+    initialize_and_notify(&mut client, json!("initialize-cancel-reuse"))?;
+    let uri = open_trace_fixture(&mut client)?;
+
+    for id in [json!(71003), json!("71003")] {
+        for phase in ["unknown", "completed"] {
+            client.notify("$/cancelRequest", json!({"id": id.clone()}))?;
+            let response = client.request(
+                id.clone(),
+                "textDocument/hover",
+                json!({
+                    "textDocument": {"uri": uri},
+                    "position": {"line": 1, "character": 2}
+                }),
+                timeout(),
+            )?;
+            assert_response_id(&response, &id)?;
+            ensure!(
+                response.get("error").is_none(),
+                "cancellation of {phase} ID {id} poisoned a later request: {response}"
+            );
+            ensure!(
+                response
+                    .pointer("/result/contents")
+                    .is_some_and(|contents| contents.to_string().contains("print")),
+                "later request must execute the real hover provider after {phase} cancellation: {response}"
+            );
+        }
+    }
+
+    shutdown_and_exit(&mut client, json!("shutdown-cancel-reuse"))
+}
+
+#[test]
 fn signature_help_empty_results_complete_exact_requests() -> Result<()> {
     let mut client = RealProcessClient::spawn_exact()?;
     assert_public_candidate(&client)?;
