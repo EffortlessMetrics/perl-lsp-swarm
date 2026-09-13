@@ -1361,6 +1361,7 @@ pub fn perl_parser_core::hir::HirKind::fmt(&self, f: &mut core::fmt::Formatter<'
 pub enum perl_parser_core::hir::HirStmt
 pub perl_parser_core::hir::HirStmt::Expr(perl_parser_core::hir::HirExprId)
 pub perl_parser_core::hir::HirStmt::Let
+pub perl_parser_core::hir::HirStmt::Let::binding: core::option::Option<perl_parser_core::hir::HirBindingId>
 pub perl_parser_core::hir::HirStmt::Let::binding_range: perl_position_tracking::span::SourceLocation
 pub perl_parser_core::hir::HirStmt::Let::init: core::option::Option<perl_parser_core::hir::HirExprId>
 pub perl_parser_core::hir::HirStmt::Let::name: alloc::string::String
@@ -1929,6 +1930,7 @@ pub fn perl_parser_core::hir::HirSubscript::eq(&self, other: &perl_parser_core::
 pub fn perl_parser_core::hir::HirSubscript::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_parser_core::hir::HirVariable
 pub perl_parser_core::hir::HirVariable::access: perl_parser_core::hir::AccessMode
+pub perl_parser_core::hir::HirVariable::binding: core::option::Option<perl_parser_core::hir::HirBindingId>
 pub perl_parser_core::hir::HirVariable::kind: perl_parser_core::hir::VariableKind
 pub perl_parser_core::hir::HirVariable::name: alloc::string::String
 pub perl_parser_core::hir::HirVariable::sigil: perl_parser_core::hir::Sigil
