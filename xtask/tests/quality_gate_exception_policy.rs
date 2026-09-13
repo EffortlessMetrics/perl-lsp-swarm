@@ -145,7 +145,7 @@ expires = "2099-12-31"
 }
 
 #[test]
-fn quality_gate_cli_blocks_expired_quality_exception() -> TestResult {
+fn quality_gate_cli_keeps_elapsed_exception_active_and_advisory() -> TestResult {
     let root = repo_root()?;
     let dir = tempdir()?;
     let coverage = dir.path().join("coverage-baseline.json");
@@ -156,21 +156,30 @@ fn quality_gate_cli_blocks_expired_quality_exception() -> TestResult {
     write_coverage_receipt(&coverage, &current_head(&root)?, 97.1)?;
     write_policy_text(&policy, &policy_with_one_exception("fail", "2099-01-01", "2000-01-01"))?;
 
-    let output =
-        patch_quality_gate_command(&root, &coverage, &policy, &receipt, &summary)?.output()?;
-    assert!(!output.status.success(), "expired exception must fail");
+    patch_quality_gate_command(&root, &coverage, &policy, &receipt, &summary)?.assert().success();
 
     let payload: Value = serde_json::from_str(&fs::read_to_string(&receipt)?)?;
-    let action = next_action(&payload, "quality_exception_expired")?;
-    assert_eq!(action.get("id").and_then(Value::as_str), Some("ripr-total-burndown"));
-    assert_repair_contract(action)?;
-    assert_action_commands_use_quality_gate_mode(action, "enforce-patch-coverage")?;
+    assert_eq!(payload.pointer("/decision").and_then(Value::as_str), Some("pass"));
+    assert_eq!(
+        payload.pointer("/temporary_exceptions/active_count").and_then(Value::as_u64),
+        Some(1)
+    );
+    assert_eq!(
+        payload.pointer("/temporary_exceptions/active/0/expires").and_then(Value::as_str),
+        Some("2000-01-01")
+    );
+    assert_eq!(
+        payload.pointer("/temporary_exceptions/lifecycle_authority").and_then(Value::as_str),
+        Some("policy_cadence")
+    );
+    assert!(!has_next_action(&payload, "quality_exception_expired"));
+    assert!(!has_next_action(&payload, "quality_exception_required_missing"));
 
     Ok(())
 }
 
 #[test]
-fn quality_gate_cli_blocks_due_review_when_policy_requires_failure() -> TestResult {
+fn quality_gate_cli_keeps_due_review_advisory_when_legacy_policy_says_fail() -> TestResult {
     let root = repo_root()?;
     let dir = tempdir()?;
     let coverage = dir.path().join("coverage-baseline.json");
@@ -181,22 +190,25 @@ fn quality_gate_cli_blocks_due_review_when_policy_requires_failure() -> TestResu
     write_coverage_receipt(&coverage, &current_head(&root)?, 97.1)?;
     write_policy_text(&policy, &policy_with_one_exception("fail", "2000-01-01", "2099-01-01"))?;
 
-    let output =
-        patch_quality_gate_command(&root, &coverage, &policy, &receipt, &summary)?.output()?;
-    assert!(!output.status.success(), "due review must fail when due_review = fail");
+    patch_quality_gate_command(&root, &coverage, &policy, &receipt, &summary)?.assert().success();
 
     let payload: Value = serde_json::from_str(&fs::read_to_string(&receipt)?)?;
-    let action = next_action(&payload, "quality_exception_review_due")?;
-    assert_eq!(action.get("blocking").and_then(Value::as_bool), Some(true));
-    assert_eq!(action.get("id").and_then(Value::as_str), Some("ripr-total-burndown"));
-    assert_repair_contract(action)?;
-    assert_action_commands_use_quality_gate_mode(action, "enforce-patch-coverage")?;
+    assert_eq!(payload.pointer("/decision").and_then(Value::as_str), Some("pass"));
+    assert_eq!(
+        payload.pointer("/temporary_exceptions/due_review").and_then(Value::as_str),
+        Some("advisory")
+    );
+    assert_eq!(
+        payload.pointer("/temporary_exceptions/active_count").and_then(Value::as_u64),
+        Some(1)
+    );
+    assert!(!has_next_action(&payload, "quality_exception_review_due"));
 
     Ok(())
 }
 
 #[test]
-fn quality_gate_cli_warns_due_review_when_policy_allows_warning() -> TestResult {
+fn quality_gate_cli_keeps_warn_review_policy_advisory() -> TestResult {
     let root = repo_root()?;
     let dir = tempdir()?;
     let coverage = dir.path().join("coverage-baseline.json");
@@ -211,9 +223,11 @@ fn quality_gate_cli_warns_due_review_when_policy_allows_warning() -> TestResult 
 
     let payload: Value = serde_json::from_str(&fs::read_to_string(&receipt)?)?;
     assert_eq!(payload.pointer("/decision").and_then(Value::as_str), Some("pass"));
-    let action = next_action(&payload, "quality_exception_review_due")?;
-    assert_eq!(action.get("blocking").and_then(Value::as_bool), Some(false));
-    assert_action_commands_use_quality_gate_mode(action, "enforce-patch-coverage")?;
+    assert_eq!(
+        payload.pointer("/temporary_exceptions/due_review").and_then(Value::as_str),
+        Some("advisory")
+    );
+    assert!(!has_next_action(&payload, "quality_exception_review_due"));
 
     Ok(())
 }
@@ -262,7 +276,7 @@ fn coverage_and_ripr_status_doc_links_exception_policy() -> TestResult {
 
     for required in [
         "policy/quality-gate-exceptions.toml",
-        "Expired exceptions fail the quality gate",
+        "Lifecycle dates create advisory owner work",
         "final-enforcement blockers",
         "Temporary exceptions are not success criteria",
     ] {
@@ -376,6 +390,12 @@ fn exception_scope(id: &str) -> &'static str {
         "project-coverage-burndown" => "project_coverage",
         _ => "quality_gate_transition",
     }
+}
+
+fn has_next_action(receipt: &Value, kind: &str) -> bool {
+    receipt.get("next_actions").and_then(Value::as_array).is_some_and(|actions| {
+        actions.iter().any(|action| action.get("kind").and_then(Value::as_str) == Some(kind))
+    })
 }
 
 fn next_action<'a>(receipt: &'a Value, kind: &str) -> TestResult<&'a Value> {

@@ -327,6 +327,36 @@
       "reason": "Keep representative source bodies used with Perl command-line switches executable as clean parser contracts.",
       "disposition": "execute",
       "boundedness": "focused"
+    },
+    {
+      "id": "parser.command_line.regex_modifier_matrix",
+      "package": "perl-parser-core",
+      "target": "command_line_regex_modifier_matrix",
+      "features": [],
+      "no_default_features": false,
+      "cargo_args": [],
+      "test_args": [
+        "--test-threads=4"
+      ],
+      "owner": "#13663",
+      "reason": "Prove compact regex-family operators retain their modifier payload in author order, keep their byte range bounded to the operator, and diagnose invalid s///-and-tr/// modifiers inside that range.",
+      "disposition": "execute",
+      "boundedness": "focused"
+    },
+    {
+      "id": "parser.class_grammar.admission",
+      "package": "perl-parser-core",
+      "target": "class_grammar_context",
+      "features": [],
+      "no_default_features": false,
+      "cargo_args": [],
+      "test_args": [
+        "--test-threads=4"
+      ],
+      "owner": "#10740",
+      "reason": "Pin class-grammar admission boundaries: ADJUST admitted only inside class grammar, exact enclosing-frame restoration, statement-form rejection, and fresh/incremental equivalence.",
+      "disposition": "execute",
+      "boundedness": "focused"
     }
   ]
 }
