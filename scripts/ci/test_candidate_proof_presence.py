@@ -112,6 +112,22 @@ class ClassifyTests(unittest.TestCase):
                 presence.NOT_REGULAR_FILE,
             )
 
+    def test_a_longer_path_does_not_declare_a_shorter_one(self) -> None:
+        """A prefix collision must not turn a stale head into a false red.
+
+        Declaring ``xtask/tests/foo.rs`` because the workflow mentions
+        ``xtask/tests/foo.rs.golden`` would report the absent proof as deleted
+        and block the candidate for the wrong reason.
+        """
+        workflow = "      - 'xtask/tests/ci_nightly_cache_contract.rs.golden'\n"
+        with TemporaryDirectory() as name:
+            self.assertEqual(
+                presence.classify(Path(name), workflow, PROOF_PATH),
+                presence.STALE_HEAD_ABSENT,
+            )
+        self.assertFalse(presence.declares(workflow, PROOF_PATH))
+        self.assertTrue(presence.declares(DECLARING_WORKFLOW, PROOF_PATH))
+
     def test_broken_symlink_fails_closed(self) -> None:
         with TemporaryDirectory() as name:
             root = Path(name)
@@ -223,6 +239,9 @@ class MainExitCodeTests(unittest.TestCase):
             "bad id=xtask/tests/x.rs",
             "id=/absolute/path.rs",
             "id=../outside.rs",
+            # PosixPath does not split on backslashes, so this traversal has to
+            # be rejected explicitly rather than by Path(path).parts.
+            "id=xtask\\..\\..\\etc\\passwd",
         ):
             with self.subTest(spec=spec):
                 with self.assertRaises(ValueError):
@@ -284,6 +303,14 @@ class RepositoryContractTests(unittest.TestCase):
                     presence.classify(REPO_ROOT, self.workflow, path),
                     presence.PRESENT,
                 )
+                # Negative control: on its own this assertion also passes
+                # against a classify() hardcoded to PRESENT, because every real
+                # file exists. Pin that the verdict depends on the tree.
+                with TemporaryDirectory() as empty:
+                    self.assertNotEqual(
+                        presence.classify(Path(empty), self.workflow, path),
+                        presence.PRESENT,
+                    )
 
     def test_every_classified_proof_guards_a_step(self) -> None:
         step_id = "candidate-proofs"
@@ -303,12 +330,18 @@ class RepositoryContractTests(unittest.TestCase):
         ``== 'present'`` condition would silently skip every proof instead.
         """
         conditions = re.findall(
-            r"if: steps\.candidate-proofs\.outputs\.\w+ (\S+) '([a-z_]+)'",
+            r"if: steps\.candidate-proofs\.outputs\.(\w+) (\S+) '([a-z_]+)'",
             self.workflow,
         )
-        self.assertEqual(len(conditions), len(self.proofs))
-        for operator, value in conditions:
+        for _identifier, operator, value in conditions:
             self.assertEqual((operator, value), ("!=", presence.STALE_HEAD_ABSENT))
+
+        # Identity, not just arity: a guard for an id that is never classified
+        # would otherwise be masked by an unrelated guard keeping the count equal.
+        guarded = [identifier for identifier, _operator, _value in conditions]
+        classified = [identifier for identifier, _path in self.proofs]
+        self.assertEqual(sorted(guarded), sorted(classified))
+        self.assertEqual(len(guarded), len(set(guarded)), guarded)
 
     def test_the_classify_invocation_is_itself_a_declaration(self) -> None:
         """Removing only the ``on.paths`` entry must not buy a skip.

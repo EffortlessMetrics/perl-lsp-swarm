@@ -90,9 +90,30 @@ def parse_proof(spec: str) -> tuple[str, str]:
         raise ValueError(
             f"proof id {identifier!r} must use only letters, digits, and underscores"
         )
-    if path.startswith("/") or ".." in Path(path).parts:
+    # Backslashes are checked explicitly: this runs as a PosixPath, so
+    # ``Path(path).parts`` would not split a backslash-separated ``..`` and the
+    # traversal guard would silently admit what this docstring forbids.
+    if path.startswith("/") or "\\" in path or ".." in Path(path).parts:
         raise ValueError(f"proof path {path!r} must be repository relative")
     return identifier, path
+
+
+def declares(workflow_text: str, proof_path: str) -> bool:
+    """Report whether the candidate workflow still claims ``proof_path``.
+
+    The match is anchored on the right so a path cannot be declared by being a
+    prefix of a longer one: with a bare substring test, adding
+    ``xtask/tests/foo.rs`` beside an existing ``xtask/tests/foo.rs.golden``
+    would report the shorter path as declared and turn a genuine stale head
+    into a false red — the very failure this module exists to remove.
+    """
+    index = workflow_text.find(proof_path)
+    while index != -1:
+        tail = workflow_text[index + len(proof_path) : index + len(proof_path) + 1]
+        if not (tail.isalnum() or tail in "._-/"):
+            return True
+        index = workflow_text.find(proof_path, index + 1)
+    return False
 
 
 def classify(root: Path, workflow_text: str, proof_path: str) -> str:
@@ -104,7 +125,7 @@ def classify(root: Path, workflow_text: str, proof_path: str) -> str:
         return NOT_REGULAR_FILE
     if target.is_file():
         return PRESENT
-    if proof_path in workflow_text:
+    if declares(workflow_text, proof_path):
         return DECLARED_BUT_MISSING
     return STALE_HEAD_ABSENT
 
