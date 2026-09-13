@@ -1,4 +1,4 @@
-project: vscode
+project: product
 component: Editor behavior
 kind: Fixed
 body: Unknown or late cancellation no longer poisons reused request IDs.
