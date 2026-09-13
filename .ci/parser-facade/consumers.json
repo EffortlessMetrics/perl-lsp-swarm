@@ -7,6 +7,7 @@
       "disposition": "deprecate",
       "owner": "#6701",
       "target_owner": "#6975",
+      "usage": "production",
       "exit_condition": "Reduce the compatibility crate to forwarding and downstream compilation proof.",
       "members": [
         "crates/perl-incremental-parsing/Cargo.toml"
@@ -18,7 +19,12 @@
       "disposition": "review",
       "owner": "#6698",
       "target_owner": "#7065",
+      "usage": "production",
       "exit_condition": "Retain explicit benchmark and fuzz consumers without granting them parser facade authority.",
+      "pending": {
+        "reason": "The supported parser feature/API/downstream matrix does not yet exist, so no evidence can currently retire or confirm this row.",
+        "resolves_when": "#7065 publishes the supported feature/API/downstream matrix covering this row."
+      },
       "members": [
         "crates/perl-parser-bench/Cargo.toml",
         "fuzz/Cargo.toml",
@@ -31,7 +37,12 @@
       "disposition": "review",
       "owner": "#4752",
       "target_owner": "#7065",
+      "usage": "production",
       "exit_condition": "Keep the archived Tree-sitter consumer visibly non-authoritative or remove its workspace dependency.",
+      "pending": {
+        "reason": "The supported parser feature/API/downstream matrix does not yet exist, so no evidence can currently retire or confirm this row.",
+        "resolves_when": "#7065 publishes the supported feature/API/downstream matrix covering this row."
+      },
       "members": [
         "archive/crates/tree-sitter-perl-rs/Cargo.toml"
       ]
@@ -42,6 +53,7 @@
       "disposition": "move",
       "owner": "#2477",
       "target_owner": "#7063",
+      "usage": "production",
       "exit_condition": "Keep product consumers above the parser facade and migrate them to explicit parser attachment points.",
       "members": [
         "crates/perl-dap/Cargo.toml",
@@ -55,7 +67,12 @@
       "disposition": "review",
       "owner": "#2477",
       "target_owner": "#7065",
+      "usage": "production",
       "exit_condition": "Retain repository automation as an external consumer of the documented parser facade.",
+      "pending": {
+        "reason": "The supported parser feature/API/downstream matrix does not yet exist, so no evidence can currently retire or confirm this row.",
+        "resolves_when": "#7065 publishes the supported feature/API/downstream matrix covering this row."
+      },
       "members": [
         "xtask/Cargo.toml"
       ]
