@@ -783,6 +783,7 @@ pub fn perl_lsp::state::ParsedSnapshot::degradation_tier(&self) -> perl_lsp::sta
 pub fn perl_lsp::state::ParsedSnapshot::generation(&self) -> u32
 pub fn perl_lsp::state::ParsedSnapshot::parent_map(&self) -> &perl_semantic_analyzer::analysis::declaration::ParentMap
 pub fn perl_lsp::state::ParsedSnapshot::parse_errors(&self) -> &[perl_parser_core::syntax::error::ParseError]
+pub fn perl_lsp::state::ParsedSnapshot::regex_analysis(&self) -> core::option::Option<&alloc::sync::Arc<perl_parser_core::syntax::regex_analysis::RegexAnalysisTable>>
 pub fn perl_lsp::state::ParsedSnapshot::semantic_analyzer(&self) -> core::option::Option<alloc::sync::Arc<perl_semantic_analyzer::analysis::semantic::SemanticAnalyzer>>
 pub fn perl_lsp::state::ParsedSnapshot::source(&self) -> &str
 pub fn perl_lsp::state::ParsedSnapshot::source_region_index(&self) -> alloc::sync::Arc<perl_parser_core::syntax::source_context::index::SourceRegionIndex>

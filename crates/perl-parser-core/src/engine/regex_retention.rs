@@ -8,6 +8,7 @@
 
 use std::{
     cell::RefCell,
+    marker::PhantomData,
     ops::Deref,
     sync::{Arc, atomic::AtomicBool},
 };
@@ -71,7 +72,11 @@ pub fn parse_source_with_regex_analysis(source: &str) -> RegexParseOutput {
     let session = PendingGeometryGuard::begin(source);
     let mut parser = Parser::new(source);
     let parse_output = parser.parse_with_recovery();
-    finish_output(source, parse_output, session.finish())
+    finish_output(
+        source,
+        parse_output,
+        session.finish().unwrap_or_else(PendingGeometrySession::empty),
+    )
 }
 
 /// Parse source with cooperative cancellation and retain canonical regex analysis.
@@ -83,7 +88,11 @@ pub fn parse_source_with_cancellation_and_regex_analysis(
     let session = PendingGeometryGuard::begin(source);
     let mut parser = Parser::new_with_cancellation(source, cancellation_flag);
     let parse_output = parser.parse_with_recovery();
-    finish_output(source, parse_output, session.finish())
+    finish_output(
+        source,
+        parse_output,
+        session.finish().unwrap_or_else(PendingGeometrySession::empty),
+    )
 }
 
 /// Parse a caller-supplied token stream and retain canonical regex analysis.
@@ -94,7 +103,142 @@ pub fn parse_tokens_with_regex_analysis(tokens: Vec<Token>, source: &str) -> Reg
     let session = PendingGeometryGuard::begin(source);
     let mut parser = Parser::from_tokens(tokens, source);
     let parse_output = parser.parse_with_recovery();
-    finish_output(source, parse_output, session.finish())
+    finish_output(
+        source,
+        parse_output,
+        session.finish().unwrap_or_else(PendingGeometrySession::empty),
+    )
+}
+
+/// Retain canonical regex analysis around a parse the caller drives itself.
+///
+/// The whole-parse entry points above own both the parse and its recovery policy.
+/// A long-lived host such as the language server already owns that policy — it
+/// drives [`Parser::parse`] directly so it can keep its own failure handling — but
+/// it still needs the one canonical regex table for the same source snapshot.
+///
+/// Wrapping the caller's parse in this session gives it exactly that, without a
+/// second parse and without a second regex authority:
+///
+/// ```
+/// use perl_parser_core::{Parser, RetainedRegexSession};
+///
+/// let source = "my $re = qr/(a+)+b/;";
+/// let session = RetainedRegexSession::begin(source);
+/// let mut parser = Parser::new(source);
+/// let mut ast = parser.parse().expect("clean parse");
+/// let table = session.finish(Some(&mut ast));
+///
+/// assert_eq!(table.records.len(), 1);
+/// assert!(table.source_matches(source));
+/// ```
+///
+/// While the session is active the parser's legacy per-operator scan is suppressed
+/// exactly as it is for the whole-parse entry points, so the retained table is the
+/// only regex evidence produced for that parse.
+///
+/// # Binding the session to one source
+///
+/// The session borrows the source it began with and uses that same text to build
+/// the table, so the retained geometry and the table's digest cannot come from two
+/// different documents. That matters more than it looks: geometry is recorded
+/// against the parser's source by length, so a *different* document of the same
+/// length would otherwise contribute geometry to a table stamped with this
+/// document's digest — mis-anchored ranges that still pass every freshness check
+/// downstream. Holding the borrow makes that unrepresentable rather than merely
+/// validated.
+///
+/// The session is thread-local, and that is enforced rather than documented: it is
+/// deliberately `!Send`. Its stack entry lives in a thread-local registered by the
+/// thread that called [`RetainedRegexSession::begin`], so a session moved to another
+/// thread would retire an id that thread never registered — retaining nothing there
+/// while the originating thread keeps the entry for the rest of its life. That is the
+/// same orphaned-entry failure that identity-based retirement closes for out-of-order
+/// finishes on one thread, reached along the other axis, and no runtime check can
+/// close it: only the type system can. `PhantomData<*const ()>` is what makes the move
+/// a compile error instead.
+#[derive(Debug)]
+pub struct RetainedRegexSession<'source> {
+    guard: PendingGeometryGuard,
+    source: &'source str,
+    /// Binds the session to the thread that began it. See the type-level note.
+    _not_send: PhantomData<*const ()>,
+}
+
+impl<'source> RetainedRegexSession<'source> {
+    /// Begin retaining parser-owned geometry for a parse of `source`.
+    #[must_use]
+    pub fn begin(source: &'source str) -> Self {
+        Self { guard: PendingGeometryGuard::begin(source), source, _not_send: PhantomData }
+    }
+
+    /// Finish the session and build the canonical table for the parsed `ast`.
+    ///
+    /// The table is built against the source this session began with, and binds its
+    /// digest so a later consumer can prove freshness.
+    ///
+    /// `ast` is `None` when the caller's parse produced no usable tree — a fatal
+    /// failure such as recursion or nesting exhaustion. The geometry the parser
+    /// recorded *before* it gave up is still real evidence about this exact buffer, so
+    /// it is retained rather than discarded.
+    ///
+    /// Discarding it lost findings outright. Measured on a document holding both a
+    /// nested-quantifier regex and 3000 levels of nesting: without a session the parse
+    /// reports one backtracking advisory, and with one it reported none and retained no
+    /// record — the legacy scan suppressed, nothing canonical to replace it. Retaining
+    /// the pending geometry keeps the finding, which is the whole point of the seam.
+    ///
+    /// The one thing this path cannot supply is the compile-time pragma environment,
+    /// which is built from the tree. Records retained here therefore carry an *unknown*
+    /// language profile rather than a default one, and the analyzer withholds the
+    /// findings whose truth depends on it — capture-name validity under `use utf8`,
+    /// say — while still producing the ones that do not, such as backtracking risk and
+    /// embedded code.
+    ///
+    /// Unknown rather than default, because the difference is a correctness one: a
+    /// default environment does not mean "no pragmas were seen", it asserts `utf8` is
+    /// off. Measured under that earlier reading, a valid non-ASCII named capture under
+    /// `use utf8;` published `PL1006` purely because of an unrelated fatal construct
+    /// elsewhere in the file. Retaining a finding that was really there is the point of
+    /// this path; inventing one is worse than the silence it replaced.
+    ///
+    /// A session finished out of order — while a session begun after it is still
+    /// active — retains nothing rather than consuming the other session's geometry.
+    /// An empty table is a claim this layer can honestly make; another document's
+    /// spans stamped with this document's digest is not.
+    ///
+    /// The AST's compatibility flags (`has_embedded_code`) are refreshed from the
+    /// table so they remain a projection of the canonical analysis rather than an
+    /// independent scan result.
+    ///
+    /// # Caller contract
+    ///
+    /// `ast` must be the tree produced by parsing the source this session borrows.
+    /// That is the one part of the binding this type cannot enforce, so it is stated
+    /// rather than assumed.
+    ///
+    /// Geometry admission is bound to the exact buffer, so a foreign tree cannot
+    /// contribute another parse's spans. It can still influence the result in two
+    /// narrower ways: [`collect_ast_geometry`] may re-extract geometry from *this*
+    /// source at a foreign node's offsets when the ranges and pattern text happen to
+    /// be compatible, and the compile-time pragma environment — which supplies the
+    /// language/feature profile every record is analyzed under — is built from the
+    /// tree it is given. A foreign tree therefore yields analysis of this source
+    /// under another document's pragma state.
+    ///
+    /// Making that structural would need a parse result that carries its own session
+    /// identity, which is a wider API change than this seam; it is tracked separately.
+    #[must_use]
+    pub fn finish(self, ast: Option<&mut Node>) -> RegexAnalysisTable {
+        let source = self.source;
+        let pending = self.guard.finish().unwrap_or_else(PendingGeometrySession::empty);
+        let Some(ast) = ast else {
+            return build_table_without_ast(source, pending);
+        };
+        let table = build_table(source, ast, pending);
+        apply_ast_compatibility_flags(ast, &table);
+        table
+    }
 }
 
 /// Record parser-owned geometry and suppress the legacy detached-body scan.
@@ -108,7 +252,10 @@ pub(crate) fn record_operator_geometry(source: &str, start: usize) -> bool {
         let Some(session) = sessions.last_mut() else {
             return false;
         };
-        if session.source_len != source.len() {
+        if !session.owns(source) {
+            // A parse of some other buffer. Suppressing the legacy scan for it
+            // would lose its findings without retaining anything in exchange, so
+            // hand it back to the compatibility path.
             return false;
         }
         if let Some(text) = source.get(start..)
@@ -135,18 +282,74 @@ pub(crate) fn has_active_session() -> bool {
 fn finish_output(
     source: &str,
     mut parse_output: ParseOutput,
-    mut pending: PendingGeometrySession,
+    pending: PendingGeometrySession,
 ) -> RegexParseOutput {
-    let environment = CompileTimePragmaEnvironment::build(&parse_output.ast);
+    let table = build_table(source, &parse_output.ast, pending);
+
+    apply_ast_compatibility_flags(&mut parse_output.ast, &table);
+    project_regex_diagnostics(&mut parse_output, &table);
+
+    RegexParseOutput { parse_output, regex_analysis: table }
+}
+
+/// Build the canonical table for one already-parsed AST and its exact source.
+///
+/// This is the single retention body shared by every entry point: the whole-parse
+/// entry points above and the caller-driven [`RetainedRegexSession`]. Keeping one
+/// body is what stops a second regex authority from appearing for callers that
+/// drive their own parse.
+/// Build the table from parser-recorded geometry alone, for a parse that produced no
+/// usable tree.
+///
+/// Everything the AST would have contributed is deliberately absent: no
+/// [`collect_ast_geometry`] supplementation, and no unavailable-candidate records,
+/// since both are derived from a tree there isn't one of. What remains is geometry the
+/// parser recorded against this exact buffer before it failed, which is evidence in its
+/// own right.
+///
+/// The language profile is **unknown**, not default, and the difference is a
+/// correctness one.
+///
+/// The pragma environment is built from the tree, so this path has none. Deriving the
+/// profile from a *default* environment does not mean "no pragmas were seen" — it
+/// asserts `utf8` is disabled and features are off, which is a claim about the document
+/// this path cannot support. Measured: with a default environment, a valid non-ASCII
+/// named capture under `use utf8;` followed by a fatal construct published `PL1006`, a
+/// warning about code that is correct. Retaining a finding that was really there is the
+/// point of this path; inventing one is strictly worse than the silence it replaced.
+///
+/// `FeatureState::Unknown` says what is actually true — the pragma state could not be
+/// determined — and the analyzer withholds the findings whose truth depends on it while
+/// still reporting the ones that do not, such as backtracking risk and embedded code.
+fn build_table_without_ast(
+    source: &str,
+    mut pending: PendingGeometrySession,
+) -> RegexAnalysisTable {
+    let profile = CaptureLanguageProfile::new(
+        RegexLanguageProfile::new(None, FeatureState::Unknown),
+        FeatureState::Unknown,
+    );
+    pending.geometries.sort_by_key(geometry_sort_key);
+    pending.geometries.dedup_by(|left, right| {
+        left.operator == right.operator && left.full_range == right.full_range
+    });
+
+    let mut table = RegexAnalysisTable::for_source(source);
+    for geometry in pending.geometries {
+        let _record = table.retain_geometry(geometry, profile);
+    }
+    table
+}
+
+fn build_table(
+    source: &str,
+    ast: &Node,
+    mut pending: PendingGeometrySession,
+) -> RegexAnalysisTable {
+    let environment = CompileTimePragmaEnvironment::build(ast);
     let parser_geometry = pending.geometries.clone();
     let mut unavailable = Vec::new();
-    collect_ast_geometry(
-        &parse_output.ast,
-        source,
-        &parser_geometry,
-        &mut pending.geometries,
-        &mut unavailable,
-    );
+    collect_ast_geometry(ast, source, &parser_geometry, &mut pending.geometries, &mut unavailable);
     pending.geometries.sort_by_key(geometry_sort_key);
     pending.geometries.dedup_by(|left, right| {
         left.operator == right.operator && left.full_range == right.full_range
@@ -188,10 +391,7 @@ fn finish_output(
         }
     }
 
-    apply_ast_compatibility_flags(&mut parse_output.ast, &table);
-    project_regex_diagnostics(&mut parse_output, &table);
-
-    RegexParseOutput { parse_output, regex_analysis: table }
+    table
 }
 
 fn profile_at(environment: &CompileTimePragmaEnvironment, offset: usize) -> CaptureLanguageProfile {
@@ -324,16 +524,33 @@ fn pattern_is_compatible(kind: &NodeKind, geometry: &RegexFamilyGeometry) -> boo
 }
 
 fn apply_ast_compatibility_flags(node: &mut Node, table: &RegexAnalysisTable) {
-    let expected = ExpectedFamily::for_node(&node.kind);
-    let embedded = expected
+    // Only a record that actually analyzed the body is an authority on embedded code.
+    //
+    // A record whose geometry was unavailable, or a node with no record at all, has
+    // nothing to say about it — and writing that silence into the flag would clear
+    // evidence the parser had already found while publishing no canonical finding to
+    // replace it, since the projection emits nothing for such a record either. Leaving
+    // the parser's own flag intact keeps the compatibility lint as the floor. Dedup is
+    // unaffected: suppression is matched against canonical embedded-code spans, and an
+    // unanalyzed record contributes none, so the finding is still published exactly
+    // once.
+    //
+    // No input reached this branch in probing (varied delimiters, nesting, recovered
+    // forms, and multiple operators per document all produced one `Analyzed` record per
+    // regex-family node), so this guards a latent hazard rather than an observed
+    // failure. The previous unconditional write meant reachability was the only thing
+    // standing between the code and a lost security diagnostic.
+    let analyzed = ExpectedFamily::for_node(&node.kind)
         .and_then(|family| record_for_node(table, node.location, family))
-        .is_some_and(RegexAnalysisRecord::has_embedded_code);
+        .filter(|record| record.availability == RegexAnalysisAvailability::Analyzed);
 
     match &mut node.kind {
         NodeKind::Regex { has_embedded_code, .. }
         | NodeKind::Match { has_embedded_code, .. }
         | NodeKind::Substitution { has_embedded_code, .. } => {
-            *has_embedded_code = embedded;
+            if let Some(record) = analyzed {
+                *has_embedded_code = record.has_embedded_code();
+            }
         }
         _ => {}
     }
@@ -535,41 +752,130 @@ impl RetentionInput {
 
 #[derive(Debug)]
 struct PendingGeometrySession {
+    /// Identity of the guard that pushed this entry, so a session finished out of
+    /// order cannot pop and consume a different session's geometry.
+    id: u64,
+    /// Address of the exact buffer this session was begun for.
+    ///
+    /// Length alone is not identity. Two documents of the same length would
+    /// otherwise both satisfy the admission test, so a parse of one could
+    /// contribute geometry to a table built from the other — spans anchored in
+    /// text nobody analyzed, carrying a digest that still matches. Comparing the
+    /// buffer address as well means only the parse this session actually wraps
+    /// can contribute.
+    source_ptr: usize,
     source_len: usize,
     geometries: Vec<RegexFamilyGeometry>,
 }
 
 impl PendingGeometrySession {
-    fn for_source(source: &str) -> Self {
-        Self { source_len: source.len(), geometries: Vec::new() }
+    /// Open a session bound to the exact buffer `source` names.
+    fn for_source(id: u64, source: &str) -> Self {
+        Self {
+            id,
+            source_ptr: source.as_ptr() as usize,
+            source_len: source.len(),
+            geometries: Vec::new(),
+        }
+    }
+
+    /// The stand-in used when a guard finds no entry of its own to retire.
+    ///
+    /// Its `id` is `0`, which [`next_session_id`] never issues, and its null
+    /// address matches no live buffer — so it can neither be mistaken for a real
+    /// session nor admit geometry through [`Self::owns`].
+    fn empty() -> Self {
+        Self { id: 0, source_ptr: 0, source_len: 0, geometries: Vec::new() }
+    }
+
+    /// Whether `source` is the exact buffer this session was begun for.
+    fn owns(&self, source: &str) -> bool {
+        self.source_ptr == source.as_ptr() as usize && self.source_len == source.len()
     }
 }
 
+/// Source of session identities. Thread-local, so no two live sessions on a thread
+/// share an id and the counter never needs to be synchronized.
+fn next_session_id() -> u64 {
+    thread_local! {
+        static NEXT_SESSION_ID: std::cell::Cell<u64> = const { std::cell::Cell::new(1) };
+    }
+    NEXT_SESSION_ID.with(|next| {
+        let id = next.get();
+        next.set(id.saturating_add(1));
+        id
+    })
+}
+
+#[derive(Debug)]
 struct PendingGeometryGuard {
     active: bool,
+    id: u64,
 }
 
 impl PendingGeometryGuard {
     fn begin(source: &str) -> Self {
+        let id = next_session_id();
         ACTIVE_GEOMETRY_SESSIONS.with(|sessions| {
-            sessions.borrow_mut().push(PendingGeometrySession::for_source(source));
+            sessions.borrow_mut().push(PendingGeometrySession::for_source(id, source));
         });
-        Self { active: true }
+        Self { active: true, id }
     }
 
-    fn finish(mut self) -> PendingGeometrySession {
-        let pending = ACTIVE_GEOMETRY_SESSIONS.with(|sessions| sessions.borrow_mut().pop());
+    /// Remove this guard's own entry, wherever it sits, and report whether it was
+    /// the active one.
+    ///
+    /// Removal is by identity rather than by position. Retiring only the stack top
+    /// would leave a buried entry behind forever: `finish` consumes the guard, so
+    /// nothing runs `Drop` afterwards to clean it up. A leaked entry keeps
+    /// [`has_active_session`] true for the rest of the thread's life, which charges
+    /// every later parse the whole-source `from_utf8` check that guard exists to
+    /// avoid, and the stack grows once per out-of-order finish without bound.
+    ///
+    /// Identity is also what keeps the original hazard closed: this guard can never
+    /// take a *different* parse's entry, which it would then anchor against its own
+    /// source.
+    fn retire(&mut self) -> Retired {
         self.active = false;
-        pending.unwrap_or(PendingGeometrySession { source_len: 0, geometries: Vec::new() })
+        ACTIVE_GEOMETRY_SESSIONS.with(|sessions| {
+            let mut sessions = sessions.borrow_mut();
+            let Some(index) = sessions.iter().position(|session| session.id == self.id) else {
+                return Retired::Missing;
+            };
+            let was_top = index + 1 == sessions.len();
+            let session = sessions.remove(index);
+            if was_top { Retired::Active(session) } else { Retired::Buried }
+        })
     }
+
+    /// This guard's own session, or `None` when it was finished out of order.
+    ///
+    /// A buried session stopped receiving geometry the moment a nested session was
+    /// pushed, so what it holds is partial. Retaining nothing keeps the caller on
+    /// the honest path — `collect_ast_geometry` re-derives what it needs from the
+    /// tree — rather than binding a half-populated session to a complete digest.
+    fn finish(mut self) -> Option<PendingGeometrySession> {
+        match self.retire() {
+            Retired::Active(session) => Some(session),
+            Retired::Buried | Retired::Missing => None,
+        }
+    }
+}
+
+/// Outcome of removing a guard's entry from the session stack.
+enum Retired {
+    /// The entry was the active session; its geometry is complete and usable.
+    Active(PendingGeometrySession),
+    /// The entry was below a nested session, so its geometry is partial.
+    Buried,
+    /// No entry carried this guard's identity.
+    Missing,
 }
 
 impl Drop for PendingGeometryGuard {
     fn drop(&mut self) {
         if self.active {
-            ACTIVE_GEOMETRY_SESSIONS.with(|sessions| {
-                let _ = sessions.borrow_mut().pop();
-            });
+            let _ = self.retire();
         }
     }
 }
@@ -696,11 +1002,47 @@ mod tests {
             // A different source length cannot belong to this session; accepting it
             // would bind geometry to bytes the table was not built from.
             assert!(!record_operator_geometry("my $x = /ab/;", 8));
-            let pending = session.finish();
+            let pending = session.finish().expect("the guard owns the active session");
             assert_eq!(pending.source_len, source.len());
         }
         // The session is popped on drop, so the next ordinary parse is unaffected.
         assert!(!record_operator_geometry(source, 8));
+    }
+
+    /// An out-of-order finish must retire its own entry, not abandon it.
+    ///
+    /// `finish` consumes the guard, so nothing runs `Drop` behind it. Retiring only
+    /// the stack top therefore leaks the buried entry permanently: the thread keeps
+    /// reporting an active session forever, and every later parse pays the
+    /// whole-source `from_utf8` check that `has_active_session` exists to skip.
+    ///
+    /// Only reachable from inside the crate, because `has_active_session` is the
+    /// state that leaks and it is `pub(crate)`.
+    #[test]
+    fn an_out_of_order_finish_leaves_no_orphaned_session_behind() {
+        let outer_source = "my $a = qr/(a+)+b/;\n";
+        let inner_source = "my $a = qr/(x+)-b/;\n";
+
+        assert!(!has_active_session(), "the thread starts clean");
+
+        let outer = PendingGeometryGuard::begin(outer_source);
+        let inner = PendingGeometryGuard::begin(inner_source);
+
+        // Finish the outer guard while the inner one is still active.
+        assert!(outer.finish().is_none(), "a buried session retains nothing");
+        assert!(has_active_session(), "the inner session is still legitimately active");
+
+        assert!(inner.finish().is_some(), "the inner guard owns the active session");
+        assert!(
+            !has_active_session(),
+            "both sessions are finished, so nothing may remain on the stack"
+        );
+
+        // The observable consequence of a leak: the hook would still engage here.
+        assert!(
+            !record_operator_geometry(outer_source, 8),
+            "no session is active, so an ordinary parse keeps the compatibility path"
+        );
     }
 
     #[test]
@@ -709,7 +1051,7 @@ mod tests {
         let session = PendingGeometryGuard::begin(source);
         assert!(record_operator_geometry(source, 8));
         assert!(record_operator_geometry(source, 8));
-        let pending = session.finish();
+        let pending = session.finish().expect("the guard owns the active session");
         assert_eq!(
             pending.geometries.len(),
             1,
