@@ -30,6 +30,16 @@
 //! destructure them. Trait implementations remain governed through their trait
 //! contract rather than being counted as inherent members.
 //!
+//! What a row governs: an item's **identity** (`kind:path`) and its cfg gate.
+//! It does not govern the item's shape — a function signature, a field or
+//! payload type, a generic parameter or bound can all change while every row
+//! stays current and the check stays green. So this ledger answers "is this
+//! symbol still published, under the same gate, and who consumes it", not "is
+//! its contract unchanged"; a semver-style shape check is a different
+//! instrument, and `cargo-semver-checks` already runs in this repository for
+//! the published crates. Stated here because a row that reconciles clean is
+//! easy to read as a stronger guarantee than it is.
+//!
 //! Boundary of member governance: members are governed for types **defined in
 //! this crate**, including a type defined in a private module and republished
 //! by a `pub use`. A type re-exported from *another* crate — `Node`,
