@@ -6,7 +6,7 @@
   "source_snapshot": {
     "path_class": "public_test_fixture",
     "fixture_source": "crates/perl-corpus/fixtures/parser_accuracy/imports_exports.pl",
-    "content_hash": "sha256:9f2b1c0d4e5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c"
+    "content_hash": "sha256:93560f3327f5e851d102fd4aae5f846dc07bf64fb24187712ac82e3245ec7466"
   },
   "rust_extractor": {
     "name": "oracle-import-export-extractor",

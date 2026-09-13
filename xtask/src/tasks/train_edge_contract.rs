@@ -1518,7 +1518,19 @@ pub fn run() -> Result<()> {
                 "{bundle}: adapted document violates the shared contract: {:?}",
                 violation_codes(&violations)
             ));
-        } else {
+        }
+        // An adapted document declares `schema: train_edge_contract.v1` and
+        // `schema_version: 1`, so it claims to be a full contract document and
+        // must satisfy the published schema, not only the Rust reader. Without
+        // this a later schema constraint could diverge from what adaptation
+        // emits while this task stayed green (#14268).
+        failures.extend(validate_payload_against_schema(
+            &schema,
+            SCHEMA_PATH,
+            &adapted,
+            &format!("{bundle} (adapted)"),
+        )?);
+        if violations.is_empty() {
             let total: usize = kind_counts.values().sum();
             let summary: Vec<String> =
                 kind_counts.iter().map(|(kind, count)| format!("{kind}={count}")).collect();

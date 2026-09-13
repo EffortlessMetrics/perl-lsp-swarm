@@ -3,6 +3,7 @@
 use crate::utils::project_root;
 use color_eyre::eyre::{Context, Result, bail};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
@@ -139,6 +140,15 @@ fn collect(root: &Path) -> Result<(ValidationStats, Vec<String>)> {
         RECEIPT_PATH,
     )?);
 
+    // The schema constrains `source_snapshot.content_hash` only to a non-empty
+    // string, so it cannot tell a real digest from a plausible-looking one. A
+    // canonical receipt that names a committed fixture and then reports a digest
+    // those bytes do not have asserts provenance it does not hold, and every
+    // fact in the receipt is scoped to that snapshot. Recompute it here so the
+    // claim stays bound to the source, and so editing the fixture cannot leave
+    // this receipt quietly stale.
+    verify_source_snapshot_digest(root, &receipt, &mut violations);
+
     let stats = ValidationStats {
         required_fields: REQUIRED_TOP_LEVEL_FIELDS.len(),
         comparison_classes: REQUIRED_COMPARISON_CLASSES.len(),
@@ -147,6 +157,59 @@ fn collect(root: &Path) -> Result<(ValidationStats, Vec<String>)> {
         receipts_applied: 1,
     };
     Ok((stats, violations))
+}
+
+/// Recompute `source_snapshot.content_hash` from the bytes of the file
+/// `source_snapshot.fixture_source` names, and report a violation when the two
+/// disagree.
+///
+/// Only the `sha256:` form is recognised. An unknown algorithm prefix is a
+/// violation rather than a silent pass: accepting it would let a receipt opt
+/// out of this check by renaming its prefix.
+fn verify_source_snapshot_digest(root: &Path, receipt: &Value, violations: &mut Vec<String>) {
+    let Some(source) =
+        lookup(receipt, &["source_snapshot", "fixture_source"]).and_then(Value::as_str)
+    else {
+        violations.push(format!("{RECEIPT_PATH}: source_snapshot.fixture_source must be a string"));
+        return;
+    };
+    let Some(declared) =
+        lookup(receipt, &["source_snapshot", "content_hash"]).and_then(Value::as_str)
+    else {
+        violations.push(format!("{RECEIPT_PATH}: source_snapshot.content_hash must be a string"));
+        return;
+    };
+
+    let Some(declared_hex) = declared.strip_prefix("sha256:") else {
+        violations.push(format!(
+            "{RECEIPT_PATH}: source_snapshot.content_hash must carry the `sha256:` prefix; got {declared:?}"
+        ));
+        return;
+    };
+
+    let path = root.join(source);
+    let bytes = match fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            violations.push(format!(
+                "{RECEIPT_PATH}: source_snapshot.fixture_source {source} is not readable: {error}"
+            ));
+            return;
+        }
+    };
+
+    let actual = Sha256::digest(&bytes).iter().fold(String::new(), |mut out, byte| {
+        use std::fmt::Write as _;
+        let _ = write!(out, "{byte:02x}");
+        out
+    });
+    // Hex case carries no meaning in a digest, so compare case-insensitively
+    // rather than failing a receipt that spelled it in upper case.
+    if !actual.eq_ignore_ascii_case(declared_hex) {
+        violations.push(format!(
+            "{RECEIPT_PATH}: source_snapshot.content_hash is sha256:{declared_hex}; {source} hashes to sha256:{actual}"
+        ));
+    }
 }
 
 fn read_schema(root: &Path, rel: &str) -> Result<Value> {
@@ -435,13 +498,72 @@ mod tests {
         workspace(current_schema_text(), receipt_text)
     }
 
+    /// The Perl fixture the canonical receipt names as its source snapshot.
+    /// Embedded so the digest check runs against the same bytes the committed
+    /// receipt was computed from, without the temp workspace depending on the
+    /// real corpus layout.
+    const SOURCE_FIXTURE: &str =
+        include_str!("../../../crates/perl-corpus/fixtures/parser_accuracy/imports_exports.pl");
+
     fn workspace(schema_text: String, receipt_text: String) -> TestResult<tempfile::TempDir> {
         let tempdir = tempfile::tempdir()?;
         fs::create_dir_all(tempdir.path().join("schemas"))?;
         fs::create_dir_all(tempdir.path().join("fixtures/oracle_receipt"))?;
+        fs::create_dir_all(tempdir.path().join("crates/perl-corpus/fixtures/parser_accuracy"))?;
         fs::write(tempdir.path().join(SCHEMA_PATH), schema_text)?;
         fs::write(tempdir.path().join(RECEIPT_PATH), receipt_text)?;
+        fs::write(
+            tempdir.path().join("crates/perl-corpus/fixtures/parser_accuracy/imports_exports.pl"),
+            SOURCE_FIXTURE,
+        )?;
         Ok(tempdir)
+    }
+
+    /// The committed receipt's digest must match the committed fixture. This is
+    /// the regression guard for the false digest a review caught: the schema
+    /// bounds `content_hash` only to a non-empty string, so nothing else in the
+    /// task could tell a real digest from a plausible-looking one.
+    #[test]
+    fn canonical_receipt_digest_matches_the_committed_source() -> TestResult {
+        let root = project_root()?;
+        let receipt = read_schema(&root, RECEIPT_PATH)?;
+        let mut violations = Vec::new();
+
+        verify_source_snapshot_digest(&root, &receipt, &mut violations);
+
+        assert!(violations.is_empty(), "{violations:?}");
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_receipt_whose_digest_does_not_match_its_source() -> TestResult {
+        let violations = assert_receipt_rejected("wrong content hash", |receipt| {
+            receipt["source_snapshot"]["content_hash"] =
+                Value::String(format!("sha256:{}", "0".repeat(64)));
+        })?;
+
+        assert!(
+            violations.iter().any(|violation| violation.contains("hashes to sha256:")),
+            "the violation must report the digest actually computed: {violations:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_receipt_whose_digest_prefix_is_not_sha256() -> TestResult {
+        assert_receipt_rejected("unknown digest algorithm", |receipt| {
+            receipt["source_snapshot"]["content_hash"] = Value::String("md5:deadbeef".to_string());
+        })?;
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_receipt_naming_a_source_that_does_not_exist() -> TestResult {
+        assert_receipt_rejected("missing source", |receipt| {
+            receipt["source_snapshot"]["fixture_source"] =
+                Value::String("crates/perl-corpus/fixtures/parser_accuracy/absent.pl".to_string());
+        })?;
+        Ok(())
     }
 
     fn current_receipt_text() -> String {

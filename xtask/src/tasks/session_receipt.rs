@@ -601,6 +601,35 @@ mod tests {
         Ok(())
     }
 
+    /// `sample_receipt` is a hand-written value, so validating only it leaves
+    /// the real construction path unbound: environment-dependent fields
+    /// (`captured_at`, the fail-closed `None` cases, `warn_threshold`) come from
+    /// `build_receipt`, not from the sample. Validate what `run` would actually
+    /// write.
+    ///
+    /// `run` itself deliberately does not hard-fail on a schema violation: it is
+    /// an advisory session-start hook, and turning a receipt-shape regression
+    /// into a startup failure would trade a reporting defect for an
+    /// availability one. This test is where that shape is bound instead.
+    #[test]
+    fn receipt_built_from_the_real_repository_satisfies_its_schema() -> Result<()> {
+        let root = project_root()?;
+        let schema_path = root.join(".ci/receipts/schemas/session-start.schema.json");
+        let schema: serde_json::Value = serde_json::from_str(&fs::read_to_string(&schema_path)?)?;
+
+        let receipt = build_receipt(&root, None, None, 20)?;
+        let value = serde_json::to_value(&receipt)?;
+
+        let violations = validate_payload_against_schema(
+            &schema,
+            ".ci/receipts/schemas/session-start.schema.json",
+            &value,
+            "session-start receipt (built)",
+        )?;
+        assert!(violations.is_empty(), "built receipt violates its schema: {violations:?}");
+        Ok(())
+    }
+
     /// Discriminating control for #14268: each mutation keeps the receipt's
     /// key set exactly as the schema declares it, so the required/properties
     /// comparison above stays green, and only the applied schema rejects it.
