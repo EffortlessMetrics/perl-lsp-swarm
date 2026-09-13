@@ -1,0 +1,30 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+#
+# Issue #10301 remains open; this branch records a bounded subset. The `cc`
+# entries below are ordinary proptest persistence seeds. The replay controls
+# are predetermined decoder vectors, not crash-derived corpus evidence.
+cc 3e3edc91b77add66e7cf868c4f1f70d9fdf9259ad2271e416a8ef99708203785 # shrinks to case = GeneratedCase { seed: 0, schema_version: 1, family: LexicalDeclaration, disposition: "generator.skeleton", subject: Subject { text: "", clean_parse_by_construction: false }, target: Document, profile: Profile { keyword_spacing: Space, brace_placement: SameLine, final_newline: Preserve, line_ending: Lf }, expects_refusal: true }
+cc ea1827d72aee9ec17051ffa0e9e509628c79aae566b8875fab66f1910acf5e80 # shrinks to seed = 0, index = 0
+cc a027de85ef60642ed6ba2e56b049a76459367c8b57ccb1e66996b46c2babacaa # shrinks to case = GeneratedCase { seed: 0, schema_version: 1, family: LexicalDeclaration, disposition: "generator.skeleton", subject: Subject { text: "", clean_parse_by_construction: true }, target: Document, profile: Profile { keyword_spacing: Space, brace_placement: SameLine, final_newline: Preserve, line_ending: Lf }, expects_refusal: false }
+cc e97da14b819ab5d2d6a508fa65350b418d8a6bf660a7ff43092845e474412636 # shrinks to case = GeneratedCase { seed: 0, schema_version: 1, family: LexicalDeclaration, disposition: "generator.skeleton", subject: Subject { text: "", clean_parse_by_construction: true }, target: Document, profile: Profile { keyword_spacing: Space, brace_placement: SameLine, final_newline: Preserve, line_ending: Lf }, expects_refusal: false }
+cc 16afdb9a77d528fb6eef63e57d9e2ba3c2ad886eba27b3413574c3c9a8ac08fe # shrinks to seed = 0, index = 0
+cc 47299c1f641506209121cae62ef306498c69a40224fd9725656215febecec764 # shrinks to case = GeneratedCase { seed: 4008407488000767412, schema_version: 1, family: ConditionalBlock, disposition: "mutator.keyword_gap", subject: Subject { text: "\tif ($x){return 1;} # note", clean_parse_by_construction: true }, target: Document, profile: Profile { keyword_spacing: Compact, brace_placement: SameLine, final_newline: Preserve, line_ending: Mixed }, expects_refusal: false }
+cc e9c4453aa180210363ed8cb49608037189a37bd48c089e66844a6a225a526dd3 # shrinks to case = GeneratedCase { seed: 3884912738634991937, schema_version: 1, family: LoopBlock, disposition: "mutator.keyword_gap", subject: Subject { text: "  while ($n){next;}", clean_parse_by_construction: true }, target: Document, profile: Profile { keyword_spacing: Compact, brace_placement: SameLine, final_newline: Preserve, line_ending: Mixed }, expects_refusal: false }
+cc 2c8116db5ba7e0e9a9a43fdc66aa3303c255f2bf4548b12d75ec376a45bf71a7 # shrinks to case = GeneratedCase { seed: 11318640723303869039, schema_version: 1, family: ConditionalBlock, disposition: "generator.conditional_block", subject: Subject { text: "\tif($x){return 1;} # note", clean_parse_by_construction: true }, target: Document, profile: Profile { keyword_spacing: Compact, brace_placement: SameLine, final_newline: Preserve, line_ending: Mixed }, expects_refusal: false }
+cc 0cdfd8423b2a264de4e0cf30144b752e491c499aa2df6bc5e829c9013647e1ea # shrinks to case = GeneratedCase { seed: 16003302313137172560, schema_version: 1, family: ConditionalBlock, disposition: "generator.conditional_block", subject: Subject { text: "  unless($ok){next;} # note", clean_parse_by_construction: true }, target: Document, profile: Profile { keyword_spacing: Compact, brace_placement: NextLine, final_newline: Preserve, line_ending: Mixed }, expects_refusal: false }
+cc 74361d6550ab9eae145dc487c04061c6f3dd867b0b90947b549c64ee653c7e65 # shrinks to seed = 3525089012754461813, index = 31
+cc 3fab19d6ccd9d14cd8f6dfdcacbef001e7b9cce5e4ad8b8af30025946b529f90 # shrinks to seed = 11561439700946367915, index = 46
+# Property-tier decoder/replay controls, replayed with full (seed, selector)
+# fidelity through the shared `case_from_fuzz_input` decoder. They exercise
+# the valid path, the invalidation path, and low and high index bands. No
+# completed cargo fuzz run has produced a crash artifact for this claim, so
+# runtime fuzz execution remains NOT_PROVEN.
+# replay-control seed=0000000000000042 selector=2a
+# replay-control seed=0102030405060708 selector=a5
+# replay-control seed=deadbeefcafebabe selector=80
+# replay-control seed=0123456789abcdef selector=3f
