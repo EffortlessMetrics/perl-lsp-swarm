@@ -348,6 +348,32 @@ def governed_rows(
     return rows, overlap_detected
 
 
+def merge_governed_rows(
+    base_rows: list[dict[str, Any]], candidate_rows: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Union two governed-row sets by surface id, widening matched paths.
+
+    Base metadata wins where a surface exists on both sides: the base manifest
+    is the trusted statement of what a surface *requires*. The candidate only
+    contributes applicability -- which paths are governed -- so a candidate
+    cannot weaken an existing row's evidence requirements, only bring more
+    paths (or a new surface) under review.
+    """
+    merged: dict[str, dict[str, Any]] = {}
+    for row in base_rows:
+        merged[row["surface_id"]] = dict(row)
+    for row in candidate_rows:
+        surface_id = row["surface_id"]
+        existing = merged.get(surface_id)
+        if existing is None:
+            merged[surface_id] = dict(row)
+            continue
+        existing["matched_paths"] = sorted(
+            set(existing["matched_paths"]) | set(row["matched_paths"])
+        )
+    return [merged[key] for key in sorted(merged)]
+
+
 # ---------------------------------------------------------------------------
 # Reviewer-packet classification (agent_review_packet.v1, exact-head)
 # ---------------------------------------------------------------------------
@@ -462,6 +488,23 @@ def validate_packet(
             and subject_text.strip()
         ):
             covered_refs.append(ref)
+
+    # The closed contract requires nonempty changed-evidence identities beside
+    # the changed authorities. Reading only `authorities` let a packet delete
+    # subject.changed.evidence entirely and still publish PASS_CURRENT_REVIEW,
+    # which the canonical schema rejects.
+    evidence_rows = packet_field(packet, "subject", "changed", "evidence")
+    if not isinstance(evidence_rows, list) or not evidence_rows:
+        return fail(NOT_PROVEN_SUBJECT, "changed_evidence_absent")
+    for evidence_row in evidence_rows:
+        if not isinstance(evidence_row, dict):
+            return fail(FAIL_ARTIFACT_REVIEW_INCOMPLETE, "malformed_changed_evidence")
+        kind = evidence_row.get("kind")
+        identity = evidence_row.get("identity")
+        if not all(
+            isinstance(value, str) and value.strip() for value in (kind, identity)
+        ):
+            return fail(NOT_PROVEN_SUBJECT, "changed_evidence_identity_unbound")
 
     roles = packet.get("roles")
     if not isinstance(roles, list) or not roles:
@@ -799,6 +842,28 @@ def evaluate(inputs: dict[str, Any]) -> dict[str, Any]:
             del error
         if changed_files or not truncated:
             governed, overlap_detected = governed_rows(doc, changed_files)
+            # Applicability is the union of the base and candidate denominators,
+            # never the base alone. A candidate that adds a surface binding and
+            # changes that newly governed path in the same commit is invisible
+            # to the base manifest, so the row never resolves and the run
+            # reports PASS_NOT_APPLICABLE for governed work.
+            #
+            # Union, not replacement, and it only ever widens governance: the
+            # base keeps binding every path it already bound, so a candidate
+            # cannot escape review by deleting its own binding, and the worst a
+            # hostile candidate achieves by adding one is more required
+            # evidence against itself.
+            if candidate_root is not None:
+                try:
+                    candidate_doc = load_manifest_document(candidate_root)
+                except ValueError:
+                    candidate_doc = {}
+                if candidate_doc:
+                    candidate_rows, candidate_overlap = governed_rows(
+                        candidate_doc, changed_files
+                    )
+                    governed = merge_governed_rows(governed, candidate_rows)
+                    overlap_detected = overlap_detected or candidate_overlap
         if truncated:
             global_results.append(NOT_PROVEN_GITHUB)
         if overlap_detected:

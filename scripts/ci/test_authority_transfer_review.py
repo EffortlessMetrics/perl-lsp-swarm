@@ -576,6 +576,76 @@ class AuthorityTransferReviewTests(unittest.TestCase):
             atr.FAIL_FIRST_FALSIFIER_MISSING, receipt["packets"][0]["verdict"]
         )
 
+    def test_candidate_added_binding_is_governed_not_invisible(self) -> None:
+        # A PR that adds a surface binding and changes that newly governed path
+        # in the same commit is invisible to the base manifest, so the row never
+        # resolves and the run reports PASS_NOT_APPLICABLE for governed work.
+        # Applicability is the union of both denominators.
+        import shutil
+        import tomllib
+
+        new_path = "newly/governed/thing.rs"
+        candidate = self.base.parent / "candidate-tree"
+        if candidate.exists():
+            shutil.rmtree(candidate)
+        shutil.copytree(self.base, candidate)
+        manifest = candidate / atr.DEFAULT_MANIFEST
+        text = manifest.read_text(encoding="utf-8")
+        anchor = 'paths = [\n  "src/authority/**",'
+        self.assertIn(anchor, text)
+        text = text.replace(
+            anchor, f'paths = [\n  "{new_path}",\n  "src/authority/**",', 1
+        )
+        manifest.write_text(text, encoding="utf-8", newline="\n")
+        (candidate / atr.DEFAULT_PROJECTION).write_text(
+            atr.vrs.render_projection(tomllib.loads(text)),
+            encoding="utf-8",
+            newline="\n",
+        )
+
+        # Base alone cannot see it.
+        self.assertEqual(
+            atr.PASS_NOT_APPLICABLE, self.evaluate([new_path], [])["result"]
+        )
+
+        # With the candidate denominator in play the row resolves.
+        receipt = self.evaluate([new_path], [], candidate_root=candidate)
+        self.assertNotEqual(atr.PASS_NOT_APPLICABLE, receipt["result"])
+        self.assertIn(
+            "authority_catalog",
+            [row["surface_id"] for row in receipt["governed_rows"]],
+        )
+
+    def test_candidate_cannot_escape_governance_by_dropping_its_binding(self) -> None:
+        # The union only ever widens. A candidate that deletes a binding the
+        # base still carries stays governed by the base row.
+        import shutil
+
+        candidate = self.base.parent / "candidate-stripped"
+        if candidate.exists():
+            shutil.rmtree(candidate)
+        shutil.copytree(self.base, candidate)
+        manifest = candidate / atr.DEFAULT_MANIFEST
+        text = manifest.read_text(encoding="utf-8")
+        manifest.write_text(
+            text.replace('"src/authority/**",', "", 1), encoding="utf-8", newline="\n"
+        )
+        receipt = self.evaluate(GOVERNED_CHANGED, [], candidate_root=candidate)
+        self.assertIn(
+            "authority_catalog",
+            [row["surface_id"] for row in receipt["governed_rows"]],
+        )
+
+    def test_packet_without_changed_evidence_is_not_a_current_review(self) -> None:
+        # The closed contract requires nonempty changed-evidence identities;
+        # reading only `authorities` let a packet delete them and still pass.
+        body = packet_body("semantic_close_authority", HEAD)
+        del body["subject"]["changed"]["evidence"]
+        packet = self.write_packet("no-evidence.json", body)
+        receipt = self.evaluate(GOVERNED_CHANGED, [packet])
+        self.assertNotEqual(atr.PASS_CURRENT_REVIEW, receipt["result"])
+        self.assertEqual(atr.NOT_PROVEN_SUBJECT, receipt["packets"][0]["verdict"])
+
     def test_cli_self_test_flag_runs_green(self) -> None:
         buffer = io.StringIO()
         with redirect_stdout(buffer):
