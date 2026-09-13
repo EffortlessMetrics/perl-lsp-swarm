@@ -3719,7 +3719,6 @@ impl<'a> BodyBuilder2<'a> {
                 let labelled = direct_label.is_some();
                 let postfix_loop_region =
                     if loop_form && !labelled { Some(self.alloc_loop_region()) } else { None };
-                let postfix_label = None;
                 let statement_id = self.lower_statement(statement);
                 let condition_id = self.lower_expr(condition);
                 self.alloc_stmt(
@@ -3728,7 +3727,6 @@ impl<'a> BodyBuilder2<'a> {
                         condition: condition_id,
                         verb,
                         postfix_loop_region,
-                        postfix_label,
                     },
                     range,
                 )

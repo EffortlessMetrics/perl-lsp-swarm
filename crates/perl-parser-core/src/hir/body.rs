@@ -56,19 +56,31 @@ pub struct HirBlockId(pub u32);
 /// Stable body-local identity for a control region that can receive a Perl
 /// loop-control transfer (`next`, `last`, `redo`).
 ///
-/// Region IDs are allocated in body source order as loops are lowered, so the
-/// identity is stable across identical inputs. Consumers such as PIR-A and
-/// downstream verifiers must use this ID rather than reconstructing the target
-/// from raw source ranges, flat-HIR shells, or label strings (see #13249).
+/// Consumers such as PIR-A and downstream verifiers must use this ID rather
+/// than reconstructing the target from raw source ranges, flat-HIR shells, or
+/// label strings (see #13249).
 ///
 /// The identity is scoped to one [`HirBody`]: two different bodies may allocate
 /// the same numeric value for unrelated regions, so a region ID has meaning
 /// only inside the [`HirBody`] that produced it.
 ///
-/// Both ordinary structured loops ([`HirExpr::Loop`]) and loop-form postfix
-/// modifiers ([`HirStmt::PostfixCondition`] with `postfix_loop_region: Some(_)`)
-/// allocate region IDs. Branch-form modifiers (`if`/`unless`) never do —
-/// they are not loop targets.
+/// # Allocation contract
+///
+/// Within one body, region IDs are dense from 0, unique, and deterministic —
+/// identical input yields identical IDs. A region is allocated *before* its own
+/// children are lowered, so an enclosing loop always holds a lower ID than a
+/// loop nested inside it.
+///
+/// That is the whole ordering guarantee. IDs follow the lowerer's traversal,
+/// which is **not** a lexical source ordering in general: a C-style `for`
+/// lowers its update expression after its body, so a region in the update gets
+/// a higher ID than one in the body even though it appears earlier in source.
+/// A consumer that needs source ordering must sort by the node's source range
+/// (via [`BodySourceMap`]) rather than by region ID.
+///
+/// Ordinary structured loops ([`HirExpr::Loop`]) always allocate a region.
+/// Postfix modifiers allocate one only in the unlabelled loop form — see
+/// [`HirStmt::PostfixCondition::postfix_loop_region`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct HirLoopRegionId(u32);
 
@@ -701,17 +713,21 @@ pub enum HirStmt {
         condition: HirExprId,
         /// Postfix modifier verb.
         verb: StatementModifierKind,
-        /// Body-local loop-region identity when this postfix modifier acts as
-        /// a loop (`STMT while COND`, `STMT until COND`, `STMT for LIST`,
-        /// `STMT foreach LIST`), and `None` for the branch-form modifiers
-        /// `if`/`unless` — which are never loop targets (#13249).
+        /// Body-local loop-region identity for an **unlabelled** loop-form
+        /// postfix modifier (`STMT while COND`, `STMT until COND`,
+        /// `STMT for LIST`, `STMT foreach LIST`).
+        ///
+        /// `None` in two cases. Branch-form modifiers (`if`/`unless`) are
+        /// never loop targets. A modifier carrying a label written directly
+        /// on it (`LOOP: $x++ while $c`) is wrapped by a non-loop labelled
+        /// region instead, so `last LOOP` there resolves to `NonLoopTarget` —
+        /// matching Perl, where a statement-modifier loop is not a
+        /// `next`/`last` target. A label on an enclosing construct does not
+        /// suppress the region: only a direct label does (#13249).
+        ///
+        /// The identity is allocation-only. A postfix modifier is not an
+        /// enclosing loop, so transfers inside it keep resolving outward.
         postfix_loop_region: Option<HirLoopRegionId>,
-        /// Optional controlling label inherited from an enclosing `LABEL:`
-        /// statement, applicable only to loop-form postfix modifiers.
-        /// Branch-form modifiers ignore any pending label so that a
-        /// `LABEL: STMT if COND;` does not silently misclassify the label as
-        /// a loop target (#13249).
-        postfix_label: Option<HirLoopLabel>,
     },
 }
 

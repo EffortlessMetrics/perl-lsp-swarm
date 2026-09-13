@@ -70,8 +70,10 @@ fn collect_loops(body: &HirBody) -> Vec<&HirExpr> {
     body.exprs.iter().filter(|&e| matches!(e, HirExpr::Loop { .. })).collect()
 }
 
-/// Loops sorted by their stable region ID (which is allocated in body
-/// source order). `[0]` is the outermost-first loop, `[1]` the next, etc.
+/// Loops sorted by their stable region ID. For the sibling/nesting shapes
+/// used here that coincides with source order, but region IDs follow the
+/// lowerer's traversal in general — see
+/// [`region_ids_are_dense_deterministic_and_outer_before_nested`].
 fn loops_by_region_id(body: &HirBody) -> Vec<&HirExpr> {
     let mut loops = collect_loops(body);
     loops.sort_by_key(|e| match e {
@@ -404,13 +406,13 @@ fn branch_form_postfix_never_becomes_a_loop_target() -> TestResult {
     // A labelled branch-form postfix. The label must be absorbed by the
     // labelled statement wrapper as a non-loop labelled region — the `if`
     // postfix itself must remain a non-loop, and `postfix_loop_region` /
-    // `postfix_label` must both stay `None`.
+    // must stay `None`.
     let file = parse("BLK: $x = 1 if $ready;");
     let body = root_body(&file)?;
     let block = root_block(body)?;
     let stmt =
         body.stmt(*block.stmts.first().ok_or("root has no statements")?).ok_or("stmt missing")?;
-    let HirStmt::PostfixCondition { verb, postfix_loop_region, postfix_label, .. } = stmt else {
+    let HirStmt::PostfixCondition { verb, postfix_loop_region, .. } = stmt else {
         return Err(format!("expected postfix condition, got {stmt:?}").into());
     };
     assert!(matches!(verb, StatementModifierKind::If));
@@ -418,7 +420,6 @@ fn branch_form_postfix_never_becomes_a_loop_target() -> TestResult {
         postfix_loop_region.is_none(),
         "branch-form `if` postfix must never allocate a loop region"
     );
-    assert!(postfix_label.is_none(), "branch-form postfix must never carry a loop label");
     Ok(())
 }
 
@@ -430,12 +431,11 @@ fn labelled_loop_form_postfix_is_not_a_target() -> TestResult {
     let block = root_block(body)?;
     let stmt =
         body.stmt(*block.stmts.first().ok_or("root has no statements")?).ok_or("stmt missing")?;
-    let HirStmt::PostfixCondition { verb, postfix_loop_region, postfix_label, .. } = stmt else {
+    let HirStmt::PostfixCondition { verb, postfix_loop_region, .. } = stmt else {
         return Err(format!("expected postfix condition, got {stmt:?}").into());
     };
     assert!(matches!(verb, StatementModifierKind::While));
     assert!(postfix_loop_region.is_none());
-    assert!(postfix_label.is_none());
     Ok(())
 }
 
@@ -449,11 +449,10 @@ fn last_inside_labelled_postfix_loop_does_not_create_a_target() -> TestResult {
     let block = root_block(body)?;
     let stmt =
         body.stmt(*block.stmts.first().ok_or("root has no statements")?).ok_or("stmt missing")?;
-    let HirStmt::PostfixCondition { postfix_loop_region, postfix_label, .. } = stmt else {
+    let HirStmt::PostfixCondition { postfix_loop_region, .. } = stmt else {
         return Err(format!("expected postfix condition, got {stmt:?}").into());
     };
     assert!(postfix_loop_region.is_none());
-    assert!(postfix_label.is_none());
     let controls = collect_loop_controls(body);
     assert_eq!(controls.len(), 1);
     let (written, resolved, disposition) = loop_control(controls[0]);
@@ -725,5 +724,45 @@ fn directly_labelled_postfix_loop_still_mints_no_region() -> TestResult {
         })
         .collect();
     assert_eq!(regions, vec![None], "a directly-labelled loop-form modifier mints no region");
+    Ok(())
+}
+
+/// The documented allocation contract for region IDs: dense from 0, unique,
+/// deterministic across identical input, and allocated before a region's own
+/// children so an enclosing loop always holds a lower ID than one nested in
+/// it. Consumers index per-region tables by these IDs, so a gap, a duplicate,
+/// or run-to-run drift would corrupt the join.
+#[test]
+fn region_ids_are_dense_deterministic_and_outer_before_nested() -> TestResult {
+    let source = "OUTER: while ($a) { INNER: while ($b) { last OUTER; } } while ($c) { }";
+
+    let collect = || -> Result<Vec<u32>, Box<dyn Error>> {
+        let file = parse(source);
+        let body = root_body(&file)?;
+        let mut ids: Vec<u32> =
+            collect_loops(body).iter().map(|l| loop_region(l).as_u32()).collect();
+        ids.sort_unstable();
+        Ok(ids)
+    };
+
+    let ids = collect()?;
+    assert_eq!(ids, vec![0, 1, 2], "region IDs must be dense from 0 with no gaps or duplicates");
+    assert_eq!(ids, collect()?, "identical input must yield identical region IDs");
+
+    // A region is allocated before its own children are lowered, so the outer
+    // loop holds a strictly lower ID than the loop nested inside it.
+    let file = parse(source);
+    let body = root_body(&file)?;
+    let labelled = |wanted: &str| -> Option<u32> {
+        collect_loops(body).into_iter().find_map(|l| match l {
+            HirExpr::Loop { region_id, label: Some(label), .. } if label.name == wanted => {
+                Some(region_id.as_u32())
+            }
+            _ => None,
+        })
+    };
+    let outer = labelled("OUTER").ok_or("OUTER loop is missing")?;
+    let inner = labelled("INNER").ok_or("INNER loop is missing")?;
+    assert!(outer < inner, "an enclosing loop must hold a lower region ID than a nested one");
     Ok(())
 }

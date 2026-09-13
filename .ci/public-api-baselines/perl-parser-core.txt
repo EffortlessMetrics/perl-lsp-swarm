@@ -1376,7 +1376,6 @@ pub perl_parser_core::hir::HirStmt::LoopControl::verb: perl_parser_core::hir::Lo
 pub perl_parser_core::hir::HirStmt::LoopControl::written_label: core::option::Option<alloc::string::String>
 pub perl_parser_core::hir::HirStmt::PostfixCondition
 pub perl_parser_core::hir::HirStmt::PostfixCondition::condition: perl_parser_core::hir::HirExprId
-pub perl_parser_core::hir::HirStmt::PostfixCondition::postfix_label: core::option::Option<perl_parser_core::hir::HirLoopLabel>
 pub perl_parser_core::hir::HirStmt::PostfixCondition::postfix_loop_region: core::option::Option<perl_parser_core::hir::HirLoopRegionId>
 pub perl_parser_core::hir::HirStmt::PostfixCondition::statement: perl_parser_core::hir::HirStmtId
 pub perl_parser_core::hir::HirStmt::PostfixCondition::verb: perl_parser_core::hir::StatementModifierKind
