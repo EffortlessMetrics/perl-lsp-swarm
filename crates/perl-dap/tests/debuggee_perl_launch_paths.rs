@@ -82,6 +82,7 @@ fn find_configured_or_path_pipe_perl() -> Result<Option<PathBuf>, Box<dyn Error>
 #[test]
 #[cfg(windows)]
 #[serial(dap_debuggee_environment)]
+#[allow(clippy::print_stderr)]
 fn pinned_native_probe_uses_piped_stdio_bootstrap() -> Result<(), Box<dyn Error>> {
     let _emacs = EnvGuard::remove("EMACS");
     let _perl_rl = EnvGuard::remove("PERL_RL");
