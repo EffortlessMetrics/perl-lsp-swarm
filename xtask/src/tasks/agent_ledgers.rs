@@ -626,8 +626,15 @@ fn check_close_proof(proof: Option<&Value>, classification: &str, errors: &mut V
         }
         Some(Value::String(prose)) => {
             if prose.trim().is_empty() {
+                errors.push("`close_proof` must not be empty".to_string());
+            } else if required {
+                // CLOSE_PROOF_POLICY.md requires landing proof *and* separate
+                // semantic-completion evidence. A prose string carries neither in
+                // machine-checkable form, so it cannot authorize a gated close.
                 errors.push(format!(
-                    "classification `{classification}` requires non-empty `close_proof`"
+                    "classification `{classification}` requires the structured `close_proof` object of \
+                     pr-ledger.schema.json; a prose string carries no landing receipt or \
+                     semantic-completion evidence (CLOSE_PROOF_POLICY.md)"
                 ));
             }
         }
@@ -831,9 +838,11 @@ mod tests {
 
     // ----- helpers ----------------------------------------------------------
 
+    /// A conforming structured close proof, per `docs/agents/pr-ledger.schema.json`.
+    const STRUCTURED_CLOSE_PROOF: &str = r#"{"command":"cargo xtask landing-proof --commit abc1234 --canonical-main origin/main --format json","receipt":{"schema_version":"landing_proof.v1","commit_reachable":true,"commit":"abc1234","canonical_main":"origin/main","semantic_completion":"not_evaluated"},"semantic_completion_evidence":"semantic-close packet #1100","verified_date":"2026-06-07"}"#;
+
     const PR_TRIAGE_HEADER: &str = "#!ledger-schema: pr-triage.v1";
     const WORKFLOW_HEADER: &str = "#!ledger-schema: workflow-outcome.v1";
-    const UB_HEADER: &str = "#!ledger-schema: ub-review-calibration.v1";
 
     fn valid_row() -> &'static str {
         r#"{"pr":"1234","title":"fix: thing","classification":"unclassified","confidence":"medium","evidence":[],"cleanup_done":false,"known_gaps":[]}"#
@@ -1169,16 +1178,44 @@ mod tests {
         Ok(())
     }
 
+    /// A structured close proof satisfies both gated classifications.
     #[test]
-    fn test_close_superseded_with_close_proof_valid() -> Result<()> {
-        let line = r#"{"pr":"42","title":"chore: drop","classification":"close-superseded","confidence":"high","evidence":["git merge-base proof"],"cleanup_done":true,"known_gaps":[],"close_proof":"abc1234 is ancestor of main"}"#;
-        ensure!(line_errors(line).is_empty(), "got: {:?}", line_errors(line));
+    fn test_gated_classifications_accept_a_structured_close_proof() -> Result<()> {
+        for classification in CLOSE_PROOF_REQUIRED {
+            let line = format!(
+                r#"{{"pr":"42","title":"chore: drop","classification":"{classification}","confidence":"high","evidence":["landing proof"],"cleanup_done":true,"known_gaps":[],"close_proof":{STRUCTURED_CLOSE_PROOF}}}"#
+            );
+            let errs = line_errors(&line);
+            ensure!(errs.is_empty(), "{classification}: structured proof rejected: {errs:?}");
+        }
         Ok(())
     }
 
+    /// Prose is not machine-checkable evidence, so it cannot authorize a gated close.
+    ///
+    /// `CLOSE_PROOF_POLICY.md` requires landing proof *and* separate
+    /// semantic-completion evidence; a free string carries neither. This is the
+    /// control that keeps the prose escape hatch shut for the two classifications
+    /// that close work.
     #[test]
-    fn test_duplicate_of_merged_with_close_proof_valid() -> Result<()> {
-        let line = r#"{"pr":"99","title":"dup","classification":"duplicate-of-merged","confidence":"high","evidence":["PR #98"],"cleanup_done":false,"known_gaps":["still open"],"close_proof":"sha abc merged via PR #98"}"#;
+    fn test_gated_classifications_reject_prose_close_proof() -> Result<()> {
+        for classification in CLOSE_PROOF_REQUIRED {
+            let line = format!(
+                r#"{{"pr":"42","title":"chore: drop","classification":"{classification}","confidence":"high","evidence":[],"cleanup_done":true,"known_gaps":[],"close_proof":"abc1234 is ancestor of main"}}"#
+            );
+            let msg = first_msg(&line);
+            ensure!(
+                msg.contains("requires the structured `close_proof` object"),
+                "{classification}: prose close proof accepted, got `{msg}`"
+            );
+        }
+        Ok(())
+    }
+
+    /// An ungated row may still carry a prose note; only closes are gated.
+    #[test]
+    fn test_ungated_classification_accepts_prose_close_proof() -> Result<()> {
+        let line = r#"{"pr":"7","title":"t","classification":"deferred","confidence":"low","evidence":[],"cleanup_done":false,"known_gaps":[],"close_proof":"context for a later wave"}"#;
         ensure!(line_errors(line).is_empty(), "got: {:?}", line_errors(line));
         Ok(())
     }
@@ -1199,7 +1236,7 @@ mod tests {
                 r#"{{"pr":"1","title":"t","classification":"{classification}","confidence":"high","evidence":[],"cleanup_done":false,"known_gaps":[],"close_proof":"  "}}"#
             );
             ensure!(
-                first_msg(&empty).contains("non-empty `close_proof`"),
+                first_msg(&empty).contains("`close_proof` must not be empty"),
                 "{classification}: empty close_proof accepted"
             );
 

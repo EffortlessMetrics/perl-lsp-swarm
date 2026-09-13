@@ -44,6 +44,20 @@ The F8 catch-all (`_ => {}`) must not survive: no wrong-typed value may pass as
   `close-superseded` or `duplicate-of-merged`. This rule exists to prevent the 29-PR
   false-close class recorded in `workflow-outcomes.jsonl` row 2 and
   `CLOSE_PROOF_POLICY.md`; it must keep its own passing negative control.
+
+  The rule is **strengthened**, not merely preserved. For those two gated
+  classifications the proof must now be the structured object of
+  `pr-ledger.schema.json`, whose receipt is checked constant by constant
+  (`landing_proof.v1`, reachable commit of at least 7 characters,
+  `semantic_completion = not_evaluated`). A prose string is rejected for a gated
+  close: `CLOSE_PROOF_POLICY.md` requires landing proof **and** separate
+  semantic-completion evidence, and a free string carries neither in
+  machine-checkable form. Prose remains acceptable on ungated rows, where
+  `close_proof` is an incidental note rather than close authorization.
+
+  This is a deliberate tightening beyond the pre-change behavior, which accepted any
+  non-empty string. It costs no compatibility: `pr-triage.v1` is inert — no committed
+  `.jsonl` declares it.
 - The 13 pr-triage `classification` values and 3 `confidence` values remain enforced.
 - Blank lines and `#` comment lines remain skipped.
 - A missing ledger directory remains a non-error.
