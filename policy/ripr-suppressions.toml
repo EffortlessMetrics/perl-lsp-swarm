@@ -3512,6 +3512,28 @@ created = "2026-09-13"
 review_after = "2026-09-20"
 expires = "2026-09-27"
 removal_criteria = "Remove when #12617 wires the first production consumer (re-scope the suppression to that consumer's seams) or when ripr#1429 resolves declaration-line and newtype-declaration probes; narrow immediately if a future receipt reports an executable (non-declaration) no_static_path seam in this file."
+# Mojo::Base object-fact producer (#9682): a registry-activated fact producer
+# landed ahead of its consumer. The adapter disposition is
+# `AdapterDisposition::Shadow`, so no provider reads these modules and the SDK
+# authority validator refuses the output as publication authority — the
+# not-yet-wired substrate boundary of the PLSP-ADR-0006 workspace-core entry,
+# at declaration-line ripr#1429 class.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-mojo-base-object-facts-not-yet-wired"
+kind = "declaration_line_no_static_path"
+paths = [
+    "crates/perl-semantic-facts/src/framework_adapters/mojo_base_facts.rs",
+    "crates/perl-semantic-analyzer/src/analysis/mojo_base_attributes.rs",
+]
+classification = ["no_static_path"]
+owner = "proof-lane"
+issue = "EffortlessMetrics/ripr#1429"
+reason = "PR #14807 (#9682): measured with pinned ripr 0.10.0 running CI's producer, 46 no_static_path probes (32 in mojo_base_facts.rs, 14 in mojo_base_attributes.rs), 42 of them family `field_construction` on declaration lines — enum variant and struct field declarations such as `reason: String`, `Literal(String)` and `None,`. Per-declaration probes cannot trace activation because nothing in production calls these modules: the Mojo::Base adapter disposition is Shadow by construction and #9684 is the consumer this producer exists to unblock. TESTS-FIRST OBLIGATION IS MET, not deferred: reachable_unrevealed is 0 in the same run, so ripr found no reachable seam this proof fails to discriminate. The behavior is pinned by 88 tests across the two modules plus the end-to-end seam in crates/perl-semantic-analyzer/tests/mojo_base_object_facts.rs, with 27 guards each proven by a controlled mutation that fails one named test. HONEST SCOPE NOTE, and it differs from the quickorm_api sibling: that entry rests on the registry module's contract forbidding behavior, which is NOT true here — these modules contain real executable extraction and minting logic. The protection is the classification scoping instead: only `no_static_path` is suppressed, so a reachable_unrevealed seam in either file still blocks the gate on its merits, and weakly_exposed stays advisory-visible per #3363. What this window does mask is a future declaration-line probe in these two files. Remove when #9684 wires a production consumer (then re-scope to that consumer's findings), or when ripr#1429 resolves declaration-line probes via constructor-call paths."
+created = "2026-09-13"
+review_after = "2026-09-20"
+expires = "2026-10-13"
+removal_criteria = "Remove when #9684 gives these modules their first production consumer and ripr can trace them for real (re-scope to that consumer's seams), or when ripr#1429 resolves declaration-line probes; narrow immediately if the no_static_path count in these files rises for a reason other than added declarations."
 
 # -----------------------------------------------------------------------------
 # Field-trait decoder declaration owners and removed-predicate probes (#13449,
