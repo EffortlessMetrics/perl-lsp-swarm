@@ -19,27 +19,25 @@ These are the propositions it rests on:
 
 from __future__ import annotations
 
+import importlib.util
 import os
 import re
-import types
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-# Compiled from source rather than loaded through importlib: importlib consults
-# __pycache__, which can serve stale bytecode when an edited source keeps the
-# same size and mtime. That window is not reachable in the two places this suite
-# runs (both fresh checkouts, and scripts/__pycache__/ is gitignored), but this
-# module decides whether a gate is skipped, so it is read from the exact bytes
-# on disk. The neighbouring scripts/ci/ helper tests still use the importlib
-# idiom; converging them is follow-up work, not this candidate's scope.
+# Loaded the same way as the neighbouring scripts/ci/ helper tests
+# (test_scope_cache_key.py, test_run_gate_shard.py). A compile()/exec() loader
+# would avoid importlib's __pycache__ consultation, but the stale-bytecode
+# window needs an edit preserving both size and mtime, and the two surfaces this
+# suite runs on are fresh checkouts with scripts/__pycache__/ gitignored. If the
+# repository adopts that loader it should move all three helpers together rather
+# than diverge here.
 SCRIPT = Path(__file__).with_name("candidate_proof_presence.py")
-presence = types.ModuleType("candidate_proof_presence")
-presence.__file__ = str(SCRIPT)
-exec(  # noqa: S102 - trusted repository source, compiled from exact bytes
-    compile(SCRIPT.read_text(encoding="utf-8"), str(SCRIPT), "exec"),
-    presence.__dict__,
-)
+SPEC = importlib.util.spec_from_file_location("candidate_proof_presence", SCRIPT)
+assert SPEC is not None and SPEC.loader is not None
+presence = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(presence)
 
 REPO_ROOT = Path(os.environ.get("A3_REPO_ROOT", Path(__file__).resolve().parents[2]))
 WORKFLOW_PATH = ".github/workflows/workflow-policy.yml"
