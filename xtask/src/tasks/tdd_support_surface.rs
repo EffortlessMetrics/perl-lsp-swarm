@@ -1507,27 +1507,51 @@ fn referenced_symbols(crate_dir: &Path) -> Result<BTreeSet<String>> {
 /// `use perl_tdd_support as support;`, `use perl_tdd_support::{self as support};`
 /// and `extern crate perl_tdd_support as support;`.
 ///
-/// Aliases are collected file-wide before references are scanned, so a path
-/// spelled through the alias counts as a reference to the crate. A file scope
-/// is an over-approximation of Rust's module scope; it can only add
-/// references, never hide one, which is the safe direction for a consumer
-/// inventory.
+/// Every binding in the file is collected, at any depth — an alias inside an
+/// inline module, a block or a function body counts exactly as one at the top.
+/// Inspecting only `File.items` would have missed those, and a path spelled
+/// through a missed alias is a consumer edge that silently disappears: the
+/// crate reads as `declared_unused` or `must_only` when it is neither. That is
+/// the one direction this inventory must not err in, because #8605 migrates
+/// against it.
+///
+/// Aliases are then applied file-wide rather than per lexical scope. That is a
+/// deliberate over-approximation, kept for the same reason: a file-wide alias
+/// set can only add references, never hide one. Resolving each path against
+/// the bindings visible at its own location would be more precise and strictly
+/// more dangerous here — precision lets the scan *drop* an edge, and a
+/// shadowed alias is the only case it would buy, at the cost of a scope stack
+/// through the whole scan. The cost of the approximation is bounded and
+/// stated: if some unrelated `use other::thing as support;` shadows a real
+/// `perl_tdd_support` alias of the same name, references under the shadow are
+/// still attributed to the governed crate.
 fn crate_aliases(file: &syn::File) -> BTreeSet<String> {
     let mut aliases = BTreeSet::new();
-    for item in &file.items {
-        match item {
-            Item::Use(node) => collect_root_aliases(&node.tree, false, &mut aliases),
-            Item::ExternCrate(node) => {
-                if node.ident == SUBJECT_ROOT_PATH
-                    && let Some((_, rename)) = &node.rename
-                {
-                    aliases.insert(rename.to_string());
-                }
-            }
-            _ => {}
-        }
-    }
+    let mut collector = AliasCollector { aliases: &mut aliases };
+    syn::visit::Visit::visit_file(&mut collector, file);
     aliases
+}
+
+/// Walks the whole tree for bindings of the governed crate root, so that
+/// aliases below file scope are found before references are scanned.
+struct AliasCollector<'a> {
+    aliases: &'a mut BTreeSet<String>,
+}
+
+impl<'ast> syn::visit::Visit<'ast> for AliasCollector<'_> {
+    fn visit_item_use(&mut self, node: &'ast syn::ItemUse) {
+        collect_root_aliases(&node.tree, false, self.aliases);
+        syn::visit::visit_item_use(self, node);
+    }
+
+    fn visit_item_extern_crate(&mut self, node: &'ast syn::ItemExternCrate) {
+        if node.ident == SUBJECT_ROOT_PATH
+            && let Some((_, rename)) = &node.rename
+        {
+            self.aliases.insert(rename.to_string());
+        }
+        syn::visit::visit_item_extern_crate(self, node);
+    }
 }
 
 fn collect_root_aliases(tree: &syn::UseTree, under_root: bool, out: &mut BTreeSet<String>) {

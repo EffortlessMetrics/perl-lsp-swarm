@@ -1600,14 +1600,86 @@ fn self_rename_and_extern_crate_aliases_are_tracked() -> Result<()> {
 
 #[test]
 fn an_alias_of_another_crate_does_not_create_references() -> Result<()> {
+    // Mentions the governed crate in prose only, so the file is actually
+    // parsed and scanned rather than skipped by the cheap substring filter.
     let dir = consumer_dir(
-        "use some_other_crate as support;\n\
+        "//! Does not depend on perl_tdd_support.\n\
+         use some_other_crate as support;\n\
          use support::must;\n\
          pub fn go() { let _ = must(1); }\n",
     )?;
     let referenced = referenced_symbols(&dir.path().join("consumer"))?;
     if !referenced.is_empty() {
         bail!("an alias of an unrelated crate must not count, found {referenced:?}");
+    }
+    Ok(())
+}
+
+#[test]
+fn an_alias_declared_inside_an_inline_module_is_still_tracked() -> Result<()> {
+    let dir = consumer_dir(
+        "pub mod inner {\n\
+         \x20   use perl_tdd_support as support;\n\
+         \x20   pub fn go() { support::tdd_basic::TestGenerator::new(); }\n\
+         }\n",
+    )?;
+    let referenced = referenced_symbols(&dir.path().join("consumer"))?;
+    if referenced != names(&["tdd_basic"]) {
+        bail!("an alias bound in an inline module must resolve, found {referenced:?}");
+    }
+    Ok(())
+}
+
+#[test]
+fn an_alias_declared_inside_a_function_body_is_still_tracked() -> Result<()> {
+    let dir = consumer_dir(
+        "pub fn go() {\n\
+         \x20   use perl_tdd_support as support;\n\
+         \x20   use support::must;\n\
+         \x20   let _ = must(Ok::<(), ()>(()));\n\
+         \x20   support::bdd::noop();\n\
+         }\n",
+    )?;
+    let referenced = referenced_symbols(&dir.path().join("consumer"))?;
+    if referenced != names(&["bdd", "must"]) {
+        bail!("an alias bound in a function body must resolve, found {referenced:?}");
+    }
+    Ok(())
+}
+
+#[test]
+fn a_nested_extern_crate_rename_is_still_tracked() -> Result<()> {
+    let dir = consumer_dir(
+        "pub mod inner {\n\
+         \x20   extern crate perl_tdd_support as legacy;\n\
+         \x20   pub fn go() { legacy::governance::noop(); }\n\
+         }\n",
+    )?;
+    let referenced = referenced_symbols(&dir.path().join("consumer"))?;
+    if referenced != names(&["governance"]) {
+        bail!("a nested `extern crate` rename must resolve, found {referenced:?}");
+    }
+    Ok(())
+}
+
+#[test]
+fn a_shadowing_local_alias_is_over_approximated_not_dropped() -> Result<()> {
+    // The documented cost of a file-wide alias set: `support` is bound to the
+    // governed crate at the top and shadowed inside `inner`. The scan still
+    // attributes `support::must` there. This asserts the approximation the
+    // module docs claim, and pins its direction — an extra edge, never a
+    // missing one, which is the only direction #8605 can migrate against.
+    let dir = consumer_dir(
+        "use perl_tdd_support as support;\n\
+         pub fn outer() { support::bdd::noop(); }\n\
+         pub mod inner {\n\
+         \x20   use some_other_crate as support;\n\
+         \x20   pub fn go() { support::must(1); }\n\
+         }\n",
+    )?;
+    let referenced = referenced_symbols(&dir.path().join("consumer"))?;
+    if referenced != names(&["bdd", "must"]) {
+        bail!("expected the over-approximation to keep both names, found {referenced:?}");
     }
     Ok(())
 }
