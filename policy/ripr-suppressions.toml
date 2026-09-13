@@ -3472,6 +3472,62 @@ expires = "2026-09-23"
 removal_criteria = "Remove when the registry gains a production consumer (re-scope suppression to that consumer's seams) or when ripr#1429 resolves declaration-line probes for data rows; narrow immediately if any executable (non-declaration) code lands in this file."
 
 # -----------------------------------------------------------------------------
+# PR #13565 (#13360) adds the stack-increment admission/result trust-boundary
+# module. Hosted RIPR 0.10.0 (run 34736098538, head ebf57ab5e, evaluated merge
+# tree 00111226) reports 165 no_static_path probes — field_construction on
+# struct-field/const declaration lines across delta.rs, mod.rs, plan.rs,
+# result.rs, subject.rs, tests.rs, the ci-stack task wiring, and the
+# stack_local route-profile constant. The falsification is decisive for the
+# ripr#1429 declaration-line class: xtask/tests/stack_increment_seam_proof.rs
+# constructs the public structs literally (DeltaPath, ChildDelta,
+# StackSubjectInput, StackPlanRequest, StackResultInput) and drives
+# parse -> subject -> plan -> result -> explanation with accepting and
+# refusing assertions, yet the blocking count was identical (165) before and
+# after that seam test landed — declaration-line probes on non-primitive
+# fields do not resolve through struct-literal construction (same class as
+# the #12049 reachability-contract and #13397 no_panic_debt entries).
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-13360-stack-increment-declaration-seams"
+kind = "declaration_line_no_static_path"
+paths = ["xtask/src/stack_increment/*", "xtask/src/stack_increment/**", "xtask/src/tasks/ci_stack_increment.rs", "xtask/src/tasks/gates/route_profile.rs"]
+classification = ["no_static_path"]
+owner = "proof-lane"
+issue = "#13360"
+reason = "PR #13565 (#13360): 165 no_static_path field_construction probes on declaration lines (pub struct fields, consts, and error-code tables) across the new stack_increment module, its ci-stack task wiring, and the stack_local route-profile constant. Executable seams remain proven by the module's unit tests (cross-repository admission refusals, malformed rename rows, forged rowless results, canonical delta/subject/selector digests, protected-main promotion refusal) plus the external xtask/tests/stack_increment_seam_proof.rs integration test, which constructs every public struct literally and asserts both accepting and refusing branches — and the blocking count did not move, confirming the ripr#1429 declaration-line class rather than a coverage gap. Suppression is path-scoped and no_static_path-only; any reachable_unrevealed or other blocking classification in these files still gates, except the single declaration-line probe dispositioned by the companion entry below."
+created = "2026-09-13"
+review_after = "2026-10-13"
+expires = "2026-12-13"
+removal_criteria = "Remove when EffortlessMetrics/ripr#1429 traces declaration-line field_construction owners to same-crate or integration tests; then delete this entry and expect the stack_increment unit tests plus xtask/tests/stack_increment_seam_proof.rs to clear the seams without it. Do not extend this entry to any other classification."
+
+# -----------------------------------------------------------------------------
+# Companion single-probe entry for the same PR: RIPR reports one
+# reachable_unrevealed probe (probe:xtask_src_stack_increment_result.rs:
+# field_construction:be152ed4, result.rs:340) on the declaration line of the
+# `parent_state: ParentPrerequisiteState` parameter of
+# classify_context_status, stop_reason fixture_opaque. Tests reach and
+# discriminate the parameter: unit tests assert Failed -> BlockedParent,
+# Passed -> CurrentSuccess, and None -> NotReported, and the external seam
+# proof constructs StackResultInput with parent_state Some(Passed) and
+# asserts CurrentSuccess; the tracer cannot reveal a declaration-line
+# field_construction mutation through fixture-opaque construction — the same
+# ripr#1429 class as the entry above, reported under a different
+# classification.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-13360-result-parent-state-declaration"
+kind = "declaration_line_no_static_path"
+paths = ["xtask/src/stack_increment/result.rs"]
+classification = ["reachable_unrevealed"]
+owner = "proof-lane"
+issue = "#13360"
+reason = "PR #13565 (#13360): a single reachable_unrevealed field_construction probe on the declaration line of classify_context_status's parent_state parameter (result.rs:340, probe be152ed4, stop_reason fixture_opaque, run 34736098538). The parameter's behavior is discriminated by unit tests (ParentPrerequisiteState::Failed -> BlockedParent, Passed -> CurrentSuccess, None -> NotReported) and by the external seam-proof integration test; RIPR cannot reveal the declaration-line mutation through fixture-opaque construction. HONEST SCOPE NOTE: the matcher is file-scoped and classification-qualified, so a future genuine reachable_unrevealed executable seam in result.rs would be masked for this window — review at review_after and narrow or remove immediately if any receipt reports a non-declaration reachable_unrevealed probe here."
+created = "2026-09-13"
+review_after = "2026-10-13"
+expires = "2026-11-13"
+removal_criteria = "Remove when EffortlessMetrics/ripr#1429 resolves declaration-line probes via constructor/fixture call paths, or immediately narrow if a receipt reports a non-declaration reachable_unrevealed seam in this file."
+
+# -----------------------------------------------------------------------------
 # PR #14650 (#12616) adds the compiler transformation law/plan/result contract
 # vocabulary as one dependency-neutral in-memory module. ripr 0.10.0 reports
 # 140 no_static_path probes in it: 117 family field_construction on
