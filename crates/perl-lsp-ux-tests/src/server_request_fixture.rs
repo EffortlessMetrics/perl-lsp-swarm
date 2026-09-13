@@ -288,12 +288,12 @@ mod tests {
     fn conversation(registration_first: bool, show_document_response: bool) -> Result<Vec<Value>> {
         let registration_response = json!({
             "jsonrpc": "2.0",
-            "id": REGISTRATION_ID,
+            "id": 41,
             "result": {"registered": true}
         });
         let progress_response = json!({
             "jsonrpc": "2.0",
-            "id": PROGRESS_ID,
+            "id": "fixture-progress",
             "result": {"created": true}
         });
         let mut responses = vec![
@@ -306,7 +306,7 @@ mod tests {
             json!({"jsonrpc": "2.0", "method": "initialized"}),
             json!({
                 "jsonrpc": "2.0",
-                "id": CONFIGURATION_ID,
+                "id": "fixture-configuration",
                 "result": [{"perlPath": "fixture-perl"}]
             }),
         ];
@@ -320,7 +320,7 @@ mod tests {
         if show_document_response {
             responses.push(json!({
                 "jsonrpc": "2.0",
-                "id": SHOW_DOCUMENT_ID,
+                "id": "fixture-show-document",
                 "result": {"shown": true}
             }));
         }
@@ -347,18 +347,18 @@ mod tests {
         let messages = conversation(true, true)?;
         ensure!(message_at(&messages, 0)?.get("id") == Some(&json!(1)));
         ensure!(message_at(&messages, 1)?.get("method") == Some(&json!("workspace/configuration")));
-        ensure!(message_at(&messages, 1)?.get("id") == Some(&json!(CONFIGURATION_ID)));
+        ensure!(message_at(&messages, 1)?.get("id") == Some(&json!("fixture-configuration")));
         ensure!(
             message_at(&messages, 2)?.get("method") == Some(&json!("client/registerCapability"))
         );
-        ensure!(message_at(&messages, 2)?.get("id") == Some(&json!(REGISTRATION_ID)));
+        ensure!(message_at(&messages, 2)?.get("id") == Some(&json!(41)));
         ensure!(
             message_at(&messages, 3)?.get("method")
                 == Some(&json!("window/workDoneProgress/create"))
         );
-        ensure!(message_at(&messages, 3)?.get("id") == Some(&json!(PROGRESS_ID)));
+        ensure!(message_at(&messages, 3)?.get("id") == Some(&json!("fixture-progress")));
         ensure!(message_at(&messages, 4)?.get("method") == Some(&json!("window/showDocument")));
-        ensure!(message_at(&messages, 4)?.get("id") == Some(&json!(SHOW_DOCUMENT_ID)));
+        ensure!(message_at(&messages, 4)?.get("id") == Some(&json!("fixture-show-document")));
         let notification = message_at(&messages, 5)?;
         ensure!(notification.get("method") == Some(&json!("fixture/server-request-round-trips")));
         ensure!(
@@ -372,7 +372,9 @@ mod tests {
         ensure!(
             notification.pointer("/params/progressResponse/result/created") == Some(&json!(true))
         );
-        ensure!(notification.pointer("/params/responseOrder") == Some(&json!([41, PROGRESS_ID])));
+        ensure!(
+            notification.pointer("/params/responseOrder") == Some(&json!([41, "fixture-progress"]))
+        );
         ensure!(notification.pointer("/params/registrationWasDelayed") == Some(&json!(false)));
         ensure!(
             message_at(&messages, 6)?.pointer("/result/unexpectedShowDocumentResponse")
@@ -392,7 +394,9 @@ mod tests {
         ensure!(
             notification.pointer("/params/progressResponse/result/created") == Some(&json!(true))
         );
-        ensure!(notification.pointer("/params/responseOrder") == Some(&json!([PROGRESS_ID, 41])));
+        ensure!(
+            notification.pointer("/params/responseOrder") == Some(&json!(["fixture-progress", 41]))
+        );
         Ok(())
     }
 
@@ -480,13 +484,13 @@ mod tests {
             );
         }
 
-        require_response_pair(&json!(REGISTRATION_ID), &json!(PROGRESS_ID))?;
-        require_response_pair(&json!(PROGRESS_ID), &json!(REGISTRATION_ID))?;
+        require_response_pair(&json!(41), &json!("fixture-progress"))?;
+        require_response_pair(&json!("fixture-progress"), &json!(41))?;
         for (first, second) in [
-            (json!(REGISTRATION_ID), json!(REGISTRATION_ID)),
-            (json!(REGISTRATION_ID), json!("other")),
-            (json!(PROGRESS_ID), json!("other")),
-            (json!("other"), json!(PROGRESS_ID)),
+            (json!(41), json!(41)),
+            (json!(41), json!("other")),
+            (json!("fixture-progress"), json!("other")),
+            (json!("other"), json!("fixture-progress")),
         ] {
             let Err(error) = require_response_pair(&first, &second) else {
                 bail!("invalid response pair must fail");
@@ -654,7 +658,7 @@ mod tests {
 
         let show_document_response = json!({
             "jsonrpc": "2.0",
-            "id": SHOW_DOCUMENT_ID,
+            "id": "fixture-show-document",
             "result": {"shown": true}
         });
         let mut output = Vec::new();

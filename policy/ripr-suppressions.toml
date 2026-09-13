@@ -2993,6 +2993,20 @@ created = "2026-09-09"
 review_after = "2026-09-16"
 expires = "2026-09-23"
 removal_criteria = "Remove when ripr#1429 traces async/channel plumbing, or narrow immediately if a future receipt reports an executable seam used outside the test harness."
+
+[[suppress]]
+id = "ripr-suppress-13199-fixture-constant-declaration-seams"
+kind = "declaration_line_no_static_path"
+paths = ["crates/perl-lsp-ux-tests/src/server_request_fixture.rs"]
+classification = ["no_static_path"]
+owner = "proof-lane"
+issue = "EffortlessMetrics/ripr#1429"
+reason = "PR #13199: the hosted receipt from run 34743834914 (artifact 10314426810, evaluated merge head ffb84b756e914b259929843719ee23760c554b03, PR head ac0841244) reports new_unresolved: 4, gap_list_proven: true, and exactly four field_construction no_static_path probes on the id-constant declarations at lines 8-11 (CONFIGURATION_ID, REGISTRATION_ID, PROGRESS_ID, SHOW_DOCUMENT_ID). The preceding increment closed all 63 reachable_unrevealed probes on this file's helpers with direct discriminator tests, so reachable_unrevealed is now 0 here and this entry masks a declaration-only remainder. The four constants' values are pinned as literals by happy_path_emits_exact_ids_and_round_trip_payload, progress_first_preserves_response_mapping_and_order, serve_until_exit_covers_shutdown_and_exit_paths, and response_validation_reports_exact_errors (whose exact error text asserts 41 and \"fixture-progress\"), and by tests/ux_client_server_request_script.rs against a real child process, so a mutated constant fails tests behaviourally even though ripr cannot trace a declaration owner to them. The crate is test support per TEST_SUPPORT_CRATE_PREFIXES and ships no production behaviour; constructor-only tests for declaration owners would be proof theatre. HONEST SCOPE NOTE: the matcher is path-scoped with no line selector, so while this window is open any future no_static_path seam anywhere in this file is masked too and must be reviewed rather than silently accepted."
+created = "2026-09-13"
+review_after = "2026-09-20"
+expires = "2026-10-13"
+removal_criteria = "Remove when ripr#1429 resolves declaration-line probes via constructor/usage paths, or narrow immediately if a receipt reports an executable no_static_path seam in this file beyond the four id constants."
+
 # Exact-tree test panic-family denominator (#13397, PR #14904): RIPR reports
 # no_static_path on non-executable struct/const/field owners in the new
 # observation module. Same-file tests construct the public DTOs, call
