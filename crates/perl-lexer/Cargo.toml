@@ -24,8 +24,10 @@ tracing.workspace = true
 # For better error handling
 thiserror.workspace = true
 perl-position-tracking = { workspace = true }
+perl-source-identity = { workspace = true }
 
 [dev-dependencies]
+tempfile.workspace = true
 criterion.workspace = true
 serde_json.workspace = true
 proptest.workspace = true
