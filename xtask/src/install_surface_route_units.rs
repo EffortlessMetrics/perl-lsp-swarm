@@ -1122,6 +1122,7 @@ pub fn render_explain(report: &RouteMappingReport) -> String {
 mod tests {
     use super::*;
     use color_eyre::eyre::eyre;
+    use std::collections::BTreeSet;
 
     /// A row carrying every piece of evidence a current first-party route needs.
     /// Individual tests weaken exactly one field, so a failure names one cause.
@@ -1494,6 +1495,178 @@ mod tests {
         let second = render_explain(&explain_report(&subjects));
         assert_eq!(first, second);
         assert!(first.contains("totals\tmapped="));
+        Ok(())
+    }
+
+    /// The serialized tokens are the contract a route consumer imports, so every one
+    /// is pinned here. Without this, changing `"archive_pair_required"` to anything
+    /// else passes the whole suite: no other test reads a token, it only compares
+    /// variants.
+    #[test]
+    fn every_serialized_token_is_pinned() {
+        let shapes: [(ProductShape, &str); 8] = [
+            (ProductShape::ServerOnly, "server_only"),
+            (ProductShape::ServerDapPair, "server_dap_pair"),
+            (ProductShape::ManagedServerDapPair, "managed_server_dap_pair"),
+            (ProductShape::EditorPackage, "editor_package"),
+            (ProductShape::PackageSource, "package_source"),
+            (ProductShape::DocumentationOnly, "documentation_only"),
+            (ProductShape::NotApplicable, "not_applicable"),
+            (ProductShape::Unknown, "unknown"),
+        ];
+        for (shape, token) in shapes {
+            assert_eq!(shape.as_str(), token);
+        }
+
+        let units: [(RouteProductUnit, &str); 8] = [
+            (RouteProductUnit::ArchivePairRequired, "archive_pair_required"),
+            (RouteProductUnit::ManagedEditorPair, "managed_editor_pair"),
+            (RouteProductUnit::AdvancedServerOnly, "advanced_server_only"),
+            (RouteProductUnit::HistoricalServerOnly, "historical_server_only"),
+            (RouteProductUnit::PackageManagerOwned, "package_manager_owned"),
+            (
+                RouteProductUnit::LocalDevelopmentNonAuthoritative,
+                "local_development_non_authoritative",
+            ),
+            (RouteProductUnit::NotApplicable, "not_applicable"),
+            (RouteProductUnit::NotProven, "not_proven"),
+        ];
+        for (unit, token) in units {
+            assert_eq!(unit.as_str(), token);
+        }
+
+        let ceilings: [(ClaimCeiling, &str); 7] = [
+            (ClaimCeiling::NotProven, "not_proven"),
+            (ClaimCeiling::NoProductClaim, "no_product_claim"),
+            (ClaimCeiling::SourceRecipeOnly, "source_recipe_only"),
+            (ClaimCeiling::HistoricalOnly, "historical_only"),
+            (ClaimCeiling::LocalDevelopmentOnly, "local_development_only"),
+            (ClaimCeiling::ExternallyOwnedChannel, "externally_owned_channel"),
+            (ClaimCeiling::CurrentPublicRoute, "current_public_route"),
+        ];
+        for (ceiling, token) in ceilings {
+            assert_eq!(ceiling.as_str(), token);
+        }
+
+        let classes: [(ChannelClass, &str); 5] = [
+            (ChannelClass::FirstPartyArchive, "first_party_archive"),
+            (ChannelClass::ManagedEditor, "managed_editor"),
+            (ChannelClass::PackageManager, "package_manager"),
+            (ChannelClass::ReusableSetupAction, "reusable_setup_action"),
+            (ChannelClass::RepositoryInternal, "repository_internal"),
+        ];
+        for (class, token) in classes {
+            assert_eq!(class.as_str(), token);
+        }
+    }
+
+    /// `as_str` and the serde representation are two spellings of the same token.
+    /// If they drift, a consumer reading the JSON receipt and a consumer reading the
+    /// rendered report disagree about which unit a surface owns — so the two are
+    /// pinned against each other for every variant rather than independently.
+    #[test]
+    fn as_str_agrees_with_serde_for_every_variant() -> Result<()> {
+        fn serialized<T: Serialize>(value: T) -> Result<String> {
+            match serde_json::to_value(value)? {
+                serde_json::Value::String(token) => Ok(token),
+                other => Err(eyre!("expected a string token, got {other}")),
+            }
+        }
+
+        for shape in [
+            ProductShape::ServerOnly,
+            ProductShape::ServerDapPair,
+            ProductShape::ManagedServerDapPair,
+            ProductShape::EditorPackage,
+            ProductShape::PackageSource,
+            ProductShape::DocumentationOnly,
+            ProductShape::NotApplicable,
+            ProductShape::Unknown,
+        ] {
+            assert_eq!(serialized(shape)?, shape.as_str(), "{shape:?}");
+        }
+
+        for unit in [
+            RouteProductUnit::ArchivePairRequired,
+            RouteProductUnit::ManagedEditorPair,
+            RouteProductUnit::AdvancedServerOnly,
+            RouteProductUnit::HistoricalServerOnly,
+            RouteProductUnit::PackageManagerOwned,
+            RouteProductUnit::LocalDevelopmentNonAuthoritative,
+            RouteProductUnit::NotApplicable,
+            RouteProductUnit::NotProven,
+        ] {
+            assert_eq!(serialized(unit)?, unit.as_str(), "{unit:?}");
+        }
+
+        for ceiling in [
+            ClaimCeiling::NotProven,
+            ClaimCeiling::NoProductClaim,
+            ClaimCeiling::SourceRecipeOnly,
+            ClaimCeiling::HistoricalOnly,
+            ClaimCeiling::LocalDevelopmentOnly,
+            ClaimCeiling::ExternallyOwnedChannel,
+            ClaimCeiling::CurrentPublicRoute,
+        ] {
+            assert_eq!(serialized(ceiling)?, ceiling.as_str(), "{ceiling:?}");
+        }
+
+        for class in [
+            ChannelClass::FirstPartyArchive,
+            ChannelClass::ManagedEditor,
+            ChannelClass::PackageManager,
+            ChannelClass::ReusableSetupAction,
+            ChannelClass::RepositoryInternal,
+        ] {
+            assert_eq!(serialized(class)?, class.as_str(), "{class:?}");
+        }
+        Ok(())
+    }
+
+    /// Every reason a mapping can carry must serialize to its own stable token, and
+    /// `as_str` must agree with serde for each. A duplicate would make two distinct
+    /// blockers indistinguishable in the report a reviewer reads.
+    #[test]
+    fn reason_codes_are_distinct_and_agree_with_serde() -> Result<()> {
+        let reasons = [
+            ReasonCode::RuleEvidenceSatisfied,
+            ReasonCode::UnknownProductShape,
+            ReasonCode::UnrecognizedProductShape,
+            ReasonCode::UnrecognizedTargetChannel,
+            ReasonCode::UnrecognizedPublicationStage,
+            ReasonCode::UnrecognizedReachability,
+            ReasonCode::UnrecognizedTopologyRelationship,
+            ReasonCode::UnrecognizedDisposition,
+            ReasonCode::RegistryDispositionUnresolved,
+            ReasonCode::DispositionOutsideRule,
+            ReasonCode::PublicationStageOutsideRule,
+            ReasonCode::ReachabilityOutsideRule,
+            ReasonCode::TopologyOutsideRule,
+            ReasonCode::TopologyNotProven,
+            ReasonCode::HistoricalEvidence,
+            ReasonCode::HistoricalNonServerShape,
+            ReasonCode::HistoricalPairHasNoRouteUnit,
+            ReasonCode::SetupActionRouteOwnershipUnreviewed,
+            ReasonCode::NoProductUnitClaimed,
+            ReasonCode::PackageRecipeNotInstalledProduct,
+            ReasonCode::PackageSourceWithoutPackageChannel,
+            ReasonCode::EditorPackageWithoutProductRelation,
+            ReasonCode::ManagedPairRequiresManagedShape,
+            ReasonCode::AmbiguousRouteOwnership,
+            ReasonCode::NoRuleForShapeAndChannel,
+        ];
+        let mut seen = BTreeSet::new();
+        for reason in reasons {
+            let token = reason.as_str();
+            assert!(!token.is_empty(), "{reason:?} has an empty token");
+            assert!(seen.insert(token), "duplicate reason token {token}");
+            let encoded = match serde_json::to_value(reason)? {
+                serde_json::Value::String(value) => value,
+                other => return Err(eyre!("expected a string token, got {other}")),
+            };
+            assert_eq!(encoded, token, "{reason:?} serde/as_str drift");
+        }
+        assert_eq!(seen.len(), reasons.len());
         Ok(())
     }
 
