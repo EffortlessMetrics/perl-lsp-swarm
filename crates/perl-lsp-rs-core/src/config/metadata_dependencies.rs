@@ -1352,72 +1352,6 @@ mod tests {
     }
 
     #[test]
-    fn meta_yml_kind_without_prereqs_keeps_leaf_key() {
-        assert_eq!(
-            meta_yml_kind(&[], "requires"),
-            "requires",
-            "an empty nesting path keeps the leaf key"
-        );
-        assert_eq!(
-            meta_yml_kind(&[(0, "requires".to_string())], "requires"),
-            "requires",
-            "a nesting path without prereqs keeps the leaf key"
-        );
-    }
-
-    #[test]
-    fn meta_yml_kind_qualifies_phase_path_under_prereqs() {
-        assert_eq!(
-            meta_yml_kind(&[(0, "prereqs".to_string()), (2, "runtime".to_string())], "requires",),
-            "runtime.requires"
-        );
-        assert_eq!(
-            meta_yml_kind(
-                &[
-                    (0, "prereqs".to_string()),
-                    (2, "runtime".to_string()),
-                    (4, "platform".to_string()),
-                ],
-                "requires",
-            ),
-            "runtime.platform.requires"
-        );
-    }
-
-    #[test]
-    fn meta_yml_kind_with_no_phases_keeps_leaf_key() {
-        assert_eq!(meta_yml_kind(&[(0, "prereqs".to_string())], "requires"), "requires");
-    }
-
-    #[test]
-    fn collect_from_file_appends_distinct_meta_yml_phase_facts() -> TestResult {
-        let temp = TempDir::new()?;
-        let path = temp.path().join("META.yml");
-        fs::write(
-            &path,
-            "prereqs:\n  runtime:\n    requires:\n      Shared::Module: 1.0\n  test:\n    requires:\n      Shared::Module: 1.0\n",
-        )?;
-
-        let mut dependencies = Vec::new();
-        collect_from_file(&mut dependencies, &path, DeclaredDependencySource::MetaYml.extractor());
-
-        assert_eq!(dependencies.len(), 2);
-        assert!(dependencies.contains(&DeclaredDependency::new(
-            "Shared::Module",
-            Some("1.0"),
-            "runtime.requires",
-            DeclaredDependencySource::MetaYml,
-        )));
-        assert!(dependencies.contains(&DeclaredDependency::new(
-            "Shared::Module",
-            Some("1.0"),
-            "test.requires",
-            DeclaredDependencySource::MetaYml,
-        )));
-        Ok(())
-    }
-
-    #[test]
     fn hash_requirement_edges_have_local_oracles() {
         let source = r#"
             my $ignored = 'PREREQ_PM\\not_a_key';
@@ -1805,5 +1739,79 @@ requires 'Kept#Tag'; # drop
             vec!["Fresh::Module"],
             "an observed absence still downgrades, which is how a real delete works"
         );
+    }
+
+    #[test]
+    fn meta_yml_kind_without_prereqs_keeps_leaf_key() {
+        assert_eq!(
+            meta_yml_kind(&[], "requires"),
+            "requires",
+            "an empty nesting path keeps the leaf key"
+        );
+        assert_eq!(
+            meta_yml_kind(&[(0, "requires".to_string())], "requires"),
+            "requires",
+            "a nesting path without prereqs keeps the leaf key"
+        );
+    }
+
+    #[test]
+    fn meta_yml_kind_boundary_discriminator() {
+        let open_keys: Vec<(usize, String)> =
+            vec![(0, "prereqs".to_string()), (2, "runtime".to_string())];
+
+        assert_eq!(meta_yml_kind(&open_keys, "requires"), "runtime.requires");
+    }
+
+    #[test]
+    fn meta_yml_kind_qualifies_phase_path_under_prereqs() {
+        assert_eq!(
+            meta_yml_kind(&[(0, "prereqs".to_string()), (2, "runtime".to_string())], "requires",),
+            "runtime.requires"
+        );
+        assert_eq!(
+            meta_yml_kind(
+                &[
+                    (0, "prereqs".to_string()),
+                    (2, "runtime".to_string()),
+                    (4, "platform".to_string()),
+                ],
+                "requires",
+            ),
+            "runtime.platform.requires"
+        );
+    }
+
+    #[test]
+    fn meta_yml_kind_with_no_phases_keeps_leaf_key() {
+        assert_eq!(meta_yml_kind(&[(0, "prereqs".to_string())], "requires"), "requires");
+    }
+
+    #[test]
+    fn collect_from_file_appends_distinct_meta_yml_phase_facts() -> TestResult {
+        let temp = TempDir::new()?;
+        let path = temp.path().join("META.yml");
+        fs::write(
+            &path,
+            "prereqs:\n  runtime:\n    requires:\n      Shared::Module: 1.0\n  test:\n    requires:\n      Shared::Module: 1.0\n",
+        )?;
+
+        let mut dependencies = Vec::new();
+        collect_from_file(&mut dependencies, &path, DeclaredDependencySource::MetaYml.extractor());
+
+        assert_eq!(dependencies.len(), 2);
+        assert!(dependencies.contains(&DeclaredDependency::new(
+            "Shared::Module",
+            Some("1.0"),
+            "runtime.requires",
+            DeclaredDependencySource::MetaYml,
+        )));
+        assert!(dependencies.contains(&DeclaredDependency::new(
+            "Shared::Module",
+            Some("1.0"),
+            "test.requires",
+            DeclaredDependencySource::MetaYml,
+        )));
+        Ok(())
     }
 }
