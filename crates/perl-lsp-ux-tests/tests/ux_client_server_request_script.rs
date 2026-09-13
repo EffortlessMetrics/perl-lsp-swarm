@@ -1,4 +1,4 @@
-use anyhow::{Result, anyhow, ensure};
+use anyhow::{Result, anyhow, bail, ensure};
 use perl_lsp_ux_tests::{
     ObservedServerRequest, ScriptedServerRequest, ScriptedServerResponse, ServerRequestDelivery,
     UxClient,
@@ -101,13 +101,15 @@ fn scripted_client_cancels_long_delays_when_wait_times_out() -> Result<()> {
         ),
         ScriptedServerRequest::new(
             "client/registerCapability",
-            ScriptedServerResponse::success(Value::Null).after(Duration::from_secs(60)),
+            ScriptedServerResponse::success(Value::Null).after(Duration::from_secs(45)),
         ),
         ScriptedServerRequest::success("window/workDoneProgress/create", Value::Null),
     ];
     let client = UxClient::spawn_scripted(binary, "file:///fixture", script, wait_timeout)?;
     let started = Instant::now();
-    let error = client.wait_for_script(wait_timeout).expect_err("script wait must time out");
+    let Err(error) = client.wait_for_script(wait_timeout) else {
+        bail!("script wait must time out while a long response delay is pending");
+    };
     ensure!(error.to_string().contains("timed out"));
     drop(client);
     ensure!(
