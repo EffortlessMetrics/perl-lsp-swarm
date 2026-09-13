@@ -317,13 +317,14 @@ fn copied_native_fixture_requires_staged_core_library() -> Result<(), Box<dyn Er
 
     let backup = controls.path().join("staged-lib-backup");
     fs::rename(&staged_lib, &backup)?;
-    let failure = probe_debuggee_perl_for_test(&pinned, Duration::from_secs(10), false)
+    let failure = probe_debuggee_perl_for_test(&pinned, Duration::from_secs(10), false);
+    fs::rename(&backup, &staged_lib)?;
+    let failure = failure
         .err()
         .ok_or("copied fixture unexpectedly found perl5db without staged core library")?;
     if !failure.to_ascii_lowercase().contains("perl5db") {
         return Err(format!("missing staged library lost its diagnostic: {failure}").into());
     }
-    fs::rename(&backup, &staged_lib)?;
     probe_debuggee_perl_for_test(&pinned, Duration::from_secs(10), false)
         .map_err(|reason| format!("restored staged library was not pipe-usable: {reason}"))?;
     Ok(())
