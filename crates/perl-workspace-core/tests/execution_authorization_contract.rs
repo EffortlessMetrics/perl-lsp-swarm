@@ -3624,3 +3624,111 @@ fn an_irrelevant_override_does_not_date_the_decision() -> Result<(), Box<dyn Err
     )?;
     Ok(())
 }
+
+/// A sole refused tool is a denial, not "no tool was offered".
+///
+/// `evaluate_executable_tool` folds dispositions only once some verified tool
+/// is accepted. With every offered tool refused the gate is false and the
+/// function falls through to `REASON_NO_VERIFIED_TOOL` / `NotProven` — the
+/// answer for evidence that offered nothing. The function's own comment says
+/// these two facts "are separated before either can answer"; the all-refused
+/// case is where they were not. It matters because `NotProven` reads as
+/// actionable ("select a tool") where the user has already refused this one.
+#[test]
+fn only_a_denied_verified_tool_is_a_denial_not_no_tool() -> Result<(), Box<dyn Error>> {
+    let scope = TrustScope::editor_workspace("ws");
+    let bound = generations("ws", 1)?;
+    let refused = ClassifiedInput::new(
+        "tool.interpreter",
+        InputRiskClass::SelectedVerifiedTool,
+        EnvironmentInputAuthority::UserConfiguration,
+        InputDisposition::Denied,
+        None,
+        "user_refused_this_tool",
+    );
+
+    let decision = authorize(
+        &intent(
+            OperationProfile::RunCurrentSavedFile,
+            ExecutionReasonClass::ExplicitUserAction,
+            &scope,
+            &bound,
+            vec![refused.id.clone()],
+        ),
+        &evidence(
+            &scope,
+            WorkspaceTrust::Trusted,
+            AuthorizationActor::ExplicitUserAction { action_id: "run".to_string() },
+            &bound,
+            vec![refused],
+        ),
+    );
+
+    require(
+        decision.outcome() == AuthorizationOutcome::Denied,
+        "the only offered tool was refused, so the operation is denied",
+    )?;
+    require(
+        has_reason(&decision, "verified_tool_not_accepted"),
+        "the reason must say the tool was refused, not that none was offered",
+    )?;
+    require(
+        !has_reason(&decision, "no_verified_tool"),
+        "a refused tool must not be reported as an absent one",
+    )?;
+    Ok(())
+}
+
+/// A sole refused cadence setting is a denial, not a prompt.
+///
+/// Same gate shape in `evaluate_persistent_cadence`. With the only user-scoped
+/// setting refused, the fold never runs and the default
+/// `ConfirmationRequired` / `REASON_CADENCE_NOT_AUTHORIZED` answers instead —
+/// so an explicit refusal becomes a prompt. That is the boundary a session
+/// override is allowed to satisfy, which is the same escalation path already
+/// closed once for ambient tools.
+#[test]
+fn only_a_denied_cadence_setting_is_a_denial_not_a_prompt() -> Result<(), Box<dyn Error>> {
+    let scope = TrustScope::editor_workspace("ws");
+    let bound = generations("ws", 1)?;
+    let tool = verified_tool();
+    let disabled = ClassifiedInput::new(
+        "cadence.compile_on_save",
+        InputRiskClass::UserScopedSetting,
+        EnvironmentInputAuthority::UserConfiguration,
+        InputDisposition::Denied,
+        None,
+        "user_disabled_compile_on_save",
+    );
+
+    let decision = authorize(
+        &intent(
+            OperationProfile::TrustedCompileOnSave,
+            ExecutionReasonClass::TrustedPostSave,
+            &scope,
+            &bound,
+            ids(&[tool.clone(), disabled.clone()]),
+        ),
+        &evidence(
+            &scope,
+            WorkspaceTrust::Trusted,
+            AuthorizationActor::ExplicitUserAction { action_id: "save".to_string() },
+            &bound,
+            vec![tool, disabled],
+        ),
+    );
+
+    require(
+        decision.outcome() == AuthorizationOutcome::Denied,
+        "an explicitly disabled cadence is refused, not merely unconfirmed",
+    )?;
+    require(
+        has_reason(&decision, "cadence_setting_not_accepted"),
+        "the reason must name the refusing setting",
+    )?;
+    require(
+        !has_reason(&decision, "cadence_not_authorized"),
+        "a refusal must not be reported as a missing opt-in",
+    )?;
+    Ok(())
+}

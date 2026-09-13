@@ -2845,9 +2845,13 @@ fn evaluate_executable_tool(
         .filter(|&input| input.risk_class == InputRiskClass::SelectedVerifiedTool)
         .collect();
 
-    if verified.iter().any(|&input| input.disposition.is_accepted()) {
-        // Most restrictive wins within the class too: an accepted interpreter
-        // does not carry a refused or unconfirmed tool selected alongside it.
+    // Most restrictive wins within the class too: an accepted interpreter does
+    // not carry a refused or unconfirmed tool selected alongside it. The fold
+    // runs whenever any tool was offered, not only when one was accepted —
+    // gating it on an acceptance made the all-refused set fall through to the
+    // "nothing was offered" answer below, which is the very conflation the
+    // comment above says is separated.
+    if !verified.is_empty() {
         let (worst, blocking) = most_restrictive_disposition(&verified);
         if worst == CapabilityFinding::Granted {
             return worst;
@@ -3043,21 +3047,34 @@ fn evaluate_persistent_cadence(
         .filter(|&input| input.risk_class == InputRiskClass::UserScopedSetting)
         .collect();
 
+    // Refusal and grant are asymmetric here, so they are asked separately.
+    //
+    // Any user-scoped setting that refuses decides the answer, whatever
+    // authority it claims — withholding is not a claim to authority. Gating
+    // this on an acceptance existing left the all-refused set falling through
+    // to the "never opted in" default below, turning an explicit refusal into
+    // a prompt, which a session override is then allowed to satisfy.
+    if !settings.is_empty() {
+        let (worst, blocking) = most_restrictive_disposition(&settings);
+        if worst != CapabilityFinding::Granted {
+            reasons.push(reason(
+                REASON_CADENCE_SETTING_NOT_ACCEPTED,
+                Some(capability),
+                blocking,
+                ActionableAuthority::UserConfiguration,
+            ));
+            return worst;
+        }
+    }
+
+    // Granting still requires user or machine authority: a setting cannot
+    // manufacture it by claiming provenance. Settings accepted by a weaker
+    // authority fall through to the branches below rather than granting here.
     if settings.iter().any(|&input| {
         input.authority == EnvironmentInputAuthority::UserConfiguration
             && input.disposition.is_accepted()
     }) {
-        let (worst, blocking) = most_restrictive_disposition(&settings);
-        if worst == CapabilityFinding::Granted {
-            return worst;
-        }
-        reasons.push(reason(
-            REASON_CADENCE_SETTING_NOT_ACCEPTED,
-            Some(capability),
-            blocking,
-            ActionableAuthority::UserConfiguration,
-        ));
-        return worst;
+        return CapabilityFinding::Granted;
     }
 
     // A workspace- or resource-scoped setting cannot manufacture user or
