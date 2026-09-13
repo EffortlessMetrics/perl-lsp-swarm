@@ -77,16 +77,33 @@ def workflow_run_commands(text: str) -> tuple[str, ...]:
     and `tests/test_active_authority_contract.py` already consumes it this way.
     A second copy here would be a second authority on what "the workflow
     actually executes" -- the exact duplication this repository rejects.
-    """
-    import importlib.util
 
+    The source is compiled and executed directly rather than loaded through
+    `importlib`, which consults `__pycache__` and validates it by size and mtime:
+    an edit preserving both would run stale bytecode. That risk is small, but the
+    whole point of this borrow is to run the parser as it exists now, and this
+    suite has already shipped two guards that passed while proving nothing.
+    Only the loading mechanism differs from the sibling; the parser stays theirs.
+    """
     helper_path = ROOT / "tests" / "test_writer_authority_transfer_contract.py"
-    spec = importlib.util.spec_from_file_location("_writer_authority_helper", helper_path)
-    if spec is None or spec.loader is None:
-        raise RuntimeError(f"cannot load the run-command parser from {helper_path}")
-    helper = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(helper)
-    return helper.workflow_run_commands(text)
+    try:
+        source = helper_path.read_text(encoding="utf-8")
+    except OSError as error:
+        raise RuntimeError(
+            f"cannot read the run-command parser from {helper_path}"
+        ) from error
+    # The helper resolves ROOT from `__file__` at module scope, which a bare exec
+    # namespace does not define, and `__name__` must not be "__main__" or its
+    # unittest.main() guard would fire.
+    namespace: dict[str, object] = {
+        "__file__": str(helper_path),
+        "__name__": "_writer_authority_helper",
+    }
+    exec(compile(source, str(helper_path), "exec"), namespace)  # noqa: S102
+    borrowed = namespace.get("workflow_run_commands")
+    if not callable(borrowed):
+        raise RuntimeError(f"{helper_path} no longer defines workflow_run_commands")
+    return borrowed(text)
 
 
 def workflow_event_paths(text: str, event: str) -> tuple[str, ...]:
@@ -182,8 +199,9 @@ class ReloadLifecycleAuthorityTest(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.spec = read(SPEC)
 
-    def test_spec_exists_and_declares_current_status(self) -> None:
-        self.assertTrue((ROOT / SPEC).is_file(), f"{SPEC} is missing")
+    def test_spec_declares_current_status(self) -> None:
+        # `setUpClass` already read the spec, so a missing file fails there with a
+        # real traceback; asserting `is_file()` here could never fire.
         self.assertRegex(
             self.spec,
             re.compile(r"^Status: current$", re.MULTILINE),
