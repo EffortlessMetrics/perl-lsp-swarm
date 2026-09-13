@@ -1,0 +1,11 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: >-
+  Recover incomplete postfix dereferences with diagnostics while preserving
+  selector spans and the following statement.
+time: 2026-09-08T04:25:52Z
+custom:
+  PR: "14740"
+  Slug: postfix-recovery
+  Breaking: "no"

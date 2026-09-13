@@ -9,7 +9,28 @@
 //! the sampled read interval. Windows uses the repository's stable WinAPI
 //! `FileIdInfo` adapter when available; adapter failure remains `Unavailable`
 //! and cannot support a clean or race-detection claim.
+//!
+//! # Evidence format migration
+//!
+//! `worktree-recovery plan --json` now uses `worktree_forensic_evidence.v2`: observations
+//! use the shared typed `state` (`OBSERVED` or `NOT_PROVEN`), with absent optional
+//! fields omitted. v1 used `detail: "observed"` for successful observations and
+//! `value: null` for unavailable ones. There is no persisted-plan reader or replay
+//! operation in this module. Consumers of saved JSON must select their decoder by
+//! `schema_version`; retain v1 records as historical evidence or rerun inspection
+//! to obtain v2, rather than relabeling old records.
+//!
+//! The plan digest covers serialized evidence (including its schema), excluding
+//! the observation timestamp and digest itself. v1 and v2 digests therefore are
+//! different identities, not a claim that the inspected filesystem changed.
+//! Classification, read-only behavior, and human unavailable-detail text remain
+//! unchanged; even the human report's digest changes with the schema.
+//! Forensic field decoding and output admission enforce state/value coherence;
+//! directly constructed invalid observations cannot produce clean classification
+//! or a rendered report. See `docs/specs/WORKTREE_FORENSIC_EVIDENCE_V2.md` for the
+//! owning wire contract and shared-type change requirements.
 
+use crate::worktree_cleanup::{Observation, ObservationState};
 use chrono::{SecondsFormat, Utc};
 use color_eyre::eyre::{Context, Result, bail, eyre};
 use serde::{Deserialize, Serialize};
@@ -27,7 +48,7 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
-pub const FORENSIC_SCHEMA_VERSION: &str = "worktree_forensic_evidence.v1";
+pub const FORENSIC_SCHEMA_VERSION: &str = "worktree_forensic_evidence.v2";
 pub const FORENSIC_POLICY_VERSION: &str = "2026-08-27";
 
 const MAX_MANIFEST_FILES: usize = 256;
@@ -64,22 +85,6 @@ impl RecoveryClassification {
             Self::ForensicInstrumentUnavailable => "FORENSIC_INSTRUMENT_UNAVAILABLE",
             Self::NotProven => "NOT_PROVEN",
         }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Observation<T> {
-    pub value: Option<T>,
-    pub detail: String,
-}
-
-impl<T> Observation<T> {
-    pub fn observed(value: T) -> Self {
-        Self { value: Some(value), detail: String::from("observed") }
-    }
-
-    pub fn unavailable(detail: impl Into<String>) -> Self {
-        Self { value: None, detail: detail.into() }
     }
 }
 
@@ -194,10 +199,15 @@ impl ManifestEvidence {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RecoveryEvidence {
+    #[serde(deserialize_with = "deserialize_repository_identity")]
     pub repository_identity: Observation<RepositoryIdentity>,
+    #[serde(deserialize_with = "deserialize_candidate_identity")]
     pub candidate_identity: Observation<CandidateIdentity>,
+    #[serde(deserialize_with = "deserialize_pointer")]
     pub pointer: Observation<PointerEvidence>,
+    #[serde(deserialize_with = "deserialize_administrative_gitdir")]
     pub administrative_gitdir: Observation<PathBuf>,
+    #[serde(deserialize_with = "deserialize_administrative_commondir")]
     pub administrative_commondir: Observation<PathBuf>,
     pub administration: AdministrationState,
     pub head: HeadEvidence,
@@ -214,16 +224,141 @@ pub struct RecoveryEvidence {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RecoveryPlan {
+    #[serde(deserialize_with = "deserialize_forensic_schema_version")]
     pub schema_version: String,
     pub policy_version: String,
     pub observed_at: String,
+    #[serde(deserialize_with = "deserialize_repository")]
     pub repository: Observation<RepositoryIdentity>,
+    #[serde(deserialize_with = "deserialize_candidate")]
     pub candidate: Observation<CandidateIdentity>,
     pub evidence: RecoveryEvidence,
     pub classification: RecoveryClassification,
     pub reasons: Vec<String>,
     pub proposed_actions: Vec<String>,
     pub plan_digest: String,
+}
+
+fn deserialize_forensic_schema_version<'de, D>(
+    deserializer: D,
+) -> std::result::Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let version = String::deserialize(deserializer)
+        .map_err(|error| serde::de::Error::custom(format!("schema_version: {error}")))?;
+    if version != FORENSIC_SCHEMA_VERSION {
+        return Err(serde::de::Error::custom(format!(
+            "schema_version: expected {FORENSIC_SCHEMA_VERSION}, got {version:?}"
+        )));
+    }
+    Ok(version)
+}
+
+// The shared cleanup type can represent more states than forensic v2 admits.
+// Keep the invariant here; cleanup's applicability semantics are unchanged.
+fn validate_observation<T>(field: &str, observation: &Observation<T>) -> Result<()> {
+    match (observation.state, observation.value.is_some()) {
+        (ObservationState::Observed, true) | (ObservationState::NotProven, false) => Ok(()),
+        _ => bail!(
+            "invalid forensic observation {field}: expected OBSERVED with value or NOT_PROVEN without value"
+        ),
+    }
+}
+
+fn deserialize_observation<'de, D, T>(
+    deserializer: D,
+    field: &str,
+) -> std::result::Result<Observation<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    let observation = Observation::<T>::deserialize(deserializer)
+        .map_err(|error| serde::de::Error::custom(format!("{field}: {error}")))?;
+    validate_observation(field, &observation).map_err(serde::de::Error::custom)?;
+    Ok(observation)
+}
+
+fn deserialize_repository_identity<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Observation<RepositoryIdentity>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    deserialize_observation(deserializer, "repository_identity")
+}
+
+fn deserialize_candidate_identity<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Observation<CandidateIdentity>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    deserialize_observation(deserializer, "candidate_identity")
+}
+
+fn deserialize_pointer<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Observation<PointerEvidence>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    deserialize_observation(deserializer, "pointer")
+}
+
+fn deserialize_administrative_gitdir<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Observation<PathBuf>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    deserialize_observation(deserializer, "administrative_gitdir")
+}
+
+fn deserialize_administrative_commondir<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Observation<PathBuf>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    deserialize_observation(deserializer, "administrative_commondir")
+}
+
+fn deserialize_repository<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Observation<RepositoryIdentity>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    deserialize_observation(deserializer, "repository")
+}
+
+fn deserialize_candidate<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Observation<CandidateIdentity>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    deserialize_observation(deserializer, "candidate")
+}
+
+impl RecoveryEvidence {
+    fn validate_observations(&self) -> Result<()> {
+        validate_observation("repository_identity", &self.repository_identity)?;
+        validate_observation("candidate_identity", &self.candidate_identity)?;
+        validate_observation("pointer", &self.pointer)?;
+        validate_observation("administrative_gitdir", &self.administrative_gitdir)?;
+        validate_observation("administrative_commondir", &self.administrative_commondir)
+    }
+}
+
+impl RecoveryPlan {
+    fn validate_observations(&self) -> Result<()> {
+        validate_observation("repository", &self.repository)?;
+        validate_observation("candidate", &self.candidate)?;
+        self.evidence.validate_observations()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -336,7 +471,7 @@ pub fn inspect_with_limits_and_probe(
         Ok(identity) => identity,
         Err(error) => {
             let detail = error.to_string();
-            let evidence = initial_evidence(Observation::unavailable(detail.clone()));
+            let evidence = initial_evidence(Observation::not_proven(detail.clone()));
             let mut evidence = evidence;
             evidence.instrument_failures.push(detail);
             return finish_plan(evidence);
@@ -351,7 +486,7 @@ pub fn inspect_with_limits_and_probe(
         }
         Err(error) => {
             let detail = error.to_string();
-            evidence.candidate_identity = Observation::unavailable(detail.clone());
+            evidence.candidate_identity = Observation::not_proven(detail.clone());
             evidence.instrument_failures.push(detail);
             false
         }
@@ -397,16 +532,16 @@ pub fn inspect_with_limits_and_probe(
         StableRead::Stable(bytes) => bytes,
         StableRead::Unstable(detail) => {
             evidence.instrument_failures.push(detail.clone());
-            evidence.pointer = Observation::unavailable(detail);
+            evidence.pointer = Observation::not_proven(detail);
             return finish_plan(evidence);
         }
         StableRead::Unavailable(detail) => {
             if is_missing_path(&pointer_path) {
                 evidence.contradictions.push(String::from("MISSING_GIT_POINTER"));
-                evidence.pointer = Observation::unavailable("candidate has no .git pointer");
+                evidence.pointer = Observation::not_proven("candidate has no .git pointer");
             } else {
                 evidence.instrument_failures.push(detail.clone());
-                evidence.pointer = Observation::unavailable(detail);
+                evidence.pointer = Observation::not_proven(detail);
             }
             return finish_plan(evidence);
         }
@@ -417,7 +552,7 @@ pub fn inspect_with_limits_and_probe(
         Err(error) => {
             let detail = format!("candidate .git pointer is not UTF-8: {error}");
             evidence.contradictions.push(String::from("INVALID_GIT_POINTER"));
-            evidence.pointer = Observation::unavailable(detail);
+            evidence.pointer = Observation::not_proven(detail);
             return finish_plan(evidence);
         }
     };
@@ -425,7 +560,7 @@ pub fn inspect_with_limits_and_probe(
         Ok(path) => path,
         Err(detail) => {
             evidence.contradictions.push(detail.clone());
-            evidence.pointer = Observation::unavailable(detail);
+            evidence.pointer = Observation::not_proven(detail);
             return finish_plan(evidence);
         }
     };
@@ -492,13 +627,15 @@ pub fn inspect_with_limits_and_probe(
     finish_plan(evidence)
 }
 
+// These placeholders are NOT_PROVEN: inspection has not established the fact.
+// NOT_APPLICABLE would assert an applicability decision that has not been made.
 fn initial_evidence(repository_identity: Observation<RepositoryIdentity>) -> RecoveryEvidence {
     RecoveryEvidence {
         repository_identity,
-        candidate_identity: Observation::unavailable("candidate identity not observed"),
-        pointer: Observation::unavailable("candidate pointer not observed"),
-        administrative_gitdir: Observation::unavailable("administrative gitdir not observed"),
-        administrative_commondir: Observation::unavailable("administrative commondir not observed"),
+        candidate_identity: Observation::not_proven("candidate identity not observed"),
+        pointer: Observation::not_proven("candidate pointer not observed"),
+        administrative_gitdir: Observation::not_proven("administrative gitdir not observed"),
+        administrative_commondir: Observation::not_proven("administrative commondir not observed"),
         administration: AdministrationState::Unknown(String::from("not observed")),
         head: HeadEvidence::Unknown(String::from("not observed")),
         reference: ReferenceEvidence::Unknown(String::from("not observed")),
@@ -514,6 +651,9 @@ fn initial_evidence(repository_identity: Observation<RepositoryIdentity>) -> Rec
 }
 
 pub fn classify(evidence: &RecoveryEvidence) -> RecoveryClassification {
+    if evidence.validate_observations().is_err() {
+        return RecoveryClassification::NotProven;
+    }
     if !evidence.contradictions.is_empty() {
         return RecoveryClassification::IdentityConflict;
     }
@@ -579,10 +719,17 @@ pub fn classify(evidence: &RecoveryEvidence) -> RecoveryClassification {
 }
 
 pub fn exit_code(plan: &RecoveryPlan) -> i32 {
-    if plan.classification == RecoveryClassification::CleanReconstructable { 0 } else { 2 }
+    if plan.validate_observations().is_ok()
+        && plan.classification == RecoveryClassification::CleanReconstructable
+    {
+        0
+    } else {
+        2
+    }
 }
 
 pub fn render(plan: &RecoveryPlan, format: OutputFormat) -> Result<String> {
+    plan.validate_observations()?;
     match format {
         OutputFormat::Json => serde_json::to_string_pretty(plan)
             .map(|text| format!("{text}\n"))
@@ -605,6 +752,7 @@ pub fn render(plan: &RecoveryPlan, format: OutputFormat) -> Result<String> {
 }
 
 fn finish_plan(evidence: RecoveryEvidence) -> Result<RecoveryPlan> {
+    evidence.validate_observations()?;
     let classification = classify(&evidence);
     let mut reasons = Vec::new();
     reasons.extend(evidence.contradictions.iter().cloned());
@@ -1906,14 +2054,21 @@ fn sha256(bytes: &[u8]) -> String {
 fn display_repository(observation: &Observation<RepositoryIdentity>) -> String {
     match &observation.value {
         Some(value) => value.repository_root.display().to_string(),
-        None => format!("UNKNOWN ({})", observation.detail),
+        None => display_unavailable(observation.detail.as_deref()),
     }
 }
 
 fn display_candidate(observation: &Observation<CandidateIdentity>) -> String {
     match &observation.value {
         Some(value) => value.canonical_path.display().to_string(),
-        None => format!("UNKNOWN ({})", observation.detail),
+        None => display_unavailable(observation.detail.as_deref()),
+    }
+}
+
+fn display_unavailable(detail: Option<&str>) -> String {
+    match detail {
+        Some(detail) => format!("UNKNOWN ({detail})"),
+        None => String::from("UNKNOWN"),
     }
 }
 
@@ -1977,6 +2132,229 @@ mod tests {
             contradictions: Vec::new(),
             instrument_failures: Vec::new(),
         }
+    }
+
+    fn corrupt_observation<T>(observation: &mut Observation<T>, case: usize) {
+        use crate::worktree_cleanup::ObservationState;
+        observation.state = match case {
+            0 => ObservationState::Observed,
+            1 => ObservationState::NotProven,
+            _ => ObservationState::NotApplicable,
+        };
+        if case == 0 || case == 3 {
+            observation.value = None;
+        }
+    }
+
+    fn corrupt_evidence_observation(evidence: &mut RecoveryEvidence, field: &str, case: usize) {
+        match field {
+            "repository_identity" => corrupt_observation(&mut evidence.repository_identity, case),
+            "candidate_identity" => corrupt_observation(&mut evidence.candidate_identity, case),
+            "pointer" => corrupt_observation(&mut evidence.pointer, case),
+            "administrative_gitdir" => {
+                corrupt_observation(&mut evidence.administrative_gitdir, case)
+            }
+            _ => corrupt_observation(&mut evidence.administrative_commondir, case),
+        }
+    }
+
+    #[test]
+    fn forensic_observation_invariant_blocks_constructed_clean_evidence() -> Result<()> {
+        for field in [
+            "repository_identity",
+            "candidate_identity",
+            "pointer",
+            "administrative_gitdir",
+            "administrative_commondir",
+        ] {
+            for case in [1, 0, 2, 3] {
+                let mut evidence = positive_evidence();
+                corrupt_evidence_observation(&mut evidence, field, case);
+                ensure!(
+                    classify(&evidence) != RecoveryClassification::CleanReconstructable,
+                    "invalid {field} case {case} classified clean"
+                );
+                ensure!(finish_plan(evidence).is_err(), "invalid {field} reached plan output");
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn forensic_observation_invariant_blocks_human_and_json_projection() -> Result<()> {
+        for field in [
+            "repository",
+            "candidate",
+            "repository_identity",
+            "candidate_identity",
+            "pointer",
+            "administrative_gitdir",
+            "administrative_commondir",
+        ] {
+            for case in [1, 0, 2, 3] {
+                let mut plan = finish_plan(positive_evidence())?;
+                match field {
+                    "repository" => corrupt_observation(&mut plan.repository, case),
+                    "candidate" => corrupt_observation(&mut plan.candidate, case),
+                    _ => corrupt_evidence_observation(&mut plan.evidence, field, case),
+                }
+                for format in [OutputFormat::Human, OutputFormat::Json] {
+                    let error = render(&plan, format)
+                        .err()
+                        .ok_or_else(|| eyre!("invalid {field} case {case} rendered"))?;
+                    ensure!(
+                        error.to_string().contains(field),
+                        "render error omitted {field}: {error}"
+                    );
+                }
+                ensure!(exit_code(&plan) != 0, "invalid {field} returned success exit code");
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn forensic_observation_invariant_rejects_deserialized_fields() -> Result<()> {
+        for pointer in [
+            "/repository",
+            "/candidate",
+            "/evidence/repository_identity",
+            "/evidence/candidate_identity",
+            "/evidence/pointer",
+            "/evidence/administrative_gitdir",
+            "/evidence/administrative_commondir",
+        ] {
+            for case in [1, 0, 2, 3] {
+                let mut json = serde_json::to_value(finish_plan(positive_evidence())?)?;
+                let observation =
+                    json.pointer_mut(pointer).ok_or_else(|| eyre!("missing {pointer}"))?;
+                let observation =
+                    observation.as_object_mut().ok_or_else(|| eyre!("not an observation"))?;
+                observation.insert(
+                    "state".to_string(),
+                    serde_json::json!(match case {
+                        0 => "OBSERVED",
+                        1 => "NOT_PROVEN",
+                        _ => "NOT_APPLICABLE",
+                    }),
+                );
+                if case == 0 || case == 3 {
+                    observation.remove("value");
+                }
+                let error = serde_json::from_value::<RecoveryPlan>(json.clone())
+                    .err()
+                    .ok_or_else(|| eyre!("invalid {pointer} case {case} deserialized"))?;
+                let field = pointer.rsplit('/').next().ok_or_else(|| eyre!("missing field"))?;
+                ensure!(
+                    error.to_string().contains(field),
+                    "decoder error omitted {field}: {error}"
+                );
+                if pointer.starts_with("/evidence/") {
+                    ensure!(
+                        serde_json::from_value::<RecoveryEvidence>(
+                            json.get("evidence").ok_or_else(|| eyre!("missing evidence"))?.clone()
+                        )
+                        .is_err(),
+                        "standalone evidence admitted invalid {pointer}"
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn forensic_plan_decoder_requires_current_schema_version() -> Result<()> {
+        let plan = finish_plan(positive_evidence())?;
+        let current = serde_json::to_value(&plan)?;
+        ensure!(
+            serde_json::from_value::<RecoveryPlan>(current.clone())? == plan,
+            "current schema did not round trip"
+        );
+        for version in ["worktree_forensic_evidence.v1", "worktree_forensic_evidence.v999", ""] {
+            let mut relabeled = current.clone();
+            relabeled
+                .as_object_mut()
+                .ok_or_else(|| eyre!("plan is not an object"))?
+                .insert("schema_version".to_string(), serde_json::json!(version));
+            let error = serde_json::from_value::<RecoveryPlan>(relabeled)
+                .err()
+                .ok_or_else(|| eyre!("decoder accepted schema {version:?}"))?;
+            ensure!(
+                error.to_string().contains("schema_version"),
+                "version rejection omitted field context: {error}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn forensic_json_v2_observation_contract() -> Result<()> {
+        let plan = finish_plan(positive_evidence())?;
+        let json: serde_json::Value = serde_json::from_str(&render(&plan, OutputFormat::Json)?)?;
+        ensure!(json["schema_version"] == "worktree_forensic_evidence.v2", "wrong wire version");
+        let observed = serde_json::json!({
+            "state": "OBSERVED",
+            "value": {
+                "requested_path": "candidate",
+                "canonical_path": "candidate",
+                "path_key": "candidate"
+            }
+        });
+        ensure!(json["candidate"] == observed, "observed JSON changed: {}", json["candidate"]);
+        ensure!(json["evidence"]["candidate_identity"] == observed, "nested observation diverged");
+        let decoded: RecoveryPlan = serde_json::from_value(json)?;
+        ensure!(decoded == plan, "v2 plan did not round trip");
+
+        let unavailable =
+            finish_plan(initial_evidence(Observation::not_proven("probe unavailable")))?;
+        let json: serde_json::Value =
+            serde_json::from_str(&render(&unavailable, OutputFormat::Json)?)?;
+        ensure!(
+            json["schema_version"] == "worktree_forensic_evidence.v2",
+            "unavailable version drift"
+        );
+        ensure!(
+            json["repository"]
+                == serde_json::json!({
+                    "state": "NOT_PROVEN", "detail": "probe unavailable"
+                }),
+            "unavailable observation shape changed"
+        );
+        ensure!(
+            json["candidate"]
+                == serde_json::json!({
+                    "state": "NOT_PROVEN", "detail": "candidate identity not observed"
+                }),
+            "uninspected candidate is not an applicability decision"
+        );
+        ensure!(
+            unavailable.classification != RecoveryClassification::CleanReconstructable,
+            "unavailable evidence became clean"
+        );
+        let decoded: RecoveryPlan = serde_json::from_value(json)?;
+        ensure!(decoded == unavailable, "unavailable v2 plan did not round trip");
+        ensure!(
+            render(&unavailable, OutputFormat::Human)?.contains("UNKNOWN (probe unavailable)"),
+            "human unavailable detail changed"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn forensic_digest_ignores_timestamp_but_binds_evidence_and_schema() -> Result<()> {
+        let mut plan = finish_plan(positive_evidence())?;
+        let original = plan.plan_digest.clone();
+        plan.observed_at = String::from("2099-01-01T00:00:00Z");
+        plan.plan_digest = String::from("prior digest is not an input");
+        ensure!(digest_plan(&plan)? == original, "timestamp or digest changed identity");
+        let mut changed = plan.clone();
+        changed.evidence.pointer = Observation::not_proven("pointer unavailable");
+        ensure!(digest_plan(&changed)? != original, "changed evidence retained identity");
+        changed = plan;
+        changed.schema_version = String::from("worktree_forensic_evidence.v1");
+        ensure!(digest_plan(&changed)? != original, "schema version is not digest-bound");
+        Ok(())
     }
 
     fn assert_same_size_change_rejected(result: StableRead, label: &str) -> Result<()> {
@@ -2187,21 +2565,21 @@ mod tests {
             (
                 "repository",
                 RecoveryEvidence {
-                    repository_identity: Observation::unavailable("missing repository"),
+                    repository_identity: Observation::not_proven("missing repository"),
                     ..positive_evidence()
                 },
             ),
             (
                 "candidate",
                 RecoveryEvidence {
-                    candidate_identity: Observation::unavailable("missing candidate"),
+                    candidate_identity: Observation::not_proven("missing candidate"),
                     ..positive_evidence()
                 },
             ),
             (
                 "pointer",
                 RecoveryEvidence {
-                    pointer: Observation::unavailable("missing pointer"),
+                    pointer: Observation::not_proven("missing pointer"),
                     ..positive_evidence()
                 },
             ),

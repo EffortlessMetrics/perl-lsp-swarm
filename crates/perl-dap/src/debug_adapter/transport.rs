@@ -1,12 +1,15 @@
 //! Transport layer: run (stdin/stdout) and run_with_io.
 
+use super::sync_utils::EventSender;
+#[cfg(test)]
+use super::sync_utils::dispatch_event;
 use super::{
     Arc, AtomicBool, BufReader, ContentLengthFramer, DapMessage, DebugAdapter,
-    EVENT_QUEUE_CAPACITY, Mutex, Read, Write, dispatch_event, io, lock_or_recover, sync_channel,
-    thread,
+    EVENT_QUEUE_CAPACITY, Mutex, Read, Write, io, lock_or_recover, sync_channel, thread,
 };
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::TryRecvError;
+use std::time::Duration;
 
 const EVENT_WRITE_BATCH_MAX: usize = 64;
 const WRITE_FAILURE_THRESHOLD: usize = 3;
@@ -41,7 +44,9 @@ fn write_event_payloads<W: Write>(
     payloads: &[Vec<u8>],
     consecutive_write_failures: &mut usize,
     transport_broken: &AtomicBool,
+    flushed: &mut bool,
 ) -> bool {
+    *flushed = false;
     let mut write_failed = false;
     let mut transport_marked_broken = false;
     for payload in payloads {
@@ -60,6 +65,7 @@ fn write_event_payloads<W: Write>(
                 record_event_write_failure(consecutive_write_failures, transport_broken);
         } else {
             record_event_write_success(consecutive_write_failures);
+            *flushed = true;
         }
     }
     transport_marked_broken
@@ -84,13 +90,17 @@ impl DebugAdapter {
 
         // Create bounded channel for asynchronous events.
         let (tx, rx) = sync_channel::<DapMessage>(EVENT_QUEUE_CAPACITY);
-        self.event_sender = Some(tx.clone());
+        let event_sender = EventSender::new(tx);
+        self.event_sender = Some(event_sender.clone());
+        let (writer_done_tx, writer_done_rx) = sync_channel::<bool>(1);
 
         // Clone transport_broken flag to pass to the event handler thread.
         let transport_broken = Arc::clone(&self.transport_broken);
-
+        // This handshake is local to this transport run.  It cannot be
+        // satisfied by a terminal event from a previous session.
         thread::spawn(move || {
             let mut consecutive_write_failures = 0;
+            let mut event_delivery_failed = false;
 
             while let Ok(first_msg) = rx.recv() {
                 // Check if transport is already marked broken
@@ -118,6 +128,7 @@ impl DebugAdapter {
                     match serde_json::to_vec(&msg) {
                         Ok(payload) => payloads.push(payload),
                         Err(e) => {
+                            event_delivery_failed = true;
                             tracing::error!(
                                 error = %e,
                                 message = ?msg,
@@ -135,11 +146,13 @@ impl DebugAdapter {
                 }
 
                 let mut writer = lock_or_recover(&event_writer, "event_writer");
+                let mut event_flushed = false;
                 if write_event_payloads(
                     &mut *writer,
                     &payloads,
                     &mut consecutive_write_failures,
                     &transport_broken,
+                    &mut event_flushed,
                 ) {
                     tracing::error!(
                         failure_count = consecutive_write_failures,
@@ -148,13 +161,24 @@ impl DebugAdapter {
                     );
                     break;
                 }
+                event_delivery_failed |= !event_flushed;
 
                 if disconnected {
                     break;
                 }
             }
             tracing::debug!("Event handler thread terminating");
+            let _ = writer_done_tx
+                .send(!event_delivery_failed && !transport_broken.load(Ordering::Acquire));
         });
+
+        struct EventSenderCloseGuard(EventSender);
+        impl Drop for EventSenderCloseGuard {
+            fn drop(&mut self) {
+                self.0.close();
+            }
+        }
+        let _close_guard = EventSenderCloseGuard(event_sender.clone());
 
         let mut reader = BufReader::new(input);
         let mut framer = ContentLengthFramer::new();
@@ -229,7 +253,18 @@ impl DebugAdapter {
                     }
                 };
 
-                let response = self.dispatch_request(seq, &command, arguments);
+                // #9581 secondary-capability floor, ahead of the table-owned
+                // dispatch: a floored wire request is refused before any
+                // handler can run. The `initialized` notification below still
+                // keys off the (never-floored) initialize response.
+                let response = match self.secondary_capability_floor_response(
+                    seq,
+                    &command,
+                    arguments.as_ref(),
+                ) {
+                    Some(floored) => floored,
+                    None => self.dispatch_request(seq, &command, arguments),
+                };
                 let payload = serde_json::to_vec(&response).map_err(io::Error::other)?;
                 let notify_initialized = command == "initialize"
                     && Self::response_succeeded_for_command(&response, "initialize");
@@ -241,6 +276,38 @@ impl DebugAdapter {
                     self.event_sender.as_ref(),
                     &self.seq,
                 )?;
+                // A successful disconnect closes this DAP conversation.  Do
+                // not read the editor pipe again: VS Code closes it after the
+                // response, and treating that expected EOF as a transport
+                // failure turns an orderly shutdown into exit code 1.
+                if command == "disconnect"
+                    && matches!(response, DapMessage::Response { success: true, .. })
+                {
+                    // Close admission only after the response has been flushed. Every
+                    // producer already admitted before this point must finish before
+                    // the receiver observes channel disconnection.
+                    event_sender.close();
+                    let drained =
+                        writer_done_rx.recv_timeout(Duration::from_secs(5)).map_err(|error| {
+                            match error {
+                                std::sync::mpsc::RecvTimeoutError::Timeout => io::Error::new(
+                                    io::ErrorKind::TimedOut,
+                                    "DAP event queue was not drained before disconnect",
+                                ),
+                                std::sync::mpsc::RecvTimeoutError::Disconnected => io::Error::new(
+                                    io::ErrorKind::BrokenPipe,
+                                    "event writer stopped before disconnect drain",
+                                ),
+                            }
+                        })?;
+                    if !drained {
+                        return Err(io::Error::new(
+                            io::ErrorKind::BrokenPipe,
+                            "DAP event delivery failed during disconnect",
+                        ));
+                    }
+                    return Ok(());
+                }
             }
         }
     }
@@ -263,7 +330,7 @@ fn write_response_then_notify_initialized<W: Write>(
     shared_writer: &Mutex<W>,
     payload: &[u8],
     notify_initialized: bool,
-    event_sender: Option<&std::sync::mpsc::SyncSender<DapMessage>>,
+    event_sender: Option<&EventSender>,
     seq: &Mutex<i64>,
 ) -> io::Result<()> {
     {
@@ -273,7 +340,7 @@ fn write_response_then_notify_initialized<W: Write>(
     }
 
     if notify_initialized && let Some(sender) = event_sender {
-        let _ = dispatch_event(sender, seq, "initialized", None);
+        let _ = sender.send_event(seq, "initialized", None);
     }
     Ok(())
 }
@@ -467,7 +534,7 @@ mod tests {
                 &producer_writer,
                 b"response-payload",
                 true,
-                Some(&tx),
+                Some(&EventSender::new(tx.clone())),
                 &producer_seq,
             )
         });
@@ -665,12 +732,19 @@ mod tests {
         let transport_broken = AtomicBool::new(false);
         let mut consecutive = WRITE_FAILURE_THRESHOLD - 1;
         let payloads = vec![b"{}".to_vec()];
+        let mut flushed = false;
 
-        let threshold_hit =
-            write_event_payloads(&mut writer, &payloads, &mut consecutive, &transport_broken);
+        let threshold_hit = write_event_payloads(
+            &mut writer,
+            &payloads,
+            &mut consecutive,
+            &transport_broken,
+            &mut flushed,
+        );
 
         assert!(!threshold_hit, "successful event write must not mark the transport broken");
         assert_eq!(consecutive, 0, "successful flush must reset failure count");
+        assert!(flushed, "successful flush must report delivery");
         assert!(
             !transport_broken.load(AOrdering::Acquire),
             "transport_broken must remain false after successful flush"
@@ -725,12 +799,19 @@ mod tests {
         let transport_broken = AtomicBool::new(false);
         let mut consecutive = WRITE_FAILURE_THRESHOLD - 1;
         let payloads = vec![b"{}".to_vec()];
+        let mut flushed = false;
 
-        let threshold_hit =
-            write_event_payloads(&mut writer, &payloads, &mut consecutive, &transport_broken);
+        let threshold_hit = write_event_payloads(
+            &mut writer,
+            &payloads,
+            &mut consecutive,
+            &transport_broken,
+            &mut flushed,
+        );
 
         assert!(threshold_hit, "flush failure at threshold must mark the transport broken");
         assert_eq!(consecutive, WRITE_FAILURE_THRESHOLD);
+        assert!(!flushed, "failed flush must not report delivery");
         assert!(
             transport_broken.load(AOrdering::Acquire),
             "transport_broken must be set after threshold flush failure"
@@ -784,6 +865,26 @@ mod framing_tests {
     #[derive(Clone, Default)]
     struct SharedBuf(Arc<Mutex<Vec<u8>>>);
 
+    struct DisconnectThenReadError {
+        input: Vec<u8>,
+        consumed: bool,
+    }
+
+    impl io::Read for DisconnectThenReadError {
+        fn read(&mut self, target: &mut [u8]) -> io::Result<usize> {
+            if self.consumed {
+                return Err(io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "read after orderly disconnect",
+                ));
+            }
+            self.consumed = true;
+            let amount = self.input.len().min(target.len());
+            target[..amount].copy_from_slice(&self.input[..amount]);
+            Ok(amount)
+        }
+    }
+
     impl SharedBuf {
         fn new() -> Self {
             Self(Arc::new(Mutex::new(Vec::new())))
@@ -801,6 +902,35 @@ mod framing_tests {
         }
 
         fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// The response is writable, but flushing a terminated event fails.  This
+    /// exercises the real queue-drain acknowledgment path rather than only the
+    /// write-failure counter helper.
+    #[derive(Default)]
+    struct TerminatedEventFlushFailingWriter {
+        bytes: Vec<u8>,
+    }
+
+    impl io::Write for TerminatedEventFlushFailingWriter {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.bytes.extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            let pending = std::mem::take(&mut self.bytes);
+            if pending
+                .windows(b"\"event\":\"terminated\"".len())
+                .any(|window| window == b"\"event\":\"terminated\"")
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "mock terminated-event flush failure",
+                ));
+            }
             Ok(())
         }
     }
@@ -937,6 +1067,97 @@ mod framing_tests {
             written.len()
         );
         Ok(())
+    }
+
+    #[test]
+    fn test_transport_disconnect_stops_before_post_disconnect_read_error() -> io::Result<()> {
+        let mut disconnect = framed_request(1, "disconnect", None);
+        disconnect.extend(framed_request(2, "initialize", Some(json!({"adapterID": "perl"}))));
+        let input = DisconnectThenReadError { input: disconnect, consumed: false };
+        let output = SharedBuf::new();
+        let mut adapter = DebugAdapter::new();
+        adapter.seed_attached_pid_for_test(4242);
+        adapter.run_with_io(input, output.clone())?;
+        let written_bytes = output.bytes_snapshot();
+        let mut framer = ContentLengthFramer::new();
+        framer.push(&written_bytes);
+        let mut messages = Vec::new();
+        loop {
+            match framer.try_next() {
+                Ok(Some(body)) => messages.push(
+                    serde_json::from_slice::<serde_json::Value>(&body).map_err(|error| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!("invalid output frame: {error}"),
+                        )
+                    })?,
+                ),
+                Ok(None) => break,
+                Err(error) => {
+                    return Err(io::Error::new(io::ErrorKind::InvalidData, error.to_string()));
+                }
+            }
+        }
+        let disconnect = messages
+            .iter()
+            .find(|message| {
+                message.get("type").and_then(serde_json::Value::as_str) == Some("response")
+                    && message.get("command").and_then(serde_json::Value::as_str)
+                        == Some("disconnect")
+            })
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "disconnect response frame missing")
+            })?;
+        if disconnect.get("request_seq").and_then(serde_json::Value::as_i64) != Some(1)
+            || disconnect.get("success").and_then(serde_json::Value::as_bool) != Some(true)
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "disconnect response fields incorrect",
+            ));
+        }
+        if messages.iter().any(|message| {
+            message.get("type").and_then(serde_json::Value::as_str) == Some("response")
+                && message.get("command").and_then(serde_json::Value::as_str) == Some("initialize")
+        }) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "request after disconnect was processed",
+            ));
+        }
+        let terminated_count = messages
+            .iter()
+            .filter(|message| {
+                message.get("type").and_then(serde_json::Value::as_str) == Some("event")
+                    && message.get("event").and_then(serde_json::Value::as_str)
+                        == Some("terminated")
+            })
+            .count();
+        if terminated_count != 1 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("expected one terminated event, got {terminated_count}"),
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_disconnect_does_not_ack_failed_terminated_event_flush() -> io::Result<()> {
+        let input = Cursor::new(framed_request(1, "disconnect", None));
+        let mut adapter = DebugAdapter::new();
+        adapter.seed_attached_pid_for_test(4242);
+        let result = adapter.run_with_io(input, TerminatedEventFlushFailingWriter::default());
+        match result {
+            Err(error) if error.kind() == io::ErrorKind::BrokenPipe => Ok(()),
+            Err(error) => Err(io::Error::new(
+                error.kind(),
+                format!("failed terminated-event flush returned wrong error: {error}"),
+            )),
+            Ok(()) => Err(io::Error::other(
+                "disconnect returned Ok despite failed terminated-event flush",
+            )),
+        }
     }
 
     // ── 6. EOF mid-header ──────────────────────────────────────────────────────
