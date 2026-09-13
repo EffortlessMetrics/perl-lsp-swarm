@@ -17,6 +17,8 @@ use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::{Digest, fnv1a};
 
+pub mod authorization;
+
 /// Schema version for [`ProjectEnvironmentSnapshot`].
 ///
 /// Bump when the snapshot contract or fingerprint material changes. Version 3

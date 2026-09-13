@@ -119,6 +119,19 @@ function currentSourceBundleFile(platform = process.platform, arch = process.arc
   return `bin/${platform}-${arch}/${binaryName}`;
 }
 
+/** @returns {string[]} */
+function currentSourceBundleFiles(
+  platform = process.platform,
+  arch = process.arch,
+  includeDap = false,
+) {
+  const dapName = platform === 'win32' ? 'perl-dap.exe' : 'perl-dap';
+  return [
+    currentSourceBundleFile(platform, arch),
+    ...(includeDap ? [`bin/${platform}-${arch}/${dapName}`] : []),
+  ];
+}
+
 function parseArgs(argv) {
   let updateBaseline = false;
   /** @type {string | null} */
@@ -165,7 +178,13 @@ async function main() {
   const manifestPath = (process.env.PERL_LSP_CANDIDATE_PAYLOAD_MANIFEST || '').trim();
   const allowedFiles = [];
   if (!manifestPath && process.env.PERL_LSP_CURRENT_SOURCE_SMOKE === '1') {
-    allowedFiles.push(currentSourceBundleFile());
+    allowedFiles.push(
+      ...currentSourceBundleFiles(
+        process.platform,
+        process.arch,
+        process.env.PERL_LSP_CURRENT_SOURCE_DAP_STAGED === '1',
+      ),
+    );
   }
   if (manifestPath) {
     const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
@@ -226,6 +245,7 @@ module.exports = {
   classifyInventoryViolations,
   compareInventory,
   currentSourceBundleFile,
+  currentSourceBundleFiles,
   bundleTargetForPackagedFile,
   platformForPackagedFile,
   parseArgs,

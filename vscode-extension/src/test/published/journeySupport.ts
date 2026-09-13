@@ -345,25 +345,64 @@ export interface BundledServerProcessIdentity {
   pid: number;
   path: string;
   creationTimeFileTime?: string;
+  /** Linux boot ID plus process start ticks; Windows retains FILETIME above. */
+  creationIdentity?: string;
+}
+
+/** Parse the Linux process start identity from one `/proc/<pid>/stat` row. */
+export function parseLinuxProcessStat(
+  stat: string,
+  pid: number,
+  bootId: string,
+): { pid: number; creationIdentity: string } {
+  const statPid = /^\s*(\d+)\s+\(/.exec(stat)?.[1];
+  if (statPid !== String(pid))
+    throw new Error('Linux process stat PID does not match the observed PID');
+  const closingParen = stat.lastIndexOf(')');
+  if (closingParen < 0) throw new Error('Linux process stat has no closing command delimiter');
+  const fields = stat
+    .slice(closingParen + 1)
+    .trim()
+    .split(/\s+/);
+  const startTicks = fields[19];
+  if (!startTicks || !/^\d+$/.test(startTicks)) {
+    throw new Error('Linux process stat has no numeric start time');
+  }
+  if (!/^\w[\w.-]*$/.test(bootId)) throw new Error('Linux process boot identity is malformed');
+  return { pid, creationIdentity: `${bootId}:${startTicks}` };
+}
+
+export function isLinuxProcessGoneError(error: unknown): boolean {
+  if (error === null || (typeof error !== 'object' && typeof error !== 'function')) {
+    return false;
+  }
+  const code = (error as NodeJS.ErrnoException).code;
+  return code === 'ENOENT' || code === 'ESRCH';
 }
 
 /** Enumerate perl-dap children rooted in the installed bundled-adapter directory. */
 export async function scanBundledDapProcessIdentities(
   directory: string,
 ): Promise<BundledServerProcessIdentity[]> {
-  if (process.platform !== 'win32') {
-    return [];
-  }
   const resolved = path.resolve(directory);
+  if (process.platform !== 'win32' && process.platform !== 'linux') return [];
+  const windows = process.platform === 'win32';
+  const bootId = windows
+    ? undefined
+    : fs.readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim();
+  if (!windows && !bootId)
+    throw new Error('Linux bundled DAP scan could not read the boot identity');
   const result = await runBoundedProcess(
-    'powershell.exe',
-    [
-      '-NoProfile',
-      '-NonInteractive',
-      '-Command',
-      '(Get-Process -Name perl-dap -ErrorAction SilentlyContinue) | ' +
-        'ForEach-Object { if ($_.Path) { "$($_.Id)`t$($_.Path)`t$($_.StartTime.ToFileTimeUtc())" } }',
-    ],
+    windows ? 'powershell.exe' : 'ps',
+    windows
+      ? [
+          '-NoProfile',
+          '-NonInteractive',
+          '-Command',
+          '(Get-Process -Name perl-dap -ErrorAction SilentlyContinue) | ' +
+            'ForEach-Object { if ($_.Path) { "$($_.Id)`t$($_.Path)`t$($_.StartTime.ToFileTimeUtc())" } }',
+        ]
+      : ['-eo', 'pid=,args='],
     {
       shell: false,
       timeoutMs: PROCESS_SCAN_TIMEOUT_MS,
@@ -382,23 +421,63 @@ export async function scanBundledDapProcessIdentities(
   const needle = prefix.toLowerCase();
   return result.stdout
     .split(/\r?\n/)
-    .map((line) => /^(\d+)\t(.+)\t(\d+)$/.exec(line.trim()))
-    .map((match) => {
-      const pidText = match?.[1];
-      const executable = match?.[2];
-      const creationTimeFileTime = match?.[3];
-      if (!pidText || !executable || !creationTimeFileTime) return null;
+    .map((line) => {
+      const trimmed = line.trim();
+      const match = windows
+        ? /^(\d+)\t(.+)\t(\d+)$/.exec(trimmed)
+        : /^(\d+)[ \t]+(.+)$/.exec(trimmed);
+      if (!match) return null;
+      const pid = Number.parseInt(match[1] ?? '', 10);
+      const rawCommand = (match[2] ?? '').trim();
+      const rawPath = windows ? match[2] : rawCommand.split(/[ \t]/, 1)[0];
+      if (!Number.isInteger(pid) || !rawPath) return null;
+      if (windows) {
+        return { pid, executable: rawPath.trim(), creationTimeFileTime: match[3] };
+      }
+      const expectedPrefix = `${prefix}perl-dap`;
+      if (rawCommand !== expectedPrefix && !rawCommand.startsWith(`${expectedPrefix} `))
+        return null;
+      let executable: string;
+      let identity: BundledServerProcessIdentity;
+      try {
+        executable = fs.readlinkSync(`/proc/${pid}/exe`);
+        const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
+        identity = { ...parseLinuxProcessStat(stat, pid, bootId ?? ''), path: executable };
+      } catch (error: unknown) {
+        if (isLinuxProcessGoneError(error)) return null;
+        throw error;
+      }
+      if (!identity.path) return null;
       return {
-        pid: Number.parseInt(pidText, 10),
+        pid: identity.pid,
+        executable: identity.path,
+        creationIdentity: identity.creationIdentity,
+      };
+    })
+    .map((match) => {
+      if (!match) return null;
+      const { pid, executable, creationTimeFileTime, creationIdentity } = match;
+      return {
+        pid,
         path: executable,
-        creationTimeFileTime,
+        ...(creationTimeFileTime === undefined ? {} : { creationTimeFileTime }),
+        ...(creationIdentity === undefined ? {} : { creationIdentity }),
       };
     })
     .filter(
-      (entry): entry is { pid: number; path: string; creationTimeFileTime: string } =>
-        entry !== null,
+      (
+        entry,
+      ): entry is {
+        pid: number;
+        path: string;
+        creationTimeFileTime?: string;
+        creationIdentity?: string;
+      } => entry !== null,
     )
-    .filter((entry) => entry.path.toLowerCase().startsWith(needle));
+    .filter((entry) => {
+      const candidate = process.platform === 'win32' ? entry.path.toLowerCase() : entry.path;
+      return candidate.startsWith(process.platform === 'win32' ? needle : prefix);
+    });
 }
 
 /**
