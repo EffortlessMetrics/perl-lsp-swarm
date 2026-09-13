@@ -472,7 +472,15 @@ fn command_tokens_invoke_xtask_cli(tokens: &[String]) -> bool {
     let Some((command, args)) = rest.split_first() else {
         return false;
     };
-    if command != "cargo" || selects_another_target(args) {
+    if command != "cargo" {
+        return false;
+    }
+    // `cargo +stable xtask …` pins a toolchain; it does not change what runs.
+    let args = match args.split_first() {
+        Some((first, tail)) if first.starts_with('+') => tail,
+        _ => args,
+    };
+    if selects_another_target(args) {
         return false;
     }
     match args.first().map(String::as_str) {
@@ -513,6 +521,7 @@ fn selects_another_target(args: &[String]) -> bool {
     false
 }
 
+/// Whether any step in any job of this workflow runs the `xtask` CLI.
 fn workflow_invokes_xtask_cli(workflow: &Value) -> bool {
     let Some(jobs) = workflow.get("jobs").and_then(Value::as_mapping) else {
         return false;
@@ -2062,24 +2071,54 @@ mod tests {
         Ok(())
     }
 
-    /// Each wrapper form must be detected on its own, not merely because a
-    /// sibling job in the same fixture was.
+    /// The standing inventory of invocation spellings.
+    ///
+    /// Every defect found in this detector so far has been the same shape: a
+    /// spelling nobody enumerated. The shipped-tree ratchet cannot catch that,
+    /// because it asks the detector itself what counts as an invocation. This
+    /// table is the independent half — it fixes what each spelling *means*
+    /// against Cargo's documented behaviour, so extending the detector means
+    /// adding a row here rather than rediscovering the class.
+    ///
+    /// Each case is asserted on its own. A fixture with several jobs passes on
+    /// any one of them, which would hide a missed form.
     #[test]
-    fn every_wrapper_form_is_detected_independently() {
-        for script in [
+    fn cli_invocation_spellings_are_classified_by_what_they_run() {
+        // Reaches `xtask/src/main.rs`, so the wiring files are a dependency.
+        let runs_the_cli = [
+            "cargo xtask example-contract check",
+            "cargo xtask",
+            "cargo xtask\texample-contract check",
+            "cargo run -p xtask --locked -- example-contract check",
+            "cargo run --package xtask --locked -- example-contract check",
+            "cargo run -p xtask --bin xtask -- example-contract check",
+            "cargo run --manifest-path xtask/Cargo.toml -- example-contract check",
+            "cargo +stable xtask example-contract check",
+            "cargo +nightly run -p xtask -- example-contract check",
             "RUST_LOG=debug cargo xtask example-contract check",
             "env RUST_LOG=debug cargo xtask example-contract check",
             "sudo -E cargo xtask example-contract check",
             "nice -n 10 cargo xtask example-contract check",
-        ] {
-            assert!(command_invokes_xtask_cli(script), "not detected: {script}");
-        }
-        for script in [
+            "make build && cargo xtask example-contract check",
+        ];
+        // Reaches a different target, or is not a command at all.
+        let does_not_run_the_cli = [
+            "cargo run -p xtask --bin generated-status-contract -- --check",
+            "cargo run -p xtask --example public_beta_experience -- --check",
+            "cargo test -p xtask --locked --test example_contract",
+            "cargo build -p xtask",
+            "cargo +stable test -p xtask",
+            "echo 'run cargo xtask example-contract check locally'",
             "echo -n 10 cargo xtask example-contract check",
-            "RUST_LOG=debug cargo test -p xtask",
-            "env RUST_LOG=debug cargo run -p xtask --bin other -- check",
-        ] {
-            assert!(!command_invokes_xtask_cli(script), "wrongly detected: {script}");
+            "# cargo xtask example-contract check",
+            "just ci-metrics-ratchet",
+        ];
+
+        for script in runs_the_cli {
+            assert!(command_invokes_xtask_cli(script), "should be a CLI claim: {script}");
+        }
+        for script in does_not_run_the_cli {
+            assert!(!command_invokes_xtask_cli(script), "should not be a CLI claim: {script}");
         }
     }
 
