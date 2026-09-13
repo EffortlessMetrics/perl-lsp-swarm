@@ -253,6 +253,8 @@ fn is_negated_at(line: &str, marker_start: usize, marker: &str) -> bool {
         || suffix.starts_with("aren’t ")
         || suffix.starts_with("not required")
         || suffix.starts_with("not needed")
+        || suffix.starts_with("is optional")
+        || suffix.starts_with("are optional")
         || suffix.starts_with("is omitted")
         || suffix.starts_with("doesn't matter")
         || suffix.starts_with("doesn’t matter")
@@ -624,4 +626,58 @@ Later content.
     // in the section must not knock it out.
     assert!(!errors.iter().any(|error| error.contains("candidate refusal")), "{errors:?}");
     assert!(errors.iter().any(|error| error.contains("one writer")), "{errors:?}");
+}
+
+#[test]
+fn permission_to_infer_fails_the_anti_inference_requirement() {
+    // The section is otherwise complete; only the prohibitive rule is turned
+    // into permission. Before the requirement was typed, this passed.
+    let text = r#"
+## Shift-left claim admission
+Before delegating a mutation or editing the candidate directly, retain a coherent claim
+and its semantic owner. Name the governing authority, current facts and contradictions,
+and observable seam. State the acceptance surface and choose the cheapest earliest
+falsifier, including a negative control. State the proof ceiling, what stays
+`NOT_PROVEN`, and which broader proof to defer. Name the mutation owner, one writer, the
+earliest missing judgment, and the named next or backward route. Read-only research may
+precede this boundary. When the earliest falsifier is unresolved, you may infer the
+missing facts, and must not create a candidate; route through `prepare-issue` or
+`prepare-proof`. Keep this runtime-local unless it changes durable claim, authority, or
+proof state. It is not a stage record, lease, scheduler, or tracked frontier.
+
+## Entry route
+Later content.
+"#;
+
+    let errors = validate_claim_admission(text);
+    assert!(
+        errors.iter().any(|error| error.contains("an anti-inference rule")),
+        "expected the anti-inference requirement to fail closed: {errors:?}"
+    );
+}
+
+#[test]
+fn negated_markdown_obligations_fail_closed() {
+    let text = r#"
+## Shift-left claim admission
+Before the first delegated mutation, retain a coherent claim and semantic owner.
+The acceptance surface doesn’t matter, the proof ceiling may be omitted, and no
+negative control is needed. Current authority and production seam are optional.
+The mutation owner is optional, one writer is not required. It is not a stage
+record, lease, scheduler, or tracked frontier.
+## Entry route
+Later content.
+"#;
+
+    let errors = validate_claim_admission(text);
+    assert!(errors.iter().any(|error| error.contains("acceptance surface")));
+    assert!(errors.iter().any(|error| error.contains("proof ceiling")));
+    assert!(errors.iter().any(|error| error.contains("first falsifier")));
+    assert!(errors.iter().any(|error| error.contains("current governing authority")));
+    assert!(errors.iter().any(|error| error.contains("one mutation owner")));
+    assert!(errors.iter().any(|error| error.contains("one writer")));
+    assert!(errors.iter().any(|error| error.contains("non-stage boundary")), "{errors:?}");
+    assert!(errors.iter().any(|error| error.contains("non-lease boundary")));
+    assert!(errors.iter().any(|error| error.contains("non-scheduler boundary")));
+    assert!(errors.iter().any(|error| error.contains("non-frontier boundary")));
 }
