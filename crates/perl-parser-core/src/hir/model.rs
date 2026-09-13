@@ -2530,23 +2530,47 @@ pub fn opens_per_symbol_options(args: &[String], open: usize) -> bool {
         && args.get(open + 2).map(|token| token.trim()).is_some_and(|name| name == "as")
 }
 
+/// Whether the token at `index` is a name renamed by a per-symbol option hash
+/// that follows it.
+///
+/// `foo => { -as => 'bar' }` installs `bar`; `foo` is not installed under its
+/// own name, so it is not an imported symbol. The intervening `=>` is a comma
+/// as far as Perl is concerned, so `foo, { -as => 'bar' }` is the same list and
+/// is treated the same way.
+fn is_renamed_by_following_options(args: &[String], index: usize) -> bool {
+    let mut next = index.saturating_add(1);
+    while let Some(token) = args.get(next) {
+        match token.trim() {
+            "=>" | "," => next = next.saturating_add(1),
+            "{" => return opens_per_symbol_options(args, next),
+            _ => return false,
+        }
+    }
+    false
+}
+
 /// The `use` argument tokens that are not part of a module configuration hash.
 ///
 /// A standalone `{ ... }` in an import list configures the module — `use M 'a',
 /// { key => 'value' }` asks for `a` alone — so its body is not a list of
 /// requested symbols.
 ///
-/// A hash whose first key is dash-prefixed is left alone: that is
-/// Sub::Exporter's per-symbol option form, `foo => { -as => 'bar' }`, which
-/// describes the symbol rather than the module. Modelling the rename is out of
-/// scope here, but dropping the body would hide the installed name while
-/// keeping the one that is not installed.
+/// One hash shape is read rather than skipped: Sub::Exporter's per-symbol option
+/// form, `foo => { -as => 'bar' }`, which describes the symbol rather than the
+/// module and carries the name actually installed.
 ///
-/// The option *names* inside such a retained hash are still dropped. `-as`
-/// arrives as `-` then `as`, and while the `-` names nothing a reader could
-/// mistake for a symbol, `as` does: keeping it published an option keyword as a
-/// requested import at `ExactAst`/`High`, the same over-claim this function
-/// exists to prevent for ordinary configuration hashes.
+/// Only that installed name survives the shape. The option *name* is dropped —
+/// `-as` arrives as `-` then `as`, and while the `-` names nothing a reader
+/// could mistake for a symbol, `as` does — and so is the name being renamed:
+/// `foo => { -as => 'bar' }` installs `bar` and does not install `foo`, so
+/// publishing `foo` claims a symbol the importer never receives. Keeping either
+/// was the same over-claim this function exists to prevent for ordinary
+/// configuration hashes, at `ExactAst`/`High`.
+///
+/// Affix options are a different case and are unaffected: they are skipped
+/// rather than retained, because `ok => { -postfix => '_ok' }` installs `ok_ok`
+/// and `_ok` names nothing. There the pre-existing `ok` is left in place, since
+/// composing the alias is rename modelling this pass does not do.
 pub fn arguments_outside_configuration_hashes(args: &[String]) -> Vec<&str> {
     let mut kept = Vec::new();
     let mut skip_depth = 0usize;
@@ -2576,6 +2600,8 @@ pub fn arguments_outside_configuration_hashes(args: &[String]) -> Vec<&str> {
             && index > 0
             && args.get(index - 1).map(|previous| previous.trim()) == Some("-")
         {
+            continue;
+        } else if option_depth == 0 && is_renamed_by_following_options(args, index) {
             continue;
         }
         kept.push(trimmed);

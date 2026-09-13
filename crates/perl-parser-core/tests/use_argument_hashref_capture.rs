@@ -150,15 +150,14 @@ fn a_hash_holding_a_block_with_statements_is_captured_whole() -> Result<(), Stri
 }
 
 #[test]
-fn a_retained_option_hash_does_not_publish_the_option_keyword() -> Result<(), String> {
+fn a_retained_option_hash_publishes_only_the_installed_name() -> Result<(), String> {
     // `foo => { -as => 'bar' }` is the one hash shape kept rather than skipped,
-    // because `bar` is literally the installed name. Keeping the body also put
-    // `as` in front of every consumer of `UseDecl.args`, and nothing asserted
-    // its absence: an option keyword names no symbol, so publishing it is the
-    // same over-claim in the import direction that the sibling contracts above
-    // refuse for ordinary configuration hashes. `foo` stays deliberately — this
-    // pass does not model the rename (a stated non-goal), so the imprecise name
-    // it carried before the hash was recorded at all is retained.
+    // because `bar` is literally the installed name. Retaining the body once
+    // published all three of `foo`, `as` and `bar`, and nothing asserted the
+    // first two absent. Only `bar` is installed: `as` is an option keyword that
+    // names no symbol, and `foo` is renamed away, so both were the over-claim in
+    // the import direction that the sibling contracts above refuse for ordinary
+    // configuration hashes.
     let source = "use Module foo => { -as => 'bar' };\n";
     assert_clean_parse(source);
     let file = lower(source);
@@ -169,8 +168,28 @@ fn a_retained_option_hash_does_not_publish_the_option_keyword() -> Result<(), St
 
     assert_eq!(
         spec.symbols,
-        ImportSymbols::Explicit(vec!["foo".to_string(), "bar".to_string()]),
-        "the installed name survives and the option keyword is not an import"
+        ImportSymbols::Explicit(vec!["bar".to_string()]),
+        "only the installed name is an import"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_rename_beside_other_requested_names_keeps_them() -> Result<(), String> {
+    // The control against over-correcting: dropping the renamed name must not
+    // disturb the plain names either side of it in the same import list.
+    let source = "use Module 'a', foo => { -as => 'bar' }, 'c';\n";
+    assert_clean_parse(source);
+    let file = lower(source);
+
+    let specs = file.compile_environment.import_specs(FileId(0));
+    let spec = import_spec_for(&specs, "Module")
+        .ok_or_else(|| format!("no import spec for Module in {specs:?}"))?;
+
+    assert_eq!(
+        spec.symbols,
+        ImportSymbols::Explicit(vec!["a".to_string(), "bar".to_string(), "c".to_string()]),
+        "plain requested names survive a neighbouring rename"
     );
     Ok(())
 }

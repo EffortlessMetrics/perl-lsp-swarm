@@ -1029,10 +1029,15 @@ mod tests {
                     names.iter().any(|name| name == "bar"),
                     "the installed name must survive: {names:?}"
                 );
-                // Retaining the body must not publish the option keyword itself.
+                // Retaining the body must publish neither the option keyword nor
+                // the name that was renamed away — only `bar` is installed.
                 assert!(
                     !names.iter().any(|name| name == "as"),
                     "an option keyword is not an imported symbol: {names:?}"
+                );
+                assert!(
+                    !names.iter().any(|name| name == "foo"),
+                    "a renamed name is not installed under its own name: {names:?}"
                 );
             }
             other => return Err(format!("expected an explicit list, got {other:?}").into()),
