@@ -627,13 +627,27 @@ impl BreakpointStore {
     /// * `source_path` - Absolute path to source file
     pub fn clear_breakpoints(&self, source_path: &str) {
         let mut breakpoints_map = self.breakpoints.lock().unwrap_or_else(|e| e.into_inner());
-        breakpoints_map.remove(source_path);
+        let mut installations = self.engine_installations.lock().unwrap_or_else(|e| e.into_inner());
+        let ids = breakpoints_map
+            .remove(source_path)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|record| record.id)
+            .collect::<Vec<_>>();
+        for id in ids {
+            installations.remove(&id);
+        }
     }
 
     /// Clear all breakpoints in all source files
     pub fn clear_all(&self) {
         let mut breakpoints_map = self.breakpoints.lock().unwrap_or_else(|e| e.into_inner());
+        let mut installations = self.engine_installations.lock().unwrap_or_else(|e| e.into_inner());
+        let ids = breakpoints_map.values().flatten().map(|record| record.id).collect::<Vec<_>>();
         breakpoints_map.clear();
+        for id in ids {
+            installations.remove(&id);
+        }
     }
 
     /// Check if the store is empty
@@ -811,8 +825,9 @@ impl BreakpointStore {
         lines_delta: i64,
     ) {
         let mut breakpoints_map = self.breakpoints.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(records) = breakpoints_map.get_mut(source_path) {
-            for record in records {
+        let mut installations = self.engine_installations.lock().unwrap_or_else(|e| e.into_inner());
+        let ids = if let Some(records) = breakpoints_map.get_mut(source_path) {
+            for record in &mut *records {
                 // Shift breakpoints that are at or after the edit line
                 if record.line >= start_line {
                     record.line += lines_delta;
@@ -824,6 +839,12 @@ impl BreakpointStore {
                     }
                 }
             }
+            records.iter().map(|record| record.id).collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+        for id in ids {
+            installations.remove(&id);
         }
     }
 }
@@ -1049,7 +1070,7 @@ print "result: $final\n";
     }
 
     #[test]
-    fn test_clear_breakpoints() {
+    fn test_clear_breakpoints() -> Result<(), String> {
         let store = BreakpointStore::new();
         let source_path = "/workspace/script.pl";
 
@@ -1068,6 +1089,12 @@ print "result: $final\n";
             source_modified: None,
         };
         store.set_breakpoints(&args);
+        if !store.mark_engine_installed(1, source_path, 10, 7, "digest".to_string()) {
+            return Err("test breakpoint must be installable".to_string());
+        }
+        if !store.has_engine_breakpoint_candidate(source_path, 10, 7) {
+            return Err("test breakpoint installation must be observable".to_string());
+        }
 
         // Clear breakpoints
         store.clear_breakpoints(source_path);
@@ -1075,6 +1102,10 @@ print "result: $final\n";
         // Should be empty
         let breakpoints = store.get_breakpoints(source_path);
         assert_eq!(breakpoints.len(), 0);
+        if store.has_engine_breakpoint_candidate(source_path, 10, 7) {
+            return Err("cleared breakpoint installation must be removed".to_string());
+        }
+        Ok(())
     }
 
     #[test]
@@ -1233,6 +1264,34 @@ print "result: $final\n";
         // 3. Edit after breakpoint (no shift)
         store.adjust_breakpoints_for_edit(source_path, 20, 10);
         assert_eq!(store.get_breakpoints(source_path)[0].line, 12);
+    }
+
+    #[test]
+    fn test_adjust_breakpoints_removes_stale_engine_installation() -> Result<(), String> {
+        let store = BreakpointStore::new();
+        let source_path = "/workspace/script.pl";
+        store.breakpoints.lock().unwrap_or_else(|e| e.into_inner()).insert(
+            source_path.to_string(),
+            vec![BreakpointRecord {
+                id: 1,
+                line: 10,
+                column: None,
+                condition: None,
+                hit_condition: None,
+                log_message: None,
+                hit_count: 0,
+                verified: true,
+                message: None,
+            }],
+        );
+        if !store.mark_engine_installed(1, source_path, 10, 7, "digest".to_string()) {
+            return Err("test breakpoint must be installable".to_string());
+        }
+        store.adjust_breakpoints_for_edit(source_path, 5, 5);
+        if store.has_engine_breakpoint_candidate(source_path, 15, 7) {
+            return Err("edited breakpoint must not retain stale engine installation".to_string());
+        }
+        Ok(())
     }
 
     #[test]

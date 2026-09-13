@@ -327,6 +327,35 @@ impl DebugAdapter {
         state.generation
     }
 
+    /// Invalidate a session after an operation may have reached the debugger.
+    ///
+    /// The broker settlement and adapter generation check are conditional on
+    /// the same captured generation.  Teardown runs while the termination
+    /// state lock is held, so a replacement cannot be cleared by a late
+    /// acknowledgement timeout.
+    pub(super) fn invalidate_session_generation_if_current(
+        &self,
+        expected_adapter_generation: u64,
+        expected_broker_generation: operation_broker::SessionGeneration,
+        reason: &'static str,
+    ) -> bool {
+        if !self.operation_broker.settle_all_if_current(reason, expected_broker_generation) {
+            return false;
+        }
+
+        let mut state = lock_or_recover(&self.termination_state, "debug_adapter.termination_state");
+        if state.generation != expected_adapter_generation {
+            return false;
+        }
+        state.generation = state.generation.saturating_add(1);
+        state.emitted = false;
+        Self::clear_active_session_state_with_state(
+            &self.session,
+            &self.tcp_session,
+            &self.attached_pid,
+        )
+    }
+
     /// Close the session generation at the end of a client-initiated terminal
     /// request (`terminate`/`disconnect`).
     ///
@@ -384,10 +413,20 @@ impl DebugAdapter {
                 // are legitimate pre-launch use cases).
                 let p = Path::new(path);
 
-                // Best-effort canonicalize for logging; fall back to raw path.
+                // Resolve relative spellings once at admission so later launch
+                // replay uses the same file identity. Preserve absolute
+                // spellings because Windows canonicalize may add a device
+                // prefix that does not match the launch identity.
+                let stable_path = if p.is_absolute() {
+                    p.to_path_buf()
+                } else {
+                    std::fs::canonicalize(p).unwrap_or_else(|_| {
+                        std::path::absolute(p).unwrap_or_else(|_| p.to_path_buf())
+                    })
+                };
                 let resolved = std::fs::canonicalize(p)
                     .map(|c| c.to_string_lossy().into_owned())
-                    .unwrap_or_else(|_| path.to_string());
+                    .unwrap_or_else(|_| stable_path.to_string_lossy().into_owned());
 
                 // Reject any path containing a ParentDir component — these can
                 // escape the (unknown) workspace boundary.
@@ -414,7 +453,7 @@ impl DebugAdapter {
                             "Pre-launch absolute path outside current working directory \
                              accepted without workspace boundary check"
                         );
-                        return Ok(PathBuf::from(path));
+                        return Ok(stable_path);
                     }
                 }
 
@@ -423,7 +462,7 @@ impl DebugAdapter {
                     path = %resolved,
                     "Pre-launch path accepted without workspace boundary check"
                 );
-                Ok(PathBuf::from(path))
+                Ok(stable_path)
             }
         }
     }
@@ -517,7 +556,7 @@ impl DebugAdapter {
         source_path: &str,
         line: i64,
         timeout: Duration,
-    ) -> Result<(), String> {
+    ) -> Result<(), EngineBreakpointAcknowledgeError> {
         let path_hex =
             source_path.as_bytes().iter().map(|byte| format!("{byte:02x}")).collect::<String>();
         let command = format!(
@@ -526,12 +565,14 @@ impl DebugAdapter {
         let captured_generation = self.current_session_generation();
         let (operation, begin, end, prior_state) = {
             let mut guard = lock_or_recover(&self.session, "debug_adapter.session");
-            let session = guard.as_mut().ok_or_else(|| "no active debugger session".to_string())?;
-            let stdin = session
-                .process
-                .stdin
-                .as_mut()
-                .ok_or_else(|| "debugger stdin is unavailable".to_string())?;
+            let session = guard.as_mut().ok_or_else(|| {
+                EngineBreakpointAcknowledgeError::Rejected("no active debugger session".to_string())
+            })?;
+            let stdin = session.process.stdin.as_mut().ok_or_else(|| {
+                EngineBreakpointAcknowledgeError::Rejected(
+                    "debugger stdin is unavailable".to_string(),
+                )
+            })?;
             // The query is an adapter-internal inspection while perl5db is at a
             // prompt. Mark that interval stopped so the reader does not expose
             // the query's context echo as a user step stop. configurationDone
@@ -544,21 +585,40 @@ impl DebugAdapter {
                     Ok(query) => query,
                     Err(error) => {
                         session.state = prior_state;
-                        return Err(error);
+                        return Err(if error.starts_with("framed query not submitted") {
+                            EngineBreakpointAcknowledgeError::Rejected(error)
+                        } else {
+                            EngineBreakpointAcknowledgeError::Ambiguous(error)
+                        });
                     }
                 };
             (operation, begin, end, prior_state)
         };
-        let result = self
-            .capture_framed_debugger_output_for_operation(&operation, &begin, &end)
-            .ok_or_else(|| "engine breakpoint acknowledgement did not complete".to_string())
-            .and_then(|lines| {
+        let result = match self.await_framed_debugger_output_for_operation(&operation, &begin, &end)
+        {
+            operation_broker::BrokerTerminal::Completed(lines) => {
                 if engine_breakpoint_acknowledged(&lines) {
                     Ok(())
                 } else {
-                    Err(format!("engine did not acknowledge breakpoint at {source_path}:{line}"))
+                    Err(EngineBreakpointAcknowledgeError::Rejected(format!(
+                        "engine did not acknowledge breakpoint at {source_path}:{line}"
+                    )))
                 }
-            });
+            }
+            terminal @ (operation_broker::BrokerTerminal::Cancelled
+            | operation_broker::BrokerTerminal::TimedOut
+            | operation_broker::BrokerTerminal::TransportFailure(_)
+            | operation_broker::BrokerTerminal::ProtocolFailure(_)) => {
+                Err(EngineBreakpointAcknowledgeError::Ambiguous(format!(
+                    "engine breakpoint acknowledgement settled as {}",
+                    terminal.as_str()
+                )))
+            }
+            terminal => Err(EngineBreakpointAcknowledgeError::Rejected(format!(
+                "engine breakpoint acknowledgement settled as {}",
+                terminal.as_str()
+            ))),
+        };
         if self.current_session_generation() == captured_generation
             && let Ok(mut guard) = self.session.lock()
             && let Some(session) = guard.as_mut()
@@ -719,7 +779,29 @@ impl DebugAdapter {
             }
         };
 
-        self.capture_framed_debugger_output_for_operation(&operation, begin_marker, end_marker)
+        match self.await_framed_debugger_output_for_operation(&operation, begin_marker, end_marker)
+        {
+            operation_broker::BrokerTerminal::Completed(lines) => Some(lines),
+            terminal => {
+                tracing::debug!(terminal = terminal.as_str(), "framed query settled uncompleted");
+                None
+            }
+        }
+    }
+
+    fn await_framed_debugger_output_for_operation(
+        &self,
+        operation: &operation_broker::BrokerOperation,
+        begin_marker: &str,
+        end_marker: &str,
+    ) -> operation_broker::BrokerTerminal {
+        self.operation_broker.await_framed_payload(
+            operation,
+            begin_marker,
+            end_marker,
+            &self.recent_output,
+            &self.cancel_requested,
+        )
     }
 
     fn capture_framed_debugger_output_for_operation(
@@ -728,13 +810,7 @@ impl DebugAdapter {
         begin_marker: &str,
         end_marker: &str,
     ) -> Option<Vec<String>> {
-        match self.operation_broker.await_framed_payload(
-            operation,
-            begin_marker,
-            end_marker,
-            &self.recent_output,
-            &self.cancel_requested,
-        ) {
+        match self.await_framed_debugger_output_for_operation(operation, begin_marker, end_marker) {
             operation_broker::BrokerTerminal::Completed(lines) => Some(lines),
             terminal => {
                 tracing::debug!(terminal = terminal.as_str(), "framed query settled uncompleted");
@@ -982,6 +1058,12 @@ impl DebugAdapter {
             sess.stack_frame_arguments.insert(frame_id, arguments);
         }
     }
+}
+
+#[derive(Debug)]
+pub(super) enum EngineBreakpointAcknowledgeError {
+    Rejected(String),
+    Ambiguous(String),
 }
 
 /// Accept only the exact scalar marker emitted by the acknowledgement query.

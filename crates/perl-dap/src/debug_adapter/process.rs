@@ -672,10 +672,19 @@ impl DebugAdapter {
         };
 
         match cmd.spawn() {
-            Ok(child) => {
+            Ok(mut child) => {
                 // Only advance the session generation once spawning has succeeded. A rejected
                 // launch must leave the currently active reader valid for its existing session.
-                self.prepare_replacement_session();
+                if !self.prepare_replacement_session() {
+                    let cleanup = Self::terminate_child_process(&mut child);
+                    return Err(if cleanup {
+                        "Cannot replace the active debugger session because its process cleanup was not confirmed"
+                            .to_string()
+                    } else {
+                        "Cannot replace the active debugger session; cleanup of both processes was not confirmed"
+                            .to_string()
+                    });
+                }
                 if let Ok(mut identity) = self.launch_source_identity.lock() {
                     *identity = Some((launch_source_path.clone(), launch_source_digest.clone()));
                 }
@@ -740,7 +749,16 @@ impl DebugAdapter {
                         self.install_stored_source_breakpoints(&source_key, &records)
                     })
                     .unwrap_or_default();
-                for id in installed_source_breakpoints {
+                if installed_source_breakpoints.ambiguous {
+                    return Err(if installed_source_breakpoints.cleanup_succeeded {
+                        "Debugger session was invalidated because a source breakpoint acknowledgement was ambiguous"
+                            .to_string()
+                    } else {
+                        "Debugger session was invalidated but cleanup was not confirmed after an ambiguous source breakpoint acknowledgement"
+                            .to_string()
+                    });
+                }
+                for id in installed_source_breakpoints.installed {
                     self.send_event(
                         "breakpoint",
                         Some(serde_json::json!({
@@ -2012,7 +2030,20 @@ impl DebugAdapter {
                         // The TCP session is fully connected and has a reader before it becomes
                         // the active session, so a failed attach does not invalidate an existing
                         // session's generation.
-                        self.prepare_replacement_session();
+                        if !self.prepare_replacement_session() {
+                            let _ = session.disconnect();
+                            return DapMessage::Response {
+                                seq,
+                                request_seq,
+                                success: false,
+                                command: "attach".to_string(),
+                                body: None,
+                                message: Some(
+                                    "Cannot replace the active debugger session because its process cleanup was not confirmed"
+                                        .to_string(),
+                                ),
+                            };
+                        }
                         // Store session
                         if let Ok(mut guard) = self.tcp_session.lock() {
                             *guard = Some(session);
@@ -2102,12 +2133,12 @@ impl DebugAdapter {
     }
 
     /// Clear active process session, TCP session, and PID-attach mode state.
-    pub(super) fn clear_active_session_state(&self) {
+    pub(super) fn clear_active_session_state(&self) -> bool {
         Self::clear_active_session_state_with_state(
             &self.session,
             &self.tcp_session,
             &self.attached_pid,
-        );
+        )
     }
 
     /// Advance the session generation and tear down the prior active session.
@@ -2115,40 +2146,69 @@ impl DebugAdapter {
     /// Callers invoke this only after a replacement launch or attach has
     /// successfully completed its external setup, so rejected replacements
     /// leave the existing session untouched.
-    fn prepare_replacement_session(&self) {
+    fn prepare_replacement_session(&self) -> bool {
         self.begin_session_generation();
-        self.clear_active_session_state();
+        self.clear_active_session_state()
     }
 
     pub(super) fn clear_active_session_state_with_state(
         session: &Arc<Mutex<Option<DebugSession>>>,
         tcp_session: &Arc<Mutex<Option<TcpAttachSession>>>,
         attached_pid: &Arc<Mutex<Option<u32>>>,
-    ) {
+    ) -> bool {
+        Self::clear_active_session_state_with_terminator(
+            session,
+            tcp_session,
+            attached_pid,
+            Self::terminate_child_process,
+        )
+    }
+
+    fn clear_active_session_state_with_terminator(
+        session: &Arc<Mutex<Option<DebugSession>>>,
+        tcp_session: &Arc<Mutex<Option<TcpAttachSession>>>,
+        attached_pid: &Arc<Mutex<Option<u32>>>,
+        mut terminate: impl FnMut(&mut Child) -> bool,
+    ) -> bool {
+        let mut cleanup_succeeded = true;
         // Terminate the debug session
-        if let Ok(mut guard) = session.lock()
-            && let Some(mut active_session) = guard.take()
-        {
-            if !Self::terminate_child_process(&mut active_session.process) {
-                tracing::warn!("Failed to ensure debug session process termination");
+        match session.lock() {
+            Ok(mut guard) => {
+                if let Some(active_session) = guard.as_mut() {
+                    if terminate(&mut active_session.process) {
+                        active_session.state = DebugState::Terminated;
+                        let _ = guard.take();
+                    } else {
+                        tracing::warn!("Failed to ensure debug session process termination");
+                        cleanup_succeeded = false;
+                        // Retain the Child handle so a later owner can retry the
+                        // bounded reap instead of silently dropping an unconfirmed
+                        // live process.
+                        active_session.state = DebugState::Terminated;
+                    }
+                }
             }
-            active_session.state = DebugState::Terminated;
+            Err(_) => cleanup_succeeded = false,
         }
 
         // Disconnect TCP session if active
         if let Ok(mut guard) = tcp_session.lock()
             && let Some(ref mut tcp_session) = *guard
+            && tcp_session.disconnect().is_err()
         {
-            let _ = tcp_session.disconnect();
+            cleanup_succeeded = false;
         }
-        if let Ok(mut guard) = tcp_session.lock() {
-            *guard = None;
+        match tcp_session.lock() {
+            Ok(mut guard) => *guard = None,
+            Err(_) => cleanup_succeeded = false,
         }
 
         // Clear PID attach mode.
-        if let Ok(mut guard) = attached_pid.lock() {
-            *guard = None;
+        match attached_pid.lock() {
+            Ok(mut guard) => *guard = None,
+            Err(_) => cleanup_succeeded = false,
         }
+        cleanup_succeeded
     }
 
     fn clear_active_session_state_for_generation(
@@ -2689,6 +2749,57 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::mpsc::{TryRecvError, sync_channel};
     use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn failed_child_cleanup_retains_owner_until_retry() -> Result<(), String> {
+        let adapter = DebugAdapter::new();
+        adapter.seed_session_for_test().map_err(|error| error.to_string())?;
+        let expected_pid = adapter
+            .session
+            .lock()
+            .map_err(|_| "session lock poisoned")?
+            .as_ref()
+            .map(|session| session.process.id())
+            .ok_or("test session was not installed")?;
+
+        let failed = DebugAdapter::clear_active_session_state_with_terminator(
+            &adapter.session,
+            &adapter.tcp_session,
+            &adapter.attached_pid,
+            |_| false,
+        );
+        if failed {
+            return Err("injected failed cleanup was reported as successful".to_string());
+        }
+        let retained = adapter
+            .session
+            .lock()
+            .map_err(|_| "session lock poisoned")?
+            .as_ref()
+            .map(|session| session.process.id());
+        if retained != Some(expected_pid) {
+            return Err(format!(
+                "failed cleanup dropped the owned child: expected {expected_pid}, got {retained:?}"
+            ));
+        }
+        let retained_state = adapter
+            .session
+            .lock()
+            .map_err(|_| "session lock poisoned")?
+            .as_ref()
+            .map(|session| session.state.clone());
+        if retained_state != Some(DebugState::Terminated) {
+            return Err("failed cleanup left the retained session resumable".to_string());
+        }
+
+        if !adapter.clear_active_session_state() {
+            return Err("retrying real child cleanup failed".to_string());
+        }
+        if adapter.session.lock().map_err(|_| "session lock poisoned")?.is_some() {
+            return Err("successful retry retained the child owner".to_string());
+        }
+        Ok(())
+    }
 
     #[test]
     fn context_then_prompt_preserves_current_suspension_frame_id() -> Result<(), String> {

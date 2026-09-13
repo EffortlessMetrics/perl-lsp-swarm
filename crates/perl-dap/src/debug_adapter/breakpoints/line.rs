@@ -4,6 +4,18 @@ use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
 impl DebugAdapter {
+    pub(in crate::debug_adapter) fn invalidate_ambiguous_breakpoint_session(
+        &self,
+        adapter_generation: u64,
+        broker_generation: crate::debug_adapter::operation_broker::SessionGeneration,
+    ) -> bool {
+        self.invalidate_session_generation_if_current(
+            adapter_generation,
+            broker_generation,
+            "breakpoint_ack_ambiguous",
+        )
+    }
+
     /// Install source breakpoints retained before launch once the debugger
     /// reader is live. The same acknowledgement and identity checks are used
     /// by an in-session setBreakpoints request and by launch replay.
@@ -11,17 +23,20 @@ impl DebugAdapter {
         &self,
         source_path: &str,
         records: &[BreakpointRecord],
-    ) -> HashSet<i64> {
+    ) -> SourceBreakpointInstallation {
         let source_digest = std::fs::read(source_path)
             .map(|bytes| perl_source_identity::ContentDigest::of_bytes(&bytes).to_string())
             .unwrap_or_default();
         let session_generation = self.current_session_generation();
+        let broker_generation = self.operation_broker.current_session_generation();
         let active_session = self.session.lock().map(|guard| guard.is_some()).unwrap_or(false);
         if !active_session || !self.launch_source_revision_matches(source_path, &source_digest) {
-            return HashSet::new();
+            return SourceBreakpointInstallation::default();
         }
 
         let mut installed = HashSet::new();
+        let mut ambiguous = false;
+        let mut cleanup_succeeded = true;
         let deadline = Instant::now() + Duration::from_secs(5);
         for record in records {
             if !record.verified
@@ -35,8 +50,26 @@ impl DebugAdapter {
             if remaining.is_zero() {
                 break;
             }
-            let acknowledged =
-                self.acknowledge_engine_breakpoint(source_path, record.line, remaining).is_ok();
+            let acknowledged = match self.acknowledge_engine_breakpoint(
+                source_path,
+                record.line,
+                remaining,
+            ) {
+                Ok(()) => true,
+                Err(crate::debug_adapter::EngineBreakpointAcknowledgeError::Rejected(error)) => {
+                    tracing::debug!(%error, "debugger rejected source breakpoint acknowledgement");
+                    false
+                }
+                Err(crate::debug_adapter::EngineBreakpointAcknowledgeError::Ambiguous(error)) => {
+                    tracing::warn!(%error, "source breakpoint acknowledgement became ambiguous");
+                    ambiguous = true;
+                    cleanup_succeeded = self.invalidate_ambiguous_breakpoint_session(
+                        session_generation,
+                        broker_generation,
+                    );
+                    break;
+                }
+            };
             let current_revision = std::fs::read(source_path)
                 .map(|bytes| perl_source_identity::ContentDigest::of_bytes(&bytes).to_string())
                 .is_ok_and(|digest| digest == source_digest);
@@ -54,7 +87,7 @@ impl DebugAdapter {
                 installed.insert(record.id);
             }
         }
-        installed
+        SourceBreakpointInstallation { installed, ambiguous, cleanup_succeeded }
     }
 
     /// Handle setBreakpoints request
@@ -235,8 +268,8 @@ impl DebugAdapter {
             }
         }
 
-        let engine_installed = if all_entries_rejected {
-            HashSet::new()
+        let engine_installation = if all_entries_rejected {
+            SourceBreakpointInstallation::default()
         } else {
             args.source
                 .path
@@ -247,6 +280,24 @@ impl DebugAdapter {
                 })
                 .unwrap_or_default()
         };
+
+        if engine_installation.ambiguous {
+            return DapMessage::Response {
+                seq,
+                request_seq,
+                success: false,
+                command: "setBreakpoints".to_string(),
+                body: Some(json!({ "breakpoints": [] })),
+                message: Some(
+                    if engine_installation.cleanup_succeeded {
+                        "Breakpoint acknowledgement was ambiguous; the debugger session was invalidated"
+                    } else {
+                        "Breakpoint acknowledgement was ambiguous; the session was invalidated but cleanup was not confirmed"
+                    }
+                        .to_string(),
+                ),
+            };
+        }
 
         // Keep function breakpoints active after line-breakpoint synchronization.
         if !all_entries_rejected {
@@ -283,7 +334,7 @@ impl DebugAdapter {
                 // Static AST validity is a pending state.  A client-visible
                 // verified breakpoint requires the current debugger engine's
                 // acknowledgement for this session and source digest.
-                let engine_verified = engine_installed.contains(&bp.id);
+                let engine_verified = engine_installation.installed.contains(&bp.id);
                 value["verified"] = Value::Bool(engine_verified);
                 if bp.verified && !engine_verified {
                     let active = self.session.lock().map(|guard| guard.is_some()).unwrap_or(false);
@@ -311,6 +362,13 @@ impl DebugAdapter {
             message: None,
         }
     }
+}
+
+#[derive(Default)]
+pub(in crate::debug_adapter) struct SourceBreakpointInstallation {
+    pub(in crate::debug_adapter) installed: HashSet<i64>,
+    pub(in crate::debug_adapter) ambiguous: bool,
+    pub(in crate::debug_adapter) cleanup_succeeded: bool,
 }
 
 #[cfg(test)]
@@ -447,7 +505,11 @@ mod source_boundary_tests {
         let started = Instant::now();
         let installed = adapter.install_stored_source_breakpoints(source_text, &records);
         let elapsed = started.elapsed();
-        require(installed.is_empty(), "a nonresponding engine must not install breakpoints")?;
+        require(
+            installed.installed.is_empty(),
+            "a nonresponding engine must not install breakpoints",
+        )?;
+        require(installed.ambiguous, "a nonresponding engine must invalidate the session")?;
         require(
             elapsed < Duration::from_secs(8),
             &format!("aggregate installation exceeded one budget: {elapsed:?}"),
@@ -458,10 +520,30 @@ mod source_boundary_tests {
             .map_err(|_| "session lock poisoned")?
             .as_ref()
             .map(|session| session.state.clone());
+        require_equal(state, None, "an ambiguous installation must clear the active session")?;
+        Ok(())
+    }
+
+    #[test]
+    fn unconfigured_relative_admission_uses_stable_store_identity() -> Result<(), Box<dyn Error>> {
+        let mut adapter = DebugAdapter::new();
+        let body = successful_body(request(&mut adapter, "Cargo.toml", json!([{ "line": 1 }])))?;
         require_equal(
-            state,
-            Some(DebugState::Running),
-            "a failed aggregate installation must restore the prior session state",
+            single_breakpoint(&body)?.get("verified").and_then(Value::as_bool),
+            Some(false),
+            "relative source admission remains pending before launch",
+        )?;
+        let stable = DebugAdapter::validate_source_path_at("Cargo.toml", None)?
+            .to_string_lossy()
+            .into_owned();
+        require(
+            adapter.breakpoints.get_breakpoints("Cargo.toml").is_empty(),
+            "relative source must not remain keyed by its unstable spelling",
+        )?;
+        require_equal(
+            adapter.breakpoints.get_breakpoints(&stable).len(),
+            1,
+            "relative source must be keyed by its stable absolute identity",
         )?;
         Ok(())
     }

@@ -1271,6 +1271,99 @@ fn exact_session_later_source_breakpoint_after_launch_remains_verified() -> Resu
     outcome.and(teardown)
 }
 
+#[test]
+fn exact_session_delayed_breakpoint_prompt_fails_closed() -> Result<()> {
+    let binary = resolve_matrix_binary()?;
+    let Some(perl) =
+        debuggee_perl_or_typed_skip("exact_session_delayed_breakpoint_prompt_fails_closed")
+    else {
+        return Ok(());
+    };
+    let (guard, fixture) = write_delayed_breakpoint_fixture()?;
+    let mut session = ExactSession::spawn(&binary)?;
+    let outcome = (|| -> Result<()> {
+        let initialized = session.request(
+            "initialize",
+            Some(json!({ "adapterID": "perl-dap-delayed-breakpoint", "clientID": "exact-session-matrix" })),
+            ROW_TIMEOUT,
+        )?;
+        if !initialized.success {
+            return Err(anyhow!("initialize failed: {:?}", initialized.message));
+        }
+        session.wait_for_event("initialized", ROW_TIMEOUT)?;
+        let pending = session.request(
+            "setBreakpoints",
+            Some(json!({
+                "source": { "path": fixture.display().to_string() },
+                "breakpoints": [{ "line": 3 }],
+            })),
+            ROW_TIMEOUT,
+        )?;
+        if !pending.success {
+            return Err(anyhow!("pre-launch setBreakpoints failed: {:?}", pending.message));
+        }
+        let pending_breakpoint = pending
+            .body
+            .as_ref()
+            .and_then(|body| body.get("breakpoints"))
+            .and_then(Value::as_array)
+            .and_then(|breakpoints| breakpoints.first())
+            .ok_or_else(|| anyhow!("pre-launch response omitted its breakpoint"))?;
+        if pending_breakpoint.get("verified").and_then(Value::as_bool) != Some(false) {
+            return Err(anyhow!(
+                "delayed breakpoint was not pending before launch: {pending_breakpoint}"
+            ));
+        }
+        let launch = session.request(
+            "launch",
+            Some(json!({
+                "program": fixture.display().to_string(),
+                "perlPath": perl.binary.display().to_string(),
+                "stopOnEntry": false,
+            })),
+            ROW_TIMEOUT,
+        )?;
+        if launch.success {
+            return Err(anyhow!("delayed debugger prompt unexpectedly launched successfully"));
+        }
+        let message = launch.message.unwrap_or_default();
+        if !message.contains("ambiguous") && !message.contains("invalidated") {
+            return Err(anyhow!("delayed launch failure omitted ambiguity reason: {message}"));
+        }
+        let pid_path = fixture.with_file_name("delayed_breakpoint.pid");
+        let pid_deadline = Instant::now() + Duration::from_secs(2);
+        while !pid_path.is_file() && Instant::now() < pid_deadline {
+            thread::sleep(Duration::from_millis(25));
+        }
+        let pid_text = fs::read_to_string(&pid_path)
+            .with_context(|| format!("reading delayed debuggee PID file {pid_path:?}"))?;
+        let pid = pid_text.trim().parse::<u32>().context("parsing delayed debuggee PID")?;
+        let cleanup_deadline = Instant::now() + CLEANUP_TIMEOUT;
+        while process_is_alive(pid)? && Instant::now() < cleanup_deadline {
+            thread::sleep(Duration::from_millis(25));
+        }
+        if process_is_alive(pid)? {
+            return Err(anyhow!("ambiguous delayed launch left debuggee PID {pid} alive"));
+        }
+        let disconnected = session.request(
+            "disconnect",
+            Some(json!({ "terminateDebuggee": true })),
+            ROW_TIMEOUT,
+        )?;
+        if !disconnected.success {
+            return Err(anyhow!(
+                "adapter was not responsive after delayed launch failure: {:?}",
+                disconnected.message
+            ));
+        }
+        session.require_natural_exit(ROW_TIMEOUT)?;
+        Ok(())
+    })();
+    let teardown = session.teardown();
+    drop(guard);
+    outcome.and(teardown)
+}
+
 /// Deterministic fixture content with a fixed line anchor, written to a
 /// per-run tempdir; the digest lands in the subject identity.
 fn write_fixture() -> Result<(tempfile::TempDir, PathBuf)> {
@@ -1289,6 +1382,75 @@ fn write_later_breakpoint_fixture() -> Result<(tempfile::TempDir, PathBuf)> {
     fs::write(&path, "# later breakpoint fixture\nmy $before = 1;\nmy $also_before = 2;\nmy $target = 3;\nprint \"ok\\n\";\n")
         .context("writing the later-breakpoint fixture")?;
     Ok((dir, path))
+}
+
+fn write_delayed_breakpoint_fixture() -> Result<(tempfile::TempDir, PathBuf)> {
+    let dir = tempfile::tempdir().context("creating delayed-breakpoint fixture tempdir")?;
+    let path = dir.path().join("delayed_breakpoint_fixture.pl");
+    let pid_path = dir.path().join("delayed_breakpoint.pid");
+    let pid_literal = pid_path.to_string_lossy().replace('\\', "\\\\").replace('\'', "\\'");
+    fs::write(
+        &path,
+        format!(
+            "BEGIN {{ my $pid = $$; if ($^O eq 'msys' || $^O eq 'cygwin') {{ require Cygwin; $pid = Cygwin::pid_to_winpid($$); }} open(my $fh, '>', '{}') or die $!; print $fh $pid; close $fh; sleep 7; }}\nmy $before = 1;\nmy $target = 2;\nprint \"ok\\n\";\n",
+            pid_literal
+        ),
+    )
+    .context("writing delayed-breakpoint fixture")?;
+    Ok((dir, path))
+}
+
+fn process_is_alive(pid: u32) -> Result<bool> {
+    #[cfg(windows)]
+    {
+        use std::io;
+        use winapi::um::handleapi::CloseHandle;
+        use winapi::um::processthreadsapi::{GetExitCodeProcess, OpenProcess};
+        use winapi::um::winnt::{PROCESS_QUERY_LIMITED_INFORMATION, SYNCHRONIZE};
+        const STILL_ACTIVE: u32 = 259;
+
+        // SAFETY: OpenProcess receives a scalar PID and read-only query rights.
+        let handle =
+            unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, 0, pid) };
+        if handle.is_null() {
+            let error = io::Error::last_os_error();
+            if error.raw_os_error() == Some(87) {
+                return Ok(false);
+            }
+            return Err(anyhow!("opening delayed debuggee PID {pid}: {error}"));
+        }
+        let mut exit_code = 0;
+        // SAFETY: handle is valid and exit_code points to writable stack memory.
+        let queried = unsafe { GetExitCodeProcess(handle, &mut exit_code) } != 0;
+        let close_ok = unsafe { CloseHandle(handle) } != 0;
+        if !queried {
+            return Err(anyhow!(
+                "querying delayed debuggee PID {pid}: {}",
+                io::Error::last_os_error()
+            ));
+        }
+        if !close_ok {
+            return Err(anyhow!(
+                "closing delayed debuggee PID {pid}: {}",
+                io::Error::last_os_error()
+            ));
+        }
+        Ok(exit_code == STILL_ACTIVE)
+    }
+    #[cfg(unix)]
+    {
+        let output = Command::new("ps")
+            .args(["-p", &pid.to_string(), "-o", "stat="])
+            .output()
+            .context("checking delayed debuggee process")?;
+        let state = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        Ok(output.status.success() && !state.is_empty() && !state.starts_with('Z'))
+    }
+    #[cfg(not(any(windows, unix)))]
+    {
+        let _ = pid;
+        Err(anyhow!("process liveness oracle is unavailable on this platform"))
+    }
 }
 
 fn write_receipt_if_configured(
