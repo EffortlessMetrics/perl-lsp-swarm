@@ -5,8 +5,9 @@
 - [x] `.spec/11627-module-train-live/` bundle (this file's siblings) written
       before implementation.
 - [x] `xtask/src/tasks/module_train_live.rs`: raw-observation model, read-only
-      adapters (git local / git remote / gh pr list+view through the single
-      allowlisted choke point), deterministic normalizer, pure action
+      adapters (git local / git remote / gh pr list+view, plus one gated
+      `gh api graphql` review read, through the single allowlisted choke
+      point), deterministic normalizer, pure action
       classifier, check/next/explain renderers.
 - [x] Additive public seam on #11626's module: `LoadedManifest::node_statuses()`,
       `node_static_facts()`, `controller_issue()`, public
@@ -15,7 +16,7 @@
 - [x] Fixture corpus under `xtask/tests/fixtures/module-train-live/`
       (`raw-corpus.json` with 11 PRs covering every candidate state family,
       `raw-clean-surface.json` for the START baseline).
-- [x] 37 focused tests in `xtask/src/tasks/module_train_live_tests.rs`: all 18
+- [x] 46 focused tests in `xtask/src/tasks/module_train_live_tests.rs`: all 18
       shift-left falsifiers, determinism, plus the bot-review repair tests
       (repo-bound gh queries, fail-closed detail reads, partial-trailer node
       retention, manifest-digest validation binding, cancelled checks carry
@@ -28,7 +29,7 @@
 ## Proof (scoped; run on the final tree)
 
 ```text
-cargo test -p xtask --locked --bin xtask module_train_live -> 37 passed
+cargo test -p xtask --locked --bin xtask module_train_live -> 46 passed
 cargo test -p xtask --locked --bin xtask module_train      -> 58 passed (C02 regression)
 cargo fmt -p xtask -- --check                              -> clean
 cargo clippy -p xtask --all-targets --locked -- -D warnings -> zero findings in this PR's files
@@ -43,11 +44,28 @@ git diff --check -> clean
 
 ## Residuals (recorded on #11627; not proven here)
 
-1. Review-thread observation (GraphQL) and review-head binding: typed blockers;
-   MERGE_READY_RECOMMENDATION unreachable from live observation (the classifier
-   branch exists and is covered by synthetic-fact tests).
+1. Review-thread observation — **closed by #14237**: `threads_resolved` is
+   observed through one gated read-only `gh api graphql` document and fails
+   closed (unobserved or truncated page, a head that moved between the list and
+   the review read, or any GraphQL instrument failure leaves it unprovable,
+   never "resolved").
+   Review-head binding — **partially closed, deliberately**: #14237 observes
+   whether each opinionated review sits on the head commit
+   (`reviewed_commit_is_head`, from `latestOpinionatedReviews` so advisory
+   comments do not distort it), but that comparison is a **diagnostic only**.
+   Semantic review currency is NOT derived from it: `REVIEW_CURRENTNESS.md`
+   ("Review is semantic, not exact-head") and `AGENTS.md` ("head SHA change
+   alone -> no review invalidation") make a head SHA an invalid review-validity
+   token, and materiality is not observable here. So
+   `review_head_currency_not_observable` remains a typed blocker and
+   `head_moved_after_review` is never raised from a commit delta.
+   MERGE_READY_RECOMMENDATION therefore stays unreachable on two blockers
+   (currency + receipts), not one.
 2. Behavior-receipt/profile observation: typed blocker for fan-in/claim starts
-   and merge-ready.
+   and merge-ready. **Blocked by #11619** (P11A exact-process receipt
+   substrate, open): this tree has no `module-process` task and no
+   `module_resolution_composition.v1` schema, so the receipt kinds have no
+   producer to observe.
 3. Explicit stack parsing (`explicit_stack_member`) and cross-PR base/head edge
    validation: fail-closed reserved vocabulary (`stack_relation != "none"`
    fails closed).
@@ -59,6 +77,42 @@ git diff --check -> clean
 8. Merged-window truncation is permanent at current merge velocity for any
    bounded window; merged-candidate facts degrade to a recorded limitation
    (honest bound, not a completeness claim).
+9. **External GraphQL schema proof — open, not discharged.** #14237's
+   `GH_REVIEW_GRAPHQL` selects `headRefOid`, `reviewDecision`,
+   `reviewThreads(first:){totalCount nodes{isResolved}}` and
+   `latestOpinionatedReviews(first:){totalCount nodes{state submittedAt
+   commit{oid} author{login}}}`. Those field signatures were never checked
+   against GitHub's published schema: `docs.github.com` was refused by the
+   authoring environment's egress proxy, and live introspection needs a `gh`
+   CLI absent there (the same reason the network `refresh` path is
+   unexercised). The adjacent **transport** contract *is* externally grounded
+   against upstream `cli/cli` source (`-f` never expands `@file`, `-F` does,
+   `query`/`operationName` are lifted to the request-body top level, non-zero
+   exit on any `errors` payload) — only the schema field names are unverified.
+   Exposure is bounded to a false *negative*: every structural field is read
+   with an explicit `ObservationFailure` rather than a default, so a renamed
+   field degrades the read to `instrument_failed`/`NOT_PROVEN` and can never
+   become "no threads" or "resolved".
+   To discharge, on a networked machine with authenticated `gh`: introspect
+   the live schema for each selected field and its arguments; execute the
+   document once against a real PR; record the response as a fixture so the
+   corpus exercises a real payload; and **add a check that fails loudly when a
+   selected field disappears**. That last part carries the real risk — because
+   the adapter fails closed, a schema rename would silently switch the feature
+   off rather than break it, which reads exactly like normal operation.
+   (A tracking issue was attempted during #14242 but GitHub secondary rate
+   limits blocked creation; this register is the durable record until one is
+   filed.)
+
+## Schema evolution
+
+`module_train_live.v1` became **v2** in #14237: `PrFacts` gained review-thread
+facts, per-review commit binding and review-page truncation, which changes the
+canonical semantic representation and therefore the digest. Snapshots are
+ephemeral observations, so the remedy for a stored v1 file is to re-run
+`module-train live refresh`, not to migrate it. The version check runs before
+the digest check so a superseded snapshot reports `schema_version mismatch`
+rather than coming out of the tamper-detection path.
 
 ## Adoption / rollback
 
