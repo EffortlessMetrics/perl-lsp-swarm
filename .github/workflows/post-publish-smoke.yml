@@ -121,10 +121,19 @@ jobs:
             # the job went green, the smoke test never ran, and nothing said so.
             # A v2 producer renaming a field would have landed in exactly that
             # branch (#15332). Refusing out loud is the point — the absence of
-            # a proof has to be as visible as a failed one. Note the asymmetry
-            # with the missing-file branch above: no file means nothing was
-            # published, which is a legitimate skip; an unreadable file means
-            # something was published and we cannot say what.
+            # a proof has to be as visible as a failed one.
+            #
+            # Note the asymmetry with the missing-file branch above, and what
+            # that branch does and does not establish. A file that is present
+            # but unintelligible means something was published and we cannot
+            # say what, so it fails here. No file at all is weaker evidence
+            # than it looks: it is usually a dry run, which publishes nothing
+            # and is a legitimate skip, but `continue-on-error` on the download
+            # also swallows an artifact-service failure into the same state,
+            # and the step's outcome is `failure` either way. Separating those
+            # needs evidence this job does not have — see #15481. Until then
+            # that branch stays a warning, and it is not proof that nothing
+            # was published.
             #
             # The subject is decoded here too, from the same read. The receipt
             # records the commit the publish actually ran from, and the proof

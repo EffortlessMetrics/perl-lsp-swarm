@@ -233,7 +233,7 @@ fn produced_receipt(version: &str, subject: &str) -> Result<String> {
             String::from_utf8_lossy(&output.stderr)
         );
     }
-    let written = dir.path().join("receipt/publication-receipt.json");
+    let written = dir.path().join("receipt").join("publication-receipt.json");
     fs::read_to_string(&written)
         .with_context(|| format!("reading the produced receipt at {}", written.display()))
 }
