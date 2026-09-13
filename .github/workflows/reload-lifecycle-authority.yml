@@ -1,0 +1,65 @@
+name: Reload Lifecycle Authority
+
+# PLSP-SPEC-0037 is the single in-repo architecture authority for the
+# generation-bound reload and observation-route lifecycle (#10874). This gate
+# fails when a second document claims that authority, when the contract loses
+# its structure (an identity row without an owner, a deleted rule id still
+# cited elsewhere), or when the contract stops being indexed.
+#
+# The path filters must cover every surface the suite READS, not just the files
+# it names. GitHub evaluates filters before the job runs, so an input outside
+# them changes on `main` with no gate having run:
+#
+#   docs/**   the marker scan reads every markdown file under docs/, so a
+#             competing authority added to any other doc would merge unseen --
+#             which would defeat the one rule this gate exists to enforce;
+#   crates/** the identity table's type claims are resolved against Rust
+#             source, so deleting or renaming a claimed type is what makes an
+#             `implemented` row go stale;
+#   tests/test_writer_authority_transfer_contract.py
+#             owns the run-command parser this suite borrows.
+#
+# `test_every_read_surface_fires_both_events` enforces the coverage, and
+# `crates/**` is why: it costs one small job on Rust PRs (a few seconds of
+# Python and git grep). Narrow it only by also narrowing what the suite reads.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/reload-lifecycle-authority.yml'
+      - 'crates/**'
+      - 'docs/**'
+      - 'tests/test_reload_lifecycle_authority.py'
+      - 'tests/test_writer_authority_transfer_contract.py'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/reload-lifecycle-authority.yml'
+      - 'crates/**'
+      - 'docs/**'
+      - 'tests/test_reload_lifecycle_authority.py'
+      - 'tests/test_writer_authority_transfer_contract.py'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: reload-lifecycle-authority-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  check:
+    name: Check reload lifecycle authority
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Check the reload lifecycle contract
+        # Kept on one line: test_workflow_runs_this_suite asserts the contiguous
+        # source substring "python3 -m unittest tests/test_reload_lifecycle_authority.py",
+        # which folded (>-) YAML would break.
+        run: python3 -m unittest tests/test_reload_lifecycle_authority.py

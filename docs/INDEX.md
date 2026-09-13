@@ -128,6 +128,7 @@ Decision records, project status, and planning documents.
 - [Agent Build Storage and Gates Spec](specs/PLSP-SPEC-0013-agent-build-storage-and-gates.md)
 - [Refactor Acceptance Spec](specs/PLSP-SPEC-0014-refactor-acceptance.md)
 - [Native Stack Product Surface Spec](specs/PLSP-SPEC-0015-native-stack-product-surface.md)
+- [Reload Lifecycle and Observation-Route Contract](specs/PLSP-SPEC-0037-reload-lifecycle-v1.md) — the single architecture authority for generation-bound reload, observation routes, and workspace publication
 - [Receiver Expression Facts Spec](specs/PLSP-SPEC-0005-receiver-expression-facts.md), [Receiver Facts Implementation Plan](project/RECEIVER_FACTS_IMPLEMENTATION_PLAN.md), and [Receiver Facts Status](project/status/receiver_facts.md)
 - [Project Milestones](project/MILESTONES.md)
 - [Feature Governance](project/FEATURE_GOVERNANCE.md)
