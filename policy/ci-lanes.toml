@@ -309,6 +309,7 @@ paths = [
   "crates/perl-lexer/**",
   "crates/perl-ast/**",
   "crates/perl-semantic-analyzer/**",
+  "crates/perl-pragma/**",
   "crates/perl-module/**",
   "crates/perl-workspace/**",
   "crates/perl-tdd-support/**",
