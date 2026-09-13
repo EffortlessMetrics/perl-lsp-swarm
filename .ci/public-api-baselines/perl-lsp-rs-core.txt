@@ -201,6 +201,7 @@ pub fn perl_lsp_rs_core::config::DeclaredDependency::new(module: impl core::conv
 pub fn perl_lsp_rs_core::config::DeclaredDependency::clone(&self) -> perl_lsp_rs_core::config::DeclaredDependency
 pub fn perl_lsp_rs_core::config::DeclaredDependency::eq(&self, other: &perl_lsp_rs_core::config::DeclaredDependency) -> bool
 pub fn perl_lsp_rs_core::config::DeclaredDependency::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_lsp_rs_core::config::DeclaredDependency::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
 pub struct perl_lsp_rs_core::config::EffectiveNativeCriticConfig
 pub perl_lsp_rs_core::config::EffectiveNativeCriticConfig::exclude: alloc::vec::Vec<alloc::string::String>
 pub perl_lsp_rs_core::config::EffectiveNativeCriticConfig::include: alloc::vec::Vec<alloc::string::String>
