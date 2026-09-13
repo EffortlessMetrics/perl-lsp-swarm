@@ -1246,7 +1246,7 @@ impl LspServer {
             self.enforce_code_action_tag_capabilities(std::slice::from_mut(&mut action));
             Ok(Some(action))
         } else {
-            Ok(None)
+            Err(crate::protocol::invalid_params("Missing code action parameters"))
         }
     }
 }

@@ -2383,7 +2383,7 @@ impl LspServer {
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
         let Some(mut item) = params else {
-            return Ok(None);
+            return Err(crate::protocol::invalid_params("Missing completion item parameters"));
         };
 
         // Extract the label and kind upfront (clone to avoid borrow issues)

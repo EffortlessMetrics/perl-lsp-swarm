@@ -243,6 +243,116 @@ fn exit_without_shutdown_returns_status_one() -> Result<()> {
     client.assert_transport_clean()
 }
 
+fn require_missing_resolve_params_error(
+    method: &str,
+    id: Value,
+    explicit_null: bool,
+) -> Result<()> {
+    let mut client = RealProcessClient::spawn_exact()?;
+    assert_public_candidate(&client)?;
+    initialize_and_notify(&mut client, json!("initialize-resolve-error"))?;
+    let request = if explicit_null {
+        json!({"jsonrpc": "2.0", "id": id, "method": method, "params": null})
+    } else {
+        json!({"jsonrpc": "2.0", "id": id, "method": method})
+    };
+    client.send_raw_bytes(&RealProcessClient::encode_message(&request))?;
+    let response = client.receive_response(&id, timeout())?;
+    assert_response_id(&response, &id)?;
+    ensure!(response.get("result").is_none(), "invalid resolve returned a result: {response}");
+    ensure!(
+        response.pointer("/error/code") == Some(&json!(-32602)),
+        "missing resolve parameters must return InvalidParams: {response}"
+    );
+    ensure!(
+        response
+            .pointer("/error/message")
+            .and_then(Value::as_str)
+            .is_some_and(|text| !text.is_empty()),
+        "invalid resolve must explain the error: {response}"
+    );
+    shutdown_and_exit(&mut client, json!("shutdown-resolve-error"))
+}
+
+#[test]
+fn resolve_completion_without_params_returns_error() -> Result<()> {
+    require_missing_resolve_params_error("completionItem/resolve", json!(701), false)
+}
+
+#[test]
+fn resolve_completion_with_null_params_returns_error() -> Result<()> {
+    require_missing_resolve_params_error("completionItem/resolve", json!("701"), true)
+}
+
+#[test]
+fn resolve_code_action_without_params_returns_error() -> Result<()> {
+    require_missing_resolve_params_error("codeAction/resolve", json!(702), false)
+}
+
+#[test]
+fn resolve_code_action_with_null_params_returns_error() -> Result<()> {
+    require_missing_resolve_params_error("codeAction/resolve", json!("702"), true)
+}
+
+#[test]
+fn resolve_valid_items_retain_documentation_and_edits() -> Result<()> {
+    let mut client = RealProcessClient::spawn_exact()?;
+    assert_public_candidate(&client)?;
+    initialize_and_notify(&mut client, json!("initialize-resolve-valid"))?;
+    let completion = client.request(
+        json!(703),
+        "completionItem/resolve",
+        json!({"label": "print", "kind": 3}),
+        timeout(),
+    )?;
+    assert_response_id(&completion, &json!(703))?;
+    ensure!(completion.get("error").is_none(), "valid completion failed: {completion}");
+    ensure!(
+        completion.pointer("/result/label") == Some(&json!("print")),
+        "completion changed: {completion}"
+    );
+    ensure!(
+        completion
+            .pointer("/result/documentation/value")
+            .and_then(Value::as_str)
+            .is_some_and(|text| !text.is_empty()),
+        "builtin completion must retain documentation: {completion}"
+    );
+    let uri = "file:///workspace/resolve-valid.pl";
+    client.notify(
+        "textDocument/didOpen",
+        json!({"textDocument": {
+            "uri": uri, "languageId": "perl", "version": 1, "text": "print 1;\n"
+        }}),
+    )?;
+    let action = client.request(
+        json!("703"),
+        "codeAction/resolve",
+        json!({
+            "title": "Add use strict", "kind": "quickfix",
+            "data": {"uri": uri, "pragma": "use strict;"}
+        }),
+        timeout(),
+    )?;
+    assert_response_id(&action, &json!("703"))?;
+    ensure!(action.get("error").is_none(), "valid code action failed: {action}");
+    let edits = action
+        .pointer("/result/edit/changes")
+        .and_then(|changes| changes.get(uri))
+        .and_then(Value::as_array)
+        .ok_or_else(|| anyhow::anyhow!("resolved code action omitted document edits: {action}"))?;
+    ensure!(edits.len() == 1, "expected one pragma edit: {action}");
+    ensure!(
+        edits.first()
+            == Some(&json!({
+                "range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 0}},
+                "newText": "use strict;\n"
+            })),
+        "wrong resolved pragma edit: {action}"
+    );
+    shutdown_and_exit(&mut client, json!("shutdown-resolve-valid"))
+}
+
 #[test]
 fn strict_stdout_parser_rejects_stray_logs_and_lf_only_frames() -> Result<()> {
     let stray_log = b"starting perllsp on stdout\n";
