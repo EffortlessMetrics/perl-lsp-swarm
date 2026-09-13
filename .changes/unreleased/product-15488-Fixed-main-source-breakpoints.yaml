@@ -1,0 +1,11 @@
+project: product
+component: Editor behavior
+kind: Fixed
+body: >-
+  Preserve main-file breakpoints set before launch until the Perl engine
+  acknowledges them, then replay them with their original IDs and verified state.
+time: 2026-09-13T04:22:55Z
+custom:
+  PR: "15488"
+  Slug: main-source-breakpoints
+  Breaking: "no"
