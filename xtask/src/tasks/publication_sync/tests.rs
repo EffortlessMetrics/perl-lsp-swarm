@@ -2494,6 +2494,75 @@ fn the_receipt_cannot_be_written_over_a_row_path() -> Result<()> {
 }
 
 #[test]
+fn an_empty_ledger_is_not_an_available_product_surface() -> Result<()> {
+    // `Allowlist.allow` carries `#[serde(default)]`, so an empty file — or a
+    // truncated one, or one whose table is misnamed — parses cleanly into zero
+    // entries. Treating that as an available authority is fail-open: `classify`
+    // drops to the path heuristics alone, and this row is invisible to every one
+    // of them.
+    //
+    // The premise, asserted rather than assumed: neither cheap classifier sees
+    // this path, so the ledger is the only thing that could have caught it.
+    const PRODUCT: &str = "clients/lite-xl/compose.lua";
+    if is_product_or_test_path(PRODUCT) || is_rust_build_manifest(PRODUCT) {
+        bail!("{PRODUCT} is caught without the ledger; this control proves nothing");
+    }
+
+    // Load it through the real entry point against a real empty ledger file, not
+    // by constructing `available: false` by hand. Hand-constructing would only
+    // re-prove that an unavailable surface is unverifiable, which was already
+    // true, and would say nothing about whether `load` reaches that state — the
+    // rule actually under test.
+    let ledger_root = tempfile::tempdir()?;
+    fs::create_dir_all(ledger_root.path().join("policy"))?;
+    fs::write(ledger_root.path().join("policy/non-rust-allowlist.toml"), b"")?;
+
+    let mut load_state = PlanState::default();
+    let empty = ProductSurface::load(ledger_root.path(), &mut load_state);
+    if empty.available {
+        bail!("an empty ledger was reported as an available product surface");
+    }
+    let (load_verdict, load_findings) = load_state.finish();
+    if load_verdict != Verdict::NotProven {
+        bail!("loading an empty ledger produced verdict {load_verdict}");
+    }
+    if !load_findings.iter().any(|finding| finding.code == "product_surface_unavailable") {
+        bail!("loading an empty ledger produced {load_findings:?}");
+    }
+    if empty.classify(PRODUCT, None) == SurfaceVerdict::ProductOrTest {
+        bail!("an empty ledger classified {PRODUCT}; the fixture is not empty");
+    }
+
+    let mut document = clean_value()?;
+    let row = &mut rows_mut(&mut document)?[0];
+    row["path"] = json!(PRODUCT);
+    row["action"] = json!("drop_swarm_only");
+    row["class"] = json!("governance");
+    row["source_digest"] =
+        json!("sha256:5000000000000000000000000000000000000000000000000000000000000001");
+    row["release_base_digest"] = Value::Null;
+    row["expected_public_digest"] = Value::Null;
+
+    let manifest: Manifest = serde_json::from_value(document.clone())?;
+    let digest = canonical_digest(&document)?;
+    let receipt = evaluate_with_surface(
+        &manifest,
+        &digest,
+        Path::new("."),
+        test_loader,
+        &empty,
+        fixture_checkout,
+        fixture_tree,
+    )?;
+
+    // Unverifiable, not permitted: the planner cannot show this is safe.
+    if receipt.verdict == Verdict::Pass {
+        bail!("a displacing row over product code passed against an empty ledger: {receipt:?}");
+    }
+    assert_finding(&receipt, "row_product_bearing_unverifiable")
+}
+
+#[test]
 fn a_padded_authority_is_still_protected_evidence() -> Result<()> {
     // Every site that *reads* an authority or evidence reference trims it, so
     // `"  docs/…  "` resolves to the same document a bare reference does. The
@@ -2514,20 +2583,31 @@ fn a_padded_authority_is_still_protected_evidence() -> Result<()> {
     // it whatever these rules do. The first draft of this control used
     // `docs/swarm/sync-protocol.md`, which *is* an input, and so passed against
     // the unfixed code — proving nothing.
-    for kind in ["authority", "evidence"] {
+    // The third case is the one trimming alone gets wrong, in the opposite
+    // direction. `validate_row_authority` and `collect_cited_issues` trim, but
+    // `validate_evidence_reference` hands the **raw** string to the loader for
+    // both `repository_source` and `live_receipt`. So when the file's real name
+    // carries the spaces, the reader resolves the padded path while a
+    // trimmed-only set records a different one — the same guard-versus-reader
+    // disagreement as the first two cases, mirrored. Recording only one spelling
+    // is wrong whichever spelling is chosen; the set has to hold both.
+    for (kind, reference, filename) in [
+        ("authority", "  docs/release-notes.md  ", "docs/release-notes.md"),
+        ("evidence", "  docs/release-notes.md  ", "docs/release-notes.md"),
+        ("raw-named evidence", "  docs/ padded-name.md  ", "  docs/ padded-name.md  "),
+    ] {
         let mut document = clean_value()?;
         match kind {
             "authority" => {
-                rows_mut(&mut document)?[0]["authority_ref"] = json!("  docs/release-notes.md  ");
+                rows_mut(&mut document)?[0]["authority_ref"] = json!(reference);
             }
             _ => {
-                document["invariants"][0]["evidence"][0]["reference"] =
-                    json!("  docs/release-notes.md  ");
+                document["invariants"][0]["evidence"][0]["reference"] = json!(reference);
             }
         }
 
         let (root, manifest_path, _) = materialize_repo(&document)?;
-        let target = root.path().join("docs/release-notes.md");
+        let target = root.path().join(filename);
         if let Some(parent) = target.parent() {
             fs::create_dir_all(parent)?;
         }

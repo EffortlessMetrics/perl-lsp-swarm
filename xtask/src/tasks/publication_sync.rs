@@ -675,6 +675,28 @@ struct ProductSurface {
 impl ProductSurface {
     fn load(repo_root: &Path, state: &mut PlanState) -> Self {
         match file_policy::load_allowlist(repo_root) {
+            // A ledger that parses is not yet a ledger that can answer. `allow`
+            // carries `#[serde(default)]`, so an empty file, a truncated one, or
+            // one whose table is named something else all deserialize cleanly
+            // into zero entries. Treating that as an available authority is the
+            // fail-open direction: `classify` would fall back to the path
+            // heuristics alone, and a displacing row over non-source product
+            // such as `clients/lite-xl/compose.lua` — no product segment, no
+            // source extension, no Rust manifest — would read as unclassified
+            // and pass.
+            //
+            // Nothing this planner is for can be established against an empty
+            // ledger, so an empty one is unavailable rather than permissive.
+            // This repository carries hundreds of entries; zero means the file
+            // is not the ledger.
+            Ok(allowlist) if allowlist.allow.is_empty() => {
+                state.not_proven(
+                    "product_surface_unavailable",
+                    "policy/non-rust-allowlist.toml declares no entries, so it cannot be consulted as the product surface",
+                    "release/ci",
+                );
+                Self { entries: Vec::new(), available: false }
+            }
             Ok(allowlist) => Self {
                 entries: allowlist
                     .allow
@@ -1053,25 +1075,43 @@ fn consumed_repository_paths(manifest: &Manifest) -> BTreeSet<String> {
         consumed.insert(row.path.clone());
         // The crate-root probe `validate_rows` performs on a displacing row.
         consumed.insert(format!("{}/Cargo.toml", row.path));
-        // Trimmed, because every site that *reads* one of these trims it first.
-        // An untrimmed set records a spelling no reader ever resolves — and
-        // `valid_repository_path` accepts padding, since a space is a legal path
-        // character, so the padded form is inserted rather than rejected and the
-        // guard silently compares the wrong file.
-        let authority = row.authority_ref.trim();
-        if valid_repository_path(authority) && looks_like_document(authority) {
-            consumed.insert(authority.to_string());
-        }
+        insert_reference_spellings(&mut consumed, &row.authority_ref, looks_like_document);
     }
 
     for entry in evidence_entries(manifest) {
-        let reference = entry.reference.trim();
-        if valid_repository_path(reference) {
-            consumed.insert(reference.to_string());
-        }
+        insert_reference_spellings(&mut consumed, &entry.reference, |_| true);
     }
 
     consumed
+}
+
+/// Record every spelling of `reference` a reader might resolve.
+///
+/// Both the raw string and its trimmed form, because the readers disagree and
+/// the set has to cover all of them. `validate_row_authority` and
+/// `collect_cited_issues` trim; `validate_evidence_reference` hands the **raw**
+/// string to the loader for both `repository_source` and `live_receipt`.
+///
+/// Recording only one spelling puts the guard on the wrong file for whichever
+/// reader disagrees, and the direction of the mistake flips with the reference
+/// kind. Untrimmed-only missed a padded authority, because the readers resolve
+/// the trimmed path; trimmed-only misses a padded evidence reference naming a
+/// file whose real name carries the spaces, because the loader resolves the raw
+/// path. `valid_repository_path` accepts padding either way — a space is a legal
+/// path character — so neither form is rejected on its way in.
+///
+/// A superset is the safe direction for both callers: the alias guard refuses to
+/// overwrite more files, and the integrity check refuses more stale ones.
+fn insert_reference_spellings(
+    consumed: &mut BTreeSet<String>,
+    reference: &str,
+    admissible: impl Fn(&str) -> bool,
+) {
+    for spelling in [reference, reference.trim()] {
+        if valid_repository_path(spelling) && admissible(spelling) {
+            consumed.insert(spelling.to_string());
+        }
+    }
 }
 
 /// Every evidence entry a manifest carries, across invariants and live controls.
