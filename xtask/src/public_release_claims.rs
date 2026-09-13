@@ -743,7 +743,18 @@ fn split_table_row(row: &str) -> Vec<String> {
     inner.split('|').map(|cell| cell.trim().to_string()).collect()
 }
 
+fn reject_escaped_pipes(row: &str, kind: &str) -> Result<(), CatalogError> {
+    if row.contains("\\|") {
+        return Err(CatalogError::new(format!(
+            "{DOC_PATH}: {kind} contains an escaped pipe; cell splitting is pipe-literal and \
+             cannot represent `\\|`: {row}"
+        )));
+    }
+    Ok(())
+}
+
 fn parse_surface_row(row: &str) -> Result<Option<ParsedSurface>, CatalogError> {
+    reject_escaped_pipes(row, "surface row")?;
     let cells = split_table_row(row);
     if cells.len() < 5 {
         return Err(CatalogError::new(format!(
@@ -770,6 +781,7 @@ fn parse_surface_row(row: &str) -> Result<Option<ParsedSurface>, CatalogError> {
 }
 
 fn parse_claim_row(row: &str, section: Option<&str>) -> Result<Option<ParsedClaim>, CatalogError> {
+    reject_escaped_pipes(row, "claim row")?;
     let cells = split_table_row(row);
     if cells.len() < 4 {
         return Err(CatalogError::new(format!(
@@ -2053,6 +2065,21 @@ mod tests {
         let error = parse_surface_row("| S04 | `foo/bar.yml | role | claims | — |")
             .expect_err("unbalanced surface path must fail");
         assert!(format!("{error}").contains("unbalanced"));
+    }
+
+    #[test]
+    fn escaped_pipe_rows_are_rejected() {
+        for error in [
+            parse_surface_row("| S01 | `a\\|b` | role | class | — |")
+                .expect_err("escaped pipe in surface row must fail"),
+            parse_claim_row("| C101 | `a\\|b`:1 | s | d | n |", Some("S01"))
+                .expect_err("escaped pipe in claim row must fail"),
+        ] {
+            let message = format!("{error}");
+            assert!(message.contains("escaped pipe"), "{message}");
+            assert!(message.contains(DOC_PATH), "{message}");
+        }
+        assert!(!committed_doc().contains("\\|"));
     }
 
     /// D2: the four receipt-named rows carry the first-class anti-claim, and

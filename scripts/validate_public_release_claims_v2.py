@@ -443,6 +443,22 @@ def assert_derivation_probes(inventory: dict[str, Any]) -> None:
     if derive_anti_claim_ids(local_only):
         raise ValidationError(f"{DOC_PATH}: D2 local --path install became an anti-claim")
 
+    for row, kind in [
+        ("| S01 | `a\\|b` | role | class | — |", "surface row"),
+        ("| C101 | `a\\|b`:1 | s | d | n |", "claim row"),
+    ]:
+        try:
+            reject_escaped_pipes(row, kind)
+        except ValidationError as error:
+            if "escaped pipe" not in str(error) or DOC_PATH not in str(error):
+                raise ValidationError(
+                    f"{DOC_PATH}: {kind} escaped-pipe probe returned the wrong error"
+                ) from error
+        else:
+            raise ValidationError(f"{DOC_PATH}: {kind} escaped-pipe probe was accepted")
+    if "\\|" in Path(DOC_PATH).read_text(encoding="utf-8"):
+        raise ValidationError(f"{DOC_PATH}: live inventory unexpectedly contains an escaped pipe")
+
 
 # ---------------------------------------------------------------------------
 # Inventory parsing
@@ -451,6 +467,14 @@ def assert_derivation_probes(inventory: dict[str, Any]) -> None:
 def split_table_row(row: str) -> list[str]:
     inner = row.strip().strip("|")
     return [cell.strip() for cell in inner.split("|")]
+
+
+def reject_escaped_pipes(row: str, kind: str) -> None:
+    if "\\|" in row:
+        raise ValidationError(
+            f"{DOC_PATH}: {kind} contains an escaped pipe; cell splitting is pipe-literal "
+            f"and cannot represent `\\|`: {row}"
+        )
 
 
 def parse_audited_anchor(joined: str) -> tuple[str, str]:
@@ -530,6 +554,7 @@ def parse_inventory(doc: str) -> dict[str, Any]:
             continue
         if in_surface_index:
             if trimmed.startswith("| S"):
+                reject_escaped_pipes(trimmed, "surface row")
                 cells = split_table_row(trimmed)
                 if len(cells) < 5:
                     raise ValidationError(f"{DOC_PATH}: malformed surface row: {trimmed}")
@@ -549,6 +574,7 @@ def parse_inventory(doc: str) -> dict[str, Any]:
                     )
             continue
         if trimmed.startswith("| C"):
+            reject_escaped_pipes(trimmed, "claim row")
             cells = split_table_row(trimmed)
             if len(cells) < 4:
                 raise ValidationError(f"{DOC_PATH}: malformed claim row: {trimmed}")
