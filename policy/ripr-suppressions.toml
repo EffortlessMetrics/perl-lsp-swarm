@@ -3470,3 +3470,56 @@ created = "2026-09-09"
 review_after = "2026-09-16"
 expires = "2026-09-23"
 removal_criteria = "Remove when the registry gains a production consumer (re-scope suppression to that consumer's seams) or when ripr#1429 resolves declaration-line probes for data rows; narrow immediately if any executable (non-declaration) code lands in this file."
+
+# -----------------------------------------------------------------------------
+# PR #14758 (#10502) adds the Neovim activation/root envelope validator in
+# xtask/src/neovim_activation_root_envelope.rs. ripr 0.10.0 reports 62
+# no_static_path probes there — 31 field_construction and 31 call_deletion —
+# and every one sits on a declaration line: the `const` census tables
+# (REQUIRED_FILE_FAMILIES, REQUIRED_ROOT_CELLS and their individual rows,
+# ISOLATION_ROOT_CELLS, the accepted-key lists, the disposition sets, the
+# pinned identity constants), the `pub struct EnvelopeValidationError`
+# declaration, the `type Validated` alias, and two RecordedConfig field
+# declarations.
+#
+# The same receipt binds related tests to 1019 of the 1137 findings in this
+# file — every function seam names the integration tests that reach it. Only
+# the declaration probes report related_tests_total = 0, and they report
+# stop_reasons ["no_changed_rust_line"] on lines that are plainly added lines
+# in the analyzed diff. That is the const_data_no_static_path / ripr#1429 class
+# already recorded for INDIRECT_METHOD_EXCLUDED and GIT_READ_ONLY_FIRST: const
+# data has no call path ripr can trace the way a function body does.
+#
+# Adding tests was tried first, not assumed away. Ten co-located #[cfg(test)]
+# tests were added in the same module that name and iterate every flagged
+# table — the sorted/unique censuses, the unique expected-role binding, the
+# observation-cell exemption, the disposition subsets, the pinned identities,
+# the Validated alias, and RecordedConfig's two sets. They pass, and a negative
+# control (pointing marker.dist_ini at marker.build_pl's role) fails exactly
+# one of them. The receipt was regenerated afterwards and no_static_path stayed
+# at 62 with the identical probe set, which is the evidence that these findings
+# are not actionable by adding tests.
+#
+# Coverage evidence: 36 falsifiers in
+# xtask/tests/neovim_activation_root_envelope.rs drive validate_envelope over
+# two captured real-host runs, plus the 10 co-located census tests above.
+#
+# HONEST SCOPE NOTE: read_ripr_suppression_rules is PATH-scoped, so this covers
+# all diff-scoped findings in this file, not only the no_static_path set. Net
+# blocking impact is exactly those 62 probes — this diff reports
+# reachable_unrevealed = 0 and weakly_exposed is advisory-excluded. The
+# accepted, time-boxed residual is that a future reachable_unrevealed gap in
+# this file would be masked for the window below.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-neovim-activation-root-envelope-declarations"
+kind = "const_data_no_static_path"
+paths = ["xtask/src/neovim_activation_root_envelope.rs"]
+classification = ["no_static_path"]
+owner = "devex/editor-hosts"
+issue = "EffortlessMetrics/ripr#1429"
+reason = "PR #14758 (#10502): ripr 0.10.0 flags 62 no_static_path probes (31 field_construction, 31 call_deletion) in xtask/src/neovim_activation_root_envelope.rs, all on declaration lines — the const census tables and their rows, the EnvelopeValidationError struct declaration, the Validated type alias, and two RecordedConfig field declarations. The same receipt binds related tests to 1019 of the 1137 findings in this file; only the declaration probes report related_tests_total = 0, with stop_reasons [\"no_changed_rust_line\"] on lines that are added lines in the analyzed diff. Same const_data_no_static_path ripr#1429 class as ripr-suppress-indirect-method-excluded-const-no-static-path and ripr-suppress-module-train-live-readonly-const. Adding tests was tried first: ten co-located #[cfg(test)] tests that name and iterate every flagged table were added in the same module (sorted/unique censuses, unique expected-role binding, observation-cell exemption, disposition subsets, pinned identities, the Validated alias, RecordedConfig's two sets), they pass, a negative control fails exactly one of them, and the regenerated receipt still reported 62 with the identical probe set. Behaviour is covered by 36 falsifiers in xtask/tests/neovim_activation_root_envelope.rs driving validate_envelope over two captured real-host runs. Suppression is narrow (single xtask file, one PR). Remove when ripr traces const-data and declaration-line references or targeted mutation is scheduled per #1289."
+created = "2026-09-13"
+review_after = "2026-09-20"
+expires = "2026-10-13"
+removal_criteria = "Remove when ripr#1429 traces const-data and declaration-line references, or narrow immediately if a future receipt reports an executable no_static_path seam in neovim_activation_root_envelope.rs beyond these declarations."

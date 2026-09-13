@@ -32,6 +32,7 @@ pub mod lsp_runtime_train_manifest;
 pub mod main_history_event;
 pub mod native_helix_actions;
 pub mod native_neovim_actions;
+pub mod neovim_activation_root_envelope;
 pub mod no_panic_debt;
 pub mod parser_accuracy_legacy_population;
 pub mod publication_drift;
