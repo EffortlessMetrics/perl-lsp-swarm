@@ -533,24 +533,20 @@ fn an_unreadable_source_does_not_freeze_the_readable_ones() {
     );
 }
 
-/// Pins the documented retention limit for shadowed declarations: `previous`
-/// is the deduplicated view, so a module declared by two sources is attributed
-/// to the earlier one. When the earlier source drops it while the later source
-/// is unreadable, it disappears — the later source has no retained entry to
-/// contribute. Recovering it would need per-source memory before dedupe, and
-/// the cheap alternative would resurrect modules the readable source
-/// deliberately removed. The folder is reported stale so the uncertainty is
-/// visible.
+/// Shadowed declarations retain their source-specific facts. When the earlier
+/// source drops a module while the later source is unreadable, the later
+/// source's previous declaration remains alongside the readable source's new
+/// declaration. The folder is reported stale so the uncertainty is visible.
 #[test]
-fn a_shadowed_declaration_is_not_retained_but_the_folder_is_stale() {
+fn a_shadowed_declaration_is_retained_and_the_folder_is_stale() {
     let dir = TempDir::new().expect("tempdir");
     write_file(&dir, "cpanfile", "requires 'Shared::Mod';\n");
     write_file(&dir, "META.yml", "requires:\n  Shared::Mod: 0\n");
     let server = workspace_server(&dir);
     assert_eq!(
         declared_modules(&server),
-        vec!["Shared::Mod".to_string()],
-        "the module is recorded once, attributed to cpanfile"
+        vec!["Shared::Mod".to_string(), "Shared::Mod".to_string()],
+        "the same module is retained as distinct source-specific facts"
     );
 
     // cpanfile drops it; META.yml (which also declares it) becomes unreadable.
@@ -561,8 +557,8 @@ fn a_shadowed_declaration_is_not_retained_but_the_folder_is_stale() {
 
     assert_eq!(
         declared_modules(&server),
-        vec!["Only::Now".to_string()],
-        "the shadowed declaration is not recoverable from the deduplicated view"
+        vec!["Only::Now".to_string(), "Shared::Mod".to_string()],
+        "the unreadable source retains its distinct previous declaration"
     );
     assert!(
         server.dependency_facts_are_stale(&dir_uri(&dir)),
