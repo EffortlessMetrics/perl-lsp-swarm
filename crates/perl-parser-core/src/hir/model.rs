@@ -2525,7 +2525,7 @@ fn import_spec(
 /// `foo, {...}` are the same list, and which reading applies is the imported
 /// module's business. The option vocabulary is the only evidence available
 /// here, so this errs toward skipping and keeps the retained case narrow.
-pub fn opens_per_symbol_options(args: &[String], open: usize) -> bool {
+fn opens_per_symbol_options(args: &[String], open: usize) -> bool {
     args.get(open + 1).map(|token| token.trim()) == Some("-")
         && args.get(open + 2).map(|token| token.trim()).is_some_and(|name| name == "as")
 }
