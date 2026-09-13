@@ -898,7 +898,7 @@
     {
       "reexport_id": "rx:perl-ast-v2",
       "path": "perl_ast::v2",
-      "site": "crates/perl-ast/src/lib.rs:93",
+      "site": "crates/perl-ast/src/lib.rs:110",
       "exposes": "whole package",
       "consumer_id": "c:ast-reexport",
       "compatibility_obligation": "The canonical documented compatibility path. Absorption must keep this path working unchanged; it is the path the replacement column of every public-item row names."
@@ -1294,14 +1294,14 @@
     {
       "surface_id": "ps:workspace-dependency",
       "surface": "workspace_dependency",
-      "site": "Cargo.toml:235",
+      "site": "Cargo.toml:241",
       "current_status": "path + version 0.17.0, so workspace consumers resolve the local path while the published version stays declared",
       "owner": "#7398"
     },
     {
       "surface_id": "ps:publish-allowlist",
       "surface": "publish_allowlist",
-      "site": "Cargo.toml:128",
+      "site": "Cargo.toml:134",
       "current_status": "Tier 1b publish-allowlisted crate",
       "owner": "release tooling"
     },
