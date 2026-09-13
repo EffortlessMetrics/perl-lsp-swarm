@@ -232,13 +232,11 @@ pub struct AttachConfiguration {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timeout_ms: Option<u32>,
 
-    /// If true, pause execution at the first opportunity after attaching.
+    /// Request a pause after attaching.
     ///
-    /// Equivalent to the DAP `stopOnEntry` field. When set, the adapter emits a
-    /// `stopped` event with `reason = "entry"` immediately after the attach
-    /// handshake completes. TCP attachments reject `true` because the peer owns
-    /// execution stops; configure the peer to pause instead. Defaults to `false`
-    /// when absent.
+    /// Equivalent to the DAP `stopOnEntry` field. TCP attachments reject `true`
+    /// because the peer protocol cannot request or acknowledge this pause.
+    /// `false` or absent permits attaching and forwarding actual peer stops.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stop_on_entry: Option<bool>,
 }

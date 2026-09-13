@@ -1,7 +1,7 @@
 project: product
 component: Editor behavior
 kind: Fixed
-body: TCP document attach now rejects unsupported stopOnEntry requests before connecting and directs users to configure the debugger peer to pause.
+body: TCP debugger attach now rejects unsupported stopOnEntry requests before connecting and directs users to configure the debugger peer to pause.
 time: 2026-09-13T16:36:10Z
 custom:
   PR: "15521"
