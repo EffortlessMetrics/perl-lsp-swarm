@@ -600,10 +600,15 @@ fn check_pr_triage(row: &PrTriageRow) -> Vec<String> {
 
 /// Validate `close_proof` for a pr-triage row.
 ///
-/// Two forms are accepted. The structured form of `docs/agents/pr-ledger.schema.json`
-/// is checked field by field; the prose form is the shape this validator has always
-/// accepted and is kept for compatibility, but it carries no machine-checkable
-/// landing or semantic evidence.
+/// Which forms are accepted depends on whether the classification **gates a close**:
+///
+/// - `close-superseded` and `duplicate-of-merged` accept **only** the structured form
+///   of `docs/agents/pr-ledger.schema.json`, checked field by field. A prose string is
+///   rejected: `CLOSE_PROOF_POLICY.md` requires landing proof *and* separate
+///   semantic-completion evidence, and a free string carries neither in
+///   machine-checkable form.
+/// - Every other classification may also carry a prose string, where `close_proof` is
+///   an incidental note rather than close authorization.
 fn check_close_proof(proof: Option<&Value>, classification: &str, errors: &mut Vec<String>) {
     let required = CLOSE_PROOF_REQUIRED.contains(&classification);
 
