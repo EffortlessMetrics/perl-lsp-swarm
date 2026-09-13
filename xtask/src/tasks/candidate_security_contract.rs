@@ -6,13 +6,9 @@
 //! validation. It executes no scanner, runs no candidate audit, accepts no
 //! risk, and changes no `ship_candidate` policy — those belong to the exact
 //! security execution this contract is a prerequisite for.
-//! Validation checks structural consistency and typed subject identity
-//! formats (#15511): a subject must be shaped like the identity it claims to
-//! be, so a placeholder or arbitrary label cannot stand in for an exact
-//! candidate subject. Canonical per-rail metadata binding and cross-artifact
-//! candidate/topology binding remain #14431; a well-formed identity is
-//! evidence of shape only, never evidence that the named candidate exists or
-//! that any audit passed.
+//! Validation checks structural consistency and nonblank declarations only.
+//! Typed subject identity formats and canonical rail bindings remain #14431;
+//! successful validation is not evidence of an exact candidate or a passed audit.
 
 use color_eyre::eyre::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
@@ -44,12 +40,6 @@ pub struct CandidateSecurityContract {
     pub rails: Vec<SecurityRail>,
 }
 
-/// Exact-candidate subject identities, each carrying the format its
-/// authority defines rather than free text. Formats are read from
-/// `schemas/release_candidate_artifacts.v1.schema.json` — the directly
-/// related candidate contract — not invented here: `$defs.git_sha` for the
-/// repository SHA, `$defs.sha256` for every digest and lockfile hash,
-/// `producer_run.run_id`/`attempt` for the workflow identity.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(deny_unknown_fields)]
 pub struct SubjectIdentities {
@@ -70,23 +60,7 @@ pub struct SubjectIdentities {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub container_digest: Option<String>,
     pub workflow_run_id: String,
-    /// Producer run attempt, after `release_candidate_artifacts.v1`
-    /// `producer_run.attempt` (`type: integer`, `minimum: 1`). Integer-typed
-    /// so a non-numeric placeholder is unrepresentable rather than merely
-    /// rejected; zero stays representable and is rejected by validation.
-    ///
-    /// Two deliberate narrowings of that authority's domain, both
-    /// fail-closed:
-    ///
-    /// - **Integer syntax only.** JSON Schema counts `1.0` as an integer, but
-    ///   this contract's identities are digest inputs, and `1` and `1.0` are
-    ///   two spellings of one attempt that serialize to different bytes. That
-    ///   is the same hazard canonical rail ordering exists to prevent, so the
-    ///   canonical spelling is the only accepted one.
-    /// - **Bounded width.** `u64` rather than an arbitrary-precision integer.
-    ///   A producer run attempt is a small counter; the bound is far above
-    ///   any reachable value and rejects rather than truncates.
-    pub workflow_attempt: u64,
+    pub workflow_attempt: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
@@ -174,98 +148,6 @@ pub enum FindingDisposition {
     Remediated,
 }
 
-/// Length of a Git commit identity, from `release_candidate_artifacts.v1`
-/// `$defs.git_sha` (`^[0-9a-f]{40}$`).
-const GIT_SHA_HEX_LEN: usize = 40;
-
-/// Length of a SHA-256 digest, from `release_candidate_artifacts.v1`
-/// `$defs.sha256` (`^[0-9a-f]{64}$`). The authority carries no algorithm
-/// prefix, so `sha256:<hex>` is a different representation and not accepted.
-const SHA256_HEX_LEN: usize = 64;
-
-/// Upper bound of `release_candidate_artifacts.v1` `$defs.bounded_id`.
-const BOUNDED_ID_MAX_LEN: usize = 128;
-
-/// Lowercase hex of an exact length. Uppercase is rejected rather than
-/// normalized: two spellings of one digest would give one candidate two
-/// identities, and every digest this contract binds is produced lowercase.
-fn is_lowercase_hex(value: &str, expected_len: usize) -> bool {
-    // Same predicate shape as `is_git_sha` in `release_candidate_artifacts.rs`,
-    // generalized over the length the authority pattern fixes.
-    value.len() == expected_len
-        && value.bytes().all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
-}
-
-/// `release_candidate_artifacts.v1` `$defs.bounded_id`:
-/// `^[A-Za-z0-9][A-Za-z0-9._:@+-]*$`, 1 to 128 characters. Deliberately not
-/// numeric-only — the authority defines a bounded identifier, and inventing a
-/// digits-only run-ID rule here would reject identities that contract accepts.
-fn is_bounded_id(value: &str) -> bool {
-    // The charset below is ASCII-only, so byte length equals the character
-    // length the authority bounds.
-    if value.is_empty() || value.len() > BOUNDED_ID_MAX_LEN {
-        return false;
-    }
-    let mut bytes = value.bytes();
-    // The pattern's first character class is narrower than the rest: no
-    // leading `.`, `_`, `:`, `@`, `+`, or `-`.
-    if !bytes.next().is_some_and(|first| first.is_ascii_alphanumeric()) {
-        return false;
-    }
-    bytes.all(|byte| {
-        byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b':' | b'@' | b'+' | b'-')
-    })
-}
-
-fn validate_git_sha(name: &str, value: &str) -> Result<()> {
-    if !is_lowercase_hex(value, GIT_SHA_HEX_LEN) {
-        bail!(
-            "subject identity {name} is not an exact Git SHA \
-             ({GIT_SHA_HEX_LEN} lowercase hex characters): {value:?}"
-        );
-    }
-    Ok(())
-}
-
-fn validate_sha256(name: &str, value: &str) -> Result<()> {
-    if !is_lowercase_hex(value, SHA256_HEX_LEN) {
-        bail!(
-            "subject identity {name} is not an exact SHA-256 digest \
-             ({SHA256_HEX_LEN} lowercase hex characters, no algorithm prefix): {value:?}"
-        );
-    }
-    Ok(())
-}
-
-fn validate_bounded_id(name: &str, value: &str) -> Result<()> {
-    if !is_bounded_id(value) {
-        bail!(
-            "subject identity {name} is not a bounded identifier \
-             (1 to {BOUNDED_ID_MAX_LEN} characters matching \
-             ^[A-Za-z0-9][A-Za-z0-9._:@+-]*$): {value:?}"
-        );
-    }
-    Ok(())
-}
-
-/// Every digest-shaped subject identity, paired with its field name. The
-/// container digest is handled separately because its presence is governed by
-/// `container_required` before its format matters.
-fn digest_subjects(subjects: &SubjectIdentities) -> [(&'static str, &String); 10] {
-    [
-        ("candidate_packet_digest", &subjects.candidate_packet_digest),
-        ("cargo_lock_hash", &subjects.cargo_lock_hash),
-        ("extension_package_hash", &subjects.extension_package_hash),
-        ("extension_lock_hash", &subjects.extension_lock_hash),
-        ("topology_digest", &subjects.topology_digest),
-        ("crate_package_digest", &subjects.crate_package_digest),
-        ("crate_archive_digest", &subjects.crate_archive_digest),
-        ("vsix_digest", &subjects.vsix_digest),
-        ("checksums_digest", &subjects.checksums_digest),
-        ("sbom_digest", &subjects.sbom_digest),
-    ]
-}
-
 /// The topology-required rail inventory, in canonical order.
 pub fn required_rails() -> [RailName; 4] {
     [
@@ -288,37 +170,42 @@ pub fn validate_contract(contract: &CandidateSecurityContract) -> Result<()> {
         );
     }
 
-    // Subject identities carry the format their authority defines. An
-    // arbitrary nonblank label is not an exact candidate subject, so shape is
-    // checked here rather than left to a downstream reader that has no way to
-    // tell `"not-a-hash"` from a digest that simply belongs to another
-    // candidate. Shape is necessary, never sufficient: binding these
-    // identities to real candidate and topology packets remains #14431.
     let subjects = &contract.subjects;
-    validate_git_sha("release_repo_sha", &subjects.release_repo_sha)?;
-    for (name, value) in digest_subjects(subjects) {
-        validate_sha256(name, value)?;
-    }
-    validate_bounded_id("workflow_run_id", &subjects.workflow_run_id)?;
-    if subjects.workflow_attempt < 1 {
-        bail!(
-            "subject identity workflow_attempt is {}; the producer run attempt starts at 1",
-            subjects.workflow_attempt
-        );
+    for (name, value) in [
+        ("release_repo_sha", &subjects.release_repo_sha),
+        ("candidate_packet_digest", &subjects.candidate_packet_digest),
+        ("cargo_lock_hash", &subjects.cargo_lock_hash),
+        ("extension_package_hash", &subjects.extension_package_hash),
+        ("extension_lock_hash", &subjects.extension_lock_hash),
+        ("topology_digest", &subjects.topology_digest),
+        ("crate_package_digest", &subjects.crate_package_digest),
+        ("crate_archive_digest", &subjects.crate_archive_digest),
+        ("vsix_digest", &subjects.vsix_digest),
+        ("checksums_digest", &subjects.checksums_digest),
+        ("sbom_digest", &subjects.sbom_digest),
+        ("workflow_run_id", &subjects.workflow_run_id),
+        ("workflow_attempt", &subjects.workflow_attempt),
+    ] {
+        if value.trim().is_empty() {
+            bail!("required subject identity {name} is omitted");
+        }
     }
 
-    // The container pair is one closed state: required with a well-formed
+    // The container pair is one closed state: required with a non-blank
     // digest, or not required with no digest. Either half alone leaves the
     // subject set carrying an identity the topology does not govern.
-    match (contract.container_required, subjects.container_digest.as_deref()) {
+    let container_digest = subjects.container_digest.as_deref().map(str::trim);
+    match (contract.container_required, container_digest) {
         (true, None) => {
             bail!("topology requires a container but container_digest is omitted")
         }
-        (true, Some(digest)) => validate_sha256("container_digest", digest)?,
+        (true, Some("")) => {
+            bail!("topology requires a container but container_digest is blank")
+        }
         (false, Some(_)) => {
             bail!("container_digest is present while the topology does not require a container")
         }
-        (false, None) => {}
+        _ => {}
     }
 
     let mut tool_names = BTreeSet::new();
@@ -492,24 +379,11 @@ fn rail_status_label(status: RailStatus) -> &'static str {
     }
 }
 
-/// Canonical-shaped fixture digest. Each subject takes a distinct `tag` so a
-/// test cannot pass by collapsing two subject identities into one value.
-#[cfg(test)]
-fn fixture_digest(tag: u8) -> String {
-    format!("{tag:02x}").repeat(SHA256_HEX_LEN / 2)
-}
-
 /// Build the deterministic baseline inventory for one candidate: every
 /// topology-required rail present with explicit subjects, producers, and
-/// boundaries.
-///
-/// Subject identities here are canonical-shaped fixture values, not
-/// placeholders. A fixture that could not itself bind a candidate would make
-/// every other test in this module prove something weaker than it claims, so
-/// the document that the passing tests validate is one that carries
-/// well-formed exact identities. Shape is all it carries: these digests name
-/// no real artifact, and `placeholder_template` covers the separate
-/// shape-declaration role.
+/// boundaries. Values are placeholders that name their rule, not audit
+/// results — this constructor exists so the inventory shape is executable and
+/// provable before any scanner runs.
 #[cfg(test)]
 fn baseline_inventory() -> CandidateSecurityContract {
     let mut tools = BTreeSet::new();
@@ -547,20 +421,20 @@ fn baseline_inventory() -> CandidateSecurityContract {
     CandidateSecurityContract {
         schema_version: CONTRACT_SCHEMA.to_string(),
         subjects: SubjectIdentities {
-            release_repo_sha: "a1".repeat(GIT_SHA_HEX_LEN / 2),
-            candidate_packet_digest: fixture_digest(0x10),
-            cargo_lock_hash: fixture_digest(0x11),
-            extension_package_hash: fixture_digest(0x12),
-            extension_lock_hash: fixture_digest(0x13),
-            topology_digest: fixture_digest(0x14),
-            crate_package_digest: fixture_digest(0x15),
-            crate_archive_digest: fixture_digest(0x16),
-            vsix_digest: fixture_digest(0x17),
-            checksums_digest: fixture_digest(0x18),
-            sbom_digest: fixture_digest(0x19),
-            container_digest: Some(fixture_digest(0x1a)),
-            workflow_run_id: "release-candidate-run.1".to_string(),
-            workflow_attempt: 1,
+            release_repo_sha: "<release repo sha>".to_string(),
+            candidate_packet_digest: "<candidate packet digest>".to_string(),
+            cargo_lock_hash: "<Cargo.lock hash>".to_string(),
+            extension_package_hash: "<extension package hash>".to_string(),
+            extension_lock_hash: "<extension lock hash>".to_string(),
+            topology_digest: "<topology digest>".to_string(),
+            crate_package_digest: "<crate package digest>".to_string(),
+            crate_archive_digest: "<crate archive digest>".to_string(),
+            vsix_digest: "<VSIX digest>".to_string(),
+            checksums_digest: "<checksums digest>".to_string(),
+            sbom_digest: "<SBOM digest>".to_string(),
+            container_digest: Some("<container digest>".to_string()),
+            workflow_run_id: "<workflow run>".to_string(),
+            workflow_attempt: "<attempt>".to_string(),
         },
         tools,
         container_required: true,
@@ -599,41 +473,6 @@ fn baseline_inventory() -> CandidateSecurityContract {
             ),
         ],
     }
-}
-
-/// The shape declaration: the same closed inventory with every subject
-/// identity left as a named placeholder.
-///
-/// This is deliberately not a candidate. Declaring the shape and asserting an
-/// exact candidate are different acts, and before typed formats existed the
-/// same constructor did both — a document of placeholders validated, so
-/// "closed and valid" could be reported for a contract binding no candidate
-/// at all. Keeping the template constructible but unvalidatable preserves the
-/// documentation value while making the distinction executable: see
-/// `placeholder_template_cannot_pass_candidate_validation`.
-#[cfg(test)]
-fn placeholder_template() -> CandidateSecurityContract {
-    let mut template = baseline_inventory();
-    template.subjects = SubjectIdentities {
-        release_repo_sha: "<release repo sha>".to_string(),
-        candidate_packet_digest: "<candidate packet digest>".to_string(),
-        cargo_lock_hash: "<Cargo.lock hash>".to_string(),
-        extension_package_hash: "<extension package hash>".to_string(),
-        extension_lock_hash: "<extension lock hash>".to_string(),
-        topology_digest: "<topology digest>".to_string(),
-        crate_package_digest: "<crate package digest>".to_string(),
-        crate_archive_digest: "<crate archive digest>".to_string(),
-        vsix_digest: "<VSIX digest>".to_string(),
-        checksums_digest: "<checksums digest>".to_string(),
-        sbom_digest: "<SBOM digest>".to_string(),
-        container_digest: Some("<container digest>".to_string()),
-        workflow_run_id: "<workflow run>".to_string(),
-        // The former `"<attempt>"` placeholder is unrepresentable now that the
-        // attempt is integer-typed; zero is the remaining unset-like value and
-        // validation rejects it.
-        workflow_attempt: 0,
-    };
-    template
 }
 
 /// Contract documents are small closed JSON files. Anything larger, missing,
@@ -680,8 +519,7 @@ pub fn run(path: &std::path::Path) -> Result<()> {
     let contract = load_contract(path)?;
     validate_contract(&contract)?;
     println!(
-        "candidate security contract {} is structurally valid and its subject identities are well-formed; \
-         binding to real candidate artifacts and audit results are not verified",
+        "candidate security contract {} is structurally valid; exact identity binding and audit results are not verified",
         path.display()
     );
     Ok(())
@@ -954,16 +792,13 @@ mod tests {
 
     #[test]
     fn rejects_blank_container_digest_while_required() -> Result<()> {
-        // A blank digest is now one shape failure among many rather than its
-        // own branch, but it must still fail closed while a container is
-        // required.
         let mut candidate = contract();
         candidate.subjects.container_digest = Some("   ".to_string());
         let error = match validate_contract(&candidate) {
             Ok(()) => return Err(eyre!("blank container digest unexpectedly passed")),
             Err(error) => error,
         };
-        assert!(error.to_string().contains("container_digest"));
+        assert!(error.to_string().contains("container_digest is blank"));
         Ok(())
     }
 
@@ -1186,259 +1021,6 @@ mod tests {
             .ok_or_else(|| eyre!("duplicate finding identity unexpectedly passed"))?;
         if !error.to_string().contains("duplicate finding id") {
             bail!("duplicate finding failed for an unrelated reason: {error}");
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn rejects_malformed_release_repo_sha() -> Result<()> {
-        // Every rejected spelling is a mutation of one accepted value, so the
-        // control discriminates the Git-SHA format rather than the field.
-        let canonical = "a1".repeat(GIT_SHA_HEX_LEN / 2);
-        validate_contract(&contract())?;
-        for malformed in [
-            String::new(),
-            "x".to_string(),
-            "a1".repeat(GIT_SHA_HEX_LEN / 2 - 1),
-            format!("{canonical}a1"),
-            canonical.to_uppercase(),
-            format!("{}zz", "a1".repeat(GIT_SHA_HEX_LEN / 2 - 1)),
-            // A well-formed SHA-256 is not a well-formed commit identity: the
-            // lengths are what separate the two subject kinds.
-            "a1".repeat(SHA256_HEX_LEN / 2),
-        ] {
-            let mut candidate = contract();
-            candidate.subjects.release_repo_sha = malformed.clone();
-            let error = validate_contract(&candidate)
-                .err()
-                .ok_or_else(|| eyre!("malformed release_repo_sha {malformed:?} passed"))?;
-            if !error.to_string().contains("release_repo_sha is not an exact Git SHA") {
-                bail!("release_repo_sha {malformed:?} failed for an unrelated reason: {error}");
-            }
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn rejects_malformed_digest_subject_identities() -> Result<()> {
-        // Applied to every digest-shaped subject, so no field is left on the
-        // trim-only path when a sibling is hardened.
-        let canonical = fixture_digest(0x2b);
-        let malformed_values = [
-            String::new(),
-            "not-a-hash".to_string(),
-            canonical.to_uppercase(),
-            format!("sha256:{canonical}"),
-            // A commit identity is the wrong length for a content digest.
-            "a1".repeat(GIT_SHA_HEX_LEN / 2),
-            format!("{canonical}ff"),
-        ];
-        let baseline = contract();
-        let subject_names: Vec<&'static str> =
-            digest_subjects(&baseline.subjects).iter().map(|(name, _)| *name).collect();
-        if subject_names.len() != 10 {
-            bail!("digest subject inventory changed; extend this control to cover it");
-        }
-        for name in subject_names {
-            for malformed in &malformed_values {
-                let mut candidate = contract();
-                // Reach the named field through the serialized document so the
-                // control cannot silently stop covering a renamed subject.
-                let mut value = serde_json::to_value(&candidate.subjects)?;
-                let object = value
-                    .as_object_mut()
-                    .ok_or_else(|| eyre!("subjects must serialize to a JSON object"))?;
-                if !object.contains_key(name) {
-                    bail!("subject {name} is absent from the serialized document");
-                }
-                object.insert(name.to_string(), serde_json::Value::String(malformed.clone()));
-                candidate.subjects = serde_json::from_value(value)?;
-                let error = validate_contract(&candidate)
-                    .err()
-                    .ok_or_else(|| eyre!("malformed {name} = {malformed:?} passed"))?;
-                if !error.to_string().contains(&format!("{name} is not an exact SHA-256 digest")) {
-                    bail!("{name} = {malformed:?} failed for an unrelated reason: {error}");
-                }
-            }
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn rejects_malformed_container_digest_while_required() -> Result<()> {
-        let mut valid = contract();
-        valid.subjects.container_digest = Some(fixture_digest(0x3c));
-        validate_contract(&valid)?;
-        for malformed in ["not-a-hash".to_string(), fixture_digest(0x3c).to_uppercase()] {
-            let mut candidate = contract();
-            candidate.subjects.container_digest = Some(malformed.clone());
-            let error = validate_contract(&candidate)
-                .err()
-                .ok_or_else(|| eyre!("malformed container digest {malformed:?} passed"))?;
-            if !error.to_string().contains("container_digest is not an exact SHA-256 digest") {
-                bail!("container digest {malformed:?} failed for an unrelated reason: {error}");
-            }
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn workflow_run_id_accepts_bounded_identifiers_and_rejects_malformed_ones() -> Result<()> {
-        // The authority defines a bounded identifier, not a numeric run ID.
-        // These accepted values guard against a digits-only rule creeping in.
-        for accepted in [
-            "1".to_string(),
-            "18234509871".to_string(),
-            "release-candidate-run.1".to_string(),
-            "run_2026-09-13:attempt@1+a".to_string(),
-            "a".repeat(BOUNDED_ID_MAX_LEN),
-        ] {
-            let mut candidate = contract();
-            candidate.subjects.workflow_run_id = accepted.clone();
-            validate_contract(&candidate)
-                .with_context(|| format!("bounded run id {accepted:?} must be accepted"))?;
-        }
-        for malformed in [
-            String::new(),
-            "   ".to_string(),
-            "-leading-dash".to_string(),
-            ".leading-dot".to_string(),
-            "has space".to_string(),
-            "has/slash".to_string(),
-            "a".repeat(BOUNDED_ID_MAX_LEN + 1),
-        ] {
-            let mut candidate = contract();
-            candidate.subjects.workflow_run_id = malformed.clone();
-            let error = validate_contract(&candidate)
-                .err()
-                .ok_or_else(|| eyre!("malformed run id {malformed:?} passed"))?;
-            if !error.to_string().contains("workflow_run_id is not a bounded identifier") {
-                bail!("run id {malformed:?} failed for an unrelated reason: {error}");
-            }
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn rejects_zero_workflow_attempt() -> Result<()> {
-        let mut candidate = contract();
-        candidate.subjects.workflow_attempt = 1;
-        validate_contract(&candidate)?;
-        candidate.subjects.workflow_attempt = 0;
-        let error = validate_contract(&candidate)
-            .err()
-            .ok_or_else(|| eyre!("zero producer attempt unexpectedly passed"))?;
-        if !error.to_string().contains("attempt starts at 1") {
-            bail!("zero attempt failed for an unrelated reason: {error}");
-        }
-        Ok(())
-    }
-
-    /// Replace `workflow_attempt` in a serialized baseline document with
-    /// `raw` JSON text, so parse-level behavior is exercised on the bytes a
-    /// producer would actually emit rather than on an already-typed value.
-    fn document_with_raw_attempt(raw: &str) -> Result<String> {
-        let value = serde_json::to_value(contract())?;
-        let encoded = serde_json::to_string(&value)?;
-        let needle = format!("\"workflow_attempt\":{}", contract().subjects.workflow_attempt);
-        if !encoded.contains(&needle) {
-            bail!("baseline document does not carry the expected attempt encoding");
-        }
-        Ok(encoded.replace(&needle, &format!("\"workflow_attempt\":{raw}")))
-    }
-
-    #[test]
-    fn rejects_non_integer_workflow_attempt_document() -> Result<()> {
-        // The former placeholder spelling is now unrepresentable: it cannot
-        // reach validation because it cannot parse.
-        let mut value = serde_json::to_value(contract())?;
-        value
-            .get_mut("subjects")
-            .and_then(|subjects| subjects.as_object_mut())
-            .ok_or_else(|| eyre!("contract must carry a subjects object"))?
-            .insert("workflow_attempt".to_string(), serde_json::Value::String("<attempt>".into()));
-        let parsed: Result<CandidateSecurityContract, _> = serde_json::from_value(value);
-        assert!(parsed.is_err(), "a non-integer producer attempt must not parse");
-        Ok(())
-    }
-
-    #[test]
-    fn workflow_attempt_accepts_only_the_canonical_integer_spelling() -> Result<()> {
-        // JSON Schema would count `1.0` and `1e0` as integers. This contract
-        // does not: its subject identities feed a digest, and one attempt with
-        // several spellings serializes to several byte sequences — the hazard
-        // canonical rail ordering already exists to prevent. The narrowing is
-        // deliberate and fail-closed, so it is pinned rather than left to
-        // whatever serde happens to do.
-        let canonical = document_with_raw_attempt("1")?;
-        let parsed: CandidateSecurityContract = serde_json::from_str(&canonical)?;
-        validate_contract(&parsed)?;
-        for raw in ["1.0", "1e0", "0.5", "-1"] {
-            let document = document_with_raw_attempt(raw)?;
-            let outcome: Result<CandidateSecurityContract, _> = serde_json::from_str(&document);
-            let Err(error) = outcome else {
-                bail!("non-canonical attempt spelling {raw:?} unexpectedly parsed");
-            };
-            // Attributable to the attempt field, not to an unrelated parse
-            // failure in the rest of the document.
-            if !error.to_string().contains("workflow_attempt")
-                && !error.to_string().contains("integer")
-                && !error.to_string().contains("u64")
-            {
-                bail!("attempt spelling {raw:?} failed for an unrelated reason: {error}");
-            }
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn workflow_attempt_accepts_values_beyond_a_32_bit_counter() -> Result<()> {
-        // The authority sets no maximum, so the accepted width must not stop
-        // at a 32-bit counter. This is the boundary a reviewer would probe.
-        let document = document_with_raw_attempt("4294967296")?;
-        let parsed: CandidateSecurityContract = serde_json::from_str(&document)?;
-        if parsed.subjects.workflow_attempt != 4_294_967_296 {
-            bail!("attempt beyond 32 bits was not preserved");
-        }
-        validate_contract(&parsed)?;
-        Ok(())
-    }
-
-    #[test]
-    fn placeholder_template_cannot_pass_candidate_validation() -> Result<()> {
-        // The separation this claim exists for: the template declares the
-        // shape, the fixture asserts a candidate, and only the latter
-        // validates. Before typed formats, both validated identically.
-        validate_contract(&contract())?;
-        let template = placeholder_template();
-        let error = validate_contract(&template)
-            .err()
-            .ok_or_else(|| eyre!("placeholder template unexpectedly validated as a candidate"))?;
-        if !error.to_string().contains("release_repo_sha is not an exact Git SHA") {
-            bail!("placeholder template failed for an unrelated reason: {error}");
-        }
-        // Every subject is a placeholder, not just the one that reported
-        // first: each must independently fail to bind.
-        let canonical = contract().subjects;
-        for name in digest_subjects(&template.subjects).iter().map(|(name, _)| *name) {
-            let mut candidate = contract();
-            let mut template_value = serde_json::to_value(&template.subjects)?;
-            let placeholder = template_value
-                .as_object_mut()
-                .and_then(|object| object.get(name).cloned())
-                .ok_or_else(|| eyre!("template subject {name} is absent"))?;
-            let mut value = serde_json::to_value(&canonical)?;
-            value
-                .as_object_mut()
-                .ok_or_else(|| eyre!("subjects must serialize to a JSON object"))?
-                .insert(name.to_string(), placeholder);
-            candidate.subjects = serde_json::from_value(value)?;
-            let error = validate_contract(&candidate)
-                .err()
-                .ok_or_else(|| eyre!("placeholder subject {name} bound a candidate"))?;
-            if !error.to_string().contains(&format!("{name} is not an exact SHA-256 digest")) {
-                bail!("placeholder {name} failed for an unrelated reason: {error}");
-            }
         }
         Ok(())
     }
