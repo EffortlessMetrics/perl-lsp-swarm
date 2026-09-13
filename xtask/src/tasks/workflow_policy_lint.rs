@@ -373,17 +373,39 @@ fn lint_workflow_file(path: &Path, is_fixture: bool, issues: &mut Vec<LintIssue>
 /// `cargo run -p xtask --bin <name>` and `--example <name>` select a different
 /// target that does not link `main.rs`'s dispatch, and `cargo test -p xtask`
 /// compiles test targets rather than the CLI, so neither is a subcommand claim.
+///
+/// Matching is on whitespace-separated tokens rather than substrings, so a tab,
+/// a run of spaces, or a bare `cargo xtask` is classified the same as the
+/// ordinary spelling.
+///
+/// The bias is deliberate. Over-detection costs a workflow two redundant
+/// `paths:` entries; under-detection leaves a gate silently unenumerated, which
+/// is the failure this rule exists to prevent. So recall is preferred to
+/// precision, and no attempt is made to prove the token sits in command
+/// position: a prose mention of the command inside an `echo` can only matter on
+/// a workflow that also carries a `paths:` filter, and would only ask it for the
+/// two entries. Commented-out lines are excluded because they never execute.
 fn command_invokes_xtask_cli(script: &str) -> bool {
     script.lines().any(|line| {
         let line = line.trim();
-        // `cargo xtask <sub>` (the alias) or `cargo run -p xtask [flags] -- <sub>`.
-        let alias = line.contains("cargo xtask ");
-        let explicit =
-            line.contains("cargo run") && line.contains("-p xtask") && line.contains(" -- ");
-        if !alias && !explicit {
+        if line.starts_with('#') {
             return false;
         }
-        !(line.contains("--bin ") || line.contains("--example "))
+        let tokens: Vec<&str> = line.split_whitespace().collect();
+        let Some(cargo_at) = tokens.iter().position(|token| *token == "cargo") else {
+            return false;
+        };
+        let rest = &tokens[cargo_at + 1..];
+        if rest.iter().any(|token| *token == "--bin" || *token == "--example") {
+            return false;
+        }
+        match rest.first() {
+            // `cargo xtask [<sub>]` — the alias form.
+            Some(&"xtask") => true,
+            // `cargo run -p xtask [flags] -- <sub>` — the explicit form.
+            Some(&"run") => rest.contains(&"-p") && rest.contains(&"xtask") && rest.contains(&"--"),
+            _ => false,
+        }
     })
 }
 
@@ -1893,6 +1915,24 @@ mod tests {
         Ok(())
     }
 
+    /// Spelling must not decide the verdict. A missed invocation leaves a gate
+    /// silently unenumerated, which is the failure this rule exists to prevent.
+    #[test]
+    fn xtask_cli_is_detected_through_tabs_and_bare_invocation() -> Result<()> {
+        let issues = wiring_issues("xtask_cli_paths_tab_and_bare.yml")?;
+        assert_eq!(issues.len(), 1, "one finding for the one paths-filtered trigger: {issues:?}");
+        Ok(())
+    }
+
+    #[test]
+    fn commented_out_invocation_is_not_a_cli_claim() -> Result<()> {
+        assert!(
+            wiring_issues("xtask_cli_commented_invocation.yml")?.is_empty(),
+            "a documented command in a comment is prose, not a dependency"
+        );
+        Ok(())
+    }
+
     #[test]
     fn xtask_cli_wiring_may_be_covered_by_a_glob() -> Result<()> {
         assert!(
@@ -1933,7 +1973,7 @@ mod tests {
     /// through the xtask CLI may omit the wiring files it depends on.
     #[test]
     fn shipped_workflows_enumerate_xtask_cli_wiring() -> Result<()> {
-        let workflows_dir = project_root()?.join(".github/workflows");
+        let workflows_dir = project_root()?.join(".github").join("workflows");
         let mut issues = Vec::new();
         for entry in fs::read_dir(&workflows_dir)? {
             let path = entry?.path();
