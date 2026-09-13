@@ -10,8 +10,6 @@ body:
 
         **VS Code public-beta users:** `Perl: Report Issue` offers `Show Support Packet` (inspect it in an editor tab) and `Copy Support Packet`. The packet carries product/editor identity and only the support state the extension can establish safely. Please review the packet before pasting it below. Do not paste private source, full logs, environment dumps, credentials, debugger values, or test output unless a maintainer asks for one specifically bounded excerpt.
 
-        The packet schema version is shown in the packet. Current and older known packet versions are useful; an unknown or malformed version is limited evidence and should still be pasted when available rather than blocking the report.
-
   - type: dropdown
     id: component
     attributes:
@@ -104,7 +102,7 @@ body:
       description: |
         In VS Code run `Perl: Report Issue`, use `Show Support Packet` to review it or `Copy Support Packet` to copy it, then paste it here.
         The packet is user-triggered and should contain bounded/redacted product state rather than full logs or source.
-        Packets from older known schema versions remain useful. Unknown or malformed packet versions are limited evidence, not a reason to abandon the report.
+        The schema version appears in the packet. Older known versions remain useful; unknown or malformed versions are limited evidence. You can file the report without a packet.
         Leave blank for other editors or if packet generation is unavailable.
       render: text
 
