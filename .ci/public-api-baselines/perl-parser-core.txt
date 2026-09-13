@@ -2258,6 +2258,7 @@ pub fn perl_parser_core::hir::VariableDecl::eq(&self, other: &perl_parser_core::
 pub fn perl_parser_core::hir::VariableDecl::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub const perl_parser_core::hir::COMPILE_EFFECT_MODEL_VERSION: u32
 pub const perl_parser_core::hir::HIR_BODY_MODEL_VERSION: u32
+pub fn perl_parser_core::hir::arguments_outside_configuration_hashes(args: &[alloc::string::String]) -> alloc::vec::Vec<&str>
 pub fn perl_parser_core::hir::lower_ast(ast: &perl_ast::ast::Node) -> perl_parser_core::hir::HirFile
 pub fn perl_parser_core::hir::lower_body(ast: &perl_ast::ast::Node) -> perl_parser_core::hir::HirBody
 pub type perl_parser_core::hir::LoopControlVerb = perl_parser_core::hir::ControlTransferKind
