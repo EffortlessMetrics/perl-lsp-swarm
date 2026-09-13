@@ -411,9 +411,10 @@ end
 -- server.lua declares `verbose` at THREE sites: the `Server` class field
 -- (the constructed server), the `lsp.server.options` class field (what a
 -- server definition is written against), and the default options table a
--- definition copies from.  A
--- reader may meet either one.  Both must disclose; the pristine defect is
--- precisely that only the class field does.
+-- definition copies from.  A reader may meet any of the three, so all three
+-- must disclose the same content classes.  The pristine defect is precisely
+-- that only the Server class field did: the defaults table called it
+-- ordinary debugging, and the options-class field did not exist at all.
 -- ---------------------------------------------------------------------------
 
 local server_source = read_file(server_module_path)
