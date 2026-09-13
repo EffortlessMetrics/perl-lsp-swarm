@@ -19,7 +19,10 @@
 --
 -- The admission options and what each one can expose:
 --
---   log_file           complete JSON protocol -> a durable file
+--   log_file           logged JSON protocol payloads -> a durable file.
+--                      PARTIAL: large documents travel Server:push_raw,
+--                      whose frames never reach util.jsonprettify and so
+--                      never reach this file.
 --   log_server_stderr  server-emitted stderr  -> the editor log
 --   force_verbosity_off  the client-wide suppressor for per-server verbose
 --   Server default `verbose` / Server.verbose  complete protocol payloads
@@ -48,15 +51,20 @@
 --       precise place a user opts in;
 --   A6  every admission option still exists as a real config default /
 --       server option, so the disclosure describes a live switch rather
---       than drifting off a removed one.
+--       than drifting off a removed one;
+--   A7  where a sink does NOT receive everything, both surfaces keep
+--       saying so, and no admission surface advertises a complete
+--       transcript. `log_file` is the case: the raw path bypasses it
+--       entirely. Honest partiality is easy to fix once and then lose to
+--       a later rewording, so it is pinned rather than left to review.
 --
 -- Red-first baseline: run against the pristine upstream base copies, whose
 -- wording is byte-identical to current staged main for these surfaces:
 --   lua clients/lite-xl/tests/init_trace_admission_test.lua \
 --     clients/lite-xl/leaves/base/init.lua \
 --     clients/lite-xl/leaves/base/server.lua
--- Observed pristine baseline: 20 failed / 21 passed. Observed patched
--- result: 41 passed, 0 failed, identically on an LF and on a CRLF copy of
+-- Observed pristine baseline: 22 failed / 27 passed. Observed patched
+-- result: 49 passed, 0 failed, identically on an LF and on a CRLF copy of
 -- the staged modules.
 --
 -- Mutation falsifiers of the PATCHED source (each mechanically verified to
@@ -80,7 +88,13 @@
 --   6. drop the `comment_text` normalization and join raw comment lines ->
 --      the A5 default-options "configuration values" row fails on BOTH LF
 --      and CRLF, because that phrase wraps as "... and configuration" /
---      "values." and the retained marker splits it.
+--      "values." and the retained marker splits it;
+--   7. restore the pre-fix "complete JSON protocol trace" wording on the
+--      log_file annotation and drop "Partial" from its description -> all
+--      three A7 log_file rows fail (GUI partiality, annotation partiality,
+--      forbidden completeness claim);
+--   8. thin the log_file description back to source+configuration ->
+--      A1's content-class row fails on the missing "file paths".
 --
 -- No framework: plain asserts, one process, deterministic, exit code
 -- carries the result. Compatible with the Lite XL Lua runtime family (5.4).
@@ -148,13 +162,27 @@ local SENSITIVITY_MARKER = "sensitive"
 local OWNER_ISSUE = "#11155"
 local MAX_DESCRIPTION_BYTES = 240
 
+-- The exact claim the pre-#12015 wording made about log_file, and the one
+-- the raw path falsifies. Matching the phrase rather than the bare word
+-- "complete" keeps the honest "not a complete transcript" disclosure legal.
+local FORBIDDEN_COMPLETENESS_CLAIM = "complete json protocol"
+
 local ADMISSIONS = {
   {
     path = "log_file",
     label = "Log File",
-    classes = { "source code", "configuration" },
+    classes = { "source code", "configuration", "file paths" },
     operational = ".log",
-    annotation_classes = { "source code", "configuration values" },
+    annotation_classes = { "source code", "configuration values", "file paths" },
+    -- A7: this trace is PARTIAL. `Server:process_raw` writes `raw_data`
+    -- straight to the server and never routes it through
+    -- `util.jsonprettify`, the sole path that appends to log_file, so the
+    -- didOpen/didChange/didSave frames init.lua sends via `push_raw` for
+    -- large documents never land here. Both surfaces must keep saying so:
+    -- a disclosure that silently regains "complete" misleads exactly the
+    -- person debugging those flows.
+    gui_must_say = { "partial" },
+    annotation_must_say = { "not a complete transcript", "raw path" },
   },
   {
     path = "log_server_stderr",
@@ -236,6 +264,21 @@ for _, row in ipairs(ADMISSIONS) do
   ok(#description <= MAX_DESCRIPTION_BYTES,
     "A4 " .. row.path .. " description stays within "
       .. MAX_DESCRIPTION_BYTES .. " bytes (got " .. #description .. ")")
+
+  -- A7: partiality obligations, where the sink does not receive everything.
+  if row.gui_must_say then
+    local honest, absent = says_all(description, row.gui_must_say)
+    ok(honest,
+      "A7 " .. row.path .. " description keeps its partiality disclosure"
+        .. (honest and "" or (" (missing: " .. table.concat(absent, ", ") .. ")")))
+  end
+
+  -- A7 negative: no admission surface may advertise a complete transcript.
+  -- The phrase is checked, not the bare word "complete", so the honest
+  -- "not a complete transcript" wording is not itself a violation.
+  ok(not says(description, FORBIDDEN_COMPLETENESS_CLAIM),
+    "A7 " .. row.path .. " description does not claim a "
+      .. FORBIDDEN_COMPLETENESS_CLAIM)
 end
 
 -- ---------------------------------------------------------------------------
@@ -349,13 +392,26 @@ for _, row in ipairs(ADMISSIONS) do
 
   ok(says(annotation, OWNER_ISSUE),
     "A2 " .. row.path .. " annotation cites the owning issue " .. OWNER_ISSUE)
+
+  if row.annotation_must_say then
+    local honest, absent = says_all(annotation, row.annotation_must_say)
+    ok(honest,
+      "A7 " .. row.path .. " annotation keeps its partiality disclosure"
+        .. (honest and "" or (" (missing: " .. table.concat(absent, ", ") .. ")")))
+  end
+
+  ok(not says(annotation, FORBIDDEN_COMPLETENESS_CLAIM),
+    "A7 " .. row.path .. " annotation does not claim a "
+      .. FORBIDDEN_COMPLETENESS_CLAIM)
 end
 
 -- ---------------------------------------------------------------------------
 -- A5: CROSS-MODULE CONSISTENCY for `verbose`.
 --
--- server.lua declares `verbose` twice: once as the Server class field and
--- once in the default options table that a server definition copies.  A
+-- server.lua declares `verbose` at THREE sites: the `Server` class field
+-- (the constructed server), the `lsp.server.options` class field (what a
+-- server definition is written against), and the default options table a
+-- definition copies from.  A
 -- reader may meet either one.  Both must disclose; the pristine defect is
 -- precisely that only the class field does.
 -- ---------------------------------------------------------------------------
