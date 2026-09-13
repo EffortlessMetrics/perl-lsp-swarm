@@ -773,40 +773,40 @@ fn decode_evaluate_path(reported: &str) -> Result<String, String> {
         Ok(trimmed.to_string())
     }?;
 
-    if let Some((prefix, payload)) = decoded.split_once(" '") {
-        if prefix.trim().parse::<u64>().is_ok() {
-            let mut path = String::with_capacity(payload.len());
-            let mut characters = payload.chars();
-            let mut closed = false;
-            while let Some(character) = characters.next() {
-                match character {
-                    '\\' => match characters.next() {
-                        Some('\\') => path.push('\\'),
-                        Some('\'') => path.push('\''),
-                        Some(other) => {
-                            return Err(format!(
-                                "unsupported perl5db ordinal escape \\{other} in {decoded:?}"
-                            ));
-                        }
-                        None => {
-                            return Err(format!("trailing perl5db ordinal escape in {decoded:?}"));
-                        }
-                    },
-                    '\'' => {
-                        closed = true;
-                        break;
+    if let Some((prefix, payload)) = decoded.split_once(" '")
+        && prefix.trim().parse::<u64>().is_ok()
+    {
+        let mut path = String::with_capacity(payload.len());
+        let mut characters = payload.chars();
+        let mut closed = false;
+        while let Some(character) = characters.next() {
+            match character {
+                '\\' => match characters.next() {
+                    Some('\\') => path.push('\\'),
+                    Some('\'') => path.push('\''),
+                    Some(other) => {
+                        return Err(format!(
+                            "unsupported perl5db ordinal escape \\{other} in {decoded:?}"
+                        ));
                     }
-                    other => path.push(other),
+                    None => {
+                        return Err(format!("trailing perl5db ordinal escape in {decoded:?}"));
+                    }
+                },
+                '\'' => {
+                    closed = true;
+                    break;
                 }
+                other => path.push(other),
             }
-            if !closed || characters.any(|character| !character.is_whitespace()) {
-                return Err(format!("unclosed perl5db ordinal path {decoded:?}"));
-            }
-            if path.is_empty() {
-                return Err(format!("empty perl5db ordinal path {decoded:?}"));
-            }
-            return Ok(path);
         }
+        if !closed || characters.any(|character| !character.is_whitespace()) {
+            return Err(format!("unclosed perl5db ordinal path {decoded:?}"));
+        }
+        if path.is_empty() {
+            return Err(format!("empty perl5db ordinal path {decoded:?}"));
+        }
+        return Ok(path);
     }
     Ok(decoded)
 }
@@ -1986,17 +1986,15 @@ fn probe_debuggee_perl_with_options_and_barrier(
         }
         let mut child = command.spawn().map_err(|e| fail(format!("cannot spawn: {e}")))?;
         #[cfg(all(test, windows))]
-        if publication_barrier {
-            if let Err(error) = resume_suspended_probe_process(&child) {
-                let cleanup =
-                    terminate_probe_process_tree(&mut child, descendant_pid_file, cleanup_fault);
-                return Err(fail(format!(
-                    "cannot resume probe process for publication barrier: {error}{}",
-                    cleanup
-                        .err()
-                        .map_or_else(String::new, |error| format!("; cleanup failed: {error}"))
-                )));
-            }
+        if publication_barrier && let Err(error) = resume_suspended_probe_process(&child) {
+            let cleanup =
+                terminate_probe_process_tree(&mut child, descendant_pid_file, cleanup_fault);
+            return Err(fail(format!(
+                "cannot resume probe process for publication barrier: {error}{}",
+                cleanup
+                    .err()
+                    .map_or_else(String::new, |error| format!("; cleanup failed: {error}"))
+            )));
         }
         #[cfg(test)]
         if let Some(descendant_pid_file) = descendant_pid_file {
