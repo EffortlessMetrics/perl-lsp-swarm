@@ -827,20 +827,14 @@ suite('Packaged VSIX bundled-server journey', function () {
     } finally {
       try {
         if (fixtureDocument && !fixtureDocument.isClosed) {
-          const restore = new vscode.WorkspaceEdit();
-          restore.replace(
-            fixtureDocument.uri,
-            new vscode.Range(
-              new vscode.Position(0, 0),
-              fixtureDocument.positionAt(fixtureDocument.getText().length),
-            ),
-            fixtureText,
-          );
-          assert.ok(await vscode.workspace.applyEdit(restore), 'fixture restoration was rejected');
-          assert.equal(fixtureDocument.getText(), fixtureText);
-          assert.ok(await fixtureDocument.save(), 'restored fixture could not be saved');
+          await vscode.window.showTextDocument(fixtureDocument);
+          await vscode.commands.executeCommand('workbench.action.revertAndCloseActiveEditor');
         }
-        fs.unlinkSync(workspaceFile);
+        assert.equal(fs.readFileSync(workspaceFile, 'utf8'), fixtureText);
+        const cleanup = new vscode.WorkspaceEdit();
+        cleanup.deleteFile(vscode.Uri.file(workspaceFile));
+        assert.ok(await vscode.workspace.applyEdit(cleanup), 'fixture deletion was rejected');
+        assert.ok(!fs.existsSync(workspaceFile), 'owned fixture remains after cleanup');
       } finally {
         await Promise.all(
           inspectedSettings.map(({ key, value }) =>
