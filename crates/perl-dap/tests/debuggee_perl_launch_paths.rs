@@ -9,7 +9,7 @@
 mod common;
 
 #[cfg(windows)]
-use common::run_cleanup_command_for_test;
+use common::run_bounded_command_for_test;
 use common::{
     DEBUGGEE_PERL_OVERRIDE_ENV, DapWorkflowSession, probe_debuggee_perl_for_test, workflow_timeout,
 };
@@ -41,8 +41,8 @@ fn stage_perl_library_layout(
         ])
         .stdout(fs::File::create(&stdout_path)?)
         .stderr(fs::File::create(&stderr_path)?);
-    let (_, status) = run_cleanup_command_for_test(command, Duration::from_secs(5))?;
-    let status = status.map_err(|error| format!("cannot query Perl library layout: {error}"))?;
+    let status = run_bounded_command_for_test(command, Duration::from_secs(5))
+        .map_err(|error| format!("cannot query Perl library layout: {error}"))?;
     if !status.success() {
         return Err(format!(
             "cannot query Perl library layout: {}",
@@ -101,6 +101,26 @@ fn copy_directory(source: &Path, destination: &Path) -> Result<(), Box<dyn Error
         }
     }
     Ok(())
+}
+
+#[cfg(windows)]
+fn prepare_native_perl_fixture(
+    source_perl: &Path,
+    destination: &Path,
+) -> Result<(PathBuf, PathBuf), Box<dyn Error>> {
+    let staged_perl = stage_perl_library_layout(source_perl, destination)?
+        .ok_or("selected Perl is not a native MSWin32 build")?;
+    let staged_bin = staged_perl.parent().ok_or("staged Perl has no bin directory")?;
+    let source_dir = source_perl.parent().ok_or("Perl path has no parent directory")?;
+    for entry in fs::read_dir(source_dir)? {
+        let entry = entry?;
+        if entry.path().extension().and_then(|extension| extension.to_str()) == Some("dll") {
+            fs::copy(entry.path(), staged_bin.join(entry.file_name()))?;
+        }
+    }
+    let pinned = staged_bin.join("perl5.exe");
+    fs::copy(&staged_perl, &pinned)?;
+    Ok((staged_perl, pinned))
 }
 
 struct EnvGuard {
@@ -201,9 +221,10 @@ fn all_convenience_launch_paths_reach_the_pinned_interpreter() -> Result<(), Box
     #[cfg(windows)]
     let (ambient, pinned) =
         if let Some(staged_perl) = stage_perl_library_layout(&source_perl, controls.path())? {
-            let staged_bin = staged_perl.parent().ok_or("staged Perl has no bin directory")?;
-            let ambient = staged_perl;
+            let staged_bin =
+                staged_perl.parent().ok_or("staged Perl has no bin directory")?.to_path_buf();
             let pinned = staged_bin.join("perl5.exe");
+            let ambient = staged_perl;
             fs::copy(&ambient, &pinned)?;
             (ambient, pinned)
         } else {
@@ -272,6 +293,31 @@ fn all_convenience_launch_paths_reach_the_pinned_interpreter() -> Result<(), Box
             &format!("configured {launch_path}"),
         )
         .map_err(std::io::Error::other)?;
+    }
+    Ok(())
+}
+
+#[test]
+#[cfg(windows)]
+#[serial]
+fn copied_native_fixture_requires_staged_core_library() -> Result<(), Box<dyn Error>> {
+    let source = env::var_os(DEBUGGEE_PERL_OVERRIDE_ENV)
+        .ok_or("strict fixture proof requires a configured native Perl pin")?;
+    let source = PathBuf::from(source);
+    let controls = tempfile::tempdir()?;
+    let (ambient, pinned) = prepare_native_perl_fixture(&source, controls.path())?;
+    probe_debuggee_perl_for_test(&pinned, Duration::from_secs(10), false)
+        .map_err(|reason| format!("staged native fixture was not pipe-usable: {reason}"))?;
+
+    let staged_install =
+        ambient.parent().and_then(Path::parent).ok_or("staged Perl has no installation root")?;
+    let staged_lib = staged_install.join("lib");
+    fs::remove_dir_all(&staged_lib)?;
+    let failure = probe_debuggee_perl_for_test(&pinned, Duration::from_secs(10), false)
+        .err()
+        .ok_or("copied fixture unexpectedly found perl5db without staged core library")?;
+    if !failure.to_ascii_lowercase().contains("perl5db") {
+        return Err(format!("missing staged library lost its diagnostic: {failure}").into());
     }
     Ok(())
 }

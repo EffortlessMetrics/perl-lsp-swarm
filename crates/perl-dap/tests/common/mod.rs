@@ -2412,6 +2412,14 @@ pub(crate) fn run_cleanup_command_for_test(
     }
 }
 
+#[cfg(test)]
+pub(crate) fn run_bounded_command_for_test(
+    command: Command,
+    budget: Duration,
+) -> Result<std::process::ExitStatus, String> {
+    run_cleanup_command(command, budget)
+}
+
 fn run_cleanup_command_inner(
     mut command: Command,
     budget: Duration,
