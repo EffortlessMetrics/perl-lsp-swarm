@@ -62,7 +62,10 @@ const ALLOWED_SITES: [(&str, &str); 4] = [
 fn collect_rust_sources(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
     let entries = fs::read_dir(dir)
         .map_err(|error| format!("source directory {} must be readable: {error}", dir.display()))?;
-    for entry in entries.flatten() {
+    for entry in entries {
+        let entry = entry.map_err(|error| {
+            format!("source directory entry in {} must be readable: {error}", dir.display())
+        })?;
         let path = entry.path();
         if path.is_dir() {
             collect_rust_sources(&path, out)?;

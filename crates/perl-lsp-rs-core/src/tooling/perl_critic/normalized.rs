@@ -748,6 +748,7 @@ fn compare_contributors(
                 &right.remediation_related_information,
             )
         })
+        .then_with(|| left.fix_available.cmp(&right.fix_available))
 }
 
 /// Deterministic total order over one related-information entry: range
@@ -1045,6 +1046,52 @@ mod tests {
         assert_eq!(related.len(), 2);
         assert_eq!(related[0].message, "alpha related");
         assert_eq!(related[1].message, "zulu related");
+    }
+
+    #[test]
+    fn contributors_differing_only_in_fix_availability_stay_ordered() -> Result<(), String> {
+        let range = range(10, 20);
+        let forward_candidates = vec![
+            CriticFindingCandidate::with_fix_availability(
+                CriticObservedIdentity::built_in_system_call(),
+                source(1, 7),
+                Severity::Harsh,
+                range,
+                "system() executes a shell command",
+                None,
+                false,
+            ),
+            CriticFindingCandidate::with_fix_availability(
+                CriticObservedIdentity::built_in_system_call(),
+                source(1, 7),
+                Severity::Harsh,
+                range,
+                "system() executes a shell command",
+                None,
+                true,
+            ),
+        ];
+        let forward = normalize_critic_findings(forward_candidates.clone());
+        let mut reversed = forward_candidates;
+        reversed.reverse();
+        let backward = normalize_critic_findings(reversed);
+
+        if forward != backward {
+            return Err("contributor bytes depend on arrival order".to_string());
+        }
+        let Some(row) = forward.first() else {
+            return Err("normalized contributor row is missing".to_string());
+        };
+        let Some(first) = row.contributors().first() else {
+            return Err("first contributor is missing".to_string());
+        };
+        let Some(second) = row.contributors().get(1) else {
+            return Err("second contributor is missing".to_string());
+        };
+        if first.fix_available || !second.fix_available {
+            return Err("fix availability did not determine final contributor order".to_string());
+        }
+        Ok(())
     }
 
     #[test]

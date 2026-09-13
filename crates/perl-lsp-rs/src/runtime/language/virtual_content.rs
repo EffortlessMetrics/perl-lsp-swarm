@@ -606,6 +606,7 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn parser_virtual_content_rejects_unstable_workspace_before_system_fallback() -> TestResult {
         let temp = tempfile::tempdir()?;

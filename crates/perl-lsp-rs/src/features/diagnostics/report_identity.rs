@@ -294,11 +294,13 @@ impl PullReportSubject {
         push_str(&mut canonical, "substrate", inner.as_str());
         push_str(&mut canonical, "position_encoding", self.projection.position_encoding.as_token());
         push_u64(&mut canonical, "markup_messages", u64::from(self.projection.markup_messages));
-        push_u64(
-            &mut canonical,
-            "configuration_generation",
-            self.configuration_generation.unwrap_or(0),
-        );
+        match self.configuration_generation {
+            Some(generation) => {
+                push_str(&mut canonical, "configuration_generation", "some");
+                push_u64(&mut canonical, "configuration_generation_value", generation);
+            }
+            None => push_str(&mut canonical, "configuration_generation", "none"),
+        }
         push_str(
             &mut canonical,
             "project_version",
@@ -561,6 +563,21 @@ mod tests {
             .ok()
             .unwrap();
         assert_ne!(baseline, moved);
+    }
+
+    #[test]
+    fn configuration_generation_presence_moves_identity() -> Result<(), String> {
+        let mut context = context_with(Some("/tmp/ws-a"));
+        context.configuration_generation = None;
+        let unavailable =
+            subject_for(&context, URI_A, CONTENT).compose().map_err(|error| error.to_string())?;
+        context.configuration_generation = Some(0);
+        let zero =
+            subject_for(&context, URI_A, CONTENT).compose().map_err(|error| error.to_string())?;
+        if unavailable == zero {
+            return Err("unavailable and zero configuration generations share an ID".to_string());
+        }
+        Ok(())
     }
 
     #[test]
