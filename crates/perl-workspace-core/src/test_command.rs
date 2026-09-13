@@ -437,6 +437,8 @@ impl TestCommandPlan {
                     trust: candidate.trust,
                     authority: candidate.authority,
                     input_id: candidate.input_id.clone(),
+                    tool_candidate_id: candidate.tool_candidate_id.clone(),
+                    build_system_id: candidate.build_system_id.clone(),
                     required_generated_state: candidate
                         .required_generated_state
                         .iter()
@@ -502,6 +504,20 @@ pub struct PublicTestCommandCandidate {
     pub authority: EnvironmentInputAuthority,
     /// Supplying input.
     pub input_id: EnvironmentInputId,
+    /// Discovered tool this candidate launches, when one supplied it.
+    ///
+    /// Published because provenance is part of candidate *identity*: two build
+    /// facts can justify the same command shape and stay distinct candidates.
+    /// Without these a public consumer sees two entries with identical kind,
+    /// include mode, argv, and redacted paths, differing only in an opaque
+    /// `id`, and cannot explain why. Both are `stable_id` digests over
+    /// already-redacted material, not host paths — the same class as the
+    /// `input_id` this receipt already carries.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_candidate_id: Option<String>,
+    /// Build-system fact this candidate was derived from, when one supplied it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub build_system_id: Option<String>,
     /// Redacted generated-state preconditions.
     pub required_generated_state: Vec<PublicGeneratedStateRequirement>,
     /// Admission decision.
@@ -606,7 +622,7 @@ pub fn plan_test_commands(
             input_id: None,
         });
     }
-    let test_roots = relative_test_directories(snapshot, &working_dir, &mut limitations);
+    let test_roots = relative_test_directories(snapshot, &working_dir);
 
     let mut candidates = Vec::new();
 
@@ -706,6 +722,16 @@ pub fn plan_test_commands(
         }
     }
 
+    // Both remaining reports below describe the `prove` argument list, so they
+    // are published only once such a candidate exists to carry it. Gating on an
+    // emitted candidate rather than on a discovered `prove` tool also covers a
+    // tool whose input carries no authority and was therefore skipped.
+    let emitted_prove_candidate =
+        candidates.iter().any(|candidate| candidate.kind == TestRunnerKind::Prove);
+    if emitted_prove_candidate {
+        publish_test_root_limitations(&test_roots, &mut limitations);
+    }
+
     // Withholding the `-b` form is correct, but it must not be silent. The
     // project declared a blib role and receives no `-b` candidate, and a caller
     // needs to know that an entry point was considered and rejected rather than
@@ -715,18 +741,11 @@ pub fn plan_test_commands(
     // would need filesystem facts this module does not have.
     //
     // Reported only when a `prove` candidate was actually emitted, because this
-    // limitation explains why *that* candidate has no blib variant. Gating on an
-    // emitted candidate rather than on a discovered `prove` tool also covers a
-    // tool whose input carries no authority: in both cases no prove form exists,
-    // so blaming the blib root would send a caller to fix something that still
-    // could not produce a command.
+    // limitation explains why *that* candidate has no blib variant.
     //
     // A project that declared no blib role at all lost nothing, so it gets no
     // limitation — `a_project_with_no_blib_role_reports_no_blib_limitation`.
-    if declared_blib_role
-        && !blib_available
-        && candidates.iter().any(|candidate| candidate.kind == TestRunnerKind::Prove)
-    {
+    if declared_blib_role && !blib_available && emitted_prove_candidate {
         limitations.push(EnvironmentLimitation {
             code: "test_command.no_workspace_blib_root".to_string(),
             detail: "an active include entry carries a blib role, but none of them is this \
@@ -932,20 +951,33 @@ enum TestRootCoverage {
 struct TestRootArguments {
     arguments: Vec<String>,
     coverage: TestRootCoverage,
+    /// Whether the snapshot declared any active test root at all.
+    ///
+    /// Distinct from an empty `arguments`: every declared root may have been
+    /// unreachable. Reporting "no test root was supplied" in that case would
+    /// tell a caller to declare a root they already declared.
+    declared_any_root: bool,
 }
 
+/// Pure: it computes arguments and reports what it found, and records nothing.
+///
+/// Limitations are published by [`publish_test_root_limitations`] only once a
+/// `prove` candidate actually exists to carry these arguments. Emitting them
+/// here would attach prove-specific claims to make-only, Build-only, and empty
+/// plans, whose argv never contains a test root.
 fn relative_test_directories(
     snapshot: &ProjectEnvironmentSnapshot,
     working_dir: &EnvironmentPathRef,
-    limitations: &mut Vec<EnvironmentLimitation>,
 ) -> TestRootArguments {
     let mut directories = Vec::new();
     let mut had_unrelatable_root = false;
+    let mut declared_any_root = false;
 
     for root in snapshot.active_project_roots() {
         if root.role != ProjectRootRole::Test {
             continue;
         }
+        declared_any_root = true;
         match relative_child(&working_dir.normalized, &root.path.normalized) {
             Some(relative) => directories.push(relative),
             None => had_unrelatable_root = true,
@@ -955,25 +987,7 @@ fn relative_test_directories(
     directories.sort();
     directories.dedup();
 
-    if had_unrelatable_root {
-        limitations.push(EnvironmentLimitation {
-            code: "test_command.test_root_outside_working_directory".to_string(),
-            detail: "at least one active test root is not inside the workspace working directory, \
-                     so it cannot become a workspace-relative argument"
-                .to_string(),
-            input_id: None,
-        });
-    }
-
     if directories.is_empty() {
-        limitations.push(EnvironmentLimitation {
-            code: "test_command.assumed_default_test_directory".to_string(),
-            detail: format!(
-                "no active test root was supplied, so the conventional `{DEFAULT_TEST_DIRECTORY}` \
-                 directory is assumed"
-            ),
-            input_id: None,
-        });
         directories.push(DEFAULT_TEST_DIRECTORY.to_string());
     }
 
@@ -983,7 +997,42 @@ fn relative_test_directories(
         TestRootCoverage::Complete
     };
 
-    TestRootArguments { arguments: directories, coverage }
+    TestRootArguments { arguments: directories, coverage, declared_any_root }
+}
+
+/// Record what the emitted `prove` arguments do not say for themselves.
+///
+/// Called only when a `prove` candidate exists, since both claims are about an
+/// argument list nothing else carries.
+fn publish_test_root_limitations(
+    test_roots: &TestRootArguments,
+    limitations: &mut Vec<EnvironmentLimitation>,
+) {
+    if test_roots.coverage == TestRootCoverage::Incomplete {
+        limitations.push(EnvironmentLimitation {
+            code: "test_command.test_root_outside_working_directory".to_string(),
+            detail: "at least one active test root is not inside the workspace working directory, \
+                     so it cannot become a workspace-relative argument"
+                .to_string(),
+            input_id: None,
+        });
+    }
+
+    // Only when the project genuinely declared nothing. When every declared
+    // root was unreachable the arguments also fall back to the conventional
+    // directory, but the reason is containment, already reported above — and
+    // the candidate is `BlockedIncompleteTestRoots`, so the substitution cannot
+    // be mistaken for the declared surface.
+    if !test_roots.declared_any_root {
+        limitations.push(EnvironmentLimitation {
+            code: "test_command.assumed_default_test_directory".to_string(),
+            detail: format!(
+                "no active test root was supplied, so the conventional `{DEFAULT_TEST_DIRECTORY}` \
+                 directory is assumed"
+            ),
+            input_id: None,
+        });
+    }
 }
 
 /// Which launcher will invoke `make test`.
@@ -1072,6 +1121,19 @@ const fn path_separators(parent: &str) -> &'static [char] {
     // `str::contains(char)` is not `const`, so scan by bytes; a backslash is
     // ASCII, so a byte scan is equivalent to a char scan for this predicate.
     let bytes = parent.as_bytes();
+
+    // A drive-letter prefix names Windows whichever separator the producer
+    // wrote, so `C:/ws` is as Windows as `C:\ws`. This matches
+    // `is_absolute_path`, which already accepts both spellings; without it a
+    // forward-slash Windows root would reject its own backslash children.
+    if bytes.len() >= 3
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && (bytes[2] == b'/' || bytes[2] == b'\\')
+    {
+        return &['/', '\\'];
+    }
+
     let mut index = 0;
     while index < bytes.len() {
         if bytes[index] == b'\\' {
@@ -1104,7 +1166,26 @@ const fn path_separators(parent: &str) -> &'static [char] {
 /// so `/ws\\outside/t` is a sibling of `/ws`, not a child.
 fn relative_child(parent: &str, child: &str) -> Option<String> {
     let separators = path_separators(parent);
+    let windows = separators.contains(&'\\');
     let trimmed_parent = parent.trim_end_matches(separators);
+
+    // On Windows `/` and `\` are the same separator, and a producer may spell
+    // a root and its children differently. Fold them together for the prefix
+    // test so `C:/ws` still owns `C:\ws\t`. This is decidable from the path
+    // alone — unlike filesystem case sensitivity, which varies per directory
+    // and is therefore never folded. On POSIX nothing is folded: a backslash
+    // is a filename character, and treating it as a separator would fabricate
+    // a child from a sibling whose name contains one.
+    let folded_child;
+    let folded_parent;
+    let (child, trimmed_parent) = if windows {
+        folded_child = child.replace('\\', "/");
+        folded_parent = trimmed_parent.replace('\\', "/");
+        (folded_child.as_str(), folded_parent.as_str())
+    } else {
+        (child, trimmed_parent)
+    };
+
     let remainder = child.strip_prefix(trimmed_parent)?;
 
     // The child *is* the parent. Relative to the working directory that is the
@@ -1128,11 +1209,10 @@ fn relative_child(parent: &str, child: &str) -> Option<String> {
         return None;
     }
 
-    // On Windows both separators are legal; normalize to `/` so the emitted
-    // argument is uniform. On POSIX a `\\` is a filename character and must
-    // survive verbatim — replacing it would silently rename a file.
-    let relative =
-        if separators.contains(&'\\') { relative.replace('\\', "/") } else { relative.to_string() };
+    // Windows separators were already folded to `/` above, so the argument is
+    // uniform. On POSIX a `\\` is a filename character and survives verbatim —
+    // replacing it would silently rename a file.
+    let relative = relative.to_string();
     if relative.starts_with('-') {
         return Some(format!("{CURRENT_DIRECTORY}/{relative}"));
     }

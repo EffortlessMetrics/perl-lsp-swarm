@@ -1338,6 +1338,142 @@ fn a_windows_backslash_child_still_resolves() -> Result<(), FixtureError> {
     Ok(())
 }
 
+/// A drive letter names Windows whichever separator the producer wrote, so
+/// `C:/ws` accepts a `\` child exactly as `C:\ws` does — `is_absolute_path`
+/// already treats both spellings as Windows-absolute. Rules out: inferring the
+/// platform from a backslash alone, which silently makes a forward-slash
+/// Windows root reject its own children.
+#[test]
+fn a_windows_root_written_with_forward_slashes_still_owns_its_children() -> Result<(), FixtureError>
+{
+    for (root, test_root, expected) in [
+        ("C:/ws", "C:/ws\\t\\basic", "t/basic"),
+        ("C:/ws", "C:/ws/t/basic", "t/basic"),
+        ("C:\\ws", "C:/ws/t/basic", "t/basic"),
+    ] {
+        let root_input = accepted_input("root.workspace");
+        let tool_input = accepted_input("tool.prove");
+        let test_input = accepted_input("root.test");
+        let snapshot =
+            ProjectEnvironmentSnapshotBuilder::new(WORKSPACE_ID, 11, WorkspaceTrust::Trusted)
+                .with_input(root_input.clone())
+                .with_input(tool_input.clone())
+                .with_input(test_input.clone())
+                .with_project_root(ProjectRoot::new(
+                    ProjectRootRole::Workspace,
+                    path(root),
+                    root_input.id.clone(),
+                ))
+                .with_project_root(ProjectRoot::new(
+                    ProjectRootRole::Test,
+                    path(test_root),
+                    test_input.id.clone(),
+                ))
+                .with_tool_candidate(prove_tool(tool_input.id.clone()))
+                .build()?;
+
+        let plan = plan_test_commands(&snapshot, &GeneratedStateEvidence::for_snapshot(&snapshot))?;
+        let prove = candidates_of(&plan.candidates, TestRunnerKind::Prove);
+        let candidate = prove.first().ok_or(FixtureError::Missing("prove"))?;
+
+        assert_eq!(
+            candidate.argv,
+            vec!["-l".to_string(), expected.to_string()],
+            "`{test_root}` under `{root}`"
+        );
+        assert_eq!(
+            candidate.admission,
+            TestCommandAdmission::Ready,
+            "`{test_root}` under `{root}`"
+        );
+    }
+    Ok(())
+}
+
+/// A plan that emits no `prove` argv has no test-root assumption to report.
+/// `make test` and `Build test` choose their own files, so a limitation about
+/// the conventional `t` directory describes an argument nothing carries. Rules
+/// out: prove-specific limitations leaking into make-only, Build-only, and
+/// empty plans.
+#[test]
+fn a_plan_without_a_prove_candidate_makes_no_test_root_claim() -> Result<(), FixtureError> {
+    // make-only
+    let (builder, _) = base_builder();
+    let tool_input = accepted_input("tool.make");
+    let build_input = accepted_input("build.eumm");
+    let make_only = builder
+        .with_input(tool_input.clone())
+        .with_input(build_input.clone())
+        .with_tool_candidate(make_tool("make", tool_input.id.clone()))
+        .with_build_system(build_fact(BuildSystemKind::ExtUtilsMakeMaker, build_input.id.clone()))
+        .build()?;
+
+    // no runner at all
+    let (empty_builder, _) = base_builder();
+    let no_runner = empty_builder.build()?;
+
+    for (label, snapshot) in [("make-only", &make_only), ("no-runner", &no_runner)] {
+        let plan = plan_test_commands(snapshot, &GeneratedStateEvidence::for_snapshot(snapshot))?;
+        assert!(
+            candidates_of(&plan.candidates, TestRunnerKind::Prove).is_empty(),
+            "{label} plan must contain no prove candidate"
+        );
+        assert!(
+            !plan
+                .limitations
+                .iter()
+                .any(|item| item.code == "test_command.assumed_default_test_directory"),
+            "{label} plan emits no `t` argument, so it must claim no assumption about one"
+        );
+    }
+    Ok(())
+}
+
+/// "No test root was supplied" and "every supplied root was unreachable" are
+/// different facts. Reporting the first when the second happened tells a caller
+/// to declare a root they already declared. Rules out: deriving the
+/// assumed-default limitation from an empty argument list rather than from the
+/// absence of a declared root.
+#[test]
+fn all_detached_roots_are_reported_as_detached_not_as_absent() -> Result<(), FixtureError> {
+    let (builder, _) = base_builder();
+    let tool_input = accepted_input("tool.prove");
+    let test_input = accepted_input("root.test");
+    let snapshot = builder
+        .with_input(tool_input.clone())
+        .with_input(test_input.clone())
+        .with_tool_candidate(prove_tool(tool_input.id.clone()))
+        .with_project_root(ProjectRoot::new(
+            ProjectRootRole::Test,
+            path("/elsewhere/t"),
+            test_input.id.clone(),
+        ))
+        .build()?;
+
+    let plan = plan_test_commands(&snapshot, &GeneratedStateEvidence::for_snapshot(&snapshot))?;
+
+    assert!(
+        plan.limitations
+            .iter()
+            .any(|item| item.code == "test_command.test_root_outside_working_directory"),
+        "the real containment failure is reported"
+    );
+    assert!(
+        !plan
+            .limitations
+            .iter()
+            .any(|item| item.code == "test_command.assumed_default_test_directory"),
+        "a root was supplied, so claiming none was is false"
+    );
+
+    // The candidate still exists and is still blocked, so the substituted `t`
+    // cannot be mistaken for the declared surface.
+    let prove = candidates_of(&plan.candidates, TestRunnerKind::Prove);
+    let candidate = prove.first().ok_or(FixtureError::Missing("prove"))?;
+    assert_eq!(candidate.admission, TestCommandAdmission::BlockedIncompleteTestRoots);
+    Ok(())
+}
+
 /// Makefile discovery is a property of the launcher, not of `make` generally.
 /// Without `-f` / `/F` the launcher finds its makefile *by name*, and the names
 /// differ: only GNU make reads `GNUmakefile`, and only `gmake` names GNU make
