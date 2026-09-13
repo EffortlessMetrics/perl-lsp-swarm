@@ -411,10 +411,11 @@ impl LspServer {
     ///
     /// # Returns
     /// - `Ok(Some(signature_help))`: Signature information found.
-    /// - `Ok(None)`: No signature help available at position.
+    /// - `Ok(Some(Value::Null))`: No signature help available at position or the
+    ///   document is not open.
     ///
     /// # Errors
-    /// Returns [`JsonRpcError`] if params are invalid or document not found.
+    /// Returns [`JsonRpcError`] if params are invalid or the feature is not advertised.
     pub fn test_handle_signature_help(
         &self,
         params: Option<Value>,
