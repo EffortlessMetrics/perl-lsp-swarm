@@ -9,7 +9,8 @@
 mod common;
 
 use common::{
-    DEBUGGEE_PERL_OVERRIDE_ENV, DapWorkflowSession, probe_debuggee_perl_for_test, workflow_timeout,
+    DEBUGGEE_PERL_OVERRIDE_ENV, DapWorkflowSession, probe_debuggee_perl_for_test,
+    run_cleanup_command_for_test, workflow_timeout,
 };
 use serial_test::serial;
 use std::env;
@@ -28,23 +29,33 @@ fn stage_perl_library_layout(
 ) -> Result<PathBuf, Box<dyn Error>> {
     let source_bin = source_perl.parent().ok_or("selected Perl has no bin directory")?;
     let source_root = source_bin.parent().ok_or("selected Perl has no installation root")?;
-    let output = Command::new(source_perl)
+    let stdout_path = destination.join("perl-config.stdout");
+    let stderr_path = destination.join("perl-config.stderr");
+    let mut command = Command::new(source_perl);
+    command
         .args([
             "-MConfig",
             "-e",
             "print join(\"\\n\", grep { defined($_) && length($_) } @Config{qw(privlib archlib)})",
         ])
-        .output()?;
-    if !output.status.success() {
+        .stdout(fs::File::create(&stdout_path)?)
+        .stderr(fs::File::create(&stderr_path)?);
+    let (_, status) = run_cleanup_command_for_test(command, Duration::from_secs(5))?;
+    let status = status.map_err(|error| format!("cannot query Perl library layout: {error}"))?;
+    if !status.success() {
         return Err(format!(
             "cannot query Perl library layout: {}",
-            String::from_utf8_lossy(&output.stderr)
+            String::from_utf8_lossy(&fs::read(&stderr_path)?)
         )
         .into());
     }
+    let config_stdout = fs::read(&stdout_path)?;
+    if config_stdout.len() > 4096 {
+        return Err("selected Perl returned an oversized library layout".into());
+    }
     let staged_install = destination.join("perl-install");
     let mut staged_roots = Vec::new();
-    for raw_root in String::from_utf8_lossy(&output.stdout)
+    for raw_root in String::from_utf8_lossy(&config_stdout)
         .lines()
         .map(str::trim)
         .filter(|root| !root.is_empty())
