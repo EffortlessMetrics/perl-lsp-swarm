@@ -5,7 +5,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { parsePackagedServerVersionStdout } from '../../packagedServerVersion';
-import { runBoundedProcess } from '../../testAdapter';
+import { runBoundedProcess, type BoundedProcessResult } from '../../testAdapter';
 
 /**
  * Shared primitives for the published-smoke journeys (packaged bundle journey
@@ -16,6 +16,21 @@ import { runBoundedProcess } from '../../testAdapter';
  */
 
 export type ReceiptValue = Record<string, unknown>;
+
+/** Preserve bounded probe failures without mistaking them for process absence. */
+export function debuggeeCreationTimeFromProbe(
+  pid: number,
+  result: BoundedProcessResult,
+): string | null {
+  assert.ok(Number.isSafeInteger(pid) && pid > 0, 'invalid owned debuggee PID');
+  if (result.outcome !== 'completed' || result.exitCode !== 0) {
+    throw new Error(`owned debuggee scan failed: ${JSON.stringify({ pid, ...result })}`);
+  }
+  const creationTime = result.stdout.trim();
+  if (!creationTime) return null;
+  assert.match(creationTime, /^\d+$/, 'invalid process creation time');
+  return creationTime;
+}
 
 export function platformLabel(): string {
   switch (process.platform) {

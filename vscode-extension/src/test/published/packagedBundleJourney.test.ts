@@ -7,6 +7,7 @@ import { runBoundedProcess } from '../../testAdapter';
 import {
   assertProviderSucceeded,
   assertDailyDriverRenameEdits,
+  debuggeeCreationTimeFromProbe,
   bundledBinaryPath,
   bundledDapPath,
   bundledServerVersion,
@@ -290,12 +291,8 @@ async function observeDebuggee(pid: number): Promise<OwnedDebuggee | null> {
       terminationWatchdogMs: 5000,
     },
   );
-  if (result.outcome !== 'completed' || result.exitCode !== 0) {
-    throw new Error(`owned debuggee scan failed: ${result.outcome}, ${result.exitCode}`);
-  }
-  const creationTimeFileTime = result.stdout.trim();
-  if (!creationTimeFileTime) return null;
-  assert.match(creationTimeFileTime, /^\d+$/, 'invalid process creation time');
+  const creationTimeFileTime = debuggeeCreationTimeFromProbe(pid, result);
+  if (creationTimeFileTime === null) return null;
   return { pid, creationTimeFileTime };
 }
 
