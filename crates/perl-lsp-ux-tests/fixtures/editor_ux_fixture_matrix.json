@@ -377,6 +377,33 @@
       ]
     },
     {
+      "id": "inc_conformance_begin_block",
+      "scenario_file": "ux_scenario_14_begin_inc_conformance.rs",
+      "subsystem_owner": "module_resolution",
+      "ci_tier": "pr",
+      "component": "module_resolution",
+      "instrumentation": {
+        "run_receipt": false,
+        "first_useful_result": false,
+        "protocol_goldens": false
+      },
+      "user_journey": "resolve modules through a block-leading BEGIN use lib across diagnostics, navigation, hover, and completion",
+      "measures": [
+        "workflow_pass_rate",
+        "workflow_stability_rate",
+        "module_resolution_workflow_success_rate",
+        "cross_file_definition_success_rate"
+      ],
+      "expected_outcomes": [
+        "PL701, hover, goto-definition, and completion agree for BEGIN-scoped use lib"
+      ],
+      "confidence_signals": [
+        "first_five_minutes_harness",
+        "manual_editor_smoke",
+        "issue_burndown_regression_guard"
+      ]
+    },
+    {
       "id": "multi_root_workspace_symbols",
       "scenario_file": "ux_scenario_15_workspace_symbols.rs",
       "subsystem_owner": "workspace_indexing",

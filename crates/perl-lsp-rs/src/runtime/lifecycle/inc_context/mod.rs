@@ -462,7 +462,11 @@ mod tests {
         ];
         *server.root_path.lock() = Some(workspace);
 
-        let source = "BEGIN { use lib 'hir-only'; }\nuse lib 'source';\nuse Recovered;\n";
+        // The BEGIN shape is the one this seam exists to cover: the scanner must
+        // see both the block-scoped root and the top-level root that follows the
+        // closing brace. Seeing only the first inverts the effective @INC order,
+        // because `lexical_paths` front-inserts whatever the scanner returned.
+        let source = "BEGIN {\n    use lib 'hir-only';\n}\nuse lib 'source';\nuse Recovered;\n";
         let offset = source.rfind("use Recovered").ok_or("offset not found")?;
         let context = server
             .effective_inc_context_for_doc(Some(&script_uri), Some(source), Some(offset))
