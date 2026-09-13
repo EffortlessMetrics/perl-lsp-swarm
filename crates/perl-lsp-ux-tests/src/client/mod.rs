@@ -643,7 +643,7 @@ impl UxClient {
     fn send_raw(&self, msg: &Value) -> Result<()> {
         let mut stdin = self.stdin.lock().unwrap_or_else(|e| e.into_inner());
         let stdin = stdin.as_mut().ok_or_else(|| anyhow!("LSP client stdin is already closed"))?;
-        write_framed(stdin, msg)
+        write_framed_to(stdin, msg)
     }
 
     /// Explain a wait outcome, folding in the child's real exit status.
@@ -735,32 +735,14 @@ impl Drop for UxClient {
         if let Some(script) = self.script.take() {
             script.settle();
         }
-        if let Ok(mut stdin) = self.stdin.lock() {
-            stdin.take();
-        }
 
         let shutdown_state = self.shutdown_state.load(Ordering::SeqCst);
+        let mut stdin = self.stdin.lock().unwrap_or_else(|error| error.into_inner());
+        finish_stdin(&mut stdin, shutdown_state == SHUTDOWN_RUNNING);
         if shutdown_state == SHUTDOWN_COMPLETE {
             return;
         }
 
-        // Best-effort graceful shutdown only for clients that never started an
-        // explicit terminal sequence. A failed explicit sequence must not emit
-        // a second normal shutdown/exit pair and cannot become graceful proof.
-        if shutdown_state == SHUTDOWN_RUNNING {
-            let shutdown = r#"{"jsonrpc":"2.0","id":999998,"method":"shutdown","params":{}}"#;
-            let exit = r#"{"jsonrpc":"2.0","method":"exit"}"#;
-            if let Ok(mut stdin) = self.stdin.lock()
-                && let Some(stdin) = stdin.as_mut()
-            {
-                for body in [shutdown, exit] {
-                    let hdr = format!("Content-Length: {}\r\n\r\n", body.len());
-                    let _ = stdin.write_all(hdr.as_bytes());
-                    let _ = stdin.write_all(body.as_bytes());
-                    let _ = stdin.flush();
-                }
-            }
-        }
         // Give the server its grace period by waiting for its own end-of-stream
         // rather than polling `try_wait` on a timer: the reader records the
         // stream end the moment it happens, so an orderly exit is observed
@@ -832,7 +814,23 @@ fn reap_or_kill(child: &mut Child) {
 
 // ── Message framing ───────────────────────────────────────────────────────────
 
-fn write_framed(stdin: &mut ChildStdin, message: &Value) -> Result<()> {
+/// Emit the best-effort `shutdown`/`exit` pair, then close the pipe.
+///
+/// Closing must happen after the write: the frames are what let the server
+/// exit on its own terms, and an early close turns that into an EOF kill.
+fn finish_stdin<W: Write>(slot: &mut Option<W>, send_shutdown: bool) {
+    if send_shutdown && let Some(stdin) = slot.as_mut() {
+        for message in [
+            json!({"jsonrpc": "2.0", "id": 999998, "method": "shutdown", "params": {}}),
+            json!({"jsonrpc": "2.0", "method": "exit"}),
+        ] {
+            let _ = write_framed_to(stdin, &message);
+        }
+    }
+    slot.take();
+}
+
+fn write_framed_to<W: Write>(stdin: &mut W, message: &Value) -> Result<()> {
     let body = message.to_string();
     let header = format!("Content-Length: {}\r\n\r\n", body.len());
     stdin.write_all(header.as_bytes()).context("Failed to write LSP header to stdin")?;
@@ -993,7 +991,7 @@ fn build_command(binary_path: &str, config: &ScenarioConfig) -> Result<Command> 
 
 #[cfg(test)]
 mod framing_tests {
-    use super::{FrameRead, ReaderExit, read_one_frame};
+    use super::{FrameRead, ReaderExit, finish_stdin, read_one_frame};
     use crate::observation::{Inbox, StreamEnd};
     use std::io::BufReader;
 
@@ -1055,6 +1053,32 @@ mod framing_tests {
             matches!(read(""), FrameRead::EndOfStream),
             "empty input must be an orderly end of stream"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn finish_stdin_writes_shutdown_before_closing() -> anyhow::Result<()> {
+        let mut bytes = Vec::new();
+        let mut slot = Some(&mut bytes);
+        finish_stdin(&mut slot, true);
+        let framed = String::from_utf8(bytes)?;
+        anyhow::ensure!(
+            framed.matches("Content-Length: ").count() == 2,
+            "shutdown and exit must each have a Content-Length header: {framed:?}"
+        );
+        anyhow::ensure!(
+            framed.contains("\"method\":\"shutdown\""),
+            "shutdown frame must be written before closing: {framed:?}"
+        );
+        anyhow::ensure!(
+            framed.contains("\"method\":\"exit\""),
+            "exit frame must be written before closing: {framed:?}"
+        );
+
+        let mut closed_bytes = Vec::new();
+        let mut closed = Some(&mut closed_bytes);
+        finish_stdin(&mut closed, false);
+        anyhow::ensure!(closed.is_none(), "finish_stdin must close the pipe");
         Ok(())
     }
 
