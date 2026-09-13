@@ -888,6 +888,37 @@ gates:
     #     verification on 6ec7242bd: lexer_robustness_tests green twice,
     #     check-panic-test exit 0. Exact extended-cohort rerun PASS on this
     #     branch.
+    #   2026-09-05 batch (#11688): perl-lsp-rs-core admitted. Measured 434
+    #     findings on af4dccc6c (the ~154 recorded on #12000 in August is a
+    #     stale census; main moved). Repaired to zero: 243 unwrap/expect sites
+    #     routed to perl_test_must helpers off clippy's own JSON primary spans,
+    #     so the receiver boundary is exact; 206 `.expect*("...")` context
+    #     strings land in `_with` variants and the 37 bare helpers are exactly
+    #     the 37 `.unwrap()`/`.unwrap_err()` sites that carried no message
+    #     (#14291's context-loss defect cannot recur under that identity). 86
+    #     bool_assert_comparison plus mechanical classes took clippy's
+    #     machine-applicable replacements; 49 panic-family sites were removed by
+    #     real assertions and projections, never suppressed, per the
+    #     panic-stays-denied-everywhere contract. Two narrow reasoned
+    #     #[expect(dead_code)] remain: the #9662/#8032 inventory ledger rows and
+    #     an inherent-vs-blanket specialization fallback arm; deleting either
+    #     would destroy evidence rather than remove dead code. Exact
+    #     extended-cohort rerun PASS on this branch (exit 0, 2m19s, within the
+    #     480s/400000ms envelope); cargo test -p perl-lsp-rs-core --all-targets
+    #     --locked = 5244 passed / 0 failed across 100 targets.
+    #     ADMISSION BOUNDARY: this crate's measured residual is zero under the
+    #     cohort contract, but four blanket test-module masks predating this
+    #     work (semantic_snapshot.rs:2417, semantic_construction.rs:1338,
+    #     providers/formatting/formatting.rs:1091, and
+    #     protocol/final_surface_inventory/tests.rs:7) suppress unwrap_used /
+    #     expect_used / panic in their modules. A --force-warn remeasurement
+    #     that pierces them reports 321 further findings the gate cannot see
+    #     (166 unwrap-on-Result, 49 expect_err, 43 expect-on-Result, 31
+    #     unwrap_err, 15 unwrap-on-Option, 9 panic, 8 expect-on-Option). None
+    #     were added here and none are masked by this change; they are
+    #     inherited debt. So this row ratchets the measured surface only, and
+    #     does not assert that perl-lsp-rs-core is free of the panic family.
+    #     Removing those masks is a separate tranche on #11688.
     command: >-
       cargo clippy
       -p perl-token
@@ -926,6 +957,7 @@ gates:
       -p perllsp
       -p perl-lexer
       -p perl-ci-hygiene
+      -p perl-lsp-rs-core
       --all-targets --locked
       -- -D warnings -A missing_docs
     # Budget: measured ~80s locally with warm dependencies and cold check

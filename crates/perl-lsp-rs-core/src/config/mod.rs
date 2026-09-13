@@ -3164,6 +3164,8 @@ fn value_to_string<T: std::fmt::Debug>(value: &T) -> String {
 
 #[cfg(test)]
 mod tests {
+    use perl_test_must::must_some_with;
+
     use super::*;
     use std::sync::{Arc, Mutex};
     use tracing_subscriber::layer::SubscriberExt as _;
@@ -3301,10 +3303,7 @@ mod tests {
         let inputs: Vec<(&str, &ProjectConfig)> = vec![("folderA", &a), ("folderB", &b)];
         let (merged, conflicts) = merge_project_configs_for_server(&inputs);
 
-        assert_eq!(
-            merged.critic.include.as_ref().map(Vec::as_slice),
-            Some(&["ProhibitGrep".to_string()][..])
-        );
+        assert_eq!(merged.critic.include.as_deref(), Some(&["ProhibitGrep".to_string()][..]));
         assert_eq!(conflicts.len(), 1);
         assert_eq!(conflicts[0].key, "critic.include");
     }
@@ -4046,8 +4045,10 @@ profile = "recommended"
     #[test]
     fn native_critic_config_boundary_agrees_with_profile_authority() {
         for raw in ["recommended", " RECOMMENDED ", "strict", " STRICT "] {
-            let expected = NativeCriticProfile::parse(raw)
-                .expect("boundary fixture must be accepted by the profile authority");
+            let expected = must_some_with(
+                NativeCriticProfile::parse(raw),
+                "boundary fixture must be accepted by the profile authority",
+            );
             let mut config = ServerConfig::default();
             config.update_from_value(&serde_json::json!({
                 "critic": { "profile": raw }
@@ -6172,7 +6173,7 @@ api_key_prefix = "Attacker "
     /// `generic_channel_ai_activation_shapes_fail_closed_across_clients`
     /// below (#4997).
     #[test]
-    fn client_configuration_ignores_ai_endpoint_and_credential_fields_from_didChange() {
+    fn client_configuration_ignores_ai_endpoint_and_credential_fields_from_did_change() {
         let mut config = ServerConfig::default();
         config.update_from_value(&serde_json::json!({
             "aiCompletion": {

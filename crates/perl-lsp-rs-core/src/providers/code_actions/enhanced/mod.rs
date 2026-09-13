@@ -531,7 +531,7 @@ mod tests {
     fn test_utf8_action_adds_open_when_utf8_already_present() {
         let source = "use utf8;\nmy $msg = \"café\";\n";
         let mut parser = Parser::new(source);
-        let ast = must(parser.parse());
+        let _ast = must(parser.parse());
 
         let provider = EnhancedCodeActionsProvider::new(source.to_string());
         let actions = provider.get_global_refactorings();
@@ -547,7 +547,7 @@ mod tests {
     fn test_utf8_action_ignores_comment_mentions_of_pragma() {
         let source = "# use utf8;\nmy $msg = \"café\";\n";
         let mut parser = Parser::new(source);
-        let ast = must(parser.parse());
+        let _ast = must(parser.parse());
 
         let provider = EnhancedCodeActionsProvider::new(source.to_string());
         let actions = provider.get_global_refactorings();
@@ -564,7 +564,7 @@ mod tests {
         // Inverse regression: only `use open :utf8` is present, should only add `use utf8;`.
         let source = "use open qw(:std :utf8);\nmy $msg = \"café\";\n";
         let mut parser = Parser::new(source);
-        let ast = must(parser.parse());
+        let _ast = must(parser.parse());
 
         let provider = EnhancedCodeActionsProvider::new(source.to_string());
         let actions = provider.get_global_refactorings();
@@ -581,7 +581,7 @@ mod tests {
         // Both pragmas already present — no UTF-8 action should be generated.
         let source = "use utf8;\nuse open qw(:std :utf8);\nmy $msg = \"café\";\n";
         let mut parser = Parser::new(source);
-        let ast = must(parser.parse());
+        let _ast = must(parser.parse());
 
         let provider = EnhancedCodeActionsProvider::new(source.to_string());
         let actions = provider.get_global_refactorings();
@@ -597,7 +597,7 @@ mod tests {
         // No non-ASCII content — no UTF-8 action regardless of pragma presence.
         let source = "my $msg = \"hello\";\n";
         let mut parser = Parser::new(source);
-        let ast = must(parser.parse());
+        let _ast = must(parser.parse());
 
         let provider = EnhancedCodeActionsProvider::new(source.to_string());
         let actions = provider.get_global_refactorings();
@@ -613,7 +613,7 @@ mod tests {
         // `use open ... :encoding(UTF-8)` must also count as open-utf8 pragma present.
         let source = "use utf8;\nuse open IO => ':encoding(UTF-8)';\nmy $msg = \"café\";\n";
         let mut parser = Parser::new(source);
-        let ast = must(parser.parse());
+        let _ast = must(parser.parse());
 
         let provider = EnhancedCodeActionsProvider::new(source.to_string());
         let actions = provider.get_global_refactorings();
@@ -629,7 +629,7 @@ mod tests {
         // Leading whitespace on the pragma line should still be matched (anchored to ^\s*).
         let source = "    use utf8;\nmy $msg = \"café\";\n";
         let mut parser = Parser::new(source);
-        let ast = must(parser.parse());
+        let _ast = must(parser.parse());
 
         let provider = EnhancedCodeActionsProvider::new(source.to_string());
         let actions = provider.get_global_refactorings();
@@ -646,7 +646,7 @@ mod tests {
         // `use utf8mode` (hypothetical) is not `use utf8` — the \b word boundary must prevent a match.
         let source = "use utf8mode;\nmy $msg = \"café\";\n";
         let mut parser = Parser::new(source);
-        let ast = must(parser.parse());
+        let _ast = must(parser.parse());
 
         let provider = EnhancedCodeActionsProvider::new(source.to_string());
         let actions = provider.get_global_refactorings();
@@ -663,7 +663,7 @@ mod tests {
         // Comment on same line after pragma should still match.
         let source = "use utf8; # enable unicode\nmy $msg = \"café\";\n";
         let mut parser = Parser::new(source);
-        let ast = must(parser.parse());
+        let _ast = must(parser.parse());
 
         let provider = EnhancedCodeActionsProvider::new(source.to_string());
         let actions = provider.get_global_refactorings();

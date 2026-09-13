@@ -564,6 +564,8 @@ fn build_scope_suggestion(issue: &ScopeIssue) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    use perl_test_must::must_some_with;
+
     use super::*;
     use perl_semantic_facts::{
         AnchorId, Confidence, DefinitionCandidate, EntityFact, EntityId, FileId, OccurrenceFact,
@@ -1364,14 +1366,16 @@ mod tests {
     }
     #[test]
     fn undeclared_variable_without_candidates_keeps_actionable_fallback() {
-        let diagnostic = scope_issues_to_diagnostics_with_semantics(
-            vec![undeclared_issue("$cont", (10, 15))],
-            FileId(1),
-            &NullStubQueries,
-        )
-        .into_iter()
-        .next()
-        .expect("one issue should produce one diagnostic");
+        let diagnostic = must_some_with(
+            scope_issues_to_diagnostics_with_semantics(
+                vec![undeclared_issue("$cont", (10, 15))],
+                FileId(1),
+                &NullStubQueries,
+            )
+            .into_iter()
+            .next(),
+            "one issue should produce one diagnostic",
+        );
 
         assert_eq!(
             diagnostic.message,
@@ -1394,11 +1398,12 @@ mod tests {
             "unrelated analyzer description",
         );
 
-        let diagnostic =
+        let diagnostic = must_some_with(
             scope_issues_to_diagnostics_with_semantics(vec![issue], FileId(1), &NullStubQueries)
                 .into_iter()
-                .next()
-                .expect("one issue should produce one diagnostic");
+                .next(),
+            "one issue should produce one diagnostic",
+        );
 
         assert!(
             diagnostic.message.contains("$cont"),
@@ -1413,14 +1418,16 @@ mod tests {
 
     #[test]
     fn unrelated_diagnostic_kinds_do_not_receive_nearest_match_language() {
-        let diagnostic = scope_issues_to_diagnostics_with_semantics(
-            vec![bareword_issue("pritn", (10, 14))],
-            FileId(1),
-            &NullStubQueries,
-        )
-        .into_iter()
-        .next()
-        .expect("one issue should produce one diagnostic");
+        let diagnostic = must_some_with(
+            scope_issues_to_diagnostics_with_semantics(
+                vec![bareword_issue("pritn", (10, 14))],
+                FileId(1),
+                &NullStubQueries,
+            )
+            .into_iter()
+            .next(),
+            "one issue should produce one diagnostic",
+        );
 
         assert!(
             diagnostic.message.contains("Bareword 'pritn'"),

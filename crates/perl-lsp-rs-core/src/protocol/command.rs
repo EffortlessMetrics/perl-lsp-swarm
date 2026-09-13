@@ -99,6 +99,8 @@ pub fn code_action_documentation_entries() -> Value {
 
 #[cfg(test)]
 mod tests {
+    use perl_test_must::must_some_with;
+
     use super::Command;
     use serde_json::{Value, json};
 
@@ -158,9 +160,8 @@ mod tests {
     #[test]
     fn code_action_documentation_commands_carry_tooltip_without_replacing_identity() {
         let docs = super::code_action_documentation_entries();
-        let Some(entries) = docs.as_array() else {
-            panic!("documentation entries must serialize as an array");
-        };
+        let entries =
+            must_some_with(docs.as_array(), "documentation entries must serialize as an array");
         assert_eq!(entries.len(), 3);
         for (kind, title, tooltip, provider, scenario) in [
             (
@@ -185,12 +186,12 @@ mod tests {
                 "lsp_318_code_action_documentation_fix_all",
             ),
         ] {
-            let Some(entry) = entries
-                .iter()
-                .find(|entry| entry.get("kind").and_then(Value::as_str) == Some(kind))
-            else {
-                panic!("missing documentation kind {kind}");
-            };
+            let entry = must_some_with(
+                entries
+                    .iter()
+                    .find(|entry| entry.get("kind").and_then(Value::as_str) == Some(kind)),
+                format!("missing documentation kind {kind}"),
+            );
             let command = entry.get("command").unwrap_or(&Value::Null);
             assert_eq!(command.get("title").and_then(Value::as_str), Some(title));
             assert_eq!(

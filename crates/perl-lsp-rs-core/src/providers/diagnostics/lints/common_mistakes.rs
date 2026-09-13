@@ -222,6 +222,7 @@ mod tests {
     use perl_parser_core::parser::Parser;
     use perl_semantic_analyzer::analysis::symbol::SymbolExtractor;
     use perl_tdd_support::{must, must_some};
+    use perl_test_must::must_some_with;
 
     fn common_mistakes_diags(source: &str) -> Vec<Diagnostic> {
         let ast = must(Parser::new(source).parse());
@@ -392,24 +393,26 @@ mod tests {
         use crate::tooling::perl_critic::CriticFindingShape;
 
         let literal = common_mistakes_diags("if (5 == undef) { }");
-        let literal_observation = literal
-            .iter()
-            .find(|d| d.code.as_deref() == Some("PL404"))
-            .and_then(|d| d.critic_observation.as_ref())
-            .unwrap_or_else(|| {
-                panic!("literal undef PL404 must carry an observation: {literal:?}")
-            });
+        let literal_observation = must_some_with(
+            literal
+                .iter()
+                .find(|d| d.code.as_deref() == Some("PL404"))
+                .and_then(|d| d.critic_observation.as_ref()),
+            format!("literal undef PL404 must carry an observation: {literal:?}"),
+        );
         assert_eq!(
             literal_observation.identity().shape(),
             CriticFindingShape::LiteralUndefComparison
         );
 
         let dataflow = common_mistakes_diags("if ($undeclared_var == 5) { }");
-        let dataflow_observation = dataflow
-            .iter()
-            .find(|d| d.code.as_deref() == Some("PL404"))
-            .and_then(|d| d.critic_observation.as_ref())
-            .unwrap_or_else(|| panic!("data-flow PL404 must carry an observation: {dataflow:?}"));
+        let dataflow_observation = must_some_with(
+            dataflow
+                .iter()
+                .find(|d| d.code.as_deref() == Some("PL404"))
+                .and_then(|d| d.critic_observation.as_ref()),
+            format!("data-flow PL404 must carry an observation: {dataflow:?}"),
+        );
         assert_eq!(
             dataflow_observation.identity().shape(),
             CriticFindingShape::PotentiallyUndefComparison
@@ -419,13 +422,13 @@ mod tests {
     #[test]
     fn pl404_observations_declare_the_critic_scale_severity_the_producer_owns() {
         let diags = common_mistakes_diags("if (5 == undef) { }");
-        let observation = diags
-            .iter()
-            .find(|d| d.code.as_deref() == Some("PL404"))
-            .and_then(|d| d.critic_observation.as_ref());
-        let Some(observation) = observation else {
-            panic!("PL404 must carry an observation: {diags:?}")
-        };
+        let observation = must_some_with(
+            diags
+                .iter()
+                .find(|d| d.code.as_deref() == Some("PL404"))
+                .and_then(|d| d.critic_observation.as_ref()),
+            format!("PL404 must carry an observation: {diags:?}"),
+        );
         // Stern matches the reviewed native alias declaration; deriving it
         // from the LSP Warning instead would be an invented mapping.
         assert_eq!(observation.severity(), crate::tooling::perl_critic::Severity::Stern);
@@ -438,18 +441,18 @@ mod tests {
     fn pl404_observation_remediation_copies_match_the_ordinary_diagnostic_fields() {
         for source in ["if (5 == undef) { }", "if ($undeclared_var == 5) { }"] {
             let diags = common_mistakes_diags(source);
-            let diagnostic = diags
-                .iter()
-                .find(|d| d.code.as_deref() == Some("PL404"))
-                .unwrap_or_else(|| panic!("PL404 must be emitted for {source}"));
-            let suggestion = diagnostic
-                .suggestion
-                .as_deref()
-                .unwrap_or_else(|| panic!("PL404 must carry an ordinary suggestion"));
-            let observation = diagnostic
-                .critic_observation
-                .as_ref()
-                .unwrap_or_else(|| panic!("PL404 must carry an observation: {diags:?}"));
+            let diagnostic = must_some_with(
+                diags.iter().find(|d| d.code.as_deref() == Some("PL404")),
+                format!("PL404 must be emitted for {source}"),
+            );
+            let suggestion = must_some_with(
+                diagnostic.suggestion.as_deref(),
+                "PL404 must carry an ordinary suggestion",
+            );
+            let observation = must_some_with(
+                diagnostic.critic_observation.as_ref(),
+                format!("PL404 must carry an observation: {diags:?}"),
+            );
 
             assert_eq!(
                 observation.suggestion(),

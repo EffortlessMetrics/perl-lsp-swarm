@@ -1282,6 +1282,7 @@ fn command_rows() -> Vec<SurfaceRow> {
 #[cfg(test)]
 mod ripr_seam_proof {
     use super::*;
+    use perl_test_must::must_some_with;
 
     #[test]
     fn capability_rows_are_static_capability_fields() {
@@ -1434,9 +1435,10 @@ mod ripr_seam_proof {
                 "compatibility row {} must be unadvertised",
                 row.surface_id
             );
-            let boundary = row.compatibility.as_ref().unwrap_or_else(|| {
-                panic!("compatibility row {} must carry a boundary", row.surface_id)
-            });
+            let boundary = must_some_with(
+                row.compatibility.as_ref(),
+                format!("compatibility row {} must carry a boundary", row.surface_id),
+            );
             assert!(
                 !boundary.subject.is_empty()
                     && !boundary.reason.is_empty()

@@ -769,7 +769,7 @@ params;
             Some(&module),
             &SourceGeneration::known("gen-test"),
         );
-        let facts = canonical_file_facts(&ast, FileId(1), &activations);
+        let _facts = canonical_file_facts(&ast, FileId(1), &activations);
         let offset = must_some_with(source.find("params"), "keyword in fixture");
         let projection = must_some_with(
             two_x_shadow_hover_projection_at(&activations, &ast, "App", offset),
@@ -801,7 +801,7 @@ params;
             Some(&module),
             &SourceGeneration::known("gen-test"),
         );
-        let facts = canonical_file_facts(&ast, FileId(1), &activations);
+        let _facts = canonical_file_facts(&ast, FileId(1), &activations);
         let offset = must_some_with(source.rfind("params"), "call in fixture");
         assert!(
             two_x_shadow_hover_projection_at(&activations, &ast, "App", offset).is_none(),

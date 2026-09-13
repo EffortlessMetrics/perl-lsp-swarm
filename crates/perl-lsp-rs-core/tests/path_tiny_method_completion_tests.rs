@@ -2,6 +2,7 @@
 
 use perl_lsp_rs_core::providers::completion::{CompletionItem, CompletionProvider};
 use perl_parser::Parser;
+use perl_test_must::must_some_with;
 
 fn completions_at_end(source: &str) -> Vec<CompletionItem> {
     let ast = Parser::new(source).parse_with_recovery().ast;
@@ -11,7 +12,7 @@ fn completions_at_end(source: &str) -> Vec<CompletionItem> {
 
 fn completions_at_marker(source: &str) -> Vec<CompletionItem> {
     const MARKER: &str = "<|>";
-    let position = source.find(MARKER).expect("completion marker should be present");
+    let position = must_some_with(source.find(MARKER), "completion marker should be present");
     let source = source.replacen(MARKER, "", 1);
     let ast = Parser::new(&source).parse_with_recovery().ast;
     CompletionProvider::new_with_index_and_source(&ast, &source, None)

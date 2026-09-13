@@ -70,6 +70,8 @@ pub fn check_error_nodes(
 
 #[cfg(test)]
 mod tests {
+    use perl_test_must::{must_some_with, must_with};
+
     use super::super::diagnostics::DiagnosticsProvider;
     use super::{DiagnosticCode, check_error_nodes};
     use perl_parser::Parser;
@@ -80,20 +82,21 @@ mod tests {
     fn error_node_helper_emits_fixable_parse_diagnostic() {
         // Unit-scoped coverage of check_error_nodes; provider conversion is covered separately below.
         let source = "if () { 1 }";
-        let ast = Parser::new(source)
-            .parse()
-            .expect("malformed condition must produce the established ERROR-node AST");
+        let ast = must_with(
+            Parser::new(source).parse(),
+            "malformed condition must produce the established ERROR-node AST",
+        );
         let classifier = ErrorClassifier::new();
         let mut diagnostics = Vec::new();
 
         check_error_nodes(&ast, source, &classifier, &mut diagnostics);
 
-        let diagnostic = diagnostics
-            .iter()
-            .find(|diagnostic| {
+        let diagnostic = must_some_with(
+            diagnostics.iter().find(|diagnostic| {
                 diagnostic.code.as_deref() == Some(DiagnosticCode::ParseError.as_str())
-            })
-            .expect("the ERROR node must emit a ParseError diagnostic");
+            }),
+            "the ERROR node must emit a ParseError diagnostic",
+        );
         assert!(diagnostic.fixable);
     }
 
@@ -105,10 +108,10 @@ mod tests {
         let diagnostics =
             DiagnosticsProvider::new().get_diagnostics(&ast, &output.diagnostics, source, None);
 
-        let diagnostic = diagnostics
-            .iter()
-            .find(|diagnostic| diagnostic.code.as_deref() == Some("PL001"))
-            .expect("malformed parser output must reach the provider as PL001");
+        let diagnostic = must_some_with(
+            diagnostics.iter().find(|diagnostic| diagnostic.code.as_deref() == Some("PL001")),
+            "malformed parser output must reach the provider as PL001",
+        );
 
         assert!(diagnostic.fixable);
     }
