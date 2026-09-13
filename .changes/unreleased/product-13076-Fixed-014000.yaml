@@ -1,0 +1,9 @@
+project: product
+component: DAP
+kind: Fixed
+body: Require a separator after a single WSL drive letter so adjacent mount names such as /mnt/cx are not converted into Windows drive-relative paths.
+time: 2026-09-10T01:40:00Z
+custom:
+  PR: "13076"
+  Slug: wsl-single-drive-separator
+  Breaking: "no"

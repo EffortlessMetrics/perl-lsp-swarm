@@ -1,0 +1,197 @@
+# Self-hosted runner isolation profiles
+#
+# Every job that can be started by pull-request-controlled activity AND routes
+# to self-hosted runner capacity must appear here. `workflow-policy-lint`
+# enforces that obligation job-driven: a self-hosted PR-controlled job with no
+# `[[profile]]` entry fails the Workflow Policy gate closed
+# (SELF_HOSTED_ISOLATION_UNDECLARED).
+#
+# Owner: #7414 (cross-run substrate isolation for persistent trusted-pr runners)
+# Gate:  #15070 (this registry and its fail-closed check)
+#
+# ## What a profile does and does not establish
+#
+# A profile is a *declaration of observed substrate*, not a safety certificate.
+#
+#   lifecycle = "persistent"
+#
+# records that state survives between runs. It does NOT assert that the runner
+# is decontaminated between candidates. Cross-run sentinel proof, cache
+# promotion validation, network-egress containment, and teardown verification
+# are runtime evidence that no repository-side static check can supply; they
+# remain open on #7414 and are named per profile in `runtime_proof`.
+#
+# Downstream consumer: #10064 reads these profiles when qualifying a self-hosted
+# integration route. A product-green bundle is not evidence that the isolation
+# contract passed.
+#
+# ## Fields
+#
+#   workflow           exact `.github/workflows/<file>` path
+#   job                exact job id in that workflow's `jobs:` map
+#   runner             normalized runner token; must match the job's actual
+#                      `runs-on:` (drift fails the gate)
+#   lifecycle          disposable | reimaged | persistent
+#   candidate_writable host paths a candidate job can write that outlive the
+#                      job; empty list only when the substrate truly retains
+#                      nothing
+#   per_run_namespaced writable paths that are separated per run — either by a
+#                      run/attempt-scoped path or by an in-job cleanup step.
+#                      This is weaker than it sounds for `$GITHUB_WORKSPACE`,
+#                      which is one physical directory reused every run and
+#                      separated only by checkout/cleanup, not by path. The
+#                      workflows themselves record that leaking across runs
+#                      (ripr.yml: "If a previous run left root-owned files
+#                      behind (e.g. cleanup step missed), actions/checkout
+#                      fails with EACCES"). Listing a path here means "not the
+#                      durable cross-run channel", never "proven clean".
+#   runtime_proof      issue owning the cross-run/teardown/egress proof this
+#                      static declaration does not establish
+#   review_after       freshness boundary; a lapsed profile fails the gate
+
+schema_version = 1
+policy = "self-hosted-runner-isolation"
+owner = "EffortlessMetrics"
+updated = "2026-09-07"
+
+# =============================================================================
+# Rust small lanes on persistent CX53/CX43 capacity
+#
+# These four jobs check out the pull-request head and execute candidate build
+# and test code inside Docker, with two host cache directories mounted
+# read-write and shared across every run on the host. Those two mounts are the
+# concrete cross-run channel #7414 exists to close: a candidate can write cargo
+# registry/git content and sccache objects that a later candidate may read as
+# build input.
+#
+# The workspace and scratch/target mounts are namespaced per run/attempt and
+# torn down by an in-job cleanup step, so they are recorded separately.
+# =============================================================================
+
+[[profile]]
+workflow = ".github/workflows/ripr.yml"
+job = "ripr-cx53"
+runner = "self_hosted_cx53"
+lifecycle = "persistent"
+candidate_writable = ["/mnt/ci-cache/cargo-home", "/mnt/ci-cache/sccache"]
+per_run_namespaced = [
+  "$GITHUB_WORKSPACE",
+  "/mnt/ci-scratch/perl-lsp-swarm/ripr-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT",
+  "/mnt/ci-scratch/tmp/ripr-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT",
+]
+runtime_proof = "#7414"
+review_after = "2027-03-07"
+
+[[profile]]
+workflow = ".github/workflows/ripr.yml"
+job = "ripr-cx43"
+runner = "self_hosted_cx43"
+lifecycle = "persistent"
+candidate_writable = ["/mnt/ci-cache/cargo-home", "/mnt/ci-cache/sccache"]
+per_run_namespaced = [
+  "$GITHUB_WORKSPACE",
+  "/mnt/ci-scratch/perl-lsp-swarm/ripr-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT",
+  "/mnt/ci-scratch/tmp/ripr-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT",
+]
+runtime_proof = "#7414"
+review_after = "2027-03-07"
+
+[[profile]]
+workflow = ".github/workflows/em-ci-routed-rust.yml"
+job = "rust-small-cx53"
+runner = "self_hosted_cx53"
+lifecycle = "persistent"
+candidate_writable = ["/mnt/ci-cache/cargo-home", "/mnt/ci-cache/sccache"]
+per_run_namespaced = [
+  "$GITHUB_WORKSPACE",
+  "/mnt/ci-scratch/perl-lsp-swarm/$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT",
+  "/mnt/ci-scratch/tmp/$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT",
+]
+runtime_proof = "#7414"
+review_after = "2027-03-07"
+
+[[profile]]
+workflow = ".github/workflows/em-ci-routed-rust.yml"
+job = "rust-small-cx43"
+runner = "self_hosted_cx43"
+lifecycle = "persistent"
+candidate_writable = ["/mnt/ci-cache/cargo-home", "/mnt/ci-cache/sccache"]
+per_run_namespaced = [
+  "$GITHUB_WORKSPACE",
+  "/mnt/ci-scratch/perl-lsp-swarm/$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT",
+  "/mnt/ci-scratch/tmp/$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT",
+]
+runtime_proof = "#7414"
+review_after = "2027-03-07"
+
+# =============================================================================
+# Nano lanes on persistent workflow-nano capacity
+#
+# These jobs mount no host cache and run no container, but they do check out the
+# pull-request head on a persistent host. The runner work directory and any
+# state a candidate writes outside it are therefore still cross-run surfaces
+# until #7414 proves teardown.
+#
+# Note the asymmetry with the cx53/cx43 lanes above: those pin CARGO_HOME and
+# SCCACHE_DIR at explicit `/mnt/ci-cache` paths, which is exactly why their
+# cache surfaces are nameable. A nano job that runs cargo without that override
+# writes the same class of state to the host account's default locations
+# instead, so those must be recorded rather than assumed absent.
+# =============================================================================
+
+[[profile]]
+workflow = ".github/workflows/policy-validators.yml"
+job = "validate"
+runner = "self_hosted_workflow_nano"
+lifecycle = "persistent"
+# Verified: this job installs no toolchain and runs no cargo — stdlib python3
+# against the checkout only.
+candidate_writable = ["runner work directory"]
+per_run_namespaced = ["$GITHUB_WORKSPACE"]
+runtime_proof = "#7414"
+review_after = "2027-03-07"
+
+[[profile]]
+workflow = ".github/workflows/agent-capability-gate.yml"
+job = "agent-capability-gate-self-hosted"
+runner = "self_hosted_workflow_nano"
+lifecycle = "persistent"
+# This job installs a Rust toolchain and runs `cargo xtask` with no CARGO_HOME
+# or RUSTUP_HOME override, so registry, git, and toolchain state land in the
+# host account's defaults and survive the job. That is the cargo cache channel
+# #7414 names, reached by a different route than the cx53/cx43 mounts.
+candidate_writable = [
+  "runner work directory",
+  "$HOME/.cargo",
+  "$HOME/.rustup",
+]
+per_run_namespaced = ["$GITHUB_WORKSPACE"]
+runtime_proof = "#7414"
+review_after = "2027-03-07"
+
+# =============================================================================
+# Droid review lane
+#
+# Recorded, not endorsed. #7414 explicitly does not rehabilitate Droid automatic
+# execution; #6098 owns that lane's trust decision. This profile exists so the
+# lane cannot be altered or duplicated silently, and so its secret exposure on a
+# persistent host stays visible.
+# =============================================================================
+
+[[profile]]
+workflow = ".github/workflows/droid.yml"
+job = "droid"
+runner = "self_hosted_droid_review"
+lifecycle = "persistent"
+# `$HOME/.factory/settings.local.json` is written after checkout and contains
+# MINIMAX_API_KEY in cleartext. It is outside the workspace, so no workspace
+# cleanup reaches it, and it persists on the host between candidates. #6098
+# already names "persistent state in user-scope directories" as the open
+# problem for this lane; recording the exact path is the point of this row.
+candidate_writable = [
+  "runner work directory",
+  "$HOME/.factory/settings.local.json (contains MINIMAX_API_KEY)",
+]
+per_run_namespaced = ["$GITHUB_WORKSPACE"]
+runtime_proof = "#6098"
+review_after = "2027-03-07"
