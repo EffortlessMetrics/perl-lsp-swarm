@@ -53,6 +53,55 @@ pub struct HirStmtId(pub u32);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct HirBlockId(pub u32);
 
+/// Stable body-local identity for a control region that can receive a Perl
+/// loop-control transfer (`next`, `last`, `redo`).
+///
+/// Consumers such as PIR-A and downstream verifiers must use this ID rather
+/// than reconstructing the target from raw source ranges, flat-HIR shells, or
+/// label strings (see #13249).
+///
+/// The identity is scoped to one [`HirBody`]: two different bodies may allocate
+/// the same numeric value for unrelated regions, so a region ID has meaning
+/// only inside the [`HirBody`] that produced it.
+///
+/// # Allocation contract
+///
+/// Within one body, region IDs are dense from 0, unique, and deterministic —
+/// identical input yields identical IDs. A region is allocated *before* its own
+/// children are lowered, so an enclosing loop always holds a lower ID than a
+/// loop nested inside it.
+///
+/// That is the whole ordering guarantee. IDs follow the lowerer's traversal,
+/// which is **not** a lexical source ordering in general: a C-style `for`
+/// lowers its update expression after its body, so a region in the update gets
+/// a higher ID than one in the body even though it appears earlier in source.
+/// A consumer that needs source ordering must sort by the node's source range
+/// (via [`BodySourceMap`]) rather than by region ID.
+///
+/// Ordinary structured loops ([`HirExpr::Loop`]) always allocate a region.
+/// Postfix modifiers allocate one only in the unlabelled loop form — see
+/// [`HirStmt::PostfixCondition::postfix_loop_region`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct HirLoopRegionId(u32);
+
+impl HirLoopRegionId {
+    /// Construct a region ID from its raw index. Not part of the public
+    /// contract — reserved for the body lowerer.
+    pub(super) fn from_index(index: u32) -> Self {
+        Self(index)
+    }
+
+    /// The raw index as `u32`.
+    pub fn as_u32(self) -> u32 {
+        self.0
+    }
+
+    /// The raw index as `usize`, for indexing external per-region tables.
+    pub fn as_usize(self) -> usize {
+        self.0 as usize
+    }
+}
+
 // ──────────────────────────────────────────────────────────────────────────────
 // Arena
 // ──────────────────────────────────────────────────────────────────────────────
@@ -321,6 +370,58 @@ impl BinaryOp {
     }
 }
 
+/// Optional controlling label attached to a loop region.
+///
+/// Perl `LABEL:` syntax attaches an identifier to the immediately-following
+/// loop (or loop-form postfix modifier) so that `next LABEL` / `last LABEL` /
+/// `redo LABEL` can target that specific enclosing loop.
+///
+/// The `range` is the parser's `LabeledStatement` span: it starts at the label
+/// token and extends through the subordinate statement. The trailing colon is
+/// therefore included as part of the enclosing statement span. Consumers that
+/// need the token-only extent should use the label spelling and source text
+/// rather than treating this range as a token range.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HirLoopLabel {
+    /// Label spelling as written in source (e.g. `"OUTER"`).
+    pub name: String,
+    /// Source range of the enclosing labeled statement.
+    pub range: SourceLocation,
+}
+
+/// Explanation of how a [`HirStmt::LoopControl`] was bound to a target region.
+///
+/// A statically-valid transfer resolves to [`LoopControlResolution::Resolved`]
+/// with `resolved_target: Some(_)`. Every other outcome carries a typed
+/// disposition — the body lowerer must never silently fall back to the nearest
+/// loop or drop a label. Downstream verifiers, diagnostics, and PIR consumers
+/// read the disposition rather than reconstructing target identity from
+/// source ranges (see #13249).
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum LoopControlResolution {
+    /// The transfer is bound to a specific loop region — see
+    /// [`HirStmt::LoopControl::resolved_target`] for the region ID.
+    Resolved,
+    /// Unlabelled transfer with no enclosing loop region visible from this
+    /// statement. `next`/`last`/`redo` outside a loop.
+    NoEnclosingLoop,
+    /// Labelled transfer whose label matches an enclosing labelled construct
+    /// that this HIR does not model as a loop region (e.g. a labelled bare
+    /// block, `LABEL: { ... }`). A typed boundary rather than a silent
+    /// misresolve to the nearest loop.
+    NonLoopTarget {
+        /// Label spelling as written on the enclosing non-loop construct.
+        label: String,
+    },
+    /// Labelled transfer whose label does not match any enclosing labelled
+    /// construct visible from this statement.
+    UnresolvedLabel {
+        /// Label spelling as written on the `next`/`last`/`redo`.
+        label: String,
+    },
+}
+
 /// One expression node in the HIR body graph.
 ///
 /// Every variant that has child expressions carries explicit [`HirExprId`]
@@ -388,6 +489,19 @@ pub enum HirExpr {
     Loop {
         /// Loop family.
         kind: LoopKind,
+        /// Stable body-local target identity for `next`/`last`/`redo` (#13249).
+        ///
+        /// Consumers such as PIR-A and downstream verifiers use this ID to
+        /// pair a [`HirStmt::LoopControl`] with its target loop region — they
+        /// must not reconstruct target identity from raw source ranges, flat
+        /// HIR shells, or label strings.
+        region_id: HirLoopRegionId,
+        /// Optional controlling label inherited from an enclosing
+        /// `LABEL:` statement, with its source range (#13249).
+        ///
+        /// Present when this loop was written as `LABEL: while/until/for
+        /// /foreach (...)`. `None` for unlabelled loops.
+        label: Option<HirLoopLabel>,
         /// Optional C-style loop initializer block.
         ///
         /// The block preserves every initializer statement, including
@@ -556,9 +670,40 @@ pub enum HirStmt {
     LoopControl {
         /// Transfer verb.
         verb: LoopControlVerb,
-        /// Optional target loop label.
-        target_label: Option<String>,
+        /// Label as written on the transfer, if any (e.g. `next OUTER`).
+        ///
+        /// Preserved verbatim from the AST for diagnostics and re-serialisation.
+        /// Downstream consumers must NOT rely on this field for target
+        /// identity; use `resolved_target` and `resolution` instead (#13249).
+        written_label: Option<String>,
+        /// Resolved target loop region when the transfer is statically
+        /// valid — otherwise `None`, in which case `resolution` explains why.
+        ///
+        /// Unlabelled transfers resolve to the innermost enclosing loop
+        /// region. Labelled transfers resolve to the innermost enclosing
+        /// loop region whose controlling label matches by exact string
+        /// equality; two nested loops sharing a spelling both remain
+        /// addressable by their distinct region IDs (#13249).
+        resolved_target: Option<HirLoopRegionId>,
+        /// Explanation of the resolution outcome. Downstream verifiers use
+        /// this to distinguish an unbound-label transfer from an unlabelled
+        /// transfer outside a loop, and to detect labelled transfers into
+        /// non-loop labelled regions (#13249).
+        resolution: LoopControlResolution,
     },
+
+    /// A bare block (`{ ... }`) appearing in statement position.
+    ///
+    /// A statement ID cannot represent a sequence, so the block's children are
+    /// held in the block arena and referenced here. Consumers walk bodies from
+    /// [`HirBody::root_block`] and follow block statement lists, so carrying the
+    /// [`HirBlockId`] is what keeps every child reachable — returning only the
+    /// first child's ID would orphan the rest in the arena (#13249).
+    ///
+    /// The block's own lexical scope is applied while its children are lowered,
+    /// so a declaration inside the block resolves as a lexical rather than
+    /// against the enclosing scope.
+    Block(HirBlockId),
 
     /// Statement followed by a postfix condition (`expr if condition`).
     PostfixCondition {
@@ -568,6 +713,21 @@ pub enum HirStmt {
         condition: HirExprId,
         /// Postfix modifier verb.
         verb: StatementModifierKind,
+        /// Body-local loop-region identity for an **unlabelled** loop-form
+        /// postfix modifier (`STMT while COND`, `STMT until COND`,
+        /// `STMT for LIST`, `STMT foreach LIST`).
+        ///
+        /// `None` in two cases. Branch-form modifiers (`if`/`unless`) are
+        /// never loop targets. A modifier carrying a label written directly
+        /// on it (`LOOP: $x++ while $c`) is wrapped by a non-loop labelled
+        /// region instead, so `last LOOP` there resolves to `NonLoopTarget` —
+        /// matching Perl, where a statement-modifier loop is not a
+        /// `next`/`last` target. A label on an enclosing construct does not
+        /// suppress the region: only a direct label does (#13249).
+        ///
+        /// The identity is allocation-only. A postfix modifier is not an
+        /// enclosing loop, so transfers inside it keep resolving outward.
+        postfix_loop_region: Option<HirLoopRegionId>,
     },
 }
 

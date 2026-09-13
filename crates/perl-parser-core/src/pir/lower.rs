@@ -1158,6 +1158,16 @@ impl BodyLowerer {
             HirStmt::Expr(expr_id) => {
                 self.lower_expr(body, *expr_id, file);
             }
+            HirStmt::Block(block_id) => {
+                // A bare block executes its statements in order in the
+                // enclosing flow, so walk them rather than treating the block
+                // as one opaque statement (#13249).
+                if let Some(nested) = body.block(*block_id) {
+                    for nested_stmt in nested.stmts.clone() {
+                        self.lower_stmt(body, nested_stmt, file);
+                    }
+                }
+            }
             HirStmt::LoopControl { .. } => {
                 *self.unsupported.entry("LoopControl").or_insert(0) += 1;
                 // Loop-control transfers (`last`/`next`/`redo`) do not emit a
@@ -1166,7 +1176,7 @@ impl BodyLowerer {
                 // this body inherit a spurious fallthrough predecessor.
                 self.last_in_scope.remove(&None);
             }
-            HirStmt::PostfixCondition { statement, condition, verb } => {
+            HirStmt::PostfixCondition { statement, condition, verb, .. } => {
                 *self.unsupported.entry("PostfixCondition").or_insert(0) += 1;
                 let statement_first_modifier =
                     matches!(verb, StatementModifierKind::While | StatementModifierKind::Until);

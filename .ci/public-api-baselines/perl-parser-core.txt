@@ -1304,6 +1304,8 @@ pub perl_parser_core::hir::HirExpr::Loop::continue_block: core::option::Option<p
 pub perl_parser_core::hir::HirExpr::Loop::init: core::option::Option<perl_parser_core::hir::HirBlockId>
 pub perl_parser_core::hir::HirExpr::Loop::iterator_binding: core::option::Option<perl_parser_core::hir::HirExprId>
 pub perl_parser_core::hir::HirExpr::Loop::kind: perl_parser_core::hir::LoopKind
+pub perl_parser_core::hir::HirExpr::Loop::label: core::option::Option<perl_parser_core::hir::HirLoopLabel>
+pub perl_parser_core::hir::HirExpr::Loop::region_id: perl_parser_core::hir::HirLoopRegionId
 pub perl_parser_core::hir::HirExpr::Loop::update: core::option::Option<perl_parser_core::hir::HirExprId>
 pub perl_parser_core::hir::HirExpr::Opaque
 pub perl_parser_core::hir::HirExpr::Opaque::ast_kind: alloc::string::String
@@ -1359,6 +1361,7 @@ pub fn perl_parser_core::hir::HirKind::clone(&self) -> perl_parser_core::hir::Hi
 pub fn perl_parser_core::hir::HirKind::eq(&self, other: &perl_parser_core::hir::HirKind) -> bool
 pub fn perl_parser_core::hir::HirKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub enum perl_parser_core::hir::HirStmt
+pub perl_parser_core::hir::HirStmt::Block(perl_parser_core::hir::HirBlockId)
 pub perl_parser_core::hir::HirStmt::Expr(perl_parser_core::hir::HirExprId)
 pub perl_parser_core::hir::HirStmt::Let
 pub perl_parser_core::hir::HirStmt::Let::binding_range: perl_position_tracking::span::SourceLocation
@@ -1367,10 +1370,13 @@ pub perl_parser_core::hir::HirStmt::Let::name: alloc::string::String
 pub perl_parser_core::hir::HirStmt::Let::sigil: perl_parser_core::hir::Sigil
 pub perl_parser_core::hir::HirStmt::Let::storage: perl_parser_core::hir::DeclStorageClass
 pub perl_parser_core::hir::HirStmt::LoopControl
-pub perl_parser_core::hir::HirStmt::LoopControl::target_label: core::option::Option<alloc::string::String>
+pub perl_parser_core::hir::HirStmt::LoopControl::resolution: perl_parser_core::hir::LoopControlResolution
+pub perl_parser_core::hir::HirStmt::LoopControl::resolved_target: core::option::Option<perl_parser_core::hir::HirLoopRegionId>
 pub perl_parser_core::hir::HirStmt::LoopControl::verb: perl_parser_core::hir::LoopControlVerb
+pub perl_parser_core::hir::HirStmt::LoopControl::written_label: core::option::Option<alloc::string::String>
 pub perl_parser_core::hir::HirStmt::PostfixCondition
 pub perl_parser_core::hir::HirStmt::PostfixCondition::condition: perl_parser_core::hir::HirExprId
+pub perl_parser_core::hir::HirStmt::PostfixCondition::postfix_loop_region: core::option::Option<perl_parser_core::hir::HirLoopRegionId>
 pub perl_parser_core::hir::HirStmt::PostfixCondition::statement: perl_parser_core::hir::HirStmtId
 pub perl_parser_core::hir::HirStmt::PostfixCondition::verb: perl_parser_core::hir::StatementModifierKind
 pub fn perl_parser_core::hir::HirStmt::clone(&self) -> perl_parser_core::hir::HirStmt
@@ -1407,6 +1413,15 @@ pub fn perl_parser_core::hir::LiteralKind::clone(&self) -> perl_parser_core::hir
 pub fn perl_parser_core::hir::LiteralKind::eq(&self, other: &perl_parser_core::hir::LiteralKind) -> bool
 pub fn perl_parser_core::hir::LiteralKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_parser_core::hir::LiteralKind::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub perl_parser_core::hir::LoopControlResolution::NoEnclosingLoop
+pub perl_parser_core::hir::LoopControlResolution::NonLoopTarget
+pub perl_parser_core::hir::LoopControlResolution::NonLoopTarget::label: alloc::string::String
+pub perl_parser_core::hir::LoopControlResolution::Resolved
+pub perl_parser_core::hir::LoopControlResolution::UnresolvedLabel
+pub perl_parser_core::hir::LoopControlResolution::UnresolvedLabel::label: alloc::string::String
+pub fn perl_parser_core::hir::LoopControlResolution::clone(&self) -> perl_parser_core::hir::LoopControlResolution
+pub fn perl_parser_core::hir::LoopControlResolution::eq(&self, other: &perl_parser_core::hir::LoopControlResolution) -> bool
+pub fn perl_parser_core::hir::LoopControlResolution::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub perl_parser_core::hir::LoopKind::CStyleFor
 pub perl_parser_core::hir::LoopKind::Foreach
 pub perl_parser_core::hir::LoopKind::Until
@@ -1904,6 +1919,21 @@ pub perl_parser_core::hir::HirItem::scope_context: core::option::Option<perl_par
 pub fn perl_parser_core::hir::HirItem::clone(&self) -> perl_parser_core::hir::HirItem
 pub fn perl_parser_core::hir::HirItem::eq(&self, other: &perl_parser_core::hir::HirItem) -> bool
 pub fn perl_parser_core::hir::HirItem::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_parser_core::hir::HirLoopLabel
+pub perl_parser_core::hir::HirLoopLabel::name: alloc::string::String
+pub perl_parser_core::hir::HirLoopLabel::range: perl_position_tracking::span::SourceLocation
+pub fn perl_parser_core::hir::HirLoopLabel::clone(&self) -> perl_parser_core::hir::HirLoopLabel
+pub fn perl_parser_core::hir::HirLoopLabel::eq(&self, other: &perl_parser_core::hir::HirLoopLabel) -> bool
+pub fn perl_parser_core::hir::HirLoopLabel::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_parser_core::hir::HirLoopRegionId(_)
+pub fn perl_parser_core::hir::HirLoopRegionId::as_u32(self) -> u32
+pub fn perl_parser_core::hir::HirLoopRegionId::as_usize(self) -> usize
+pub fn perl_parser_core::hir::HirLoopRegionId::clone(&self) -> perl_parser_core::hir::HirLoopRegionId
+pub fn perl_parser_core::hir::HirLoopRegionId::cmp(&self, other: &perl_parser_core::hir::HirLoopRegionId) -> core::cmp::Ordering
+pub fn perl_parser_core::hir::HirLoopRegionId::eq(&self, other: &perl_parser_core::hir::HirLoopRegionId) -> bool
+pub fn perl_parser_core::hir::HirLoopRegionId::partial_cmp(&self, other: &perl_parser_core::hir::HirLoopRegionId) -> core::option::Option<core::cmp::Ordering>
+pub fn perl_parser_core::hir::HirLoopRegionId::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_parser_core::hir::HirLoopRegionId::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
 pub const fn perl_parser_core::hir::HirScopeId::from_index(index: u32) -> Self
 pub const fn perl_parser_core::hir::HirScopeId::index(self) -> u32
 pub fn perl_parser_core::hir::HirScopeId::clone(&self) -> perl_parser_core::hir::HirScopeId
