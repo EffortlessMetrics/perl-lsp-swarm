@@ -786,4 +786,71 @@ mod tests {
     fn current_schema_text() -> String {
         include_str!("../../../schemas/oracle_receipt.v1.schema.json").to_string()
     }
+
+    /// The apply step reads its instance through `RECEIPT_PATH`, and every
+    /// other test here reaches that constant only through a temp workspace it
+    /// populated itself — so a rename that pointed the apply step at a
+    /// different or absent instance would leave all of them green. Pin the
+    /// published location against the committed tree (#14268).
+    #[test]
+    fn receipt_path_names_the_committed_canonical_instance() -> TestResult {
+        assert_eq!(
+            RECEIPT_PATH, "fixtures/oracle_receipt/canonical_receipt.v1.json",
+            "the canonical receipt's published location is part of this task's contract"
+        );
+
+        let committed = project_root()?.join(RECEIPT_PATH);
+        assert!(committed.is_file(), "{RECEIPT_PATH} must exist in the committed tree");
+
+        let receipt: Value = serde_json::from_str(&fs::read_to_string(&committed)?)?;
+        assert_eq!(
+            receipt["schema_version"], SCHEMA_VERSION,
+            "the instance at {RECEIPT_PATH} must declare {SCHEMA_VERSION}"
+        );
+        Ok(())
+    }
+
+    /// `receipts_applied` is the only stat that separates a run which applied
+    /// the schema to an instance from one that merely walked the schema, so a
+    /// regression dropping the apply step would leave every other field
+    /// identical. Observe it directly against the committed tree (#14268).
+    #[test]
+    fn collect_reports_the_applied_receipt_against_the_committed_tree() -> TestResult {
+        let (stats, violations) = collect(&project_root()?)?;
+
+        assert!(violations.is_empty(), "the committed receipt must be clean: {violations:?}");
+        assert_eq!(stats.receipts_applied, 1, "exactly one receipt instance is applied");
+        assert_eq!(
+            stats.required_fields,
+            REQUIRED_TOP_LEVEL_FIELDS.len(),
+            "the walk-only stats must still be reported alongside the apply step"
+        );
+        Ok(())
+    }
+
+    /// The digest tests compare the committed receipt against `SOURCE_FIXTURE`,
+    /// so those embedded bytes are load-bearing proof input: an `include_str!`
+    /// aimed at a different fixture would keep them green while pinning the
+    /// wrong snapshot. The macro is opaque to static analysis, so assert the
+    /// embed equals the corpus file the receipt names (#14268).
+    #[test]
+    fn embedded_source_fixture_is_the_snapshot_the_receipt_names() -> TestResult {
+        assert!(!SOURCE_FIXTURE.is_empty(), "the embedded corpus fixture must not be empty");
+
+        let root = project_root()?;
+        let receipt: Value = serde_json::from_str(&fs::read_to_string(root.join(RECEIPT_PATH))?)?;
+        let named = receipt["source_snapshot"]["fixture_source"]
+            .as_str()
+            .expect("the canonical receipt names its fixture_source");
+        assert_eq!(
+            named, "crates/perl-corpus/fixtures/parser_accuracy/imports_exports.pl",
+            "the embed below must track the fixture the receipt names"
+        );
+        assert_eq!(
+            SOURCE_FIXTURE,
+            fs::read_to_string(root.join(named))?,
+            "the embedded bytes must be the committed corpus fixture the receipt names"
+        );
+        Ok(())
+    }
 }
