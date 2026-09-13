@@ -201,19 +201,20 @@ fn is_lowercase_hex(value: &str, expected_len: usize) -> bool {
 /// numeric-only — the authority defines a bounded identifier, and inventing a
 /// digits-only run-ID rule here would reject identities that contract accepts.
 fn is_bounded_id(value: &str) -> bool {
-    let mut bytes = value.bytes();
-    let Some(first) = bytes.next() else {
-        return false;
-    };
-    if !first.is_ascii_alphanumeric() {
+    // The charset below is ASCII-only, so byte length equals the character
+    // length the authority bounds.
+    if value.is_empty() || value.len() > BOUNDED_ID_MAX_LEN {
         return false;
     }
-    // The charset is ASCII-only, so byte length equals the character length
-    // the authority bounds.
-    value.len() <= BOUNDED_ID_MAX_LEN
-        && bytes.all(|byte| {
-            byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b':' | b'@' | b'+' | b'-')
-        })
+    let mut bytes = value.bytes();
+    // The pattern's first character class is narrower than the rest: no
+    // leading `.`, `_`, `:`, `@`, `+`, or `-`.
+    if !bytes.next().is_some_and(|first| first.is_ascii_alphanumeric()) {
+        return false;
+    }
+    bytes.all(|byte| {
+        byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b':' | b'@' | b'+' | b'-')
+    })
 }
 
 fn validate_git_sha(name: &str, value: &str) -> Result<()> {
