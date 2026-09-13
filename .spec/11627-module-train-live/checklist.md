@@ -77,6 +77,32 @@ git diff --check -> clean
 8. Merged-window truncation is permanent at current merge velocity for any
    bounded window; merged-candidate facts degrade to a recorded limitation
    (honest bound, not a completeness claim).
+9. **External GraphQL schema proof — open, not discharged.** #14237's
+   `GH_REVIEW_GRAPHQL` selects `headRefOid`, `reviewDecision`,
+   `reviewThreads(first:){totalCount nodes{isResolved}}` and
+   `latestOpinionatedReviews(first:){totalCount nodes{state submittedAt
+   commit{oid} author{login}}}`. Those field signatures were never checked
+   against GitHub's published schema: `docs.github.com` was refused by the
+   authoring environment's egress proxy, and live introspection needs a `gh`
+   CLI absent there (the same reason the network `refresh` path is
+   unexercised). The adjacent **transport** contract *is* externally grounded
+   against upstream `cli/cli` source (`-f` never expands `@file`, `-F` does,
+   `query`/`operationName` are lifted to the request-body top level, non-zero
+   exit on any `errors` payload) — only the schema field names are unverified.
+   Exposure is bounded to a false *negative*: every structural field is read
+   with an explicit `ObservationFailure` rather than a default, so a renamed
+   field degrades the read to `instrument_failed`/`NOT_PROVEN` and can never
+   become "no threads" or "resolved".
+   To discharge, on a networked machine with authenticated `gh`: introspect
+   the live schema for each selected field and its arguments; execute the
+   document once against a real PR; record the response as a fixture so the
+   corpus exercises a real payload; and **add a check that fails loudly when a
+   selected field disappears**. That last part carries the real risk — because
+   the adapter fails closed, a schema rename would silently switch the feature
+   off rather than break it, which reads exactly like normal operation.
+   (A tracking issue was attempted during #14242 but GitHub secondary rate
+   limits blocked creation; this register is the durable record until one is
+   filed.)
 
 ## Schema evolution
 
