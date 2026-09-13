@@ -546,7 +546,7 @@ fn display_roots(roots: &[PathBuf]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use perl_tdd_support::{must, must_err};
+    use perl_tdd_support::{must, must_err, must_some_with};
     use std::fs;
 
     fn dir(parent: &Path, name: &str) -> PathBuf {
@@ -904,10 +904,21 @@ mod tests {
             must(WorkspaceAuthority::from_startup(&[root], false)),
         ] {
             let error = must_err(resolve_session_boundary(&authority, &script, Some(&script)));
-            assert!(
-                matches!(error, WorkspaceAuthorityError::UnusableLaunchRoot { .. }),
-                "a program must not be able to serve as its own boundary, got {error:?}"
+            let (launch_root, detail) = must_some_with(
+                match &error {
+                    WorkspaceAuthorityError::UnusableLaunchRoot { launch_root, detail } => {
+                        Some((launch_root, detail))
+                    }
+                    _ => None,
+                },
+                format!("a program must not be able to serve as its own boundary, got {error:?}"),
             );
+            // Pin the payload, not just the variant: the rejected path is the
+            // one the client sent, and the cause names the directory rule it
+            // broke. Swapping the two fields here would otherwise report the
+            // rule as the path and the path as the cause.
+            assert_eq!(*launch_root, script.display().to_string());
+            assert_eq!(*detail, "a workspace root must be a directory");
         }
     }
 
@@ -1062,5 +1073,189 @@ mod tests {
             matches!(error, WorkspaceAuthorityError::ProgramOutsideTrustedRoots { .. }),
             "the program's parent directory must not authorize its own launch, got {error:?}"
         );
+    }
+
+    // --- refusal payloads ---
+    //
+    // Every refusal above is asserted with `matches!(.., { .. })`, which pins
+    // *which* variant came back and nothing about what it carries. These fields
+    // are the entire user-facing explanation for a refused launch, so a variant
+    // built with its fields empty, constant, or swapped would still satisfy
+    // every test above while telling the user nothing — or naming the wrong
+    // path. The tests below pin the payloads themselves, and assert the
+    // rendered message places each field in its documented slot so a swap at
+    // the construction site cannot survive.
+
+    #[test]
+    fn an_unusable_trusted_root_refusal_names_the_offending_root() {
+        let temp = must(tempfile::tempdir());
+        let script = file(temp.path(), "a.pl");
+        let expected = script.display().to_string();
+
+        let error = must_err(WorkspaceAuthority::from_startup(&[script], false));
+        let detail = must_some_with(
+            match &error {
+                WorkspaceAuthorityError::UnusableTrustedRoot(detail) => Some(detail),
+                _ => None,
+            },
+            format!("expected an unusable-trusted-root refusal, got {error:?}"),
+        );
+        assert!(
+            detail.starts_with(&expected),
+            "the refusal must name the rejected root first, got {detail:?}"
+        );
+        assert!(
+            detail.contains("is not a directory"),
+            "the refusal must say why the root is unusable, got {detail:?}"
+        );
+        assert!(
+            error.to_string().contains(detail),
+            "the rendered message must carry the payload, got {error}"
+        );
+    }
+
+    #[test]
+    fn a_program_outside_trusted_roots_refusal_names_the_program_and_the_roots() {
+        let temp = must(tempfile::tempdir());
+        let root = dir(temp.path(), "ws");
+        let outside = dir(temp.path(), "elsewhere");
+        let script = file(&outside, "a.pl");
+
+        let error =
+            must_err(resolve_session_boundary(&bound(std::slice::from_ref(&root)), &script, None));
+        let (program, roots) = must_some_with(
+            match &error {
+                WorkspaceAuthorityError::ProgramOutsideTrustedRoots { program, roots } => {
+                    Some((program, roots))
+                }
+                _ => None,
+            },
+            format!("expected a program-outside-roots refusal, got {error:?}"),
+        );
+        // The rejected program, not the root, and vice versa: a swapped
+        // construction fails both of these.
+        assert_eq!(*program, script.display().to_string());
+        assert!(
+            roots.contains(&root.display().to_string()),
+            "the refusal must name the configured roots, got {roots:?}"
+        );
+        assert_ne!(program, roots, "the program must not be reported as the root set");
+
+        let rendered = error.to_string();
+        assert!(
+            rendered.contains(&format!("The script '{program}' is outside")),
+            "the program belongs in the script slot, got {rendered}"
+        );
+        assert!(
+            rendered.contains(&format!("Configured roots: {roots}.")),
+            "the root set belongs in the roots slot, got {rendered}"
+        );
+    }
+
+    #[test]
+    fn an_unusable_launch_root_refusal_names_the_launch_root_and_why() {
+        let temp = must(tempfile::tempdir());
+        let root = dir(temp.path(), "ws");
+        let script = file(&root, "a.pl");
+        let missing = temp.path().join("absent");
+
+        let error = must_err(resolve_session_boundary(
+            &WorkspaceAuthority::unconfigured(),
+            &script,
+            Some(&missing),
+        ));
+        let (launch_root, detail) = must_some_with(
+            match &error {
+                WorkspaceAuthorityError::UnusableLaunchRoot { launch_root, detail } => {
+                    Some((launch_root, detail))
+                }
+                _ => None,
+            },
+            format!("expected an unusable-launch-root refusal, got {error:?}"),
+        );
+        assert_eq!(
+            *launch_root,
+            missing.display().to_string(),
+            "the refusal must name the root the client actually sent"
+        );
+        assert!(!detail.is_empty(), "the refusal must say why the root is unusable");
+        assert_ne!(launch_root, detail, "the path must not be reported as its own cause");
+
+        let rendered = error.to_string();
+        assert!(
+            rendered.contains(&format!("'{launch_root}'")),
+            "the launch root belongs in the quoted slot, got {rendered}"
+        );
+        assert!(
+            rendered.contains(&format!("Details: {detail}")),
+            "the cause belongs after 'Details: ', got {rendered}"
+        );
+    }
+
+    #[test]
+    fn a_widening_launch_root_refusal_names_the_launch_root_and_the_roots_it_left() {
+        let temp = must(tempfile::tempdir());
+        let root = dir(temp.path(), "ws");
+        let script = file(&root, "a.pl");
+        let outside = dir(temp.path(), "elsewhere");
+
+        let error = must_err(resolve_session_boundary(
+            &bound(std::slice::from_ref(&root)),
+            &script,
+            Some(&outside),
+        ));
+        let (launch_root, detail) = must_some_with(
+            match &error {
+                WorkspaceAuthorityError::LaunchRootWidensAuthority { launch_root, detail } => {
+                    Some((launch_root, detail))
+                }
+                _ => None,
+            },
+            format!("expected a widening-launch-root refusal, got {error:?}"),
+        );
+        assert_eq!(
+            *launch_root,
+            outside.display().to_string(),
+            "the refusal must name the root the client actually sent"
+        );
+        assert!(
+            detail.contains("no configured workspace root contains it"),
+            "the refusal must say the root escaped the configured set, got {detail:?}"
+        );
+        assert!(
+            detail.contains(&root.display().to_string()),
+            "the refusal must name the roots it was measured against, got {detail:?}"
+        );
+        assert_ne!(launch_root, detail, "the path must not be reported as its own cause");
+
+        let rendered = error.to_string();
+        assert!(
+            rendered.contains(&format!("'{launch_root}'")),
+            "the launch root belongs in the quoted slot, got {rendered}"
+        );
+        assert!(
+            rendered.contains(&format!("Details: {detail}")),
+            "the cause belongs after 'Details: ', got {rendered}"
+        );
+    }
+
+    #[test]
+    fn a_contradictory_authority_refusal_names_both_conflicting_flags() {
+        let temp = must(tempfile::tempdir());
+        let root = dir(temp.path(), "ws");
+
+        let error = must_err(WorkspaceAuthority::from_startup(&[root], true));
+        assert_eq!(error, WorkspaceAuthorityError::ContradictoryAuthority);
+
+        // The variant carries no payload, so the message is the whole
+        // explanation: it has to name both flags the operator passed, or it
+        // cannot tell them which one to drop.
+        let rendered = error.to_string();
+        for flag in ["--workspace-root", "--allow-unbounded-workspace"] {
+            assert!(
+                rendered.contains(flag),
+                "the refusal must name {flag} so the operator can resolve it, got {rendered}"
+            );
+        }
     }
 }
