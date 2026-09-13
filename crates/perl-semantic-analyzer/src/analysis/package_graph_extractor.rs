@@ -16,9 +16,79 @@
 //! | `push @ISA, 'Base'`                      | `Inherits`            |
 //! | `extends 'Base'` (Moo/Moose)             | `Inherits`            |
 //! | `with 'Role'` (Moo/Moose)               | `ComposesRole`        |
+//!
+//! # Framework DSL gating
+//!
+//! `extends` and `with` are ordinary Perl function calls, not keywords. They
+//! carry inheritance and role-composition meaning only when an object
+//! framework has imported them into the calling package. A package that
+//! defines `sub extends { ... }` and calls `extends 'NotAParent'` is ordinary
+//! Perl, and turning that into an `Inherits` edge is a false fact.
+//!
+//! Edges for these two spellings are therefore emitted only when, at the call
+//! site, the current package has activated a framework that exports that exact
+//! keyword ([`classify_framework_module`]), and the package does not define a
+//! subroutine of the same name that would shadow the import. Activation is
+//! source-ordered and package-local: `use Moose` in one package or later in
+//! the file does not license an earlier call elsewhere.
+//!
+//! Native Perl forms (`use parent`, `use base`, `@ISA`) are unaffected — they
+//! are not framework DSL and need no activation.
 
+use crate::analysis::symbol::{FrameworkKind, classify_framework_module};
 use crate::ast::{Node, NodeKind};
 use perl_semantic_facts::{AnchorId, Confidence, FileId, PackageEdge, PackageEdgeKind, Provenance};
+use rustc_hash::{FxHashMap, FxHashSet};
+
+/// The framework DSL keyword a call spelling would mean, if it were the DSL.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum DslKeyword {
+    /// `extends 'Base'` — inheritance.
+    Extends,
+    /// `with 'Role'` — role composition.
+    With,
+}
+
+/// Which framework DSL keywords a `use` of a module imports into the package.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct DslImports {
+    /// The package may use `extends` to declare a superclass.
+    extends: bool,
+    /// The package may use `with` to compose a role.
+    with: bool,
+}
+
+impl DslImports {
+    /// The keywords a given framework activation exports.
+    ///
+    /// Role variants export `with` (a role may consume other roles) but not
+    /// `extends`: `Moose::Role`, `Moo::Role`, and `Role::Tiny` do not give a
+    /// package a superclass declaration.
+    fn for_framework(kind: FrameworkKind) -> Self {
+        match kind {
+            FrameworkKind::Moo | FrameworkKind::Moose => Self { extends: true, with: true },
+            FrameworkKind::MooRole
+            | FrameworkKind::MooseRole
+            | FrameworkKind::RoleTiny
+            | FrameworkKind::RoleTinyWith => Self { extends: false, with: true },
+            FrameworkKind::ClassTiny => Self::default(),
+        }
+    }
+
+    /// Whether this activation set grants `keyword`.
+    fn grants(self, keyword: DslKeyword) -> bool {
+        match keyword {
+            DslKeyword::Extends => self.extends,
+            DslKeyword::With => self.with,
+        }
+    }
+
+    /// Accumulate another activation in the same package.
+    fn merge(&mut self, other: Self) {
+        self.extends |= other.extends;
+        self.with |= other.with;
+    }
+}
 
 /// Extractor that walks an AST to produce [`PackageEdge`] entries for each
 /// inheritance, role-composition, or dependency relationship found.
@@ -28,12 +98,87 @@ impl PackageGraphExtractor {
     /// Walk the entire AST and return one [`PackageEdge`] per detected
     /// inheritance or role-composition relationship.
     ///
-    /// Each edge carries the supplied `file_id` and an `anchor_id` derived
-    /// from the statement's byte-offset span.
+    /// Each edge carries an `anchor_id` derived from the statement's
+    /// byte-offset span.
+    ///
+    /// Framework DSL edges (`extends`/`with`) require framework activation in
+    /// the calling package; see the module documentation.
     pub fn extract(ast: &Node, _file_id: FileId) -> Vec<PackageEdge> {
-        let mut state = ExtractorState { current_package: "main".to_string(), edges: Vec::new() };
+        // Subroutines are installed at compile time, so a package-local
+        // `sub extends` shadows the import regardless of where it appears
+        // relative to the call. Collect those first.
+        let mut shadows =
+            ShadowScan { current_package: "main".to_string(), shadowed: FxHashSet::default() };
+        shadows.walk(ast);
+
+        let mut state = ExtractorState {
+            current_package: "main".to_string(),
+            activated: FxHashMap::default(),
+            shadowed: shadows.shadowed,
+            edges: Vec::new(),
+        };
         state.walk(ast);
         state.edges
+    }
+}
+
+/// Pre-pass that records packages defining a subroutine whose name collides
+/// with a framework DSL keyword.
+struct ShadowScan {
+    /// Current package context.
+    current_package: String,
+    /// `(package, keyword)` pairs where a local subroutine shadows the DSL.
+    shadowed: FxHashSet<(String, DslKeyword)>,
+}
+
+impl ShadowScan {
+    fn walk(&mut self, node: &Node) {
+        match &node.kind {
+            NodeKind::Program { statements } => {
+                for stmt in statements {
+                    self.walk(stmt);
+                }
+                return;
+            }
+            NodeKind::Block { statements } => {
+                let prev_package = self.current_package.clone();
+                for stmt in statements {
+                    self.walk(stmt);
+                }
+                self.current_package = prev_package;
+                return;
+            }
+            NodeKind::Package { name, block: Some(block), .. } => {
+                let prev_package = self.current_package.clone();
+                self.current_package = name.clone();
+                self.walk(block);
+                self.current_package = prev_package;
+                return;
+            }
+            NodeKind::Package { name, block: None, .. } => {
+                self.current_package = name.clone();
+                return;
+            }
+            NodeKind::Subroutine { name: Some(sub_name), .. } => {
+                if let Some(keyword) = dsl_keyword_for(sub_name) {
+                    self.shadowed.insert((self.current_package.clone(), keyword));
+                }
+            }
+            _ => {}
+        }
+
+        for child in node.children() {
+            self.walk(child);
+        }
+    }
+}
+
+/// Map a call or subroutine spelling onto the DSL keyword it could mean.
+fn dsl_keyword_for(name: &str) -> Option<DslKeyword> {
+    match name {
+        "extends" => Some(DslKeyword::Extends),
+        "with" => Some(DslKeyword::With),
+        _ => None,
     }
 }
 
@@ -41,6 +186,10 @@ impl PackageGraphExtractor {
 struct ExtractorState {
     /// Current package context (updated when `package Foo;` is encountered).
     current_package: String,
+    /// DSL keywords activated so far, per package, in source order.
+    activated: FxHashMap<String, DslImports>,
+    /// `(package, keyword)` pairs shadowed by a local subroutine.
+    shadowed: FxHashSet<(String, DslKeyword)>,
     /// Accumulated edges.
     edges: Vec<PackageEdge>,
 }
@@ -98,6 +247,19 @@ impl ExtractorState {
                 let names = Self::extract_parent_names_from_args(args);
                 for name in names {
                     self.emit_edge(name, PackageEdgeKind::Inherits, anchor_id, Confidence::High);
+                }
+            }
+
+            // `use Moose;` / `use Moo::Role;` — records which DSL keywords are
+            // imported into the current package from this point in the source.
+            // Activation is package-local and source-ordered: it licenses only
+            // later `extends`/`with` calls in this same package.
+            NodeKind::Use { module, .. } => {
+                if let Some(kind) = classify_framework_module(module) {
+                    self.activated
+                        .entry(self.current_package.clone())
+                        .or_default()
+                        .merge(DslImports::for_framework(kind));
                 }
             }
 
@@ -159,8 +321,9 @@ impl ExtractorState {
                         }
                     }
                 }
-                // `extends 'Base'` (Moo/Moose)
-                "extends" => {
+                // `extends 'Base'` (Moo/Moose) — framework DSL. A call that is
+                // not the activated DSL falls through and emits nothing.
+                "extends" if self.dsl_call_is_framework(DslKeyword::Extends) => {
                     let anchor_id = Self::anchor_from_node(stmt_node);
                     let names = Self::collect_names_from_args(args);
                     for name in names {
@@ -172,8 +335,8 @@ impl ExtractorState {
                         );
                     }
                 }
-                // `with 'Role'` (Moo/Moose)
-                "with" => {
+                // `with 'Role'` (Moo/Moose) — framework DSL, same gating.
+                "with" if self.dsl_call_is_framework(DslKeyword::With) => {
                     let anchor_id = Self::anchor_from_node(stmt_node);
                     let names = Self::collect_names_from_args(args);
                     for name in names {
@@ -195,6 +358,19 @@ impl ExtractorState {
     }
 
     // ── Helpers ─────────────────────────────────────────────────────────
+
+    /// Whether a call spelled as a framework DSL keyword actually resolves to
+    /// that keyword in the current package.
+    ///
+    /// Requires that the package activated a framework exporting `keyword`
+    /// at or before this point in the source, and that the package does not
+    /// define a subroutine of the same name that would shadow the import.
+    fn dsl_call_is_framework(&self, keyword: DslKeyword) -> bool {
+        if self.shadowed.contains(&(self.current_package.clone(), keyword)) {
+            return false;
+        }
+        self.activated.get(&self.current_package).is_some_and(|imports| imports.grants(keyword))
+    }
 
     /// Emit a [`PackageEdge`] from the current package to the given target.
     fn emit_edge(
@@ -586,6 +762,106 @@ with 'MyApp::Printable', 'MyApp::Serializable';
             "expected no inheritance/role edges, got {inheritance_edges:?}"
         );
         Ok(())
+    }
+
+    // ── Framework activation gating (negative controls) ─────────────────
+
+    /// Collect only the framework-DSL-derived edge kinds.
+    fn dsl_edges(code: &str) -> Vec<PackageEdge> {
+        parse_and_extract(code)
+            .into_iter()
+            .filter(|e| {
+                e.kind == PackageEdgeKind::Inherits || e.kind == PackageEdgeKind::ComposesRole
+            })
+            .collect()
+    }
+
+    #[test]
+    fn bare_extends_without_framework_activation_emits_no_edge() {
+        // Ordinary Perl: a user sub named `extends` is not Moo/Moose inheritance.
+        let edges = dsl_edges("package Plain;\nsub extends { 1 }\nextends 'NotAParent';\n1;");
+        assert!(edges.is_empty(), "expected no edges without activation, got {edges:?}");
+    }
+
+    #[test]
+    fn bare_with_without_framework_activation_emits_no_edge() {
+        let edges = dsl_edges("package Plain;\nsub with { 1 }\nwith 'NotARole';\n1;");
+        assert!(edges.is_empty(), "expected no edges without activation, got {edges:?}");
+    }
+
+    #[test]
+    fn dsl_spelling_alone_emits_no_edge() {
+        // No framework anywhere and no local sub: the spelling alone must not
+        // manufacture inheritance or role facts. This pins the activation
+        // gate independently of the shadowing gate.
+        let edges = dsl_edges("package Plain;\nextends 'NotAParent';\nwith 'NotARole';\n1;");
+        assert!(edges.is_empty(), "spelling alone must not emit edges, got {edges:?}");
+    }
+
+    #[test]
+    fn extends_before_activation_emits_no_edge() {
+        // Source order matters: the DSL is not imported yet at the call site.
+        let edges = dsl_edges("package Early;\nextends 'NotAParent';\nuse Moose;\n1;");
+        assert!(edges.is_empty(), "expected no edges before activation, got {edges:?}");
+    }
+
+    #[test]
+    fn activation_in_another_package_does_not_activate_this_one() {
+        let code = "package Framed;\nuse Moose;\n1;\n\npackage Plain;\nextends 'NotAParent';\n1;\n";
+        let edges = dsl_edges(code);
+        assert!(
+            edges.iter().all(|e| e.from_package != "Plain"),
+            "activation must be package-local, got {edges:?}"
+        );
+    }
+
+    #[test]
+    fn local_sub_shadowing_the_dsl_suppresses_the_edge() {
+        // A package-local `sub extends` replaces the imported DSL keyword.
+        let edges =
+            dsl_edges("package Shadow;\nuse Moose;\nsub extends { 1 }\nextends 'NotAParent';\n1;");
+        assert!(
+            edges.iter().all(|e| e.kind != PackageEdgeKind::Inherits),
+            "a shadowing sub must prevent an exact Inherits edge, got {edges:?}"
+        );
+    }
+
+    #[test]
+    fn role_activation_grants_with_but_not_extends() {
+        // `Moose::Role` exports `with`, but does not export `extends`.
+        let edges = dsl_edges("package R;\nuse Moose::Role;\nwith 'Other::Role';\n1;");
+        assert_eq!(edges.len(), 1, "expected exactly the role edge, got {edges:?}");
+        assert_eq!(edges[0].kind, PackageEdgeKind::ComposesRole);
+        assert_eq!(edges[0].to_package, "Other::Role");
+
+        let bad = dsl_edges("package R;\nuse Moose::Role;\nextends 'NotAParent';\n1;");
+        assert!(bad.is_empty(), "Moose::Role must not grant `extends`, got {bad:?}");
+    }
+
+    #[test]
+    fn moo_and_mouse_activate_both_keywords() {
+        for module in ["Moo", "Mouse"] {
+            let code = format!("package P;\nuse {module};\nextends 'B';\nwith 'R';\n1;\n");
+            let edges = dsl_edges(&code);
+            assert_eq!(edges.len(), 2, "{module}: expected two edges, got {edges:?}");
+            assert_eq!(edges[0].kind, PackageEdgeKind::Inherits);
+            assert_eq!(edges[1].kind, PackageEdgeKind::ComposesRole);
+        }
+    }
+
+    #[test]
+    fn native_isa_relations_do_not_require_framework_activation() {
+        // Gating applies only to the framework DSL, never to native Perl forms.
+        for code in [
+            "package C;\nuse parent 'B';\n1;",
+            "package C;\nuse base 'B';\n1;",
+            "package C;\nour @ISA = ('B');\n1;",
+            "package C;\npush @ISA, 'B';\n1;",
+        ] {
+            let edges = dsl_edges(code);
+            assert_eq!(edges.len(), 1, "native form must still emit: {code:?} -> {edges:?}");
+            assert_eq!(edges[0].to_package, "B");
+        }
     }
 
     // ── Qualified package names ─────────────────────────────────────────
