@@ -243,6 +243,13 @@ level = "deny"
 status = "active"
 class = "restriction"
 reason = "fixture required pin"
+
+[[lint]]
+name = "clippy::decimal_bitwise_operands"
+level = "deny"
+status = "active"
+class = "numeric"
+reason = "fixture required pin"
 "##,
         )?;
         fs::write(
