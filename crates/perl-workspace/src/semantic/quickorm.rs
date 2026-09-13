@@ -509,8 +509,15 @@ fn static_table_name_anchor<'a>(node: &'a Node, source: Option<&str>) -> Option<
             let raw = source
                 .and_then(|text| text.get(node.location.start..node.location.end))
                 .unwrap_or(value);
-            let literal = string_literal_inner_text(raw);
-            (!literal.trim().is_empty() && !contains_unescaped_interpolation(raw)).then_some(node)
+            let Some((literal, delimiter)) = string_literal_inner_text(raw) else {
+                return is_static_identifier(raw).then_some(node);
+            };
+            if literal.trim().is_empty()
+                || (delimiter == b'"' && contains_unescaped_interpolation(raw))
+            {
+                return None;
+            }
+            Some(node)
         }
         NodeKind::Identifier { name } if is_static_identifier(name) => Some(node),
         NodeKind::Binary { op, left, .. } if op == "=>" => static_table_name_anchor(left, source),
@@ -518,15 +525,15 @@ fn static_table_name_anchor<'a>(node: &'a Node, source: Option<&str>) -> Option<
     }
 }
 
-fn string_literal_inner_text(value: &str) -> &str {
+fn string_literal_inner_text(value: &str) -> Option<(&str, u8)> {
     let bytes = value.as_bytes();
     match (bytes.first(), bytes.last()) {
         (Some(quote), Some(closing_quote))
             if value.len() >= 2 && quote == closing_quote && matches!(*quote, b'\'' | b'"') =>
         {
-            &value[1..value.len() - 1]
+            Some((&value[1..value.len() - 1], *quote))
         }
-        _ => value,
+        _ => None,
     }
 }
 

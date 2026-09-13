@@ -719,15 +719,42 @@ fn non_ascii_interpolated_table_name_remains_dynamic() -> Result<(), Box<dyn std
 }
 
 #[test]
-fn single_quoted_non_ascii_sigil_name_remains_conservatively_excluded()
--> Result<(), Box<dyn std::error::Error>> {
-    // The anchor classifier does not distinguish quote style; single-quoted literals are outside
-    // the bounded pilot's support claim.
-    let facts = generated_facts_from_source(
-        r#"use utf8; package User; use DBIx::QuickORM type => 'table'; table '$π' => sub {};"#,
-    )?;
+fn single_quoted_sigil_names_are_static_literals() -> Result<(), Box<dyn std::error::Error>> {
+    for source in [
+        "package User; use DBIx::QuickORM type => 'table'; table '$name' => sub {};",
+        "use utf8; package User; use DBIx::QuickORM type => 'table'; table '$π' => sub {};",
+    ] {
+        let facts = generated_facts_from_source(source)?;
+        assert_eq!(canonical_names(&facts), vec!["User::qorm_table"], "{source}");
+    }
+    Ok(())
+}
 
-    assert!(facts.is_empty());
+#[test]
+fn backtick_and_qx_table_names_do_not_emit_qorm_table() -> Result<(), Box<dyn std::error::Error>> {
+    for table_name in ["`hostname`", "qx(hostname)"] {
+        let source = format!(
+            "package User; use DBIx::QuickORM type => 'table'; table {table_name} => sub {{}};"
+        );
+        assert!(
+            generated_facts_from_source(&source)?.is_empty(),
+            "command substitution names are not bounded static literals: {source}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn q_and_qq_table_names_remain_unsupported() -> Result<(), Box<dyn std::error::Error>> {
+    for table_name in ["q(users)", "qq(users)"] {
+        let source = format!(
+            "package User; use DBIx::QuickORM type => 'table'; table {table_name} => sub {{}};"
+        );
+        assert!(
+            generated_facts_from_source(&source)?.is_empty(),
+            "quote-like names remain outside the bounded pilot: {source}"
+        );
+    }
     Ok(())
 }
 
