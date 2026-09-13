@@ -2887,36 +2887,59 @@ mod tests {
     #[test]
     fn rejected_replacement_child_is_retained_across_failed_cleanup() -> Result<(), String> {
         let adapter = DebugAdapter::new();
-        let child = DebugAdapter::spawn_noop_child_for_test()
-            .map_err(|error| format!("spawning rejected child: {error}"))?;
-        adapter
-            .try_retain_rejected_child(child)
-            .map_err(|_| "first rejected child was not retained".to_string())?;
-
-        let second = DebugAdapter::spawn_noop_child_for_test()
-            .map_err(|error| format!("spawning second rejected child: {error}"))?;
-        let rejection = adapter.reject_spawned_replacement_child(second, false);
-        if !rejection.contains("another unconfirmed process") {
-            return Err(
-                "second rejected child did not take the production rejection path".to_string()
-            );
+        adapter.seed_session_for_test().map_err(|error| error.to_string())?;
+        let active_pid = adapter
+            .session
+            .lock()
+            .map_err(|_| "session lock poisoned")?
+            .as_ref()
+            .map(|session| session.process.id())
+            .ok_or("active session was not installed")?;
+        if DebugAdapter::clear_active_session_state_with_terminator(
+            &adapter.session,
+            &adapter.tcp_session,
+            &adapter.attached_pid,
+            |_| false,
+        ) {
+            return Err("injected active cleanup unexpectedly succeeded".to_string());
+        }
+        let replacement = DebugAdapter::spawn_noop_child_for_test()
+            .map_err(|error| format!("spawning replacement child: {error}"))?;
+        let replacement_pid = replacement.id();
+        let rejection = adapter.reject_spawned_replacement_child(replacement, false);
+        if !rejection.contains("both processes") {
+            return Err("production rejection path did not retain replacement child".to_string());
+        }
+        let retained_active_pid = adapter
+            .session
+            .lock()
+            .map_err(|_| "session lock poisoned")?
+            .as_ref()
+            .map(|session| session.process.id());
+        if retained_active_pid != Some(active_pid) {
+            return Err("failed active cleanup lost its original child owner".to_string());
+        }
+        let retained_replacement_pid = adapter
+            .rejected_child
+            .lock()
+            .map_err(|_| "rejected-child lock was poisoned")?
+            .as_ref()
+            .map(|child| child.id());
+        if retained_replacement_pid != Some(replacement_pid) {
+            return Err("failed replacement cleanup lost its child owner".to_string());
         }
 
-        if adapter.clear_rejected_child_with_terminator(|_| false) {
-            return Err("injected rejected-child cleanup unexpectedly succeeded".to_string());
+        if !adapter.clear_active_session_state() {
+            return Err("retrying cleanup of both child owners failed".to_string());
         }
-        if adapter.rejected_child.lock().map_err(|_| "rejected-child lock was poisoned")?.is_none()
+        if adapter.session.lock().map_err(|_| "session lock poisoned")?.is_some()
+            || adapter
+                .rejected_child
+                .lock()
+                .map_err(|_| "rejected-child lock was poisoned")?
+                .is_some()
         {
-            return Err("failed cleanup dropped the rejected child owner".to_string());
-        }
-        if !adapter.clear_rejected_child_with_terminator(|child| {
-            child.kill().is_ok() && child.wait().is_ok()
-        }) {
-            return Err("retrying rejected-child cleanup failed".to_string());
-        }
-        if adapter.rejected_child.lock().map_err(|_| "rejected-child lock was poisoned")?.is_some()
-        {
-            return Err("successful rejected-child cleanup retained its owner".to_string());
+            return Err("successful retry retained a child owner".to_string());
         }
         Ok(())
     }
