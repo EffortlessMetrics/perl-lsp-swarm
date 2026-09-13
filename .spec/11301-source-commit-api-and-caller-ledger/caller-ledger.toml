@@ -39,18 +39,14 @@ compatibility_apis = ["index_file", "index_file_str", "index_file_with_generatio
 # dropped one .index_file_with_generation(...) call; the scorecard coordinator
 # re-seed added a canonical index_live_file caller identity (not counted).
 # Burndown 696 -> 695 by #13183 (extensionless Perl shebang discovery,
-# PR #13185) plus this reconciliation. Checker-equivalent per-file scan over
-# git ls-tree blobs, base 5410b54d = 696 with the merged tree already at 699:
-#   crates/perl-lsp-rs/src/runtime/workspace.rs 6 -> 9 (+3 net) as merged:
-#     -1 production call (the removed did-create/did-rename reclassification
-#     arm no longer re-indexes through the compatibility surface) and +4
-#     `#[cfg(test)]` fixtures that pre-seed closed-file facts before watcher,
-#     create and rename events.
-# The four fixtures seed initial (on-disk, non-live) state, so they are
-# migrated here to the canonical `index_initial_file` -- `index_file` is a
-# thin alias of it, so the migration is behavior-preserving and removes four
-# compatibility callers rather than accepting them into the baseline. Net
-# effect on the combined tree: 696 - 1 = 695.
+# PR #13185), already landed on main: its did-create/did-rename
+# reclassification arm no longer re-indexes through the compatibility surface
+# (-1 production call in crates/perl-lsp-rs/src/runtime/workspace.rs), and the
+# four `#[cfg(test)]` fixtures it adds to pre-seed closed-file facts before
+# watcher, create, and rename events call the canonical `index_initial_file`,
+# so they add no compatibility callers. This ledger edit only reconciles the
+# recorded baseline with that landed count; the #13120 QuickORM work adds
+# canonical index-initial callers and no compatibility calls of its own.
 compatibility_baseline = 695
 
 # Structural recurrence control (#11305): files under these prefixes must
