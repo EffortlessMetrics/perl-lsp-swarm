@@ -713,6 +713,26 @@ impl BreakpointStore {
         outcome
     }
 
+    /// Check whether a runtime stop could belong to a current engine
+    /// installation before doing filesystem I/O for source revalidation.
+    ///
+    /// This is only an admission hint; callers must still supply the current
+    /// digest to [`Self::register_engine_breakpoint_hit`], which remains the
+    /// authoritative attribution check.
+    pub(crate) fn has_engine_breakpoint_candidate(
+        &self,
+        source_path: &str,
+        line: i64,
+        session_generation: u64,
+    ) -> bool {
+        let installations = self.engine_installations.lock().unwrap_or_else(|e| e.into_inner());
+        installations.values().any(|installation| {
+            installation.session_generation == session_generation
+                && installation.line == line
+                && file_paths_match(&installation.source_path, source_path)
+        })
+    }
+
     /// Register a breakpoint hit with optional variable interpolation.
     ///
     /// Similar to `register_breakpoint_hit`, but accepts optional variable values
@@ -1809,6 +1829,14 @@ EOF
             .to_string();
         if !store.mark_engine_installed(id, &source_path, 5, 7, digest.clone()) {
             return Err("engine installation was not committed".into());
+        }
+        if !store.has_engine_breakpoint_candidate(&source_path, 5, 7) {
+            return Err("current engine installation was not admitted as a hit candidate".into());
+        }
+        if store.has_engine_breakpoint_candidate(&source_path, 6, 7)
+            || store.has_engine_breakpoint_candidate(&source_path, 5, 8)
+        {
+            return Err("wrong line or generation was admitted as a hit candidate".into());
         }
         if store.register_engine_breakpoint_hit(&source_path, 5, 8, &digest).matched {
             return Err("stale session generation matched an engine breakpoint".into());

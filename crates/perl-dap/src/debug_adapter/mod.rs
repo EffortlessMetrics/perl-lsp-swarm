@@ -477,6 +477,9 @@ impl DebugAdapter {
             .as_deref()
             .and_then(Path::to_str)
             .map(|path| {
+                if !breakpoints.has_engine_breakpoint_candidate(path, line, session_generation) {
+                    return EngineBreakpointHitOutcome::default();
+                }
                 let digest = std::fs::read(path)
                     .map(|bytes| ContentDigest::of_bytes(&bytes).to_string())
                     .unwrap_or_default();
