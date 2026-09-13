@@ -27,7 +27,7 @@ use std::time::Duration;
 fn stage_perl_library_layout(
     source_perl: &Path,
     destination: &Path,
-) -> Result<Option<PathBuf>, Box<dyn Error>> {
+) -> Result<Option<(PathBuf, Vec<PathBuf>)>, Box<dyn Error>> {
     let source_bin = source_perl.parent().ok_or("selected Perl has no bin directory")?;
     let source_root = source_bin.parent().ok_or("selected Perl has no installation root")?;
     let stdout_path = destination.join("perl-config.stdout");
@@ -71,9 +71,10 @@ fn stage_perl_library_layout(
             .strip_prefix(source_root)
             .map_err(|_| format!("Perl library root is outside installation root: {root:?}"))?;
         let staged = staged_install.join(relative);
-        if staged_roots.iter().any(|existing: &PathBuf| existing == &staged) {
+        if staged_roots.iter().any(|existing: &PathBuf| staged.starts_with(existing)) {
             continue;
         }
+        staged_roots.retain(|existing| !existing.starts_with(&staged));
         copy_directory(&root, &staged)?;
         staged_roots.push(staged);
     }
@@ -84,7 +85,7 @@ fn stage_perl_library_layout(
     fs::create_dir_all(&staged_bin)?;
     let staged_perl = staged_bin.join(source_perl.file_name().ok_or("Perl has no filename")?);
     fs::copy(source_perl, &staged_perl)?;
-    Ok(Some(staged_perl))
+    Ok(Some((staged_perl, staged_roots)))
 }
 
 #[cfg(windows)]
@@ -119,15 +120,16 @@ fn copy_adjacent_dlls(source_perl: &Path, destination_dir: &Path) -> Result<(), 
 fn prepare_native_perl_fixture(
     source_perl: &Path,
     destination: &Path,
-) -> Result<Option<(PathBuf, PathBuf, PathBuf)>, Box<dyn Error>> {
-    let Some(staged_perl) = stage_perl_library_layout(source_perl, destination)? else {
+) -> Result<Option<(PathBuf, PathBuf, Vec<PathBuf>)>, Box<dyn Error>> {
+    let Some((staged_perl, staged_roots)) = stage_perl_library_layout(source_perl, destination)?
+    else {
         return Ok(None);
     };
     let staged_bin = staged_perl.parent().ok_or("staged Perl has no bin directory")?;
     copy_adjacent_dlls(source_perl, staged_bin)?;
     let pinned = staged_bin.join("perl5.exe");
     fs::copy(&staged_perl, &pinned)?;
-    Ok(Some((staged_perl, pinned, destination.join("perl-install").join("lib"))))
+    Ok(Some((staged_perl, pinned, staged_roots)))
 }
 
 struct EnvGuard {
@@ -301,10 +303,16 @@ fn all_convenience_launch_paths_reach_the_pinned_interpreter() -> Result<(), Box
 #[allow(clippy::print_stderr)]
 fn copied_native_fixture_requires_staged_core_library() -> Result<(), Box<dyn Error>> {
     let Some(source) = find_configured_or_path_pipe_perl()? else {
-        return Err("strict fixture proof found no pipe-capable Perl candidate".into());
+        let strict = env::var_os("PERL_LSP_DAP_REQUIRE_PERL")
+            .is_some_and(|value| value == "1" || value.eq_ignore_ascii_case("true"));
+        if strict {
+            return Err("strict fixture proof found no pipe-capable Perl candidate".into());
+        }
+        eprintln!("SKIP copied_native_fixture_requires_staged_core_library: Perl unavailable");
+        return Ok(());
     };
     let controls = tempfile::tempdir()?;
-    let Some((_ambient, pinned, staged_lib)) =
+    let Some((_ambient, pinned, staged_roots)) =
         prepare_native_perl_fixture(&source, controls.path())?
     else {
         eprintln!(
@@ -315,10 +323,16 @@ fn copied_native_fixture_requires_staged_core_library() -> Result<(), Box<dyn Er
     probe_debuggee_perl_for_test(&pinned, Duration::from_secs(10), false)
         .map_err(|reason| format!("staged native fixture was not pipe-usable: {reason}"))?;
 
-    let backup = controls.path().join("staged-lib-backup");
-    fs::rename(&staged_lib, &backup)?;
+    let mut backups = Vec::new();
+    for (index, staged_root) in staged_roots.iter().enumerate() {
+        let backup = controls.path().join(format!("staged-lib-backup-{index}"));
+        fs::rename(staged_root, &backup)?;
+        backups.push((staged_root, backup));
+    }
     let failure = probe_debuggee_perl_for_test(&pinned, Duration::from_secs(10), false);
-    fs::rename(&backup, &staged_lib)?;
+    for (staged_root, backup) in backups.into_iter().rev() {
+        fs::rename(backup, staged_root)?;
+    }
     let failure = failure
         .err()
         .ok_or("copied fixture unexpectedly found perl5db without staged core library")?;
