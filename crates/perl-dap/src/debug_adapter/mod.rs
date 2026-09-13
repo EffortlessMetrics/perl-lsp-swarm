@@ -623,11 +623,11 @@ impl DebugAdapter {
                 terminal.as_str()
             ))),
         };
-        if self.current_session_generation() == captured_generation
-            && let Ok(mut guard) = self.session.lock()
-            && let Some(session) = guard.as_mut()
-        {
-            session.state = prior_state;
+        if self.current_session_generation() == captured_generation {
+            let mut guard = lock_or_recover(&self.session, "acknowledge_engine_breakpoint.restore");
+            if let Some(session) = guard.as_mut() {
+                session.state = prior_state;
+            }
         }
         result
     }

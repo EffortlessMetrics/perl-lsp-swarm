@@ -38,7 +38,8 @@ debugger acknowledges the exact source and line. The adapter then reports the
 same breakpoint ID as verified. If the launched source is changed or cannot be
 matched to the recorded source identity, the breakpoint remains unverified.
 This bounded behavior applies to the launched main source; module breakpoints
-remain unverified in this implementation. If the debugger may have received a
+with conditions, hit counts, or log messages remain unverified in this
+implementation. If the debugger may have received a
 breakpoint command but does not acknowledge it, the adapter invalidates the
 session and reports the launch or request failure instead of resuming through
 an uncertain breakpoint state.
