@@ -133,12 +133,9 @@ impl LspServer {
     ///
     /// The cancelled set is advisory — entries are checked by [`is_cancelled`]
     /// and removed by [`cancel_clear`] when the routing path processes them.
-    /// However, cancels for already-completed or never-dispatched requests
-    /// insert entries that are never removed. To prevent unbounded growth,
-    /// stale markers are removed when the set reaches
-    /// [`CANCELLED_SET_CAP`] (#5032 item 2). Markers for requests that are
-    /// still queued or executing are retained by the scheduler-aware pending
-    /// set, so trimming cannot erase a live queued cancellation.
+    /// Cancellation requests for unknown or already-settled IDs are ignored by
+    /// the scheduler-aware path. The legacy helper remains for internal
+    /// supersession and test paths; its cap prevents unbounded growth.
     pub(crate) fn cancel_mark(&self, id: &JsonRpcId) {
         let pending = self.pending_request_ids.lock();
         let mut c = self.cancelled.lock();
@@ -169,8 +166,10 @@ impl LspServer {
 
     /// Release a scheduler-owned request ID after it is fully settled.
     pub(crate) fn clear_request_pending(&self, id: &JsonRpcId) {
-        self.pending_request_ids.lock().remove(id);
-        self.cancel_clear(id);
+        let mut pending = self.pending_request_ids.lock();
+        let mut cancelled = self.cancelled.lock();
+        pending.remove(id);
+        cancelled.remove(id);
     }
 
     /// Clear a cancelled request
