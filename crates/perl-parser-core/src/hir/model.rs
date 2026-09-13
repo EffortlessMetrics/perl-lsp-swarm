@@ -1856,7 +1856,10 @@ impl FrameworkAdapterRegistry {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum FrameworkAdapterKind {
-    /// Exporter and Exporter::Tiny-style export declarations.
+    /// Declaration-based export mechanisms: Exporter and Exporter::Tiny's
+    /// `@EXPORT`/`@EXPORT_OK`/`%EXPORT_TAGS`, and Sub::Exporter's `-setup`
+    /// configuration. Sub::Exporter is an unrelated distribution; it shares
+    /// this adapter because it lowers to the same export declarations.
     ExporterFamily,
 }
 
@@ -2500,6 +2503,172 @@ fn import_spec(
     }
 }
 
+/// Whether the `{` at `open` begins Sub::Exporter's per-symbol option hash.
+///
+/// `foo => { -as => 'bar' }` describes the symbol being imported, and `bar` is
+/// literally the installed name, so keeping that hash keeps a real symbol. The
+/// parser splits `-as` into `-` and `as`.
+///
+/// Only `-as` qualifies. The affix options — Sub::Exporter's `-prefix`/`-suffix`
+/// and `Test2::Util::Importer`'s `-prefix`/`-postfix` — carry a *fragment*, not
+/// a name: `ok => { -postfix => '_ok' }` installs `ok_ok`, as
+/// `providers/testing/test2.rs` composes it. Keeping such a hash would publish
+/// `_ok`, which is nothing at all, so those are skipped like any other
+/// configuration. Composing the affix is rename modelling, which this pass does
+/// not do; the Test2 provider already does it where it matters.
+///
+/// Requiring the option name, rather than any dashed key,
+/// keeps an ordinary module configuration hash that happens to open with a
+/// dashed key — `use M 'foo', { -config => 'value' }` — on the skipped side.
+///
+/// The `-as` pair need not come first. Key order in a Perl hash literal carries
+/// no meaning, so `{ -prefix => 'p_', -as => 'bar' }` installs `bar` exactly as
+/// `{ -as => 'bar', -prefix => 'p_' }` does. Deciding on the first key alone
+/// made the answer depend on the order the author happened to write.
+///
+/// Perl cannot separate these two shapes on syntax alone: `foo => {...}` and
+/// `foo, {...}` are the same list, and which reading applies is the imported
+/// module's business. The option vocabulary is the only evidence available
+/// here, so this errs toward skipping and keeps the retained case narrow.
+///
+/// This is deliberately the same scan that picks the installed name, so the
+/// decision to retain a hash and the name retained from it cannot disagree.
+fn opens_per_symbol_options(args: &[String], open: usize) -> bool {
+    effective_as_value_index(args, open).is_some()
+}
+
+/// Whether the token at `index` is a name renamed by a per-symbol option hash
+/// that follows it.
+///
+/// `foo => { -as => 'bar' }` installs `bar`; `foo` is not installed under its
+/// own name, so it is not an imported symbol. The intervening `=>` is a comma
+/// as far as Perl is concerned, so `foo, { -as => 'bar' }` is the same list and
+/// is treated the same way.
+fn is_renamed_by_following_options(args: &[String], index: usize) -> bool {
+    let mut next = index.saturating_add(1);
+    while let Some(token) = args.get(next) {
+        match token.trim() {
+            "=>" | "," => next = next.saturating_add(1),
+            "{" => return opens_per_symbol_options(args, next),
+            _ => return false,
+        }
+    }
+    false
+}
+
+/// The index of the one value a retained per-symbol option hash installs.
+///
+/// Only `-as` carries an installed name. The affix options carry a *fragment*,
+/// so `-prefix => 'pre_'` names nothing a consumer could resolve, and every
+/// other option configures the import rather than naming it — dropping the
+/// option name while keeping its value would publish exactly the fragment the
+/// skipped affix hashes exist to avoid.
+///
+/// A Perl hash literal keeps the last value for a repeated key, so the last
+/// `-as` wins. A value that is missing, or is itself punctuation, installs
+/// nothing.
+fn effective_as_value_index(args: &[String], open: usize) -> Option<usize> {
+    let mut depth = 0usize;
+    let mut effective = None;
+    let mut index = open;
+    while let Some(token) = args.get(index) {
+        match token.trim() {
+            "{" => depth = depth.saturating_add(1),
+            "}" => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    break;
+                }
+            }
+            "-" if depth == 1 && opens_as_pair_with_a_name(args, index) => {
+                effective = Some(index + 3);
+            }
+            _ => {}
+        }
+        index = index.saturating_add(1);
+    }
+    effective
+}
+
+/// Whether `index` starts an `-as => <name>` pair whose value could be a name.
+///
+/// The parser splits `-as` into `-` then `as`, so the pair spans four tokens. A
+/// value that is punctuation is a malformed or truncated pair and installs
+/// nothing.
+fn opens_as_pair_with_a_name(args: &[String], index: usize) -> bool {
+    let token = |offset: usize| args.get(index + offset).map(|token| token.trim());
+
+    token(0) == Some("-")
+        && token(1) == Some("as")
+        && token(2) == Some("=>")
+        && token(3).is_some_and(|value| !matches!(value, "}" | "," | "-" | "=>" | "{"))
+}
+
+/// The `use` argument tokens that are not part of a module configuration hash.
+///
+/// A standalone `{ ... }` in an import list configures the module — `use M 'a',
+/// { key => 'value' }` asks for `a` alone — so its body is not a list of
+/// requested symbols.
+///
+/// One hash shape is read rather than skipped: Sub::Exporter's per-symbol option
+/// form, `foo => { -as => 'bar' }`, which describes the symbol rather than the
+/// module and carries the name actually installed.
+///
+/// Only that installed name survives the shape. The option *name* is dropped —
+/// `-as` arrives as `-` then `as`, and while the `-` names nothing a reader
+/// could mistake for a symbol, `as` does — and so is the name being renamed:
+/// `foo => { -as => 'bar' }` installs `bar` and does not install `foo`, so
+/// publishing `foo` claims a symbol the importer never receives. Keeping either
+/// was the same over-claim this function exists to prevent for ordinary
+/// configuration hashes, at `ExactAst`/`High`.
+///
+/// Affix options are a different case and are unaffected: they are skipped
+/// rather than retained, because `ok => { -postfix => '_ok' }` installs `ok_ok`
+/// and `_ok` names nothing. There the pre-existing `ok` is left in place, since
+/// composing the alias is rename modelling this pass does not do.
+pub fn arguments_outside_configuration_hashes(args: &[String]) -> Vec<&str> {
+    let mut kept = Vec::new();
+    let mut skip_depth = 0usize;
+    // Brace depth inside a retained per-symbol option hash, and the one index in
+    // it that names an installed symbol. Everything else in such a hash is
+    // configuration: option names, and the values of options other than `-as`.
+    let mut option_depth = 0usize;
+    let mut installed_name_index = None;
+    for (index, arg) in args.iter().enumerate() {
+        let trimmed = arg.trim();
+        if skip_depth > 0 {
+            match trimmed {
+                "{" => skip_depth = skip_depth.saturating_add(1),
+                "}" => skip_depth = skip_depth.saturating_sub(1),
+                _ => {}
+            }
+            continue;
+        }
+        if trimmed == "{" {
+            if opens_per_symbol_options(args, index) {
+                option_depth = option_depth.saturating_add(1);
+                if option_depth == 1 {
+                    installed_name_index = effective_as_value_index(args, index);
+                }
+            } else {
+                skip_depth = 1;
+                continue;
+            }
+        } else if trimmed == "}" {
+            option_depth = option_depth.saturating_sub(1);
+            if option_depth == 0 {
+                installed_name_index = None;
+            }
+        } else if option_depth > 0 && Some(index) != installed_name_index {
+            continue;
+        } else if option_depth == 0 && is_renamed_by_following_options(args, index) {
+            continue;
+        }
+        kept.push(trimmed);
+    }
+    kept
+}
+
 fn classify_import_args(
     args: &[String],
     module: &str,
@@ -2522,9 +2691,10 @@ fn classify_import_args(
     let mut explicit_names = Vec::new();
     let mut tags = Vec::new();
     let mut has_dynamic_arg = false;
-
-    for arg in args {
-        let trimmed = arg.trim();
+    // Reading a configuration hash body would publish its keys and values as
+    // imported names at `ExactAst`/`High` — the same over-claim in the import
+    // direction that the export lowering refuses in the export direction.
+    for trimmed in arguments_outside_configuration_hashes(args) {
         if trimmed == "=>" || trimmed == "," || trimmed == "\\" {
             continue;
         }
