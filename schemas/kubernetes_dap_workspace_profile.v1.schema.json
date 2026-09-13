@@ -1,0 +1,300 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://effortlessmetrics.com/schemas/kubernetes_dap_workspace_profile.v1.schema.json",
+  "title": "Kubernetes DAP workspace-profile contract v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "contract_id",
+    "controller_issue",
+    "parent_train",
+    "environment_subject_authority",
+    "path_namespace_authority",
+    "dap_core_authority",
+    "launch_environment_authority",
+    "support_registry_authority",
+    "coverage_scope",
+    "claim_boundary",
+    "complete",
+    "transport_boundary",
+    "source_namespace",
+    "admitted_profiles",
+    "rejected_topologies",
+    "dap_cells",
+    "security_requirements",
+    "limitations"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "kubernetes_dap_workspace_profile.v1"
+    },
+    "contract_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "controller_issue": {
+      "type": "string",
+      "pattern": "^#[1-9][0-9]*$"
+    },
+    "parent_train": {
+      "type": "string",
+      "pattern": "^#[1-9][0-9]*$"
+    },
+    "environment_subject_authority": {
+      "type": "string",
+      "minLength": 1
+    },
+    "path_namespace_authority": {
+      "type": "string",
+      "minLength": 1
+    },
+    "dap_core_authority": {
+      "type": "string",
+      "minLength": 1
+    },
+    "launch_environment_authority": {
+      "type": "string",
+      "minLength": 1
+    },
+    "support_registry_authority": {
+      "type": "string",
+      "minLength": 1
+    },
+    "coverage_scope": {
+      "type": "string",
+      "minLength": 1
+    },
+    "claim_boundary": {
+      "type": "string",
+      "minLength": 1
+    },
+    "complete": {
+      "const": false
+    },
+    "transport_boundary": {
+      "$ref": "#/$defs/transport_boundary"
+    },
+    "source_namespace": {
+      "$ref": "#/$defs/source_namespace"
+    },
+    "admitted_profiles": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "items": {
+        "$ref": "#/$defs/admitted_profile"
+      }
+    },
+    "rejected_topologies": {
+      "type": "array",
+      "minItems": 11,
+      "items": {
+        "$ref": "#/$defs/rejected_topology"
+      }
+    },
+    "dap_cells": {
+      "type": "array",
+      "minItems": 9,
+      "items": {
+        "$ref": "#/$defs/dap_cell"
+      }
+    },
+    "security_requirements": {
+      "type": "array",
+      "minItems": 8,
+      "items": {
+        "$ref": "#/$defs/security_requirement"
+      }
+    },
+    "limitations": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/limitation"
+      }
+    }
+  },
+  "$defs": {
+    "transport_boundary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["transport", "stream_owner", "tty", "shell", "network_listener"],
+      "properties": {
+        "transport": {
+          "enum": ["stdio", "tcp"]
+        },
+        "stream_owner": {
+          "enum": ["parent", "adapter"]
+        },
+        "tty": {
+          "type": "boolean"
+        },
+        "shell": {
+          "type": "boolean"
+        },
+        "network_listener": {
+          "type": "boolean"
+        }
+      }
+    },
+    "source_namespace": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["equality", "canonicalization_authority", "rewrite_authority"],
+      "properties": {
+        "equality": {
+          "type": "string",
+          "const": "client == adapter == debuggee"
+        },
+        "canonicalization_authority": {
+          "type": "string",
+          "minLength": 1
+        },
+        "rewrite_authority": {
+          "const": "none"
+        }
+      }
+    },
+    "install_mode": {
+      "enum": ["project_image", "injected_tool"]
+    },
+    "reason_code": {
+      "enum": [
+        "standalone_deployment_forbidden",
+        "shared_multi_tenant_adapter_forbidden",
+        "sidecar_environment_mismatch",
+        "service_exposure_forbidden",
+        "network_listener_forbidden",
+        "attach_injection_unsupported",
+        "adapter_owned_cluster_access_forbidden",
+        "kubernetes_api_dependency_forbidden",
+        "operator_controller_forbidden",
+        "editor_path_translation_forbidden",
+        "lsp_profile_projection_forbidden",
+        "capability_catalog_inheritance_forbidden",
+        "transport_boundary_violation",
+        "source_namespace_mismatch",
+        "loader_contract_mismatch",
+        "init_image_perl_substitution_forbidden",
+        "baseline_perl_substitution_forbidden",
+        "project_perl_identity_mismatch",
+        "image_identity_not_exact",
+        "injection_source_unbound",
+        "artifact_digest_unverified",
+        "executable_mode_invalid",
+        "tool_mount_not_read_only",
+        "resource_profile_missing",
+        "cleanup_ownership_missing",
+        "security_context_missing",
+        "service_account_token_forbidden",
+        "dap_cell_evidence_missing",
+        "install_mode_identity_conflict",
+        "adapter_identity_not_exact",
+        "tool_volume_ownership_missing"
+      ]
+    },
+    "cell_family": {
+      "enum": ["initial_admitted", "optional"]
+    },
+    "cell_state": {
+      "enum": ["evidence_backed", "not_proven", "unsupported"]
+    },
+    "fact_key": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]*$"
+    },
+    "admitted_profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["profile_id", "install_mode", "summary", "required_facts"],
+      "properties": {
+        "profile_id": {
+          "enum": ["project_image", "injected_tool"]
+        },
+        "install_mode": {
+          "$ref": "#/$defs/install_mode"
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 1
+        },
+        "required_facts": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/fact_key"
+          }
+        }
+      }
+    },
+    "rejected_topology": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["topology_id", "reason_code", "boundary"],
+      "properties": {
+        "topology_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reason_code": {
+          "$ref": "#/$defs/reason_code"
+        },
+        "boundary": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "dap_cell": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cell_id", "family", "state", "evidence"],
+      "properties": {
+        "cell_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "family": {
+          "$ref": "#/$defs/cell_family"
+        },
+        "state": {
+          "$ref": "#/$defs/cell_state"
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "security_requirement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["requirement_id", "statement"],
+      "properties": {
+        "requirement_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*$"
+        },
+        "statement": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "limitation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["statement"],
+      "properties": {
+        "statement": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  }
+}
