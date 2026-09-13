@@ -1566,8 +1566,10 @@ sub score {
 
 #[test]
 #[serial]
-fn bdd_pull_diagnostics_tracks_result_ids_per_document() -> Result<(), Box<dyn std::error::Error>> {
-    let scenario = BddScenario::new("Pull diagnostics keep per-document resultId caches isolated");
+fn bdd_pull_diagnostics_invalidates_reports_when_workspace_facts_change()
+-> Result<(), Box<dyn std::error::Error>> {
+    let scenario =
+        BddScenario::new("Pull diagnostics invalidate report IDs when workspace facts change");
 
     let healthy = r#"use strict;
 use warnings;
@@ -1620,6 +1622,16 @@ sub boom {
     assert_eq!(DocumentDiagnosticFlow::kind(&stable_unchanged), Some("unchanged"));
     assert_eq!(DocumentDiagnosticFlow::kind(&changing_unchanged), Some("unchanged"));
 
+    // A prior result ID is bound to the complete report subject. Swapping IDs
+    // between documents must therefore produce full reports for both requests,
+    // even though neither document changed.
+    let stable_with_changing_id = DocumentDiagnosticFlow::new(&mut harness, stable_uri.clone())
+        .request(Some(changing_id.as_str()))?;
+    let changing_with_stable_id = DocumentDiagnosticFlow::new(&mut harness, changing_uri.clone())
+        .request(Some(stable_id.as_str()))?;
+    assert_eq!(DocumentDiagnosticFlow::kind(&stable_with_changing_id), Some("full"));
+    assert_eq!(DocumentDiagnosticFlow::kind(&changing_with_stable_id), Some("full"));
+
     scenario.when("introducing a syntax regression in only one document");
     harness.change_full(&changing_uri, 2, broken)?;
     harness.barrier();
@@ -1633,13 +1645,17 @@ sub boom {
         (stable_after_edit, changing_after_edit)
     };
 
-    scenario
-        .then("the unchanged file stays unchanged while the edited file gets a new full report");
-    assert_eq!(DocumentDiagnosticFlow::kind(&stable_after_edit), Some("unchanged"));
+    scenario.then("both reports are full because the accepted workspace fact generation changed");
+    assert_eq!(DocumentDiagnosticFlow::kind(&stable_after_edit), Some("full"));
+    let stable_after_edit_id = DocumentDiagnosticFlow::result_id(&stable_after_edit)?;
+    assert_ne!(
+        stable_after_edit_id, stable_id,
+        "workspace fact changes must invalidate the stable document resultId"
+    );
     assert_eq!(
-        stable_after_edit.get("resultId").and_then(Value::as_str),
-        Some(stable_id.as_str()),
-        "stable file should keep the same resultId"
+        diagnostic_error_count(&stable_after_edit),
+        0,
+        "the unchanged document should remain diagnostically clean"
     );
 
     assert_eq!(DocumentDiagnosticFlow::kind(&changing_after_edit), Some("full"));
