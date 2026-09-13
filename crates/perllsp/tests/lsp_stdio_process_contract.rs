@@ -18,6 +18,180 @@ fn timeout() -> Duration {
     Duration::from_secs(10)
 }
 
+fn check_policy_message(receipt: Option<Value>, expected_evidence: &str) -> Result<()> {
+    let mut client = RealProcessClient::spawn_exact()?;
+    assert_public_candidate(&client)?;
+    initialize_and_notify(&mut client, json!("initialize-policy"))?;
+    let expected_freshness = receipt
+        .as_ref()
+        .map(|value| value.get("freshness").cloned().unwrap_or_else(|| json!("unknown")));
+    let expected_detail = receipt
+        .as_ref()
+        .and_then(|value| value.get("user_message"))
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    let mut argument = json!({"provider": "hover"});
+    if expected_detail.is_some() {
+        let fields =
+            argument.as_object_mut().ok_or_else(|| anyhow::anyhow!("expected argument object"))?;
+        fields.insert("receipt_id".to_string(), json!("caller-receipt-marker"));
+        fields.insert("scenario".to_string(), json!("caller-scenario-marker"));
+    }
+    if let Some(receipt) = receipt {
+        let prior =
+            client.request(json!("prior-hover"), "textDocument/hover", json!({}), timeout())?;
+        assert_response_id(&prior, &json!("prior-hover"))?;
+        ensure!(
+            prior.pointer("/error/code") == Some(&json!(-32602)),
+            "expected prior hover error: {prior}"
+        );
+        argument
+            .as_object_mut()
+            .ok_or_else(|| anyhow::anyhow!("expected argument object"))?
+            .insert("request_receipt".to_string(), receipt);
+    }
+    let response = client.request(
+        json!("policy-message"),
+        "workspace/executeCommand",
+        json!({
+            "command": "perl.explainProviderDecision", "arguments": [argument]
+        }),
+        timeout(),
+    )?;
+    assert_response_id(&response, &json!("policy-message"))?;
+    ensure!(response.get("error").is_none(), "explanation failed: {response}");
+    let result =
+        response.get("result").ok_or_else(|| anyhow::anyhow!("missing result: {response}"))?;
+    let message = result
+        .get("user_message")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow::anyhow!("missing user message: {result}"))?;
+    ensure!(
+        message.contains("\nProvider policy summary:\n"),
+        "static defaults must be identified as policy: {message}"
+    );
+    ensure!(
+        message.starts_with(expected_evidence),
+        "request evidence must lead the message: {message}"
+    );
+    if let Some(detail) = expected_detail {
+        let (evidence, policy) = message
+            .split_once("\nProvider policy summary:\n")
+            .ok_or_else(|| anyhow::anyhow!("missing policy boundary: {message}"))?;
+        ensure!(
+            evidence.contains(&format!("Request detail: {detail}")),
+            "request detail must be in the evidence section: {message}"
+        );
+        ensure!(
+            !policy.contains(&detail) && message.matches(&detail).count() == 1,
+            "request detail must not be duplicated or labeled as policy: {message}"
+        );
+        for (field, marker) in
+            [("receipt_id", "caller-receipt-marker"), ("scenario", "caller-scenario-marker")]
+        {
+            ensure!(
+                evidence.contains(marker) && !policy.contains(marker),
+                "caller context must remain outside static policy: {message}"
+            );
+            ensure!(
+                result.get(field).and_then(Value::as_str) == Some(marker),
+                "structured caller context must be preserved: {result}"
+            );
+        }
+        ensure!(
+            result.pointer("/request_receipt/user_message").and_then(Value::as_str)
+                == Some(detail.as_str()),
+            "structured request detail must be preserved: {result}"
+        );
+    }
+    ensure!(
+        result.get("freshness") == Some(&json!("fresh")),
+        "message repair must preserve the structured policy default: {result}"
+    );
+    if let Some(expected_freshness) = expected_freshness {
+        ensure!(
+            result.pointer("/request_receipt/freshness") == Some(&expected_freshness),
+            "caller receipt must retain precedence and its structured freshness: {result}"
+        );
+        ensure!(
+            result.pointer("/request_receipt/provider_error").is_none(),
+            "prior hover error must not leak into the caller receipt: {result}"
+        );
+        ensure!(
+            result.pointer("/copyable_payload/request_receipt") == result.get("request_receipt"),
+            "copyable request receipt must match the structured evidence: {result}"
+        );
+    } else {
+        ensure!(
+            result.get("request_receipt").is_none(),
+            "no request receipt should be invented: {result}"
+        );
+        ensure!(
+            result.pointer("/copyable_payload/request_receipt") == Some(&Value::Null),
+            "copyable payload must retain its explicit absence representation: {result}"
+        );
+    }
+    ensure!(
+        result.pointer("/copyable_payload/user_message").and_then(Value::as_str) == Some(message),
+        "copyable message must match the displayed message: {result}"
+    );
+    shutdown_and_exit(&mut client, json!("shutdown-policy"))
+}
+
+#[test]
+fn policy_message_without_request_evidence_is_explicit() -> Result<()> {
+    check_policy_message(None, "No request evidence is attached.")
+}
+
+#[test]
+fn policy_message_keeps_request_detail_out_of_policy() -> Result<()> {
+    check_policy_message(
+        Some(json!({
+            "freshness": "unknown", "user_message": "The recorded request returned no result."
+        })),
+        "Attached request freshness: unknown.",
+    )
+}
+
+#[test]
+fn policy_message_preserves_unknown_request_evidence() -> Result<()> {
+    check_policy_message(
+        Some(json!({"freshness": "unknown"})),
+        "Attached request freshness: unknown.",
+    )
+}
+
+#[test]
+fn policy_message_preserves_stale_request_evidence() -> Result<()> {
+    check_policy_message(Some(json!({"freshness": "stale"})), "Attached request freshness: stale.")
+}
+
+#[test]
+fn policy_message_preserves_fresh_request_evidence() -> Result<()> {
+    check_policy_message(Some(json!({"freshness": "fresh"})), "Attached request freshness: fresh.")
+}
+
+#[test]
+fn policy_message_preserves_not_applicable_request_evidence() -> Result<()> {
+    check_policy_message(
+        Some(json!({"freshness": "not_applicable"})),
+        "Attached request freshness: not applicable.",
+    )
+}
+
+#[test]
+fn policy_message_missing_request_freshness_is_unknown() -> Result<()> {
+    check_policy_message(Some(json!({})), "Attached request freshness: unknown.")
+}
+
+#[test]
+fn policy_message_invalid_request_freshness_is_unknown() -> Result<()> {
+    check_policy_message(
+        Some(json!({"freshness": "invented"})),
+        "Attached request freshness: unknown.",
+    )
+}
+
 fn assert_public_candidate(client: &RealProcessClient) -> Result<()> {
     ensure!(
         client.candidate_name() == "perllsp",
