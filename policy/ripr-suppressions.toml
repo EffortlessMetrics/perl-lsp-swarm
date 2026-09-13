@@ -3512,3 +3512,42 @@ created = "2026-09-13"
 review_after = "2026-09-20"
 expires = "2026-09-27"
 removal_criteria = "Remove when #12617 wires the first production consumer (re-scope the suppression to that consumer's seams) or when ripr#1429 resolves declaration-line and newtype-declaration probes; narrow immediately if a future receipt reports an executable (non-declaration) no_static_path seam in this file."
+
+# -----------------------------------------------------------------------------
+# Structural access-hop contract declarations (#13619, PR #14611): the same
+# declaration-line ripr#1429 class already accepted for this crate's sibling
+# reachability_operation contract (see
+# ripr-suppress-reachability-contract-declarations above), reproduced by the
+# same design under ripr 0.10.0. The module is private-field records behind
+# validated constructors because the issue's evidence law requires records a
+# producer cannot forge post-construction; the pub-field DTO alternative was
+# explicitly rejected by the 2026-08-24 campaign ruling on the sibling
+# contract for exactly that reason.
+#
+# Decisive falsification on this module, not inherited from the precedent:
+# probe `crates_perl-semantic-facts_src_structural_access_tests.rs:
+# field_construction` on line 17 is `const DOCUMENT: FileId = FileId(7);`,
+# the fixture document every one of the module's 102 inline falsifiers
+# constructs through, and it still reports reach:no "No static test path
+# found for the changed owner". A constant on the direct path of every test
+# in the module cannot be an uncovered seam; the probe class does not
+# resolve through constructor-call paths.
+#
+# This entry is deliberately NOT about `weakly_exposed`. Those 253 findings
+# are advisory by design (#3363/#2015, genuine_new_ripr_gap_count blocks on
+# `min(reachable_unrevealed + no_static_path, severe_gaps)`), they are
+# reported and left visible, and several are being worked as real test
+# hardening on their own merits. `reachable_unrevealed` is 0 on this head.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-structural-access-contract-declarations"
+kind = "declaration_line_no_static_path"
+paths = ["crates/perl-semantic-facts/src/structural_access/**"]
+classification = ["no_static_path"]
+owner = "structural-access-contract-lane"
+issue = "#13619"
+reason = "PR #14611 (#13619) adds the ordered structural access-hop contract as private-field records behind validated constructors, and ripr 0.10.0 reports 66 no_static_path probes on their declaration lines: 41 field_construction on private struct fields (StructuralAccessHop's ordinal/aggregate/operator/selector/spelling/outcome, StructuralAccessChain's schema_version/subject/hops, and the StructuralAccessContractError payload fields), 13 call_deletion on enum payload and const declarations, 5 match_arm, 4 return_value, 2 predicate and 1 error_path — all reach:no 'No static test path found for the changed owner'. The falsification is decisive and specific to this module: the probe on structural_access/tests.rs:17, `const DOCUMENT: FileId = FileId(7);`, is the fixture document every one of the 102 inline falsifiers builds on, and it still reports no_static_path. Every executable seam of the contract is asserted by those 102 inline falsifiers plus 5 external round-trip tests driving the public API from outside the crate (ordered round trips, operator and selector distinctions, per-hop and chain fingerprint sensitivity, all 13 hop laws and 8 chain laws, and the malformed-transport rejections). This entry covers only the non-actionable declaration-line class; the module's 253 weakly_exposed findings stay visible and non-blocking per #3363, and reachable_unrevealed is 0. Remove when EffortlessMetrics/ripr#1429 resolves declaration-line probes for private non-primitive-typed fields via constructor-call paths, or when #9474 gives the contract its first production consumer and the findings can be re-scoped to that consumer's seams."
+created = "2026-09-13"
+review_after = "2026-10-13"
+expires = "2026-11-13"
+removal_criteria = "EffortlessMetrics/ripr#1429 fixed upstream so declaration-line probes resolve through constructor-call paths, OR #9474 lands the first production consumer of this contract (re-scope to that consumer's seams), then delete this entry and rerun the enforce-new-ripr gate. HONEST SCOPE NOTE: the matcher is path-scoped and classification-qualified, so it suppresses only no_static_path in this module; reachable_unrevealed and weakly_exposed findings here are NOT masked and must be dispositioned separately."
