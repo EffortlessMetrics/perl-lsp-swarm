@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
-import type { HealthCheckResult } from './onboarding';
+import { HealthCheckStatus, type HealthCheckResult } from './onboarding';
+import type { LanguageServerRuntimeSnapshot } from './languageServerRuntimeHealth';
 import type {
   HealthCheckCommandResult,
   HealthCheckCommandStatus,
@@ -23,6 +24,12 @@ export interface ServerCommandContext {
   readonly reinstallServerBinary: () => Promise<ReinstallCommandResult>;
   readonly restartServer: () => Promise<void>;
   readonly runHealthCheck: (serverPath: string | null) => Promise<HealthCheckResult[]>;
+  /** Runtime proof supplied by the lifecycle owner after implicit startup. */
+  readonly runtimeHealthCheck: (resolvedPath: string | null) => HealthCheckResult;
+  /** Read-only lifecycle identity used to reject stale setup probe results. */
+  readonly currentRuntimeSnapshot: () => LanguageServerRuntimeSnapshot;
+  /** Report only a known matching runtime failure for explicit-path diagnostics. */
+  readonly runtimeFailureCheck?: (requestedPath: string | null) => HealthCheckResult | undefined;
   /** Optional until the negotiated identity protocol is available in composition. */
   readonly showBinaryIdentity?: () => Promise<unknown>;
 }
@@ -80,7 +87,51 @@ export function registerServerCommandGroup(
     async (serverPath?: string | null) => {
       const resolvedPath =
         serverPath !== undefined ? serverPath : await dependencies.resolveServerPath();
-      const results = await dependencies.runHealthCheck(resolvedPath);
+      const initialSnapshot =
+        serverPath === undefined ? dependencies.currentRuntimeSnapshot() : null;
+      const firstProbePath = initialSnapshot ? initialSnapshot.serverPath : resolvedPath;
+      let results = [...(await dependencies.runHealthCheck(firstProbePath))];
+      let runtimeResult: HealthCheckResult | undefined;
+      if (serverPath === undefined) {
+        const afterProbeSnapshot = dependencies.currentRuntimeSnapshot();
+        if (
+          initialSnapshot?.generation !== afterProbeSnapshot.generation ||
+          initialSnapshot?.serverPath !== afterProbeSnapshot.serverPath
+        ) {
+          results = [...(await dependencies.runHealthCheck(afterProbeSnapshot.serverPath))];
+          const finalSnapshot = dependencies.currentRuntimeSnapshot();
+          if (
+            afterProbeSnapshot.generation !== finalSnapshot.generation ||
+            afterProbeSnapshot.serverPath !== finalSnapshot.serverPath
+          ) {
+            results = [];
+            runtimeResult = {
+              label: 'LSP runtime',
+              ok: false,
+              status: HealthCheckStatus.Error,
+              detail:
+                'The language server changed during the health check. Run Health Check again.',
+            };
+          } else {
+            runtimeResult = dependencies.runtimeHealthCheck?.(finalSnapshot.serverPath);
+          }
+        } else {
+          runtimeResult = dependencies.runtimeHealthCheck?.(afterProbeSnapshot.serverPath);
+        }
+      } else {
+        runtimeResult = dependencies.runtimeFailureCheck?.(resolvedPath);
+      }
+      if (serverPath === undefined && runtimeResult === undefined) {
+        runtimeResult = {
+          label: 'LSP runtime',
+          ok: false,
+          status: HealthCheckStatus.Error,
+          detail: 'Runtime health evidence is unavailable.',
+        };
+      }
+      if (runtimeResult) {
+        results.push(runtimeResult);
+      }
       const commandResult = toHealthCheckCommandResult(results);
 
       const errors = results.filter((result) => !result.ok && result.status === 'error');
@@ -117,8 +168,12 @@ export function registerServerCommandGroup(
           }
         });
       } else {
+        const successMessage =
+          serverPath === undefined
+            ? 'Perl LSP health check passed.'
+            : 'Perl LSP setup check passed.';
         void vscode.window
-          .showInformationMessage('Perl LSP health check passed.', 'Show Output')
+          .showInformationMessage(successMessage, 'Show Output')
           .then((selection) => {
             if (selection === 'Show Output') {
               dependencies.outputChannel.show();

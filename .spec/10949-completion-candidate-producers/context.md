@@ -1,7 +1,17 @@
 # CAND-INV-01 context
 
 - Issue: #10949 (programme controller #8969, identity controller #8963).
-- Basis: main@30efa8a (2026-09-07).
+- Basis: main@30efa8a (2026-09-07), merged forward to main@8b945cf (2026-09-13).
+  That merge moved the scanned surface and `check` refused on the digest, which is
+  the control working. The re-audit found one change in the 42 scanned files: a
+  test-only call site in `completion.rs`'s `mod tests` gained a `source` argument
+  for a signature change owned elsewhere. No producer, route, finalizer, or
+  disposition is affected, and discovery still reports 58 producers across 18
+  classes with 0 post-finalizer appends, so the digest was accepted and the
+  projection regenerated. The digest deliberately covers whole file bytes rather
+  than the ship-only subset `has_cfg_test` filters from discovery: a test edit
+  that costs one re-audit is a better trade than a digest that could go stale on
+  a `cfg`-shape the filter misreads.
 - One PR; control plane only. No candidate inclusion, ordering, insertion,
   rank, cap, route, serialization, or protocol response change.
 

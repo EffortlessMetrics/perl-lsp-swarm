@@ -1085,22 +1085,17 @@ fn non_empty(opt: &Option<String>) -> Option<&str> {
 }
 
 /// Is `sha` an ancestor of `base` in `root`'s git history? `None` means the
-/// check was inconclusive (e.g. `sha` unresolvable in a shallow clone) — a
-/// soft degrade to "not confirmed" (treated as `false` by callers), not an
-/// instrument failure. This is a soak-period safety gate, not a correctness
-/// check on user input, so failing open here (never escalating a boundary
-/// during an unresolvable ancestry check) is the advisory-correct choice.
+/// check was inconclusive — a shallow or partial checkout, an unresolvable
+/// revision, or a git failure — a soft degrade to "not confirmed" (treated as
+/// `false` by callers), not an instrument failure. The verdict comes from the
+/// shared `xtask::git_ancestry` authority, never from a bare
+/// `merge-base --is-ancestor` exit code, so a present-but-disconnected graft
+/// cannot report a false "not an ancestor" (#14557). This is a soak-period
+/// safety gate, not a correctness check on user input, so failing open here
+/// (never escalating a boundary during an unprovable ancestry check) is the
+/// advisory-correct choice.
 fn is_ancestor(root: &Path, sha: &str, base: &str) -> Option<bool> {
-    let out = Command::new("git")
-        .current_dir(root)
-        .args(["merge-base", "--is-ancestor", sha, base])
-        .output()
-        .ok()?;
-    match out.status.code() {
-        Some(0) => Some(true),
-        Some(1) => Some(false),
-        _ => None,
-    }
+    xtask::git_ancestry::is_ancestor_verdict(&xtask::git_ancestry::is_ancestor(root, sha, base))
 }
 
 /// The subset of `changed` that is not present in `root`'s working tree.
@@ -1487,6 +1482,76 @@ custom:
     fn valid_fragment_has_no_findings() {
         let cfg = test_config();
         assert!(validate_fragment(&good_fragment(), &cfg).is_empty());
+    }
+
+    #[test]
+    fn plain_body_colon_is_rejected_but_block_body_colon_is_valid()
+    -> std::result::Result<(), String> {
+        let plain = r#"
+project: product
+component: Developer experience
+kind: Fixed
+body: A valid-looking body with a colon: followed by text.
+custom:
+  PR: "3768"
+  Breaking: "no"
+"#;
+        if serde_yaml_ng::from_str::<Fragment>(plain).is_ok() {
+            return Err(
+                "a plain YAML body must not accept an unquoted colon-space sequence".to_string()
+            );
+        }
+
+        let block = r#"
+project: product
+component: Developer experience
+kind: Fixed
+body: >-
+  A valid body with a colon: followed by text.
+custom:
+  PR: "3768"
+  Breaking: "no"
+"#;
+        let fragment = serde_yaml_ng::from_str::<Fragment>(block).map_err(|e| e.to_string())?;
+        if fragment.body != "A valid body with a colon: followed by text." {
+            return Err(format!(
+                "folded body changed punctuation or whitespace: {:?}",
+                fragment.body
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn repaired_product_12815_fragment_is_schema_valid() -> std::result::Result<(), String> {
+        let root = crate::utils::project_root().map_err(|e| e.to_string())?;
+        let path = root.join("xtask/tests/fixtures/product-12815-Fixed-221500.yaml");
+        let content =
+            std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let fragment: Fragment = serde_yaml_ng::from_str(&content).map_err(|e| e.to_string())?;
+        let findings =
+            validate_fragment(&fragment, &load_config(&root).map_err(|e| e.to_string())?);
+        if !findings.is_empty() {
+            return Err(format!("{}: {findings:?}", path.display()));
+        }
+        let expected_body = "Standalone POSIX and PowerShell installers promote a verified perllsp plus perl-dap product unit through an immutable candidate directory and an atomic current pointer. Interrupted or failed transitions leave the previous complete unit in place instead of a mixed pair. Migration impact: Windows installs now launch perllsp and perl-dap through PATH-visible .cmd shims and remove legacy install-directory .exe entry points, while POSIX publishes PATH names as links into .perl-lsp/current; consumers that invoke the installed executables by absolute path or copy installed files must move to the shim or link entry points.";
+        if fragment.body != expected_body {
+            return Err(format!(
+                "repaired body changed or was truncated: {body:?}",
+                body = fragment.body
+            ));
+        }
+        if fragment.project != "product"
+            || fragment.component != "Packaging and distribution"
+            || fragment.kind != "Fixed"
+            || fragment.custom.get("PR").map(String::as_str) != Some("12815")
+            || fragment.custom.get("Slug").map(String::as_str)
+                != Some("standalone-atomic-product-unit")
+            || fragment.custom.get("Breaking").map(String::as_str) != Some("yes")
+        {
+            return Err(format!("repaired fragment metadata changed: {:?}", fragment.custom));
+        }
+        Ok(())
     }
 
     #[test]
