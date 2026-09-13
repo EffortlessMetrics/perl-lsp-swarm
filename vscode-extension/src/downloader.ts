@@ -737,6 +737,12 @@ export class BinaryDownloader {
   /** Release metadata envelope. Real GitHub release JSON is far below this. */
   private static readonly MAX_RELEASE_METADATA_BYTES = 1024 * 1024;
   private lastErrorMessage: string | undefined;
+  /**
+   * The credential disposition of a release-metadata request that was refused
+   * with HTTP 403, if one was. Only that request can carry credentials, so only
+   * it can produce a credential-related remedy.
+   */
+  private releaseMetadata403Disposition: GitHubAuthDisposition | undefined;
 
   constructor(
     private readonly context: vscode.ExtensionContext,
@@ -763,22 +769,13 @@ export class BinaryDownloader {
    * it withheld because certificate validation is off (#15493): the setting to
    * change is `http.proxyStrictSSL`, not the environment.
    *
-   * The remedy names the release check rather than the failing request. A 403
-   * can also come from the artifact download, which never carries credentials,
-   * and the withheld-credential statement stays true either way: the release
-   * check really did run unauthenticated.
+   * The remedy follows the request that was actually refused, not the current
+   * settings. A 403 can also come from the archive or checksum download, which
+   * never carry credentials; re-enabling certificate validation would not
+   * change those, so they keep the generic advice.
    */
   private rateLimitRemedy(): string {
-    const strictTls = vscode.workspace
-      .getConfiguration('http')
-      .get<boolean>('proxyStrictSSL', true);
-    const disposition = resolveGitHubAuthDisposition({
-      url: BinaryDownloader.releasesApiUrl(),
-      hasToken: readGitHubToken() !== undefined,
-      strictTls,
-    });
-
-    if (disposition === 'withheld_unverified_tls') {
+    if (this.releaseMetadata403Disposition === 'withheld_unverified_tls') {
       return (
         'The release check ran without your GitHub token because "http.proxyStrictSSL" is disabled, ' +
         'which turns off certificate validation; re-enable it so the token can be used over a verified connection.'
@@ -790,6 +787,7 @@ export class BinaryDownloader {
 
   async ensureBinary(forceDownload = false): Promise<string | null> {
     this.lastErrorMessage = undefined;
+    this.releaseMetadata403Disposition = undefined;
     const myReason: ManagedInstallReason = forceDownload ? 'force' : 'ensure';
 
     // Singleflight: if an install is already running, decide whether to
@@ -1398,6 +1396,12 @@ export class BinaryDownloader {
       // Preserve the established message for a missing release.
       if (error instanceof BoundedJsonStatusError && error.statusCode === 404) {
         throw new Error('No releases found');
+      }
+      if (error instanceof BoundedJsonStatusError && error.statusCode === 403) {
+        // Remember the credential decision this refused request actually used.
+        // A later 403 from the archive or checksum download is a different
+        // request that never carries credentials, so it must not inherit this.
+        this.releaseMetadata403Disposition = authDisposition;
       }
       throw error;
     }

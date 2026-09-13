@@ -3125,9 +3125,11 @@ describe('ensureBinary error classification', () => {
   });
 
   /**
-   * A 403 is diagnosed against the credential decision that was actually made
-   * (#15493). Telling a user to set GITHUB_TOKEN is wrong advice when the token
-   * exists and was withheld because certificate validation is disabled.
+   * A 403 is diagnosed against the credential decision the refused request
+   * actually used (#15493). Telling a user to set GITHUB_TOKEN is wrong advice
+   * when the token exists and was withheld because certificate validation is
+   * disabled — and the `proxyStrictSSL` remedy is equally wrong for a 403 from
+   * the archive or checksum download, which never carries credentials.
    */
   function withStrictSSL(strictSSL: boolean): void {
     const vscode = require('vscode');
@@ -3139,6 +3141,40 @@ describe('ensureBinary error classification', () => {
       inspect: jest.fn(),
       update: jest.fn(),
     }));
+  }
+
+  /**
+   * Drive a real release-metadata request that GitHub refuses with 403, so the
+   * remedy is derived from the disposition that request actually used rather
+   * than from a stubbed error string.
+   */
+  function setupReleaseMetadata403(): void {
+    (
+      downloader as unknown as { downloadWithProgress: { mockRestore?: () => void } }
+    ).downloadWithProgress.mockRestore?.();
+
+    jest
+      .spyOn(downloader as unknown as { getPlatformTarget: () => string }, 'getPlatformTarget')
+      .mockReturnValue('x86_64-unknown-linux-gnu');
+
+    jest
+      .spyOn(downloader as unknown as { httpGet: (...args: unknown[]) => unknown }, 'httpGet')
+      .mockImplementation((..._args: unknown[]) => {
+        const callback = _args[3] as (value: unknown) => void;
+        const response = new EventEmitter() as EventEmitter & {
+          statusCode: number;
+          headers: Record<string, string>;
+          destroy: jest.Mock;
+        };
+        response.statusCode = 403;
+        response.headers = {};
+        response.destroy = jest.fn();
+        callback(response);
+        process.nextTick(() => response.emit('end'));
+        const request = new EventEmitter() as EventEmitter & { destroy: jest.Mock };
+        request.destroy = jest.fn();
+        return request;
+      });
   }
 
   function withGitHubToken(token: string | undefined, run: () => Promise<void>): Promise<void> {
@@ -3162,10 +3198,10 @@ describe('ensureBinary error classification', () => {
     });
   }
 
-  test('HTTP 403 names proxyStrictSSL when a present token was withheld', async () => {
+  test('metadata 403 names proxyStrictSSL when a present token was withheld', async () => {
     await withGitHubToken('test-token-should-not-leak', async () => {
       withStrictSSL(false);
-      setupDownloadError('Failed to download: HTTP 403');
+      setupReleaseMetadata403();
       const vscode = require('vscode');
       vscode.window.showErrorMessage.mockResolvedValue(undefined);
 
@@ -3181,12 +3217,12 @@ describe('ensureBinary error classification', () => {
     });
   });
 
-  test('HTTP 403 keeps the token advice when no token was withheld', async () => {
+  test('metadata 403 keeps the token advice when no token was withheld', async () => {
     await withGitHubToken(undefined, async () => {
       // Certificate validation is off, but there is no credential to withhold,
       // so the anonymous rate limit really is the whole story.
       withStrictSSL(false);
-      setupDownloadError('Failed to download: HTTP 403');
+      setupReleaseMetadata403();
       const vscode = require('vscode');
       vscode.window.showErrorMessage.mockResolvedValue(undefined);
 
@@ -3198,10 +3234,10 @@ describe('ensureBinary error classification', () => {
     });
   });
 
-  test('HTTP 403 keeps the token advice when the token was sent', async () => {
+  test('metadata 403 keeps the token advice when the token was sent', async () => {
     await withGitHubToken('test-token-should-not-leak', async () => {
       withStrictSSL(true);
-      setupDownloadError('Failed to download: HTTP 403');
+      setupReleaseMetadata403();
       const vscode = require('vscode');
       vscode.window.showErrorMessage.mockResolvedValue(undefined);
 
@@ -3211,6 +3247,24 @@ describe('ensureBinary error classification', () => {
       expect(message).toMatch(/set the GITHUB_TOKEN environment variable/);
       expect(message).not.toMatch(/http\.proxyStrictSSL/);
       expect(message).not.toContain('test-token-should-not-leak');
+    });
+  });
+
+  test('non-metadata 403 keeps the generic advice even with a withheld credential', async () => {
+    // The archive and checksum downloads never carry credentials, so
+    // re-enabling certificate validation cannot resolve a 403 from them. The
+    // remedy must follow the refused request, not the current settings.
+    await withGitHubToken('test-token-should-not-leak', async () => {
+      withStrictSSL(false);
+      setupDownloadError('Failed to download: HTTP 403');
+      const vscode = require('vscode');
+      vscode.window.showErrorMessage.mockResolvedValue(undefined);
+
+      await downloader.ensureBinary();
+
+      const message = vscode.window.showErrorMessage.mock.calls[0][0] as string;
+      expect(message).not.toMatch(/http\.proxyStrictSSL/);
+      expect(message).toMatch(/set the GITHUB_TOKEN environment variable/);
     });
   });
 
