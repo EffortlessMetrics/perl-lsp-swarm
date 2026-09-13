@@ -11,40 +11,150 @@
 //! Runtime schema fill, generated row classes, import-symbol customization,
 //! naming hooks, relationship accessors, dynamic identities, and edit
 //! authorization also remain blocked.
+//!
+//! # Containment (temporary, pending #13238)
+//!
+//! Upstream DBIx::QuickORM `0.000029` does not model package state as one
+//! "current builder" bit. Each import installs a set of actual local names and
+//! records them for a later `unimport`. A second import can overwrite some of
+//! the names it installs while leaving a distinct earlier renamed alias live,
+//! so no single bit — and no latest-import-wins rule — reproduces the result.
+//!
+//! Until #13238 supplies the exact installed-name state, this extractor admits
+//! only the one shape it can prove:
+//!
+//! ```text
+//! exactly one parser-proven exact QuickORM table import for the package
+//! + no second QuickORM import/`no`/reconfiguration for that package
+//! + the first admitted direct table builder
+//! → candidate fields
+//!
+//! anything else
+//! → no candidate for the whole package
+//! ```
+//!
+//! Suppression is whole-package and retroactive: a later import event discards
+//! candidates already collected for that package. Losing a non-published
+//! candidate is preferable to preserving false exactness.
 
 use crate::{Node, NodeKind};
 use perl_semantic_facts::{
     AnchorFact, AnchorId, Confidence, EntityFact, EntityId, EntityKind, FileId, Provenance,
 };
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
+
+/// What this extractor can prove about one package's QuickORM import state.
+///
+/// There is deliberately no variant meaning "table mode was replaced by a
+/// later import": that is the upstream claim this containment slice retires.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PackageImportState {
+    /// Exactly one QuickORM import, proven to be the exact table-class form.
+    ExactTableImport,
+    /// Exactly one QuickORM import, in a form this extractor does not admit.
+    UnadmittedSingleImport,
+    /// More than one QuickORM import/`no` event, or an event whose effect on
+    /// installed names cannot be modeled. Suppresses the package entirely.
+    NotProven,
+}
+
+impl PackageImportState {
+    /// Whether this state installs the table-class DSL in the package.
+    ///
+    /// Only the proven exact import does. Both other states answer "no" for
+    /// different reasons, which is why this is not the negation of
+    /// [`Self::retracts_candidates`].
+    fn admits_table_builder(self) -> bool {
+        matches!(self, Self::ExactTableImport)
+    }
+
+    /// Whether this state withdraws candidates already collected for the
+    /// package.
+    ///
+    /// Only `NotProven` does. `UnadmittedSingleImport` collected nothing to
+    /// withdraw, which is a different answer from having lost authority it
+    /// held — conflating the two is the single-bit model this slice retires.
+    fn retracts_candidates(self) -> bool {
+        matches!(self, Self::NotProven)
+    }
+}
+
+/// Whether a `use`/`no` names the module this adapter models.
+///
+/// The adapter's identity is one exact module name, matched at four walk
+/// sites. A child namespace such as `DBIx::QuickORM::Util` installs different
+/// names and is not this import.
+fn is_quickorm_module(module: &str) -> bool {
+    module == "DBIx::QuickORM"
+}
 
 #[derive(Debug, Clone, Default)]
 struct QuickOrmWalkCtx {
     current_package: Option<String>,
-    explicit_table_packages: BTreeSet<String>,
+    imports: BTreeMap<String, PackageImportState>,
+    consumed_builders: BTreeSet<String>,
 }
 
 impl QuickOrmWalkCtx {
+    /// The package whose symbol table a statement at this point would touch.
+    ///
+    /// Perl's implicit starting package is `main`, so a file with no `package`
+    /// statement still has one key rather than a null one.
     fn package(&self) -> &str {
         self.current_package.as_deref().unwrap_or("main")
     }
 
+    /// Whether the current package's one-shot table builder is installed and
+    /// still unused.
+    ///
+    /// Both clauses are load-bearing and neither implies the other. The exact
+    /// match on `ExactTableImport` is deliberate: `UnadmittedSingleImport` and
+    /// `NotProven` must not activate, and `NotProven` in particular must not,
+    /// even though the end-of-walk filter would discard its candidates anyway.
     fn table_builder_active(&self) -> bool {
-        self.explicit_table_packages.contains(self.package())
+        let package = self.package();
+        self.imports.get(package).is_some_and(|state| state.admits_table_builder())
+            && !self.consumed_builders.contains(package)
     }
 
-    fn replace_current_builder(&mut self, active: bool) {
+    /// Record one `use DBIx::QuickORM` event for the current package.
+    ///
+    /// The first import is modeled from its own proven form. Any later import
+    /// makes the package `NotProven`, because this extractor cannot tell which
+    /// installed names survived it.
+    fn record_import(&mut self, exact_table_class: bool) {
         let package = self.package().to_string();
-        if active {
-            self.explicit_table_packages.insert(package);
-        } else {
-            self.explicit_table_packages.remove(&package);
-        }
+        let next = match self.imports.get(&package) {
+            None if exact_table_class => PackageImportState::ExactTableImport,
+            None => PackageImportState::UnadmittedSingleImport,
+            Some(_) => PackageImportState::NotProven,
+        };
+        self.imports.insert(package, next);
     }
 
+    /// Record one `no DBIx::QuickORM` event for the current package.
+    ///
+    /// `unimport` removes the names recorded by a specific earlier import. This
+    /// extractor does not retain those name sets, so the package is suppressed.
+    fn record_unimport(&mut self) {
+        let package = self.package().to_string();
+        self.imports.insert(package, PackageImportState::NotProven);
+    }
+
+    /// Record that the package's one-shot table builder has already run.
     fn consume_current_builder(&mut self) {
         let package = self.package().to_string();
-        self.explicit_table_packages.remove(&package);
+        self.consumed_builders.insert(package);
+    }
+
+    /// Whether candidates already collected for `package` must be retracted.
+    ///
+    /// Only `NotProven` retracts. A package that is absent, or carries one
+    /// unadmitted import, produced nothing to retract — that is a different
+    /// answer from "lost the authority it had", and collapsing the two is the
+    /// single-bit model this containment slice retires.
+    fn is_suppressed(&self, package: &str) -> bool {
+        self.imports.get(package).is_some_and(|state| state.retracts_candidates())
     }
 }
 
@@ -63,6 +173,14 @@ pub(crate) struct QuickOrmColumnFact {
     pub(crate) anchor: AnchorFact,
 }
 
+/// A candidate collected during the walk, retained with the package that
+/// declared it so a later import event can suppress it.
+#[derive(Debug, Clone)]
+struct PendingCandidate {
+    package: String,
+    fact: QuickOrmColumnFact,
+}
+
 /// Extract the bounded DBIx::QuickORM column candidates without publishing them.
 ///
 /// There is intentionally no non-test caller while canonical admission and
@@ -74,17 +192,24 @@ pub(crate) fn extract_dbix_quickorm_column_candidates(
     ast: &Node,
     file_id: FileId,
 ) -> Vec<QuickOrmColumnFact> {
-    let mut out = Vec::new();
+    let mut pending = Vec::new();
     let mut ctx = QuickOrmWalkCtx::default();
-    walk_quickorm(ast, file_id, &mut ctx, &mut out);
-    out
+    walk_quickorm(ast, file_id, &mut ctx, &mut pending);
+
+    // Import state is only final once the whole file has been walked: an import
+    // event after a table declaration still suppresses the package.
+    pending
+        .into_iter()
+        .filter(|candidate| !ctx.is_suppressed(&candidate.package))
+        .map(|candidate| candidate.fact)
+        .collect()
 }
 
 fn walk_quickorm(
     node: &Node,
     file_id: FileId,
     ctx: &mut QuickOrmWalkCtx,
-    out: &mut Vec<QuickOrmColumnFact>,
+    out: &mut Vec<PendingCandidate>,
 ) {
     match &node.kind {
         NodeKind::Program { statements } => {
@@ -112,14 +237,11 @@ fn walk_quickorm(
                 ctx.current_package = Some(name.clone());
             }
         }
-        NodeKind::Use { module, args, .. } if module == "DBIx::QuickORM" => {
-            // Every import creates and installs a fresh builder in the caller.
-            // A later plain import therefore replaces a table builder with the
-            // default ORM builder instead of preserving table-class activation.
-            ctx.replace_current_builder(is_explicit_table_class_import(args));
+        NodeKind::Use { module, args, .. } if is_quickorm_module(module) => {
+            ctx.record_import(is_explicit_table_class_import(args));
         }
-        NodeKind::No { module, .. } if module == "DBIx::QuickORM" => {
-            ctx.consume_current_builder();
+        NodeKind::No { module, .. } if is_quickorm_module(module) => {
+            ctx.record_unimport();
         }
         NodeKind::ExpressionStatement { expression } if ctx.table_builder_active() => {
             // In a type=table builder, the first table() call removes the DSL
@@ -129,8 +251,19 @@ fn walk_quickorm(
             if extract_table_declaration(expression, file_id, ctx, out) {
                 ctx.consume_current_builder();
             }
+            // This arm never descends, and the builder body is an anonymous
+            // sub that `extract_table_declaration` reads for columns only. A
+            // `use`/`no` inside it still runs at compile time, so record it
+            // here; the end-of-walk filter drops whatever it suppresses.
+            record_nested_import_events(expression, ctx);
         }
-        NodeKind::Subroutine { .. } | NodeKind::Method { .. } => {}
+        NodeKind::Subroutine { .. } | NodeKind::Method { .. } => {
+            // A `table` call in a deferred definition has not executed, but
+            // `use`/`no` are compile-time: they run wherever they appear. Scan
+            // the body for import events only, so a nested import cannot escape
+            // containment while a nested `table` call still stays deferred.
+            record_nested_import_events(node, ctx);
+        }
         _ => {
             // A declaration or nested call can still execute the one-shot
             // builder's first `table` invocation (for example
@@ -146,34 +279,112 @@ fn walk_quickorm(
     }
 }
 
+/// Record QuickORM import events inside a deferred definition.
+///
+/// This deliberately emits no candidates and consumes no builder: only the
+/// compile-time import events matter here.
+fn record_nested_import_events(node: &Node, ctx: &mut QuickOrmWalkCtx) {
+    match &node.kind {
+        NodeKind::Block { statements } => {
+            // Same lexical rule as the main walk: a `package` inside the body
+            // must not leak back out to the enclosing statement sequence.
+            let saved_package = ctx.current_package.clone();
+            for statement in statements {
+                record_nested_import_events(statement, ctx);
+            }
+            ctx.current_package = saved_package;
+        }
+        NodeKind::Package { name, block, .. } => {
+            let saved_package = ctx.current_package.clone();
+            ctx.current_package = Some(name.clone());
+            if let Some(block) = block {
+                record_nested_import_events(block, ctx);
+                ctx.current_package = saved_package;
+            }
+        }
+        NodeKind::Use { module, args, .. } if is_quickorm_module(module) => {
+            ctx.record_import(is_explicit_table_class_import(args));
+        }
+        NodeKind::No { module, .. } if is_quickorm_module(module) => {
+            ctx.record_unimport();
+        }
+        _ => {
+            for child in node.children() {
+                record_nested_import_events(child, ctx);
+            }
+        }
+    }
+}
+
+/// One normalized `use DBIx::QuickORM` import argument.
+///
+/// `proven_static` records whether the *source form* proves the argument is a
+/// literal string. A bareword is not proven: `type => table` is
+/// indistinguishable from a constant or a `table()` call resolved at runtime,
+/// so it cannot earn the same admission as `type => 'table'`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ImportArg {
+    value: String,
+    proven_static: bool,
+}
+
+/// An exact table-class import is `type` followed by a *proven static* `table`.
+///
+/// The key may be a bareword: under a fat arrow Perl autoquotes it, and the
+/// `qw`/quoted spellings carry their own proof. The value may not, because a
+/// bareword there is a live expression this extractor cannot evaluate.
 fn is_explicit_table_class_import(args: &[String]) -> bool {
     let normalized = normalized_import_args(args);
     matches!(
         normalized.as_slice(),
-        [type_key, table_value] if type_key == "type" && table_value == "table"
+        [type_key, table_value]
+            if type_key.value == "type"
+                && table_value.value == "table"
+                && table_value.proven_static
     )
 }
 
-fn normalized_import_args(args: &[String]) -> Vec<String> {
+fn normalized_import_args(args: &[String]) -> Vec<ImportArg> {
     let mut normalized = Vec::new();
 
     for arg in args {
         let trimmed = arg.trim();
         if let Some(words) = parse_qw_words(trimmed) {
-            normalized.extend(words.into_iter().filter_map(|word| normalize_import_value(&word)));
+            // `qw` autoquotes every word, so each one is a proven literal.
+            normalized.extend(words.into_iter().filter_map(|word| {
+                normalize_symbol_name(&word).map(|value| ImportArg { value, proven_static: true })
+            }));
         } else if !matches!(trimmed, "" | "," | "=>")
-            && let Some(value) = normalize_import_value(trimmed)
+            && let Some(arg) = classify_import_arg(trimmed)
         {
-            normalized.push(value);
+            normalized.push(arg);
         }
     }
 
     normalized
 }
 
-fn normalize_import_value(raw: &str) -> Option<String> {
-    let trimmed = raw.trim().trim_matches('\'').trim_matches('"').trim();
-    if trimmed.is_empty() { None } else { Some(trimmed.to_string()) }
+fn classify_import_arg(raw: &str) -> Option<ImportArg> {
+    let trimmed = raw.trim();
+    let value = normalize_symbol_name(trimmed)?;
+    Some(ImportArg { value, proven_static: is_static_string_literal(trimmed) })
+}
+
+/// Whether a raw import token is a quoted literal with no interpolation.
+fn is_static_string_literal(raw: &str) -> bool {
+    // Taking both ends from the same iterator rejects a lone quote character,
+    // where `next_back` finds nothing left.
+    let mut chars = raw.chars();
+    let (Some(open), Some(close)) = (chars.next(), chars.next_back()) else {
+        return false;
+    };
+    match (open, close) {
+        ('\'', '\'') => true,
+        // A double-quoted value interpolates, so only a sigil-free body is a
+        // proven literal.
+        ('"', '"') => !raw.contains('$') && !raw.contains('@'),
+        _ => false,
+    }
 }
 
 /// Find the first `table` invocation reachable in an executable expression.
@@ -194,7 +405,7 @@ fn extract_table_declaration(
     expression: &Node,
     file_id: FileId,
     ctx: &QuickOrmWalkCtx,
-    out: &mut Vec<QuickOrmColumnFact>,
+    out: &mut Vec<PendingCandidate>,
 ) -> bool {
     let Some(call) = find_executable_table_call(expression) else {
         return false;
@@ -227,7 +438,7 @@ fn walk_table_builder(
     builder: &Node,
     file_id: FileId,
     ctx: &QuickOrmWalkCtx,
-    out: &mut Vec<QuickOrmColumnFact>,
+    out: &mut Vec<PendingCandidate>,
 ) {
     match &builder.kind {
         NodeKind::Subroutine { name: None, body, .. } => walk_table_body(body, file_id, ctx, out),
@@ -240,7 +451,7 @@ fn walk_table_body(
     body: &Node,
     file_id: FileId,
     ctx: &QuickOrmWalkCtx,
-    out: &mut Vec<QuickOrmColumnFact>,
+    out: &mut Vec<PendingCandidate>,
 ) {
     let NodeKind::Block { statements } = &body.kind else {
         return;
@@ -259,7 +470,7 @@ fn extract_column_expression(
     expression: &Node,
     file_id: FileId,
     ctx: &QuickOrmWalkCtx,
-    out: &mut Vec<QuickOrmColumnFact>,
+    out: &mut Vec<PendingCandidate>,
 ) {
     match &expression.kind {
         NodeKind::FunctionCall { name, args } if name == "column" => {
@@ -287,7 +498,7 @@ fn emit_candidate(
     candidate: NameCandidate,
     file_id: FileId,
     ctx: &QuickOrmWalkCtx,
-    out: &mut Vec<QuickOrmColumnFact>,
+    out: &mut Vec<PendingCandidate>,
 ) {
     let Some(name) = normalize_static_field_name(&candidate.name) else {
         return;
@@ -378,13 +589,13 @@ fn push_field(
     field_name: &str,
     source_name: &NameCandidate,
     file_id: FileId,
-    out: &mut Vec<QuickOrmColumnFact>,
+    out: &mut Vec<PendingCandidate>,
 ) {
     let canonical_name = format!("{package}::{field_name}");
-    if out.iter().any(|fact| {
-        fact.entity.canonical_name == canonical_name
-            && fact.anchor.span_start_byte as usize == source_name.span_start
-            && fact.anchor.span_end_byte as usize == source_name.span_end
+    if out.iter().any(|candidate| {
+        candidate.fact.entity.canonical_name == canonical_name
+            && candidate.fact.anchor.span_start_byte as usize == source_name.span_start
+            && candidate.fact.anchor.span_end_byte as usize == source_name.span_end
     }) {
         return;
     }
@@ -421,7 +632,10 @@ fn push_field(
         provenance: Provenance::FrameworkSynthesis,
         confidence: Confidence::Medium,
     };
-    out.push(QuickOrmColumnFact { entity, anchor });
+    out.push(PendingCandidate {
+        package: package.to_string(),
+        fact: QuickOrmColumnFact { entity, anchor },
+    });
 }
 
 fn stable_id(label: &str, file_id: FileId, anchor_start: usize, package: &str, name: &str) -> u64 {
@@ -459,6 +673,127 @@ mod tests {
 
     fn has_name(facts: &[QuickOrmColumnFact], canonical_name: &str) -> bool {
         facts.iter().any(|fact| fact.entity.canonical_name == canonical_name)
+    }
+
+    /// The walk context's transition table, asserted without the parser.
+    ///
+    /// The end-of-walk filter drops `NotProven` packages whatever the builder
+    /// predicate answered, so the `NotProven` arm of `table_builder_active` is
+    /// unobservable through parsed source. It is still load-bearing: without it
+    /// the predicate would claim authority the package no longer has. Pin the
+    /// transition table directly so that arm cannot silently rot.
+    #[test]
+    fn the_walk_context_activates_the_builder_only_for_one_exact_unconsumed_import() {
+        let fresh = QuickOrmWalkCtx::default;
+
+        assert!(!fresh().table_builder_active(), "no import proves nothing");
+
+        let mut unadmitted = fresh();
+        unadmitted.record_import(false);
+        assert!(
+            !unadmitted.table_builder_active(),
+            "a single import this extractor does not admit is not table mode"
+        );
+
+        let mut exact = fresh();
+        exact.record_import(true);
+        assert!(exact.table_builder_active(), "one exact table import activates");
+
+        let mut repeated = fresh();
+        repeated.record_import(true);
+        repeated.record_import(true);
+        assert!(
+            !repeated.table_builder_active(),
+            "a second import leaves the installed names unknown"
+        );
+        assert!(repeated.is_suppressed("main"));
+
+        let mut unimported = fresh();
+        unimported.record_import(true);
+        unimported.record_unimport();
+        assert!(
+            !unimported.table_builder_active(),
+            "`no DBIx::QuickORM` removes the authority this extractor cannot track"
+        );
+        assert!(unimported.is_suppressed("main"));
+
+        let mut consumed = fresh();
+        consumed.record_import(true);
+        consumed.consume_current_builder();
+        assert!(
+            !consumed.table_builder_active(),
+            "the builder is one-shot: the first table call closes it"
+        );
+        assert!(
+            !consumed.is_suppressed("main"),
+            "consuming the builder must not suppress the candidates it emitted"
+        );
+    }
+
+    /// The two state policies, exhaustively, as pure functions.
+    ///
+    /// Every variant is named against both questions so neither can quietly
+    /// become the other's negation: `UnadmittedSingleImport` answers "no" to
+    /// both, and that middle case is the whole point of having three states.
+    #[test]
+    fn each_import_state_answers_both_policy_questions_separately() {
+        use PackageImportState::{ExactTableImport, NotProven, UnadmittedSingleImport};
+
+        assert!(ExactTableImport.admits_table_builder());
+        assert!(!UnadmittedSingleImport.admits_table_builder());
+        assert!(!NotProven.admits_table_builder());
+
+        assert!(NotProven.retracts_candidates());
+        assert!(!ExactTableImport.retracts_candidates());
+        assert!(!UnadmittedSingleImport.retracts_candidates());
+    }
+
+    /// The adapter's module identity, without the walk.
+    #[test]
+    fn only_the_exact_quickorm_module_name_is_this_adapters_import() {
+        assert!(is_quickorm_module("DBIx::QuickORM"));
+
+        assert!(!is_quickorm_module("DBIx::QuickORM::Util"));
+        assert!(!is_quickorm_module("DBIx::Quick"));
+        assert!(!is_quickorm_module("DBIx::Class"));
+        assert!(!is_quickorm_module("dbix::quickorm"));
+        assert!(!is_quickorm_module("strict"));
+        assert!(!is_quickorm_module(""));
+    }
+
+    /// The retroactive filter's predicate, asserted without the parser.
+    ///
+    /// Only `NotProven` retracts candidates. The other three cases — never
+    /// imported, one unadmitted import, and a package this walk never saw —
+    /// emit nothing to retract in the first place, so widening the predicate
+    /// to cover them changes no parsed-source result. They are still distinct
+    /// answers to "did this package lose authority it had", and confusing
+    /// "produced nothing" with "was retracted" is how the previous
+    /// single-bit model went wrong. Pin all four directly.
+    #[test]
+    fn the_walk_context_suppresses_only_a_package_whose_import_history_is_unprovable() {
+        let mut ctx = QuickOrmWalkCtx::default();
+        assert!(
+            !ctx.is_suppressed("main"),
+            "a package with no QuickORM import has nothing to retract"
+        );
+
+        ctx.record_import(false);
+        assert!(
+            !ctx.is_suppressed("main"),
+            "one unadmitted import is not proof that authority was lost"
+        );
+
+        ctx.record_import(true);
+        assert!(ctx.is_suppressed("main"), "a second import leaves the installed names unknown");
+        assert!(!ctx.is_suppressed("Other::Package"), "suppression is per package, not per file");
+
+        let mut exact = QuickOrmWalkCtx::default();
+        exact.record_import(true);
+        assert!(
+            !exact.is_suppressed("main"),
+            "the admitted single-import cohort must survive the filter"
+        );
     }
 
     #[test]
@@ -604,7 +939,7 @@ table inner => sub { column inner_id => sub { primary_key }; };
     }
 
     #[test]
-    fn later_plain_import_replaces_only_the_current_package_builder() {
+    fn a_second_import_fails_the_package_closed_without_affecting_its_neighbour() {
         let facts = candidate_facts(
             r#"
 package Outer;
@@ -623,8 +958,358 @@ table inner => sub { column inner_id => sub { primary_key }; };
 "#,
         );
 
+        // `Inner` is suppressed because two imports happened, not because the
+        // second one is modeled as replacing the first.
         assert!(has_name(&facts, "Outer::outer_id"));
         assert!(!has_name(&facts, "Inner::inner_id"));
+    }
+
+    #[test]
+    fn repeated_import_order_and_shape_never_selects_a_surviving_builder() {
+        // Each case has two QuickORM import events for one package. Under the
+        // containment slice none of them may guess which names stayed live.
+        for (label, source) in [
+            (
+                "table then plain",
+                r#"
+package My::ORM::Table::User;
+use DBIx::QuickORM type => 'table';
+use DBIx::QuickORM;
+table users => sub { column id => sub { primary_key }; };
+1;
+"#,
+            ),
+            (
+                "plain then table",
+                r#"
+package My::ORM::Table::User;
+use DBIx::QuickORM;
+use DBIx::QuickORM type => 'table';
+table users => sub { column id => sub { primary_key }; };
+1;
+"#,
+            ),
+            (
+                "table then renamed alias",
+                r#"
+package My::ORM::Table::User;
+use DBIx::QuickORM type => 'table';
+use DBIx::QuickORM type => 'table', rename => { table => 'qorm_table' };
+table users => sub { column id => sub { primary_key }; };
+1;
+"#,
+            ),
+            (
+                "two distinct aliases",
+                r#"
+package My::ORM::Table::User;
+use DBIx::QuickORM type => 'table', rename => { table => 'tbl_a' };
+use DBIx::QuickORM type => 'table', rename => { table => 'tbl_b' };
+table users => sub { column id => sub { primary_key }; };
+1;
+"#,
+            ),
+            (
+                "table then exact repeat",
+                r#"
+package My::ORM::Table::User;
+use DBIx::QuickORM type => 'table';
+use DBIx::QuickORM type => 'table';
+table users => sub { column id => sub { primary_key }; };
+1;
+"#,
+            ),
+        ] {
+            let facts = candidate_facts(source);
+            assert!(
+                !has_name(&facts, "My::ORM::Table::User::id"),
+                "repeated import must fail closed: {label}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_import_after_the_table_declaration_retracts_the_package_candidates() {
+        // The walk reaches `table` while the package still looks exact. Import
+        // state is only final at end of file, so the candidate must be dropped.
+        let facts = candidate_facts(
+            r#"
+package My::ORM::Table::User;
+use DBIx::QuickORM type => 'table';
+
+table users => sub { column id => sub { primary_key }; };
+
+use DBIx::QuickORM;
+1;
+"#,
+        );
+
+        assert!(!has_name(&facts, "My::ORM::Table::User::id"));
+    }
+
+    #[test]
+    fn an_import_inside_a_deferred_definition_still_fails_the_package_closed() {
+        // `use`/`no` run at compile time wherever they appear, so a sub body is
+        // not a hiding place for a second import event. The companion control
+        // in `deferred_sub_body_table_call_does_not_consume_the_builder` proves
+        // a nested `table` call is still treated as deferred.
+        for (label, source) in [
+            (
+                "nested plain import",
+                r#"
+package My::ORM::Table::User;
+use DBIx::QuickORM type => 'table';
+
+sub helper { use DBIx::QuickORM; }
+
+table users => sub { column id => sub { primary_key }; };
+1;
+"#,
+            ),
+            (
+                "nested unimport",
+                r#"
+package My::ORM::Table::User;
+use DBIx::QuickORM type => 'table';
+
+sub helper { no DBIx::QuickORM; }
+
+table users => sub { column id => sub { primary_key }; };
+1;
+"#,
+            ),
+            // `method` is a distinct node kind sharing the same walk arm, so it
+            // needs its own case rather than inheriting the `sub` result.
+            (
+                "nested import in a method body",
+                r#"
+package My::ORM::Table::User;
+use DBIx::QuickORM type => 'table';
+
+method helper { use DBIx::QuickORM; }
+
+table users => sub { column id => sub { primary_key }; };
+1;
+"#,
+            ),
+            (
+                "nested unimport in a method body",
+                r#"
+package My::ORM::Table::User;
+use DBIx::QuickORM type => 'table';
+
+method helper { no DBIx::QuickORM; }
+
+table users => sub { column id => sub { primary_key }; };
+1;
+"#,
+            ),
+        ] {
+            let facts = candidate_facts(source);
+            assert!(
+                !has_name(&facts, "My::ORM::Table::User::id"),
+                "nested import event must fail the package closed: {label}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_table_dsl_without_any_quickorm_import_is_not_a_candidate_source() {
+        // `table` and `column` are ordinary Perl sub names. Without an import
+        // the package has no QuickORM state at all, and the extractor must not
+        // mint fields from the bare shape of the call.
+        let facts = candidate_facts(
+            r#"
+package My::Reporting::Layout;
+
+table users => sub {
+    column id => sub { primary_key };
+};
+1;
+"#,
+        );
+
+        assert!(facts.is_empty());
+    }
+
+    #[test]
+    fn only_quickorm_import_events_count_toward_the_containment() {
+        // Real Perl files carry unrelated imports. If the module guard did not
+        // discriminate, `use strict` alone would suppress every package, and a
+        // cohort built only from QuickORM imports would never notice.
+        let facts = candidate_facts(
+            r#"
+package My::ORM::Table::User;
+use strict;
+use warnings;
+use DBIx::QuickORM type => 'table';
+use POSIX qw(floor);
+no warnings 'uninitialized';
+
+table users => sub { column id => sub { primary_key }; };
+1;
+"#,
+        );
+
+        assert!(has_name(&facts, "My::ORM::Table::User::id"));
+    }
+
+    #[test]
+    fn only_quickorm_import_events_count_inside_a_deferred_definition() {
+        // The nested scan has its own module guards, reached only from the
+        // builder statement and from deferred definitions. Without an unrelated
+        // import on those paths, a guard that matched every module would still
+        // look covered: the top-level negative control never enters them.
+        let facts = candidate_facts(
+            r#"
+package My::ORM::Table::User;
+use DBIx::QuickORM type => 'table';
+
+table users => sub {
+    use integer;
+    no warnings 'uninitialized';
+    column id => sub { primary_key };
+};
+
+sub helper {
+    use POSIX qw(floor);
+    no strict 'refs';
+    return 1;
+}
+1;
+"#,
+        );
+
+        assert!(has_name(&facts, "My::ORM::Table::User::id"));
+    }
+
+    #[test]
+    fn an_import_inside_the_table_builder_still_fails_the_package_closed() {
+        // The builder body is an anonymous sub the extractor reads for columns
+        // only, and the active-builder statement arm does not descend. A second
+        // import there is still a compile-time event for the package.
+        for (label, source) in [
+            (
+                "import in the builder body",
+                r#"
+package My::ORM::Table::User;
+use DBIx::QuickORM type => 'table';
+table users => sub { use DBIx::QuickORM; column id => sub { primary_key }; };
+1;
+"#,
+            ),
+            (
+                "unimport in the builder body",
+                r#"
+package My::ORM::Table::User;
+use DBIx::QuickORM type => 'table';
+table users => sub { no DBIx::QuickORM; column id => sub { primary_key }; };
+1;
+"#,
+            ),
+            (
+                "import in a nested column builder",
+                r#"
+package My::ORM::Table::User;
+use DBIx::QuickORM type => 'table';
+table users => sub { column id => sub { use DBIx::QuickORM; primary_key }; };
+1;
+"#,
+            ),
+            (
+                "import in an assigned table call builder",
+                r#"
+package My::ORM::Table::User;
+use DBIx::QuickORM type => 'table';
+my $first = table users => sub { use DBIx::QuickORM; column id => sub { primary_key }; };
+1;
+"#,
+            ),
+        ] {
+            let facts = candidate_facts(source);
+            assert!(
+                !has_name(&facts, "My::ORM::Table::User::id"),
+                "import inside the table expression must fail the package closed: {label}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_package_inside_a_deferred_definition_does_not_leak_to_the_outer_walk() {
+        // If the nested import scan left `Inner` current, the outer `table`
+        // call would be attributed to the wrong package and silently lost.
+        let facts = candidate_facts(
+            r#"
+package Outer;
+use DBIx::QuickORM type => 'table';
+
+sub helper {
+    package Inner;
+    use DBIx::QuickORM;
+}
+
+table outer => sub { column outer_id => sub { primary_key }; };
+1;
+"#,
+        );
+
+        assert!(has_name(&facts, "Outer::outer_id"));
+        assert!(!has_name(&facts, "Inner::outer_id"));
+    }
+
+    #[test]
+    fn unimport_removes_candidate_authority_for_the_whole_package() {
+        let facts = candidate_facts(
+            r#"
+package My::ORM::Table::User;
+use DBIx::QuickORM type => 'table';
+
+table users => sub { column id => sub { primary_key }; };
+
+no DBIx::QuickORM;
+1;
+"#,
+        );
+
+        assert!(!has_name(&facts, "My::ORM::Table::User::id"));
+    }
+
+    #[test]
+    fn a_bareword_table_value_is_not_proven_static() {
+        // `type => table` is indistinguishable from a constant or a `table()`
+        // call, so it must not inherit the admission of `type => 'table'`.
+        for source in [
+            r#"
+package My::ORM::Table::Bare;
+use DBIx::QuickORM type => table;
+table users => sub { column id => sub { primary_key }; };
+1;
+"#,
+            r#"
+package My::ORM::Table::Call;
+use DBIx::QuickORM type => table();
+table users => sub { column id => sub { primary_key }; };
+1;
+"#,
+        ] {
+            let facts = candidate_facts(source);
+            assert!(
+                !facts.iter().any(|fact| fact.entity.canonical_name.ends_with("::id")),
+                "unproven import value must remain blocked: {source}"
+            );
+        }
+
+        // The proven quoted spelling still activates, so the block above is
+        // discriminating rather than vacuous.
+        let proven = candidate_facts(
+            r#"
+package My::ORM::Table::Quoted;
+use DBIx::QuickORM type => 'table';
+table users => sub { column id => sub { primary_key }; };
+1;
+"#,
+        );
+        assert!(has_name(&proven, "My::ORM::Table::Quoted::id"));
     }
 
     #[test]
@@ -737,6 +1422,34 @@ package My::ORM::Table::User;
 use DBIx::QuickORM type => 'table';
 
 sub install_later {
+    table deferred => sub {
+        column deferred_id => sub { primary_key };
+    };
+}
+
+table users => sub {
+    column id => sub { primary_key };
+};
+1;
+"#,
+        );
+
+        assert!(has_name(&facts, "My::ORM::Table::User::id"));
+        assert!(!has_name(&facts, "My::ORM::Table::User::deferred_id"));
+    }
+
+    #[test]
+    fn deferred_method_body_table_call_does_not_consume_the_builder() {
+        // The `Method` arm has two jobs: record compile-time import events, and
+        // keep a deferred `table` call from executing. The nested-import tests
+        // only pin the first — with the arm deleted, the catch-all still
+        // records imports through descent — so this pins the second.
+        let facts = candidate_facts(
+            r#"
+package My::ORM::Table::User;
+use DBIx::QuickORM type => 'table';
+
+method install_later {
     table deferred => sub {
         column deferred_id => sub { primary_key };
     };
