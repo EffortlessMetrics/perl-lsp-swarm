@@ -1961,6 +1961,19 @@ fn probe_debuggee_perl_with_options_and_barrier(
             .env_remove("PERL5OPT")
             .env("LC_ALL", "C")
             .env("TZ", "UTC");
+        // Keep the resolver probe on the same native Windows stdio path as a
+        // real adapter launch. Strawberry's perl5db selects its console
+        // transport unless EMACS is set, and ReadLine must not query console
+        // handles when the child is attached to pipes. Preserve caller
+        // PERLDB_OPTS and append the debugger-only override, matching the
+        // production launcher in debug_adapter/process.rs.
+        #[cfg(windows)]
+        {
+            command.env("EMACS", "1");
+            let mut perl_db_opts = std::env::var_os("PERLDB_OPTS").unwrap_or_default();
+            perl_db_opts.push(" ReadLine=0");
+            command.env("PERLDB_OPTS", perl_db_opts);
+        }
         if let Some(descendant_pid_file) = descendant_pid_file {
             command.env("PERL_LSP_DAP_TEST_DESCENDANT_PID_FILE", descendant_pid_file);
             command.env(
