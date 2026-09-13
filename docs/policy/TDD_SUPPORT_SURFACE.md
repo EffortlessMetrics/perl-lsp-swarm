@@ -604,7 +604,7 @@ Edge classification is the input #8605 consumes when it migrates `must*` imports
 | --- | --- | --- | --- |
 | `perl-core-harness` | dev-dependencies | must_only | `must`, `must_some` |
 | `perl-corpus` | dev-dependencies | mixed | `must`, `must_some`, `symlink_test_decision`, `try_create_dir_symlink`, `try_create_file_symlink` |
-| `perl-dap` | dev-dependencies | must_only | `must`, `must_err`, `must_some`, `must_some_with`, `must_with` |
+| `perl-dap` | dev-dependencies | mixed | `must`, `must_err`, `must_some`, `must_some_with`, `must_with`, `symlink_test_decision` |
 | `perl-incremental-parsing` | dev-dependencies | must_only | `must_some` |
 | `perl-lexer` | dev-dependencies | mixed | `BddScenario`, `must`, `must_some` |
 | `perl-lsp-perltidy` | dev-dependencies | must_only | `must`, `must_err`, `must_some` |
@@ -628,6 +628,6 @@ Edge classification is the input #8605 consumes when it migrates `must*` imports
 | Edge class | Crates |
 | --- | ---: |
 | declared_unused | 2 |
-| mixed | 5 |
-| must_only | 15 |
+| mixed | 6 |
+| must_only | 14 |
 | **total** | **22** |
