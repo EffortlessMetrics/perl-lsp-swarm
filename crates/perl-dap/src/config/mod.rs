@@ -236,7 +236,9 @@ pub struct AttachConfiguration {
     ///
     /// Equivalent to the DAP `stopOnEntry` field. When set, the adapter emits a
     /// `stopped` event with `reason = "entry"` immediately after the attach
-    /// handshake completes. Defaults to `false` when absent.
+    /// handshake completes. TCP attachments reject `true` because the peer owns
+    /// execution stops; configure the peer to pause instead. Defaults to `false`
+    /// when absent.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stop_on_entry: Option<bool>,
 }
