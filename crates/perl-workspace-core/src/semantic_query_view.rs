@@ -194,6 +194,12 @@ pub enum ViewRejection {
         /// The underlying serialization failure, rendered for diagnostics.
         detail: String,
     },
+    /// A discovered-but-unread path carries no bounding limitation: the
+    /// model claims bounded absence without any evidence record naming it.
+    UnboundedUnreadPaths {
+        /// The unread paths no limitation bounds, in deterministic order.
+        paths: Vec<String>,
+    },
 }
 
 impl fmt::Display for ViewRejection {
@@ -216,6 +222,9 @@ impl fmt::Display for ViewRejection {
             }
             Self::SnapshotIdentityUnavailable { detail } => {
                 write!(f, "model snapshot identity unavailable: {detail}")
+            }
+            Self::UnboundedUnreadPaths { paths } => {
+                write!(f, "unbounded unread paths: {}", paths.join(", "))
             }
         }
     }
@@ -492,8 +501,8 @@ impl SemanticQueryView {
     ///
     /// # Errors
     /// Rejects wrong-root, schema-incompatible, mixed-adoption, stale input,
-    /// and an unavailable model snapshot identity (the freshness anchor)
-    /// before any materialization.
+    /// unbounded unread paths, and an unavailable model snapshot identity (the
+    /// freshness anchor) before any materialization.
     pub fn build(model: &ProjectModel) -> Result<Self, ViewRejection> {
         Self::build_checked(CheckedBuildInput {
             model,
@@ -832,11 +841,10 @@ impl SemanticQueryView {
         family_ids: impl Iterator<Item = &'v str>,
         path: &str,
     ) -> Vec<&'v str> {
-        let suffix = format!(":{path}");
         family_ids
             .filter(|id| match self.limitation_paths.get(*id) {
                 Some(paths) => paths.iter().any(|bounded| bounded == path),
-                None => id.ends_with(&suffix),
+                None => legacy_id_names_path(id, path),
             })
             .collect()
     }
@@ -894,6 +902,15 @@ fn validate_input(
 
     if !model.shard_states.is_empty() && !unadopted.is_empty() {
         return Err(ViewRejection::MixedGenerationAdoption { unadopted_paths: unadopted });
+    }
+    let unbounded_unread = model
+        .unread_discovered
+        .iter()
+        .filter(|path| !path_is_bounded(model, path))
+        .cloned()
+        .collect::<Vec<_>>();
+    if !unbounded_unread.is_empty() {
+        return Err(ViewRejection::UnboundedUnreadPaths { paths: unbounded_unread });
     }
     Ok(())
 }
@@ -1063,6 +1080,30 @@ fn declarations_completeness(model: &ProjectModel) -> IndexCompleteness {
     partial_if_limited(model)
 }
 
+fn legacy_id_names_path(id: &str, path: &str) -> bool {
+    let mut rest = id;
+    while let Some(colon) = rest.find(':') {
+        if &rest[colon + 1..] == path {
+            return true;
+        }
+        rest = &rest[colon + 1..];
+    }
+    false
+}
+
+fn limitation_bounds_path(limitation: &crate::error::ModelLimitation, path: &str) -> bool {
+    if limitation.paths.is_empty() {
+        legacy_id_names_path(&limitation.id, path)
+    } else {
+        limitation.paths.iter().any(|bounded| bounded == path)
+    }
+}
+
+fn path_is_bounded(model: &ProjectModel, path: &str) -> bool {
+    model.limitations.iter().any(|limitation| limitation_bounds_path(limitation, path))
+        || model.shard_states.get(path).is_some_and(|state| !state.limitation_ids.is_empty())
+}
+
 /// The family denominator: every admitted file plus every
 /// discovered-but-unread path. An unread source is not an empty slot — it
 /// bounds the family, because the walk saw it and the read failed.
@@ -1075,26 +1116,8 @@ fn partial_if_limited(model: &ProjectModel) -> IndexCompleteness {
         .collect();
     let mut limitation_ids: BTreeSet<String> = BTreeSet::new();
     for limitation in &model.limitations {
-        if !limitation.paths.is_empty() {
-            // Structural association is authoritative: the limitation names
-            // the paths it bounds, so no id-text convention is consulted.
-            if limitation.paths.iter().any(|path| paths.contains(path.as_str())) {
-                limitation_ids.insert(limitation.id.clone());
-            }
-            continue;
-        }
-        // Legacy ids keep the textual convention, preserved exactly: an id
-        // bounds the family when any colon-remainder of the id names a
-        // contributing path (the `<kind>:<relative path>` convention; the
-        // remainder is checked at every colon so paths containing colons
-        // still match, as with `ends_with`).
-        let mut rest = limitation.id.as_str();
-        while let Some(colon) = rest.find(':') {
-            if paths.contains(&rest[colon + 1..]) {
-                limitation_ids.insert(limitation.id.clone());
-                break;
-            }
-            rest = &rest[colon + 1..];
+        if paths.iter().any(|path| limitation_bounds_path(limitation, path)) {
+            limitation_ids.insert(limitation.id.clone());
         }
     }
     for path in &paths {
@@ -2008,6 +2031,12 @@ mod tests {
             message: "could not read `lib/Locked.pm`".to_string(),
             paths: vec!["lib/Locked.pm".to_string()],
         });
+        model.limitations.push(ModelLimitation {
+            id: "read-failed:lib/Other.pm".to_string(),
+            kind: "read_failure".to_string(),
+            message: "could not read `lib/Other.pm`".to_string(),
+            paths: vec!["lib/Other.pm".to_string()],
+        });
         model.unread_discovered.insert("lib/Locked.pm".to_string());
         let mut with_extra_unread = model.clone();
         with_extra_unread.unread_discovered.insert("lib/Other.pm".to_string());
@@ -2048,7 +2077,27 @@ mod tests {
 
     #[test]
     fn view_fingerprint_separates_unread_and_limitation_sections() {
-        let mut unread_model = ProjectModel::empty("proj", FactClasses::all());
+        let mut baseline = ProjectModel::empty("proj", FactClasses::all());
+        baseline.files.push(file("lib/Common.pm", "common"));
+        baseline.limitations.push(ModelLimitation {
+            id: "read-failed:a".to_string(),
+            kind: "read_failure".to_string(),
+            message: "shared bound".to_string(),
+            paths: Vec::new(),
+        });
+        baseline.shard_states.insert(
+            "lib/Common.pm".to_string(),
+            crate::ProjectShardState {
+                generation: 1,
+                producer: "test".to_string(),
+                schema_version: SCHEMA_VERSION,
+                fingerprint: "fnv64:0000000000000001".to_string(),
+                limitation_ids: vec!["read-failed:a".to_string()],
+                populated: Some(FactClasses::all()),
+                limitation_paths: BTreeMap::new(),
+            },
+        );
+        let mut unread_model = baseline.clone();
         unread_model.unread_discovered.insert("a".to_string());
         unread_model.limitations.push(ModelLimitation {
             id: "b".to_string(),
@@ -2057,7 +2106,7 @@ mod tests {
             paths: vec!["q".to_string()],
         });
 
-        let mut limitation_model = ProjectModel::empty("proj", FactClasses::all());
+        let mut limitation_model = baseline;
         limitation_model.limitations.push(ModelLimitation {
             id: "a".to_string(),
             kind: "producer_gap".to_string(),
@@ -2068,6 +2117,63 @@ mod tests {
         let unread_view = SemanticQueryView::build(&unread_model).unwrap();
         let limitation_view = SemanticQueryView::build(&limitation_model).unwrap();
         assert_ne!(unread_view.fingerprint(), limitation_view.fingerprint());
+    }
+
+    #[test]
+    fn unread_path_without_bounding_limitation_is_rejected() {
+        let mut model = ProjectModel::empty("proj", FactClasses::all());
+        model.unread_discovered.insert("lib/Locked.pm".to_string());
+
+        let err = SemanticQueryView::build(&model).unwrap_err();
+        assert_eq!(
+            err,
+            ViewRejection::UnboundedUnreadPaths { paths: vec!["lib/Locked.pm".to_string()] }
+        );
+
+        let persisted = serde_json::to_string(&model).unwrap();
+        let restored: ProjectModel = serde_json::from_str(&persisted).unwrap();
+        assert_eq!(
+            SemanticQueryView::build(&restored).unwrap_err(),
+            ViewRejection::UnboundedUnreadPaths { paths: vec!["lib/Locked.pm".to_string()] }
+        );
+    }
+
+    #[test]
+    fn structurally_bounded_unread_path_builds_partial() {
+        let mut model = ProjectModel::empty("proj", FactClasses::all());
+        model.unread_discovered.insert("lib/Locked.pm".to_string());
+        model.limitations.push(ModelLimitation {
+            id: "read-failed:lib/Locked.pm".to_string(),
+            kind: "read_failure".to_string(),
+            message: "could not read `lib/Locked.pm`".to_string(),
+            paths: vec!["lib/Locked.pm".to_string()],
+        });
+
+        let view = SemanticQueryView::build(&model).unwrap();
+        assert!(matches!(
+            view.source_by_path("lib/Locked.pm"),
+            IndexAnswer::Partial { rows: None, limitation_ids }
+                if limitation_ids == ["read-failed:lib/Locked.pm"]
+        ));
+    }
+
+    #[test]
+    fn legacy_bounded_unread_path_builds_partial() {
+        let mut model = ProjectModel::empty("proj", FactClasses::all());
+        model.unread_discovered.insert("lib/Locked.pm".to_string());
+        model.limitations.push(ModelLimitation {
+            id: "read-failed:lib/Locked.pm".to_string(),
+            kind: "read_failure".to_string(),
+            message: "could not read `lib/Locked.pm`".to_string(),
+            paths: Vec::new(),
+        });
+
+        let view = SemanticQueryView::build(&model).unwrap();
+        assert!(matches!(
+            view.source_by_path("lib/Locked.pm"),
+            IndexAnswer::Partial { rows: None, limitation_ids }
+                if limitation_ids == ["read-failed:lib/Locked.pm"]
+        ));
     }
 
     #[test]
