@@ -46,7 +46,7 @@ impl StoredLexCheckpoint {
     /// once by the caller. Position and offset structure reject misaligned or
     /// corrupted state; the canonical digest rejects every other generation.
     fn belongs_to_source(&self, source: &str, observed: &ContentDigest) -> bool {
-        if self.live.position > source.len() || !source.is_char_boundary(self.live.position) {
+        if self.live.position() > source.len() || !source.is_char_boundary(self.live.position()) {
             return false;
         }
         self.source_digest.as_ref() == observed && self.live.is_valid_for(source)
@@ -114,8 +114,8 @@ pub(crate) struct LexedSource {
 }
 
 fn summarize_checkpoint(checkpoint: &LiveLexerCheckpoint, line_index: &LineIndex) -> LexCheckpoint {
-    let (line, column) = line_index.byte_to_position(checkpoint.position);
-    LexCheckpoint { byte: checkpoint.position, mode: checkpoint.mode, line, column }
+    let (line, column) = line_index.byte_to_position(checkpoint.position());
+    LexCheckpoint { byte: checkpoint.position(), mode: checkpoint.mode(), line, column }
 }
 
 fn push_summary(
@@ -126,29 +126,13 @@ fn push_summary(
     // A queued/virtual lexer event may expose several internal states at one
     // byte. The public summary is one replayable boundary per byte and maps to
     // the first complete live state reproduced by `capture_live_checkpoint`.
-    if summaries.last().is_none_or(|summary| summary.byte != checkpoint.position) {
+    if summaries.last().is_none_or(|summary| summary.byte != checkpoint.position()) {
         summaries.push(summarize_checkpoint(checkpoint, line_index));
     }
 }
 
 fn behavior_state_changed(previous: &LiveLexerCheckpoint, current: &LiveLexerCheckpoint) -> bool {
-    previous.mode != current.mode
-        || previous.delimiter_stack != current.delimiter_stack
-        || previous.in_prototype != current.in_prototype
-        || previous.prototype_depth != current.prototype_depth
-        || previous.after_sub != current.after_sub
-        || previous.after_arrow != current.after_arrow
-        || previous.hash_brace_depth != current.hash_brace_depth
-        || previous.after_var_subscript != current.after_var_subscript
-        || previous.paren_depth != current.paren_depth
-        || previous.after_newline != current.after_newline
-        || previous.pending_heredocs != current.pending_heredocs
-        || previous.line_start_offset != current.line_start_offset
-        || previous.emit_heredoc_body_tokens != current.emit_heredoc_body_tokens
-        || previous.current_quote_op != current.current_quote_op
-        || previous.qw_recovery_enabled != current.qw_recovery_enabled
-        || previous.eof_emitted != current.eof_emitted
-        || previous.context != current.context
+    previous.behavior_state_changed(current)
 }
 
 fn compact_stored_checkpoints(checkpoints: &mut Vec<StoredLexCheckpoint>) {
@@ -166,12 +150,12 @@ fn push_stored_checkpoint(
     spacing: &mut usize,
     live: &LiveLexerCheckpoint,
 ) {
-    if checkpoints.last().is_some_and(|stored| stored.live.position == live.position) {
+    if checkpoints.last().is_some_and(|stored| stored.live.position() == live.position()) {
         return;
     }
 
     let retain = checkpoints.last().is_none_or(|previous| {
-        live.position.saturating_sub(previous.live.position) >= *spacing
+        live.position().saturating_sub(previous.live.position()) >= *spacing
             || behavior_state_changed(&previous.live, live)
     });
     if !retain {
@@ -268,13 +252,13 @@ pub(crate) fn capture_live_checkpoint(
 
     loop {
         let checkpoint = lexer.checkpoint();
-        if checkpoint.position == boundary {
+        if checkpoint.position() == boundary {
             if checkpoint.is_timeout_sensitive() {
                 return None;
             }
             return Some(checkpoint);
         }
-        if checkpoint.position > boundary {
+        if checkpoint.position() > boundary {
             return None;
         }
 
@@ -298,10 +282,12 @@ pub(crate) fn lex_from_live_checkpoint(
     checkpoint: &LiveLexerCheckpoint,
 ) -> Result<LexedSource> {
     let mut lexer = PerlLexer::new(source);
-    if !lexer.can_restore(checkpoint) {
+    let mut checkpoint = checkpoint.clone();
+    if checkpoint.rebind_to_source(source, perl_source_identity::SourceGeneration::Unknown).is_err()
+        || lexer.restore(&checkpoint).is_err()
+    {
         anyhow::bail!("live lexer checkpoint is not valid for the edited source");
     }
-    lexer.restore(checkpoint);
 
     let source_digest = Arc::new(ContentDigest::of_bytes(source.as_bytes()));
     let mut tokens = Vec::new();
@@ -312,7 +298,7 @@ pub(crate) fn lex_from_live_checkpoint(
     let mut live_checkpoints = Vec::new();
     #[cfg(test)]
     let mut terminal_checkpoint = None;
-    let mut last_position = checkpoint.position;
+    let mut last_position = checkpoint.position();
 
     loop {
         let live = lexer.checkpoint();
@@ -441,11 +427,11 @@ mod tests {
         let checkpoint = lexed
             .live_checkpoints
             .iter()
-            .find(|checkpoint| checkpoint.position == method_start)
+            .find(|checkpoint| checkpoint.position() == method_start)
             .ok_or_else(|| anyhow::anyhow!("method checkpoint is missing"))?;
 
-        assert_eq!(checkpoint.position, method_start);
-        assert!(checkpoint.after_arrow, "method restart must preserve after_arrow");
+        assert_eq!(checkpoint.position(), method_start);
+        assert!(checkpoint.after_arrow(), "method restart must preserve after_arrow");
         Ok(())
     }
 
@@ -456,11 +442,11 @@ mod tests {
         let lexed = lex_source_with_checkpoints(source, &line_index);
 
         assert!(
-            lexed.live_checkpoints.iter().any(|checkpoint| checkpoint.in_prototype),
+            lexed.live_checkpoints.iter().any(|checkpoint| checkpoint.in_prototype()),
             "prototype fixture must expose an in_prototype checkpoint"
         );
         assert!(
-            lexed.live_checkpoints.iter().any(|checkpoint| checkpoint.paren_depth > 0),
+            lexed.live_checkpoints.iter().any(|checkpoint| checkpoint.paren_depth() > 0),
             "prototype fixture must expose parenthesis depth"
         );
     }
@@ -479,9 +465,9 @@ mod tests {
         let expected = lexed
             .live_checkpoints
             .iter()
-            .find(|checkpoint| checkpoint.position == method_start)
+            .find(|checkpoint| checkpoint.position() == method_start)
             .ok_or_else(|| anyhow::anyhow!("method checkpoint is missing"))?;
-        let replayed = capture_live_checkpoint(source, expected.position)
+        let replayed = capture_live_checkpoint(source, expected.position())
             .ok_or_else(|| anyhow::anyhow!("live checkpoint replay failed"))?;
 
         assert_eq!(replayed, *expected);
@@ -503,14 +489,14 @@ mod tests {
             .get(start_index + 1)
             .ok_or_else(|| anyhow::anyhow!("checkpoint after heredoc start is missing"))?;
 
-        assert_eq!(queued.pending_heredocs.len(), 1);
-        assert_eq!(queued.pending_heredocs[0].label, "EOF");
+        assert_eq!(queued.pending_heredocs().len(), 1);
+        assert_eq!(queued.pending_heredocs()[0].label, "EOF");
         assert!(
-            lexed.checkpoints.iter().any(|summary| summary.byte == queued.position),
+            lexed.checkpoints.iter().any(|summary| summary.byte == queued.position()),
             "queued-heredoc state must remain a replayable boundary"
         );
         assert!(
-            capture_live_checkpoint(source, queued.position).is_none(),
+            capture_live_checkpoint(source, queued.position()).is_none(),
             "queued-heredoc checkpoints must fall back before the deterministic heredoc budget path"
         );
         assert!(
@@ -522,11 +508,12 @@ mod tests {
             .live_checkpoints
             .iter()
             .find(|checkpoint| {
-                checkpoint.position > queued.position && checkpoint.pending_heredocs.is_empty()
+                checkpoint.position() > queued.position()
+                    && checkpoint.pending_heredocs().is_empty()
             })
             .ok_or_else(|| anyhow::anyhow!("checkpoint after heredoc completion is missing"))?;
         assert!(
-            lexed.checkpoints.iter().any(|summary| summary.byte == resumed.position),
+            lexed.checkpoints.iter().any(|summary| summary.byte == resumed.position()),
             "restart summaries must resume after the heredoc queue drains"
         );
         Ok(())
