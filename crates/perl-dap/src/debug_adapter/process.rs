@@ -2035,6 +2035,21 @@ impl DebugAdapter {
                     };
                 }
 
+                if stop_on_entry {
+                    return DapMessage::Response {
+                        seq,
+                        request_seq,
+                        success: false,
+                        command: "attach".to_string(),
+                        body: None,
+                        message: Some(
+                            "TCP attach does not support stopOnEntry=true. Set stopOnEntry=false and \
+                             configure the debugger peer to pause if needed"
+                                .to_string(),
+                        ),
+                    };
+                }
+
                 // Create TCP attach session
                 let mut session = TcpAttachSession::new();
 

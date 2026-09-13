@@ -162,21 +162,21 @@ fn dap_attach_e2e_tcp_loopback() -> TestResult {
     server_handle
         .join()
         .map_err(|_| std::io::Error::other("fake TCP debugger server panicked"))?
-        .map_err(|err| std::io::Error::other(err.to_string()))?;
+        .map_err(std::io::Error::other)?;
     Ok(())
 }
 
 #[test]
-fn dap_attach_e2e_tcp_loopback_stop_on_entry_and_server_stopped() -> TestResult {
-    tcp_loopback_stop_on_entry_peer_event("pause")
+fn dap_attach_e2e_tcp_loopback_peer_pause_is_forwarded() -> TestResult {
+    tcp_loopback_peer_event("pause")
 }
 
 #[test]
-fn dap_attach_e2e_tcp_loopback_peer_entry_is_forwarded_without_synthetic_stop() -> TestResult {
-    tcp_loopback_stop_on_entry_peer_event("entry")
+fn dap_attach_e2e_tcp_loopback_peer_entry_is_forwarded() -> TestResult {
+    tcp_loopback_peer_event("entry")
 }
 
-fn tcp_loopback_stop_on_entry_peer_event(peer_reason: &'static str) -> TestResult {
+fn tcp_loopback_peer_event(peer_reason: &'static str) -> TestResult {
     let listener = TcpListener::bind(("127.0.0.1", 0))?;
     let port = listener.local_addr()?.port();
     listener.set_nonblocking(true)?;
@@ -248,7 +248,7 @@ fn tcp_loopback_stop_on_entry_peer_event(peer_reason: &'static str) -> TestResul
                 "host": "127.0.0.1",
                 "port": port,
                 "timeout": 2000,
-                "stopOnEntry": true
+                "stopOnEntry": false
             })),
         ),
         "attach",
@@ -258,8 +258,8 @@ fn tcp_loopback_stop_on_entry_peer_event(peer_reason: &'static str) -> TestResul
         server_handle
             .join()
             .map_err(|_| std::io::Error::other("fake TCP debugger server panicked"))?
-            .map_err(|err| std::io::Error::other(err.to_string()))?;
-        return Err(std::io::Error::other(error).into());
+            .map_err(std::io::Error::other)?;
+        return Err(error.into());
     }
 
     let mut failure = None;
@@ -360,11 +360,83 @@ fn tcp_loopback_stop_on_entry_peer_event(peer_reason: &'static str) -> TestResul
     let server_result = server_handle
         .join()
         .map_err(|_| std::io::Error::other("fake TCP debugger server panicked"))
-        .and_then(|result| result.map_err(|err| std::io::Error::other(err.to_string())));
+        .and_then(|result| result.map_err(std::io::Error::other));
     if let Some(error) = failure {
         return Err(error.into());
     }
     server_result?;
+    Ok(())
+}
+
+#[test]
+fn dap_attach_e2e_tcp_stop_on_entry_is_rejected_before_connect() -> TestResult {
+    let listener = TcpListener::bind(("127.0.0.1", 0))?;
+    let port = listener.local_addr()?.port();
+    listener.set_nonblocking(true)?;
+
+    let mut adapter = DebugAdapter::new();
+    let (tx, rx) = sync_channel(64);
+    adapter.set_event_sender(tx);
+    response_success(adapter.handle_request(1, "initialize", None), "initialize")?;
+    let _initialized = wait_for_event(&rx, "initialized", smoke_timeout())?;
+
+    let attach_response = adapter.handle_request(
+        2,
+        "attach",
+        Some(json!({
+            "host": "127.0.0.1",
+            "port": port,
+            "timeout": 2000,
+            "stopOnEntry": true
+        })),
+    );
+
+    // The refusal must happen before TCP connect. If the old implementation
+    // accepted the request, close that connection before returning the failure
+    // so the intentional pre-fix red remains bounded and cleanup-safe.
+    let connected = match listener.accept() {
+        Ok((socket, _)) => {
+            drop(socket);
+            true
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => false,
+        Err(error) => {
+            let _ = adapter.handle_request(3, "disconnect", Some(json!({})));
+            return Err(error.into());
+        }
+    };
+    if connected {
+        let _ = adapter.handle_request(3, "disconnect", Some(json!({})));
+    }
+
+    let message = response_failure_message(attach_response, "attach")?;
+    if !message.contains("stopOnEntry") || !message.contains("TCP") {
+        return Err(format!(
+            "TCP stopOnEntry refusal must explain the unsupported adapter-controlled pause: {message}"
+        )
+        .into());
+    }
+    if connected {
+        return Err("TCP refusal must occur before opening the peer socket".into());
+    }
+
+    while let Ok(message) = rx.try_recv() {
+        if let DapMessage::Event { event, .. } = message {
+            return Err(
+                format!("refused attach must not publish postinitialize event `{event}`").into()
+            );
+        }
+    }
+
+    let threads_body = response_success(adapter.handle_request(4, "threads", None), "threads")?
+        .ok_or("threads response missing body")?;
+    let threads = threads_body
+        .get("threads")
+        .and_then(Value::as_array)
+        .ok_or("threads response missing thread list")?;
+    if !threads.is_empty() {
+        return Err("refused attach must leave no active session".into());
+    }
     Ok(())
 }
 
