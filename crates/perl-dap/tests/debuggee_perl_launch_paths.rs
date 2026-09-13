@@ -8,9 +8,10 @@
 
 mod common;
 
+#[cfg(windows)]
+use common::run_cleanup_command_for_test;
 use common::{
-    DEBUGGEE_PERL_OVERRIDE_ENV, DapWorkflowSession, probe_debuggee_perl_for_test,
-    run_cleanup_command_for_test, workflow_timeout,
+    DEBUGGEE_PERL_OVERRIDE_ENV, DapWorkflowSession, probe_debuggee_perl_for_test, workflow_timeout,
 };
 use serial_test::serial;
 use std::env;
@@ -26,7 +27,7 @@ use std::time::Duration;
 fn stage_perl_library_layout(
     source_perl: &Path,
     destination: &Path,
-) -> Result<PathBuf, Box<dyn Error>> {
+) -> Result<Option<PathBuf>, Box<dyn Error>> {
     let source_bin = source_perl.parent().ok_or("selected Perl has no bin directory")?;
     let source_root = source_bin.parent().ok_or("selected Perl has no installation root")?;
     let stdout_path = destination.join("perl-config.stdout");
@@ -36,7 +37,7 @@ fn stage_perl_library_layout(
         .args([
             "-MConfig",
             "-e",
-            "print join(\"\\n\", grep { defined($_) && length($_) } @Config{qw(privlib archlib)})",
+            "print join(\"\\n\", $^O, grep { defined($_) && length($_) } @Config{qw(privlib archlib)})",
         ])
         .stdout(fs::File::create(&stdout_path)?)
         .stderr(fs::File::create(&stderr_path)?);
@@ -53,13 +54,15 @@ fn stage_perl_library_layout(
     if config_stdout.len() > 4096 {
         return Err("selected Perl returned an oversized library layout".into());
     }
+    let config_text = String::from_utf8_lossy(&config_stdout);
+    let mut config_lines = config_text.lines();
+    let os_name = config_lines.next().unwrap_or_default();
+    if os_name != "MSWin32" {
+        return Ok(None);
+    }
     let staged_install = destination.join("perl-install");
     let mut staged_roots = Vec::new();
-    for raw_root in String::from_utf8_lossy(&config_stdout)
-        .lines()
-        .map(str::trim)
-        .filter(|root| !root.is_empty())
-    {
+    for raw_root in config_lines.map(str::trim).filter(|root| !root.is_empty()) {
         let root = PathBuf::from(raw_root);
         if !root.is_dir() {
             continue;
@@ -81,7 +84,7 @@ fn stage_perl_library_layout(
     fs::create_dir_all(&staged_bin)?;
     let staged_perl = staged_bin.join(source_perl.file_name().ok_or("Perl has no filename")?);
     fs::copy(source_perl, &staged_perl)?;
-    Ok(staged_perl)
+    Ok(Some(staged_perl))
 }
 
 #[cfg(windows)]
@@ -98,12 +101,6 @@ fn copy_directory(source: &Path, destination: &Path) -> Result<(), Box<dyn Error
         }
     }
     Ok(())
-}
-
-#[cfg(windows)]
-fn is_native_windows_perl(binary: &Path) -> Result<bool, Box<dyn Error>> {
-    let output = Command::new(binary).args(["-V:osname"]).output()?;
-    Ok(output.status.success() && String::from_utf8_lossy(&output.stdout).contains("MSWin32"))
 }
 
 struct EnvGuard {
@@ -202,20 +199,20 @@ fn all_convenience_launch_paths_reach_the_pinned_interpreter() -> Result<(), Box
     };
     let controls = tempfile::tempdir()?;
     #[cfg(windows)]
-    let (ambient, pinned) = if is_native_windows_perl(&source_perl)? {
-        let staged_perl = stage_perl_library_layout(&source_perl, controls.path())?;
-        let staged_bin = staged_perl.parent().ok_or("staged Perl has no bin directory")?;
-        let ambient = staged_perl;
-        let pinned = staged_bin.join("perl5.exe");
-        fs::copy(&ambient, &pinned)?;
-        (ambient, pinned)
-    } else {
-        let ambient = controls.path().join("perl.exe");
-        let pinned = controls.path().join("perl5.exe");
-        fs::copy(&source_perl, &ambient)?;
-        fs::copy(&source_perl, &pinned)?;
-        (ambient, pinned)
-    };
+    let (ambient, pinned) =
+        if let Some(staged_perl) = stage_perl_library_layout(&source_perl, controls.path())? {
+            let staged_bin = staged_perl.parent().ok_or("staged Perl has no bin directory")?;
+            let ambient = staged_perl;
+            let pinned = staged_bin.join("perl5.exe");
+            fs::copy(&ambient, &pinned)?;
+            (ambient, pinned)
+        } else {
+            let ambient = controls.path().join("perl.exe");
+            let pinned = controls.path().join("perl5.exe");
+            fs::copy(&source_perl, &ambient)?;
+            fs::copy(&source_perl, &pinned)?;
+            (ambient, pinned)
+        };
     #[cfg(not(windows))]
     let (ambient, pinned) = {
         let ambient = controls.path().join("perl");
