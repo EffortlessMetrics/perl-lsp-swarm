@@ -1614,16 +1614,22 @@ fn test_did_change_rejects_overlong_result_before_commit() -> Result<(), Box<dyn
         })))?;
         let recovered =
             server.documents.lock().get(uri).ok_or("recovered document missing")?.clone();
-        if recovered.text != "my $recovered = 1;\n"
-            || recovered.version != 2
-            || recovered.current_generation() != before_generation.wrapping_add(1)
-            || !stream.is_cancelled()
-            || server.stream_sessions().len() != 0
-        {
-            return Err(format!(
-                "valid recovery did not commit and cancel stale work in case {case}"
-            )
-            .into());
+        if recovered.text != "my $recovered = 1;\n" {
+            return Err(format!("valid recovery did not commit text in case {case}").into());
+        }
+        if recovered.version != 2 {
+            return Err(format!("valid recovery did not commit version in case {case}").into());
+        }
+        if recovered.current_generation() != before_generation.wrapping_add(1) {
+            return Err(
+                format!("valid recovery did not increment generation in case {case}").into()
+            );
+        }
+        if !stream.is_cancelled() {
+            return Err(format!("valid recovery did not cancel stale stream in case {case}").into());
+        }
+        if server.stream_sessions().len() != 0 {
+            return Err(format!("valid recovery did not evict stale stream in case {case}").into());
         }
     }
 
@@ -1673,8 +1679,12 @@ fn test_did_save_rejects_overlong_text_before_commit() -> Result<(), Box<dyn std
         return Err("didSave accepted an overlong saved line".into());
     }
 
-    let documents = server.documents.lock();
-    let document = documents.get(uri).ok_or("rejected didSave must retain the document")?;
+    let document = server
+        .documents
+        .lock()
+        .get(uri)
+        .ok_or("rejected didSave must retain the document")?
+        .clone();
     if document.text != "saved\n"
         || document.version != 1
         || document.current_generation() != before_generation
@@ -1684,21 +1694,27 @@ fn test_did_save_rejects_overlong_text_before_commit() -> Result<(), Box<dyn std
     {
         return Err("rejected didSave changed predecessor document/readiness/stream state".into());
     }
-    drop(documents);
 
     server.handle_did_save(Some(json!({
         "textDocument": {"uri": uri},
         "text": "my $saved = 1;\n"
     })))?;
-    let documents = server.documents.lock();
-    let document = documents.get(uri).ok_or("recovered save document missing")?;
-    if document.text != "my $saved = 1;\n"
-        || document.version != 1
-        || document.current_generation() != before_generation.wrapping_add(1)
-        || !stream.is_cancelled()
-        || server.stream_sessions().len() != 0
-    {
-        return Err("valid save recovery did not commit and cancel same-version stream".into());
+    let document =
+        server.documents.lock().get(uri).ok_or("recovered save document missing")?.clone();
+    if document.text != "my $saved = 1;\n" {
+        return Err("valid save recovery did not commit text".into());
+    }
+    if document.version != 1 {
+        return Err("valid save recovery did not preserve version".into());
+    }
+    if document.current_generation() != before_generation.wrapping_add(1) {
+        return Err("valid save recovery did not increment generation".into());
+    }
+    if !stream.is_cancelled() {
+        return Err("valid save recovery did not cancel same-version stream".into());
+    }
+    if server.stream_sessions().len() != 0 {
+        return Err("valid save recovery did not evict same-version stream".into());
     }
     Ok(())
 }
