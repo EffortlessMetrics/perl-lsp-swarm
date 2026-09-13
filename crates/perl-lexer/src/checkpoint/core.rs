@@ -639,8 +639,9 @@ mod tests {
             eof_emitted: false,
             context: CheckpointContext::Normal,
         };
+        let content = perl_source_identity::ContentDigest::of_bytes(b"");
         let identity = crate::LexerCheckpointIdentity::capture(
-            "",
+            &content,
             &LexerConfig::default(),
             false,
             false,
