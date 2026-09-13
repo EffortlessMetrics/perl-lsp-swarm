@@ -35,9 +35,27 @@ can skip *only* the stale-head case while every other state stays red:
     guard never resolves outside a plain tracked file.
 
 The declaration marker is the proof path itself, which this repository already
-requires in the workflow's ``on.paths`` filters. Classification therefore reads
-only the candidate tree: no base ref is fetched and no base-owned code is
-executed inside the candidate.
+requires in the workflow's ``on.paths`` filters. Every classified subject is
+therefore read from the candidate tree: the proof paths under ``--root`` and the
+candidate's own copy of the workflow named by ``--workflow``.
+
+The *instrument* is a separate question from the subjects. The workflow runs this
+module from a checkout of the revision that composed the effective workflow
+rather than from the candidate's own copy, because a candidate predating this
+module carries no copy of it -- exactly the stale head the classification exists
+to serve. Pinning it to the base branch instead was considered and rejected: the
+``--proof`` invocation comes from the merged workflow, so a base-pinned guard
+could be handed an invocation it predates and fail to parse a spec added
+alongside it, reproducing at the instrument level the workflow/tree revision skew
+this module exists to remove. Keeping guard and invocation on one revision makes
+them consistent by construction.
+
+The cost of that choice is that on a pull request the merge commit already
+contains the candidate's changes, so a candidate editing this file ships its own
+classifier. That is the trust posture the job already has -- it executes
+candidate test and shell proofs by design -- and the control is review of the
+diff, so the workflow prints the resolved guard revision and digest to make the
+instrument that actually ran visible rather than assumed.
 """
 
 from __future__ import annotations
