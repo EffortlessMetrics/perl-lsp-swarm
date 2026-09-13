@@ -25,6 +25,11 @@ fn check_policy_message(receipt: Option<Value>, expected_evidence: &str) -> Resu
     let expected_freshness = receipt
         .as_ref()
         .map(|value| value.get("freshness").cloned().unwrap_or_else(|| json!("unknown")));
+    let expected_detail = receipt
+        .as_ref()
+        .and_then(|value| value.get("user_message"))
+        .and_then(Value::as_str)
+        .map(str::to_owned);
     let mut argument = json!({"provider": "hover"});
     if let Some(receipt) = receipt {
         let prior =
@@ -63,6 +68,24 @@ fn check_policy_message(receipt: Option<Value>, expected_evidence: &str) -> Resu
         message.starts_with(expected_evidence),
         "request evidence must lead the message: {message}"
     );
+    if let Some(detail) = expected_detail {
+        let (evidence, policy) = message
+            .split_once("\nProvider policy summary:\n")
+            .ok_or_else(|| anyhow::anyhow!("missing policy boundary: {message}"))?;
+        ensure!(
+            evidence.contains(&format!("Request detail: {detail}")),
+            "request detail must be in the evidence section: {message}"
+        );
+        ensure!(
+            !policy.contains(&detail) && message.matches(&detail).count() == 1,
+            "request detail must not be duplicated or labeled as policy: {message}"
+        );
+        ensure!(
+            result.pointer("/request_receipt/user_message").and_then(Value::as_str)
+                == Some(detail.as_str()),
+            "structured request detail must be preserved: {result}"
+        );
+    }
     ensure!(
         result.get("freshness") == Some(&json!("fresh")),
         "message repair must preserve the structured policy default: {result}"
@@ -100,6 +123,16 @@ fn check_policy_message(receipt: Option<Value>, expected_evidence: &str) -> Resu
 #[test]
 fn policy_message_without_request_evidence_is_explicit() -> Result<()> {
     check_policy_message(None, "No request evidence is attached.")
+}
+
+#[test]
+fn policy_message_keeps_request_detail_out_of_policy() -> Result<()> {
+    check_policy_message(
+        Some(json!({
+            "freshness": "unknown", "user_message": "The recorded request returned no result."
+        })),
+        "Attached request freshness: unknown.",
+    )
 }
 
 #[test]

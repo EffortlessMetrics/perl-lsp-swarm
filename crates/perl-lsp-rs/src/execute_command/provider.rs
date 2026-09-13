@@ -373,6 +373,9 @@ impl ExecuteCommandProvider {
             validate_explanation_echo(&scenario, "scenario")?;
             explanation = explanation.with_scenario(scenario);
         }
+        // Format before attaching the request receipt: the shared formatter also
+        // includes request detail, which must not appear under the policy heading.
+        let policy_summary = format_provider_decision_explanation(&explanation);
         if let Some(request_receipt) = request.request_receipt {
             if !request_receipt.is_object() {
                 return Err(
@@ -396,14 +399,16 @@ impl ExecuteCommandProvider {
                 Some(ProviderDecisionFreshness::NotApplicable) => "not applicable",
                 _ => "unknown",
             };
-            format!("Attached request freshness: {label}.")
+            let mut evidence = format!("Attached request freshness: {label}.");
+            if let Some(detail) = receipt.get("user_message").and_then(Value::as_str) {
+                evidence.push_str(&format!("\nRequest detail: {detail}"));
+            }
+            evidence
         } else {
             "No request evidence is attached.".to_string()
         };
-        let user_message = format!(
-            "{request_evidence}\nProvider policy summary:\n{}",
-            format_provider_decision_explanation(&explanation)
-        );
+        let user_message =
+            format!("{request_evidence}\nProvider policy summary:\n{policy_summary}");
         explanation = explanation.with_user_message(user_message);
         let copyable_payload = ProviderDecisionCopyablePayload::from_explanation(
             &explanation,
