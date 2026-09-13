@@ -663,10 +663,10 @@ impl LspServer {
                 params.pointer("/textDocument/version").and_then(|v| v.as_i64());
             let incoming_version = incoming_version_i64.and_then(|v| i32::try_from(v).ok());
 
-            // A save replacement can preserve the client's document version while
-            // still replacing the buffer. In that case every stream for the URI
-            // captured stale text, including same-version sessions, and must be
-            // cancelled. Ordinary versioned changes retain the older-only policy.
+            // The editor has changed even if the candidate text is rejected.
+            // Stop streams derived from its predecessor before validating it.
+            // Saves preserve the client version, so also cancel same-version
+            // streams; ordinary changes retain the older-only policy.
             for key in Self::uri_key_variants(uri) {
                 if let Some(version) = incoming_version_i64 {
                     if allow_same_version {
@@ -702,20 +702,6 @@ impl LspServer {
                     return Ok(());
                 }
 
-                // Invalidate the perlcritic violation cache for this file so that
-                // the next diagnostic cycle re-runs perlcritic on the new content.
-                #[cfg(not(target_arch = "wasm32"))]
-                {
-                    let file_path = url::Url::parse(uri).ok().and_then(|u| u.to_file_path().ok());
-                    if let Some(path) = file_path {
-                        let path_str = path.to_string_lossy().to_string();
-                        if let Some(ref mut analyzer) = *self.critic_analyzer.lock() {
-                            analyzer.invalidate_cache(&path_str);
-                        }
-                        self.pull_diagnostics_orchestrator.invalidate_file_cache(&path);
-                    }
-                }
-
                 let mut doc_state =
                     existing_doc.unwrap_or_else(|| empty_state(incoming_version.unwrap_or(0)));
 
@@ -745,20 +731,6 @@ impl LspServer {
                         .map(|s| s.degradation_tier())
                         .unwrap_or(DegradationTier::Minimal)
                         == DegradationTier::Minimal;
-
-                // Increment generation counter for this change
-                let next_gen = doc_state.generation.fetch_add(1, Ordering::SeqCst).wrapping_add(1);
-                let target_version = version;
-
-                // Pending readiness for the exact replacement generation,
-                // installed before any parse work for it begins (#11675).
-                // Supersedes the prior generation's readiness by construction.
-                self.install_active_document_pending(
-                    &normalized_uri,
-                    uri,
-                    &doc_state.generation,
-                    next_gen,
-                );
 
                 // Apply incremental changes with UTF-16 aware mapping
                 use crate::textdoc::{Doc, PosEnc, apply_changes};
@@ -810,6 +782,33 @@ impl LspServer {
                 if let Err(err) = crate::security::validate_buffer_line_lengths(&text) {
                     return Err(invalid_params(&err.to_string()));
                 }
+
+                // The candidate is private until the line bound passes. Keep the
+                // document lock so validation and these effects use the same
+                // predecessor; rejection must preserve its generation/readiness.
+                // Invalidate cached diagnostics only for an accepted buffer.
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    let file_path = url::Url::parse(uri).ok().and_then(|u| u.to_file_path().ok());
+                    if let Some(path) = file_path {
+                        let path_str = path.to_string_lossy().to_string();
+                        if let Some(ref mut analyzer) = *self.critic_analyzer.lock() {
+                            analyzer.invalidate_cache(&path_str);
+                        }
+                        self.pull_diagnostics_orchestrator.invalidate_file_cache(&path);
+                    }
+                }
+
+                let next_gen = doc_state.generation.fetch_add(1, Ordering::SeqCst).wrapping_add(1);
+                let target_version = version;
+
+                // Publish pending readiness before parsing the accepted generation.
+                self.install_active_document_pending(
+                    &normalized_uri,
+                    uri,
+                    &doc_state.generation,
+                    next_gen,
+                );
 
                 // Keep template documents that were intentionally skipped on didOpen
                 // in no-parse mode across subsequent didChange notifications.
