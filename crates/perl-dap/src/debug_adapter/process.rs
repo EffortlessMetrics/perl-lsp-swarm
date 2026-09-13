@@ -687,19 +687,7 @@ impl DebugAdapter {
                 // launch must leave the currently active reader valid for its existing session.
                 if !self.prepare_replacement_session() {
                     let cleanup = Self::terminate_child_process(&mut child);
-                    if !cleanup {
-                        if let Err(mut child) = self.try_retain_rejected_child(child) {
-                            let _ = Self::terminate_child_process(&mut child);
-                            return Err("Cannot retain the rejected debugger process because another unconfirmed process is already retained".to_string());
-                        }
-                    }
-                    return Err(if cleanup {
-                        "Cannot replace the active debugger session because its process cleanup was not confirmed"
-                            .to_string()
-                    } else {
-                        "Cannot replace the active debugger session; cleanup of both processes was not confirmed"
-                            .to_string()
-                    });
+                    return Err(self.reject_spawned_replacement_child(child, cleanup));
                 }
                 if let Ok(mut identity) = self.launch_source_identity.lock() {
                     *identity = Some((launch_source_path.clone(), launch_source_digest.clone()));
@@ -2202,6 +2190,25 @@ impl DebugAdapter {
         }
     }
 
+    fn reject_spawned_replacement_child(&self, mut child: Child, cleanup: bool) -> String {
+        if cleanup {
+            return "Cannot replace the active debugger session because its process cleanup was not confirmed"
+                .to_string();
+        }
+        match self.try_retain_rejected_child(child) {
+            Ok(()) => {
+                "Cannot replace the active debugger session; cleanup of both processes was not confirmed"
+                    .to_string()
+            }
+            Err(returned_child) => {
+                child = returned_child;
+                let _ = Self::terminate_child_process(&mut child);
+                "Cannot retain the rejected debugger process because another unconfirmed process is already retained"
+                    .to_string()
+            }
+        }
+    }
+
     /// Advance the session generation and tear down the prior active session.
     ///
     /// Callers invoke this only after a replacement launch or attach has
@@ -2888,12 +2895,11 @@ mod tests {
 
         let second = DebugAdapter::spawn_noop_child_for_test()
             .map_err(|error| format!("spawning second rejected child: {error}"))?;
-        let mut second = match adapter.try_retain_rejected_child(second) {
-            Ok(()) => return Err("second rejected child was incorrectly retained".to_string()),
-            Err(child) => child,
-        };
-        if !DebugAdapter::terminate_child_process(&mut second) {
-            return Err("unowned second rejected child could not be cleaned up".to_string());
+        let rejection = adapter.reject_spawned_replacement_child(second, false);
+        if !rejection.contains("another unconfirmed process") {
+            return Err(
+                "second rejected child did not take the production rejection path".to_string()
+            );
         }
 
         if adapter.clear_rejected_child_with_terminator(|_| false) {

@@ -1458,6 +1458,7 @@ fn process_is_alive(pid: u32) -> Result<bool> {
     {
         let mut command = Command::new("ps");
         command.args(["-p", &pid.to_string(), "-o", "stat="]);
+        command.stdout(Stdio::piped()).stderr(Stdio::piped());
         let mut child = command.spawn().context("checking delayed debuggee process")?;
         let deadline = Instant::now() + Duration::from_millis(500);
         let output = loop {
@@ -1468,7 +1469,6 @@ fn process_is_alive(pid: u32) -> Result<bool> {
             }
             if Instant::now() >= deadline {
                 let _ = child.kill();
-                let _ = child.wait();
                 return Err(anyhow!("timed out checking delayed debuggee process {pid}"));
             }
             thread::sleep(Duration::from_millis(10));
