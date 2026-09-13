@@ -275,15 +275,70 @@ export async function copyManagedFileWithRetry(
   }
 }
 
-function githubApiHeaders(url: string, includeAuth = true): Record<string, string> {
+/** Only requests to this origin may carry the GitHub API bearer credential. */
+const GITHUB_API_ORIGIN = 'https://api.github.com/';
+
+/**
+ * Why a managed-release request did or did not carry GitHub API credentials.
+ *
+ * Certificate validation (`http.proxyStrictSSL`) and credential attachment are
+ * two separate policies. They used to share one boolean by accident: the
+ * strict-TLS flag was passed positionally into an `includeAuth` parameter, so
+ * editing either policy silently moved the other and nothing in the code named
+ * the rule being applied (#15493). Resolving the decision into this disposition
+ * keeps the two policies independent and lets callers explain the outcome.
+ */
+export type GitHubAuthDisposition =
+  | 'sent'
+  | 'no_token'
+  | 'not_github_api_host'
+  | 'withheld_unverified_tls';
+
+/** The GitHub token this host offers, if any. */
+export function readGitHubToken(): string | undefined {
+  return process.env.GITHUB_TOKEN || process.env.GH_TOKEN || undefined;
+}
+
+/**
+ * Decide whether one managed-release request may carry the GitHub credential.
+ *
+ * `withheld_unverified_tls` is a deliberate refusal, not a side effect: with
+ * `http.proxyStrictSSL` disabled the connection's certificate is not validated,
+ * so any host able to intercept it could read a bearer token. The request still
+ * proceeds, unauthenticated and subject to the anonymous rate limit.
+ */
+export function resolveGitHubAuthDisposition(params: {
+  readonly url: string;
+  readonly hasToken: boolean;
+  readonly strictTls: boolean;
+}): GitHubAuthDisposition {
+  if (!params.url.startsWith(GITHUB_API_ORIGIN)) {
+    return 'not_github_api_host';
+  }
+  if (!params.hasToken) {
+    return 'no_token';
+  }
+  if (!params.strictTls) {
+    return 'withheld_unverified_tls';
+  }
+  return 'sent';
+}
+
+/**
+ * Headers for one managed-release API request. The credential rides on the
+ * already-resolved disposition, so this builder makes no policy decision.
+ */
+function githubApiHeaders(authDisposition: GitHubAuthDisposition): Record<string, string> {
   const headers: Record<string, string> = {
     'User-Agent': 'vscode-perl-lsp',
     Accept: 'application/vnd.github+json',
   };
 
-  const token = process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
-  if (includeAuth && token && url.startsWith('https://api.github.com/')) {
-    headers.Authorization = `Bearer ${token}`;
+  if (authDisposition === 'sent') {
+    const token = readGitHubToken();
+    if (token) {
+      headers.Authorization = `Bearer ${token}`;
+    }
   }
 
   return headers;
@@ -686,6 +741,12 @@ export class BinaryDownloader {
   /** Release metadata envelope. Real GitHub release JSON is far below this. */
   private static readonly MAX_RELEASE_METADATA_BYTES = 1024 * 1024;
   private lastErrorMessage: string | undefined;
+  /**
+   * The credential disposition of a release-metadata request that was refused
+   * with HTTP 403, if one was. Only that request can carry credentials, so only
+   * it can produce a credential-related remedy.
+   */
+  private releaseMetadata403Disposition: GitHubAuthDisposition | undefined;
 
   constructor(
     private readonly context: vscode.ExtensionContext,
@@ -698,6 +759,34 @@ export class BinaryDownloader {
 
   getLastErrorMessage(): string | undefined {
     return this.lastErrorMessage;
+  }
+
+  /** The GitHub API endpoint that lists this product's releases. */
+  private static releasesApiUrl(): string {
+    return `${GITHUB_API_ORIGIN}repos/${BinaryDownloader.REPO_OWNER}/${BinaryDownloader.REPO_NAME}/releases`;
+  }
+
+  /**
+   * Remedy sentence for an HTTP 403 from the release API.
+   *
+   * "Set GITHUB_TOKEN" is wrong advice for a user who already set one and had
+   * it withheld because certificate validation is off (#15493): the setting to
+   * change is `http.proxyStrictSSL`, not the environment.
+   *
+   * The remedy follows the request that was actually refused, not the current
+   * settings. A 403 can also come from the archive or checksum download, which
+   * never carry credentials; re-enabling certificate validation would not
+   * change those, so they keep the generic advice.
+   */
+  private rateLimitRemedy(): string {
+    if (this.releaseMetadata403Disposition === 'withheld_unverified_tls') {
+      return (
+        'The release check ran without your GitHub token because "http.proxyStrictSSL" is disabled, ' +
+        'which turns off certificate validation; re-enable it so the token can be used over a verified connection.'
+      );
+    }
+
+    return 'Wait a few minutes, or set the GITHUB_TOKEN environment variable to increase your rate limit.';
   }
 
   async ensureBinary(forceDownload = false): Promise<string | null> {
@@ -723,6 +812,11 @@ export class BinaryDownloader {
       );
     }
 
+    // Clear the 403 record here rather than on entry: a force call that joins
+    // an in-flight ensure sits in the await above while that other run records
+    // its own metadata disposition. Resetting on entry would both leak that
+    // value into this run's remedy and wipe the in-flight run's own record.
+    this.releaseMetadata403Disposition = undefined;
     const promise = this.runEnsureBinary(forceDownload);
     activeManagedInstall = { promise, reason: myReason };
     try {
@@ -816,7 +910,7 @@ export class BinaryDownloader {
         // GitHub rate limit or auth failure
         message =
           'perl-lsp: Download blocked (HTTP 403 — GitHub rate limit). ' +
-          'Wait a few minutes, or set the GITHUB_TOKEN environment variable to increase your rate limit. ' +
+          `${this.rateLimitRemedy()} ` +
           manualInstallNote;
         buttons = ['Install Manually', 'View Logs'];
       } else if (errorMsg.includes('HTTP 404')) {
@@ -1183,13 +1277,13 @@ export class BinaryDownloader {
       if (versionTag) {
         // Get specific release by tag. The tag is user configuration, so it is
         // encoded before it reaches the API path.
-        url = `https://api.github.com/repos/${BinaryDownloader.REPO_OWNER}/${BinaryDownloader.REPO_NAME}/releases/tags/${encodeURIComponent(versionTag)}`;
+        url = `${BinaryDownloader.releasesApiUrl()}/tags/${encodeURIComponent(versionTag)}`;
       }
       // A tag channel without versionTag performs no fetch: the selector's
       // closed policy owns that refusal instead of a silent channel fallback.
     } else {
       // One list endpoint feeds the selector for both stable and latest.
-      url = `https://api.github.com/repos/${BinaryDownloader.REPO_OWNER}/${BinaryDownloader.REPO_NAME}/releases`;
+      url = BinaryDownloader.releasesApiUrl();
     }
 
     let releases: Release[] = [];
@@ -1280,8 +1374,20 @@ export class BinaryDownloader {
     const isHttps = url.startsWith('https:');
     const httpConfig = vscode.workspace.getConfiguration('http');
     const proxyStrictSSL = httpConfig.get<boolean>('proxyStrictSSL', true);
+    const authDisposition = resolveGitHubAuthDisposition({
+      url,
+      hasToken: readGitHubToken() !== undefined,
+      strictTls: proxyStrictSSL,
+    });
+    if (authDisposition === 'withheld_unverified_tls') {
+      // Record the reason, never the credential.
+      this.outputChannel.appendLine(
+        'Managed release metadata: GitHub credentials withheld because "http.proxyStrictSSL" is disabled, ' +
+          'which turns off certificate validation. The request proceeds unauthenticated under the anonymous rate limit.',
+      );
+    }
     const options = {
-      headers: githubApiHeaders(url, proxyStrictSSL),
+      headers: githubApiHeaders(authDisposition),
       rejectUnauthorized: proxyStrictSSL,
     };
 
@@ -1298,6 +1404,12 @@ export class BinaryDownloader {
       // Preserve the established message for a missing release.
       if (error instanceof BoundedJsonStatusError && error.statusCode === 404) {
         throw new Error('No releases found');
+      }
+      if (error instanceof BoundedJsonStatusError && error.statusCode === 403) {
+        // Remember the credential decision this refused request actually used.
+        // A later 403 from the archive or checksum download is a different
+        // request that never carries credentials, so it must not inherit this.
+        this.releaseMetadata403Disposition = authDisposition;
       }
       throw error;
     }
