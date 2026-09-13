@@ -246,6 +246,7 @@ impl ServerRequestScript {
         Ok((Self { state, state_cv, response_tx, dispatcher: Some(dispatcher), workers }, observer))
     }
 
+    /// A timeout settles the script, so no scripted response is written after the deadline.
     pub(crate) fn wait(&self, timeout: Duration) -> Result<Vec<ObservedServerRequest>> {
         let deadline = Instant::now() + timeout;
         let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
@@ -276,10 +277,13 @@ impl ServerRequestScript {
                 return Ok(observed);
             }
             if Instant::now() >= deadline {
-                return Err(anyhow!(
+                let error = anyhow!(
                     "timed out after {}ms waiting for scripted requests; remaining={remaining}, scheduled={scheduled}",
                     timeout.as_millis()
-                ));
+                );
+                drop(state);
+                self.cancel();
+                return Err(error);
             }
             let wait_for = deadline.saturating_duration_since(Instant::now());
             state = self

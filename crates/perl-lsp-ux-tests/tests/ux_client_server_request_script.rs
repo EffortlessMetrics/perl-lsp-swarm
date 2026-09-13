@@ -111,6 +111,13 @@ fn scripted_client_cancels_long_delays_when_wait_times_out() -> Result<()> {
         bail!("script wait must time out while a long response delay is pending");
     };
     ensure!(error.to_string().contains("timed out"));
+    let Err(error) = client.wait_for_script(wait_timeout) else {
+        bail!("cancelled scripted response must not be reported as delivered");
+    };
+    ensure!(
+        error.to_string().contains("cancelled before its delay elapsed"),
+        "expected cancellation delivery failure, got: {error:#}"
+    );
     drop(client);
     ensure!(
         started.elapsed() < Duration::from_secs(10),
