@@ -1637,13 +1637,13 @@ sub boom {
         .request(Some(stable_id.as_str()))?;
     assert_eq!(DocumentDiagnosticFlow::kind(&stable_with_changing_id), Some("full"));
     assert_eq!(DocumentDiagnosticFlow::kind(&changing_with_stable_id), Some("full"));
-    assert_ne!(
+    assert_eq!(
         stable_with_changing_id.get("resultId").and_then(Value::as_str),
-        Some(changing_id.as_str())
-    );
-    assert_ne!(
-        changing_with_stable_id.get("resultId").and_then(Value::as_str),
         Some(stable_id.as_str())
+    );
+    assert_eq!(
+        changing_with_stable_id.get("resultId").and_then(Value::as_str),
+        Some(changing_id.as_str())
     );
 
     scenario.when("introducing a syntax regression in only one document");
