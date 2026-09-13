@@ -415,6 +415,76 @@ mod tests {
     /// afterwards. This is the pairing that makes an eager constructor a
     /// regression rather than a wash: `ParsedSnapshot` hands the analysis over
     /// unconditionally, so "this consumer will not read it" has to be free.
+    /// #7286: the *provider* must reject an analysis built from a different
+    /// tree — not merely `matches` in isolation.
+    ///
+    /// `matches_rejects_a_different_tree_parsed_from_identical_source` proves
+    /// the predicate discriminates. It does not prove the consumer consults it,
+    /// and no output comparison can: both trees are parsed from identical text,
+    /// so a provider that wrongly trusted the foreign analysis would return
+    /// byte-identical diagnostics. The fact cells are the only witness. If the
+    /// provider rejected the pairing it built its own analysis locally and the
+    /// foreign one stays cold; if it trusted it, the foreign cells warm up.
+    #[test]
+    fn the_provider_rejects_an_analysis_from_a_different_tree() {
+        let source = "use strict;\nsub f { my $unused = 1; print $undeclared; }\n";
+        let ast_a = parse(source);
+        let output_b = Parser::new(source).parse_with_recovery();
+        let ast_b = Arc::new(output_b.ast);
+        let parse_errors_b = output_b.diagnostics;
+        assert!(
+            !Arc::ptr_eq(&ast_a, &ast_b),
+            "fixture invariant: the two trees must be distinct allocations, or there is no \
+             mismatch to reject"
+        );
+
+        let foreign = DocumentDiagnosticAnalysis::build(&ast_a, source);
+        let _ = super::super::DiagnosticsProvider::new().get_diagnostics_with_path_with_analysis(
+            &ast_b,
+            &parse_errors_b,
+            source,
+            None,
+            &[],
+            None,
+            None,
+            Some(&foreign),
+        );
+
+        assert!(
+            !foreign.pragma_map_materialized(),
+            "the provider must not read a pragma timeline belonging to another tree"
+        );
+        assert!(
+            !foreign.scope_issues_materialized(),
+            "the provider must not read scope issues belonging to another tree"
+        );
+        assert!(
+            !foreign.symbol_table_materialized(),
+            "the provider must not read a symbol table belonging to another tree"
+        );
+
+        // Positive control: with the analysis's own tree, the very same call
+        // does consume the shared facts. Without this, the assertions above
+        // would also pass against a provider that ignores every supplied
+        // analysis, which is the opposite defect.
+        let matching = DocumentDiagnosticAnalysis::build(&ast_b, source);
+        let _ = super::super::DiagnosticsProvider::new().get_diagnostics_with_path_with_analysis(
+            &ast_b,
+            &parse_errors_b,
+            source,
+            None,
+            &[],
+            None,
+            None,
+            Some(&matching),
+        );
+        assert!(
+            matching.pragma_map_materialized() && matching.scope_issues_materialized(),
+            "instrument liveness: a matching analysis must actually be consumed, otherwise the \
+             rejection asserted above proves nothing"
+        );
+    }
+
     #[test]
     fn a_blocking_parse_error_evaluation_runs_no_pass() {
         // Unbalanced brace: recovery still yields an AST, and the resulting
