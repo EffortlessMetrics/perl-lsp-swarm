@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Added
+body: '`perl.explainMissingModuleLookup` reports the stored interpreter startup `@INC` acquisition state (configured off, not observed, transient or terminal timeout, unavailable, failed, legitimate empty, exact) and whether a not-found search was complete, without launching or retrying Perl.'
+time: 2026-09-06T12:00:00Z
+custom:
+  PR: "14958"
+  Slug: explain-startup-inc-degradation
+  Breaking: "no"

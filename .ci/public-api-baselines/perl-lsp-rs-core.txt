@@ -138,6 +138,16 @@ pub perl_lsp_rs_core::config::RejectedIncludePathReason::WorkspaceRootUnavailabl
 pub fn perl_lsp_rs_core::config::RejectedIncludePathReason::clone(&self) -> perl_lsp_rs_core::config::RejectedIncludePathReason
 pub fn perl_lsp_rs_core::config::RejectedIncludePathReason::eq(&self, other: &perl_lsp_rs_core::config::RejectedIncludePathReason) -> bool
 pub fn perl_lsp_rs_core::config::RejectedIncludePathReason::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_lsp_rs_core::config::SystemIncLookupImpact
+pub perl_lsp_rs_core::config::SystemIncLookupImpact::Disabled
+pub perl_lsp_rs_core::config::SystemIncLookupImpact::NotObserved
+pub perl_lsp_rs_core::config::SystemIncLookupImpact::OmittedTerminal
+pub perl_lsp_rs_core::config::SystemIncLookupImpact::OmittedTransient
+pub perl_lsp_rs_core::config::SystemIncLookupImpact::Participated
+pub fn perl_lsp_rs_core::config::SystemIncLookupImpact::code(self) -> &'static str
+pub fn perl_lsp_rs_core::config::SystemIncLookupImpact::clone(&self) -> perl_lsp_rs_core::config::SystemIncLookupImpact
+pub fn perl_lsp_rs_core::config::SystemIncLookupImpact::eq(&self, other: &perl_lsp_rs_core::config::SystemIncLookupImpact) -> bool
+pub fn perl_lsp_rs_core::config::SystemIncLookupImpact::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub enum perl_lsp_rs_core::config::SystemIncProbeOutcome
 pub perl_lsp_rs_core::config::SystemIncProbeOutcome::Disabled
 pub perl_lsp_rs_core::config::SystemIncProbeOutcome::IoFailed
@@ -149,6 +159,19 @@ pub perl_lsp_rs_core::config::SystemIncProbeOutcome::Unavailable
 pub fn perl_lsp_rs_core::config::SystemIncProbeOutcome::clone(&self) -> perl_lsp_rs_core::config::SystemIncProbeOutcome
 pub fn perl_lsp_rs_core::config::SystemIncProbeOutcome::eq(&self, other: &perl_lsp_rs_core::config::SystemIncProbeOutcome) -> bool
 pub fn perl_lsp_rs_core::config::SystemIncProbeOutcome::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_lsp_rs_core::config::SystemIncProbeOutcomeKind
+pub perl_lsp_rs_core::config::SystemIncProbeOutcomeKind::Disabled
+pub perl_lsp_rs_core::config::SystemIncProbeOutcomeKind::IoFailed
+pub perl_lsp_rs_core::config::SystemIncProbeOutcomeKind::NonZeroExit
+pub perl_lsp_rs_core::config::SystemIncProbeOutcomeKind::NotObserved
+pub perl_lsp_rs_core::config::SystemIncProbeOutcomeKind::Paths
+pub perl_lsp_rs_core::config::SystemIncProbeOutcomeKind::SuccessfulEmpty
+pub perl_lsp_rs_core::config::SystemIncProbeOutcomeKind::TimedOut
+pub perl_lsp_rs_core::config::SystemIncProbeOutcomeKind::Unavailable
+pub fn perl_lsp_rs_core::config::SystemIncProbeOutcomeKind::code(self) -> &'static str
+pub fn perl_lsp_rs_core::config::SystemIncProbeOutcomeKind::clone(&self) -> perl_lsp_rs_core::config::SystemIncProbeOutcomeKind
+pub fn perl_lsp_rs_core::config::SystemIncProbeOutcomeKind::eq(&self, other: &perl_lsp_rs_core::config::SystemIncProbeOutcomeKind) -> bool
+pub fn perl_lsp_rs_core::config::SystemIncProbeOutcomeKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub enum perl_lsp_rs_core::config::UnauthorizedExternalIncludePathSource
 pub perl_lsp_rs_core::config::UnauthorizedExternalIncludePathSource::DidChangeConfiguration
 pub perl_lsp_rs_core::config::UnauthorizedExternalIncludePathSource::FolderConfiguration
@@ -416,6 +439,19 @@ pub fn perl_lsp_rs_core::config::ServerConfig::default() -> Self
 pub fn perl_lsp_rs_core::config::ServerConfig::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_lsp_rs_core::config::ServerConfig::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 pub fn perl_lsp_rs_core::config::ServerConfig::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_lsp_rs_core::config::SystemIncProbeSnapshot
+pub perl_lsp_rs_core::config::SystemIncProbeSnapshot::attempts_consumed: u32
+pub perl_lsp_rs_core::config::SystemIncProbeSnapshot::max_attempts: u32
+pub perl_lsp_rs_core::config::SystemIncProbeSnapshot::outcome: perl_lsp_rs_core::config::SystemIncProbeOutcomeKind
+pub perl_lsp_rs_core::config::SystemIncProbeSnapshot::system_root_count: core::option::Option<usize>
+pub perl_lsp_rs_core::config::SystemIncProbeSnapshot::use_perl5lib: bool
+pub perl_lsp_rs_core::config::SystemIncProbeSnapshot::use_system_inc: bool
+pub fn perl_lsp_rs_core::config::SystemIncProbeSnapshot::lookup_impact(&self) -> perl_lsp_rs_core::config::SystemIncLookupImpact
+pub fn perl_lsp_rs_core::config::SystemIncProbeSnapshot::retry_eligible(&self) -> bool
+pub fn perl_lsp_rs_core::config::SystemIncProbeSnapshot::terminal(&self) -> bool
+pub fn perl_lsp_rs_core::config::SystemIncProbeSnapshot::clone(&self) -> perl_lsp_rs_core::config::SystemIncProbeSnapshot
+pub fn perl_lsp_rs_core::config::SystemIncProbeSnapshot::eq(&self, other: &perl_lsp_rs_core::config::SystemIncProbeSnapshot) -> bool
+pub fn perl_lsp_rs_core::config::SystemIncProbeSnapshot::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_lsp_rs_core::config::WorkspaceConfig
 pub perl_lsp_rs_core::config::WorkspaceConfig::declared_dependencies: alloc::vec::Vec<perl_lsp_rs_core::config::DeclaredDependency>
 pub perl_lsp_rs_core::config::WorkspaceConfig::discovery_extra_extensions: alloc::vec::Vec<alloc::string::String>
@@ -435,6 +471,8 @@ pub fn perl_lsp_rs_core::config::WorkspaceConfig::env_perl_lib_paths() -> alloc:
 pub fn perl_lsp_rs_core::config::WorkspaceConfig::get_system_inc(&mut self) -> &[std::path::PathBuf]
 pub fn perl_lsp_rs_core::config::WorkspaceConfig::get_system_inc_probe_outcome(&mut self) -> perl_lsp_rs_core::config::SystemIncProbeOutcome
 pub fn perl_lsp_rs_core::config::WorkspaceConfig::parse_perl5lib(value: &str) -> alloc::vec::Vec<alloc::string::String>
+pub fn perl_lsp_rs_core::config::WorkspaceConfig::peek_system_inc(&self) -> (alloc::vec::Vec<std::path::PathBuf>, perl_lsp_rs_core::config::SystemIncProbeSnapshot)
+pub fn perl_lsp_rs_core::config::WorkspaceConfig::peek_system_inc_probe(&self) -> perl_lsp_rs_core::config::SystemIncProbeSnapshot
 pub fn perl_lsp_rs_core::config::WorkspaceConfig::preserve_metadata_state_from(&mut self, previous: &Self)
 pub fn perl_lsp_rs_core::config::WorkspaceConfig::refresh_declared_dependencies(&mut self, workspace_root: &std::path::Path)
 pub fn perl_lsp_rs_core::config::WorkspaceConfig::refresh_dependency_include_paths(&mut self, workspace_root: &std::path::Path)
