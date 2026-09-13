@@ -548,6 +548,9 @@ fn quote_like_lookalikes_do_not_swallow_following_pragmas() {
         "my %h = (q => 1, y => 2, s => 3);\nuse lib 'real';\n",
         "my $v = $h{q};\nuse lib 'real';\n",
         "my $v = $obj->m(1);\nuse lib 'real';\n",
+        "$i18n->tr('key');\nuse lib 'real';\n",
+        "$obj->s(1);\nuse lib 'real';\n",
+        "$obj -> y(1);\nuse lib 'real';\n",
         "my $size = -s $file;\nuse lib 'real';\n",
         "my $qux = quux();\nuse lib 'real';\n",
         "my $v = Foo::y();\nuse lib 'real';\n",
@@ -578,17 +581,46 @@ fn unterminated_quote_like_fails_closed() {
     );
 }
 
+#[test]
+fn qx_is_quote_like_but_qxx_stays_a_bareword() {
+    let qx_source = "qx{echo it's};\nuse lib 'after-qx';\n";
+    let qxx_source = "qxx(...);\nuse lib 'after-qxx';\n";
+
+    assert_eq!(
+        extract_use_lib_operations(qx_source),
+        vec![UseLibAction::Add(vec![UseLibPath {
+            path: "after-qx".to_string(),
+            from_findbin: false,
+        }])]
+    );
+    assert_eq!(
+        extract_use_lib_operations(qxx_source),
+        vec![UseLibAction::Add(vec![UseLibPath {
+            path: "after-qxx".to_string(),
+            from_findbin: false,
+        }])]
+    );
+}
+
 /// Identifier-continue characters beyond ASCII keep `__END__` an identifier:
 /// under `use utf8` `__END__é` is a bareword Perl compiles, not a marker.
 #[test]
 fn non_ascii_identifier_continue_is_not_a_data_marker() {
-    let source = "use utf8;\nmy $__END__é = 1;\n__END__é;\nuse lib 'real';\n";
+    let sources = [
+        ("use utf8;\nmy $__END__é = 1;\n__END__é;\nuse lib 'real';\n", "real"),
+        ("use utf8;\n__END__\u{0301};\nuse lib 'still-code';\n", "still-code"),
+    ];
 
-    assert_eq!(
-        extract_use_lib_operations(source),
-        vec![UseLibAction::Add(vec![UseLibPath { path: "real".to_string(), from_findbin: false }])],
-        "a non-ASCII identifier continuation was read as a data-section marker"
-    );
+    for (source, expected) in sources {
+        assert_eq!(
+            extract_use_lib_operations(source),
+            vec![UseLibAction::Add(vec![UseLibPath {
+                path: expected.to_string(),
+                from_findbin: false,
+            }])],
+            "an identifier continuation was read as a data-section marker: {source:?}"
+        );
+    }
 }
 
 /// A colon after the marker makes it a *label*, so the code region continues.

@@ -230,7 +230,7 @@ fn is_data_section_marker(rest: &str) -> bool {
             // an identifier: under `use utf8` `__END__é` is a bareword Perl
             // compiles, so treating it as a marker would hide code and the
             // pragmas in it.
-            if tail.chars().next().is_some_and(|ch| ch.is_alphanumeric() || ch == '_') {
+            if tail.chars().next().is_some_and(is_delimiter_char) {
                 return false;
             }
             // A colon *adjacent* to the marker continues the token: `__END__:`
@@ -252,7 +252,7 @@ fn is_data_section_marker(rest: &str) -> bool {
 
 /// The quote-like operator at `chars[i]`, as (body count, delimiter index).
 ///
-/// Recognized operators: `q`, `qq`, `qw`, `qr`, `m`, `s`, `tr`, `y`. The word
+/// Recognized operators: `q`, `qq`, `qw`, `qx`, `qr`, `m`, `s`, `tr`, `y`. The word
 /// must stand alone (not preceded by an identifier character, a sigil, `-` or
 /// `:`, so `$h{q}`, `->m(...)`, `-s $f`, `Foo::y` and `qux` are untouched), and
 /// the delimiter must be punctuation Perl accepts as one: never a closing
@@ -268,9 +268,12 @@ fn quote_like_at(source: &str, chars: &[(usize, char)], i: usize) -> Option<(u8,
     {
         return None;
     }
+    if source[..idx].trim_end_matches([' ', '\t']).ends_with("->") {
+        return None;
+    }
     let (bodies, word_len) = match ch {
         'q' => match chars.get(i + 1).map(|(_, c)| *c) {
-            Some('q' | 'w' | 'r') => (1u8, 2usize),
+            Some('q' | 'w' | 'r' | 'x') => (1u8, 2usize),
             _ => (1, 1),
         },
         'm' => (1, 1),
