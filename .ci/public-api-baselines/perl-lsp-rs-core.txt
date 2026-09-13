@@ -2329,6 +2329,8 @@ pub fn perl_lsp_rs_core::protocol::resolve_envelope::SessionResolveAuthenticator
 pub trait perl_lsp_rs_core::protocol::resolve_envelope::ResolveEnvelopeSubject: serde_core::ser::Serialize + serde_core::de::DeserializeOwned
 pub const perl_lsp_rs_core::protocol::resolve_envelope::ResolveEnvelopeSubject::FAMILY: perl_lsp_rs_core::protocol::resolve_envelope::ResolveFamily
 pub const perl_lsp_rs_core::protocol::resolve_envelope::ResolveEnvelopeSubject::VERSION: u16
+pub const perl_lsp_rs_core::providers::InlayHintResolveSubjectV1::FAMILY: perl_lsp_rs_core::protocol::resolve_envelope::ResolveFamily
+pub const perl_lsp_rs_core::providers::InlayHintResolveSubjectV1::VERSION: u16
 pub mod perl_lsp_rs_core::protocol::schema
 pub enum perl_lsp_rs_core::protocol::schema::Direction
 pub perl_lsp_rs_core::protocol::schema::Direction::ClientToServer
@@ -3892,6 +3894,21 @@ pub perl_lsp_rs_core::providers::inlay_hints::InlayHint::position: perl_position
 pub perl_lsp_rs_core::providers::inlay_hints::InlayHint::tooltip: core::option::Option<alloc::string::String>
 pub fn perl_lsp_rs_core::providers::InlayHint::clone(&self) -> perl_lsp_rs_core::providers::InlayHint
 pub fn perl_lsp_rs_core::providers::InlayHint::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_lsp_rs_core::providers::inlay_hints::InlayHintResolveSubjectV1
+pub perl_lsp_rs_core::providers::inlay_hints::InlayHintResolveSubjectV1::character: u32
+pub perl_lsp_rs_core::providers::inlay_hints::InlayHintResolveSubjectV1::content_hash: u64
+pub perl_lsp_rs_core::providers::inlay_hints::InlayHintResolveSubjectV1::function_name: alloc::string::String
+pub perl_lsp_rs_core::providers::inlay_hints::InlayHintResolveSubjectV1::generation: u32
+pub perl_lsp_rs_core::providers::inlay_hints::InlayHintResolveSubjectV1::incarnation: u64
+pub perl_lsp_rs_core::providers::inlay_hints::InlayHintResolveSubjectV1::line: u32
+pub perl_lsp_rs_core::providers::inlay_hints::InlayHintResolveSubjectV1::uri: alloc::string::String
+pub fn perl_lsp_rs_core::providers::InlayHintResolveSubjectV1::clone(&self) -> perl_lsp_rs_core::providers::InlayHintResolveSubjectV1
+pub fn perl_lsp_rs_core::providers::InlayHintResolveSubjectV1::eq(&self, other: &perl_lsp_rs_core::providers::InlayHintResolveSubjectV1) -> bool
+pub fn perl_lsp_rs_core::providers::InlayHintResolveSubjectV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub const perl_lsp_rs_core::providers::InlayHintResolveSubjectV1::FAMILY: perl_lsp_rs_core::protocol::resolve_envelope::ResolveFamily
+pub const perl_lsp_rs_core::providers::InlayHintResolveSubjectV1::VERSION: u16
+pub fn perl_lsp_rs_core::providers::InlayHintResolveSubjectV1::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_lsp_rs_core::providers::InlayHintResolveSubjectV1::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 pub struct perl_lsp_rs_core::providers::inlay_hints::InlayHintsProvider
 pub fn perl_lsp_rs_core::providers::InlayHintsProvider::generate_hints(&self, ast: &perl_ast::ast::Node, to_pos16: &impl core::ops::function::Fn(usize) -> (u32, u32), range: core::option::Option<perl_position_tracking::wire::WireRange>) -> alloc::vec::Vec<perl_lsp_rs_core::providers::InlayHint>
 pub fn perl_lsp_rs_core::providers::InlayHintsProvider::new() -> Self
@@ -8079,6 +8096,21 @@ pub perl_lsp_rs_core::providers::InlayHint::position: perl_position_tracking::wi
 pub perl_lsp_rs_core::providers::InlayHint::tooltip: core::option::Option<alloc::string::String>
 pub fn perl_lsp_rs_core::providers::InlayHint::clone(&self) -> perl_lsp_rs_core::providers::InlayHint
 pub fn perl_lsp_rs_core::providers::InlayHint::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_lsp_rs_core::providers::InlayHintResolveSubjectV1
+pub perl_lsp_rs_core::providers::InlayHintResolveSubjectV1::character: u32
+pub perl_lsp_rs_core::providers::InlayHintResolveSubjectV1::content_hash: u64
+pub perl_lsp_rs_core::providers::InlayHintResolveSubjectV1::function_name: alloc::string::String
+pub perl_lsp_rs_core::providers::InlayHintResolveSubjectV1::generation: u32
+pub perl_lsp_rs_core::providers::InlayHintResolveSubjectV1::incarnation: u64
+pub perl_lsp_rs_core::providers::InlayHintResolveSubjectV1::line: u32
+pub perl_lsp_rs_core::providers::InlayHintResolveSubjectV1::uri: alloc::string::String
+pub fn perl_lsp_rs_core::providers::InlayHintResolveSubjectV1::clone(&self) -> perl_lsp_rs_core::providers::InlayHintResolveSubjectV1
+pub fn perl_lsp_rs_core::providers::InlayHintResolveSubjectV1::eq(&self, other: &perl_lsp_rs_core::providers::InlayHintResolveSubjectV1) -> bool
+pub fn perl_lsp_rs_core::providers::InlayHintResolveSubjectV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub const perl_lsp_rs_core::providers::InlayHintResolveSubjectV1::FAMILY: perl_lsp_rs_core::protocol::resolve_envelope::ResolveFamily
+pub const perl_lsp_rs_core::providers::InlayHintResolveSubjectV1::VERSION: u16
+pub fn perl_lsp_rs_core::providers::InlayHintResolveSubjectV1::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_lsp_rs_core::providers::InlayHintResolveSubjectV1::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 pub struct perl_lsp_rs_core::providers::InlayHintsProvider
 pub fn perl_lsp_rs_core::providers::InlayHintsProvider::generate_hints(&self, ast: &perl_ast::ast::Node, to_pos16: &impl core::ops::function::Fn(usize) -> (u32, u32), range: core::option::Option<perl_position_tracking::wire::WireRange>) -> alloc::vec::Vec<perl_lsp_rs_core::providers::InlayHint>
 pub fn perl_lsp_rs_core::providers::InlayHintsProvider::new() -> Self

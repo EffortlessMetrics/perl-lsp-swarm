@@ -760,6 +760,7 @@ pub fn perl_lsp::state::ClientCapabilities::default() -> Self
 pub fn perl_lsp::state::ClientCapabilities::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_lsp::state::DocumentState
 pub perl_lsp::state::DocumentState::generation: alloc::sync::Arc<core::sync::atomic::AtomicU32>
+pub perl_lsp::state::DocumentState::incarnation: u64
 pub perl_lsp::state::DocumentState::incremental_doc: core::option::Option<perl_parser::incremental::incremental_document::IncrementalDocument>
 pub perl_lsp::state::DocumentState::incremental_state: core::option::Option<perl_parser::incremental::state::IncrementalState>
 pub perl_lsp::state::DocumentState::line_starts: perl_position_tracking::line_index::LineStartsCache

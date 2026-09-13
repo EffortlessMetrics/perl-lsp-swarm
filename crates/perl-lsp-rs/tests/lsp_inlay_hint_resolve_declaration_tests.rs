@@ -4,7 +4,7 @@
 //!
 //! These tests drive `textDocument/inlayHint` → `inlayHint/resolve` against an
 //! open document. They fail if resolve still returns the first same-name `sub`.
-//! Envelope authenticity (#14672) and provider migration (#8299) are out of scope.
+//! Combined replay coverage binds declaration selection to the authenticated hint (#14672).
 
 use perl_lsp::{JsonRpcRequest, LspServer};
 use serde_json::{Value, json};
@@ -318,5 +318,47 @@ greet("Alice", "Hello");
         line, only,
         "the sole greet declaration must still resolve; got {line}, expected {only}"
     );
+    Ok(())
+}
+
+/// Client-owned sibling data cannot redirect a valid hint to another package or
+/// document; moving its position must refuse even when the envelope is intact.
+#[test]
+fn resolve_authenticated_hint_preserves_effective_declaration() -> TestResult {
+    let srv = LspServer::new();
+    init_with_label_location(&srv);
+    let uri = "file:///authenticated_effective.pl";
+    let decoy_uri = "file:///authenticated_decoy.pl";
+    let text = "package A;\nsub run($x, $y) { return 1; }\nsub run($x, $y) { return 2; }\nrun(1, 2);\npackage B;\nsub run($x, $y) { return 3; }\n";
+    open_document(&srv, uri, text);
+    open_document(&srv, decoy_uri, "sub run($x, $y) { return 4; }\n");
+    let hints = list_hints(&srv, uri)?;
+    let issued = first_param_hint_for(hints.as_array().ok_or("hint array missing")?, "run")?;
+    let mut tampered = issued.clone();
+    let data =
+        tampered.get_mut("data").and_then(Value::as_object_mut).ok_or("hint data missing")?;
+    data.insert("uri".into(), json!(decoy_uri));
+    data.insert("functionName".into(), json!("B::run"));
+    data.insert("function".into(), json!("B::run"));
+    let resolved = resolve_hint(&srv, tampered)?;
+    if resolved_location_line(&resolved)? != 2 {
+        return Err("authenticated call must select A's last definition on line 2".into());
+    }
+    let parts = resolved.get("label").and_then(Value::as_array).ok_or("label parts missing")?;
+    let location = parts.iter().find_map(|part| part.get("location")).ok_or("location missing")?;
+    if location.get("uri").and_then(Value::as_str) != Some(uri) {
+        return Err("client sibling URI redirected authenticated location".into());
+    }
+    let mut moved = issued.clone();
+    let position = moved.get_mut("position").ok_or("position missing")?;
+    *position = json!({ "line": 5, "character": 0 });
+    let refused = resolve_hint(&srv, moved)?;
+    if refused
+        .get("label")
+        .and_then(Value::as_array)
+        .is_some_and(|parts| parts.iter().any(|part| part.get("location").is_some()))
+    {
+        return Err("moved authenticated hint retained a location".into());
+    }
     Ok(())
 }
