@@ -3059,3 +3059,87 @@ void test('smoke source labels cannot forge summary rows or workflow commands', 
   if (!notice || notice.includes('\n') || !notice.includes('%0A::error::forged%25'))
     throw new Error('source label forged a workflow command');
 });
+
+void test('main forwards its constructed manifest to the Test Explorer child', () => {
+  const vm = require('node:vm');
+  const source = fs.readFileSync(path.join(__dirname, 'run-local-vsix-smoke.js'), 'utf8');
+  const revision = 'a'.repeat(40);
+  const environment = {
+    PERL_LSP_FIRST_HOUR_SERVER_PATH: '/fixture/perllsp',
+    PERL_LSP_SERVER_SOURCE_SHA: revision,
+    PERL_LSP_CURRENT_SOURCE_SHA: revision,
+    PERL_LSP_CANDIDATE_ID: 'local-candidate',
+    PERL_LSP_ARTIFACT_SET_ID: 'local-artifacts',
+    PERL_LSP_CONSTRUCT_CANDIDATE_MANIFEST: '1',
+    PERL_LSP_TEST_EXPLORER_JOURNEY: '1',
+  };
+  const childEnvironments = [];
+  const sandbox = {
+    __dirname,
+    module: { exports: {} },
+    process: {
+      env: environment,
+      platform: 'win32',
+      arch: 'x64',
+      stderr: {
+        write(message) {
+          throw new Error(message);
+        },
+      },
+    },
+    require(name) {
+      if (name === 'fs')
+        return {
+          existsSync: () => true,
+          readFileSync: () => JSON.stringify({ name: 'fixture', version: '1.0.0' }),
+          rmSync() {},
+        };
+      return require(name);
+    },
+    capture: (env) => childEnvironments.push(env),
+  };
+  // Execute the actual main and manifest constructor. Only package/process IO
+  // and unrelated journey legs are replaced; the handoff itself is untouched.
+  vm.runInNewContext(
+    source +
+      `
+    gitRevision = () => '${revision}';
+    ensureCleanWorkingTree = () => {};
+    persistReceipt = () => {};
+    stageServerForPackage = () => () => {};
+    runNpm = () => ({ status: 0 });
+    sha256File = () => 'b'.repeat(64);
+    runInventoryTransition = () => ({ status: 'pass', behavior_safe: true });
+    runPublishedSmoke = () => ({ phase: 'child', result: { status: 0 } });
+    validateVerifiedCandidateReceipt = () => ({ ok: true });
+    runTestExplorerJourneyStage = (env, revision, vsixPath, digest) => {
+      capture(testExplorerSmokeEnv(env, revision, vsixPath, digest));
+      return { status: 'pass' };
+    };
+    shouldRunActivationFailureJourney = () => false;
+    shouldRunCrashRecoveryJourney = () => false;
+    finalizeSmokeRun = () => 0;
+    main();
+  `,
+    sandbox,
+    { filename: 'run-local-vsix-smoke-main-fixture.js' },
+  );
+  assert.equal(childEnvironments.length, 1, 'main must invoke the Test Explorer stage');
+  const child = childEnvironments[0];
+  assert.ok(
+    child.PERL_LSP_CANDIDATE_ARTIFACT_MANIFEST,
+    'main must forward the constructed manifest',
+  );
+  assert.deepEqual(JSON.parse(child.PERL_LSP_CANDIDATE_ARTIFACT_MANIFEST), {
+    candidate_id: 'local-candidate',
+    artifact_set_id: 'local-artifacts',
+    frozen_product_sha: revision,
+    platform: 'windows',
+    vsix_sha256: 'b'.repeat(64),
+    bundled_server_sha256: 'b'.repeat(64),
+  });
+  assert.equal(child.PERL_LSP_TEST_EXPLORER_SMOKE, '1');
+  assert.equal(child.PERL_LSP_TEST_EXPLORER_JOURNEY, undefined);
+  assert.equal(child.PERL_LSP_CURRENT_SOURCE_SMOKE, undefined);
+  assert.equal(environment.PERL_LSP_CANDIDATE_ARTIFACT_MANIFEST, undefined);
+});
