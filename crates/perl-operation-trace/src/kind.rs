@@ -113,4 +113,37 @@ mod tests {
             assert!(seen.insert(kind.to_string()), "duplicate display string for {kind:?}");
         }
     }
+
+    /// Table-driven, exhaustive over [`ALL`]: pins every match arm in
+    /// `Display for OperationKind` to its exact wire string, not merely the
+    /// two spot-checked by `display_is_stable_snake_case` above. A mutation
+    /// to any single arm's literal (for example `TestRun => "testrun"`)
+    /// breaks exactly one row here, whereas `display_is_stable_snake_case`
+    /// only ever exercises two of the ten arms and
+    /// `every_variant_has_a_distinct_display_string` only proves the ten
+    /// strings are pairwise distinct, never that any one of them is the
+    /// *documented* string.
+    #[test]
+    fn display_matches_the_exact_documented_string_for_every_variant() {
+        let expected: [(OperationKind, &str); 10] = [
+            (OperationKind::LspRequest, "lsp_request"),
+            (OperationKind::WorkspaceIndexing, "workspace_indexing"),
+            (OperationKind::TestRun, "test_run"),
+            (OperationKind::ProcessExecution, "process_execution"),
+            (OperationKind::DebugSession, "debug_session"),
+            (OperationKind::CompilerBuild, "compiler_build"),
+            (OperationKind::ConfigurationReload, "configuration_reload"),
+            (OperationKind::SnapshotHydration, "snapshot_hydration"),
+            (OperationKind::RiprPacketProduction, "ripr_packet_production"),
+            (OperationKind::ReleaseCandidate, "release_candidate"),
+        ];
+        assert_eq!(
+            expected.len(),
+            ALL.len(),
+            "this table must stay exhaustive over every OperationKind variant"
+        );
+        for (kind, wire) in expected {
+            assert_eq!(kind.to_string(), wire, "wrong Display string for {kind:?}");
+        }
+    }
 }

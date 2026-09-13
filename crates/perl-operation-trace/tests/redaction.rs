@@ -34,6 +34,19 @@ fn hostile_event() -> OperationEvent {
 }
 
 #[test]
+fn hostile_event_fixture_has_the_expected_kind() {
+    // Pins the fixture builder directly: the sole reason `hostile_event()`
+    // uses `StageStarted` is that it is the one event kind whose registry
+    // entry declares a field at every privacy tier (see `src/registry.rs`).
+    // If this constructor's kind ever drifted to one that does not declare
+    // `host_path`/`source_line`/`api_key_hint`, `EventRegistry::validate`
+    // would reject the event and `hostile_fixture_never_appears_in_the_serialized_trace`
+    // would fail via its `record(...)?` — but only as an incidental side
+    // effect, not because anything named the expected kind directly.
+    assert_eq!(hostile_event().kind(), OperationEventKind::StageStarted);
+}
+
+#[test]
 fn hostile_fixture_never_appears_in_the_serialized_trace() -> Result<(), Box<dyn std::error::Error>>
 {
     let mut allocator = OperationIdAllocator::new(

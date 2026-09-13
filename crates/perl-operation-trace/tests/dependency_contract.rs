@@ -87,34 +87,34 @@ const PERMITTED: &[&str] = &[
     "unicode-ident",
 ];
 
+/// The exact `cargo tree` invocation this contract runs.
+///
+/// Named apart from `dependency_tree` so its exact contents can be pinned
+/// directly by [`tree_command_args_include_edges_normal_and_target_all`]
+/// without shelling out to `cargo` at all: a deleted `--target`/`all` pair,
+/// or a `--edges` value other than `normal`, would otherwise only ever show
+/// up as a change to what `cargo tree` happens to print on the current host
+/// (which, for this crate's *current* dependency closure, `--target all`
+/// does not actually change), not as a direct assertion failure.
+const TREE_COMMAND_ARGS: &[&str] = &[
+    "tree",
+    "-p",
+    "perl-operation-trace",
+    "--edges",
+    "normal",
+    "--prefix",
+    "none",
+    "--target",
+    "all",
+];
+
 /// Run `cargo tree` for this crate's normal (non-dev, non-build) edges.
 ///
 /// Panics with a precise diagnostic when the instrument cannot run — the
 /// contract is unproven in that case, which is a failure, not a pass.
 fn dependency_tree() -> String {
-    let output = Command::new(env!("CARGO"))
-        .args([
-            "tree",
-            "-p",
-            "perl-operation-trace",
-            "--edges",
-            "normal",
-            "--prefix",
-            "none",
-            // `cargo tree` defaults to the host target only. Without
-            // `--target all`, a target-specific normal dependency (a
-            // Windows-only `sha2` edge, say) would evade both `FORBIDDEN`
-            // and the "exact closure" claim below on every platform except
-            // the one it is added for -- and the platform-specific CI job
-            // that would otherwise catch it does not run this integration
-            // test. `--target all` unions every target's dependency graph
-            // into one tree, so this contract is proven across platforms,
-            // not just the one running the check.
-            "--target",
-            "all",
-        ])
-        .output()
-        .unwrap_or_else(|error| {
+    let output =
+        Command::new(env!("CARGO")).args(TREE_COMMAND_ARGS).output().unwrap_or_else(|error| {
             panic!(
                 "dependency contract is unproven: could not run `cargo tree` ({error}). \
                  The contract fails closed rather than skipping."
@@ -204,4 +204,76 @@ fn package_names_parses_cargo_tree_output() {
     // A path containing a crate-like substring must not be read as a package.
     let tricky = "perl-operation-trace v0.1.0 (/home/dev/perl-workspace-core/checkout)\n";
     assert_eq!(package_names(tricky), vec!["perl-operation-trace"]);
+}
+
+/// `package_names` sorts then `.dedup()`s; the sample above never repeats a
+/// package name, so it never actually exercises `.dedup()` collapsing a
+/// true duplicate — a deleted `.dedup()` call would still pass every
+/// existing test in this file (`cargo tree`'s real `--prefix none` output
+/// deduplicates already-visited subtrees itself, so a live run may not
+/// repeat a name either). This test supplies two literal duplicate lines
+/// directly, independent of what a live `cargo tree` invocation happens to
+/// produce.
+#[test]
+fn package_names_deduplicates_repeated_entries() {
+    let sample = "perl-operation-trace v0.1.0\nserde v1.0.0\nserde v1.0.0 (*)\nserde v1.0.0 (*)\n";
+    assert_eq!(package_names(sample), vec!["perl-operation-trace", "serde"]);
+}
+
+/// Pins the exact `cargo tree` invocation's arguments directly, without
+/// shelling out to `cargo`: `--edges normal` (dev/build edges excluded) and
+/// `--target all` (see `TREE_COMMAND_ARGS`'s doc comment for why dropping
+/// `--target all` would not otherwise be caught by any test in this file).
+#[test]
+fn tree_command_args_include_edges_normal_and_target_all() {
+    assert_eq!(
+        TREE_COMMAND_ARGS,
+        [
+            "tree",
+            "-p",
+            "perl-operation-trace",
+            "--edges",
+            "normal",
+            "--prefix",
+            "none",
+            "--target",
+            "all"
+        ]
+    );
+}
+
+/// `FORBIDDEN` is this contract's core declared data; pin that a handful of
+/// the specifically-motivated entries (LSP/DAP runtime, the durable-identity
+/// sibling, the hash-function dependency) are actually present, rather than
+/// only ever exercising the list indirectly through a live `cargo tree` run
+/// that currently contains none of them (so their *absence* from the list
+/// would not be caught by `no_forbidden_dependencies` at all).
+#[test]
+fn forbidden_list_names_the_specifically_reviewed_out_of_bounds_crates() {
+    for name in
+        ["tokio", "sha2", "perl-workspace", "perl-source-identity", "perl-subprocess-runtime"]
+    {
+        assert!(FORBIDDEN.contains(&name), "expected {name:?} in FORBIDDEN");
+    }
+}
+
+/// `PERMITTED` is this contract's core declared data; pin it is *exactly*
+/// the reviewed serde closure, not merely a superset that happens to contain
+/// whatever a live `cargo tree` run currently prints.
+#[test]
+fn permitted_list_is_exactly_the_reviewed_serde_closure() {
+    let mut expected = vec![
+        "perl-operation-trace",
+        "serde",
+        "serde_core",
+        "serde_derive",
+        "proc-macro2",
+        "quote",
+        "syn",
+        "unicode-ident",
+    ];
+    expected.sort_unstable();
+    let mut actual = PERMITTED.to_vec();
+    actual.sort_unstable();
+    assert_eq!(actual, expected);
 }

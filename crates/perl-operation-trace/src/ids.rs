@@ -302,6 +302,35 @@ mod tests {
 
     // ── Wire format ────────────────────────────────────────────────────────
 
+    /// `OPERATION_ID_PREFIX` is the wire prefix every id must carry; pin its
+    /// exact value directly rather than only ever exercising it indirectly
+    /// through `as_wire`/`from_wire` call sites.
+    #[test]
+    fn operation_id_prefix_is_exactly_op_colon() {
+        assert_eq!(OPERATION_ID_PREFIX, "op:");
+    }
+
+    /// Boundary test for `from_wire`'s canonical-rendering predicate
+    /// (`sequence_part != sequence.to_string()`): below the boundary (a
+    /// non-canonical spelling that still parses as the same numeric value)
+    /// is rejected, exactly at the boundary (the canonical spelling) is
+    /// accepted, and a spelling that parses to a *different* numeric value
+    /// is rejected for an unrelated reason (not equal because not even the
+    /// same number). All three cases are pinned by exact equality, not
+    /// `is_some()`/`is_none()` alone.
+    #[test]
+    fn from_wire_canonical_sequence_predicate_boundary() {
+        // Exactly canonical: accepted, and parses to the expected id.
+        assert_eq!(OperationId::from_wire("op:s1:42"), Some(OperationId::new(session("s1"), 42)));
+        // Same numeric value, non-canonical spelling: rejected even though
+        // `.parse()` alone would succeed.
+        assert_eq!(OperationId::from_wire("op:s1:042"), None, "leading zero must be rejected");
+        assert_eq!(OperationId::from_wire("op:s1:+42"), None, "explicit sign must be rejected");
+        // A different numeric value's canonical spelling is simply a
+        // different id, not a predicate failure.
+        assert_eq!(OperationId::from_wire("op:s1:43"), Some(OperationId::new(session("s1"), 43)));
+    }
+
     #[test]
     fn wire_round_trips() {
         let id = OperationId::new(session("s1"), 42);
@@ -357,6 +386,19 @@ mod tests {
         for bad in ["\"\"", "\"op:\"", "\"op::5\"", "\"op:s1:05\"", "\"not-an-id\""] {
             assert!(serde_json::from_str::<OperationId>(bad).is_err(), "must reject {bad}");
         }
+    }
+
+    /// Stronger than `deserialization_is_validating`'s `is_err()` checks: the
+    /// rejected deserialization's own error message must name the expected
+    /// wire shape, not merely fail for some unspecified reason.
+    #[test]
+    fn deserialization_error_message_names_the_expected_wire_shape() {
+        let err = serde_json::from_str::<OperationId>("\"not-an-id\"").unwrap_err();
+        let message = err.to_string();
+        assert!(
+            message.contains("op:<session>:<sequence>"),
+            "expected the error to name the expected wire shape, got: {message}"
+        );
     }
 
     // ── ParentOperationId ─────────────────────────────────────────────────

@@ -30,6 +30,23 @@ fn domain_event() -> OperationEvent {
         .with_field("stage", EventFieldValue::PublicString("parse".into()))
 }
 
+#[test]
+fn domain_event_fixture_has_the_expected_kind_and_field() {
+    // Pins the fixture builder itself, directly: every test in this file
+    // relies on `domain_event()` producing a `StageStarted` event carrying
+    // `stage = "parse"`, but no other test asserts that shape directly — it
+    // is only ever exercised through the round-trip serialization
+    // comparisons below, which would still (mostly) pass if this builder
+    // silently started constructing a different, but still internally
+    // consistent, event.
+    let event = domain_event();
+    assert_eq!(event.kind(), OperationEventKind::StageStarted);
+    assert_eq!(
+        event.fields(),
+        &[("stage".to_string(), EventFieldValue::PublicString("parse".into()))]
+    );
+}
+
 /// The serialized `events` payload this crate recorded for `operation` under
 /// `recorder`, with the non-vacuity guard (exactly one recorded event) baked
 /// in so every caller gets it for free.

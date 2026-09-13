@@ -275,6 +275,19 @@ mod tests {
         assert!(json.contains("23 bytes"), "got: {json}");
     }
 
+    /// Pins `approx_serialized_len`'s exact return value directly — the
+    /// budget-accounting method itself, not only its externally observable
+    /// effect on `serde_json::to_string`'s output length (checked above).
+    #[test]
+    fn private_value_approx_serialized_len_matches_the_rendered_placeholder() {
+        assert_eq!(PrivateValue::new("ab").approx_serialized_len(), "<redacted:2 bytes>".len());
+        assert_eq!(
+            PrivateValue::new("abcdefgh").approx_serialized_len(),
+            "<redacted:8 bytes>".len()
+        );
+        assert_eq!(PrivateValue::new("").approx_serialized_len(), "<redacted:0 bytes>".len());
+    }
+
     #[test]
     fn private_value_length_varies_with_content() {
         let short = PrivateValue::new("ab");
@@ -321,5 +334,23 @@ mod tests {
         assert_eq!(s.len(), 3);
         assert!(!s.is_empty());
         assert!(!serde_json::to_string(&s).unwrap().contains('3'));
+    }
+
+    /// Pins `approx_serialized_len`'s exact return value directly, and that
+    /// it is identical regardless of plaintext length — the budget
+    /// -accounting method itself, not only its externally observable effect
+    /// on `serde_json::to_string`'s output (checked above).
+    #[test]
+    fn secret_field_approx_serialized_len_is_fixed_regardless_of_plaintext_length() {
+        assert_eq!(SECRET_REDACTED_PLACEHOLDER, "<redacted>");
+        assert_eq!(
+            SecretField::new("a").approx_serialized_len(),
+            SECRET_REDACTED_PLACEHOLDER.len()
+        );
+        assert_eq!(
+            SecretField::new("a very much longer low-entropy secret value indeed")
+                .approx_serialized_len(),
+            SECRET_REDACTED_PLACEHOLDER.len()
+        );
     }
 }

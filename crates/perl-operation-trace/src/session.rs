@@ -170,9 +170,33 @@ mod tests {
 
     #[test]
     fn rejects_blank_labels() {
-        assert!(SessionId::new("").is_err());
-        assert!(SessionId::new("   ").is_err());
-        assert!(SessionId::new("\t\n").is_err());
+        assert_eq!(SessionId::new(""), Err(SessionIdError::Blank));
+        assert_eq!(SessionId::new("   "), Err(SessionIdError::Blank));
+        assert_eq!(SessionId::new("\t\n"), Err(SessionIdError::Blank));
+    }
+
+    /// `MAX_SESSION_ID_BYTES` is a public contract constant; pin its exact
+    /// numeric value directly. The boundary tests below only ever exercise
+    /// it *by name*, so a mutation to the constant's own declared value
+    /// would still pass every boundary test without this line.
+    #[test]
+    fn max_session_id_bytes_is_exactly_128() {
+        assert_eq!(MAX_SESSION_ID_BYTES, 128);
+    }
+
+    /// Exhaustive over every [`SessionIdError`] variant: pins `Display`'s
+    /// exact text for each. Nothing previously asserted this text at all.
+    #[test]
+    fn session_id_error_display_matches_the_exact_documented_string_for_every_variant() {
+        assert_eq!(SessionIdError::Blank.to_string(), "session id must not be blank");
+        assert_eq!(
+            SessionIdError::ContainsControlCharacter.to_string(),
+            "session id must not contain an ASCII control character"
+        );
+        assert_eq!(
+            SessionIdError::TooLong { max: 128, actual: 200 }.to_string(),
+            "session id must be at most 128 bytes, got 200"
+        );
     }
 
     #[test]

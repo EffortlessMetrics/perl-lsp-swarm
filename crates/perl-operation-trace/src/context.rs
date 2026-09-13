@@ -286,12 +286,40 @@ mod tests {
         }
     }
 
+    /// Table-driven, exhaustive over every [`IdentityRefKind`] variant: pins
+    /// `Display`'s exact wire string per arm. Before this test, nothing
+    /// asserted any of these six literals directly — the round-trip test
+    /// above only proves `Display` and `Deserialize` agree with each other.
+    #[test]
+    fn identity_ref_kind_display_matches_the_exact_documented_string_for_every_variant() {
+        let expected = [
+            (IdentityRefKind::Source, "source"),
+            (IdentityRefKind::Environment, "environment"),
+            (IdentityRefKind::Fact, "fact"),
+            (IdentityRefKind::Process, "process"),
+            (IdentityRefKind::Receipt, "receipt"),
+            (IdentityRefKind::Generation, "generation"),
+        ];
+        for (kind, wire) in expected {
+            assert_eq!(kind.to_string(), wire, "wrong Display string for {kind:?}");
+        }
+    }
+
     // ── IdentityRef ───────────────────────────────────────────────────────
 
     #[test]
     fn identity_ref_rejects_blank() {
-        assert!(IdentityRef::new("").is_err());
-        assert!(IdentityRef::new("   ").is_err());
+        assert_eq!(IdentityRef::new(""), Err(IdentityRefError::Blank));
+        assert_eq!(IdentityRef::new("   "), Err(IdentityRefError::Blank));
+    }
+
+    /// `IdentityRefError` currently has one variant; pin its `Display` text
+    /// exactly rather than leaving the match arm (and the whole `impl
+    /// fmt::Display`) exercised only through `is_err()`-style checks
+    /// elsewhere.
+    #[test]
+    fn identity_ref_error_display_is_exact() {
+        assert_eq!(IdentityRefError::Blank.to_string(), "identity reference must not be blank");
     }
 
     #[test]
@@ -339,6 +367,25 @@ mod tests {
     }
 
     // ── Attachment bound ──────────────────────────────────────────────────
+
+    /// `MAX_ATTACHED_IDENTITY_REFS` is a public contract constant; pin its
+    /// exact numeric value directly. Every other test in this module only
+    /// ever exercises it *by name* (`0..MAX_ATTACHED_IDENTITY_REFS`), so a
+    /// mutation to the constant's own declared value would still pass every
+    /// boundary test below without this line.
+    #[test]
+    fn max_attached_identity_refs_is_exactly_eight() {
+        assert_eq!(MAX_ATTACHED_IDENTITY_REFS, 8);
+    }
+
+    /// `ContextError` currently has one variant; pin its `Display` text
+    /// exactly, independent of the equality check `attach_beyond_the_bound_is_rejected`
+    /// already performs on the error value itself.
+    #[test]
+    fn context_error_display_is_exact() {
+        let err = ContextError::TooManyAttachedIdentityRefs { max: 8 };
+        assert_eq!(err.to_string(), "cannot attach more than 8 identity references to one context");
+    }
 
     #[test]
     fn attach_up_to_the_bound_succeeds() {

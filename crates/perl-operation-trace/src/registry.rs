@@ -218,6 +218,64 @@ mod tests {
     use crate::event::EventFieldValue;
     use crate::privacy::{PrivateValue, SecretField};
 
+    /// This crate's core contract data — `specs`, backed by the
+    /// per-event-kind `*_FIELDS` consts — is otherwise only ever exercised
+    /// *indirectly*, through whether a hand-built `OperationEvent` passes or
+    /// fails validation. Nothing previously asserted the declared table
+    /// itself: which fields each of the 17 event kinds declares, at which
+    /// [`FieldPrivacy`] tier, and which are `required`. Flipping `host_path`
+    /// from `Private` to `Public`, or clearing `stage`'s `required` flag,
+    /// would go undetected by every other test in this file, because most
+    /// of them build events that are already well-formed under the *current*
+    /// table and only check that validation accepts or rejects — they never
+    /// read the table's declared shape back out. This test does: for every
+    /// event kind, it asserts the exact ordered list of `(name, privacy,
+    /// required)` triples `specs` returns, so a change to any single
+    /// declared field's name, tier, or requiredness breaks exactly one row.
+    #[test]
+    fn registry_declares_the_exact_field_table_for_every_event_kind() {
+        use FieldPrivacy::{Private, Public, Secret};
+        use OperationEventKind as K;
+
+        let expected: [(K, &[(&str, FieldPrivacy, bool)]); 17] = [
+            (K::Admitted, &[]),
+            (K::Rejected, &[("reason", Public, true)]),
+            (K::GenerationSelected, &[("generation", Public, true)]),
+            (
+                K::StageStarted,
+                &[
+                    ("stage", Public, true),
+                    ("host_path", Private, false),
+                    ("source_line", Secret, false),
+                    ("api_key_hint", Secret, false),
+                ],
+            ),
+            (K::StageCompleted, &[("stage", Public, true)]),
+            (K::ProducerSelected, &[("producer", Public, true)]),
+            (K::CacheHit, &[("cache_key", Public, true)]),
+            (K::CacheMiss, &[("cache_key", Public, true)]),
+            (K::StalePublicationRejected, &[("reason", Public, true)]),
+            (K::FallbackSelected, &[("fallback", Public, true)]),
+            (
+                K::ProcessPlanned,
+                &[("executable_logical_name", Public, true), ("argv_digest_hint", Private, false)],
+            ),
+            (K::ProcessStarted, &[("pid_hint", Public, false)]),
+            (K::ProcessTerminated, &[("exit_hint", Public, false)]),
+            (K::Cancelled, &[("reason", Public, false)]),
+            (K::DeadlineExceeded, &[("deadline_ms", Public, false)]),
+            (K::ReceiptEmitted, &[("receipt_ref", Public, true)]),
+            (K::Terminal, &[(OUTCOME_FIELD, Public, true)]),
+        ];
+
+        for (kind, fields) in expected {
+            let declared = specs(kind);
+            let actual: Vec<(&str, FieldPrivacy, bool)> =
+                declared.iter().map(|spec| (spec.name, spec.privacy, spec.required)).collect();
+            assert_eq!(actual, fields, "declared field table mismatch for {kind:?}");
+        }
+    }
+
     #[test]
     fn event_with_no_fields_and_no_required_fields_is_valid() {
         let event = OperationEvent::new(OperationEventKind::Admitted);
@@ -353,6 +411,44 @@ mod tests {
                 kind: OperationEventKind::StageStarted,
                 field: "stage".to_string(),
             }
+        );
+    }
+
+    /// Exhaustive over every [`RegistryError`] variant: pins `Display`'s
+    /// exact text for each, rather than the existing per-variant tests each
+    /// checking a *different, single* variant's structural equality only.
+    #[test]
+    fn registry_error_display_matches_the_exact_documented_string_for_every_variant() {
+        let missing = RegistryError::MissingRequiredField {
+            kind: OperationEventKind::Rejected,
+            field: "reason".to_string(),
+        };
+        assert_eq!(missing.to_string(), "event kind rejected is missing required field \"reason\"");
+
+        let unknown = RegistryError::UnknownField {
+            kind: OperationEventKind::Rejected,
+            field: "extra".to_string(),
+        };
+        assert_eq!(unknown.to_string(), "event kind rejected does not declare field \"extra\"");
+
+        let mismatch = RegistryError::PrivacyMismatch {
+            kind: OperationEventKind::StageStarted,
+            field: "host_path".to_string(),
+            expected: FieldPrivacy::Private,
+            got: FieldPrivacy::Public,
+        };
+        assert_eq!(
+            mismatch.to_string(),
+            "event kind stage_started field \"host_path\" is declared private but was supplied as public"
+        );
+
+        let duplicate = RegistryError::DuplicateField {
+            kind: OperationEventKind::Terminal,
+            field: "outcome".to_string(),
+        };
+        assert_eq!(
+            duplicate.to_string(),
+            "event kind terminal declares field \"outcome\" more than once"
         );
     }
 

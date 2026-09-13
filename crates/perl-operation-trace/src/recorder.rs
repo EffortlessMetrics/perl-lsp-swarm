@@ -718,6 +718,174 @@ mod tests {
         OperationEvent::new(OperationEventKind::Admitted)
     }
 
+    // ── Data-declaration pinning ──────────────────────────────────────────
+    //
+    // The tests in this section read declared struct fields and defaults
+    // back out directly (this module's own `#[cfg(test)]` block has access
+    // to `OperationRecord`'s and `OperationRecorder`'s private fields), so a
+    // mutation to a field's stored value, not merely to the *behavior* built
+    // on top of it, is caught here rather than only ever showing up as a
+    // side effect several calls later.
+
+    #[test]
+    fn recorder_bounds_new_stores_each_argument_in_its_named_field() {
+        let bounds = RecorderBounds::new(10, 20, 30);
+        assert_eq!(bounds.max_events, 10);
+        assert_eq!(bounds.max_payload_bytes, 20);
+        assert_eq!(bounds.max_operations, 30);
+    }
+
+    #[test]
+    fn operation_record_new_has_the_documented_empty_defaults() {
+        let record = OperationRecord::new(OperationKind::TestRun);
+        assert_eq!(record.kind, OperationKind::TestRun);
+        assert_eq!(record.parent, None);
+        assert!(record.entries.is_empty());
+        assert_eq!(record.admitted_events, 0);
+        assert_eq!(record.terminal_outcome, None);
+        assert_eq!(record.truncated, None);
+        assert_eq!(record.payload_bytes, 0);
+    }
+
+    #[test]
+    fn disabled_recorder_has_zeroed_bounds_and_empty_state() {
+        let recorder = OperationRecorder::disabled();
+        assert_eq!(recorder.bounds, RecorderBounds::new(0, 0, 0));
+        assert!(recorder.operations.is_empty());
+        assert_eq!(recorder.operations_rejected_by_cap, 0);
+    }
+
+    #[test]
+    fn truncation_reason_serializes_to_the_exact_variant_tag() {
+        assert_eq!(
+            serde_json::to_string(&TruncationReason::MaxEventsExceeded).unwrap(),
+            "\"MaxEventsExceeded\""
+        );
+        assert_eq!(
+            serde_json::to_string(&TruncationReason::MaxPayloadBytesExceeded).unwrap(),
+            "\"MaxPayloadBytesExceeded\""
+        );
+    }
+
+    /// Exhaustive over every [`RecordError`] variant (including the inner
+    /// `Some`/`None` match on `ParentConflict::existing`): pins `Display`'s
+    /// exact text. Every existing test in this file checks *structural*
+    /// equality on the error value itself (`assert_eq!(err, RecordError::…)`)
+    /// but never the rendered message text this match block actually builds
+    /// — the two are different code paths (`derive(PartialEq)` vs. the
+    /// hand-written `fmt::Display` below), so a mutation to the Display text
+    /// alone (a typo, a swapped `{operation}`/`{parent}`, a dropped clause)
+    /// would pass every other test in this file undetected.
+    #[test]
+    fn record_error_display_matches_the_exact_documented_string_for_every_variant() {
+        let op0 = op("s1", 0); // wire "op:s1:0"
+        let op1 = op("s1", 1); // wire "op:s1:1"
+        let op2 = op("s1", 2); // wire "op:s1:2"
+
+        let cases: Vec<(RecordError, String)> = vec![
+            (
+                RecordError::Registry(RegistryError::MissingRequiredField {
+                    kind: OperationEventKind::Rejected,
+                    field: "reason".to_string(),
+                }),
+                "registry rejected event: event kind rejected is missing required field \"reason\""
+                    .to_string(),
+            ),
+            (
+                RecordError::DuplicateTerminal { operation: op0.clone() },
+                "operation op:s1:0 already has a terminal event".to_string(),
+            ),
+            (
+                RecordError::EventAfterTerminal { operation: op0.clone() },
+                "operation op:s1:0 already reached a terminal state".to_string(),
+            ),
+            (
+                RecordError::EventAfterTruncation { operation: op0.clone() },
+                "operation op:s1:0's trace was already truncated".to_string(),
+            ),
+            (
+                RecordError::MissingOutcome { operation: op0.clone() },
+                "operation op:s1:0's terminal event has no well-formed outcome field".to_string(),
+            ),
+            (
+                RecordError::SelfParent { operation: op0.clone() },
+                "operation op:s1:0 cannot be its own parent".to_string(),
+            ),
+            (
+                RecordError::ParentCycle { operation: op0.clone(), parent: op1.clone() },
+                "operation op:s1:0's parent chain through op:s1:1 cycles back to itself".to_string(),
+            ),
+            (
+                RecordError::ParentConflict {
+                    operation: op0.clone(),
+                    existing: Some(op1.clone()),
+                    supplied: op2.clone(),
+                },
+                "operation op:s1:0 already has parent op:s1:1, but this call supplied op:s1:2"
+                    .to_string(),
+            ),
+            (
+                RecordError::ParentConflict {
+                    operation: op0.clone(),
+                    existing: None,
+                    supplied: op1.clone(),
+                },
+                "operation op:s1:0 was first recorded with no parent, but this call supplied op:s1:1"
+                    .to_string(),
+            ),
+            (
+                RecordError::KindConflict {
+                    operation: op0.clone(),
+                    existing: OperationKind::TestRun,
+                    supplied: OperationKind::LspRequest,
+                },
+                "operation op:s1:0 already has kind test_run, but this call supplied lsp_request"
+                    .to_string(),
+            ),
+            (
+                RecordError::TooManyOperations { operation: op0.clone(), max: 5 },
+                "operation op:s1:0 was rejected: this recorder already retains the maximum of 5 distinct operations"
+                    .to_string(),
+            ),
+        ];
+
+        for (err, expected) in cases {
+            assert_eq!(err.to_string(), expected);
+        }
+    }
+
+    #[test]
+    fn snapshot_carries_the_current_schema_version() {
+        let mut recorder = OperationRecorder::new(RecorderBounds::new(10, 1_000, 10));
+        recorder.record(&ctx("s1", 0), admitted()).unwrap();
+        assert_eq!(recorder.snapshot().schema_version, OperationTraceSchemaVersion::V1);
+    }
+
+    #[test]
+    fn snapshot_event_entry_carries_the_exact_kind_and_fields() {
+        let mut recorder = OperationRecorder::new(RecorderBounds::new(10, 1_000, 10));
+        let context = ctx("s1", 0);
+        let event = OperationEvent::new(OperationEventKind::StageStarted)
+            .with_field("stage", EventFieldValue::PublicString("parse".into()));
+        recorder.record(&context, event).unwrap();
+
+        let snapshot = recorder.snapshot();
+        let RecordedEventEntry::Event { kind, fields } = &snapshot.operations[0].events[0] else {
+            unreachable!("expected an Event entry, not a truncation marker")
+        };
+        assert_eq!(*kind, OperationEventKind::StageStarted);
+        assert_eq!(
+            fields,
+            &vec![("stage".to_string(), EventFieldValue::PublicString("parse".into()))]
+        );
+    }
+
+    #[test]
+    fn operation_kind_is_none_for_an_operation_this_recorder_has_never_seen() {
+        let recorder = OperationRecorder::new(RecorderBounds::new(10, 1_000, 10));
+        assert_eq!(recorder.operation_kind(&op("s1", 999)), None);
+    }
+
     // ── Terminal invariants ───────────────────────────────────────────────
 
     #[test]

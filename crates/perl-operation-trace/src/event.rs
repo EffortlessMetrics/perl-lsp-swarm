@@ -328,6 +328,44 @@ mod tests {
         }
     }
 
+    /// Table-driven, exhaustive over [`ALL_EVENT_KINDS`]: pins every match
+    /// arm in `Display for OperationEventKind` to its exact wire string.
+    /// Before this test, nothing in the suite asserted any of these 17
+    /// literal strings directly — `event_kind_serde_round_trip_is_lossless`
+    /// only proves `Display`/deserialize agree with *each other*, so
+    /// swapping two arms' strings (or misspelling one) would still pass
+    /// every existing test.
+    #[test]
+    fn display_matches_the_exact_documented_string_for_every_variant() {
+        let expected: [(OperationEventKind, &str); 17] = [
+            (OperationEventKind::Admitted, "admitted"),
+            (OperationEventKind::Rejected, "rejected"),
+            (OperationEventKind::GenerationSelected, "generation_selected"),
+            (OperationEventKind::StageStarted, "stage_started"),
+            (OperationEventKind::StageCompleted, "stage_completed"),
+            (OperationEventKind::ProducerSelected, "producer_selected"),
+            (OperationEventKind::CacheHit, "cache_hit"),
+            (OperationEventKind::CacheMiss, "cache_miss"),
+            (OperationEventKind::StalePublicationRejected, "stale_publication_rejected"),
+            (OperationEventKind::FallbackSelected, "fallback_selected"),
+            (OperationEventKind::ProcessPlanned, "process_planned"),
+            (OperationEventKind::ProcessStarted, "process_started"),
+            (OperationEventKind::ProcessTerminated, "process_terminated"),
+            (OperationEventKind::Cancelled, "cancelled"),
+            (OperationEventKind::DeadlineExceeded, "deadline_exceeded"),
+            (OperationEventKind::ReceiptEmitted, "receipt_emitted"),
+            (OperationEventKind::Terminal, "terminal"),
+        ];
+        assert_eq!(
+            expected.len(),
+            ALL_EVENT_KINDS.len(),
+            "this table must stay exhaustive over every OperationEventKind variant"
+        );
+        for (kind, wire) in expected {
+            assert_eq!(kind.to_string(), wire, "wrong Display string for {kind:?}");
+        }
+    }
+
     // ── OperationOutcome ──────────────────────────────────────────────────
 
     #[test]
@@ -359,6 +397,33 @@ mod tests {
         assert!(serde_json::from_str::<OperationOutcome>("\"done\"").is_err());
     }
 
+    /// Table-driven, exhaustive over [`ALL_OUTCOMES`]: pins every match arm
+    /// in both `as_wire_str` and `Display` to its exact literal, not merely
+    /// that encode/decode round-trip. `outcome_wire_str_round_trips_for_every_variant`
+    /// above would still pass if, say, `Completed` and `Failed` swapped
+    /// wire strings with each other consistently in both directions — this
+    /// test pins the actual documented string per variant, which that one
+    /// cannot.
+    #[test]
+    fn as_wire_str_matches_the_exact_documented_string_for_every_variant() {
+        let expected: [(OperationOutcome, &str); 5] = [
+            (OperationOutcome::Completed, "completed"),
+            (OperationOutcome::Failed, "failed"),
+            (OperationOutcome::Cancelled, "cancelled"),
+            (OperationOutcome::Superseded, "superseded"),
+            (OperationOutcome::Rejected, "rejected"),
+        ];
+        assert_eq!(
+            expected.len(),
+            ALL_OUTCOMES.len(),
+            "this table must stay exhaustive over every OperationOutcome variant"
+        );
+        for (outcome, wire) in expected {
+            assert_eq!(outcome.as_wire_str(), wire, "wrong wire string for {outcome:?}");
+            assert_eq!(outcome.to_string(), wire, "Display must match as_wire_str for {outcome:?}");
+        }
+    }
+
     // ── EventFieldValue privacy classification ───────────────────────────
 
     #[test]
@@ -371,6 +436,39 @@ mod tests {
             FieldPrivacy::Private
         );
         assert_eq!(EventFieldValue::Secret(SecretField::new("x")).privacy(), FieldPrivacy::Secret);
+    }
+
+    /// Pins `approx_payload_len`'s exact byte count for every variant,
+    /// including the two non-public tiers' *redacted* lengths — never their
+    /// plaintext lengths (see this method's own doc comment and
+    /// `crate::recorder`'s secret-length-side-channel regression test, which
+    /// exercises the same property indirectly through the recorder's budget
+    /// but never asserts this method's return value directly).
+    #[test]
+    fn approx_payload_len_matches_what_each_variant_actually_serializes_to() {
+        assert_eq!(EventFieldValue::Integer(1).approx_payload_len(), std::mem::size_of::<i64>());
+        assert_eq!(
+            EventFieldValue::Boolean(true).approx_payload_len(),
+            std::mem::size_of::<bool>()
+        );
+        assert_eq!(EventFieldValue::PublicString("hello".into()).approx_payload_len(), 5);
+        assert_eq!(EventFieldValue::PublicString(String::new()).approx_payload_len(), 0);
+        // Private: charged the *rendered* `<redacted:N bytes>` length, which
+        // depends on the plaintext's length but is never the plaintext
+        // length itself.
+        assert_eq!(
+            EventFieldValue::Private(PrivateValue::new("abcdefgh")).approx_payload_len(),
+            "<redacted:8 bytes>".len()
+        );
+        // Secret: a fixed constant, identical regardless of plaintext length
+        // — the whole point of `SecretField::approx_serialized_len`.
+        let short = EventFieldValue::Secret(SecretField::new("a"));
+        let long = EventFieldValue::Secret(SecretField::new(
+            "a much longer low-entropy secret value than the one above",
+        ));
+        assert_eq!(short.approx_payload_len(), "<redacted>".len());
+        assert_eq!(long.approx_payload_len(), "<redacted>".len());
+        assert_eq!(short.approx_payload_len(), long.approx_payload_len());
     }
 
     // ── OperationEvent ────────────────────────────────────────────────────
@@ -417,5 +515,27 @@ mod tests {
         let event = OperationEvent::new(OperationEventKind::Terminal)
             .with_field(OUTCOME_FIELD, EventFieldValue::Private(PrivateValue::new("completed")));
         assert_eq!(event.outcome(), None);
+    }
+
+    /// `OUTCOME_FIELD` is a public, wire-stable constant name; pin its exact
+    /// value directly rather than only ever exercising it indirectly through
+    /// `with_field`/`outcome()` call sites.
+    #[test]
+    fn outcome_field_name_is_exactly_outcome() {
+        assert_eq!(OUTCOME_FIELD, "outcome");
+    }
+
+    /// `outcome()` walks every field looking for one named [`OUTCOME_FIELD`]
+    /// (`find_map`'s per-field `if name != OUTCOME_FIELD { return None }`
+    /// branch). Every existing test puts the outcome field first or alone,
+    /// so none of them exercises the "skip a non-matching field name, then
+    /// find the real one" path. A field with an unrelated name placed
+    /// *before* the outcome field closes that gap.
+    #[test]
+    fn outcome_is_found_after_skipping_an_unrelated_field() {
+        let event = OperationEvent::new(OperationEventKind::Terminal)
+            .with_field("unrelated", EventFieldValue::Integer(7))
+            .with_field(OUTCOME_FIELD, EventFieldValue::PublicString("completed".into()));
+        assert_eq!(event.outcome(), Some(OperationOutcome::Completed));
     }
 }

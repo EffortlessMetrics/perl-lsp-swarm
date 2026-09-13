@@ -64,6 +64,14 @@ mod tests {
         assert!(OperationTraceSchemaVersion::V1.is_supported());
     }
 
+    /// `SCHEMA_VERSION_V1` is a public contract constant; pin its exact
+    /// numeric value directly, and that `V1` wraps exactly it.
+    #[test]
+    fn schema_version_v1_constant_is_exactly_one() {
+        assert_eq!(SCHEMA_VERSION_V1, 1);
+        assert_eq!(OperationTraceSchemaVersion::V1.as_u32(), SCHEMA_VERSION_V1);
+    }
+
     #[test]
     fn unknown_version_is_unsupported() {
         assert!(!OperationTraceSchemaVersion(0).is_supported());
@@ -83,6 +91,20 @@ mod tests {
                 "schema version {bad} must be rejected"
             );
         }
+    }
+
+    /// Stronger than `deserialization_fails_closed_on_unsupported_version`'s
+    /// `is_err()` checks: the rejected deserialization's own error message
+    /// must name the currently supported version, not merely fail for some
+    /// unspecified reason.
+    #[test]
+    fn deserialization_error_message_names_the_supported_version() {
+        let err = serde_json::from_str::<OperationTraceSchemaVersion>("2").unwrap_err();
+        let message = err.to_string();
+        assert!(
+            message.contains("currently 1"),
+            "expected the error to name the supported version, got: {message}"
+        );
     }
 
     #[test]
