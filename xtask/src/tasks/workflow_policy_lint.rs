@@ -44,6 +44,15 @@ const PR_CONTROLLED_TRIGGERS: &[&str] = &[
 /// label ever appearing in the workflow file.
 const GITHUB_HOSTED_LABEL_PREFIXES: &[&str] = &["ubuntu-", "windows-", "macos-"];
 
+/// Files every `cargo xtask <subcommand>` invocation routes through.
+///
+/// `xtask/src/main.rs` is the clap dispatch and `xtask/src/tasks/mod.rs` is the
+/// module registration it reaches subcommands through. `mod tasks;` is declared
+/// in `main.rs`, not `lib.rs`, so both compile into the default `xtask` binary
+/// and into no other target. A paths-filtered gate that runs a subcommand but
+/// omits them cannot observe a change to its own dispatch (#14293).
+const XTASK_CLI_WIRING_FILES: &[&str] = &["xtask/src/main.rs", "xtask/src/tasks/mod.rs"];
+
 const ALLOWLIST_PR_CONTENTS_WRITE: &[&str] = &["ci.yml", "ci-nightly.yml", "droid-review.yml"];
 const POLICY_WARN_UNPINNED_ACTIONS: bool = true;
 const ALLOWLIST_BLANKET_CANCEL_IN_PROGRESS: &[&str] = &["docs-deploy.yml", "post-merge-status.yml"];
@@ -334,7 +343,113 @@ fn lint_workflow_file(path: &Path, is_fixture: bool, issues: &mut Vec<LintIssue>
         }
     }
 
+    if workflow_invokes_xtask_cli(&workflow) {
+        for (trigger, paths) in triggers_with_paths_filters(&workflow) {
+            let missing = XTASK_CLI_WIRING_FILES
+                .iter()
+                .filter(|wiring| !paths_filter_covers(&paths, wiring))
+                .copied()
+                .collect::<Vec<_>>();
+            if missing.is_empty() {
+                continue;
+            }
+            issues.push(LintIssue {
+                level: "error",
+                code: "XTASK_CLI_WIRING_PATHS",
+                workflow: workflow_name.clone(),
+                message: format!(
+                    "trigger '{trigger}' runs an xtask CLI subcommand but its paths filter omits {}; a change to the CLI wiring would skip this gate",
+                    missing.join(", ")
+                ),
+            });
+        }
+    }
+
     Ok(())
+}
+
+/// Whether a `run:` script invokes the default `xtask` binary's CLI.
+///
+/// `cargo run -p xtask --bin <name>` and `--example <name>` select a different
+/// target that does not link `main.rs`'s dispatch, and `cargo test -p xtask`
+/// compiles test targets rather than the CLI, so neither is a subcommand claim.
+fn command_invokes_xtask_cli(script: &str) -> bool {
+    script.lines().any(|line| {
+        let line = line.trim();
+        // `cargo xtask <sub>` (the alias) or `cargo run -p xtask [flags] -- <sub>`.
+        let alias = line.contains("cargo xtask ");
+        let explicit =
+            line.contains("cargo run") && line.contains("-p xtask") && line.contains(" -- ");
+        if !alias && !explicit {
+            return false;
+        }
+        !(line.contains("--bin ") || line.contains("--example "))
+    })
+}
+
+fn workflow_invokes_xtask_cli(workflow: &Value) -> bool {
+    let Some(jobs) = workflow.get("jobs").and_then(Value::as_mapping) else {
+        return false;
+    };
+    jobs.values().any(|job| {
+        job.get("steps").and_then(Value::as_sequence).is_some_and(|steps| {
+            steps.iter().any(|step| {
+                step.get("run").and_then(Value::as_str).is_some_and(command_invokes_xtask_cli)
+            })
+        })
+    })
+}
+
+/// Whether a `paths:` allowlist selects `target`.
+///
+/// Entries are GitHub filter patterns, not literals: `xtask/**` already covers
+/// both wiring files, so requiring them to be spelled out would be a false
+/// positive. Later entries win, which is how a `!` exclusion takes a file back
+/// out of an earlier glob. A pattern that does not parse cannot be shown to
+/// cover anything and is therefore not treated as coverage.
+fn paths_filter_covers(paths: &[String], target: &str) -> bool {
+    let options = glob::MatchOptions {
+        case_sensitive: true,
+        require_literal_separator: true,
+        require_literal_leading_dot: false,
+    };
+    let mut covered = false;
+    for entry in paths {
+        let (negated, raw) = match entry.strip_prefix('!') {
+            Some(rest) => (true, rest),
+            None => (false, entry.as_str()),
+        };
+        let Ok(pattern) = glob::Pattern::new(raw) else {
+            continue;
+        };
+        if pattern.matches_with(target, options) {
+            covered = !negated;
+        }
+    }
+    covered
+}
+
+/// Every trigger carrying a `paths:` allowlist, with its entries.
+///
+/// `paths-ignore:` is deliberately out of scope: it is a denylist, so omitting
+/// a file from it cannot cause the gate to be skipped.
+fn triggers_with_paths_filters(workflow: &Value) -> Vec<(String, Vec<String>)> {
+    let Some(on) = workflow_on(workflow).and_then(Value::as_mapping) else {
+        return Vec::new();
+    };
+    let mut found = Vec::new();
+    for (trigger, config) in on {
+        let Some(name) = trigger.as_str() else {
+            continue;
+        };
+        let Some(paths) = config.get("paths").and_then(Value::as_sequence) else {
+            continue;
+        };
+        let entries =
+            paths.iter().filter_map(Value::as_str).map(str::to_string).collect::<Vec<_>>();
+        found.push((name.to_string(), entries));
+    }
+    found
 }
 
 fn is_contents_write_allowlisted(workflow_name: &str) -> bool {
@@ -1698,6 +1813,142 @@ mod tests {
     fn fixture_path(name: &str) -> Result<PathBuf> {
         let root = project_root()?;
         Ok(root.join("xtask/tests/fixtures/workflow-policy").join(name))
+    }
+
+    fn wiring_issues(name: &str) -> Result<Vec<LintIssue>> {
+        let path = fixture_path(name)?;
+        let mut issues = Vec::new();
+        lint_workflow_file(&path, true, &mut issues)?;
+        Ok(issues.into_iter().filter(|issue| issue.code == "XTASK_CLI_WIRING_PATHS").collect())
+    }
+
+    #[test]
+    fn xtask_cli_paths_missing_wiring_is_reported() -> Result<()> {
+        let issues = wiring_issues("xtask_cli_paths_missing_wiring.yml")?;
+        assert_eq!(issues.len(), 1, "one finding for the one paths-filtered trigger: {issues:?}");
+        let message = &issues[0].message;
+        assert_eq!(issues[0].level, "error");
+        assert!(message.contains("pull_request"), "names the trigger: {message}");
+        assert!(message.contains("xtask/src/main.rs"), "names the missing file: {message}");
+        assert!(message.contains("xtask/src/tasks/mod.rs"), "names the missing file: {message}");
+        Ok(())
+    }
+
+    #[test]
+    fn xtask_cli_paths_complete_wiring_passes() -> Result<()> {
+        assert!(
+            wiring_issues("xtask_cli_paths_complete_wiring.yml")?.is_empty(),
+            "an enumerated filter is accepted, including the `cargo run -p xtask --` spelling"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn xtask_cli_partial_wiring_reports_only_the_missing_file() -> Result<()> {
+        let issues = wiring_issues("xtask_cli_paths_partial_wiring.yml")?;
+        assert_eq!(issues.len(), 1, "{issues:?}");
+        let message = &issues[0].message;
+        assert!(message.contains("xtask/src/tasks/mod.rs"), "names what is missing: {message}");
+        assert!(
+            !message.contains("xtask/src/main.rs"),
+            "does not name the file that is already listed: {message}"
+        );
+        Ok(())
+    }
+
+    /// `--bin` selects a standalone target. `mod tasks;` is declared in
+    /// `xtask/src/main.rs`, so neither wiring file is compiled into that
+    /// binary and requiring them would be a false positive.
+    #[test]
+    fn xtask_bin_invocation_is_not_a_cli_claim() -> Result<()> {
+        assert!(wiring_issues("xtask_bin_paths_missing_wiring.yml")?.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn xtask_test_invocation_is_not_a_cli_claim() -> Result<()> {
+        assert!(wiring_issues("xtask_test_paths_missing_wiring.yml")?.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn xtask_cli_without_paths_filter_is_not_reported() -> Result<()> {
+        assert!(
+            wiring_issues("xtask_cli_no_paths_filter.yml")?.is_empty(),
+            "an unfiltered trigger always runs; there is no filter to omit from"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn xtask_cli_wiring_obligation_is_per_trigger() -> Result<()> {
+        let issues = wiring_issues("xtask_cli_push_paths_missing_wiring.yml")?;
+        assert_eq!(issues.len(), 1, "only the incomplete trigger is reported: {issues:?}");
+        let message = &issues[0].message;
+        assert!(message.contains("push"), "names the incomplete trigger: {message}");
+        assert!(
+            !message.contains("pull_request"),
+            "does not report the complete trigger: {message}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn xtask_cli_wiring_may_be_covered_by_a_glob() -> Result<()> {
+        assert!(
+            wiring_issues("xtask_cli_paths_glob_wiring.yml")?.is_empty(),
+            "`xtask/**` already selects both wiring files"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn xtask_cli_wiring_glob_must_actually_reach_the_file() -> Result<()> {
+        let issues = wiring_issues("xtask_cli_paths_narrow_glob.yml")?;
+        assert_eq!(issues.len(), 1, "{issues:?}");
+        let message = &issues[0].message;
+        assert!(
+            message.contains("xtask/src/main.rs"),
+            "`xtask/src/tasks/**` does not reach main.rs: {message}"
+        );
+        assert!(
+            !message.contains("xtask/src/tasks/mod.rs"),
+            "but it does reach tasks/mod.rs: {message}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn xtask_cli_wiring_excluded_by_negation_is_reported() -> Result<()> {
+        let issues = wiring_issues("xtask_cli_paths_negated_wiring.yml")?;
+        assert_eq!(issues.len(), 1, "{issues:?}");
+        let message = &issues[0].message;
+        assert!(message.contains("xtask/src/main.rs"), "the excluded file: {message}");
+        assert!(!message.contains("xtask/src/tasks/mod.rs"), "still covered: {message}");
+        Ok(())
+    }
+
+    /// The claim #14293 actually makes, asserted against the shipped
+    /// workflows rather than fixtures: no paths-filtered gate that routes
+    /// through the xtask CLI may omit the wiring files it depends on.
+    #[test]
+    fn shipped_workflows_enumerate_xtask_cli_wiring() -> Result<()> {
+        let workflows_dir = project_root()?.join(".github/workflows");
+        let mut issues = Vec::new();
+        for entry in fs::read_dir(&workflows_dir)? {
+            let path = entry?.path();
+            let Some(ext) = path.extension().and_then(|value| value.to_str()) else {
+                continue;
+            };
+            if ext != "yml" && ext != "yaml" {
+                continue;
+            }
+            lint_workflow_file(&path, false, &mut issues)?;
+        }
+        let wiring: Vec<_> =
+            issues.iter().filter(|issue| issue.code == "XTASK_CLI_WIRING_PATHS").collect();
+        assert!(wiring.is_empty(), "workflows with an unenumerated CLI dependency: {wiring:#?}");
+        Ok(())
     }
 
     #[test]
