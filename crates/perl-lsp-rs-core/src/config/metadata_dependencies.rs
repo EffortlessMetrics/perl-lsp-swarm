@@ -1306,7 +1306,6 @@ fn skip_ws_and_commas(bytes: &[u8], idx: &mut usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::TempDir;
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -1789,7 +1788,7 @@ requires 'Kept#Tag'; # drop
 
     #[test]
     fn collect_from_file_appends_distinct_meta_yml_phase_facts() -> TestResult {
-        let temp = TempDir::new()?;
+        let temp = tempfile::TempDir::new()?;
         let path = temp.path().join("META.yml");
         fs::write(
             &path,
