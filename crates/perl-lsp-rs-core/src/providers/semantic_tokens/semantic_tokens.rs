@@ -1998,9 +1998,14 @@ mod tests {
             }
             if token_type == kind {
                 let source_line = lines.get(line as usize).ok_or("token line missing")?;
-                result.push(
-                    source_line.chars().skip(column as usize).take(length as usize).collect(),
-                );
+                // `column` and `length` are UTF-16 code units, because `pos16`
+                // accumulates `len_utf16`. Decoding with `chars()` would conflate
+                // code units with scalar values and mis-slice any line holding an
+                // astral character, so slice the UTF-16 form itself.
+                let utf16: Vec<u16> = source_line.encode_utf16().collect();
+                let end = (column as usize).saturating_add(length as usize);
+                let slice = utf16.get(column as usize..end).ok_or("token range out of bounds")?;
+                result.push(String::from_utf16(slice)?);
             }
         }
         Ok(result)
@@ -2052,6 +2057,21 @@ mod tests {
         let keys = painted_tokens(source, "json_heredoc_key")?;
 
         assert_eq!(keys, vec!["\"a\""], "an unterminated tail must not retract or widen keys");
+        Ok(())
+    }
+
+    #[test]
+    fn json_heredoc_recovery_holds_across_an_astral_character()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // The same colon-miss recovery, but with a non-BMP character ahead of the
+        // surviving key on the line. The emitted column and length are UTF-16 code
+        // units, so `U+1F600` (two units, one scalar) is exactly where a decoder
+        // that confuses the two reports the wrong span.
+        let source = "my $json = <<JSON;\n{\"\u{1F600} and \"good\": 1}\nJSON\n";
+
+        let keys = painted_tokens(source, "json_heredoc_key")?;
+
+        assert_eq!(keys, vec!["\"good\""], "astral text must not shift the recovered key span");
         Ok(())
     }
 
