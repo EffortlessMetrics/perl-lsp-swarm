@@ -6618,6 +6618,56 @@ paths = ["archive/["]
     }
 
     #[test]
+    fn install_surface_route_unit_suppression_matches_no_static_path_only() -> Result<()> {
+        let rules =
+            read_ripr_suppression_rules(&repo_root()?, Path::new("policy/ripr-suppressions.toml"))?;
+        let path = "xtask/src/install_surface_route_units.rs";
+
+        assert!(
+            suppression_matches_finding(
+                &rules,
+                &json!({"classification": "no_static_path", "probe": {"file": path}})
+            ),
+            "no_static_path on {path} must match the #10831 declaration suppression"
+        );
+        assert!(
+            suppression_matches_finding(
+                &rules,
+                &json!({"grip_class": "no_static_path", "seam": {"file": path}})
+            ),
+            "ripr 0.9.x grip_class no_static_path on {path} must match"
+        );
+        // The blocking bucket this entry deliberately does not cover: a future
+        // executable seam must still stop the gate.
+        assert!(
+            !suppression_matches_finding(
+                &rules,
+                &json!({"classification": "reachable_unrevealed", "probe": {"file": path}})
+            ),
+            "reachable_unrevealed on {path} must remain visible"
+        );
+        assert!(
+            !suppression_matches_finding(
+                &rules,
+                &json!({"classification": "weakly_exposed", "probe": {"file": path}})
+            ),
+            "weakly_exposed on {path} must remain visible"
+        );
+        // The registry vocabulary's other owner is not in scope of this entry.
+        assert!(
+            !suppression_matches_finding(
+                &rules,
+                &json!({
+                    "classification": "no_static_path",
+                    "probe": {"file": "xtask/src/tasks/install_surface_inventory.rs"}
+                })
+            ),
+            "the inventory task must not inherit this file-scoped suppression"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn mutation_label_routes_targeted() {
         let decision = routing_decision(&["mutation".to_string()], false);
         assert!(decision.requires_targeted_mutation);
