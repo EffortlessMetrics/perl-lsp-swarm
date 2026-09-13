@@ -324,6 +324,10 @@ export function resolveGitHubAuthDisposition(params: {
   return 'sent';
 }
 
+/**
+ * Headers for one managed-release API request. The credential rides on the
+ * already-resolved disposition, so this builder makes no policy decision.
+ */
 function githubApiHeaders(authDisposition: GitHubAuthDisposition): Record<string, string> {
   const headers: Record<string, string> = {
     'User-Agent': 'vscode-perl-lsp',
@@ -787,7 +791,6 @@ export class BinaryDownloader {
 
   async ensureBinary(forceDownload = false): Promise<string | null> {
     this.lastErrorMessage = undefined;
-    this.releaseMetadata403Disposition = undefined;
     const myReason: ManagedInstallReason = forceDownload ? 'force' : 'ensure';
 
     // Singleflight: if an install is already running, decide whether to
@@ -809,6 +812,11 @@ export class BinaryDownloader {
       );
     }
 
+    // Clear the 403 record here rather than on entry: a force call that joins
+    // an in-flight ensure sits in the await above while that other run records
+    // its own metadata disposition. Resetting on entry would both leak that
+    // value into this run's remedy and wipe the in-flight run's own record.
+    this.releaseMetadata403Disposition = undefined;
     const promise = this.runEnsureBinary(forceDownload);
     activeManagedInstall = { promise, reason: myReason };
     try {

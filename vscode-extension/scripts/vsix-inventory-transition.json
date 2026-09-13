@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
   "owner_issue": 15493,
-  "reason": "Issue #15493 separates the GitHub credential policy from the http.proxyStrictSSL certificate-validation setting in the managed release transport, and binds the HTTP 403 remedy to the credential disposition the refused request actually used. The exact binaryless Linux candidate bundle measures out/extension.js at 1681291 bytes, a declared +2763-byte size-only transition from the accepted base; no packaged file is added, removed, or renamed, and the accompanying key reordering of readme.md and LICENSE.txt is archive-entry order from the regenerating host, which the semantic inventory hash normalizes away.",
+  "reason": "Issue #15493 separates the GitHub credential policy from the http.proxyStrictSSL certificate-validation setting in the managed release transport, and binds the HTTP 403 remedy to the credential disposition the refused request actually used. The exact binaryless Linux candidate bundle measures out/extension.js at 1681447 bytes, a declared +2919-byte size-only transition from the accepted base; no packaged file is added, removed, or renamed, and the accompanying key reordering of readme.md and LICENSE.txt is archive-entry order from the regenerating host, which the semantic inventory hash normalizes away.",
   "base_baseline_file_sha256": "97e252c780703cdac57817eb53c68e62fe8d8454364c4689569126f8dd7882f2",
-  "candidate_baseline_file_sha256": "063db14e843fa92fc90e93ef297ff2c5000b59bc1f815b19a27299ff3aedd853",
+  "candidate_baseline_file_sha256": "fc5ef313ef2dba47475c87bb3c945b1608d7210278732aa03239a7d2627187ad",
   "base_inventory_sha256": "4330c8d298776388ded382fe8ce8b3e810a47adf54cd214f25c5df4c0d033956",
-  "candidate_inventory_sha256": "5021df4c4eff9e8f5b5082d80700b4c47cbe8ddf6b479c69985f34b5bd1457cc"
+  "candidate_inventory_sha256": "0463d67dfe3fd488dc082e51e4f12635fbc05790e9bd1e07375b0cae4d912a0f"
 }

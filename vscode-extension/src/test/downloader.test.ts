@@ -105,6 +105,7 @@ function makeContext(storagePath?: string): vscode.ExtensionContext {
   } as unknown as vscode.ExtensionContext;
 }
 
+/** Put one environment variable back, including the "was unset" case. */
 function restoreEnv(name: 'GITHUB_TOKEN' | 'GH_TOKEN', value: string | undefined): void {
   if (value === undefined) {
     delete process.env[name];
@@ -3210,6 +3211,52 @@ describe('ensureBinary error classification', () => {
     expect(message).toMatch(/set the GITHUB_TOKEN environment variable/);
     expect(message).not.toMatch(/http\.proxyStrictSSL/);
     expect(message).not.toContain('test-token-should-not-leak');
+  });
+
+  /**
+   * A force call that arrives while an ensure install is in flight waits for
+   * it, then runs its own. The 403 record belongs to the run that owns it: the
+   * waiting call must not inherit the in-flight run's disposition, and must not
+   * wipe it out from under that run either.
+   */
+  test('a force run joined behind an ensure does not inherit its 403 disposition', async () => {
+    type Seams = {
+      releaseMetadata403Disposition?: string;
+      runEnsureBinary: (forceDownload: boolean) => Promise<string | null>;
+    };
+    const seams = downloader as unknown as Seams;
+
+    let releaseEnsure!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      releaseEnsure = resolve;
+    });
+
+    let dispositionSeenByForceRun: string | undefined = 'never-ran';
+    const runSpy = jest.spyOn(seams, 'runEnsureBinary');
+    // The in-flight ensure records a metadata 403 while the force call waits.
+    runSpy.mockImplementationOnce(async () => {
+      await gate;
+      seams.releaseMetadata403Disposition = 'withheld_unverified_tls';
+      throw new Error('Release fetch failed: HTTP 403');
+    });
+    // The force call's own run must start from a clean record.
+    runSpy.mockImplementationOnce(async () => {
+      dispositionSeenByForceRun = seams.releaseMetadata403Disposition;
+      return null;
+    });
+
+    const vscode = require('vscode');
+    vscode.window.showErrorMessage.mockResolvedValue(undefined);
+
+    const ensureCall = downloader.ensureBinary(false).catch(() => null);
+    await Promise.resolve();
+    const forceCall = downloader.ensureBinary(true).catch(() => null);
+    await Promise.resolve();
+    releaseEnsure();
+    await ensureCall;
+    await forceCall;
+
+    expect(dispositionSeenByForceRun).toBeUndefined();
   });
 
   test('non-metadata 403 keeps the generic advice even with a withheld credential', async () => {
