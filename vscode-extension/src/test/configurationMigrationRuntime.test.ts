@@ -639,6 +639,24 @@ describe('configuration migration runtime', () => {
     });
   });
 
+  test('selection compares releases numerically across a digit boundary', () => {
+    // Under a lexicographic compare the 0.9 era would also "cover" 0.10.0, leaving two
+    // applicable rows and reporting ambiguity instead of selecting the 0.10 era.
+    const digitBoundary: ConfigurationMigrationRegistry = {
+      ...twoEraRegistry(
+        { introduced_version: '0.9.0', last_supported_version: '0.9.x' },
+        { introduced_version: '0.10.0', last_supported_version: '0.10.x' },
+      ),
+      source_public_release: '0.10.0',
+    };
+
+    expect(validateMigrationRegistry(digitBoundary)).toEqual([]);
+    expect(interpretOldSetting(digitBoundary)).toMatchObject({
+      migration_id: 'era_b',
+      status: 'compatible_legacy',
+    });
+  });
+
   test('a registry the validator certifies is never blamed on the user as an unknown key', () => {
     // Two legitimate disjoint eras, neither of which reaches this envelope's source
     // release. There is no applicable historical policy, so interpretation fails closed —

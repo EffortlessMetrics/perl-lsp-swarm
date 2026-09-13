@@ -1,9 +1,12 @@
 import {
   type ConfigurationMigrationRegistry,
   type ConfigurationMigrationRow,
+  type MigrationEra,
+  type MigrationVersion,
   V018_CONFIGURATION_MIGRATIONS,
   findMigrationRows,
   migrationEraCoversVersion,
+  migrationErasOverlap,
   parseMigrationEra,
   parseMigrationEraBound,
   parseMigrationVersion,
@@ -183,6 +186,43 @@ describe('public-beta configuration migration registry', () => {
         withSecondEra({ introduced_version: '0.16.0', last_supported_version: '0.15.0' }),
       ),
     ).toContain('migration historical era is not a valid window: second_era');
+  });
+
+  test('era comparison is numeric, not lexicographic, across a digit boundary', () => {
+    // '10' sorts before '9' as text. Every other fixture here uses two-digit minors, where
+    // text and numeric order coincide — so a lexicographic compare would pass them all while
+    // placing 0.10.0 inside an era bounded above by 0.9.x.
+    const eraOf = (introduced: string, lastSupported: string): MigrationEra => {
+      const base = V018_CONFIGURATION_MIGRATIONS.rows[0];
+      if (base === undefined) {
+        throw new Error('the shipped registry must define one row');
+      }
+      const parsed = parseMigrationEra({
+        ...base,
+        introduced_version: introduced,
+        last_supported_version: lastSupported,
+      });
+      if (parsed === null) {
+        throw new Error(`era ${introduced}..${lastSupported} must parse`);
+      }
+      return parsed;
+    };
+    const versionOf = (value: string): MigrationVersion => {
+      const parsed = parseMigrationVersion(value);
+      if (parsed === null) {
+        throw new Error(`${value} must parse`);
+      }
+      return parsed;
+    };
+
+    // Coverage: 0.10 is above the 0.9 series, not inside it.
+    expect(migrationEraCoversVersion(eraOf('0.0.0', '0.9.x'), versionOf('0.10.0'))).toBe(false);
+    // ...while a two-digit patch inside that series still is.
+    expect(migrationEraCoversVersion(eraOf('0.0.0', '0.9.x'), versionOf('0.9.10'))).toBe(true);
+    // Overlap: these share the whole 0.10 series, so admitting them would be the bug.
+    expect(migrationErasOverlap(eraOf('0.9.0', '0.10.x'), eraOf('0.10.0', '0.10.x'))).toBe(true);
+    // ...and these genuinely do not touch.
+    expect(migrationErasOverlap(eraOf('0.9.0', '0.9.x'), eraOf('0.10.0', '0.10.x'))).toBe(false);
   });
 
   test('the shipped registry declares a valid era covering its own source release', () => {
