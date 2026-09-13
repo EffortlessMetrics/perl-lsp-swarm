@@ -584,44 +584,20 @@ export interface BoundedTerminationResult {
  * Running→Stopped crash path. This is deliberately NOT the extension's user
  * restart command and not the activation API's stop seam — the issue's
  * negative controls forbid substituting either for the crash.
+ * Node emulates SIGKILL on Windows as unconditional single-process termination.
+ * Delivery is not an exit/recovery oracle: callers must still observe process
+ * disappearance, replacement generation, overlap and cleanup independently.
  */
 export async function terminateServerProcess(pid: number): Promise<BoundedTerminationResult> {
   if (!Number.isInteger(pid) || pid <= 0) {
     return { outcome: 'error', detail: `invalid pid ${JSON.stringify(pid)}` };
-  }
-  if (process.platform === 'win32') {
-    const result = await runBoundedProcess('taskkill', ['/PID', String(pid), '/F'], {
-      shell: false,
-      timeoutMs: 15_000,
-      maxOutputBytes: 64 * 1024,
-      terminationGraceMs: 2_000,
-      terminationWatchdogMs: 10_000,
-      windowsHide: true,
-    });
-    if (result.outcome === 'completed' && result.exitCode === 0) {
-      return { outcome: 'terminated', detail: `taskkill /F pid ${pid}` };
-    }
-    if (
-      result.outcome === 'completed' &&
-      /not found|no such/i.test(result.stdout + result.stderr)
-    ) {
-      return { outcome: 'already_gone', detail: `taskkill reported pid ${pid} already gone` };
-    }
-    return {
-      outcome: 'error',
-      detail: `taskkill pid ${pid} ended ${result.outcome} exit ${String(result.exitCode)}: ${(
-        result.stderr ||
-        result.stdout ||
-        ''
-      ).slice(0, 300)}`,
-    };
   }
   try {
     process.kill(pid, 'SIGKILL');
     return { outcome: 'terminated', detail: `SIGKILL pid ${pid}` };
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
-    if (/ESRCH/i.test(message)) {
+    if (typeof error === 'object' && error !== null && 'code' in error && error.code === 'ESRCH') {
       return { outcome: 'already_gone', detail: `pid ${pid} already gone (ESRCH)` };
     }
     return { outcome: 'error', detail: message };
