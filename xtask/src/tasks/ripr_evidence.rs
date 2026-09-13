@@ -20,6 +20,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 use syn::spanned::Spanned;
+use syn::visit::{self, Visit};
 use xtask::git_ancestry::{AncestryDisposition, AncestryReceipt, classify_ancestry};
 
 #[cfg(test)]
@@ -2492,36 +2493,37 @@ fn production_surface_from_metadata(
 /// ignored so the caller keeps those findings in the blocking basis.
 fn inline_cfg_test_ranges(source: &str) -> Vec<(usize, usize)> {
     let Ok(file) = syn::parse_file(source) else { return Vec::new() };
-    let mut ranges = Vec::new();
-    collect_inline_cfg_test_ranges(&file.items, &mut ranges);
-    ranges
+    let mut collector = InlineCfgTestRangeCollector::default();
+    collector.visit_file(&file);
+    collector.ranges
 }
 
-fn collect_inline_cfg_test_ranges(items: &[syn::Item], ranges: &mut Vec<(usize, usize)>) {
-    for item in items {
-        if let syn::Item::Mod(module) = item {
-            let guarded = module.attrs.iter().any(|attribute| {
-                attribute.path().is_ident("cfg")
-                    && attribute.parse_args::<syn::Path>().is_ok_and(|path| path.is_ident("test"))
-            });
-            if guarded && let Some((_, nested)) = &module.content {
-                let start = module
-                    .attrs
-                    .iter()
-                    .map(Spanned::span)
-                    .chain(std::iter::once(module.span()))
-                    .map(|span| span.start().line)
-                    .min()
-                    .unwrap_or(module.span().start().line);
-                let end = module.span().end().line;
-                if start < end {
-                    ranges.push((start, end));
-                }
-                collect_inline_cfg_test_ranges(nested, ranges);
-            } else if let Some((_, nested)) = &module.content {
-                collect_inline_cfg_test_ranges(nested, ranges);
+#[derive(Default)]
+struct InlineCfgTestRangeCollector {
+    ranges: Vec<(usize, usize)>,
+}
+
+impl<'ast> Visit<'ast> for InlineCfgTestRangeCollector {
+    fn visit_item_mod(&mut self, module: &'ast syn::ItemMod) {
+        let guarded = module.attrs.iter().any(|attribute| {
+            attribute.path().is_ident("cfg")
+                && attribute.parse_args::<syn::Path>().is_ok_and(|path| path.is_ident("test"))
+        });
+        if guarded && module.content.is_some() {
+            let start = module
+                .attrs
+                .iter()
+                .map(Spanned::span)
+                .chain(std::iter::once(module.span()))
+                .map(|span| span.start().line)
+                .min()
+                .unwrap_or(module.span().start().line);
+            let end = module.span().end().line;
+            if start < end {
+                self.ranges.push((start, end));
             }
         }
+        visit::visit_item_mod(self, module);
     }
 }
 
@@ -6014,6 +6016,13 @@ mod tests {
     fn helper() {}
     const TEXT: &str = "#[cfg(test)]";
 }
+fn product_with_local_test_module() {
+    #[cfg(test)]
+    mod local_tests {
+        fn helper() {}
+    }
+    let production = 1;
+}
 #[cfg(any(test, feature = "extra"))]
 mod maybe_tests {
     fn product_when_featured() {}
@@ -6028,7 +6037,17 @@ mod maybe_tests {
         {
             return Err(eyre!("inline cfg(test) helper was not excluded"));
         }
-        for line in [1, 2, 7, 9, 11] {
+        if classify_non_production_at_line(Some(&surface), "src/lib.rs", Some(5))
+            != Some(NonProductionKind::InlineTest)
+        {
+            return Err(eyre!("inline cfg(test) module interior was not excluded"));
+        }
+        if classify_non_production_at_line(Some(&surface), "src/lib.rs", Some(11))
+            != Some(NonProductionKind::InlineTest)
+        {
+            return Err(eyre!("block-local inline cfg(test) helper was not excluded"));
+        }
+        for line in [1, 2, 7, 9, 12, 13, 16, 17, 18] {
             if classify_non_production_at_line(Some(&surface), "src/lib.rs", Some(line)).is_some() {
                 return Err(eyre!("line {line} was incorrectly classified as test-only"));
             }
